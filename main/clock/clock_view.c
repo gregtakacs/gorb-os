@@ -101,6 +101,17 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
  * background with no full-page repaint. */
 #define CLK_GIF_MAX 32
 #define CLK_GIF_TICK_MS 40            /* 25 fps target; flush self-throttles */
+
+/* L3/L4: rather than invalidating the plate through LVGL whenever a GIF delta
+ * rect or a hand rotation dirties it — the software image blit measured
+ * ~250-300 cycles/px (~85 ms/frame on the orb ticks; experiment A: dropping the
+ * plate invalidation took render~ 100->14 ms and fps 8->23) — the tick marks
+ * the affected rows and the L4 commit hook (paint_layer) rebuilds them straight
+ * in the panel mirror: background restored out of the canvas, then the
+ * hands/shadows/glass composited over it. 0 = old all-through-LVGL path
+ * (A/B fallback). */
+#define CLK_BG_DIRECT_PUSH 1
+
 static uint16_t        *s_canvas;      /* PSRAM, CLK_SCR_W*CLK_SCR_H RGB565 */
 static lv_image_dsc_t   s_canvas_dsc;
 static int              s_gif_shown = 0;   /* frame the canvas holds now */
@@ -225,17 +236,36 @@ static void show_plate_frame(int idx)
     lv_obj_invalidate(s_plate);
 }
 
-/* Apply frame `tgt`'s delta rects into the PSRAM canvas and invalidate ONLY
- * those screen areas. The canvas already holds frame tgt-1 (baked that way),
- * so copying the changed rects makes it hold tgt exactly where tgt differs
- * perceptibly; unchanged pixels are left untouched and stay on-screen without
- * a flush. LVGL then re-renders + flushes the union of these rects and whatever
- * the hand rotations dirtied this same tick. */
+static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out);
+static void area_union(lv_area_t *a, const lv_area_t *b);
+#if CLK_BG_DIRECT_PUSH
+static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
+static bool l4_active(void);
+static void request_commit(void);
+#endif
+
+/* Apply frame `tgt`'s delta rects into the PSRAM canvas and get them onto the
+ * glass. The canvas already holds frame tgt-1 (baked that way), so copying
+ * the changed rects makes it hold tgt exactly where tgt differs perceptibly.
+ *
+ * L3 (CLK_BG_DIRECT_PUSH): the glass update is a straight push into the panel
+ * mirror — LVGL's plate re-blit cost those pixels ~250-300 cycles each. The
+ * layers that PAINT OVER the background (hand/shadow/glass) are restored by
+ * the L4 commit hook (see paint_layer): the pushed rows are marked, and just
+ * before the bands DMA the mirror out, the affected layers are composited
+ * directly into it with LVGL's own nearest-neighbour rotation maths.
+ *
+ * If the mirror is unavailable (no PSRAM) or a push is rejected, that rect
+ * falls back to the classic path: invalidate the plate area and let LVGL
+ * re-render plate and layers over it. */
 static void gif_apply_frame(int tgt)
 {
     const uint16_t lo = clk_bg_rect_first[tgt];
     const uint16_t hi = clk_bg_rect_first[tgt + 1];
     const uint8_t *base = blob();
+
+    /* Bounding box of everything pushed this tick (screen coords). */
+    bool any_pushed = false;
 
     for (uint16_t r = lo; r < hi; r++) {
         const clk_bg_rect_t *rc = &clk_bg_rects[r];
@@ -245,11 +275,34 @@ static void gif_apply_frame(int tgt)
             uint16_t *dst = &s_canvas[(size_t)(rc->y + y) * CLK_SCR_W + rc->x];
             memcpy(dst, src + (size_t)y * rc->w, (size_t)rc->w * sizeof(uint16_t));
         }
-        lv_area_t a = { rc->x, rc->y,
-                        (lv_coord_t)(rc->x + rc->w - 1),
-                        (lv_coord_t)(rc->y + rc->h - 1) };
-        lv_obj_invalidate_area(s_plate, &a);
+        bool pushed = false;
+#if CLK_BG_DIRECT_PUSH
+        /* L4: do NOT write the mirror here. The canvas is now up to date and the
+         * commit hook restores exactly these rows out of it at the one safe
+         * moment (every chunk mirrored, before the bands DMA). Pushing straight
+         * into the mirror here was the bug: a tick can run while an earlier
+         * frame's flush is still in flight, so the push overwrote rows whose
+         * hand pixels a previous commit had already composited, and the marks
+         * for them had been consumed -- hands vanished over precisely the
+         * pushed rects. One writer per row, and it is the hook. */
+        if (l4_active()) {
+            mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1);
+            pushed = true;
+        }
+#endif
+        if (!pushed) {
+            lv_area_t a = { rc->x, rc->y,
+                            (lv_coord_t)(rc->x + rc->w - 1),
+                            (lv_coord_t)(rc->y + rc->h - 1) };
+            lv_obj_invalidate_area(s_plate, &a);
+        }
     }
+#if CLK_BG_DIRECT_PUSH
+    (void)any_pushed;
+    /* Rows were painted outside LVGL: give LVGL a 1 px job so a commit (and
+     * with it our hook, and the band DMA that ships the rows) actually runs. */
+    request_commit();
+#endif
     s_gif_shown = tgt;
 }
 
@@ -287,6 +340,12 @@ static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc)
     lv_image_set_pivot(o, spr->pivotx, spr->pivoty);
     lv_obj_set_pos(o, spr->centerx - spr->pivotx, spr->centery - spr->pivoty);
     lv_image_set_blend_mode(o, map_blend(spr->blend));
+    /* LVGL defaults rotation to 4-tap bilinear (antialias=1): ~4x the
+     * per-px cost of the nearest path on the S3, and it dominates the
+     * hands-over-animated-orb re-composite (~40 ms/frame). The baked ink
+     * already carries its own AA in the A8 plane, so nearest sampling of
+     * the rotated source looks near-identical at these sprite widths. */
+    lv_image_set_antialias(o, false);
     return o;
 }
 
@@ -336,7 +395,12 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
 
 static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
 {
-    const double rad = (double)ang_10 * (M_PI / 3600.0);   /* 0.1 deg -> rad */
+    /* ang_10 is TENTHS of a degree: deg = ang_10/10, rad = ang_10 * PI/1800.
+     * (The divisor here was 3600, i.e. the box was built for HALF the angle:
+     * right at 12 o'clock, progressively wrong as the hand swept, which is why
+     * the hour hand lost its tip and the second hand looked clipped at a straight
+     * edge wherever the box stopped short of the ink paint_layer maps onto.) */
+    const double rad = (double)ang_10 * (M_PI / 1800.0);
     const double c = cos(rad), s = sin(rad);
     int32_t x1 = 0x7fffffff, y1 = 0x7fffffff;
     int32_t x2 = -0x7fffffff, y2 = -0x7fffffff;
@@ -380,12 +444,38 @@ static int32_t s_ang_10[5] = { INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN, INT32
 /* Push the current angles onto the live widgets. lv_image_set_rotation returns
  * early when the 0.1-degree value is unchanged, so at a 1 Hz tick only the hand
  * that actually moved (the second, for a ticking dial) dirties its area — the
- * hour/minute are re-pose no-ops and the plate is never touched. */
+ * hour/minute are re-pose no-ops and the plate is never touched.
+ *
+ * HARD GATE for sweeping dials: re-posing a hand invalidates its FULL rotated
+ * bounding box (tens of thousands of px; measured 38 ms/frame while all three
+ * hands re-posed every 40 ms tick). While sweeping, the minute/hour angles
+ * advance sub-pixel amounts per tick (minute = 0.0002 deg/tick at 25 fps —
+ * ~0.00007 px of tip motion), so re-posing them every tick is pure waste:
+ * only re-pose a layer when its angle left the drawn one by >= 0.2 deg
+ * (~0.4 px at the longest tip — at or below visibility). The second hand
+ * sweeps 1.44 deg/tick so it always passes; the minute hand re-poses every
+ * ~2 s and the hour every few minutes, catching up exactly.
+ *
+ * The invalidations lv_image_set_rotation() issues for itself are the whole
+ * (previously unfixable) cost: it queues the FULL transformed box of BOTH the
+ * old and the new pose (measured: hand+shadow re-blit = ~39 ms/frame of
+ * per-pixel inverse-rotate + RGB565A8 blend with LV_DRAW_SW_ASM_NONE), which
+ * re-rasterizes ~2x18.6k px for a wedge that is a few hundred px wide. Wrap
+ * the setters in lv_display_enable_invalidation(false/true) — the same nesting
+ * counter lv_image.c itself uses around lv_obj_refresh_ext_draw_size — and
+ * push only the swept union ourselves. The software renderer then clips the
+ * rotated blit to that refresh area, so cost scales with the wedge, not the
+ * box. */
+#define HAND_REDRAW_EPS_10 2
 static void apply_angles(const float ang[5])
 {
+    lv_display_t * disp = lv_obj_get_display(s_scr);
+
     for (int i = 0; i < 5; i++) {
         const int32_t a = (int32_t)lroundf(ang[i] * 10.0f);
         if (a == s_ang_10[i]) continue;
+        if (s_ang_10[i] != INT32_MIN &&
+            abs((int)(a - s_ang_10[i])) < HAND_REDRAW_EPS_10) continue;
         if (!s_hand[i] && !s_shadow[i]) { s_ang_10[i] = a; continue; }
 
         const int32_t prev = s_ang_10[i];
@@ -418,14 +508,359 @@ static void apply_angles(const float ang[5])
             have = true;
         }
 
-        /* Through the parent: no child-box clip. */
-        if (have) lv_obj_invalidate_area(s_scr, &u);
+        /* Under L4 the commit painter owns these rows outright: restoring the
+         * background from the canvas and re-painting every layer over them is
+         * both cheaper and more correct than asking LVGL to re-composite the
+         * rotated boxes (which was the 36-48 ms we are replacing), so it does
+         * not invalidate them and only the painter runs. Without a canvas the
+         * classic path is back in charge and the wedge goes to LVGL. */
+        if (have) {
+#if CLK_BG_DIRECT_PUSH
+            if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+            else
+#endif
+                lv_obj_invalidate_area(s_scr, &u);
+        }
 
-        if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
-        if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
+        if (prev == INT32_MIN) {
+            /* First pose ever: nothing painted yet, the setter's own
+             * (full-box) invalidation is the one that paints it. */
+            if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
+            if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
+        }
+        else {
+            lv_display_enable_invalidation(disp, false);
+            if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
+            if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
+            lv_display_enable_invalidation(disp, true);
+            /* The setter early-returns without applying its angle if it
+             * already equals the widget's — impossible here since s_ang_10 is
+             * only updated together with the setters, but re-mark the swept
+             * box once more so a lost invalidation can never stick. */
+            if (have) {
+#if CLK_BG_DIRECT_PUSH
+                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+                else
+#endif
+                    lv_obj_invalidate_area(s_scr, &u);
+            }
+        }
         s_ang_10[i] = a;
     }
 }
+
+#if CLK_BG_DIRECT_PUSH
+/* ---- L4: direct layer compositing into the panel mirror -------------------
+ * With L3 the raw GIF pixels land in the mirror instantly, but everything
+ * that PAINTS OVER them (hands, shadows, glass overlay) still had to come
+ * back through LVGL: measured 36-48 ms/frame of render~, because for every
+ * pushed row LVGL re-rasterized each overlapping layer's FULL rotated box
+ * through its generic transform+blend pipeline (~500+ cyc/px even with the
+ * widget's antialiasing off, and shrinking the invalidation does not shrink
+ * the rotated scan).
+ *
+ * So skip LVGL for the re-composite entirely: the tick marks the rows its
+ * push dirtied (plus the wedges of any hand that moved), and at commit --
+ * after every chunk is in the mirror, before the bands DMA it out -- we
+ * paint each affected layer straight into the mirror. The maths below copies
+ * lv_draw_sw_transform()'s ROTATION-ONLY, ANTI-ALIAS-OFF nearest-neighbour
+ * path (and lv_color_16_16_mix_inlined / rgb565_image_blend for the blend)
+ * operation for operation, so our pixels are bit-identical to what LVGL
+ * draws for the first paint and for the wedges it still renders itself.
+ * Cost is the clipped box with two early-outs (source bounds, alpha==0):
+ * the needles are mostly empty box, so the mask skip drops ~3/4 of it. */
+
+/* Rows this tick has dirtied and that the commit hook must re-composite from
+ * scratch: background restored out of s_canvas, then every layer painted over
+ * it in z-order.
+ *
+ * Two things are essential and were the source of the "hands missing /
+ * trailing" bug:
+ *  - the rows must ALSO be marked in the display's band set (display_mark_rows),
+ *    or the mirror we repaint is never DMA'd and the glass keeps the old rows;
+ *  - each marked row's whole painted span must be restored from the canvas
+ *    first, or a layer that moved out of a pixel leaves it behind (ghost) and
+ *    a layer that is re-painted blends over its own previous copy.
+ * Restoring first also makes the hook idempotent, so the marks stay set for
+ * the duration of the tick and are cleared at tick start, not at commit.
+ *
+ * Each row remembers the x-extent that must be restored: the union of every
+ * pushed rect and every layer box that touched it. Narrower than the row, and
+ * it can only grow within a tick, so a later mark never loses coverage. */
+static uint8_t   s_layer_need_row[CLK_SCR_H];
+static int32_t   s_layer_row_x0[CLK_SCR_H];
+static int32_t   s_layer_row_x1[CLK_SCR_H];
+static bool      s_need_commit;      /* something marked rows since last tick  */
+
+static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
+{
+    if (y0 < 0) y0 = 0;
+    if (y1 >= CLK_SCR_H) y1 = CLK_SCR_H - 1;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= CLK_SCR_W) x1 = CLK_SCR_W - 1;
+    if (y1 < y0 || x1 < x0) return;
+
+    bool any = false;
+    for (int32_t y = y0; y <= y1; y++) {
+        if (!s_layer_need_row[y]) {
+            s_layer_need_row[y] = 1;
+            s_layer_row_x0[y] = x0;
+            s_layer_row_x1[y] = x1;
+        } else {
+            if (x0 < s_layer_row_x0[y]) s_layer_row_x0[y] = x0;
+            if (x1 > s_layer_row_x1[y]) s_layer_row_x1[y] = x1;
+        }
+        any = true;
+    }
+    if (any) {
+        s_need_commit = true;
+        display_mark_rows(y0, y1);
+    }
+}
+
+/* L4 only replaces LVGL when there is a canvas to restore background from;
+ * without it (non-GIF themes, or the PSRAM canvas alloc failed) the classic
+ * all-through-LVGL path stays in charge. */
+static bool l4_active(void)
+{
+    return CLK_BG_DIRECT_PUSH && s_canvas != NULL && gif_mode();
+}
+
+/* LVGL starts a commit only when it has something of its own to render, so a
+ * tick that pushed background and moved hands purely through the painter has
+ * to give it a reason: a 1 px plate nudge whose chunk mirrors a correct pixel
+ * and whose is_last drives the commit our hook hangs on. */
+static void request_commit(void)
+{
+    if (!s_need_commit || !l4_active()) return;
+    s_need_commit = false;
+    static const lv_area_t nudge = { 0, 0, 0, 0 };
+    lv_obj_invalidate_area(s_plate, &nudge);
+}
+
+/* Every layer the painter owns, at the angle it is currently held at.
+ *
+ * Called once per tick, and it is what makes the hook the complete owner of the
+ * rows it rebuilds. Marking only the layers whose angle CHANGED was the bug: a
+ * hand that stands still (the hour hand for an hour at a time, the minute hand
+ * under the 0.2-degree re-pose gate) never marked its own box, so the rows it
+ * lives on carried nothing but the GIF rect's narrow x-extent. restore_marked_rows
+ * then wiped that row back to plain background and paint_layer's per-row x-clip
+ * refused to draw the hand outside it -- the hour hand lost its tip and the
+ * minute hand was painted once and froze outside the animated area. */
+static void mark_all_layers(void)
+{
+    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
+        const int k = clk_theme.order[oi];
+        if (k < 0 || k > 4) continue;
+        if (s_ang_10[k] == INT32_MIN) continue;
+        lv_area_t b;
+        if (s_hand[k])   { swept_box(&clk_theme.hand[k],   s_ang_10[k], &b);
+                           mark_rows(b.y1, b.y2, b.x1, b.x2); }
+        if (s_shadow[k]) { swept_box(&clk_theme.shadow[k], s_ang_10[k], &b);
+                           mark_rows(b.y1, b.y2, b.x1, b.x2); }
+    }
+    if (s_overlay && sprite_drawable(&clk_theme.overlay)) {
+        lv_area_t b; swept_box(&clk_theme.overlay, 0, &b);
+        mark_rows(b.y1, b.y2, b.x1, b.x2);
+    }
+}
+
+/* lv_trigo_sin(), copied from lv_math.c: bit-exact table + 32767 clamp. */
+static const uint16_t s_sin0_90[91] = {
+    0,     572,   1144,  1715,  2286,  2856,  3425,  3993,  4560,  5126,
+    5690,  6252,  6813,  7371,  7927,  8481,  9032,  9580,  10126, 10668,
+    11207, 11743, 12275, 12803, 13328, 13848, 14365, 14876, 15384, 15886,
+    16384, 16877, 17364, 17847, 18324, 18795, 19261, 19720, 20174, 20622,
+    21063, 21498, 21926, 22348, 22763, 23170, 23571, 23965, 24351, 24730,
+    25102, 25466, 25822, 26170, 26510, 26842, 27166, 27482, 27789, 28088,
+    28378, 28660, 28932, 29197, 29452, 29698, 29935, 30163, 30382, 30592,
+    30792, 30983, 31164, 31336, 31499, 31651, 31795, 31928, 32052, 32166,
+    32270, 32365, 32449, 32524, 32588, 32643, 32688, 32723, 32748, 32763,
+    32768
+};
+
+static inline int32_t trigo_sin(int32_t angle)
+{
+    while (angle < 0)    angle += 360;
+    while (angle >= 360) angle -= 360;
+    int32_t ret;
+    if (angle < 90)        ret =  s_sin0_90[angle];
+    else if (angle < 180)  ret =  s_sin0_90[180 - angle];
+    else if (angle < 270)  ret = -s_sin0_90[angle - 180];
+    else                   ret = -s_sin0_90[360 - angle];
+    return (ret == 32767) ? 32768 : (ret == -32767) ? -32768 : ret;
+}
+
+/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h. */
+static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
+{
+    if (mix == 255) return c1;
+    if (mix == 0)   return c2;
+    if (c1 == c2)   return c1;
+    uint32_t mix5 = ((uint32_t)mix + 4) >> 3;
+    uint32_t bg = (uint32_t)(c2 | ((uint32_t)c2 << 16)) & 0x7E0F81F;
+    uint32_t fg = (uint32_t)(c1 | ((uint32_t)c1 << 16)) & 0x7E0F81F;
+    uint32_t res = ((((fg - bg) * mix5) >> 5) + bg) & 0x7E0F81F;
+    return (uint16_t)((res >> 16) | res);
+}
+
+/* Paint one rotated RGB565A8 layer over the rows flagged this frame, inside
+ * the x-span flagged for each row (never outside: those pixels already hold a
+ * correct composite and re-blending them would double-darken). */
+static void paint_layer(const clk_sprite_t *spr, int32_t ang_10)
+{
+    if (!sprite_drawable(spr)) return;
+    uint16_t *fb = display_fb_mirror();
+    if (!fb) return;
+
+    const uint8_t *base = blob();
+    const uint16_t *col = (const uint16_t *)(base + spr->color_off);
+    const uint8_t *alp  = base + spr->color_off
+                          + (uint32_t)spr->w * (uint32_t)spr->h * 2u;
+
+    /* The (padded) swept box is a superset of LVGL's transformed area;
+     * out-of-image samples fall through the bounds test below. */
+    lv_area_t box;
+    swept_box(spr, ang_10, &box);
+
+    /* Inverse-transform setup, copied from lv_draw_sw_transform(): scale is
+     * fixed 256, so sxx..syy reduce to trig*64; x0_ups/y0_ups keep LVGL's
+     * exact operation order (int32 products, truncating /256). */
+    int32_t tr_ang = -(ang_10 % 3600);
+    int32_t sinma, cosma;
+    if (tr_ang == 0) { sinma = 0; cosma = 1024; }   /* LVGL's bit-exact case */
+    else {
+        const int32_t low = tr_ang / 10, rem = tr_ang - (tr_ang / 10) * 10;
+        const int32_t s1 = trigo_sin(low),      s2 = trigo_sin(low + 1);
+        const int32_t c1 = trigo_sin(low + 90), c2 = trigo_sin(low + 91);
+        sinma = ((s1 * (10 - rem) + s2 * rem) / 10) >> 5;
+        cosma = ((c1 * (10 - rem) + c2 * rem) / 10) >> 5;
+    }
+    const int32_t sxx =  cosma * 64, sxy = -(sinma * 64);
+    const int32_t syx =  sinma * 64, syy =  cosma * 64;
+    const int32_t xin0 = -(int32_t)spr->pivotx, yin0 = -(int32_t)spr->pivoty;
+    const int32_t x0_ups =
+        (int32_t)(((cosma * xin0 - sinma * yin0) * 64) / 256)
+        + (int32_t)spr->pivotx * 256 + 0x80;
+    const int32_t y0_ups =
+        (int32_t)(((sinma * xin0 + cosma * yin0) * 64) / 256)
+        + (int32_t)spr->pivoty * 256 + 0x80;
+
+    const int32_t posx = (int32_t)spr->centerx - (int32_t)spr->pivotx;
+    const int32_t posy = (int32_t)spr->centery - (int32_t)spr->pivoty;
+
+    const int bmode = spr->blend;
+
+    for (int32_t y = box.y1; y <= box.y2; y++) {
+        if (!s_layer_need_row[y]) continue;
+        const int32_t y_abs = y - posy;
+        const int32_t xs_r = x0_ups + (int32_t)(((int64_t)sxy * y_abs) >> 8);
+        const int32_t ys_r = y0_ups + (int32_t)(((int64_t)syy * y_abs) >> 8);
+        uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
+
+        const int32_t xa = box.x1 > s_layer_row_x0[y] ? box.x1 : s_layer_row_x0[y];
+        const int32_t xb = box.x2 < s_layer_row_x1[y] ? box.x2 : s_layer_row_x1[y];
+
+        for (int32_t x = xa; x <= xb; x++) {
+            const int32_t x_abs = x - posx;
+            const int32_t xs_int = (xs_r + ((sxx * x_abs) >> 8)) >> 8;
+            const int32_t ys_int = (ys_r + ((syx * x_abs) >> 8)) >> 8;
+            if (xs_int < 0 || xs_int >= (int32_t)spr->w ||
+                ys_int < 0 || ys_int >= (int32_t)spr->h) continue;
+
+            const uint32_t sidx = (uint32_t)ys_int * spr->w + (uint32_t)xs_int;
+            const uint8_t a = alp[sidx];
+            if (!a) {
+                continue;                   /* 3/4 of the box: skip  */
+            }
+
+            const uint16_t c = col[sidx];
+            uint16_t *d = &fbrow[x];
+            const uint16_t dest = __builtin_bswap16(*d);
+            uint16_t out;
+
+            if (bmode == 1) {          /* MULTIPLY (shadow layers) */
+                if (c == 0xffff) continue;
+                const uint16_t res =
+                    (uint16_t)((((dest >> 11) * (c >> 11) >> 5) << 11) |
+                              ((((dest >> 5) & 0x3F) * ((c >> 5) & 0x3F) >> 6) << 5) |
+                              (((dest & 0x1F) * (c & 0x1F)) >> 5));
+                out = mix_16_16(res, dest, a);
+            }
+            else if (bmode == 2) {     /* SCREEN (mapped to ADDITIVE) */
+                if (c == 0x0000) continue;
+                const uint32_t dr = dest >> 11, dg = (dest >> 5) & 0x3F, db = dest & 0x1F;
+                const uint32_t sr = c >> 11,    sg = (c >> 5) & 0x3F,    sb = c & 0x1F;
+                const uint32_t r = (dr + sr < 31 ? dr + sr : 31) << 11;
+                const uint32_t g = (dg + sg < 63 ? dg + sg : 63) << 5;
+                const uint32_t b = db + sb < 31 ? db + sb : 31;
+                out = mix_16_16((uint16_t)(r | g | b), dest, a);
+            }
+            else {                     /* NORMAL */
+                out = (a >= 255) ? c : mix_16_16(c, dest, a);
+            }
+            *d = __builtin_bswap16(out);
+        }
+    }
+}
+
+/* Restore the background of every marked row out of the canvas the plate
+ * itself reads from, byte-swapped straight into the mirror. This is what makes
+ * the whole pass idempotent: a layer that moved away has its pixels wiped back
+ * to plain background, and a layer painted twice over the same row lands on
+ * clean pixels each time. Doing it here (rather than leaning on LVGL to
+ * re-render the plate) is what removes the re-composite cost. */
+static void restore_marked_rows(uint16_t *fb)
+{
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        if (!s_layer_need_row[y]) continue;
+        const uint16_t *src = &s_canvas[(size_t)y * CLK_SCR_W + s_layer_row_x0[y]];
+        uint16_t *d = fb + (size_t)y * CLK_SCR_W + s_layer_row_x0[y];
+        for (int32_t x = s_layer_row_x0[y]; x <= s_layer_row_x1[y]; x++) {
+            const uint16_t v = *src++;
+            *d++ = (uint16_t)((v >> 8) | (v << 8));
+        }
+    }
+}
+
+/* display commit hook: rebuild the rows this tick dirtied from the ground up —
+ * background out of the canvas, then every layer in the screen's z-order (all
+ * shadows, then all hands per theme order, then the glass overlay) painted
+ * over it.
+ *
+ * The marks are consumed HERE, not at the next tick. A commit only happens when
+ * LVGL gets around to starting one, and at 47 ms per flush against a 40 ms GIF
+ * beat the commit trails the tick that dirtied the rows: clearing at tick start
+ * handed rows to a commit that never ran and dropped them, which is what made
+ * hands vanish over freshly pushed background and leave a ghost at the pose the
+ * first LVGL render had drawn. Rows that never get a commit simply stay marked
+ * until one does. */
+static void clock_layer_commit(void)
+{
+    if (!l4_active()) return;
+    uint16_t *fb = display_fb_mirror();
+    if (!fb) return;
+
+    restore_marked_rows(fb);
+
+    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
+        const int k = clk_theme.order[oi];
+        if (k < 0 || k > 4) continue;
+        if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
+            paint_layer(&clk_theme.shadow[k], s_ang_10[k]);
+    }
+    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
+        const int k = clk_theme.order[oi];
+        if (k < 0 || k > 4) continue;
+        if (s_hand[k] && s_ang_10[k] != INT32_MIN)
+            paint_layer(&clk_theme.hand[k], s_ang_10[k]);
+    }
+    if (s_overlay) paint_layer(&clk_theme.overlay, 0);
+
+    memset(s_layer_need_row, 0, sizeof(s_layer_need_row));
+}
+#endif /* CLK_BG_DIRECT_PUSH */
 
 static void compose_now(void)
 {
@@ -495,6 +930,16 @@ static void tick_timer_cb(lv_timer_t *timer)
         show_plate_frame(bg_frame_now());
     }
     compose_now();
+#if CLK_BG_DIRECT_PUSH
+    /* Own every pixel any layer can reach, not just the ones that moved:
+     * apply_angles marked the swept union (which clears the vacated wedge), this
+     * marks the full box of each layer at its present pose (which is what a
+     * hand that stands still or is clipped by the GIF rect's x-extent needs to
+     * be restored and redrawn every tick). Marks union per row, so both
+     * contributions apply, and the commit consumes them. */
+    if (l4_active()) mark_all_layers();
+    request_commit();
+#endif
     report_fps_if_due();
 
     /* The GIF delta bank always runs on its own fastest beat; a non-looping
@@ -627,6 +1072,9 @@ esp_err_t clock_view_init(void)
 
     s_t0_us = esp_timer_get_time();
     compose_now();
+#if CLK_BG_DIRECT_PUSH
+    display_set_commit_hook(clock_layer_commit);
+#endif
 
     uint32_t start_period;
     if (gif_mode())                            start_period = CLK_GIF_TICK_MS;

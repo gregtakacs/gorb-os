@@ -135,6 +135,38 @@ static uint8_t  s_dirty_row[SCREEN_HEIGHT];   /* row marked this frame (task ctx
 static volatile int s_band_inflight;          /* bands DMA'd, awaiting trans-done  */
 static bool     s_coalesce_mode = false;       /* true when the PSRAM mirror exists */
 
+/* ---- L1: tile the coalesced bands through internal-DMA scratch ----------------
+ * Submitting a band straight from the PSRAM mirror makes the SPI master
+ * bounce-copy every 37 KB bus chunk (see the trans_queue_depth comment in
+ * display_init): the bounce memcpy runs on the submitting task, serializes
+ * behind the queue at depth 1, and costs ~30 ms/frame. Instead copy each band
+ * in TILE_ROWS-row tiles into one of two MALLOC_CAP_DMA ping-pong buffers and
+ * submit those: the source is DMA-capable so the driver does zero bounce work,
+ * and trans_queue_depth 2 lets tile k+1's DMA start while tile k is still
+ * issuing. A tile of TILE_ROWS x 466 x 2 = 37,280 B equals the bus
+ * max_transfer_sz, so each tile is ONE spi transaction and gets exactly ONE
+ * trans-done callback (lcd_spi_post_trans_color_cb fires only on the last
+ * chunk, and hands edata = NULL -- the driver gives us no buffer identity, so
+ * buffer reuse is guarded ourselves): before writing tile t into a buffer we
+ * wait until s_tile_done proves that buffer's previous tile's DMA completed.
+ * Transactions retire strictly in FIFO order, so the callback count alone is
+ * the proof. Tiles disabled (allocation failure) fall back to the proven
+ * PSRAM-direct submit at queue depth 1. */
+#define USE_DMA_TILES 1            /* flip to 1 once the L0 baseline is captured */
+#define TILE_ROWS     40           /* 466*40*2 == LVGL buf_bytes == bus max xfer */
+_Static_assert(TILE_ROWS == LVGL_BUF_LINES,
+               "tile must exactly fill the LVGL buffer (= bus max_transfer_sz): "
+               "one draw_bitmap == one SPI transaction == one trans-done");
+static uint16_t    *s_tile[2] __attribute__((unused));  /* used when USE_DMA_TILES */
+static volatile uint32_t s_tile_done;   /* tile trans-dones this commit (task resets) */
+static bool         s_tiles_ok __attribute__((unused)); /* both tile bufs allocated at init */
+
+/* Rows the clock's commit-time painter marks between commits (display_mark_rows
+ * while no LVGL frame is in flight). The commit-time frame-start snapshot in
+ * lvgl_flush_cb folds them into s_dirty_row so a mark made in tick context,
+ * before the frame's first chunk arrives, still rides this frame's band set. */
+static uint8_t s_push_row[SCREEN_HEIGHT];
+
 
 /* ---- esp_lcd color-transfer-done callback (QSPI DMA finished) ---- */
 static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
@@ -145,8 +177,12 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
         /* The only DMA that reaches here is the coalesced last-chunk band push.
          * Release the LVGL buffer (which LVGL re-arms for the NEXT frame) only
          * once the final band's DMA has completed, so the next frame cannot
-         * mirror over s_fb while these bands are still being read out of it. */
-        if (s_band_inflight > 0) s_band_inflight--;
+         * mirror over s_fb while these bands are still being read out of it.
+         * s_tile_done counts FIFO-ordered tile completions for the ping-pong
+         * write-guard in dma_dirty_bands (one cb per draw_bitmap: a tile is a
+         * single bus transaction; the fallback PSRAM submit counts too but
+         * nobody reads it in that mode). */
+        if (s_band_inflight > 0) { s_band_inflight--; s_tile_done++; }
         if (s_band_inflight == 0 && s_last_pending) {
             s_last_pending = false;
             lv_display_flush_ready((lv_display_t *)user_ctx);
@@ -237,11 +273,11 @@ static bool s_flush_in_flight_pad_gate_done = false;
  * s_fb at its true (x,y). Row stride of s_fb is SCREEN_WIDTH so a full-width
  * band is later DMA-able as one contiguous run without a repack scratch. */
 static void mirror_chunk(int32_t x1, int32_t y1, int32_t w, int32_t h,
-                         const uint16_t *src)
+                         const uint16_t *src, int32_t stride)
 {
     for (int r = 0; r < h; r++) {
         uint16_t *d = &FB(x1, y1 + r);
-        const uint16_t *s = src + (size_t)r * w;
+        const uint16_t *s = src + (size_t)r * stride;
         for (int c = 0; c < w; c++) {
             uint16_t v = s[c];
             d[c] = (uint16_t)((v >> 8) | (v << 8));
@@ -280,23 +316,86 @@ static int dma_dirty_bands(lv_display_t *disp)
     }
     if (n == 0) return 0;
 
-    /* DMA each band straight from the PSRAM mirror s_fb. A full-width band is
-     * one contiguous run in s_fb (its row stride == SCREEN_WIDTH == the band
-     * width), so no repack scratch is needed. The band is full-width (x=0..465,
+    /* s_fb is a COMPLETE mirror by commit time (every chunk was mirrored before
+     * any DMA -- the commit is deferred to the last chunk), so every byte DMA'd
+     * is exactly what belongs on the glass. Bands are full-width (x=0..465,
      * always even) so no odd pad column is ever synthesized -> the stale-
-     * hairline race is structurally impossible; and because s_fb is a COMPLETE
-     * mirror by commit time (every chunk was mirrored before any DMA -- the
-     * commit is deferred to the last chunk) every byte DMA'd is exactly what
-     * belongs on the glass.
+     * hairline race is structurally impossible. */
+
+#if USE_DMA_TILES
+    if (s_tiles_ok) {
+        /* Tile mode: copy TILE_ROWS-row slabs of each band into ping-pong
+         * internal-DMA buffers and submit them. DMA-capable source -> the SPI
+         * master does no bounce work; queue depth 2 overlaps tile k+1's
+         * command phase with tile k's DMA. One draw_bitmap == one transaction
+         * == one trans-done, so s_band_inflight counts tiles. */
+        int tiles = 0;
+        for (int i = 0; i < n; i++)
+            tiles += (r1[i] - r0[i] + TILE_ROWS) / TILE_ROWS;   /* ceil */
+        s_band_inflight = tiles;
+        s_tile_done     = 0;
+        s_last_pending  = true;
+        unsigned ti = 0;                      /* tile index this commit        */
+        int last_ok[2] = { -1, -1 };          /* last successful tile idx per buf */
+        for (int i = 0; i < n; i++) {
+            for (int row = r0[i]; row <= r1[i]; ) {
+                int rows = r1[i] - row + 1;
+                if (rows > TILE_ROWS) rows = TILE_ROWS;
+                const int b = ti & 1;
+                /* Write-guard: buffer b still holds tile last_ok[b]'s pixels;
+                 * its DMA must have retired (s_tile_done FIFO-counts past it)
+                 * before we overwrite. Bounded so a lost callback degrades to
+                 * one corrupted tile, never a frozen flush. */
+                if (last_ok[b] >= 0) {
+                    const int64_t w0 = esp_timer_get_time();
+                    while (s_tile_done <= (uint32_t)last_ok[b] &&
+                           esp_timer_get_time() - w0 < 100000) { }
+                    if (s_tile_done <= (uint32_t)last_ok[b]) {
+                        ESP_LOGW(TAG, "tile %u: no trans-done for tile %d in 100 ms "
+                                      "(inflight=%d done=%u) -- writing over",
+                                 ti, last_ok[b], (int)s_band_inflight,
+                                 (unsigned)s_tile_done);
+                    }
+                }
+                uint16_t *tb = s_tile[b];
+                memcpy(tb, &FB(0, row), (size_t)SCREEN_WIDTH * (size_t)rows * 2);
+                s_bench_pix    += (uint64_t)SCREEN_WIDTH * (uint32_t)rows;
+                s_bench_chunks++;
+                const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, row,
+                                                              SCREEN_WIDTH,
+                                                              row + rows, tb);
+                if (e != ESP_OK) {
+                    ESP_LOGE(TAG, "tile %u [r=%d..%d] draw_bitmap failed: %s",
+                             ti, row, row + rows - 1, esp_err_to_name(e));
+                    if (s_band_inflight > 0) s_band_inflight--;
+                    if (s_band_inflight == 0 && s_last_pending) {
+                        s_last_pending = false;
+                        lv_display_flush_ready(disp);
+                    }
+                } else {
+                    last_ok[b] = (int)ti;
+                    ti++;
+                }
+                row += rows;
+            }
+        }
+        return n;
+    }
+#endif /* USE_DMA_TILES */
+
+    /* Direct mode: DMA each band straight from the PSRAM mirror s_fb. A
+     * full-width band is one contiguous run in s_fb (its row stride ==
+     * SCREEN_WIDTH == the band width), so no repack scratch is needed.
      *
      * The SPI master cannot DMA from PSRAM (ESP32-S3 GPSPI has no EDMA), so it
      * bounce-copies each bus-sized chunk into a MALLOC_CAP_DMA temp; that is
-     * why esp_lcd_new_panel_io_spi is created with trans_queue_depth==1 (see
-     * display_init) -- a deeper queue piles up N simultaneous bounces and OOMs.
+     * why this mode requires trans_queue_depth==1 (see display_init) -- a
+     * deeper queue piles up N simultaneous bounces and OOMs.
      * s_band_inflight MUST equal the number of draw_bitmap calls we ACTUALLY
      * enqueue; a failed submit gets no post-trans callback, so it is accounted
      * for inline or the LVGL task spins forever in wait_for_flushing. */
     s_band_inflight = n;
+    s_tile_done     = 0;
     s_last_pending  = true;
     for (int i = 0; i < n; i++) {
         const int bh  = r1[i] - r0[i] + 1;
@@ -318,6 +417,8 @@ static int dma_dirty_bands(lv_display_t *disp)
     return n;
 }
 
+static display_commit_hook_t s_commit_hook;   /* defined with the L4 API below */
+
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                           uint8_t *px_map)
 {
@@ -328,9 +429,13 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
     const int64_t t_entry = esp_timer_get_time();
 
     /* First chunk of an LVGL frame: stamp the latency clock (the single TE wait
-     * that gates the whole frame happens at commit time, in dma_dirty_bands). */
+     * that gates the whole frame happens at commit time, in dma_dirty_bands).
+     * Adopt any rows the clock marked between commits: they were painted in the
+     * mirror outside LVGL (display_mark_rows) and must ride this frame's bands
+     * even though LVGL never rendered those areas. */
     if (!s_flush_in_flight) {
-        memset(s_dirty_row, 0, sizeof(s_dirty_row));
+        memcpy(s_dirty_row, s_push_row, sizeof(s_dirty_row));
+        memset(s_push_row, 0, sizeof(s_push_row));
         s_frame_t0_us   = esp_timer_get_time();
         s_flush_in_flight = true;
     }
@@ -341,11 +446,14 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         /* Zero-copy-ish accumulate: byte-swap this chunk into the mirror, mark
          * its rows, and hand the LVGL buffer straight back -- the actual QSPI
          * push is deferred to the last chunk as a handful of band DMAs. */
-        mirror_chunk(x1, y1, w, h, (const uint16_t *)px_map);
+        mirror_chunk(x1, y1, w, h, (const uint16_t *)px_map, w);
         for (int r = y1; r <= y2; r++) s_dirty_row[r] = 1;
 
         if (is_last) {
             s_flush_in_flight = false;
+            /* L4: every chunk is now in the mirror; let the clock composite
+             * its overlay layers directly before the bands read s_fb out. */
+            if (s_commit_hook) s_commit_hook();
             wait_for_te();
             int bands = dma_dirty_bands(disp);
             if (bands == 0) {                 /* nothing dirty: book the frame */
@@ -454,25 +562,51 @@ esp_err_t display_init(void)
         spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO),
         TAG, "spi_bus_initialize");
 
+#if USE_DMA_TILES
+    /* Ping-pong tile buffers (see L1 comment above the TILE_ROWS define).
+     * Sized exactly like the LVGL buffers == the bus max_transfer_sz, so each
+     * tile is a single SPI transaction. Internal DMA RAM: peak usage is these
+     * two + buf1/buf2 (s_scratch only serves the no-PSRAM fallback). */
+    for (int t = 0; t < 2; t++)
+        s_tile[t] = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    s_tiles_ok = (s_tile[0] != NULL && s_tile[1] != NULL);
+    if (!s_tiles_ok) {
+        free(s_tile[0]); free(s_tile[1]);
+        s_tile[0] = s_tile[1] = NULL;
+        ESP_LOGW(TAG, "tile buffers OOM; falling back to PSRAM-direct submit");
+    }
+#endif
+
     /* 3. Panel IO — 32-bit commands + quad mode (QSPI CO5300 protocol) */
     esp_lcd_panel_io_spi_config_t io_cfg =
         CO5300_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, on_color_trans_done, s_lvgl_disp);
     io_cfg.pclk_hz = LCD_SPI_CLOCK_HZ;
-    /* The coalesced bands are DMA'd straight from the PSRAM mirror s_fb. The
-     * ESP32-S3 GPSPI has no EDMA (it can't source a descriptor from PSRAM), so
-     * the SPI master bounce-copies every bus-sized chunk of a PSRAM transfer
-     * into its own internal MALLOC_CAP_DMA temp (spi_master.c: !esp_ptr_dma_capable
-     * -> aligned_alloc+memcpy). Those bounce buffers live until the chunk's DMA
-     * completes, so a trans_queue_depth of N lets N of them pile up at once: a
-     * ~300 KB full-width band = ~8 chunks x ~37 KB = ~296 KB of internal DMA
-     * demanded simultaneously -> heap_caps_aligned_alloc fails -> draw_bitmap
-     * returns ESP_ERR_NO_MEM and the chunk is silently dropped (no trans-done,
-     * so the flush would never complete). The default depth is 10; pin it to 1
-     * so the driver frees each chunk's bounce (via the recycle in
-     * panel_io_spi_tx_color) before allocating the next -> peak ~1 bounce. The
-     * fps win is the reduction in per-BAND command serialisations (<=5), not
-     * chunk queue depth, so this costs no throughput. */
+    /* Queue-depth policy, set by the submit mode (see dma_dirty_bands):
+     *
+     * PSRAM-direct (trans_queue_depth==1): the ESP32-S3 GPSPI has no EDMA — it
+     * can't source a descriptor from PSRAM — so the SPI master bounce-copies
+     * every bus-sized chunk of a PSRAM transfer into its own internal
+     * MALLOC_CAP_DMA temp (spi_master.c: !esp_ptr_dma_capable ->
+     * heap_caps_aligned_alloc + memcpy). Those bounce buffers live until the
+     * chunk's DMA completes, so a depth of N lets N pile up at once: a ~300 KB
+     * full-width band = 8 chunks x 37 KB = ~296 KB demanded simultaneously ->
+     * the aligned alloc fails -> draw_bitmap returns ESP_ERR_NO_MEM and the
+     * chunk is silently dropped (no trans-done, flush never completes). Depth
+     * 1 forces the driver to recycle each chunk's bounce before allocating the
+     * next (peak ~1 bounce) — at the cost of serializing every bounce memcpy
+     * behind the queue (~30 ms/frame).
+     *
+     * Tiled (depth 2): tile sources are internal DMA RAM, so NO bounce work
+     * happens at all and two transactions can be in flight safely — tile k+1's
+     * command phase overlaps tile k's DMA. The ping-pong write-guard in
+     * dma_dirty_bands (FIFO trans-done count) is what makes 2 buffers at depth
+     * 2 safe, since esp_lcd's post-trans callback passes edata=NULL and gives
+     * no buffer identity. */
+#if USE_DMA_TILES
+    io_cfg.trans_queue_depth = s_tiles_ok ? 2 : 1;
+#else
     io_cfg.trans_queue_depth = 1;
+#endif
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
                                  &io_cfg, &s_panel_io),
@@ -599,6 +733,33 @@ void display_bench_stats(uint64_t *pix, uint32_t *chunks)
 uint64_t display_bench_submit_us(void)
 {
     return s_bench_submit_us;
+}
+
+/* ---- L4: commit-time direct compositing (the clock's overlay painter) ---- */
+void display_set_commit_hook(display_commit_hook_t hook)
+{
+    s_commit_hook = hook;
+}
+
+uint16_t *display_fb_mirror(void)
+{
+    return s_coalesce_mode ? s_fb : NULL;
+}
+
+/* Rows the clock's commit-time painter is about to repaint without LVGL ever
+ * having rendered them. They must join the band set or the panel never sees
+ * them. Marked in both arrays so it works whether or not a frame is already
+ * in flight (frame start folds s_push_row into s_dirty_row; a mark after that
+ * fold has to land in s_dirty_row directly). */
+void display_mark_rows(int32_t y0, int32_t y1)
+{
+    if (!s_coalesce_mode) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 >= SCREEN_HEIGHT) y1 = SCREEN_HEIGHT - 1;
+    for (int32_t r = y0; r <= y1; r++) {
+        s_push_row[r]   = 1;
+        s_dirty_row[r]  = 1;
+    }
 }
 
 void display_bench_reset(void)

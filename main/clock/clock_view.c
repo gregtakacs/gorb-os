@@ -102,6 +102,36 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
 #define CLK_GIF_MAX 32
 #define CLK_GIF_TICK_MS 40            /* 25 fps target; flush self-throttles */
 
+/* Two motions share the one fast tick in GIF mode: the second hand sweeping
+ * (which wants every tick to look smooth) and the GIF background advancing
+ * (which does not -- a frame held a few ms longer is imperceptible). Flush cost
+ * scales with the number of marked ROWS a commit DMA's, and the two motions
+ * mark overlapping-but-not-identical row sets: gif_apply_frame marks the
+ * changed rects, mark_all_layers marks the hands' swept boxes. Because flush
+ * (~51 ms) exceeds the GIF's own ~40 ms delay, the GIF is perpetually behind and
+ * advances EVERY tick, so every frame pays GIF-rows UNION hand-rows. Advancing
+ * the GIF only every Nth tick lets the intervening ticks DMA just the hands.
+ * Whether that actually drops tiles/frame (i.e. whether the GIF marks rows the
+ * hands do not already cover) is the question this flag is here to answer --
+ * read chunks/s in the fps line: 135 = GIF marks nothing extra, lower = it does.
+ * N=1 = no throttle (original behaviour).
+ *
+ * Measured (tiles/frame = chunks/s / fps): /1 = 9.0 tiles, 15 fps; /2 = 8.0
+ * tiles, 18 fps; /3 = 8.3 tiles, 18 fps. So the GIF contributes only ~1 tile/
+ * frame; /2 was the perf sweet spot (the same 18 fps as /3 but a smoother
+ * background, and fewer tiles/frame). The plateau at 18 fps is NOT the GIF -- it
+ * is mark_all_layers() re-marking all three hands' FULL swept boxes (+shadows
+ * +overlay) every tick, even the hour/minute that did not move. That ~8-tile
+ * hand-box floor is what keeps flush >= ~47 ms; breaking past it needs a
+ * stationary hand to mark only the rows it shares with a moving layer, not its
+ * whole box -- which must be done without re-opening the freeze bug (see
+ * mark_all_layers).
+ *
+ * SHIPPED DEFAULT IS 1: visual fidelity of the background wins over the +3 fps
+ * that /2's half-speed GIF buys. Set to 2 only if throughput is prioritised
+ * over background smoothness. */
+#define CLK_GIF_THROTTLE 1
+
 /* L3/L4: rather than invalidating the plate through LVGL whenever a GIF delta
  * rect or a hand rotation dirties it — the software image blit measured
  * ~250-300 cycles/px (~85 ms/frame on the orb ticks; experiment A: dropping the
@@ -923,7 +953,8 @@ static void tick_timer_cb(lv_timer_t *timer)
         const int      next = (s_gif_shown + 1) % (int)clk_theme.gif_frames;
         if ((int32_t)(now - s_gif_due) >= 0) {
             gif_apply_frame(next);
-            s_gif_due = lv_tick_get() + clk_gif_delays[next];
+            s_gif_due = lv_tick_get()
+                      + (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
         }
     } else {
         s_bg_tick++;
@@ -1083,13 +1114,30 @@ esp_err_t clock_view_init(void)
     s_tick_timer = lv_timer_create(tick_timer_cb, start_period, NULL);
     lv_timer_pause(s_tick_timer);   /* parked until the clock is on the glass */
 
+    /* Report the cadence the bake actually recorded instead of a literal that
+     * drifts out of date: GIF playback is paced by clk_gif_delays[] (the GIF's
+     * own per-frame delays), not by the tick — the tick only sets how often the
+     * sweeping hand is recomposed. */
+    char bgdesc[64];
+    if (gif_mode()) {
+        uint32_t d0 = clk_gif_delays[0] > 0 ? (uint32_t)clk_gif_delays[0]
+                                            : (uint32_t)CLK_GIF_TICK_MS;
+        snprintf(bgdesc, sizeof bgdesc,
+                 "gif delta bank: %u frames @ %u ms (%u.%u fps), tick %u ms",
+                 (unsigned)clk_theme.gif_frames, (unsigned)d0,
+                 (unsigned)(1000 / d0), (unsigned)((1000 % d0) * 10 / d0),
+                 (unsigned)CLK_GIF_TICK_MS);
+    } else if (bg_live()) {
+        snprintf(bgdesc, sizeof bgdesc, "plate anim");
+    } else {
+        snprintf(bgdesc, sizeof bgdesc, "still");
+    }
+
     ESP_LOGI(TAG, "analog clock: %d hand(s), shadow %s(%d,%d), sweep %s, bg %s",
              (clk_theme.hand[0].show ? 1 : 0) + (clk_theme.hand[1].show ? 1 : 0)
                  + (clk_theme.hand[2].show ? 1 : 0),
              clk_theme.shadow_on ? "on" : "off", clk_theme.shadow_dx, clk_theme.shadow_dy,
-             clk_theme.second_sweep ? "on" : "off",
-             gif_mode() ? "gif delta bank (20 fps target)"
-                        : (bg_live() ? "plate anim" : "still"));
+             clk_theme.second_sweep ? "on" : "off", bgdesc);
     return ESP_OK;
 }
 

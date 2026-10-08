@@ -29,6 +29,21 @@ bool     display_te(void);
 /** Cumulative microseconds spent waiting for TE (frame-budget telemetry). */
 uint32_t display_te_wait_us(void);
 
+/**
+ * Full-page refresh benchmark counters, accumulated in the flush path: a frame is
+ * booked from the submit of its first row-chunk to the DMA-completion of its last.
+ * Snapshot the running totals (any out-param may be NULL); reset zeroes them.
+ */
+void display_bench_snapshot(uint32_t *frames, uint64_t *us_total, uint32_t *us_max);
+
+/** Pixels + flush row-chunks handed to the panel since reset/before now. */
+void display_bench_stats(uint64_t *pix, uint32_t *chunks);
+
+/** Cumulative µs spent inside flush_cb (swap + mirror + draw_bitmap submit). */
+uint64_t display_bench_submit_us(void);
+
+void display_bench_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

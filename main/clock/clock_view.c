@@ -159,6 +159,22 @@ static bool gif_mode(void)
            && clk_theme.gif_frames <= CLK_GIF_MAX && s_canvas != NULL;
 }
 
+/* GIF-mode beat: the tick rides the GIF's OWN baked delay, so one tick is one
+ * GIF frame and every frame is up for exactly the same number of ticks. A tick
+ * faster than the GIF's delay does not yield that delay — the frame still
+ * only flips on a tick, so a 67 ms GIF on a 40 ms tick lands on 2-tick holds
+ * (~9 fps, and uneven when flush jitter crosses the due boundary). Slower is
+ * impossible; equal is the only clean answer. The sweeping hand reads the
+ * wall clock, not the tick count, so it stays time-accurate at any sampling
+ * rate; it just steps fewer times a second. The delay table is baked uniform
+ * per theme (--bg-fps), so frame 0's delay is the tempo. */
+static uint32_t gif_tick_ms(void)
+{
+    const uint32_t d = clk_gif_delays[0];
+    if (d < 20) return 20;              /* sanity floor: never spin past 50 fps */
+    return d;
+}
+
 static bool bg_live(void)
 {
     if (clk_theme.bg_mode == 1)
@@ -945,10 +961,11 @@ static void tick_timer_cb(lv_timer_t *timer)
     if (!s_active) return;      /* parked: clock not on the glass */
     s_fps_ticks++;
     if (gif_mode()) {
-        /* Pace the GIF by its OWN delays: the tick runs at CLK_GIF_TICK_MS so
-         * the sweeping hand stays smooth, but the background frame only
-         * advances once the frame it is about to show has been due for its
-         * native duration (40 ms here, 50 on the GIF's held frames). */
+        /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay
+         * (gif_tick_ms), so the background advances exactly one frame per tick
+         * at the authoring tempo — no due-time quantisation, no uneven holds.
+         * The sweeping hand is sampled on the same beat (time-accurate angles
+         * from the wall clock, just stepped at the GIF's rate). */
         const uint32_t now  = lv_tick_get();
         const int      next = (s_gif_shown + 1) % (int)clk_theme.gif_frames;
         if ((int32_t)(now - s_gif_due) >= 0) {
@@ -977,7 +994,7 @@ static void tick_timer_cb(lv_timer_t *timer)
      * plate background only needs the fast beat while a play is running (the
      * check in bg_frame_now() may have just started one). */
     uint32_t period;
-    if (gif_mode())                              period = CLK_GIF_TICK_MS;
+    if (gif_mode())                              period = gif_tick_ms();
     else if (bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
                                                  period = bg_rate(tick_base_ms(), &s_bg_every);
     else                                         { s_bg_every = 1; period = tick_base_ms(); }
@@ -988,7 +1005,7 @@ static void tick_timer_cb(lv_timer_t *timer)
  * In GIF delta mode the whole dial runs on the fastest shared beat. */
 static uint32_t tick_base_ms(void)
 {
-    if (gif_mode()) return CLK_GIF_TICK_MS;
+    if (gif_mode()) return gif_tick_ms();
     if (!clk_theme.second_sweep) return 1000;
     int rate = clk_theme.tick_rate;
     if (rate < 1) rate = 1;
@@ -1108,7 +1125,7 @@ esp_err_t clock_view_init(void)
 #endif
 
     uint32_t start_period;
-    if (gif_mode())                            start_period = CLK_GIF_TICK_MS;
+    if (gif_mode())                            start_period = gif_tick_ms();
     else if (bg_live() && clk_theme.bg_loop)   start_period = bg_rate(tick_base_ms(), &s_bg_every);
     else                                       { s_bg_every = 1; start_period = tick_base_ms(); }
     s_tick_timer = lv_timer_create(tick_timer_cb, start_period, NULL);
@@ -1126,7 +1143,7 @@ esp_err_t clock_view_init(void)
                  "gif delta bank: %u frames @ %u ms (%u.%u fps), tick %u ms",
                  (unsigned)clk_theme.gif_frames, (unsigned)d0,
                  (unsigned)(1000 / d0), (unsigned)((1000 % d0) * 10 / d0),
-                 (unsigned)CLK_GIF_TICK_MS);
+                 (unsigned)gif_tick_ms());
     } else if (bg_live()) {
         snprintf(bgdesc, sizeof bgdesc, "plate anim");
     } else {

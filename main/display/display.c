@@ -140,26 +140,35 @@ static bool     s_coalesce_mode = false;       /* true when the PSRAM mirror exi
  * bounce-copy every 37 KB bus chunk (see the trans_queue_depth comment in
  * display_init): the bounce memcpy runs on the submitting task, serializes
  * behind the queue at depth 1, and costs ~30 ms/frame. Instead copy each band
- * in TILE_ROWS-row tiles into one of two MALLOC_CAP_DMA ping-pong buffers and
- * submit those: the source is DMA-capable so the driver does zero bounce work,
- * and trans_queue_depth 2 lets tile k+1's DMA start while tile k is still
- * issuing. A tile of TILE_ROWS x 466 x 2 = 37,280 B equals the bus
- * max_transfer_sz, so each tile is ONE spi transaction and gets exactly ONE
- * trans-done callback (lcd_spi_post_trans_color_cb fires only on the last
- * chunk, and hands edata = NULL -- the driver gives us no buffer identity, so
- * buffer reuse is guarded ourselves): before writing tile t into a buffer we
- * wait until s_tile_done proves that buffer's previous tile's DMA completed.
+ * in TILE_ROWS-row tiles into a ring of TILE_BUFS MALLOC_CAP_DMA ping-pong
+ * buffers and submit those: the source is DMA-capable so the driver does zero
+ * bounce work, and trans_queue_depth == the number of buffers we actually got
+ * lets a later tile's command phase overlap an earlier tile's DMA. Note the
+ * GPSPI bus drives ONE transaction at a time, so buffers beyond 2 buy headroom,
+ * not throughput: measured, depth 3/4 left submit/s identical (the per-tile cost
+ * is the fixed esp_lcd command/CS setup, not queue depth). A tile of
+ * TILE_ROWS x 466 x 2 = 37,280 B equals the bus max_transfer_sz, so each tile
+ * is ONE spi transaction and gets exactly ONE trans-done callback
+ * (lcd_spi_post_trans_color_cb fires only on the last chunk, and hands
+ * edata = NULL -- the driver gives us no buffer identity, so buffer reuse is
+ * guarded ourselves): before writing tile t into buffer t % s_tiles_n we wait
+ * until s_tile_done proves that buffer's previous tile's DMA completed.
  * Transactions retire strictly in FIFO order, so the callback count alone is
- * the proof. Tiles disabled (allocation failure) fall back to the proven
- * PSRAM-direct submit at queue depth 1. */
+ * the proof. We allocate up to TILE_BUFS but drive the ring with s_tiles_n (how
+ * many actually allocated), so a heap shortfall degrades to depth 2 rather
+ * than the 30 ms/frame PSRAM-direct path; tiles disabled entirely (fewer than
+ * 2 buffers) fall back to the proven PSRAM-direct submit at queue depth 1. */
 #define USE_DMA_TILES 1            /* flip to 1 once the L0 baseline is captured */
 #define TILE_ROWS     40           /* 466*40*2 == LVGL buf_bytes == bus max xfer */
+#define TILE_BUFS      2           /* ring depth to attempt (bus is serialized: >2 is free headroom, not more fps) */
 _Static_assert(TILE_ROWS == LVGL_BUF_LINES,
                "tile must exactly fill the LVGL buffer (= bus max_transfer_sz): "
                "one draw_bitmap == one SPI transaction == one trans-done");
-static uint16_t    *s_tile[2] __attribute__((unused));  /* used when USE_DMA_TILES */
+_Static_assert(TILE_BUFS >= 2, "ring must hold at least 2 buffers to overlap DMA");
+static uint16_t    *s_tile[TILE_BUFS] __attribute__((unused)); /* used when USE_DMA_TILES */
 static volatile uint32_t s_tile_done;   /* tile trans-dones this commit (task resets) */
-static bool         s_tiles_ok __attribute__((unused)); /* both tile bufs allocated at init */
+static int          s_tiles_n __attribute__((unused)); /* buffers actually allocated */
+static bool         s_tiles_ok __attribute__((unused)); /* s_tiles_n >= 2, ring enabled */
 
 /* Rows the clock's commit-time painter marks between commits (display_mark_rows
  * while no LVGL frame is in flight). The commit-time frame-start snapshot in
@@ -336,12 +345,14 @@ static int dma_dirty_bands(lv_display_t *disp)
         s_tile_done     = 0;
         s_last_pending  = true;
         unsigned ti = 0;                      /* tile index this commit        */
-        int last_ok[2] = { -1, -1 };          /* last successful tile idx per buf */
+        const int nbuf = s_tiles_n;           /* ring size actually allocated   */
+        int last_ok[TILE_BUFS];               /* last successful tile idx per buf */
+        for (int bi = 0; bi < nbuf; bi++) last_ok[bi] = -1;
         for (int i = 0; i < n; i++) {
             for (int row = r0[i]; row <= r1[i]; ) {
                 int rows = r1[i] - row + 1;
                 if (rows > TILE_ROWS) rows = TILE_ROWS;
-                const int b = ti & 1;
+                const int b = (int)(ti % (unsigned)nbuf);
                 /* Write-guard: buffer b still holds tile last_ok[b]'s pixels;
                  * its DMA must have retired (s_tile_done FIFO-counts past it)
                  * before we overwrite. Bounded so a lost callback degrades to
@@ -565,16 +576,32 @@ esp_err_t display_init(void)
 #if USE_DMA_TILES
     /* Ping-pong tile buffers (see L1 comment above the TILE_ROWS define).
      * Sized exactly like the LVGL buffers == the bus max_transfer_sz, so each
-     * tile is a single SPI transaction. Internal DMA RAM: peak usage is these
-     * two + buf1/buf2 (s_scratch only serves the no-PSRAM fallback). */
-    for (int t = 0; t < 2; t++)
+     * tile is a single SPI transaction. Internal DMA RAM is the scarce
+     * resource, so before asking for the ring we reclaim s_scratch, which is
+     * only ever touched by the no-PSRAM pad-fallback path in lvgl_flush_cb:
+     * with the coalescing mirror present (s_fb != NULL) that path is dead, so
+     * freeing it hands back one full 37 KB buffer's worth of internal DMA RAM
+     * to fund the deeper ring. We try for TILE_BUFS but run at whatever count
+     * lands (s_tiles_n), so a shortfall degrades to depth 2, not the 30 ms
+     * PSRAM-direct path. */
+    if (s_coalesce_mode && s_scratch) {
+        free(s_scratch);
+        s_scratch = NULL;
+    }
+    for (int t = 0; t < TILE_BUFS; t++)
         s_tile[t] = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    s_tiles_ok = (s_tile[0] != NULL && s_tile[1] != NULL);
+    s_tiles_n = 0;
+    while (s_tiles_n < TILE_BUFS && s_tile[s_tiles_n] != NULL) s_tiles_n++;
+    s_tiles_ok = (s_tiles_n >= 2);
     if (!s_tiles_ok) {
-        free(s_tile[0]); free(s_tile[1]);
-        s_tile[0] = s_tile[1] = NULL;
+        for (int t = 0; t < TILE_BUFS; t++) { free(s_tile[t]); s_tile[t] = NULL; }
+        s_tiles_n = 0;
         ESP_LOGW(TAG, "tile buffers OOM; falling back to PSRAM-direct submit");
     }
+    ESP_LOGI(TAG, "tile ring: %d x %u B internal DMA RAM (peak internal free %u B, largest block %u B)",
+             s_tiles_ok ? s_tiles_n : 0, (unsigned)buf_bytes,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 #endif
 
     /* 3. Panel IO — 32-bit commands + quad mode (QSPI CO5300 protocol) */
@@ -596,14 +623,15 @@ esp_err_t display_init(void)
      * next (peak ~1 bounce) — at the cost of serializing every bounce memcpy
      * behind the queue (~30 ms/frame).
      *
-     * Tiled (depth 2): tile sources are internal DMA RAM, so NO bounce work
-     * happens at all and two transactions can be in flight safely — tile k+1's
-     * command phase overlaps tile k's DMA. The ping-pong write-guard in
-     * dma_dirty_bands (FIFO trans-done count) is what makes 2 buffers at depth
-     * 2 safe, since esp_lcd's post-trans callback passes edata=NULL and gives
-     * no buffer identity. */
+     * Tiled (depth == s_tiles_n): tile sources are internal DMA RAM, so NO
+     * bounce work happens at all and s_tiles_n transactions can be in flight
+     * safely — a later tile's command phase overlaps an earlier tile's DMA,
+     * hiding the per-transaction esp_lcd setup that dominates flush time.
+     * The ring write-guard in dma_dirty_bands (FIFO trans-done count, buffer
+     * t % s_tiles_n) is what makes N buffers at depth N safe, since esp_lcd's
+     * post-trans callback passes edata=NULL and gives no buffer identity. */
 #if USE_DMA_TILES
-    io_cfg.trans_queue_depth = s_tiles_ok ? 2 : 1;
+    io_cfg.trans_queue_depth = s_tiles_ok ? s_tiles_n : 1;
 #else
     io_cfg.trans_queue_depth = 1;
 #endif
@@ -668,8 +696,13 @@ esp_err_t display_init(void)
     }
 #endif
 
-    ESP_LOGI(TAG, "Display ready (%dx%d), LVGL buffers: %u B x2 internal DMA RAM",
-             SCREEN_WIDTH, SCREEN_HEIGHT, (unsigned)buf_bytes);
+    ESP_LOGI(TAG, "Display ready (%dx%d), LVGL buffers: %u B x2 internal DMA RAM, tile ring depth %d",
+             SCREEN_WIDTH, SCREEN_HEIGHT, (unsigned)buf_bytes,
+#if USE_DMA_TILES
+             s_tiles_ok ? s_tiles_n : 0);
+#else
+             0);
+#endif
 
     return ESP_OK;
 }

@@ -37,6 +37,7 @@ static const char *TAG = "display";
 static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t    s_panel;
 static lv_display_t             *s_lvgl_disp;
+static uint16_t                 *s_scratch;   /* aligned re-pack buffer, internal DMA RAM */
 
 /* ---- esp_lcd color-transfer-done callback (QSPI DMA finished) ---- */
 static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
@@ -47,16 +48,47 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
     return false;   /* no yield needed */
 }
 
-/* ---- LVGL 9 flush callback ---- */
+/* ---- LVGL 9 flush callback ----
+ *
+ * The CO5300 over QSPI requires each flush window to start on an EVEN column
+ * and span an EVEN number of columns: the SPI GDMA engine in quad mode needs a
+ * transfer length that is a multiple of 4 bytes (2 px * 2 B). When LVGL renders
+ * a partial region with an odd x-start or odd width (e.g. the centered clock
+ * label), flushing it verbatim shears/slants every row. The Arduino reference
+ * lib solves this with a rounder_cb; LVGL 9 dropped rounder_cb, so we align the
+ * rectangle here and re-pack the pixel rows into an even-width scratch buffer.
+ *
+ * Padding columns are filled black — invisible on the true-black AMOLED clock.
+ */
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                           uint8_t *px_map)
 {
-    esp_lcd_panel_draw_bitmap(s_panel,
-                              area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1,
-                              px_map);
-    /* flush_ready fires from on_color_trans_done when the DMA completes.
-     * If draw_bitmap failed, release LVGL anyway so we don't deadlock. */
+    const int32_t x1 = area->x1, y1 = area->y1, x2 = area->x2, y2 = area->y2;
+    const int w = x2 - x1 + 1;
+    const int h = y2 - y1 + 1;
+
+    int32_t ax1 = x1 & ~1;                 /* round x-start down to even */
+    int     aw  = (w + 1) & ~1;            /* round width up to even     */
+    if (ax1 + aw > SCREEN_WIDTH) {         /* keep window inside the panel */
+        aw = (SCREEN_WIDTH - ax1) & ~1;
+    }
+
+    if (ax1 == x1 && aw == w) {
+        /* already even-aligned: DMA the LVGL buffer directly */
+        esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2 + 1, y2 + 1, px_map);
+    } else {
+        /* re-pack rows into the even-width scratch buffer */
+        const uint16_t *src = (const uint16_t *)px_map;
+        const int left = x1 - ax1;
+        for (int r = 0; r < h; r++) {
+            uint16_t *d = s_scratch + (size_t)r * aw;
+            for (int c = 0;  c < left;      c++) d[c] = 0x0000;
+            memcpy(d + left, src + (size_t)r * w, (size_t)w * sizeof(uint16_t));
+            for (int c = left + w; c < aw;  c++) d[c] = 0x0000;
+        }
+        esp_lcd_panel_draw_bitmap(s_panel, ax1, y1, ax1 + aw, y2 + 1, s_scratch);
+    }
+    /* flush_ready fires from on_color_trans_done when the DMA completes. */
 }
 
 /* ---- LVGL tick source ---- */
@@ -79,9 +111,12 @@ esp_err_t display_init(void)
     const size_t buf_bytes = (size_t)SCREEN_WIDTH * LVGL_BUF_LINES * 2; /* RGB565 */
     void *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     void *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!buf1 || !buf2) {
+    s_scratch  = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!buf1 || !buf2 || !s_scratch) {
         free(buf1);
         free(buf2);
+        free(s_scratch);
+        s_scratch = NULL;
         ESP_LOGE(TAG, "Failed to allocate LVGL draw buffers in internal DMA RAM");
         return ESP_ERR_NO_MEM;
     }
@@ -126,6 +161,13 @@ esp_err_t display_init(void)
 
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel),             TAG, "panel_reset");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel),              TAG, "panel_init");
+
+    /* Apply the round-panel GRAM offset: the visible 466 px map to GRAM
+     * columns 6..471 (vendor init sets CASET 0x06..0x1DD). Without this the
+     * rightmost columns show stale GRAM (green splotch) and the image shifts. */
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, LCD_COL_OFFSET, LCD_ROW_OFFSET),
+                        TAG, "panel_set_gap");
+
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "disp_on");
 
     ESP_LOGI(TAG, "Display ready (%dx%d), LVGL buffers: %u B x2 internal DMA RAM",

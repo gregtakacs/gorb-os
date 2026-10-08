@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "display/co5300.c"
+        "display/display.c"
+        "clock/clock_view.c"
+    INCLUDE_DIRS
+        "."
+        "display"
+        "clock"
+    REQUIRES
+        esp_driver_spi
+        esp_driver_gpio
+        esp_lcd
+        esp_timer
+        esp_hw_support
+        esp_psram
+        nvs_flash
+        lvgl__lvgl
+)

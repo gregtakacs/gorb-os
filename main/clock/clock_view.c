@@ -21,6 +21,7 @@
 static const char *TAG = "clock";
 
 static lv_obj_t   *s_clock_label;
+static lv_obj_t   *s_scr;              /* the clock's own screen (switchable) */
 static lv_timer_t *s_tick_timer;
 static lv_timer_t *s_motion_timer;
 
@@ -139,7 +140,10 @@ static void stop_motion_timer(void)
 
 esp_err_t clock_view_init(void)
 {
-    lv_obj_t *scr = lv_screen_active();
+    /* Own screen (created but not loaded): input_router decides which screen is
+     * visible, so the clock and the color picker never draw over each other. */
+    lv_obj_t *scr = lv_obj_create(NULL);
+    s_scr = scr;
 
     /* True-black background for AMOLED */
     lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
@@ -212,4 +216,9 @@ void clock_view_set_bounce(bool on)
 bool clock_view_bounce(void)
 {
     return s_bounce_on;
+}
+
+lv_obj_t *clock_view_screen(void)
+{
+    return s_scr;
 }

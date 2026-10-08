@@ -16,6 +16,9 @@
 #include "board_config.h"
 #include "display.h"
 #include "clock_view.h"
+#include "color_picker.h"
+#include "knob.h"
+#include "input_router.h"
 
 static const char *TAG = "main";
 
@@ -44,16 +47,21 @@ void app_main(void)
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 
-    /* Build the clock UI */
+    /* Build the two screens. Both register their own LVGL screen object; the
+     * input router decides which one is loaded. */
     ESP_ERROR_CHECK(clock_view_init());
+    ESP_ERROR_CHECK(color_picker_init());
 
-    /* MVP animation: bounce the clock around the round screen. This is also a
-     * live stress-test of the flush + tear-free path (small moving dirty rects
-     * each frame, now gated on the panel's TE pulse). */
-    clock_view_set_bounce(true);
+    /* Rotary knob: GPIO edge ISRs feed the detent + press streams. */
+    ESP_ERROR_CHECK(knob_init());
+
+    /* Route knob events to the active screen (color picker first) and start the
+     * ~10 ms input poll, which runs on the LVGL task created below. */
+    ESP_ERROR_CHECK(input_router_init());
 
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "orb-os-esp-idf running — clock displayed");
+    ESP_LOGI(TAG, "orb-os-esp-idf running — knob HSB editor live (long-press: switch screen)");
 }
+

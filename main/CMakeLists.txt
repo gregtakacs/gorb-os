@@ -3,10 +3,16 @@ idf_component_register(
         "main.c"
         "display/display.c"
         "clock/clock_view.c"
+        "knob/knob.c"
+        "color/color_picker.c"
+        "input/input_router.c"
     INCLUDE_DIRS
         "."
         "display"
         "clock"
+        "knob"
+        "color"
+        "input"
     REQUIRES
         esp_driver_spi
         esp_driver_gpio

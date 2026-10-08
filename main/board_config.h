@@ -31,6 +31,14 @@
 #define PIN_I2C_SDA     15
 #define PIN_I2C_SCL     14
 
+// ---------- Rotary knob (KY-040 on the 8-pin header H2) ----------
+// Same wiring as the Arduino reference orb-os/src/knob.cpp: A/B are the
+// quadrature phases, SW is the active-low push switch. These three GPIOs are
+// free on this board (not claimed by the display above or the I2C peripherals).
+#define PIN_KNOB_A      18   // encoder CLK / phase A
+#define PIN_KNOB_B      17   // encoder DT  / phase B
+#define PIN_KNOB_SW     16   // encoder push (active low)
+
 // ---------- Panel geometry ----------
 #define SCREEN_WIDTH    466
 #define SCREEN_HEIGHT   466

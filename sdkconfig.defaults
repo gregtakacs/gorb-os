@@ -31,4 +31,7 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # LVGL 9 configuration (managed component lvgl/lvgl)
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# Small fonts for the color-picker chips + hint line
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
 

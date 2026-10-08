@@ -14,8 +14,11 @@
 extern "C" {
 #endif
 
-/** Create the clock UI (call after display_init + lv_init). */
+/** Create the clock UI on its own LVGL screen (call after display_init + lv_init). */
 esp_err_t clock_view_init(void);
+
+/** The clock's screen object, for input_router to lv_screen_load(). */
+struct _lv_obj_t *clock_view_screen(void);
 
 /** Enable/disable the bouncing motion. Safe to call any time after init. */
 void clock_view_set_bounce(bool on);

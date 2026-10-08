@@ -5,3 +5,6 @@ sdkconfig.old
 dependencies.lock
 .cache/
 .vscode/
+__pycache__/
+assets/preview/
+assets/rawframe_*.png

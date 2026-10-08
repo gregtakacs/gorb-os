@@ -46,6 +46,41 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
     partitions.csv        NVS + phy + factory app (16 MB flash)
     sdkconfig.defaults    PSRAM OPI, USB console, LVGL font/color options
 
+## Theme assets (offline baking)
+
+All dial art is baked on the bench by `tools/bake_clock.py`; the device never
+decodes PNG or JSON. It emits `assets/clock_assets.bin` (packed RGB565 planes,
+embedded via `target_add_binary_data`) plus `assets/clock_assets.h` (geometry +
+rect tables). Both are committed so `idf.py build` needs no bake step — but
+they are generated: regenerate them with the baker, don't hand-edit them.
+
+Animate the background from a **PNG frame sequence**, not a GIF:
+
+    python3 tools/bake_clock.py <theme_dir> \
+        --bg-frames ~/Downloads/skeleton-dial-frames.zip --bg-fps 12.5 \
+        --dump-dir assets/preview
+
+`--bg-frames` takes a `.zip` of PNGs, a folder, a glob, or one PNG; frames are
+natural-sorted (`frame_2` before `frame_10`). The same delta-rect bank (one
+keyframe + per-frame changed rects the device memcpy's over a PSRAM canvas) can
+also be fed from a GIF with `--bg-gif`, which keeps its native per-frame timing.
+
+Why PNG is the source of record and a `.bin` never is:
+
+- A GIF re-quantises every frame to a 256-colour palette *before* the bake even
+  sees it. This dial's art has ~61k unique colours per frame, so a GIF detour
+  costs up to 68/255 per channel; going straight from PNG to RGB565 costs at
+  most 7.
+- `clock_assets.bin` is already the final 5/6/5-bit quantisation. Re-baking it
+  re-quantises lossy data, cannot be re-dithered, carries no alpha, and stores
+  no size/fps/byte-order metadata — it is an output, not an asset.
+- Both loaders share one packer (`bake_bg_bank`), so PNG and GIF bakes are
+  byte-identical modulo the source's own pixels; the GIF regression bake
+  reproduces `assets/clock_assets.bin` exactly.
+
+Always check `--dump-dir`'s `stale_NN.png` before flashing: it should be solid
+black. Any lit pixel is the panel's canvas holding another frame's art.
+
 ## Hardware
 
 | Component | Details |

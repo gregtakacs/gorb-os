@@ -52,12 +52,32 @@ Usage:
       frame's rects into it, and invalidates exactly those areas plus the
       hands' swept wedges — instead of flushing the full page every frame.
 
+  --bg-frames DIR|ZIP|GLOB   the same delta-rect bank, fed from a PNG frame
+      sequence instead of a GIF (a directory of PNGs, a .zip containing them,
+      or a shell glob). Frames are natural-sorted (frame_2 before frame_10),
+      composited over black, and paced at --bg-fps (PNGs carry no timing).
+      USE THIS FOR NEW ARTWORK rather than round-tripping through a GIF: a
+      PNG sequence is the only source that survives re-baking. A GIF caps
+      every frame at 256 palette entries (this dial's artwork has ~61k unique
+      colours per frame, so the GIF pass costs up to 68/255 per channel where
+      the direct PNG->RGB565 bake costs at most 7), and a baked .bin is even
+      worse as a source — it is already the final 5-bit/6-bit/5-bit
+      quantisation, so re-baking it re-quantises lossy data, cannot be
+      dithered differently, has no alpha, and carries no size/fps/byte-order
+      metadata at all. GIF stays supported because it is what existing assets
+      (assets/orb_bg.gif) and other people's exports arrive as.
+
   <theme_dir> e.g. ~/docker/Projects/orb-os/themes/unpacked/steam-punk-t2is
 """
 import argparse
+import fnmatch
+import glob as _glob
+import io
 import json
 import os
+import re
 import sys
+import zipfile
 from PIL import Image
 
 SCREEN_W = 466
@@ -256,19 +276,44 @@ def _frames_to_u16(img):
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def _load_gif_frames(path, fit="cover"):
-    """Composite the GIF into opaque RGBA images at panel size (disposal-aware).
-    Returns (images, per-frame delays in ms).
+def _fit_to_panel(img, fit="cover"):
+    """Fit one composited logical-resolution RGBA frame to the panel, 1:1.
 
-    THE ONLY RESIZE IN THE WHOLE PIPELINE happens here, at bake time: frames are
-    composited at the GIF's own logical resolution and only then fitted, so the
-    device-side canvas and the packed rects are strictly 1:1 panel pixels.
+    THE ONLY RESIZE IN THE WHOLE PIPELINE: shared by the GIF and PNG frame
+    loaders so both land on strictly panel-sized pixels (the device canvas and
+    the packed rects are 1:1 with the glass, forever after this point).
 
     fit="cover"   cover-scale the full logical frame to the panel, then centre
                   (crop only the rounding overshoot). Keeps the whole artwork.
     fit="crop"    take the panel-sized window out of the logical frame at 1:1
                   (no resampler at all) when the asset is big enough; falls back
-                  to cover when it is smaller than the panel."""
+                  to cover when it is smaller than the panel.
+
+    A frame already authored at panel size (the usual case for a dial exported
+    straight from the studio at 466x466) is passed through untouched, so a
+    pixel-perfect asset never sees the resampler at all."""
+    iw, ih = img.size
+    if (iw, ih) == (SCREEN_W, SCREEN_H):
+        return img
+    if fit == "crop" and iw >= SCREEN_W and ih >= SCREEN_H:
+        # 1:1 centre crop: no resampler, so the artwork's own pixel grid is
+        # preserved exactly (this is what stops sub-pixel edge stepping).
+        left, top = (iw - SCREEN_W) // 2, (ih - SCREEN_H) // 2
+        return img.crop((left, top, left + SCREEN_W, top + SCREEN_H))
+    # cover-scale to panel like bake_gif --mode cover
+    scale = max(SCREEN_W / iw, SCREEN_H / ih)
+    nw, nh = int(round(iw * scale)), int(round(ih * scale))
+    r = img.resize((nw, nh), Image.LANCZOS)
+    left, top = (nw - SCREEN_W) // 2, (nh - SCREEN_H) // 2
+    return r.crop((left, top, left + SCREEN_W, top + SCREEN_H))
+
+
+def _load_gif_frames(path, fit="cover"):
+    """Composite the GIF into opaque RGBA images at panel size (disposal-aware).
+    Returns (images, per-frame delays in ms).
+
+    Frames are composited at the GIF's own logical resolution and only then
+    fitted (see _fit_to_panel), so the device canvas and packed rects stay 1:1."""
     im = Image.open(path)
     n = getattr(im, "n_frames", 1)
     disposals, delays = [], []
@@ -285,24 +330,86 @@ def _load_gif_frames(path, fit="cover"):
         im.seek(i)
         fr = im.convert("RGBA")
         canvas.paste(fr, (0, 0), fr)
-        iw, ih = logical
-        if fit == "crop" and iw >= SCREEN_W and ih >= SCREEN_H:
-            # 1:1 centre crop: no resampler, so the artwork's own pixel grid is
-            # preserved exactly (this is what stops sub-pixel edge stepping).
-            left, top = (iw - SCREEN_W) // 2, (ih - SCREEN_H) // 2
-            out.append(canvas.crop((left, top, left + SCREEN_W, top + SCREEN_H)))
-        else:
-            # cover-scale to panel like bake_gif --mode cover
-            scale = max(SCREEN_W / iw, SCREEN_H / ih)
-            nw, nh = int(round(iw * scale)), int(round(ih * scale))
-            r = canvas.resize((nw, nh), Image.LANCZOS)
-            left, top = (nw - SCREEN_W) // 2, (nh - SCREEN_H) // 2
-            out.append(r.crop((left, top, left + SCREEN_W, top + SCREEN_H)))
+        out.append(_fit_to_panel(canvas, fit))
         if d == 2:
             canvas = Image.new("RGBA", logical, (0, 0, 0, 255))
         elif d == 3:
             canvas = backup
     return out, delays
+
+
+def _natkey(name):
+    """Sort key that reads digits as numbers: frame_2 before frame_10, so a
+    plain frame_1..frame_15 drop plays in the order it was made rather than the
+    lexicographic one it would otherwise sort into."""
+    return [int(t) if t.isdigit() else t.lower()
+            for t in re.split(r"(\d+)", os.path.basename(name))]
+
+
+def _png_frame_items(src, frame_glob):
+    """Resolve a --bg-frames argument to an ordered [(name, bytes)] PNG list.
+
+    Accepted shapes, in the order tried:
+      *.zip        every .png entry in the archive (studio exports arrive
+                   zipped; reading it in place avoids a throwaway extract and
+                   the risk of baking a stale folder left over from last time)
+      directory    files matching frame_glob, else every .png in it
+      glob         e.g. 'shots/frame_*.png'
+      single .png  a one-frame background
+    A raw .bin is refused by main() before this ever runs."""
+    p = os.path.expanduser(src)
+    if p.lower().endswith(".zip"):
+        if not os.path.exists(p):
+            raise SystemExit(f"--bg-frames: no such archive: {p}")
+        with zipfile.ZipFile(p) as z:
+            items = [(zi.filename, z.read(zi.filename)) for zi in z.infolist()
+                     if not zi.is_dir() and zi.filename.lower().endswith(".png")]
+        if not items:
+            raise SystemExit(f"--bg-frames: no PNG entries inside {p}")
+        return sorted(items, key=lambda kv: _natkey(kv[0]))
+    if os.path.isdir(p):
+        names = [n for n in os.listdir(p) if n.lower().endswith(".png")]
+        if frame_glob:
+            hit = [n for n in names if fnmatch.fnmatch(n, frame_glob)]
+            if hit:
+                names = hit
+        if not names:
+            raise SystemExit(f"--bg-frames: no PNGs in {p}"
+                             + (f" matching {frame_glob}" if frame_glob else ""))
+        return [(n, open(os.path.join(p, n), "rb").read())
+                for n in sorted(names, key=_natkey)]
+    hits = _glob.glob(p) if any(c in p for c in "*?[") else []
+    hits = [h for h in hits if h.lower().endswith(".png")]
+    if not hits and p.lower().endswith(".png") and os.path.exists(p):
+        hits = [p]
+    if not hits:
+        raise SystemExit(f"--bg-frames: nothing to bake from {src!r} (want a .zip "
+                         f"of PNGs, a folder of PNGs, a PNG glob, or one .png)")
+    return [(h, open(h, "rb").read()) for h in sorted(hits, key=_natkey)]
+
+
+def _load_png_frames(src, frame_glob=None, fps=0.0, fit="cover"):
+    """Opaque RGBA panel-size images from a PNG sequence + per-frame delays (ms).
+
+    PNGs carry no timing, so the caller supplies the beat (--bg-fps, falling
+    back to the theme's bgAnim fps, then 25). Frames are matted over true black
+    -- the right matte on an AMOLED, where a black pixel is an off pixel -- and
+    matched to the GIF path so both feed one delta packer."""
+    items = _png_frame_items(src, frame_glob)
+    ms = max(1, int(round(1000.0 / fps))) if fps > 0 else 40
+    out = []
+    for name, data in items:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+        rgba = im.convert("RGBA")
+        if rgba.getextrema()[3][0] < 255:
+            base = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+            base.paste(rgba, (0, 0), rgba)
+            rgba = base
+        out.append(_fit_to_panel(rgba, fit))
+    if not out:
+        raise SystemExit(f"--bg-frames: no decodable PNG frame in {src!r}")
+    return out, [ms] * len(out)
 
 
 def _box_density(mask):
@@ -488,7 +595,14 @@ def _temporal_snap(F, eps):
 
 
 def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
-    """Bake the GIF background into the blob as keyframe + delta rects.
+    """Bake the GIF background into the blob as keyframe + delta rects."""
+    return bake_bg_bank(blob, gif_path, diff_thresh, denoise=denoise, fit=fit)
+
+
+def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
+                 fps=0.0, frame_glob=None):
+    """Bake an animated background (GIF or PNG frame sequence) into the blob
+    as one keyframe + per-frame delta rects.
 
     Returns dict(frames, key_off, rects=[(x,y,w,h,off), ...],
                  first=[rect index where each frame's list starts..., len])
@@ -499,11 +613,21 @@ def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
     therefore exactly reproducible on the device. The simulation is warmed
     over a few whole cycles first and the LAST cycle is the one baked: the
     device then replays that exact periodic canvas trajectory forever, so no
-    pixel ever silently drifts away from the GIF's look."""
+    pixel ever silently drifts away from the source animation's look.
+
+    `src` is either a GIF (paced by its own per-frame delays) or anything
+    --bg-frames accepts as a PNG sequence (paced at `fps`, since PNGs have no
+    timing of their own). Both go through the identical snap/warm/replay packer
+    so a bank baked from PNGs behaves exactly like one baked from a GIF."""
     import numpy as np
-    imgs, delays = _load_gif_frames(gif_path, fit=fit)
+    is_gif = src.lower().endswith(".gif")
+    if is_gif:
+        imgs, delays = _load_gif_frames(src, fit=fit)
+    else:
+        imgs, delays = _load_png_frames(src, frame_glob=frame_glob, fps=fps, fit=fit)
     F = [_frames_to_u16(im) for im in imgs]
-    print(f"  gif bg: {gif_path} -> {len(F)} frames @ {SCREEN_W}x{SCREEN_H} fit={fit} "
+    print(f"  {'gif' if is_gif else 'frames'} bg: {src} -> {len(F)} frames @ "
+          f"{SCREEN_W}x{SCREEN_H} fit={fit} "
           f"(diff thresh {diff_thresh}, cluster>=12/25, tile16<=16 rects)")
     F, quiet = _temporal_snap(F, denoise)
     n = len(F)
@@ -676,16 +800,32 @@ def main():
     ap.add_argument("--bg-gif", default=None,
                     help="use this GIF as the clock background (delta-rect bank) "
                          "instead of the theme plate + bgAnim frames")
+    ap.add_argument("--bg-frames", default=None, metavar="ZIP|DIR|GLOB|PNG",
+                    help="same delta-rect bank, fed from a PNG frame sequence: a "
+                         ".zip of PNGs, a folder of PNGs, a PNG glob, or a single "
+                         "PNG. Preferred over a GIF for new art - PNG is lossless "
+                         "and re-bakeable, a GIF re-quantises every frame down to "
+                         "256 palette entries before the bake even starts. "
+                         "Mutually exclusive with --bg-gif.")
+    ap.add_argument("--bg-glob", default=None, metavar="PAT",
+                    help="with --bg-frames on a folder: which PNGs are frames "
+                         "(e.g. 'frame_*.png' or 'clock_plate_*_v2.png'). Default: "
+                         "every .png in the folder. Natural-sorted either way.")
+    ap.add_argument("--bg-fps", type=float, default=0.0, metavar="N",
+                    help="with --bg-frames: playback rate, since PNGs carry no "
+                         "timing. 0 (default) takes the theme's bgAnim.fps, then "
+                         "25 fps if the theme has no bgAnim at all.")
     ap.add_argument("--diff-thresh", type=int, default=12,
                     help="min perceptual RGB565 step (0-248) for a pixel to count "
                          "as changed when packing delta rects (default 12)")
     ap.add_argument("--bg-denoise", type=int, default=2, metavar="EPS",
-                    help="GIF bg: snap pixels whose whole cycle stays within +/-EPS "
-                         "RGB565 codes of one value to that value in every frame "
-                         "(kills source dither, which the packer otherwise drops and "
-                         "the panel then shows as a 1px drift). 0 disables; default 1")
+                    help="animated bg (GIF or PNG frames): snap pixels whose whole "
+                         "cycle stays within +/-EPS RGB565 codes of one value to "
+                         "that value in every frame (kills source dither, which the "
+                         "packer otherwise drops and the panel then shows as a 1px "
+                         "drift). 0 disables; default 2")
     ap.add_argument("--bg-fit", choices=("cover", "crop"), default="cover",
-                    help="GIF bg 500->466 style: 'cover' scales the whole logical "
+                    help="animated bg 500->466 style: 'cover' scales the whole logical "
                          "frame to the panel (no cropping, tiny resample blur); "
                          "'crop' centre-crops the panel window out of the asset at "
                          "1:1 (no resampler at all, loses the asset's outer border). "
@@ -693,9 +833,10 @@ def main():
     ap.add_argument("--force-sweep", action="store_true",
                     help="override the theme: secondSweep on")
     ap.add_argument("--no-sweep", action="store_true",
-                    help="keep the theme's secondSweep even in --bg-gif mode. "
-                         "In GIF-bg mode sweep defaults ON: a ticking second "
-                         "hand over an animated dial strobes at the GIF's beat "
+                    help="keep the theme's secondSweep even in animated-bg "
+                         "mode (--bg-gif or --bg-frames). "
+                         "In animated-bg mode sweep defaults ON: a ticking second "
+                         "hand over an animated dial strobes at the animation's beat "
                          "instead of sweeping, and the theme JSON's "
                          "secondSweep:false silently re-baked the dial back to "
                          "a tick (that regression shipped as sweep=0).")
@@ -703,7 +844,7 @@ def main():
                     help="write per-asset inspection PNGs: keyframe, each "
                          "frame's settled device canvas, its change mask, its "
                          "packed rect layout, a stale-pixel map (canvas vs the "
-                         "true GIF frame), and every hand/shadow/overlay sprite "
+                         "true source frame), and every hand/shadow/overlay sprite "
                          "with its planar alpha composited over a checkerboard")
     ap.add_argument("--tick-rate", type=int, default=0,
                     help="override the theme's tickRate (beats per second)")
@@ -717,6 +858,17 @@ def main():
                          "against the plate band it repaints.")
     ap.add_argument("--preview-dir", default=None)
     args = ap.parse_args()
+
+    if args.bg_gif and args.bg_frames:
+        sys.exit("--bg-gif and --bg-frames are alternatives for the same thing "
+                 "(the animated background bank); pick one.")
+    for a in (args.bg_gif, args.bg_frames):
+        if a and os.path.splitext(os.path.expanduser(a))[1].lower() in (".bin", ".raw"):
+            sys.exit(f"{a!r} is a baked raw-RGB565 blob, not a source. The baker "
+                     f"emits that format (assets/clock_assets.bin); feeding it back "
+                     f"in re-quantises already-lossy pixels, has no alpha and no "
+                     f"size/fps metadata. Bake from the PNG frames "
+                     f"(--bg-frames) or the GIF (--bg-gif) instead.")
 
     tdir = os.path.abspath(args.theme_dir)
     style_path = os.path.join(tdir, "clock_style.json")
@@ -734,14 +886,20 @@ def main():
     blob = Blob()
 
     gif = None
-    if args.bg_gif:
-        # ---- GIF background bank: one keyframe + per-frame delta rects. The
-        # theme's own plate/bgAnim art is skipped entirely — the GIF IS the
-        # clock's background now, from a single asset file. ----
-        gif = bake_gif_bg(blob, args.bg_gif, args.diff_thresh,
-                          denoise=args.bg_denoise, fit=args.bg_fit)
-        plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
+    bg_src = args.bg_gif or args.bg_frames
+    if bg_src:
+        # ---- animated background bank: one keyframe + per-frame delta rects.
+        # The theme's own plate/bgAnim art is skipped entirely — the bank IS the
+        # clock's background now, whether it came from one GIF or one folder of
+        # PNG frames. Both take the identical packer below. ----
         bg = style.get("bgAnim", {}) or {}
+        gif = bake_bg_bank(blob, bg_src, args.diff_thresh,
+                           denoise=args.bg_denoise, fit=args.bg_fit,
+                           fps=(args.bg_fps or (0.0 if args.bg_gif
+                                                else float(bg.get("fps", 0) or 0))),
+                           frame_glob=args.bg_glob)
+        gif["src"] = bg_src
+        plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
         baked_frames, anim_frames = [], 0
     else:
         # ---- plate: full-screen RGB565 colour plane, at the front of the blob ----
@@ -880,7 +1038,11 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
     hdr = []
     hdr.append("/* AUTO-GENERATED by tools/bake_clock.py -- DO NOT EDIT.\n"
                " * Re-bake:  python3 tools/bake_clock.py <theme_dir>\n"
-               " * Source theme: {}\n */\n#pragma once\n\n#include <stdint.h>\n\n".format(theme_name))
+               " * Source theme: {}{}\n */\n#pragma once\n\n#include <stdint.h>\n\n".format(
+                   theme_name,
+                   "\n * Source background: {}  (delta-rect bank; re-bake from the\n"
+                   " * PNG/GIF source, never from a baked .bin)".format(
+                       gif.get("src", "?")) if gif else ""))
     hdr.append("#define CLK_SCR_W {}\n#define CLK_SCR_H {}\n\n".format(SCREEN_W, SCREEN_H))
     hdr.append("typedef struct {\n"
                "  uint16_t w, h;            /* cropped ink size */\n"
@@ -905,7 +1067,7 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                "  clk_sprite_t hand[5];\n"
                "  clk_sprite_t shadow[5];\n"
                "  clk_sprite_t overlay;\n"
-               "  uint8_t  bg_mode;         /* 0 = plate + bgAnim frames, 1 = GIF delta bank */\n"
+               "  uint8_t  bg_mode;         /* 0 = plate + bgAnim frames, 1 = animated delta bank (GIF or PNG frames) */\n"
                "  uint32_t bg_key_off;      /* mode 1: full RGB565 keyframe (frame 0) */\n"
                "  uint16_t gif_frames;      /* mode 1: frames in the loop (incl. keyframe) */\n"
                "} clk_theme_t;\n\n")

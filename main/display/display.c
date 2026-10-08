@@ -6,10 +6,17 @@
  * Key points discovered on hardware:
  *  - QSPI CO5300 needs 32-bit opcode-prefixed command framing; the vendor
  *    QSPI config macros handle that (lcd_cmd_bits = 32, flags.quad_mode).
- *  - The ESP32-S3 SPI GDMA driver cannot read source buffers out of PSRAM
- *    (spi_common.c sets access_ext_mem = false), so LVGL draw buffers MUST
- *    live in internal DMA-capable RAM. Hence LVGL runs in PARTIAL render
- *    mode with modest double buffers instead of a full 466x466 PSRAM frame.
+ *  - The ESP32-S3 SPI GDMA can only DMA straight from internal RAM; a PSRAM
+ *    source buffer is silently bounce-copied into an internal MALLOC_CAP_DMA
+ *    temp first (spi_master.c: !esp_ptr_dma_capable -> alloc+memcpy). So LVGL
+ *    draw buffers live in internal DMA RAM for a zero-copy fast path, and LVGL
+ *    runs in PARTIAL render mode. A full 466x466 PSRAM frame is only viable as
+ *    a staged one-transaction-per-frame push that pays the bounce copy.
+ *  - Tear-free: the panel's GRAM is scanned out independently of our QSPI
+ *    writes, so a write landing mid-scan shows new top + old bottom at once.
+ *    The official driver's default init already sends TEARON (0x35,{0x00}), so
+ *    the panel drives LCD_TE (GPIO13) at vertical blanking; we poll it and only
+ *    queue a flush during blanking. See wait_for_te().
  */
 
 #include "display.h"
@@ -22,10 +29,12 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_co5300.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
 #include "lvgl.h"
 
 static const char *TAG = "display";
@@ -38,6 +47,37 @@ static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t    s_panel;
 static lv_display_t             *s_lvgl_disp;
 static uint16_t                 *s_scratch;   /* aligned re-pack buffer, internal DMA RAM */
+
+/* ---- Tear-effect (TE) sync state ----
+ * The panel already drives LCD_TE (we don't send TEARON — the official driver's
+ * default init table includes {0x35, 0x00}). s_te_live is decided once at init by
+ * watching the pin actually toggle, so a depopulated/absent signal doesn't make us
+ * burn the full timeout on every frame. s_te_enable lets it be A/B tested at run
+ * time via a console command. Mirrors orb-os's s_teOn / display_set_te(). */
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+static volatile bool     s_te_live   = false;   /* pin proven to toggle at init */
+static volatile bool     s_te_enable = true;    /* runtime gate (A/B toggle) */
+static volatile uint32_t s_te_wait_us = 0;      /* cumulative us spent waiting, for /health */
+#endif
+
+/* Block until the panel finishes a TE pulse (i.e. we are inside/just after
+ * vertical blanking), so the queued QSPI write lands between scans. Ported from
+ * orb-os's wait_for_te(): wait out the current HIGH, then wait out the LOW, so we
+ * return on the rising edge that opens the blanking window. Bounded at 25 ms so a
+ * missing pulse degrades to "no worse than tearing" instead of hanging the flush. */
+static void wait_for_te(void)
+{
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    if (!s_te_live || !s_te_enable) {
+        return;
+    }
+    const int64_t t0 = esp_timer_get_time();
+    const int64_t deadline = t0 + 25000;                    /* 25 ms ceiling */
+    while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() < deadline) { }
+    while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() < deadline) { }
+    s_te_wait_us += (uint32_t)(esp_timer_get_time() - t0);
+#endif
+}
 
 /* ---- esp_lcd color-transfer-done callback (QSPI DMA finished) ---- */
 static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
@@ -75,6 +115,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
 
     if (ax1 == x1 && aw == w) {
         /* already even-aligned: DMA the LVGL buffer directly */
+        wait_for_te();
         esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2 + 1, y2 + 1, px_map);
     } else {
         /* re-pack rows into the even-width scratch buffer */
@@ -86,6 +127,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
             memcpy(d + left, src + (size_t)r * w, (size_t)w * sizeof(uint16_t));
             for (int c = left + w; c < aw;  c++) d[c] = 0x0000;
         }
+        wait_for_te();
         esp_lcd_panel_draw_bitmap(s_panel, ax1, y1, ax1 + aw, y2 + 1, s_scratch);
     }
     /* flush_ready fires from on_color_trans_done when the DMA completes. */
@@ -170,6 +212,37 @@ esp_err_t display_init(void)
 
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "disp_on");
 
+    /* 5. Tear-effect sync. The panel is scanning by now and (its default init
+     *    having sent TEARON) should be pulsing LCD_TE at vertical blanking.
+     *    Configure the pin as a plain input, then PROVE the signal is actually
+     *    moving before we ever spend time waiting on it — a pin that never
+     *    toggles would burn the whole 25 ms timeout every frame. Better to find
+     *    that out once, here, than to pay for it silently forever (mirrors the
+     *    orb-os stash's toggle-probe). */
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    {
+        const gpio_config_t te_cfg = {
+            .pin_bit_mask = 1ULL << PIN_LCD_TE,
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        ESP_RETURN_ON_ERROR(gpio_config(&te_cfg), TAG, "te_gpio_config");
+
+        bool moved = false;
+        const int first = gpio_get_level(PIN_LCD_TE);
+        const int64_t t0 = esp_timer_get_time();
+        while (esp_timer_get_time() - t0 < 50000) {          /* 50 ms window */
+            if (gpio_get_level(PIN_LCD_TE) != first) { moved = true; break; }
+        }
+        s_te_live = moved;
+        ESP_LOGI(TAG, "LCD_TE on GPIO%d: %s -> TE sync %s", PIN_LCD_TE,
+                 moved ? "toggling" : "STUCK (no pulse in 50 ms)",
+                 moved ? "ON" : "OFF");
+    }
+#endif
+
     ESP_LOGI(TAG, "Display ready (%dx%d), LVGL buffers: %u B x2 internal DMA RAM",
              SCREEN_WIDTH, SCREEN_HEIGHT, (unsigned)buf_bytes);
     return ESP_OK;
@@ -178,4 +251,34 @@ esp_err_t display_init(void)
 esp_lcd_panel_handle_t display_get_panel(void)
 {
     return s_panel;
+}
+
+/* ---- Runtime TE A/B controls + frame telemetry (mirrors orb-os display_set_te)
+ *      These are safe to call from the console; they only flip a bool. ---- */
+void display_set_te(bool on)
+{
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    s_te_enable = on;
+    ESP_LOGI(TAG, "TE wait %s", on ? "on" : "off");
+#else
+    (void)on;
+#endif
+}
+
+bool display_te(void)
+{
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    return s_te_live && s_te_enable;
+#else
+    return false;
+#endif
+}
+
+uint32_t display_te_wait_us(void)
+{
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    return s_te_wait_us;
+#else
+    return 0;
+#endif
 }

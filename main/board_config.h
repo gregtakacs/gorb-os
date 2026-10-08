@@ -16,6 +16,17 @@
 #define PIN_LCD_D2       6
 #define PIN_LCD_D3       7
 
+// Tear-effect output from the CO5300. Confirmed from the Waveshare
+// ESP32-S3-Touch-AMOLED-1.75 schematic: "GPIO13 LCD_TE" on pin 11 of the
+// display FPC J301 through a populated 0R link, so the signal is genuinely
+// present. The panel's GRAM is scanned out independently of our writes, so a
+// write that lands mid-scan shows the top of the new frame and the bottom of
+// the old one at once (tearing). TE pulses at vertical blanking and lets us
+// "write between scans". The official driver already sends TEARON (0x35) in
+// its default init, so the panel emits TE — we only read the pin here.
+// Set to -1 to disable the TE wait entirely.
+#define PIN_LCD_TE       13
+
 // ---------- Shared I2C bus (touch / IMU / RTC / PMIC / codec) ----------
 #define PIN_I2C_SDA     15
 #define PIN_I2C_SCL     14

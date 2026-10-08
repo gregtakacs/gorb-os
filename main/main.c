@@ -47,6 +47,11 @@ void app_main(void)
     /* Build the clock UI */
     ESP_ERROR_CHECK(clock_view_init());
 
+    /* MVP animation: bounce the clock around the round screen. This is also a
+     * live stress-test of the flush + tear-free path (small moving dirty rects
+     * each frame, now gated on the panel's TE pulse). */
+    clock_view_set_bounce(true);
+
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 

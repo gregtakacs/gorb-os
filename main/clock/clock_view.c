@@ -164,10 +164,12 @@ static bool gif_mode(void)
  * faster than the GIF's delay does not yield that delay — the frame still
  * only flips on a tick, so a 67 ms GIF on a 40 ms tick lands on 2-tick holds
  * (~9 fps, and uneven when flush jitter crosses the due boundary). Slower is
- * impossible; equal is the only clean answer. The sweeping hand reads the
- * wall clock, not the tick count, so it stays time-accurate at any sampling
- * rate; it just steps fewer times a second. The delay table is baked uniform
- * per theme (--bg-fps), so frame 0's delay is the tempo. */
+ * impossible; equal is the only clean answer. The delay table is baked
+ * uniform per theme (--bg-fps), so frame 0's delay is the tempo. The
+ * sweeping hand composes on every tick but reads the wall clock, not the
+ * tick count, so it stays time-accurate at any sampling rate — and with a
+ * tickRate declared it quantises to 1/tickRate steps, so extra ticks between
+ * beats cost no hand redraw (see hand_angles()). */
 static uint32_t gif_tick_ms(void)
 {
     const uint32_t d = clk_gif_delays[0];
@@ -403,6 +405,21 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
 {
     const bool sweep   = clk_theme.second_sweep;
     const bool railway = clk_theme.second_railway;
+
+    /* High-beat escapement in GIF mode: the tick rides the GIF's baked delay
+     * (gif_tick_ms), faster than a smooth sweep needs, so let the theme's
+     * tickRate (beats per second) quantise the second hand to a 1/tickRate
+     * grid instead of sampling the wall clock every tick. 28,800 vph = 8
+     * bps: the seconds hand advances 0.75 deg 8x a second while the spring
+     * background runs at the GIF's own ~16 fps. Between beats the angle is
+     * unchanged, so apply_angles' eps gate skips re-posing the hand and the
+     * tick's commit carries GIF rows only. Non-GIF themes are untouched —
+     * there the tick already runs at tickRate, and sampling the wall clock
+     * once per beat is the same quantisation by another route. */
+    if (sweep && clk_theme.tick_rate > 1 && gif_mode()) {
+        const double bps = (double)clk_theme.tick_rate;
+        wall_frac = floor(wall_frac * bps) / bps;
+    }
 
     float secF = (float)sec + (sweep ? (float)wall_frac : 0.0f);
     float minF = (railway && sweep) ? (float)min
@@ -1132,9 +1149,9 @@ esp_err_t clock_view_init(void)
     lv_timer_pause(s_tick_timer);   /* parked until the clock is on the glass */
 
     /* Report the cadence the bake actually recorded instead of a literal that
-     * drifts out of date: GIF playback is paced by clk_gif_delays[] (the GIF's
-     * own per-frame delays), not by the tick — the tick only sets how often the
-     * sweeping hand is recomposed. */
+     * drifts out of date: the GIF and the tick share clk_gif_delays[] (the
+     * GIF's own per-frame delays), and the sweeping hand beats at
+     * tickRate when the theme declares one. */
     char bgdesc[64];
     if (gif_mode()) {
         uint32_t d0 = clk_gif_delays[0] > 0 ? (uint32_t)clk_gif_delays[0]
@@ -1150,11 +1167,20 @@ esp_err_t clock_view_init(void)
         snprintf(bgdesc, sizeof bgdesc, "still");
     }
 
+    char sweepdesc[24] = "off";
+    if (clk_theme.second_sweep) {
+        if (gif_mode() && clk_theme.tick_rate > 1)
+            snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps beat)",
+                     (unsigned)clk_theme.tick_rate);
+        else
+            snprintf(sweepdesc, sizeof sweepdesc, "on");
+    }
+
     ESP_LOGI(TAG, "analog clock: %d hand(s), shadow %s(%d,%d), sweep %s, bg %s",
              (clk_theme.hand[0].show ? 1 : 0) + (clk_theme.hand[1].show ? 1 : 0)
                  + (clk_theme.hand[2].show ? 1 : 0),
              clk_theme.shadow_on ? "on" : "off", clk_theme.shadow_dx, clk_theme.shadow_dy,
-             clk_theme.second_sweep ? "on" : "off", bgdesc);
+             sweepdesc, bgdesc);
     return ESP_OK;
 }
 

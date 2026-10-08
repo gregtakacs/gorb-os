@@ -152,6 +152,11 @@ static uint32_t         s_fps_t0, s_fps_ticks;
  * callback's END, so anything shorted from the requested period shows up
  * as schedule, not drift. 0 = not yet anchored (fresh start / unpark). */
 static uint32_t         s_tick_due;
+/* GIF-mode hand beat state (hand_angles): tick counter, the true seconds it
+ * was last re-anchored to, and the wall fraction held between beats. */
+static uint32_t         s_bt_ctr = 0;
+static int              s_bt_sec = -1;
+static double           s_bt_frac = 0.0;
 static uint32_t         s_fps_bench_f0;
 static uint64_t         s_fps_bench_t0;
 static uint64_t         s_fps_pix0;
@@ -402,6 +407,17 @@ static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc)
     return o;
 }
 
+/* Ticks per hand beat in GIF mode: theme tickRate (beats/s) against the
+ * beat the tick actually delivers. 4 bps on an 83 ms tick -> 3 ticks. */
+static uint32_t hand_beat_ticks(void)
+{
+    int rate = clk_theme.tick_rate;
+    if (rate < 1) rate = 1;
+    const uint32_t t = gif_tick_ms();
+    const uint32_t n = (uint32_t)((1000.0 / (double)rate) / (double)t + 0.5);
+    return n < 1 ? 1 : n;
+}
+
 /* Seconds 0..60 (fractional while sweeping), minutes 0..60 (fractional unless a
  * railway dial sits it on a mark), hour 0..12 fractional. Mirrors orb-os
  * compose_custom: minute_hand_mins() and the p_min/p_hr derivation. */
@@ -411,19 +427,31 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
     const bool sweep   = clk_theme.second_sweep;
     const bool railway = clk_theme.second_railway;
 
-    /* High-beat escapement in GIF mode: the tick rides the GIF's baked delay
-     * (gif_tick_ms), faster than a smooth sweep needs, so let the theme's
-     * tickRate (beats per second) quantise the second hand to a 1/tickRate
-     * grid instead of sampling the wall clock every tick. 28,800 vph = 8
-     * bps: the seconds hand advances 0.75 deg 8x a second while the spring
-     * background runs at the GIF's own ~16 fps. Between beats the angle is
-     * unchanged, so apply_angles' eps gate skips re-posing the hand and the
-     * tick's commit carries GIF rows only. Non-GIF themes are untouched —
-     * there the tick already runs at tickRate, and sampling the wall clock
-     * once per beat is the same quantisation by another route. */
-    if (sweep && clk_theme.tick_rate > 1 && gif_mode()) {
-        const double bps = (double)clk_theme.tick_rate;
-        wall_frac = floor(wall_frac * bps) / bps;
+    /* GIF-mode hand cadence: the tick delivers exactly one GIF frame per tick,
+     * so the second hand's beat rides the TICK COUNTER, not a wall-clock grid.
+     * The theme's tickRate (beats/s) becomes ticks-per-beat (hand_beat_ticks):
+     * 4 bps on a 12 fps tick = advance every 3rd tick, always the 3rd — an
+     * evenly spaced beat even though 250 ms is not an exact multiple of the
+     * ~83 ms the pipe actually delivers. Quantising the wall clock instead
+     * would stretch or squash beats by one tick every time the phases slip.
+     * On each beat the angle is sampled from the wall clock, so the hand
+     * reads true time (position error <= one beat, re-anchored at every
+     * second boundary); between beats the angle holds, apply_angles' eps
+     * gate skips the re-pose, and the tick's commit carries GIF rows only.
+     * tpb <= 1 means the tick is at or below the beat: a true sweep, wall
+     * sampled every tick. Non-GIF themes are untouched — there the tick
+     * already runs at tickRate and sampling once per tick IS the beat. */
+    if (sweep && clk_theme.tick_rate > 0 && gif_mode()) {
+        const uint32_t tpb = hand_beat_ticks();
+        if (tpb > 1) {
+            if (sec != s_bt_sec) {          /* true seconds re-anchor the phase */
+                s_bt_sec = sec;
+                s_bt_ctr = 0;
+            }
+            if ((s_bt_ctr % tpb) == 0) s_bt_frac = wall_frac;
+            s_bt_ctr++;
+            wall_frac = s_bt_frac;
+        }
     }
 
     float secF = (float)sec + (sweep ? (float)wall_frac : 0.0f);
@@ -1197,11 +1225,14 @@ esp_err_t clock_view_init(void)
         snprintf(bgdesc, sizeof bgdesc, "still");
     }
 
-    char sweepdesc[24] = "off";
+    char sweepdesc[32] = "off";
     if (clk_theme.second_sweep) {
-        if (gif_mode() && clk_theme.tick_rate > 1)
-            snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps beat)",
-                     (unsigned)clk_theme.tick_rate);
+        const uint32_t tpb = gif_mode() ? hand_beat_ticks() : 1;
+        if (gif_mode() && tpb > 1)
+            snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps, every %u ticks)",
+                     (unsigned)clk_theme.tick_rate, (unsigned)tpb);
+        else if (gif_mode())
+            snprintf(sweepdesc, sizeof sweepdesc, "on(sweep, every tick)");
         else
             snprintf(sweepdesc, sizeof sweepdesc, "on");
     }
@@ -1234,6 +1265,7 @@ void clock_view_set_bounce(bool on)
              * frame; resetting the counter would desync canvas vs deltas. */
             s_gif_due = lv_tick_get();
             s_tick_due = 0;                 /* re-anchor the beat ladder */
+            s_bt_ctr = 0;                   /* first tick back is a beat */
             s_fps_t0 = lv_tick_get();
             s_fps_ticks = 0;
             uint32_t bf; uint64_t bt; uint32_t bm;

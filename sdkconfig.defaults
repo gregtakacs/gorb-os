@@ -28,6 +28,14 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # Log level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
+# Optimisation. LVGL's software renderer is the clock's hot path: a GIF tick
+# fills ~29% of a 466x466 page in C, and flush_cb then byte-swaps and
+# mirror-copies every one of those pixels. At the SDK default (-Og) that
+# software render, not the QSPI transfer, set the frame budget; -O2 is the
+# single cheapest fps win and costs only build time + a little flash.
+CONFIG_COMPILER_OPTIMIZATION_LEVEL_RELEASE=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
 # LVGL 9 configuration (managed component lvgl/lvgl)
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y

@@ -1,7 +1,6 @@
 idf_component_register(
     SRCS
         "main.c"
-        "display/co5300.c"
         "display/display.c"
         "clock/clock_view.c"
     INCLUDE_DIRS
@@ -17,4 +16,5 @@ idf_component_register(
         esp_psram
         nvs_flash
         lvgl__lvgl
+        espressif__esp_lcd_co5300
 )

@@ -17,18 +17,26 @@ static const char *TAG = "input";
 static input_screen_t s_current = INPUT_SCREEN_COLOR;
 static lv_timer_t    *s_poll_timer;
 
+static const char *screen_name(input_screen_t s)
+{
+    switch (s) {
+        case INPUT_SCREEN_CLOCK: return "clock";
+        default:                 return "color";
+    }
+}
+
 static void set_screen(input_screen_t s, bool load)
 {
     if (s >= INPUT_SCREEN_COUNT) return;
     s_current = s;
 
-    /* Only the visible screen's animation should run: bounce burns flush work on
-     * every tick, so park it when the clock is not on the glass. */
+    /* Only the visible screen's animation should run: the GIF + hand beat burns
+     * flush work on every tick, so park it when the clock is not on the glass. */
     clock_view_set_bounce(s == INPUT_SCREEN_CLOCK);
 
     if (load) {
         lv_obj_t *scr = (s == INPUT_SCREEN_CLOCK) ? clock_view_screen()
-                                                   : color_picker_screen();
+                                                  : color_picker_screen();
         if (scr) lv_screen_load(scr);
         /* Re-push this screen's model to its widgets and force a clean repaint.
          * lv_screen_load() already invalidates, but the picker keeps its values
@@ -37,7 +45,7 @@ static void set_screen(input_screen_t s, bool load)
          * back instead of reverting to whatever the last frame happened to show. */
         if (s == INPUT_SCREEN_COLOR) color_picker_show();
     }
-    ESP_LOGI(TAG, "screen -> %s", s == INPUT_SCREEN_CLOCK ? "clock" : "color");
+    ESP_LOGI(TAG, "screen -> %s", screen_name(s));
 }
 
 /* Runs on the LVGL task (created via lv_timer), so widget calls are legal here. */
@@ -72,7 +80,11 @@ static void poll_timer_cb(lv_timer_t *timer)
 
 esp_err_t input_router_init(void)
 {
-    set_screen(INPUT_SCREEN_COLOR, /*load=*/true);
+    /* Boot on the clock: with the GIF delta bank baked it is the live face of
+     * the device (animating background + ticking hands). Long-press cycles
+     * clock -> color. */
+    set_screen(INPUT_SCREEN_CLOCK, /*load=*/true);
+
     s_poll_timer = lv_timer_create(poll_timer_cb, POLL_PERIOD_MS, NULL);
     if (!s_poll_timer) return ESP_FAIL;
     ESP_LOGI(TAG, "router running (poll %d ms)", POLL_PERIOD_MS);

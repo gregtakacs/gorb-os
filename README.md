@@ -71,3 +71,6 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
 - [ ] WiFi + SNTP for real time
 - [ ] Touch / IMU input
 - [ ] Multiple screens / theming
+- [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a
+      knob-driven toggle back to USB-Serial-JTAG for flashing.
+      **Shelved — full design in `docs/usb-sd-msc-plan.md`.**

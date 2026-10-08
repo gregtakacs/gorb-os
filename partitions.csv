@@ -1,4 +1,8 @@
 # Name,   Type, SubType, Offset,  Size,  Flags
 nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x180000,
+# factory: the app (~0.7 MB) plus the embedded clock art bank — GIF keyframe +
+# delta rects + hand sprites from assets/clock_assets.bin (~3 MB) via
+# target_add_binary_data. See main/CMakeLists.txt.
+factory,  app,  factory, 0x10000, 0xE00000,
+

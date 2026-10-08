@@ -48,7 +48,9 @@ void app_main(void)
     ESP_ERROR_CHECK(display_init());
 
     /* Build the two screens. Both register their own LVGL screen object; the
-     * input router decides which one is loaded. */
+     * input router decides which one is loaded. The GIF background animates
+     * from inside the clock view (delta-rect bank), so there is no separate
+     * orb/bench screen any more. */
     ESP_ERROR_CHECK(clock_view_init());
     ESP_ERROR_CHECK(color_picker_init());
 

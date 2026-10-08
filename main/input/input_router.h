@@ -22,7 +22,11 @@
 extern "C" {
 #endif
 
-typedef enum { INPUT_SCREEN_COLOR = 0, INPUT_SCREEN_CLOCK, INPUT_SCREEN_COUNT } input_screen_t;
+typedef enum {
+    INPUT_SCREEN_COLOR = 0,
+    INPUT_SCREEN_CLOCK,
+    INPUT_SCREEN_COUNT
+} input_screen_t;
 
 /**
  * Register the screens and start the input poll timer. Call after knob_init(),

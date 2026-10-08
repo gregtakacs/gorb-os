@@ -15,14 +15,66 @@
 #include "board_config.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "color";
 
-/* Per-detent adjustment for each channel. Hue wraps, s/v clamp. */
-#define HUE_STEP  5
-#define SAT_STEP  5
-#define VAL_STEP  5
+/* ---- Velocity-adaptive stepping (issue: slow=1, fast=5) ----
+ *
+ * We can't use LVGL's tick here (this runs from the router's own lv_timer, and
+ * several turns can land in one 10 ms poll), so we measure real time with
+ * esp_timer. Instantaneous speed = |detents| / seconds between successive turn
+ * events. We smooth it with an EMA so a single burst doesn't slam the step, and
+ * map that speed onto a per-detent multiplier from STEP_MIN (slow) to STEP_MAX
+ * (fast). If the knob has been idle past VEL_IDLE_US we treat the next turn as
+ * a fresh slow start (multiplier drops back toward STEP_MIN), so an
+ * accelerate-then-stop-then-start again feels natural. */
+#define STEP_MIN        1      /* per-detent change when turning slowly       */
+#define STEP_MAX        5      /* per-detent change when turning fast         */
+#define VEL_SLOW_DPS    6.0f   /* detents/sec at/below which step == STEP_MIN */
+#define VEL_FAST_DPS    30.0f  /* detents/sec at/above which step == STEP_MAX */
+#define VEL_IDLE_US     220000 /* gap that resets the smoothed velocity       */
+#define VEL_EMA         0.35f  /* new-sample weight in the speed smoother     */
+
+static int64_t s_last_turn_us = 0;   /* esp_timer time of the last turn event */
+static float   s_dps = 0.0f;         /* smoothed detents/sec                  */
+
+static int current_step(void)
+{
+    if (s_dps <= VEL_SLOW_DPS) return STEP_MIN;
+    if (s_dps >= VEL_FAST_DPS) return STEP_MAX;
+    float t = (s_dps - VEL_SLOW_DPS) / (VEL_FAST_DPS - VEL_SLOW_DPS);
+    int m = STEP_MIN + (int)(t * (STEP_MAX - STEP_MIN) + 0.5f);
+    if (m < STEP_MIN) m = STEP_MIN;
+    if (m > STEP_MAX) m = STEP_MAX;
+    return m;
+}
+
+/* Feed one turn reading (raw net detents since last poll) into the estimator
+ * and return the per-detent multiplier to apply this event. */
+static int update_velocity(int32_t raw_delta)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_last_turn_us == 0 || (now - s_last_turn_us) > VEL_IDLE_US) {
+        s_dps = 0.0f;                    /* fresh slow start after an idle gap */
+    } else {
+        double dt_s = (double)(now - s_last_turn_us) / 1e6;
+        if (dt_s > 0.0) {
+            float inst = (float)abs(raw_delta) / (float)dt_s;
+            s_dps += VEL_EMA * (inst - s_dps);
+        }
+    }
+    s_last_turn_us = now;
+    return current_step();
+}
+
+/* Per-detent adjustment baseline for each channel. Hue wraps, s/v clamp; the
+ * actual per-event nudge is baseline * current_step(). */
+#define HUE_STEP  1
+#define SAT_STEP  1
+#define VAL_STEP  1
 
 typedef enum { CH_HUE = 0, CH_SAT, CH_VAL, CH_COUNT } channel_t;
 
@@ -72,22 +124,22 @@ static void refresh(void)
     for (int i = 0; i < CH_COUNT; i++) style_chip((channel_t)i);
 }
 
-static void adjust(int32_t delta)
+static void adjust(int32_t delta, int step)
 {
     if (delta == 0) return;
     switch (s_ch) {
         case CH_HUE:
-            s_hue = (uint16_t)(((int32_t)s_hue + delta * HUE_STEP % 360 + 360) % 360);
+            s_hue = (uint16_t)(((int32_t)s_hue + delta * step * HUE_STEP % 360 + 360) % 360);
             break;
         case CH_SAT: {
-            int v = (int)s_sat + delta * SAT_STEP;
+            int v = (int)s_sat + delta * step * SAT_STEP;
             if (v < 0)   v = 0;
             if (v > 100) v = 100;
             s_sat = (uint8_t)v;
             break;
         }
         case CH_VAL: {
-            int v = (int)s_val + delta * VAL_STEP;
+            int v = (int)s_val + delta * step * VAL_STEP;
             if (v < 0)   v = 0;
             if (v > 100) v = 100;
             s_val = (uint8_t)v;
@@ -112,6 +164,7 @@ esp_err_t color_picker_init(void)
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
     lv_obj_set_scrollable(s_scr, false);
+    lv_obj_set_scrollbar_mode(s_scr, LV_SCROLLBAR_MODE_OFF);
 
     /* Big circular swatch — the resulting color, upper-centre of the disc. */
     s_swatch = lv_obj_create(s_scr);
@@ -163,16 +216,33 @@ esp_err_t color_picker_init(void)
 
 lv_obj_t *color_picker_screen(void) { return s_scr; }
 
+void color_picker_show(void)
+{
+    /* Called when this screen becomes the active one: re-push the (persistent)
+     * model to the widgets and force a full repaint so the swatch and chips
+     * match s_hue/s_sat/s_val rather than whatever the frame last showed. Also
+     * drop any stale velocity so returning to the picker starts "slow". */
+    s_last_turn_us = 0;
+    s_dps = 0.0f;
+    refresh();
+    if (s_scr) lv_obj_invalidate(s_scr);
+}
+
 void color_picker_apply_input(int32_t delta, bool pressed)
 {
     if (pressed) {
         const channel_t before = s_ch;
         cycle_channel();
+        /* A push is a discrete selection act, not a turn — reset the velocity so
+         * the next rotate starts from the slow baseline. */
+        s_last_turn_us = 0;
+        s_dps = 0.0f;
         ESP_LOGI(TAG, "push %s -> %s", CH_LETTER[before], CH_LETTER[s_ch]);
     } else if (delta) {
-        adjust(delta);
+        const int step = update_velocity(delta);
+        adjust(delta, step);
         uint16_t h; uint8_t s, v; color_picker_get(&h, &s, &v);
-        ESP_LOGI(TAG, "turn %+ld -> %s = %u", (long)delta,
+        ESP_LOGI(TAG, "turn %+ld x%d -> %s = %u", (long)delta, step,
                  CH_LETTER[s_ch], (unsigned)(s_ch == CH_HUE ? h : (s_ch == CH_SAT ? s : v)));
     }
 }

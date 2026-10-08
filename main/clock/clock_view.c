@@ -152,13 +152,23 @@ esp_err_t clock_view_init(void)
     /* Remove default screen padding so the label can be positioned freely */
     lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
 
-    /* Create the time label. No alignment: we drive x/y ourselves so the label
-     * never gets re-centred by a layout pass. Give it a size that comfortably
-     * fits "88:88:88" at Montserrat-48 so it can bounce as a rigid box. */
+    /* Pin the clock screen's scroll/overflow off so a stray layout pass can never
+     * shift the 466x466 screen and leave unpainted (stale) margins. */
+    lv_obj_set_scrollable(scr, false);
+    lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
+
+    /* Create the time label. Pin its alignment to TOP_LEFT (its default) so the
+     * x/y we set are ALWAYS absolute screen coords — never an offset from a
+     * centre. (A prior lv_obj_align(CENTER) would make later lv_obj_set_x/y be
+     * relative-to-centre, throwing the bounce physics and on-screen placement
+     * out of sync — the bug that let the clock fly off screen.) Give it a size
+     * that comfortably fits "88:88:88" at Montserrat-48 so it can bounce as a
+     * rigid box. */
     s_clock_label = lv_label_create(scr);
     lv_obj_set_style_text_color(s_clock_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_pad_all(s_clock_label, 0, 0);
+    lv_obj_set_align(s_clock_label, LV_ALIGN_TOP_LEFT);
     lv_label_set_text(s_clock_label, "88:88:88");
 
     /* Ask LVGL how big that text actually is, then adopt those as the box. */
@@ -208,7 +218,14 @@ void clock_view_set_bounce(bool on)
                  (double)BOUNCE_SPEED_PPS, BOUNCE_PERIOD_MS);
     } else {
         stop_motion_timer();
-        lv_obj_align(s_clock_label, LV_ALIGN_CENTER, 0, 0);
+        /* Re-centre by absolute coords (align is pinned TOP_LEFT, so this is the
+         * real on-screen position). Do NOT use lv_obj_align(CENTER) here — it
+         * changes the label's align base and silently breaks the bounce-on path's
+         * lv_obj_set_x/y. */
+        s_pos_x = (SCREEN_WIDTH  - s_body_w) / 2.0f;
+        s_pos_y = (SCREEN_HEIGHT - s_body_h) / 2.0f;
+        lv_obj_set_x(s_clock_label, (int32_t)(s_pos_x + 0.5f) & ~1);
+        lv_obj_set_y(s_clock_label, (int32_t)(s_pos_y + 0.5f) & ~1);
         ESP_LOGI(TAG, "Bounce OFF (clock re-centred)");
     }
 }

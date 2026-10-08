@@ -100,6 +100,47 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
  *
  * Padding columns are filled black — invisible on the true-black AMOLED clock.
  */
+/* RGB565 byte order.
+ *
+ * The CO5300 wants each 16-bit pixel sent big-endian over the wire (RRRRRGGG
+ * byte first, then GGGBBBBB). The esp_lcd driver's draw_bitmap is a verbatim
+ * tx_color — it does no reordering — and LVGL on the little-endian S3 stores
+ * RGB565 low-byte-first. So every pixel we hand the panel is byte-swapped.
+ *
+ * This is invisible for grayscale (white/black text, the 0x1818/0x8080/0x9090
+ * chips): those values are byte palindromes, so swapping them changes nothing.
+ * It only betrays itself on saturated hues — which is why the clock looked
+ * fine while the color picker's swatch was "way off". lv_color_hsv_to_rgb is
+ * correct; the wire order was the culprit.
+ *
+ * We swap in place on px_map. Safe because LVGL re-renders the entire flush
+ * rect from its own (unswapped) color state on every flush, so a given pixel
+ * is only ever swapped once immediately before its DMA — never twice. */
+static inline void rgb565_swap(uint16_t *px, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        px[i] = (uint16_t)((px[i] >> 8) | (px[i] << 8));
+    }
+}
+
+/* A single LVGL refresh can hand us several row-chunks (an object taller than
+ * the partial buffer, e.g. the 170px swatch with a 40-row buffer, arrives as
+ * ~5 calls). If we gate EVERY chunk on its own blanking, the chunks land in
+ * ~5 different vertical-blanking periods — the DMA itself is quick (~3ms) but
+ * each wait_for_te() can stall up to a whole frame. The panel then scans out
+ * the top of the object in its new colour for ~30ms while the lower chunks are
+ * still the previous colour: a horizontal split line that lingers while you
+ * turn the knob fast.
+ *
+ * So we gate on TE only for the FIRST chunk of a frame and let the remaining
+ * chunks of that same frame stream back-to-back (they're already serialized by
+ * flush_ready). One frame = one blanking window, so the whole object commits
+ * together. lv_display_flush_is_last() tells us when the frame's last chunk has
+ * been handed over, which re-arms the gate for the next frame. Single-chunk
+ * flushes (the clock label) are always "first and last", so their behaviour is
+ * unchanged — this only affects tall multi-chunk objects. */
+static bool s_flush_in_flight = false;
+
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                           uint8_t *px_map)
 {
@@ -113,18 +154,31 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         aw = (SCREEN_WIDTH - ax1) & ~1;
     }
 
-    if (ax1 == x1 && aw == w) {
-        /* already even-aligned: DMA the LVGL buffer directly */
+    /* Blank out at most once per LVGL frame. */
+    if (!s_flush_in_flight) {
         wait_for_te();
+        s_flush_in_flight = true;
+    }
+    if (lv_display_flush_is_last(disp)) {
+        s_flush_in_flight = false;         /* next flush is a new frame */
+    }
+
+    if (ax1 == x1 && aw == w) {
+        /* already even-aligned: byte-swap in place, then DMA directly */
+        rgb565_swap((uint16_t *)px_map, (size_t)w * h);
         esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2 + 1, y2 + 1, px_map);
     } else {
-        /* re-pack rows into the even-width scratch buffer */
+        /* re-pack rows into the even-width scratch buffer, swapping as we go */
         const uint16_t *src = (const uint16_t *)px_map;
         const int left = x1 - ax1;
         for (int r = 0; r < h; r++) {
             uint16_t *d = s_scratch + (size_t)r * aw;
+            const uint16_t *s = src + (size_t)r * w;
             for (int c = 0;  c < left;      c++) d[c] = 0x0000;
-            memcpy(d + left, src + (size_t)r * w, (size_t)w * sizeof(uint16_t));
+            for (int c = 0;  c < w;          c++) {
+                uint16_t v = s[c];
+                d[left + c] = (uint16_t)((v >> 8) | (v << 8));
+            }
             for (int c = left + w; c < aw;  c++) d[c] = 0x0000;
         }
         wait_for_te();

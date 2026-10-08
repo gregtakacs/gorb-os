@@ -30,6 +30,12 @@ static void set_screen(input_screen_t s, bool load)
         lv_obj_t *scr = (s == INPUT_SCREEN_CLOCK) ? clock_view_screen()
                                                    : color_picker_screen();
         if (scr) lv_screen_load(scr);
+        /* Re-push this screen's model to its widgets and force a clean repaint.
+         * lv_screen_load() already invalidates, but the picker keeps its values
+         * in module statics (not in the widget tree), so we re-sync explicitly —
+         * this is what makes the chosen color survive a trip to the clock and
+         * back instead of reverting to whatever the last frame happened to show. */
+        if (s == INPUT_SCREEN_COLOR) color_picker_show();
     }
     ESP_LOGI(TAG, "screen -> %s", s == INPUT_SCREEN_CLOCK ? "clock" : "color");
 }

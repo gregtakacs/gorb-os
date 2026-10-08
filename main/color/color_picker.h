@@ -28,6 +28,13 @@ esp_err_t color_picker_init(void);
 lv_obj_t *color_picker_screen(void);
 
 /**
+ * Re-sync the widgets to the (persistent) model and repaint. Call from the LVGL
+ * task right after this screen is loaded, so the swatch/chips reflect the last
+ * chosen values rather than stale frame content.
+ */
+void color_picker_show(void);
+
+/**
  * Apply one poll's worth of knob input. delta = net detents (>0 = CW),
  * pressed = knob was tapped. Call from the LVGL task only.
  */

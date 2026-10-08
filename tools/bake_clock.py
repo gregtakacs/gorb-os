@@ -600,9 +600,19 @@ def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
 
 
 def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
-                 fps=0.0, frame_glob=None):
+                 fps=0.0, frame_glob=None, frame_step=1):
     """Bake an animated background (GIF or PNG frame sequence) into the blob
     as one keyframe + per-frame delta rects.
+
+    `frame_step` DECIMATES the source sequence: the pack is one authored loop
+    sampled at the generator's fps (e.g. 30 PNGs = one second at 30 fps), and
+    the display pipe plays at its own tick rate; taking every Nth frame keeps
+    the loop at one authored second when N = source_frames / playback_fps
+    (30 -> 15 @ 15 fps, and from a 60-frame pack 60 -> 15 @ 15 or 60 -> 12 @
+    12). The step must divide the frame count so the loop still closes. For
+    GIFs the kept frames absorb their skipped neighbours' delay, so the total
+    period is preserved exactly; PNG delays are uniform, so re-pacing is just
+    the round-trip through --bg-fps.
 
     Returns dict(frames, key_off, rects=[(x,y,w,h,off), ...],
                  first=[rect index where each frame's list starts..., len])
@@ -625,6 +635,31 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
         imgs, delays = _load_gif_frames(src, fit=fit)
     else:
         imgs, delays = _load_png_frames(src, frame_glob=frame_glob, fps=fps, fit=fit)
+    if frame_step < 1:
+        raise SystemExit("--frame-step must be >= 1")
+    if frame_step > 1:
+        if len(imgs) % frame_step:
+            raise SystemExit(f"--frame-step {frame_step} does not divide "
+                             f"{len(imgs)} frames — the loop would not close")
+        imgs = imgs[::frame_step]
+        if (not is_gif) and fps > 0 and len(imgs) != max(1, int(round(fps))):
+            raise SystemExit(
+                f"--frame-step {frame_step} left {len(imgs)} frames but --bg-fps "
+                f"{fps:g} wants {int(round(fps))} kept for one authored "
+                f"loop per second — use --frame-step "
+                f"{len(imgs) * frame_step // int(round(fps))} on this "
+                f"{len(imgs) * frame_step}-frame pack (or export a pack whose "
+                f"frame count is divisible by both target fps)")
+        if is_gif:
+            # GIF delays ARE the source tempo; kept frames absorb their
+            # skipped neighbours so the total period is preserved.
+            delays = [sum(delays[i:i + frame_step])
+                      for i in range(0, len(delays), frame_step)]
+        # PNG delays were synthesised from --bg-fps, which is already the
+        # PLAYBACK rate of the kept frames (step = source_frames / fps), so
+        # they stay untouched.
+        print(f"  decimated every {frame_step}th frame: {len(imgs)} kept "
+              f"(loop still 1 authored period)")
     F = [_frames_to_u16(im) for im in imgs]
     print(f"  {'gif' if is_gif else 'frames'} bg: {src} -> {len(F)} frames @ "
           f"{SCREEN_W}x{SCREEN_H} fit={fit} "
@@ -815,6 +850,15 @@ def main():
                     help="with --bg-frames: playback rate, since PNGs carry no "
                          "timing. 0 (default) takes the theme's bgAnim.fps, then "
                          "25 fps if the theme has no bgAnim at all.")
+    ap.add_argument("--frame-step", type=int, default=1, metavar="N",
+                    help="take every Nth source frame before baking "
+                         "(DECIMATION). The pack is one authored loop sampled at "
+                         "the generator's fps; playing all of it at a lower "
+                         "--bg-fps runs the loop slow (30 frames at 15 fps = a "
+                         "2 s loop). Use N = source_frames / playback_fps so one "
+                         "pass stays one authored second: 30-pack -> step 2 for "
+                         "15 fps; a 60-pack -> step 4 for 15 fps or step 5 for "
+                         "12 fps. Must divide the frame count.")
     ap.add_argument("--diff-thresh", type=int, default=12,
                     help="min perceptual RGB565 step (0-248) for a pixel to count "
                          "as changed when packing delta rects (default 12)")
@@ -897,7 +941,7 @@ def main():
                            denoise=args.bg_denoise, fit=args.bg_fit,
                            fps=(args.bg_fps or (0.0 if args.bg_gif
                                                 else float(bg.get("fps", 0) or 0))),
-                           frame_glob=args.bg_glob)
+                           frame_glob=args.bg_glob, frame_step=args.frame_step)
         gif["src"] = bg_src
         plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
         baked_frames, anim_frames = [], 0

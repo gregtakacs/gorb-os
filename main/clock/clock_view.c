@@ -147,6 +147,11 @@ static lv_image_dsc_t   s_canvas_dsc;
 static int              s_gif_shown = 0;   /* frame the canvas holds now */
 static uint32_t         s_gif_due;         /* lv_tick ms the next frame is due */
 static uint32_t         s_fps_t0, s_fps_ticks;
+/* Deadline ladder for the tick (see tick_timer_cb): lv_timer measures its
+ * period from when the LAST RUN STARTED but we re-set the period from the
+ * callback's END, so anything shorted from the requested period shows up
+ * as schedule, not drift. 0 = not yet anchored (fresh start / unpark). */
+static uint32_t         s_tick_due;
 static uint32_t         s_fps_bench_f0;
 static uint64_t         s_fps_bench_t0;
 static uint64_t         s_fps_pix0;
@@ -977,6 +982,7 @@ static void tick_timer_cb(lv_timer_t *timer)
     (void)timer;
     if (!s_active) return;      /* parked: clock not on the glass */
     s_fps_ticks++;
+    const uint32_t t_start_ms = lv_tick_get();
     if (gif_mode()) {
         /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay
          * (gif_tick_ms), so the background advances exactly one frame per tick
@@ -987,8 +993,13 @@ static void tick_timer_cb(lv_timer_t *timer)
         const int      next = (s_gif_shown + 1) % (int)clk_theme.gif_frames;
         if ((int32_t)(now - s_gif_due) >= 0) {
             gif_apply_frame(next);
-            s_gif_due = lv_tick_get()
-                      + (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
+            const uint32_t d = (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
+            /* Anchor to the previous deadline so tick jitter cannot inflate
+             * the tempo; if we fell more than a frame behind, drop missed
+             * deadlines (no burst-catch-up: deltas are chained per frame). */
+            s_gif_due += d;
+            if ((int32_t)(now - s_gif_due) >= (int32_t)d)
+                s_gif_due = now + d;
         }
     } else {
         s_bg_tick++;
@@ -1009,12 +1020,31 @@ static void tick_timer_cb(lv_timer_t *timer)
 
     /* The GIF delta bank always runs on its own fastest beat; a non-looping
      * plate background only needs the fast beat while a play is running (the
-     * check in bg_frame_now() may have just started one). */
+     * check in bg_frame_now() may have just started one).
+     * Deadline-anchored, not callback-anchored: lv_timer decides lateness
+     * against a fixed 62.5 ms ladder we advance by the beat each tick, so
+     * this callback's own work (and the LVGL refresh it queues) is schedule
+     * to absorb, not drift to accumulate. Ask for a hair less than what is
+     * left: the timer can only fire on a handler wake and lvgl_task's sleeps
+     * quantise to ~5 ms, so an exact ask reliably lands one wake late.
+     * Measured reality for this bank: the display pipeline books ~54 ms of
+     * TE-wait + band submits per commit, so the tick still arrives ~67 ms
+     * apart (~15 fps, loop ~1.07 s) — the ladder keeps the SCHEDULE honest;
+     * true 16 needs ~5 ms shaved off the flush path, not the timer. */
     uint32_t period;
     if (gif_mode())                              period = gif_tick_ms();
     else if (bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
                                                  period = bg_rate(tick_base_ms(), &s_bg_every);
     else                                         { s_bg_every = 1; period = tick_base_ms(); }
+    if (gif_mode()) {
+        if (!s_tick_due) s_tick_due = t_start_ms + period;
+        else             s_tick_due += period;
+        if ((int32_t)(t_start_ms - s_tick_due) >= (int32_t)period)
+            s_tick_due = t_start_ms + period;       /* fell a beat behind */
+        const int32_t left = (int32_t)(s_tick_due - t_start_ms) - 8;
+        lv_timer_set_period(timer, (left < 2) ? 2 : (uint32_t)left);
+        return;
+    }
     lv_timer_set_period(timer, period);
 }
 
@@ -1203,6 +1233,7 @@ void clock_view_set_bounce(bool on)
              * parked — repaint it whole and keep cycling from the current
              * frame; resetting the counter would desync canvas vs deltas. */
             s_gif_due = lv_tick_get();
+            s_tick_due = 0;                 /* re-anchor the beat ladder */
             s_fps_t0 = lv_tick_get();
             s_fps_ticks = 0;
             uint32_t bf; uint64_t bt; uint32_t bm;

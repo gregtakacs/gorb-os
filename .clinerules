@@ -85,10 +85,21 @@ There are two pages, each one giant `static const char[]` of concatenated
 at `/timezone`). The timezone UI lives only on the clock page — the owner took
 it off the network page outright after the first phone tests. The clock page
 renders city rows from `/api/v1/config` (`label` + `iana` columns), reads the
-phone's zone via `Intl…resolvedOptions()` and auto-applies it; it shows no
-POSIX rules to a person, ever. `tools/host_tz_test.py` parses and pins both
-pages and enforces those boundaries by forbidding tz UI on the landing page
-and `posix`/<select> on the clock page. Two ways the pages break in a
+phone's zone via `Intl…resolvedOptions()` and auto-applies it; for a zone the
+table does not carry it SYNTHESIZES the DST rule client-side from the phone's
+own IANA database (bisection of monthly offset windows, refused when the
+pattern moves between years — Jerusalem/Casablanca class), and every set is
+verified by comparing the phone's offset against the device's measured
+`tz_offset` echo. It shows no POSIX rules to a person, ever — the rules are
+built in the browser and posted, never displayed. The zone table itself
+(`s_tz_tbl`) is machine-generated from the IANA zone of the same name and the
+host suite re-proves every row against the machine's tzdata (2025-2028, every
+noon + the minute either side of every transition); regenerate rows via
+`tools/host_tz_test.py`'s derivation, do NOT hand-edit a rule, and key new
+rows on the canonical IANA name (the five `US/*` keys are frozen because NVS
+may already store them). `tools/host_tz_test.py` parses and pins both pages
+and enforces those boundaries by forbidding tz UI on the landing page and
+`posix`/<select> on the clock page. Three ways the pages break in a
 way curl + a working server can hide:
 
 1. **Unbalanced parens across fragment boundaries.** Each C line looks fine in
@@ -103,6 +114,11 @@ way curl + a working server can hide:
    `esp_wifi_scan_start(block=true)` on httpd's single worker, so the status poll
    and the tz fetch queued behind a 5-10 s scan. Sequential curl never shows it;
    a browser fires its first requests at once.
+3. **A call to a function whose definition was deleted.** Syntax-clean, every
+   substring pin green, and the button just does nothing on the phone. This
+   happened for real while writing the synthesis engine (a rewrite dropped
+   `gmtRule`'s definition but left its call). The host suite lints both pages
+   for calls to functions that do not exist — keep that lint green too.
 
 `tools/host_tz_test.py` now rebuilds the page bytes exactly as the compiler does
 (concatenate the fragments, C-unescape) and parses the `<script>` with esprima —
@@ -110,7 +126,11 @@ a syntax error fails the host suite. This is the file's own rule in action: what
 the no-radio bench can't observe must be lifted to a host check. **Keep that check
 green whenever you touch the page.** (Verified by mutation: re-injecting the `)`
 turns it red.) esprima is not stdlib — a missing parser is a loud SKIP, not a
-pass, so `pip install esprima` if it skips.
+pass, so `pip install esprima` if it skips. The suite is self-verifying:
+`python3 tools/host_tz_test.py --mutations` re-runs it against fourteen
+deliberate regressions (deleted synth engine, rubber-stamped echo check,
+hand-edited rule, shrunk buffer, …) and every one must fail it with a named
+verdict; a battery that cannot fail is not a test.
 
 ## Simulating the phone side of provisioning on the radio-less bench
 

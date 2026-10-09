@@ -42,17 +42,20 @@ menu "Orb networking"
             The provisioning AP must not outlive its welcome: it is OPEN, and
             behind it sits an unauthenticated /api/v1/ota. The AP therefore
             always dies on a timer — but that timer is only the FALLBACK now:
-            the config page closes the AP itself (POST /api/v1/wifi/ap
-            {"on":"off"}) the moment it has rendered the connected message, so
-            the phone returns to the home network in seconds and the orb's new
-            link is tappable. This value covers the path where that never
-            happens — the webview died, or the last status poll lost the air —
-            counted from the lease landing.
+            the confirmation hands the user a Copy / Open / Done choice and the
+            AP closes the moment one of them is tapped (a POST to
+            /api/v1/wifi/ap with an off body). It is deliberately NOT
+            automatic when the message renders: Android binds its captive-
+            portal webview to the AP, so closing the AP unasked took the
+            page -- and the orb's brand-new address on it -- away with it.
+            This value is the backstop for the path where nobody taps
+            anything, counted from the lease landing, so a user reading the
+            instructions has this whole window to act.
 
-            0 closes the AP on GOT_IP whether or not the page ever saw the
-            result: the phone may be deauthed before its final poll lands
-            (the page then reports "device unreachable" as its last word —
-            not recommended).
+            0 closes the AP the instant the lease lands, before anyone can read
+            the confirmation: the page renders and the webview goes with the AP.
+            Leave this well above the time it takes to read the
+            address and switch networks by hand (NOT recommended).
 
     config ORB_NET_AP_MANUAL_S
         int "Seconds an explicit POST /api/v1/wifi/ap keeps the SoftAP open"

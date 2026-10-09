@@ -327,6 +327,38 @@ def landing_page_js():
               'get renamed? This check dies loudly rather than silently stop '
               'covering the page.'); return 1
     import ast
+    # Fragment integrity. The extractor above SKIPS any line it cannot match,
+    # which means an unbalanced quote in the page silently deletes source from
+    # the bytes under test instead of failing: two real edits today produced a
+    # file that would not compile (a leftover " turned a C comment into an
+    # unterminated literal; an extra " opened an empty literal) and the parse
+    # check stayed green because the damaged lines had simply vanished from
+    # `page`. So walk the region line by line and refuse to accept a page whose
+    # lines are not all either comments or well-formed C string fragments.
+    region = m.group(1)
+    base = src[:m.start()].count(chr(10)) + 1
+    bad, in_comment = [], False
+    for off, line in enumerate(region.split(chr(10))):
+        t, where = line.strip(), base + off
+        if not t:
+            continue
+        if in_comment:
+            if '*/' in t:
+                in_comment = False
+            continue
+        if t.startswith('/*') or t.startswith('//'):
+            if '*/' not in t and t.startswith('/*'):
+                in_comment = True
+            continue
+        if not re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t):
+            bad.append((where, t[:64]))
+    if bad:
+        for where, t in bad[:6]:
+            print(f'FAIL landing page: line {where} is neither a comment nor a '
+                  f'complete C string fragment (unbalanced quote?): {t!r}')
+        print('       the extractor skips such lines, so they were NOT covered '
+              'by the parse/pin checks below.')
+        return 1
     fragments = re.findall(r'"((?:[^"\\\n]|\\.)*)"', m.group(1))
     if not fragments:
         print('FAIL landing page: no string fragments inside HTML_LANDING'); return 1
@@ -356,38 +388,78 @@ def landing_page_js():
     # success so the confirmation can never be overwritten by "device
     # unreachable" when the AP drops.
     rc = 0
+    # Product decisions pinned to the shipped page. Each was an explicit call:
+    # no AP-summon button; polling stops on success so the confirmation cannot
+    # be overwritten by "device unreachable"; the reason shows as a word; and -
+    # the one that took a phone test to learn - the AP is closed only on a
+    # DELIBERATE tap, never automatically when the confirmation renders.
+    # Android binds its captive-portal webview to the AP, so an automatic ack
+    # took the page down with the address still unread on it.
+    rc = 0
     for k, why in {'apbtn': 'AP-summon button (removed deliberately)',
-                   'apgo': 'AP-summon JS (removed deliberately)'}.items():
+                   'apgo': 'AP-summon JS (removed deliberately)',
+                   'apoff': 'the old automatic AP close on render'}.items():
         if k in page:
-            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+            print(f'FAIL landing page: contains {k!r} - {why}'); rc = 1
+    # The connected render must hand off to success() and stop. This is the
+    # one-line proof that rendering cannot close the AP.
+    for k, why in {"if(d.state=='connected'){success(d);return}":
+                   'the success render does not ack the AP'}.items():
+        if k not in js:
+            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
     # page-level (HTML, not script) presences
-    for k, why in {'id=eye': 'password show/hide toggle button'}.items():
+    for k, why in {'id=eye': 'password show/hide toggle button',
+                   'id=done': 'confirmation block polling cannot clobber'}.items():
         if k not in page:
-            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
-    for k, why in {'on":"off': 'the connected-ack AP close (apoff)',
-                   "createElement('a')": 'the clickable new-IP link',
+            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
+    for k, why in {"createElement('a')": 'the open-in-new-tab link',
+                   "a.target='_blank'": 'that link opens a new tab, not over this page',
+                   'Copy address': 'the copy button',
+                   'close setup network': 'the explicit user ack that closes the AP',
+                   'Switch your phone back to your own wifi': 'instructions to leave the AP',
+                   'addr.readOnly=true': 'a selectable address box for manual copy',
+                   "JSON.stringify({on:'off'})": 'the ack body the endpoint expects',
+                   "mode:'no-cors'": 'the ack stays a simple request cross-origin',
+                   "if(lanip)fetch('http://'": 'ack still lands after the phone roams home',
+                   "document.execCommand('copy')": 'the copy path that works on http',
+                   'navigator.clipboard': 'the modern copy path, tried when present',
                    'clearInterval(mainTmr)': 'status polling stops on success',
-                   "getElementById(\'eye\')": 'the toggle\'s click wiring',
+                   "getElementById('eye')": "the toggle's click wiring",
                    "'hide':'show'": "the toggle's own label flips",
-                   # The three phone-test fixes: the scan owns the status line,
-                   # a reason reads as a word, and one dropped poll is not a failure.
+                   # The three earlier phone-test fixes: the scan owns the
+                   # status line, a reason reads as a word, and one dropped
+                   # poll is not reported as a failure.
                    'if(scanning)return;': 'status() cannot overwrite the scan UX',
-                   'fails<3': 'transient fetch loss is tolerated, not shown as unreachable',
+                   'fails<3': 'transient fetch loss is tolerated, not unreachable',
                    'wifi_reason_name': 'the 802.11 reason shown as a word'}.items():
         if k not in js:
-            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
+            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
+    # Count-exact, not just present: apkill() posts twice (the AP's own address
+    # and the absolute-LAN-address retry for a phone that already roamed home)
+    # and EVERY one of them has to be a simple request. A substring pin here
+    # passed while one of the two was mutated to 'cors' -- and cors on the
+    # fallback means a preflight the orb never answers, i.e. the ack silently
+    # never lands from the home network.
+    for k, want, why in [("mode:'no-cors'", 2,
+                         'every ack post is a simple (no-preflight) request'),
+                       ("/api/v1/wifi/ap", 2,
+                         'both ack posts exist (AP address + LAN-address fallback)')]:
+        got = js.count(k)
+        if got != want:
+            print(f'FAIL landing page: {k!r} appears {got}x, want {want}x - {why}'); rc = 1
+
     # The old display path printed the raw code, which is what read as
     # "response 4?" on a phone. Keep the word form from being reintroduced.
     for k, why in {"?', reason '+d.wifi_reason": 'raw reason number shown to the user'}.items():
         if k in js:
-            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+            print(f'FAIL landing page: contains {k!r} - {why}'); rc = 1
     # Server side of the same decisions: a user-initiated join must be a state
     # of its own, otherwise the page can only ever say "provisioning".
     for k, why in {'s_joining': 'the joining state distinct from provisioning',
                    '"joining"': 'the joining state string the page keys on',
                    'wifi_reason_name': 'the reason rendered as a word'}.items():
         if k not in src:
-            print(f'FAIL orb_net.c: missing {k!r} — {why}'); rc = 1
+            print(f'FAIL orb_net.c: missing {k!r} - {why}'); rc = 1
     if rc:
         return rc
     print(f'ok    landing-page JS parses ({len(js)} B script), '

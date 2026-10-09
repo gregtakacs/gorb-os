@@ -1665,9 +1665,11 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
  * ISN'T reachable shows no button to press. (The device's own rescue path
  * posts NET_CMD_AP_RESCUE internally — it does not come through this
  * endpoint.) What remains genuinely useful, and what this endpoint is for:
- *   - the CLOSE half, which the config page now posts the moment it has
- *     rendered the connected message, sending the phone home to the LAN in
- *     seconds instead of riding the hold timer, and
+ *   - the CLOSE half, which the config page posts when the user taps Copy /
+ *     Open / Done on the confirmation. Not automatic on render: Android binds
+ *     its captive-portal webview to the AP, so closing the AP unasked took the
+ *     page -- and the new address on it -- away with it. The hold timer still
+ *     covers a page that was never acknowledged, and
  *   - tooling/tests (e.g. /tmp/ap_cp_test.sh) summoning the AP with no page
  *     open at all.
  *
@@ -1953,6 +1955,7 @@ static const char HTML_LANDING[] =
 "</style></head><body>"
 "<h1>orb setup</h1>"
 "<div id=state>loading&hellip;</div>"
+"<div id=done hidden></div>"
 "<div id=pick hidden><label>Network password</label>"
 "<div class=row><input id=pass type=password placeholder='leave empty for open' autocomplete=off autocapitalize=none style='flex:1;min-width:0'><button id=eye>show</button></div>"
 "<div class=row><button id=go>Connect</button><button id=rs>Rescan</button></div></div>"
@@ -1967,13 +1970,7 @@ static const char HTML_LANDING[] =
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
 "async function status(){if(done)return;try{var d=await j('/api/v1/status');fails=0;"
-"if(d.state=='connected'){done=true;clearInterval(timer);clearInterval(mainTmr);"
-"var e=document.getElementById('state');e.className='ok';"
-"e.textContent='connected \\u2014 orb is at ';"
-"var a=document.createElement('a');a.href='http://'+d.ip+'/';a.textContent=a.href;"
-"a.style.color='#9cf';e.appendChild(a);"
-"var k=document.createElement('span');k.textContent=' \\u2014 your phone goes back to your wifi; tap the link once it does';e.appendChild(k);"
-"apoff(d);return}"
+"if(d.state=='connected'){success(d);return}"
 "if(scanning)return;say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
 "+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason_name?', '+d.wifi_reason_name:'')+')':'')"
 "+(d.wifi_reason&&!d.assoc_fails?' (last reason '+d.wifi_reason+')':''));}"
@@ -2013,16 +2010,57 @@ static const char HTML_LANDING[] =
 "function tssel(v){var s=document.getElementById('tz'),x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
 " var k=false;for(var i=0;i<zones.length;i++)if(zones[i].name==v)k=true;"
 " if(k){s.value=v;x.hidden=true;g.hidden=true}else{s.value='__c__';x.hidden=false;g.hidden=false;if(v&&v!='UTC')x.value=v}}"
-"/* The provisioning handshake: once THIS page has rendered the connected"
-"   message, the AP has done its job — close it now instead of letting the"
-"   phone ride CONFIG_ORB_NET_AP_HOLD_S of dead air before it can rejoin the"
-"   home network and tap the link. Only while a lease gives the orb another"
-"   way in (the device enforces that too); the reply dies with the AP, which"
-"   is the expected outcome, not an error. */"
-"function apoff(d){if(!d.ap||apSent)return;apSent=true;"
+/* The provisioning handoff. Deliberately NOT automatic: Android binds its
+captive-portal webview to the AP it just joined, so the instant the SoftAP goes
+away the webview is torn down with it -- closing the AP as soon as this page
+rendered the confirmation yanked the page away before anyone could read the
+orb's new address (first live phone test). The AP comes down only on a
+deliberate tap here; CONFIG_ORB_NET_AP_HOLD_S from the lease stays the backstop
+for a page nobody acknowledged. no-cors keeps this a simple request, because
+the phone may already be back on the home network when the retry fires and the
+absolute-IP fallback has to survive being cross-origin without a preflight the
+orb does not answer. */
+"var lanip='',tip=null,addr=null;"
+"function apkill(){var b=JSON.stringify({on:'off'});"
+"fetch('/api/v1/wifi/ap',{method:'POST',mode:'no-cors',body:b}).catch(function(){"
+"if(lanip)fetch('http://'+lanip+'/api/v1/wifi/ap',{method:'POST',mode:'no-cors',body:b})});}"
+"function tiptxt(t){if(tip)tip.textContent=t}"
+"function ack(t){if(apSent)return;apSent=true;clearInterval(timer);clearInterval(mainTmr);"
 "document.getElementById('pick').hidden=true;document.getElementById('ns').innerHTML='';"
-"j('/api/v1/wifi/ap',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"on\":\"off\"}'})"
-".catch(function(){})}"
+"tiptxt(t);apkill()}"
+/* Two copy paths, both needed: navigator.clipboard is undefined on an insecure
+   origin, and the provisioning page IS http://192.168.4.1 -- the API a modern
+   example would use cannot exist here. execCommand is the one that answers on
+   a phone, and its boolean is what lets the AP close only on a copy we know
+   landed, instead of taking the page down having done nothing. */
+"function cp(u){var ok=false;"
+"try{var ta=document.createElement('textarea');ta.value=u;ta.style.position='fixed';ta.style.left='-2000px';"
+"document.body.appendChild(ta);ta.focus();ta.select();ta.setSelectionRange(0,u.length);"
+"ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){ok=false}"
+"if(!ok&&navigator.clipboard){try{navigator.clipboard.writeText(u);ok=true}catch(e){}}"
+"if(ok){ack('copied - switch back to your wifi and paste it anywhere');return}"
+"tiptxt('browser blocked the copy - select the address above and copy it yourself');"
+"if(addr)addr.select()}"
+"function success(d){if(done)return;done=true;lanip=d.ip;clearInterval(timer);clearInterval(mainTmr);"
+"var u='http://'+d.ip+'/';say('orb is on your network','ok');"
+"var e=document.getElementById('done');e.innerHTML='';e.hidden=false;"
+"var p=document.createElement('div');"
+"p.textContent='Setup is done. Switch your phone back to your own wifi, then use this address. '"
+"+'The setup network closes when you tap one of these, or by itself shortly after.';"
+"e.appendChild(p);"
+"addr=document.createElement('input');addr.value=u;addr.readOnly=true;"
+"addr.onclick=function(){addr.select()};e.appendChild(addr);addr.select();"
+"var r=document.createElement('div');r.className='row';"
+"var c=document.createElement('button');c.textContent='Copy address';"
+"c.onclick=function(){cp(u)};"
+"var f=document.createElement('button');f.textContent='Done - close setup network';"
+"f.onclick=function(){ack('closing the setup network - you can close this page')};"
+"r.appendChild(c);r.appendChild(f);e.appendChild(r);"
+"var a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.style.color='#9cf';"
+"a.textContent='Open the orb page in a new tab';"
+"a.onclick=function(){ack('opening the orb page - you can close this one')};e.appendChild(a);"
+"tip=document.createElement('div');tip.style.color='#9cf';tip.style.marginTop='.4rem';"
+"e.appendChild(tip)}"
 "async function tzload(){var v='UTC';"
 " try{var d=await j('/api/v1/config');zones=d.zones||[];v=d.tz||'UTC';tzcur=v;"
 " tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+')');}catch(e){tzmsg('zone list unavailable')}"

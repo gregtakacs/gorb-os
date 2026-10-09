@@ -40,8 +40,30 @@
 static const char *TAG = "display";
 
 /* Number of screen rows per LVGL partial buffer.
- * 466 px * 40 rows * 2 B = 37,280 B per buffer (x2 = ~75 KB internal RAM). */
-#define LVGL_BUF_LINES  40
+ * 466 px * 20 rows * 2 B = 18,640 B per buffer.
+ *
+ * This was 40 (37,280 B) and had to come down once networking was measured on
+ * hardware, not on paper. The display needs FOUR internal-DMA buffers total: two
+ * LVGL partial buffers plus the two-entry tile ring (TILE_ROWS must equal this,
+ * asserted below). At 40 rows that is 4 x 37,280 = 149,120 B of internal DMA
+ * RAM, and the measured internal heap after esp_wifi_init() is 80,631 B free /
+ * 31,744 B largest -- so the ring could never fund itself, the driver fell back
+ * to PSRAM-direct submit, and every band then needed a single contiguous 37,280 B
+ * bounce buffer that no longer existed (largest block 31,744). Result: every
+ * draw_bitmap returned ESP_ERR_NO_MEM and the screen went dead the moment WiFi
+ * came up. At 20 rows the four buffers cost 74,560 B and each individual
+ * allocation is 18,640 B -- comfortably inside the post-WiFi largest block, with
+ * room left for the httpd scratch buffers.
+ *
+ * The price is ~2x the SPI transactions per full-frame commit (the per-tile cost
+ * is the fixed esp_lcd command/CS setup, which measurement showed queue depth
+ * does not change), i.e. somewhat lower frame rate on a whole-dial repaint. That
+ * is the correct side of this trade: a slower dial is a dial, and a dead one is
+ * not. If the dial proves too sluggish, buy the headroom back on the WiFi side
+ * (fewer RX buffers / IRAM_OPT=n frees ~16.7 KB of DIRAM) rather than by
+ * re-inflating this buffer -- 40 rows is only survivable if that largest-block
+ * number is raised too, and re-measured. */
+#define LVGL_BUF_LINES  20
 
 static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t    s_panel;
@@ -159,7 +181,7 @@ static bool     s_coalesce_mode = false;       /* true when the PSRAM mirror exi
  * than the 30 ms/frame PSRAM-direct path; tiles disabled entirely (fewer than
  * 2 buffers) fall back to the proven PSRAM-direct submit at queue depth 1. */
 #define USE_DMA_TILES 1            /* flip to 1 once the L0 baseline is captured */
-#define TILE_ROWS     40           /* 466*40*2 == LVGL buf_bytes == bus max xfer */
+#define TILE_ROWS     20           /* 466*20*2 == LVGL buf_bytes == bus max xfer */
 #define TILE_BUFS      2           /* ring depth to attempt (bus is serialized: >2 is free headroom, not more fps) */
 _Static_assert(TILE_ROWS == LVGL_BUF_LINES,
                "tile must exactly fill the LVGL buffer (= bus max_transfer_sz): "

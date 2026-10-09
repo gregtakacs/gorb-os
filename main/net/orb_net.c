@@ -13,6 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <unistd.h>
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
@@ -581,6 +587,172 @@ static void ap_close(const char *why)
     ESP_LOGI(TAG, "SoftAP down (%s)", why);
 }
 
+/* --------------------------------------------------------------------------
+ * Captive-portal DNS  ("Sign in to network")
+ *
+ * A phone that joins orb-xxxxxx decides what to tell its user by resolving the
+ * hostnames its OS probes for exactly that decision (connectivitycheck.gstatic.com
+ * on Android, captive.apple.com on iOS). The default softAP hands out NO resolver
+ * at all — esp_netif_lwip's dhcpserver comes up with dns_server.addr = 0
+ * (dhcpserver.c:158) — so those lookups go nowhere and the OS declares the
+ * network dead rather than a portal. h_captive()'s 302 (which is what raises the
+ * notification and lands the browser on the config page) never gets its request,
+ * because the phone never finds the orb. Two halves fix it, both scoped to the AP
+ * so the station's own DNS — including the SNTP hostname lookup on the LAN — is
+ * untouched:
+ *   1) advertise the AP's own address as the resolver over DHCP option 6, and
+ *   2) answer every A query sent there with that same address.
+ * The bind is to the AP address on purpose, NOT INADDR_ANY: a responder on
+ * 0.0.0.0:53 would also swallow the orb's own outbound resolution while the
+ * station is up, silently breaking time sync the moment anyone opened the AP.
+ *
+ * Lifecycle is welded to the driver's own AP_START/AP_STOP, so the responder can
+ * outlive an AP close only if the AP itself does — the same "leaked open AP"
+ * failure the rest of this file is engineered against.
+ * ------------------------------------------------------------------------ */
+#if CONFIG_ORB_NET_CAPTIVE_DNS
+
+#define NET_DNS_PORT 53
+#define NET_DNS_BUF  512      /* a DNS packet over UDP is capped at 512 B */
+
+static int           s_dns_fd = -1;    /* responder socket; -1 when down        */
+static TaskHandle_t  s_dns_task;       /* responder task; NULL when down        */
+static volatile bool s_dns_wanted;     /* keep the task running                 */
+static uint32_t      s_dns_ip;         /* AP address, network byte order        */
+
+/* Build a DNS reply that answers every A query with `ip` (already in network
+ * byte order) and answers nothing else, echoing the question verbatim so the
+ * client pairs the answer with its request. Deliberately pure — no sockets, no
+ * globals, no logging — so the byte encoding is unit-testable in
+ * tools/host_tz_test.py. This is precisely the code a bench with no WiFi radio
+ * cannot otherwise exercise, and a wrong offset here is a phone that never pops
+ * "Sign in to network" with no log line that would say so. Returns the reply
+ * length written to tx, or 0 when the query is not ours to answer (malformed,
+ * or carrying a second question we decline to serve). */
+static int dns_build_reply(const uint8_t *rx, int n, uint32_t ip,
+                           uint8_t *tx, int cap)
+{
+    if (n < 17) return 0;                        /* header + root label + qtype+qclass */
+    if ((rx[4] | rx[5]) != 1) return 0;           /* QDCOUNT (bytes 4-5) must be 1 */
+
+    const uint16_t qtype = (uint16_t)((rx[n - 4] << 8) | rx[n - 3]);
+    const int qlen = n - 12;                      /* the question, echoed verbatim */
+    const int alen = (qtype == 1) ? 16 : 0;        /* one A record, or none for AAAA/PTR */
+    const int len  = 12 + qlen + alen;
+    if (qlen <= 0 || len > cap) return 0;
+
+    memcpy(tx, rx, n);                             /* id + flags + counts + question */
+    tx[2] = 0x81; tx[3] = 0x80;                    /* QR|RD, RA|rcode=NOERROR */
+    tx[6] = 0;    tx[7] = (uint8_t)(alen ? 1 : 0);        /* ANCOUNT */
+    tx[8] = 0; tx[9] = 0; tx[10] = 0; tx[11] = 0;         /* NSCOUNT, ARCOUNT */
+    if (alen) {
+        uint8_t *a = tx + 12 + qlen;
+        a[0] = 0xC0; a[1] = 0x0C;                  /* name -> the QNAME at offset 12 */
+        a[2] = 0x00; a[3] = 0x01;                  /* TYPE A */
+        a[4] = 0x00; a[5] = 0x01;                  /* CLASS IN */
+        a[6] = 0x00; a[7] = 0x00; a[8] = 0x00; a[9] = 0x3C; /* TTL 60 */
+        a[10] = 0x00; a[11] = 0x04;                /* RDLENGTH 4 */
+        memcpy(a + 12, &ip, 4);                    /* -> the AP itself */
+    }
+    return len;
+}
+
+static void dns_task_loop(void *arg)
+{
+    (void)arg;
+    uint8_t rx[NET_DNS_BUF];
+    uint8_t tx[NET_DNS_BUF];
+    for (;;) {
+        /* select() with a short timeout, not a bare blocking recvfrom(): the
+         * AP_STOP path only clears a flag, and this task must notice within a
+         * poll window and close its OWN socket. Closing from another task while
+         * recvfrom() blocks is not guaranteed to wake lwIP. */
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(s_dns_fd, &rf);
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
+        const int sel = select(s_dns_fd + 1, &rf, NULL, NULL, &tv);
+        if (!s_dns_wanted) break;               /* AP_STOP asked us down */
+        if (sel <= 0) continue;                 /* timeout: re-check the flag */
+
+        struct sockaddr_in from;
+        socklen_t fl = sizeof from;
+        const int n = recvfrom(s_dns_fd, rx, sizeof rx, 0,
+                               (struct sockaddr *)&from, &fl);
+        /* All the packet-encoding decisions live in dns_build_reply() so they
+         * are host-tested; here we only shuttle bytes. A 0 reply means the
+         * query was not ours to answer and is silently dropped. */
+        const int len = dns_build_reply(rx, n, s_dns_ip, tx, (int)sizeof tx);
+        if (len > 0)
+            sendto(s_dns_fd, tx, (size_t)len, 0,
+                   (const struct sockaddr *)&from, fl);
+    }
+    close(s_dns_fd);
+    s_dns_fd = -1;
+    s_dns_task = NULL;
+    vTaskDelete(NULL);
+}
+
+/* Called from the AP_START handler (default event task). Everything here is
+ * quick and non-blocking, which is what that context requires; and every failure
+ * is merely "no popup" — the AP and its config page still work exactly as they
+ * did before this feature existed. */
+static void dns_start(void)
+{
+    if (s_dns_wanted) return;                    /* already answering */
+    if (!s_ap_netif) return;
+    esp_netif_ip_info_t ii;
+    if (esp_netif_get_ip_info(s_ap_netif, &ii) != ESP_OK || ii.ip.addr == 0) {
+        ESP_LOGW(TAG, "captive DNS: no AP address yet — no portal popup");
+        return;
+    }
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { ESP_LOGW(TAG, "captive DNS: socket: %d", errno); return; }
+    struct sockaddr_in sa = { 0 };
+    sa.sin_family      = AF_INET;
+    sa.sin_port        = htons(NET_DNS_PORT);
+    sa.sin_addr.s_addr = ii.ip.addr;             /* the AP's own address, net order */
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        ESP_LOGW(TAG, "captive DNS: bind: %d", errno);
+        close(fd);
+        return;
+    }
+    /* Tell clients the resolver exists, or the query never reaches the socket. */
+    esp_netif_dns_info_t d = { 0 };
+    d.ip.type       = ESP_IPADDR_TYPE_V4;
+    d.ip.u_addr.ip4 = ii.ip;
+    esp_netif_set_dns_info(s_ap_netif, ESP_NETIF_DNS_MAIN, &d);
+
+    s_dns_ip     = ii.ip.addr;
+    s_dns_fd     = fd;
+    s_dns_wanted = true;
+    if (xTaskCreate(dns_task_loop, "orb_dns", 3072, NULL, 4, &s_dns_task) != pdPASS) {
+        ESP_LOGW(TAG, "captive DNS: task out of memory — no portal popup");
+        s_dns_wanted = false;
+        close(fd);
+        s_dns_fd = -1;
+        return;
+    }
+    /* One line on success, and it names the address: whether the AP actually
+     * advertises a resolver is exactly the kind of thing that is invisible from
+     * the device and shows up only as "my phone never showed the sign-in prompt"
+     * in the field. Paired with the AP_STOP teardown so a stuck responder is
+     * equally visible. .addr is already network order, so the bytes in memory
+     * are the octets in dotted order — no lwIP ip4_addrN() macro needed. */
+    const uint8_t *o = (const uint8_t *)&ii.ip.addr;
+    ESP_LOGI(TAG, "captive DNS answering for %u.%u.%u.%u",
+             o[0], o[1], o[2], o[3]);
+}
+
+/* AP_STOP just signals; the responder closes its own socket and self-deletes
+ * inside its 200 ms select window, so the socket is never closed from two tasks. */
+static void dns_stop(void)
+{
+    if (s_dns_wanted) ESP_LOGI(TAG, "captive DNS stopped (AP down)");
+    s_dns_wanted = false;
+}
+#endif /* CONFIG_ORB_NET_CAPTIVE_DNS */
+
 static void net_task_loop(void *arg)
 {
     (void)arg;
@@ -768,12 +940,18 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WIFI_EVENT_AP_START:
         s_ap_up = true;
         ESP_LOGI(TAG, "SoftAP up — join it and open the URL in the log above");
+#if CONFIG_ORB_NET_CAPTIVE_DNS
+        dns_start();                 /* advertise + answer, so phones show "Sign in" */
+#endif
         break;
 
     case WIFI_EVENT_AP_STOP:
         /* The driver's word that the AP is really gone, which is what makes
          * ap_close()'s early return honest. */
         s_ap_up = false;
+#if CONFIG_ORB_NET_CAPTIVE_DNS
+        dns_stop();                  /* the AP is down; take its resolver with it */
+#endif
         break;
 
     default:
@@ -1829,10 +2007,15 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
-        /* Android + iOS/macOS captive-portal probes (see h_captive). */
+        /* Android + iOS/macOS captive-portal probes (see h_captive). The last two
+         * are Firefox's network-check and the old-Chromium/Kindle endpoint: a phone
+         * that finds them covered pops its own "Sign in to network" notification,
+         * which is the whole point of the DNS responder above. */
         { .uri = "/generate_204",      .method = HTTP_GET, .handler = h_captive },
         { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = h_captive },
         { .uri = "/favicon.ico",       .method = HTTP_GET, .handler = h_captive },
+        { .uri = "/gen_204",           .method = HTTP_GET, .handler = h_captive },
+        { .uri = "/connect/test.php",  .method = HTTP_GET, .handler = h_captive },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         /* Checked, not ignored: past max_uri_handlers this returns

@@ -53,6 +53,12 @@ retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
 # nobody summoned. The codes are 802.11's, pinned to the values in
 # esp_wifi_types_generic.h so a rename on our side cannot silently flip one.
 si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}")
+# The captive-portal DNS reply builder, lifted for the same reason as the ladder
+# and the self-inflicted guard: it is exactly the code this bench cannot exercise
+# (no WiFi radio to send a real query), and every byte is a silent failure mode —
+# a wrong offset is a phone that never shows "Sign in to network" and a device
+# that logs nothing wrong. So the encoding is pinned here instead.
+dns_fn = lift(r"static int dns_build_reply\(const uint8_t \*rx.*?return len;\n\}")
 wifi_reasons = """
 enum { WIFI_REASON_AUTH_EXPIRE = 2,           /* esp_wifi_types_generic.h */
        WIFI_REASON_AUTH_LEAVE  = 3,
@@ -74,6 +80,7 @@ harness = f"""
 {retry_fn}
 {wifi_reasons}
 {si_fn}
+{dns_fn}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
 #define ESP_LOGW(a, ...) do {{ }} while (0)
@@ -152,6 +159,53 @@ static void off(const char *posix, int hh, int mm, int ss, int want){{
     printf("%-5s %-34s %02d:%02d:%02d -> %+d min (want %+d)\\n",
            got == want ? "ok" : "FAIL", posix, hh, mm, ss, got, want);
 }}
+/* A single-question DNS query "example", A or AAAA, QDCOUNT forced, so the
+ * builder's accept/reject decisions and its exact answer bytes can be checked. */
+static int mk_query(uint8_t *q, uint16_t qtype, uint16_t qdcount)
+{{
+    q[0]=0xAB; q[1]=0xCD;                    /* id, must be echoed back  */
+    q[2]=0x01; q[3]=0x00;                     /* RD=1, everything else 0  */
+    q[4]=(uint8_t)(qdcount>>8); q[5]=(uint8_t)qdcount;
+    q[6]=0;q[7]=0;q[8]=0;q[9]=0;q[10]=0;q[11]=0;
+    int p=12;
+    q[p++]=7; memcpy(q+p,"example",7); p+=7;  /* one label, no compression */
+    q[p++]=0;                                  /* end of QNAME             */
+    q[p++]=(uint8_t)(qtype>>8); q[p++]=(uint8_t)qtype;
+    q[p++]=0x00; q[p++]=0x01;                  /* CLASS IN                  */
+    return p;                                  /* == 25                     */
+}}
+static void dns_case(const char *what, uint16_t qtype, uint16_t qdcount,
+                     int n_override, int cap, int want_len)
+{{
+    uint8_t q[64], tx[512];
+    memset(tx, 0xEE, sizeof tx);
+    int n = mk_query(q, qtype, qdcount);
+    if (n_override > 0) n = n_override;         /* exercise the truncated path */
+    const uint8_t ipb[4] = {{192,168,4,1}};
+    uint32_t ip; memcpy(&ip, ipb, 4);           /* network order: bytes = octets */
+    const int len = dns_build_reply(q, n, ip, tx, cap);
+    int pass = (len == want_len);
+    if (pass && want_len > 0) {{
+        const int qlen = n - 12;
+        if (tx[0]!=0xAB || tx[1]!=0xCD) pass=0;               /* id echoed        */
+        if (tx[2]!=0x81 || tx[3]!=0x80) pass=0;               /* QR|RD, RA, noerr */
+        if (tx[4]!=0   || tx[5]!=1)     pass=0;               /* QDCOUNT kept = 1 */
+        if (tx[8]||tx[9]||tx[10]||tx[11]) pass=0;             /* NSCOUNT, ARCOUNT */
+        if (tx[7]==1) {{                                        /* answered A */
+            if (qtype != 1) pass=0;
+            const uint8_t *a = tx + 12 + qlen;
+            if (!(a[0]==0xC0&&a[1]==0x0C&&a[2]==0&&a[3]==1&&a[4]==0&&a[5]==1)) pass=0;
+            if (!(a[6]==0&&a[7]==0&&a[8]==0&&a[9]==0x3C&&a[10]==0&&a[11]==4)) pass=0;
+            if (memcmp(a+12, ipb, 4)!=0) pass=0;               /* rdata == the AP */
+            if (len != 12+qlen+16) pass=0;
+        }} else if (tx[7]==0) {{                                /* no answer */
+            if (len != 12+qlen) pass=0;
+        }} else pass=0;
+    }}
+    if (!pass) fails++;
+    printf("%-5s %-24s qtype=%-2u qd=%u n=%d cap=%d -> %d (want %d)\\n",
+           pass?"ok":"FAIL", what, (unsigned)qtype, (unsigned)qdcount, n, cap, len, want_len);
+}}
 int main(void)
 {{
     puts("== POST /api/v1/config bodies ==");
@@ -227,6 +281,17 @@ int main(void)
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();
+    puts("== captive-portal DNS reply encoding ==");
+    /* The A answer is what actually pops the phone's "Sign in to network" box;
+     * AAAA/PTR must come back with the question echoed and NO answer so the
+     * client falls through to A instead of mis-parsing a bogus record; and a
+     * truncated or second-question query must be dropped, not answered wrong. */
+    dns_case("A -> one answer",      1,  1,  0, 512, 41);
+    dns_case("AAAA -> echo only",   28,  1,  0, 512, 25);
+    dns_case("PTR -> echo only",    12,  1,  0, 512, 25);
+    dns_case("truncated <17B",       1,  1, 16, 512,  0);
+    dns_case("two questions",        1,  2,  0, 512,  0);
+    dns_case("tx too small",         1,  1,  0,  20,  0);
     printf("%s\\n", fails ? "FAILURES" : "all host checks pass");
     return fails != 0;
 }}

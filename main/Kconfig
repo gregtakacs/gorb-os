@@ -94,4 +94,25 @@ menu "Orb networking"
             via the passthrough rules), so nothing here links mbedtls's
             server-side SSL path.
 
+    config ORB_NET_CAPTIVE_DNS
+        bool "Answer the AP's DNS so phones pop 'Sign in to network'"
+        depends on ORB_NET_ENABLE
+        default y
+        help
+            A phone that joins the provisioning AP decides what to show its user
+            by resolving the reachability-check hostnames its OS probes for that
+            purpose. The default softAP advertises no resolver at all, so those
+            probes fail silently and the phone reports "no internet" (and may drop
+            the AP) instead of the "Sign in to network" prompt that would open the
+            config page. With this on, the AP advertises itself as the resolver and
+            answers every query with its own address (192.168.4.1), so the existing
+            /generate_204 + /hotspot-detect.html redirects fire and the browser
+            lands on the page without the user typing an IP.
+
+            The responder binds the AP address only, never 0.0.0.0, so the
+            station's own DNS — including SNTP — is never redirected to the orb.
+            It starts and stops with the SoftAP itself. Turn off only to reclaim
+            the small task + one UDP socket; the config page stays reachable at
+            the printed http://192.168.4.1/ either way.
+
 endmenu

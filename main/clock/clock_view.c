@@ -5,9 +5,17 @@
  * The dial is composed as LVGL sibling objects rather than one CPU canvas:
  *
  *   plate (static RGB565 lv_image, never invalidated)
- *     -> shadows (planar RGB565A8 lv_image, rotated about the hand pivot)
- *     -> hands   (planar RGB565A8 lv_image, rotated about the hand pivot)
+ *     -> per hand, back-to-front in the theme's order:
+ *          shadow (planar RGB565A8 lv_image, rotated about the hand pivot)
+ *          hand   (planar RGB565A8 lv_image, rotated about the hand pivot)
  *     -> overlay (hub cap), drawn last / on top
+ *
+ * A shadow belongs to its own hand and sits directly under IT, not under every
+ * hand: the minute hand casts onto the plane the second hand lives on, so the
+ * minute shadow must overpaint the second hand it falls across. (orb-os lays
+ * all the shadows down first; that reads as a smudge across a hand the theme
+ * orders below, so this port interleaves instead — see clock_view_init and
+ * clock_layer_commit, which must and do agree on the stack.)
  *
  * Because LVGL runs in LV_DISPLAY_RENDER_MODE_PARTIAL it renders and flushes
  * only the invalidated rectangle. The hands are baked TRIMMED to their opaque
@@ -63,7 +71,8 @@
 #include "lvgl.h"
 #include "display.h"
 
-#include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, blob syms */
+#include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
+#include "art_bank.h"       /* the bank the above offsets index into */
 
 static const char *TAG = "clock";
 
@@ -198,7 +207,16 @@ static bool     s_active = false;     /* clock is the on-screen view */
 static int64_t  s_t0_us  = 0;         /* epoch anchor for the wall clock */
 static bool     s_warned_screen = false;
 
-static const uint8_t *blob(void) { return clock_assets_bin_start; }
+/* Mapped base of the art bank, filled in by clock_view_init() (NULL until then).
+ * Kept as a file static rather than calling art_bank_ptr() on every sprite read:
+ * blob() is on the per-frame paint path and this keeps it a single load. */
+static const uint8_t *s_art;
+
+/* Every pixel of the dial comes from here: the bank now lives in the `assets`
+ * flash partition and is mapped once at boot by art_bank_init() below, so this
+ * stays a bare pointer return and sprite reads cost exactly what they did when
+ * the bank was linked into .rodata. See main/art/art_bank.h. */
+static const uint8_t *blob(void) { return s_art; }
 
 static uint32_t sprite_bytes(const clk_sprite_t *s)
 {
@@ -921,9 +939,9 @@ static void restore_marked_rows(uint16_t *fb)
 }
 
 /* display commit hook: rebuild the rows this tick dirtied from the ground up —
- * background out of the canvas, then every layer in the screen's z-order (all
- * shadows, then all hands per theme order, then the glass overlay) painted
- * over it.
+ * background out of the canvas, then every layer in the screen's z-order (each
+ * shadow directly under its own hand, walking the theme's order, then the glass
+ * overlay) painted over it.
  *
  * The marks are consumed HERE, not at the next tick. A commit only happens when
  * LVGL gets around to starting one, and at 47 ms per flush against a 40 ms GIF
@@ -940,15 +958,15 @@ static void clock_layer_commit(void)
 
     restore_marked_rows(fb);
 
+    /* Same z-stack as the LVGL sibling order built in clock_view_init(): a
+     * shadow goes down directly under its OWN hand, not under every hand. The
+     * two paths must agree exactly — a row LVGL paints itself has to come out
+     * identical to one this hook paints — so the interleave lives here too. */
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
             paint_layer(&clk_theme.shadow[k], s_ang_10[k]);
-    }
-    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             paint_layer(&clk_theme.hand[k], s_ang_10[k]);
     }
@@ -1107,16 +1125,19 @@ static uint32_t bg_rate(uint32_t base, uint32_t *every)
 
 esp_err_t clock_view_init(void)
 {
-    const size_t have = (size_t)(clock_assets_bin_end - clock_assets_bin_start);
-
-    /* The bake records the exact blob size in the generated header; a stale
-     * bin/hdr pair (rebaked one but not the other) is caught loudly here
-     * rather than as a wild read off the end of rodata. */
-    if (have < CLK_BLOB_BYTES) {
-        ESP_LOGE(TAG, "clock art too small: have %u B, need %u B (re-bake?)",
-                 (unsigned)have, (unsigned)CLK_BLOB_BYTES);
-        return ESP_ERR_INVALID_SIZE;
+    /* Map the art bank before anything reads it. The bake records the exact blob
+     * size in the generated header, so a stale bin/partition pair (rebaked one
+     * but not the other, or a bin flashed over an older layout) is caught loudly
+     * here rather than as a wild read off the end of the mapping. */
+    const esp_err_t art_err = art_bank_init(CLK_BLOB_BYTES);
+    if (art_err != ESP_OK) {
+        ESP_LOGE(TAG, "clock art bank unavailable (%s) — re-flash the \"%s\" partition?",
+                 esp_err_to_name(art_err), ART_BANK_PARTITION_NAME);
+        return art_err;
     }
+    s_art = art_bank_ptr();
+    ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B)",
+             (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES);
 
     s_scr = lv_obj_create(NULL);
     /* Screen bg stays TRANSPARENT: the plate covers the full 466x466 opaquely,
@@ -1175,18 +1196,22 @@ esp_err_t clock_view_init(void)
      * otherwise a rebuilt view would skip the re-pose as "unchanged". */
     for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
 
-    /* All shadows go down first, then all hands (orb-os: interleaving lets a
-     * minute shadow smudge across the hour hand beneath it). Within each group,
-     * respect the theme's own back-to-front order. */
+    /* Each shadow goes down immediately before its OWN hand, walking the
+     * theme's back-to-front order, so the z-stack is
+     *     S2 H2 S1 H1 S0 H0   (S=shadow, H=hand, 2=second, 1=minute, 0=hour)
+     * rather than every shadow under every hand. A shadow is cast by the hand
+     * above onto the plane of the hands below it, so a hand must never stand
+     * over the shadow of a hand that draws above it — with all the shadows in
+     * one group first, the minute shadow fell UNDER the second hand and the
+     * second hand was never darkened by it. (orb-os groups all shadows first;
+     * that reads as a smudge on a hand the theme orders below, and it is the
+     * one place this port diverges from it on purpose.)
+     * Statics (3,4) are the face, not hands: they cast no shadow. */
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
         if (k <= 2 && clk_theme.shadow_on)
             s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k]);
-    }
-    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
     }
 

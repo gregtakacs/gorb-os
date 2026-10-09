@@ -6,8 +6,10 @@ Reads an orb-os (Arduino) theme folder — its clock_style.json, theme.json and
 the clock_*.png layer art — and produces two artefacts for the IDF firmware:
 
   assets/clock_assets.bin   one packed blob of raw pixel planes
-  assets/clock_assets.h     geometry parsed offline from clock_style.json, plus
-                            the extern symbols for the blob. NO runtime JSON
+  assets/clock_assets.h     geometry parsed offline from clock_style.json. The
+                            blob is NOT referenced from the app image — it is
+                            flashed into the `assets` data partition and mapped
+                            at boot by main/art/art_bank.c. NO runtime JSON
                             parser needed on the device.
 
 Why offline: same reasoning as bake_gif.py. Decoding PNG (zlib) and reading the
@@ -655,9 +657,15 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
             # skipped neighbours so the total period is preserved.
             delays = [sum(delays[i:i + frame_step])
                       for i in range(0, len(delays), frame_step)]
-        # PNG delays were synthesised from --bg-fps, which is already the
-        # PLAYBACK rate of the kept frames (step = source_frames / fps), so
-        # they stay untouched.
+        else:
+            # PNG delays were synthesised from --bg-fps, which is already the
+            # PLAYBACK rate of the kept frames (step = source_frames / fps), so
+            # each kept frame holds exactly one of them — no re-pacing, but the
+            # list still has to be decimated to the KEPT count. The header
+            # declares clk_gif_delays[gif["frames"]]; leaving one entry per
+            # SOURCE frame overruns that (60 initialisers into a [12]), and the
+            # surplus is only silently dropped while every delay is equal.
+            delays = delays[::frame_step]
         print(f"  decimated every {frame_step}th frame: {len(imgs)} kept "
               f"(loop still 1 authored period)")
     F = [_frames_to_u16(im) for im in imgs]
@@ -1144,7 +1152,7 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
     frames_literal = ", ".join(str(o) for o in baked_frames) if baked_frames else "0"
     hdr.append("static const uint32_t clk_bg_frames[{}] = {{ {} }};\n\n".format(
         max(1, len(baked_frames)), frames_literal))
-    hdr.append("/* total blob size; the embedded clock_assets_bin must be at least this big */\n"
+    hdr.append("/* total blob size; the `assets` partition must hold at least this many bytes */\n"
                "#define CLK_BLOB_BYTES {}u\n\n".format(len(blob.buf)))
 
     hdr.append("static const clk_theme_t clk_theme = {\n")
@@ -1188,8 +1196,8 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         ",".join(KINDS[i] for i in range(5) if hand_recs[i]["show"]),
         int(shadow_on), shadow_dx, shadow_dy, int(second_sweep), plate_follow,
         anim_frames, bgcolor))
-    print("next: add target_add_binary_data() to main/CMakeLists.txt and rebuild "
-          "(factory partition must hold app + this blob)")
+    print("next: idf.py build && idf.py flash — the top-level CMakeLists.txt flashes "
+          "this blob into the `assets` partition (which must be >= this blob size)")
 
 
 if __name__ == "__main__":

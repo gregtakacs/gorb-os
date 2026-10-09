@@ -1,8 +1,47 @@
-# Name,   Type, SubType, Offset,  Size,  Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-# factory: the app (~0.7 MB) plus the embedded clock art bank — GIF keyframe +
-# delta rects + hand sprites from assets/clock_assets.bin (~3 MB) via
-# target_add_binary_data. See main/CMakeLists.txt.
-factory,  app,  factory, 0x10000, 0xE00000,
+# Layout B (A/B OTA + mmap'd art bank + SD theme archive).
+#
+# RETENTION INVARIANT — do not change the nvs row's offset or size. Neither
+# `idf.py flash` nor OTA ever rewrites nvs (it is absent from build/flash_args),
+# so WiFi credentials + settings survive both. They only die if this row moves,
+# the table layout shifts, or someone runs `idf.py erase-flash`.
+# esp_wifi owns the NVS namespace "nvs.net80211" (SSID/passphrase + PHY cal);
+# application settings MUST use their own namespaces ("orb.settings", "orb.net"),
+# never that one. See main/net/.
+nvs,      data, nvs,     0x9000,    0x8000,
+otadata,  data, ota,     0x11000,   0x2000,
+phy_init, data, phy,     0x13000,   0x1000,
+# Two app slots: the S3 cannot OTA into the partition it is running from.
+# Sized for CODE ONLY (~1.31 MB today, measured from build/orb-os-esp-idf.bin
+# after the network + OTA modules landed; was ~0.74 MB before Phase 2) — the art
+# bank moved out to `assets`, so nothing here carries pixels. 2 MB per slot leaves
+# ~0.7 MB of headroom; check the real number before shrinking either slot, since a
+# slot smaller than the image turns every upgrade into an ESP_ERR_OTA_VALIDATE_FAILED.
+ota_0,    app,  ota_0,   0x20000,   0x200000,
+ota_1,    app,  ota_1,   0x220000,  0x200000,
+# No `factory` partition on purpose: with otadata erased the bootloader logs
+# "No factory image, trying OTA 0" and seeds otadata itself
+# (bootloader_support/src/bootloader_utility.c), and `idf.py flash` resolves the
+# app slot to ota_0 (partition_table/parttool.py default-boot search = factory,
+# then ota_0..15). So first boot and USB reflash both land in ota_0.
+#
+# Active clock art bank (GIF keyframe + delta rects + hand sprites, ~1.85 MB
+# today) — mmap'd at boot by main/art/art_bank.c and handed to clock_view.c
+# as the base pointer every sprite read goes through. Offset and size are 64 KB
+# aligned so esp_partition_mmap wastes no MMU page entries on rounding.
+# The blank SubType column is deliberate but must stay PRESENT: gen_esp32part.py
+# parses this CSV positionally (name,type,subtype,offset,size — see
+# PartitionDefinition.from_csv) and turns a blank data subtype into `undefined`
+# 0x06; delete the comma and offset/size shift left into the wrong fields.
+# Lookup is always by LABEL, never by subtype.
+assets,   data, ,           0x420000, 0x800000,
+# Pre-gzipped PWA shell for the config page (manifest + SW + one JS bundle).
+# Raw bytes, served with Content-Encoding: gzip; NOT a filesystem partition.
+www,      data, ,           0xC20000, 0x140000,
+# Application settings + WiFi credentials, in their OWN NVS partition.
+# This is the retention fix: main.c still calls nvs_flash_erase() to recover from
+# a corrupt default NVS, and that call only wipes the `nvs` partition above —
+# which esp_wifi may then repopulate, but which can no longer take the user's
+# SSID/passphrase with it, because those live here under "orb.net".
+storage,  data, nvs,        0xD60000, 0x6000,
+# Ends at 0xD66000 of a 16 MB flash; ~2.6 MB deliberately unallocated.
 

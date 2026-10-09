@@ -1929,7 +1929,8 @@ static const char HTML_LANDING[] =
 "</style></head><body>"
 "<h1>orb setup</h1>"
 "<div id=state>loading&hellip;</div>"
-"<div id=pick hidden><label>Network password <input id=pass type=password placeholder='leave empty for open'></label>"
+"<div id=pick hidden><label>Network password</label>"
+"<div class=row><input id=pass type=password placeholder='leave empty for open' autocomplete=off autocapitalize=none style='flex:1;min-width:0'><button id=eye>show</button></div>"
 "<div class=row><button id=go>Connect</button><button id=rs>Rescan</button></div></div>"
 "<ul id=ns></ul>"
 "<h1>Timezone</h1>"
@@ -2018,6 +2019,9 @@ static const char HTML_LANDING[] =
 "document.getElementById('go').onclick=join;"
 "document.getElementById('rs').onclick=function(){scan(true)};"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
+"document.getElementById('eye').onclick=function(){var p=document.getElementById('pass');"
+"var s=p.type=='password';p.type=s?'text':'password';this.textContent=s?'hide':'show';"
+"p.focus();};"
 "status();scan();mainTmr=setInterval(function(){if(!sel&&!done)status()},3000);"
 "</script></body></html>";
 

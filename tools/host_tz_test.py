@@ -360,9 +360,15 @@ def landing_page_js():
                    'apgo': 'AP-summon JS (removed deliberately)'}.items():
         if k in page:
             print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+    # page-level (HTML, not script) presences
+    for k, why in {'id=eye': 'password show/hide toggle button'}.items():
+        if k not in page:
+            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
     for k, why in {'on":"off': 'the connected-ack AP close (apoff)',
                    "createElement('a')": 'the clickable new-IP link',
-                   'clearInterval(mainTmr)': 'status polling stops on success'}.items():
+                   'clearInterval(mainTmr)': 'status polling stops on success',
+                   "getElementById(\'eye\')": 'the toggle\'s click wiring',
+                   "'hide':'show'": "the toggle's own label flips"}.items():
         if k not in js:
             print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
     if rc:

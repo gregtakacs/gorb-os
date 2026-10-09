@@ -303,6 +303,58 @@ if cc.returncode:
     sys.exit(cc.returncode)
 # -Werror on the lifted code is deliberate: it is also the cheapest compiler-diagnostics
 # check on the device source, since anything that warns here warns in the IDF build too.
+# ---------------------------------------------------------------------------
+# Landing-page JS. The provisioning UX is one giant C string literal, and a
+# syntax error in it was invisible to every other check in this file — and
+# invisible on the bench, which has no radio and has therefore never once
+# loaded the page in a real browser. It is NOT invisible to a phone: the first
+# parse error kills the whole <script> block, so status(), scan() and tzload()
+# all silently never run and the page sits at "loading…" with an empty network
+# list and an empty timezone dropdown. Found exactly that way, from a user
+# report: an unbalanced ')' in status()'s say() call — each C fragment balances
+# locally, only the compiler's concatenation breaks it, so reviewing source
+# lines one by one shows nothing.
+#
+# So: rebuild the page bytes the way the compiler does (concatenate the
+# adjacent literals inside HTML_LANDING, C-unescaping each) and parse the
+# script block. esprima is not stdlib — a missing parser is a loud SKIP (run
+# this file with a python that has it: pip install esprima); a missing page or
+# a broken script is a FAIL.
+def landing_page_js():
+    m = re.search(r'static const char HTML_LANDING\[\] =(.*?);\s*\n', src, re.S)
+    if not m:
+        print('FAIL landing page: HTML_LANDING not found in orb_net.c — did it '
+              'get renamed? This check dies loudly rather than silently stop '
+              'covering the page.'); return 1
+    import ast
+    fragments = re.findall(r'"((?:[^"\\\n]|\\.)*)"', m.group(1))
+    if not fragments:
+        print('FAIL landing page: no string fragments inside HTML_LANDING'); return 1
+    page = ''.join(ast.literal_eval('"' + f + '"') for f in fragments)
+    js = re.search(r'<script>(.*?)</script>', page, re.S)
+    if not js:
+        print('FAIL landing page: no <script> block'); return 1
+    try:
+        import esprima
+    except ImportError:
+        print('SKIP  landing-page JS parse (no esprima: pip install esprima)')
+        return 0
+    try:
+        esprima.parseScript(js.group(1))
+    except Exception as e:
+        print(f'FAIL landing-page JS: {e}')
+        idx = getattr(e, 'index', None)
+        if isinstance(idx, int):
+            s = js.group(1)
+            print('      near: …' + s[max(0, idx - 70):idx + 70] + '…')
+        return 1
+    print(f'ok    landing-page JS parses ({len(js.group(1))} B script)')
+    return 0
+
+
+rc = landing_page_js()
+if rc:
+    sys.exit(rc)
 sys.exit(subprocess.run(["/tmp/tzjson_host"]).returncode)
 
 

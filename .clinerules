@@ -78,6 +78,33 @@ Fix a missing symbol by writing the explicit `CONFIG_<SYM>=y` line into
 `sdkconfig` (append if absent), then rebuild. Fresh clones get `default y` for
 free; it's the *existing* local `sdkconfig` that silently excludes it.
 
+## The config page is a C string, and a JS syntax error in it is invisible on a radio-less bench
+
+The whole provisioning UX (`HTML_LANDING` in `orb_net.c`) is one giant
+`static const char[]` of concatenated `"…"` fragments. Two ways it breaks in a
+way curl + a working server can hide:
+
+1. **Unbalanced parens across fragment boundaries.** Each C line looks fine in
+   isolation; only the compiler's concatenation makes `say(a+(b?'x':'')+(c?'y':''))`
+   wrong, and a phone renders the result as a page stuck at "loading…" with an
+   empty network list AND an empty timezone dropdown — because the first parse
+   error kills the entire `<script>`, so `status()`, `scan()` and `tzload()` all
+   silently never run. That empty-dropdown symptom (reported from a real phone)
+   was exactly this: one extra `)`. Reviewing source line-by-line shows nothing.
+2. **A blocking handler starving the page's parallel requests.** See the
+   `NET_CMD_SCAN`/`scan_collect` code: the original ran
+   `esp_wifi_scan_start(block=true)` on httpd's single worker, so the status poll
+   and the tz fetch queued behind a 5-10 s scan. Sequential curl never shows it;
+   a browser fires its first requests at once.
+
+`tools/host_tz_test.py` now rebuilds the page bytes exactly as the compiler does
+(concatenate the fragments, C-unescape) and parses the `<script>` with esprima —
+a syntax error fails the host suite. This is the file's own rule in action: what
+the no-radio bench can't observe must be lifted to a host check. **Keep that check
+green whenever you touch the page.** (Verified by mutation: re-injecting the `)`
+turns it red.) esprima is not stdlib — a missing parser is a loud SKIP, not a
+pass, so `pip install esprima` if it skips.
+
 ## Bench has no WiFi radio — verify what you can, and say what you can't
 
 There is no wireless adapter on the host, so the phone-side captive-portal popup

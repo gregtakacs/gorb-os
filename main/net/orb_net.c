@@ -86,7 +86,9 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_AP_OPEN,       /* open the AP for a manual request           */
        NET_CMD_AP_RESCUE,     /* open the AP because the creds are not working */
        NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
-       NET_CMD_AP_EXPIRED };  /* close it, unless the STA still has no lease  */
+       NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
+       NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
+       NET_CMD_SCAN_DONE };   /* drain the results once the driver says done     */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
@@ -753,6 +755,12 @@ static void dns_stop(void)
 }
 #endif /* CONFIG_ORB_NET_CAPTIVE_DNS */
 
+/* Defined below with the scan endpoints: every esp_wifi_* call belongs on the
+ * radio task, so the scan lifecycle is driven from there, not from the httpd
+ * handler — see the h_wifi_scan comment for what that costs a phone. */
+static void scan_begin(void);
+static void scan_collect(void);
+
 static void net_task_loop(void *arg)
 {
     (void)arg;
@@ -830,6 +838,14 @@ static void net_task_loop(void *arg)
                 ESP_LOGI(TAG, "SoftAP stays up: no lease yet, checking again in %d s",
                          NET_AP_RECHECK_S);
             }
+            break;
+
+        case NET_CMD_SCAN:
+            scan_begin();
+            break;
+
+        case NET_CMD_SCAN_DONE:
+            scan_collect();
             break;
 
         default:
@@ -952,6 +968,14 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_stop();                  /* the AP is down; take its resolver with it */
 #endif
+        break;
+
+    case WIFI_EVENT_SCAN_DONE:
+        /* Post only — the event task must not call into the driver, same rule
+         * the timer callbacks live by. Unconditional: even after the page gave
+         * up waiting, the driver's record list still has to be freed —
+         * scan_collect() handles the not-SCANNING case. */
+        net_post(NET_CMD_SCAN_DONE, 0);
         break;
 
     default:
@@ -1256,12 +1280,40 @@ static esp_err_t h_config_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, resp);
 }
 
-/* Scan is blocking on purpose: the config page shows a spinner. A non-blocking
- * scan would need a result cached across the WIFI_EVENT_SCAN_DONE event, which
- * is more state than a bring-up build should carry. Capped at 12 networks both
- * to bound the reply and because that is all a 466x466 screen can list. */
+/* Scan is ASYNC, and this state machine is why it has to be. The original
+ * called esp_wifi_scan_start(..., block=true) inside the handler, and httpd
+ * has ONE worker task: a full-channel scan holds that worker 5-10 s, and while
+ * it did, the config page's status poll and its /api/v1/config timezone fetch
+ * queued behind it and never landed inside the captive-portal webview's
+ * patience. Observed on a phone as: shell loads, state stuck at "loading…",
+ * no network list, empty timezone dropdown. Sequential curl from a bench
+ * cannot reproduce that — a browser fires its first three requests in
+ * parallel, one of which takes seconds.
+ *
+ * Protocol: GET /api/v1/wifi/scan starts a scan when none is live and answers
+ * {"status":"scanning"} (HTTP 200, so the page's shared fetch helper treats it
+ * as a reply, not an error) until the radio task has drained the driver and
+ * rendered s_scan_json. "?fresh=1" — the Rescan button — re-arms from any
+ * settled state. The result is cached until the next re-arm: a page reload or
+ * a second tab gets the last table instantly instead of paying for a scan.
+ * Capped at 12 networks both to bound the reply and because that is all a
+ * 466x466 screen can list. */
 #define SCAN_MAX_NETWORKS 12
 #define SCAN_FETCH_MAX    40   /* records drained looking for distinct SSIDs */
+#define SCAN_TIMEOUT_US   ((int64_t)20 * 1000000)
+                             /* a scan that never reports done is failed here;
+                              * 20 s exceeds a full-channel active scan plus
+                              * queue latency, and a late SCAN_DONE is still
+                              * drained — see scan_collect's non-SCANNING guard */
+
+enum { SCAN_IDLE = 0, SCAN_SCANNING, SCAN_READY, SCAN_FAILED, SCAN_BUSY };
+/* Cross-task: httpd arms SCANNING/IDLE, the radio task settles it to
+ * READY/FAILED/BUSY. Every transition is a single store into this volatile
+ * int, and s_scan_json is only READ while the state says READY — all buffer
+ * writes happen strictly earlier, inside the SCANNING window — so a reader
+ * sees one settled state or the next, never a half-built reply. */
+static volatile int s_scan_state = SCAN_IDLE;
+static int64_t      s_scan_t0_us;   /* when the live scan was armed */
 
 /* A neighbor's SSID is untrusted bytes straight from the air, and an SSID
  * containing a double quote or backslash would corrupt (or be a small injection
@@ -1316,29 +1368,40 @@ static void scan_fold(const wifi_ap_record_t *r)
     e->open = (r->authmode == WIFI_AUTH_OPEN);
 }
 
-static esp_err_t h_wifi_scan(httpd_req_t *req)
+/* RADIO TASK ONLY. Start the driver scan; the handler armed SCAN_SCANNING
+ * before posting this, so a failure here is the only thing that settles the
+ * state early. */
+static void scan_begin(void)
 {
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-
-    static wifi_ap_record_t rec;                    /* ~200 B, kept off the stack */
     s_scan_n = 0;
-    const int n0 = snprintf(s_scan_json, sizeof(s_scan_json), "{\"networks\":[");
-    if (n0 < 0 || (size_t)n0 >= sizeof(s_scan_json)) goto fail;
-    size_t off = (size_t)n0;
-
     const wifi_scan_config_t sc = { .show_hidden = false };
-    const esp_err_t se = esp_wifi_scan_start(&sc, true);
+    const esp_err_t se = esp_wifi_scan_start(&sc, /*block=*/false);
     if (se == ESP_ERR_WIFI_STATE) {
         /* A connect() is in flight; the driver aborts scanning in that window.
-         * Say so — the page can retry, where "scan failed" is a dead end. */
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "{\"error\":\"busy\", \"detail\":\"association in progress\"}");
+         * Say so — the page can Rescan, where "scan failed" is a dead end. */
+        s_scan_state = SCAN_BUSY;
+        return;
     }
     if (se != ESP_OK) {
         ESP_LOGE(TAG, "scan_start: %s", esp_err_to_name(se));
-        goto fail;
+        s_scan_state = SCAN_FAILED;
     }
+}
+
+/* RADIO TASK ONLY, posted from WIFI_EVENT_SCAN_DONE. Draining happens here,
+ * not in the event callback, for the same reason every other driver call has:
+ * one task owns the radio. */
+static void scan_collect(void)
+{
+    if (s_scan_state != SCAN_SCANNING) {
+        /* The page already timed out (or nobody started this scan): nothing
+         * may read the buffer, but the driver's list still has to be freed or
+         * it leaks until the next scan. */
+        esp_wifi_clear_ap_list();
+        return;
+    }
+
+    static wifi_ap_record_t rec;                    /* ~200 B, kept off the stack */
 
     /* Drain one record at a time into the same static `rec` rather than pulling a
      * batch with esp_wifi_scan_get_ap_records(): the batch form needs
@@ -1365,6 +1428,10 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
         s_scan_tbl[j + 1] = k;
     }
 
+    const int n0 = snprintf(s_scan_json, sizeof(s_scan_json), "{\"networks\":[");
+    if (n0 < 0 || (size_t)n0 >= sizeof(s_scan_json)) goto fail;
+    size_t off = (size_t)n0;
+
     for (int i = 0; i < s_scan_n; i++) {
         /* Format into scratch and commit ONLY if it fits. snprintf's return is
          * the would-be length, so checking it after the write detects overflow
@@ -1386,14 +1453,58 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
 
     if ((size_t)snprintf(s_scan_json + off, sizeof(s_scan_json) - off, "]}")
             >= sizeof(s_scan_json) - off) goto fail;
-    return httpd_resp_sendstr(req, s_scan_json);
+    s_scan_state = SCAN_READY;
+    ESP_LOGI(TAG, "scan done: %d distinct network%s", s_scan_n,
+             s_scan_n == 1 ? "" : "s");
+    return;
 
 fail:
-    /* Always reach a valid body: a truncated JSON reply is indistinguishable
-     * from a crash from the page's point of view. */
-    esp_wifi_clear_ap_list();
-    httpd_resp_set_status(req, "500 Internal Server Error");
-    return httpd_resp_sendstr(req, "{\"error\":\"scan failed\"}");
+    /* Always reach a settled state: a scan left in SCANNING after a failed
+     * render would spin the page until its own timeout, which is
+     * indistinguishable from a dead radio from the user's point of view. */
+    s_scan_state = SCAN_FAILED;
+}
+
+/* The handler never touches the driver — see the SCAN_* comment above for
+ * what that cost a phone. It only arms scans (the sole starter, and httpd
+ * serves serially, so no double-post) and reports state. */
+static esp_err_t h_wifi_scan(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    /* Rescan re-arms from any settled state; mid-scan it is a no-op, so two
+     * eager taps cannot stack scans. */
+    const bool fresh = strstr(req->uri, "fresh") != NULL;
+    if (fresh && s_scan_state != SCAN_SCANNING) s_scan_state = SCAN_IDLE;
+
+    if (s_scan_state == SCAN_IDLE) {
+        s_scan_t0_us = esp_timer_get_time();
+        s_scan_state = SCAN_SCANNING;          /* arms the timeout as well */
+        net_post(NET_CMD_SCAN, 0);
+        return httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
+    }
+
+    switch (s_scan_state) {
+    case SCAN_SCANNING:
+        if (esp_timer_get_time() - s_scan_t0_us > SCAN_TIMEOUT_US) {
+            /* The driver never answered with SCAN_DONE. Fail visibly rather
+             * than spin: the page offers Rescan, and a late SCAN_DONE still
+             * frees the driver's list (see scan_collect's non-SCANNING arm). */
+            s_scan_state = SCAN_FAILED;
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"scan timed out\"}");
+        }
+        return httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
+    case SCAN_READY:
+        return httpd_resp_sendstr(req, s_scan_json);
+    case SCAN_BUSY:
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"busy\", \"detail\":\"association in progress\"}");
+    default: /* SCAN_FAILED */
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"scan failed\"}");
+    }
 }
 
 #define JOIN_BODY_MAX 256
@@ -1824,16 +1935,22 @@ static const char HTML_LANDING[] =
 "async function status(){try{var d=await j('/api/v1/status');aprep(d);"
 "if(d.state=='connected'){say('connected \\u2014 orb is now at http://'+d.ip+'/','ok');return}"
 "say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
-"+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason?', reason '+d.wifi_reason:'')+')':''))"
+"+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason?', reason '+d.wifi_reason:'')+')':'')"
 "+(d.wifi_reason&&!d.assoc_fails?' (last reason '+d.wifi_reason+')':''));}"
 "catch(e){say('device unreachable','bad')}}"
-"async function scan(){say('scanning\\u2026');var ns=document.getElementById('ns');ns.innerHTML='';"
-"try{var d=await j('/api/v1/wifi/scan');var list=d.networks||[];"
+"var scanTmr=0;"
+"function scanStop(){clearTimeout(scanTmr);scanTmr=0}"
+"async function scan1(force){var ns=document.getElementById('ns');"
+"say('scanning\\u2026');ns.innerHTML='';"
+"try{var d=await j('/api/v1/wifi/scan'+(force?'?fresh=1':''));"
+"if(d.status=='scanning'){scanStop();scanTmr=setTimeout(function(){scan1(false)},1200);return}"
+"scanStop();var list=d.networks||[];"
 "if(!list.length){say('no networks found \\u2014 try Rescan','bad');return}"
 "list.forEach(function(n){var li=document.createElement('li');var b=document.createElement('button');"
 "b.textContent=n.ssid+'  ('+n.rssi+' dBm, ch '+n.ch+(n.open?', open)':' )');"
 "b.onclick=function(){sel=n.ssid;document.getElementById('pick').hidden=false;say('selected '+n.ssid);document.getElementById('pass').focus()};"
-"li.appendChild(b);ns.appendChild(li)});say('pick a network');}catch(e){say('scan failed: '+e.message,'bad')}}"
+"li.appendChild(b);ns.appendChild(li)});say('pick a network');}catch(e){scanStop();say('scan failed: '+e.message,'bad')}}"
+"function scan(force){scanStop();scan1(!!force)}"
 "async function join(){if(!sel){say('pick a network first','bad');return}"
 "var p=document.getElementById('pass').value;"
 "say('joining '+sel+'\\u2026');"
@@ -1883,7 +2000,7 @@ static const char HTML_LANDING[] =
 "document.getElementById('tzx').onkeydown=function(e){if(e.key=='Enter')tzpush()};"
 "tzload();"
 "document.getElementById('go').onclick=join;"
-"document.getElementById('rs').onclick=scan;"
+"document.getElementById('rs').onclick=function(){scan(true)};"
 "document.getElementById('apbtn').onclick=apgo;"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
 "status();scan();setInterval(function(){if(!sel)status()},3000);"

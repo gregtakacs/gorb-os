@@ -254,6 +254,72 @@ static const tz_entry_t s_tz_tbl[] = {
     { "Europe/London",  "GMT0BST,M3.5.0/1,M10.5.0",   "Europe/London",       "London"                    },
     { "Europe/Berlin",  "CET-1CEST,M3.5.0,M10.5.0/3", "Europe/Berlin",       "Berlin"                    },
     { "Asia/Tokyo",     "JST-9",                      "Asia/Tokyo",          "Tokyo"                     },
+    /* The rows below are NOT hand-typed rules: every one was generated from
+     * the IANA zone of the same name by tools/host_tz_test.py's reference
+     * derivation and machine-verified against it (host libc applying the
+     * shipped string must reproduce zoneinfo minute-for-minute around every
+     * transition of 2025-2028 — the test re-runs that proof on every
+     * invocation). Re-generate rather than edit by hand: the classic failure
+     * of hand-written zone tables is an /n time given in the wrong side's
+     * local clock (EU rows ending M10.5.0/2 instead of /3), which is a whole
+     * hour of silent wrongness for six months a year. Zones whose clock
+     * changes follow a non-solar calendar (Asia/Jerusalem, Africa/Casablanca)
+     * cannot be expressed as any static POSIX rule at all and are deliberately
+     * absent — a phone there lands on the clock page's honest fixed-offset
+     * row instead of a table entry that would drift. */
+    { "America/Anchorage",             "ANCHO9ANCHOD8,M3.2.0,M11.1.0",              "America/Anchorage",               "Anchorage"                },
+    { "Pacific/Honolulu",              "HONOL10",                                   "Pacific/Honolulu",                "Honolulu"                 },
+    { "America/Toronto",               "TORON5TOROND4,M3.2.0,M11.1.0",              "America/Toronto",                 "Toronto"                  },
+    { "America/Mexico_City",           "MEXIC6",                                    "America/Mexico_City",             "Mexico City"              },
+    { "America/Guatemala",             "GUATE6",                                    "America/Guatemala",               "Guatemala City"           },
+    { "America/Caracas",               "CARAC4",                                    "America/Caracas",                 "Caracas"                  },
+    { "America/Bogota",                "BOGOT5",                                    "America/Bogota",                  "Bogota"                   },
+    { "America/Lima",                  "LIMA5",                                     "America/Lima",                    "Lima"                     },
+    { "America/Sao_Paulo",             "SAOPA3",                                    "America/Sao_Paulo",               "Sao Paulo"                },
+    { "America/Santiago",              "SANTI4SANTID3,M9.1.0/0,M4.1.0/0",           "America/Santiago",                "Santiago"                 },
+    { "America/Argentina/Buenos_Aires", "BUENO3",                                    "America/Argentina/Buenos_Aires",  "Buenos Aires"             },
+    { "America/Montevideo",            "MONTE3",                                    "America/Montevideo",              "Montevideo"               },
+    { "Europe/Paris",                  "PARIS-1PARISD-2,M3.5.0,M10.5.0/3",          "Europe/Paris",                    "Paris"                    },
+    { "Europe/Madrid",                 "MADRI-1MADRID-2,M3.5.0,M10.5.0/3",          "Europe/Madrid",                   "Madrid"                   },
+    { "Europe/Rome",                   "ROME-1ROMED-2,M3.5.0,M10.5.0/3",            "Europe/Rome",                     "Rome"                     },
+    { "Europe/Athens",                 "ATHEN-2ATHEND-3,M3.5.0/3,M10.5.0/4",        "Europe/Athens",                   "Athens"                   },
+    { "Europe/Bucharest",              "BUCHA-2BUCHAD-3,M3.5.0/3,M10.5.0/4",        "Europe/Bucharest",                "Bucharest"                },
+    { "Europe/Kyiv",                   "KYIV-2KYIVD-3,M3.5.0/3,M10.5.0/4",          "Europe/Kyiv",                     "Kyiv"                     },
+    { "Europe/Moscow",                 "MOSCO-3",                                   "Europe/Moscow",                   "Moscow"                   },
+    { "Europe/Dublin",                 "DUBLI0DUBLID-1,M3.5.0/1,M10.5.0",           "Europe/Dublin",                   "Dublin"                   },
+    { "Europe/Lisbon",                 "LISBO0LISBOD-1,M3.5.0/1,M10.5.0",           "Europe/Lisbon",                   "Lisbon"                   },
+    { "Europe/Istanbul",               "ISTAN-3",                                   "Europe/Istanbul",                 "Istanbul"                 },
+    { "Africa/Cairo",                  "CAIRO-2CAIROD-3,M4.5.5/0,M10.5.5/0",        "Africa/Cairo",                    "Cairo"                    },
+    { "Africa/Lagos",                  "LAGOS-1",                                   "Africa/Lagos",                    "Lagos"                    },
+    { "Africa/Nairobi",                "NAIRO-3",                                   "Africa/Nairobi",                  "Nairobi"                  },
+    { "Africa/Johannesburg",           "JOHAN-2",                                   "Africa/Johannesburg",             "Johannesburg"             },
+    { "Africa/Algiers",                "ALGIE-1",                                   "Africa/Algiers",                  "Algiers"                  },
+    { "Africa/Tripoli",                "TRIPO-2",                                   "Africa/Tripoli",                  "Tripoli"                  },
+    { "Asia/Dubai",                    "DUBAI-4",                                   "Asia/Dubai",                      "Dubai"                    },
+    { "Asia/Karachi",                  "KARAC-5",                                   "Asia/Karachi",                    "Karachi"                  },
+    { "Asia/Kolkata",                  "KOLKA-5:30",                                "Asia/Kolkata",                    "Kolkata"                  },
+    { "Asia/Dhaka",                    "DHAKA-6",                                   "Asia/Dhaka",                      "Dhaka"                    },
+    { "Asia/Tehran",                   "TEHRA-3:30",                                "Asia/Tehran",                     "Tehran"                   },
+    { "Asia/Yangon",                   "YANGO-6:30",                                "Asia/Yangon",                     "Yangon"                   },
+    { "Asia/Kathmandu",                "KATHM-5:45",                                "Asia/Kathmandu",                  "Kathmandu"                },
+    { "Asia/Tashkent",                 "TASHK-5",                                   "Asia/Tashkent",                   "Tashkent"                 },
+    { "Asia/Almaty",                   "ALMAT-5",                                   "Asia/Almaty",                     "Almaty"                   },
+    { "Asia/Baku",                     "BAKU-4",                                    "Asia/Baku",                       "Baku"                     },
+    { "Asia/Bangkok",                  "BANGK-7",                                   "Asia/Bangkok",                    "Bangkok"                  },
+    { "Asia/Singapore",                "SINGA-8",                                   "Asia/Singapore",                  "Singapore"                },
+    { "Asia/Hong_Kong",                "HONGK-8",                                   "Asia/Hong_Kong",                  "Hong Kong"                },
+    { "Asia/Shanghai",                 "SHANG-8",                                   "Asia/Shanghai",                   "Shanghai"                 },
+    { "Asia/Taipei",                   "TAIPE-8",                                   "Asia/Taipei",                     "Taipei"                   },
+    { "Asia/Seoul",                    "SEOUL-9",                                   "Asia/Seoul",                      "Seoul"                    },
+    { "Australia/Perth",               "PERTH-8",                                   "Australia/Perth",                 "Perth"                    },
+    { "Australia/Brisbane",            "BRISB-10",                                  "Australia/Brisbane",              "Brisbane"                 },
+    { "Australia/Adelaide",            "ADELA-9:30ADELAD-10:30,M10.1.0,M4.1.0/3",   "Australia/Adelaide",              "Adelaide"                 },
+    { "Australia/Darwin",              "DARWI-9:30",                                "Australia/Darwin",                "Darwin"                   },
+    { "Australia/Hobart",              "HOBAR-10HOBARD-11,M10.1.0,M4.1.0/3",        "Australia/Hobart",                "Hobart"                   },
+    { "Pacific/Auckland",              "AUCKL-12AUCKLD-13,M9.5.0,M4.1.0/3",         "Pacific/Auckland",                "Auckland"                 },
+    { "Pacific/Fiji",                  "FIJI-12",                                   "Pacific/Fiji",                    "Fiji"                     },
+    { "Pacific/Apia",                  "APIA-13",                                   "Pacific/Apia",                    "Apia"                     },
+    { "Pacific/Chatham",               "CHATH-12:45CHATHD-13:45,M9.5.0/2:45,M4.1.0/3:45", "Pacific/Chatham",                 "Chatham Islands"          },
 };
 #define NET_TZ_N ((int)(sizeof(s_tz_tbl) / sizeof(s_tz_tbl[0])))
 
@@ -1205,14 +1271,14 @@ static esp_err_t h_status(httpd_req_t *req)
  * hand-set rule; the clock page shows it to nobody. */
 static esp_err_t h_config_get(httpd_req_t *req)
 {
-    /* static, not stack (same reasoning as s_scan_json): nine entries at ~54 B
-     * of key/quote/colon overhead plus name + rule + iana + label is ~1.05 kB,
-     * and the echo tail can carry two 64-char strings, so ~1.2 kB worst case —
-     * the exact figure tools/host_tz_test.py recomputes from the table and
-     * asserts against this buffer. On httpd's CONFIG_HTTPD_TASK_STACK_SIZE
+    /* static, not stack (same reasoning as s_scan_json): 62 rows of
+     * name+posix+label (+iana where it differs from the key) is ~5.2 kB, and
+     * the echo tail can carry two 64-char strings — the exact worst case is
+     * recomputed from the table by tools/host_tz_test.py on every run and
+     * asserted against this cap. On httpd's CONFIG_HTTPD_TASK_STACK_SIZE
      * stack that is a real overflow risk; handlers run serially, so one
      * instance is safe. */
-    static char json[1280];
+    static char json[6144];
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -1226,11 +1292,18 @@ static esp_err_t h_config_get(httpd_req_t *req)
         /* Commit only if the entry fits: snprintf's return is the would-be
          * length, and half an entry left in the buffer would make the whole body
          * unparseable (the exact failure h_wifi_scan documents). */
+        /* iana is emitted only where it differs from name: the canonical
+         * spelling IS the key for most rows, and at 62 rows the table's body
+         * is dominated by that repetition. Clients already fall back
+         * (z.iana || z.name). */
         const int w = snprintf(json + off, sizeof(json) - (size_t)off,
-                               "%s{\"name\":\"%s\",\"posix\":\"%s\","
-                               "\"iana\":\"%s\",\"label\":\"%s\"}",
+                               "%s{\"name\":\"%s\",\"posix\":\"%s\",%s%s%s"
+                               "\"label\":\"%s\"}",
                                i ? "," : "", s_tz_tbl[i].name, s_tz_tbl[i].posix,
-                               s_tz_tbl[i].iana, s_tz_tbl[i].label);
+                               strcmp(s_tz_tbl[i].iana, s_tz_tbl[i].name) == 0 ? "" : "\"iana\":\"",
+                               strcmp(s_tz_tbl[i].iana, s_tz_tbl[i].name) == 0 ? "" : s_tz_tbl[i].iana,
+                               strcmp(s_tz_tbl[i].iana, s_tz_tbl[i].name) == 0 ? "" : "\",",
+                               s_tz_tbl[i].label);
         if (w < 0 || (size_t)w >= sizeof(json) - (size_t)off) goto fail;
         off += w;
     }
@@ -2128,18 +2201,22 @@ static const char HTML_TZ[] =
 "var zones=[],cur='',phone='',want='';"
 "function msg(t,c){var e=document.getElementById('msg');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
-/* Minutes east of UTC that the browser's own tz database says `zn` is in,
-   RIGHT NOW (DST included). The orb deliberately does not compute these: its
-   newlib has no zoneinfo, only the rules it ships, while every phone that can
-   open this page has the full IANA table. Measured via formatToParts because
-   there is no other honest way to ask a browser for a zone's offset. */
-"function offMin(zn){try{var d=new Date();"
-"var a=new Intl.DateTimeFormat('en-US',{timeZone:zn,hourCycle:'h23',year:'numeric',month:'2-digit',"
-"day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(d);"
+/* Minutes east of UTC that the browser's own tz database says `zn` is in at a
+   given instant (DST included). The orb deliberately does not compute these:
+   its newlib has no zoneinfo, only the rules it ships, while every phone that
+   can open this page has the full IANA table. Measured via formatToParts
+   because there is no other honest way to ask a browser for a zone's offset.
+   Cached per zone+utc-day: synth() bisects hundreds of probes and building a
+   fresh DateTimeFormat per probe is the slow part of this page. */
+"var _oc={};"
+"function offAt(zn,ms){var k=zn+'|'+Math.floor(ms/864e5),c=_oc[k];if(c!==undefined)return c;var o=null;"
+"try{var a=new Intl.DateTimeFormat('en-US',{timeZone:zn,hourCycle:'h23',year:'numeric',month:'2-digit',"
+"day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(new Date(ms));"
 "var p={};for(var i=0;i<a.length;i++)p[a[i].type]=a[i].value;"
 "var h=parseInt(p.hour,10);if(h==24)h=0;"
-"return Math.round((Date.UTC(+p.year,p.month-1,+p.day,h,+p.minute,+p.second)-d.getTime())/60000);}"
-"catch(e){return null}}"
+"o=Math.round((Date.UTC(+p.year,p.month-1,+p.day,h,+p.minute,+p.second)-ms)/60000);}"
+"catch(e){o=null}_oc[k]=o;return o}"
+"function offMin(zn){return offAt(zn,Date.now())}"
 "function hm(m){if(m==null||isNaN(m))return 'GMT?';var s=m<0?'-':'+';m=Math.abs(m);"
 "return 'GMT'+s+('0'+Math.floor(m/60)).slice(-2)+':'+('0'+(m%60)).slice(-2)}"
 "function zname(z){return z.iana||z.name}"
@@ -2154,19 +2231,69 @@ static const char HTML_TZ[] =
 "var po=-(new Date()).getTimezoneOffset(),hit=null,n=0;"
 "for(i=0;i<zones.length;i++){var o=offMin(zname(zones[i]));if(o!=null&&o==po){n++;hit=zones[i]}}"
 "return n==1?hit:null}"
-/* Client-side rule synthesis for zones the table does not carry: the browser
-   knows the phone's offset, POSIX counts west (so the sign flips), and the
-   row itself says out loud that no DST is in this. The endpoint already
-   accepts raw rules — this only removes the typing. */
+/* Rule synthesis for a zone the table does not carry — the answer to "what if
+   the user is not one of the listed cities". The phone knows this zone's real
+   clock changes; we ask it (bisecting each monthly window to the minute by
+   offset — verified against an exhaustive scan over all 486 system IANA zones
+   by tools/host_tz_test.py) and assemble the POSIX rule the orb will run:
+   offsets counted west, rule1 into DST with /time in the pre-change local
+   clock, last-weekday-of-month encoded as the .5 C libraries read as "last".
+   The rule is cross-checked against the next two years too — a zone whose
+   clock does not follow the sun (Jerusalem's Hebrew-calendar DST, Ramadan-
+   suspended Casablanca) shifts week to week and fails, so it gets the honest
+   fixed-offset row rather than a rule that would drift silently. Everything
+   the phone can name, it can set; no one types a rule. Strings carry only
+   letters/digits/:,.-+ — nothing a localized city name could smuggle trips
+   the endpoint's printable-ASCII guard, and X/D are the last resort. */
+"function foff(e){var w=-e,x=w<0?'-':'';w=Math.abs(w);"
+"var h=Math.floor(w/60),r=w%60;return x+h+(r?':'+('0'+r).slice(-2):'')}"
+"function transY(zn,y){var out=[];"
+"for(var m=0;m<12;m++){var a0=Date.UTC(y,m,1)/6e4,a1=(m==11?Date.UTC(y+1,0,1):Date.UTC(y,m+1,1))/6e4;"
+"var o0=offAt(zn,a0*6e4),o1=offAt(zn,a1*6e4);if(o0==null||o1==null)return null;if(o0==o1)continue;"
+"var lo=a0,hi=a1;while(hi-lo>1){var mid=lo+((hi-lo)>>1);"
+"if(offAt(zn,mid*6e4)==o0)lo=mid;else hi=mid}out.push([hi*6e4,o0,o1])}return out}"
+"function mrule(t,pre){var d=new Date(t+pre*6e4);"
+"var day=d.getUTCDate(),dim=(new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0))).getUTCDate();"
+"var wd=d.getUTCDay(),wk=(day+7>dim)?5:Math.floor((day-1)/7)+1;"
+"var hh=d.getUTCHours(),mm=d.getUTCMinutes(),ss=d.getUTCSeconds();"
+"var tt=(hh==2&&mm==0&&ss==0)?'':(hh==0&&mm==0&&ss==0)?'/0':"
+"'/'+hh+(mm||ss?':'+('0'+mm).slice(-2):'')+(ss?':'+('0'+ss).slice(-2):'');"
+"return 'M'+(d.getUTCMonth()+1)+'.'+wk+'.'+wd+tt}"
+"function sym(zn){var c=(String(zn).split('/').pop()||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase();"
+"return (c||'X').slice(0,5)}"
+"/* The no-DST shape, kept for zones synthesis refuses: their clocks move more"
+"   often than twice a year, so no static rule honestly describes them. */"
 "function gmtRule(m){var s=m>=0?'-':'+';m=Math.abs(m);var h=Math.floor(m/60),r=m%60;"
 "return 'GMT'+s+h+(r?':'+('0'+r).slice(-2):'')}"
+/* null = not honestly expressable (changes more or fewer than twice a year,
+   or the pattern moves between years). ok = the rule plus the phone's CURRENT
+   offset, which becomes the echo-verify target at the device. */
+"function synth(zn){var y=new Date().getUTCFullYear(),ts=transY(zn,y);"
+"if(!ts||ts.length!==2)return null;"
+"var a=ts[0],b=ts[1];"
+"var std=Math.min(a[1],a[2],b[1],b[2]),dst=Math.max(a[1],a[2],b[1],b[2]);"
+"if(std==dst)return null;"
+"var td=(a[2]==dst)?a:b,tsd=(a[2]==dst)?b:a,nm=sym(zn);"
+"var parts=[nm+foff(std)+nm+'D'+foff(dst),mrule(td[0],td[1]),mrule(tsd[0],tsd[1])];"
+"for(var k=1;k<=2;k++){var o=transY(zn,y+k);if(!o||o.length!==2)return null;"
+"var p0=o[0][2]>o[0][1]?[mrule(o[0][0],o[0][1]),mrule(o[1][0],o[1][1])]:[mrule(o[1][0],o[1][1]),mrule(o[0][0],o[0][1])];"
+"if(p0[0]!=parts[1]||p0[1]!=parts[2])return null}"
+"var r=parts[0]+','+parts[1]+','+parts[2];"
+"if(r.length>64)return null;return r}"
 "function mkrow(txt,on,cls){var b=document.createElement('button');b.textContent=txt;"
 "if(cls)b.className=cls;b.onclick=on;return b}"
 /* The response's tz_offset is read, never the echo of what was sent: the
-   question this page answers is what the dial now shows, not what was asked. */
-"function setTz(v,txt){msg('setting '+txt+'...');"
+   question this page answers is what the dial now shows, not what was asked.
+   When `want` is given (anything chosen because it IS the phone's zone), the
+   device's measured offset must agree with the phone's: a rule the orb's
+   libc silently degraded reports itself as UTC, and lands here as 'did not
+   stick' in words — instead of a wrong dial the owner notices hours later. */
+"function setTz(v,txt,want){msg('setting '+txt+'...');"
 "j('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:v})})"
-".then(function(d){cur=d.tz;render();msg('orb now shows '+hm(d.tz_offset)+' - is that the right time? If not, tap your city','ok')})"
+".then(function(d){cur=d.tz;render();"
+"if(want!=null&&d.tz_offset==want)msg('orb now shows '+hm(want)+' - matches your phone. If the dial is wrong, tap your city','ok');"
+"else if(want!=null)msg('orb shows '+hm(d.tz_offset)+', not your '+hm(want)+' - that zone did not stick; tap your city','bad');"
+"else msg('orb now shows '+hm(d.tz_offset)+' - is that the right time? If not, tap your city','ok')})"
 ".catch(function(e){msg('the orb refused it: '+e.message,'bad')})}"
 "function render(){var box=document.getElementById('zs');box.innerHTML='';"
 "var f=want.toLowerCase();"
@@ -2175,16 +2302,19 @@ static const char HTML_TZ[] =
 "list.sort(function(a,b){var x=offMin(zname(a)),y=offMin(zname(b));if(x==null)x=-9999;if(y==null)y=-9999;"
 "return x-y||String(a.label||a.name).localeCompare(String(b.label||b.name))});"
 "list.forEach(function(z){box.appendChild(mkrow(lbl(z),function(){setTz(z.name,z.label||z.name)},z.name==cur?'cur':''))});"
-"if(phone&&!matchPhone()){var po=-(new Date()).getTimezoneOffset();"
-"box.appendChild(mkrow(hm(po)+' - Same as your phone (does not follow DST automatically)',"
-"function(){setTz(gmtRule(po),'your phone time')}))}}"
+"if(phone&&!matchPhone()){var po=-(new Date()).getTimezoneOffset(),city=sym(phone);"
+"var r=synth(phone);"
+"if(r)box.appendChild(mkrow(hm(po)+' - '+city+' (your phone, follows its clock changes)',"
+"function(){setTz(r,city+' from your phone',po)},'phone'));"
+"else box.appendChild(mkrow(hm(po)+' - Same as your phone (does not follow DST automatically)',"
+"function(){setTz(gmtRule(po),'your phone time',po)},'phone'))}}"
 "async function boot(){var d;try{d=await j('/api/v1/config')}catch(e){msg('could not reach the orb','bad');return}"
 "zones=d.zones||[];cur=d.tz||'UTC';phone=phoneTz();render();"
-"var m=matchPhone();if(!m){if(phone)msg('the orb does not know '+phone+' - pick a city, or the row that matches your phone');"
+"var m=matchPhone();if(!m){if(phone)msg('the orb does not know '+phone+' - tap the '+sym(phone)+' row at the end of the list, or search for a city');"
 "else msg('tap your city');return}"
 "if(m.name==cur){msg('the orb is already on your phone time ('+hm(offMin(zname(m)))+') - if the dial is wrong, tap your city','ok');return}"
 "msg('your phone says '+(m.label||m.name)+' - setting the orb...');"
-"setTz(m.name,m.label||m.name)}"
+"setTz(m.name,m.label||m.name,-(new Date()).getTimezoneOffset())}"
 "document.getElementById('q').oninput=function(){want=this.value;render()};"
 "boot();"
 "</script></body></html>";

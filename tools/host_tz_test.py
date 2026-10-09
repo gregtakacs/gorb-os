@@ -1,12 +1,30 @@
 #!/usr/bin/env python3
 """Bench check for orb_net.c's config-body parser and timezone offset math.
 
-    python3 tools/host_tz_test.py
+    python3 tools/host_tz_test.py            # all checks
+    python3 tools/host_tz_test.py --mutations # do the checks actually bite?
 
-Neither of those two pieces of logic can be tested on the device without a radio,
-a browser and a stopwatch, and both are the kind of code that fails silently: a
-mis-parsed body stores a wrong TZ forever, and a wrong offset moves the dial an
-hour with nothing logged. So they run here instead, in about a second.
+Three families of check live here, all for the same reason: this is code that
+fails silently on a wall clock nobody is watching.
+
+1. The lifted-C harness (parser, offset math, ladder, DNS): neither the device
+   nor a stopwatch can substitute for running the real functions here.
+2. The IANA oracle: every shipped zone-table row, asserted to reproduce
+   zoneinfo under the host C library across 2025-2028 — see the block above
+   the harness for why hand-written rules are a liability and how regenerating
+   rows (tools notes in orb_net.c's table comment) is the maintenance story.
+   This needs the machine's tzdata to be current; that is a feature: when a
+   government changes a rule, this test fails before the clock does.
+3. The page checks: both HTML pages are rebuilt from their C fragments the way
+   the compiler does, parsed with esprima, pinned to the product decisions,
+   and linted for calls to functions that do not exist (the fault esprima and
+   substring pins both miss). --mutations re-runs the whole file against
+   fourteen deliberate regressions; a battery that cannot fail is not a test.
+
+Neither the parser nor a browser was available on the bench when the first
+wrong-zone bug shipped: a mis-parsed body stores a wrong TZ forever, and a
+wrong offset moves the dial an hour with nothing logged. So they run here
+instead, in a few seconds.
 
 The harness lifts `json_find`, `json_str` and the whole timezone block VERBATIM
 out of main/net/orb_net.c rather than copying it, so the check can never drift
@@ -25,7 +43,11 @@ import os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "main", "net", "orb_net.c")
+if "--src" in sys.argv:
+    SRC = sys.argv[sys.argv.index("--src") + 1]
 src = open(SRC).read()
+import hashlib
+BIN = "/tmp/tzjson_host_" + hashlib.md5(SRC.encode()).hexdigest()[:10]
 
 
 def lift(pattern):
@@ -66,6 +88,113 @@ enum { WIFI_REASON_AUTH_EXPIRE = 2,           /* esp_wifi_types_generic.h */
        WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT = 15,
        WIFI_REASON_NO_AP_FOUND = 201 };
 """
+
+# ---------------------------------------------------------------------------
+# The shipped zone table vs the machine's IANA database — the referee for
+# "what if the user is not one of the listed cities". Every row's POSIX rule
+# is asserted to reproduce, under the host C library, exactly what zoneinfo
+# says for the canonical IANA zone: every noon UTC of 2026 plus the minute
+# either side of every 2025-2028 transition. Hand-written rules fail this the
+# way hand-written rules always fail — an /n time quoted in the wrong side's
+# local clock, a last-Sunday pinned as a fourth-Sunday — and the failure is a
+# silent hour of wrongness half the year on somebody's wall, invisible on the
+# bench (no screen, and the owner's phone may be in the one wrong zone). The
+# same derivation runs in the clock page's JS for zones NOT in this table;
+# monthly-window bisection here is the identical algorithm, verified once
+# against an exhaustive hourly scan over every zone on the system.
+# Requires current tzdata: if a future rule change breaks a row, this test
+# fails LOUDLY the day the box's tzdata updates — that is the maintenance
+# story, regenerate the row, do not edit rules by hand.
+# ---------------------------------------------------------------------------
+import datetime as _dt
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
+tbm = re.search(r'static const tz_entry_t s_tz_tbl\[\] = \{(.*?)\n\};', src, re.S)
+if not tbm:
+    sys.exit('could not find s_tz_tbl — did it get renamed?')
+rows = re.findall(r'\{\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\s*,?\s*\}',
+                  tbm.group(1))
+if not rows:
+    sys.exit('no four-column zone rows parsed from s_tz_tbl')
+
+def _off_min(z, ts):
+    d = _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).astimezone(z)
+    return int(d.utcoffset().total_seconds() // 60)
+
+def _trans(z, year):
+    out = []
+    for m in range(1, 13):
+        a0 = int(_dt.datetime(year, m, 1, tzinfo=_dt.timezone.utc).timestamp())
+        a1 = int(_dt.datetime(year + (1 if m == 12 else 0),
+                              1 if m == 12 else m + 1, 1,
+                              tzinfo=_dt.timezone.utc).timestamp())
+        o0, o1 = _off_min(z, a0), _off_min(z, a1)
+        if o0 == o1:
+            continue
+        lo, hi = a0 // 60, a1 // 60
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if _off_min(z, mid * 60) == o0:
+                lo = mid
+            else:
+                hi = mid
+        out.append((hi * 60, o0, o1))
+    return out
+
+probe_data = probe_calls = ''
+if ZoneInfo is None:
+    print('SKIP  IANA oracle (no zoneinfo; python >= 3.9 required — zone rows go UNREFEREED)')
+else:
+    datas = []
+    missing_zones = []
+    for idx, (n, px, ia, la) in enumerate(rows):
+        try:
+            z = ZoneInfo(ia or n)
+        except Exception:
+            # A row naming a zone this machine's tzdata does not know is a
+            # FAIL line, not a traceback — the battery must report verdicts.
+            missing_zones.append('%s -> %s' % (n, ia or n))
+            datas.append('static const struct probe pr%d[] = {{0,0}};' % idx)
+            probe_calls += ('    off_sweep("%s", "%s", pr%d, 0);\n' % (n, px, idx))
+            continue
+        pr = []
+        for y in (2025, 2026, 2027, 2028):
+            for t, o_lo, o_hi in _trans(z, y):
+                pr += [(t - 60, o_lo), (t, o_hi), (t + 3540, o_hi)]
+        base = int(_dt.datetime(2026, 1, 1, 12, tzinfo=_dt.timezone.utc).timestamp())
+        pr += [(base + k * 86400, _off_min(z, base + k * 86400)) for k in range(366)]
+        datas.append('static const struct probe pr%d[] = {' % idx +
+                     ','.join('{%d,%d}' % p for p in pr) + '};')
+        probe_calls += ('    off_sweep("%s", "%s", pr%d, %u);\n' % (n, px, idx, len(pr)))
+    probe_data = (
+        'struct probe { long long at; int want; };\n'
+        'static unsigned off_bad;\n'
+        'static void off_at1(const char *posix, long long at, int want)\n'
+        '{\n'
+        '    setenv("TZ", posix, 1); tzset();\n'
+        '    const int got = tz_offset_min((time_t)at);\n'
+        '    if (got != want) { off_bad++;\n'
+        '        if (off_bad <= 3)\n'
+        '            printf("      %s @%lld -> %+d want %+d\\n", posix, at, got, want);\n'
+        '    }\n'
+        '}\n'
+        'static void off_sweep(const char *name, const char *posix,\n'
+        '                      const struct probe *p, unsigned n)\n'
+        '{\n'
+        '    off_bad = 0;\n'
+        '    for (unsigned i = 0; i < n; i++) off_at1(posix, p[i].at, p[i].want);\n'
+        '    if (off_bad) { fails++;\n'
+        '        printf("FAIL zone %-28s some of %u probes wrong vs IANA (posix %s)\\n",\n'
+        '               name, n, posix);\n'
+        '    } else\n'
+        '        printf("ok    zone %-28s %3u probes match IANA\\n", name, n);\n'
+        '}\n'
+        + chr(10).join(datas) + chr(10))
+    probe_calls = ('    puts("== shipped zone rules vs the machine IANA database ==");\n'
+                   + probe_calls.replace('\\n', '\n'))
 
 harness = f"""
 #include <stdio.h>
@@ -206,6 +335,7 @@ static void dns_case(const char *what, uint16_t qtype, uint16_t qdcount,
     printf("%-5s %-24s qtype=%-2u qd=%u n=%d cap=%d -> %d (want %d)\\n",
            pass?"ok":"FAIL", what, (unsigned)qtype, (unsigned)qdcount, n, cap, len, want_len);
 }}
+{probe_data}
 int main(void)
 {{
     puts("== POST /api/v1/config bodies ==");
@@ -247,6 +377,7 @@ int main(void)
     off("UTC0", 23, 59, 59, 0);
     off("JST-9", 23, 59, 59, 540);                            /* +1 day across the date line */
     off("EST5EDT,M3.2.0,M11.1.0", 12, 0, 30, -240);           /* non-zero seconds */
+{probe_calls}
     puts("== association back-off ladder ==");
     /* The ladder is what a wall clock uses instead of giving up, so its shape is
      * the whole design: eager while a dropout might still be transient, quiet
@@ -296,9 +427,10 @@ int main(void)
     return fails != 0;
 }}
 """
-open("/tmp/tzjson_host.c", "w").write(harness)
+BC_SRC = BIN + ".c"
+open(BC_SRC, "w").write(harness)
 cc = subprocess.run(["gcc", "-O1", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Wno-unused-function",
-                     "-Werror", "-o", "/tmp/tzjson_host", "/tmp/tzjson_host.c"])
+                     "-Werror", "-o", BIN, BC_SRC])
 if cc.returncode:
     sys.exit(cc.returncode)
 # -Werror on the lifted code is deliberate: it is also the cheapest compiler-diagnostics
@@ -334,7 +466,7 @@ def c_page(sym):
                             'This check dies loudly rather than silently stop covering.')
     region = m.group(1)
     base = src[:m.start()].count(chr(10)) + 1
-    bad, in_comment = [], False
+    bad, in_comment, kept = [], False, []
     for off, line in enumerate(region.split(chr(10))):
         t, where = line.strip(), base + off
         if not t:
@@ -347,7 +479,9 @@ def c_page(sym):
             if t.startswith('/*') and '*/' not in t:
                 in_comment = True
             continue
-        if not re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t):
+        if re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t):
+            kept.append(t)
+        else:
             bad.append((where, t[:64]))
     if bad:
         for where, t in bad[:6]:
@@ -357,7 +491,12 @@ def c_page(sym):
               'by the parse/pin checks below.')
         return None, None, sym + ' fragment integrity'
     import ast
-    fragments = re.findall(r'"((?:[^"\\\n]|\\.)*)"', region)
+    # fragments come ONLY from gate-classified string lines: a regex over the
+    # raw region also harvests "quoted words" from C comments and injects them
+    # into the bytes under test (one comment that wrote read as "last" shipped
+    # that word into the parsed page and past the forbidden-token pins).
+    fragments = [mm.group(1) for t in kept
+                 for mm in re.finditer(r'"((?:[^"\\\n]|\\.)*)"', t)]
     if not fragments:
         return None, None, f'no string fragments inside {sym}'
     page = ''.join(ast.literal_eval('"' + f + '"') for f in fragments)
@@ -366,6 +505,31 @@ def c_page(sym):
         return None, None, f'no <script> block in {sym}'
     return page, js.group(1), None
 
+
+def _calls(js_):
+    # User-facing copy contains shapes that only LOOK like call sites
+    # (Same as your phone (does not follow DST)); blank strings first.
+    out, instr, esc = [], None, False
+    for ch in js_:
+        if instr:
+            if esc:
+                esc = False
+            elif ch == chr(92):
+                esc = True
+            elif ch == instr:
+                instr = None
+            out.append(chr(32))
+        else:
+            if ch in (chr(39), chr(34)):
+                instr = ch
+                out.append(chr(32))
+            else:
+                out.append(ch)
+    t = str().join(out)
+    # callback/catch parameter lists are not calls: function(d){, catch(e){
+    t = re.sub(r"(function\s*\()[^)]*(\))", r"\1\2", t)
+    t = re.sub(r"(catch\s*\()[^)]*(\))", r"\1\2", t)
+    return set(re.findall(r"(?<![.\w$])([a-z][A-Za-z0-9_$]*)\s*\(", t))
 
 def landing_page_js():
     # Two pages ship in firmware now: the provisioning landing page and the
@@ -479,12 +643,40 @@ def landing_page_js():
                    'function matchPhone': 'phone-to-table matching before asking',
                    'your phone says ': 'announces the auto-set it is about to do',
                    'is that the right time': 'asks the one question that catches a bad rule',
-                   'does not follow DST': 'the fallback row admits its limit',
+                   'does not follow DST': 'the refused-synth row admits its limit',
+                   'function synth': 'phone-side POSIX rule derivation for unlisted zones',
+                   'function transY': "finds the phone zone's clock changes by bisect",
+                   'function mrule': 'encodes a transition as an M rule',
+                   'function offAt': 'offset probes at arbitrary instants',
+                   'function gmtRule': 'the fixed-offset shape synthesis refuses to fake',
+                   'function sym': 'a phone zone name becomes a safe rule token',
+                   'for(var k=1;k<=2;k++)': 'the rule must hold for the NEXT TWO YEARS too',
+                   'follows its clock changes': 'the synthesized row promises DST tracking it makes good on',
+                   'matches your phone': 'the device echo agreed with the phone',
+                   'did not stick': 'the device echo disagreed — said out loud',
+                   'd.tz_offset==want': 'set-time compares the dial, not the echo of the request',
+                   'return n==1?hit:null': 'offset matching only ever applies a UNANIMOUS answer',
                    'could not reach the orb': 'says so when the fetch dies',
                    'GMT': 'labels lead with the offset',
                    'oninput': 'the search box filters live'}.items():
         if k not in cjs:
             print(f'FAIL clock page: missing {k!r} — {why}'); rc = 1
+
+    # A call to a function that does not exist is a RUNTIME fault: esprima
+    # parses it happily and every string pin still passes while the phone just
+    # shows a dead button. One real edit here dropped gmtRule's definition
+    # while leaving its call site; only this check catches that class.
+    for tag, js_ in (('landing', ljs), ('clock', cjs)):
+        defs = set(re.findall(r'function ([A-Za-z_$][\w$]*)\s*\(', js_))
+        used = _calls(js_)
+        undef = sorted(used - defs - {'fetch', 'if', 'for', 'while', 'switch',
+                                      'return', 'typeof', 'function', 'async',
+                                      'await', 'new', 'catch', 'parseInt',
+                                      'isNaN', 'setTimeout', 'setInterval',
+                                      'clearTimeout', 'clearInterval'})
+        if undef:
+            print(f'FAIL {tag} page JS calls undefined functions: {undef} — '
+                  'esprima cannot see this, the phone can'); rc = 1
 
     # ---- server side of the same decisions ----
     for k, why in {'s_joining': 'the joining state distinct from provisioning',
@@ -495,7 +687,8 @@ def landing_page_js():
                    '"/timezone"': 'the clock page route',
                    'const char *iana': 'the canonical-name column the phone matches',
                    'const char *label': 'the city column a person reads',
-                   '\\"iana\\":\\"%s\\"': 'config serves the iana column',
+                   '\\"iana\\":\\"': 'config serves the iana column (when it differs from the key)',
+                   'strcmp(s_tz_tbl[i].iana, s_tz_tbl[i].name)': 'iana omitted where it repeats the key',
                    '\\"label\\":\\"%s\\"': 'config serves the label column'}.items():
         if k not in src:
             print(f'FAIL orb_net.c: missing {k!r} — {why}'); rc = 1
@@ -504,13 +697,30 @@ def landing_page_js():
     # column of every row counted at its real length + the two 64-char echo
     # strings, checked against the declared buffer. A truncation here is an
     # empty picker on the phone, which looks like a device fault.
-    tb = re.search(r'static const tz_entry_t s_tz_tbl\[\] = \{(.*?)\n\};', src, re.S)
-    rows = re.findall(r'\{\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\s*,?\s*\}',
-                      tb.group(1)) if tb else []
-    if len(rows) < 9:
-        print(f'FAIL orb_net.c: expected 9 four-column zone rows, found {len(rows)}'); rc = 1
+    if len(rows) < 50:
+        print(f'FAIL orb_net.c: the tap-the-city table is supposed to be GLOBAL '
+              f'(>=50 rows), found {len(rows)} — new rows are machine-generated, '
+              f'see the s_tz_tbl comment'); rc = 1
+    for city in ('Asia/Kathmandu', 'Pacific/Chatham', 'America/Santiago',
+                 'Africa/Cairo', 'Europe/Dublin', 'America/Anchorage'):
+        if ('"' + city + '"') not in tbm.group(1):
+            print(f'FAIL orb_net.c: curated row {city} is gone — a user there '
+                  f'would silently lose the auto-match; rows are regenerated, not trimmed'); rc = 1
+    FROZEN_KEYS = {'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific',
+                   'US/Arizona'}          # NVS-stored legacy keys: frozen contract
+    for n, px, ia, la in rows:
+        if n != ia and n not in FROZEN_KEYS:
+            print(f'FAIL orb_net.c: row {n!r} is neither canonical (name==iana) nor a '
+                  f'frozen legacy key — new rows key on the IANA name verbatim'); rc = 1
+    if len({n for n, _, _, _ in rows}) != len(rows) or \
+       len({ia for _, _, ia, _ in rows}) != len(rows):
+        print('FAIL orb_net.c: duplicate zone key or iana name in the table'); rc = 1
+    if any(len(px) > 64 or len(n) > 64 or not px.isprintable()
+           for n, px, _, _ in rows):
+        print('FAIL orb_net.c: a rule/key exceeds NET_TZ_MAX(64) or is not printable'); rc = 1
     else:
-        ent = sum(43 + len(n) + len(px) + len(ia) + len(la) for n, px, ia, la in rows)
+        ent = sum(31 + len(n) + len(px) + len(la) +
+                  (9 + len(ia) if ia != n else 0) for n, px, ia, la in rows)
         worst = (len('{"zones":[') + ent + len(rows) - 1
                  + len('],"tz":"') + 64 + len('","posix":"') + 64
                  + len('","tz_offset":') + 6 + 1 + 32)   # tail + slack
@@ -530,13 +740,62 @@ def landing_page_js():
 
     if rc:
         return rc
-    print(f'ok    landing ({len(ljs)} B) + clock ({len(cjs)} B) JS parse; tz UI off the '
-          f'network page, {nroutes} routes in cap, config body fits')
+    print(f'ok    landing ({len(ljs)} B) + clock ({len(cjs)} B) JS parse + call linter; '
+          f'tz UI off the network page, {len(rows)} zone rows, {nroutes} routes in cap, '
+          f'config body fits')
     return 0
 
+MUTATIONS = [
+    # name, old text in orb_net.c, new text — each must make SOME check fail.
+    # The battery's whole purpose: a pin you can delete without any red line
+    # is not a pin. Renames target the linter, deletions target copies.
+    ('synth engine disappears', 'function synth(zn){var y=', 'function synthX(zn){var y='),
+    ('transition finder gone', 'function transY(zn,y){', 'function transYx(zn,y){'),
+    ('gmtRule def dropped but call kept', 'function gmtRule(m){', 'function gmtRuleQ(m){'),
+    ('lbl renamed (call site survives)', 'function lbl(z){', 'function lblQ(z){'),
+    ('rule trusted for one year only', 'for(var k=1;k<=2;k++)', 'for(var k=1;k<=0;k++)'),
+    ('echo check rubber-stamped', 'd.tz_offset==want', 'd.tz_offset==d.tz_offset'),
+    ('refused zone hides its limit', ' (does not follow DST automatically)', ' (probably fine)'),
+    ('ambiguous offset auto-applied', 'return n==1?hit:null', 'return hit?hit:null'),
+    ('posix text leaks to the page', " (your phone, follows its clock changes)",
+     " (your phone posix)"),
+    ('curated city hand-deleted', 'Asia/Kathmandu', 'XX/Deleted', 2),
+    ('rule hand-edited into wrongness', 'CET-1CEST,M3.5.0,M10.5.0/3',
+     'CET-1CEST,M3.5.0,M10.4.0/3'),
+    ('iana never emitted', '? "" : "\\"iana\\":\\"",', '? "" : "",'),
+    ('config buffer shrunk', 'static char json[6144];', 'static char json[2048];'),
+    ('httpd route cap lowered', 'cfg.max_uri_handlers  = 20;', 'cfg.max_uri_handlers  = 12;'),
+]
+
+def run_mutations():
+    rc = 0
+    for i, entry in enumerate(MUTATIONS):
+        name, old, new = entry[0], entry[1], entry[2]
+        want = entry[3] if len(entry) > 3 else 1
+        if src.count(old) != want:
+            print(f'FAIL mutation {name!r}: anchor found {src.count(old)}x in the '
+                  f'source, want {want}x — the mutation is stale, fix the battery'); rc = 1; continue
+        mut = '/tmp/orb_net_mut_%d.c' % i
+        open(mut, 'w').write(src.replace(old, new))
+        r = subprocess.run([sys.executable, __file__, '--src', mut],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f'FAIL  mutation {name!r} SURVIVED — a real regression would pass '
+                  f'the suite too'); print(r.stdout[-1200:]); rc = 1
+        else:
+            first = next((l for l in r.stdout.splitlines() if l.startswith('FAIL')), '?')
+            print(f'ok    mutation {name!r} caught: {first[:96]}')
+    return rc
+
+if '--mutations' in sys.argv:
+    sys.exit(run_mutations())
+if ZoneInfo is not None and missing_zones:
+    for mz in missing_zones:
+        print('FAIL orb_net.c: zone table names a zone the IANA database does not know:', mz)
+    sys.exit(1)
 rc = landing_page_js()
 if rc:
     sys.exit(rc)
-sys.exit(subprocess.run(["/tmp/tzjson_host"]).returncode)
+sys.exit(subprocess.run([BIN]).returncode)
 
 

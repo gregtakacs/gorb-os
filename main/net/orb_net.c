@@ -76,6 +76,7 @@ static const char *TAG = "orb_net";
  * never opened without arming its expiry in the same breath, and the only
  * places that touch the mode are the AP commands below. */
 enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
+       NET_CMD_JOIN,          /* apply credentials posted by /wifi/join      */
        NET_CMD_AP_OPEN,       /* open the AP for a manual request           */
        NET_CMD_AP_RESCUE,     /* open the AP because the creds are not working */
        NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
@@ -108,6 +109,12 @@ static volatile unsigned s_assoc_fails;
  * the ladder escalates on the duplicate, and the rescue AP opens after roughly
  * half the configured attempts. */
 static volatile bool s_retry_pending;
+/* The 802.11 reason code from the last disconnect, reported by /api/v1/status.
+ * Chosen over "the orb is not connecting": 201 (network not here), 15 (wrong
+ * key) and 2 (router let the auth lapse) look identical from the LAN and need
+ * different fixes. Sticky through a later lease on purpose — after a flappy
+ * night it is still the only evidence of what the router did. */
+static volatile uint8_t s_last_reason;
 
 /* Handlers below are registered by pointer, so the apply helper used by the
  * join endpoint needs a prototype ahead of its definition. */
@@ -438,7 +445,16 @@ static uint32_t retry_delay_s(unsigned attempt)
  * lease (see NET_CMD_AP_EXPIRED), so this only re-arms the check. */
 #define NET_AP_RECHECK_S 300
 
-typedef struct { int cmd; int arg; } net_msg_t;
+/* arg carries the AP hold seconds; ssid/pass carry a join's credentials. They
+ * travel inside the message rather than in a shared static so the queue is the
+ * only lock needed: two browsers submitting at once cannot interleave one
+ * join's ssid with the other's password. ~104 B x 8 slots of internal RAM. */
+typedef struct {
+    int  cmd;
+    int  arg;
+    char ssid[NET_SSID_MAX + 1];
+    char pass[NET_PASS_MAX + 1];
+} net_msg_t;
 
 static void net_post(int cmd, int arg)
 {
@@ -446,6 +462,20 @@ static void net_post(int cmd, int arg)
     const net_msg_t m = { .cmd = cmd, .arg = arg };
     if (xQueueSend(s_net_q, &m, 0) != pdTRUE)
         ESP_LOGW(TAG, "net queue full; dropped cmd %d", cmd);
+}
+
+/* Join variant of net_post(): carries the credentials so the radio task, and
+ * nothing else, is the task that touches the station. Blocks briefly instead of
+ * dropping — a join silently discarded from a full queue would have the device
+ * telling the browser "joining" while never having tried. Returns false only
+ * when the queue does not exist (bring-up OOM), letting the caller fall back. */
+static bool net_post_join(const char *ssid, const char *pass)
+{
+    if (!s_net_q) return false;
+    net_msg_t m = { .cmd = NET_CMD_JOIN };
+    snprintf(m.ssid, sizeof(m.ssid), "%s", ssid);
+    snprintf(m.pass, sizeof(m.pass), "%s", pass ? pass : "");
+    return xQueueSend(s_net_q, &m, pdMS_TO_TICKS(200)) == pdTRUE;
 }
 
 /* Timer callbacks may only post: the esp_timer task is shared and must not
@@ -490,35 +520,48 @@ static void ap_open(uint32_t hold_s, const char *why)
     wifi_config_t ap;
     ap_fill_config(&ap);
 
-    /* Mode first, then the profile: that is the ordering the driver accepts at
-     * runtime, and it leaves the AP momentarily up with the driver's default
-     * profile — so the SSID is read back rather than trusted, because a device
-     * on the wall advertising "espressif" instead of "orb-xxxxxx" is a support
-     * call nobody can diagnose from the log alone. */
-    /* Profile first where the driver will take it. Setting the profile on a
-     * RUNNING softAP restarts it, and the first build of this path did exactly
-     * that: every open logged AP_START twice and started the DHCP server twice
-     * (20948/20953 in the bench log). With the interface still down the profile
-     * is merely stored, so the AP comes up once already carrying "orb-xxxxxx"
-     * instead of blinking on air with the driver's default SSID. If the driver
-     * refuses a profile for a disabled interface, fall back to mode-then-config
-     * and accept the restart. */
-    bool profiled = (esp_wifi_set_config(WIFI_IF_AP, &ap) == ESP_OK);
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
         ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
         return;
     }
-    if (!profiled) profiled = (esp_wifi_set_config(WIFI_IF_AP, &ap) == ESP_OK);
-    if (!profiled) {
-        ESP_LOGE(TAG, "ap open (%s): set_config failed — AP may advertise the "
-                      "driver default SSID", why);
-    } else {
-        wifi_config_t chk;
-        memset(&chk, 0, sizeof(chk));
-        if (esp_wifi_get_config(WIFI_IF_AP, &chk) == ESP_OK &&
-            strcmp((const char *)chk.ap.ssid, (const char *)ap.ap.ssid) != 0)
-            ESP_LOGE(TAG, "ap open (%s): SSID is \"%s\", not \"%s\"",
-                     why, (const char *)chk.ap.ssid, (const char *)ap.ap.ssid);
+
+    /* Ask the driver what it is already carrying before writing anything.
+     * esp_wifi_set_config() on a RUNNING softAP is a restart, not an update, so
+     * writing it here unconditionally is what made every open in the earlier
+     * builds log AP_START twice and start the DHCP server twice (30261/30267 in
+     * the bench log). Beyond the noise, that restart deauths whoever is already
+     * attached — and the whole point of this AP is that a phone is sitting on it
+     * while its owner fills in the config page. The profile is deterministic
+     * (SSID from the MAC, open, channel 1), so once the driver holds it, it
+     * holds it: the write is only needed the first time after boot. */
+    wifi_config_t chk;
+    memset(&chk, 0, sizeof(chk));
+    const bool current =
+        esp_wifi_get_config(WIFI_IF_AP, &chk) == ESP_OK &&
+        chk.ap.ssid_len == ap.ap.ssid_len &&
+        chk.ap.channel  == ap.ap.channel &&
+        chk.ap.authmode == ap.ap.authmode &&
+        strcmp((const char *)chk.ap.ssid, (const char *)ap.ap.ssid) == 0;
+
+    if (!current) {
+        /* Deliberately no early return on failure: the AP IS up either way and
+         * must still have its expiry armed below, or a refused write would leak
+         * the AP open forever — the one failure this whole design forbids. */
+        if (esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) {
+            ESP_LOGE(TAG, "ap open (%s): set_config failed — AP may advertise the "
+                          "driver default SSID", why);
+        } else {
+            /* Read it back rather than trust the write, for the same reason: a
+             * device on the wall advertising "espressif" instead of "orb-xxxxxx"
+             * is invisible to every check that runs on the device, and only the
+             * person holding the phone would notice it. */
+            wifi_config_t rb;
+            memset(&rb, 0, sizeof(rb));
+            if (esp_wifi_get_config(WIFI_IF_AP, &rb) == ESP_OK &&
+                strcmp((const char *)rb.ap.ssid, (const char *)ap.ap.ssid) != 0)
+                ESP_LOGE(TAG, "ap open (%s): SSID is \"%s\", not \"%s\"",
+                         why, (const char *)rb.ap.ssid, (const char *)ap.ap.ssid);
+        }
     }
 
     arm_oneshot(s_ap_timer, hold_s, "ap expiry");
@@ -551,7 +594,45 @@ static void net_task_loop(void *arg)
             if (s_sta_up || s_provisioning) break;
             s_retry_pending = false;          /* this attempt is now live */
             ESP_LOGI(TAG, "association attempt %u", s_assoc_fails + 1);
-            esp_wifi_connect();
+            const esp_err_t ce = esp_wifi_connect();
+            if (ce == ESP_ERR_WIFI_CONN) break;   /* an attempt is already live */
+            if (ce != ESP_OK) {
+                /* The attempt never happened, so no DISCONNECTED will ever
+                 * arrive to arm the next one. Swallowing that (the previous
+                 * behaviour, and what stranded the bench orb with no lease, no
+                 * AP and nothing pending) turns one rejected call into a dead
+                 * device until someone pulls power. Re-arm eagerly, and without
+                 * spending a ladder rung: the network did not say no here. */
+                ESP_LOGW(TAG, "connect refused (%s); retrying in %u s",
+                         esp_err_to_name(ce), (unsigned)NET_STA_RETRY_S);
+                s_retry_pending = true;
+                arm_oneshot(s_retry_timer, NET_STA_RETRY_S, "retry");
+            }
+            break;
+
+        case NET_CMD_JOIN:
+            /* Credentials are already in NVS — the handler persisted them before
+             * posting, so a failure here costs an association, never the config.
+             * The radio half belongs on this task: disconnect()/connect() racing
+             * a set_mode() from the AP path is what left the station idle with no
+             * timer armed, and serialising every radio mutation here is what
+             * keeps that from recurring. */
+            s_assoc_fails = 0;
+            s_retry_pending = false;
+            {
+                const esp_err_t je = net_apply_sta_config(m.ssid, m.pass);
+                if (je != ESP_OK)
+                    ESP_LOGE(TAG, "join(%s) on radio task: %s",
+                             m.ssid, esp_err_to_name(je));
+            }
+            /* Watchdog, not the primary path: normally the driver answers with
+             * ASSOCIATED or DISCONNECTED and the ladder takes over from there.
+             * If it answers with nothing at all — the wedge on the bench — this
+             * is the only thing that brings the station back without a reboot.
+             * Harmless when the association is merely slow: NET_CMD_CONNECT
+             * breaks out on s_sta_up, and a connect() during a live attempt
+             * returns ESP_ERR_WIFI_CONN and is ignored. */
+            arm_oneshot(s_retry_timer, NET_STA_RETRY_S, "retry");
             break;
 
         case NET_CMD_AP_OPEN:
@@ -585,6 +666,52 @@ static void net_task_loop(void *arg)
     }
 }
 
+/* The handful of codes this device can actually meet at a wall: named ones are
+ * worth the screen, everything else prints as its number rather than as a guess.
+ * WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT is the one that pays for this function — it
+ * is what a wrong passphrase looks like, and the only difference between
+ * "retype the password" and "bring me the serial cable". */
+static const char *reason_name(uint8_t r)
+{
+    switch (r) {
+    case WIFI_REASON_AUTH_EXPIRE:            return "auth-expired";
+    case WIFI_REASON_AUTH_LEAVE:             return "auth-leave";
+    case WIFI_REASON_ASSOC_LEAVE:            return "assoc-leave";
+    case WIFI_REASON_MIC_FAILURE:            return "mic-failure";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "wrong-key";
+    case WIFI_REASON_IE_IN_4WAY_DIFFERS:     return "4way-ie-differs";
+    case WIFI_REASON_AKMP_INVALID:           return "akmp-invalid";
+    case WIFI_REASON_802_1X_AUTH_FAILED:     return "1x-auth-failed";
+    case WIFI_REASON_CIPHER_SUITE_REJECTED:  return "cipher-rejected";
+    case WIFI_REASON_TIMEOUT:                return "timeout";
+    case WIFI_REASON_PEER_INITIATED:         return "peer-initiated";
+    case WIFI_REASON_AP_INITIATED:           return "ap-initiated";
+    case WIFI_REASON_BEACON_TIMEOUT:         return "beacon-timeout";
+    case WIFI_REASON_NO_AP_FOUND:            return "no-ap-found";
+    case WIFI_REASON_AUTH_FAIL:              return "auth-fail";
+    case WIFI_REASON_ASSOC_FAIL:             return "assoc-fail";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:      return "handshake-timeout";
+    case WIFI_REASON_CONNECTION_FAIL:        return "connection-fail";
+    case WIFI_REASON_AP_TSF_RESET:           return "ap-tsf-reset";
+    case WIFI_REASON_ROAMING:                return "roaming";
+    default:                                 return NULL;
+    }
+}
+
+/* The two codes that mean the station came down because WE took it down:
+ * esp_wifi_disconnect() on a join, or a set_mode() that rebuilt the interface.
+ * They must never feed the failure counter — otherwise toggling the AP from the
+ * config page walks the device toward its own rescue threshold with nobody
+ * having said no to anything, and a user pressing a button watches the orb
+ * conclude that its network is dead. Kept as a predicate rather than inlined in
+ * the event handler so the host test can pin it: from the LAN, an
+ * incorrectly-counted leave is indistinguishable from a router that is refusing
+ * the orb, and it ends with an AP open on the wall that nobody summoned. */
+static bool sta_leave_is_self_inflicted(uint8_t reason)
+{
+    return reason == WIFI_REASON_AUTH_LEAVE || reason == WIFI_REASON_ASSOC_LEAVE;
+}
+
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base; (void)data;
@@ -597,14 +724,29 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         break;
 
     case WIFI_EVENT_STA_DISCONNECTED: {
+        const wifi_event_sta_disconnected_t *ed = data;
+        const uint8_t reason = ed ? ed->reason : 0;
         s_sta_up = false;
         s_rssi   = -999;
+        if (reason) s_last_reason = reason;
         if (s_provisioning) break;         /* AP-only mode: nothing to retry */
         if (s_retry_pending) break;        /* driver's second event for one failure */
-        const unsigned attempt = ++s_assoc_fails;
-        const uint32_t delay   = retry_delay_s(attempt);
-        ESP_LOGW(TAG, "disassociated (attempt %u); retrying in %u s",
-                 attempt, (unsigned)delay);
+        /* See sta_leave_is_self_inflicted(): a leave we caused is not a refusal,
+         * so it costs the ladder nothing. The retry is armed regardless, because
+         * an unowned disconnect must never end with the device sitting down
+         * forever with nothing pending. */
+        const bool refused = !sta_leave_is_self_inflicted(reason);
+        const unsigned attempt = refused ? ++s_assoc_fails : s_assoc_fails;
+        const uint32_t delay   = retry_delay_s(attempt ? attempt : 1);
+        char fb[16];
+        const char *nm = reason_name(reason);
+        if (!nm) { snprintf(fb, sizeof(fb), "code-%u", reason); nm = fb; }
+        if (refused) ESP_LOGW(TAG, "disassociated: %s (reason %u, attempt %u); "
+                                   "retrying in %u s", nm, reason, attempt,
+                             (unsigned)delay);
+        else         ESP_LOGI(TAG, "disassociated: %s (reason %u) — self-initiated, "
+                                   "not counted; retrying in %u s", nm, reason,
+                              (unsigned)delay);
         s_retry_pending = true;
         arm_oneshot(s_retry_timer, delay, "retry");
         /* Credentials exist but are not working. Past the threshold, open the
@@ -613,9 +755,13 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
          * network that comes back on its own is still taken automatically while
          * the door stays open for a phone. Without this the only exit from a
          * changed router passphrase is serial + an NVS erase. */
-        if (!s_ap_up && CONFIG_ORB_NET_AP_RESCUE_FAILS > 0 &&
+        if (refused && !s_ap_up && CONFIG_ORB_NET_AP_RESCUE_FAILS > 0 &&
             attempt >= (unsigned)CONFIG_ORB_NET_AP_RESCUE_FAILS)
-            net_post(NET_CMD_AP_OPEN, NET_AP_RECHECK_S);
+            /* NET_CMD_AP_RESCUE, not NET_CMD_AP_OPEN: the two open the radio the
+             * same way but the log line differs, and "requested from the config
+             * page" next to an AP nobody asked for is exactly the misleading
+             * provenance a support call gets stuck on. */
+            net_post(NET_CMD_AP_RESCUE, NET_AP_RECHECK_S);
         break;
     }
 
@@ -786,7 +932,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
-        "\"assoc_fails\":%u}",
+        "\"assoc_fails\":%u,\"wifi_reason\":%u}",
         s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -801,7 +947,8 @@ static esp_err_t h_status(httpd_req_t *req)
          * tell a closed AP from a firmware that never closes it, which is
          * exactly the question that motivated the change. assoc_fails rides
          * along because "how long until the rescue AP" is the next question. */
-        s_ap_up ? "true" : "false", (unsigned)s_assoc_fails);
+        s_ap_up ? "true" : "false", (unsigned)s_assoc_fails,
+        (unsigned)s_last_reason);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -1166,13 +1313,34 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
      * user can see nothing happening in. */
     s_assoc_fails = 0;
 
-    const esp_err_t e = net_apply_sta_config(ssid, pass);
-    if (e != ESP_OK) {
-        ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_sendstr(req, "{\"error\":\"apply failed\"}");
+    /* Answer FIRST, then hand the radio over. Applying credentials calls
+     * esp_wifi_disconnect(), which drops the very TCP connection this reply
+     * travels on, so sending afterwards produced a timeout on a request that had
+     * worked — confirmed on the bench, where every join since this feature landed
+     * returned nothing at all to the browser.
+     *
+     * The delay is not enough to make that reliable on its own: sendstr() only
+     * hands the segment to lwIP, and a byte still in the retransmit queue when
+     * the radio drops never arrives (measured as a 3-8 s curl timeout on an
+     * accepted join). So this is a flush window, not a guarantee, and the config
+     * page likewise treats a lost reply as "pending" and polls status rather than
+     * reporting a rejection. Blocking here costs 250 ms of one httpd worker on a
+     * request a human makes once per provisioning; the alternative is an API
+     * whose success nobody can observe. */
+    const esp_err_t sent = httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
+    vTaskDelay(pdMS_TO_TICKS(250));
+
+    /* Nothing left can fail in a way the caller needs told about: the
+     * credentials are already committed, and the radio outcome is not known yet —
+     * it is what /api/v1/status reports as state/assoc_fails/wifi_reason. If the
+     * queue never came up (bring-up OOM), do the radio work on this task rather
+     * than not do it at all. */
+    if (!net_post_join(ssid, pass)) {
+        ESP_LOGW(TAG, "join: no radio queue — applying from the httpd task");
+        const esp_err_t e = net_apply_sta_config(ssid, pass);
+        if (e != ESP_OK) ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
     }
-    return httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
+    return sent;
 }
 
 /* POST /api/v1/wifi/ap — summon the provisioning AP on an orb that is happily
@@ -1477,7 +1645,10 @@ static const char HTML_LANDING[] =
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
 "async function status(){try{var d=await j('/api/v1/status');aprep(d);"
 "if(d.state=='connected'){say('connected \\u2014 orb is now at http://'+d.ip+'/','ok');return}"
-"say(d.state+(sel?' \\u2014 connecting to '+sel:''));}catch(e){say('device unreachable','bad')}}"
+"say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
+"+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason?', reason '+d.wifi_reason:'')+')':''))"
+"+(d.wifi_reason&&!d.assoc_fails?' (last reason '+d.wifi_reason+')':''));}"
+"catch(e){say('device unreachable','bad')}}"
 "async function scan(){say('scanning\\u2026');var ns=document.getElementById('ns');ns.innerHTML='';"
 "try{var d=await j('/api/v1/wifi/scan');var list=d.networks||[];"
 "if(!list.length){say('no networks found \\u2014 try Rescan','bad');return}"
@@ -1489,7 +1660,14 @@ static const char HTML_LANDING[] =
 "var p=document.getElementById('pass').value;"
 "say('joining '+sel+'\\u2026');"
 "try{await j('/api/v1/wifi/join',{method:'POST',headers:{'Content-Type':'application/json'},"
-"body:JSON.stringify(tzbody(sel,p))});}catch(e){say('join rejected: '+e.message,'bad');return}"
+"body:JSON.stringify(tzbody(sel,p))});}"
+"catch(e){var m=''+((e&&e.message)||'');"
+"/* Losing the reply is the normal outcome, not a failure: the orb drops"
+"   this very connection to try the new credentials, so the answer is often"
+"   lost on the way back. Only call it a rejection when an answer came"
+"   back with a reason in it. */"
+"if(/tz|ssid|body|content|large/i.test(m)){say('join rejected: '+m,'bad');return}"
+"say('sent \\u2014 orb is reconnecting\\u2026')}"
 "clearInterval(timer);timer=setInterval(status,1500);status()}"
 "function hm(m){var s=m<0?'-':'+',a=Math.abs(m);return s+Math.floor(a/60)+':'+('0'+(a%60)).slice(-2)}"
 "function tzmsg(t){document.getElementById('tzs').textContent=t}"
@@ -1812,7 +1990,9 @@ esp_err_t orb_net_start(void)
      * Revisit (WIFI_PS_MIN_MODEM) if this ever ships on a battery. */
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "set_ps");
 
-    if (!s_provisioning) {
+    if (!s_provisioning && !net_post_join(ssid, pass)) {
+        /* Queue missing (bring-up OOM): apply here so a correctly-configured
+         * orb still reaches its network on first boot. */
         const esp_err_t je = net_apply_sta_config(ssid, pass);
         if (je != ESP_OK) ESP_LOGW(TAG, "initial join failed: %s (will retry)",
                                    esp_err_to_name(je));

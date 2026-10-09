@@ -46,6 +46,20 @@ jsons = lift(r"static bool json_str\(const char \*body.*?\n\}")
 retry_defs = "\n".join(lift(rf"#define {k} +\d+ +/[^\n]*")
                        for k in ("NET_STA_RETRY_S", "NET_STA_RETRY_MAX_S"))
 retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
+# Which disconnects the orb caused itself, and which are the network saying no.
+# Lifted for the same reason as the ladder: both decide whether the rescue AP
+# opens, and neither is observable from the LAN — a miscounted "leave" looks
+# exactly like a router refusing the device, and ends with an open AP that
+# nobody summoned. The codes are 802.11's, pinned to the values in
+# esp_wifi_types_generic.h so a rename on our side cannot silently flip one.
+si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}")
+wifi_reasons = """
+enum { WIFI_REASON_AUTH_EXPIRE = 2,           /* esp_wifi_types_generic.h */
+       WIFI_REASON_AUTH_LEAVE  = 3,
+       WIFI_REASON_ASSOC_LEAVE = 8,
+       WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT = 15,
+       WIFI_REASON_NO_AP_FOUND = 201 };
+"""
 
 harness = f"""
 #include <stdio.h>
@@ -58,6 +72,8 @@ harness = f"""
 #include <stdint.h>
 {retry_defs}
 {retry_fn}
+{wifi_reasons}
+{si_fn}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
 #define ESP_LOGW(a, ...) do {{ }} while (0)
@@ -95,6 +111,34 @@ static void bk(unsigned attempt, uint32_t want)
     if (got != want) fails++;
     printf("%-5s attempt %-12u -> %4u s (want %u)\\n",
            got == want ? "ok" : "FAIL", attempt, (unsigned)got, (unsigned)want);
+}}
+static void leave_case(unsigned reason, int want_self){{
+    const bool got = sta_leave_is_self_inflicted((uint8_t)reason);
+    const int pass = ((int)got == want_self);
+    if (!pass) fails++;
+    printf("%-5s reason %-4u -> %-14s (want %s)\\n", pass ? "ok" : "FAIL", reason,
+           got ? "self-inflicted" : "counted",
+           want_self ? "self-inflicted" : "counted");
+}}
+/* The consequence that matters: self-inflicted leaves must be able to go on
+ * forever without reaching the rescue threshold, because the config page's AP
+ * button generates one per press. Modelled against the same counter the handler
+ * drives, so "the button eventually summons a rescue AP nobody asked for" is a
+ * test failure rather than a field report. */
+static void guard_counter(void){{
+    unsigned counted = 0;
+    for (int i = 0; i < 40; i++) {{
+        const unsigned r = (i & 1) ? WIFI_REASON_AUTH_LEAVE : WIFI_REASON_ASSOC_LEAVE;
+        if (!sta_leave_is_self_inflicted((uint8_t)r)) counted++;
+    }}
+    unsigned refused = 0;
+    for (int i = 0; i < 40; i++) {{
+        const unsigned r = (i & 1) ? WIFI_REASON_NO_AP_FOUND : WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT;
+        if (!sta_leave_is_self_inflicted((uint8_t)r)) refused++;
+    }}
+    if (counted != 0 || refused != 40) fails++;
+    printf("%-5s 40 leaves -> counter %u (want 0); 40 refusals -> %u (want 40)\\n",
+           (counted == 0 && refused == 40) ? "ok" : "FAIL", counted, refused);
 }}
 static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
@@ -170,6 +214,19 @@ int main(void)
         printf("%-5s first 8 attempts span %u s (want 395)\\n",
                sum == 395u ? "ok" : "FAIL", sum);
     }}
+    puts("== which disconnects may spend a ladder rung ==");
+    /* The same counter decides when the rescue AP opens, so a code misclassified
+     * here either summons an AP nobody asked for (a self-inflicted leave counted
+     * as a refusal) or leaves the device retrying a dead network forever (a real
+     * refusal not counted). Both are invisible from the LAN. */
+    leave_case(WIFI_REASON_AUTH_LEAVE, 1);                  /* 3: our disconnect() */
+    leave_case(WIFI_REASON_ASSOC_LEAVE, 1);                  /* 8: our set_mode() */
+    leave_case(WIFI_REASON_AUTH_EXPIRE, 0);                  /* 2: router let it lapse */
+    leave_case(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, 0);       /* 15: wrong passphrase */
+    leave_case(WIFI_REASON_NO_AP_FOUND, 0);                  /* 201: SSID gone */
+    leave_case(0, 0);      /* driver reported nothing: must still count, or the
+                            * ladder stops and the orb sits unreachable forever */
+    guard_counter();
     printf("%s\\n", fails ? "FAILURES" : "all host checks pass");
     return fails != 0;
 }}

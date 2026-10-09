@@ -77,8 +77,11 @@ menu "Orb networking"
             8-9 minutes of failure — long enough that a router rebooting
             (1-3 min) never wakes the AP, short enough that a real lockout is
             fixable from a phone instead of with a USB cable and an NVS erase.
-            Set 0 to disable (NOT recommended: it puts serial access back on
-            the critical path for a changed Wi-Fi passphrase).
+            Only the network saying no counts: a disconnect the orb caused
+            itself (submitting a join, opening or closing the AP) spends no
+            attempt, so pressing buttons can never summon a rescue AP by
+            accumulation. Set 0 to disable (NOT recommended: it puts serial
+            access back on the critical path for a changed Wi-Fi passphrase).
 
 
     config ORB_NET_HTTPD_PORT

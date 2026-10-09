@@ -71,6 +71,21 @@ CONFIG_HTTPD_PURGE_BUF_LEN=256
 # sockets to spare; it may be lowered toward 6 if the heap numbers justify it, but
 # not below it or httpd_start() refuses to start.
 
+# A/B rollback: ON, because this is a sealed device whose only other recovery
+# path is opening the case and flashing over USB. The A/B slots in partitions.csv
+# are not by themselves a safety net — without this, a successfully-uploaded image
+# that turns out to hang the display becomes the permanent boot target and the
+# orb is a brick until someone gets at the USB port. With it, the bootloader boots
+# a new image in ESP_OTA_IMG_PENDING_VERIFY and reverts to the previous slot on the
+# next reboot unless the app calls esp_ota_mark_app_valid_cancel_rollback() (main.c
+# does, only after display_bench_snapshot() reports the dial actually drew frames).
+# Consequences verified in esp_ota_ops.c: a second OTA while still PENDING_VERIFY
+# returns ESP_ERR_OTA_ROLLBACK_INVALID_STATE (line 142) — deliberate, it stops an
+# unproven image overwriting its own fallback — and idf.py flash resets boot
+# selection because ota_data_initial.bin IS in build/flash_args, so USB recovery
+# still works after a bad OTA. Costs a little otadata wear; worth it here.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
 # `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed
 # bucket and NOT this image's real instruction-RAM usage. This target's only

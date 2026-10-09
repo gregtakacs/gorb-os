@@ -8,6 +8,7 @@
  * measurement rather than arithmetic on datasheets. Set CONFIG_ORB_NET_MEM_DEBUG
  * off for shipping builds.
  */
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -208,8 +210,22 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    char json[384];
+    char json[512];
 
+    /* Which A/B slot is running, and whether the bootloader still considers it
+     * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
+     * other slot and /api/v1/reboot switches to it, so after a reboot this is the
+     * only way to tell the two apart from the LAN — and with rollback compiled in,
+     * "pending" here means the self-revert safety net is still armed. */
+    const esp_partition_t *slot = esp_ota_get_running_partition();
+    esp_ota_img_states_t img = ESP_OTA_IMG_UNDEFINED;
+    if (slot) esp_ota_get_state_partition(slot, &img);
+    const char *img_str =
+        img == ESP_OTA_IMG_PENDING_VERIFY ? "pending" :
+        img == ESP_OTA_IMG_VALID          ? "valid"   :
+        img == ESP_OTA_IMG_INVALID        ? "invalid" :
+        img == ESP_OTA_IMG_ABORTED        ? "aborted" :
+        img == ESP_OTA_IMG_NEW            ? "new"     : "undefined";
 
     /* Read the signal straight from the driver rather than trusting s_rssi:
      * that is only refreshed by event handlers, so it went stale and reported
@@ -227,13 +243,14 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
-        "\"art_ready\":%s,\"art_bytes\":%u}",
+        "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\"}",
         s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-        art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes());
+        art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
+        (slot ? slot->label : "?"), img_str);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -454,6 +471,186 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
 }
 
+/* -------------------------------------------------------------------------
+ * OTA: upload an app image over the LAN and stage it in the inactive A/B slot.
+ *
+ * Deliberately NOT esp_https_ota: that pulls in its own HTTP client plus TLS
+ * handling, and TLS is terminated upstream by the reverse proxy (see orb_net.h),
+ * so the device-side equivalent is a plain POST over esp_ota_ops. It would also
+ * require the download to be reachable FROM the device, which a LAN-side page
+ * driving a sealed device on someone's laptop is not.
+ *
+ * Staged, never auto-applied: /api/v1/ota writes, validates, and sets the boot
+ * partition; the caller then decides when to reboot via /api/v1/reboot. A device
+ * showing the time to a whole household should not reboot because a curl
+ * finished, and staging first means a bad upload costs nothing — the running
+ * image is untouched until that second request.
+ * ------------------------------------------------------------------------- */
+
+#define OTA_CHUNK 4096   /* static buffer, not stack: httpd's task stack is 8 KB */
+
+/* Smallest credible app image: 24 B image header + one segment header + the
+ * appended SHA-256. Below this it is not an image, and rejecting it here saves
+ * erasing a 2 MB slot for garbage. */
+#define OTA_MIN_BYTES 96
+
+static bool s_ota_busy;   /* one upload at a time; httpd has 3 slots */
+
+static esp_err_t ota_reject(httpd_req_t *req, esp_ota_handle_t *h,
+                            const char *status, const char *msg, esp_err_t logged)
+{
+    if (h && *h) {
+        esp_ota_abort(*h);      /* frees the ops entry; slot left uncommitted */
+        *h = 0;
+    }
+    s_ota_busy = false;
+    if (logged != ESP_OK) ESP_LOGE(TAG, "ota: %s (%s)", msg, esp_err_to_name(logged));
+    else                  ESP_LOGE(TAG, "ota: %s", msg);
+    httpd_resp_set_status(req, status);
+    /* Echo the reason in the body, not just the status line: every msg here is a
+     * string literal (never client data, so no escaping hazard), and an upload
+     * that fails while the user is staring at a progress bar has to say why
+     * without anyone attaching a serial cable to a mounted device. */
+    char body[160];
+    const int n = (logged != ESP_OK)
+        ? snprintf(body, sizeof(body), "{\"error\":\"%s\",\"detail\":\"%s\"}", msg, esp_err_to_name(logged))
+        : snprintf(body, sizeof(body), "{\"error\":\"%s\"}", msg);
+    if (n < 0 || (size_t)n >= sizeof(body))
+        return httpd_resp_sendstr(req, "{\"error\":\"update rejected\"}");
+    return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t h_ota(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static char ota_buf[OTA_CHUNK];
+
+    const int clen = (int)req->content_len;
+
+    /* Content-Length is mandatory, not mere strictness. esp_ota_begin() erases
+     * align_up(size, sector) when given a size, but the ENTIRE 2 MB slot when
+     * handed OTA_SIZE_UNKNOWN (esp_ota_ops.c:147-153) — and flash erase runs with
+     * the cache disabled, which stalls the LVGL task and blanks the clock for
+     * seconds. Taking the declared length shrinks that stall to the ~1.3 MB
+     * actually being written. A chunked upload gets 411, not a blackout. */
+    if (clen <= 0) return ota_reject(req, NULL, "411 Length Required",
+                                     "Content-Length required", ESP_OK);
+    if (clen < OTA_MIN_BYTES) return ota_reject(req, NULL, "400 Bad Request",
+                                                "body too small to be an image", ESP_OK);
+    if (s_ota_busy) return ota_reject(req, NULL, "409 Conflict",
+                                      "an update is already in progress", ESP_OK);
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target  = esp_ota_get_next_update_partition(NULL);
+    if (!target) return ota_reject(req, NULL, "507 Insufficient Storage",
+                                   "no spare app slot found", ESP_OK);
+    if (running && target->subtype == running->subtype) {
+        /* The S3 cannot OTA into the partition it is running from. With only
+         * ota_0/ota_1, hitting this means the slot pairing is broken. */
+        return ota_reject(req, NULL, "507 Insufficient Storage",
+                          "next update slot is the running one", ESP_OK);
+    }
+    if ((size_t)clen > target->size) {
+        static char m[96];
+        snprintf(m, sizeof(m), "{\"error\":\"too large\",\"max\":%u}", (unsigned)target->size);
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, m);
+    }
+
+    s_ota_busy = true;
+    ESP_LOGW(TAG, "ota: staging %d B into %s (0x%x)",
+             clen, target->label, (unsigned)target->address);
+
+    esp_ota_handle_t h = 0;
+    esp_err_t e = esp_ota_begin(target, (size_t)clen, &h);
+    if (e != ESP_OK) {
+        /* ESP_ERR_OTA_ROLLBACK_INVALID_STATE lands here: rollback is compiled in
+         * and this boot is still PENDING_VERIFY, i.e. esp_ota_mark_app_valid_cancel_rollback()
+         * has not run yet (main.c does it once the dial is confirmed up). Refusing
+         * the second upgrade is the point of that check — it stops a still-unproven
+         * image from overwriting its own fallback before anyone knows whether it
+         * works. */
+        return ota_reject(req, &h, "500 Internal Server Error", "ota_begin failed", e);
+    }
+
+    int got = 0;
+    while (got < clen) {
+        const int want = clen - got;
+        const int r = httpd_req_recv(req, ota_buf,
+                                    (size_t)(want < OTA_CHUNK ? want : OTA_CHUNK));
+        if (r <= 0) {
+            /* Client vanished mid-upload. The slot is left uncommitted and the
+             * boot partition still points at the working image — this failure
+             * mode is the whole reason staging and rebooting are two requests. */
+            return ota_reject(req, &h, "400 Bad Request", "upload aborted by client", ESP_OK);
+        }
+        e = esp_ota_write(h, ota_buf, (size_t)r);
+        if (e != ESP_OK) return ota_reject(req, &h, "500 Internal Server Error", "flash write failed", e);
+        got += r;
+    }
+
+    /* esp_ota_end() CONSUMES the handle — it LIST_REMOVEs + free()s the ops entry
+     * and validates via esp_image_verify() — so h must not be aborted after it.
+     * This validation is the reason to be here at all: a truncated or garbage
+     * upload fails and the boot partition is left pointing at the working image. */
+    e = esp_ota_end(h);
+    h = 0;
+    if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
+        return ota_reject(req, NULL, "400 Bad Request",
+                          "image failed validation (valid app image for this chip?)", e);
+    }
+    if (e != ESP_OK) return ota_reject(req, NULL, "500 Internal Server Error", "ota_end failed", e);
+
+    /* Commits the slot as next-to-boot (and re-validates independently). */
+    e = esp_ota_set_boot_partition(target);
+    if (e != ESP_OK) return ota_reject(req, NULL, "500 Internal Server Error", "set_boot_partition failed", e);
+
+    s_ota_busy = false;
+    ESP_LOGW(TAG, "ota: staged %d B; boot slot -> %s, reboot to activate", clen, target->label);
+
+    static char resp[160];
+    snprintf(resp, sizeof(resp),
+             "{\"state\":\"staged\",\"slot\":\"%s\",\"bytes\":%d,"
+             "\"reboot\":\"POST /api/v1/reboot\"}", target->label, clen);
+    return httpd_resp_sendstr(req, resp);
+}
+
+/* Reboot is a separate verb from staging (see h_ota). The response must leave
+ * before esp_restart() runs — otherwise the caller sees a dropped connection and
+ * cannot tell success from failure — so the restart is deferred to a one-shot
+ * timer instead of being done inline. */
+static void reboot_timer_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "rebooting on request (POST /api/v1/reboot)");
+    esp_restart();
+}
+
+static esp_err_t h_reboot(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static esp_timer_handle_t s_reboot_timer;
+    if (!s_reboot_timer) {
+        const esp_timer_create_args_t ta = { .callback = reboot_timer_cb };
+        if (esp_timer_create(&ta, &s_reboot_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "ota: could not create reboot timer");
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
+        }
+    }
+    if (esp_timer_start_once(s_reboot_timer, 750 * 1000) != ESP_OK) {
+        ESP_LOGE(TAG, "ota: could not arm reboot timer");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
+    }
+    ESP_LOGW(TAG, "ota: rebooting in 750 ms");
+    return httpd_resp_sendstr(req, "{\"state\":\"rebooting\"}");
+}
+
 /* Landing page for the first-boot SoftAP, when there is no PWA loaded yet (the
  * `www` partition is Phase 4). This is the whole provisioning UX, so it has to
  * stand on its own: a phone that just joined 'orb-xxxxxx' opens 192.168.4.1 and
@@ -613,6 +810,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },
+        { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
+        { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* Android + iOS/macOS captive-portal probes (see h_captive). */
         { .uri = "/generate_204",      .method = HTTP_GET, .handler = h_captive },
         { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = h_captive },

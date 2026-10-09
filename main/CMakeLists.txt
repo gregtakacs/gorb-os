@@ -33,6 +33,8 @@ idf_component_register(
         esp_http_server        # plain-HTTP config API (TLS terminated upstream)
         lwip                   # "
         esp_app_format         # esp_app_get_description() for the status endpoint
+        app_update             # OTA: esp_ota_begin/write/end + set_boot_partition + rollback confirm
+        bootloader_support     # esp_ota_img_states_t / esp_flash_partitions.h (status "img" field)
         nvs_flash
         lvgl__lvgl
         espressif__esp_lcd_co5300

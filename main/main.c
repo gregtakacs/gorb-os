@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "lvgl.h"
@@ -74,6 +75,31 @@ void app_main(void)
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "orb-os-esp-idf running — knob HSB editor live (long-press: switch screen)");
+
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    /* Rollback handshake. With the safety net compiled in, the bootloader boots a
+     * freshly OTA'd image in PENDING_VERIFY and REVERTS it at the next reboot
+     * unless the app confirms itself workable. "Workable" here means the dial
+     * actually drew, so wait for a couple of real flushes from the LVGL task
+     * instead of confirming the instant we reach this line: an image that comes
+     * up, wedges the display, and leaves a frozen clock is exactly the case the
+     * net exists for, and a blind delay would wave it through. */
+    for (int waited_ms = 0; waited_ms < 6000; waited_ms += 100) {
+        uint32_t frames = 0;
+        uint64_t us_total = 0;
+        uint32_t us_max = 0;
+        display_bench_snapshot(&frames, &us_total, &us_max);
+        if (frames >= 2) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    const esp_err_t rb = esp_ota_mark_app_valid_cancel_rollback();
+    if (rb != ESP_OK) {
+        /* Not fatal: the clock is running. But this image stays unconfirmed, so a
+         * reboot sends it back to the previous slot — say so loudly. */
+        ESP_LOGE(TAG, "rollback not cancelled (%s) — next reboot may revert to previous image",
+                 esp_err_to_name(rb));
+    }
+#endif
 
 #if CONFIG_ORB_NET_ENABLE
     /* Start the network AFTER the LVGL task exists, so the dial is already

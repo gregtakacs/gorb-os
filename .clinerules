@@ -1,0 +1,99 @@
+# gorb-os — agent notes
+
+Independent ESP-IDF firmware project (see `README.md`). This file only records
+the gotchas that cost real time on the bench; it does not restate the README.
+
+## Long-running bench commands must run detached — the 30 s tool cap is real
+
+**Rule: anything that takes over 30 s MUST be launched in the background and
+polled, never run inline.** A command that runs past ~30 s is killed by the tool
+timeout *mid-flight*, which for these operations is not just an annoyance — a
+killed WiFi OTA leaves a half-written inactive slot, and you pay the wait twice
+(kill, then re-issue). The reliable idiom:
+
+```
+# write the work into /tmp/foo.sh, then launch fully detached and return now:
+setsid /tmp/foo.sh </dev/null >/dev/null 2>&1 & disown
+# ...the script itself appends "EXIT=$?" / "DONE $(date +%T)" to a /tmp log,
+# and you poll that log with short `sleep N; cat/grep <log>` calls.
+```
+
+Two launch gotchas that burned time this session, both avoided by using a
+**script file** rather than an inline one-liner:
+- `nohup curl … &` alone still blocks the tool call — you must `setsid … &
+  disown` AND redirect stdin/stdout/stderr (`</dev/null >/dev/null 2>&1`) for it
+  to actually detach and return immediately.
+- Nested double-quotes inside an inline `bash -c '…'` launcher break the shell.
+  Put the payload in a file instead of quoting it around.
+- Each command in a `run_commands` array is its **own shell**; a `cd` in one
+  element does not carry to the next. Prefix every element with its own `cd`,
+  or use absolute paths.
+
+### Known operations that exceed 30 s (run these detached)
+- **WiFi OTA push**: `curl --data-binary @build/gorb-os.bin
+  http://<ip>/api/v1/ota` — ~40 s for the ~1.3 MB app over a healthy link, and
+  it **aborts mid-stream** ("upload aborted by client") when rssi is marginal
+  (< ~-70, ICMP loss). Prefer **serial flash** for the app on a flaky bench
+  (`/tmp/serflash.sh` does app+otadata to ota_0 in ~25 s, hashes verified); use
+  WiFi OTA only when the device is near its AP. The device keeps booting the old
+  slot during a push, so it looks "silent" — that is the httpd worker blocked in
+  the flash write, not a hang; poll, don't re-push (a second push corrupts).
+- **Serial flash of a bulk image**: any `esptool write_flash` / `idf.py flash`
+  that sends the app (1.3 MB) — and especially anything that re-sends
+  `assets/clock_assets.bin` (~1.85 MB) — runs 25–40 s+. Detach and poll
+  `/tmp/serflash.log` for `Hash of data verified` + `EXIT=0`.
+- **`idf.py build` that recompiles many objects**: the steady-state rebuild of
+  one file (`orb_net.c`) is ~10 s and is fine inline, but the **first build into
+  a fresh `-B` dir**, or any build after an `sdkconfig`/Kconfig change that
+  drags in mbedtls/LWIP, exceeds 30 s. Run detached and grep the log for
+  `Project build complete` / `binary size` / `warning:` / `error:`.
+- **`idf.py flash monitor`**, and any `monitor`/serial capture held open longer
+  than ~25 s (e.g. watching the association ladder). Use the short bounded
+  capture scripts (`/tmp/cap.py <log> <secs>`, `/tmp/cap_reset.py`) with a
+  duration under ~12 s inline; longer captures go detached.
+
+### Known operations that are SAFE inline (under 30 s)
+- `python3 tools/host_tz_test.py` (~1 s).
+- Steady-state `idf.py build` after editing a single source file (~10 s).
+- `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
+- Short serial captures (≤ ~12 s) like `/tmp/cap_reset.py`.
+
+## sdkconfig is local + untracked — a NEW Kconfig `default y` does NOT appear on a rebuild
+
+`sdkconfig` and any `sdkconfig.defaults` are NOT committed here (and there is no
+`*_defconfig`). `idf.py build` treats an existing `sdkconfig` as authoritative:
+adding a `config FOO` with `default y` to `main/Kconfig` does **not** materialize
+`FOO=y` into the existing `sdkconfig`/`build/config/sdkconfig.h` — so
+`#if CONFIG_FOO` silently compiles the feature **out**, and the only tell is a
+binary that barely grows. This bit `CONFIG_ORB_NET_CAPTIVE_DNS`: the first "clean
+build" was a false pass (+96 B = just the URI strings, not the task).
+
+Therefore, **whenever you add a Kconfig symbol and want it on, prove it actually
+compiled in — do not trust `EXIT=0`:**
+1. grep `build/config/sdkconfig.h` for `#define CONFIG_<SYM> 1` (absent = out);
+2. `xtensa-esp32s3-elf-nm build/gorb-os.elf | grep <new_fn>` and
+   `strings … | grep <new log line>`;
+3. sanity-check the `binary size` delta is the right order of magnitude.
+Fix a missing symbol by writing the explicit `CONFIG_<SYM>=y` line into
+`sdkconfig` (append if absent), then rebuild. Fresh clones get `default y` for
+free; it's the *existing* local `sdkconfig` that silently excludes it.
+
+## Bench has no WiFi radio — verify what you can, and say what you can't
+
+There is no wireless adapter on the host, so the phone-side captive-portal popup
+("Sign in to network") and any real client joining the AP cannot be proven here.
+What IS verifiable on the bench, via USB serial + the LAN the orb joins as a
+station:
+- Serial console: `sudo` on `/dev/ttyACM0` (re-attach via usbipd drops dialout).
+  Flash/boot capture: `/tmp/cap_reset.py`, `/tmp/cap.py <log> <secs>`.
+- `/api/v1/status` over LAN (state/fw/slot/img/rssi/synced/ap/assoc_fails).
+- AP open/close lifecycle + `captive DNS answering for …` via
+  `/tmp/ap_cp_test.sh` (opens AP while station holds a lease, checks the station
+  stays connected+synced, fires the probe endpoints, closes AP, greps serial).
+- **Audit loop**: flash, then confirm `/api/v1/status`'s `fw` is the git hash you
+  built (`-dirty` = uncommitted edits). Ship = test = commit, same bytes.
+
+Anything needing a radio to *observe* (the popup, real DNS answer to a client)
+belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how
+`dns_build_reply`, `retry_delay_s`, `sta_leave_is_self_inflicted` and the tz
+block are tested. Do not claim a radio-dependent behavior is verified.

@@ -182,7 +182,7 @@ System python has no PIL; use a venv with `pillow numpy` for both tools.
     /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-tourbillon \
         --bg-frames /tmp/out/frames --bg-fps 15 \
         --tourbillon <unzipped kit>/tourbillon --tourbillon-fps 15 \
-        --no-sweep --tick-rate 1 --dump-dir assets/preview-orbital
+        --force-sweep --tick-rate 15 --dump-dir assets/preview-orbital
 
 Layer mapping (kit drawOrder -> compositor slots, verified against the ink radial
 surveys — check the same numbers before trusting a new kit's art into a slot):
@@ -213,11 +213,19 @@ Firmware rules this dial depends on (`main/clock/clock_view.c`):
 - `CLK_GIF_THROTTLE 2` does nothing on this art (tick period exceeds the GIF
   deadline, so every tick is due anyway); measured no fps change. Leave at 1.
 
-The kit's orbit TICKS at 1 Hz (`--no-sweep --tick-rate 1`): the carriage's swept
-box is ~430 px tall, and sweeping would re-rotate it every tick for half the
-frame rate and no visible gain on a mechanical carriage. If a future kit needs
-both sweep and a big layer, the wedge idea in the mark_all_layers plateau note
-is where to start.
+The kit's orbit SWEEPS: bake with `--force-sweep --tick-rate 15`. tickRate must be
+>= the bank fps so `hand_beat_ticks()` yields one tick per beat (tpb<=1 = true
+wall-clock sampling every tick); a low tickRate RE-QUANTISES the sweep to that
+many beats/s and at rate 1 is indistinguishable from ticking. Measured price:
+steady 5 fps vs 9-10 ticking — each sweep step rotates the whole carriage, whose
+rigid ring ink moves as one, so every beat re-marks the full swept box (~430 px
+tall, ~40% of the page) and the commit re-blends dial+glass over it. Quantising
+to tpb=2 (`--tick-rate 7`) measured NO higher fps (5-7, pipeline already
+saturated) for steeper 1.2-2.4° steps — rate 15 is the best sweep setting.
+Recovering sweep fps means marking the rotated INK footprint per row instead of
+the box (the row model stores one min/max x-span, so a full ring buys back
+nothing; start from the mark_all_layers plateau note). Classic tick art keeps
+its old 9-10 fps discipline either way — sweep lives in the theme, not the code.
 
 Steam-punk is NOT lost: `git checkout assets/clock_assets.bin assets/clock_assets.h
 main/CMakeLists.txt --` restores the shipped 1.85 MB pair (it rebuilds identically
@@ -226,6 +234,6 @@ a copy). Swap the pair, `idf.py build`, and the full `idf.py flash` (the assets
 partition write is the slow ~3 min part — detach, per above).
 
 Verified on the bench at fw with this theme: boot logs `tourbillon: 15 frames @
-15 fps on the second-hand slot, orbit about (233,233)`, steady 9-10 fps, px/s
-~1.2-1.5 M, no Guru. `assets/preview-orbital/` holds the bake's own inspection
+15 fps on the second-hand slot, orbit about (233,233)`; sweep steady 5 fps (tick
+mode measured 9-10), px/s ~0.9-1.2 M under sweep, no Guru. `assets/preview-orbital/` holds the bake's own inspection
 PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).

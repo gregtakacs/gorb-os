@@ -89,10 +89,12 @@ def main():
     shutil.copy(f"{K}/layers/dial.png", f"{theme}/clock_hand_static1.png")
     Image.fromarray(glass2).save(f"{theme}/clock_overlay.png")
 
-    json.dump({"name": os.path.basename(outdir)}, open(f"{theme}/theme.json", "w"))
+    json.dump({"name": "orbital-tourbillon"}, open(f"{theme}/theme.json", "w"))
     # clock_style.json authored from the manifest (kit: centre 233,233;
     # z-order hour below minute; dial over the carriage, under the hands;
-    # tick, not sweep — see module docstring).
+    # SWEEPING carriage: the manifest's orbit is continuous and the device
+    # samples the wall clock every tick — tickRate >= the bank fps keeps
+    # hand_beat_ticks() at one tick per beat, i.e. a true sweep, not 1 Hz).
     style = {
         "hands": {
             "order": [2, 3, 0, 1],
@@ -108,8 +110,8 @@ def main():
             "static2": {"show": False, "pivotX": 233, "pivotY": 233,
                         "centerX": 233, "centerY": 233, "blend": 0},
         },
-        "secondSweep": False, "secondRailway": False,
-        "textOverHands": False, "tickRate": 1,
+        "secondSweep": True, "secondRailway": False,
+        "textOverHands": False, "tickRate": 15,
     }
     json.dump(style, open(f"{theme}/clock_style.json", "w"), indent=1)
     shutil.rmtree("/tmp/_kit", ignore_errors=True)

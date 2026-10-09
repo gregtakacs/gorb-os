@@ -315,7 +315,7 @@ static const clk_theme_t clk_theme = {
   /* bg */ 0x000000,
   /* plate_follow */ 0,
   /* shadow_on */ 0, /* shadow dx,dy */ 3, 9,
-  /* sweep,railway,textOverHands,tickRate */ 0, 0, 0, 1,
+  /* sweep,railway,textOverHands,tickRate */ 1, 0, 0, 15,
   /* bg_frames */ 0, /* fps,loop,every */ 6, 0, 3600,
   /* plate_off */ 0,
   /* order */ { 2, 3, 0, 1 }, /* order_n */ 4,

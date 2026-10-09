@@ -52,8 +52,8 @@
    "blend": 0
   }
  },
- "secondSweep": false,
+ "secondSweep": true,
  "secondRailway": false,
  "textOverHands": false,
- "tickRate": 1
+ "tickRate": 15
 }

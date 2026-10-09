@@ -78,10 +78,17 @@ Fix a missing symbol by writing the explicit `CONFIG_<SYM>=y` line into
 `sdkconfig` (append if absent), then rebuild. Fresh clones get `default y` for
 free; it's the *existing* local `sdkconfig` that silently excludes it.
 
-## The config page is a C string, and a JS syntax error in it is invisible on a radio-less bench
+## The config pages are C strings, and a JS syntax error in them is invisible on a radio-less bench
 
-The whole provisioning UX (`HTML_LANDING` in `orb_net.c`) is one giant
-`static const char[]` of concatenated `"…"` fragments. Two ways it breaks in a
+There are two pages, each one giant `static const char[]` of concatenated
+`"…"` fragments: `HTML_LANDING` (provisioning at `/`) and `HTML_TZ` (the clock
+at `/timezone`). The timezone UI lives only on the clock page — the owner took
+it off the network page outright after the first phone tests. The clock page
+renders city rows from `/api/v1/config` (`label` + `iana` columns), reads the
+phone's zone via `Intl…resolvedOptions()` and auto-applies it; it shows no
+POSIX rules to a person, ever. `tools/host_tz_test.py` parses and pins both
+pages and enforces those boundaries by forbidding tz UI on the landing page
+and `posix`/<select> on the clock page. Two ways the pages break in a
 way curl + a working server can hide:
 
 1. **Unbalanced parens across fragment boundaries.** Each C line looks fine in

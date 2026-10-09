@@ -320,21 +320,18 @@ if cc.returncode:
 # script block. esprima is not stdlib — a missing parser is a loud SKIP (run
 # this file with a python that has it: pip install esprima); a missing page or
 # a broken script is a FAIL.
-def landing_page_js():
-    m = re.search(r'static const char HTML_LANDING\[\] =(.*?);\s*\n', src, re.S)
+def c_page(sym):
+    """Rebuild the page bytes the way the compiler does (concatenate the adjacent
+    literals, C-unescape each) after first refusing any line that is neither a
+    comment nor a whole C string fragment — the extractor below silently skips
+    lines it cannot match, so without this gate an unbalanced quote deletes
+    source from the bytes under test instead of failing (two real edits did
+    exactly that, and the parse checks stayed green on a page that had quietly
+    lost lines)."""
+    m = re.search(r'static const char ' + sym + r'\[\] =(.*?);\s*\n', src, re.S)
     if not m:
-        print('FAIL landing page: HTML_LANDING not found in orb_net.c — did it '
-              'get renamed? This check dies loudly rather than silently stop '
-              'covering the page.'); return 1
-    import ast
-    # Fragment integrity. The extractor above SKIPS any line it cannot match,
-    # which means an unbalanced quote in the page silently deletes source from
-    # the bytes under test instead of failing: two real edits today produced a
-    # file that would not compile (a leftover " turned a C comment into an
-    # unterminated literal; an extra " opened an empty literal) and the parse
-    # check stayed green because the damaged lines had simply vanished from
-    # `page`. So walk the region line by line and refuse to accept a page whose
-    # lines are not all either comments or well-formed C string fragments.
+        return None, None, (sym + ' not found in orb_net.c — did it get renamed? '
+                            'This check dies loudly rather than silently stop covering.')
     region = m.group(1)
     base = src[:m.start()].count(chr(10)) + 1
     bad, in_comment = [], False
@@ -347,125 +344,195 @@ def landing_page_js():
                 in_comment = False
             continue
         if t.startswith('/*') or t.startswith('//'):
-            if '*/' not in t and t.startswith('/*'):
+            if t.startswith('/*') and '*/' not in t:
                 in_comment = True
             continue
         if not re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t):
             bad.append((where, t[:64]))
     if bad:
         for where, t in bad[:6]:
-            print(f'FAIL landing page: line {where} is neither a comment nor a '
-                  f'complete C string fragment (unbalanced quote?): {t!r}')
+            print(f'FAIL {sym}: line {where} is neither a comment nor a complete '
+                  f'C string fragment (unbalanced quote?): {t!r}')
         print('       the extractor skips such lines, so they were NOT covered '
               'by the parse/pin checks below.')
-        return 1
-    fragments = re.findall(r'"((?:[^"\\\n]|\\.)*)"', m.group(1))
+        return None, None, sym + ' fragment integrity'
+    import ast
+    fragments = re.findall(r'"((?:[^"\\\n]|\\.)*)"', region)
     if not fragments:
-        print('FAIL landing page: no string fragments inside HTML_LANDING'); return 1
+        return None, None, f'no string fragments inside {sym}'
     page = ''.join(ast.literal_eval('"' + f + '"') for f in fragments)
     js = re.search(r'<script>(.*?)</script>', page, re.S)
     if not js:
-        print('FAIL landing page: no <script> block'); return 1
+        return None, None, f'no <script> block in {sym}'
+    return page, js.group(1), None
+
+
+def landing_page_js():
+    # Two pages ship in firmware now: the provisioning landing page and the
+    # clock page (/timezone, HTML_TZ). The timezone UI was MOVED, not restyled
+    # — owner's call after provisioning worked: the network page must not show
+    # zone settings at all, and the old dropdown of IANA keys + POSIX free
+    # text was unusable for a person (and the phone's own zone was never
+    # auto-applied, so it usually was not touched at all). So the pins below
+    # enforce BOTH halves of that decision: tz UI is FORBIDDEN on the landing
+    # page, and the clock page is pinned to the human-readable shape.
     try:
         import esprima
     except ImportError:
         print('SKIP  landing-page JS parse (no esprima: pip install esprima)')
         return 0
-    try:
-        esprima.parseScript(js.group(1))
-    except Exception as e:
-        print(f'FAIL landing-page JS: {e}')
-        idx = getattr(e, 'index', None)
-        if isinstance(idx, int):
-            s = js.group(1)
-            print('      near: …' + s[max(0, idx - 70):idx + 70] + '…')
-        return 1
-    js = js.group(1)
-    # Product decisions pinned to the shipped page (each was an explicit user
-    # call — see the h_wifi_ap comment for the reasoning): no AP-summon button,
-    # the page CLOSES the AP itself once the connected message is delivered,
-    # the success render carries a clickable link, and polling stops on
-    # success so the confirmation can never be overwritten by "device
-    # unreachable" when the AP drops.
     rc = 0
-    # Product decisions pinned to the shipped page. Each was an explicit call:
-    # no AP-summon button; polling stops on success so the confirmation cannot
-    # be overwritten by "device unreachable"; the reason shows as a word; and -
-    # the one that took a phone test to learn - the AP is closed only on a
-    # DELIBERATE tap, never automatically when the confirmation renders.
-    # Android binds its captive-portal webview to the AP, so an automatic ack
-    # took the page down with the address still unread on it.
-    rc = 0
+    pages = {}
+    for sym in ('HTML_LANDING', 'HTML_TZ'):
+        page, js, err = c_page(sym)
+        if err:
+            print(f'FAIL landing page: {err}'); return 1
+        try:
+            esprima.parseScript(js)
+        except Exception as e:
+            print(f'FAIL {sym} JS: {e}')
+            idx = getattr(e, 'index', None)
+            if isinstance(idx, int):
+                print('      near: …' + js[max(0, idx - 70):idx + 70] + '…')
+            return 1
+        pages[sym] = (page, js)
+    lpage, ljs = pages['HTML_LANDING']
+    cpage, cjs = pages['HTML_TZ']
+
+    # ---- landing: the shipped product decisions (see the h_wifi_ap and
+    # HTML_LANDING comments for the reasoning behind each) ----
     for k, why in {'apbtn': 'AP-summon button (removed deliberately)',
                    'apgo': 'AP-summon JS (removed deliberately)',
-                   'apoff': 'the old automatic AP close on render'}.items():
-        if k in page:
-            print(f'FAIL landing page: contains {k!r} - {why}'); rc = 1
-    # The connected render must hand off to success() and stop. This is the
-    # one-line proof that rendering cannot close the AP.
+                   'apoff': 'the old automatic AP close on render',
+                   # the whole point of the split: nothing timezone-shaped
+                   # belongs on the network page, not even as a leftover.
+                   'Timezone': 'timezone section on the network page',
+                   'id=tz': 'timezone dropdown on the network page',
+                   'tzs': 'old timezone status line',
+                   'tzgo': 'old set-zone button',
+                   'tzx': 'old POSIX free-text box',
+                   'tzbody': 'old join-piggybacked timezone',
+                   'POSIX': 'POSIX rules shown to a person',
+                   '__c__': 'old custom-rule dropdown value',
+                   '<select': 'dropdown UI on the network page',
+                   'resolvedOptions': 'phone timezone detection (belongs on the clock page only)'}.items():
+        if k in lpage:
+            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
     for k, why in {"if(d.state=='connected'){success(d);return}":
                    'the success render does not ack the AP'}.items():
-        if k not in js:
-            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
-    # page-level (HTML, not script) presences
+        if k not in ljs:
+            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
     for k, why in {'id=eye': 'password show/hide toggle button',
                    'id=done': 'confirmation block polling cannot clobber'}.items():
-        if k not in page:
-            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
+        if k not in lpage:
+            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
     for k, why in {"createElement('a')": 'the open-in-new-tab link',
                    "a.target='_blank'": 'that link opens a new tab, not over this page',
+                   'orb clock: set your city': 'the link to the clock page',
                    'Copy address': 'the copy button',
                    'close setup network': 'the explicit user ack that closes the AP',
                    'Switch your phone back to your own wifi': 'instructions to leave the AP',
                    'addr.readOnly=true': 'a selectable address box for manual copy',
-                   "JSON.stringify({on:'off'})": 'the ack body the endpoint expects',
-                   "mode:'no-cors'": 'the ack stays a simple request cross-origin',
-                   "if(lanip)fetch('http://'": 'ack still lands after the phone roams home',
+                   "JSON.stringify({ssid:sel,pass:p})": 'join sends only the network choice',
                    "document.execCommand('copy')": 'the copy path that works on http',
                    'navigator.clipboard': 'the modern copy path, tried when present',
                    'clearInterval(mainTmr)': 'status polling stops on success',
                    "getElementById('eye')": "the toggle's click wiring",
                    "'hide':'show'": "the toggle's own label flips",
-                   # The three earlier phone-test fixes: the scan owns the
-                   # status line, a reason reads as a word, and one dropped
-                   # poll is not reported as a failure.
                    'if(scanning)return;': 'status() cannot overwrite the scan UX',
                    'fails<3': 'transient fetch loss is tolerated, not unreachable',
                    'wifi_reason_name': 'the 802.11 reason shown as a word'}.items():
-        if k not in js:
-            print(f'FAIL landing page: missing {k!r} - {why}'); rc = 1
-    # Count-exact, not just present: apkill() posts twice (the AP's own address
-    # and the absolute-LAN-address retry for a phone that already roamed home)
-    # and EVERY one of them has to be a simple request. A substring pin here
-    # passed while one of the two was mutated to 'cors' -- and cors on the
-    # fallback means a preflight the orb never answers, i.e. the ack silently
-    # never lands from the home network.
+        if k not in ljs:
+            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
+    for k, why in {"?', reason '+d.wifi_reason": 'raw reason number shown to the user'}.items():
+        if k in ljs:
+            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+    # Count-exact: apkill() posts twice (AP address + absolute-LAN retry for a
+    # phone that already roamed home); EVERY one must be a simple request.
+    # cors on the fallback means a preflight the orb never answers, i.e. the
+    # ack silently never lands. A substring pin passed this mutation before.
     for k, want, why in [("mode:'no-cors'", 2,
                          'every ack post is a simple (no-preflight) request'),
-                       ("/api/v1/wifi/ap", 2,
+                        ("/api/v1/wifi/ap", 2,
                          'both ack posts exist (AP address + LAN-address fallback)')]:
-        got = js.count(k)
+        got = ljs.count(k)
         if got != want:
-            print(f'FAIL landing page: {k!r} appears {got}x, want {want}x - {why}'); rc = 1
+            print(f'FAIL landing page: {k!r} appears {got}x, want {want}x — {why}'); rc = 1
 
-    # The old display path printed the raw code, which is what read as
-    # "response 4?" on a phone. Keep the word form from being reintroduced.
-    for k, why in {"?', reason '+d.wifi_reason": 'raw reason number shown to the user'}.items():
-        if k in js:
-            print(f'FAIL landing page: contains {k!r} - {why}'); rc = 1
-    # Server side of the same decisions: a user-initiated join must be a state
-    # of its own, otherwise the page can only ever say "provisioning".
+    # ---- clock page: human-readable, phone-driven, zero typing ----
+    for k, why in {'posix': 'POSIX shown on the clock page',
+                   'POSIX': 'POSIX named on the clock page',
+                   '<select': 'dropdown (the list is tap-one-row buttons now)',
+                   '__c__': 'custom-rule case',
+                   'tzx': 'free-text rule box',
+                   'EST5EDT': 'a POSIX rule example on the page',
+                   'Set zone': 'the old confirm button'}.items():
+        if k in cpage:
+            print(f'FAIL clock page: contains {k!r} — {why}'); rc = 1
+    for k, why in {'Type your city': 'search box in the markup',
+                   'id=msg': 'one plain status line',
+                   'id=zs': 'the city list container'}.items():
+        if k not in cpage:
+            print(f'FAIL clock page: missing {k!r} — {why}'); rc = 1
+    for k, why in {'resolvedOptions().timeZone': 'reads the phone\'s own zone',
+                   'formatToParts': 'measures zone offsets in the browser',
+                   'function matchPhone': 'phone-to-table matching before asking',
+                   'your phone says ': 'announces the auto-set it is about to do',
+                   'is that the right time': 'asks the one question that catches a bad rule',
+                   'does not follow DST': 'the fallback row admits its limit',
+                   'could not reach the orb': 'says so when the fetch dies',
+                   'GMT': 'labels lead with the offset',
+                   'oninput': 'the search box filters live'}.items():
+        if k not in cjs:
+            print(f'FAIL clock page: missing {k!r} — {why}'); rc = 1
+
+    # ---- server side of the same decisions ----
     for k, why in {'s_joining': 'the joining state distinct from provisioning',
                    '"joining"': 'the joining state string the page keys on',
-                   'wifi_reason_name': 'the reason rendered as a word'}.items():
+                   'wifi_reason_name': 'the reason rendered as a word',
+                   'HTML_TZ': 'the clock page bytes',
+                   'h_timezone': 'the clock page handler',
+                   '"/timezone"': 'the clock page route',
+                   'const char *iana': 'the canonical-name column the phone matches',
+                   'const char *label': 'the city column a person reads',
+                   '\\"iana\\":\\"%s\\"': 'config serves the iana column',
+                   '\\"label\\":\\"%s\\"': 'config serves the label column'}.items():
         if k not in src:
-            print(f'FAIL orb_net.c: missing {k!r} - {why}'); rc = 1
+            print(f'FAIL orb_net.c: missing {k!r} — {why}'); rc = 1
+
+    # h_config_get's static json[] must survive the table it prints: every
+    # column of every row counted at its real length + the two 64-char echo
+    # strings, checked against the declared buffer. A truncation here is an
+    # empty picker on the phone, which looks like a device fault.
+    tb = re.search(r'static const tz_entry_t s_tz_tbl\[\] = \{(.*?)\n\};', src, re.S)
+    rows = re.findall(r'\{\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\s*,?\s*\}',
+                      tb.group(1)) if tb else []
+    if len(rows) < 9:
+        print(f'FAIL orb_net.c: expected 9 four-column zone rows, found {len(rows)}'); rc = 1
+    else:
+        ent = sum(43 + len(n) + len(px) + len(ia) + len(la) for n, px, ia, la in rows)
+        worst = (len('{"zones":[') + ent + len(rows) - 1
+                 + len('],"tz":"') + 64 + len('","posix":"') + 64
+                 + len('","tz_offset":') + 6 + 1 + 32)   # tail + slack
+        mb = re.search(r'static esp_err_t h_config_get.*?static char json\[(\d+)\]', src, re.S)
+        cap = int(mb.group(1)) if mb else -1
+        if cap < worst:
+            print(f'FAIL orb_net.c: config json buffer {cap} B < computed worst case '
+                  f'{worst} B — enlarge it or trim a column'); rc = 1
+
+    # Every registered route must fit the httpd table cap: registration past
+    # max_uri_handlers 404s with no log line at all.
+    nroutes = src.count('{ .uri = "')
+    mcap = re.search(r'max_uri_handlers\s*=\s*(\d+)', src)
+    cap = int(mcap.group(1)) if mcap else -1
+    if not (0 < nroutes <= cap):
+        print(f'FAIL orb_net.c: {nroutes} routes vs max_uri_handlers {cap}'); rc = 1
+
     if rc:
         return rc
-    print(f'ok    landing-page JS parses ({len(js)} B script), '
-          'AP-ack / no-button / status-stop pinned')
+    print(f'ok    landing ({len(ljs)} B) + clock ({len(cjs)} B) JS parse; tz UI off the '
+          f'network page, {nroutes} routes in cap, config body fits')
     return 0
-
 
 rc = landing_page_js()
 if rc:

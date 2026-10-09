@@ -228,24 +228,32 @@ static bool json_str(const char *body, size_t len, const char *key, char *out, s
  *
  * Nothing here knows about SNTP: TZ only interprets the epoch, it never sets it.
  * ------------------------------------------------------------------------ */
-typedef struct { const char *name; const char *posix; } tz_entry_t;
+typedef struct { const char *name; const char *posix; const char *iana; const char *label; } tz_entry_t;
 
-/* Names are IANA-style so the same strings still work as keys if esp_timezones
- * ever lands. The rules are the post-2007 POSIX forms — M3.2.0 = second Sunday
+/* Keys are what the device STORES and resolves — IANA-style so they still
+ * work as keys if esp_timezones ever lands — and they are frozen: NVS holds
+ * the served string verbatim and tz_resolve() looks it up by key, so renaming
+ * one silently un-sets every device already provisioned to it.
+ * `iana` is the canonical spelling the phone world uses (Android reports
+ * America/Chicago, never US/Central) and exists purely so the clock page can
+ * match the phone's own zone to a table row exactly. `label` is the city a
+ * person would recognize; the clock page renders "(GMT-06:00) Chicago", never
+ * these keys, and never a POSIX rule — that was the old UX and the owner hated it.
+ * The rules are the post-2007 POSIX forms — M3.2.0 = second Sunday
  * of March, the /n suffix naming the weekday the transition lands on. US/Arizona
  * is its own row precisely BECAUSE it is MST7 with no DST component: handing it
- * "MST7MDT,…" is the classic way to put a no-DST state an hour off for half the
+ * "MST7MDT,..." is the classic way to put a no-DST state an hour off for half the
  * year, and the only thing that ever catches that is someone glancing at the dial. */
 static const tz_entry_t s_tz_tbl[] = {
-    { "UTC",            "UTC0"                       },
-    { "US/Eastern",     "EST5EDT,M3.2.0,M11.1.0"     },
-    { "US/Central",     "CST6CDT,M3.2.0,M11.1.0"     },
-    { "US/Mountain",    "MST7MDT,M3.2.0,M11.1.0"     },
-    { "US/Pacific",     "PST8PDT,M3.2.0,M11.1.0"     },
-    { "US/Arizona",     "MST7"                       },
-    { "Europe/London",  "GMT0BST,M3.5.0/1,M10.5.0"   },
-    { "Europe/Berlin",  "CET-1CEST,M3.5.0,M10.5.0/3" },
-    { "Asia/Tokyo",     "JST-9"                      },
+    { "UTC",            "UTC0",                       "UTC",                 "UTC"                       },
+    { "US/Eastern",     "EST5EDT,M3.2.0,M11.1.0",     "America/New_York",    "New York"                  },
+    { "US/Central",     "CST6CDT,M3.2.0,M11.1.0",     "America/Chicago",     "Chicago"                   },
+    { "US/Mountain",    "MST7MDT,M3.2.0,M11.1.0",     "America/Denver",      "Denver"                    },
+    { "US/Pacific",     "PST8PDT,M3.2.0,M11.1.0",     "America/Los_Angeles", "Los Angeles"               },
+    { "US/Arizona",     "MST7",                       "America/Phoenix",     "Phoenix (no clock change)"  },
+    { "Europe/London",  "GMT0BST,M3.5.0/1,M10.5.0",   "Europe/London",       "London"                    },
+    { "Europe/Berlin",  "CET-1CEST,M3.5.0,M10.5.0/3", "Europe/Berlin",       "Berlin"                    },
+    { "Asia/Tokyo",     "JST-9",                      "Asia/Tokyo",          "Tokyo"                     },
 };
 #define NET_TZ_N ((int)(sizeof(s_tz_tbl) / sizeof(s_tz_tbl[0])))
 
@@ -1188,19 +1196,23 @@ static esp_err_t h_status(httpd_req_t *req)
     return httpd_resp_sendstr(req, json);
 }
 
-/* GET /api/v1/config — the zone table is SERVED, not hardcoded in the page. The
- * inline page and the future PWA both render their picker from this reply, which
- * is the only way the list of zones stays in step with the firmware that owns the
- * rules. `posix` is the resolved rule in effect, so the page can show what a name
- * actually means and can tell a table entry from a hand-typed string. */
+/* GET /api/v1/config — the zone table is SERVED, not hardcoded in the page: the
+ * clock page renders entirely from this reply, which is the only way its list of
+ * cities stays in step with the firmware that owns the rules. The reply carries
+ * every column a client could want — `label` is what a person reads, `iana` is
+ * what a phone's own zone string is matched against, and `posix` (the resolved
+ * rule in effect) stays for tooling and for telling a table entry from a
+ * hand-set rule; the clock page shows it to nobody. */
 static esp_err_t h_config_get(httpd_req_t *req)
 {
-    /* static, not stack (same reasoning as s_scan_json): the nine entries are
-     * ~510 B — 9 × (22 B of key/quote/colon + a ≤20 B name + a ≤24 B rule) — and
-     * the echo tail can carry a 64-char custom rule, so ~710 B worst case. On
-     * httpd's CONFIG_HTTPD_TASK_STACK_SIZE stack that is a real overflow risk;
-     * handlers run serially, so one instance is safe. */
-    static char json[768];
+    /* static, not stack (same reasoning as s_scan_json): nine entries at ~54 B
+     * of key/quote/colon overhead plus name + rule + iana + label is ~1.05 kB,
+     * and the echo tail can carry two 64-char strings, so ~1.2 kB worst case —
+     * the exact figure tools/host_tz_test.py recomputes from the table and
+     * asserts against this buffer. On httpd's CONFIG_HTTPD_TASK_STACK_SIZE
+     * stack that is a real overflow risk; handlers run serially, so one
+     * instance is safe. */
+    static char json[1280];
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -1215,8 +1227,10 @@ static esp_err_t h_config_get(httpd_req_t *req)
          * length, and half an entry left in the buffer would make the whole body
          * unparseable (the exact failure h_wifi_scan documents). */
         const int w = snprintf(json + off, sizeof(json) - (size_t)off,
-                               "%s{\"name\":\"%s\",\"posix\":\"%s\"}",
-                               i ? "," : "", s_tz_tbl[i].name, s_tz_tbl[i].posix);
+                               "%s{\"name\":\"%s\",\"posix\":\"%s\","
+                               "\"iana\":\"%s\",\"label\":\"%s\"}",
+                               i ? "," : "", s_tz_tbl[i].name, s_tz_tbl[i].posix,
+                               s_tz_tbl[i].iana, s_tz_tbl[i].label);
         if (w < 0 || (size_t)w >= sizeof(json) - (size_t)off) goto fail;
         off += w;
     }
@@ -1938,7 +1952,14 @@ static esp_err_t h_reboot(httpd_req_t *req)
  *
  * The final IP is shown deliberately prominently: the orb leaves the SoftAP's
  * subnet on success, so the page you are looking at becomes unreachable and the
- * address to type next has to be on screen before that happens. */
+ * address to type next has to be on screen before that happens.
+ *
+ * There is deliberately NO timezone UI on this page — not even a collapsed one.
+ * Owner's call after provisioning first worked end to end: this page's job ends
+ * at "the orb is on your network, here is where it went", and a zone dropdown
+ * asking a first-time user mid-join to read POSIX rules served neither job. The
+ * clock is set on its own page (/timezone, HTML_TZ below), which the success
+ * confirmation links to. */
 static const char HTML_LANDING[] =
 "<!doctype html><html><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -1951,7 +1972,6 @@ static const char HTML_LANDING[] =
 "input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem}"
 ".row{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}"
 "select{font:inherit;padding:.5rem;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;max-width:100%}"
-"#tzs{color:#9cf;font-size:.9rem;margin:.3rem 0 1rem}"
 "</style></head><body>"
 "<h1>orb setup</h1>"
 "<div id=state>loading&hellip;</div>"
@@ -1960,13 +1980,8 @@ static const char HTML_LANDING[] =
 "<div class=row><input id=pass type=password placeholder='leave empty for open' autocomplete=off autocapitalize=none style='flex:1;min-width:0'><button id=eye>show</button></div>"
 "<div class=row><button id=go>Connect</button><button id=rs>Rescan</button></div></div>"
 "<ul id=ns></ul>"
-"<h1>Timezone</h1>"
-"<div class=row><select id=tz></select></div>"
-"<div class=row><input id=tzx placeholder='POSIX rule, e.g. EST5EDT,M3.2.0,M11.1.0' hidden></div>"
-"<div class=row><button id=tzgo hidden>Set zone</button></div>"
-"<div id=tzs></div>"
 "<script>"
-"var sel=null,timer=0,mainTmr=0,zones=[],tzcur='',done=false,apSent=false,fails=0,scanning=false;"
+"var sel=null,timer=0,mainTmr=0,done=false,apSent=false,fails=0,scanning=false;"
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
 "async function status(){if(done)return;try{var d=await j('/api/v1/status');fails=0;"
@@ -1992,7 +2007,7 @@ static const char HTML_LANDING[] =
 "var p=document.getElementById('pass').value;"
 "say('joining '+sel+'\\u2026');"
 "try{await j('/api/v1/wifi/join',{method:'POST',headers:{'Content-Type':'application/json'},"
-"body:JSON.stringify(tzbody(sel,p))});}"
+"body:JSON.stringify({ssid:sel,pass:p})});}"
 "catch(e){var m=''+((e&&e.message)||'');"
 "/* Losing the reply is the normal outcome, not a failure: the orb drops"
 "   this very connection to try the new credentials, so the answer is often"
@@ -2001,15 +2016,6 @@ static const char HTML_LANDING[] =
 "if(/tz|ssid|body|content|large/i.test(m)){say('join rejected: '+m,'bad');return}"
 "say('sent \\u2014 orb is reconnecting\\u2026')}"
 "clearInterval(timer);timer=setInterval(status,1500);status()}"
-"function hm(m){var s=m<0?'-':'+',a=Math.abs(m);return s+Math.floor(a/60)+':'+('0'+(a%60)).slice(-2)}"
-"function tzmsg(t){document.getElementById('tzs').textContent=t}"
-"function tzpicked(){var s=document.getElementById('tz');return s.value=='__c__'?document.getElementById('tzx').value:s.value}"
-"/* Only send tz when it differs from what the device reported: a join that resent the"
-"   zone it already has costs an NVS write and an erase for nothing. */"
-"function tzbody(ssid,p){var o={ssid:ssid,pass:p};var t=tzpicked();if(t&&t!=tzcur)o.tz=t;return o}"
-"function tssel(v){var s=document.getElementById('tz'),x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
-" var k=false;for(var i=0;i<zones.length;i++)if(zones[i].name==v)k=true;"
-" if(k){s.value=v;x.hidden=true;g.hidden=true}else{s.value='__c__';x.hidden=false;g.hidden=false;if(v&&v!='UTC')x.value=v}}"
 /* The provisioning handoff. Deliberately NOT automatic: Android binds its
 captive-portal webview to the AP it just joined, so the instant the SoftAP goes
 away the webview is torn down with it -- closing the AP as soon as this page
@@ -2059,25 +2065,12 @@ orb does not answer. */
 "var a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.style.color='#9cf';"
 "a.textContent='Open the orb page in a new tab';"
 "a.onclick=function(){ack('opening the orb page - you can close this one')};e.appendChild(a);"
+"var k=document.createElement('div');k.style.marginTop='.35rem';"
+"var k2=document.createElement('a');k2.href='http://'+d.ip+'/timezone';k2.target='_blank';k2.rel='noopener';"
+"k2.style.color='#9cf';k2.textContent='orb clock: set your city';"
+"k2.onclick=function(){ack('opening the clock page - you can close this one')};k.appendChild(k2);e.appendChild(k);"
 "tip=document.createElement('div');tip.style.color='#9cf';tip.style.marginTop='.4rem';"
 "e.appendChild(tip)}"
-"async function tzload(){var v='UTC';"
-" try{var d=await j('/api/v1/config');zones=d.zones||[];v=d.tz||'UTC';tzcur=v;"
-" tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+')');}catch(e){tzmsg('zone list unavailable')}"
-" var s=document.getElementById('tz');s.innerHTML='';"
-" zones.forEach(function(z){var o=document.createElement('option');o.value=z.name;o.textContent=z.name+'  '+z.posix;s.appendChild(o)});"
-" var c=document.createElement('option');c.value='__c__';c.textContent='other (POSIX rule)...';s.appendChild(c);"
-" tssel(v)}"
-"async function tzpush(){var v=tzpicked();if(!v){tzmsg('pick or type a zone');return}"
-" tzmsg('setting '+v+'...');"
-" try{var d=await j('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:v})});"
-" tzcur=d.tz;tssel(d.tz);tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+') - is the dial right?');"
-" }catch(e){tzmsg('zone rejected: '+e.message)}}"
-"document.getElementById('tz').onchange=function(){var x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
-" if(this.value=='__c__'){x.hidden=false;g.hidden=false;x.focus();return}x.hidden=true;g.hidden=true;tzpush()};"
-"document.getElementById('tzgo').onclick=tzpush;"
-"document.getElementById('tzx').onkeydown=function(e){if(e.key=='Enter')tzpush()};"
-"tzload();"
 "document.getElementById('go').onclick=join;"
 "document.getElementById('rs').onclick=function(){scan(true)};"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
@@ -2092,6 +2085,115 @@ static esp_err_t h_index(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, HTML_LANDING, HTTPD_RESP_USE_STRLEN);
+}
+
+/* The clock page: /timezone, deliberately its own page and not a section of
+ * provisioning (owner's call after the first successful phone test, with two
+ * concrete complaints behind it: the dropdown listed IANA keys beside POSIX
+ * rules no person reads, and the free-text "other" box expected someone to
+ * type EST5EDT,M3.2.0,M11.1.0 correctly on a phone keyboard). Nothing here is
+ * a technical decision any more: no <select> of keys, no POSIX ever, no
+ * free-text at all. Cities are served by /api/v1/config (one source of truth
+ * with the firmware that owns the rules) and rendered as
+ * "GMT-06:00 - Chicago", the offset measured live by the browser — the one
+ * place on this network with a full zoneinfo database. Tapping a city sets
+ * it, one tap, no confirm button.
+ *
+ * On load the page reads the phone's own zone — Intl resolvedOptions, which
+ * unlike the clipboard API is available on this insecure origin — and applies
+ * it without being asked, then asks the only question that matters: is the
+ * time on the orb's dial right? That question is the safety valve the config
+ * endpoint's tz_offset echo exists for: a rule newlib silently degrades shows
+ * up as a wrong GMT offset on screen, in words, immediately. If the phone's
+ * zone is not in the (deliberately small) table, one honest extra row keeps
+ * the phone's exact time as a fixed-offset rule and says out loud that it
+ * will not follow DST — so the escape hatch is a tap, never typing rules. */
+static const char HTML_TZ[] =
+"<!doctype html><html><head><meta charset=utf-8>"
+"<meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>orb clock</title><style>"
+"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
+"h1{font-size:1.2rem}"
+"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0}"
+"#msg.ok{background:#14421f}#msg.bad{background:#4a1414}"
+"input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;margin:.5rem 0}"
+"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;width:100%;text-align:left;margin:.15rem 0;display:block}"
+"button.cur{background:#14421f}"
+"</style></head><body>"
+"<h1>orb clock</h1>"
+"<div id=msg>loading&hellip;</div>"
+"<input id=q placeholder='Type your city' autocomplete=off>"
+"<div id=zs></div>"
+"<script>"
+"var zones=[],cur='',phone='',want='';"
+"function msg(t,c){var e=document.getElementById('msg');e.textContent=t;e.className=c||''}"
+"async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
+/* Minutes east of UTC that the browser's own tz database says `zn` is in,
+   RIGHT NOW (DST included). The orb deliberately does not compute these: its
+   newlib has no zoneinfo, only the rules it ships, while every phone that can
+   open this page has the full IANA table. Measured via formatToParts because
+   there is no other honest way to ask a browser for a zone's offset. */
+"function offMin(zn){try{var d=new Date();"
+"var a=new Intl.DateTimeFormat('en-US',{timeZone:zn,hourCycle:'h23',year:'numeric',month:'2-digit',"
+"day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(d);"
+"var p={};for(var i=0;i<a.length;i++)p[a[i].type]=a[i].value;"
+"var h=parseInt(p.hour,10);if(h==24)h=0;"
+"return Math.round((Date.UTC(+p.year,p.month-1,+p.day,h,+p.minute,+p.second)-d.getTime())/60000);}"
+"catch(e){return null}}"
+"function hm(m){if(m==null||isNaN(m))return 'GMT?';var s=m<0?'-':'+';m=Math.abs(m);"
+"return 'GMT'+s+('0'+Math.floor(m/60)).slice(-2)+':'+('0'+(m%60)).slice(-2)}"
+"function zname(z){return z.iana||z.name}"
+"function lbl(z){return hm(offMin(zname(z)))+' - '+(z.label||z.name)}"
+"function phoneTz(){try{var t=Intl.DateTimeFormat().resolvedOptions().timeZone;return t||''}catch(e){return''}}"
+/* Name first (exact against iana — Android says America/Chicago, never
+   US/Central); current offset second, but only when it names exactly one
+   zone: guessing between Denver and Phoenix is how clocks get quietly an
+   hour wrong in November, and a wrong guess here is auto-APPLIED. */
+"function matchPhone(){if(!phone)return null;var i;"
+"for(i=0;i<zones.length;i++)if(zones[i].iana==phone||zones[i].name==phone)return zones[i];"
+"var po=-(new Date()).getTimezoneOffset(),hit=null,n=0;"
+"for(i=0;i<zones.length;i++){var o=offMin(zname(zones[i]));if(o!=null&&o==po){n++;hit=zones[i]}}"
+"return n==1?hit:null}"
+/* Client-side rule synthesis for zones the table does not carry: the browser
+   knows the phone's offset, POSIX counts west (so the sign flips), and the
+   row itself says out loud that no DST is in this. The endpoint already
+   accepts raw rules — this only removes the typing. */
+"function gmtRule(m){var s=m>=0?'-':'+';m=Math.abs(m);var h=Math.floor(m/60),r=m%60;"
+"return 'GMT'+s+h+(r?':'+('0'+r).slice(-2):'')}"
+"function mkrow(txt,on,cls){var b=document.createElement('button');b.textContent=txt;"
+"if(cls)b.className=cls;b.onclick=on;return b}"
+/* The response's tz_offset is read, never the echo of what was sent: the
+   question this page answers is what the dial now shows, not what was asked. */
+"function setTz(v,txt){msg('setting '+txt+'...');"
+"j('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:v})})"
+".then(function(d){cur=d.tz;render();msg('orb now shows '+hm(d.tz_offset)+' - is that the right time? If not, tap your city','ok')})"
+".catch(function(e){msg('the orb refused it: '+e.message,'bad')})}"
+"function render(){var box=document.getElementById('zs');box.innerHTML='';"
+"var f=want.toLowerCase();"
+"var list=zones.filter(function(z){return !f||(z.label||'').toLowerCase().indexOf(f)>=0"
+"||z.name.toLowerCase().indexOf(f)>=0||(z.iana||'').toLowerCase().indexOf(f)>=0});"
+"list.sort(function(a,b){var x=offMin(zname(a)),y=offMin(zname(b));if(x==null)x=-9999;if(y==null)y=-9999;"
+"return x-y||String(a.label||a.name).localeCompare(String(b.label||b.name))});"
+"list.forEach(function(z){box.appendChild(mkrow(lbl(z),function(){setTz(z.name,z.label||z.name)},z.name==cur?'cur':''))});"
+"if(phone&&!matchPhone()){var po=-(new Date()).getTimezoneOffset();"
+"box.appendChild(mkrow(hm(po)+' - Same as your phone (does not follow DST automatically)',"
+"function(){setTz(gmtRule(po),'your phone time')}))}}"
+"async function boot(){var d;try{d=await j('/api/v1/config')}catch(e){msg('could not reach the orb','bad');return}"
+"zones=d.zones||[];cur=d.tz||'UTC';phone=phoneTz();render();"
+"var m=matchPhone();if(!m){if(phone)msg('the orb does not know '+phone+' - pick a city, or the row that matches your phone');"
+"else msg('tap your city');return}"
+"if(m.name==cur){msg('the orb is already on your phone time ('+hm(offMin(zname(m)))+') - if the dial is wrong, tap your city','ok');return}"
+"msg('your phone says '+(m.label||m.name)+' - setting the orb...');"
+"setTz(m.name,m.label||m.name)}"
+"document.getElementById('q').oninput=function(){want=this.value;render()};"
+"boot();"
+"</script></body></html>";
+
+static esp_err_t h_timezone(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, HTML_TZ, HTTPD_RESP_USE_STRLEN);
 }
 
 /* Captive-portal probes. A phone that joins an open AP with no internet
@@ -2182,8 +2284,9 @@ static esp_err_t net_start_httpd(void)
      * Measured before the fix: the 9th handler (/favicon.ico, registered today)
      * already answers 404 on the running device while the 8 before it 302. Raise
      * it with room for the endpoints this feature needs, and check the return
-     * below rather than trusting the count. */
-    cfg.max_uri_handlers  = 16;
+     * below rather than trusting the count. The /timezone page brings the table
+     * to 15 registered routes; 20 keeps headroom for the next one. */
+    cfg.max_uri_handlers  = 20;
     /* Below the LVGL task's priority 5: a slow or chatty client must never
      * preempt a paint and show up as a dropped frame on the dial. */
     cfg.task_priority    = 4;
@@ -2197,6 +2300,7 @@ static esp_err_t net_start_httpd(void)
 
     static const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,  .handler = h_index },
+        { .uri = "/timezone",          .method = HTTP_GET,  .handler = h_timezone },
         { .uri = "/api/v1/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },

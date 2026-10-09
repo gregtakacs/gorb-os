@@ -34,6 +34,53 @@ menu "Orb networking"
             code legibly, so the pairing URL is printed to the serial log and
             shown on-screen).
 
+    config ORB_NET_AP_HOLD_S
+        int "Seconds to keep the SoftAP after the STA gets a lease"
+        depends on ORB_NET_ENABLE
+        default 120
+        help
+            The provisioning AP must not outlive its welcome: it is OPEN, and
+            behind it sits an unauthenticated /api/v1/ota. The AP therefore
+            always dies on a timer. Once the station has an address, the AP is
+            kept another N seconds so the phone that just submitted the
+            credentials can still read the "connected at http://" result — the
+            page polls /api/v1/status every 1.5 s, and dropping the AP on
+            GOT_IP would pull the radio out from under that reply.
+
+            0 closes the AP as soon as a lease lands (the page then reports
+            "device unreachable" as its last word — not recommended).
+
+    config ORB_NET_AP_MANUAL_S
+        int "Seconds an explicit POST /api/v1/wifi/ap keeps the SoftAP open"
+        depends on ORB_NET_ENABLE
+        default 900
+        help
+            Window for the on-demand path: you walk up to an orb that is
+            happily on the LAN, summon its AP from the config page, and join it
+            from a phone. Long enough to pair, join the AP and submit the form;
+            short enough that a forgotten request cannot leave the AP open
+            overnight.
+
+    config ORB_NET_AP_RESCUE_FAILS
+        int "Failed associations before the SoftAP comes back up"
+        depends on ORB_NET_ENABLE
+        default 8
+        help
+            The recovery path for the case that has no other exit: credentials
+            are stored but unusable (the passphrase on the router changed while
+            the orb was powered off), so the boot path takes the station-only
+            branch and no AP ever appears. After this many consecutive failed
+            associations the orb opens the provisioning AP alongside the
+            retries, and closes it again on a timer once it gets a lease.
+
+            With the 5 s base back-off doubling to 120 s, 8 attempts is roughly
+            8-9 minutes of failure — long enough that a router rebooting
+            (1-3 min) never wakes the AP, short enough that a real lockout is
+            fixable from a phone instead of with a USB cable and an NVS erase.
+            Set 0 to disable (NOT recommended: it puts serial access back on
+            the critical path for a changed Wi-Fi passphrase).
+
+
     config ORB_NET_HTTPD_PORT
         int "Config-server port"
         depends on ORB_NET_ENABLE

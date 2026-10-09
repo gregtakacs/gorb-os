@@ -16,6 +16,7 @@
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "esp_app_desc.h"
@@ -55,12 +56,34 @@ static const char *TAG = "orb_net";
 #define NET_NVS_PARTITION "storage"
 #define NET_NVS_NAMESPACE "orb.net"
 
-#define NET_STA_RETRY_S  5      /* back-off between association attempts */
+#define NET_STA_RETRY_S  5      /* first association back-off; doubles from here */
+#define NET_STA_RETRY_MAX_S 120 /* ceiling — see retry_delay_s() */
 #define NET_SSID_MAX     32
 #define NET_PASS_MAX     64
 #define NET_TZ_MAX       64     /* a POSIX TZ rule is short by construction */
 #define NET_TZ_KEY       "tz"   /* NVS: a table name OR a raw POSIX string */
 #define NET_CONFIG_BODY_MAX 128 /* POST /api/v1/config is {"tz":"…"} and nothing else */
+
+/* Everything that MUTATES THE RADIO runs on its own task, not on the default
+ * event loop and not on an esp_timer callback. esp_wifi_set_mode() is explicitly
+ * off-limits from inside a WiFi/IP event handler — the callback is executed in
+ * the same thread the driver is waiting on — and the esp_timer task forbids
+ * blocking calls, which is exactly what stopping an AP turns into (it tears
+ * down beacons and deauths stations). So the event handlers, the timers and the
+ * httpd endpoints all just post a command here, and one consumer does the work.
+ *
+ * It is also what makes a leaked-open AP impossible by construction: the AP is
+ * never opened without arming its expiry in the same breath, and the only
+ * places that touch the mode are the AP commands below. */
+enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
+       NET_CMD_AP_OPEN,       /* open the AP for a manual request           */
+       NET_CMD_AP_RESCUE,     /* open the AP because the creds are not working */
+       NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
+       NET_CMD_AP_EXPIRED };  /* close it, unless the STA still has no lease  */
+static QueueHandle_t      s_net_q;
+static TaskHandle_t       s_net_task;
+static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
+static esp_timer_handle_t s_ap_timer;      /* one-shot, AP expiry            */
 
 static esp_netif_t   *s_sta_netif;
 static esp_netif_t   *s_ap_netif;
@@ -68,9 +91,23 @@ static httpd_handle_t s_server;
 static nvs_handle_t   s_nvs;
 
 static volatile bool s_sta_up;         /* has an IP */
-static volatile bool s_provisioning;   /* SoftAP only, no STA link */
+static volatile bool s_provisioning;   /* booted with no credentials at all */
+static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 static volatile int  s_rssi = -999;
 static char          s_ip[16] = "";
+
+/* Consecutive failed associations since the last lease. Drives BOTH the back-off
+ * and the rescue-AP threshold, and is cleared only by a real lease — a device
+ * that flaps on a marginal signal accumulates attempts and gets the AP, which is
+ * the correct outcome: it cannot reach the LAN either. */
+static volatile unsigned s_assoc_fails;
+/* Set when a retry is armed, cleared when the attempt actually goes out. The
+ * driver can report ONE failed association as TWO WIFI_EVENT_STA_DISCONNECTED
+ * events (seen on the bench: attempt 1 at t+6.1 s, attempt 2 at t+8.5 s with a
+ * 5 s timer in between). Without this latch the counter runs at double speed,
+ * the ladder escalates on the duplicate, and the rescue AP opens after roughly
+ * half the configured attempts. */
+static volatile bool s_retry_pending;
 
 /* Handlers below are registered by pointer, so the apply helper used by the
  * join endpoint needs a prototype ahead of its definition. */
@@ -369,14 +406,182 @@ static const char *net_tz_set(const char *tz)
 }
 
 /* --------------------------------------------------------------------------
- * WiFi event handling
+ * WiFi event handling + the radio task
  * ------------------------------------------------------------------------ */
-static void wifi_retry_cb(void *arg)
+
+/* Exponential association back-off: 5 s, 10, 20, 40, 80, then 120 s forever.
+ *
+ * A wrong passphrase is retried indefinitely — there is no "give up" state for
+ * a wall clock, since the network may come back after a power cut — so a fixed
+ * 5 s cadence means forever-hammering an AP that has already said no. That is
+ * not hypothetical here: the bench router's WPA3/SAE implementation rate-limits
+ * eager clients, which has been extending every flash cycle this session by a
+ * minute or two. Back-off keeps the first ~30 s eager (where a transient
+ * dropout actually lives) and goes quiet after that.
+ *
+ * The same counter decides when the rescue AP opens, so the ladder IS the clock
+ * that says "this network is not coming back by itself". attempt is 1-based.
+ * Pure, so the host test can check the ladder without a radio. */
+static uint32_t retry_delay_s(unsigned attempt)
+{
+    if (attempt < 2) return NET_STA_RETRY_S;
+    uint32_t d = NET_STA_RETRY_S;
+    for (unsigned i = 1; i < attempt; i++) {
+        if (d >= NET_STA_RETRY_MAX_S) break;
+        d *= 2U;
+    }
+    return d > NET_STA_RETRY_MAX_S ? NET_STA_RETRY_MAX_S : d;
+}
+
+/* Re-evaluation period for an AP that is open because there is no lease. The
+ * AP is never closed merely for being old — it closes when the station gets a
+ * lease (see NET_CMD_AP_EXPIRED), so this only re-arms the check. */
+#define NET_AP_RECHECK_S 300
+
+typedef struct { int cmd; int arg; } net_msg_t;
+
+static void net_post(int cmd, int arg)
+{
+    if (!s_net_q) return;               /* before bring-up: nothing to notify */
+    const net_msg_t m = { .cmd = cmd, .arg = arg };
+    if (xQueueSend(s_net_q, &m, 0) != pdTRUE)
+        ESP_LOGW(TAG, "net queue full; dropped cmd %d", cmd);
+}
+
+/* Timer callbacks may only post: the esp_timer task is shared and must not
+ * block, and the esp_wifi_* calls do block on the driver's own task. */
+static void retry_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_CONNECT, 0); }
+static void ap_timer_cb(void *arg)    { (void)arg; net_post(NET_CMD_AP_EXPIRED, 0); }
+static void arm_oneshot(esp_timer_handle_t t, uint32_t secs, const char *what)
+{
+    if (!t) { ESP_LOGE(TAG, "%s timer does not exist", what); return; }
+    /* Stop first: each of these can be re-armed while already pending, and
+     * start_once on a running one-shot simply fails — leaving the OLD deadline
+     * in force, which for the AP means closing at the wrong moment. */
+    esp_timer_stop(t);
+    if (esp_timer_start_once(t, (uint64_t)secs * 1000000ULL) != ESP_OK)
+        ESP_LOGE(TAG, "%s timer not armed", what);
+}
+
+
+/* The provisioning AP's identity, in one place so the boot path and the runtime
+ * rescue/manual paths cannot drift apart. Open on purpose: the 466x466 panel
+ * cannot render a scannable QR, so there is no way to hand out a passphrase —
+ * which is precisely why every open here is bounded by a timer. */
+static void ap_fill_config(wifi_config_t *ap)
+{
+    memset(ap, 0, sizeof(*ap));
+    uint8_t mac[6] = { 0 };
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf((char *)ap->ap.ssid, sizeof(ap->ap.ssid), "orb-%02X%02X", mac[4], mac[5]);
+    ap->ap.ssid_len       = (uint8_t)strlen((char *)ap->ap.ssid);
+    ap->ap.channel        = 1;      /* 2.4 GHz-only radio; ch 1 is legal everywhere */
+    ap->ap.authmode       = WIFI_AUTH_OPEN;
+    ap->ap.max_connection = 2;
+}
+
+/* RADIO TASK ONLY. */
+static void ap_open(uint32_t hold_s, const char *why)
+{
+    if (!s_ap_netif) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (!s_ap_netif) { ESP_LOGE(TAG, "ap netif: out of memory"); return; }
+    }
+    wifi_config_t ap;
+    ap_fill_config(&ap);
+
+    /* Mode first, then the profile: that is the ordering the driver accepts at
+     * runtime, and it leaves the AP momentarily up with the driver's default
+     * profile — so the SSID is read back rather than trusted, because a device
+     * on the wall advertising "espressif" instead of "orb-xxxxxx" is a support
+     * call nobody can diagnose from the log alone. */
+    /* Profile first where the driver will take it. Setting the profile on a
+     * RUNNING softAP restarts it, and the first build of this path did exactly
+     * that: every open logged AP_START twice and started the DHCP server twice
+     * (20948/20953 in the bench log). With the interface still down the profile
+     * is merely stored, so the AP comes up once already carrying "orb-xxxxxx"
+     * instead of blinking on air with the driver's default SSID. If the driver
+     * refuses a profile for a disabled interface, fall back to mode-then-config
+     * and accept the restart. */
+    bool profiled = (esp_wifi_set_config(WIFI_IF_AP, &ap) == ESP_OK);
+    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
+        ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
+        return;
+    }
+    if (!profiled) profiled = (esp_wifi_set_config(WIFI_IF_AP, &ap) == ESP_OK);
+    if (!profiled) {
+        ESP_LOGE(TAG, "ap open (%s): set_config failed — AP may advertise the "
+                      "driver default SSID", why);
+    } else {
+        wifi_config_t chk;
+        memset(&chk, 0, sizeof(chk));
+        if (esp_wifi_get_config(WIFI_IF_AP, &chk) == ESP_OK &&
+            strcmp((const char *)chk.ap.ssid, (const char *)ap.ap.ssid) != 0)
+            ESP_LOGE(TAG, "ap open (%s): SSID is \"%s\", not \"%s\"",
+                     why, (const char *)chk.ap.ssid, (const char *)ap.ap.ssid);
+    }
+
+    arm_oneshot(s_ap_timer, hold_s, "ap expiry");
+    ESP_LOGW(TAG, "SoftAP \"%s\" OPEN (%s) — join it, then open http://192.168.4.1/"
+                  " (%u s hold)", (const char *)ap.ap.ssid, why, (unsigned)hold_s);
+}
+
+/* RADIO TASK ONLY. */
+static void ap_close(const char *why)
+{
+    if (!s_ap_up) return;                 /* already down; no wasted flap */
+    esp_timer_stop(s_ap_timer);
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+        ESP_LOGE(TAG, "ap close (%s): set_mode(STA) failed — AP stays up", why);
+        return;
+    }
+    ESP_LOGI(TAG, "SoftAP down (%s)", why);
+}
+
+static void net_task_loop(void *arg)
 {
     (void)arg;
-    if (!s_sta_up && !s_provisioning) {
-        ESP_LOGI(TAG, "retrying association");
-        esp_wifi_connect();
+    net_msg_t m;
+    for (;;) {
+        if (xQueueReceive(s_net_q, &m, portMAX_DELAY) != pdTRUE) continue;
+        switch (m.cmd) {
+        case NET_CMD_CONNECT:
+            /* Re-check what the event loop owns: a lease may have landed
+             * between the timer firing and this task getting to run. */
+            if (s_sta_up || s_provisioning) break;
+            s_retry_pending = false;          /* this attempt is now live */
+            ESP_LOGI(TAG, "association attempt %u", s_assoc_fails + 1);
+            esp_wifi_connect();
+            break;
+
+        case NET_CMD_AP_OPEN:
+            ap_open((uint32_t)m.arg, "requested from the config page");
+            break;
+
+        case NET_CMD_AP_RESCUE:
+            ap_open((uint32_t)m.arg, "credentials not working");
+            break;
+
+        case NET_CMD_AP_HOLD:
+            if (s_ap_up) arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
+            break;
+
+        case NET_CMD_AP_EXPIRED:
+            /* The invariant that decides this whole feature: the AP closes
+             * because the device BECAME reachable, not because a timer ran
+             * out. With no lease the AP is the only door a phone can walk up
+             * to, so it stays open and the check merely re-arms. */
+            if (s_sta_up) ap_close("lease held, hold expired");
+            else if (!s_provisioning) {
+                arm_oneshot(s_ap_timer, NET_AP_RECHECK_S, "ap recheck");
+                ESP_LOGI(TAG, "SoftAP stays up: no lease yet, checking again in %d s",
+                         NET_AP_RECHECK_S);
+            }
+            break;
+
+        default:
+            break;
+        }
     }
 }
 
@@ -391,24 +596,38 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (!s_provisioning) esp_wifi_connect();
         break;
 
-    case WIFI_EVENT_STA_DISCONNECTED:
+    case WIFI_EVENT_STA_DISCONNECTED: {
         s_sta_up = false;
         s_rssi   = -999;
         if (s_provisioning) break;         /* AP-only mode: nothing to retry */
-        ESP_LOGW(TAG, "disassociated; retrying in %d s", NET_STA_RETRY_S);
-        {
-            esp_timer_handle_t t;
-            /* One-shot timer, not a task: a reconnect loop that outlives a bad
-             * AP config must not also own a stack in the scarce internal pool. */
-            const esp_timer_create_args_t ta = { .callback = wifi_retry_cb,
-                                                 .name = "netretry" };
-            if (esp_timer_create(&ta, &t) == ESP_OK)
-                esp_timer_start_once(t, (uint64_t)NET_STA_RETRY_S * 1000000ULL);
-        }
+        if (s_retry_pending) break;        /* driver's second event for one failure */
+        const unsigned attempt = ++s_assoc_fails;
+        const uint32_t delay   = retry_delay_s(attempt);
+        ESP_LOGW(TAG, "disassociated (attempt %u); retrying in %u s",
+                 attempt, (unsigned)delay);
+        s_retry_pending = true;
+        arm_oneshot(s_retry_timer, delay, "retry");
+        /* Credentials exist but are not working. Past the threshold, open the
+         * provisioning AP ALONGSIDE the retries: under APSTA the station can
+         * still associate (see the boot-path comment on exactly this), so a
+         * network that comes back on its own is still taken automatically while
+         * the door stays open for a phone. Without this the only exit from a
+         * changed router passphrase is serial + an NVS erase. */
+        if (!s_ap_up && CONFIG_ORB_NET_AP_RESCUE_FAILS > 0 &&
+            attempt >= (unsigned)CONFIG_ORB_NET_AP_RESCUE_FAILS)
+            net_post(NET_CMD_AP_OPEN, NET_AP_RECHECK_S);
         break;
+    }
 
     case WIFI_EVENT_AP_START:
+        s_ap_up = true;
         ESP_LOGI(TAG, "SoftAP up — join it and open the URL in the log above");
+        break;
+
+    case WIFI_EVENT_AP_STOP:
+        /* The driver's word that the AP is really gone, which is what makes
+         * ap_close()'s early return honest. */
+        s_ap_up = false;
         break;
 
     default:
@@ -483,8 +702,15 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&ev->ip_info.ip));
     s_sta_up       = true;
     s_provisioning = false;
+    s_assoc_fails  = 0;      /* back-off is per-outage, not per-device-life */
     ESP_LOGI(TAG, "associated: config page at http://%s/", s_ip);
     stage_probe("sta-connected");
+
+    /* A lease is what closes the provisioning AP — see NET_CMD_AP_EXPIRED for
+     * why the close is conditioned on this rather than on the timer alone.
+     * Posted rather than called directly: this runs on the default event loop,
+     * where esp_wifi_set_mode() is off-limits. */
+    net_post(NET_CMD_AP_HOLD, CONFIG_ORB_NET_AP_HOLD_S);
 
     /* Lease + DHCP-supplied resolver exist now, so the NTP exchange can be
      * resolved and answered. esp_netif_sntp_start() is stop-then-init
@@ -507,7 +733,12 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    char json[512];
+    /* 640, not the 512 this started with: the body has since grown a tz string
+     * (up to NET_TZ_MAX) plus the ap/assoc_fails pair, and a truncated body is
+     * worse than an error because the page just fails to parse it. The overflow
+     * check below is what makes that visible rather than subtle, and the host
+     * test pins the worst case. */
+    char json[640];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -554,7 +785,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
-        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d}",
+        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
+        "\"assoc_fails\":%u}",
         s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -563,7 +795,13 @@ static esp_err_t h_status(httpd_req_t *req)
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (slot ? slot->label : "?"), img_str,
         s_time_synced ? "true" : "false", (long long)now,
-        s_tz[0] ? s_tz : "UTC", tz_offset_min(now));
+        s_tz[0] ? s_tz : "UTC", tz_offset_min(now),
+        /* The AP's real state, from the driver's own events. Without this the
+         * whole lifecycle added here is invisible from the LAN — you could not
+         * tell a closed AP from a firmware that never closes it, which is
+         * exactly the question that motivated the change. assoc_fails rides
+         * along because "how long until the rescue AP" is the next question. */
+        s_ap_up ? "true" : "false", (unsigned)s_assoc_fails);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -920,6 +1158,14 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
         if (why) ESP_LOGW(TAG, "join: tz \"%s\" not applied (%s)", tz, why);
     }
 
+    /* A human just said "try these", so start the back-off ladder over — the
+     * whole point of the ladder is to stop hammering a network that has already
+     * said no, and that reasoning must not apply to a network the user has just
+     * corrected. Without this, fixing a passphrase within a minute of the last
+     * failure would sit out the current 120 s wait before making the attempt the
+     * user can see nothing happening in. */
+    s_assoc_fails = 0;
+
     const esp_err_t e = net_apply_sta_config(ssid, pass);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
@@ -927,6 +1173,86 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"apply failed\"}");
     }
     return httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
+}
+
+/* POST /api/v1/wifi/ap — summon the provisioning AP on an orb that is happily
+ * on the LAN, so it can be re-provisioned from a phone at the wall without a
+ * reboot, a cable, or an NVS erase. Its own endpoint (rather than a flag on
+ * /api/v1/config) because it is a radio action with its own lifetime, and the
+ * AP state is reported by /api/v1/status so the caller can watch it land.
+ *
+ * Body is optional: {} opens for CONFIG_ORB_NET_AP_MANUAL_S seconds;
+ * {"on":"off"} closes it immediately. The open path goes through the radio task
+ * exactly like the rescue path — one code path, one set of log lines — and both
+ * arm the AP's expiry, which is why no caller can leave it open by accident. */
+static esp_err_t h_wifi_ap(httpd_req_t *req)
+{
+    char body[NET_CONFIG_BODY_MAX + 1];
+    /* content_len + read-until-complete, exactly as h_wifi_join does it and for
+     * the same reason: httpd_req_recv() may return a PARTIAL read, and a
+     * half-read body here would be interpreted as a different intent — a
+     * truncated {"on":"off"} reads as "no on key", which would OPEN the AP when
+     * the caller asked to close it. */
+    const int clen = (int)req->content_len;
+    if (clen > NET_CONFIG_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int n = 0;
+    while (n < clen) {
+        const int r = httpd_req_recv(req, body + n, (size_t)(clen - n));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        n += r;
+    }
+    body[n] = '\0';
+
+    bool close_now = false;
+    if (n > 0) {
+        /* Two spellings of one intent, both cheap to accept: the page sends
+         * {"on":"off"} and a person at a curl prompt sends {"on":false}. */
+        const char *v = json_find(body, (size_t)n, "on");
+        if (v && v[0] == 'f') close_now = true;
+        else if (v && v[0] == '"') {
+            char on[8] = "";
+            json_str(body, (size_t)n, "on", on, sizeof on);
+            close_now = strcmp(on, "off") == 0 || strcmp(on, "false") == 0 ||
+                        strcmp(on, "0") == 0;
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    if (close_now) {
+        /* Only honoured while there IS another way in. Reaching an orb with no
+         * lease and no AP is precisely the lockout the rescue path exists for,
+         * so saying "ok, closed" there would be actively harmful — 409 and a
+         * reason instead. */
+        if (!s_sta_up) {
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req,
+                       "{\"error\":\"no lease — the AP is the only way in\"}");
+        }
+        net_post(NET_CMD_AP_EXPIRED, 0);   /* the one path that closes a leased AP */
+        return httpd_resp_sendstr(req, "{\"state\":\"ap_closing\"}");
+    }
+    net_post(NET_CMD_AP_OPEN, CONFIG_ORB_NET_AP_MANUAL_S);
+    char ssid[16];
+    uint8_t mac[6] = { 0 };
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf(ssid, sizeof(ssid), "orb-%02X%02X", mac[4], mac[5]);
+    /* Reports the SSID because the phone has to find it in a list of networks,
+     * and the seconds because "how long do I have" is the first question a
+     * person standing at a wall with a phone asks. */
+    char out[128];
+    const int m = snprintf(out, sizeof(out),
+                           "{\"state\":\"ap_opening\",\"ap_ssid\":\"%s\",\"seconds\":%d}",
+                           ssid, CONFIG_ORB_NET_AP_MANUAL_S);
+    if (m < 0 || (size_t)m >= sizeof(out)) return httpd_resp_sendstr(req, "{\"state\":\"ap_opening\"}");
+    return httpd_resp_sendstr(req, out);
 }
 
 /* -------------------------------------------------------------------------
@@ -1143,12 +1469,13 @@ static const char HTML_LANDING[] =
 "<div class=row><select id=tz></select></div>"
 "<div class=row><input id=tzx placeholder='POSIX rule, e.g. EST5EDT,M3.2.0,M11.1.0' hidden></div>"
 "<div class=row><button id=tzgo hidden>Set zone</button></div>"
+"<div class=row><button id=apbtn>Show setup AP</button><span id=apinfo></span></div>"
 "<div id=tzs></div>"
 "<script>"
-"var sel=null,timer=0,zones=[],tzcur='';"
+"var sel=null,timer=0,zones=[],tzcur='',appin=0;"
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
-"async function status(){try{var d=await j('/api/v1/status');"
+"async function status(){try{var d=await j('/api/v1/status');aprep(d);"
 "if(d.state=='connected'){say('connected \\u2014 orb is now at http://'+d.ip+'/','ok');return}"
 "say(d.state+(sel?' \\u2014 connecting to '+sel:''));}catch(e){say('device unreachable','bad')}}"
 "async function scan(){say('scanning\\u2026');var ns=document.getElementById('ns');ns.innerHTML='';"
@@ -1173,6 +1500,15 @@ static const char HTML_LANDING[] =
 "function tssel(v){var s=document.getElementById('tz'),x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
 " var k=false;for(var i=0;i<zones.length;i++)if(zones[i].name==v)k=true;"
 " if(k){s.value=v;x.hidden=true;g.hidden=true}else{s.value='__c__';x.hidden=false;g.hidden=false;if(v&&v!='UTC')x.value=v}}"
+"function aprep(d){var e=document.getElementById('apinfo');if(!e)return;"
+"if(Date.now()<appin)return;                     /* do not clobber a fresh instruction */"
+"e.textContent=d.ap?'setup AP is OPEN right now \u2014 join it from your phone':'';}"
+"function apgo(){var e=document.getElementById('apinfo');if(e)e.textContent='opening\u2026';"
+"appin=Date.now()+20000;                        /* aprep must not overwrite before this */"
+"j('/api/v1/wifi/ap',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})"
+".then(function(d){if(!e)return;"
+"e.textContent='join '+(d.ap_ssid||'the orb AP')+' from your phone, then open http://192.168.4.1/ ('+(d.seconds||'?')+'s)';})"
+".catch(function(x){appin=0;if(e)e.textContent='ap: '+x.message;})}"
 "async function tzload(){var v='UTC';"
 " try{var d=await j('/api/v1/config');zones=d.zones||[];v=d.tz||'UTC';tzcur=v;"
 " tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+')');}catch(e){tzmsg('zone list unavailable')}"
@@ -1192,6 +1528,7 @@ static const char HTML_LANDING[] =
 "tzload();"
 "document.getElementById('go').onclick=join;"
 "document.getElementById('rs').onclick=scan;"
+"document.getElementById('apbtn').onclick=apgo;"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
 "status();scan();setInterval(function(){if(!sel)status()},3000);"
 "</script></body></html>";
@@ -1309,6 +1646,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },
+        { .uri = "/api/v1/wifi/ap",  .method = HTTP_POST, .handler = h_wifi_ap },
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
@@ -1415,15 +1753,9 @@ esp_err_t orb_net_start(void)
         s_provisioning = true;
         s_ap_netif     = esp_netif_create_default_wifi_ap();
 
-        uint8_t mac[6] = { 0 };
-        esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-
-        wifi_config_t ap = { 0 };
-        snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "orb-%02X%02X", mac[4], mac[5]);
-        ap.ap.ssid_len       = (uint8_t)strlen((char *)ap.ap.ssid);
-        ap.ap.channel        = 1;      /* 2.4 GHz-only radio; ch 1 is legal everywhere */
-        ap.ap.authmode       = WIFI_AUTH_OPEN;
-        ap.ap.max_connection = 2;
+        wifi_config_t ap;
+        ap_fill_config(&ap);   /* same builder the runtime rescue/manual paths use,
+                                * so the SSID scheme cannot drift between them */
 
         /* APSTA, not AP: a single radio cannot scan or associate while the STA
          * interface is disabled, and esp_wifi_connect() "only impact
@@ -1442,6 +1774,30 @@ esp_err_t orb_net_start(void)
         return ESP_ERR_NOT_FOUND;
 #endif
     }
+
+    /* The radio-mutation task + its timers exist before esp_wifi_start(),
+     * because the START event can arm the retry timer immediately. Priority 4
+     * like httpd — under LVGL's 5, so neither a reconnect burst nor an AP
+     * teardown can preempt a paint. 3 KB is enough for esp_wifi_set_mode(): it
+     * waits on the driver, it does not compute. */
+    const esp_timer_create_args_t retry_ta = { .callback = retry_timer_cb,
+                                               .name = "netretry" };
+    if (esp_timer_create(&retry_ta, &s_retry_timer) != ESP_OK)
+        ESP_LOGE(TAG, "retry timer: creation failed — associations will not retry");
+    const esp_timer_create_args_t ap_ta = { .callback = ap_timer_cb,
+                                            .name = "apexpire" };
+    if (esp_timer_create(&ap_ta, &s_ap_timer) != ESP_OK)
+        ESP_LOGE(TAG, "ap expiry timer: creation failed — the SoftAP will stay up");
+    s_net_q = xQueueCreate(8, sizeof(net_msg_t));
+    if (!s_net_q || xTaskCreate(net_task_loop, "orb_net", 3072, NULL, 4,
+                                &s_net_task) != pdPASS) {
+        /* Not fatal: without the queue the association retry simply stops
+         * firing, which the log says plainly. The boot-path join below is
+         * unaffected, so a correctly-configured orb still comes up. */
+        ESP_LOGE(TAG, "radio task/queue: out of memory — retries and AP teardown disabled");
+        s_net_q = NULL;
+    }
+    stage_probe("post-nettask");
 
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi_start");
     stage_probe("post-wifi_start");

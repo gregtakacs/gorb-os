@@ -38,6 +38,14 @@ def lift(pattern):
 block = src[src.index("typedef struct { const char *name"):src.index("/* Validate, persist, apply")]
 jsonf = lift(r"static const char \*json_find\(const char \*body.*?\n\}")
 jsons = lift(r"static bool json_str\(const char \*body.*?\n\}")
+# The association ladder, lifted with its constants: retry_delay_s() decides how
+# long a device sits before retrying a network that rejected it, and also when
+# the rescue AP opens (the same counter). Both are invisible from the LAN and
+# both are off-by-one-prone, so the ladder is pinned here rather than watched
+# for ten minutes at a serial console.
+retry_defs = "\n".join(lift(rf"#define {k} +\d+ +/[^\n]*")
+                       for k in ("NET_STA_RETRY_S", "NET_STA_RETRY_MAX_S"))
+retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
 
 harness = f"""
 #include <stdio.h>
@@ -47,6 +55,9 @@ harness = f"""
 #include <time.h>
 #define NET_TZ_MAX 64
 #define NET_TZ_KEY "tz"
+#include <stdint.h>
+{retry_defs}
+{retry_fn}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
 #define ESP_LOGW(a, ...) do {{ }} while (0)
@@ -78,8 +89,14 @@ static void post(const char *body, int want_ok, const char *why, int want_clear)
     printf("%-5s %-46s present=%d clear=%d value='%s' %s%s\\n", pass ? "ok" : "FAIL",
            body, present, cleared, v, rej ? "reject: " : "", rej ? rej : "");
 }}
-static void off(const char *posix, int hh, int mm, int ss, int want)
+static void bk(unsigned attempt, uint32_t want)
 {{
+    const uint32_t got = retry_delay_s(attempt);
+    if (got != want) fails++;
+    printf("%-5s attempt %-12u -> %4u s (want %u)\\n",
+           got == want ? "ok" : "FAIL", attempt, (unsigned)got, (unsigned)want);
+}}
+static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
     memset(&t, 0, sizeof t);
     t.tm_year = 126; t.tm_mon = 9; t.tm_mday = 8;
@@ -132,6 +149,27 @@ int main(void)
     off("UTC0", 23, 59, 59, 0);
     off("JST-9", 23, 59, 59, 540);                            /* +1 day across the date line */
     off("EST5EDT,M3.2.0,M11.1.0", 12, 0, 30, -240);           /* non-zero seconds */
+    puts("== association back-off ladder ==");
+    /* The ladder is what a wall clock uses instead of giving up, so its shape is
+     * the whole design: eager while a dropout might still be transient, quiet
+     * once the network has clearly said no, and never past the ceiling. The
+     * ceiling matters most — a `d *= 2` without the break overflows at attempt
+     * ~27 into a huge unsigned, and esp_timer_start_once() on that is a device
+     * that never retries and never opens the rescue AP, i.e. bricked until
+     * someone finds the serial port. */
+    bk(0, NET_STA_RETRY_S);                                   /* defensive clamp */
+    bk(1, 5); bk(2, 10); bk(3, 20); bk(4, 40); bk(5, 80);
+    bk(6, 120); bk(7, 120); bk(8, 120); bk(40, 120); bk(4000000000u, 120);
+    /* Sum of the waits before the 8th failure — the time the rescue AP takes to
+     * appear on a device with unusable credentials. Pinned so the Kconfig help's
+     * "roughly N minutes" cannot silently become a lie. */
+    {{
+        unsigned sum = 0;
+        for (unsigned a = 1; a < 8; a++) sum += retry_delay_s(a);
+        if (sum != 395u) fails++;
+        printf("%-5s first 8 attempts span %u s (want 395)\\n",
+               sum == 395u ? "ok" : "FAIL", sum);
+    }}
     printf("%s\\n", fails ? "FAILURES" : "all host checks pass");
     return fails != 0;
 }}

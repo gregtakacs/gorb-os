@@ -109,7 +109,8 @@ black. Any lit pixel is the panel's canvas holding another frame's art.
 ## Roadmap
 
 - [x] Digital clock (free-running from boot)
-- [ ] WiFi + SNTP for real time
+- [x] WiFi: STA + SoftAP provisioning, LAN config page, LAN OTA with A/B rollback
+- [ ] SNTP for real time (the dial still free-runs from boot)
 - [ ] Touch / IMU input
 - [ ] Multiple screens / theming
 - [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a

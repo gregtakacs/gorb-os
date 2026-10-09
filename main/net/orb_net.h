@@ -45,3 +45,11 @@ bool orb_net_is_provisioning(void);
 
 /** The STA IPv4 as dotted-quad text, or "" when not associated. */
 const char *orb_net_ip_str(void);
+
+/**
+ * True once SNTP has landed and the system clock is real (i.e. the dial may
+ * read time()). False before the first sync and with CONFIG_ORB_NET_ENABLE=n,
+ * which is the caller's cue to keep free-running from its own boot epoch —
+ * a stale dial beats a 1970 dial.
+ */
+bool orb_net_time_synced(void);

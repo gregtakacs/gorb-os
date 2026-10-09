@@ -71,6 +71,29 @@ CONFIG_HTTPD_PURGE_BUF_LEN=256
 # sockets to spare; it may be lowered toward 6 if the heap numbers justify it, but
 # not below it or httpd_start() refuses to start.
 
+# SNTP: TWO servers, not one. CONFIG_LWIP_SNTP_MAX_SERVERS sizes both lwIP's
+# server table and esp_sntp_config_t.servers[], so the value must be at least
+# the number of servers we configure — the IDF default of 1 makes the two-server
+# config in orb_net.c impossible to pass. Rounded up to 3 so a future DHCP- or
+# user-supplied third server does not need a re-pin of this line.
+# The reason for two at all: a single hostname that fails to resolve (dead
+# server, blocked DNS, a router whose resolver flaps) would otherwise cost the
+# clock its time until the next association, and a wall clock that silently
+# reverts to its boot epoch is the exact failure this feature exists to kill.
+# Hourly re-sync is CONFIG_LWIP_SNTP_UPDATE_DELAY (IDF default 3600000) and is
+# deliberately left at the default.
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
+# lwIP's default startup delay holds the FIRST request back by a random 0-4999 ms
+# (SNTP_STARTUP_DELAY_FUNC = LWIP_RAND() % 5000) — a thundering-herd spreading
+# meant for a fleet booting at once. This is one wall clock on a wall socket, so
+# the spread buys nothing and costs up to five seconds of showing the wrong time
+# after every association: measured time-to-synced after the DHCP lease ranged
+# 0.4 s to 3.7 s with it on. Off means the exchange starts the moment on_ip()
+# arms the client. The 15 s recv timeout and the retry ladder are untouched, so
+# a dead server still fails over to the second one rather than hanging anything.
+# CONFIG_LWIP_SNTP_STARTUP_DELAY is not set
+
 # A/B rollback: ON, because this is a sealed device whose only other recovery
 # path is opening the case and flashing over USB. The A/B slots in partitions.csv
 # are not by themselves a safety net — without this, a successfully-uploaded image

@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,6 +26,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -187,6 +190,54 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Time: SNTP
+ *
+ * Configured at bring-up but NOT started there: lwIP's SNTP client sends its
+ * first request from sntp_init(), and doing that before the station has a lease
+ * means the DNS lookup for the server hostname runs against the empty resolver
+ * set a pre-DHCP interface has. The exchange then fails, the client retreats to
+ * the 15 s -> 150 s retry ladder, and the first real time the orb gets can be
+ * minutes after the network it needed was already up. Starting on
+ * IP_EVENT_STA_GOT_IP (on_ip below) costs nothing on that path and keeps the
+ * hourly CONFIG_LWIP_SNTP_UPDATE_DELAY re-sync running from the first answer.
+ *
+ * Two servers, not one: if pool.ntp.org's hostname does not resolve (or its
+ * anycast instance is down) the client fails over to time.google.com instead of
+ * losing the clock until the next association. That failover is what
+ * CONFIG_LWIP_SNTP_MAX_SERVERS=3 in sdkconfig.defaults pays for — the IDF
+ * default of 1 makes the second entry impossible to register at all.
+ * ------------------------------------------------------------------------ */
+#define NET_SNTP_SERVERS 2
+
+/* lwIP's esp_netif_sntp_init() checks the server count at RUNTIME and its
+ * failure path returns ESP_OK anyway (esp_netif_sntp.c:48 -> the ESP_GOTO_ON_FALSE
+ * jumps to `err:` without ever assigning the error to `ret`), so a stale
+ * sdkconfig that still has CONFIG_LWIP_SNTP_MAX_SERVERS=1 produces a device that
+ * quietly never syncs and reports success. Fail the build instead, where it is
+ * visible: the pin that matters is the one in sdkconfig.defaults. */
+_Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= NET_SNTP_SERVERS,
+               "CONFIG_LWIP_SNTP_MAX_SERVERS must be >= the orb_net server list");
+
+/* Set once SNTP has stepped the system clock during this boot; deliberately
+ * never cleared. Losing the AP does not make the epoch wrong — it only stops it
+ * being corrected — and both readers (the dial's source switch and
+ * /api/v1/status) treat it as "time() is trustworthy", not "association up". */
+static volatile bool s_time_synced;
+
+/* Runs on the lwIP tcpip task, not the caller's — so it must do nothing but
+ * record the fact. The dial reads s_time_synced from the LVGL task; a bool
+ * write is atomic on the S3 and the value only ever goes false -> true. */
+static void sntp_sync_cb(struct timeval *tv)
+{
+    s_time_synced = true;
+    /* Second granularity out of the callback is enough to log and to prove the
+     * exchange landed: the dial's sub-second fraction comes from esp_timer in
+     * compose_now() regardless of what the callback saw. */
+    ESP_LOGI(TAG, "sntp: time synced, epoch %lld s",
+             (long long)(tv ? tv->tv_sec : 0));
+}
+
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base;
@@ -198,6 +249,16 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     s_provisioning = false;
     ESP_LOGI(TAG, "associated: config page at http://%s/", s_ip);
     stage_probe("sta-connected");
+
+    /* Lease + DHCP-supplied resolver exist now, so the NTP exchange can be
+     * resolved and answered. esp_netif_sntp_start() is stop-then-init
+     * (esp_netif_sntp.c:170-180), so this is idempotent on every reconnect: it
+     * re-arms the ladder rather than stacking clients, and a network that drops
+     * for a minute gets a fresh sync attempt on the way back instead of waiting
+     * out the hourly timer. */
+    const esp_err_t se = esp_netif_sntp_start();
+    if (se != ESP_OK)
+        ESP_LOGW(TAG, "sntp_start: %s (clock keeps free-running)", esp_err_to_name(se));
 }
 
 /* --------------------------------------------------------------------------
@@ -243,14 +304,16 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
-        "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\"}",
+        "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
+        "\"synced\":%s,\"epoch\":%lld}",
         s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
-        (slot ? slot->label : "?"), img_str);
+        (slot ? slot->label : "?"), img_str,
+        s_time_synced ? "true" : "false", (long long)time(NULL));
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -837,6 +900,35 @@ esp_err_t orb_net_start(void)
     }
 
     ESP_RETURN_ON_ERROR(net_open_storage(), TAG, "open storage");
+    stage_probe("pre-sntp_init");
+
+    /* SNTP is configured here and started from on_ip() — see the block comment
+     * above the callback. start=false keeps the client off the wire until there
+     * is a lease; wait_for_sync=false because nothing here may block on the
+     * network: orb_net_start() runs on the app path in front of the display, and
+     * a dead NTP server must not be able to hold up the clock. smooth_sync=false
+     * deliberately: this is a wall clock, so stepping to the right time at boot
+     * is more honest than slewing, and the sweep smoothness comes from the
+     * esp_timer fraction in compose_now(), not from the clock discipline. */
+    const esp_sntp_config_t sntp_cfg = {
+        .smooth_sync   = false,
+        .server_from_dhcp = false,
+        .wait_for_sync = false,
+        .start         = false,
+        .sync_cb       = sntp_sync_cb,
+        .renew_servers_after_new_IP = false,
+        .ip_event_to_renew = IP_EVENT_STA_GOT_IP,
+        .index_of_first_server = 0,
+        .num_of_servers = NET_SNTP_SERVERS,
+        .servers = ESP_SNTP_SERVER_LIST("pool.ntp.org", "time.google.com"),
+    };
+    const esp_err_t sne = esp_netif_sntp_init(&sntp_cfg);
+    if (sne != ESP_OK) {
+        /* Not fatal by design: the dial falls back to CLOCK_EPOCH + esp_timer
+         * and stays a clock with the wrong time rather than no clock. */
+        ESP_LOGE(TAG, "sntp_init: %s (clock will free-run)", esp_err_to_name(sne));
+    }
+    stage_probe("post-sntp_init");
 
     wifi_init_config_t wic = WIFI_INIT_CONFIG_DEFAULT();
     const esp_err_t e = esp_wifi_init(&wic);
@@ -941,6 +1033,11 @@ const char *orb_net_ip_str(void)
     return s_ip;
 }
 
+bool orb_net_time_synced(void)
+{
+    return s_time_synced;
+}
+
 #else /* !CONFIG_ORB_NET_ENABLE */
 
 esp_err_t orb_net_start(void)
@@ -954,5 +1051,7 @@ bool orb_net_is_up(void) { return false; }
 bool orb_net_is_provisioning(void) { return false; }
 
 const char *orb_net_ip_str(void) { return ""; }
+
+bool orb_net_time_synced(void) { return false; }
 
 #endif /* CONFIG_ORB_NET_ENABLE */

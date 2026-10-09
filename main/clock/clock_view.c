@@ -70,6 +70,7 @@
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "display.h"
+#include "orb_net.h"   /* orb_net_time_synced(): the dial's second time source */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
 #include "art_bank.h"       /* the bank the above offsets index into */
@@ -77,7 +78,8 @@
 static const char *TAG = "clock";
 
 /* Free-running time base: starts at a fixed epoch, ticks in wall-clock real
- * time. Replace the base with SNTP sync when WiFi is added. */
+ * time until SNTP lands. compose_now() takes time() from that point on, so this
+ * is the unsynced source only — see the dual-source note there. */
 #define CLOCK_EPOCH 1700000000  /* Nov 2023 baseline */
 
 static lv_obj_t *s_scr;
@@ -206,6 +208,16 @@ static bool bg_live(void)
 static bool     s_active = false;     /* clock is the on-screen view */
 static int64_t  s_t0_us  = 0;         /* epoch anchor for the wall clock */
 static bool     s_warned_screen = false;
+
+/* Wall-clock base compose_now() ticks from, and the esp_timer instant it was
+ * sampled at. ONE pair, not two sources: tm_sec and the sub-second fraction
+ * must come from the same clock, or the second hand steps backward once per
+ * second by the phase difference between time()'s seconds and the esp_timer
+ * sawtooth. Starts on the free-running baseline and is overwritten the first
+ * time the system clock looks credible (see compose_now). */
+static time_t s_epoch_base   = CLOCK_EPOCH;
+static bool   s_anchor_is_real = false;   /* has s_epoch_base ever come from time()? */
+#define CLOCK_RESYNC_SLACK 2.0            /* s of drift that re-triggers a re-anchor */
 
 /* Mapped base of the art bank, filled in by clock_view_init() (NULL until then).
  * Kept as a file static rather than calling art_bank_ptr() on every sprite read:
@@ -978,9 +990,36 @@ static void clock_layer_commit(void)
 
 static void compose_now(void)
 {
-    const int64_t now  = esp_timer_get_time();
-    const double  el   = (double)(now - s_t0_us) / 1e6;
-    time_t  t   = (time_t)CLOCK_EPOCH + (time_t)floor(el);
+    /* Two time sources, one anchor pair (see s_epoch_base). Sampled HERE, on the
+     * LVGL task, so time() and esp_timer_get_time() are taken back-to-back and
+     * the pair is consistent; the SNTP callback deliberately only sets a flag.
+     *
+     * The system clock is trusted when it is either freshly synced or already
+     * past the dial's own baseline:
+     *   - orb_net_time_synced(): SNTP stepped it during this boot.
+     *   - time() >= CLOCK_EPOCH: IDF keeps the boot time in RTC slow memory, so
+     *     an epoch set by the previous boot SURVIVES a warm reboot (measured:
+     *     after POST /api/v1/reboot the epoch is already right ~1.5 s before the
+     *     next SNTP reply lands). Trusting it is what stops the dial from sliding
+     *     back to Nov-2023 for a few seconds every time the orb reboots.
+     * Anything lower is the 1970 default after a power cut, so the dial keeps
+     * free-running from CLOCK_EPOCH instead — a stale dial beats a 1970 dial, and
+     * the hourly CONFIG_LWIP_SNTP_UPDATE_DELAY re-sync then only re-anchors when
+     * the drift is big enough to be worth the visible jump. */
+    const int64_t now_us = esp_timer_get_time();
+    const time_t  real   = time(NULL);
+    if (orb_net_time_synced() || real >= (time_t)CLOCK_EPOCH) {
+        const double drift = (double)(real - s_epoch_base)
+                           - (double)(now_us - s_t0_us) / 1e6;
+        if (!s_anchor_is_real || fabs(drift) >= CLOCK_RESYNC_SLACK) {
+            s_epoch_base     = real;
+            s_t0_us          = now_us;
+            s_anchor_is_real = true;
+        }
+    }
+
+    const double  el   = (double)(now_us - s_t0_us) / 1e6;
+    time_t  t   = s_epoch_base + (time_t)floor(el);
     double  frac = el - floor(el);
 
     struct tm ti;

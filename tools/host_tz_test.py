@@ -368,9 +368,26 @@ def landing_page_js():
                    "createElement('a')": 'the clickable new-IP link',
                    'clearInterval(mainTmr)': 'status polling stops on success',
                    "getElementById(\'eye\')": 'the toggle\'s click wiring',
-                   "'hide':'show'": "the toggle's own label flips"}.items():
+                   "'hide':'show'": "the toggle's own label flips",
+                   # The three phone-test fixes: the scan owns the status line,
+                   # a reason reads as a word, and one dropped poll is not a failure.
+                   'if(scanning)return;': 'status() cannot overwrite the scan UX',
+                   'fails<3': 'transient fetch loss is tolerated, not shown as unreachable',
+                   'wifi_reason_name': 'the 802.11 reason shown as a word'}.items():
         if k not in js:
             print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
+    # The old display path printed the raw code, which is what read as
+    # "response 4?" on a phone. Keep the word form from being reintroduced.
+    for k, why in {"?', reason '+d.wifi_reason": 'raw reason number shown to the user'}.items():
+        if k in js:
+            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+    # Server side of the same decisions: a user-initiated join must be a state
+    # of its own, otherwise the page can only ever say "provisioning".
+    for k, why in {'s_joining': 'the joining state distinct from provisioning',
+                   '"joining"': 'the joining state string the page keys on',
+                   'wifi_reason_name': 'the reason rendered as a word'}.items():
+        if k not in src:
+            print(f'FAIL orb_net.c: missing {k!r} — {why}'); rc = 1
     if rc:
         return rc
     print(f'ok    landing-page JS parses ({len(js)} B script), '

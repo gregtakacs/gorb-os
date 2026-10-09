@@ -100,6 +100,7 @@ static httpd_handle_t s_server;
 static nvs_handle_t   s_nvs;
 
 static volatile bool s_sta_up;         /* has an IP */
+static volatile bool s_joining;        /* a user-initiated join is in flight */
 static volatile bool s_provisioning;   /* booted with no credentials at all */
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 static volatile int  s_rssi = -999;
@@ -799,6 +800,12 @@ static void net_task_loop(void *arg)
              * keeps that from recurring. */
             s_assoc_fails = 0;
             s_retry_pending = false;
+            /* Distinguishes "still waiting for someone to tell me a network" from
+             * "trying the one the user just picked". Both were reported as
+             * "provisioning", which on a phone mid-setup reads as a page that
+             * ignored the Connect button (the first live phone test, where the
+             * join actually succeeded and the user never saw it). */
+            s_joining = true;
             {
                 const esp_err_t je = net_apply_sta_config(m.ssid, m.pass);
                 if (je != ESP_OK)
@@ -1050,6 +1057,10 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&ev->ip_info.ip));
     s_sta_up       = true;
     s_provisioning = false;
+    /* The lease is the word that the join the user pressed Connect for actually
+     * landed; until then /api/v1/status keeps saying "joining" rather than falling
+     * back to "provisioning", which is what made the first phone test look ignored. */
+    s_joining      = false;
     s_assoc_fails  = 0;      /* back-off is per-outage, not per-device-life */
     ESP_LOGI(TAG, "associated: config page at http://%s/", s_ip);
     stage_probe("sta-connected");
@@ -1086,7 +1097,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * worse than an error because the page just fails to parse it. The overflow
      * check below is what makes that visible rather than subtle, and the host
      * test pins the worst case. */
-    char json[640];
+    char json[768];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -1129,13 +1140,26 @@ static esp_err_t h_status(httpd_req_t *req)
      * tzset() fixes the dial itself as soon as the real epoch lands. */
     const time_t now = time(NULL);
 
+    /* The 802.11 reason in words, not as a number: "attempt 1, reason 204" on a
+     * phone during setup is unreadable (a user can be expected to act on "wrong
+     * password" and on nothing else), and 204 in particular is the code a wrong
+     * passphrase returns. The number stays in the reply for tooling. */
+    char rbuf[16];
+    const char *rname = reason_name(s_last_reason);
+    if (!rname) {
+        snprintf(rbuf, sizeof(rbuf), "code-%u", (unsigned)s_last_reason);
+        rname = rbuf;
+    }
+
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
-        "\"assoc_fails\":%u,\"wifi_reason\":%u}",
-        s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
+        "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\"}",
+        s_sta_up      ? "connected"    :
+        s_joining     ? "joining"      :
+        s_provisioning ? "provisioning" : "down",
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -1147,10 +1171,10 @@ static esp_err_t h_status(httpd_req_t *req)
         /* The AP's real state, from the driver's own events. Without this the
          * whole lifecycle added here is invisible from the LAN — you could not
          * tell a closed AP from a firmware that never closes it, which is
-         * exactly the question that motivated the change. assoc_fails rides
+         * exactly the question that motivated this change. assoc_fails rides
          * along because "how long until the rescue AP" is the next question. */
         s_ap_up ? "true" : "false", (unsigned)s_assoc_fails,
-        (unsigned)s_last_reason);
+        (unsigned)s_last_reason, rname);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -1939,10 +1963,10 @@ static const char HTML_LANDING[] =
 "<div class=row><button id=tzgo hidden>Set zone</button></div>"
 "<div id=tzs></div>"
 "<script>"
-"var sel=null,timer=0,mainTmr=0,zones=[],tzcur='',done=false,apSent=false;"
+"var sel=null,timer=0,mainTmr=0,zones=[],tzcur='',done=false,apSent=false,fails=0,scanning=false;"
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
-"async function status(){if(done)return;try{var d=await j('/api/v1/status');"
+"async function status(){if(done)return;try{var d=await j('/api/v1/status');fails=0;"
 "if(d.state=='connected'){done=true;clearInterval(timer);clearInterval(mainTmr);"
 "var e=document.getElementById('state');e.className='ok';"
 "e.textContent='connected \\u2014 orb is at ';"
@@ -1950,22 +1974,22 @@ static const char HTML_LANDING[] =
 "a.style.color='#9cf';e.appendChild(a);"
 "var k=document.createElement('span');k.textContent=' \\u2014 your phone goes back to your wifi; tap the link once it does';e.appendChild(k);"
 "apoff(d);return}"
-"say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
-"+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason?', reason '+d.wifi_reason:'')+')':'')"
+"if(scanning)return;say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
+"+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason_name?', '+d.wifi_reason_name:'')+')':'')"
 "+(d.wifi_reason&&!d.assoc_fails?' (last reason '+d.wifi_reason+')':''));}"
-"catch(e){say('device unreachable','bad')}}"
+"catch(e){if(++fails<3){say('waiting for the orb \\u2026');return}say('device unreachable','bad')}}"
 "var scanTmr=0;"
 "function scanStop(){clearTimeout(scanTmr);scanTmr=0}"
-"async function scan1(force){var ns=document.getElementById('ns');"
+"async function scan1(force){var ns=document.getElementById('ns');scanning=1;"
 "say('scanning\\u2026');ns.innerHTML='';"
 "try{var d=await j('/api/v1/wifi/scan'+(force?'?fresh=1':''));"
 "if(d.status=='scanning'){scanStop();scanTmr=setTimeout(function(){scan1(false)},1200);return}"
-"scanStop();var list=d.networks||[];"
+"scanStop();scanning=0;var list=d.networks||[];"
 "if(!list.length){say('no networks found \\u2014 try Rescan','bad');return}"
 "list.forEach(function(n){var li=document.createElement('li');var b=document.createElement('button');"
 "b.textContent=n.ssid+'  ('+n.rssi+' dBm, ch '+n.ch+(n.open?', open)':' )');"
 "b.onclick=function(){sel=n.ssid;document.getElementById('pick').hidden=false;say('selected '+n.ssid);document.getElementById('pass').focus()};"
-"li.appendChild(b);ns.appendChild(li)});say('pick a network');}catch(e){scanStop();say('scan failed: '+e.message,'bad')}}"
+"li.appendChild(b);ns.appendChild(li)});say('pick your network from the list');}catch(e){scanStop();scanning=0;say('scan failed: '+e.message,'bad')}}"
 "function scan(force){scanStop();scan1(!!force)}"
 "async function join(){if(!sel){say('pick a network first','bad');return}"
 "var p=document.getElementById('pass').value;"

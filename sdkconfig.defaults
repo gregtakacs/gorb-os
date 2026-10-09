@@ -43,3 +43,43 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 
+# ---------------------------------------------------------------------------
+# Networking (config page). Bring-up + heap instrumentation build: the
+# stage_probe() lines in main/net/orb_net.c are what decide the remaining RAM
+# trims, so keep MEM_DEBUG on until those numbers are in hand.
+# ---------------------------------------------------------------------------
+CONFIG_ORB_NET_ENABLE=y
+CONFIG_ORB_NET_MEM_DEBUG=y
+CONFIG_ORB_NET_AP_FALLBACK=y
+CONFIG_ORB_NET_HTTPD_PORT=80
+
+# Header buffer MUST be raised from the 512 B default: a desktop browser's
+# header block (User-Agent + Accept + Accept-Encoding + the sec-ch-ua family +
+# Cookie) routinely reaches 1.5-3 KB, and esp_http_server rejects the whole
+# request with 431 when it does not fit — i.e. the config page would not load at
+# all from a laptop, only from a minimal client. This is per-SERVER (one
+# HTTPD_SCRATCH_BUF allocation), not per-session, so 4 KB here costs 4 KB once.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096
+CONFIG_HTTPD_MAX_URI_LEN=1024
+# Chunked-transfer purge buffer: keep small, but non-trivial so a browser that
+# sends an unneeded body on PATCH is drained without stalling the handler.
+CONFIG_HTTPD_PURGE_BUF_LEN=256
+
+# LWIP_MAX_SOCKETS is left at the 10 this project already builds with. It must
+# be >= httpd's max_open_sockets + 3 (checked in esp_http_server's httpd_main.c)
+# and orb_net uses max_open_sockets = 3, so 10 satisfies that assertion with four
+# sockets to spare; it may be lowered toward 6 if the heap numbers justify it, but
+# not below it or httpd_start() refuses to start.
+
+# WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
+# `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed
+# bucket and NOT this image's real instruction-RAM usage. This target's only
+# instruction-RAM region is iram0_0_seg = 357,120 B, and the linker map shows
+# .iram0.text at ~81 KB of it (~23%). Turning both options off was measured to
+# free only 16,768 B of DIRAM while leaving that "16,383" byte-for-byte
+# unchanged, i.e. the row does not track what those options move — so it is not
+# evidence of an IRAM crunch, and there is no 16 KB IRAM ceiling to crash into.
+# If IRAM ever genuinely overflows, ld says so loudly ("section .iram0.text will
+# not fit in region iram0_0_seg"); that error, not this table, is the trigger to
+# revisit CONFIG_ESP_WIFI_EXTRA_IRAM_OPT / these two knobs.
+

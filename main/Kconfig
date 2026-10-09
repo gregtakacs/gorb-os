@@ -1,0 +1,47 @@
+menu "Orb networking"
+
+    config ORB_NET_ENABLE
+        bool "Bring up WiFi + the config-page HTTP server"
+        default n
+        help
+            Phase 2 bring-up switch. When off, main/net is compiled but not
+            started, so the clock runs with the pre-networking memory profile
+            and the heap instrumentation can be compared either way.
+
+            The point of enabling this on a development build is to collect the
+            real internal-RAM numbers (orb_net_start() logs them at each stage);
+            the WiFi + httpd budget is the one thing the plan could not settle
+            without hardware.
+
+    config ORB_NET_MEM_DEBUG
+        bool "Log internal/DMA + PSRAM heap at each networking stage"
+        depends on ORB_NET_ENABLE
+        default y
+        help
+            Emits one line per stage: before the netif/event loops, after
+            esp_wifi_init(), after esp_wifi_start(), on STA connect, and after
+            httpd_start(). Compare the INTERNAL column against the ~105 KB
+            budget before adopting any further trims.
+
+    config ORB_NET_AP_FALLBACK
+        bool "Start a SoftAP if there are no stored credentials"
+        depends on ORB_NET_ENABLE
+        default y
+        help
+            First-boot provisioning path: with no SSID saved, the orb comes up
+            as an open "orb-xxxxxx" AP on channel 1 (channel 1 only, so it sits
+            inside the 2.4 GHz-only radio; the 466x466 screen cannot show a QR
+            code legibly, so the pairing URL is printed to the serial log and
+            shown on-screen).
+
+    config ORB_NET_HTTPD_PORT
+        int "Config-server port"
+        depends on ORB_NET_ENABLE
+        default 80
+        help
+            Plain HTTP. TLS is terminated upstream (dev: DEV-LLM-STACK's
+            Traefik with a real LE cert; production NAS-STACK: its own Traefik
+            via the passthrough rules), so nothing here links mbedtls's
+            server-side SSL path.
+
+endmenu

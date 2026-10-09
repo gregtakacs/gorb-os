@@ -19,6 +19,7 @@
 #include "color_picker.h"
 #include "knob.h"
 #include "input_router.h"
+#include "orb_net.h"
 
 static const char *TAG = "main";
 
@@ -37,9 +38,17 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "=== orb-os-esp-idf booting ===");
 
-    /* Initialize NVS (needed for future WiFi / settings) */
+    /* Initialize NVS (WiFi driver's own store: namespace "nvs.net80211").
+     *
+     * The recovery erase below is safe for user data because application
+     * settings and WiFi credentials do NOT live in this partition — they are in
+     * the separate `storage` partition (partitions.csv) owned by main/net. At
+     * worst a wipe here costs the driver's cached profile and PHY calibration,
+     * both of which are re-derived; orb_net_start() re-pushes the stored SSID
+     * and passphrase on every boot, so credentials survive it. */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "corrupt/unformatted NVS — erasing (WiFi creds are safe in `storage`)");
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
@@ -65,5 +74,14 @@ void app_main(void)
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "orb-os-esp-idf running — knob HSB editor live (long-press: switch screen)");
+
+#if CONFIG_ORB_NET_ENABLE
+    /* Start the network AFTER the LVGL task exists, so the dial is already
+     * ticking while the radio comes up and a bring-up failure can never show up
+     * as a blank screen. Deliberately not ESP_ERROR_CHECK: the clock is the
+     * product, and this is a device in a sealed case. */
+    if (orb_net_start() != ESP_OK)
+        ESP_LOGE(TAG, "networking down — clock running without config page");
+#endif
 }
 

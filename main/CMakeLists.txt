@@ -7,6 +7,7 @@ idf_component_register(
         "color/color_picker.c"
         "input/input_router.c"
         "art/art_bank.c"
+        "net/orb_net.c"
     INCLUDE_DIRS
         "."
         "display"
@@ -15,6 +16,7 @@ idf_component_register(
         "color"
         "input"
         "art"
+        "net"
         "../assets"
     REQUIRES
         esp_driver_spi
@@ -25,6 +27,12 @@ idf_component_register(
         esp_psram
         esp_partition          # art bank: find + mmap the `assets` partition
         spi_flash              # "
+        esp_wifi               # config page: STA + first-boot provisioning SoftAP
+        esp_netif              # "
+        esp_event              # "
+        esp_http_server        # plain-HTTP config API (TLS terminated upstream)
+        lwip                   # "
+        esp_app_format         # esp_app_get_description() for the status endpoint
         nvs_flash
         lvgl__lvgl
         espressif__esp_lcd_co5300

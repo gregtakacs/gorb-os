@@ -117,3 +117,9 @@ black. Any lit pixel is the panel's canvas holding another frame's art.
       knob-driven toggle back to USB-Serial-JTAG for flashing.
       **Shelved — full design in `docs/usb-sd-msc-plan.md`.**
 
+
+## License
+
+MIT — see [LICENSE](LICENSE). Upstream Orb OS is also MIT, so the port
+provenance (themes baked into `assets/clock_assets.bin`, ports noted in file
+headers) is license-compatible.

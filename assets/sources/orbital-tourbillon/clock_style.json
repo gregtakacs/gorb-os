@@ -1,0 +1,59 @@
+{
+ "hands": {
+  "order": [
+   2,
+   3,
+   0,
+   1
+  ],
+  "shadow": {
+   "on": false,
+   "dx": 3,
+   "dy": 9
+  },
+  "hour": {
+   "show": true,
+   "pivotX": 20,
+   "pivotY": 136,
+   "centerX": 233,
+   "centerY": 233,
+   "blend": 0
+  },
+  "minute": {
+   "show": true,
+   "pivotX": 16,
+   "pivotY": 197,
+   "centerX": 233,
+   "centerY": 233,
+   "blend": 0
+  },
+  "second": {
+   "show": true,
+   "pivotX": 233,
+   "pivotY": 233,
+   "centerX": 233,
+   "centerY": 233,
+   "blend": 0
+  },
+  "static1": {
+   "show": true,
+   "pivotX": 233,
+   "pivotY": 233,
+   "centerX": 233,
+   "centerY": 233,
+   "blend": 0
+  },
+  "static2": {
+   "show": false,
+   "pivotX": 233,
+   "pivotY": 233,
+   "centerX": 233,
+   "centerY": 233,
+   "blend": 0
+  }
+ },
+ "secondSweep": false,
+ "secondRailway": false,
+ "textOverHands": false,
+ "tickRate": 1
+}

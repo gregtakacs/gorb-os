@@ -144,19 +144,87 @@ class Blob:
         return off
 
 
-def emit_sprite(blob, rgba, offx, offy, pivot_x, pivot_y, center_x, center_y, blend, show):
+def emit_sprite(blob, rgba, offx, offy, pivot_x, pivot_y, center_x, center_y, blend, show,
+                diff=None):
     w, h = rgba.size
     color_off = blob.add(rgb565_le(rgba))
     blob.add(alpha_bytes(rgba))
     # pivot expressed in CROPPED coords = original pivot minus crop origin
+    dx, dy, dw, dh = diff if diff else (0, 0, 0, 0)
     return dict(w=w, h=h, offx=offx, offy=offy, pivotx=pivot_x - offx, pivoty=pivot_y - offy,
                 centerx=center_x, centery=center_y, blend=blend, show=int(bool(show)),
-                color_off=color_off)
+                color_off=color_off, diffx=dx, diffy=dy, diffw=dw, diffh=dh)
 
 
 def blank_sprite(cx, cy, show=0):
     return dict(w=0, h=0, offx=0, offy=0, pivotx=0, pivoty=0,
-                centerx=cx, centery=cy, blend=0, show=show, color_off=0)
+                centerx=cx, centery=cy, blend=0, show=show, color_off=0,
+                diffx=0, diffy=0, diffw=0, diffh=0)
+
+
+def bake_tourbillon(blob, style, args):
+    """Frame bank for an ANIMATED rotating second hand (tourbillon/oscillating
+    balance): a PNG sequence whose frames share geometry and differ only in
+    their internal motion. Every frame is cropped to the ONE ink bbox of the
+    whole cycle (so all frames rotate about the same pivot and dirty the same
+    box), and each frame stores the rect that differs from its predecessor --
+    chained and cyclic, exactly like the GIF delta bank's rect lists. The
+    device rotates the frame it shows by the seconds angle; the diff rect is
+    what makes that cheap: between swaps only those pixels can have changed,
+    so the tick re-marks the rotated diff rect instead of the layer's full
+    swept box (see clock_view.c's mark_all_layers/tourbillon_advance)."""
+    import numpy as np
+    hs = (style.get("hands", {}) or {}).get("second", {}) or {}
+    px = int(hs.get("pivotX", SCREEN_W // 2)); py = int(hs.get("pivotY", SCREEN_H // 2))
+    cx = int(hs.get("centerX", px)); cy = int(hs.get("centerY", py))
+
+    items = _png_frame_items(args.tourbillon, None)
+    imgs = [Image.open(io.BytesIO(b)).convert("RGBA") for _, b in items]
+    if len({im.size for im in imgs}) != 1:
+        raise SystemExit("--tourbillon: frames must all be the same size")
+    if imgs[0].size != (SCREEN_W, SCREEN_H):
+        imgs = [resize_full(im) for im in imgs]
+    arrs = [np.asarray(im, dtype=np.int16) for im in imgs]
+
+    # ONE ink bbox for the whole cycle: every frame is cropped to it, so one
+    # pivot/geometry record serves the bank and the swept box never moves.
+    l = t = 1 << 30
+    r = b = -1
+    for a in arrs:
+        ys, xs = np.nonzero(a[:, :, 3] > 0)
+        if not len(xs):
+            continue
+        l = min(l, int(xs.min())); t = min(t, int(ys.min()))
+        r = max(r, int(xs.max()) + 1); b = max(b, int(ys.max()) + 1)
+    if r <= l or b <= t:
+        raise SystemExit("--tourbillon: frames are fully transparent")
+    l = max(0, l - args.pad); t = max(0, t - args.pad)
+    r = min(SCREEN_W, r + args.pad); b = min(SCREEN_H, b + args.pad)
+
+    n = len(imgs)
+    if n > 16:
+        raise SystemExit(f"--tourbillon: {n} frames exceeds the baked max of 16 "
+                         f"(clk_theme.tourbillon[] in clock_assets.h)")
+    thr = max(1, args.diff_thresh) * 3        # per-sum, same feel as the bank's
+
+    recs = []
+    for i, im in enumerate(imgs):
+        crop = im.crop((l, t, r, b))
+        d = np.abs(arrs[i] - arrs[(i - 1) % n]).sum(axis=2)
+        ys, xs = np.nonzero(d > thr)
+        if len(xs):
+            dl = max(0, int(xs.min()) - 3 - l)
+            dt = max(0, int(ys.min()) - 3 - t)
+            dr = min(crop.size[0], int(xs.max()) + 4 - l)
+            db = min(crop.size[1], int(ys.max()) + 4 - t)
+            diff = (dl, dt, dr - dl, db - dt)
+        else:
+            diff = (0, 0, 0, 0)               # identical to predecessor: mark nothing
+        recs.append(emit_sprite(blob, crop, l, t, px, py, cx, cy, 0, True, diff=diff))
+    print("  {:8s} tourbillon: {} frames @ {} fps, bbox=({},{},{},{}) pivot=({},{}) centre=({},{})".format(
+        "anim", n, args.tourbillon_fps, l, t, r - l, b - t, px, py, cx, cy))
+    return recs
+
 
 
 def _lvgl_trig(ang_10):
@@ -900,6 +968,18 @@ def main():
                          "with its planar alpha composited over a checkerboard")
     ap.add_argument("--tick-rate", type=int, default=0,
                     help="override the theme's tickRate (beats per second)")
+    ap.add_argument("--tourbillon", default=None, metavar="DIR|ZIP|GLOB",
+                    help="animated second-hand (tourbillon) frame bank: a PNG "
+                         "sequence (dir, zip of PNGs, or glob) of full-canvas "
+                         "frames that share geometry and differ only in their "
+                         "internal motion (oscillating balance). Baked into the "
+                         "second-hand slot; the device rotates the shown frame "
+                         "by the seconds angle exactly like any hand, and "
+                         "re-marks only each frame's baked diff rect per swap. "
+                         "Pivot/centre come from the style's hands.second.")
+    ap.add_argument("--tourbillon-fps", type=int, default=15,
+                    help="playback rate of the --tourbillon frame bank "
+                         "(default 15, the kit manifest's tempo)")
     ap.add_argument("--no-pivot-snap", action="store_true",
                     help="keep each hand's authored pivotX/pivotY verbatim. By "
                          "default a rotating hand's pivot is snapped to the "
@@ -1045,14 +1125,24 @@ def main():
                  f" canvas={img.size} ink={rec['w']}x{rec['h']}@({rec['offx']},{rec['offy']})")
               + pivot_note)
 
+    # ---- tourbillon: an ANIMATED second hand (optional frame bank) ----
+    # Overrides the second-hand record with frame 0 of the bank: the hand
+    # record stays the geometry carrier (bbox/pivot/centre for the rotator and
+    # for swept-box maths); the pixels come from clk_theme.tourbillon[f].
+    tourb_recs = []
+    if args.tourbillon:
+        tourb_recs = bake_tourbillon(blob, style, args)
+        if tourb_recs:
+            hand_recs[2] = dict(tourb_recs[0], show=1)
+
     _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
-            plate_off, blob, args, gif)
+            plate_off, blob, args, gif, tourb_recs)
 
 
 def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
-            plate_off, blob, args, gif=None):
+            plate_off, blob, args, gif=None, tourb_recs=None):
     hands_style = style.get("hands", {}) or {}
     order = [int(k) for k in (hands_style.get("order", [0, 1, 2, 3, 4]) or [0, 1, 2, 3, 4])
              if 0 <= int(k) < 5]
@@ -1083,9 +1173,11 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         f.write(blob.buf)
 
     def fmt_spr(r, label):
-        return ("  {{ {:>4}, {:>4}, {:>5}, {:>5}, {:>5}, {:>5}, {:>5}, {:>5}, {:>2}, {:>2}, {:>9} }}, /* {} */".format(
+        return ("  {{ {:>4}, {:>4}, {:>5}, {:>5}, {:>5}, {:>5}, {:>5}, {:>5}, {:>2}, {:>2}, {:>9}, {:>5}, {:>5}, {:>5}, {:>5} }}, /* {} */".format(
             r["w"], r["h"], r["offx"], r["offy"], r["pivotx"], r["pivoty"],
-            r["centerx"], r["centery"], r["blend"], r["show"], r["color_off"], label))
+            r["centerx"], r["centery"], r["blend"], r["show"], r["color_off"],
+            r["diffx"], r["diffy"], r["diffw"], r["diffh"], label))
+
 
     hdr = []
     hdr.append("/* AUTO-GENERATED by tools/bake_clock.py -- DO NOT EDIT.\n"
@@ -1105,7 +1197,12 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                "  uint8_t  show;            /* draw this layer */\n"
                "  uint32_t color_off;       /* blob offset of the colour plane (w*h*2);\n"
                "                             *   the alpha plane follows at +w*h*2, stride w */\n"
+               "  int16_t  diffx, diffy;    /* tourbillon frames only: rect that differs\n"
+               "                             *   from the PREVIOUS frame, CROPPED coords;\n"
+               "                             *   0,0 = identical to its predecessor */\n"
+               "  uint16_t diffw, diffh;\n"
                "} clk_sprite_t;\n\n")
+    hdr.append("#define CLK_TOURB_MAX 16\n\n")
     hdr.append("typedef struct {\n"
                "  uint32_t bg;\n"
                "  uint8_t  plate_follow;    /* 0 none 1 hour 2 minute 3 second */\n"
@@ -1122,7 +1219,11 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                "  uint8_t  bg_mode;         /* 0 = plate + bgAnim frames, 1 = animated delta bank (GIF or PNG frames) */\n"
                "  uint32_t bg_key_off;      /* mode 1: full RGB565 keyframe (frame 0) */\n"
                "  uint16_t gif_frames;      /* mode 1: frames in the loop (incl. keyframe) */\n"
+               "  uint16_t tourbillon_n;    /* second-hand frame bank size (0 = plain hand) */\n"
+               "  uint16_t tourbillon_fps;  /* bank playback tempo */\n"
+               "  clk_sprite_t tourbillon[CLK_TOURB_MAX];  /* shown frame's pixels replace hand[2]'s */\n"
                "} clk_theme_t;\n\n")
+
 
     hdr.append("typedef struct {\n"
                "  uint16_t x, y, w, h;  /* screen rect */\n"
@@ -1171,9 +1272,18 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
     hdr.append("  /* hand */ {\n" + "\n".join(fmt_spr(hand_recs[i], KINDS[i]) for i in range(5)) + "\n  },\n")
     hdr.append("  /* shadow */ {\n" + "\n".join(fmt_spr(shadow_recs[i], KINDS[i]) for i in range(5)) + "\n  },\n")
     hdr.append("  /* overlay */" + fmt_spr(overlay, "overlay")[1:] + "\n")
-    hdr.append("  /* bg_mode,bg_key_off,gif_frames */ {}, {}, {}\n".format(
+    hdr.append("  /* bg_mode,bg_key_off,gif_frames */ {}, {}, {},\n".format(
         1 if gif else 0, (gif["key_off"] if gif else 0), (gif["frames"] if gif else 0)))
+    tb = tourb_recs or []
+    hdr.append("  /* tourbillon_n,tourbillon_fps */ {}, {},\n".format(
+        len(tb), int(getattr(args, "tourbillon_fps", 15) or 15)))
+    blank = blank_sprite(0, 0, 0)
+    hdr.append("  /* tourbillon */ {\n"
+               + "\n".join(fmt_spr(tb[i] if i < len(tb) else blank, f"tourb{i:02d}")
+                           for i in range(16))
+               + "\n  }\n")
     hdr.append("};\n\n")
+
     hdr.append("/* Symbols from target_add_binary_data(... clock_assets.bin BINARY). */\n"
                "extern const uint8_t clock_assets_bin_start[] asm(\"_binary_clock_assets_bin_start\");\n"
                "extern const uint8_t clock_assets_bin_end[]   asm(\"_binary_clock_assets_bin_end\");\n")

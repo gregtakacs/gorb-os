@@ -9,6 +9,12 @@
  *          shadow (planar RGB565A8 lv_image, rotated about the hand pivot)
  *          hand   (planar RGB565A8 lv_image, rotated about the hand pivot)
  *     -> overlay (hub cap), drawn last / on top
+ *        (the overlay is where a baked-on GLASS PNG lives: one full-coverage
+ *        A8 layer composited above everything, e.g. watch-kit glass+bezel
+ *        merged at bake time — this theme's is exactly that)
+ *  The second layer may instead be an ANIMATED hand: a --tourbillon frame
+ *  bank (clk_theme.tourbillon[]) swapped by wall-clock frame and rotated by
+ *  the seconds angle like any other hand (see tourbillon_advance).
  *
  * A shadow belongs to its own hand and sits directly under IT, not under every
  * hand: the minute hand casts onto the plane the second hand lives on, so the
@@ -174,6 +180,20 @@ static uint64_t         s_fps_pix0;
 static uint32_t         s_fps_chunk0;
 static uint64_t         s_fps_sub0;
 
+/* ---- tourbillon: an animated second hand (frame bank + device rotation) ----
+ * The kit's seconds layer is N full-canvas frames that share geometry and
+ * differ only in internal motion (an oscillating balance); the ORBIT around
+ * the dial centre is the same rotation every hand already gets, driven by the
+ * seconds angle (the kit manifest's seconds/60 x 360 formula). Between frame
+ * swaps only the pixels inside the baked diff rect vs the PREVIOUS frame can
+ * differ, so the per-tick re-mark is that rotated diff box — not the
+ * carriage's full swept box, which would re-composite ~40% of the page every
+ * tick and re-create the mark_all_layers plateau this dial must not hit. */
+static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never */
+static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
+static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
+
+
 static bool gif_mode(void)
 {
     return clk_theme.bg_mode == 1 && clk_theme.gif_frames >= 2
@@ -268,7 +288,20 @@ static void fill_plate_dsc(lv_image_dsc_t *d)
     d->data              = blob() + clk_theme.plate_off;
 }
 
+/* The sprite the given layer index draws RIGHT NOW: a tourbillon frame when
+ * the theme has a frame bank on the second hand, the static hand otherwise.
+ * Geometry (bbox, pivot, centre) is identical across the bank — the frame
+ * swap changes pixels, never the rotation maths. */
+static const clk_sprite_t *layer_spr(const int k)
+{
+    if (k == 2 && clk_theme.tourbillon_n
+        && s_tourb_shown >= 0 && s_tourb_shown < (int32_t)clk_theme.tourbillon_n)
+        return &clk_theme.tourbillon[s_tourb_shown];
+    return &clk_theme.hand[k];
+}
+
 /* ---- bgAnim: port of orb-os bg_anim_frame() / bg_rate() ------------------
+
  * A looping theme cycles the still plate plus its baked extra frames forever,
  * advancing off the tick count so every frame is up for exactly the same
  * number of ticks; a non-looping theme holds the still plate until bg_every
@@ -325,6 +358,10 @@ static void show_plate_frame(int idx)
 }
 
 static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out);
+static void swept_rect_box(const clk_sprite_t *spr, int32_t ang_10,
+                           int32_t rx1, int32_t ry1, int32_t rx2, int32_t ry2,
+                           lv_area_t *out);
+
 static void area_union(lv_area_t *a, const lv_area_t *b);
 #if CLK_BG_DIRECT_PUSH
 static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
@@ -519,7 +556,9 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
  * box, which is precisely the band the clip was dropping. */
 #define SWEPT_PAD 3
 
-static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
+static void swept_rect_box(const clk_sprite_t *spr, int32_t ang_10,
+                           int32_t rx1, int32_t ry1, int32_t rx2, int32_t ry2,
+                           lv_area_t *out)
 {
     /* ang_10 is TENTHS of a degree: deg = ang_10/10, rad = ang_10 * PI/1800.
      * (The divisor here was 3600, i.e. the box was built for HALF the angle:
@@ -532,8 +571,8 @@ static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
     int32_t x2 = -0x7fffffff, y2 = -0x7fffffff;
 
     for (int i = 0; i < 4; i++) {
-        const double cx = (i & 1) ? (double)(spr->w - 1) : 0.0;
-        const double cy = (i & 2) ? (double)(spr->h - 1) : 0.0;
+        const double cx = (i & 1) ? (double)rx2 : (double)rx1;
+        const double cy = (i & 2) ? (double)ry2 : (double)ry1;
         const double dx = cx - (double)spr->pivotx;
         const double dy = cy - (double)spr->pivoty;
         /* lv_point_transform()'s convention, with the pivot pinned to the
@@ -554,6 +593,12 @@ static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
     out->x2 = (lv_coord_t)(x2 > CLK_SCR_W - 1 ? CLK_SCR_W - 1 : x2);
     out->y2 = (lv_coord_t)(y2 > CLK_SCR_H - 1 ? CLK_SCR_H - 1 : y2);
 }
+
+static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
+{
+    swept_rect_box(spr, ang_10, 0, 0, (int32_t)spr->w - 1, (int32_t)spr->h - 1, out);
+}
+
 
 static void area_union(lv_area_t *a, const lv_area_t *b)
 {
@@ -675,6 +720,62 @@ static void apply_angles(const float ang[5])
     }
 }
 
+/* ---- tourbillon: pick the wall-clock frame and swap it in -----------------
+ * The only pixels that can differ after a frame swap are the changed rects of
+ * the OUTGOING and INCOMING frame at the current angle (both are chained
+ * against neighbours by the baker, like the delta bank); a first-ever draw has
+ * no prior composite of this layer, so it takes the full swept box. The angle
+ * changes (the orbit step) are marked by apply_angles itself, exactly as for
+ * any other hand. */
+static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
+{
+    if (spr->diffw && spr->diffh)
+        swept_rect_box(spr, ang_10, spr->diffx, spr->diffy,
+                       (int32_t)spr->diffx + (int32_t)spr->diffw - 1,
+                       (int32_t)spr->diffy + (int32_t)spr->diffh - 1, out);
+    else
+        swept_box(spr, ang_10 == INT32_MIN ? 0 : ang_10, out);
+}
+
+static void tourbillon_advance(void)
+{
+    const int n = (int)clk_theme.tourbillon_n;
+    if (n <= 0 || !s_hand[2]) return;
+
+    const uint32_t fps = clk_theme.tourbillon_fps ? clk_theme.tourbillon_fps : 15;
+    const int f = (int)(((uint64_t)(lv_tick_get() - s_tourb_t0) * fps)
+                        / 1000u % (uint32_t)n);
+    if (f == s_tourb_shown) return;
+
+    const int32_t a = s_ang_10[2];
+    lv_area_t u;
+    if (s_tourb_shown < 0 || a == INT32_MIN) {
+        /* First draw of this layer: no prior composite exists to diff against,
+         * so the whole (rotation-0 if not posed yet) swept box goes dirty. */
+        swept_box(&clk_theme.tourbillon[f], a == INT32_MIN ? 0 : a, &u);
+    } else {
+        tourb_mark(&clk_theme.tourbillon[s_tourb_shown], a, &u);
+        lv_area_t v;
+        tourb_mark(&clk_theme.tourbillon[f], a, &v);
+        area_union(&u, &v);
+    }
+
+    /* Mirror apply_angles' etiquette: the src setter would invalidate the
+     * widget's whole transformed box; the marks below cover exactly what
+     * needs rebuilding. Under L4 the commit painter owns the rows outright. */
+    lv_display_t *disp = lv_obj_get_display(s_scr);
+    lv_display_enable_invalidation(disp, false);
+    lv_image_set_src(s_hand[2], &s_tourb_dsc[f]);
+    lv_display_enable_invalidation(disp, true);
+#if CLK_BG_DIRECT_PUSH
+    if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+    else
+#endif
+        lv_obj_invalidate_area(s_scr, &u);
+    s_tourb_shown = f;
+}
+
+
 #if CLK_BG_DIRECT_PUSH
 /* ---- L4: direct layer compositing into the panel mirror -------------------
  * With L3 the raw GIF pixels land in the mirror instantly, but everything
@@ -776,20 +877,61 @@ static void request_commit(void)
  * minute hand was painted once and froze outside the animated area. */
 static void mark_all_layers(void)
 {
+    /* Full-coverage art (tourbillon kits — dial/glass reach every row) cannot
+     * afford this discipline at all: re-marking four static boxes unions
+     * ~430 rows of full-page restore+repaint per tick and caps the dial at
+     * 5 fps (measured). It is also provably redundant under the current hook:
+     * restore_marked_rows wipes each marked row to plain canvas and the layer
+     * loop below repaints EVERY layer across the marked span, so a static
+     * layer's pixels are rebuilt by whoever actually dirtied its rows — and
+     * when nothing moved at all there is nothing to flush. Layers mark
+     * themselves on the ticks they change: apply_angles (rotation, incl. the
+     * carriage orbit step) and tourbillon_advance (frame swap) both do.
+     * Classic themes keep the shipped discipline byte-for-byte — the
+     * "hands missing / trailing" freeze bug predates the per-row x-span
+     * restore and is not re-litigated for art that runs fine today. */
+    if (clk_theme.tourbillon_n > 0) return;
+
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
+
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
         if (s_ang_10[k] == INT32_MIN) continue;
         lv_area_t b;
-        if (s_hand[k])   { swept_box(&clk_theme.hand[k],   s_ang_10[k], &b);
-                           mark_rows(b.y1, b.y2, b.x1, b.x2); }
-        if (s_shadow[k]) { swept_box(&clk_theme.shadow[k], s_ang_10[k], &b);
-                           mark_rows(b.y1, b.y2, b.x1, b.x2); }
+        if (s_hand[k])   {
+            /* A live tourbillon re-marks ONLY its current frame's changed rect:
+             * every other pixel of the shown frame is, row for row, exactly
+             * what the last composite produced (nothing else writes them), and
+             * the frame swap / orbit step mark their own boxes themselves
+             * (tourbillon_advance, apply_angles). The full box would be ~40%
+             * of the page re-marked EVERY tick. */
+            if (k == 2 && clk_theme.tourbillon_n && s_tourb_shown >= 0)
+                tourb_mark(&clk_theme.tourbillon[s_tourb_shown], s_ang_10[k], &b);
+            else
+                swept_box(&clk_theme.hand[k], s_ang_10[k], &b);
+            mark_rows(b.y1, b.y2, b.x1, b.x2);
+        }
+        if (s_shadow[k]) {
+            /* Its OWN box, never the hand's fallthrough: the shadow record is
+             * the hand's shifted by dx,dy, so the old reuse under-marked the
+             * vacated shadow edge on themes with shadows, and re-marked a
+             * tourbillon diff box twice at hand coords on themes without. */
+            lv_area_t sb;
+            swept_box(&clk_theme.shadow[k], s_ang_10[k], &sb);
+            mark_rows(sb.y1, sb.y2, sb.x1, sb.x2);
+        }
     }
-    if (s_overlay && sprite_drawable(&clk_theme.overlay)) {
-        lv_area_t b; swept_box(&clk_theme.overlay, 0, &b);
-        mark_rows(b.y1, b.y2, b.x1, b.x2);
-    }
+
+    /* The overlay deliberately does NOT mark its own box any more. Its pixels
+     * never move, so the only rows needing a re-composite under/over it are
+     * the ones some OTHER layer already flagged (gif pushes, hand wedges, the
+     * tourbillon's diff box) — the commit hook restores those rows from the
+     * canvas and repaints every layer, overlay included, over them. Marking
+     * the overlay's own box was harmless while it was a hub cap, but a kit
+     * "glass" overlay covers the whole page, and self-marking it made every
+     * tick restore and re-blend the ENTIRE dial (measured 2.4 pages/tick,
+     * 3-4 fps). Same rule as a still hand's box: never re-dirty what did not
+     * change. */
 }
 
 /* lv_trigo_sin(), copied from lv_math.c: bit-exact table + 32767 clamp. */
@@ -831,6 +973,35 @@ static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
     return (uint16_t)((res >> 16) | res);
 }
 
+/* Blend one sampled texel onto the mirror. Shared by the rotated and the
+ * static loop in paint_layer so the two can never drift apart. */
+static inline void blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
+{
+    const uint16_t dest = __builtin_bswap16(*d);
+    uint16_t out;
+    if (bmode == 1) {                      /* MULTIPLY (shadow layers) */
+        if (c == 0xffff) return;
+        const uint16_t res =
+            (uint16_t)((((dest >> 11) * (c >> 11) >> 5) << 11) |
+                       ((((dest >> 5) & 0x3F) * ((c >> 5) & 0x3F) >> 6) << 5) |
+                       (((dest & 0x1F) * (c & 0x1F)) >> 5));
+        out = mix_16_16(res, dest, a);
+    }
+    else if (bmode == 2) {                 /* SCREEN (mapped to ADDITIVE) */
+        if (c == 0x0000) return;
+        const uint32_t dr = dest >> 11, dg = (dest >> 5) & 0x3F, db = dest & 0x1F;
+        const uint32_t sr = c >> 11,    sg = (c >> 5) & 0x3F,    sb = c & 0x1F;
+        const uint32_t r = (dr + sr < 31 ? dr + sr : 31) << 11;
+        const uint32_t g = (dg + sg < 63 ? dg + sg : 63) << 5;
+        const uint32_t b = db + sb < 31 ? db + sb : 31;
+        out = mix_16_16((uint16_t)(r | g | b), dest, a);
+    }
+    else {                                 /* NORMAL */
+        out = (a >= 255) ? c : mix_16_16(c, dest, a);
+    }
+    *d = __builtin_bswap16(out);
+}
+
 /* Paint one rotated RGB565A8 layer over the rows flagged this frame, inside
  * the x-span flagged for each row (never outside: those pixels already hold a
  * correct composite and re-blending them would double-darken). */
@@ -849,6 +1020,43 @@ static void paint_layer(const clk_sprite_t *spr, int32_t ang_10)
      * out-of-image samples fall through the bounds test below. */
     lv_area_t box;
     swept_box(spr, ang_10, &box);
+
+    const int32_t posx = (int32_t)spr->centerx - (int32_t)spr->pivotx;
+    const int32_t posy = (int32_t)spr->centery - (int32_t)spr->pivoty;
+    const int bmode = spr->blend;
+
+    if (ang_10 % 3600 == 0) {
+        /* ---- static path (ang == 0): dial, glass, hub ----
+         * A layer that never turns maps screen px to texel by a constant
+         * offset (the identity case of LVGL's transform is exact: xs_int =
+         * x - posx, ys_int = y - posy — verified by reducing the general
+         * maths at sinma=0/cosma=1024). Per-pixel multiply chains, shifts and
+         * bounds tests are pure waste here; clip the spans up front instead.
+         * A full-coverage semi-transparent "glass" overlay makes this the
+         * single biggest line item in the commit, so it has to be exact AND
+         * cheap: ~1 us/px of real blending otherwise caps the whole dial at
+         * 4 fps once the art is full-coverage rather than a hub cap. */
+        const int32_t xa_lim = posx + (int32_t)spr->w - 1;
+        const uint32_t w = (uint32_t)spr->w;
+        for (int32_t y = box.y1; y <= box.y2; y++) {
+            if (!s_layer_need_row[y]) continue;
+            const int32_t sy = y - posy;
+            if (sy < 0 || sy >= (int32_t)spr->h) continue;
+            int32_t xa = box.x1 > s_layer_row_x0[y] ? box.x1 : s_layer_row_x0[y];
+            int32_t xb = box.x2 < s_layer_row_x1[y] ? box.x2 : s_layer_row_x1[y];
+            if (xa < posx) xa = posx;
+            if (xb > xa_lim) xb = xa_lim;
+            if (xa > xb) continue;
+            uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
+            uint32_t si = (uint32_t)sy * (uint32_t)w + (uint32_t)(xa - posx);
+            for (int32_t x = xa; x <= xb; x++, si++) {
+                const uint8_t a = alp[si];
+                if (!a) continue;
+                blend_px(&fbrow[x], col[si], a, bmode);
+            }
+        }
+        return;
+    }
 
     /* Inverse-transform setup, copied from lv_draw_sw_transform(): scale is
      * fixed 256, so sxx..syy reduce to trig*64; x0_ups/y0_ups keep LVGL's
@@ -873,11 +1081,6 @@ static void paint_layer(const clk_sprite_t *spr, int32_t ang_10)
         (int32_t)(((sinma * xin0 + cosma * yin0) * 64) / 256)
         + (int32_t)spr->pivoty * 256 + 0x80;
 
-    const int32_t posx = (int32_t)spr->centerx - (int32_t)spr->pivotx;
-    const int32_t posy = (int32_t)spr->centery - (int32_t)spr->pivoty;
-
-    const int bmode = spr->blend;
-
     for (int32_t y = box.y1; y <= box.y2; y++) {
         if (!s_layer_need_row[y]) continue;
         const int32_t y_abs = y - posy;
@@ -900,33 +1103,7 @@ static void paint_layer(const clk_sprite_t *spr, int32_t ang_10)
             if (!a) {
                 continue;                   /* 3/4 of the box: skip  */
             }
-
-            const uint16_t c = col[sidx];
-            uint16_t *d = &fbrow[x];
-            const uint16_t dest = __builtin_bswap16(*d);
-            uint16_t out;
-
-            if (bmode == 1) {          /* MULTIPLY (shadow layers) */
-                if (c == 0xffff) continue;
-                const uint16_t res =
-                    (uint16_t)((((dest >> 11) * (c >> 11) >> 5) << 11) |
-                              ((((dest >> 5) & 0x3F) * ((c >> 5) & 0x3F) >> 6) << 5) |
-                              (((dest & 0x1F) * (c & 0x1F)) >> 5));
-                out = mix_16_16(res, dest, a);
-            }
-            else if (bmode == 2) {     /* SCREEN (mapped to ADDITIVE) */
-                if (c == 0x0000) continue;
-                const uint32_t dr = dest >> 11, dg = (dest >> 5) & 0x3F, db = dest & 0x1F;
-                const uint32_t sr = c >> 11,    sg = (c >> 5) & 0x3F,    sb = c & 0x1F;
-                const uint32_t r = (dr + sr < 31 ? dr + sr : 31) << 11;
-                const uint32_t g = (dg + sg < 63 ? dg + sg : 63) << 5;
-                const uint32_t b = db + sb < 31 ? db + sb : 31;
-                out = mix_16_16((uint16_t)(r | g | b), dest, a);
-            }
-            else {                     /* NORMAL */
-                out = (a >= 255) ? c : mix_16_16(c, dest, a);
-            }
-            *d = __builtin_bswap16(out);
+            blend_px(&fbrow[x], col[sidx], a, bmode);
         }
     }
 }
@@ -980,7 +1157,7 @@ static void clock_layer_commit(void)
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
             paint_layer(&clk_theme.shadow[k], s_ang_10[k]);
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
-            paint_layer(&clk_theme.hand[k], s_ang_10[k]);
+            paint_layer(layer_spr(k), s_ang_10[k]);   /* tourbillon frame if live */
     }
     if (s_overlay) paint_layer(&clk_theme.overlay, 0);
 
@@ -1097,6 +1274,7 @@ static void tick_timer_cb(lv_timer_t *timer)
         show_plate_frame(bg_frame_now());
     }
     compose_now();
+    tourbillon_advance();          /* no-op unless the theme has a frame bank */
 #if CLK_BG_DIRECT_PUSH
     /* Own every pixel any layer can reach, not just the ones that moved:
      * apply_angles marked the swept union (which clears the vacated wedge), this
@@ -1263,6 +1441,15 @@ esp_err_t clock_view_init(void)
     /* Glass / hub cap last, on top of everything. */
     s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc);
 
+    /* Tourbillon frame bank: descriptors for the second-hand layer's swap.
+     * Reset the frame state so the first tick (re)draws it whole. */
+    for (int i = 0; i < (int)clk_theme.tourbillon_n && i < CLK_TOURB_MAX; i++)
+        if (sprite_drawable(&clk_theme.tourbillon[i]))
+            fill_sprite_dsc(&s_tourb_dsc[i], &clk_theme.tourbillon[i]);
+    s_tourb_shown = -1;
+    s_tourb_t0 = lv_tick_get();
+
+
     s_t0_us = esp_timer_get_time();
     compose_now();
 #if CLK_BG_DIRECT_PUSH
@@ -1312,6 +1499,10 @@ esp_err_t clock_view_init(void)
                  + (clk_theme.hand[2].show ? 1 : 0),
              clk_theme.shadow_on ? "on" : "off", clk_theme.shadow_dx, clk_theme.shadow_dy,
              sweepdesc, bgdesc);
+    if (clk_theme.tourbillon_n)
+        ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
+                 (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,
+                 (int)clk_theme.hand[2].centerx, (int)clk_theme.hand[2].centery);
     return ESP_OK;
 }
 
@@ -1349,6 +1540,11 @@ void clock_view_set_bounce(bool on)
             s_bg_play_start = 0;
             s_bg_last_play  = 0;
         }
+        /* Tourbillon: force a whole first draw and restart the frame clock,
+         * same discipline as the angle reset — nothing was composited while
+         * parked, so whatever s_tourb_shown claims is stale. */
+        s_tourb_shown = -1;
+        s_tourb_t0 = lv_tick_get();
         lv_obj_invalidate(s_scr);
         if (!gif_mode()) show_plate_frame(bg_frame_now());
         compose_now();

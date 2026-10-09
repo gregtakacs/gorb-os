@@ -168,3 +168,64 @@ Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how
 `dns_build_reply`, `retry_delay_s`, `sta_leave_is_self_inflicted` and the tz
 block are tested. Do not claim a radio-dependent behavior is verified.
+## Clock themes from watch-designer kits (tourbillon/animated second hand)
+
+`tools/bake_clock.py` takes a layered watch kit (`assets/sources/watch-orbital-kit.zip`
+is the shipped example: base gear frames, hands/, layers/{dial,glass,outer}, a
+15-frame tourbillon/, and a manifest.json carrying every pivot/centre — trust the
+manifest, it is the renderer that made the art) and emits `assets/clock_assets.{bin,h}`
+as one pair; they are generated together and must be committed together — the
+firmware reads `clk_theme` by layout, so a stale half of the pair is a corrupt dial.
+System python has no PIL; use a venv with `pillow numpy` for both tools.
+
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit.zip /tmp/out
+    /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-tourbillon \
+        --bg-frames /tmp/out/frames --bg-fps 15 \
+        --tourbillon <unzipped kit>/tourbillon --tourbillon-fps 15 \
+        --no-sweep --tick-rate 1 --dump-dir assets/preview-orbital
+
+Layer mapping (kit drawOrder -> compositor slots, verified against the ink radial
+surveys — check the same numbers before trusting a new kit's art into a slot):
+the gear base is the `--bg-frames` delta bank; the tourbillon is the SECOND-HAND
+slot as a frame bank (`--tourbillon`, max 16 frames, per-frame diff rects chained
+vs predecessor exactly like the delta bank); the dial is `static1` via
+`hands.order=[2,3,0,1]` (over the carriage, under the hands); the glass sheen is
+the single `clock_overlay.png`; the bezel is matted INTO the bank frames by
+`prep_watch_kit.py` because its rim is fully opaque and no layer above reaches
+r>=220 (minute hand tops out at r=199) — a runtime ring would cost PSRAM blends
+the canvas restore serves for free. Glass must stay the overlay: the kit draws
+hands UNDER glass, so folding it anywhere else is a fidelity loss.
+
+Firmware rules this dial depends on (`main/clock/clock_view.c`):
+- `tourbillon_advance()` swaps the shown frame off the wall clock (15 fps) and
+  marks ONLY the union of the outgoing+incoming baked diff rects at the current
+  angle; the orbit itself is plain hand rotation (manifest's seconds/60x360).
+  First draw marks the full swept box. Park/resume resets `s_tourb_shown`.
+- `mark_all_layers()` early-returns when `clk_theme.tourbillon_n > 0`: with
+  full-coverage art (translucent dial + glass over every row) the classic
+  per-tick full-box re-mark measured 5 fps; letting only the movers mark their
+  own rows (apply_angles / tourbillon_advance) runs 9-10 fps. Classic themes
+  (tourbillon_n == 0) keep the old discipline verbatim — do not "optimise" it
+  for them without re-reading the freeze-bug note above that function.
+- `paint_layer()` has an identity fast path at ang % 360 == 0 (the dial and the
+  glass never rotate); `blend_px()` is the single blend implementation both
+  loops share — keep it that way.
+- `CLK_GIF_THROTTLE 2` does nothing on this art (tick period exceeds the GIF
+  deadline, so every tick is due anyway); measured no fps change. Leave at 1.
+
+The kit's orbit TICKS at 1 Hz (`--no-sweep --tick-rate 1`): the carriage's swept
+box is ~430 px tall, and sweeping would re-rotate it every tick for half the
+frame rate and no visible gain on a mechanical carriage. If a future kit needs
+both sweep and a big layer, the wedge idea in the mark_all_layers plateau note
+is where to start.
+
+Steam-punk is NOT lost: `git checkout assets/clock_assets.bin assets/clock_assets.h
+main/CMakeLists.txt --` restores the shipped 1.85 MB pair (it rebuilds identically
+from the same --bg-gif orb_bg.gif command, and /tmp/steam-punk-assets-backup holds
+a copy). Swap the pair, `idf.py build`, and the full `idf.py flash` (the assets
+partition write is the slow ~3 min part — detach, per above).
+
+Verified on the bench at fw with this theme: boot logs `tourbillon: 15 frames @
+15 fps on the second-hand slot, orbit about (233,233)`, steady 9-10 fps, px/s
+~1.2-1.5 M, no Guru. `assets/preview-orbital/` holds the bake's own inspection
+PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).

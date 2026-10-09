@@ -11,7 +11,7 @@ set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
 add_compile_definitions(LV_INV_BUF_SIZE=96)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(orb-os-esp-idf)
+project(gorb-os)
 
 # ---------------------------------------------------------------------------
 # Clock art bank: flash assets/clock_assets.bin into the `assets` partition.

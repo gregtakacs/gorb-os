@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bake_clock.py — offline analog-clock theme baker for orb-os-esp-idf.
+bake_clock.py — offline analog-clock theme baker for gorb-os.
 
 Reads an orb-os (Arduino) theme folder — its clock_style.json, theme.json and
 the clock_*.png layer art — and produces two artefacts for the IDF firmware:

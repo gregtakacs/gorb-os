@@ -1,6 +1,6 @@
 #pragma once
 /**
- * orb-os-esp-idf — Board pin definitions
+ * gorb-os — Board pin definitions
  *
  * Waveshare ESP32-S3-Touch-AMOLED-1.75
  * ESP32-S3R8: 8 MB OPI PSRAM, 16 MB flash

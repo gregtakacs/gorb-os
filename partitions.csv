@@ -11,7 +11,7 @@ nvs,      data, nvs,     0x9000,    0x8000,
 otadata,  data, ota,     0x11000,   0x2000,
 phy_init, data, phy,     0x13000,   0x1000,
 # Two app slots: the S3 cannot OTA into the partition it is running from.
-# Sized for CODE ONLY (~1.31 MB today, measured from build/orb-os-esp-idf.bin
+# Sized for CODE ONLY (~1.31 MB today, measured from build/gorb-os.bin
 # after the network + OTA modules landed; was ~0.74 MB before Phase 2) — the art
 # bank moved out to `assets`, so nothing here carries pixels. 2 MB per slot leaves
 # ~0.7 MB of headroom; check the real number before shrinking either slot, since a

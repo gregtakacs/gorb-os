@@ -1,7 +1,13 @@
-# orb-os-esp-idf
+# gorb-os
 
-ESP-IDF firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.75 board
+**Greg's Orb OS** — ESP-IDF firmware for the Waveshare
+ESP32-S3-Touch-AMOLED-1.75 board
 (ESP32-S3R8, 466x466 CO5300 AMOLED via QSPI, 8 MB PSRAM, 16 MB flash).
+
+A rewrite of the Arduino **Orb OS** project (https://github.com/gregtakacs/orb-os,
+locally `~/docker/Projects/orb-os`) onto ESP-IDF + LVGL 9. Comments that cite
+`orb-os/src/...` are pointing at that upstream on purpose: this repo is
+`gorb-os`, the upstream stays `orb-os`.
 
 ## MVP
 
@@ -109,3 +115,4 @@ black. Any lit pixel is the panel's canvas holding another frame's art.
 - [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a
       knob-driven toggle back to USB-Serial-JTAG for flashing.
       **Shelved — full design in `docs/usb-sd-msc-plan.md`.**
+

@@ -1,5 +1,5 @@
 /**
- * orb-os-esp-idf — main application entry.
+ * gorb-os — main application entry.
  *
  * MVP: Initialize CO5300 AMOLED + LVGL 9, display a centered digital clock.
  */
@@ -37,7 +37,7 @@ static void lvgl_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== orb-os-esp-idf booting ===");
+    ESP_LOGI(TAG, "=== gorb-os booting ===");
 
     /* Initialize NVS (WiFi driver's own store: namespace "nvs.net80211").
      *
@@ -74,7 +74,7 @@ void app_main(void)
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "orb-os-esp-idf running — knob HSB editor live (long-press: switch screen)");
+    ESP_LOGI(TAG, "gorb-os running — knob HSB editor live (long-press: switch screen)");
 
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
     /* Rollback handshake. With the safety net compiled in, the bootloader boots a

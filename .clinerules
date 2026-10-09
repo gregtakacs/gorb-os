@@ -105,6 +105,23 @@ green whenever you touch the page.** (Verified by mutation: re-injecting the `)`
 turns it red.) esprima is not stdlib — a missing parser is a loud SKIP, not a
 pass, so `pip install esprima` if it skips.
 
+## Simulating the phone side of provisioning on the radio-less bench
+
+The host has no WiFi radio, so "a phone joins orb-xxxxxx" is the one link the
+bench cannot supply — but everything AFTER the first join is testable as a
+station: once a phone has provisioned the orb onto a network the bench can
+also reach (the home LAN), the orb boots connected, its LAN IP answers curl,
+and APSTA lets tooling open the AP (`POST /api/v1/wifi/ap {}` — the config
+page has no button for this, see the h_wifi_ap comment) while the station
+stays up. That exercises the full page, the connected-ack AP close (watch
+serial for `SoftAP down (lease held, hold expired)`), and captive DNS.
+Credentials SURVIVE app re-flashes — only `erase_region 0x9000` (nvs) +
+`0xD60000` (storage) removes them — so keep one bench orb provisioned and
+re-wipe only to test first-boot provisioning itself.
+(Older notes mentioned `www/provisioner.html.gz` and `WIFI_SSID` baked from
+`.env` at build time: that mechanism is NOT in this tree — provisioning is
+entirely `HTML_LANDING` in `orb_net.c`. Verify before repeating that claim.)
+
 ## Bench has no WiFi radio — verify what you can, and say what you can't
 
 There is no wireless adapter on the host, so the phone-side captive-portal popup

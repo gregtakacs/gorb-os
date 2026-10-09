@@ -41,25 +41,31 @@ menu "Orb networking"
         help
             The provisioning AP must not outlive its welcome: it is OPEN, and
             behind it sits an unauthenticated /api/v1/ota. The AP therefore
-            always dies on a timer. Once the station has an address, the AP is
-            kept another N seconds so the phone that just submitted the
-            credentials can still read the "connected at http://" result — the
-            page polls /api/v1/status every 1.5 s, and dropping the AP on
-            GOT_IP would pull the radio out from under that reply.
+            always dies on a timer — but that timer is only the FALLBACK now:
+            the config page closes the AP itself (POST /api/v1/wifi/ap
+            {"on":"off"}) the moment it has rendered the connected message, so
+            the phone returns to the home network in seconds and the orb's new
+            link is tappable. This value covers the path where that never
+            happens — the webview died, or the last status poll lost the air —
+            counted from the lease landing.
 
-            0 closes the AP as soon as a lease lands (the page then reports
-            "device unreachable" as its last word — not recommended).
+            0 closes the AP on GOT_IP whether or not the page ever saw the
+            result: the phone may be deauthed before its final poll lands
+            (the page then reports "device unreachable" as its last word —
+            not recommended).
 
     config ORB_NET_AP_MANUAL_S
         int "Seconds an explicit POST /api/v1/wifi/ap keeps the SoftAP open"
         depends on ORB_NET_ENABLE
         default 900
         help
-            Window for the on-demand path: you walk up to an orb that is
-            happily on the LAN, summon its AP from the config page, and join it
-            from a phone. Long enough to pair, join the AP and submit the form;
+            Window for the on-demand path: a machine already on the LAN
+            summons the AP with POST /api/v1/wifi/ap, and a phone at the wall
+            joins it. Long enough to pair, join the AP and submit the form;
             short enough that a forgotten request cannot leave the AP open
-            overnight.
+            overnight. (The config page carries no button for this on
+            purpose — anything that can reach the page can change the
+            network from the page; see the h_wifi_ap comment.)
 
     config ORB_NET_AP_RESCUE_FAILS
         int "Failed associations before the SoftAP comes back up"

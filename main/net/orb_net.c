@@ -1632,16 +1632,26 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     return sent;
 }
 
-/* POST /api/v1/wifi/ap — summon the provisioning AP on an orb that is happily
- * on the LAN, so it can be re-provisioned from a phone at the wall without a
- * reboot, a cable, or an NVS erase. Its own endpoint (rather than a flag on
- * /api/v1/config) because it is a radio action with its own lifetime, and the
- * AP state is reported by /api/v1/status so the caller can watch it land.
+/* POST /api/v1/wifi/ap — raise or lower the provisioning AP by request.
+ *
+ * The config page deliberately has NO button on the OPEN half, and the
+ * reasoning is worth keeping with the code: whoever can load the page can
+ * change the orb's network FROM the page, so an orb reachable enough to show
+ * a button never needs a human pressing it to summon an AP; and an orb that
+ * ISN'T reachable shows no button to press. (The device's own rescue path
+ * posts NET_CMD_AP_RESCUE internally — it does not come through this
+ * endpoint.) What remains genuinely useful, and what this endpoint is for:
+ *   - the CLOSE half, which the config page now posts the moment it has
+ *     rendered the connected message, sending the phone home to the LAN in
+ *     seconds instead of riding the hold timer, and
+ *   - tooling/tests (e.g. /tmp/ap_cp_test.sh) summoning the AP with no page
+ *     open at all.
  *
  * Body is optional: {} opens for CONFIG_ORB_NET_AP_MANUAL_S seconds;
- * {"on":"off"} closes it immediately. The open path goes through the radio task
- * exactly like the rescue path — one code path, one set of log lines — and both
- * arm the AP's expiry, which is why no caller can leave it open by accident. */
+ * {"on":"off"} closes it immediately, honoured only while a lease means there
+ * is still another way in. The open path goes through the radio task exactly
+ * like the rescue path — one code path, one set of log lines — and both arm
+ * the AP's expiry, which is why no caller can leave it open by accident. */
 static esp_err_t h_wifi_ap(httpd_req_t *req)
 {
     char body[NET_CONFIG_BODY_MAX + 1];
@@ -1926,14 +1936,19 @@ static const char HTML_LANDING[] =
 "<div class=row><select id=tz></select></div>"
 "<div class=row><input id=tzx placeholder='POSIX rule, e.g. EST5EDT,M3.2.0,M11.1.0' hidden></div>"
 "<div class=row><button id=tzgo hidden>Set zone</button></div>"
-"<div class=row><button id=apbtn>Show setup AP</button><span id=apinfo></span></div>"
 "<div id=tzs></div>"
 "<script>"
-"var sel=null,timer=0,zones=[],tzcur='',appin=0;"
+"var sel=null,timer=0,mainTmr=0,zones=[],tzcur='',done=false,apSent=false;"
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
-"async function status(){try{var d=await j('/api/v1/status');aprep(d);"
-"if(d.state=='connected'){say('connected \\u2014 orb is now at http://'+d.ip+'/','ok');return}"
+"async function status(){if(done)return;try{var d=await j('/api/v1/status');"
+"if(d.state=='connected'){done=true;clearInterval(timer);clearInterval(mainTmr);"
+"var e=document.getElementById('state');e.className='ok';"
+"e.textContent='connected \\u2014 orb is at ';"
+"var a=document.createElement('a');a.href='http://'+d.ip+'/';a.textContent=a.href;"
+"a.style.color='#9cf';e.appendChild(a);"
+"var k=document.createElement('span');k.textContent=' \\u2014 your phone goes back to your wifi; tap the link once it does';e.appendChild(k);"
+"apoff(d);return}"
 "say(d.state+(sel?' \\u2014 connecting to '+sel:'')"
 "+(d.assoc_fails?' (attempt '+d.assoc_fails+(d.wifi_reason?', reason '+d.wifi_reason:'')+')':'')"
 "+(d.wifi_reason&&!d.assoc_fails?' (last reason '+d.wifi_reason+')':''));}"
@@ -1973,15 +1988,16 @@ static const char HTML_LANDING[] =
 "function tssel(v){var s=document.getElementById('tz'),x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
 " var k=false;for(var i=0;i<zones.length;i++)if(zones[i].name==v)k=true;"
 " if(k){s.value=v;x.hidden=true;g.hidden=true}else{s.value='__c__';x.hidden=false;g.hidden=false;if(v&&v!='UTC')x.value=v}}"
-"function aprep(d){var e=document.getElementById('apinfo');if(!e)return;"
-"if(Date.now()<appin)return;                     /* do not clobber a fresh instruction */"
-"e.textContent=d.ap?'setup AP is OPEN right now \u2014 join it from your phone':'';}"
-"function apgo(){var e=document.getElementById('apinfo');if(e)e.textContent='opening\u2026';"
-"appin=Date.now()+20000;                        /* aprep must not overwrite before this */"
-"j('/api/v1/wifi/ap',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})"
-".then(function(d){if(!e)return;"
-"e.textContent='join '+(d.ap_ssid||'the orb AP')+' from your phone, then open http://192.168.4.1/ ('+(d.seconds||'?')+'s)';})"
-".catch(function(x){appin=0;if(e)e.textContent='ap: '+x.message;})}"
+"/* The provisioning handshake: once THIS page has rendered the connected"
+"   message, the AP has done its job — close it now instead of letting the"
+"   phone ride CONFIG_ORB_NET_AP_HOLD_S of dead air before it can rejoin the"
+"   home network and tap the link. Only while a lease gives the orb another"
+"   way in (the device enforces that too); the reply dies with the AP, which"
+"   is the expected outcome, not an error. */"
+"function apoff(d){if(!d.ap||apSent)return;apSent=true;"
+"document.getElementById('pick').hidden=true;document.getElementById('ns').innerHTML='';"
+"j('/api/v1/wifi/ap',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"on\":\"off\"}'})"
+".catch(function(){})}"
 "async function tzload(){var v='UTC';"
 " try{var d=await j('/api/v1/config');zones=d.zones||[];v=d.tz||'UTC';tzcur=v;"
 " tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+')');}catch(e){tzmsg('zone list unavailable')}"
@@ -2001,9 +2017,8 @@ static const char HTML_LANDING[] =
 "tzload();"
 "document.getElementById('go').onclick=join;"
 "document.getElementById('rs').onclick=function(){scan(true)};"
-"document.getElementById('apbtn').onclick=apgo;"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
-"status();scan();setInterval(function(){if(!sel)status()},3000);"
+"status();scan();mainTmr=setInterval(function(){if(!sel&&!done)status()},3000);"
 "</script></body></html>";
 
 static esp_err_t h_index(httpd_req_t *req)

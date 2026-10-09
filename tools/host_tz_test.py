@@ -348,7 +348,27 @@ def landing_page_js():
             s = js.group(1)
             print('      near: …' + s[max(0, idx - 70):idx + 70] + '…')
         return 1
-    print(f'ok    landing-page JS parses ({len(js.group(1))} B script)')
+    js = js.group(1)
+    # Product decisions pinned to the shipped page (each was an explicit user
+    # call — see the h_wifi_ap comment for the reasoning): no AP-summon button,
+    # the page CLOSES the AP itself once the connected message is delivered,
+    # the success render carries a clickable link, and polling stops on
+    # success so the confirmation can never be overwritten by "device
+    # unreachable" when the AP drops.
+    rc = 0
+    for k, why in {'apbtn': 'AP-summon button (removed deliberately)',
+                   'apgo': 'AP-summon JS (removed deliberately)'}.items():
+        if k in page:
+            print(f'FAIL landing page: contains {k!r} — {why}'); rc = 1
+    for k, why in {'on":"off': 'the connected-ack AP close (apoff)',
+                   "createElement('a')": 'the clickable new-IP link',
+                   'clearInterval(mainTmr)': 'status polling stops on success'}.items():
+        if k not in js:
+            print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
+    if rc:
+        return rc
+    print(f'ok    landing-page JS parses ({len(js)} B script), '
+          'AP-ack / no-button / status-stop pinned')
     return 0
 
 

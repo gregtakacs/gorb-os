@@ -19,6 +19,12 @@
  * the credentials survive `nvs_flash_erase()`, which main.c still calls to
  * recover from a corrupt default NVS — with the driver's namespace and ours in
  * different partitions, that recovery can no longer cost the user their WiFi.
+ *
+ * The timezone lives in that same namespace under `tz`, for the same reason: it
+ * is device config the owner set once, and reopening the case to recover a
+ * corrupt partition must not quietly put the dial an hour out with nothing on
+ * screen to explain it. Unset means UTC, and /api/v1/status says so rather than
+ * letting a wrong-looking dial be the only symptom.
  */
 #pragma once
 

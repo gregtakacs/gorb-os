@@ -1022,6 +1022,12 @@ static void compose_now(void)
     time_t  t   = s_epoch_base + (time_t)floor(el);
     double  frac = el - floor(el);
 
+    /* The zone is device config, not a constant in this file: orb_net owns TZ
+     * (NVS key `tz`, loaded at bring-up and settable from the config page or during
+     * provisioning) and applies it with setenv()+tzset(). That is why changing the
+     * zone needs no reboot and no call into this file — this localtime_r() is the
+     * only place the zone reaches the dial, and the next frame after a change is
+     * already in the new one. */
     struct tm ti;
     localtime_r(&t, &ti);
 

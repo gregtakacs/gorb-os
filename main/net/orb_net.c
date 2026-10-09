@@ -58,6 +58,9 @@ static const char *TAG = "orb_net";
 #define NET_STA_RETRY_S  5      /* back-off between association attempts */
 #define NET_SSID_MAX     32
 #define NET_PASS_MAX     64
+#define NET_TZ_MAX       64     /* a POSIX TZ rule is short by construction */
+#define NET_TZ_KEY       "tz"   /* NVS: a table name OR a raw POSIX string */
+#define NET_CONFIG_BODY_MAX 128 /* POST /api/v1/config is {"tz":"…"} and nothing else */
 
 static esp_netif_t   *s_sta_netif;
 static esp_netif_t   *s_ap_netif;
@@ -107,6 +110,17 @@ static const char *json_find(const char *body, size_t len, const char *key)
     for (const char *p = body; (size_t)(p - body) + klen + 2 <= len; p++) {
         if (p[0] != '"') continue;
         if (strncmp(p + 1, key, klen) != 0 || p[1 + klen] != '"') continue;
+        /* A match only counts at KEY position: the previous non-space character has
+         * to be '{' or ',' (or the start of the body). Without that, the body
+         * {"x":"tz","tz":"UTC"} matches the VALUE "tz" first, finds a ',' where a
+         * colon belongs, and the real key later in the body is never reached — so a
+         * perfectly good request gets a 400 it cannot explain. Short keys used as
+         * values elsewhere are exactly what a client echoing its own state produces,
+         * and the same helper parses ssid/pass, where a shadowed key would send the
+         * device joining the wrong network. */
+        const char *q = p;
+        while (q > body && (q[-1] == ' ' || q[-1] == '\t' || q[-1] == '\n' || q[-1] == '\r')) q--;
+        if (q > body && q[-1] != '{' && q[-1] != ',') continue;
         const char *v = p + klen + 2;                    /* past the closing quote */
         while (v < body + len && (*v == ' ' || *v == ':')) v++;
         return v;
@@ -141,6 +155,218 @@ static bool json_str(const char *body, size_t len, const char *key, char *out, s
 
 /* (The numeric-argument helper lands with PATCH /api/v1/settings in Phase 4;
  * carrying it unused would only trip -Wunused-function.) */
+
+/* --------------------------------------------------------------------------
+ * Timezone — device config, never a firmware constant.
+ *
+ * The zone is per-device state owned by whoever holds the device, so it lives in
+ * the same `storage`/orb.net NVS as the credentials (and inherits surviving
+ * nvs_flash_erase() for the same reason: a sealed clock on a wall must not lose
+ * its settings because a different partition went corrupt).
+ *
+ * What is stored is what the client sent: one of the names below OR a RAW POSIX
+ * string. Both are legal on the wire — there is no zoneinfo in this image
+ * (esp_timezones is ~470 KB of it), so the named table is UI sugar over the
+ * POSIX rules it resolves to, and accepting the raw form is what keeps every
+ * zone reachable without a firmware change. Storing the name rather than
+ * resolving-then-storing is deliberate: it lets /api/v1/config echo a value the
+ * config page can match against its own <option> list, so a reloaded page
+ * pre-selects the zone it was set to instead of showing a rule nobody typed.
+ *
+ * Nothing here knows about SNTP: TZ only interprets the epoch, it never sets it.
+ * ------------------------------------------------------------------------ */
+typedef struct { const char *name; const char *posix; } tz_entry_t;
+
+/* Names are IANA-style so the same strings still work as keys if esp_timezones
+ * ever lands. The rules are the post-2007 POSIX forms — M3.2.0 = second Sunday
+ * of March, the /n suffix naming the weekday the transition lands on. US/Arizona
+ * is its own row precisely BECAUSE it is MST7 with no DST component: handing it
+ * "MST7MDT,…" is the classic way to put a no-DST state an hour off for half the
+ * year, and the only thing that ever catches that is someone glancing at the dial. */
+static const tz_entry_t s_tz_tbl[] = {
+    { "UTC",            "UTC0"                       },
+    { "US/Eastern",     "EST5EDT,M3.2.0,M11.1.0"     },
+    { "US/Central",     "CST6CDT,M3.2.0,M11.1.0"     },
+    { "US/Mountain",    "MST7MDT,M3.2.0,M11.1.0"     },
+    { "US/Pacific",     "PST8PDT,M3.2.0,M11.1.0"     },
+    { "US/Arizona",     "MST7"                       },
+    { "Europe/London",  "GMT0BST,M3.5.0/1,M10.5.0"   },
+    { "Europe/Berlin",  "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Asia/Tokyo",     "JST-9"                      },
+};
+#define NET_TZ_N ((int)(sizeof(s_tz_tbl) / sizeof(s_tz_tbl[0])))
+
+/* The setting exactly as NVS holds it ("" = never set = UTC). Kept in RAM
+ * because /api/v1/status is polled at a few Hz by the config page and must not
+ * touch flash to say what zone it is in. Written only from orb_net_start() and
+ * the serial httpd task, so no lock is needed. */
+static char s_tz[NET_TZ_MAX + 1];
+
+/* Days since 1970-01-01 for a broken-down date (Howard Hinnant's civil-days
+ * algorithm; exact across the whole Gregorian range this device can hold).
+ * Hand-rolled because this newlib has NO timegm(): its libc.a exports tzset,
+ * localtime_r and gmtime_r but not timegm, so the plan's "two timegm() calls and
+ * subtract" cannot even be declared, let alone linked. */
+static long days_from_civil(long y, long m, long d)
+{
+    y -= (m <= 2);
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const long yoe = y - era * 400;
+    const long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/* Minutes EAST of UTC in effect at `at` — measured, never asked for. Asked for
+ * is not an option: this newlib only populates tm_gmtoff on the zoneinfo path,
+ * and the DST decision cached by the last tzset() belongs to whatever the clock
+ * said AT THAT MOMENT, which on the post-power-cut path is 1970. Diffing
+ * localtime against gmtime of the SAME instant is correct in both directions,
+ * honors DST, and trusts no library state. */
+static int tz_offset_min(time_t at)
+{
+    struct tm lt, gt;
+    if (!localtime_r(&at, &lt) || !gmtime_r(&at, &gt)) return 0;
+    const long dl = days_from_civil((long)lt.tm_year + 1900, (long)lt.tm_mon + 1, lt.tm_mday);
+    const long dg = days_from_civil((long)gt.tm_year + 1900, (long)gt.tm_mon + 1, gt.tm_mday);
+    return (int)(((dl - dg) * 86400L + (long)(lt.tm_hour - gt.tm_hour) * 3600L
+                  + (long)(lt.tm_min - gt.tm_min) * 60L
+                  + (long)(lt.tm_sec - gt.tm_sec)) / 60);
+}
+
+/* NULL when acceptable, else the reason to hand back in the 400. Printable ASCII
+ * only and no quote/backslash, because this value is echoed straight into JSON by
+ * /api/v1/status and /api/v1/config. That check is not belt-and-braces:
+ * json_str() DROPS the backslash of an escape and keeps the character after it,
+ * so {"tz":"A\"B"} arrives here as the three characters A"B — a stored quote
+ * would let a client forge keys inside the device's own replies.
+ *
+ * A malformed-but-printable rule ("XX3") is deliberately ACCEPTED, per the plan:
+ * newlib degrades it to UTC silently rather than failing, and the safety valve is
+ * the tz_offset echo — the page can then ask "showing +0:00, right?" instead of
+ * the owner staring at a wrong dial wondering what happened. */
+static const char *tz_reject_reason(const char *tz)
+{
+    size_t n = 0;
+    for (const char *p = tz; *p; p++, n++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c > 0x7e)  return "tz must be printable ASCII";
+        if (c == '"' || c == '\\') return "tz may not contain quotes";
+    }
+    if (n == 0) return "tz empty (send \"UTC\")";
+    if (n > NET_TZ_MAX) return "tz too long";
+    return NULL;
+}
+
+/* Pull the optional "tz" out of a request body: *present says whether the key was
+ * there at all, out carries the value, and "" means an explicit {"tz":""}, i.e.
+ * clear back to never-set. Returns NULL to accept, else the reason to 400.
+ *
+ * The empty case has to be looked for BEFORE json_str(): that helper reports a
+ * missing-quote, an empty value, and an overlong one all as plain false, but here
+ * empty and overlong mean opposite things — one is a request to clear the zone,
+ * the other is a truncated value that must never reach flash. */
+static const char *tz_body_value(const char *body, size_t len, char *out, size_t out_sz,
+                                 bool *present)
+{
+    out[0] = '\0';
+    *present = false;
+    const char *v = json_find(body, len, NET_TZ_KEY);
+    if (!v) return NULL;
+    *present = true;
+    if (v[0] == '"' && v[1] == '"') return NULL;                 /* clear it */
+    /* Refuse an escape outright, for the same reason net_tz_set validates before
+     * it writes: json_str() DROPS the backslash and keeps the character after it,
+     * so {"tz":"EST5EDT\t"} would otherwise arrive at the guard as the printable
+     * 8 characters EST5EDTt — stored, applied as TZ, silently not what anyone
+     * typed. A POSIX rule has no use for a backslash, so the escape itself is
+     * what is wrong here, not its collapsed result. A RAW control byte is a
+     * separate case that this loop must not try to handle: 0x09 in a JSON string
+     * is illegal but this parser never checks, and only tz_reject_reason, which
+     * sees the decoded value, catches it. */
+    for (const char *p = v + 1; p < body + len && *p != '"'; p++) {
+        if (*p == '\\') return "tz may not contain an escape";
+    }
+    if (!json_str(body, len, NET_TZ_KEY, out, out_sz)) return "tz not a string, or too long";
+    return NULL;
+}
+
+/* Table name -> its POSIX rule. Anything unrecognised IS already the rule. */
+static void tz_resolve(const char *stored, char *out, size_t out_sz)
+{
+    for (int i = 0; i < NET_TZ_N; i++) {
+        if (strcmp(s_tz_tbl[i].name, stored) == 0) {
+            snprintf(out, out_sz, "%s", s_tz_tbl[i].posix);
+            return;
+        }
+    }
+    snprintf(out, out_sz, "%s", stored[0] ? stored : "UTC0");
+}
+
+/* setenv + tzset is precisely IDF's own documented runtime pattern — the same
+ * pair esp_timezones' esp_timezone_set() uses, and the one in
+ * docs/en/api-reference/system/system_time.rst — so changing the zone from the
+ * httpd task while the LVGL task renders is a supported call shape, not a novel
+ * (newlib takes its own tz lock inside localtime_r for exactly this reason).
+ * The dial needs no notification: compose_now() calls localtime_r 13x a second,
+ * so the frame after this is already in the new zone — no reboot, and the owner
+ * sees the dial move under their hand. */
+static void tz_apply(const char *stored)
+{
+    char posix[NET_TZ_MAX + 1];
+    tz_resolve(stored, posix, sizeof(posix));
+    setenv("TZ", posix, 1);
+    tzset();
+    ESP_LOGI(TAG, "tz: \"%s\" -> TZ=\"%s\" (%d min east of UTC)", stored, posix,
+             tz_offset_min(time(NULL)));
+}
+
+/* Load + apply during bring-up. A stored value that no longer validates (a
+ * hand-written NVS, or firmware that has since tightened tz_reject_reason)
+ * degrades to UTC and says so in the log: the alternative is feeding setenv()
+ * garbage, which newlib would also turn into UTC — just with nobody told. */
+static void net_tz_load(void)
+{
+    s_tz[0] = '\0';
+    size_t sz = sizeof(s_tz);
+    if (nvs_get_str(s_nvs, NET_TZ_KEY, s_tz, &sz) != ESP_OK) s_tz[0] = '\0';
+    const char *why = s_tz[0] ? tz_reject_reason(s_tz) : NULL;
+    if (why) {
+        ESP_LOGW(TAG, "stored tz rejected (%s); using UTC", why);
+        s_tz[0] = '\0';
+    }
+    tz_apply(s_tz);
+}
+
+/* Validate, persist, apply — in that order, so a zone the device will not accept
+ * is never in flash and one it does survives the next reboot before the HTTP
+ * reply claims it is set (the same persist-before-apply rule POST /wifi/join
+ * follows, and the same reason: the user is not watching a serial console).
+ *
+ * "" is the one value that does not need validating: it is an explicit CLEAR, back
+ * to the never-set state the device boots in, so the key is erased rather than
+ * written empty — status then reads "UTC" from the same code path as a factory
+ * device, not from a special case around a stored empty string. */
+static const char *net_tz_set(const char *tz)
+{
+    if (!tz[0]) {
+        nvs_erase_key(s_nvs, NET_TZ_KEY);
+        nvs_commit(s_nvs);
+        s_tz[0] = '\0';
+        tz_apply(s_tz);
+        return NULL;
+    }
+    const char *why = tz_reject_reason(tz);
+    if (why) return why;
+    if (nvs_set_str(s_nvs, NET_TZ_KEY, tz) != ESP_OK) return "tz not stored (nvs)";
+    /* The value is in flash and in s_tz either way, so a failed commit costs
+     * durability, not correctness — say which it cost instead of failing a
+     * request whose effect the user can already see on the dial. */
+    if (nvs_commit(s_nvs) != ESP_OK) ESP_LOGW(TAG, "tz: commit failed (kept until reboot)");
+    snprintf(s_tz, sizeof(s_tz), "%s", tz);
+    tz_apply(s_tz);
+    return NULL;
+}
 
 /* --------------------------------------------------------------------------
  * WiFi event handling
@@ -231,6 +457,16 @@ static volatile bool s_time_synced;
 static void sntp_sync_cb(struct timeval *tv)
 {
     s_time_synced = true;
+    /* Re-run tzset() now that the real instant is in the clock. This newlib
+     * decides DST from the time it sees when tzset() runs, so a TZ loaded at
+     * bring-up while the clock still read 1970 (the post-power-cut path, before
+     * the RTC epoch survives anything) computed its DST state for Jan-1970 — and
+     * later localtime_r() calls do NOT recompute it. One tzset() per sync, i.e.
+     * per boot and then hourly, is what makes the dial land on the right side of
+     * a DST boundary. Only tzset here, never setenv: the TZ string itself changes
+     * only from the httpd task, and setenv() reallocating the environment is not
+     * something to be doing on someone else's task for no reason. */
+    tzset();
     /* Second granularity out of the callback is enough to log and to prove the
      * exchange landed: the dial's sub-second fraction comes from esp_timer in
      * compose_now() regardless of what the callback saw. */
@@ -301,11 +537,24 @@ static esp_err_t h_status(httpd_req_t *req)
         if (esp_wifi_sta_get_ap_info(&cur) == ESP_OK) rssi = (int)cur.rssi;
     }
 
+    /* One reading of the clock, used for both the epoch echo and the zone
+     * offset — they must describe the same instant or the page shows an offset
+     * for a second the dial never displayed. tz_offset is measured, not stored:
+     * it is what makes a valid-looking-but-degenerate POSIX rule visible (the
+     * device cannot know "XX3" was meant to be a zone, but it can say "+0:00").
+     *
+     * Pre-sync (epoch < CLOCK_EPOCH, i.e. the first seconds after a power cut)
+     * this offset is measured against the 1970 clock, so it is the offset that
+     * instant would have had — which can be the wrong side of a DST boundary.
+     * "synced":false tells the page not to trust it yet; the sync callback's
+     * tzset() fixes the dial itself as soon as the real epoch lands. */
+    const time_t now = time(NULL);
+
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
-        "\"synced\":%s,\"epoch\":%lld}",
+        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d}",
         s_provisioning ? "provisioning" : (s_sta_up ? "connected" : "down"),
         s_ip, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -313,7 +562,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (slot ? slot->label : "?"), img_str,
-        s_time_synced ? "true" : "false", (long long)time(NULL));
+        s_time_synced ? "true" : "false", (long long)now,
+        s_tz[0] ? s_tz : "UTC", tz_offset_min(now));
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -325,6 +575,122 @@ static esp_err_t h_status(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, json);
+}
+
+/* GET /api/v1/config — the zone table is SERVED, not hardcoded in the page. The
+ * inline page and the future PWA both render their picker from this reply, which
+ * is the only way the list of zones stays in step with the firmware that owns the
+ * rules. `posix` is the resolved rule in effect, so the page can show what a name
+ * actually means and can tell a table entry from a hand-typed string. */
+static esp_err_t h_config_get(httpd_req_t *req)
+{
+    /* static, not stack (same reasoning as s_scan_json): the nine entries are
+     * ~510 B — 9 × (22 B of key/quote/colon + a ≤20 B name + a ≤24 B rule) — and
+     * the echo tail can carry a 64-char custom rule, so ~710 B worst case. On
+     * httpd's CONFIG_HTTPD_TASK_STACK_SIZE stack that is a real overflow risk;
+     * handlers run serially, so one instance is safe. */
+    static char json[768];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char posix[NET_TZ_MAX + 1];
+    tz_resolve(s_tz, posix, sizeof(posix));
+
+    int off = snprintf(json, sizeof(json), "{\"zones\":[");
+    if (off < 0 || (size_t)off >= sizeof(json)) goto fail;
+    for (int i = 0; i < NET_TZ_N; i++) {
+        /* Commit only if the entry fits: snprintf's return is the would-be
+         * length, and half an entry left in the buffer would make the whole body
+         * unparseable (the exact failure h_wifi_scan documents). */
+        const int w = snprintf(json + off, sizeof(json) - (size_t)off,
+                               "%s{\"name\":\"%s\",\"posix\":\"%s\"}",
+                               i ? "," : "", s_tz_tbl[i].name, s_tz_tbl[i].posix);
+        if (w < 0 || (size_t)w >= sizeof(json) - (size_t)off) goto fail;
+        off += w;
+    }
+    const int t = snprintf(json + off, sizeof(json) - (size_t)off,
+                           "],\"tz\":\"%s\",\"posix\":\"%s\",\"tz_offset\":%d}",
+                           s_tz[0] ? s_tz : "UTC", posix, tz_offset_min(time(NULL)));
+    if (t < 0 || (size_t)t >= sizeof(json) - (size_t)off) goto fail;
+    return httpd_resp_sendstr(req, json);
+
+fail:
+    /* A truncated body is indistinguishable from a crash to the caller, and an
+     * empty picker looks like "no zones configured". Say which it is. */
+    ESP_LOGE(TAG, "config body overflow (%d B)", off);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"config too large\"}");
+}
+
+/* POST /api/v1/config {"tz":"US/Eastern"} — or any raw POSIX rule.
+ *
+ * Response always reports the EFFECT (what the dial is now showing), not an echo
+ * of what was sent: a string that newlib silently degrades to UTC still has to
+ * come back as "UTC, offset 0", or the page would claim success for a zone that
+ * never took. */
+static esp_err_t h_config_post(httpd_req_t *req)
+{
+    static char body[NET_CONFIG_BODY_MAX + 1];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    /* Read-until-content_len, exactly as h_wifi_join does and for the same
+     * reason: httpd_req_recv() may return a PARTIAL read, and the consequence
+     * here is permanent — a body that arrived in two segments would parse as if
+     * it ended early and store a truncated TZ, or miss the key entirely and look
+     * like a request that asked for nothing. */
+    const int clen = (int)req->content_len;
+    if (clen < 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_CONFIG_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    /* {"tz":""} is a real request — it means clear to UTC. A body WITHOUT the key
+     * is not: tz is the only setting this endpoint owns today, and answering 200
+     * to `{}` would turn a client bug into a silent no-op the page then reports as
+     * saved. The reason goes to the log only, never into the reply: it is
+     * device-side prose about a value the client controls, and the 400 plus the
+     * logged reason is enough to fix the caller. */
+    char tz[NET_TZ_MAX + 1];
+    bool present = false;
+    const char *why = tz_body_value(body, len, tz, sizeof(tz), &present);
+    if (!why && !present) why = "no tz in body";
+    if (!why) why = net_tz_set(tz);
+    if (why) {
+        ESP_LOGW(TAG, "config: tz rejected (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"tz rejected\"}");
+    }
+
+    /* tz / posix are validated: printable ASCII with no quote or backslash, so
+     * they can go into the body unescaped without letting the client close the
+     * string early. tz_offset is the number that proves the zone really took. */
+    char posix[NET_TZ_MAX + 1];
+    tz_resolve(s_tz, posix, sizeof(posix));
+    static char resp[256];
+    const int n = snprintf(resp, sizeof(resp), "{\"state\":\"zoned\",\"tz\":\"%s\","
+                           "\"posix\":\"%s\",\"tz_offset\":%d}",
+                           s_tz[0] ? s_tz : "UTC", posix, tz_offset_min(time(NULL)));
+    if (n < 0 || (size_t)n >= sizeof(resp))
+        return httpd_resp_sendstr(req, "{\"state\":\"zoned\"}");
+    return httpd_resp_sendstr(req, resp);
 }
 
 /* Scan is blocking on purpose: the config page shows a spinner. A non-blocking
@@ -516,7 +882,26 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     if (!json_str(body, len, "pass", pass, sizeof(pass)))
         pass[0] = '\0';                              /* open network */
 
-    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s", ssid, pass[0] ? "(set)" : "(none)");
+    /* Optional, and parsed + fully validated BEFORE anything is persisted: a join
+     * that wrote the credentials and only then noticed the zone was bad would
+     * leave the orb on the network with half a request applied and no way for the
+     * page to retry the part that failed. Provisioning is the one moment a fresh
+     * orb can be zoned before it ever reaches the LAN, which is the whole point of
+     * putting it here — a clock that comes up an hour off has to be found on the
+     * LAN and re-edited to be fixed. Absent means "leave the stored zone alone",
+     * NOT "clear it"; {"tz":""} is what clears. */
+    static char tz[NET_TZ_MAX + 1];
+    bool tz_present = false;
+    const char *tz_why = tz_body_value(body, len, tz, sizeof(tz), &tz_present);
+    if (!tz_why && tz_present && tz[0]) tz_why = tz_reject_reason(tz);
+    if (tz_why) {
+        ESP_LOGW(TAG, "join: tz rejected (%s)", tz_why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"tz rejected\"}");
+    }
+
+    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
+             tz_present ? " tz=" : "", tz_present ? tz : "");
 
     /* Persist FIRST, then apply: if the association fails, the credentials are
      * already on the device so the next boot retries them instead of dropping
@@ -524,6 +909,16 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     nvs_set_str(s_nvs, "ssid", ssid);
     if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
     nvs_commit(s_nvs);
+
+    /* Zone goes through net_tz_set() rather than a local nvs_set_str(), so the
+     * write, the setenv/tzset and the log line are literally the same code the
+     * config endpoint runs — one behaviour, two doors. Cannot fail on validation
+     * here (checked above, before the credentials were touched); the only way it
+     * returns a reason is NVS, and that is worth a log, not a lost join. */
+    if (tz_present) {
+        const char *why = net_tz_set(tz);
+        if (why) ESP_LOGW(TAG, "join: tz \"%s\" not applied (%s)", tz, why);
+    }
 
     const esp_err_t e = net_apply_sta_config(ssid, pass);
     if (e != ESP_OK) {
@@ -736,14 +1131,21 @@ static const char HTML_LANDING[] =
 "button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.5rem .7rem;font:inherit}"
 "input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem}"
 ".row{display:flex;gap:.5rem;align-items:center;margin:.5rem 0}"
+"select{font:inherit;padding:.5rem;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;max-width:100%}"
+"#tzs{color:#9cf;font-size:.9rem;margin:.3rem 0 1rem}"
 "</style></head><body>"
 "<h1>orb setup</h1>"
 "<div id=state>loading&hellip;</div>"
 "<div id=pick hidden><label>Network password <input id=pass type=password placeholder='leave empty for open'></label>"
 "<div class=row><button id=go>Connect</button><button id=rs>Rescan</button></div></div>"
 "<ul id=ns></ul>"
+"<h1>Timezone</h1>"
+"<div class=row><select id=tz></select></div>"
+"<div class=row><input id=tzx placeholder='POSIX rule, e.g. EST5EDT,M3.2.0,M11.1.0' hidden></div>"
+"<div class=row><button id=tzgo hidden>Set zone</button></div>"
+"<div id=tzs></div>"
 "<script>"
-"var sel=null,timer=0;"
+"var sel=null,timer=0,zones=[],tzcur='';"
 "function say(t,c){var e=document.getElementById('state');e.textContent=t;e.className=c||''}"
 "async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
 "async function status(){try{var d=await j('/api/v1/status');"
@@ -760,8 +1162,34 @@ static const char HTML_LANDING[] =
 "var p=document.getElementById('pass').value;"
 "say('joining '+sel+'\\u2026');"
 "try{await j('/api/v1/wifi/join',{method:'POST',headers:{'Content-Type':'application/json'},"
-"body:JSON.stringify({ssid:sel,pass:p})});}catch(e){say('join rejected: '+e.message,'bad');return}"
+"body:JSON.stringify(tzbody(sel,p))});}catch(e){say('join rejected: '+e.message,'bad');return}"
 "clearInterval(timer);timer=setInterval(status,1500);status()}"
+"function hm(m){var s=m<0?'-':'+',a=Math.abs(m);return s+Math.floor(a/60)+':'+('0'+(a%60)).slice(-2)}"
+"function tzmsg(t){document.getElementById('tzs').textContent=t}"
+"function tzpicked(){var s=document.getElementById('tz');return s.value=='__c__'?document.getElementById('tzx').value:s.value}"
+"/* Only send tz when it differs from what the device reported: a join that resent the"
+"   zone it already has costs an NVS write and an erase for nothing. */"
+"function tzbody(ssid,p){var o={ssid:ssid,pass:p};var t=tzpicked();if(t&&t!=tzcur)o.tz=t;return o}"
+"function tssel(v){var s=document.getElementById('tz'),x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
+" var k=false;for(var i=0;i<zones.length;i++)if(zones[i].name==v)k=true;"
+" if(k){s.value=v;x.hidden=true;g.hidden=true}else{s.value='__c__';x.hidden=false;g.hidden=false;if(v&&v!='UTC')x.value=v}}"
+"async function tzload(){var v='UTC';"
+" try{var d=await j('/api/v1/config');zones=d.zones||[];v=d.tz||'UTC';tzcur=v;"
+" tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+')');}catch(e){tzmsg('zone list unavailable')}"
+" var s=document.getElementById('tz');s.innerHTML='';"
+" zones.forEach(function(z){var o=document.createElement('option');o.value=z.name;o.textContent=z.name+'  '+z.posix;s.appendChild(o)});"
+" var c=document.createElement('option');c.value='__c__';c.textContent='other (POSIX rule)...';s.appendChild(c);"
+" tssel(v)}"
+"async function tzpush(){var v=tzpicked();if(!v){tzmsg('pick or type a zone');return}"
+" tzmsg('setting '+v+'...');"
+" try{var d=await j('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:v})});"
+" tzcur=d.tz;tssel(d.tz);tzmsg('showing '+hm(d.tz_offset)+' from UTC ('+d.posix+') - is the dial right?');"
+" }catch(e){tzmsg('zone rejected: '+e.message)}}"
+"document.getElementById('tz').onchange=function(){var x=document.getElementById('tzx'),g=document.getElementById('tzgo');"
+" if(this.value=='__c__'){x.hidden=false;g.hidden=false;x.focus();return}x.hidden=true;g.hidden=true;tzpush()};"
+"document.getElementById('tzgo').onclick=tzpush;"
+"document.getElementById('tzx').onkeydown=function(e){if(e.key=='Enter')tzpush()};"
+"tzload();"
 "document.getElementById('go').onclick=join;"
 "document.getElementById('rs').onclick=scan;"
 "document.getElementById('pass').onkeydown=function(e){if(e.key=='Enter')join()};"
@@ -857,6 +1285,14 @@ static esp_err_t net_start_httpd(void)
      * ceiling without touching lwIP. */
     cfg.max_open_sockets = 3;
     cfg.lru_purge_enable = true;
+    /* HTTPD_DEFAULT_CONFIG() ships max_uri_handlers at 8 (httpd_config.h:61), and
+     * httpd_register_uri_handler() fails SILENTLY past that — this table now has
+     * more than 8 entries, so the tail of it would 404 with no log line at all.
+     * Measured before the fix: the 9th handler (/favicon.ico, registered today)
+     * already answers 404 on the running device while the 8 before it 302. Raise
+     * it with room for the endpoints this feature needs, and check the return
+     * below rather than trusting the count. */
+    cfg.max_uri_handlers  = 16;
     /* Below the LVGL task's priority 5: a slow or chatty client must never
      * preempt a paint and show up as a dropped frame on the dial. */
     cfg.task_priority    = 4;
@@ -873,6 +1309,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },
+        { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
+        { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* Android + iOS/macOS captive-portal probes (see h_captive). */
@@ -880,8 +1318,14 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = h_captive },
         { .uri = "/favicon.ico",       .method = HTTP_GET, .handler = h_captive },
     };
-    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)
-        httpd_register_uri_handler(s_server, &uris[i]);
+    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
+        /* Checked, not ignored: past max_uri_handlers this returns
+         * ESP_ERR_NO_MEM and the endpoint simply 404s forever with nothing in the
+         * log — which is how a nine-route server silently loses its ninth route. */
+        const esp_err_t re = httpd_register_uri_handler(s_server, &uris[i]);
+        if (re != ESP_OK)
+            ESP_LOGE(TAG, "uri %s: %s (raise max_uri_handlers)", uris[i].uri, esp_err_to_name(re));
+    }
 
     return ESP_OK;
 }
@@ -900,6 +1344,13 @@ esp_err_t orb_net_start(void)
     }
 
     ESP_RETURN_ON_ERROR(net_open_storage(), TAG, "open storage");
+
+    /* Zone before radio: the dial's first frames compose while the association is
+     * still in flight, so loading + applying TZ here (rather than in on_ip()) is
+     * what makes the very first render local instead of UTC-for-two-seconds. It
+     * only reads NVS — nothing here touches the network. */
+    net_tz_load();
+
     stage_probe("pre-sntp_init");
 
     /* SNTP is configured here and started from on_ip() — see the block comment

@@ -37,6 +37,18 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
     # flash + serial monitor in one step
     idf.py -p /dev/ttyACM0 flash monitor
 
+## Host-side checks
+
+The config-body parser and the timezone offset math are pure functions with no
+device dependency, so they are checked on the bench before anything is flashed:
+
+    python3 tools/host_tz_test.py          # ~1 s, no idf.py needed
+
+It lifts those functions verbatim out of `main/net/orb_net.c` (no copy, so it
+cannot drift) and runs the negative cases a browser would take minutes to type —
+escaped quotes, raw control bytes, overlong values, decoy keys — plus the offset
+across DST boundaries, local midnight, the date line and the half-hour zones.
+
 ## Project Structure
 
     main/
@@ -47,6 +59,10 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
         co5300.c/h        CO5300 panel driver (esp_lcd_panel interface)
       clock/
         clock_view.c/h    centered HH:MM:SS label, 1-s LVGL timer
+      net/
+        orb_net.c/h       WiFi STA + SoftAP provisioning, SNTP on lease,
+                          /api/v1 HTTP (status, scan, join, config, ota, reboot),
+                          timezone as NVS device config
       idf_component.yml   managed dependency: lvgl/lvgl ^9
       CMakeLists.txt
     partitions.csv        NVS + phy + factory app (16 MB flash)
@@ -110,7 +126,9 @@ black. Any lit pixel is the panel's canvas holding another frame's art.
 
 - [x] Digital clock (free-running from boot)
 - [x] WiFi: STA + SoftAP provisioning, LAN config page, LAN OTA with A/B rollback
-- [ ] SNTP for real time (the dial still free-runs from boot)
+- [x] SNTP for real time on DHCP lease, with the timezone as device config:
+      NVS key `tz`, applied with `setenv`/`tzset`, served as a zone table by
+      `/api/v1/config` and settable from the config page or during provisioning
 - [ ] Touch / IMU input
 - [ ] Multiple screens / theming
 - [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a

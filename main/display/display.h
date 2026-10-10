@@ -61,6 +61,27 @@ void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
  * log order equals event order within a second). */
 #define DISPLAY_CADENCE_PROBE 0
 
+/* ---- FPS-budget bench instrumentation (leave all four at 0 when not sweeping)
+ * docs/fps-budget-benchmark-plan.md Phase 2: price one blended pixel against one
+ * refreshed row. The commit hook paints DISPLAY_BENCH_PX solid-colour blocks,
+ * 60x60 = 3600 px each, so the ladder 18/36/72/112 adds the planned
+ * 65k/130k/259k/403k px/tick, blended through the very blend_px() the real
+ * layers use. Blocks walk every tick so the flush gate cannot settle them out
+ * of the DMA, and the CAD bands/px fields are the proof the ink shipped.
+ * Measured result: docs/fps-budget-findings-2026-10-10.md. */
+#define DISPLAY_BENCH 0
+#define DISPLAY_BENCH_PX 0
+/* DISPLAY_BENCH_ALPHA selects the operation: 255 takes blend_px's opaque
+ * shortcut (swap + write, no maths, measured 76 ns/px); 128 runs the real
+ * mix_16_16 the dial's layers pay (185-232 ns/px). Sweeping at 255 prices the
+ * wrong op and makes the px curve look flat. */
+#define DISPLAY_BENCH_ALPHA 255
+/* 0 = every block stays inside the shipped GIF row band [128..335], pinning
+ * the row union while only the blend count moves. 1 = blocks spread over the
+ * whole page, so the same ink count moves the ROW union instead: the only way
+ * to measure the row term without changing the art. */
+#define DISPLAY_BENCH_SPREAD 0
+
 #if DISPLAY_CADENCE_PROBE
 /** Print-and-clear every cadence record booked since the last drain. */
 void display_cadence_drain(void);

@@ -1445,6 +1445,109 @@ static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
  * and are already at the blend's ALU floor, so the tiling is rotated-only. */
 static uint16_t s_band[CLK_COMMIT_BAND][CLK_SCR_W];
 
+#if DISPLAY_BENCH
+/* ---- Synthetic live layer, to price a blended pixel --------------------------
+ * docs/fps-budget-benchmark-plan.md Phase 2. DISPLAY_BENCH_PX solid 60x60
+ * blocks (3600 px each, so 18/36/72/112 add the planned 65k/130k/259k/403k
+ * px/tick) are painted through the very blend_px() the real layers use, with
+ * the colour plane in PSRAM like a real sprite. Positions are chosen at tick
+ * time and consumed by the hook at commit, exactly like a hand's swept box,
+ * and each block walks every tick so the flush gate cannot settle the ink out
+ * of the DMA — CAD bands/px are the proof it shipped.
+ *
+ * Seed and wrap INSIDE the band: a block starting at y=0 would mark rows the
+ * art never touches, turning a px sweep into a px+rows sweep. Rows to know:
+ * the shipped commit DMA's ~265 full-width rows, and the GIF bank's 208-row
+ * union is NOT what sets that — the carriage's rotating diff box forces ~255
+ * on its own. Pinning rows therefore means keeping the ink inside that band,
+ * and DISPLAY_BENCH_SPREAD=1 is the deliberate way out, used to price the row
+ * term alone. Measured numbers: docs/fps-budget-findings-2026-10-10.md. */
+#define BENCH_BLK        60
+#define BENCH_MAX_BLK    128
+#define BENCH_BAND_Y0    128
+#define BENCH_BAND_ROWS  208
+static uint16_t *s_bench_solid;                       /* PSRAM colour plane   */
+static int16_t   s_bench_x[BENCH_MAX_BLK], s_bench_y[BENCH_MAX_BLK];
+static uint32_t  s_bench_n;                           /* blocks this tick     */
+static uint64_t  s_bench_px, s_bench_px0;             /* ink px, + last report */
+
+static void bench_init(void)
+{
+    if (DISPLAY_BENCH_PX == 0 || s_bench_solid) return;
+    const size_t n = (size_t)BENCH_BLK * BENCH_BLK * sizeof(uint16_t);
+    s_bench_solid = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_bench_solid) return;
+    uint16_t *p = s_bench_solid;
+    for (size_t i = 0; i < n / sizeof(uint16_t); i++) p[i] = 0xF81F;   /* mag */
+    /* Seed inside the band: a block that starts at y=0 marks rows the GIF
+     * never touches, and the first ~60 ticks would then measure a row change
+     * as well as a px change -- exactly the confound this sweep must not have. */
+    for (uint32_t i = 0; i < DISPLAY_BENCH_PX; i++) {
+        s_bench_x[i] = (int16_t)((i * 61) % (CLK_SCR_W - BENCH_BLK));
+#if DISPLAY_BENCH_SPREAD
+        s_bench_y[i] = (int16_t)((i * 37) % (CLK_SCR_H - BENCH_BLK));
+#else
+        s_bench_y[i] = (int16_t)(BENCH_BAND_Y0
+                                 + (i * 37) % (BENCH_BAND_ROWS - BENCH_BLK));
+#endif
+    }
+    ESP_LOGI(TAG, "bench: %u blocks of %dx%d = %u px/tick, alpha %u",
+             (unsigned)DISPLAY_BENCH_PX, BENCH_BLK, BENCH_BLK,
+             (unsigned)(DISPLAY_BENCH_PX * BENCH_BLK * BENCH_BLK),
+             (unsigned)DISPLAY_BENCH_ALPHA);
+}
+
+/* Tick side: walk the blocks and mark their rows through the hand's own path,
+ * so the hook restores+repaints exactly the pixels the ink will land on. Both
+ * axes wrap INSIDE the band, so the marked row set stays a subset of the
+ * shipped GIF union and CAD bands/px report the same rows at every point. */
+static void bench_plan(void)
+{
+    if (!s_bench_solid) return;
+    s_bench_n = DISPLAY_BENCH_PX < BENCH_MAX_BLK ? DISPLAY_BENCH_PX : BENCH_MAX_BLK;
+    for (uint32_t i = 0; i < s_bench_n; i++) {
+        int32_t x = s_bench_x[i] + 7;
+        int32_t y = s_bench_y[i] + 5;
+        if (x + BENCH_BLK > CLK_SCR_W) x = (int32_t)((i * 29) % (CLK_SCR_W - BENCH_BLK));
+#if DISPLAY_BENCH_SPREAD
+        if (y + BENCH_BLK > CLK_SCR_H) y = (int32_t)((i * 13) % (CLK_SCR_H - BENCH_BLK));
+#else
+        if (y + BENCH_BLK > BENCH_BAND_Y0 + BENCH_BAND_ROWS)
+            y = BENCH_BAND_Y0 + (int32_t)((i * 13) % (BENCH_BAND_ROWS - BENCH_BLK));
+#endif
+        s_bench_x[i] = (int16_t)x;
+        s_bench_y[i] = (int16_t)y;
+        mark_rows(y, y + BENCH_BLK - 1, x, x + BENCH_BLK - 1, false);
+    }
+}
+
+/* Hook side: blend the planned blocks into the staged band rows, after the
+ * layer loop and inside the same timed paint window, so the CAD hook/px
+ * fields carry the ink's true cost. */
+static void bench_paint_band(int32_t y0, int nr)
+{
+    if (!s_bench_solid || !s_bench_n) return;
+    for (uint32_t i = 0; i < s_bench_n; i++) {
+        const int32_t by0 = s_bench_y[i];
+        if (by0 > y0 + nr - 1 || by0 + BENCH_BLK - 1 < y0) continue;
+        const int32_t bx0 = s_bench_x[i];
+        for (int r = 0; r < nr; r++) {
+            const int32_t y = y0 + r;
+            if (y < by0 || y > by0 + BENCH_BLK - 1) continue;
+            int32_t xa = bx0, xb = bx0 + BENCH_BLK - 1;
+            if (xa < s_layer_row_x0[y]) xa = s_layer_row_x0[y];
+            if (xb > s_layer_row_x1[y]) xb = s_layer_row_x1[y];
+            if (xa > xb) continue;
+            const uint16_t *src = &s_bench_solid[(size_t)(y - by0) * BENCH_BLK];
+            uint16_t *row = s_band[r];
+            for (int32_t x = xa; x <= xb; x++)
+                blend_px(&row[x], src[x - bx0], DISPLAY_BENCH_ALPHA, 0);
+            s_bench_px += (uint32_t)(xb - xa + 1);
+        }
+    }
+}
+#endif /* DISPLAY_BENCH */
+
 /* display commit hook: rebuild the rows this tick dirtied from the ground up —
  * background out of the canvas, then every layer in the screen's z-order (each
  * shadow directly under its own hand, walking the theme's order, then the glass
@@ -1567,6 +1670,11 @@ static void clock_layer_commit(void)
             const uint8_t role = jc[i].role;
             if (role < CLK_PAINT_ROLES) s_hk_role_us[role] += (uint64_t)(esp_timer_get_time() - tr);
         }
+#if DISPLAY_BENCH
+        /* Inside the same timed paint window: the CAD hook/px fields must
+         * carry the ink's cost, not hide it in an untimed phase. */
+        bench_paint_band(y0, nr);
+#endif
         s_hk_paint_us += (uint64_t)(esp_timer_get_time() - t0);
 
         /* Flush gate: write back and send only the rows whose re-composite
@@ -1706,6 +1814,14 @@ static void report_fps_if_due(void)
              (unsigned)drb[3], (unsigned long long)(dru[3] / 1000),
              (unsigned)drb[4], (unsigned long long)(dru[4] / 1000),
              (unsigned)drb[5], (unsigned long long)(dru[5] / 1000));
+#if DISPLAY_BENCH
+    /* Proof the synthetic ink is really on the glass: ink px/s must read
+     * blocks x 3600 x fps, and the CAD bands/px fields must not collapse. */
+    ESP_LOGI(TAG, "  bench: blocks %u ink px/s %llu",
+             (unsigned)DISPLAY_BENCH_PX,
+             (unsigned long long)(s_bench_px - s_bench_px0));
+    s_bench_px0 = s_bench_px;
+#endif
 #if DISPLAY_CADENCE_PROBE
     display_cadence_drain();
 #endif
@@ -1760,6 +1876,9 @@ static void tick_timer_cb(lv_timer_t *timer)
      * be restored and redrawn every tick). Marks union per row, so both
      * contributions apply, and the commit consumes them. */
     if (l4_active()) mark_all_layers();
+#if DISPLAY_BENCH
+    if (l4_active()) bench_plan();     /* walks the blocks + marks their rows */
+#endif
     request_commit();
 #endif
     report_fps_if_due();
@@ -1942,6 +2061,9 @@ esp_err_t clock_view_init(void)
     compose_now();
 #if CLK_BG_DIRECT_PUSH
     display_set_commit_hook(clock_layer_commit);
+#if DISPLAY_BENCH
+    bench_init();
+#endif
 #endif
 
     uint32_t start_period;

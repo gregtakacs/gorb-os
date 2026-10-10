@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;0,700;1,600&family=Bodoni+Moda:ital,wght@0,500;0,700;1,600&family=Jost:ital,wght@0,500;0,600;0,700;1,600&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=DM+Serif+Display&family=Bebas+Neue&family=Michroma&family=Audiowide&family=Bungee&family=Bungee+Shade&family=Monoton&family=Righteous&family=Rubik+Mono+One&family=Major+Mono+Display&family=Silkscreen&family=Press+Start+2P&family=Shrikhand&family=Lobster&family=Pacifico&family=Black+Ops+One&family=Rampart+One&family=Rubik+Glitch&family=UnifrakturMaguntia&family=Creepster&family=VT323&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400..700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400..800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400..900&display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#12110f}a{color:#c9a25a}a:hover{color:#f0d79a}</style>
+<script src="dial-renderer.js"></script>
+<script src="watch-engine.js"></script>
+</helmet>
+<div style="min-height:100vh;background:#12110f;color:#e9e2d2;font-family:'IBM Plex Sans',sans-serif;box-sizing:border-box;display:flex;flex-direction:column">
+  <header style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 20px;padding:16px 28px;border-bottom:1px solid #25221e;background:#151412">
+    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+      <div style="font-size:18px;font-weight:600;letter-spacing:-0.01em">Watch composer</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87">{{ metaLabel }}</div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c9a25a;min-height:16px">{{ status }}</div>
+  </header>
+  <div style="display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start;padding:28px">
+    <div style="display:flex;flex-direction:column;gap:16px;align-items:center;width:490px;max-width:100%;flex:none">
+      <div style="width:466px;height:466px;flex:none;border-radius:50%;background:#000;box-shadow:0 0 0 12px #1c1a17,0 0 0 13px #2e2a24,0 30px 80px rgba(0,0,0,.6);overflow:hidden;margin-top:12px">
+        <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="display:block;width:466px;height:466px;cursor:{{ cursor }};touch-action:none"></canvas>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#f0d79a;min-width:110px">{{ frameLabel }}</div>
+        <button onClick="{{ prev }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">←</button>
+        <button onClick="{{ toggle }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:7px 14px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer;min-width:66px" style-hover="background:#ddb66c">{{ playLabel }}</button>
+        <button onClick="{{ next }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">→</button>
+        <button onClick="{{ toggleSlow }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">{{ slowLabel }}</button>
+        <sc-for list="{{ timeOpts }}" as="c" hint-placeholder-count="2">
+          <button onClick="{{ c.pick }}" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ c.label }}</button>
+        </sc-for>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;text-align:center">{{ seamText }}</div>
+      <div style="width:100%;display:flex;flex-direction:column;gap:2px;margin-top:6px;border-top:1px solid #25221e;padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;padding:0 4px 6px">
+          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Layers · top to bottom</div>
+          <div style="font-size:11px;color:#8d8472">click to hide</div>
+        </div>
+        <sc-for list="{{ layers }}" as="l" hint-placeholder-count="8">
+          <div onClick="{{ l.toggle }}" style="display:grid;grid-template-columns:40px 22px minmax(0,1fr) auto;gap:10px;align-items:center;padding:5px 6px;border-radius:6px;cursor:pointer;opacity:{{ l.op }}" style-hover="background:#1b1a17">
+            <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;background-color:#1a1916;background-image:repeating-conic-gradient(#25231f 0% 25%, #1a1916 0% 50%);background-size:8px 8px;box-shadow:0 0 0 1px #2e2a24">
+              <canvas ref="{{ l.ref }}" width="80" height="80" style="display:block;width:40px;height:40px"></canvas>
+            </div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#c9a25a">{{ l.num }}</span>
+            <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+              <span style="font-size:13px;font-weight:600">{{ l.name }}</span>
+              <span style="font-size:11px;color:#8d8472;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ l.note }}</span>
+            </div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ l.eyeFg }}">{{ l.eye }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="flex:1;min-width:320px;max-width:640px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;border-radius:9px;background:#1a1916;border:1px solid #2a2722">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="7">
+          <button onClick="{{ t.pick }}" style="background:{{ t.bg }};border:0;color:{{ t.fg }};padding:8px 12px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;flex:1 1 auto">{{ t.label }}</button>
+        </sc-for>
+      </div>
+      <sc-if value="{{ hasTabReset }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;justify-content:flex-end;margin-top:-6px">
+          <button onClick="{{ tabReset }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">{{ tabResetLabel }}</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isDial }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Start from</div>
+            <button onClick="{{ resetDesign }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset everything</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px">
+            <sc-for list="{{ dials }}" as="d" hint-placeholder-count="8">
+              <div onClick="{{ d.pick }}" style="display:flex;gap:10px;align-items:center;padding:8px;border-radius:8px;border:1px solid {{ d.bd }};background:{{ d.bg }};cursor:pointer">
+                <div style="width:48px;height:48px;flex:none;border-radius:50%;overflow:hidden;background:#000">
+                  <canvas ref="{{ d.ref }}" width="96" height="96" style="display:block;width:48px;height:48px"></canvas>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                  <div style="font-size:13px;font-weight:600;color:{{ d.fg }}">{{ d.name }}</div>
+                  <div style="font-size:11px;line-height:1.35;color:#8d8472;text-wrap:pretty">{{ d.blurb }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isComps }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+            <div style="font-size:12px;color:#8d8472;text-wrap:pretty">Listed bottom to top: later items stack over earlier ones. Click one on the dial to select it, drag to move it.</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <sc-for list="{{ compRows }}" as="c" hint-placeholder-count="3">
+              <div onClick="{{ c.pick }}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;border:1px solid {{ c.bd }};background:{{ c.bg }};cursor:pointer">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c9a25a;min-width:18px">{{ c.num }}</span>
+                <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">
+                  <div style="font-size:13px;font-weight:600;color:{{ c.fg }}">{{ c.title }}</div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.meta }}</div>
+                </div>
+                <div style="display:flex;gap:4px">
+                  <button onClick="{{ c.up }}" title="Lower in the stack" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↑</button>
+                  <button onClick="{{ c.down }}" title="Raise in the stack" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↓</button>
+                  <button onClick="{{ c.del }}" title="Remove" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0a080">×</button>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <sc-for list="{{ addOpts }}" as="a" hint-placeholder-count="4">
+              <button onClick="{{ a.go }}" style="background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:7px 12px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="border-color:#c9a25a;color:#f0d79a">{{ a.label }}</button>
+            </sc-for>
+          </div>
+          <sc-if value="{{ noSel }}" hint-placeholder-val="{{ true }}">
+            <div style="font-size:12px;color:#8d8472;padding:12px;border:1px dashed #2e2a24;border-radius:8px;text-align:center">Select a complication to edit its position, shape and style</div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Default style</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(66px,1fr));gap:6px">
+            <sc-for list="{{ handOpts }}" as="h" hint-placeholder-count="11">
+              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
+                <canvas ref="{{ h.ref }}" width="104" height="104" style="display:block;width:52px;height:52px"></canvas>
+                <div style="font-size:11px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isMove }}" hint-placeholder-val="{{ false }}">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">
+          <sc-for list="{{ trainOpts }}" as="t" hint-placeholder-count="6">
+            <div onClick="{{ t.pick }}" style="display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:8px;border:1px solid {{ t.bd }};background:{{ t.bg }};cursor:pointer">
+              <div style="font-size:13px;font-weight:600;color:{{ t.fg }}">{{ t.name }}</div>
+              <div style="font-size:11px;line-height:1.4;color:#8d8472;text-wrap:pretty">{{ t.blurb }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isCase }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Case</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px">
+            <sc-for list="{{ caseOpts }}" as="h" hint-placeholder-count="5">
+              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px 6px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
+                <canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:56px;height:56px;border-radius:6px"></canvas>
+                <div style="font-size:12px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;margin-top:8px">Glass</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px">
+            <sc-for list="{{ glassOpts }}" as="h" hint-placeholder-count="4">
+              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px 6px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
+                <canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:56px;height:56px;border-radius:50%"></canvas>
+                <div style="font-size:12px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <sc-if value="{{ hasSelHead }}" hint-placeholder-val="{{ false }}"><div style="font-size:14px;font-weight:600;color:#f0d79a;padding-top:4px">{{ selTitle }}</div></sc-if>
+        <sc-for list="{{ fields }}" as="f" hint-placeholder-count="5">
+          <sc-if value="{{ f.isHead }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;padding-top:12px;margin-top:4px;border-top:1px solid #25221e">{{ f.label }}</div>
+          </sc-if>
+          <sc-if value="{{ f.isRow }}" hint-placeholder-val="{{ true }}">
+            <div style="display:grid;grid-template-columns:112px minmax(0,1fr) 64px;gap:10px;align-items:center;min-height:30px">
+              <div style="font-size:13px;color:#b5ab97">{{ f.label }}</div>
+              <div style="min-width:0">
+                <sc-if value="{{ f.isRange }}" hint-placeholder-val="{{ true }}"><input type="range" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.on }}" style="width:100%;accent-color:#c9a25a"></sc-if>
+                <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}"><select onChange="{{ f.on }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
+                <sc-if value="{{ f.isChips }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:4px"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" style="background:{{ o.bg }};border:1px solid {{ o.bd }};color:{{ o.fg }};padding:5px 10px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ o.label }}</button></sc-for></div></sc-if>
+                <sc-if value="{{ f.isSwatch }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:24px;height:24px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 11px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for></div></sc-if>
+                <sc-if value="{{ f.isColor }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:22px;height:22px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 10px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for><input type="color" value="{{ f.value }}" onChange="{{ f.on }}" title="Custom colour" style="width:30px;height:24px;padding:0;border:1px solid #3a352d;border-radius:5px;background:#0d0c0a;cursor:pointer"><input type="text" value="{{ f.hexText }}" onChange="{{ f.onHex }}" onBlur="{{ f.onHexBlur }}" placeholder="#rrggbb or r, g, b" title="{{ f.hexTitle }}" style="flex:1 1 140px;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',ui-monospace,monospace"></div></sc-if>
+                <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ false }}"><input type="text" value="{{ f.value }}" onChange="{{ f.on }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%;box-sizing:border-box"></sc-if>
+                <sc-if value="{{ f.isFile }}" hint-placeholder-val="{{ false }}"><input type="file" accept="image/png,image/svg+xml,image/jpeg,image/webp" onChange="{{ f.on }}" style="font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;width:100%"></sc-if>
+                <sc-if value="{{ f.isNote }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:#c9a25a;text-wrap:pretty">{{ f.note }}</div></sc-if>
+              </div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#e9e2d2;text-align:right;overflow:hidden;text-overflow:ellipsis">{{ f.valText }}</div>
+            </div>
+          </sc-if>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #25221e">
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Each hand · top of the stack first</div>
+            <button onClick="{{ resetHands }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset all to defaults</button>
+          </div>
+          <div style="display:none">Each hand · top of the stack first</div>
+          <sc-for list="{{ handRows }}" as="h" hint-placeholder-count="3">
+            <div style="display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:8px;border:1px solid #2e2a24;background:#171614;opacity:{{ h.op }}">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <div style="display:flex;gap:8px;align-items:baseline;min-width:0">
+                  <span style="font-size:13px;font-weight:600;white-space:nowrap">{{ h.label }}</span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472">{{ h.meta }}</span>
+                </div>
+                <div style="display:flex;gap:4px">
+                  <button onClick="{{ h.up }}" title="Raise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↑</button>
+                  <button onClick="{{ h.down }}" title="Lower" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↓</button>
+                  <button onClick="{{ h.toggle }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer;min-width:54px" style-hover="color:#f0d79a">{{ h.eye }}</button>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
+                <select onChange="{{ h.onStyle }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
+                  <sc-for list="{{ h.styleOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
+                </select>
+                <select onChange="{{ h.onFinish }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
+                  <sc-for list="{{ h.finOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
+                </select>
+              </div>
+              <select onChange="{{ h.onShade }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
+                <sc-for list="{{ h.shadeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
+              </select>
+              <select onChange="{{ h.onLume }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
+                <sc-for list="{{ h.lumeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
+              </select>
+              <sc-if value="{{ h.isSec }}" hint-placeholder-val="{{ false }}">
+                <select onChange="{{ h.onSec }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
+                  <sc-for list="{{ h.secOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
+                </select>
+              </sc-if>
+              <div style="display:grid;grid-template-columns:56px minmax(0,1fr) 44px 56px minmax(0,1fr) 44px;gap:8px;align-items:center">
+                <span style="font-size:12px;color:#b5ab97">Length</span>
+                <input type="range" min="0.5" max="1.3" step="0.01" value="{{ h.len }}" onChange="{{ h.onLen }}" style="width:100%;accent-color:#c9a25a">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right">{{ h.lenText }}</span>
+                <span style="font-size:12px;color:#b5ab97">Width</span>
+                <input type="range" min="0.4" max="2.5" step="0.05" value="{{ h.wid }}" onChange="{{ h.onWid }}" style="width:100%;accent-color:#c9a25a">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right">{{ h.widText }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isExport }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
+          <button onClick="{{ exportFrames }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Flattened frames</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ zipNote }}</span></button>
+          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand pointing at 12 with its pivot — plus manifest.json with draw order and positions.</div>
+          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;padding-top:12px;margin-top:4px;border-top:1px solid #25221e">Design ID</div>
+          <div style="display:flex;gap:8px">
+            <input readonly value="{{ designId }}" onFocus="{{ selectAll }}" style="flex:1;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#f0d79a;padding:9px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace">
+            <button onClick="{{ copyId }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:9px 14px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">Copy</button>
+          </div>
+          <div style="display:flex;gap:8px">
+            <input value="{{ idInput }}" onChange="{{ onIdInput }}" placeholder="Paste a design ID…" style="flex:1;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:9px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace">
+            <button onClick="{{ loadDesign }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:9px 14px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#ddb66c">Load</button>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {} };
+  KEYS = Object.keys(this.DEF);
+  RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
+  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
+  LAYERS = [
+    ['outer', '6', 'Case & outer shine', 'Bezel, vignette, halo'],
+    ['glass', '5', 'Glass', 'Reflections follow the outer light'],
+    ['hands', 'H', 'Hands', 'Placed and sized by the layout'],
+    ['subdials', '4', 'Raised dials', 'One layer each, in list order'],
+    ['dial', '3', 'Dial', 'Cut through by openings'],
+    ['complications', 'C', 'Discs', 'Date, day, month & moon under their host'],
+    ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
+    ['movement', '1', 'Clock insides', 'Static plate, inner light'],
+  ];
+  base = null; gt = []; faces = {};
+  dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; cbs = {};
+  mainRef = React.createRef();
+  cfg() {
+    const c = { ...this.DEF, ...this.state.cfg }, E = window.WatchEngine, T = E && E.TRAINS[this.state.train];
+    if (T) { if (c.plate === T.plate) c.plate = 'train'; if (c.spokes === (T.spokes || 'arched')) c.spokes = 'train'; if (c.finish === (T.finish || 'brass')) c.finish = 'train'; }
+    return c;
+  }
+  setCfg(k, v) {
+    this.setState((st) => ({ cfg: { ...st.cfg, [k]: v }, ...(this.RND.includes(k) && v === 'random' ? { seeds: { ...st.seeds, [k]: Math.floor(Math.random() * 1e6) } } : {}) }));
+  }
+  get F() { const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train]; if (T && (T.cage || T.orbital)) return 8; return this.cfg().tick === 'sweep' ? 15 : 12; }
+  preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
+  design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
+  train(id) { WatchEngine.tune(this.cfg()); return WatchEngine.trainAngle(this.design(id), this.cfg().trainAngle, this.state.train); }
+  opts(id) {
+    const c = this.cfg(), s = this.state;
+    return { finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: this.F };
+  }
+  mvKey() { const o = this.opts(); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); return JSON.stringify(o); }
+  handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
+  faceKey(id) { return JSON.stringify([this.opts(id), id, this.handDef(id), this.design(id)]); }
+  face(id) {
+    if (!this.ready) return null;
+    id = id || this.state.dial;
+    const k = this.faceKey(id);
+    if (!this.faces[k]) {
+      const keys = Object.keys(this.faces); if (keys.length > 12) delete this.faces[keys[0]];
+      const hd = this.handDef(id);
+      this.faces[k] = WatchEngine.face({ ...this.opts(id), design: this.design(id), hands: hd.style, handFinish: hd.finish });
+    }
+    return this.faces[k];
+  }
+  now() {
+    const d = new Date();
+    if (this.state.timeMode === 'pose') d.setHours(10, 9, 36, 0);
+    if (this.state.timeMode === 'cycle') return WatchEngine.cycleDate(d, Math.floor(performance.now() / 450));
+    return d;
+  }
+  scr() { if (!this._scr) { this._scr = document.createElement('canvas'); this._scr.width = this._scr.height = 466; } return this._scr; }
+  cb(group, id, draw) {
+    const k = group + ':' + id;
+    if (!this.cbs[k]) this.cbs[k] = (el) => { this[group][id] = el; if (el) draw(id); };
+    return this.cbs[k];
+  }
+  upd(fn) { this.setState((st) => { const id = st.dial, d = JSON.parse(JSON.stringify(st.designs[id] || this.preset(id).design)); fn(d, st); return { designs: { ...st.designs, [id]: WatchEngine.canonDesign(d) } }; }); }
+  setComp(cid, patch) { this.upd((d) => { const c = d.comps.find((q) => q.id === cid); if (c) Object.assign(c, patch); }); }
+  addComp(type) {
+    const E = WatchEngine;
+    this.upd((d, st) => {
+      const n = 1 + Math.max(0, ...d.comps.map((c) => +String(c.id).replace(/\D/g, '') || 0)), id = 'c' + n;
+      const sel = d.comps.find((c) => c.id === st.sel), host = sel && sel.type === 'subdial' && type !== 'subdial' ? sel.id : 'dial';
+      d.comps.push({ id, type, host, ...JSON.parse(JSON.stringify(E.NEW_COMP[type])), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22) : 1 } : {}) });
+      this._pendingSel = id;
+    });
+    setTimeout(() => this._pendingSel && this.setState({ sel: this._pendingSel }), 0);
+  }
+  delComp(cid) { this.upd((d) => { d.comps = d.comps.filter((c) => c.id !== cid); d.comps.forEach((c) => { if (c.host === cid) c.host = 'dial'; }); }); if (this.state.sel === cid) this.setState({ sel: null }); }
+  moveComp(cid, dir) { this.upd((d) => { const i = d.comps.findIndex((c) => c.id === cid), j = i + dir; if (i < 0 || j < 0 || j >= d.comps.length) return; const t = d.comps[i]; d.comps[i] = d.comps[j]; d.comps[j] = t; }); }
+  moveHand(hid, dir) {
+    const fc = this.face(); if (!fc) return;
+    const order = fc.handOrder.slice(), i = order.indexOf(hid), j = i + dir;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    order[i] = order[j]; order[j] = hid;
+    this.upd((d) => { d.order = order; });
+  }
+  setHand(hid, patch) { this.upd((d) => { d.hands = d.hands || {}; d.hands[hid] = { ...(d.hands[hid] || {}), ...patch }; }); }
+  designId() {
+    const c = this.cfg(), s = this.state, E = window.WatchEngine, P = this.ready ? this.preset() : null;
+    if (this.ready && this.train().by) c.trainAngle = 0;
+    const seeds = this.RND.map((k) => (c[k] === 'random' ? s.seeds[k] : 0));
+    const hands = P && s.hands === P.hands ? 'auto' : s.hands, hfin = P && s.handFinish === P.handFinish ? 'auto' : s.handFinish;
+    const metal = this.ready && s.caseMetal !== 'auto' && s.caseMetal === E.caseMetalOf({ ...this.opts(), caseMetal: 'auto' }) ? 'auto' : s.caseMetal;
+    const v = [this.KEYS.map((k) => c[k]), seeds, s.dial, hands, hfin, this.ready ? this.design() : null, s.caseStyle, metal, s.glassStyle, s.train];
+    return 'WCD5-' + btoa(unescape(encodeURIComponent(JSON.stringify(v)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  loadId(str) {
+    try {
+      const m = String(str).trim().match(/^WCD5-([A-Za-z0-9_-]+)$/); if (!m) throw 0;
+      let b = m[1].replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
+      const [vals, seeds, dial, hands, handFinish, design, caseStyle, caseMetal, glassStyle, train] = JSON.parse(decodeURIComponent(escape(atob(b))));
+      const cfg = {}; this.KEYS.forEach((k, i) => { if (vals[i] !== undefined) cfg[k] = vals[i]; });
+      const sd = {}; this.RND.forEach((k, i) => (sd[k] = seeds[i]));
+      this.setState((st) => ({ cfg, seeds: sd, dial, hands, handFinish, designs: design ? { ...st.designs, [dial]: design } : st.designs, caseStyle, caseMetal, glassStyle, train: train || 'classic', sel: null, status: 'Loaded design', idInput: '' }));
+    } catch (e) { this.setState({ status: 'That design ID could not be read' }); }
+  }
+  resetTab(tab) {
+    const drop = (keys) => this.setState((st) => { const c = { ...st.cfg }; keys.forEach((k) => delete c[k]); return { cfg: c }; });
+    const P = this.preset(), say = (t) => this.setState({ status: t + ' reset' });
+    if (tab === 'dial') { this.upd((d) => { const keep = { comps: d.comps, hands: d.hands, order: d.order, centre: d.centre }; Object.keys(d).forEach((k) => delete d[k]); Object.assign(d, JSON.parse(JSON.stringify(P.design)), keep); }); say('Dial'); }
+    if (tab === 'comps') { this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null }); say('Complications'); }
+    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp']); say('Hands'); }
+    if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
+    if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
+    if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
+  }
+  roll(k) { this.setState((s) => ({ seeds: { ...s.seeds, [k]: Math.floor(Math.random() * 1e6) } })); }
+
+  async componentDidMount() {
+    const p = {}; this.KEYS.forEach((k) => { if (this.props && this.props[k] != null) p[k] = this.props[k]; });
+    if (Object.keys(p).length) this.setState({ cfg: p });
+    while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
+    const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
+    try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
+    this.ready = true;
+    this.buildMovement(); this.startTimer(); this.forceUpdate();
+  }
+  componentWillUnmount() { clearInterval(this.timer); this.buildId = -1; }
+  ensureFont(k) {
+    this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
+    const n = WatchEngine.FONT_NAME(k); if (!n) return;
+    Promise.race([Promise.all(['700 31px', '500 21px', 'italic 600 30px', '600 40px'].map((f) => document.fonts.load(f + ' "' + n + '"'))), new Promise((r) => setTimeout(r, 5000))])
+      .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
+  }
+  componentDidUpdate() {
+    if (!this.ready) return;
+    const D0 = this.design(); [D0.font, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
+    if (this._mk !== this.mvKey()) this.buildMovement();
+    if (this._lastSlow !== this.state.slow || this._lastF !== this.F) this.startTimer();
+    const fk = this.faceKey(this.state.dial) + this.state.timeMode;
+    if (fk !== this._fk) { this._fk = fk; this.drawLayers(); this.drawHandOpts(); }
+    const ck = JSON.stringify([this.opts(), this.state.dial, !!this.gt[0]]);
+    if (ck !== this._ck && this.gt[0] && !this.drag) { this._ck = ck; this.caseThumbs(); }
+    const tk = JSON.stringify([this.opts(), this.state.hands, this.state.handFinish, this.state.designs, !!this.gt[0]]);
+    if (tk !== this._tk && this.gt[0] && !this.drag) { this._tk = tk; this.dialThumbs(); }
+    if (this._tab !== this.state.tab) { this._tab = this.state.tab; this.drawHandOpts(); }
+    this.drawMain();
+  }
+  startTimer() {
+    clearInterval(this.timer);
+    this._lastSlow = this.state.slow; this._lastF = this.F;
+    const F = this.F;
+    this.timer = setInterval(() => {
+      if (this.state.playing && !this.rendering && this.gt.length === F) this.setState((s) => ({ frame: (s.frame + 1) % F }));
+      else this.drawMain();
+    }, this.state.slow ? 1000 / Math.max(1, F / 5) : 1000 / F);
+  }
+  async buildMovement() {
+    const id = (this.buildId = (this.buildId || 0) + 1);
+    this._mk = this.mvKey();
+    await new Promise((r) => setTimeout(r, 30));
+    if (id !== this.buildId) return;
+    const M = WatchEngine.movement(this.opts()), F = this.F;
+    const start = Math.min(this.state.frame, F - 1), order = Array.from({ length: F }, (_, i) => (start + i) % F);
+    const ng = new Array(F);
+    this.base = M; this.rendering = true;
+    this.setState({ seam: 'Rendering movement…', status: 'Rendering 1 / ' + F + '…', frame: start });
+    for (let k = 0; k < F; k++) {
+      if (id !== this.buildId) return;
+      const f = order[k], r = M.render(f);
+      ng[f] = r.gt; this.gt[f] = r.gt;
+      if (k === 0) { this.gt.length = F; this.drawMain(); this.drawLayers(); }
+      if (k % 2 === 1 || k === F - 1) this.setState({ status: 'Rendering ' + (k + 1) + ' / ' + F + '…' });
+      await new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
+    }
+    if (id !== this.buildId) return;
+    this.gt = ng; this.rendering = false;
+    const end = M.render(F), a = this.scr(), b = document.createElement('canvas'); b.width = b.height = 466;
+    const flat = (c, m, g) => { const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, 466, 466); x.drawImage(m, 0, 0); x.drawImage(g, 0, 0); if (g.cage) x.drawImage(g.cage, 0, 0); return x.getImageData(0, 0, 466, 466).data; };
+    const da = flat(a, M.plate, ng[0]), db = flat(b, M.plate, end.gt);
+    let max = 0, n = 0;
+    for (let i = 0; i < da.length; i += 4) { const d = Math.max(Math.abs(da[i] - db[i]), Math.abs(da[i + 1] - db[i + 1]), Math.abs(da[i + 2] - db[i + 2])); if (d > max) max = d; if (d > 2) n++; }
+    const seam = n === 0 ? 'Seam check, frame ' + (F + 1) + ' vs 1: ✓ identical' : n < 50 ? 'Seam check: ✓ seamless (' + n + ' px rounding)' : 'Seam check: ✗ ' + n + ' px differ, max Δ ' + max;
+    this._tk = null; this._ck = null;
+    this.setState({ seam, status: '' });
+    this.drawLayers();
+  }
+  drawMain() {
+    const c = this.mainRef.current, fc = this.face(); if (!c || !fc) return;
+    const f = this.state.frame, gt = this.gt[f] || this.gt.find(Boolean), d = this.now(), x = c.getContext('2d');
+    WatchEngine.compose(x, this.base, gt, fc, d, this.state.hidden);
+    if (+this.cfg().wb !== 6500) WatchEngine.wb(c, +this.cfg().wb);
+    const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = fc.inset || 1;
+    if (o) {
+      x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
+      x.beginPath(); x.arc(233 + (o.x - 233) * k, 233 + (o.y - 233) * k, (o.r + 3) * k, 0, Math.PI * 2); x.stroke(); x.restore();
+    }
+    const s = d.getSeconds();
+    if (s !== this._sec) { this._sec = s; this.drawLayer('hands'); if (this.base && this.base.cageAt) this.drawLayer('geartrain'); }
+  }
+  pt(e) { const r = e.currentTarget.getBoundingClientRect(), fc = this.face(), k = (fc && fc.inset) || 1; const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
+  onDown(e) {
+    const fc = this.face(); if (!fc) return;
+    const [x, y] = this.pt(e), id = fc.hit(x, y);
+    if (!id) { this.drag = null; return this.setState({ sel: null }); }
+    const g = fc.lay.G[id];
+    this.drag = { id, ox: x - g.x, oy: y - g.y };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    this.setState({ sel: id, tab: 'comps' });
+  }
+  onMove(e) {
+    if (!this.drag) return;
+    const fc = this.face(); if (!fc) return;
+    const [x, y] = this.pt(e), g = fc.lay.G[this.drag.id]; if (!g) return;
+    const nx = x - this.drag.ox, ny = y - this.drag.oy, dx = nx - g.hx, dy = ny - g.hy;
+    const dist = Math.round(Math.hypot(dx, dy) * 2) / 2, ang = Math.round(((((Math.atan2(dx, -dy) - g.hrot) * 180) / Math.PI) % 360 + 360) % 360);
+    const c = this.design().comps.find((q) => q.id === this.drag.id);
+    const patch = c && c.type === 'opening' && c.show === 'balance' ? { angle: ang } : { angle: ang, dist };
+    this._pend = patch;
+    if (!this._raf) this._raf = requestAnimationFrame(() => { this._raf = null; if (this.drag && this._pend) this.setComp(this.drag.id, this._pend); });
+  }
+  onUp() { if (this.drag) { if (this._pend) this.setComp(this.drag.id, this._pend); this._pend = null; this.drag = null; this._tk = null; this._ck = null; this.forceUpdate(); } }
+  drawLayers() { this.LAYERS.forEach(([id]) => this.drawLayer(id)); }
+  drawLayer(id) {
+    const el = this.layerEls[id], fc = this.face(); if (!el || !fc) return;
+    const x = el.getContext('2d'), sc = this.scr(), s = sc.getContext('2d'), d = this.now();
+    s.setTransform(1, 0, 0, 1, 0, 0); s.globalCompositeOperation = 'source-over'; s.clearRect(0, 0, 466, 466);
+    if (id === 'movement' && this.base) { s.drawImage(this.base.plate, 0, 0); if (fc.plateFlares) s.drawImage(fc.plateFlares, 0, 0); }
+    if (id === 'geartrain' && this.gt[0]) { s.drawImage(this.gt[0], 0, 0); WatchEngine.drawCage(s, this.base, this.gt[0], d); }
+    if (id === 'complications') { const cp = fc.comps(d); s.drawImage(cp.dial, 0, 0); Object.values(cp.subs).forEach((c) => s.drawImage(c, 0, 0)); }
+    if (id === 'dial') s.drawImage(fc.dial, 0, 0);
+    if (id === 'subdials') fc.subLayers.forEach((l) => s.drawImage(l.canvas, 0, 0));
+    if (id === 'hands') fc.drawHands(s, d);
+    if (id === 'glass') { s.fillStyle = '#2a2622'; s.beginPath(); s.arc(233, 233, 221, 0, Math.PI * 2); s.fill(); s.drawImage(fc.glass, 0, 0); }
+    if (id === 'outer') s.drawImage(fc.outer, 0, 0);
+    x.clearRect(0, 0, el.width, el.height); x.drawImage(sc, 0, 0, el.width, el.height);
+  }
+  drawDialThumb(id) {
+    const el = this.dialEls[id]; if (!el || !this.gt[0] || !this.ready) return;
+    const fc = this.face(id), sc = this.scr(), d = new Date(); d.setHours(10, 9, 36, 0);
+    WatchEngine.compose(sc.getContext('2d'), this.base, this.gt[0], fc, d, {});
+    el.getContext('2d').drawImage(sc, 0, 0, el.width, el.height);
+  }
+  dialThumbs() {
+    const tok = this._tk, ids = Object.keys(WatchEngine.PRESETS);
+    const run = (i) => { if (i >= ids.length || tok !== this._tk) return; setTimeout(() => { if (tok !== this._tk) return; this.drawDialThumb(ids[i]); run(i + 1); }, 40); };
+    run(0);
+  }
+  caseThumbs() {
+    const tok = this._ck, E = WatchEngine, jobs = [...Object.keys(E.CASE_STYLES).map((k) => ['case', k]), ...Object.keys(E.GLASS_STYLES).map((k) => ['glass', k])];
+    const run = (i) => { if (i >= jobs.length || tok !== this._ck) return; setTimeout(() => { if (tok !== this._ck) return; this.drawCaseThumb(...jobs[i]); run(i + 1); }, 30); };
+    run(0);
+  }
+  drawCaseThumb(kind, id) {
+    const el = (kind === 'case' ? this.caseEls : this.glassEls)[id], fc = this.face(); if (!el || !fc || !this.gt[0]) return;
+    const E = WatchEngine, sc = this.scr(), x = sc.getContext('2d'), d = new Date(), o = { ...this.opts() }; d.setHours(10, 9, 36, 0);
+    E.compose(x, this.base, this.gt[0], fc, d, { glass: 1, outer: 1 });
+    const out = el.getContext('2d'); out.clearRect(0, 0, 112, 112);
+    if (kind === 'case') { x.drawImage(E.caseLayer({ ...o, caseStyle: id }), 0, 0); out.drawImage(sc, 168, -2, 130, 130, 0, 0, 112, 112); }
+    else { x.drawImage(E.glassLayer({ ...o, glassStyle: id }), 0, 0); x.drawImage(fc.outer, 0, 0); out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112); }
+  }
+  drawHandOpt(id) {
+    const el = this.handEls[id], fc = this.face(); if (!el || !fc) return;
+    const style = id === 'auto' ? this.preset().hands : id;
+    WatchEngine.handPreview(el.getContext('2d'), style, fc.handFinish, el.width, fc.dialEn ? fc.dialEn.a : fc.en.a);
+  }
+  drawHandOpts() { if (!this.ready) return; ['auto', ...Object.keys(WatchEngine.HAND_STYLES)].forEach((id) => this.drawHandOpt(id)); }
+  download(blob, name) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  png(c, raw) {
+    const K = +this.cfg().wb;
+    if (!raw && K !== 6500) { const o = document.createElement('canvas'); o.width = c.width; o.height = c.height; o.getContext('2d').drawImage(c, 0, 0); c = WatchEngine.wb(o, K); }
+    return new Promise((r) => c.toBlob(async (b) => r(new Uint8Array(await b.arrayBuffer())), 'image/png')); }
+  zip(files) {
+    const T = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; T[n] = c >>> 0; }
+    const crc = (u) => { let c = 0xffffffff; for (let i = 0; i < u.length; i++) c = T[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+    const parts = [], cen = []; let off = 0;
+    for (const f of files) {
+      if (!(f.data instanceof Uint8Array)) f.data = typeof f.data === 'string' ? new TextEncoder().encode(f.data) : new Uint8Array(f.data);
+      const nm = new TextEncoder().encode(f.name), cr = crc(f.data), sz = f.data.length;
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint32(14, cr, true);
+      h.setUint32(18, sz, true); h.setUint32(22, sz, true); h.setUint16(26, nm.length, true);
+      parts.push(new Uint8Array(h.buffer), nm, f.data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint32(16, cr, true);
+      c.setUint32(20, sz, true); c.setUint32(24, sz, true); c.setUint16(28, nm.length, true); c.setUint32(42, off, true);
+      cen.push(new Uint8Array(c.buffer), nm);
+      off += 30 + nm.length + sz;
+    }
+    const cs = cen.reduce((s, u) => s + u.length, 0), e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+    e.setUint32(12, cs, true); e.setUint32(16, off, true);
+    return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type: 'application/zip' });
+  }
+  busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
+  frameCanvas(f, hidden) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), this.now(), hidden); return c; }
+  // mirror of kit_check.py: red staff jewel (alpha>=60, R>100, R-max(G,B)>40), 8-connected, blob nearest the centre
+  kitCheck(bank, T) {
+    const W = 466, out = [], lines = [], fails = []; let ink = [W, W, -1, -1];
+    bank.forEach((c, fi) => {
+      const d = c.getContext('2d').getImageData(0, 0, W, W).data, red = new Uint8Array(W * W);
+      for (let i = 0; i < W * W; i++) { const a = d[i * 4 + 3]; if (a > 0) { const x = i % W, y = (i / W) | 0; if (x < ink[0]) ink[0] = x; if (y < ink[1]) ink[1] = y; if (x > ink[2]) ink[2] = x; if (y > ink[3]) ink[3] = y; }
+        if (a >= 60) { const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; if (r > 100 && r - Math.max(g, b) > 40) red[i] = 1; } }
+      const seen = new Uint8Array(W * W); let best = null;
+      for (let i = 0; i < W * W; i++) {
+        if (!red[i] || seen[i]) continue;
+        const st = [i]; seen[i] = 1; let x0 = W, y0 = W, x1 = -1, y1 = -1, sw = 0, sx = 0, sy = 0, n = 0;
+        while (st.length) { const j = st.pop(), x = j % W, y = (j / W) | 0, a = d[j * 4 + 3]; n++; sw += a; sx += x * a; sy += y * a; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const qx = x + dx, qy = y + dy; if (qx < 0 || qy < 0 || qx >= W || qy >= W) continue; const q = qy * W + qx; if (red[q] && !seen[q]) { seen[q] = 1; st.push(q); } } }
+        const cx = sx / sw, cy = sy / sw, dd = (cx - T[0]) ** 2 + (cy - T[1]) ** 2;
+        if (!best || dd < best.dd) best = { bbox: [x0, y0, x1, y1], c: [cx, cy], n, dd };
+      }
+      if (!best) { fails.push('frame_' + (fi + 1) + ' has no red ink'); return; }
+      out.push(best);
+      const bw = best.bbox[2] - best.bbox[0] + 1, bh = best.bbox[3] - best.bbox[1] + 1;
+      lines.push('  frame_' + String(fi + 1).padStart(2, '0') + '  hub bbox x' + best.bbox[0] + '..' + best.bbox[2] + ' y' + best.bbox[1] + '..' + best.bbox[3] + ' (' + bw + 'x' + bh + ')  centroid (' + best.c[0].toFixed(4) + ', ' + best.c[1].toFixed(4) + ')  ' + best.n + ' px');
+      if (fi === 0) {
+        if (bw % 2 === 0 || bh % 2 === 0) fails.push('staff jewel bbox is ' + bw + 'x' + bh + ': must be odd x odd');
+        if (Math.abs(best.c[0] - T[0]) > 0.25 || Math.abs(best.c[1] - T[1]) > 0.25) fails.push('centroid off the declared centre by (' + (best.c[0] - T[0]).toFixed(3) + ', ' + (best.c[1] - T[1]).toFixed(3) + ')');
+      }
+    });
+    const sp = out.length ? [0, 1].map((k) => Math.max(...out.map((o) => o.c[k])) - Math.min(...out.map((o) => o.c[k]))) : [0, 0];
+    if (new Set(out.map((o) => o.bbox.join())).size > 1 || sp[0] > 0.01 || sp[1] > 0.01) fails.push('bank not registered: spread (' + sp[0].toFixed(4) + ', ' + sp[1].toFixed(4) + ')');
+    const b0 = out[0] || { bbox: [0, 0, 0, 0], c: [0, 0] }, pass = !fails.length;
+    const report = ['kit_check (in-browser mirror of kit_check.py)', 'canvas         : 466x466', 'declared centre: [' + T.join(', ') + ']   frames=' + bank.length, '', ...lines, '', '  frame-to-frame registration spread: (' + sp[0].toFixed(4) + ', ' + sp[1].toFixed(4) + ')', '', pass ? 'RESULT: PASS  (centroid on the declared centre, odd bbox, bank registered, geometry self-declared)' : 'RESULT: FAIL', ...fails.map((f) => '  - ' + f)].join('\n');
+    return { pass, report, bbox: b0.bbox, centroid: [+b0.c[0].toFixed(4), +b0.c[1].toFixed(4)], size: ink[2] < 0 ? [0, 0] : [ink[2] - ink[0] + 1, ink[3] - ink[1] + 1] };
+  }
+  async exportKit() {
+    if (this.busy()) return;
+    const fc = this.face(), F = this.F, pad = (n) => String(n).padStart(2, '0'), files = [], slug = this.state.dial, s0 = this.state;
+    this.setState({ status: 'Packing layer kit…' });
+    const baseOnly = { complications: 1, dial: 1, subdials: 1, hands: 1, glass: 1, outer: 1 };
+    for (let f = 0; f < F; f++) {
+      const c = document.createElement('canvas'); c.width = c.height = 466;
+      const g = this.gt[f], noCage = g && g.cage ? Object.assign(document.createElement('canvas'), { width: 466, height: 466 }) : g;
+      if (g && g.cage) noCage.getContext('2d').drawImage(g, 0, 0);
+      WatchEngine.compose(c.getContext('2d'), this.base, noCage, this.face(), this.now(), baseOnly);
+      files.push({ name: 'base/frame_' + pad(f + 1) + '.png', data: await this.png(c) });
+    }
+    const K = fc.inset || 1, M = (v) => 233 + (v - 233) * K;
+    const bake = (c) => { if (K === 1) return c; const o = document.createElement('canvas'); o.width = o.height = 466; const x = o.getContext('2d'); x.translate(233, 233); x.scale(K, K); x.translate(-233, -233); x.drawImage(c, 0, 0); return o; };
+    // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes
+    const D0 = this.design(), hasCustom = D0.comps.some((c) => c.type === 'window' && c.shows === 'custom'), hd0 = this.handDef(this.state.dial);
+    const lf = hasCustom ? WatchEngine.face({ ...this.opts(), design: { ...D0, comps: D0.comps.filter((c) => !(c.type === 'window' && c.shows === 'custom')) }, hands: hd0.style, handFinish: hd0.finish }) : fc;
+    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dial)) });
+    files.push({ name: 'layers/glass.png', data: await this.png(bake(fc.glass)) });
+    files.push({ name: 'layers/outer.png', data: await this.png(fc.outer) });
+    const subFiles = [];
+    for (const [i, l] of lf.subLayers.entries()) { const name = 'layers/subdial_' + pad(i + 1) + '_' + l.id + '.png'; subFiles.push({ id: l.id, file: name }); files.push({ name, data: await this.png(bake(l.canvas)) }); }
+    let cage = null;
+    if (this.base.cageAt && this.base.cageFrame && this.gt[0] && this.gt[0].cage) {
+      // put the staff axis on a texel centre: art centre at T + 0.5 in canvas space == pixel index T
+      const want = this.base.cageAt.map((v) => M(v)), T = want.map((v) => Math.round(v)), WB = +this.cfg().wb, bank = [];
+      for (let f = 0; f < F; f++) {
+        let c = this.base.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
+        if (WB !== 6500) c = WatchEngine.wb(c, WB);
+        bank.push(c); files.push({ name: 'tourbillon/frame_' + pad(f + 1) + '.png', data: await this.png(c, true) });
+      }
+      const chk = this.kitCheck(bank, T);
+      files.push({ name: 'kit_check.txt', data: new TextEncoder().encode(chk.report) });
+      if (!chk.pass) this.setState({ status: 'Tourbillon geometry check FAILED — see kit_check.txt in the zip' });
+      cage = { files: 'tourbillon/frame_01…' + pad(F) + '.png', centre: T, pivot: T.slice(), size: chk.size, hubJewel: { bbox: chk.bbox, centroid: chk.centroid }, zeroRotationDeg: +(-(this.base.cageOff || 0) * 180 / Math.PI).toFixed(2), note: (this.base.orbital ? 'orbital carriage = seconds hand; ' : '') + 'full-size layers; rotate about centre by seconds/60 × 360° + zeroRotationDeg and draw over the base frame' };
+    }
+    const comps = [];
+    const textKits = [];
+    for (const kt of fc.textKits ? fc.textKits(K) : []) {
+      const dir = 'text/' + kt.id + '_' + kt.kind + '/', piece = async (nm, p) => { if (!p) return null; files.push({ name: dir + nm, data: await this.png(p.canvas) }); return { file: dir + nm, w: p.w, h: p.h }; };
+      const capL = await piece('cap_l.png', kt.capL), capR = await piece('cap_r.png', kt.capR), slice = await piece('slice.png', kt.slice), glyphs = {};
+      for (const g of kt.glyphs) { const nm = 'glyph_' + g.ch.codePointAt(0).toString(16).padStart(4, '0') + '.png'; files.push({ name: dir + nm, data: await this.png(g.canvas) }); glyphs[g.ch] = { file: dir + nm, w: g.w, h: g.h, advance: g.adv, offsetX: g.ox }; }
+      textKits.push({ id: kt.id, kind: kt.kind, host: kt.host, centre: kt.centre, rotationDeg: kt.rotDeg, height: kt.height, opaque: kt.opaque, format: kt.format, case: kt.fcase,
+        capL, capR, slice, padX: kt.padX, ...(kt.kind === 'window' ? { currentWidth: kt.fitWidth } : {}), glyphs, byDate: kt.byDate,
+        assemble: kt.capL
+          ? 'text = byDate[YYYY-MM-DD] (or format it yourself). textW = Σ glyphs[ch].advance. W = capL.w + padX + textW + padX + capR.w (use currentWidth instead to keep the dial-fitted size). Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then glyph tiles from x = (W − textW)/2, each advancing by its advance (tiles already include the background). Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
+          : 'text = byDate[YYYY-MM-DD]. textW = Σ advance. Pen starts at centre.x − textW/2; draw each glyph tile at pen − offsetX, vertically centred on centre.y (tiles are transparent and may overlap), pen += advance. Rotate the run by rotationDeg about centre.' });
+    }
+    for (const s0 of fc.compSprites()) {
+      let s = s0;
+      if (K !== 1) {
+        const full = document.createElement('canvas'); full.width = full.height = 466; full.getContext('2d').drawImage(s0.canvas, s0.x, s0.y);
+        const b = bake(full), x = Math.floor(M(s0.x)), y = Math.floor(M(s0.y)), w = Math.ceil(s0.w * K) + 2, hh = Math.ceil(s0.h * K) + 2, cc = document.createElement('canvas');
+        cc.width = w; cc.height = hh; cc.getContext('2d').drawImage(b, -x, -y); s = { ...s0, x, y, w, h: hh, canvas: cc };
+      }
+      const name = 'complications/' + s.id + '_' + s.type + '/' + s.value + '.png';
+      files.push({ name, data: await this.png(s.canvas) });
+      let e = comps.find((c) => c.id === s.id);
+      if (!e) comps.push((e = { id: s.id, type: s.type, host: s.host, x: s.x, y: s.y, w: s.w, h: s.h, ...(s.type === 'custom' || s.type === 'flare-date' ? { format: s.format, case: s.fcase, texts: s.texts, byDate: s.index } : {}), files: [] }));
+      e.files.push(name);
+    }
+    const hands = [];
+    for (const [z, h] of fc.hands.entries()) {
+      const name = 'hands/' + pad(z + 1) + '_' + h.id + '.png';
+      let sp = h.sp.c;
+      if (K !== 1) { sp = document.createElement('canvas'); sp.width = Math.ceil(h.sp.c.width * K); sp.height = Math.ceil(h.sp.c.height * K); sp.getContext('2d').drawImage(h.sp.c, 0, 0, sp.width, sp.height); }
+      files.push({ name, data: await this.png(sp) });
+      const sh = fc.handShadow(h), bl = sh.blur * K, pd = Math.ceil(bl * 1.5 + 2), mc = document.createElement('canvas'), sil = document.createElement('canvas');
+      sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
+      mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
+      const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
+      files.push({ name: shName, data: await this.png(mc, true) });
+      const shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
+      hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined });
+    }
+    const manifest = {
+      size: 466, fps: F, frames: F, secondHand: this.cfg().tick === 'sweep' ? 'sweep' : this.cfg().tick + ' ticks per second', innerScale: K, preset: this.preset().name, movement: s0.train, designId: this.designId(), layout: this.design(),
+      drawOrder: [
+        { layer: 'base', files: 'base/frame_01…' + pad(F) + '.png', note: 'static plate + geartrain, lit by the inner light, opaque, loops every second' },
+        ...(cage ? [{ layer: 'tourbillon', ...cage }] : []),
+        { layer: 'complications', where: 'under dial', items: comps.filter((c) => c.host === 'dial' && c.type !== 'flare-date').map((c) => c.id) },
+        { layer: 'dial', file: 'layers/dial.png' },
+        ...(textKits.some((t) => t.host === 'dial') ? [{ layer: 'text', where: 'over dial', items: textKits.filter((t) => t.host === 'dial').map((t) => t.id), note: 'assemble from textKits' }] : []),
+        ...subFiles.flatMap((sf) => [{ layer: 'complications', where: 'under subdial ' + sf.id, items: comps.filter((c) => c.host === sf.id && c.type !== 'flare-date').map((c) => c.id) }, { layer: 'subdial', id: sf.id, file: sf.file },
+          ...(textKits.some((t) => t.host === sf.id) ? [{ layer: 'text', where: 'over subdial ' + sf.id, items: textKits.filter((t) => t.host === sf.id).map((t) => t.id), note: 'assemble from textKits' }] : [])]),
+        { layer: 'hands', note: 'draw in z order (1 = lowest); for each hand first draw its shadow mask rotated by the same angle about shadow.pivot, with the pivot placed at centre + shadow.offsetPx (offset stays fixed in screen space), then the hand sprite rotated about its pivot by value×360° + zeroRotationDeg with the pivot on centre' },
+        { layer: 'glass', file: 'layers/glass.png' },
+        { layer: 'outer', file: 'layers/outer.png' },
+      ],
+      complications: comps.map((c) => ({ ...c, values: c.type === 'moon' ? '00…29 = moon age / 29.53 × 30' : c.type === 'custom' || c.type === 'flare-date' ? 'one PNG per distinct rendered string; look up today in byDate (YYYY-MM-DD → file stem), covers this year and next' : c.type })),
+      hands,
+      textKits,
+      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
+      whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
+    };
+    files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+    files.push({ name: 'preview.png', data: await this.png(this.frameCanvas(this.state.frame, {})) });
+    this.download(this.zip(files), 'watch-' + slug + '-kit.zip');
+    this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files)' });
+  }
+  renderVals() {
+    const s = this.state, F = this.F, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
+    const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
+    const E = window.WatchEngine, ready = !!(this.ready && E);
+    const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
+    const on = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    const did = this.designId(), fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
+    const cap = (t) => t[0].toUpperCase() + t.slice(1);
+    const subs = D.comps.filter((c) => c.type === 'subdial');
+    const num = (cid) => D.comps.findIndex((c) => c.id === cid) + 1;
+    const compTitle = (c) => !ready ? '' : c.type === 'subdial' ? 'Subdial · ' + E.SCALES[c.scale] : c.type === 'window' ? E.SHOWS[c.shows] + ' window' : c.type === 'moon' ? 'Moon phase' : c.type === 'flare' ? 'Flare · ' + (E.FLARE_ICONS[c.icon] || '') : c.show === 'balance' ? 'Escapement opening' : 'Opening';
+    const hostName = (h) => (!h || h === 'dial' ? 'dial' : h === 'plate' ? 'movement plate' : '#' + num(h) + ' subdial');
+    const sel = D.comps.find((c) => c.id === s.sel);
+    const feats = ready ? E.features(s.train) : [];
+    const opt = (obj) => Object.entries(obj).map(([v, label]) => ({ v, label }));
+    const mark = (list, v) => list.map((o) => ({ ...o, sel: String(o.v) === String(v) }));
+    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', ...o });
+    const H = (label) => mk({ label, isHead: true, isRow: false });
+    const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, on: (e) => onv(+e.target.value), valText });
+    const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value) });
+    const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
+    const Nt = (label, note) => mk({ label, isNote: true, note });
+    const sw = (k) => 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')';
+    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#f0d79a' : '#2e2a24', pick: () => onv(k) }))] });
+    const INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
+    const parseCol = (t) => {
+      t = String(t || '').trim().toLowerCase(); let m;
+      if ((m = t.match(/^#?([0-9a-f]{6})$/))) return '#' + m[1];
+      if ((m = t.match(/^#?([0-9a-f])([0-9a-f])([0-9a-f])$/))) return '#' + m[1] + m[1] + m[2] + m[2] + m[3] + m[3];
+      if ((m = t.match(/^(?:rgb\s*\()?\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*\)?$/))) { const v = [m[1], m[2], m[3]].map(Number); if (v.every((x) => x <= 255)) return '#' + v.map((x) => x.toString(16).padStart(2, '0')).join(''); }
+      return null;
+    };
+    this._drafts = this._drafts || {};
+    const hexRGB = (v) => { const n = parseInt(v.slice(1), 16); return (n >> 16) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255); };
+    const Co = (label, value, onv, autoText, scope, X) => {
+      X = X || {};
+      const key = (scope || (s.sel || 'dial')) + ':' + label, hex = value && /^#[0-9a-f]{6}$/i.test(value) ? value : null, dr = this._drafts[key];
+      return mk({ label, isColor: true, value: hex || '#ffffff', on: (e) => { delete this._drafts[key]; onv(e.target.value); },
+        hexText: dr != null ? dr : hex || '', hexTitle: hex ? 'rgb ' + hexRGB(hex) : 'Type a hex code or r, g, b',
+        onHex: (e) => { const v = e.target.value, p = parseCol(v); if (p) { delete this._drafts[key]; onv(p); } else { this._drafts[key] = v; this.forceUpdate(); } },
+        onHexBlur: () => { if (this._drafts[key] != null) { delete this._drafts[key]; this.forceUpdate(); } },
+        valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value, valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value,
+      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1f1d1a', bd: value === 'none' ? '#f0d79a' : '#3a352d', pick: () => onv('none') }] : []),
+        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1f1d1a', bd: !value || value === 'auto' ? '#f0d79a' : '#3a352d', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#f0d79a' : '#2e2a24', pick: () => onv(c) }))] }); };
+    const Tx = (label, value, onv) => mk({ label, isText: true, value: value == null ? '' : String(value), on: (e) => onv(e.target.value) });
+    const Fi = (label, onv, valText) => mk({ label, isFile: true, on: onv, valText: valText || '' });
+    const T = ready ? E.TRAINS[s.train] : null;
+
+    const selFields = [];
+    if (sel && ready) {
+      const set = (k, n) => (v) => this.setComp(sel.id, { [k]: n ? +v : v });
+      const R = (label, k, min, max, step, fmt, dflt) => { const v = sel[k] == null ? (dflt ?? 0) : +sel[k]; selFields.push(Rg(label, v, min, max, step, set(k, true), fmt ? fmt(v) : String(v))); };
+      const Sx = (label, k, opts, n) => selFields.push(Sl(label, String(sel[k] ?? ''), opts, set(k, n)));
+      const Cx = (label, k, opts, dflt) => selFields.push(Ch(label, sel[k] ?? dflt, opts, set(k)));
+      const follow = sel.type === 'opening' && sel.show === 'balance';
+      if (sel.type !== 'subdial' && !follow) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: '#' + num(q.id) + ' ' + compTitle(q) }))]);
+      if (follow && tr.by && tr.by !== sel.id) selFields.push(Nt('Angle', 'Riding on the balance — the train is aimed by #' + num(tr.by)));
+      else R(follow ? 'Angle · train' : 'Angle', 'angle', 0, 359, 1, (v) => v + '°');
+      if (!follow) R('Distance', 'dist', 0, 220, 0.5, (v) => v + 'px');
+      if (sel.type === 'opening') Sx('Shape', 'shape', opt(E.SHAPES));
+      if (sel.type === 'flare') {
+        selFields.push(Sl('Kind', String(sel.icon ?? ''), opt(E.FLARE_ICONS), (v) => this.setComp(sel.id, v === 'datetext' && sel.icon !== 'datetext' ? { icon: v, size: Math.min(+sel.size || 16, 8) } : { icon: v })));
+        if (sel.icon === 'datetext') {
+          selFields.push(Tx('Format', sel.fmt == null ? 'ddd DD MMM' : sel.fmt, set('fmt')));
+          Cx('Case', 'fcase', [{ v: 'upper', label: 'UPPER' }, { v: 'asis', label: 'As written' }, { v: 'lower', label: 'lower' }], 'upper');
+          selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'), Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
+        }
+        if (sel.icon === 'text' || sel.icon === 'arctext' || sel.icon === 'datetext') {
+          if (sel.icon !== 'datetext') selFields.push(Tx('Text', sel.text, set('text')));
+          selFields.push(Sl('Typeface', sel.font || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], (v) => this.setComp(sel.id, { font: v === 'dial' ? undefined : v })));
+          Cx('Weight', 'weight', [{ v: 'bold', label: 'Bold' }, { v: 'regular', label: 'Regular' }, { v: 'italic', label: 'Italic' }], 'bold');
+          R('Letter spacing', 'spacing', 0, 1, 0.02, (v) => v.toFixed(2), 0);
+        }
+        if (sel.icon === 'image') {
+          selFields.push(Fi('Image', (e) => {
+            const file = e.target.files && e.target.files[0]; if (!file) return;
+            const rd = new FileReader(); rd.onload = () => { const im = new Image(); im.onload = () => { const key = 'img' + Date.now().toString(36); E.IMAGES[key] = im; this.setComp(sel.id, { img: key }); }; im.src = rd.result; }; rd.readAsDataURL(file);
+          }, sel.img && E.IMAGES[sel.img] ? 'loaded' : ''));
+          selFields.push(Nt('', 'PNG or SVG. Leave colour on Auto to keep the image’s own colours. Uploads live in this session only — they aren’t stored in the Design ID.'));
+        }
+      }
+      if (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle')) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
+      const sr = E.SIZE_RANGE[sel.type];
+      R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
+      if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); }
+      Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
+      if (sel.type === 'moon' && (sel.style === 'graphic' || sel.style === 'neon')) {
+        const neon = sel.style === 'neon';
+        selFields.push(Co(neon ? 'Glow colour' : 'Moon colour', sel.moonColor, set('moonColor'), neon ? 'Magenta' : 'Dial ink'));
+        selFields.push(Co(neon ? 'Fade colour' : 'Ring colour', sel.moonColor2, set('moonColor2'), neon ? 'Cyan' : 'Same'));
+        selFields.push(Co('Background', sel.moonBg, set('moonBg'), neon ? 'Night' : 'Dial'));
+      }
+      if (sel.type === 'flare') {
+        selFields.push(Co(sel.icon === 'arctext' ? 'Colour' : 'Foreground', sel.color, set('color'), sel.style === 'applied' ? 'Metal' : 'Dial ink', null, { none: true }));
+        if (sel.icon !== 'arctext') {
+          selFields.push(Co('Background', sel.bg || 'none', (v) => this.setComp(sel.id, { bg: v }), 'None', null, { none: true, noAuto: true }));
+          if (!sel.bg || sel.bg === 'none') selFields.push(Nt('', 'Pick a background colour to add a plate behind the icon; plate shape, size, offset and icon size appear here.'));
+          else {
+            if (sel.color !== 'none') R('Icon size', 'fgScale', 0.2, 2, 0.02, (v) => Math.round(v * 100) + '%', 1);
+            Cx('Plate', 'bgShape', [{ v: 'rect', label: 'Square' }, { v: 'rounded', label: 'Rounded' }, { v: 'pill', label: 'Pill' }, { v: 'circle', label: 'Circle' }], 'rect');
+            R('Plate width', 'bgW', 0.6, 8, 0.05, (v) => v.toFixed(2) + '×', 1.6);
+            R('Plate height', 'bgH', 0.4, 4, 0.05, (v) => v.toFixed(2) + '×', 1);
+            R('Plate offset ←→', 'bgX', -6, 6, 0.05, (v) => v.toFixed(2), 0);
+            R('Plate offset ↑↓', 'bgY', -4, 4, 0.05, (v) => v.toFixed(2), 0);
+          }
+        }
+        R('Height', 'height', -2, 3, 0.05, (v) => (v < 0 ? 'sunk ' + (-v).toFixed(2) : v === 0 ? 'flush' : 'raised ' + v.toFixed(2)), 0);
+        R('Opacity', 'opacity', 0.1, 1, 0.05, (v) => Math.round(v * 100) + '%', 1);
+      }
+      if (sel.type === 'subdial') {
+        Sx('Scale', 'scale', opt(E.SCALES));
+        R('Open centre', 'open', 0, 0.8, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'closed'));
+        R('Height', 'height', -1.5, 2, 0.05, (v) => (v < 0 ? 'sunk ' + (-v).toFixed(2) : v === 0 ? 'flush' : 'raised ' + v.toFixed(2)), 1);
+        if (sel.style === 'carbon') R('Weave angle', 'weaveAngle', 0, 90, 1, (v) => v + '°', +D.weaveAngle || 0);
+        if (sel.style === 'carbon' || sel.style === 'forged') R(sel.style === 'carbon' ? 'Weave size' : 'Flake size', 'weaveScale', 0.4, 3, 0.05, (v) => v.toFixed(2) + '×', D.weaveScale == null ? 1 : +D.weaveScale);
+        if (sel.style && sel.style !== 'enamel') R('Texture', 'tex', 0, 2.5, 0.05, (v) => v.toFixed(2) + '×', D.texture == null ? 1 : +D.texture);
+        const cv = sel.color || 'match', setC = set('color');
+        selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1f1d1a', bd: cv === 'match' ? '#f0d79a' : '#3a352d', pick: () => setC('match') }]));
+        selFields.push(Sw('Vivid', cv, E.COLOR_GROUPS.vivid, setC));
+        selFields.push(Co('Custom', E.isHex(cv) ? cv : null, (v) => setC(v === 'auto' ? 'match' : v), 'Preset'));
+        if (sel.scale !== 'none') {
+          selFields.push(H('Subdial display'));
+          selFields.push(Sl('Display', sel.tstyle || 'classic', opt(E.SUB_DISPLAYS), set('tstyle')));
+          selFields.push(Co('Text colour', sel.tcolor, set('tcolor'), 'Auto'));
+          Sx('Typeface', 'tfont', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)]);
+          if (!sel.tfont) selFields[selFields.length - 1] = Sl('Typeface', 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('tfont'));
+          Cx('Weight', 'tweight', [{ v: 'bold', label: 'Bold' }, { v: 'regular', label: 'Regular' }, { v: 'italic', label: 'Italic' }], 'bold');
+          Cx('Orientation', 'torient', [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], 'upright');
+          Cx('Direction', 'tdir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
+          R('Text size', 'tsize', 0.6, 1.6, 0.05, (v) => Math.round(v * 100) + '%', 1);
+        }
+      }
+      if (sel.type === 'window') {
+        Sx('Shows', 'shows', opt(E.SHOWS));
+        if (sel.shows === 'custom') {
+          selFields.push(Tx('Format', sel.fmt == null ? 'ddd DD MMM' : sel.fmt, set('fmt')));
+          Cx('Case', 'fcase', [{ v: 'upper', label: 'UPPER' }, { v: 'asis', label: 'As written' }, { v: 'lower', label: 'lower' }], 'upper');
+          selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'));
+          selFields.push(Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
+        }
+        Sx('Disc', 'disc', [{ v: 'auto', label: 'Match dial' }, { v: 'light', label: 'Light' }, { v: 'dark', label: 'Dark' }]);
+        selFields.push(Co('Background', sel.discColor, set('discColor'), 'Disc'), Co('Text colour', sel.textColor, set('textColor'), 'Auto'));
+        selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+      }
+      if (sel.type === 'opening') {
+        Sx('Through it', 'show', [{ v: 'free', label: 'Whatever is there' }, { v: 'balance', label: 'Follow the balance (escapement)' }, ...feats.filter((f) => f.id !== 'balance').map((f) => ({ v: f.id, label: 'Aim train at ' + f.name.toLowerCase() }))]);
+        const g = fc && fc.lay.G[sel.id];
+        if (sel.show !== 'free' && sel.show !== 'balance' && g && Math.hypot(g.x - 233, g.y - 233) < 4) Sx('Place it', 'hour', Array.from({ length: 12 }, (_, k) => ({ v: String(k + 1), label: 'at ' + (k + 1) + ' o’clock' })), true);
+        if (sel.show !== 'free' && sel.show !== 'balance' && tr.by && tr.by !== sel.id) selFields.push(Nt('Note', 'Only the first aimed opening (#' + num(tr.by) + ') turns the train'));
+      }
+    }
+
+    const fields = [];
+    const cf = (k) => (v) => this.setCfg(k, v);
+    if (ready && s.tab === 'comps') fields.push(...selFields);
+    if (ready && s.tab === 'dial') {
+      const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
+      const pr = D.print || 'roman', col = D.color || 'cream', surf = D.surface || 'enamel';
+      fields.push(H('Face'),
+        Sl('Chapter ring', pr, opt(E.PRINTS), ud('print')),
+        Sl('Numerals', D.numerals || 'all', opt(E.NUMERALS), ud('numerals')));
+      if (E.HAS_NUMS.includes(pr) && D.numerals !== 'none') fields.push(Ch('Orientation', D.numOrient || (pr === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('numOrient')));
+      fields.push(Sl('Typeface', D.font || E.RING_FONT(pr), opt(E.TYPEFACES), ud('font')));
+      if (pr !== 'none' && D.numerals !== 'none') {
+        if (pr !== 'baton') fields.push(Co(pr === 'diver' ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), pr === 'diver' ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
+        const ns = D.numScale == null ? 1 : +D.numScale;
+        fields.push(Rg(pr === 'diver' ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
+        if (pr !== 'baton') fields.push(Sl('Finish', D.numStyle || 'print', opt(E.COMP_STYLES.flare), ud('numStyle')));
+        const sz = (k) => (D[k] == null ? 1 : +D[k]);
+        fields.push(H('The 12 · and 3, 6, 9'));
+        const hasText = E.HAS_NUMS.includes(pr), same = [{ v: 'same', label: 'Same as dial' }, ...opt(E.TYPEFACES)];
+        if (hasText) fields.push(Sl('12 typeface', D.n12Font || 'same', same, ud('n12Font')), Sl('3·6·9 typeface', D.nQFont || 'same', same, ud('nQFont')));
+        if (pr !== 'baton') fields.push(Co('12 colour', D.n12Color, ud('n12Color'), 'Same'));
+        fields.push(Rg('12 size', sz('n12Scale'), 0.5, 2, 0.05, ud('n12Scale'), sz('n12Scale').toFixed(2) + '×'));
+        if (pr !== 'baton') fields.push(Co('3·6·9 colour', D.nQColor, ud('nQColor'), 'Same'));
+        fields.push(Rg('3·6·9 size', sz('nQScale'), 0.5, 2, 0.05, ud('nQScale'), sz('nQScale').toFixed(2) + '×'),
+          Nt('', 'Multiplied on top of the overall size.'));
+      }
+      const ow = D.openwork || 'none', ov = (k, d) => (D[k] == null ? d : +D[k]);
+      fields.push(H('Openwork'), Sl('Skeleton', ow, opt(E.OPENWORK), ud('openwork')));
+      if (ow !== 'none') fields.push(
+        Rg('Bar width', ov('owBar', 20), 8, 40, 1, ud('owBar'), ov('owBar', 20) + 'px'),
+        Rg('Chapter ring', ov('owRing', 168), 120, 205, 1, ud('owRing'), 'from ' + ov('owRing', 168) + 'px'),
+        ...(ow !== 'ring' ? [Rg('Hub', ov('owHub', 36), 18, 80, 1, ud('owHub'), ov('owHub', 36) + 'px')] : []),
+        Rg('Rim around openings', ov('owRim', 10), 3, 24, 1, ud('owRim'), ov('owRim', 10) + 'px'),
+        Rg('Depth', ov('owDepth', 1), 0, 2.5, 0.05, ud('owDepth'), ov('owDepth', 1).toFixed(2) + '×'),
+        ...(ow !== 'ring' ? [Ch('Inlay', +D.owInlay ? 'on' : 'off', [{ v: 'off', label: 'Plain bars' }, { v: 'on', label: 'Sparkle inlay' }], (v) => this.upd((d) => { d.owInlay = v === 'on' ? 1 : 0; }))] : []),
+        Nt('', 'Openings and subdials get a rim of dial left around them automatically.'));
+      fields.push(H('Colour'), Sw('Classic', col, E.COLOR_GROUPS.classic, ud('color')), Sw('Vivid', col, E.COLOR_GROUPS.vivid, ud('color')),
+        Co('Custom', E.isHex(col) ? col : null, (v) => ud('color')(v === 'auto' ? 'cream' : v), 'Preset', 'dial'),
+        H('Surface'), Sl('Finish', surf, opt(E.SURFACES), ud('surface')));
+      if (surf === 'carbon') fields.push(Rg('Weave angle', +D.weaveAngle || 0, 0, 90, 1, ud('weaveAngle'), (+D.weaveAngle || 0) + '°'));
+      if (surf === 'carbon' || surf === 'forged') { const wsv = D.weaveScale == null ? 1 : +D.weaveScale; fields.push(Rg(surf === 'carbon' ? 'Weave size' : 'Flake size', wsv, 0.4, 3, 0.05, ud('weaveScale'), wsv.toFixed(2) + '×')); }
+      if (surf !== 'enamel') fields.push(Rg('Texture', D.texture == null ? 1 : +D.texture, 0, 2.5, 0.05, ud('texture'), (D.texture == null ? 1 : +D.texture).toFixed(2) + '×'));
+      const W = { aging: D.aging == null ? 1 : +D.aging, stains: D.stains == null ? 1 : +D.stains, dust: D.dust == null ? 1 : +D.dust };
+      const wp = { New: [0, 0, 0], Light: [0.3, 0.15, 0.4], Vintage: [1, 1, 1], Relic: [1.5, 1.5, 1.5] };
+      const cur = Object.keys(wp).find((k) => wp[k][0] === W.aging && wp[k][1] === W.stains && wp[k][2] === W.dust) || '';
+      fields.push(H('Wear · dial and subdials'),
+        Ch('Quick set', cur, Object.keys(wp).map((k) => ({ v: k, label: k })), (k) => this.upd((d) => { [d.aging, d.stains, d.dust] = wp[k]; })),
+        Rg('Ageing', W.aging, 0, 1.5, 0.05, ud('aging'), Math.round(W.aging * 100) + '%'),
+        Rg('Stains', W.stains, 0, 1.5, 0.05, ud('stains'), Math.round(W.stains * 100) + '%'),
+        Rg('Dust & scratches', W.dust, 0, 1.5, 0.05, ud('dust'), Math.round(W.dust * 100) + '%'));
+    }
+    if (ready && s.tab === 'hands') {
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' }, { v: 'sweep', label: 'Sweep' }], cf('tick')), valText: F + ' fps' }),
+        Nt('', 'Ticking seconds export at 12 fps, sweep at 15 fps; tourbillon movements always run at 8 fps.'),
+        H('Drop shadow · hands and raised/sunken subdials'),
+        Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
+        ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
+        Rg('Distance', +c0.shDist, 0, 3, 0.05, cf('shDist'), (+c0.shDist).toFixed(2) + '×'),
+        Rg('Softness', +c0.shBlur, 0, 3, 0.05, cf('shBlur'), (+c0.shBlur).toFixed(2) + '×'),
+        Rg('Opacity', +c0.shOp, 0, 2, 0.05, cf('shOp'), Math.round(+c0.shOp * 100) + '%'),
+        H('Defaults'), Ch('Shading', D.handShade || '3d', [{ v: '3d', label: '3D · bevelled' }, { v: 'flat', label: 'Flat' }], (v) => this.upd((d) => { d.handShade = v; })), Co('Lume', D.handLume, (v) => this.upd((d) => { d.handLume = v; }), 'None'), Sl('Seconds style', D.secStyle || 'classic', opt(E.SEC_STYLES), (v) => this.upd((d) => { d.secStyle = v; })), Sl('Finish', s.handFinish, [{ v: 'auto', label: 'Preset · ' + E.HAND_FINISHES[PR.handFinish] }, ...opt(E.HAND_FINISHES)], (v) => this.setState({ handFinish: v })));
+    }
+    if (ready && s.tab === 'move') {
+      const fins = [{ v: 'train', label: 'Movement default · ' + (T.finish || 'brass') }, { v: 'brass', label: 'Brass' }, { v: 'copper', label: 'Copper' }, { v: 'gunmetal', label: 'Gunmetal' }, { v: 'rhodium', label: 'Rhodium' }, { v: 'random', label: 'Random per wheel' }];
+      const spk = [{ v: 'train', label: 'Movement default · ' + (T.spokes || 'arched') }, { v: 'arched', label: 'Arched' }, { v: 'straight', label: 'Straight' }, { v: 'tapered', label: 'Tapered' }, { v: 'closed', label: 'Closed web' }, { v: 'holes', label: 'Lightening holes' }, { v: 'thin', label: 'Fine spokes' }, { v: 'random', label: 'Random per wheel' }];
+      fields.push(H('Backdrop'), Sl('Plate', c0.plate, [{ v: 'train', label: 'Movement default · ' + E.PLATES[T.plate] }, ...opt(E.PLATES).filter((o) => o.v !== 'train')], cf('plate')),
+        ...(() => { const pl = c0.plate === 'train' ? T.plate : c0.plate; return pl === 'stripes' ? [Rg('Stripe angle', +c0.plateAngle, 0, 179, 1, cf('plateAngle'), c0.plateAngle + '°'), Rg('Stripe width', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
+          : pl === 'carbon' ? [Rg('Weave angle', +c0.plateAngle % 90, 0, 90, 1, cf('plateAngle'), (+c0.plateAngle % 90) + '°'), Rg('Weave size', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
+          : pl === 'forged' ? [Rg('Flake size', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')] : []; })(),
+        H('Wheels'),
+        Sl('Metal', c0.finish, fins, cf('finish')),
+        ...(T.gears.rear && T.gears.rear.length ? [Sl('Rear wheels', c0.rearFinish || 'train', [{ v: 'train', label: 'Movement default · ' + (T.rear === 'match' ? 'match wheels' : 'antique brass') }, { v: 'brass', label: 'Antique brass' }, { v: 'match', label: 'Match wheels (darkened)' }, { v: 'gunmetal', label: 'Gunmetal' }, { v: 'rhodium', label: 'Rhodium' }, { v: 'copper', label: 'Copper' }], cf('rearFinish'))] : []),
+        Sl('Spokes', c0.spokes, spk, cf('spokes')),
+        Ch('Etching', c0.etching, [{ v: 'none', label: 'None' }, { v: 'rings', label: 'Rings' }, { v: 'perlage', label: 'Perlage' }, { v: 'random', label: 'Random' }], cf('etching')),
+        Ch('Pinions', c0.pinion, [{ v: 'on', label: 'On' }, { v: 'off', label: 'Off' }, { v: 'random', label: 'Random' }], cf('pinion')),
+        Ch('Wheel centres', c0.center, [{ v: 'jewel', label: 'Jewels' }, { v: 'screw', label: 'Screws' }, { v: 'random', label: 'Random' }], cf('center')));
+      const rr = this.RND.filter((k) => c0[k] === 'random');
+      if (rr.length) fields.push(Ch('Re-roll', '', rr.map((k) => ({ v: k, label: '⟳ ' + ({ spokes: 'Spokes', pinion: 'Pinions', center: 'Centres', finish: 'Metal', etching: 'Etching' })[k] })), (k) => this.roll(k)));
+      if (T.orbital) fields.push(H('Orbital carriage'),
+        Rg('Escapement', +c0.orbD, 70, T.orbital.shape === 'kite' ? 150 : 160, 1, cf('orbD'), c0.orbD + 'px'),
+        Rg('Arrow tip', Math.max(+c0.orbD + 50, +c0.orbTip), 120, 212, 1, cf('orbTip'), Math.max(+c0.orbD + 50, +c0.orbTip) + 'px'),
+        Nt('', 'Distances from the centre. Pull them in to ring the carriage with a dial.'));
+      if (T.cage) fields.push(H('Tourbillon'), Rg('Cage distance', +c0.cageD, 50, 150, 1, cf('cageD'), c0.cageD + 'px'), Nt('', 'Distance from the centre. Escapement openings follow it.'));
+      fields.push(H('Placement'));
+      if (tr.by) fields.push(Nt('Train angle', tr.deg + '° — set by #' + num(tr.by) + ' ' + compTitle(D.comps.find((c) => c.id === tr.by) || {}) + '. Move that opening to turn the train.'));
+      else fields.push(Rg('Train angle', +c0.trainAngle || 0, 0, 359, 1, cf('trainAngle'), (+c0.trainAngle || 0) + '°'));
+      fields.push(H('Loop'),
+        Nt('Frame rate', F + ' fps — ' + (T && (T.cage || T.orbital) ? 'fixed at 8 for tourbillons' : '12 for ticking seconds, 15 for sweep (set in Hands)')),
+        Ch('Balance beats', String(c0.balance), [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' }], cf('balance')));
+    }
+    if (ready && s.tab === 'light') {
+      fields.push(H('Inner glow · sources under the dial ring'),
+        Rg('Strength', +c0.glow, 0, 2, 0.05, cf('glow'), (+c0.glow).toFixed(2)),
+        Rg('Temperature', +c0.temp, 1500, 6500, 100, cf('temp'), c0.temp + 'K'),
+        Rg('Hue', +c0.hue, 0, 359, 1, cf('hue'), c0.hue + '°'),
+        Rg('Colour tint', +c0.hueSat, 0, 1, 0.02, cf('hueSat'), +c0.hueSat ? Math.round(c0.hueSat * 100) + '%' : 'off'),
+        Rg('Axis', +c0.innerAngle, 0, 179, 1, cf('innerAngle'), c0.innerAngle + '°'),
+        H('Outer shine · room light on glass & case'),
+        Rg('Strength', +c0.outerLight, 0, 2, 0.05, cf('outerLight'), (+c0.outerLight).toFixed(2)),
+        Rg('Temperature', +c0.outerTemp, 1500, 6500, 100, cf('outerTemp'), c0.outerTemp + 'K'),
+        Rg('Hue', +c0.outerHue, 0, 359, 1, cf('outerHue'), c0.outerHue + '°'),
+        Rg('Colour tint', +c0.outerSat, 0, 1, 0.02, cf('outerSat'), +c0.outerSat ? Math.round(c0.outerSat * 100) + '%' : 'off'),
+        Rg('From', +c0.outerAngle, 0, 359, 1, cf('outerAngle'), c0.outerAngle + '°'),
+        H('Camera'),
+        Rg('White balance', +c0.wb, 2500, 10000, 100, cf('wb'), +c0.wb === 6500 ? 'neutral' : c0.wb + 'K'),
+        Nt('', 'Lower = cooler picture, higher = warmer. Baked into exported layers.'));
+    }
+    if (ready && s.tab === 'case') {
+      fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
+    }
+
+    const slots = fc ? fc.handOrder.slice().reverse() : [];
+    const hcfg = D.hands || {}, ce = D.centre || {};
+    const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + id.slice(7) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
+    return {
+      metaLabel: '466 × 466 · ' + F + ' fps · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      mainRef: this.mainRef, cursor: this.drag ? 'grabbing' : 'pointer',
+      onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(),
+      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + F,
+      playLabel: s.playing ? 'Pause' : 'Play',
+      slowLabel: s.slow ? Math.max(1, Math.round(F / 5)) + ' fps' : F + ' fps',
+      prev: stop((f) => (f + F - 1) % F), next: stop((f) => (f + 1) % F),
+      toggle: () => this.setState((st) => ({ playing: !st.playing })),
+      toggleSlow: () => this.setState((st) => ({ slow: !st.slow })),
+      timeOpts: [['live', 'Live'], ['pose', '10:09'], ['cycle', 'Cycle dates']].map(([id, label]) => ({ ...on(s.timeMode === id), label, pick: () => this.setState({ timeMode: id }) })),
+      seamText: s.seam, status: s.status,
+      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#2e2719' : 'transparent', fg: s.tab === id ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ tab: id }) })),
+      isDial: s.tab === 'dial', isComps: s.tab === 'comps', isHands: s.tab === 'hands', isMove: s.tab === 'move', isCase: s.tab === 'case', isExport: s.tab === 'export',
+      fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
+      resetHands: () => this.upd((d) => { Object.values(d.hands || {}).forEach((hc) => { delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? '#' + num(sel.id) + ' ' + compTitle(sel) : '',
+      dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
+        ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
+        name: E.PRESETS[id].name + (s.designs[id] ? ' · edited' : ''), blurb: E.PRESETS[id].blurb,
+        pick: () => this.setState((st) => ({ dial: id, sel: null, cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
+      })),
+      resetDesign: () => this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; return { designs: d, sel: null, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset' }; }),
+      tabReset: () => this.resetTab(s.tab), hasTabReset: s.tab !== 'export', tabResetLabel: 'Reset ' + (this.TABS.find((t) => t[0] === s.tab) || ['', ''])[1].toLowerCase(),
+      resetComps: () => { const P = E.PRESETS[s.dial]; this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
+      trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],
+      compRows: D.comps.map((c, i) => ({
+        ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c),
+        meta: 'on ' + hostName(c.host) + (c.type === 'opening' && c.show === 'balance' ? ' · follows balance' : ' · ' + Math.round(c.angle) + '° · ' + c.dist + 'px') + ' · ' + (ready ? E.COMP_STYLES[c.type][c.style] || c.style : ''),
+        pick: () => this.setState({ sel: c.id }),
+        up: (e) => { e.stopPropagation(); this.moveComp(c.id, -1); },
+        down: (e) => { e.stopPropagation(); this.moveComp(c.id, 1); },
+        del: (e) => { e.stopPropagation(); this.delComp(c.id); },
+      })),
+      addOpts: ready ? Object.entries(E.COMP_TYPES).map(([t, label]) => ({ label: '+ ' + label + (sel && sel.type === 'subdial' && t !== 'subdial' ? ' on #' + num(sel.id) : ''), go: () => this.addComp(t) })) : [],
+      handOpts: ['auto', ...(ready ? Object.keys(E.HAND_STYLES) : [])].map((id) => ({
+        ...on(id === s.hands), ref: this.cb('handEls', id, (i) => this.drawHandOpt(i)),
+        label: id === 'auto' ? 'Preset' : E.HAND_STYLES[id], pick: () => this.setState({ hands: id }),
+      })),
+      handRows: slots.map((id, i) => {
+        const hc = hcfg[id] || {}, isC = id.startsWith('centre-'), k = isC ? id.slice(7) : null, shown = isC ? !!ce[k] : hc.on !== false;
+        const len = +hc.len || 1, wid = +hc.wid || 1;
+        return {
+          label: handLabel(id), meta: 'z ' + (slots.length - i) + (shown ? '' : ' · hidden'), op: shown ? 1 : 0.5,
+          styleOpts: mark([{ v: 'auto', label: 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
+          finOpts: mark([{ v: 'auto', label: 'Default finish' }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
+          onStyle: (e) => this.setHand(id, { style: e.target.value }),
+          onFinish: (e) => this.setHand(id, { finish: e.target.value }),
+          len, wid, lenText: Math.round(len * 100) + '%', widText: wid.toFixed(2) + '×',
+          onLen: (e) => this.setHand(id, { len: +e.target.value }),
+          onWid: (e) => this.setHand(id, { wid: +e.target.value }),
+          isSec: id === 'centre-second' || !!D.comps.find((c) => c.id === id && c.scale === 'seconds'),
+          secOpts: mark([{ v: 'auto', label: 'Seconds · default (' + ((E && E.SEC_STYLES[D.secStyle || 'classic']) || '') + ')' }, ...(ready ? opt(E.SEC_STYLES) : [])], hc.sec || 'auto'),
+          onSec: (e) => this.setHand(id, { sec: e.target.value }),
+          lumeOpts: mark([{ v: 'auto', label: 'Lume · default (' + (D.handLume && D.handLume !== 'none' ? 'on' : 'none') + ')' }, { v: 'none', label: 'No lume' }, { v: '#cfe8b0', label: 'Lume · green' }, { v: '#e8d6a0', label: 'Lume · old radium' }, { v: '#9fd8ff', label: 'Lume · blue' }, { v: '#f4f1e6', label: 'Lume · white' }, { v: '#ff9a3c', label: 'Lume · orange' }, { v: '#ff7bd5', label: 'Lume · pink' }], hc.lume || 'auto'),
+          onLume: (e) => this.setHand(id, { lume: e.target.value }),
+          shadeOpts: mark([{ v: 'auto', label: 'Shading · default (' + (D.handShade === 'flat' ? 'flat' : '3D') + ')' }, { v: '3d', label: 'Shading · 3D' }, { v: 'flat', label: 'Shading · flat' }], hc.shade || 'auto'),
+          onShade: (e) => this.setHand(id, { shade: e.target.value }),
+          up: () => this.moveHand(id, 1), down: () => this.moveHand(id, -1),
+          eye: shown ? 'shown' : 'hidden',
+          toggle: () => (isC ? this.upd((d) => { d.centre = { ...(d.centre || {}), [k]: d.centre && d.centre[k] ? 0 : 1 }; }) : this.setHand(id, { on: !shown })),
+        };
+      }),
+      caseOpts: ready ? Object.entries(E.CASE_STYLES).map(([id, label]) => ({ ...on(id === s.caseStyle), label, ref: this.cb('caseEls', id, (i) => this.drawCaseThumb('case', i)), pick: () => this.setState({ caseStyle: id }) })) : [],
+      glassOpts: ready ? Object.entries(E.GLASS_STYLES).map(([id, label]) => ({ ...on(id === s.glassStyle), label, ref: this.cb('glassEls', id, (i) => this.drawCaseThumb('glass', i)), pick: () => this.setState({ glassStyle: id }) })) : [],
+      layers: this.LAYERS.map(([id, n, name, note]) => ({
+        ref: this.cb('layerEls', id, (i) => this.drawLayer(i)), num: n, name, note,
+        eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8d8472' : '#c9a25a', op: s.hidden[id] ? 0.45 : 1,
+        toggle: () => this.setState((st) => ({ hidden: { ...st.hidden, [id]: !st.hidden[id] } })),
+      })),
+      kitNote: F + ' base frames + layers + sprites · .zip',
+      zipNote: F + ' × .png, hands at shown time · .zip',
+      exportKit: () => this.exportKit(),
+      exportFrames: async () => {
+        if (this.busy()) return;
+        this.setState({ status: 'Packing frames…' });
+        const files = [];
+        for (let f = 0; f < F; f++) files.push({ name: 'frame_' + pad(f + 1) + '.png', data: await this.png(this.frameCanvas(f, s.hidden)) });
+        this.download(this.zip(files), 'watch-' + s.dial + '-frames.zip');
+        this.setState({ status: 'Downloaded watch-' + s.dial + '-frames.zip' });
+      },
+      designId: did, idInput: s.idInput || '',
+      onIdInput: (e) => this.setState({ idInput: e.target.value }),
+      loadDesign: () => this.loadId(s.idInput || ''),
+      copyId: () => { const done = () => this.setState({ status: 'Design ID copied' }), fail = () => this.setState({ status: 'Select the ID and copy it manually' }); navigator.clipboard ? navigator.clipboard.writeText(did).then(done, fail) : fail(); },
+      selectAll: (e) => e.target.select(),
+    };
+  }
+}
+</script>
+</body>
+</html>

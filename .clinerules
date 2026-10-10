@@ -202,17 +202,32 @@ Firmware rules this dial depends on (`main/clock/clock_view.c`):
   angle; the orbit itself is plain hand rotation (manifest's seconds/60x360).
   First draw marks the full swept box. Park/resume resets `s_tourb_shown`.
 - The sweeping carriage's orbit step marks the ROTATED INK, not the box:
-  `tourbillon_ink_mark()` (from `apply_angles`, i==2 only) rotates every source
-  row's ink chord of the shown frame — per-frame chords `s_tourb_cx0/1` are
-  measured once off the alpha plane into PSRAM — as an integer 16.16 line
-  segment into the `s_wp_*` device-row spans, then releases <=466 `mark_rows`
-  calls. Both poses are stamped (the vacated pixels are the other half of the
-  job). Trig is nearest-whole-degree, so pads cover <=0.5 deg of pose error
-  (SWEPT_PAD in x, `1+w/128` rows in y). Fallbacks that keep the box union:
-  non-L4, `s_shadow[2]`, bank never composited, chord alloc failed.
-  NEVER mark_rows-per-segment with double trig: near-vertical chords cost
-  ~90k calls/tick and starve the tick task (measured 1-2 fps, wave at the
-  orbit period).
+  `tourbillon_ink_mark()` (from `apply_angles`, i==2 only, AND from
+  `tourbillon_advance` for the INCOMING frame at the swap angle — the baked
+  diff rects are chained against a neighbour frame, and a 15 fps bank on a
+  ~7 fps tick often jumps two, so neither rect covers the g->f delta; the
+  incoming chord stamp is what makes the swap complete) rotates every source
+  row's ink chord of frame f — per-frame chords `s_tourb_cx0/1` are measured
+  once off the alpha plane into PSRAM — into the `s_wp_*` device-row spans,
+  then releases <=466 `mark_rows` calls. Both orbit poses are stamped (the
+  vacated pixels are the other half of the job). Fallbacks that keep the box
+  union: non-L4, `s_shadow[2]`, bank never composited, chord alloc failed.
+  TWO stamp invariants, both invisible to the fps counter when broken:
+  1. The forward rotation uses `rot_sin_cos()` — paint_layer's exact
+     interpolated /1024 trig pair — scaled **\*64** into the `>> 16` products
+     (1.0 == 65536). The first builds fed LVGL's /32768 `trigo_sin` table
+     (or sinma\*32) straight into the `>> 16`: stamps landed at HALF radius,
+     the carriage's outer ring was never restored/repainted, and it ghosted
+     a full revolution while a crisp diff-box rectangle glared next to it.
+  2. A chord whose rotated segment is WIDER than tall (|dx| > rows) stamps
+     its full span on every row it (+rpad) touches — the row-walk, which is
+     correct and tight for steep segments, marks only a ~7 px window per row
+     there and leaked the counterweight tail near the 12 pose. rpad rows
+     beyond a steep segment's ends extrapolate x by step16 (that IS covered).
+  Verify any change to stamps or paint_layer with
+  `python3 tools/sim_tourb_mark.py`: it ports both integer pipelines against
+  the baked alpha and asserts every pixel either pose paints lies inside the
+  tick's marked spans (dense at cardinal poses; exit 0 = clean).
 - `mark_rows(y0,y1,x0,x1,force)`: rows are handed to the display through
   `display_mark_rows_clocked`; the GIF push marks force=true (its pixels
   reached mirror+canvas without the panel ever seeing them). The commit hook
@@ -252,9 +267,14 @@ a copy). Swap the pair, `idf.py build`, and the full `idf.py flash` (the assets
 partition write is the slow ~3 min part — detach, per above).
 
 Verified on the bench at fw with this theme: boot logs `tourbillon: 15 frames @
-15 fps on the second-hand slot, orbit about (233,233)`; sweep steady 9 fps —
-same as tick mode (avg commit ~100 ms, px/s ~1.1-1.2 M i.e. ~270 flush rows
-per commit once band-merged, te ~9 ms/commit, no Guru). Before the rotated-ink
-marks + commit flush gate, sweep ran 5 fps at ~450 rows/commit.
+15 fps on the second-hand slot, orbit about (233,233)`; sweep steady 6-7 fps
+(avg commit ~145 ms, px/s ~0.8-1.0 M, no Guru) with `tools/sim_tourb_mark.py`
+CLEAN — every pixel either pose paints provably lies inside the tick's marks.
+(The earlier "9 fps" figures were taken while the stamps ran at half radius:
+unmarked pixels were neither restored nor re-blended, i.e. a third of the
+work — and of the artifacts — was simply being skipped. Correct marks cost
+what they cost; speed work must shave per-px blend cost, not coverage.)
+Before the rotated-ink marks + commit flush gate, sweep ran 5 fps at ~450
+rows/commit.
 `assets/preview-orbital/` holds the bake's own inspection
 PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).

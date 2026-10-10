@@ -213,9 +213,30 @@ static uint16_t *s_tourb_cx1[CLK_TOURB_MAX];
 static int16_t  s_wp_x0[CLK_SCR_H], s_wp_x1[CLK_SCR_H];
 static int32_t  s_wp_lo, s_wp_hi;
 
-/* LVGL's integer-degree 16.16 sine (see paint path); declared early — the
- * orbit stamps below use it before the paint block defines it. */
+/* LVGL's integer-degree sine, /32768 scale (see paint path; pair it with
+ * >> 15, or scale up yourself — declared early because the orbit stamps
+ * below use it before the paint block defines it). */
 static inline int32_t trigo_sin(int32_t angle);
+
+/* The rotation pair SHARED by paint_layer's inverse map and the orbit chord
+ * stamps: LVGL's lv_draw_sw_transform interpolation of trigo_sin at the exact
+ * tenth of a degree, quantised the way LVGL quantises it (>> 5), LVGL's /1024
+ * scale (1.0 == 1024 — NOT a 16.16 value: callers that multiply these into a
+ * >> 16 product must scale by 64, see tourb_stamp_pose). Stamps and painter
+ * must consume exactly these numbers: any other pair (the whole-degree table,
+ * or a different scale) displaces the stamped pose from the painted one, and
+ * rows outside the stamped spans are neither restored nor repainted — ghost
+ * and missing ink that no fps counter can see. */
+static void rot_sin_cos(int32_t ang_10, int32_t *sinma, int32_t *cosma)
+{
+    const int32_t tr_ang = -(ang_10 % 3600);
+    if (tr_ang == 0) { *sinma = 0; *cosma = 1024; return; }   /* LVGL's bit-exact case */
+    const int32_t low = tr_ang / 10, rem = tr_ang - low * 10;
+    const int32_t s1 = trigo_sin(low),      s2 = trigo_sin(low + 1);
+    const int32_t c1 = trigo_sin(low + 90), c2 = trigo_sin(low + 91);
+    *sinma = ((s1 * (10 - rem) + s2 * rem) / 10) >> 5;
+    *cosma = ((c1 * (10 - rem) + c2 * rem) / 10) >> 5;
+}
 
 
 static bool gif_mode(void)
@@ -665,7 +686,7 @@ static int32_t s_ang_10[5] = { INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN, INT32
  * tourbillon block below. Returns true when it placed the marks for both
  * poses, false when the caller must fall back to the swept-box union (no
  * bank, no prior composite, shadowed seconds, or classic path). */
-static bool tourbillon_ink_mark(int32_t prev_ang_10, int32_t new_ang_10);
+static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10);
 
 #define HAND_REDRAW_EPS_10 2
 static void apply_angles(const float ang[5])
@@ -694,7 +715,7 @@ static void apply_angles(const float ang[5])
          * tourbillon_advance's diff-box marks; the chord model tracks only
          * the hand's own art, so a shadowed second hand keeps the box. */
         const bool inked = (i == 2 && prev != INT32_MIN) &&
-                           tourbillon_ink_mark(prev, a);
+                           tourbillon_ink_mark((int)s_tourb_shown, prev, a);
 
         if (!inked && prev != INT32_MIN) {
             /* Union of the old and new wedge of every layer sharing this angle,
@@ -823,20 +844,29 @@ static bool tourb_chords(int f)
  * angle-periodic wave; the same work done here is tens of thousands of ALU
  * ops into static memory.
  *
- * Trig runs at the nearest WHOLE degree (LVGL's table), so the stamped pose
- * can be up to 0.5 deg off the angle paint_layer will inverse-map at: the
- * endpoint error is r*0.0087 <= ~2 px (covered by SWEPT_PAD) and the
- * row-crossing error ~len*0.0087 <= ~2 rows (covered by the row pad). */
+ * The forward rotation reuses paint_layer's exact trig pair (rot_sin_cos),
+ * operation for operation, so the stamped pose cannot disagree with what the
+ * commit paints: any residual is nearest-neighbour texel spread (±1 px/row),
+ * inside the pads. */
 static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
 {
     const uint16_t *c0 = s_tourb_cx0[f], *c1 = s_tourb_cx1[f];
-    int32_t deg = (ang_10 >= 0 ? ang_10 + 5 : ang_10 - 5) / 10;
-    deg %= 360; if (deg < 0) deg += 360;
-    const int32_t si = trigo_sin(deg);
-    const int32_t co = trigo_sin(deg + 90);
+    /* Forward map = transpose of paint_layer's inverse map: sin(+a) =
+     * -sinma(-a), cos(+a) = cosma(-a). The products below land in a >> 16,
+     * so the pair must be sin/cos in 16.16 (1.0 == 65536): sinma is LVGL's
+     * /1024 value, hence *64. (The first builds used trigo_sin's /32768
+     * table — or sinma*32 — straight into the >>16 form: the stamped pose
+     * sat at HALF radius, so the carriage's outer ring never got marked,
+     * never got restored or repainted, and ghosted through the whole orbit
+     * while the double-math diff boxes rebuilt a crisp rectangle around the
+     * escapement against it — the exact three reported artifacts. LVGL's
+     * own consumers pair lv_trigo_sin with >> 15, not >> 16.) */
+    int32_t sma, cma;
+    rot_sin_cos(ang_10, &sma, &cma);
+    const int32_t si = -sma * 64, co = cma * 64;
     const int32_t pvx = (int32_t)spr->pivotx, pvy = (int32_t)spr->pivoty;
     const int32_t cxs = (int32_t)spr->centerx, cys = (int32_t)spr->centery;
-    const int32_t rpad = 1 + ((int32_t)spr->w >> 7);   /* see 0.5 deg note */
+    const int32_t rpad = 1 + ((int32_t)spr->w >> 7);   /* texel spread at row ends */
 
     for (int32_t ys = 0; ys < (int32_t)spr->h; ys++) {
         if (c1[ys] < c0[ys]) continue;                /* row carries no ink */
@@ -854,14 +884,23 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
         const int32_t den = yb - ya;
         const int32_t y0 = ya - rpad, y1 = yb + rpad;
 
+        const int32_t adx = xyb - xya >= 0 ? xyb - xya : xya - xyb;
         int32_t x16, step16;
-        if (den == 0) {                    /* segment horizontal on this row */
-            step16 = 0;
-            x16 = ((xya < xyb ? xya : xyb) << 16) - (SWEPT_PAD << 16);
+        if (den == 0 || adx > den) {
+            /* Shallow segment (horizontal included): the source row's band
+             * lands across the FULL chord width on essentially the same
+             * device rows, so the row-walk — one ~7 px window per row —
+             * would mark a sliver of it and ghost the rest (this is what
+             * smeared the counterweight tail whenever the carriage rode near
+             * 12 o'clock). Mark the full span on every row the segment
+             * (plus its texel pad) touches: the pad rows beyond the ends
+             * still catch corner-round-off ink several px outside an
+             * endpoint window — the sim rejects anything narrower. */
+            const int32_t xl = (xya < xyb ? xya : xyb) - SWEPT_PAD;
             const int32_t xr = (xya < xyb ? xyb : xya) + SWEPT_PAD;
             for (int32_t y = y0; y <= y1; y++) {
                 if (y < 0 || y >= CLK_SCR_H) continue;
-                if ((int16_t)(xya < xyb ? xya : xyb) < s_wp_x0[y]) s_wp_x0[y] = (int16_t)(xya < xyb ? xya : xyb);
+                if ((int16_t)xl < s_wp_x0[y]) s_wp_x0[y] = (int16_t)xl;
                 if ((int16_t)xr > s_wp_x1[y]) s_wp_x1[y] = (int16_t)xr;
                 if (y < s_wp_lo) s_wp_lo = y;
                 if (y > s_wp_hi) s_wp_hi = y;
@@ -884,19 +923,23 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
     }
 }
 
-/* The sweeping carriage's mark for one tick: the union of the outgoing and
- * the incoming pose's rotated ink, released in <= 466 mark_rows calls. The
- * frame swap's own pixels (the oscillating balance) are marked separately by
- * tourbillon_advance's diff boxes; chords plus those boxes cover every
- * pixel that can differ on the glass — everything the old full-box union
- * touched beyond them was dial and glass re-blended onto identical output. */
-static bool tourbillon_ink_mark(int32_t prev_ang_10, int32_t new_ang_10)
+/* The sweeping carriage's mark for one tick: the union of the poses' rotated
+ * ink for frame f, released in <= 466 mark_rows calls. prev_ang_10 ==
+ * INT32_MIN stamps only the new pose (the frame swap calls it that way: the
+ * old frame's ink was already marked at this angle by its own moves, and the
+ * INCOMING frame's ink — the balance at its new position — is what the baked
+ * diff rect can fall a few pixels short of, which showed up as a visible
+ * rectangle around the escapement). The rest of the frame swap's own pixels
+ * are still marked by tourbillon_advance's diff boxes; chords plus those
+ * boxes cover every pixel that can differ on the glass — everything the old
+ * full-box union touched beyond them was dial and glass re-blended onto
+ * identical output. */
+static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 {
 #if CLK_BG_DIRECT_PUSH
     if (!l4_active()) return false;
 #endif
     if (clk_theme.tourbillon_n <= 0 || s_shadow[2]) return false;
-    const int f = (int)s_tourb_shown;
     if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
         return false;                          /* no composite on the glass yet */
     if (!tourb_chords(f)) return false;        /* fall back to the box union */
@@ -906,7 +949,8 @@ static bool tourbillon_ink_mark(int32_t prev_ang_10, int32_t new_ang_10)
         s_wp_x1[y] = (int16_t)-0x8000;
     }
     s_wp_lo = CLK_SCR_H; s_wp_hi = -1;
-    tourb_stamp_pose(&clk_theme.tourbillon[f], f, prev_ang_10);
+    if (prev_ang_10 != INT32_MIN)
+        tourb_stamp_pose(&clk_theme.tourbillon[f], f, prev_ang_10);
     tourb_stamp_pose(&clk_theme.tourbillon[f], f, new_ang_10);
     if (s_wp_hi < s_wp_lo) return true;        /* zero-ink bank: nothing to mark */
 
@@ -951,6 +995,14 @@ static void tourbillon_advance(void)
     else
 #endif
         lv_obj_invalidate_area(s_scr, &u);
+    /* The INCOMING frame's own ink at this angle, marked by chords too: the
+     * baked diff rect is an axis-aligned box that a sub-degree rotation can
+     * push a few pixels of balance ink outside — that seam was the visible
+     * rectangle around the escapement. The stamps cover the exact rotated
+     * ink; the diff-box mark above stays as the belt to the chords' braces
+     * (and is what paints when the chord tables cannot be built). */
+    if (s_tourb_shown >= 0 && a != INT32_MIN)
+        tourbillon_ink_mark(f, INT32_MIN, a);
     s_tourb_shown = f;
 }
 
@@ -1255,17 +1307,10 @@ static void paint_layer(const clk_sprite_t *spr, int32_t ang_10)
 
     /* Inverse-transform setup, copied from lv_draw_sw_transform(): scale is
      * fixed 256, so sxx..syy reduce to trig*64; x0_ups/y0_ups keep LVGL's
-     * exact operation order (int32 products, truncating /256). */
-    int32_t tr_ang = -(ang_10 % 3600);
+     * exact operation order (int32 products, truncating /256). The pair comes
+     * from the same helper the orbit chord stamps use — see rot_sin_cos. */
     int32_t sinma, cosma;
-    if (tr_ang == 0) { sinma = 0; cosma = 1024; }   /* LVGL's bit-exact case */
-    else {
-        const int32_t low = tr_ang / 10, rem = tr_ang - (tr_ang / 10) * 10;
-        const int32_t s1 = trigo_sin(low),      s2 = trigo_sin(low + 1);
-        const int32_t c1 = trigo_sin(low + 90), c2 = trigo_sin(low + 91);
-        sinma = ((s1 * (10 - rem) + s2 * rem) / 10) >> 5;
-        cosma = ((c1 * (10 - rem) + c2 * rem) / 10) >> 5;
-    }
+    rot_sin_cos(ang_10, &sinma, &cosma);
     const int32_t sxx =  cosma * 64, sxy = -(sinma * 64);
     const int32_t syx =  sinma * 64, syy =  cosma * 64;
     const int32_t xin0 = -(int32_t)spr->pivotx, yin0 = -(int32_t)spr->pivoty;

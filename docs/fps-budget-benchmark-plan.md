@@ -1,6 +1,16 @@
 # FPS budget benchmark: flush time vs refreshed rows and blended pixels
 
-Status: not started. Written 2026-10-10 from the cadence-probe session. Execute this in
+Status: **executed 2026-10-10** — findings in
+`docs/fps-budget-findings-2026-10-10.md`, model written into
+`docs/tourbillon-axis-spec.md` ("Per-frame budget"). Three deliberate
+deviations from this plan, each recorded in the findings doc: the synthetic
+block is 60x60 (3600 px, the plan's own sweep unit) rather than 16x16;
+`DISPLAY_BENCH_ALPHA` was added, because the specced "opaque" ink takes
+`blend_px`'s store shortcut and prices the wrong op; and V-A's `[140..330]`
+band is a verified null (the packer's 16-px tiles widen it back to the shipped
+union), so the tile-aligned `[144..319]` carries lever A's result.
+
+Written 2026-10-10 from the cadence-probe session. Execute this in
 a fresh chat — everything needed is in this file plus the repo. Do not ask the operator
 for context; the facts are below.
 

@@ -267,18 +267,59 @@ It now diffs against `s_fps_te0` like every other field.
 - The carriage's reach: its ink must stay inside the dial opening and pass under
   the tachymetre ring, or `bake_clock.py`'s `_zero_under`/fold gate refuses.
 
-## Ink budget
+## Per-frame budget (measured — docs/fps-budget-findings-2026-10-10.md)
 
-Carriage blended px per commit drives the frame budget directly:
+Swept on device over 19 points, two independent driver sweeps plus four art
+variants. Fitted and reported by `tools/bench/fit.py`:
 
-| kit | blended px/commit | bbox | r_max | median r |
+```
+flush_ms ~= 55 fixed (tick + restore + compare + submit)
+          + 0.22 ms/row    x full-width rows the DMA carries
+          + per-layer px price x blended px      (table below)
+```
+
+`b` comes from the one pair of points that moves rows without moving the art
+(page-spread synthetic ink, rows 255 → 417 at constant px): 218–229 µs/row.
+`c` is not a single constant — the per-blend cost is set by the pass, measured
+off the fps line's own per-layer split at the control point:
+
+| pass | blends/tick | ms/frame | ns/blend | why |
 |---|---|---|---|---|
-| kit2 | 54,799 | 223 x 298 | 190.4 | 93.4 |
-| kit3 | **62,350 (+13.8%)** | 245 x 306 | 192.8 | 99.6 |
+| hour / minute hand | 6,984 / 6,845 | 9.4 / 8.3 | 1,213–1,348 | rotated, samples across the whole sprite |
+| carriage (second) | 62,531 | 40.8 | 652 | rotated, 85 % empty alpha |
+| dial | 30,164 | 13.5 | 447 | static-position multiply |
+| glass | 71,991 | 24.1 | 334 | static-position source-over |
+| (synthetic probe) linear alpha blend | – | – | 185–232 | linear PSRAM read + `mix_16_16` |
+| (synthetic probe) opaque store | – | – | 76 | `blend_px`'s `a>=255` shortcut: swap + write |
 
-At 687 ns per nearest-path blend the carriage goes ~37.6 → ~42.8 ms/commit. A
-thinner carriage is the cheap lever if the commit passes its budget; the expensive
-one is staging the carriage's texel rows in internal RAM.
+Two consequences, both measured rather than argued:
+
+- **Rows cannot be bought with art.** The GIF delta bank's 208-row band is not
+  the row driver: the carriage's per-frame diff rect `(97,60,58,57)` sits at
+  radius ~130 from the pivot, so its rotation alone marks rows 106..360 — 255
+  full-width rows — every tick. Clamping the bank from 208 rows to 32 (pushed
+  area 34,304 → 8,192 px/tick) left the DMA at 268 rows and the flush at
+  133.6–138.2 ms: no effect. Art lever A is dead. `tools/bench/rectaudit.py`
+  predicts this in 2 s with no flash, and it caught the plan's own V-A
+  (`[140..330]`) as a null before it was baked: the packer's 16-px tile
+  quantisation widens that band straight back to 128..335.
+- **The carriage is the budget.** Removing its ink beyond r=150 (14.4 % of
+  62,350 px, 28k fewer blends/tick) took hook 104.8 → 94.5 ms and mean flush
+  138.1 → 123.3 ms — the only variant that passes the 125 ms / 8 fps gates
+  (median 7.4 fps, 33 % of seconds at 8, gap p90 168 → 151 ms). Per removed
+  carriage blend that is ~530 ns, matching the 652 ns measurement above.
+
+What the fit leaves on the table: at V-B's 123 ms the remaining budget is ~55 ms
+of fixed tick/restore/compare/submit work plus the carriage's own 40.8 ms.
+Neither is reachable by art. The next move is the internal-RAM carriage-texel
+staging experiment, not another bake.
+
+## Ink budget (pre-measurement prior — superseded, kept for the record)
+
+See Appendix A for the original table and where this measurement corrects it.
+In short: the 687 ns/blend prior was right for the carriage and wrong as a
+single `c` for the whole commit, and the row budget it blamed on the GIF bank
+belongs to the carriage's rotation.
 
 ## Required kit output
 
@@ -304,3 +345,44 @@ Keep the whole bank registered: all frames place the staff at the identical bbox
 and centroid, spread ≤ 0.01 px. The baker takes ONE cycle-wide crop
 (lines 558-571), so drift desyncs the dirty rects. The device applies the
 carriage's rotation from `seconds/60 * 360 + zeroRotationDeg`; never bake it in.
+
+## Appendix A — the ink-budget prior, and where the sweep corrected it
+
+Written before any flush model existed, from the kit geometry alone:
+
+> Carriage blended px per commit drives the frame budget directly:
+>
+> | kit | blended px/commit | bbox | r_max | median r |
+> |---|---|---|---|---|
+> | kit2 | 54,799 | 223 x 298 | 190.4 | 93.4 |
+> | kit3 | **62,350 (+13.8%)** | 245 x 306 | 192.8 | 99.6 |
+>
+> At 687 ns per nearest-path blend the carriage goes ~37.6 → ~42.8 ms/commit. A
+> thinner carriage is the cheap lever if the commit passes its budget; the
+> expensive one is staging the carriage's texel rows in internal RAM.
+
+What the 2026-10-10 sweep (`docs/fps-budget-findings-2026-10-10.md`) did to it:
+
+- **Kept: the carriage is the lever, and the ns/blend is about right.** The
+  carriage measures 652 ns/blend against the prior's 687, and its 40.8 ms/frame
+  against the prior's ~42.8. Removing 14.4 % of its ink bought the predicted
+  ~15 ms. The "thinner carriage" call is confirmed, and it is now the adopted
+  8 fps path rather than a possibility.
+- **Corrected: 687 ns is not a commit-wide `c`.** The static dial and glass
+  passes cost 447 and 334 ns/blend; the rotating hands cost 1,213–1,348. The
+  blended-pixel count of a commit does not convert to milliseconds at one rate,
+  so a budget built by multiplying total px by one constant is off by up to 4×
+  depending on which layer you are actually removing.
+- **Corrected: the row budget was attributed to the wrong author.** The prior
+  treated the GIF bank's 208-row band as the thing to shrink. The carriage's
+  rotating diff box forces ~255 full-width rows on its own every tick, so the
+  bank's rows are a subset of a floor the carriage sets — Art lever A measured
+  as exactly zero across a 32 → 208 row clamp. It also fixed the plan's own
+  V-A variant, whose blanked band `[140..330]` is byte-identical to shipped
+  after the packer's 16-px tile quantisation.
+- **Added: a synthetic-blend floor the prior had no number for.** An opaque
+  `blend_px` store costs 76 ns/px, a linear alpha blend 185–232 ns/px. That
+  gap is why an earlier read of the data ("the slow frames push fewer px, so
+  pixels are free") was right about the GIF's memcpy'd rows and wrong about the
+  layers' blends — the two are different operations and must be counted apart.
+

@@ -1,0 +1,131 @@
+# Watch Composer — evaluation and improvement plan
+
+Status: evaluation only. The four files sit in `tools/watch-composer/` byte-identical
+(md5-matched against `/mnt/c/Users/greg/Downloads/Skeleton Dial Animation/`). Nothing was
+altered, renamed, or reformatted, per instruction. Line references below are into the
+ingested copies.
+
+Companion execution plan: `docs/fps-budget-benchmark-plan.md` (device fps vs row/pixel
+budget).
+
+## What it is
+
+A single-file studio that generates the layered watch kits this repo consumes. Four
+files:
+
+| File | Lines | Role |
+|---|---|---|
+| `Watch Composer.dc.html` | 1065 | `<x-dc>` template + inline `class Component extends DCLogic`; tabs, live preview, exports, in-browser kit gate |
+| `watch-engine.js` | 2148 | `window.WatchEngine`: procedural face engine — 15 presets, 6+ movements, complications, hands, case/glass, dual lighting |
+| `dial-renderer.js` | 723 | `window.DialRenderer`: base plate + geartrain with a guaranteed seamless loop (every wheel advances exactly K=4 teeth per loop) |
+| `support.js` | 1911 | Generated dc-runtime ("do not edit" header). Bootstraps React 18.3.1 + ReactDOM + Babel from unpkg with SRI pins (1144–1148), then interprets the template |
+
+## Provenance — this is our vendor
+
+`assets/sources/watch-orbital-kit3.zip` came from this exact tool: identical manifest
+key set against `exportKit()` (html 609–708), the `WCD5-` design-ID format (365–373),
+`innerScale: 0.8755656108597285` == engine `BEZEL_IN/DR`, `movement: "orbital"` with the
+tool's defaults `orbD:128 orbTip:194 cageD:107`. Kit2 is the same schema; kit1 predates
+`innerScale`. The whole `tourbillon-axis-spec.md` pipeline consumes this tool's output.
+
+## Contract fit — verified, not assumed
+
+Checked against `tools/prep_watch_kit.py`, `tools/bake_clock.py`, `tools/kit_check.py`:
+
+| Consumer requirement | Producer | Status |
+|---|---|---|
+| `size: 466` (prep 251 hard gate) | const in both engine files | ok |
+| `fps == frames`, ≤16 (bake 575) | `get F()` returns 8 for caged/orbital trains (html 309) | ok |
+| `drawOrder[] tourbillon` with `centre/pivot/size/hubJewel/zeroRotationDeg` (prep 261–262) | html 643 | ok |
+| `hands[]` `pivot/centre/size/zeroRotationDeg` + `shadow{pivot,offsetPx}` (prep 318–344) | html 681–682; shadow canvas = hand canvas + uniform blur margin, keeps prep's integer-margin proof green | ok |
+| Bank 466×466, axis on a texel centre (the even-band lesson, commit `310ca00`) | `cageFrame(f,{k,dx,dy})` draws the carriage directly in kit space, `T+0.5` snap at html 633–636, never resampled | ok |
+| kit_check gates (red mask a≥60, R>100, R−max(G,B)>40; odd bbox; centroid ≤0.25; spread ≤0.01) | `kitCheck()` html 578–608 is a true mirror; ships `kit_check.txt` in the zip | ok |
+| Seam closure | `buildMovement()` renders frame F+1 and pixel-diffs it against frame 1, surfaced under the dial (html 455–460) | ok |
+| Live layers for prep's fold (outer/dial/glass/subdials) | html 626–630 | ok |
+
+## Strengths
+
+1. The seamless gear maths, kit-space carriage draw, and texel-snap encode the hardest
+   lessons this repo learned the expensive way — they are inside the tool now.
+2. `kitCheck` runs before download and duplicates our Python gate exactly.
+3. Seeded RNG + design-ID gives reproducible art; `busy()` blocks export mid-render.
+4. Frame build yields via MessageChannel; thumbnails are token-cancelled and lazy.
+5. The hand-rolled STORE-only ZIP writer (html 553–575) is minimal and reads cleanly in
+   Python's `zipfile`.
+6. Feature breadth: the two remaining perf levers are already sliders — `orbD`, `orbTip`,
+   `cageD` are Art lever B; sparkle/flare complications are deletable components, Art
+   lever A. Plus moon phase, custom date windows with `byDate`, lume, ~40 typefaces,
+   case/glass styles, dual light, Kelvin white balance.
+
+
+## Flaws
+
+1. **No offline mode.** First paint throws without unpkg (`getReact()`), and ~45 Google
+   Font families (html 11–21) need the network too. The critical 14 faces have a 4 s
+   load race (html 400–401); the 30 display faces can flash fallback.
+2. **No persistence.** No localStorage anywhere. A refresh loses every design not
+   manually copied into the WCD5 field. No named library, no bulk import/export.
+3. **The gate does not gate.** A failed `kitCheck` sets a status line but still
+   downloads the zip (html 642). Only prep's `sys.exit`s stop a doomed kit downstream.
+4. **Zero device-cost visibility.** The numbers this project cares about — per-tick blend
+   traffic, base delta row band, carriage bbox ink — are invisible until prep prints
+   them post-hoc. The tool cannot answer "is this design inside the 125 ms budget?".
+5. **Not agent-operable.** Export is a DOM anchor click (html 545–548). Regenerating a
+   kit from a design ID needs a human with a browser.
+6. **No undo.** Per-tab reset and "Reset everything" only. Sliders lack numeric entry;
+   `dist` quantizes to 0.5 px; the transport buttons are unlabelled glyphs.
+7. **Export hygiene.** No export mutex (double-click = two zips); `png()` re-reads the
+   wb setting per file, so a mid-export change mixes batches; `loadId` (374–383) accepts
+   wrong-length payloads and silently applies undefined settings; the frames zip carries
+   no manifest or design ID.
+8. **Schema drift risks.** Manifest `layout` holds the design object while this repo's
+   spec language uses "layout" for the orbital/static mode — a naming collision waiting
+   to mislead. `hubJewel.bbox` here is `[x0,y0,x1,y1]`; `kit_check.py` reports
+   `(xmin,xmax,ymin,ymax)` — a human comparing them will misread. `S=466 C=233 DR=221`
+   are duplicated across three files with no cross-file version handshake;
+   `WatchEngine` reaches into `DialRenderer._` internals via the window global, so
+   mismatched file pairs fail with cryptic runtime errors.
+
+## Improvement plan (priority order; nothing started)
+
+- **P1 — Device Budget panel.** Reuse the `kitCheck` canvases to show live: base
+  row-band (rows + px), carriage ink bbox, per-layer live ink
+  (dial/glass/hands/shadows), against the ink-budget table in
+  `docs/tourbillon-axis-spec.md`. The carriage sliders and the sparkle-comp toggle must
+  move the printed numbers in real time. Makes Art levers A/B an interactive objective
+  instead of flash-and-pray.
+- **P2 — Headless export hook.** `window.__composerExport = async (designId) =>
+  Uint8Array`. The agent can then regenerate any shipped kit deterministically: commit
+  the design ID next to each zip in `assets/sources/`, export via Playwright. Kit zips
+  stop being un-reproducible binaries.
+- **P3 — Gate the gate.** Disable both download buttons (or require an explicit override
+  checkbox) while `kitCheck` reports FAIL; add a PASS/FAIL badge on the Export tab.
+- **P4 — Offline + docs.** Vendor react, react-dom, babel and the font CSS locally beside
+  the HTML; add `tools/watch-composer/README.md` (provenance, how to open, the
+  export → `prep_watch_kit.py` → `bake_clock.py` chain, gate expectations, the
+  generated-status caveat on `support.js`).
+- **P5 — Design library.** localStorage autosave with named designs + JSON
+  import/export; keep WCD5 as the share format but add a version field and length
+  validation to `loadId`.
+- **P6 — Undo + numeric fields.** State is already one serializable object; add an undo
+  stack (Ctrl+Z) and number inputs beside every slider.
+- **P7 — Schema.** Dual-emit `layout`/`design` in the manifest (rename with a compat
+  alias), pick one `hubJewel.bbox` convention and document it in the spec, add a
+  one-line version handshake between the three JS files.
+- **P8 — Export hygiene.** Mutex + progress/cancel; include `designId` and a mini
+  manifest in the flattened-frames zip too.
+- Optional: commit the file as `watch-composer.dc.html` (no space) for CLI ergonomics —
+  deferred, the user asked for the originals untouched.
+
+## One-line summary
+
+A well-built generator that already embeds our hardest geometry lessons and exposes the
+exact art knobs the 8 fps plan needs, held back today by no-offline, no-persistence, a
+non-blocking gate, and no visibility into the device's blend budget.
+
+## Verification limits
+
+No browser on this box: this is a full code read plus a live schema match against
+kit3's manifest — not a click-through of the running UI. The contract table above is
+evidence-backed; the flaw list is code-evident except font-fallback behavior, which is
+inferred from the load-race code.

@@ -133,6 +133,346 @@ def crop_layer(img, pad):
     return img.crop((l, t, r, b)), l, t
 
 
+# ---------------------------------------------------------------------------
+# Bake-time static composite ("matting") -- see --matte.
+#
+# Why this exists: a full-coverage static layer (a translucent dial disc, a
+# glass sheen) costs the device a blend_px() on EVERY commit across the whole
+# marked span, measured at 82-95 cycles per blend -- ~40% of a tourbillon
+# commit. Folded into the background it sits on (the plate, or every frame of
+# the delta bank) it costs nothing at runtime, which is exactly how
+# prep_watch_kit.py already handles the bezel rim.
+#
+# It is only legal where it cannot change a single pixel. Moving a layer to the
+# bottom of the stack re-orders it against every layer that used to sit under
+# it, and alpha-compositing is NOT commutative -- so the fold is exact iff that
+# layer's alpha is 0 wherever any lower layer can ever paint. (An alpha of 255
+# does not rescue it either: matted, a lower layer would now paint *over* the
+# opaque one instead of under it.) That predicate is checkable straight off the
+# art, which is why this is proved rather than hand-picked: the orbital kit's
+# dial carries partial alpha over 55% of the pixels the carriage can reach and
+# its glass is 98% partial alpha over everything, so both must stay runtime
+# layers no matter what the fps line says. matte_plan() says so in numbers.
+# ---------------------------------------------------------------------------
+
+
+def _q565(arr):
+    """RGB888 (numpy, 0..255, last axis 3) -> RGB565 ints, the exact
+    truncation rgb565_le() applies -- the device never sees more precision
+    than this, so the matte must not either."""
+    import numpy as np
+    return ((((arr[..., 0] & 0xF8).astype(np.int64)) << 8) |
+            (((arr[..., 1] & 0xFC).astype(np.int64)) << 3) |
+            ((arr[..., 2] >> 3).astype(np.int64)))
+
+
+def _unq565(v565):
+    """RGB565 -> the RGB888 that re-quantises back to THE SAME 565, so a matte
+    composed in 565 survives rgb565_le() bit-for-bit (5 bit: x<<3|x>>2, 6 bit:
+    y<<2|y>>4 -- both saturate to 255 and are exact under the 0xF8/0xFC mask)."""
+    import numpy as np
+    r = (v565 >> 11) & 31
+    g = (v565 >> 5) & 63
+    b = v565 & 31
+    return np.dstack([(r << 3) | (r >> 2), (g << 2) | (g >> 4),
+                      (b << 3) | (b >> 2)]).astype("uint8")
+
+
+def _mix565(dst, fg, a):
+    """blend_px()'s NORMAL path (mix_16_16(fg, dst, a)) in numpy, per channel.
+
+    Deliberately the device's own maths and not Image.alpha_composite(): the
+    panel is RGB565 and every runtime composite happens there, so a matte
+    folded in 8-bit sRGB would land a quantisation step away from the pixel the
+    old live blend produced -- a diffuse error over the whole plate that no fps
+    counter can see. a==255 reduces to fg and a==0 to dst here exactly as
+    blend_px() short-circuits them."""
+    import numpy as np
+    a = np.asarray(a, dtype=np.int64)
+    mix5 = (a + 4) >> 3                       # lv's (mix+4)>>3, 0..32
+    dr, dg, db = (dst >> 11) & 31, (dst >> 5) & 63, dst & 31
+    fr, fg6, fb = (fg >> 11) & 31, (fg >> 5) & 63, fg & 31
+    r = (((fr - dr) * mix5 >> 5) + dr) & 31
+    g = (((fg6 - dg) * mix5 >> 5) + dg) & 63
+    b = (((fb - db) * mix5 >> 5) + db) & 31
+    return (r << 11) | (g << 5) | b
+
+
+def matte_fold(base_img, over_img):
+    """Fold one full-canvas RGBA layer into an RGBA base with the device's
+    blend. Alpha-0 texels pass through untouched, so the base keeps its own
+    colour exactly where the layer never painted (the planar-alpha rule
+    rgb565_le() documents: coverage is the alpha plane's business)."""
+    import numpy as np
+    dst = _q565(np.asarray(base_img.convert("RGB"), dtype=np.int64))
+    ov = np.asarray(over_img.convert("RGBA"), dtype=np.int64)
+    out = dst.copy()
+    hit = ov[..., 3] > 0
+    if hit.any():
+        out[hit] = _mix565(dst[hit], _q565(ov[..., :3])[hit], ov[..., 3][hit])
+    return Image.fromarray(_unq565(out), "RGB").convert("RGBA")
+
+
+def ink_count(img):
+    """How many texels a layer actually paints (what a fold takes off the
+    commit's blend budget). A frame bank counts the UNION over its frames --
+    any one of them can be the frame on the glass."""
+    import numpy as np
+    imgs = img if isinstance(img, (list, tuple)) else [img]
+    m = None
+    for im in imgs:
+        a = np.asarray(im.convert("RGBA").split()[3]) > 0
+        m = a if m is None else (m | a)
+    return int(m.sum()) if m is not None else 0
+
+
+def _panel_placements(img, pad, cx, cy, px, py):
+    """A layer's texels as the DEVICE positions them, on a panel-size canvas.
+
+    Art comes from the studio either full-canvas or trimmed to its own ink
+    (the kit's hands are 40x178, not 466x466), and the bake never rescales it
+    back: emit_sprite ships the crop plus a pivot in CROPPED coords, and the
+    rotator pins that pivot to the layer's centre. So the sprite's screen origin
+    is (centerx - (pivotx - offx), centery - (pivoty - offy)) -- reproduce that
+    exactly, or the reachability proof describes a layer the device never
+    paints. `img` may be a frame bank, whose frames share ONE ink bbox (as
+    bake_tourbillon does) so the whole bank lands on one placement."""
+    frames = list(img) if isinstance(img, (list, tuple)) else [img]
+    import numpy as np
+    l = t = 1 << 30
+    r = b = -1
+    for im in frames:
+        bb = im.convert("RGBA").getchannel("A").getbbox()
+        if not bb:
+            continue
+        l = min(l, bb[0]); t = min(t, bb[1])
+        r = max(r, bb[2]); b = max(b, bb[3])
+    if r <= l or b <= t:
+        return []
+    l = max(0, l - pad); t = max(0, t - pad)
+    r = min(frames[0].size[0], r + pad); b = min(frames[0].size[1], b + pad)
+    ox, oy = l, t
+    out = []
+    for im in frames:
+        crop = im.convert("RGBA").crop((ox, oy, r, b))
+        canvas = Image.new("RGBA", (SCREEN_W, SCREEN_H), (0, 0, 0, 0))
+        # Pinned so the pivot lands on the layer's centre, exactly as the
+        # device's posx/posy do (see paint_ctx_init).
+        canvas.paste(crop, (cx - (px - ox), cy - (py - oy)), crop)
+        out.append(canvas)
+    return out
+
+
+def _ink_reachable(panels, cx, cy, rotating):
+    """Every panel pixel this layer can ever paint, as a panel-size bool array.
+
+    A static layer paints its own ink. A hand sweeps a full circle in an hour,
+    so it can paint ANY pixel of the annulus its ink traces about the point it
+    rotates around: the pivot is pinned to (cx,cy), so a texel's orbit radius is
+    simply its distance from (cx,cy). +-1 px absorbs the quantised sweep step and
+    the rotation's own rounding."""
+    import numpy as np
+    mask = np.zeros((SCREEN_H, SCREEN_W), dtype=bool)
+    for im in panels:
+        mask |= np.asarray(im.split()[3]) > 0
+    if not rotating:
+        return mask
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return mask
+    r = np.hypot(xs - cx, ys - cy)
+    Y, X = np.mgrid[0:SCREEN_H, 0:SCREEN_W]
+    R = np.hypot(X - cx, Y - cy)
+    return (R >= r.min() - 1.0) & (R <= r.max() + 1.0)
+
+
+class _Layer:
+    """One compositor layer, already positioned on the panel canvas, for the
+    matte proof. `panels` is one panel-size RGBA (or several for a bank)."""
+    def __init__(self, name, panels, cx, cy, blend, rotating):
+        self.name, self.panels = name, panels
+        self.cx, self.cy = cx, cy
+        self.blend, self.rotating = blend, rotating
+        self.forced = False    # set by matte_plan when the fold overrode the proof
+
+
+def matte_plan(live, mode):
+    """Decide which static layers may be folded into the background.
+
+    `live` is the layer stack BOTTOM-TO-TOP (the theme's hands.order, then the
+    glass overlay above everything). Returns (chosen, lines) with chosen in
+    bottom-to-top fold order and lines the per-layer verdicts to print.
+
+    A layer is foldable iff it never rotates, blends NORMAL, and its alpha is 0
+    on every pixel any LOWER layer can ever paint. NORMAL matters: a MULTIPLY or
+    SCREEN layer goes through mix_16_16 with a *computed* colour, so folding it
+    changes pixels its own alpha never covered. plateFollow forbids all folding
+    -- a layer baked into the plate would slide across the glass with it.
+
+    mode: auto = fold only the proved ones, off = never, force = fold the
+    statics regardless (the caller must then report matte_fidelity, because the
+    fold is lossy by construction)."""
+    chosen, lines = [], []
+    for idx in range(len(live)):
+        cand = live[idx]
+        if cand.rotating:
+            continue                            # a mover is never a matte
+        import numpy as np
+        al = None
+        for im in cand.panels:
+            a = np.asarray(im.split()[3])
+            al = a if al is None else np.maximum(al, a)
+        if al is None or not (al > 0).any():
+            continue                            # nothing there to fold
+        lower = np.zeros(al.shape, dtype=bool)
+        for other in live[:idx]:
+            lower |= _ink_reachable(other.panels, other.cx, other.cy,
+                                    other.rotating)
+        cov = (al > 0)
+        viol = cov & lower
+        nv, nt = int(viol.sum()), int(cov.sum())
+        if cand.blend != 0:
+            verdict = f"REFUSED: blend mode {cand.blend} is never order-independent"
+        elif nv == 0:
+            verdict = f"FOLDED ({nt} px, provably clear of every lower layer)"
+        else:
+            verdict = ("REFUSED: {}/{} ink px sit where a lower layer can paint "
+                       "(max alpha there {})".format(nv, nt, int(al[viol].max())))
+        # blend NORMAL and the proof clear: the only fold worth making.
+        fold = mode != "off" and cand.blend == 0 and (nv == 0 or mode == "force")
+        if fold and nv > 0:
+            verdict += "  ** FORCED, LOSSY **"
+        if mode == "off":
+            verdict += "  [--matte off]"
+        lines.append("  matte {:<16s} {}".format(cand.name, verdict))
+        if fold:
+            cand.forced = nv > 0
+            chosen.append(cand)
+    return chosen, lines
+
+
+def resolve_hand_pivots(tdir, hands_style, args):
+    """Author pivot -> the pivot each rotating hand actually spins about.
+
+    The ONE place the correction is computed, because two consumers must agree
+    on it exactly: the hands loop bakes it into clk_sprite_t (so the rotator
+    spins there) and matte_plan's reachability annulus must be measured about
+    the same point -- a pivot that moved after the annulus was built would make
+    the proof describe a layer the device never draws. snap_pivot_to_hub is
+    pure, so calling it once and reusing the answer is bit-identical to what the
+    loop did inline."""
+    out = {}
+    for kind in KINDS:
+        hs = hands_style.get(kind, {}) or {}
+        px = int(hs.get("pivotX", 0)); py = int(hs.get("pivotY", 0))
+        cx = int(hs.get("centerX", SCREEN_W // 2))
+        cy = int(hs.get("centerY", SCREEN_H // 2))
+        if kind not in ("hour", "minute", "second") or args.no_pivot_snap:
+            out[kind] = (px, py, cx, cy, "")
+            continue
+        img = load_rgba(tdir, f"clock_hand_{kind}.png")
+        if img is None:
+            out[kind] = (px, py, cx, cy, "")
+            continue
+        nx, ny, orb = snap_pivot_to_hub(img, px, py, cx, cy)
+        note = "" if (nx, ny) == (px, py) else f" [pivot {px},{py}->{nx},{ny} orbit {orb:.2f}px]"
+        out[kind] = (nx, ny, cx, cy, note)
+    return out
+
+
+def build_live_stack(tdir, style, pivots, args, tourb_imgs):
+    """The compositor's real z-stack, BOTTOM-TO-TOP, for the matte proof.
+
+    Mirrors what the firmware builds: the theme's hands.order (earlier == lower,
+    each shadow directly under its own hand and sharing its coverage), then the
+    glass overlay above everything. The second-hand slot is the tourbillon bank
+    when one was baked, because that is the art the device actually paints."""
+    hands_style = style.get("hands", {}) or {}
+    order = [int(k) for k in (hands_style.get("order", [0, 1, 2, 3, 4]) or [])
+             if 0 <= int(k) < 5]
+    shadow_style = hands_style.get("shadow", {}) or {}
+    shadow_on = bool(shadow_style.get("on", False))
+    sdx = int(shadow_style.get("dx", 0)); sdy = int(shadow_style.get("dy", 0))
+    live = []
+    for k in order:
+        kind = KINDS[k]
+        hs = hands_style.get(kind, {}) or {}
+        if not bool(hs.get("show", False)):
+            continue
+        px, py, cx, cy, _ = pivots[kind]
+        blend = int(hs.get("blend", 0))
+        rotating = k in (0, 1, 2)
+        if k == 2 and tourb_imgs:
+            src = tourb_imgs
+        else:
+            src = load_rgba(tdir, f"clock_hand_{kind}.png")
+        if src is None:
+            continue
+        panels = _panel_placements(src, args.pad, cx, cy, px, py)
+        if not panels:
+            continue
+        live.append(_Layer(kind, panels, cx, cy, blend, rotating))
+        # Its shadow paints the same pixels one offset away, so it is part of
+        # what a static layer above it must clear to be foldable at all.
+        if shadow_on:
+            simg = load_rgba(tdir, f"clock_shadow_{kind}.png")
+            if simg is not None:
+                sp = _panel_placements(simg, args.pad, cx + sdx, cy + sdy, px, py)
+                if sp:
+                    live.append(_Layer(kind + "-shadow", sp, cx + sdx, cy + sdy,
+                                       0, rotating))
+    ov = load_rgba(tdir, "clock_overlay.png")
+    if ov is not None:
+        # The overlay ships with pivot == crop origin == its own canvas spot
+        # (see the emit_sprite call in main), so zeros here place it exactly
+        # where the device draws it.
+        op = _panel_placements(ov, args.pad, 0, 0, 0, 0)
+        if op:
+            live.append(_Layer("overlay(glass)", op, 0, 0, 0, False))
+    return live
+
+
+def _matte_base(tdir, args):
+    """A representative background to score a forced fold against: the bank's
+    keyframe, or the theme's plate. Only used by the --matte force report."""
+    src = args.bg_gif or args.bg_frames
+    if src:
+        imgs, _ = (_load_gif_frames(src) if str(src).lower().endswith(".gif")
+                   else _load_png_frames(src, args.bg_glob))
+        return imgs[0]
+    p = load_rgba(tdir, "clock_plate.png")
+    return p if p is not None else Image.new("RGBA", (SCREEN_W, SCREEN_H), (0, 0, 0, 255))
+
+
+def matte_fidelity(base_img, lower_layers, cand):
+    """Quantify what FORCING a fold costs, so 'type 2' is a measured choice.
+
+    Folding moves the candidate from ABOVE the lower layers to BELOW all of
+    them (baked into the base), and alpha-compositing is not commutative, so
+    compare exactly those two orders in the device's own RGB565:
+        true   = (base . lower... . candidate)   -- today's runtime stack
+        folded = ((base . candidate) . lower...) -- the baked result
+    A lower MOVER enters at its authored pose, so the number is representative
+    rather than exhaustive -- matte_plan's violation count is what proves the
+    fold is not exact. Only ever called for an override: a proved fold agrees
+    by construction and needs no number."""
+    import numpy as np
+    def run(seq):
+        img = base_img
+        for L in seq:
+            for p in L.panels:
+                img = matte_fold(img, p)
+        return img
+    true_px = _q565(np.asarray(run(list(lower_layers) + [cand]).convert("RGB"),
+                               dtype=np.int64))
+    got = _q565(np.asarray(run([cand] + list(lower_layers)).convert("RGB"),
+                           dtype=np.int64))
+    d = np.abs(true_px - got)
+    per = np.maximum(np.maximum((d >> 11) & 31, (d >> 5) & 63), d & 31)
+    diff = (d != 0)
+    return int(diff.sum()), int(per.max()), (float(per[diff].mean()) if diff.any() else 0.0)
+
+
 class Blob:
     """Append-only packed byte buffer that returns each segment's start offset."""
     def __init__(self):
@@ -670,7 +1010,7 @@ def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
 
 
 def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
-                 fps=0.0, frame_glob=None, frame_step=1):
+                 fps=0.0, frame_glob=None, frame_step=1, matte=None):
     """Bake an animated background (GIF or PNG frame sequence) into the blob
     as one keyframe + per-frame delta rects.
 
@@ -736,6 +1076,14 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
             delays = delays[::frame_step]
         print(f"  decimated every {frame_step}th frame: {len(imgs)} kept "
               f"(loop still 1 authored period)")
+    if matte:
+        # Fold the proved static layers into every frame of the bank, keyframe
+        # included. The matte is identical frame to frame, so it contributes no
+        # delta and the packer's diffing/rect packing is untouched -- it just
+        # starts from a background that already carries the layer.
+        for m in matte:
+            imgs = [matte_fold(im, m) for im in imgs]
+        print(f"  bg bank carries {len(matte)} baked static layer(s)")
     F = [_frames_to_u16(im) for im in imgs]
     print(f"  {'gif' if is_gif else 'frames'} bg: {src} -> {len(F)} frames @ "
           f"{SCREEN_W}x{SCREEN_H} fit={fit} "
@@ -988,6 +1336,17 @@ def main():
                          "(the second hand here declared (16,75) for a hub at "
                          "(16,71), a 2.9px wobble) and leaves the ink misaligned "
                          "against the plate band it repaints.")
+    ap.add_argument("--matte", choices=("auto", "off", "force"), default="auto",
+                    help="fold a STATIC layer (the dial disc, the glass) into the "
+                         "background at bake time so it costs no blend_px at "
+                         "runtime. auto (default) folds only the layers PROVED "
+                         "pixel-identical to do so -- alpha 0 wherever any lower "
+                         "layer can ever paint -- and prints the verdict for every "
+                         "static layer; off keeps every layer a runtime composite "
+                         "(the classic behaviour); force folds the statics anyway "
+                         "for a measured fps/fidelity tradeoff and is NOT a "
+                         "shippable setting for art the prover refused.")
+
     ap.add_argument("--preview-dir", default=None)
     args = ap.parse_args()
 
@@ -1017,6 +1376,65 @@ def main():
 
     blob = Blob()
 
+    # ---- bake-time static composite (matte): prove it, then fold it ----
+    # Decided BEFORE the background is packed, because folding means the plate
+    # (or every frame of the delta bank) has to carry the layer already. The
+    # verdict is printed whatever it says -- on the orbital kit both statics are
+    # refused, and a bake that silently kept them as runtime layers while
+    # looking like it optimised them is the failure mode to avoid here.
+    hands_style_pre = style.get("hands", {}) or {}
+    pivots = resolve_hand_pivots(tdir, hands_style_pre, args)
+    tourb_imgs = None
+    if args.tourbillon:
+        tourb_imgs = [Image.open(io.BytesIO(b)).convert("RGBA")
+                      for _, b in _png_frame_items(args.tourbillon, None)]
+        if tourb_imgs and tourb_imgs[0].size != (SCREEN_W, SCREEN_H):
+            tourb_imgs = [resize_full(im) for im in tourb_imgs]
+    live_stack = build_live_stack(tdir, style, pivots, args, tourb_imgs)
+    matte_chosen, matte_lines = matte_plan(live_stack, args.matte)
+    print("static-composite (--matte {}):".format(args.matte))
+    for ln in matte_lines:
+        print(ln)
+    for L in matte_chosen:
+        if not getattr(L, "forced", False):
+            continue
+        # Someone said --matte force on art the prover refused: price the lie
+        # in pixels instead of hiding it. See matte_fidelity's two orderings.
+        nd, mx, mn = matte_fidelity(_matte_base(tdir, args),
+                                    live_stack[:live_stack.index(L)], L)
+        print("  FORCED fold of {}: {} px of the panel CHANGE vs the runtime "
+              "stack (max {} 565-steps, mean {:.1f}) -- this is a visible "
+              "regression, not a shippable setting".format(L.name, nd, mx, mn))
+    if int(style.get("plateFollow", 0)) and matte_chosen:
+        print("  plateFollow is set: the plate parallaxes, so every fold is "
+              "dropped (a baked-in layer would slide with it)")
+        matte_chosen = []
+    # A foldable candidate is static, so it has exactly one panel (banks are
+    # movers, which are never folded).
+    matte_stack = [L.panels[0] for L in matte_chosen]
+    # KINDS index / overlay name -> folded layer, for the emission below.
+    folded = {L.name: L for L in matte_chosen}
+    folded_kinds = {L.name for L in matte_chosen}
+    matte_mask = 0
+    for nm in folded_kinds:
+        if nm in KINDS:
+            matte_mask |= 1 << KINDS.index(nm)
+        elif nm.startswith("overlay"):
+            matte_mask |= 1 << 5
+    if matte_chosen:
+        # Take the folded layers OUT of the runtime stack: the firmware builds
+        # both the LVGL objects and the L4 hook's job list from this dict, so
+        # dropping the slot here is what makes the fold the single source of
+        # truth rather than a second copy that has to be kept in step.
+        hs = style["hands"]
+        hs["order"] = [k for k in (hs.get("order", [0, 1, 2, 3, 4]) or [])
+                       if KINDS[int(k)] not in folded_kinds]
+        for nm in folded_kinds:
+            if nm in KINDS:
+                hs[nm] = dict(hs.get(nm, {}), show=False)
+            print("  folded {} into the background: {} px of blend traffic "
+                  "removed from every commit".format(nm, ink_count(folded[nm].panels)))
+
     gif = None
     bg_src = args.bg_gif or args.bg_frames
     if bg_src:
@@ -1029,7 +1447,8 @@ def main():
                            denoise=args.bg_denoise, fit=args.bg_fit,
                            fps=(args.bg_fps or (0.0 if args.bg_gif
                                                 else float(bg.get("fps", 0) or 0))),
-                           frame_glob=args.bg_glob, frame_step=args.frame_step)
+                           frame_glob=args.bg_glob, frame_step=args.frame_step,
+                           matte=matte_stack)
         gif["src"] = bg_src
         plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
         baked_frames, anim_frames = [], 0
@@ -1039,6 +1458,11 @@ def main():
         if plate_img is None:
             plate_img = Image.new("RGBA", (SCREEN_W, SCREEN_H), (0, 0, 0, 255))
         plate_img = resize_full(plate_img)
+        # A folded static layer rides on the plate itself, blended in the
+        # device's own RGB565 -- so the plate pixel IS the pixel the runtime
+        # composite used to produce, and nothing above it changes.
+        for m in matte_stack:
+            plate_img = matte_fold(plate_img, m)
         plate_off = blob.add(rgb565_le(plate_img))
         plate_key = bytes(blob.buf[plate_off:plate_off + SCREEN_W * SCREEN_H * 2])
 
@@ -1055,6 +1479,8 @@ def main():
                 baked_frames.append(plate_off)   # missing frame -> hold the still plate
                 continue
             fim = resize_full(fim)
+            for m in matte_stack:
+                fim = matte_fold(fim, m)
             payload = bytes(rgb565_le(fim))
             if payload == plate_key or payload in seen:
                 baked_frames.append(seen.get(payload, plate_off))
@@ -1069,6 +1495,8 @@ def main():
 
     # ---- overlay: full canvas but usually a tiny hub; trim to ink ----
     ov_img = load_rgba(tdir, "clock_overlay.png")
+    if "overlay(glass)" in folded_kinds:
+        ov_img = None            # folded into the background: no sprite to ship
     ov_crop, ov_offx, ov_offy = crop_layer(ov_img, args.pad)
     if ov_crop is None:
         overlay = blank_sprite(0, 0, 0)
@@ -1087,22 +1515,24 @@ def main():
     for kind in KINDS:
         hs = hands_style.get(kind, {}) or {}
         show = bool(hs.get("show", False))
-        px = int(hs.get("pivotX", 0)); py = int(hs.get("pivotY", 0))
-        cx = int(hs.get("centerX", SCREEN_W // 2)); cy = int(hs.get("centerY", SCREEN_H // 2))
+        px, py, cx, cy, pivot_note = pivots[kind]
         blend = int(hs.get("blend", 0))
 
+        if kind in folded_kinds:
+            # Folded into the plate/bank at bake time. Emit nothing at all: a
+            # zero-size record is what keeps BOTH the LVGL object and the L4
+            # hook's job list from resurrecting a second copy of the layer --
+            # a folded layer painted again would double-darken every pixel.
+            blank = blank_sprite(cx, cy, 0)
+            hand_recs.append(dict(blank))
+            shadow_recs.append(dict(blank))
+            print(f"  {kind:8s} FOLDED (baked into the background)")
+            continue
+
         img = load_rgba(tdir, f"clock_hand_{kind}.png")
-        # Correct an authored pivot that sits off the hand's own hub: only the
-        # three rotating hands need it (static layers never spin), and only
-        # when the theme's value actually wobbles (see snap_pivot_to_hub). The
-        # shadow is emitted with the SAME px/py so it stays locked to the hand.
-        pivot_note = ""
-        if img is not None and not args.no_pivot_snap and kind in ("hour", "minute", "second"):
-            spx, spy = px, py
-            nx, ny, orb = snap_pivot_to_hub(img, spx, spy, cx, cy)
-            if (nx, ny) != (spx, spy):
-                pivot_note = f" [pivot {spx},{spy}->{nx},{ny} orbit {orb:.2f}px]"
-                px, py = nx, ny
+        # The corrected pivot comes from resolve_hand_pivots(), shared with the
+        # matte reachability proof so the two can never disagree about where
+        # this hand spins (see its docstring).
         if img is None:
             hand_recs.append(blank_sprite(cx, cy, 0))
         else:
@@ -1137,12 +1567,12 @@ def main():
 
     _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
-            plate_off, blob, args, gif, tourb_recs)
+            plate_off, blob, args, gif, tourb_recs, matte_mask)
 
 
 def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
-            plate_off, blob, args, gif=None, tourb_recs=None):
+            plate_off, blob, args, gif=None, tourb_recs=None, matte_mask=0):
     hands_style = style.get("hands", {}) or {}
     order = [int(k) for k in (hands_style.get("order", [0, 1, 2, 3, 4]) or [0, 1, 2, 3, 4])
              if 0 <= int(k) < 5]
@@ -1213,6 +1643,10 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                "  int16_t  bg_fps; uint8_t bg_loop; uint16_t bg_every;\n"
                "  uint32_t plate_off;       /* full-screen RGB565 colour plane offset */\n"
                "  uint8_t  order[5]; uint8_t order_n;\n"
+               "  uint8_t  matte_mask;        /* bit i = hand slot i folded into the\n"
+               "                               *   background at bake time, never\n"
+               "                               *   composited at runtime; bit 5 = the\n"
+               "                               *   glass overlay was folded too */\n"
                "  clk_sprite_t hand[5];\n"
                "  clk_sprite_t shadow[5];\n"
                "  clk_sprite_t overlay;\n"
@@ -1269,6 +1703,8 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
     hdr.append("  /* plate_off */ {},\n".format(plate_off))
     hdr.append("  /* order */ {{ {} }}, /* order_n */ {},\n".format(
         ", ".join(str(k) for k in order), order_n))
+    hdr.append("  /* matte_mask */ {},  /* {} static layer(s) baked into the background */\n".format(
+        matte_mask, "baked" if matte_mask else "none"))
     hdr.append("  /* hand */ {\n" + "\n".join(fmt_spr(hand_recs[i], KINDS[i]) for i in range(5)) + "\n  },\n")
     hdr.append("  /* shadow */ {\n" + "\n".join(fmt_spr(shadow_recs[i], KINDS[i]) for i in range(5)) + "\n  },\n")
     hdr.append("  /* overlay */" + fmt_spr(overlay, "overlay")[1:] + "\n")

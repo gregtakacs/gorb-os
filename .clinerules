@@ -196,6 +196,32 @@ r>=220 (minute hand tops out at r=199) — a runtime ring would cost PSRAM blend
 the canvas restore serves for free. Glass must stay the overlay: the kit draws
 hands UNDER glass, so folding it anywhere else is a fidelity loss.
 
+**Bake-time static composite (`--matte`) — the two compositing methods.** A full-coverage
+static layer (the dial disc, the glass) otherwise pays a `blend_px` on every commit across
+the whole marked span. `tools/bake_clock.py --matte auto` folds such a layer into the
+background it sits on (the plate, or every frame of the delta bank) so it costs *nothing*
+at runtime, and records it in `clk_theme_t.matte_mask` (bit per hand slot, bit 5 = the
+glass); `clock_view.c` then omits the layer from both the LVGL objects and the L4 hook's
+job list, and the bake ships that sprite blank. `--matte off` keeps every layer a runtime
+composite. Default is `auto`, and auto means PROVED, never assumed: a fold is legal iff
+the layer never rotates, blends NORMAL, and its alpha is exactly 0 on every pixel any
+LOWER layer can ever paint (a rotating hand can paint its whole ink annulus about its
+centre — `_ink_reachable`). Alpha 255 does not license it either: matted, a lower layer
+would paint *over* the opaque one instead of under it. Read the printed verdict before
+changing the flag — on the orbital kit both statics are refused (dial: 64,151 of 96,406
+ink px under the carriage's r=0..221 reach; glass: 112,267 of 113,422 px, max alpha 54),
+so this art stays the runtime-composited type and `matte_mask` is 0. `--matte force`
+overrides the proof for measurement only and prices the lie in pixels: it does reach
+8-9 fps (avg commit 136-144 -> 82-94 ms, `dial 0/0 glass 0/0` in the blend telemetry,
+1.24M -> 613k blends/s) but changes 20,109 px of the panel by up to 63 RGB565 steps —
+the carriage loses the dial's tint and the hands lose the glass sheen. **A forced fold is
+never a shippable setting**; if a theme needs the fps, the art must change so the proof
+passes (the way the bezel rim does), not the proof. Fold nothing when `plateFollow` is
+set — a baked-in layer would slide across the glass with the parallax. The fold composites
+in the device's own RGB565 (`_mix565`), never PIL's 8-bit alpha_composite, so a proved
+fold is bit-identical to the blend it replaces — verified by an `auto` bake reproducing
+the shipped `clock_assets.bin` byte for byte.
+
 Firmware rules this dial depends on (`main/clock/clock_view.c`):
 - `tourbillon_advance()` swaps the shown frame off the wall clock (15 fps) and
   marks ONLY the union of the outgoing+incoming baked diff rects at the current

@@ -38,6 +38,10 @@ typedef struct {
   int16_t  bg_fps; uint8_t bg_loop; uint16_t bg_every;
   uint32_t plate_off;       /* full-screen RGB565 colour plane offset */
   uint8_t  order[5]; uint8_t order_n;
+  uint8_t  matte_mask;        /* bit i = hand slot i folded into the
+                               *   background at bake time, never
+                               *   composited at runtime; bit 5 = the
+                               *   glass overlay was folded too */
   clk_sprite_t hand[5];
   clk_sprite_t shadow[5];
   clk_sprite_t overlay;
@@ -319,6 +323,7 @@ static const clk_theme_t clk_theme = {
   /* bg_frames */ 0, /* fps,loop,every */ 6, 0, 3600,
   /* plate_off */ 0,
   /* order */ { 2, 3, 0, 1 }, /* order_n */ 4,
+  /* matte_mask */ 0,  /* none static layer(s) baked into the background */
   /* hand */ {
   {   26,  161,     7,     0,    13,   136,   233,   233,  0,  1,   2304648,     0,     0,     0,     0 }, /* hour */
   {   20,  231,     6,     0,    10,   197,   233,   233,  0,  1,   2317206,     0,     0,     0,     0 }, /* minute */

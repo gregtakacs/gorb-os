@@ -1485,12 +1485,13 @@ static void clock_layer_commit(void)
     for (int oi = 0; oi < clk_theme.order_n && nj < CLK_L4_MAX_JOBS - 1; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
+        if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], &clk_theme.shadow[k], s_ang_10[k], (uint8_t)k)) nj++;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], layer_spr(k), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
     }
-    if (s_overlay && nj < CLK_L4_MAX_JOBS)
+    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_L4_MAX_JOBS)
         if (paint_ctx_init(&jc[nj], &clk_theme.overlay, 0, CLK_PAINT_ROLES - 1)) nj++;  /* the glass */
 
     /* Walk the marked rows in bands (see s_band). Runs of marked rows are the
@@ -1903,6 +1904,12 @@ esp_err_t clock_view_init(void)
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
+        /* Folded into the background at bake time (tools/bake_clock.py
+         * --matte): the plate/bank already carries this layer's pixels, so an
+         * object here would paint a SECOND copy over them. The bake also ships
+         * the sprite blank, so this is the belt to that pair of braces -- it
+         * is what keeps a half-swapped bin+header pair from double-blending. */
+        if (clk_theme.matte_mask & (1u << k)) continue;
         if (k <= 2 && clk_theme.shadow_on)
             s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k]);
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
@@ -1969,6 +1976,13 @@ esp_err_t clock_view_init(void)
                  + (clk_theme.hand[2].show ? 1 : 0),
              clk_theme.shadow_on ? "on" : "off", clk_theme.shadow_dx, clk_theme.shadow_dy,
              sweepdesc, bgdesc);
+    /* Which compositing method this art was baked for. A set bit means that
+     * static layer is already folded into the plate/bank and costs no
+     * blend_px on any commit (tools/bake_clock.py --matte, which only ever
+     * sets a bit it PROVED pixel-identical); mask 0 is the ordinary dial where
+     * every layer is composited by clock_layer_commit each tick. */
+    ESP_LOGI(TAG, "composite: %s",
+             clk_theme.matte_mask ? "baked static matte" : "runtime layers");
     if (clk_theme.tourbillon_n)
         ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
                  (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn the rows-capacity sweep CSV into the fps-vs-animated-rows decision table.
+"""numpy-optional. Turn the rows-capacity sweep CSV into the fps-vs-animated-rows decision table.
 
 Labels: {A,B,C,D}_r<R> (animated full-width band of R rows), _static (no bg
 animation), _real (the kit's own GIF), _top<R>. Configs: A = no carriage, no
@@ -44,7 +44,7 @@ def band_of(point):
     if point.endswith('_real'):
         return None            # the kit's own art: 208-row union, sparse delta
     import re
-    m = re.search(r'_r(\d+)$|_top(\d+)$', point)
+    m = re.search(r'_(?:r|top)(\d+)(?:f\d+)?$', point)
     return int(m.group(1) or m.group(2)) if m else None
 
 
@@ -52,17 +52,33 @@ def main(csv_path, guard=DEFAULT_GUARD):
     pts = read(csv_path)
     by_cfg = {}
     for p in pts:
-        by_cfg.setdefault(p['point'].split('_')[0], []).append(p)
+        t = p['point'].split('_')
+        by_cfg.setdefault('_'.join(t[:2]) if t[0] == 'F' else t[0], []).append(p)
     print(f'guard={guard} ms  (period - guard = flush budget; measured idle+TE+submit '
           f'was 12-17 ms at 6 fps)')
     for cfg in sorted(by_cfg):
-        ps = sorted(by_cfg[cfg], key=lambda p: (band_of(p) or -1) if p['point'].endswith('_real') is False else -2)
+        ps = sorted(by_cfg[cfg], key=lambda p: -2 if p['point'].endswith('_real')
+                  else (band_of(p['point']) if band_of(p['point']) is not None else -1))
         print(f'\n== config {cfg} ==')
         print('  point        band   fps   flush   rows   blends/tick')
         for p in ps:
-            print(f"  {p['point']:<12} {str(band_of(p)):>5}  {p['fps']:5.2f} "
+            print(f"  {p['point']:<12} {str(band_of(p['point'])):>5}  {p['fps']:5.2f} "
                   f"{p['flush_avg_ms']:6.1f}  {p['rows']:5.0f}  {p['blend_px_tick']:8.0f}")
         xy = [(p['rows'], p['flush_avg_ms']) for p in ps if p['rows'] >= 8]
+        # Frontier by MEASURED fps first (a band sustains the target if the
+        # cadence held the tick), fit only to interpolate between rungs.
+        for f in TARGETS:
+            held = [p for p in ps if p['fps'] >= f - 0.35 and not p['point'].endswith('_real')]
+            bands = [b for p in held if (b := band_of(p['point'])) is not None]
+            top = max(bands) if bands else None
+            line = f'  {f:2d} fps: largest band HOLDING = ' + \
+                   (f'{top} rows ({p_of(ps, top)["point"]})' if top is not None else 'none held')
+            nxt = [b for p in ps if (b := band_of(p['point'])) is not None
+                   and not p['point'].endswith('_real') and b > (top or 0) and p['fps'] < f - 0.35]
+            if nxt:
+                hi = min(nxt)
+                line += f'; first MISSING rung = {hi}'
+            print(line)
         if len(xy) >= 3:
             (x, y) = zip(*xy)
             b, a = np.polyfit(x, y, 1)
@@ -75,6 +91,13 @@ def main(csv_path, guard=DEFAULT_GUARD):
                 print(f'  {f:2d} fps: flush<={budget:5.1f} ms -> max DMA rows '
                       f'{cap:5.0f}{" (fixed term already over budget)" if not ok else ""}')
     return 0
+
+
+def p_of(ps, band):
+    for p in ps:
+        if band_of(p['point']) == band:
+            return p
+    return ps[0]
 
 
 if __name__ == '__main__':

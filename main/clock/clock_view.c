@@ -160,6 +160,13 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
  * (A/B fallback). */
 #define CLK_BG_DIRECT_PUSH 1
 
+/* Re-mark every layer's full swept box each tick on L4/GIF themes (see
+ * mark_all_layers). 1 = shipped behaviour; 0 = rely on event marks only
+ * (rows-capacity bench, docs/rows-capacity-2026-10-10.md). */
+#ifndef CLOCK_L4_MARK_STATIC_BOXES
+#define CLOCK_L4_MARK_STATIC_BOXES 1
+#endif
+
 static uint16_t        *s_canvas;      /* PSRAM, CLK_SCR_W*CLK_SCR_H RGB565 */
 static lv_image_dsc_t   s_canvas_dsc;
 static int              s_gif_shown = 0;   /* frame the canvas holds now */
@@ -1134,6 +1141,17 @@ static void request_commit(void)
  * minute hand was painted once and froze outside the animated area. */
 static void mark_all_layers(void)
 {
+    /* Rows-capacity bench experiment (docs/rows-capacity-2026-10-10.md): the
+     * unconditional full-box re-mark makes a STANDING hand pay its box's
+     * restore+re-blend every tick (measured: a plain sweeping needle costs
+     * ~85 ms/frame on top of the GIF, and ticking it at 1 Hz does NOT help).
+     * Under the L4 hook every marked row is re-composited from the canvas
+     * across ALL layers anyway, so layers that did not move need no mark:
+     * apply_angles marks moving hands, gif_apply_frame marks pushed rows.
+     * Default 1 = the shipped discipline, byte-for-byte. */
+#if !CLOCK_L4_MARK_STATIC_BOXES
+    return;
+#endif
     /* Full-coverage art (tourbillon kits — dial/glass reach every row) cannot
      * afford this discipline at all: re-marking four static boxes unions
      * ~430 rows of full-page restore+repaint per tick and caps the dial at

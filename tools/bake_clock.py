@@ -351,6 +351,34 @@ def matte_plan(live, mode):
     return chosen, lines
 
 
+def shadow_offsets(hands_style, kind):
+    """The screen-space offset a hand's shadow centre sits at.
+
+    The device keeps ONE light direction per theme (clk_theme.shadow_dx/dy),
+    but a watch-designer kit specifies the offset PER HAND — `hands[].shadow
+    .offsetPx` grows with the hand's height in the stack, so a minute hand
+    floating further above the dial throws a further offset than the hour hand
+    under it. The runtime already supports that without knowing it: the shadow
+    is its own clk_sprite_t, and it is the record's centrex/centery — not any
+    theme-wide field — that place it (make_layer positions the object at
+    centre - pivot). So the baker takes the per-hand override when the style
+    carries one and falls back to the theme default.
+
+    The ONE place this is computed, shared by the hands loop and by
+    matte_plan's reachability stack, for the same reason resolve_hand_pivots
+    is: an offset that moved after the annulus was built would make the fold
+    proof describe a layer the device never draws."""
+    ss = hands_style.get("shadow", {}) or {}
+    hs = hands_style.get(kind, {}) or {}
+    dx = hs.get("shadowDx", None)
+    dy = hs.get("shadowDy", None)
+    if dx is None:
+        dx = int(ss.get("dx", 0))
+    if dy is None:
+        dy = int(ss.get("dy", 0))
+    return int(dx), int(dy)
+
+
 def resolve_hand_pivots(tdir, hands_style, args):
     """Author pivot -> the pivot each rotating hand actually spins about.
 
@@ -402,6 +430,7 @@ def build_live_stack(tdir, style, pivots, args, tourb_imgs):
         px, py, cx, cy, _ = pivots[kind]
         blend = int(hs.get("blend", 0))
         rotating = k in (0, 1, 2)
+        sdx, sdy = shadow_offsets(hands_style, kind)
         if k == 2 and tourb_imgs:
             src = tourb_imgs
         else:
@@ -1546,13 +1575,15 @@ def main():
             crop, ox, oy = crop_layer(simg, args.pad)
             # shadow shares the hand's angle/pivot; only its CENTRE moves, in
             # screen space, which is what keeps the light direction fixed.
+            sdx, sdy = shadow_offsets(hands_style, kind)
             shadow_recs.append(emit_sprite(blob, crop, ox, oy, px, py,
-                                           cx + shadow_dx, cy + shadow_dy, 0, shadow_on and show))
+                                           cx + sdx, cy + sdy, 0, shadow_on and show))
 
         rec = hand_recs[-1]
         print(f"  {kind:8s} show={int(show)} pivot=({px},{py}) center=({cx},{cy}) blend={blend}"
               + ("" if img is None else
                  f" canvas={img.size} ink={rec['w']}x{rec['h']}@({rec['offx']},{rec['offy']})")
+              + (f" shadowoff=({sdx},{sdy})" if simg is not None else "")
               + pivot_note)
 
     # ---- tourbillon: an ANIMATED second hand (optional frame bank) ----

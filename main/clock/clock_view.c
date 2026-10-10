@@ -160,51 +160,6 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
  * (A/B fallback). */
 #define CLK_BG_DIRECT_PUSH 1
 
-/* CLK_TOURB_FILTER: vertical 2-tap resample of the carriage's texel rows in the
- * hook's inverse map (the rot path of paint_row_ctx, carriage role only).
- * That map is LVGL's nearest-neighbour transform: the `>> 8` that turns the 8.8
- * source coordinate into a texel row throws the fraction away GLOBALLY and
- * IDENTICALLY for every pixel of the sprite. The rendered body therefore holds
- * rigid while the fraction rolls, then the whole lattice re-partitions at once.
- * That is the 1-px vertical bob: it snaps as one unit ~17 times per revolution.
- * Measured on KIT2 (227x302, pivot (113,185), centre (233,233), 8 frames): the
- * ink centroid sits at hamming=0 for 12 consecutive ticks and then steps 1 px
- * whole-body. The step histogram {-2:25, -1:125, 0:179, +1:125, +2:24} matches
- * the tangent travel (r~100-150 px, ~0.75 deg/tick, ~1.3 px/tick). The source
- * art is rigid (balance centroid identical across all 8 frames, both kits), the
- * hub measures 0.007 px, and no resampler is involved, so the artifact lives in
- * the map and nowhere else. KIT2 shows 17/21 spurious top/bottom edge reversals
- * per revolution, KIT1 7/9: same code and same geometry family, so it is
- * geometry-vs-pixel-grid, not radius and not shadows.
- * Sampling the next texel ROW with the discarded fraction as its weight makes
- * the body's position continuous in the angle instead of quantised to it.
- * Vertical-only. Full 4-tap bilinear saturates the paint phase and projects to
- * 4-5 fps, and the carriage is already the biggest single line item (242-265 of
- * the ~670 ms/s hook), so there is no budget for the horizontal tap. Nearest
- * stays for the hands, dial, glass, hub and every shadow (clock_layer_commit
- * clears the flag on shadow ctxs, so a theme that ever gives the carriage a
- * shadow of its own keeps that one nearest). It is applied to EVERY carriage
- * texel, not just near texel boundaries, because switching the filter on and off
- * injects a new pop; wy == 0 alone may skip the second tap, since there its
- * weight is 0 and the result is the nearest texel bit for bit.
- * Proven on the host first: tools/sim_tourb_mark.py models both maps (the
- * painted set grows 0.35%, and the chord marks still cover every pixel, so no
- * ghost), and the residual of the rendered ink centroid against the exact
- * forward-map centroid falls from 2.23 px peak-to-peak with 16 whole-body snaps
- * per revolution to 0.25 px with none (KIT2; KIT1 1.62 -> 0.29).
- * Cost, measured on the bench A/B (same theme, one rebuild per side, normalised
- * per commit): the carriage's ~54.8k blends/commit cost 37.6 ms with the filter
- * off and 50.2 ms with it on: 687 ns -> 1.02 us per blend. The pair's second row
- * is a SECOND PSRAM line stream per pixel, not the line the tile-32/band-8
- * staging already fetched. Commit 103.6 -> 109.8 ms, panel 7 fps -> 6. Over the
- * 5-10% budget, so this ships at 0: the bob stays until the carriage's texel
- * rows are staged in internal RAM (see the blend/s-by-layer comment on
- * paint_ctx_t), which is what stands between 1.02 us and the ~150 cycle blend
- * floor the static glass pays. 1 = filtered; rebuild to A/B.
- * Plain #define, NOT a Kconfig symbol: sdkconfig is local and untracked here, so
- * a new `default y` silently compiles the feature out (see .clinerules). */
-#define CLK_TOURB_FILTER 0
-
 static uint16_t        *s_canvas;      /* PSRAM, CLK_SCR_W*CLK_SCR_H RGB565 */
 static lv_image_dsc_t   s_canvas_dsc;
 static int              s_gif_shown = 0;   /* frame the canvas holds now */
@@ -1261,10 +1216,7 @@ static inline int32_t trigo_sin(int32_t angle)
     return (ret == 32767) ? 32768 : (ret == -32767) ? -32768 : ret;
 }
 
-/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h. Doubles
- * as the 2-tap texel mixer: its mix5 = (mix + 4) >> 3 is LVGL's own 5-bit weight
- * quantisation, so feeding it t0 << 3 reproduces the (e0*t0 + e1*t1) >> 5 lane
- * mix of lv_draw_sw_transform.c's bilinear path through one mixer. */
+/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h. */
 static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
 {
     if (mix == 255) return c1;
@@ -1306,81 +1258,6 @@ static inline void blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
     *d = __builtin_bswap16(out);
 }
 
-#if CLK_TOURB_FILTER
-/* `(32 << 8) / alpha_sum` for every alpha sum the pair mix can produce, copied
- * verbatim from lv_draw_sw_transform.c's transform_norm_inv (257 entries; the
- * two weights here add to at most 256, exactly as in LVGL's 4-tap case). The
- * alpha-weighted colour mix normalizes against the sum, and Xtensa has no
- * integer divide, so the table is what keeps that off the per-pixel path. */
-static const uint16_t s_norm_inv[257] = {
-    0, 8192, 4096, 2730, 2048, 1638, 1365, 1170, 1024, 910, 819, 744, 682, 630, 585, 546, 512, 481, 455,
-    431, 409, 390, 372, 356, 341, 327, 315, 303, 292, 282, 273, 264, 256, 248, 240, 234, 227, 221, 215,
-    210, 204, 199, 195, 190, 186, 182, 178, 174, 170, 167, 163, 160, 157, 154, 151, 148, 146, 143, 141,
-    138, 136, 134, 132, 130, 128, 126, 124, 122, 120, 118, 117, 115, 113, 112, 110, 109, 107, 106, 105,
-    103, 102, 101, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87, 86, 85, 84, 83, 82, 81, 81, 80,
-    79, 78, 78, 77, 76, 75, 75, 74, 73, 73, 72, 71, 71, 70, 70, 69, 68, 68, 67, 67, 66, 66, 65, 65, 64,
-    64, 63, 63, 62, 62, 61, 61, 60, 60, 59, 59, 58, 58, 58, 57, 57, 56, 56, 56, 55, 55, 54, 54, 54, 53,
-    53, 53, 52, 52, 52, 51, 51, 51, 50, 50, 50, 49, 49, 49, 49, 48, 48, 48, 47, 47, 47, 47, 46, 46, 46,
-    46, 45, 45, 45, 45, 44, 44, 44, 44, 43, 43, 43, 43, 42, 42, 42, 42, 42, 41, 41, 41, 41, 40, 40, 40,
-    40, 40, 39, 39, 39, 39, 39, 39, 38, 38, 38, 38, 38, 37, 37, 37, 37, 37, 37, 36, 36, 36, 36, 36, 36,
-    35, 35, 35, 35, 35, 35, 35, 34, 34, 34, 34, 34, 34, 33, 33, 33, 33, 33, 33, 33, 33, 32, 32, 32, 32,
-    32, 32, 32, 32
-};
-
-/* Combine the two vertically adjacent carriage texels sidx0 (weight 256-wy) and
- * sidx1 (weight wy) and blend the pair onto the mirror through the one shared
- * blend_px — so the filtered and the nearest loop can still never disagree on
- * what a blend means.
- *
- * Colour and alpha are SEPARATE planes (RGB565 and A8), so LVGL's rule applies:
- * each colour is scaled by its OWN alpha before the mix, then normalized back to
- * a straight colour by the running total — lv_draw_sw_transform.c's
- * transform_alpha_weights(), specialised to fx = 0. A transparent neighbour
- * therefore contributes no colour at all instead of bleeding its texel in.
- * Equal alphas cancel the whole weighting, which is the common case (the
- * carriage's opaque interior), and that branch is a plain lane mix.
- * The 3/4-empty-box skip of the nearest loop survives as the (a0 | a1) test. */
-static inline bool blend_px_vt2(const uint16_t *col, const uint8_t *alp,
-                                uint32_t sidx0, uint32_t sidx1, uint32_t wy,
-                                uint16_t *d, int bmode)
-{
-    const uint8_t a0 = alp[sidx0];
-    if (!wy) {                          /* exactly on a texel row: the nearest tap */
-        if (!a0) return false;          /* 3/4 of the box: skip                   */
-        blend_px(d, col[sidx0], a0, bmode);
-        return true;
-    }
-    const uint8_t a1 = alp[sidx1];
-    if ((a0 | a1) == 0) return false;
-    uint16_t c;
-    uint8_t a;
-    if (a0 == a1) {
-        a = a0;
-        c = mix_16_16(col[sidx0], col[sidx1], (uint8_t)(255u - wy));
-    }
-    else {
-        /* Scale each alpha to 0..256 first, so an opaque tap keeps full weight. */
-        const uint32_t u0 = ((256u - wy) * (uint32_t)(a0 + (a0 >> 7))) >> 8;
-        const uint32_t u1 = (wy * (uint32_t)(a1 + (a1 >> 7))) >> 8;
-        const uint32_t sum = u0 + u1;
-        if (sum == 0) return false;
-        const uint32_t inv = s_norm_inv[sum];
-        uint32_t t0 = (u0 * inv) >> 8;
-        uint32_t t1 = (sum * inv) >> 8;          /* the running total, not t0+t1 */
-        const uint32_t rem = 32u - t1;           /* whatever the rounding left   */
-        t1 -= t0;
-        /* Give the leftover to the tap that already weighs the most, never to a
-         * fixed one — a transparent tap must not be handed the remainder. */
-        if (rem) { if (u0 >= u1) t0 += rem; else t1 += rem; }
-        a = (uint8_t)(sum > 255u ? 255u : sum);
-        const uint32_t m0 = t0 << 3;
-        c = mix_16_16(col[sidx0], col[sidx1], (uint8_t)(m0 > 255u ? 255u : m0));
-    }
-    blend_px(d, c, a, bmode);
-    return true;
-}
-#endif /* CLK_TOURB_FILTER */
-
 /* One layer's row-independent blend maths, resolved ONCE per commit.
  *
  * Hoisting this is not a micro-optimisation, it is the whole reason the hook
@@ -1403,7 +1280,6 @@ typedef struct {
     uint8_t  bmode;
     uint8_t  role;                    /* paint bucket for the fps line (below) */
     bool     rot;                     /* false == identity (ang == 0) path */
-    bool     filt;                    /* rot path samples the texel ROW below too */
 } paint_ctx_t;
 
 /* Per-role blend counts AND time, one second's worth on the fps line (k0..k4
@@ -1443,16 +1319,6 @@ static bool paint_ctx_init(paint_ctx_t *pc, const clk_sprite_t *spr,
     pc->bx2 = box.x2; pc->by2 = box.y2;
 
     pc->rot = (ang_10 % 3600 != 0);
-#if CLK_TOURB_FILTER
-    /* Carriage only, and only while rotated: the hands, dial, glass and hub keep
-     * LVGL's nearest texel. Role 2 is the second-hand slot the tourbillon bank
-     * lives on (clock_view_init), and a tourbillon theme's carriage carries no
-     * shadow of its own — clock_layer_commit clears the flag on shadow ctxs
-     * anyway, so a theme that ever does have one keeps it nearest. */
-    pc->filt = (role == 2 && pc->rot);
-#else
-    pc->filt = false;
-#endif
     pc->sxx = pc->sxy = pc->syx = pc->syy = 0;
     pc->x0_ups = pc->y0_ups = 0;
     pc->xa_lim = pc->posx + (int32_t)spr->w - 1;
@@ -1528,43 +1394,6 @@ static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
     const int32_t y_abs = y - pc->posy;
     const int32_t xs_r = pc->x0_ups + (int32_t)(((int64_t)pc->sxy * y_abs) >> 8);
     const int32_t ys_r = pc->y0_ups + (int32_t)(((int64_t)pc->syy * y_abs) >> 8);
-
-#if CLK_TOURB_FILTER
-    if (pc->filt) {
-        /* Vertical 2-tap (see CLK_TOURB_FILTER). The 0x80 in y0_ups is LVGL's
-         * half-texel rounding bias for the NEAREST tap: the texel the truncation
-         * picks is round(), while the coordinate whose two rows straddle the true
-         * sample is (ups - 0x80). Take the pair from that unbiased coordinate, or
-         * every pixel is a 50/50 mix of the right row and the one below it — a
-         * permanent blur plus a systematic half-texel sag. At whole texels (wy
-         * == 0) the lower tap IS the tap the nearest path samples, so those
-         * pixels stay bit-identical to what LVGL draws for itself. The x tap is
-         * untouched, so the layer only ever paints wider by the texel row below
-         * an ink row: 0.35% more pixels, and tools/sim_tourb_mark.py proves the
-         * chord marks already cover them. Only their values change. */
-        const uint32_t w = pc->w;
-        const int32_t last = (int32_t)pc->h - 1;
-        for (int32_t x = xa; x <= xb; x++) {
-            const int32_t x_abs = x - pc->posx;
-            const int32_t xs_int = (xs_r + ((pc->sxx * x_abs) >> 8)) >> 8;
-            const int32_t ys_ups = ys_r + ((pc->syx * x_abs) >> 8);
-            const int32_t ys_int = ys_ups >> 8;
-            if (xs_int < 0 || xs_int >= (int32_t)pc->w ||
-                ys_int < 0 || ys_int >= (int32_t)pc->h) continue;
-
-            int32_t y0 = (ys_ups - 0x80) >> 8;
-            uint32_t wy = (uint32_t)(ys_ups - 0x80) & 0xFFu;
-            if (y0 < 0)          { y0 = 0;    wy = 0; }   /* above the sheet */
-            else if (y0 >= last) { y0 = last; wy = 0; }   /* the last row: single tap */
-
-            const uint32_t sidx0 = (uint32_t)y0 * w + (uint32_t)xs_int;
-            const uint32_t sidx1 = (y0 == last) ? sidx0 : sidx0 + w;
-            if (blend_px_vt2(col, alp, sidx0, sidx1, wy, &row[x], pc->bmode)) n++;
-        }
-        if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
-        return;
-    }
-#endif
 
     for (int32_t x = xa; x <= xb; x++) {
         const int32_t x_abs = x - pc->posx;
@@ -1658,10 +1487,7 @@ static void clock_layer_commit(void)
         if (k < 0 || k > 4) continue;
         if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
-            if (paint_ctx_init(&jc[nj], &clk_theme.shadow[k], s_ang_10[k], (uint8_t)k)) {
-                jc[nj].filt = false;      /* a carriage SHADOW stays nearest */
-                nj++;
-            }
+            if (paint_ctx_init(&jc[nj], &clk_theme.shadow[k], s_ang_10[k], (uint8_t)k)) nj++;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], layer_spr(k), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
     }

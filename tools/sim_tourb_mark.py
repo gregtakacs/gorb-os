@@ -185,15 +185,10 @@ def rot_sin_cos(ang_10):            # exact port of the firmware helper
     return sinma, cosma
 
 _PAINT_CACHE = {}
-def painted_pixels(f, ang_10, filt=False):
-    """Device pixels the painter blends for frame f at ang_10 (paint_row_ctx's
-    rot path, clipped to its own swept box -- before the row-span clip).
-
-    filt=True mirrors the CLK_TOURB_FILTER branch: the pair of texel rows that
-    straddles the unbiased coordinate (ups - 0x80), either of which may carry the
-    ink. Those pixels blend too, so the marks have to cover them; the x tap is
-    unchanged, so only the row-adjacent ink can widen the set."""
-    key = (f["n"], ang_10, filt)
+def painted_pixels(f, ang_10):
+    """Device pixels the painter blends for frame f at ang_10 (paint_layer
+    general path, clipped to its own swept box -- before the row-span clip)."""
+    key = (f["n"], ang_10)
     hit = _PAINT_CACHE.get(key)
     if hit is not None:
         return hit
@@ -207,7 +202,6 @@ def painted_pixels(f, ang_10, filt=False):
     y0_ups = cdiv((sma * xin0 + cma * yin0) * 64, 256) + f["pvy"] * 256 + 0x80
     bx1, by1, bx2, by2 = swept_box(f, ang_10)
     pts = set()
-    last = h - 1
     for y in range(by1, by2 + 1):
         y_abs = y - posy
         xs_r = x0_ups + ((sxy * y_abs) >> 8)
@@ -215,26 +209,8 @@ def painted_pixels(f, ang_10, filt=False):
         for x in range(bx1, bx2 + 1):
             x_abs = x - posx
             xs_int = (xs_r + ((sxx * x_abs) >> 8)) >> 8
-            ys_ups = ys_r + ((syx * x_abs) >> 8)
-            ys_int = ys_ups >> 8
-            if not (0 <= xs_int < w and 0 <= ys_int < h):
-                continue
-            if not filt:
-                if alp[ys_int * w + xs_int]:
-                    pts.add((x, y))
-                continue
-            yv = ys_ups - 0x80
-            y0 = yv >> 8
-            wy = yv & 0xFF
-            if y0 < 0:
-                y0, wy = 0, 0
-            elif y0 >= last:
-                y0, wy = last, 0
-            s0 = y0 * w + xs_int
-            if wy == 0:
-                if alp[s0]:
-                    pts.add((x, y))
-            elif alp[s0] or alp[(y0 + (0 if y0 == last else 1)) * w + xs_int]:
+            ys_int = (ys_r + ((syx * x_abs) >> 8)) >> 8
+            if 0 <= xs_int < w and 0 <= ys_int < h and alp[ys_int * w + xs_int]:
                 pts.add((x, y))
     _PAINT_CACHE[key] = pts
     return pts
@@ -243,7 +219,7 @@ def in_span(x, y, spans):
     a, b = spans[y]
     return a != 32767 and a <= x <= b
 
-def tick_case(frames, g, f_i, a_prev, a_new, chord_cache, filt=False):
+def tick_case(frames, g, f_i, a_prev, a_new, chord_cache):
     spans = empty_spans()
     G, F = frames[g], frames[f_i]
     stamp(G, chord_cache[g], a_prev, spans)     # apply_angles orbit step
@@ -254,8 +230,8 @@ def tick_case(frames, g, f_i, a_prev, a_new, chord_cache, filt=False):
             spans[y] = (min(spans[y][0], dx1), max(spans[y][1], dx2))
     stamp(F, chord_cache[f_i], a_new, spans)     # incoming-frame chords
 
-    miss_new = [(x, y) for (x, y) in painted_pixels(F, a_new, filt) if not in_span(x, y, spans)]
-    miss_old = [(x, y) for (x, y) in painted_pixels(G, a_prev, filt) if not in_span(x, y, spans)]
+    miss_new = [(x, y) for (x, y) in painted_pixels(F, a_new) if not in_span(x, y, spans)]
+    miss_old = [(x, y) for (x, y) in painted_pixels(G, a_prev) if not in_span(x, y, spans)]
     return miss_new, miss_old
 
 def main():
@@ -291,14 +267,10 @@ def main():
     ys = [y for _, y in ref]
     print(f"painted set tourb00 @90.0deg: {len(ref)} px, rows {min(ys)}..{max(ys)}")
     ink = []
-    ink_f = []
     for a_new in range(0, 3600, 150):
         g = (a_new // 240) % n
         ink.append(len(painted_pixels(frames[g], a_new)))
-        ink_f.append(len(painted_pixels(frames[g], a_new, True)))
     print(f"painted-set avg {sum(ink)//len(ink)} px, max {max(ink)} px")
-    print(f"painted-set with the vertical 2-tap: avg {sum(ink_f)//len(ink_f)} px "
-          f"(+{(sum(ink_f)-sum(ink))//max(1,len(ink))}), max {max(ink_f)} px")
 
     worst = []
     ANGS = list(range(0, 3600, 37))
@@ -306,25 +278,21 @@ def main():
     for card in (0, 900, 1800, 2700):          # dense tenth-degrees at cardinals
         ANGS += [card + d for d in range(-6, 7)]
         ANGS += [card - 1 + d for d in range(-6, 7)]
-    for filt in (False, True):        # nearest, then the carriage's 2-tap rows
-        for a_new in ANGS:
-            for step in (1, 2, 4, 7, 10):
-                a_prev = a_new - step
-                g = (a_new // 240) % n
-                f_i = (g + (2 if step >= 7 else 1)) % n
-                mn, mo = tick_case(frames, g, f_i, a_prev, a_new, chord_cache, filt)
-                if mn or mo:
-                    worst.append((filt, a_new, step, g, f_i, len(mn), len(mo),
-                                  sorted(mn)[:6], sorted(mo)[:6]))
+    for a_new in ANGS:
+        for step in (1, 2, 4, 7, 10):
+            a_prev = a_new - step
+            g = (a_new // 240) % n
+            f_i = (g + (2 if step >= 7 else 1)) % n
+            mn, mo = tick_case(frames, g, f_i, a_prev, a_new, chord_cache)
+            if mn or mo:
+                worst.append((a_new, step, g, f_i, len(mn), len(mo),
+                              sorted(mn)[:6], sorted(mo)[:6]))
     if not worst:
-        print("CLEAN: marked spans cover every pixel either pose paints, "
-              "nearest and 2-tap, all cases")
+        print("CLEAN: marked spans cover every pixel either pose paints, all cases")
         return 0
     print(f"{len(worst)} FAILING cases; worst first:")
-    for filt, a_new, step, g, f_i, ln, lo, mn, mo in \
-            sorted(worst, key=lambda t: -(t[5] + t[6]))[:20]:
-        print(f" {'2-tap' if filt else 'nearest'} ang {a_new/10:6.1f} step {step:2d} "
-              f"frames {g:2d}->{f_i:2d}: "
+    for a_new, step, g, f_i, ln, lo, mn, mo in sorted(worst, key=lambda t: -(t[4] + t[5]))[:20]:
+        print(f" ang {a_new/10:6.1f} step {step:2d} frames {g:2d}->{f_i:2d}: "
               f"missing-new={ln:5d} missing-old={lo:5d}  new@{mn[:4]} old@{mo[:4]}")
     return 1
 

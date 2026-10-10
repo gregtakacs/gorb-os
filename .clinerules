@@ -172,10 +172,18 @@ block are tested. Do not claim a radio-dependent behavior is verified.
 
 `tools/bake_clock.py` takes a layered watch kit (`assets/sources/watch-orbital-kit.zip`
 is the shipped example: base gear frames, hands/, layers/{dial,glass,outer}, a
-15-frame tourbillon/, and a manifest.json carrying every pivot/centre — trust the
-manifest, it is the renderer that made the art) and emits `assets/clock_assets.{bin,h}`
-as one pair; they are generated together and must be committed together — the
-firmware reads `clk_theme` by layout, so a stale half of the pair is a corrupt dial.
+15-frame tourbillon/, and a manifest.json carrying every pivot/centre). Do NOT
+trust the manifest's tourbillon `centre`: it is the renderer's own claim and was
+found wrong by half a texel on both axes (kit2: declared [233,233], measured
+centroid (232.5,232.5) — a texel corner no integer pivot can sit on, giving a
+1.70 px hub bob). Run `python3 tools/kit_check.py <kit.zip>` on the zip BEFORE
+baking and let it gate the drop; see `docs/tourbillon-axis-spec.md`. After the
+bake, `python3 tools/sim_tourb_bob.py` re-measures on the emitted pair. The three
+tools share one implementation (sim_tourb_mark's integer maths, kit_check's red
+gate), so they cannot disagree.
+The bake itself emits `assets/clock_assets.{bin,h}` as one pair; they are
+generated together and must be committed together — the firmware reads
+`clk_theme` by layout, so a stale half of the pair is a corrupt dial.
 System python has no PIL; use a venv with `pillow numpy` for both tools.
 
     /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit.zip /tmp/out
@@ -183,6 +191,22 @@ System python has no PIL; use a venv with `pillow numpy` for both tools.
         --bg-frames /tmp/out/frames --bg-fps 15 \
         --tourbillon <unzipped kit>/tourbillon --tourbillon-fps 15 \
         --force-sweep --tick-rate 15 --dump-dir assets/preview-orbital
+
+The SHIPPED theme is orbital-arrow-3 (kit3). The committed blob rebuilds
+byte-identically from the committed zip — verify that before believing any bake
+(the emitted `.h` differs only in its provenance comment, which records the input
+dir path, so compare the `.bin` by md5 and the `.h` by ignoring line 4):
+
+    unzip -q assets/sources/watch-orbital-kit3.zip -d /tmp/k3
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit3.zip /tmp/kit3
+    /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-arrow-3 \
+        --bg-frames /tmp/kit3/frames --bg-fps 8 \
+        --tourbillon /tmp/kit3/tourbillon --tourbillon-fps 8 \
+        --force-sweep --tick-rate 8 --dump-dir assets/preview-orbital-arrow-3
+
+It bakes carriage bbox=(109,46,249,310) pivot=(233,233) centre=(233,233), i.e.
+header pivotx/pivoty = (124,187), which is 0.0000 px from the measured staff
+axis. kit2 is superseded but its zip stays as `kit_check.py`'s must-fail fixture.
 
 Layer mapping (kit drawOrder -> compositor slots, verified against the ink radial
 surveys — check the same numbers before trusting a new kit's art into a slot):

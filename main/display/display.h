@@ -43,6 +43,13 @@ void display_bench_stats(uint64_t *pix, uint32_t *chunks);
  *  submit — the whole callback, not just the submit phase). */
 uint64_t display_bench_submit_us(void);
 
+/** Commit-phase breakdown of the submit time (any out-param may be NULL):
+ *  mirror = chunk byte-swap into s_fb, hook = the clock's L4 composite,
+ *  te = wait_for_te, dma = the band submits (bounce copies, not wire time).
+ *  Same monotonic totals as display_bench_submit_us(); read them as deltas. */
+void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
+                             uint64_t *te, uint64_t *dma);
+
 /**
  * Mark a closed range of panel rows as needing to go out with the next flush,
  * without writing any pixels. The clock's commit-time layer painter repaints

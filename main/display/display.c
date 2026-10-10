@@ -130,6 +130,16 @@ static volatile uint32_t s_bench_frame_us_max;
 static volatile uint64_t s_bench_pix;      /* px handed to DMA (all chunks) */
 static volatile uint32_t s_bench_chunks;   /* flush_cb calls (row-chunks)   */
 static volatile uint64_t s_bench_submit_us;/* time spent inside flush_cb    */
+/* Commit-phase breakdown of submit_us: where the ~145 ms sweep commit actually
+ * goes (the fps line can only say "the flush is slow"). mirror = byte-swap of
+ * each LVGL chunk into s_fb; hook = the clock's L4 composite; dma = the band
+ * submits (bounce copies at queue depth 1, NOT the wire time -- the last
+ * band's trans-done closes the frame window, so wire latency shows up in the
+ * per-frame avg, not here); te = wait_for_te. */
+static volatile uint64_t s_bench_mirror_us;
+static volatile uint64_t s_bench_hook_us;
+static volatile uint64_t s_bench_dma_us;
+static volatile uint64_t s_bench_te_us;
 static volatile int64_t  s_frame_t0_us;
 static volatile bool     s_last_pending;   /* last chunk submitted, awaiting DMA-done */
 
@@ -487,16 +497,24 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         /* Zero-copy-ish accumulate: byte-swap this chunk into the mirror, mark
          * its rows, and hand the LVGL buffer straight back -- the actual QSPI
          * push is deferred to the last chunk as a handful of band DMAs. */
+        const int64_t t_mir = esp_timer_get_time();
         mirror_chunk(x1, y1, w, h, (const uint16_t *)px_map, w);
+        s_bench_mirror_us += (uint64_t)(esp_timer_get_time() - t_mir);
         for (int r = y1; r <= y2; r++) { s_dirty_row[r] = 1; s_chunk_row[r] = 1; }
 
         if (is_last) {
             s_flush_in_flight = false;
             /* L4: every chunk is now in the mirror; let the clock composite
              * its overlay layers directly before the bands read s_fb out. */
+            const int64_t t_hook = esp_timer_get_time();
             if (s_commit_hook) s_commit_hook();
+            s_bench_hook_us += (uint64_t)(esp_timer_get_time() - t_hook);
+            const int64_t t_te = esp_timer_get_time();
             wait_for_te();
+            s_bench_te_us += (uint64_t)(esp_timer_get_time() - t_te);
+            const int64_t t_dma = esp_timer_get_time();
             int bands = dma_dirty_bands(disp);
+            s_bench_dma_us += (uint64_t)(esp_timer_get_time() - t_dma);
             if (bands == 0) {                 /* nothing dirty: book the frame */
                 s_last_pending = false;
                 lv_display_flush_ready(disp);
@@ -798,6 +816,15 @@ uint64_t display_bench_submit_us(void)
     return s_bench_submit_us;
 }
 
+void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
+                             uint64_t *te, uint64_t *dma)
+{
+    if (mirror) *mirror = s_bench_mirror_us;
+    if (hook)   *hook   = s_bench_hook_us;
+    if (te)     *te     = s_bench_te_us;
+    if (dma)    *dma    = s_bench_dma_us;
+}
+
 /* ---- L4: commit-time direct compositing (the clock's overlay painter) ---- */
 void display_set_commit_hook(display_commit_hook_t hook)
 {
@@ -863,4 +890,8 @@ void display_bench_reset(void)
     s_bench_pix            = 0;
     s_bench_chunks         = 0;
     s_bench_submit_us      = 0;
+    s_bench_mirror_us      = 0;
+    s_bench_hook_us        = 0;
+    s_bench_te_us          = 0;
+    s_bench_dma_us         = 0;
 }

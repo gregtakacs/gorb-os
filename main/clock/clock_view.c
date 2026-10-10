@@ -180,6 +180,7 @@ static uint64_t         s_fps_bench_t0;
 static uint64_t         s_fps_pix0;
 static uint32_t         s_fps_chunk0;
 static uint64_t         s_fps_sub0;
+static uint32_t         s_fps_te0;        /* display_te_wait_us() last read */
 /* Commit-hook phase breakdown (per-second deltas on the fps line, ms). The
  * flush is one number in display's own bookkeeping; these say which of the
  * hook's three passes eats it, so an optimization is chosen by measurement and
@@ -1676,13 +1677,14 @@ static void report_fps_if_due(void)
         s_hk_role_us0[i] = s_hk_role_us[i];
         dblend += drb[i];
     }
+    const uint32_t te_now = display_te_wait_us();
     ESP_LOGI(TAG, "clock %u fps | flush frames %u avg %llu ms | px/s %llu (%llu%% page) chunks/s %u te/s %llu ms submit/s %llu ms",
              (unsigned)s_fps_ticks, (unsigned)df,
              df ? (unsigned long long)(dt / df / 1000) : 0ULL,
              (unsigned long long)dpx,
              (unsigned long long)(dpx * 100 / ((uint64_t)CLK_SCR_W * CLK_SCR_H)),
              (unsigned)dch,
-             (unsigned long long)(display_te_wait_us() / 1000),
+             (unsigned long long)((uint32_t)(te_now - s_fps_te0) / 1000),
              (unsigned long long)((sub - s_fps_sub0) / 1000));
     ESP_LOGI(TAG, "  phases ms/s: mirror %llu te %llu dma %llu | hook %llu (rest %llu paint %llu cmp %llu) | blend/s %u",
              (unsigned long long)(dpm / 1000), (unsigned long long)(dpt / 1000),
@@ -1704,7 +1706,11 @@ static void report_fps_if_due(void)
              (unsigned)drb[3], (unsigned long long)(dru[3] / 1000),
              (unsigned)drb[4], (unsigned long long)(dru[4] / 1000),
              (unsigned)drb[5], (unsigned long long)(dru[5] / 1000));
+#if DISPLAY_CADENCE_PROBE
+    display_cadence_drain();
+#endif
     s_fps_sub0 = sub;
+    s_fps_te0 = te_now;
     s_fps_ph0 = pm; s_fps_ph1 = ph; s_fps_ph2 = pt; s_fps_ph3 = pd;
     s_hk_rest_us0 = s_hk_rest_us;
     s_hk_paint_us0 = s_hk_paint_us; s_hk_cmp_us0 = s_hk_cmp_us;
@@ -1783,6 +1789,11 @@ static void tick_timer_cb(lv_timer_t *timer)
             s_tick_due = t_start_ms + period;       /* fell a beat behind */
         const int32_t left = (int32_t)(s_tick_due - t_start_ms) - 8;
         lv_timer_set_period(timer, (left < 2) ? 2 : (uint32_t)left);
+#if DISPLAY_CADENCE_PROBE
+        ESP_LOGI(TAG, "CAD tk now=%u due=%u gif_due=%u shown=%d",
+                 (unsigned)t_start_ms, (unsigned)s_tick_due,
+                 (unsigned)s_gif_due, s_gif_shown);
+#endif
         return;
     }
     lv_timer_set_period(timer, period);

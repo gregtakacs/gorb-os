@@ -140,6 +140,29 @@ static volatile uint64_t s_bench_mirror_us;
 static volatile uint64_t s_bench_hook_us;
 static volatile uint64_t s_bench_dma_us;
 static volatile uint64_t s_bench_te_us;
+
+#if DISPLAY_CADENCE_PROBE
+/* Per-committed-frame record, booked at the last-band DMA completion (the
+ * same site that bumps s_bench_frames). gap is the cadence itself; the rest
+ * decompose it: gap = idle + dur, dur = sub + (LVGL re-render waits) and
+ * sub's own phases are mirror/hook/te/dma, so a fat second is localisable
+ * without a second capture. */
+typedef struct {
+    uint32_t gap, dur, idle, te, dma, sub, mir, hook, px;
+    uint16_t ch, bands;
+} cad_rec_t;
+#define CAD_RING 64
+static cad_rec_t s_cad_ring[CAD_RING];
+static volatile uint8_t s_cad_head, s_cad_tail;   /* ISR produces, task drains */
+/* Commit-start baselines, snapshotted when the first chunk opens a frame. One
+ * frame is in flight at a time (LVGL blocks until flush_ready), so plain
+ * statics across the task/ISR pair are race-free. */
+static int64_t  s_cad_prev_done, s_cad_start;
+static uint64_t s_cad_te0, s_cad_dma0, s_cad_sub0, s_cad_mir0, s_cad_hook0;
+static uint64_t s_cad_pix0;
+static uint32_t s_cad_ch0;
+static uint8_t  s_cad_bands;
+#endif
 static volatile int64_t  s_frame_t0_us;
 static volatile bool     s_last_pending;   /* last chunk submitted, awaiting DMA-done */
 
@@ -252,6 +275,28 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
             s_bench_frames++;
             s_bench_frame_us_total += dur;
             if (dur > s_bench_frame_us_max) s_bench_frame_us_max = dur;
+#if DISPLAY_CADENCE_PROBE
+            {
+                const int64_t done = esp_timer_get_time();
+                const uint8_t nh = (uint8_t)((s_cad_head + 1) % CAD_RING);
+                if (nh != s_cad_tail) {          /* full: drop, never stall the ISR */
+                    cad_rec_t *r = &s_cad_ring[s_cad_head];
+                    r->gap   = s_cad_prev_done ? (uint32_t)(done - s_cad_prev_done) : 0;
+                    r->dur   = dur;
+                    r->idle  = s_cad_prev_done ? (uint32_t)(s_cad_start - s_cad_prev_done) : 0;
+                    r->te    = (uint32_t)(s_bench_te_us     - s_cad_te0);
+                    r->dma   = (uint32_t)(s_bench_dma_us    - s_cad_dma0);
+                    r->sub   = (uint32_t)(s_bench_submit_us - s_cad_sub0);
+                    r->mir   = (uint32_t)(s_bench_mirror_us - s_cad_mir0);
+                    r->hook  = (uint32_t)(s_bench_hook_us   - s_cad_hook0);
+                    r->px    = (uint32_t)(s_bench_pix       - s_cad_pix0);
+                    r->ch    = (uint16_t)(s_bench_chunks    - s_cad_ch0);
+                    r->bands = s_cad_bands;
+                    s_cad_prev_done = done;
+                    s_cad_head = nh;
+                }
+            }
+#endif
         }
     } else {
         /* Fallback: one DMA per chunk, released as each completes (LVGL's own
@@ -511,6 +556,17 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         memset(s_chunk_row, 0, sizeof(s_chunk_row));
         s_frame_t0_us   = esp_timer_get_time();
         s_flush_in_flight = true;
+#if DISPLAY_CADENCE_PROBE
+        s_cad_start = s_frame_t0_us;
+        s_cad_te0   = s_bench_te_us;
+        s_cad_dma0  = s_bench_dma_us;
+        s_cad_sub0  = s_bench_submit_us;
+        s_cad_mir0  = s_bench_mirror_us;
+        s_cad_hook0 = s_bench_hook_us;
+        s_cad_pix0  = s_bench_pix;
+        s_cad_ch0   = s_bench_chunks;
+        s_cad_bands = 0;
+#endif
     }
 
     const bool is_last = lv_display_flush_is_last(disp);
@@ -537,6 +593,9 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
             const int64_t t_dma = esp_timer_get_time();
             int bands = dma_dirty_bands(disp);
             s_bench_dma_us += (uint64_t)(esp_timer_get_time() - t_dma);
+#if DISPLAY_CADENCE_PROBE
+            s_cad_bands = (uint8_t)bands;
+#endif
             if (bands == 0) {                 /* nothing dirty: book the frame */
                 s_last_pending = false;
                 lv_display_flush_ready(disp);
@@ -846,6 +905,23 @@ void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
     if (te)     *te     = s_bench_te_us;
     if (dma)    *dma    = s_bench_dma_us;
 }
+
+#if DISPLAY_CADENCE_PROBE
+void display_cadence_drain(void)
+{
+    while (s_cad_tail != s_cad_head) {
+        const cad_rec_t *r = &s_cad_ring[s_cad_tail];
+        ESP_LOGI(TAG, "CAD f=%u gap=%u dur=%u idle=%u te=%u dma=%u sub=%u "
+                      "mir=%u hook=%u px=%u ch=%u bands=%u",
+                 (unsigned)s_bench_frames,
+                 (unsigned)r->gap, (unsigned)r->dur, (unsigned)r->idle,
+                 (unsigned)r->te, (unsigned)r->dma, (unsigned)r->sub,
+                 (unsigned)r->mir, (unsigned)r->hook,
+                 (unsigned)r->px, (unsigned)r->ch, (unsigned)r->bands);
+        s_cad_tail = (uint8_t)((s_cad_tail + 1) % CAD_RING);
+    }
+}
+#endif
 
 /* ---- L4: commit-time direct compositing (the clock's overlay painter) ---- */
 void display_set_commit_hook(display_commit_hook_t hook)

@@ -216,6 +216,47 @@ Recorded so the dead ends are not re-walked:
   tourbillon entry. `centre: [233,233]` was wrong by half a texel on both axes
   and every downstream tool propagated it.
 
+## The 7-vs-8 fps question: cadence, not collision
+
+The remaining gap to the 8 fps target was blamed on flush-cadence variance —
+DMA queue depth vs TE timing colliding with the synchronously-arriving GIF
+frames (all eight delays are 125 ms). Profiled with the `DISPLAY_CADENCE_PROBE`
+ring in `display.c` (one record per committed frame: gap, dur, idle, te, dma,
+sub, mir, hook, px, ch, bands; plus tick lines with the ladder deadlines,
+drained once per second by the clock task). Capture 65 s; harness
+`/tmp/gb/cadence.py`. **The collision theory is dead:**
+
+- `te` averages 9.4 ms (max 16.8 — one 16.7 ms blanking wait; `wait_for_te`
+  caps at 25 ms) and the band-submit phase averages 14 ms over 3–5 bands.
+  Queue depth 2 never starves. Correlation of gap with `dma` is −0.03.
+- GIF frame index (carriage angle, 45° apart across the eight phases) is
+  **flat**: gap 155–160 ms, hook 108.5–110.6 ms, px ±1% between phases.
+  Nothing phase-locks.
+- The gap is tri-modal — 134.5 ms (n 50), 151.4 (n 130), 169.0 (n 209) — and
+  the modes decompose onto **`hook` (the clock's commit-time composite,
+  r=+0.76 with gap), tick-side `idle` (14.5→31.8 ms), and `te` phase (4.9→11.5
+  ms)**. Pixels exonerate themselves: the slow mode pushes *fewer* px (114k)
+  than the fast mode (130k).
+- Whole-loop structure: every tick is a GIF tick, and the commit serializes
+  the LVGL task — tick work (~24 ms) → hook paint (~110 ms, of which paint
+  is 90%: carriage 36, glass 25, dial 14, min 12, hr 10 ms/frame) → te (≤17)
+  → band submits (14). Mean 159 ms. The 8 fps seconds (flush 119–125 ms) are
+  draws where hook ≈ 100, idle ≈ 14 and te ≈ 5 land together — 8 of 61.
+- Probe load: the off-probe capture's fps histogram matches the on-probe one
+  (median 6 both), so the per-frame serial lines are honest.
+
+The ceiling is therefore the composite + tick schedule on one task, matching
+the L5 result (no marked row is invariant — nothing to *skip*) and the staging
+negative (per-blend cost is at its floor). What is left is per-tick blend
+**count**: the carriage's 62,350-px bbox and the GIF's 208-row band — both
+art-side, per the ink-budget table. Do not spend another flash on the DMA/TE
+theory.
+
+Fixed while profiling: the fps line's `te/s` field printed
+`display_te_wait_us()`'s **cumulative** µs since boot as if it were the
+per-second delta (one second read "3733 ms" against a 25 ms per-wait cap).
+It now diffs against `s_fps_te0` like every other field.
+
 ## Do not change
 
 - `size: 466`, `frames: 8`, `fps: 8` — `prep_watch_kit.py` sets `tickRate = fps`,

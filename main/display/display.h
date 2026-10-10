@@ -50,6 +50,23 @@ uint64_t display_bench_submit_us(void);
 void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
                              uint64_t *te, uint64_t *dma);
 
+/* ---- Cadence probe (temporary instrumentation; set to 0 after capture) ----
+ * The 7-vs-8 fps question is flush-cadence variance, and second-averages
+ * cannot answer it: one 200 ms frame and five 132 ms frames read identically
+ * to six uniform 150 ms frames. With the flag on, every committed frame is
+ * booked into a small ring at its DMA-completion (the same site that bumps
+ * the bench frame count), and display_cadence_drain() prints them as one
+ * serial line each. Call the drain from the clock's per-second report so the
+ * records land interleaved with the CAD tk tick lines (same clock task, so
+ * log order equals event order within a second). */
+#define DISPLAY_CADENCE_PROBE 0
+
+#if DISPLAY_CADENCE_PROBE
+/** Print-and-clear every cadence record booked since the last drain. */
+void display_cadence_drain(void);
+#endif
+
+
 /**
  * Mark a closed range of panel rows as needing to go out with the next flush,
  * without writing any pixels. The clock's commit-time layer painter repaints

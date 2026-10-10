@@ -36,6 +36,18 @@ for m in re.finditer(r"\(\s*(\d+)\)\s+\S+:\s+CAD tk now=(\d+) due=(\d+) gif_due=
 fps = [int(x) for x in re.findall(r"(\d+) fps \| flush frames", src)]
 # Per-second flush cost as booked by display's own frame timer (ms).
 fl = [int(x) for x in re.findall(r"flush frames \d+ avg (\d+) ms", src)]
+# Per-second phase lines: hook phase ms/s and the total blended px/s (the model's
+# second driver: CAD px is DMA'd full-width px, blend/s is what was composited).
+ph_blend = [int(x) for x in re.findall(r"\| blend/s (\d+)", src)]
+ph_hook = [int(x) for x in re.findall(r"\| hook (\d+) \(", src)]
+bench_ink = [int(x) for x in re.findall(r"bench: blocks \d+ ink px/s (\d+)", src)]
+bench_blk = [int(x) for x in re.findall(r"bench: blocks (\d+) ink", src)]
+# Per-layer blend split (blends/s and ms/s for hr, min, sec/carriage, dial,
+# cw, glass) — the px term must say WHICH layer's pixels it prices, or the
+# Art lever decision reads a blended average.
+LAY = re.compile(r"blend/s by layer: hr (\d+)/(\d+) ms min (\d+)/(\d+) sec "
+                 r"(\d+)/(\d+) dial (\d+)/(\d+) cw (\d+)/(\d+) glass (\d+)/(\d+)")
+lay = [m.groups() for m in (LAY.search(l) for l in src.splitlines()) if m]
 
 print(f"frames {len(fr)}  ticks {len(tk)}  secs {len(fps)}  "
       f"fps line histogram {sorted(set(fps))} x{[fps.count(s) for s in sorted(set(fps))]}")
@@ -59,7 +71,19 @@ print(f"steady window: {len(steady)} of {len(fr)} frames (t+5 s on)")
 if "--csv" in sys.argv:
     lbl = sys.argv[sys.argv.index("--csv") + 1]
     sg = [r["gap"] for r in steady]
-    cols = [lbl, len(steady), len(tk),
+    secs = max(1, len(fps))
+    # Rows the DMA actually carried: display books px == 466 * rows.
+    rows = mean([r["px"] for r in steady]) / 466.0
+    blend = mean(ph_blend) / max(1.0, mean(fps)) if ph_blend else 0.0
+    ink = mean(bench_ink) / max(1.0, mean(fps)) if bench_ink else 0.0
+    blk = bench_blk[0] if bench_blk else 0
+    def lmean(i):
+        return mean([int(g[i]) for g in lay]) if lay else 0.0
+    per = {k: lmean(i) / max(1.0, mean(fps)) for k, i in
+           (("hr", 0), ("min", 2), ("sec", 4), ("dial", 6), ("cw", 8), ("glass", 10))}
+    per_us = {k: lmean(i) for k, i in   # the fps line already prints ms/s
+              (("hr", 1), ("min", 3), ("sec", 5), ("dial", 7), ("cw", 9), ("glass", 11))}
+    cols = [lbl, blk, len(steady), len(tk),
             f"{len(steady) / ((steady[-1]['ts'] - steady[0]['ts']) / 1000):.2f}",
             mean(fl) if fl else 0,
             mean(sg) / 1000, q(sg, .5) / 1000, q(sg, .9) / 1000, q(sg, .99) / 1000,
@@ -67,12 +91,17 @@ if "--csv" in sys.argv:
             mean([r["idle"] for r in steady]) / 1000,
             mean([r["te"] for r in steady]) / 1000,
             mean([r["dma"] for r in steady]) / 1000,
-            mean([r["px"] for r in steady]),
+            mean([r["px"] for r in steady]), rows, blend, ink,
             mean([r["ch"] for r in steady]),
-            mean([r["bands"] for r in steady])]
-    print("CSV point,frames,ticks,fps,flush_avg_ms,gap_mean_ms,gap_p50,gap_p90,gap_p99,"
-          "hook_ms,idle_ms,te_ms,dma_ms,px,ch,bands")
-    print("CSV " + ",".join(f"{c:.1f}" if isinstance(c, float) else str(c) for c in cols))
+            mean([r["bands"] for r in steady]),
+            per["hr"], per["min"], per["sec"], per["dial"], per["cw"], per["glass"],
+            per_us["hr"], per_us["min"], per_us["sec"], per_us["dial"],
+            per_us["cw"], per_us["glass"]]
+    print("CSV point,blocks,frames,ticks,fps,flush_avg_ms,gap_mean_ms,gap_p50,gap_p90,"
+          "gap_p99,hook_ms,idle_ms,te_ms,dma_ms,dma_px,rows,blend_px_tick,bench_ink_tick,"
+          "ch,bands,blend_hr,blend_min,blend_sec,blend_dial,blend_cw,blend_glass,"
+          "ms_hr,ms_min,ms_sec,ms_dial,ms_cw,ms_glass")
+    print("CSV " + ",".join(f"{c:.2f}" if isinstance(c, float) else str(c) for c in cols))
     sys.exit(0)
 
 

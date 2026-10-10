@@ -964,7 +964,8 @@ def _pack_mask(mask, tile=16, max_rects=16, max_flush=0.62):
     return rects
 
 
-def _gif_transition(canvas, tgt, painted, diff_thresh, K=12):
+def _gif_transition(canvas, tgt, painted, diff_thresh, K=12, max_rects=16,
+                    max_flush=0.62):
     """One canvas->target transition -> (rect list [(x,y,w,h),...], kept mask).
 
     A pixel counts as changed when its perceptual RGB565 max-channel step
@@ -999,7 +1000,7 @@ def _gif_transition(canvas, tgt, painted, diff_thresh, K=12):
         mask = raw & (dens >= K)
         if painted is not None:
             mask = mask | (raw & (lum < 0) & painted)   # undo own leftovers
-        lst = _pack_mask(mask)
+        lst = _pack_mask(mask, max_rects=max_rects, max_flush=max_flush)
         if (len(lst) == 1 and lst[0] == (0, 0, SCREEN_W, SCREEN_H)
                 and t != diff_thresh * 5):
             continue                             # collapsed: try a stricter view
@@ -1051,7 +1052,8 @@ def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
 
 
 def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
-                 fps=0.0, frame_glob=None, frame_step=1, matte=None):
+                 fps=0.0, frame_glob=None, frame_step=1, matte=None,
+                 max_rects=16, max_flush=0.62):
     """Bake an animated background (GIF or PNG frame sequence) into the blob
     as one keyframe + per-frame delta rects.
 
@@ -1128,7 +1130,7 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
     F = [_frames_to_u16(im) for im in imgs]
     print(f"  {'gif' if is_gif else 'frames'} bg: {src} -> {len(F)} frames @ "
           f"{SCREEN_W}x{SCREEN_H} fit={fit} "
-          f"(diff thresh {diff_thresh}, cluster>=12/25, tile16<=16 rects)")
+          f"(diff thresh {diff_thresh}, cluster>=12/25, tile16<={max_rects} rects)")
     F, quiet = _temporal_snap(F, denoise)
     n = len(F)
     if denoise > 0:
@@ -1148,7 +1150,9 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
         for k in range(n):
             tgt_i = (k + 1) % n
             tgt = F[tgt_i]
-            lst, _mask = _gif_transition(canvas, tgt, painted, diff_thresh)
+            lst, _mask = _gif_transition(canvas, tgt, painted, diff_thresh,
+                                         max_rects=max_rects,
+                                         max_flush=max_flush)
             blitted = []
             for x, y, w, h in lst:
                 canvas[y:y + h, x:x + w] = tgt[y:y + h, x:x + w]
@@ -1315,6 +1319,18 @@ def main():
                     help="with --bg-frames: playback rate, since PNGs carry no "
                          "timing. 0 (default) takes the theme's bgAnim.fps, then "
                          "25 fps if the theme has no bgAnim at all.")
+    ap.add_argument("--bg-max-rects", type=int, default=16, metavar="N",
+                    help="per-frame delta-rect cap for the bg bank packer "
+                         "(default 16; the shipped recipe). Benching a wide "
+                         "animated band needs ~one rect per 16-px tile row: a "
+                         "304+ row full-width band overruns 16 and the packer "
+                         "collapses to whole-page rects, silently animating "
+                         "every row. Raise to 32 for those points.")
+    ap.add_argument("--bg-max-flush", type=float, default=0.62, metavar="F",
+                    help="packer collapse threshold: a frame whose cover "
+                         "exceeds F of the page flushes the whole page "
+                         "instead (default 0.62; the shipped recipe). Bench a "
+                         "clean full-width band of >290 rows needs ~1.01.")
     ap.add_argument("--frame-step", type=int, default=1, metavar="N",
                     help="take every Nth source frame before baking "
                          "(DECIMATION). The pack is one authored loop sampled at "
@@ -1489,7 +1505,8 @@ def main():
                            fps=(args.bg_fps or (0.0 if args.bg_gif
                                                 else float(bg.get("fps", 0) or 0))),
                            frame_glob=args.bg_glob, frame_step=args.frame_step,
-                           matte=matte_stack)
+                           matte=matte_stack, max_rects=args.bg_max_rects,
+                           max_flush=args.bg_max_flush)
         gif["src"] = bg_src
         plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
         baked_frames, anim_frames = [], 0

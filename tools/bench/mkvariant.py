@@ -10,6 +10,22 @@
                                RMAX from (233,233) — the thinner-carriage lever
                                (Phase 4 V-B). Pass the result through
                                tools/kit_check.py before baking it.
+  animband SRC_FRAMES DST Y0 Y1 [--amp N]   SYNTHESISE background animation
+                               that does not exist in the art: modulate every
+                               pixel of full-width rows [Y0..Y1] frame-to-frame
+                               with a strong periodic (8-cycle) pattern, so the
+                               baked delta bank genuinely pushes those rows
+                               every tick. Rows outside the band stay identical
+                               to the base frames. This is how the rows-capacity
+                               sweep makes 'X rows of the bg animate' real at any
+                               X; kit3's own GIF only animates rows 128..335, so
+                               band-clamping alone cannot price rows above or
+                               below that. Amplitude 70 keeps every 16-px tile
+                               above the bake's diff-thresh 12 cluster rule.
+  static SRC_FRAMES DST        DST = 8 copies of frame_01: a GIF whose delta
+                               bank is empty (plate stays on glass, tick still
+                               rides the baked delay). The true no-animating-bg
+                               control with the real dial art.
 
 Both keep everything else byte-identical, so the only thing that moves between
 the control and a variant is the quantity under test.
@@ -67,11 +83,64 @@ def cart(src_kit, dst_kit, rmax):
           f'r={rmax} from ({CX},{CY})')
 
 
+def animband(src, dst, y0, y1, amp=70.0):
+    """Fill the band toward an 8-cycle sequence of tints at fixed strength s.
+
+    out = base*(1-s) + s*tint[f]. Every pixel in the band moves EVERY tick
+    (channel delta ~16..55 >= the bake's diff-thresh 12), regardless of the
+    base value — pure black rows change too, which additive/sine patterns get
+    wrong via clipping and zero-crossing. The whole band is contiguous changed
+    tiles, so the packer merges to a few full-width rects and stays inside the
+    bank's 16-rects/frame cap even for the 448-row band (a fragmented mask
+    overruns the cap and the bake falls back to full-page rects — measured).
+    Tints are chosen so every consecutive pair (incl. the loop wrap) differs by
+    >=45 in each channel.
+    """
+    names = sorted(n for n in os.listdir(src) if n.lower().endswith('.png'))
+    if len(names) != 8:
+        raise SystemExit(f'animband: expected an 8-frame loop, found {len(names)}')
+    if os.path.isdir(dst):
+        shutil.rmtree(dst)
+    os.makedirs(dst)
+    s = amp / 200.0                                   # 0.35 at the default
+    tints = [(20, 20, 25), (170, 150, 90), (40, 35, 45), (190, 170, 100),
+             (30, 28, 35), (180, 160, 95), (50, 42, 50), (160, 140, 85)]
+    for f, n in enumerate(names):
+        base = np.asarray(Image.open(os.path.join(src, n))).astype(np.int16)
+        live = np.zeros(base.shape[:2], dtype=bool)
+        live[y0:y1 + 1, :] = True
+        for c in range(3):
+            ch = base[..., c]
+            ch[live] = np.round(ch[live] * (1 - s) + s * tints[f][c]).astype(np.int16)
+            base[..., c] = ch
+        Image.fromarray(np.clip(base, 0, 255).astype(np.uint8)).save(os.path.join(dst, n))
+    print(f'animband {src} -> {dst}: rows [{y0}..{y1}] animated s={s:.2f}, '
+          f'{len(names)} frames')
+
+
+def static(src, dst):
+    names = sorted(n for n in os.listdir(src) if n.lower().endswith('.png'))
+    if os.path.isdir(dst):
+        shutil.rmtree(dst)
+    os.makedirs(dst)
+    for i in range(len(names)):
+        shutil.copy(os.path.join(src, names[0]),
+                    os.path.join(dst, f'frame_{i + 1:02d}.png'))
+    print(f'static {src} -> {dst}: {len(names)} identical frames')
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1]
     if cmd == 'rows':
         rows(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]))
     elif cmd == 'cart':
         cart(sys.argv[2], sys.argv[3], float(sys.argv[4]))
+    elif cmd == 'animband':
+        amp = 70.0
+        if '--amp' in sys.argv:
+            amp = float(sys.argv[sys.argv.index('--amp') + 1])
+        animband(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), amp)
+    elif cmd == 'static':
+        static(sys.argv[2], sys.argv[3])
     else:
         raise SystemExit(__doc__)

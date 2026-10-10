@@ -295,7 +295,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _Lk = null; _L = null; _mbc = null;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; cbs = {};
   mainRef = React.createRef();
   cfg() {
@@ -310,35 +310,52 @@ class Component extends DCLogic {
   /* Device rows budget (docs/rows-capacity-2026-10-10.md, batch-6 numbers
    * under CLOCK_L4_MARK_STATIC_BOXES=0 -- now the shipped marking): the tick
    * that flushes the whole clock must fit 1000/fps minus ~17 ms of idle+TE,
-   * and flush grows ~0.2 ms per DMA'd background row. budgetStats.bg is the
-   * measured per-tick union of rows that change in the exported base frames
-   * (the animated geartrain; what the bg delta bank pushes). Caps below are
-   * the largest holding band at each target from the decision table; a
+   * and flush grows ~0.2 ms per DMA'd background row. buildMovement() measures
+   * the widest per-tick union of rows that change between consecutive base
+   * frames (the animated geartrain; what the bg delta bank pushes). Caps below
+   * are the largest holding band at each target from the decision table; a
    * visible moving second hand owns ~130 rows of its swept box on every tick
-   * it moves, so it eats the same budget as that many background rows. */
-  budget() {
+   * it moves, so it eats the same budget as that many background rows.
+   *
+   * Two things keep this from fighting the renderer. (1) budgetStats is keyed on
+   * artKey() -- mvKey() without the frames field -- because opts() carries
+   * frames: this.F, so keying on _mk let the cap invalidate its own measurement:
+   * fps dropped, mvKey changed, the rebuild republished _mk, the stats key no
+   * longer matched, fps snapped back to want and the movement rebuilt forever.
+   * That runaway re-render is the flicker and the flipping numbers. (2) The tier
+   * ladder only ever compares rows measured at the delivered tempo, and _ftier
+   * makes the choice monotone downward for a given art key, so buildMovement
+   * settles after at most one or two extra passes instead of chasing fps. Each
+   * pass is capped by _bp in componentDidUpdate. forceWant prices a hypothetical
+   * sweep for the Hands tab, conservatively: it reuses the rows measured at the
+   * current tempo, which are the most any tier can ask for. */
+  budget(forceWant) {
     const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train];
     const car = !!(T && (T.cage || T.orbital));
     const c = this.cfg(), D = this.design();
     const needle = !!(D.centre && D.centre.second === 1) || (D.comps || []).some((x) => x.scale === 'seconds');
-    const want = car ? 8 : c.tick === 'sweep' ? 15 : 12;
-    if (car) return { fps: 4, want, car, needle, stats: this.budgetStats,
-      why: 'Tourbillon carriages re-export at 4 fps: the carriage composite alone costs 117-135 ms per tick on the panel (measured), so 8 fps only holds with a fully frozen dial. This is the art limit for carriage kits.' };
-    const s = this.budgetStats && this.budgetStats.key === this._mk ? this.budgetStats : null;
-    if (!s) return { fps: want, want, car, needle, stats: null, why: '' };
+    const want = car ? 8 : (forceWant || (c.tick === 'sweep' ? 15 : 12));
     const CAPS = needle ? { 15: 0, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
-    const r = s.bg;
+    if (car) return { fps: 4, want: 8, car, needle, rows: 0, cap: 0, measured: false, measuredAt: 0,
+      why: 'Tourbillon carriages re-export at 4 fps: the carriage composite alone costs 117-135 ms per tick on the panel (measured), so 8 fps only holds with a fully frozen dial. This is the art limit for carriage kits.' };
+    const s = this.budgetStats && this.budgetStats.key === this._artKey ? this.budgetStats : null;
+    if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '' };
+    const r = s.rows;
     let fps = 4;
     for (const t of [15, 12, 8]) { if (t > want) continue; if (r <= CAPS[t]) { fps = t; break; } }
+    if (!forceWant) {
+      const fk = this._artKey + '|' + want;
+      if (this._ftierKey !== fk) { this._ftierKey = fk; this._ftier = 15; }
+      fps = Math.min(fps, this._ftier); this._ftier = fps;   // never claw fps back up on the same art
+    }
     let why = '';
     if (fps < want) {
-      const lim = CAPS[want];
-      why = want + ' fps allows ' + lim + ' animated background rows' + (needle ? ' while the second hand moves every tick' : '') +
+      why = want + ' fps allows ' + CAPS[want] + ' animated background rows' + (needle ? ' while the second hand moves every tick' : '') +
         '; the geartrain animation under the dial changes ' + r + ' rows per tick. The frame rate dropped to ' + fps +
         ' fps -- shrink the skeleton openings or freeze train wheels to win it back.';
       if (needle && want === 15) why += ' With a running second hand the 15 fps tier allows ZERO animated background: the hand’s swept box (~130 rows) plus a 96-row band already busts the 66 ms budget.';
     }
-    return { fps, want, car, needle, stats: s, why, cap: CAPS[want], rows: r };
+    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why };
   }
   preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
   design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
@@ -347,7 +364,8 @@ class Component extends DCLogic {
     const c = this.cfg(), s = this.state;
     return { finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: this.F };
   }
-  mvKey() { const o = this.opts(); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); return JSON.stringify(o); }
+  mvKey(noframes) { const o = this.opts(); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
+  artKey() { return this.mvKey(1); }   // movement-art signature: the same key minus the export frame count
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
   faceKey(id) { return JSON.stringify([this.opts(id), id, this.handDef(id), this.design(id)]); }
   face(id) {
@@ -445,7 +463,15 @@ class Component extends DCLogic {
   componentDidUpdate() {
     if (!this.ready) return;
     const D0 = this.design(); [D0.font, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
-    if (this._mk !== this.mvKey()) this.buildMovement();
+    if (this._mk !== this.mvKey()) {
+      /* budget() lowering the export fps is the one mvKey field the build itself
+       * can move. Rows grow as the tempo drops, so the tier only ever walks down
+       * (_ftier) and settles within a pass or two; this counter is the seatbelt
+       * that keeps a pathological dial from rebuilding forever. */
+      const ak = this.artKey();
+      if (ak !== this._bk) { this._bk = ak; this._bp = 0; }
+      if (this._bp < 3) { this._bp++; this.buildMovement(); }
+    }
     if (this._lastSlow !== this.state.slow || this._lastF !== this.F) this.startTimer();
     const fk = this.faceKey(this.state.dial) + this.state.timeMode;
     if (fk !== this._fk) { this._fk = fk; this.drawLayers(); this.drawHandOpts(); }
@@ -467,7 +493,7 @@ class Component extends DCLogic {
   }
   async buildMovement() {
     const id = (this.buildId = (this.buildId || 0) + 1);
-    this._mk = this.mvKey();
+    this._mk = this.mvKey(); this._artKey = this.mvKey(1);
     await new Promise((r) => setTimeout(r, 30));
     if (id !== this.buildId) return;
     const M = WatchEngine.movement(this.opts()), F = this.F;
@@ -509,7 +535,7 @@ class Component extends DCLogic {
         if (c > bgRows) bgRows = c;
       }
     } catch (e) { bgRows = -1; }
-    this.budgetStats = bgRows >= 0 ? { key: this._mk, bg: bgRows } : null;
+    this.budgetStats = bgRows >= 0 ? { key: this._artKey, f: F, rows: bgRows } : null;
     this._tk = null; this._ck = null;
     this.setState({ seam, status: '' });
     this.drawLayers();
@@ -963,15 +989,16 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'hands') {
       const HB = this.budget();
-      const sweepCapped = !HB.car && HB.stats && HB.stats.bg > (HB.needle ? 0 : 96);
+      const SW = HB.car ? HB : this.budget(15);   // what a sweeping seconds hand would cost, if picked
+      const sweepCapped = !HB.car && SW.measured && SW.rows > SW.cap;
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
-        { v: 'sweep', label: sweepCapped ? 'Sweep — needs a still dial (' + HB.stats.bg + ' animated rows)' : 'Sweep' }];
+        { v: 'sweep', label: sweepCapped ? 'Sweep — needs a still dial (' + SW.rows + ' animated rows)' : 'Sweep' }];
       fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, (v) => {
-        if (v === 'sweep' && sweepCapped) { this.setState({ status: 'Sweep needs 15 fps; the geartrain animation under your skeleton openings (' + HB.stats.bg + ' changed rows/tick) caps the dial at ' + HB.fps + ' fps. Shrink the openings (Dial → Openwork) or freeze the wheels to unlock sweep.' }); return; }
+        if (v === 'sweep' && sweepCapped) { this.setState({ status: 'Sweep needs 15 fps; the geartrain animation under your skeleton openings (' + SW.rows + ' changed rows/tick) caps the dial at ' + SW.fps + ' fps. Shrink the openings (Dial → Openwork) or freeze the wheels to unlock sweep.' }); return; }
         this.setCfg('tick', v);
       }), valText: HB.fps + ' fps' }),
         Nt('', HB.car ? 'Carriage kit: the tourbillon is the second hand; the dial runs at ' + HB.fps + ' fps (carriage art is the 4 fps limit — see Movement tab).'
-          : sweepCapped ? 'Sweeping the seconds at ' + HB.want + ' fps would cap the frame rate at ' + HB.fps + ' (' + HB.why + ') Keep ticking (1/2/4 per second) or shrink the skeleton openings to hold ' + HB.want + ' fps.'
+          : sweepCapped ? 'Sweeping the seconds at 15 fps would cap the frame rate at ' + SW.fps + ' (' + (SW.why || HB.why) + ') Keep ticking (1/2/4 per second) or shrink the skeleton openings to hold 15 fps.'
           : 'Ticking seconds export at 12 fps, sweep at 15 fps; tourbillon movements run at 4 fps (device rows budget — docs/rows-capacity-2026-10-10.md).'),
         H('Drop shadow · hands and raised/sunken subdials'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
@@ -1005,10 +1032,13 @@ class Component extends DCLogic {
       fields.push(H('Placement'));
       if (tr.by) fields.push(Nt('Train angle', tr.deg + '° — set by #' + num(tr.by) + ' ' + compTitle(D.comps.find((c) => c.id === tr.by) || {}) + '. Move that opening to turn the train.'));
       else fields.push(Rg('Train angle', +c0.trainAngle || 0, 0, 359, 1, cf('trainAngle'), (+c0.trainAngle || 0) + '°'));
+      const HB = this.budget();
       fields.push(H('Loop'),
-        Nt('Frame rate', F + ' fps — ' + (this.budget().why || (T && (T.cage || T.orbital)
+        Nt('Frame rate', F + ' fps — ' + (HB.why || ((T && (T.cage || T.orbital))
           ? 'carriage kit: the tourbillon composite is 117-135 ms per tick on the panel (measured), so exports run at 4 fps; 8 fps needs a frozen dial.'
-          : 'geartrain changes ' + (this.budget().stats ? this.budget().stats.bg + ' rows/tick' : '—') + '; the tick budget holds the highest target whose cap it clears (no hand: 96/160/304 rows at 15/12/8; with a moving second hand: 0/96/240).'))),
+          : HB.measured
+            ? 'the geartrain animation changes ' + HB.rows + ' rows per tick (measured over the ' + HB.measuredAt + ' exported frames); the tick budget holds the highest target whose cap it clears (no hand: 96/160/304 rows at 15/12/8; with a moving second hand: 0/96/240).'
+            : 'measuring the geartrain row footprint…'))),
         Nt('Why art limits exist', 'The panel DMA costs ~0.2 ms per changed row per tick (docs/rows-capacity-2026-10-10.md). Skeleton openings widen the row band the animated geartrain must repaint; carriages never fit above 4 fps at any opening size.'),
         Ch('Balance beats', String(c0.balance), [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' }], cf('balance')));
     }

@@ -144,6 +144,23 @@ state the reason with the measured numbers (e.g. sweep refuses to select
 while the geartrain changes rows under an open skeleton, with the rows and
 the cap printed).
 
+Two rules keep that feedback path from eating itself, because `opts()` feeds
+the export frame count into `mvKey()` — the key that gates `buildMovement()`:
+
+1. `budgetStats` is keyed on `artKey()` (`mvKey()` with the `frames` field
+   removed). Keying it on `_mk` made each published measurement invalidate
+   itself: fps dropped, `mvKey()` moved, the rebuild republished `_mk`, the
+   stats key no longer matched, `budget()` fell back to the uncapped rate, and
+   the movement re-rendered while the readout alternated 8/15/8. It also left
+   the frame bank 15 frames deep against a manifest claiming 8 fps, which the
+   baker's `fps == frames` gate rejects.
+2. `_ftier` makes the tier monotone downward per art key and `componentDidUpdate`
+   allows three frames-driven rebuilds per art key, so the descend-and-recheck
+   loop (rows grow when the tempo drops) settles in 1–3 passes.
+
+`tools/bench/loopcheck.py` mirrors both implementations and asserts the
+pre-patch swing plus the post-patch invariants (settles, bank length equals
+exported fps, no readout jump after the cold pass). Exit 1 on regression.
 
 ## Limitations of this sweep
 

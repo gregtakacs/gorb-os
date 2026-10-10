@@ -181,6 +181,33 @@ Recorded so the dead ends are not re-walked:
   100 ms/s are paid blending over rows whose background genuinely changed.
   Shrinking that cost means shrinking the GIF delta rects (art/baker side),
   not skipping composites.
+- **GIF delta rect tightening on the bake side** (the lever L5 points at:
+  stricter `--diff-thresh`, larger rect budget, softer cluster gate):
+  measured and killed. A host-side replay of `bake_bg_bank`'s own
+  warm/replay simulation (3 warm cycles, kit3 `base/` frames, fps 8,
+  denoise 2) reproduces the committed bank **rect-for-rect identical**, all
+  8 transitions. Per tick the bank pushes 34,304 px while only 14,723 px
+  genuinely change (over-cover 2.33); that inflation is **tile-16
+  quantisation, not threshold policy**: the tile-union floor is 34,048 px,
+  so the greedy+merge packing wastes 256 px (0.7%). Sweeps are flat:
+  `--diff-thresh` 12→32 buys 5% (changed px halve but the same ~190 annulus
+  rows stay touched — the glow-ring sparkle is dense, not dither),
+  `max_rects` 16→32 buys 256 px, cluster `K` 12→8/10 buys nothing. The real
+  per-tick cost is what the rects drag into the flush: their row union is a
+  **solid 208-row band [128..335]** — ~97k px of full-width DMA, ~75% of a
+  tick's 128k px — and no threshold shortens it because changed pixels
+  exist across 184 of those rows, with exactly 1 row below 3 px. This is a
+  property of kit3's base animation (ring sparkle above/below the window),
+  so the lever is the art, not the baker. Audit harness: `/tmp/gb/rectaudit.py`.
+- **`--bg-glob` silently ignored for zip sources**: falsified-and-fixed. The
+  `*.zip` branch of `_png_frame_items` read EVERY PNG in the archive; passing
+  a kit zip with `--bg-glob base/frame_*.png` baked all 25 kit PNGs (base +
+  layers + tourbillon + hands) as background frames, a 25-frame bank whose
+  loop never closes. The shipped bank is clean — it was baked from an
+  extracted base/ dir — but the trap is now closed: the zip branch honours
+  `--bg-glob` against the ARCHIVE PATH (not the basename: `base/` and
+  `tourbillon/` share `frame_01…08.png`, so a basename match cannot
+  disambiguate them).
 - **Internal-RAM texel staging** as a precondition for the filter: measured
   negative, and covered with numbers in "A note on the 2-tap filter" above.
 - **Rounding vs truncating** the 8.8 row origin: no meaningful change in the

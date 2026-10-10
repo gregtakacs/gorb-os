@@ -791,7 +791,10 @@ def _png_frame_items(src, frame_glob):
     Accepted shapes, in the order tried:
       *.zip        every .png entry in the archive (studio exports arrive
                    zipped; reading it in place avoids a throwaway extract and
-                   the risk of baking a stale folder left over from last time)
+                   the risk of baking a stale folder left over from last
+                   time), or those matching frame_glob -- a kit zip also holds
+                   hands/tourbillon/layers PNGs, so filter it or the bake
+                   quietly turns them into background frames)
       directory    files matching frame_glob, else every .png in it
       glob         e.g. 'shots/frame_*.png'
       single .png  a one-frame background
@@ -803,8 +806,17 @@ def _png_frame_items(src, frame_glob):
         with zipfile.ZipFile(p) as z:
             items = [(zi.filename, z.read(zi.filename)) for zi in z.infolist()
                      if not zi.is_dir() and zi.filename.lower().endswith(".png")]
+        if frame_glob:
+            # A kit zip carries hands/tourbillon/layers PNGs beside the base
+            # frames; without this filter --bg-glob is silently ignored for
+            # zips and every PNG becomes a "background frame". Match the
+            # ARCHIVE PATH, not the basename: base/ and tourbillon/ share the
+            # names frame_01…08.png, so a basename match cannot disambiguate.
+            items = [kv for kv in items
+                     if fnmatch.fnmatch(kv[0], frame_glob)]
         if not items:
-            raise SystemExit(f"--bg-frames: no PNG entries inside {p}")
+            raise SystemExit(f"--bg-frames: no PNG entries inside {p}"
+                             + (f" matching {frame_glob!r}" if frame_glob else ""))
         return sorted(items, key=lambda kv: _natkey(kv[0]))
     if os.path.isdir(p):
         names = [n for n in os.listdir(p) if n.lower().endswith(".png")]

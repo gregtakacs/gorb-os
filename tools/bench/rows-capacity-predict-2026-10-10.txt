@@ -1,0 +1,45 @@
+== anim48
+8 frames from /tmp/bench2/anim48: pushed 22368 px/tick, changed 18489 px/tick, over-cover 1.21
+row union: 48 rows [208..255], full-width DMA 22368 px/tick
+== anim96
+8 frames from /tmp/bench2/anim96: pushed 44736 px/tick, changed 36722 px/tick, over-cover 1.22
+row union: 96 rows [176..271], full-width DMA 44736 px/tick
+== anim112
+8 frames from /tmp/bench2/anim112: pushed 52192 px/tick, changed 52190 px/tick, over-cover 1.00
+row union: 112 rows [176..287], full-width DMA 52192 px/tick
+== anim128
+8 frames from /tmp/bench2/anim128: pushed 59648 px/tick, changed 59646 px/tick, over-cover 1.00
+row union: 128 rows [160..287], full-width DMA 59648 px/tick
+== anim144
+8 frames from /tmp/bench2/anim144: pushed 67104 px/tick, changed 54461 px/tick, over-cover 1.23
+row union: 144 rows [160..303], full-width DMA 67104 px/tick
+== anim160
+8 frames from /tmp/bench2/anim160: pushed 74560 px/tick, changed 74558 px/tick, over-cover 1.00
+row union: 160 rows [144..303], full-width DMA 74560 px/tick
+== anim192
+8 frames from /tmp/bench2/anim192: pushed 89472 px/tick, changed 71045 px/tick, over-cover 1.26
+row union: 192 rows [128..319], full-width DMA 89472 px/tick
+== anim224
+8 frames from /tmp/bench2/anim224: pushed 104384 px/tick, changed 104382 px/tick, over-cover 1.00
+row union: 224 rows [112..335], full-width DMA 104384 px/tick
+== anim240
+8 frames from /tmp/bench2/anim240: pushed 111840 px/tick, changed 86816 px/tick, over-cover 1.29
+row union: 240 rows [112..351], full-width DMA 111840 px/tick
+== anim304
+8 frames from /tmp/bench2/anim304: pushed 141664 px/tick, changed 107483 px/tick, over-cover 1.32
+row union: 304 rows [80..383], full-width DMA 141664 px/tick
+== anim368
+8 frames from /tmp/bench2/anim368: pushed 171488 px/tick, changed 127784 px/tick, over-cover 1.34
+row union: 368 rows [48..415], full-width DMA 171488 px/tick
+== anim448
+8 frames from /tmp/bench2/anim448: pushed 208764 px/tick, changed 152135 px/tick, over-cover 1.37
+row union: 448 rows [0..447], full-width DMA 208768 px/tick
+== animgo96
+8 frames from /tmp/bench2/animgo96: pushed 44736 px/tick, changed 44734 px/tick, over-cover 1.00
+row union: 96 rows [0..95], full-width DMA 44736 px/tick
+== animgo240
+8 frames from /tmp/bench2/animgo240: pushed 111840 px/tick, changed 111838 px/tick, over-cover 1.00
+row union: 240 rows [0..239], full-width DMA 111840 px/tick
+== framesstatic
+8 frames from /tmp/bench2/framesstatic: pushed 0 px/tick, changed 0 px/tick, over-cover 0.00
+row union: 0 rows, full-width DMA 0 px/tick

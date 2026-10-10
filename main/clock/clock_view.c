@@ -161,10 +161,18 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
 #define CLK_BG_DIRECT_PUSH 1
 
 /* Re-mark every layer's full swept box each tick on L4/GIF themes (see
- * mark_all_layers). 1 = shipped behaviour; 0 = rely on event marks only
- * (rows-capacity bench, docs/rows-capacity-2026-10-10.md). */
+ * mark_all_layers). SHIPPED = 0: a layer marks only the rows it actually
+ * dirties (apply_angles wedges, gif_apply_frame pushes, tourbillon diff
+ * boxes), and the commit hook repaints every layer across each marked row.
+ * The blanket re-mark made a STANDING hand pay its whole swept box every
+ * tick -- measured 134.9 ms flush for a static needle at 15 fps, dropping to
+ * 54.5 ms with the re-mark off (docs/rows-capacity-2026-10-10.md, batch 6:
+ * 10 flashed points, panel byte-identical under the flush gate). The classic
+ * freeze bug (mark_all_layers header) cannot return: restore and repaint are
+ * per-row x-span scoped, so an unmarked row is never touched. 1 restores the
+ * old discipline for A/B. */
 #ifndef CLOCK_L4_MARK_STATIC_BOXES
-#define CLOCK_L4_MARK_STATIC_BOXES 1
+#define CLOCK_L4_MARK_STATIC_BOXES 0
 #endif
 
 static uint16_t        *s_canvas;      /* PSRAM, CLK_SCR_W*CLK_SCR_H RGB565 */

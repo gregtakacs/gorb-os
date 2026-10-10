@@ -99,8 +99,9 @@ regardless. The event-mark path (`apply_angles` wedges + `gif_apply_frame`
 pushes + the hook's all-layer re-composite on marked rows) makes the static
 re-mark provably redundant, exactly as it did for the glass overlay
 ("never re-dirty what did not change"). `CLOCK_L4_MARK_STATIC_BOXES`
-(clock_view.c, default 1 = shipped) disables it for the batch-6 re-runs
-below; if the rows track the band with no frozen hands, the fix should ship
+(clock_view.c) disabled it for the batch-6 re-runs below. Batch 6 passed:
+every F_* flush tracked the band with live hands and zero CAD anomalies, so
+the flag now SHIPS at 0
 and every 12/15-fps capacity number rises.
 
 ## The decision table (kit-owner answer)
@@ -115,9 +116,33 @@ the target tick for the whole 30 s capture:
 | 12 | ✅ 160 rows (A_r160f12 12.42); ❌ 192 (A_r192f12 10.2) | ❌ (carriage alone 117 ms + row union) | ❌ |
 | 15 | ✅ 96 rows (A_r96 15.5); ❌ 112 (A_r112 12.4) | ❌ | ❌ |
 
-Carriage-less + simple sweeping needle (config B): nothing above 4 fps —
-140–160 ms flush at every band size, at any hand rate, because the hand's
-swept box is re-marked every tick (see the mark_all_layers section above).
+Carriage-less + simple sweeping needle (config B under the OLD shipped
+marking): nothing above 4 fps — 140–160 ms flush at every band size, at any
+hand rate, because the hand's swept box was re-marked every tick. With the
+mark_all_layers fix shipped this is the true capacity (batch 6):
+15 fps = static background only (54.5 ms), 12 fps = 96-row band (72.8 ms),
+8 fps = 240-row band (116.6 ms), 4 fps = full page. A ticking needle at
+1/2/4 Hz adds nothing back — a stationary hand now marks nothing, but the
+tick that moves it still pays the wedge, and the tick runs at the bg tempo.
+
+Tourbillon carriage WITH an animated background (the question the kit owner
+asked): no — the carriage pays for itself first. The chord-marked carriage
+alone costs ~120–135 ms/tick before any bg delta is added (config C static
+117–121 ms, config D static 134–136 ms), and 8 fps dies at 125 ms. The
+304-row (8 fps) and 160-row (12 fps) budgets in this table are carriage-less
+numbers; with a carriage, 4 fps is the ceiling at any animation footprint.
+
+## Watch Composer integration (same day)
+
+`tools/watch-composer/Watch Composer.dc.html` now derives the export frame
+rate from this table: `buildMovement()` diffs consecutive base frames to get
+the per-tick changed-row count (the bg delta bank's real row footprint under
+the skeleton cutout), and `budget()` caps the fps ladder to the largest
+target whose row cap it clears — no-hand 96/160/304 at 15/12/8, moving
+second hand 0/96/240, carriage kits a flat 4. The Hands and Movement tabs
+state the reason with the measured numbers (e.g. sweep refuses to select
+while the geartrain changes rows under an open skeleton, with the rows and
+the cap printed).
 
 
 ## Limitations of this sweep

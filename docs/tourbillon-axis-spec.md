@@ -165,6 +165,22 @@ Recorded so the dead ends are not re-walked:
 - **Chasing the carriage for the residual bob.** Every carriage instrument was
   clean and the bob persisted; the four display-path tests in the table above are
   what located it. Start there next time, not at the resampler.
+- **L5 static-layer row memoization** (skip re-compositing a marked row whose
+  inputs are unchanged since its accepted composite, so the static dial/glass
+  stops re-blending behind the carriage): built, verified, and killed before it
+  shipped — **the target set is empty.** The key was per-row: last accept's
+  per-role input generations (bumped at every `s_ang_10` write, the tourbillon
+  frame swap, and view rebuild), marked x-span equality, a per-row mirror write
+  epoch bumped by every LVGL chunk, and exclusion of GIF-forced rows. A VERIFY
+  build (composes eligible rows anyway, counts what a skip would have frozen)
+  measured rows/s ~2,300, **skippable/s 0, mismatch 0** over 25 s of live sweep.
+  Kit3's mark discipline already owns this win: GIF pushes force their rows
+  (the canvas genuinely changed under them), carriage chord marks accompany a
+  gen that moves every tick at 8 fps, and rows nothing moves are never marked
+  at all — that was the `mark_all_layers` fix. The glass 167 ms/s + dial
+  100 ms/s are paid blending over rows whose background genuinely changed.
+  Shrinking that cost means shrinking the GIF delta rects (art/baker side),
+  not skipping composites.
 - **Internal-RAM texel staging** as a precondition for the filter: measured
   negative, and covered with numbers in "A note on the 2-tap filter" above.
 - **Rounding vs truncating** the 8.8 row origin: no meaningful change in the

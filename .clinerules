@@ -201,6 +201,27 @@ Firmware rules this dial depends on (`main/clock/clock_view.c`):
   marks ONLY the union of the outgoing+incoming baked diff rects at the current
   angle; the orbit itself is plain hand rotation (manifest's seconds/60x360).
   First draw marks the full swept box. Park/resume resets `s_tourb_shown`.
+- The sweeping carriage's orbit step marks the ROTATED INK, not the box:
+  `tourbillon_ink_mark()` (from `apply_angles`, i==2 only) rotates every source
+  row's ink chord of the shown frame — per-frame chords `s_tourb_cx0/1` are
+  measured once off the alpha plane into PSRAM — as an integer 16.16 line
+  segment into the `s_wp_*` device-row spans, then releases <=466 `mark_rows`
+  calls. Both poses are stamped (the vacated pixels are the other half of the
+  job). Trig is nearest-whole-degree, so pads cover <=0.5 deg of pose error
+  (SWEPT_PAD in x, `1+w/128` rows in y). Fallbacks that keep the box union:
+  non-L4, `s_shadow[2]`, bank never composited, chord alloc failed.
+  NEVER mark_rows-per-segment with double trig: near-vertical chords cost
+  ~90k calls/tick and starve the tick task (measured 1-2 fps, wave at the
+  orbit period).
+- `mark_rows(y0,y1,x0,x1,force)`: rows are handed to the display through
+  `display_mark_rows_clocked`; the GIF push marks force=true (its pixels
+  reached mirror+canvas without the panel ever seeing them). The commit hook
+  `clock_layer_commit` then FLUSH-GATES non-force rows: it snapshots each
+  marked row, restores+re-paints, and `display_commit_row(y, memcmp)` sends
+  only rows whose rebuild came out different (LVGL-chunk rows always ride,
+  via `s_chunk_row`). Without this the disc of a sweep re-DMAed ~200k px of
+  identical pixels per tick and capped fps at 5 even after the blends were
+  cheap. `s_row_snap` alloc failure = every marked row flushes (safe legacy).
 - `mark_all_layers()` early-returns when `clk_theme.tourbillon_n > 0`: with
   full-coverage art (translucent dial + glass over every row) the classic
   per-tick full-box re-mark measured 5 fps; letting only the movers mark their
@@ -216,16 +237,13 @@ Firmware rules this dial depends on (`main/clock/clock_view.c`):
 The kit's orbit SWEEPS: bake with `--force-sweep --tick-rate 15`. tickRate must be
 >= the bank fps so `hand_beat_ticks()` yields one tick per beat (tpb<=1 = true
 wall-clock sampling every tick); a low tickRate RE-QUANTISES the sweep to that
-many beats/s and at rate 1 is indistinguishable from ticking. Measured price:
-steady 5 fps vs 9-10 ticking — each sweep step rotates the whole carriage, whose
-rigid ring ink moves as one, so every beat re-marks the full swept box (~430 px
-tall, ~40% of the page) and the commit re-blends dial+glass over it. Quantising
-to tpb=2 (`--tick-rate 7`) measured NO higher fps (5-7, pipeline already
-saturated) for steeper 1.2-2.4° steps — rate 15 is the best sweep setting.
-Recovering sweep fps means marking the rotated INK footprint per row instead of
-the box (the row model stores one min/max x-span, so a full ring buys back
-nothing; start from the mark_all_layers plateau note). Classic tick art keeps
-its old 9-10 fps discipline either way — sweep lives in the theme, not the code.
+many beats/s and at rate 1 is indistinguishable from ticking. Sweep costs no
+extra fps now (see the rotated-ink + flush-gate rules above): both the orbit
+step's marks and the DMA are confined to the carriage's actual ink, so dial
+and glass only re-blend where the carriage passed. Quantising to tpb=2
+(`--tick-rate 7`) measured NO higher fps (pipeline already saturated) for
+its steeper steps — rate 15 is the best sweep setting. Classic tick art
+keeps the same discipline either way — sweep lives in the theme, not the code.
 
 Steam-punk is NOT lost: `git checkout assets/clock_assets.bin assets/clock_assets.h
 main/CMakeLists.txt --` restores the shipped 1.85 MB pair (it rebuilds identically
@@ -234,6 +252,9 @@ a copy). Swap the pair, `idf.py build`, and the full `idf.py flash` (the assets
 partition write is the slow ~3 min part — detach, per above).
 
 Verified on the bench at fw with this theme: boot logs `tourbillon: 15 frames @
-15 fps on the second-hand slot, orbit about (233,233)`; sweep steady 5 fps (tick
-mode measured 9-10), px/s ~0.9-1.2 M under sweep, no Guru. `assets/preview-orbital/` holds the bake's own inspection
+15 fps on the second-hand slot, orbit about (233,233)`; sweep steady 9 fps —
+same as tick mode (avg commit ~100 ms, px/s ~1.1-1.2 M i.e. ~270 flush rows
+per commit once band-merged, te ~9 ms/commit, no Guru). Before the rotated-ink
+marks + commit flush gate, sweep ran 5 fps at ~450 rows/commit.
+`assets/preview-orbital/` holds the bake's own inspection
 PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).

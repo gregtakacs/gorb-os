@@ -198,6 +198,13 @@ static bool         s_tiles_ok __attribute__((unused)); /* s_tiles_n >= 2, ring 
  * before the frame's first chunk arrives, still rides this frame's band set. */
 static uint8_t s_push_row[SCREEN_HEIGHT];
 
+/* Rows the LVGL chunk path mirrored into s_fb THIS frame (LVGL rendered them
+ * itself). The clock's commit-time flush gate must never un-dirty such a
+ * row: its pixels came from LVGL's renderer and the panel has not seen them,
+ * however the clock's own before/after compare turns out. Cleared at the
+ * frame-start fold, set as chunks are mirrored. */
+static uint8_t s_chunk_row[SCREEN_HEIGHT];
+
 
 /* ---- esp_lcd color-transfer-done callback (QSPI DMA finished) ---- */
 static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
@@ -469,6 +476,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
     if (!s_flush_in_flight) {
         memcpy(s_dirty_row, s_push_row, sizeof(s_dirty_row));
         memset(s_push_row, 0, sizeof(s_push_row));
+        memset(s_chunk_row, 0, sizeof(s_chunk_row));
         s_frame_t0_us   = esp_timer_get_time();
         s_flush_in_flight = true;
     }
@@ -480,7 +488,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
          * its rows, and hand the LVGL buffer straight back -- the actual QSPI
          * push is deferred to the last chunk as a handful of band DMAs. */
         mirror_chunk(x1, y1, w, h, (const uint16_t *)px_map, w);
-        for (int r = y1; r <= y2; r++) s_dirty_row[r] = 1;
+        for (int r = y1; r <= y2; r++) { s_dirty_row[r] = 1; s_chunk_row[r] = 1; }
 
         if (is_last) {
             s_flush_in_flight = false;
@@ -815,6 +823,36 @@ void display_mark_rows(int32_t y0, int32_t y1)
         s_push_row[r]   = 1;
         s_dirty_row[r]  = 1;
     }
+}
+
+/* Rows the clock's painter marked THROUGH THIS INTERFACE since the last
+ * commit decision. display_commit_row may only clear a row this set holds:
+ * a row the LVGL chunk path marked dirty carries pixels LVGL itself
+ * rendered, and un-marking those would drop them from the flush. */
+static uint8_t s_clock_marked[SCREEN_HEIGHT];
+
+void display_mark_rows_clocked(int32_t y0, int32_t y1)
+{
+    if (!s_coalesce_mode) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 >= SCREEN_HEIGHT) y1 = SCREEN_HEIGHT - 1;
+    for (int32_t r = y0; r <= y1; r++) {
+        s_push_row[r]      = 1;
+        s_dirty_row[r]     = 1;
+        s_clock_marked[r]  = 1;
+    }
+}
+
+void display_commit_row(int32_t y, bool send)
+{
+    if (!s_coalesce_mode) return;
+    if (y < 0 || y >= SCREEN_HEIGHT) return;
+    if (!s_clock_marked[y]) return;       /* not ours to decide */
+    s_clock_marked[y] = 0;
+    s_dirty_row[y]    = (send || s_chunk_row[y]) ? 1 : 0;  /* a row LVGL
+        * rendered this frame rides regardless of the clock's compare */
+    s_push_row[y]     = 0;                /* consumed: must not refold into the
+                                             next frame and resend a stale row */
 }
 
 void display_bench_reset(void)

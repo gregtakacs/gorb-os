@@ -53,6 +53,25 @@ uint64_t display_bench_submit_us(void);
 void display_mark_rows(int32_t y0, int32_t y1);
 
 /**
+ * display_mark_rows for the clock's commit-time painter: same band marking,
+ * but the rows are additionally registered as the clock's own, so
+ * display_commit_row may later un-mark them if the re-composite reproduced
+ * what the mirror already held.
+ */
+void display_mark_rows_clocked(int32_t y0, int32_t y1);
+
+/**
+ * Decide whether one row participates in the next flush. The clock's commit
+ * hook owns this decision for every row it re-composites: it has the mirror,
+ * so it can compare against what the glass already shows and skip the DMA of
+ * rows whose repaint came out byte-identical (a rotating carriage re-blends
+ * a whole disc every tick but visibly changes only its wedge). Sets both the
+ * in-flight and not-yet-folded row sets so the answer sticks whichever side
+ * of the frame-start fold the call lands on. LVGL-task only.
+ */
+void display_commit_row(int32_t y, bool send);
+
+/**
  * Hook invoked at flush-commit AFTER every chunk (LVGL-rendered and pushed)
  * has been mirrored into the panel framebuffer but BEFORE the TE wait and the
  * band DMAs read it out. The clock uses this single safe window to composite

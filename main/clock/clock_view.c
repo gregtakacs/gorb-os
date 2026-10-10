@@ -193,6 +193,30 @@ static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never 
 static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
 static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
 
+/* Orbit marks (sweep perf). The generic hand marking would take the union
+ * of the two rotated bounding boxes of the carriage (~260x350 swung around
+ * the dial centre): most of the page on EVERY tick, so the commit hook
+ * restores + re-composites ~330k px of dial+glass for a carriage that only
+ * touches ~75k of them — that is what held sweep at 5 fps once the DMA
+ * itself was gated away. Instead each sweep tick marks the rotated ink
+ * footprint of both poses: every source row's ink extent (x0,x1) is kept
+ * per frame (PSRAM chords, built on first use), rotated as a line segment
+ * with 16.16 fixed-point trig, and accumulated into per-device-row x-spans
+ * — marks are as wide as the ink and no wider. The commit hook's flush gate
+ * (clock_layer_commit) then skips DMA for rows whose rebuild came out
+ * byte-identical anyway. If the chord tables cannot be built the caller
+ * falls back to the swept-box union. */
+static uint16_t *s_tourb_cx0[CLK_TOURB_MAX];
+static uint16_t *s_tourb_cx1[CLK_TOURB_MAX];
+
+/* One stamp pass's device-row span accumulation (x1 < x0 = untouched row). */
+static int16_t  s_wp_x0[CLK_SCR_H], s_wp_x1[CLK_SCR_H];
+static int32_t  s_wp_lo, s_wp_hi;
+
+/* LVGL's integer-degree 16.16 sine (see paint path); declared early — the
+ * orbit stamps below use it before the paint block defines it. */
+static inline int32_t trigo_sin(int32_t angle);
+
 
 static bool gif_mode(void)
 {
@@ -364,7 +388,7 @@ static void swept_rect_box(const clk_sprite_t *spr, int32_t ang_10,
 
 static void area_union(lv_area_t *a, const lv_area_t *b);
 #if CLK_BG_DIRECT_PUSH
-static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
+static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1, bool force);
 static bool l4_active(void);
 static void request_commit(void);
 #endif
@@ -411,7 +435,7 @@ static void gif_apply_frame(int tgt)
          * for them had been consumed -- hands vanished over precisely the
          * pushed rects. One writer per row, and it is the hook. */
         if (l4_active()) {
-            mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1);
+            mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1, true);
             pushed = true;
         }
 #endif
@@ -637,6 +661,12 @@ static int32_t s_ang_10[5] = { INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN, INT32
  * push only the swept union ourselves. The software renderer then clips the
  * rotated blit to that refresh area, so cost scales with the wedge, not the
  * box. */
+/* Sweep marking by the carriage's rotated ink chords; defined with the
+ * tourbillon block below. Returns true when it placed the marks for both
+ * poses, false when the caller must fall back to the swept-box union (no
+ * bank, no prior composite, shadowed seconds, or classic path). */
+static bool tourbillon_ink_mark(int32_t prev_ang_10, int32_t new_ang_10);
+
 #define HAND_REDRAW_EPS_10 2
 static void apply_angles(const float ang[5])
 {
@@ -653,7 +683,20 @@ static void apply_angles(const float ang[5])
         lv_area_t u;
         bool have = false;
 
-        if (prev != INT32_MIN) {
+        /* Sweep tourbillon: the orbit rotates the whole carriage, so the
+         * box union below is most of the page on EVERY tick and the commit
+         * hook re-composites the full dial+glass across it (measured: sweep
+         * ran at half tick's frame rate, the whole gap in those marks).
+         * Mark the two poses' rotated ink instead — each source row's ink
+         * extent rotated as a segment, accumulated per device row — so the
+         * rebuild is confined to what the carriage actually covered or
+         * vacated. The frame swap's changed pixels are added by
+         * tourbillon_advance's diff-box marks; the chord model tracks only
+         * the hand's own art, so a shadowed second hand keeps the box. */
+        const bool inked = (i == 2 && prev != INT32_MIN) &&
+                           tourbillon_ink_mark(prev, a);
+
+        if (!inked && prev != INT32_MIN) {
             /* Union of the old and new wedge of every layer sharing this angle,
              * in both their un-shifted (hand) and shifted (shadow) positions. */
             if (s_hand[i]) {
@@ -670,7 +713,7 @@ static void apply_angles(const float ang[5])
                 else { u = su; have = true; }
             }
         }
-        else if (s_hand[i]) {
+        else if (!inked && s_hand[i]) {
             swept_box(&clk_theme.hand[i], a, &u);
             if (s_shadow[i]) {
                 lv_area_t sn; swept_box(&clk_theme.shadow[i], a, &sn);
@@ -687,7 +730,7 @@ static void apply_angles(const float ang[5])
          * classic path is back in charge and the wedge goes to LVGL. */
         if (have) {
 #if CLK_BG_DIRECT_PUSH
-            if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+            if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
             else
 #endif
                 lv_obj_invalidate_area(s_scr, &u);
@@ -710,7 +753,7 @@ static void apply_angles(const float ang[5])
              * box once more so a lost invalidation can never stick. */
             if (have) {
 #if CLK_BG_DIRECT_PUSH
-                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
                 else
 #endif
                     lv_obj_invalidate_area(s_scr, &u);
@@ -735,6 +778,142 @@ static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
                        (int32_t)spr->diffy + (int32_t)spr->diffh - 1, out);
     else
         swept_box(spr, ang_10 == INT32_MIN ? 0 : ang_10, out);
+}
+
+/* Build frame f's per-source-row ink chords (min/max x with alpha>0), once.
+ * Sequential alpha-plane scan (~90 kB from PSRAM per frame), lazy so a theme
+ * only pays for the frames it shows. Returns false = no table: box fallback. */
+static bool tourb_chords(int f)
+{
+    if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
+        return false;
+    if (s_tourb_cx0[f]) return true;
+    const clk_sprite_t *s = &clk_theme.tourbillon[f];
+    if (!sprite_drawable(s) || !s->w || !s->h) return false;
+
+    const size_t sz = (size_t)s->h * sizeof(uint16_t);
+    uint16_t *c0 = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint16_t *c1 = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c0 || !c1) {
+        if (c0) heap_caps_free(c0);
+        if (c1) heap_caps_free(c1);
+        return false;
+    }
+    const uint8_t *alp = blob() + s->color_off + (size_t)s->w * s->h * 2;
+    for (int32_t y = 0; y < (int32_t)s->h; y++) {
+        const uint8_t *row = alp + (size_t)y * s->w;
+        int32_t lo = -1, hi = -1;
+        for (int32_t x = 0; x < (int32_t)s->w; x++)
+            if (row[x]) { lo = x; break; }
+        for (int32_t x = (int32_t)s->w - 1; x >= 0; x--)
+            if (row[x]) { hi = x; break; }
+        c0[y] = (uint16_t)(lo < 0 ? 1 : lo);   /* empty row: c1 < c0 */
+        c1[y] = (uint16_t)(hi < 0 ? 0 : hi);
+    }
+    s_tourb_cx0[f] = c0;
+    s_tourb_cx1[f] = c1;
+    return true;
+}
+
+/* Rotate frame f's source-row chords by ang_10 (TENTHS of a degree, the
+ * swept_rect_box convention) and accumulate the device rows each segment
+ * passes through into the s_wp_* spans. All-integer inner loop — the earlier
+ * double-trig, mark_rows-per-segment version cost ~90k calls per tick at the
+ * worst carriage angle and starved the tick task to 1-2 fps with an
+ * angle-periodic wave; the same work done here is tens of thousands of ALU
+ * ops into static memory.
+ *
+ * Trig runs at the nearest WHOLE degree (LVGL's table), so the stamped pose
+ * can be up to 0.5 deg off the angle paint_layer will inverse-map at: the
+ * endpoint error is r*0.0087 <= ~2 px (covered by SWEPT_PAD) and the
+ * row-crossing error ~len*0.0087 <= ~2 rows (covered by the row pad). */
+static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
+{
+    const uint16_t *c0 = s_tourb_cx0[f], *c1 = s_tourb_cx1[f];
+    int32_t deg = (ang_10 >= 0 ? ang_10 + 5 : ang_10 - 5) / 10;
+    deg %= 360; if (deg < 0) deg += 360;
+    const int32_t si = trigo_sin(deg);
+    const int32_t co = trigo_sin(deg + 90);
+    const int32_t pvx = (int32_t)spr->pivotx, pvy = (int32_t)spr->pivoty;
+    const int32_t cxs = (int32_t)spr->centerx, cys = (int32_t)spr->centery;
+    const int32_t rpad = 1 + ((int32_t)spr->w >> 7);   /* see 0.5 deg note */
+
+    for (int32_t ys = 0; ys < (int32_t)spr->h; ys++) {
+        if (c1[ys] < c0[ys]) continue;                /* row carries no ink */
+        const int32_t dy  = ys - pvy;
+        const int32_t dxa = (int32_t)c0[ys] - pvx;
+        const int32_t dxb = (int32_t)c1[ys] - pvx;
+        const int32_t ax = cxs + ((co*dxa - si*dy) >> 16);
+        const int32_t ay = cys + ((si*dxa + co*dy) >> 16);
+        const int32_t bx = cxs + ((co*dxb - si*dy) >> 16);
+        const int32_t by = cys + ((si*dxb + co*dy) >> 16);
+
+        const bool up = (ay <= by);
+        const int32_t ya  = up ? ay : by,  yb  = up ? by : ay;
+        const int32_t xya = up ? ax : bx,  xyb = up ? bx : ax;
+        const int32_t den = yb - ya;
+        const int32_t y0 = ya - rpad, y1 = yb + rpad;
+
+        int32_t x16, step16;
+        if (den == 0) {                    /* segment horizontal on this row */
+            step16 = 0;
+            x16 = ((xya < xyb ? xya : xyb) << 16) - (SWEPT_PAD << 16);
+            const int32_t xr = (xya < xyb ? xyb : xya) + SWEPT_PAD;
+            for (int32_t y = y0; y <= y1; y++) {
+                if (y < 0 || y >= CLK_SCR_H) continue;
+                if ((int16_t)(xya < xyb ? xya : xyb) < s_wp_x0[y]) s_wp_x0[y] = (int16_t)(xya < xyb ? xya : xyb);
+                if ((int16_t)xr > s_wp_x1[y]) s_wp_x1[y] = (int16_t)xr;
+                if (y < s_wp_lo) s_wp_lo = y;
+                if (y > s_wp_hi) s_wp_hi = y;
+            }
+            continue;
+        }
+        step16 = ((xyb - xya) << 16) / den;          /* x travel per device row */
+        x16 = (xya << 16) - step16 * rpad;           /* back up to the first pad row */
+        for (int32_t y = y0; y <= y1; y++) {
+            const int32_t q0 = x16 >> 16, q1 = (x16 + step16) >> 16;
+            x16 += step16;
+            if (y < 0 || y >= CLK_SCR_H) continue;
+            const int32_t xl = (q0 < q1 ? q0 : q1) - SWEPT_PAD;
+            const int32_t xr = (q0 < q1 ? q1 : q0) + SWEPT_PAD;
+            if ((int16_t)xl < s_wp_x0[y]) s_wp_x0[y] = (int16_t)xl;
+            if ((int16_t)xr > s_wp_x1[y]) s_wp_x1[y] = (int16_t)xr;
+            if (y < s_wp_lo) s_wp_lo = y;
+            if (y > s_wp_hi) s_wp_hi = y;
+        }
+    }
+}
+
+/* The sweeping carriage's mark for one tick: the union of the outgoing and
+ * the incoming pose's rotated ink, released in <= 466 mark_rows calls. The
+ * frame swap's own pixels (the oscillating balance) are marked separately by
+ * tourbillon_advance's diff boxes; chords plus those boxes cover every
+ * pixel that can differ on the glass — everything the old full-box union
+ * touched beyond them was dial and glass re-blended onto identical output. */
+static bool tourbillon_ink_mark(int32_t prev_ang_10, int32_t new_ang_10)
+{
+#if CLK_BG_DIRECT_PUSH
+    if (!l4_active()) return false;
+#endif
+    if (clk_theme.tourbillon_n <= 0 || s_shadow[2]) return false;
+    const int f = (int)s_tourb_shown;
+    if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
+        return false;                          /* no composite on the glass yet */
+    if (!tourb_chords(f)) return false;        /* fall back to the box union */
+
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {          /* empty spans */
+        s_wp_x0[y] = 0x7fff;
+        s_wp_x1[y] = (int16_t)-0x8000;
+    }
+    s_wp_lo = CLK_SCR_H; s_wp_hi = -1;
+    tourb_stamp_pose(&clk_theme.tourbillon[f], f, prev_ang_10);
+    tourb_stamp_pose(&clk_theme.tourbillon[f], f, new_ang_10);
+    if (s_wp_hi < s_wp_lo) return true;        /* zero-ink bank: nothing to mark */
+
+    for (int32_t y = s_wp_lo; y <= s_wp_hi; y++)
+        if (s_wp_x1[y] >= s_wp_x0[y])
+            mark_rows(y, y, s_wp_x0[y], s_wp_x1[y], false);
+    return true;
 }
 
 static void tourbillon_advance(void)
@@ -768,7 +947,7 @@ static void tourbillon_advance(void)
     lv_image_set_src(s_hand[2], &s_tourb_dsc[f]);
     lv_display_enable_invalidation(disp, true);
 #if CLK_BG_DIRECT_PUSH
-    if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2);
+    if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
     else
 #endif
         lv_obj_invalidate_area(s_scr, &u);
@@ -803,8 +982,9 @@ static void tourbillon_advance(void)
  *
  * Two things are essential and were the source of the "hands missing /
  * trailing" bug:
- *  - the rows must ALSO be marked in the display's band set (display_mark_rows),
- *    or the mirror we repaint is never DMA'd and the glass keeps the old rows;
+ *  - the rows must ALSO be marked in the display's band set
+ *    (display_mark_rows_clocked), or the mirror we repaint is never DMA'd and
+ *    the glass keeps the old rows;
  *  - each marked row's whole painted span must be restored from the canvas
  *    first, or a layer that moved out of a pixel leaves it behind (ghost) and
  *    a layer that is re-painted blends over its own previous copy.
@@ -813,13 +993,27 @@ static void tourbillon_advance(void)
  *
  * Each row remembers the x-extent that must be restored: the union of every
  * pushed rect and every layer box that touched it. Narrower than the row, and
- * it can only grow within a tick, so a later mark never loses coverage. */
+ * it can only grow within a tick, so a later mark never loses coverage.
+ *
+ * FORCE rows had their mirror content replaced outside the hook (the GIF
+ * delta push writes mirror+canvas directly between commits), so the panel has
+ * never seen those pixels: they always join the flush. The other marked rows
+ * are candidates for the hook's byte-compare flush gate -- the orbit disc
+ * re-composites ~450 rows a tick but only the wedge under the carriage comes
+ * out different, and re-DMA-ing 130 KB of unchanged pixels every tick is what
+ * capped sweep at 5 fps once the blend work itself was gone. */
 static uint8_t   s_layer_need_row[CLK_SCR_H];
+static uint8_t   s_layer_force_row[CLK_SCR_H];
 static int32_t   s_layer_row_x0[CLK_SCR_H];
 static int32_t   s_layer_row_x1[CLK_SCR_H];
 static bool      s_need_commit;      /* something marked rows since last tick  */
+/* Per-commit copy of the marked rows' mirror content, taken in the hook
+ * before the restore wipes it (NULL = alloc failed: every marked row
+ * flushes unconditionally, the pre-compare behaviour). */
+static uint16_t *s_row_snap;
 
-static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
+static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1,
+                             bool force)
 {
     if (y0 < 0) y0 = 0;
     if (y1 >= CLK_SCR_H) y1 = CLK_SCR_H - 1;
@@ -837,11 +1031,12 @@ static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
             if (x0 < s_layer_row_x0[y]) s_layer_row_x0[y] = x0;
             if (x1 > s_layer_row_x1[y]) s_layer_row_x1[y] = x1;
         }
+        if (force) s_layer_force_row[y] = 1;
         any = true;
     }
     if (any) {
         s_need_commit = true;
-        display_mark_rows(y0, y1);
+        display_mark_rows_clocked(y0, y1);
     }
 }
 
@@ -909,7 +1104,7 @@ static void mark_all_layers(void)
                 tourb_mark(&clk_theme.tourbillon[s_tourb_shown], s_ang_10[k], &b);
             else
                 swept_box(&clk_theme.hand[k], s_ang_10[k], &b);
-            mark_rows(b.y1, b.y2, b.x1, b.x2);
+            mark_rows(b.y1, b.y2, b.x1, b.x2, false);
         }
         if (s_shadow[k]) {
             /* Its OWN box, never the hand's fallthrough: the shadow record is
@@ -918,7 +1113,7 @@ static void mark_all_layers(void)
              * tourbillon diff box twice at hand coords on themes without. */
             lv_area_t sb;
             swept_box(&clk_theme.shadow[k], s_ang_10[k], &sb);
-            mark_rows(sb.y1, sb.y2, sb.x1, sb.x2);
+            mark_rows(sb.y1, sb.y2, sb.x1, sb.x2, false);
         }
     }
 
@@ -1145,6 +1340,19 @@ static void clock_layer_commit(void)
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;
 
+    /* Flush-gate phase 1: keep what the glass currently shows for every row
+     * we are about to rebuild. The mirror is the panel's source of truth --
+     * anything that reached the panel was written here -- so rows whose
+     * re-composite comes out byte-identical need no DMA at all. */
+    if (s_row_snap) {
+        for (int32_t y = 0; y < CLK_SCR_H; y++) {
+            if (!s_layer_need_row[y]) continue;
+            memcpy(&s_row_snap[(size_t)y * CLK_SCR_W],
+                   &fb[(size_t)y * CLK_SCR_W],
+                   (size_t)CLK_SCR_W * sizeof(uint16_t));
+        }
+    }
+
     restore_marked_rows(fb);
 
     /* Same z-stack as the LVGL sibling order built in clock_view_init(): a
@@ -1161,7 +1369,23 @@ static void clock_layer_commit(void)
     }
     if (s_overlay) paint_layer(&clk_theme.overlay, 0);
 
+    /* Flush-gate phase 2: send only rows that actually came out different.
+     * Force rows (GIF pushes, whose pixels reached the mirror but never the
+     * panel) and rows LVGL rendered itself this frame (chunk path) ride
+     * regardless of the compare. */
+    if (s_row_snap) {
+        for (int32_t y = 0; y < CLK_SCR_H; y++) {
+            if (!s_layer_need_row[y]) continue;
+            const bool send = s_layer_force_row[y] ||
+                memcmp(&s_row_snap[(size_t)y * CLK_SCR_W],
+                       &fb[(size_t)y * CLK_SCR_W],
+                       (size_t)CLK_SCR_W * sizeof(uint16_t)) != 0;
+            display_commit_row(y, send);
+        }
+    }
+
     memset(s_layer_need_row, 0, sizeof(s_layer_need_row));
+    memset(s_layer_force_row, 0, sizeof(s_layer_force_row));
 }
 #endif /* CLK_BG_DIRECT_PUSH */
 
@@ -1392,6 +1616,13 @@ esp_err_t clock_view_init(void)
             s_canvas_dsc.data_size     = (uint32_t)canvas_bytes;
             s_canvas_dsc.data          = (const uint8_t *)s_canvas;
             plate_src = &s_canvas_dsc;
+#if CLK_BG_DIRECT_PUSH
+            /* Companion buffer for the commit-time flush gate (one mirror
+             * row kept per marked row while it is rebuilt). Optional: on
+             * alloc failure every marked row flushes unconditionally. */
+            s_row_snap = heap_caps_malloc(canvas_bytes,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
         } else {
             ESP_LOGE(TAG, "canvas alloc failed (%u B); background held on keyframe",
                      (unsigned)canvas_bytes);

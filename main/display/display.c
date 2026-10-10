@@ -163,6 +163,20 @@ static volatile bool     s_last_pending;   /* last chunk submitted, awaiting DMA
  * in one blanking window. s_fb is a complete mirror at that point, so every
  * byte we DMA is exactly what belongs on the glass. */
 #define DB_MAX_BANDS 5
+
+/* The x axis is already guarded for exactly this: the comment in dma_dirty_bands
+ * notes bands are full-width so x is "always even" and "no odd pad column is
+ * ever synthesized -> the stale-hairline race is structurally impossible". The
+ * CO5300 drives 2 pixels per clock on both axes, so ROWS need the same
+ * discipline, and nothing was giving it: the panel driver programs
+ * RASET = (r0, r1) verbatim, so a band that begins on an ODD row -- which happens
+ * whenever a dirty run starts off an odd row, i.e. constantly, since the
+ * carriage's box moves by whole pixels -- addresses its window one row off and
+ * paints correct pixels onto the wrong rows. That is the whole-row bob.
+ * Snapping each band's edges to even (r0 down, r1 up) costs at most one extra
+ * row of DMA per band and keeps the coalescing win; forcing a full-page flush
+ * cures the bob too but throws away ~460k px/s of it. */
+#define DB_EVEN_BANDS 1
 static uint8_t  s_dirty_row[SCREEN_HEIGHT];   /* row marked this frame (task ctx) */
 static volatile int s_band_inflight;          /* bands DMA'd, awaiting trans-done  */
 static bool     s_coalesce_mode = false;       /* true when the PSRAM mirror exists */
@@ -363,6 +377,14 @@ static int dma_dirty_bands(lv_display_t *disp)
         n--;
     }
     if (n == 0) return 0;
+#if DB_EVEN_BANDS
+    /* Even start, even count: r0 down to even, r1 up so the span is even. */
+    for (int i = 0; i < n; i++) {
+        r0[i] &= ~1;
+        if (((r1[i] - r0[i] + 1) & 1) != 0) r1[i]++;
+        if (r1[i] >= SCREEN_HEIGHT) r1[i] = SCREEN_HEIGHT - 1;
+    }
+#endif
 
     /* s_fb is a COMPLETE mirror by commit time (every chunk was mirrored before
      * any DMA -- the commit is deferred to the last chunk), so every byte DMA'd

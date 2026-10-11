@@ -293,10 +293,12 @@
    * visible and stays the author's call, not a silent default. The scale that matters is
    * the one the chosen fit will actually apply -- cover fills and so magnifies the short
    * axis, contain fits and magnifies nothing, stretch ignores the aspect on each axis. */
-  function assetFits(id, w, h, fit) {
+  function assetFits(id, w, h, fit, zoom) {
     const a = assetGet(id);
     if (!a) return { ok: false, why: 'asset ' + id + ' is not in this browser — load its .wckit bundle' };
-    if (a.kind === 'svg') return { ok: true, vector: true, srcW: a.w, srcH: a.h, drawW: w, drawH: h };
+    const z = zoom == null ? 1 : Math.max(0.05, +zoom || 1);
+    if (a.kind === 'svg') return { ok: true, vector: true, srcW: a.w, srcH: a.h, drawW: w * z, drawH: h * z };
+    w = w * z; h = h * z;                        // the zoomed box is the box that gets drawn, so it is the box that gets priced
     const iw = a.w || 1, ih = a.h || 1;
     const f = fit || 'cover';
     const k = f === 'contain' ? Math.min(w / iw, h / ih) : f === 'stretch' ? Math.max(w / iw, h / ih) : Math.max(w / iw, h / ih);
@@ -308,21 +310,35 @@
    * caller clip (the dial already clips to DR); contain letterboxes inside it;
    * stretch ignores the source aspect. Returns false when the asset cannot draw,
    * so a caller can flag the gap instead of shipping a silently blank layer. */
+  /* One implementation of "where does the art actually land", used by the draw path
+   * AND by the composer's alignment guide, so the frame on the screen can never drift
+   * away from the pixels the engine laid down. zoom multiplies the box the fit runs in,
+   * which keeps cover/contain/stretch meaning what they always meant; callers clip
+   * separately (artInDial clips to the dial), so zooming in cannot spill past the rehaut. */
+  function artBox(id, o) {
+    o = o || {};
+    const a = assetGet(id);
+    const z = o.zoom == null ? 1 : Math.max(0.05, +o.zoom || 1);
+    const w = (o.w == null ? 2 * DR : +o.w) * z, h = (o.h == null ? 2 * DR : +o.h) * z;
+    let sw = w, sh = h;
+    if (a && a.w && a.h) {
+      const fit = o.fit || 'cover';
+      if (fit === 'cover') { const k = Math.max(w / a.w, h / a.h); sw = a.w * k; sh = a.h * k; }
+      else if (fit === 'contain') { const k = Math.min(w / a.w, h / a.h); sw = a.w * k; sh = a.h * k; }
+    }
+    return { x: +o.x || 0, y: +o.y || 0, w: sw, h: sh, box: w, ok: !!(a && a.w && a.h) };
+  }
   function drawAsset(ctx, id, o) {
     const a = assetGet(id);
     if (!a || !a.el || a.missing) return false;
-    const iw = a.w || 1, ih = a.h || 1, w = o.w, h = o.h;
-    if (!(w > 0 && h > 0)) return false;
-    const fit = o.fit || 'cover';
-    let sw = w, sh = h;
-    if (fit === 'cover') { const k = Math.max(w / iw, h / ih); sw = iw * k; sh = ih * k; }
-    else if (fit === 'contain') { const k = Math.min(w / iw, h / ih); sw = iw * k; sh = ih * k; }
+    const b = artBox(id, o);
+    if (!(b.w > 0 && b.h > 0)) return false;
     ctx.save();
     if (ctx.imageSmoothingQuality != null) ctx.imageSmoothingQuality = 'high';
-    ctx.translate(o.x, o.y);
+    ctx.translate(b.x, b.y);
     if (o.rot) ctx.rotate(o.rot);
     if (o.alpha != null) ctx.globalAlpha *= o.alpha;
-    ctx.drawImage(a.el, -sw / 2, -sh / 2, sw, sh);
+    ctx.drawImage(a.el, -b.w / 2, -b.h / 2, b.w, b.h);
     ctx.restore();
     return true;
   }
@@ -332,11 +348,10 @@
    * caller report the gap instead of shipping a blank layer. */
   function artInDial(ctx, id, o) {
     if (!id || !assetReady(id)) return false;
-    const d = o.size == null ? 2 * DR : +o.size;
     ctx.save();
     ctx.beginPath(); ctx.arc(C, C, DR, 0, TAU); ctx.clip();
-    const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: d, h: d,
-      fit: o.fit || 'cover', alpha: o.opacity == null ? 1 : +o.opacity });
+    const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: o.size == null ? 2 * DR : +o.size, h: o.size == null ? 2 * DR : +o.size,
+      fit: o.fit || 'cover', zoom: o.zoom, alpha: o.opacity == null ? 1 : +o.opacity });
     ctx.restore();
     return drew;
   }
@@ -350,24 +365,67 @@
     for (let i = 3; i < d.length; i += 4) { const a = d[i]; if (!a) continue; const p = (i - 3) / 4, px = p % w, py = (p / w) | 0; sw += a; sx += px * a; sy += py * a; }
     return sw ? [sx / sw, sy / sw] : [w / 2, h / 2];
   }
+  /* Tight box around the visible ink, alpha >= 8 so an antialiased halo cannot stretch
+   * it. The composer frames this inside the (possibly padded) plane so an author sees
+   * the gap between the artwork and an arbour that sits outside it. */
+  function inkBoundsOf(canvas) {
+    const w = canvas.width, h = canvas.height, x = canvas.getContext('2d');
+    let d; try { d = x.getImageData(0, 0, w, h).data; } catch (e) { return [0, 0, w, h]; }
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] < 8) continue;
+      const p = (i - 3) / 4, px = p % w, py = (p / w) | 0;
+      if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
+    }
+    return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 + 1, y1 + 1];
+  }
   /* A hand sprite from art. Everything downstream (drawHands, the shadow
    * silhouette, the manifest's pivot/centre/size, prep's integral-margin proof)
    * reads exactly { c, px, py } off handSprite, so an image-backed record takes
    * the same path with no change anywhere else. (px,py) is the authored pivot in
-   * sprite pixels, or the hub-ink centroid when the author did not set one. */
+   * sprite pixels, or the hub-ink centroid when the author did not set one.
+   *
+   * The pivot is NOT required to be inside the artwork. A hand whose arbour is
+   * hidden behind a subdial, or one drawn so its hub sits off the ink, legitimately
+   * puts it outside the visible bbox, and the author must be able to say so. The
+   * device rotates the plane about its stored pivot, so the pivot has to sit inside
+   * the plane: rather than reject the number, grow the canvas transparently until it
+   * does. The ink never moves -- the whole image shifts by the pad and the pivot
+   * shifts with it, so the point that lands on the arbour is the same point either
+   * way, and prep's _placed() paste at (cx-px, cy-py) needs no change at all. */
   function handSpriteAsset(id, o) {
     const a = assetGet(id);
     if (!a || !a.el || a.missing) return null;
     const maxW = (o && o.maxW) || 466, maxH = (o && o.maxH) || 466;
     const w = a.w, h = a.h; if (!w || !h) return null;
-    const k = Math.min(1, maxW / w, maxH / h), cw = Math.ceil(w * k), ch = Math.ceil(h * k);
+    // zoom is the author's, on top of the fit-to-length fit: the pivot is a point IN
+    // the image, so it scales with it and the arbour stays on the same texel. Past 1
+    // on a raster that is an upscale, which the composer states rather than hides --
+    // the ceiling of 8 keeps a mistyped 800 from allocating a canvas the size of a wall.
+    const z = !o || o.zoom == null ? 1 : Math.min(8, Math.max(0.05, +o.zoom || 1));
+    const base = Math.min(1, maxW / w, maxH / h), k = base * z, cw = Math.ceil(w * k), ch = Math.ceil(h * k);
     const c = cv(cw, ch), x = c.getContext('2d');
     if (x.imageSmoothingQuality != null) x.imageSmoothingQuality = 'high';
     x.drawImage(a.el, 0, 0, cw, ch);
-    const given = o && o.pivotX != null && o.pivotY != null;
-    let px = given ? (o.pivotX * k) : NaN, py = given ? (o.pivotY * k) : NaN;
-    if (!isFinite(px) || !isFinite(py) || px < 0 || py < 0 || px > cw || py > ch) { const hub = inkCentroidOf(c); px = hub[0]; py = hub[1]; }
-    return { c, px, py, asset: id, name: a.name, srcW: a.w, srcH: a.h, scale: k, snapped: !given };
+    const gx = o && o.pivotX, gy = o && o.pivotY;
+    const given = gx != null && gy != null && isFinite(+gx) && isFinite(+gy);
+    let px = given ? (+gx * k) : NaN, py = given ? (+gy * k) : NaN;
+    let snapped = !given;
+    if (!isFinite(px) || !isFinite(py)) { const hub = inkCentroidOf(c); px = hub[0]; py = hub[1]; }
+    let ink = inkBoundsOf(c);
+    // PAD keeps the pivot clear of the plane edge, so a whole-pixel rounding at bake
+    // time cannot drop it exactly on the last column the rotator samples.
+    const PAD = 2, off = px < PAD || py < PAD || px > cw - PAD || py > ch - PAD;
+    if (off) {
+      const bx = Math.min(0, Math.floor(px) - PAD), tx = Math.max(cw, Math.ceil(px) + PAD);
+      const by = Math.min(0, Math.floor(py) - PAD), ty = Math.max(ch, Math.ceil(py) + PAD);
+      const p = cv(tx - bx, ty - by);
+      p.getContext('2d').drawImage(c, -bx, -by);
+      px -= bx; py -= by; c.width = p.width; c.height = p.height;
+      c.getContext('2d').drawImage(p, 0, 0);
+      ink = [ink[0] - bx, ink[1] - by, ink[2] - bx, ink[3] - by];
+    }
+    return { c, px, py, ink, asset: id, name: a.name, srcW: a.w, srcH: a.h, scale: k, zoom: z, rot0: +((o && o.rot0) || 0), snapped, padded: given && off };
   }
   /* Serialise for localStorage and .wckit: the references a Design ID carries,
    * plus the bytes a bundle carries. */
@@ -621,7 +679,18 @@
         return;
       }
       if (c.type === 'moon') hole = ROUND_MOON[c.style] ? { kind: 'circle', x: g.x, y: g.y, r: sz * 0.62, style: c.style === 'sphere' ? 'frame' : 'bevel' } : { kind: 'moon', x: g.x, y: g.y, a: sz, rot: g.rot, style: 'frame' };
-      else { const ws = c.shows === 'custom' ? [customWidth(c), 22] : WIN_SIZE[c.shows] || WIN_SIZE.date; hole = { kind: 'rect', x: g.x, y: g.y, w: ws[0] * sz * (+c.ww || 1), h: ws[1] * sz * (+c.wh || 1), rad: 2.5 * sz, rot: g.rot, style: c.style || 'frame' }; }
+      else {
+        const ws = c.shows === 'custom' ? [customWidth(c), 22] : WIN_SIZE[c.shows] || WIN_SIZE.date;
+        const w = ws[0] * sz * (+c.ww || 1), h = ws[1] * sz * (+c.wh || 1);
+        /* A round date window is a real complication (a cyclops under a domed crystal,
+         * an opening punched through a enamel dial for a single numeral), so the
+         * aperture shape is the author's and not a consequence of the data it shows.
+         * The circle takes the LONGER side as its diameter: flipping a square window
+         * to round then keeps the text it framed instead of shrinking to the short
+         * axis and clipping the glyph. */
+        hole = c.wshape === 'circle' ? { kind: 'circle', x: g.x, y: g.y, r: Math.max(w, h) / 2, style: c.style || 'frame' }
+          : { kind: 'rect', x: g.x, y: g.y, w, h, rad: 2.5 * sz, rot: g.rot, style: c.style || 'frame' };
+      }
       // A dial-hosted window/moon is an opaque data disc, not a viewport: seal its
       // aperture so the shipped dial carries no hole there. The value is composited
       // over the dial at frame build (once a day); the bank never DMA's under it. A
@@ -1241,7 +1310,7 @@
      * and the aperture punches cut through it, so an art dial reads as a printed dial
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
-    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, opacity: D.sfOpacity });
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -1320,8 +1389,12 @@
     const h = c.hole;
     if (c.type === 'moon') { const p = ph == null ? moonPhase(date) : ph; return ROUND_MOON[c.style] ? moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c) : moonDisc(ctx, h.x, h.y, h.a, p, pal, seed, h.rot, c.style); }
     const v = c.blank ? '' : c.type === 'custom' ? fmtDate(c.fmt, date, c.fcase) : c.type === 'date' ? String(date.getDate()) : c.type === 'day' ? DAYS[date.getDay()] : MONTHS[date.getMonth()];
-    const k = c.k || 1, w = h.w + 10 * k, hh = h.h + 10 * k, dark = c.disc === 'dark' || (c.disc !== 'light' && !!en.dark);
-    ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(h.rot || 0);
+    const k = c.k || 1, round = h.kind === 'circle';
+    const w = (round ? 2 * h.r : h.w) + 10 * k, hh = (round ? 2 * h.r : h.h) + 10 * k, dark = c.disc === 'dark' || (c.disc !== 'light' && !!en.dark);
+    ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(round ? 0 : (h.rot || 0));
+    // A round window clips its disc to the aperture, so the disc, the inner shadow
+    // and the glyph all stop at the circle instead of squaring off outside it.
+    if (round) { ctx.beginPath(); ctx.arc(0, 0, w / 2, 0, TAU); ctx.clip(); }
     ctx.fillStyle = c.dc && c.dc !== 'auto' ? c.dc : dark ? '#1b1916' : '#f2ecdd'; ctx.fillRect(-w / 2, -hh / 2, w, hh);
     const g = ctx.createLinearGradient(0, -hh / 2, 0, hh / 2);
     g.addColorStop(0, 'rgba(0,0,0,.22)'); g.addColorStop(0.35, 'rgba(0,0,0,0)'); g.addColorStop(0.65, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.22)');
@@ -1418,7 +1491,21 @@
     steel: ['#202326', '#8b9198', '#f4f6f8', '#6c7178', '#0c0d0e'],
     rose: ['#2a1410', '#a8705e', '#f6cbb6', '#8a5444', '#140806'],
   };
-  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', tachy: 'Tachymetre' };
+  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', tachy: 'Tachymetre', none: 'No case (baked into the device)' };
+  /* The radius the case leaves open, in dial px, and the one place it is worked out.
+   * A bezel style owns a fixed opening; "none" hands the number to the author, because
+   * the metal that would have defined it is already baked into the device and only its
+   * inner edge is known. Everything that has to respect the case -- the outer mask, the
+   * glass, the vignette, and how far the whole face scales to stay under it -- reads
+   * this instead of re-deriving it from the style name. */
+  const CASE_OPEN_DEFAULT = 221.5, CASE_OPEN_MIN = 90, CASE_OPEN_MAX = 233;
+  function caseOpenR(o) {
+    const st = o && o.caseStyle, v = o && o.caseOpen;
+    if (BEZEL[st]) return BEZEL_IN;
+    if (st !== 'none') return CASE_OPEN_DEFAULT;
+    const r = +v;
+    return Math.min(CASE_OPEN_MAX, Math.max(CASE_OPEN_MIN, isFinite(r) && r > 0 ? r : CASE_OPEN_DEFAULT));
+  }
   const GLASS_STYLES = { domed: 'Domed', flat: 'Flat sapphire', box: 'Box acrylic', none: 'No glass' };
 
   // all glass and case art is authored for light from the upper left, then turned to the outer-light direction
@@ -1506,8 +1593,18 @@
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
     ctx.restore();
   }
-  function buildOuter(glow, style, metal) {
+  function buildOuter(glow, style, metal, openR) {
     const _ = L(), c = cv(S), ctx = c.getContext('2d'), st = CASE_METALS[metal] || CASE_METALS.brass;
+    // No case: the device already owns everything outside the opening, so this layer
+    // adds no shading of its own -- double-drawing a rim the hardware already paints
+    // is how you get two edges. What it still has to do is stop OUR content from
+    // bleeding under that hardware, so it ships as the mask alone.
+    if (style === 'none') {
+      const r = openR == null ? CASE_OPEN_DEFAULT : openR;
+      ctx.beginPath(); ctx.rect(-50, -50, S + 100, S + 100); ctx.arc(C, C, r, 0, TAU, true);
+      ctx.fillStyle = '#000'; ctx.fill();
+      return c;
+    }
     DA = -(LIGHT.outer - OUTER0);
     let g = ctx.createRadialGradient(150, 120, 0, 150, 120, 260);
     g.addColorStop(0, 'rgba(' + _.tint('255,214,150') + ',' + Math.min(1, 0.13 * glow) + ')'); g.addColorStop(1, 'rgba(255,214,150,0)');
@@ -1516,7 +1613,7 @@
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.38)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(C, C, 233, 0, TAU); ctx.fill();
     ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = 9; ctx.shadowOffsetY = 2;
-    const RI = BEZEL[style] ? BEZEL_IN : 221.5;
+    const RI = openR == null ? (BEZEL[style] ? BEZEL_IN : CASE_OPEN_DEFAULT) : openR;
     ctx.beginPath(); ctx.rect(-50, -50, S + 100, S + 100); ctx.arc(C, C, RI, 0, TAU, true); ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
     ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(C, C, RI - 0.5, 0, TAU); ctx.stroke();
     const spec = [];
@@ -1640,7 +1737,7 @@
   }
   const caseMetal = (o) => { if (o.caseMetal && o.caseMetal !== 'auto') return o.caseMetal; const f = resolve(o).finish; return f === 'rhodium' ? 'steel' : CASE_METALS[f] ? f : 'brass'; };
   // standalone builders for picker previews
-  function caseLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); const c = buildOuter(LIGHT.outerK, o.caseStyle, caseMetal(o)); _.setTemp(o.temp || 2200, o.hue, o.hueSat); return c; }
+  function caseLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); const c = buildOuter(LIGHT.outerK, o.caseStyle, caseMetal(o), caseOpenR(o)); _.setTemp(o.temp || 2200, o.hue, o.hueSat); return c; }
   function glassLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); return buildGlass(LIGHT.outerK, o.glassStyle); }
 
   // ---------- hands: sprites pointing at 12, pivot known — exactly what firmware rotates
@@ -1895,16 +1992,16 @@
       // Uploaded art replaces the drawn hand wholesale. It still answers { c, px, py },
       // so drawHands, the shadow silhouette and the manifest record need no branch --
       // and the metal hub cap steps aside because the art carries its own.
-      const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY }) : null;
-      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null };
+      const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom }) : null;
+      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
     });
     const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
     ['hour', 'minute', 'second'].forEach((k) => {
       const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k]) return;
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
-      const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY }) : null;
-      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null };
+      const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom }) : null;
+      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
     });
     // The four calendar pointers share the centre arbour. Each reaches the ring that feeds
     // it: with a perimeter printed its tip lands on the ticks, without one it stops short
@@ -1936,6 +2033,25 @@
     return list;
   }
   const HT = { c: null };
+  /* The absolute angle the device turns this hand to: its own data turn, the tilt of
+   * the subdial it is mounted on, and the author's facing correction for uploaded art
+   * (an image need not have been drawn pointing at 12). ONE function, so the shadow
+   * silhouette, the stage hit test, the alignment guide and the kit's
+   * zeroRotationDeg can never disagree about where a hand points. */
+  const handAngle = (hd, date) => (hd.freeze != null ? hd.freeze : hd.turn(date) * TAU) + (hd.rot || 0) + (hd.artRot || 0);
+  // the standing offset that ships in the manifest, in degrees, so the firmware adds
+  // the same facing the composer preview applies
+  const handZeroDeg = (hd) => +((((hd.rot || 0) + (hd.artRot || 0)) * 180) / Math.PI).toFixed(2);
+  /* Point-in-sprite test in the hand's own turned frame. The pivot may sit outside
+   * the ink, so the box is anchored on the pivot rather than on the canvas corner. */
+  function handHit(hd, x, y, date, m) {
+    if (!hd || !hd.sp) return false;
+    const a = handAngle(hd, date), c = Math.cos(-a), s = Math.sin(-a);
+    const dx = x - hd.x, dy = y - hd.y, lx = dx * c - dy * s, ly = dx * s + dy * c;
+    const pad = m == null ? 2.5 : m;
+    return lx >= -hd.sp.px - pad && lx <= hd.sp.c.width - hd.sp.px + pad
+      && ly >= -hd.sp.py - pad && ly <= hd.sp.c.height - hd.sp.py + pad;
+  }
   function shadowCfg(o, Lt) {
     const auto = !(+o.shAngle >= 0), a = auto ? Lt.outer + Math.PI : rad(+o.shAngle - 90);
     return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, kk: Math.min(1.5, Lt.outerK) };
@@ -1947,7 +2063,7 @@
     const t = HT.c.getContext('2d');
     hands.forEach((hd) => {
       t.setTransform(1, 0, 0, 1, 0, 0); t.clearRect(0, 0, S, S);
-      t.translate(hd.x, hd.y); t.rotate(hd.turn(date) * TAU + (hd.rot || 0)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
+      t.translate(hd.x, hd.y); t.rotate(handAngle(hd, date)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
       const h = hd.h;
       [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
         ctx.save(); ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = b; ctx.shadowOffsetX = OFF + ox; ctx.shadowOffsetY = oy;
@@ -2386,7 +2502,7 @@
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: BEZEL[o.caseStyle] ? BEZEL_IN / DR : 1, handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
+      hands: buildHands(lay, design, style, hf, o.tick), inset: caseOpenR(o) < DR ? caseOpenR(o) / DR : 1, caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
     const bd = buildDial(design, lay, en, pal, G); F.dial = bd.canvas; F.dialEn = bd.en;
     // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
@@ -2433,7 +2549,7 @@
     if (pf.length) { F.plateFlares = cv(S); const px = F.plateFlares.getContext('2d'); px.save(); px.beginPath(); px.arc(C, C, DR, 0, TAU); px.clip(); drawFlares(px, pf, { ink: '#e6dfcf', dark: 1 }, pal); px.restore(); }
     const OK = LIGHT.outerK;
     _.setTemp(o.outerTemp || o.temp || 2200, o.outerHue, o.outerSat);
-    F.glass = buildGlass(OK, o.glassStyle); F.outer = buildOuter(OK, o.caseStyle, caseMetal(o));
+    F.glass = buildGlass(OK, o.glassStyle); F.outer = buildOuter(OK, o.caseStyle, caseMetal(o), caseOpenR(o));
     _.setTemp(o.temp || 2200, o.hue, o.hueSat);
     const hostOf = (c) => (c.host === 'dial' ? { x: C, y: C, r: DR } : lay.subs.find((s) => s.id === c.host));
     const enOf = (c) => (c.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === c.host) || {}).en || en);
@@ -2451,6 +2567,22 @@
     F.drawHands = (ctx, date) => drawHands(ctx, F.hands, date, F.light, SH);
     F.handShadow = (hd) => ({ dx: SH.dir[0] * 1.6 * hd.h * SH.dist, dy: SH.dir[1] * 1.6 * hd.h * SH.dist, blur: 1.4 * hd.h * SH.blur, alpha: Math.min(1, 0.5 * SH.kk * SH.op) });
     F.hit = (x, y) => { for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) return h.id; } return null; };
+    /* What sits under this pixel, top of the stack first -- the drawing order read
+     * backwards: the hand sprites are the last thing before the glass, so a hand is
+     * tested before the complication it turns across, then the dial disc. F.hit alone
+     * answered only about complications, so clicking the face or a hand read as
+     * "nothing" and deselected whatever the author had picked.
+     * Returns plain { kind, id } targets -- never the record itself, whose canvas would
+     * ride into React state and break anything that serialises a selection. */
+    F.pickAll = (x, y, date) => {
+      const out = [];
+      const hs = F.hands || [];
+      for (let i = hs.length - 1; i >= 0; i--) { const hd = hs[i]; if (handHit(hd, x, y, date)) out.push({ kind: 'hand', id: hd.id }); }
+      for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) out.push({ kind: 'comp', id: h.id }); }
+      if (Math.hypot(x - C, y - C) <= DR) out.push({ kind: 'dial', id: 'dial' });
+      return out;
+    };
+    F.pick = (x, y, date) => F.pickAll(x, y, date)[0] || null;
     F.outline = (id) => lay.hits.find((h) => h.id === id) || null;
     // text kits for custom-format windows and date flares: end caps + a 1px tileable slice of the frame/plate,
     // and every glyph the format can produce, so firmware can assemble any string. Rendered unrotated at kit scale k.
@@ -2700,6 +2832,7 @@
       if (blank(d[p + 'Art'])) { keys.forEach((k) => delete d[k]); return; }
       if (!d[p + 'Fit'] || d[p + 'Fit'] === 'cover') delete d[p + 'Fit'];
       [p + 'X', p + 'Y'].forEach((k) => { if (+d[k] === 0 || blank(d[k])) delete d[k]; });
+      if (blank(d[p + 'Zoom']) || +d[p + 'Zoom'] === 1) delete d[p + 'Zoom'];   // 1 is the identity: a design that never zooms must not read as a different one
       if (blank(d[p + 'Size']) || +d[p + 'Size'] === defSize) delete d[p + 'Size'];
       if (blank(d[p + 'Opacity']) || +d[p + 'Opacity'] === 1) delete d[p + 'Opacity'];
     };
@@ -2708,9 +2841,16 @@
     if (d.hands) Object.keys(d.hands).forEach((k) => {
       const h = d.hands[k]; if (!h) return;
       // an art-backed hand keeps its reference plus the authored pivot, in source
-      // pixels, so a re-render can rebuild the sprite without the file
-      if (blank(h.art)) { ['art', 'pivotX', 'pivotY'].forEach((q) => delete h[q]); return; }
+      // pixels, so a re-render can rebuild the sprite without the file. The pivot is
+      // allowed outside the ink (an arbour hidden under a subdial is a real case), so
+      // it is kept on its own terms rather than as an all-or-nothing pair -- only
+      // (0,0), which no author means and which the centroid fallback serves better,
+      // counts as unset. rot0 is the facing correction for art that was not drawn
+      // pointing at 12; with no art there is nothing to correct.
+      if (blank(h.art)) { ['art', 'pivotX', 'pivotY', 'rot0', 'zoom'].forEach((q) => delete h[q]); return; }
       if (+h.pivotX === 0 && +h.pivotY === 0) { delete h.pivotX; delete h.pivotY; }
+      if (blank(h.rot0) || +h.rot0 === 0) delete h.rot0;
+      if (blank(h.zoom) || +h.zoom === 1) delete h.zoom;
     });
     if (!d.handLume || d.handLume === 'none' || d.handLume === 'auto') delete d.handLume;
     if (!d.handShade || d.handShade === '3d') delete d.handShade;
@@ -2736,6 +2876,9 @@
       if (c.type === 'window' && c.fcase === 'upper') delete c.fcase; if (c.type === 'window') delete c.fit;
       if (c.type === 'window') ['discColor', 'textColor', 'wfont'].forEach((k) => { if (!c[k] || c[k] === 'auto' || c[k] === 'dial') delete c[k]; });
       if (c.type === 'window') ['ww', 'wh'].forEach((k) => { if (c[k] != null && +c[k] === 1) delete c[k]; });
+      // rect is the identity for a window, so a design that never asks for a round
+      // aperture keeps the Design ID it had before the shape was authorable
+      if (c.type === 'window') { if (!c.wshape || c.wshape === 'rect') delete c.wshape; } else delete c.wshape;
     });
     if (d.hands) {
       Object.keys(d.hands).forEach((id) => { const h = d.hands[id]; if (h.style === 'auto') delete h.style; if (h.finish === 'auto') delete h.finish; if (h.len != null && +h.len === 1) delete h.len; if (h.wid != null && +h.wid === 1) delete h.wid; if (h.on !== false) delete h.on; if (!h.sec || h.sec === 'auto') delete h.sec; if (!h.lume || h.lume === 'auto') delete h.lume; if (!h.shade || h.shade === 'auto') delete h.shade; if (!Object.keys(h).length) delete d.hands[id]; });
@@ -2753,5 +2896,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, handSpriteAsset, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

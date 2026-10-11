@@ -308,13 +308,22 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
                   <sc-if value="{{ h.hasArt }}" hint-placeholder-val="{{ false }}">
                     <div style="display:grid;grid-template-columns:52px minmax(0,1fr) 52px minmax(0,1fr);gap:6px;align-items:center">
                       <span style="font-size:12px;color:#b5ab97">Pivot X</span>
-                      <input type="number" min="0" value="{{ h.pivotX }}" onChange="{{ h.onPivotX }}" placeholder="hub ink" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                      <input type="number" value="{{ h.pivotX }}" onChange="{{ h.onPivotX }}" placeholder="hub ink" title="Source pixels from the image's left edge. Negative and beyond the image are allowed: an arbour hidden under a subdial sits outside the visible ink, and the plane is grown to hold it." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
                       <span style="font-size:12px;color:#b5ab97">Pivot Y</span>
-                      <input type="number" min="0" value="{{ h.pivotY }}" onChange="{{ h.onPivotY }}" placeholder="hub ink" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                      <input type="number" value="{{ h.pivotY }}" onChange="{{ h.onPivotY }}" placeholder="hub ink" title="Source pixels from the image's top edge. Negative and beyond the image are allowed." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                    </div>
+                    <div style="display:grid;grid-template-columns:52px minmax(0,1fr) 52px minmax(0,1fr) 52px minmax(0,1fr);gap:6px;align-items:center">
+                      <span style="font-size:12px;color:#b5ab97">Facing</span>
+                      <input type="number" step="1" value="{{ h.rot0 }}" onChange="{{ h.onRot0 }}" title="Which way the drawing points. 0 means the art was drawn pointing at 12 o'clock; set it to the clockwise angle your image actually points at." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                      <span style="font-size:12px;color:#b5ab97">Zoom</span>
+                      <input type="number" min="0.05" step="0.05" value="{{ h.zoom }}" onChange="{{ h.onZoom }}" title="Scale the art up or down about the arbour before it is fitted to the hand's length." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                      <button onClick="{{ h.onFacingDown }}" title="Rotate 15 degrees anticlockwise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 0;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="background:#2a2722">-15°</button>
+                      <button onClick="{{ h.onFacingUp }}" title="Rotate 15 degrees clockwise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 0;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="background:#2a2722">+15°</button>
                     </div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
                       <button onClick="{{ h.onPivotHub }}" title="Put the pivot on the centroid of the hub ink, the way bake_clock.py checks it" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Snap to hub ink</button>
                       <button onClick="{{ h.onPivotCentre }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Sprite centre</button>
+                      <button onClick="{{ h.onFacingReset }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Facing to 12</button>
                       <button onClick="{{ h.onArtClear }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Use procedural</button>
                     </div>
                   </sc-if>
@@ -330,7 +339,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
         <div style="display:flex;flex-direction:column;gap:10px">
           <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
           <button onClick="{{ exportFrames }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Flattened frames</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ zipNote }}</span></button>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand pointing at 12 with its pivot — plus manifest.json with draw order and positions.</div>
+          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand as its sprite with its pivot — plus manifest.json with draw order and positions. An uploaded hand is stored pointing the way the drawing points; manifest.json carries that in <span style="font-family:'IBM Plex Mono',monospace">zeroRotationDeg</span>, so the device turns the sprite by its value plus that offset and no artwork needs redrawing to face 12.</div>
           <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Custom-format date windows and date flares ship as a sprite kit under <span style="font-family:'IBM Plex Mono',monospace">text/&lt;id&gt;_&lt;kind&gt;/</span>: the two end caps, one tileable 1px vertical slice of the frame, and a tile for every glyph the format can ever produce. The device assembles the day's string to whatever width manifest.json declares. The zip's preview.png is always posed at 10:09:36 with a waxing gibbous moon, never the transport you are watching.</div>
           <div style="font-size:11px;line-height:1.5;color:#c9a25a;font-family:'IBM Plex Mono',monospace">{{ dateKitNote }}</div>
           <button onClick="{{ exportBundle }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Design bundle (.wckit)</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ bundleNote }}</span></button>
@@ -358,7 +367,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
@@ -507,10 +516,10 @@ class Component extends DCLogic {
     // the backdrop travels with the dial, but it is drawn at the plate slot, so it has to
     // reach movement() through the movement options -- and mvKey() must see it, because
     // swapping the art swaps the base frames the whole budget is priced against
-    const bg = {}; ['bgArt', 'bgFit', 'bgX', 'bgY', 'bgSize', 'bgOpacity'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
-    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
+    const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
+    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
-  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
+  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
   artKey(mvk) { return (mvk || this.mvKey(1)) + '|' + this.state.dial + '|' + JSON.stringify(this.design()); }   // priced-art signature: the movement art, the tempo-independent part, plus the dial that hides it
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
   faceKey(id) { return JSON.stringify([this.opts(id), id, this.handDef(id), this.design(id)]); }
@@ -559,6 +568,12 @@ class Component extends DCLogic {
     this.upd((d) => { d.order = order; });
   }
   setHand(hid, patch) { this.upd((d) => { d.hands = d.hands || {}; d.hands[hid] = { ...(d.hands[hid] || {}), ...patch }; }); }
+  /* Facing stepper. Reads the design as it is NOW rather than the value the row was
+   * rendered with -- a control that reports its own snapshot sticks after one click, so
+   * reaching 90 degrees by 15-degree steps would need nine presses and land nowhere.
+   * The angle wraps to [0,360), where -15 and 345 are the same facing but only one of
+   * them is what an author expects to read back in the field. */
+  stepFacing(hid, d) { const hc = ((this.design().hands || {})[hid]) || {}; const v = +hc.rot0 || 0; this.setHand(hid, { rot0: ((v + d) % 360 + 360) % 360 }); }
   // A dial carries ONE additional centre pointer beside hour, minute and seconds. What it indicates
   // is the single choice, made in one dropdown offered on both tabs; the printed ring is derived
   // from that choice through WatchEngine.EXTRA_RING, so the rim can never carry a scale that
@@ -713,14 +728,20 @@ class Component extends DCLogic {
     const seeds = this.RND.map((k) => (c[k] === 'random' ? s.seeds[k] : 0));
     const hands = P && s.hands === P.hands ? 'auto' : s.hands, hfin = P && s.handFinish === P.handFinish ? 'auto' : s.handFinish;
     const metal = this.ready && s.caseMetal !== 'auto' && s.caseMetal === E.caseMetalOf({ ...this.opts(), caseMetal: 'auto' }) ? 'auto' : s.caseMetal;
-    const v = [this.KEYS.map((k) => c[k]), seeds, s.dial, hands, hfin, this.ready ? this.design() : null, s.caseStyle, metal, s.glassStyle, s.train];
+    // The case opening joins the ID vector only when it is the one thing the author
+    // set by hand. Under "no case" the opening radius IS the design, so two watches
+    // with different ones must not collide; under every other style the value is
+    // derived from the style, and appending it unconditionally would renumber every
+    // Design ID ever shared for a parameter nobody changed.
+    const copen = this.ready && s.caseStyle === 'none' && E.caseOpenR ? E.caseOpenR({ caseStyle: 'none', caseOpen: s.caseOpen }) : null;
+    const v = [this.KEYS.map((k) => c[k]), seeds, s.dial, hands, hfin, this.ready ? this.design() : null, s.caseStyle, metal, s.glassStyle, s.train, ...(copen != null ? [copen] : [])];
     return 'WCD5-' + btoa(unescape(encodeURIComponent(JSON.stringify(v)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
   loadId(str) {
     try {
       const m = String(str).trim().match(/^WCD5-([A-Za-z0-9_-]+)$/); if (!m) throw 0;
       let b = m[1].replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
-      const [vals, seeds, dial, hands, handFinish, design, caseStyle, caseMetal, glassStyle, train] = JSON.parse(decodeURIComponent(escape(atob(b))));
+      const [vals, seeds, dial, hands, handFinish, design, caseStyle, caseMetal, glassStyle, train, caseOpen] = JSON.parse(decodeURIComponent(escape(atob(b))));
       const cfg = {}; this.KEYS.forEach((k, i) => { if (vals[i] !== undefined) cfg[k] = vals[i]; });
       const sd = {}; this.RND.forEach((k, i) => (sd[k] = seeds[i]));
       // A bare Design ID carries references, not bytes. Say up front which art this
@@ -728,7 +749,7 @@ class Component extends DCLogic {
       // in the bake -- the .wckit is the only thing that transports the art itself.
       const refs = design ? this.artRefs(WatchEngine.canonDesign(JSON.parse(JSON.stringify(design)))) : [];
       const miss = refs.filter((r) => !WatchEngine.assetKnown(r.id));
-      this.setState((st) => ({ cfg, seeds: sd, dial, hands, handFinish, designs: design ? { ...st.designs, [dial]: design } : st.designs, caseStyle, caseMetal, glassStyle, train: train || 'classic', sel: null, idInput: '',
+      this.setState((st) => ({ cfg, seeds: sd, dial, hands, handFinish, designs: design ? { ...st.designs, [dial]: design } : st.designs, caseStyle, caseMetal, glassStyle, train: train || 'classic', caseOpen: +caseOpen > 0 ? +caseOpen : st.caseOpen, sel: null, selKind: null, idInput: '',
         status: miss.length ? 'Loaded design — ' + miss.length + ' of ' + refs.length + ' art asset' + (refs.length > 1 ? 's' : '') + ' missing from this browser (' + miss.map((m) => m.usedBy).join(', ') + '). Load the .wckit bundle to get them back.' : 'Loaded design' }));
     } catch (e) { this.setState({ status: 'That design ID could not be read' }); }
   }
@@ -1114,31 +1135,159 @@ class Component extends DCLogic {
       x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
       x.beginPath(); x.arc(233 + (o.x - 233) * k, 233 + (o.y - 233) * k, (o.r + 3) * k, 0, Math.PI * 2); x.stroke(); x.restore();
     }
+    if (this.guideOn()) this.drawGuide(x, fc, d, k);
     const s = d.getSeconds();
     if (s !== this._sec) { this._sec = s; this.drawLayer('hands'); if (this.base && this.base.cageAt) this.drawLayer('geartrain'); }
   }
+  /* The alignment overlay. It is on while it is answering the question being asked:
+   * during a drag, while the dial art or a hand is selected (the two things positioned
+   * by eye), and whenever the author pins it on. Otherwise a look at the watch stays a
+   * look at the watch. Everything it draws comes out of the engine's own geometry --
+   * fc.caseOpen, artBox, handAngle -- so the guide and the pixels cannot disagree. */
+  guideOn() {
+    const s = this.state;
+    if (s.guide === 'off') return false;
+    if (s.guide === 'on') return true;
+    return !!this.drag || s.selKind === 'dial' || s.selKind === 'hand';
+  }
+  drawGuide(x, fc, d, k) {
+    const E = window.WatchEngine, D = this.design() || {}, TAU = Math.PI * 2;
+    const px = (v) => 233 + (v - 233) * k;                       // dial space -> composited screen space
+    x.save(); x.shadowColor = 'rgba(0,0,0,.85)'; x.shadowBlur = 3;
+    x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.55)';
+    x.beginPath(); x.arc(233, 233, (fc.caseOpen == null ? 221.5 : fc.caseOpen) * k, 0, TAU); x.stroke();
+    x.setLineDash([3, 5]); x.strokeStyle = 'rgba(240,215,154,.3)';
+    for (let i = 0; i < 24; i++) {                               // 15 degree spokes: the dial's own grid
+      const a = (i / 24) * TAU;
+      x.beginPath(); x.moveTo(px(233 + Math.sin(a) * 152), px(233 - Math.cos(a) * 152)); x.lineTo(px(233 + Math.sin(a) * 216), px(233 - Math.cos(a) * 216)); x.stroke();
+    }
+    const slot = (this.state.selKind === 'dial' && ((this.drag && this.drag.kind === 'dial' && this.drag.slot) || this.artSlot())) || null;
+    if (slot && D[slot + 'Art'] && E.artBox) {
+      const b = E.artBox(D[slot + 'Art'], { x: 233 + (+D[slot + 'X'] || 0), y: 233 + (+D[slot + 'Y'] || 0), w: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], h: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], fit: D[slot + 'Fit'] || 'cover', zoom: D[slot + 'Zoom'] == null ? 1 : +D[slot + 'Zoom'] });
+      x.setLineDash([]); x.lineWidth = 1.25; x.strokeStyle = 'rgba(122,214,255,.9)';
+      const L = px(b.x - b.w / 2), T = px(b.y - b.h / 2), W = b.w * k, H = b.h * k;
+      x.strokeRect(L, T, W, H);
+      x.lineWidth = 2.5; x.strokeStyle = 'rgba(122,214,255,1)';   // corner ticks: the box reads even over busy art
+      [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]].forEach((q) => { x.beginPath(); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0] + 9 * q[2], T + q[1]); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0], T + q[1] + 9 * q[3]); x.stroke(); });
+      const ox = 233 + (+D[slot + 'X'] || 0), oy = 233 + (+D[slot + 'Y'] || 0);
+      x.setLineDash([3, 4]); x.lineWidth = 1; x.strokeStyle = 'rgba(122,214,255,.55)';
+      x.beginPath(); x.moveTo(px(ox - 30), px(oy)); x.lineTo(px(ox + 30), px(oy)); x.moveTo(px(ox), px(oy - 30)); x.lineTo(px(ox), px(oy + 30)); x.stroke();
+    }
+    if (this.state.selKind === 'hand') this.drawHandGhost(x, fc, d, k, px);
+    x.restore();
+  }
+  /* The virtual hand: where the selected hand is, and where the arbour it turns about
+   * sits. The dashed box is the sprite after its own turn AND the author's facing
+   * correction; the cross is the pivot the device puts on the centre; the ring is how
+   * far the ink sweeps, which is the box the device must dirty every tick; the ray is
+   * the direction the hand is meant to read at. Read the ink against the ray and a
+   * facing error is obvious: art drawn pointing east sits out to the side of a ray that
+   * means north, and the fix is the Facing field, not a redrawn PNG. */
+  drawHandGhost(x, fc, d, k, px) {
+    const E = window.WatchEngine, dr = this.drag;
+    const hd = (fc.hands || []).find((q) => q.id === this.state.sel);
+    if (!hd || !hd.sp) return;
+    const ang = dr && dr.kind === 'hand' && dr.id === hd.id ? dr.ang : (E.handAngle ? E.handAngle(hd, d) : hd.turn(d) * Math.PI * 2);
+    const sp = hd.sp, w = sp.c.width, h = sp.c.height;
+    let reach = 0;
+    [[-sp.px, -sp.py], [w - sp.px, -sp.py], [-sp.px, h - sp.py], [w - sp.px, h - sp.py]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0], q[1])); });
+    x.save(); x.translate(px(hd.x), px(hd.y));
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.4)';
+    x.beginPath(); x.arc(0, 0, reach * k, 0, Math.PI * 2); x.stroke();          // the sweep envelope
+    x.rotate(ang); x.scale(k, k);
+    x.setLineDash([4, 3]); x.lineWidth = 1.25 / k; x.strokeStyle = 'rgba(122,214,255,.95)';
+    x.strokeRect(-sp.px, -sp.py, w, h);                                          // the sprite, turned
+    x.strokeStyle = 'rgba(240,215,154,.8)'; x.lineWidth = 1 / k;
+    x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -(reach - 6)); x.stroke();        // where it should read
+    x.strokeStyle = '#f0d79a'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
+    x.beginPath(); x.moveTo(-7 / k, 0); x.lineTo(7 / k, 0); x.moveTo(0, -7 / k); x.lineTo(0, 7 / k); x.stroke();
+    x.beginPath(); x.arc(0, 0, 3 / k, 0, Math.PI * 2); x.stroke();
+    x.restore();
+  }
   pt(e) { const r = e.currentTarget.getBoundingClientRect(), fc = this.face(), k = (fc && fc.inset) || 1; const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
+  /* Which of the two art slots a dial drag pans. Asked outright rather than guessed:
+   * both can hold art at once, and quietly moving the wrong one wastes more of the
+   * author's time than one chip does. */
+  artSlot() {
+    const D = this.design() || {}, s = this.state.artSlot, has = (p) => !!D[p + 'Art'];
+    if (has(s)) return s;
+    return has('sf') ? 'sf' : has('bg') ? 'bg' : null;
+  }
+  /* Selecting is not only a highlight: the Editing Pane jumps to the pane that can
+   * change what was grabbed, because a selected hand under the Dial tab is a tool that
+   * cannot touch the thing under the cursor. */
+  selTab = { comp: 'comps', dial: 'dial', hand: 'hands' };
   onDown(e) {
     const fc = this.face(); if (!fc) return;
-    const [x, y] = this.pt(e), id = fc.hit(x, y);
-    if (!id) { this.drag = null; return this.setState({ sel: null }); }
-    const g = fc.lay.G[id];
-    this.drag = { id, ox: x - g.x, oy: y - g.y };
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
-    this.setState({ sel: id, tab: 'comps' });
+    const d = this.now(), [x, y] = this.pt(e);
+    /* Where several things overlap, a second click on the same spot steps down the
+     * stack -- the layer picker every design tool has. Without it a 12 o'clock date
+     * window is unreachable for the whole life of the seconds hand that sweeps it,
+     * because that hand is drawn over it and so always wins the pixel. */
+    const stack = fc.pickAll ? fc.pickAll(x, y, d) : (function () { const id = fc.hit(x, y); return id ? [{ kind: 'comp', id }] : []; })();
+    const last = this._clickAt;
+    let i = 0;
+    if (stack.length > 1 && last && Math.hypot(last.x - x, last.y - y) < 4) {
+      const at = stack.findIndex((q) => q.kind === last.kind && q.id === last.id);
+      if (at >= 0) i = (at + 1) % stack.length;
+    }
+    const t = stack[i] || null;
+    this._clickAt = t ? { x, y, kind: t.kind, id: t.id } : null;
+    const grab = () => { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {} };
+    this.drag = null;
+    if (!t) return this.setState({ sel: null, selKind: null });
+    const jump = { sel: t.id, selKind: t.kind, tab: this.selTab[t.kind] };
+    if (t.kind === 'hand') {
+      const hd = (fc.hands || []).find((q) => q.id === t.id);
+      // Only an image-backed hand has an arbour for the author to place: a procedural
+      // sprite is built to its own box from the style's geometry, so its pivot is the
+      // engine's. Selecting one still opens its pane, where the upload lives.
+      if (hd && hd.art) {
+        const hc = ((this.design() || {}).hands || {})[hd.id] || {}, turn = hd.turn(d) * Math.PI * 2, sc = hd.sp.scale || 1;
+        const given = hc.pivotX != null && hc.pivotY != null;
+        this.drag = { kind: 'hand', id: hd.id, px: x, py: y, turn, ang: turn + (hd.rot || 0) + (hd.artRot || 0), k: sc, sx: given ? +hc.pivotX : hd.sp.px / sc, sy: given ? +hc.pivotY : hd.sp.py / sc };
+      }
+      grab(); return this.setState(jump);
+    }
+    if (t.kind === 'dial') {
+      const p = this.artSlot();
+      if (p) { const D = this.design() || {}; this.drag = { kind: 'dial', slot: p, px: x, py: y, sx: +D[p + 'X'] || 0, sy: +D[p + 'Y'] || 0 }; }
+      grab(); return this.setState(jump);
+    }
+    const g = fc.lay.G[t.id];
+    if (g) this.drag = { kind: 'comp', id: t.id, ox: x - g.x, oy: y - g.y };
+    grab(); this.setState(jump);
   }
   onMove(e) {
-    if (!this.drag) return;
+    const dr = this.drag; if (!dr) return;
     const fc = this.face(); if (!fc) return;
-    const [x, y] = this.pt(e), g = fc.lay.G[this.drag.id]; if (!g) return;
-    const nx = x - this.drag.ox, ny = y - this.drag.oy, dx = nx - g.hx, dy = ny - g.hy;
-    const dist = Math.round(Math.hypot(dx, dy) * 2) / 2, ang = Math.round(((((Math.atan2(dx, -dy) - g.hrot) * 180) / Math.PI) % 360 + 360) % 360);
-    const c = this.design().comps.find((q) => q.id === this.drag.id);
-    const patch = c && c.type === 'opening' && c.show === 'balance' ? { angle: ang } : { angle: ang, dist };
-    this._pend = patch;
-    if (!this._raf) this._raf = requestAnimationFrame(() => { this._raf = null; if (this.drag && this._pend) this.setComp(this.drag.id, this._pend); });
+    const [x, y] = this.pt(e);
+    if (dr.kind === 'dial') {
+      this._pendArt = { p: dr.slot, x: Math.round(dr.sx + (x - dr.px)), y: Math.round(dr.sy + (y - dr.py)) };
+    } else if (dr.kind === 'hand') {
+      /* p' = p - R(-θ)Δ / k. Grab the picture and the point of it that has to sit on
+       * the arbour moves the other way; the hand's own turn is undone first, or
+       * dragging a hand that reads at 6 would slide its pivot along the wrong axis.
+       * The draw holds that angle for the drag (see drawLayer), so the geometry under
+       * the cursor cannot rotate out from under it while the seconds sweep. */
+      const dx = x - dr.px, dy = y - dr.py, c = Math.cos(-dr.ang), s = Math.sin(-dr.ang);
+      this._pendHand = { id: dr.id, pivotX: +((dr.sx - (dx * c - dy * s) / dr.k).toFixed(1)), pivotY: +((dr.sy - (dx * s + dy * c) / dr.k).toFixed(1)) };
+    } else {
+      const g = fc.lay.G[dr.id]; if (!g) return;
+      const nx = x - dr.ox, ny = y - dr.oy, dx = nx - g.hx, dy = ny - g.hy;
+      const dist = Math.round(Math.hypot(dx, dy) * 2) / 2, ang = Math.round(((((Math.atan2(dx, -dy) - g.hrot) * 180) / Math.PI) % 360 + 360) % 360);
+      const c = this.design().comps.find((q) => q.id === dr.id);
+      this._pend = c && c.type === 'opening' && c.show === 'balance' ? { angle: ang } : { angle: ang, dist };
+    }
+    if (!this._raf) this._raf = requestAnimationFrame(() => { this._raf = null; this.flushDrag(); });
   }
-  onUp() { if (this.drag) { if (this._pend) this.setComp(this.drag.id, this._pend); this._pend = null; this.drag = null; this._tk = null; this._ck = null; this.forceUpdate(); } }
+  flushDrag() {
+    const dr = this.drag; if (!dr) return;
+    if (this._pend) { this.setComp(dr.id, this._pend); this._pend = null; }
+    if (this._pendArt) { const a = this._pendArt; this._pendArt = null; this.upd((d) => { d[a.p + 'X'] = a.x; d[a.p + 'Y'] = a.y; }); }
+    if (this._pendHand) { const p = this._pendHand; this._pendHand = null; this.setHand(p.id, { pivotX: p.pivotX, pivotY: p.pivotY }); }
+  }
+  onUp() { if (this.drag) { this.flushDrag(); this.drag = null; this._tk = null; this._ck = null; this.forceUpdate(); } }
   drawLayers() { this.LAYERS.forEach(([id]) => this.drawLayer(id)); }
   drawLayer(id) {
     const el = this.layerEls[id], fc = this.face(); if (!el || !fc) return;
@@ -1149,7 +1298,16 @@ class Component extends DCLogic {
     if (id === 'complications') { const cp = fc.comps(d); s.drawImage(cp.dial, 0, 0); Object.values(cp.subs).forEach((c) => s.drawImage(c, 0, 0)); }
     if (id === 'dial') s.drawImage(fc.dial, 0, 0);
     if (id === 'subdials') fc.subLayers.forEach((l) => s.drawImage(l.canvas, 0, 0));
-    if (id === 'hands') fc.drawHands(s, d);
+    // While a pivot drag is under way the dragged hand holds its angle: the drag maps
+    // the cursor into the sprite's own frame, and a seconds hand sweeping underneath
+    // would rotate that frame out from under the pointer mid-stroke. Set and cleared
+    // around the one call, so a face in the cache is never left holding it.
+    if (id === 'hands') {
+      const dr = this.drag, on = dr && dr.kind === 'hand' ? (fc.hands || []).filter((h) => h.id === dr.id) : [];
+      on.forEach((h) => { h.freeze = dr.turn; });
+      fc.drawHands(s, d);
+      on.forEach((h) => { delete h.freeze; });
+    }
     if (id === 'glass') { s.fillStyle = '#2a2622'; s.beginPath(); s.arc(233, 233, 221, 0, Math.PI * 2); s.fill(); s.drawImage(fc.glass, 0, 0); }
     if (id === 'outer') s.drawImage(fc.outer, 0, 0);
     x.clearRect(0, 0, el.width, el.height); x.drawImage(sc, 0, 0, el.width, el.height);
@@ -1175,7 +1333,19 @@ class Component extends DCLogic {
     const E = WatchEngine, sc = this.scr(), x = sc.getContext('2d'), d = new Date(), o = { ...this.opts() }; d.setHours(10, 9, 36, 0);
     E.compose(x, this.base, this.gt[0], fc, d, { glass: 1, outer: 1 });
     const out = el.getContext('2d'); out.clearRect(0, 0, 112, 112);
-    if (kind === 'case') { x.drawImage(E.caseLayer({ ...o, caseStyle: id }), 0, 0); out.drawImage(sc, 168, -2, 130, 130, 0, 0, 112, 112); }
+    if (kind === 'case') {
+      // "No case" composites the dial and marks where the device's own metal takes
+      // over. Rendered honestly it would be an empty chip, which reads as a broken
+      // thumbnail rather than as the one option that draws nothing.
+      if (id === 'none') {
+        const r = E.caseOpenR ? E.caseOpenR(o) : 221.5;
+        out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112);
+        out.setLineDash([4, 3]); out.lineWidth = 1.5; out.strokeStyle = 'rgba(240,215,154,.85)';
+        out.beginPath(); out.arc(56, 56, (r / 233) * 56, 0, Math.PI * 2); out.stroke(); out.setLineDash([]);
+        return;
+      }
+      x.drawImage(E.caseLayer({ ...o, caseStyle: id }), 0, 0); out.drawImage(sc, 168, -2, 130, 130, 0, 0, 112, 112);
+    }
     else { x.drawImage(E.glassLayer({ ...o, glassStyle: id }), 0, 0); x.drawImage(fc.outer, 0, 0); out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112); }
   }
   drawHandOpt(id) {
@@ -1199,9 +1369,31 @@ class Component extends DCLogic {
     const k = Math.min(W / sp.c.width, W / sp.c.height) * 0.94, ox = (W - sp.c.width * k) / 2, oy = (W - sp.c.height * k) / 2;
     x.imageSmoothingEnabled = false;                                      // the device rotates nearest-neighbour; preview it that way
     x.drawImage(sp.c, ox, oy, sp.c.width * k, sp.c.height * k);
+    /* The plane is drawn upright and unrotated on purpose: this is the authoring space,
+     * where the pivot is placed on the hub by eye and a click maps straight to a pixel of
+     * the image. Where the padding ring is, the arbour sits outside the ink -- the faint
+     * frame is the ink itself, so the gap between the two is visible instead of being a
+     * number that has to be read off in the panel. */
+    if (hd.art && sp.ink) {
+      x.strokeStyle = 'rgba(122,214,255,.5)'; x.lineWidth = 1;
+      x.strokeRect(ox + sp.ink[0] * k, oy + sp.ink[1] * k, (sp.ink[2] - sp.ink[0]) * k, (sp.ink[3] - sp.ink[1]) * k);
+    }
     x.strokeStyle = '#c9a25a'; x.lineWidth = 1; x.beginPath();
     x.moveTo(ox + sp.px * k - 6, oy + sp.py * k); x.lineTo(ox + sp.px * k + 6, oy + sp.py * k);
     x.moveTo(ox + sp.px * k, oy + sp.py * k - 6); x.lineTo(ox + sp.px * k, oy + sp.py * k + 6); x.stroke();
+    /* Which way the device will make this hand read, measured from the arbour: the art
+     * has to lie along it. If the ink runs off in another direction, Facing is wrong by
+     * the angle between the two. Drawn in the thumb because that is where the facing is
+     * typed; the stage's virtual hand is the same ray at full size. */
+    if (hd.art) {
+      let reach = 0;
+      [[0, 0], [sp.c.width, 0], [0, sp.c.height], [sp.c.width, sp.c.height]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0] - sp.px, q[1] - sp.py)); });
+      const a = ((hd.rot0 || 0) - 90) * Math.PI / 180;                    // 0 deg facing means the art points up
+      x.strokeStyle = 'rgba(240,215,154,.85)'; x.setLineDash([3, 3]); x.lineWidth = 1.25; x.beginPath();
+      x.moveTo(ox + sp.px * k, oy + sp.py * k);
+      x.lineTo(ox + sp.px * k + Math.cos(a) * reach * k, oy + sp.py * k + Math.sin(a) * reach * k);
+      x.stroke(); x.setLineDash([]);
+    }
     el._m = { k, ox, oy, s: (hd.art && hd.art.scale) || 1 };
   }
   drawArtThumbs() { if (!this.ready) return; Object.keys(this.artEls).forEach((id) => this.drawArtThumb(id)); }
@@ -1209,7 +1401,9 @@ class Component extends DCLogic {
     const el = this.artEls[id], m = el && el._m; if (!m) return;
     const r = el.getBoundingClientRect();
     const sx = (e.clientX - r.left) * (el.width / r.width), sy = (e.clientY - r.top) * (el.height / r.height);
-    this.setHand(id, { pivotX: Math.max(0, Math.round((sx - m.ox) / m.k / m.s)), pivotY: Math.max(0, Math.round((sy - m.oy) / m.k / m.s)) });
+    // No clamp to the image: the point that must sit on the arbour can legitimately be
+    // outside the ink, and the engine grows the plane to hold it.
+    this.setHand(id, { pivotX: +((sx - m.ox) / m.k / m.s).toFixed(1), pivotY: +((sy - m.oy) / m.k / m.s).toFixed(1) });
   }
   download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -1434,7 +1628,7 @@ class Component extends DCLogic {
       const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
       files.push({ name: shName, data: await this.png(mc, true) });
       const shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
-      hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && String(h.id).startsWith('centre-') ? { drive: CAL_DRIVE[h.kind] + (offTurn && h.kind === ringHand ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
+      hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: WatchEngine.handZeroDeg ? WatchEngine.handZeroDeg(h) : +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && String(h.id).startsWith('centre-') ? { drive: CAL_DRIVE[h.kind] + (offTurn && h.kind === ringHand ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
     }
     const perimeter = !pg ? undefined : {
       scale: D0.perim, splits: pg.spec.n, outerPx: +M(pg.out + 1.6).toFixed(2), innerPx: +M(pg.inr - 1.6).toFixed(2),
@@ -1671,6 +1865,12 @@ class Component extends DCLogic {
           selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'));
           selFields.push(Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
         }
+        /* The aperture is the author's, not a consequence of the data: a cyclops over a
+         * domed crystal and a single numeral punched through an enamel dial are both
+         * round windows. Round takes the LONGER side as its diameter, so flipping a
+         * square window to round keeps the glyph it already framed instead of cropping
+         * it to the short axis. */
+        Sx('Aperture', 'wshape', [{ v: 'rect', label: 'Square aperture' }, { v: 'circle', label: 'Round aperture' }]);
         Sx('Disc', 'disc', [{ v: 'auto', label: 'Match dial' }, { v: 'light', label: 'Light' }, { v: 'dark', label: 'Dark' }]);
         selFields.push(Co('Background', sel.discColor, set('discColor'), 'Disc'), Co('Text colour', sel.textColor, set('textColor'), 'Auto'));
         selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
@@ -1761,8 +1961,9 @@ class Component extends DCLogic {
       const artBlock = (p, title, blurb, price) => {
         const id = D[p + 'Art'] || null, a = id && E.assetGet(id);
         const box = D[p + 'Size'] == null ? 442 : +D[p + 'Size'];
-        const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover') : null;
-        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'].forEach((k) => delete d[k]); });
+        const zm = D[p + 'Zoom'] == null ? 1 : +D[p + 'Zoom'];
+        const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
+        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'].forEach((k) => delete d[k]); });
         const out = [H(title),
           Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
@@ -1773,11 +1974,17 @@ class Component extends DCLogic {
           Rg('Offset X', +D[p + 'X'] || 0, -220, 220, 1, ud(p + 'X'), (+D[p + 'X'] || 0) + 'px'),
           Rg('Offset Y', +D[p + 'Y'] || 0, -220, 220, 1, ud(p + 'Y'), (+D[p + 'Y'] || 0) + 'px'),
           Rg('Size', box, 60, 940, 1, ud(p + 'Size'), box + 'px'),
+          // Zoom is separate from Size because Size is the box the FIT works in: at
+          // cover, enlarging Size enlarges the crop window and the visible content
+          // together, while Zoom keeps the framing and resamples the art about the
+          // centre. The dial clip is applied after both, so a zoomed image still
+          // cannot cross the rehaut.
+          Rg('Zoom', zm, 0.2, 4, 0.01, ud(p + 'Zoom'), zm.toFixed(2) + '\u00d7'),
           Rg('Opacity', D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity'], 0, 1, 0.01, ud(p + 'Opacity'), Math.round((D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity']) * 100) + '%'));
         const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
           : fits && fits.ok ? price : fits.why;
-        out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box) + '×' + Math.round(box) + ' box · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
-          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove this image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: drop }] }));
+        out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
+          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#2a2722' : '#1f1d1a', bd: this.state.artSlot === p ? '#c9a25a' : '#3a352d', fg: '#e9e2d2', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: drop }] }));
         return out;
       };
       fields.push.apply(fields, artBlock('bg', 'Background art · behind the geartrain',
@@ -1881,6 +2088,17 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'case') {
       fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
+      /* The opening is only authorable under "no case": every other style owns its own
+       * rim geometry, and a slider that changed nothing (or fought the bezel) would be
+       * a lie. Here it is the whole of what the case layer does -- where our content
+       * stops and the hardware's begins. */
+      if (s.caseStyle === 'none') {
+        const r = E.caseOpenR ? E.caseOpenR({ caseStyle: 'none', caseOpen: s.caseOpen }) : +s.caseOpen;
+        const mm = (v) => (v * (E.MM_PER_PX || 0.0954)).toFixed(2);
+        fields.push(H('Case opening'),
+          Rg('Opening radius', r, E.CASE_OPEN_MIN || 90, E.CASE_OPEN_MAX || 233, 0.5, (v) => this.setState({ caseOpen: +v }), mm(r) + ' mm'),
+          Nt('', 'No case metal is drawn. Everything outside ' + r.toFixed(1) + ' px from the centre (' + mm(r) + ' mm on the panel) is cleared, so the dial, the hands and their shadows stop where the metal baked into the hardware begins — and the whole face scales in to stay under it, the same way it does under a bezel.'));
+      }
     }
 
     const slots = fc ? fc.handOrder.slice().reverse() : [];
@@ -1953,23 +2171,44 @@ class Component extends DCLogic {
            * the art path untouched. (px,py) is authored in SOURCE pixels and the engine
            * scales it with the sprite, so a resize never moves the pivot off the hub. */
           hasArt: !!hc.art, artLabel: (hc.art && E.assetGet(hc.art)) ? E.assetGet(hc.art).name : hc.art ? 'no bytes for this reference' : 'Procedural',
+          rot0: hc.rot0 == null ? 0 : Math.round(+hc.rot0), zoom: hc.zoom == null ? 1 : +hc.zoom,
+          onRot0: (e) => this.setHand(id, { rot0: +e.target.value || 0 }),
+          onZoom: (e) => this.setHand(id, { zoom: Math.min(8, Math.max(0.05, +e.target.value || 1)) }),
+          // stepped off the live design, not the value this row was rendered with: a
+          // stepper that reads its own snapshot sticks on the second click
+          onFacingUp: () => this.stepFacing(id, 15),
+          onFacingDown: () => this.stepFacing(id, -15),
+          onFacingReset: () => this.setHand(id, { rot0: null }),
           artNote: (() => {
-            if (!hc.art) return 'PNG or SVG, authored at the size it will be drawn. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
+            if (!hc.art) return 'PNG or SVG, authored at the size it will be drawn. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the device turns it the rest of the way. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
             const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — load the .wckit bundle that carries it.';
-            // the engine fits the sprite with k = min(1, box/w, box/h): it never magnifies,
-            // so the only question is whether the art is being shrunk to the sweep box
+            // the engine fits the sprite with k = min(1, box/w, box/h) and then applies the
+            // author's zoom, so the pair says whether the art lands 1:1 or is resampled
             const box = Math.round(2 * (isC ? Math.min(216, 205 * 0.66) : 90) * len) + 8;
-            const k = Math.min(1, box / (a.w || 1), box / (a.h || 1));
+            const z = hc.zoom == null ? 1 : Math.min(8, Math.max(0.05, +hc.zoom || 1));
+            const k = Math.min(1, box / (a.w || 1), box / (a.h || 1)) * z;
+            const hd = fc && (fc.hands || []).find((q) => q.id === id);
+            // The arbour can be off the visible ink in two ways worth telling apart: it
+            // falls outside the artwork, or it merely crowds the plane edge and forced a
+            // pad. Both sp.px/py and sp.ink are in plane px already, so the comparison is
+            // direct -- it is only the *field* that shows the authored source number.
+            const ib = hd && hd.sp && hd.sp.ink;
+            const outsideInk = !!(ib && (hd.sp.px < ib[0] || hd.sp.px > ib[2] || hd.sp.py < ib[1] || hd.sp.py > ib[3]));
+            const piv = hc.pivotX == null ? 'hub ink (auto)' : (+hc.pivotX) + ',' + (+hc.pivotY)
+              + (outsideInk ? ' (off the artwork; the plane is grown to hold it)' : (hd && hd.sp && hd.sp.padded ? ' (near the plane edge; grown by the pad)' : ''));
             return a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · sweep box ' + box + '×' + box
-              + ' · drawn at ' + Math.round(a.w * k) + '×' + Math.round(a.h * k) + (k < 1 ? ' (shrunk once at load, never enlarged)' : ' (1:1)')
-              + ' · pivot ' + (hc.pivotX == null ? 'hub ink (auto)' : hc.pivotX + ',' + hc.pivotY);
+              + ' · drawn at ' + Math.round(a.w * k) + '×' + Math.round(a.h * k) + (k < 1 ? ' (shrunk once at load, never enlarged)' : k > 1 ? ' (upscaled ' + k.toFixed(2) + '× — the pixels are interpolated at every angle)' : ' (1:1)')
+              + ' · pivot ' + piv + ' · facing ' + (+(hc.rot0 || 0)) + '\u00b0' + (+(hc.rot0 || 0) ? '' : ' (assumed to point at 12)');
           })(),
           artRef: this.cb('artEls', id, (i) => this.drawArtThumb(i)),
-          onArtFile: (e) => { const file = e.target.files && e.target.files[0]; if (!file) return; this.pickArt(file, handLabel(id) + ' sprite', (aid) => this.setHand(id, { art: aid, pivotX: null, pivotY: null })); },
-          onArtClear: () => this.setHand(id, { art: null, pivotX: null, pivotY: null }),
-          onPivotX: (e) => this.setHand(id, { pivotX: Math.max(0, +e.target.value || 0) }),
-          onPivotY: (e) => this.setHand(id, { pivotY: Math.max(0, +e.target.value || 0) }),
-          pivotX: hc.pivotX == null ? '' : Math.round(hc.pivotX), pivotY: hc.pivotY == null ? '' : Math.round(hc.pivotY),
+          onArtFile: (e) => { const file = e.target.files && e.target.files[0]; if (!file) return; this.pickArt(file, handLabel(id) + ' sprite', (aid) => this.setHand(id, { art: aid, pivotX: null, pivotY: null, rot0: null, zoom: null })); },
+          onArtClear: () => this.setHand(id, { art: null, pivotX: null, pivotY: null, rot0: null, zoom: null }),
+          // No lower clamp and no upper clamp: an arbour legitimately sits outside the
+          // visible ink (a hand whose hub hides under a subdial, or one whose image
+          // carries only the counterpoise), and the engine grows the plane to hold it.
+          onPivotX: (e) => this.setHand(id, { pivotX: e.target.value === '' ? null : +e.target.value }),
+          onPivotY: (e) => this.setHand(id, { pivotY: e.target.value === '' ? null : +e.target.value }),
+          pivotX: hc.pivotX == null ? '' : +hc.pivotX, pivotY: hc.pivotY == null ? '' : +hc.pivotY,
           // "hub ink" is the bake-side rule made one click: bake_clock.py:snap_pivot_to_hub
           // moves the plane so its hub ink lands on the rotation centre, and clearing the
           // authored pivot lets handSpriteAsset take the ink centroid itself.

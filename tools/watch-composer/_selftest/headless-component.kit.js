@@ -58,6 +58,35 @@ const { ok, eq, wait, mk, E, txt, i1, d, fails, checked } = global.__T;
   ok(/wckit/.test(msg), 'JSON without the format header is refused', msg);
   i6.importBundle(txt(JSON.stringify({ format: 'wckit', version: 9, design: { comps: [] } }))); await wait(20);
   ok(/version 9/.test(msg), 'a future version is refused rather than half-read', msg);
+
+  /* ---- the authored arbour and facing cross a browser boundary ----------------------
+   * A Design ID carries references only, so the .wckit is the thing that has to carry
+   * a pivot outside the sprite and a facing that is not north. Both are numbers the
+   * bake reads, and a round trip that quietly drops either ships a wrong hand. */
+  const i7 = mk();
+  i7.state.designs.t = { print: 'roman', comps: [], centre: { hour: 1, minute: 1, second: 1 }, hands: { 'centre-minute': { art: 'hand-1', pivotX: -18, pivotY: 44, rot0: 90, zoom: 1.5 }, 'centre-second': { art: 'hand-1', rot0: 45 } } };
+  i7.state.designs.t.bgArt = 'bg-1';
+  let cap7 = null;
+  i7.download = (blob, name) => { cap7 = { blob, name }; };
+  await i7.exportBundle();
+  const b7 = JSON.parse(await cap7.blob.text());
+  const hm = b7.design.hands['centre-minute'];
+  ok(hm.pivotX === -18 && hm.pivotY === 44, 'a negative pivot, i.e. an arbour off the visible ink, is written into the bundle', JSON.stringify([hm.pivotX, hm.pivotY]));
+  ok(hm.rot0 === 90, 'the facing goes with it, which is the only thing that makes non-north art read right', String(hm.rot0));
+  ok(hm.zoom === 1.5, 'and so does the hand zoom', String(hm.zoom));
+  ok(b7.design.hands['centre-second'].rot0 === 45, 'each hand carries its own facing independently');
+  const canon7 = E.canonDesign(JSON.parse(JSON.stringify(b7.design)));
+  ok(canon7.hands['centre-second'].zoom === undefined, 'a zoom of 1 is dropped, so an untouched hand does not change the Design ID');
+  E.assetClear();
+  const i8 = mk();
+  i8.faces = {}; i8.buildMovement = () => { };
+  i8.importBundle(txt(JSON.stringify(b7)));
+  await wait(40);
+  const r8 = i8.state.designs.t.hands['centre-minute'];
+  ok(r8.pivotX === -18 && r8.pivotY === 44 && r8.rot0 === 90 && r8.zoom === 1.5, 'the second browser gets all four numbers back intact', JSON.stringify(r8));
+  const sp7 = E.handSpriteAsset('hand-1', { maxW: 466, maxH: 466, pivotX: r8.pivotX, pivotY: r8.pivotY, zoom: r8.zoom, rot0: r8.rot0 });
+  ok(sp7 && sp7.px >= 0 && sp7.px <= sp7.c.width && sp7.py >= 0 && sp7.py <= sp7.c.height, 'and that restored pivot still lands inside the plane the device will rotate', JSON.stringify(sp7 && [sp7.c.width, sp7.c.height, +sp7.px.toFixed(1), +sp7.py.toFixed(1)]));
+  ok(sp7 && sp7.rot0 === 90, 'the facing reaches the sprite record the manifest is built from');
   // both phases must reach their counts: a suite that silently skipped a block would
   // otherwise report green while checking nothing
   if (checked() < 30) console.log('FAIL only ' + checked() + ' checks ran across both phases');

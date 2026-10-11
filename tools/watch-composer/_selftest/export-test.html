@@ -288,7 +288,7 @@
   function artKitCheck(E, say, done) {
     const it = new (window.COMP_CLASS(DCLogic))({});
     it.ready = true; it.rendering = false;
-    it.state.dial = 'art'; it.state.timeMode = 'pose'; it.state.frame = 0; it.state.hidden = {};
+    it.state.dial = 'calendar'; it.state.timeMode = 'pose'; it.state.frame = 0; it.state.hidden = {};   // a registered preset id: handDef reads PRESETS[dial].hands
     it.state.tab = 'export'; it.state.playing = false; it.state.designs = {}; it.faces = {};
     const d = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
     d.comps = (d.comps || []).filter((c) => c.type !== 'subdial');
@@ -318,9 +318,18 @@
       if (a.w !== 8 || a.h !== 8) return fail('natural size lost: ' + a.w + 'x' + a.h);
       if (c.kind !== 'svg' || c.w !== 200 || c.h !== 100) return fail('viewBox not stamped onto the SVG: ' + c.kind + ' ' + c.w + 'x' + c.h);
       if (!/viewBox/.test(atob(c.dataUrl.split(',')[1]))) return fail('the stamped svg lost its viewBox');
-      const f1 = E.assetFits(a.id, 40, 40, 'contain'), f2 = E.assetFits(a.id, 40, 40, 'cover');
-      if (!f1.ok) return fail('a contain into a bigger box was refused: ' + f1.why);
+      /* contain is only ever cheaper than cover when the source aspect differs from the
+       * box: a square into a square makes them identical, and a 5x fill of either is an
+       * upscale. The 8x8 source into a 40x6 box is the case where contain genuinely
+       * shrinks (0.75x) and cover still blows up (5x), which is the distinction this
+       * pair is actually drawing. */
+      const f1 = E.assetFits(a.id, 40, 6, 'contain'), f2 = E.assetFits(a.id, 40, 40, 'cover');
+      if (!f1.ok) return fail('a contain that really does shrink was refused: ' + f1.why);
       if (f2.ok || !(f2.scale > 4)) return fail('a 5x cover upsample was not refused: ' + JSON.stringify(f2));
+      // the same box at a zoom is the same question: the gate must price the ZOOMED box
+      const f3 = E.assetFits(a.id, 40, 6, 'contain', 3);
+      if (f3.ok || f3.upscale !== true) return fail('contain at zoom 3 escaped the upscale gate: ' + JSON.stringify(f3));
+      if (E.assetFits(a.id, 40, 6, 'contain', 0.5).ok !== true) return fail('zooming out was refused although it shrinks the art further');
       if (E.assetFits('nope-not-here', 10, 10).ok) return fail('a dangling reference reported as drawable');
       const chk = new Image();
       chk.onload = () => {
@@ -337,10 +346,17 @@
   }
   /* The shipped half: does the kit still hang together once art is in it. */
   function artKitGo(E, say, it, d, a, c, files, fail, pass) {
+    // the sync prefix runs outside every .then handler, so without this wrapper a throw
+    // there leaves the whole suite stranded with no verdict at all -- which is exactly
+    // how a real breakage first presented itself here
+    try { artKitBody(E, say, it, d, a, c, files, fail, pass); }
+    catch (e) { fail('art kit (sync) threw: ' + (e && e.message) + ' || ' + String((e && e.stack) || '').split('\n').slice(0, 3).join(' | ')); }
+  }
+  function artKitBody(E, say, it, d, a, c, files, fail, pass) {
     d.bgArt = a.id; d.bgSize = 442;
     d.sfArt = a.id; d.sfSize = 442;   // same bytes in both slots: shares one stored asset
     d.hands = { 'centre-hour': { art: a.id, pivotX: 4, pivotY: 4 }, ct1: { art: a.id } };
-    it.state.designs = { art: E.canonDesign(d) };
+    it.state.designs = { calendar: E.canonDesign(d) };
     it.faces = {};
     // the backdrop must be IN the plate pixels, not merely referenced by them
     const withArt = E.movement(it.opts()).plate, x1 = withArt.getContext('2d');
@@ -359,9 +375,10 @@
     /* ---- slot two: the dial face. Three properties have to hold and none is provable
      * from one pixel: the art is IN the dial pixels, it is UNDER the chapter print (the
      * user still sets numerals and markers themselves), and it is CUT where the dial is
-     * cut. The ink mask is measured, not assumed -- it is the set of pixels the print
-     * contributes, found by differencing the same dial printed against the same dial
-     * blanked. If the art were laid over the print, that whole set would move. */
+     * cut. The print's ink mask is measured, not assumed -- it is the set of pixels the
+     * print contributes, found by differencing the same dial printed against the same
+     * dial blanked. The layering question is then asked of that mask: with the art in,
+     * does the print still change those pixels? */
     const S4 = 466, C4 = 233, DISC = 215;
     const inDisc = (() => { const m = new Uint8Array(S4 * S4); for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const dx = x - C4, dy = y - C4; m[y * S4 + x] = (dx * dx + dy * dy <= DISC * DISC) ? 1 : 0; } return m; })();
     const pxC = (fc) => fc.dial.getContext('2d').getImageData(0, 0, S4, S4).data;
@@ -370,7 +387,7 @@
     const faceOf = (patch) => {
       const dd = JSON.parse(JSON.stringify(d));
       Object.keys(patch || {}).forEach((k) => { dd[k] = patch[k]; });
-      it.state.designs = { art: E.canonDesign(dd) }; it.faces = {};
+      it.state.designs = { calendar: E.canonDesign(dd) }; it.faces = {};
       return it.face();
     };
     // the test art is solid (200,40,40), so "is this the art showing" is a colour test
@@ -386,12 +403,29 @@
     if (moved < 30000) return fail('the dial barely changed when the surface art was set: ' + moved + ' px, so it is not drawn into the dial');
     const redPlain = reds(artPlain);
     if (redPlain < 40000) return fail('the surface art paints only ' + redPlain + ' of the ~145k dial px in its own colour: it is not covering the face');
-    let kept = 0; for (let p = 0, i = 0; i < barePrinted.length; i += 4, p++) if (mask[p] && dif(barePrinted, artPrinted, i) <= 24) kept++;
-    if (kept < inkN * 0.95) return fail('the chapter print does not survive the dial art: ' + (inkN - kept) + ' of ' + inkN + ' ink px moved, so the art is laid OVER the print');
+    // Does the print survive the art? A pixel the print paints is compared with and
+    // without the art beneath it. Demanding that ALL of them be identical is wrong: an
+    // opaque glyph core looks the same whatever is under it, while a translucent or
+    // shadowed one blends its background and legitimately moves. What actually separates
+    // "art under the print" from "art over it" is colour: if the art were laid on top, the
+    // print's own pixels would come back in the art's colour. So that is what is measured,
+    // with the surviving-ink fraction reported alongside rather than gated on a guess.
+    // What "the print is on top of the art" really means is testable in one comparison:
+    // with the art in place, do the print's own pixels still differ from the same dial
+    // with no print? If the art were laid over the print, the print would contribute
+    // nothing there and that count would fall to about zero. (Counting instead how many
+    // print pixels are UNCHANGED by the art beneath them is not a layering test at all --
+    // it measures the ink's opacity, and printed ink mixes with what it sits on, which is
+    // why it came back at 29% on a dial whose print is correct.)
+    const isArt = (X, i) => X[i] > 150 && X[i + 1] < 90 && X[i + 2] < 90 && X[i + 3] > 200;
+    let visible = 0, buried = 0;
+    for (let p = 0, i = 0; i < barePrinted.length; i += 4, p++) { if (!mask[p]) continue; if (dif(artPrinted, artPlain, i) > 24) visible++; if (isArt(artPrinted, i)) buried++; }
+    if (visible < inkN * 0.8) return fail('the chapter print contributes nothing once the dial art is in: only ' + visible + ' of ' + inkN + ' ink px still differ from a blank dial, so the art is laid OVER the print');
+    if (buried > inkN * 0.12) return fail('the chapter print is buried under the dial art: ' + buried + ' of ' + inkN + ' ink px came back in the art colour');
     const redOw = reds(pxC(faceOf(Object.assign({ sfArt: a.id, sfSize: 442, sfFit: 'cover', openwork: 'cross', owBar: 17, owRing: 178, owHub: 24, owRim: 7 }, BLANK))));
     if (redOw > redPlain * 0.9) return fail('openwork left the art in the cut-away: ' + redOw + ' art px on an openworked dial vs ' + redPlain + ' solid');
-    say('  dial surface art: ' + redPlain + ' art px on the face, print ink held at ' + Math.round(kept / inkN * 100) + '% of ' + inkN + ', openwork cut it to ' + redOw);
-    it.state.designs = { art: E.canonDesign(d) }; it.faces = {};
+    say('  dial surface art: ' + redPlain + ' art px on the face, print still reads on top of it at ' + Math.round(visible / inkN * 100) + '% of ' + inkN + ' ink px (' + buried + ' taken by the art), openwork cut it to ' + redOw);
+    it.state.designs = { calendar: E.canonDesign(d) }; it.faces = {};
     it.exportKit().then(() => {
       try {
         const man = JSON.parse(new TextDecoder().decode(files.filter((f) => f.name === 'manifest.json')[0].data));
@@ -401,7 +435,10 @@
         const src = files.filter((f) => /^sources\//.test(f.name));
         if (!src.length) return fail('the kit carries no sources/ payload');
         if (!/^data:image\/(png|svg\+xml);base64,/.test(new TextDecoder().decode(src[0].data))) return fail('sources/ is not the base64 source');
-        if (!man.assets || man.assets.length < 2) return fail('manifest.assets[] is missing or short: ' + JSON.stringify(man.assets && man.assets.length));
+        // one image fills every slot in this fixture, and assets[] is keyed by asset id,
+        // so one entry is the correct answer -- the per-slot attribution is asserted on
+        // the next two lines, which is where a lost slot would actually show
+        if (!man.assets || man.assets.length < 1) return fail('manifest.assets[] is missing: ' + JSON.stringify(man.assets));
         const bg = man.assets.filter((x) => x.id === a.id)[0];
         if (!bg || bg.usedBy.indexOf('plate backdrop') < 0 || bg.usedBy.indexOf('dial surface') < 0) return fail('an art slot is not attributed to itself: ' + JSON.stringify(bg && bg.usedBy));
         if (!man.surfaceArt || man.surfaceArt.asset !== a.id) return fail('the manifest does not say where the dial-surface art was baked');
@@ -437,6 +474,129 @@
         }, (e) => fail('exportBundle threw ' + (e && e.message)));
       } catch (e) { fail(e.message); }
     }, (e) => fail('exportKit threw ' + (e && e.message)));
+  }
+  /* Four things in this change set can only be settled with real pixels: is a round
+   * window actually round, does "no case" still mask, does the art zoom change what is
+   * painted, and does a facing turn the ink. The stub suites prove the decisions; this
+   * proves the pixels, in the browser the composer actually runs in. */
+  const S4 = 466, C4 = 233;
+  function featSetup(E, say, done) {
+    const it = new (window.COMP_CLASS(DCLogic))({});
+    it.ready = true; it.rendering = false;
+    it.state.dial = 'modern'; it.state.timeMode = 'pose'; it.state.frame = 0; it.state.hidden = {};   // registered id, for the same reason
+    it.state.tab = 'export'; it.state.playing = false; it.budget = () => ({ fps: 8 });
+    const fail = (m) => done(new Error('features: ' + m)), pass = () => done();
+    const src = document.createElement('canvas'); src.width = 60; src.height = 60;
+    const sx = src.getContext('2d');
+    sx.fillStyle = '#ff0044'; sx.fillRect(0, 0, 60, 60);          // a colour no dial colour uses
+    const urlA = src.toDataURL('image/png');
+    E.assetRestore([{ id: 'feat-a', name: 'feat.png', kind: 'png', dataUrl: urlA }]);
+    setTimeout(() => {
+      // nothing above this is inside a .then, so an exception here would otherwise die as
+      // an uncaught error in a timer callback and the suite would just stop reporting
+      try { featBody(); } catch (e) { fail('(sync) threw: ' + (e && e.message) + ' || ' + String((e && e.stack) || '').split('\n').slice(0, 3).join(' | ')); }
+    }, 60);
+    function featBody() {
+      if (!E.assetReady('feat-a')) return fail('the fixture asset never decoded');
+      const base = { print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1, second: 0 } };
+      /* face(id) keys off the DIAL id and derives its own opts() from state, so the case
+       * fields have to be set on the instance rather than passed in -- passing an options
+       * object here reads as a dial id and dies in design(). */
+      it.faceOf = (patch, opts) => {
+        if (opts) Object.assign(it.state, opts);
+        it.state.designs = { modern: E.canonDesign(Object.assign(JSON.parse(JSON.stringify(base)), patch)) };
+        it.faces = {};
+        return it.face();
+      };
+      featAperture(E, it, say, fail, () => featCaseZoomHands(E, it, say, fail, pass));
+    }
+  }
+  /* ---- 1. a round window is round --------------------------------------------------
+   * The square case is measured first and must fill its box; if it does not, the probe
+   * is blind and says nothing about the round one. That ordering is the whole point of
+   * measuring both in the same run rather than asserting a number for the round alone. */
+  function featAperture(E, it, say, fail, next) {
+    const win = (shape) => ({ comps: [{ id: 'wr', type: 'window', shows: 'date', host: 'dial', angle: 90, dist: 110, rot: 0, size: 2.2, style: 'frame', disc: 'light', ...(shape ? { wshape: shape } : {}) }] });
+    const fSq = it.faceOf(win(null)), fCi = it.faceOf(win('circle'));
+    const hole = (fc) => fc.lay.comps.filter((c) => c.id === 'wr')[0].hole;
+    const hCi = hole(fCi), hSq = hole(fSq);
+    if (hCi.kind !== 'circle' || hSq.kind !== 'rect') return fail('layout gave the wrong hole kinds: ' + hCi.kind + '/' + hSq.kind);
+    /* The disc is a complication, so it is painted into the comps layer and not into the
+     * dial sprite -- the dial only ever carries the hole. The shape has to be measured on
+     * the DISC's own box, not the hole's: the disc overshoots the aperture by 5*k on every
+     * side so its edge tucks under the frame, and at k = 2.2 that 11 px overshoot swallows
+     * a 33 px hole whole, which is why sampling the hole measured 0.994 for a dial that is
+     * in fact round. On the disc's own box a square fills 1.0 and a circle fills pi/4. */
+    const fill = (fc) => {
+      const c = fc.lay.comps.filter((q) => q.id === 'wr')[0], h = c.hole, kk = c.k || 1, over = 5 * kk;
+      const rx = (h.kind === 'circle' ? h.r : h.w / 2) + over, ry = (h.kind === 'circle' ? h.r : h.h / 2) + over;
+      const x0 = Math.round(h.x - rx), y0 = Math.round(h.y - ry), w = Math.round(2 * rx), h2 = Math.round(2 * ry);
+      const g = fc.comps(new Date(2026, 0, 1, 10, 9, 36)).dial.getContext('2d');
+      const d = g.getImageData(x0, y0, w, h2).data; let lit = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 40) lit++;
+      return { lit, area: w * h2, frac: lit / (w * h2), r: h.kind === 'circle' ? h.r : [h.w, h.h], over };
+    };
+    const qSq = fill(fSq), qCi = fill(fCi);
+    if (!(qSq.frac > 0.9)) return fail('the square window fills only ' + qSq.frac.toFixed(2) + ' of its own disc box, so the probe is blind: ' + JSON.stringify(qSq));
+    if (qCi.frac > 0.88) return fail('a round window fills its disc box like a square one: ' + qCi.frac.toFixed(3) + ' of ' + qCi.area + ' px lit, where a circle gives 0.785 (r=' + qCi.r + ', overshoot ' + qCi.over + ')');
+    const r = hCi.r, sq = Math.max(hole(fSq).w, hole(fSq).h);
+    if (Math.abs(r * 2 - sq) > 0.51) return fail('round did not take the longer side as its diameter: r=' + r + ' box=' + sq);
+    say('  round aperture: r=' + r.toFixed(1) + ' fills ' + qCi.frac.toFixed(3) + ' of its disc box, against ' + qSq.frac.toFixed(3) + ' for the square window — a circle is pi/4');
+    next();
+  }
+  /* ---- 2-4. the case mask, the zoom, and the facing -------------------------------- */
+  function featCaseZoomHands(E, it, say, fail, pass) {
+    // no case: nothing painted where the device's own metal sits, but the opening still
+    // stops OUR content, and the whole face still scales in to stay under it.
+    const mask = E.caseLayer({ caseStyle: 'none', caseOpen: 150, outerTemp: 2200, outerHue: 0, outerSat: 0 });
+    const mx = mask.getContext('2d'), alphaAt = (x, y) => mx.getImageData(x, y, 1, 1).data[3];
+    if (alphaAt(C4, C4) > 8) return fail('no-case paints something at the centre: alpha ' + alphaAt(C4, C4));
+    if (alphaAt(C4 + 175, C4) < 250) return fail('no-case leaves outside its opening unpainted: alpha ' + alphaAt(C4 + 175, C4));
+    if (alphaAt(C4 + 138, C4) > 8) return fail('no-case masks inside the opening it was given: alpha ' + alphaAt(C4 + 138, C4));
+    const fNone = it.faceOf({}, { caseStyle: 'none', caseOpen: 150 });
+    if (Math.abs(fNone.inset - 150 / 221) > 1e-6) return fail('the face did not scale to the authored opening: inset=' + fNone.inset);
+    it.faceOf({}, { caseStyle: 'polished', caseOpen: 221.5 });      // do not let the probe leak into the ones below
+    // zoom: count the fixture's colour on the dial, and confirm the clip holds at 4x
+    const artPx = (fc) => {
+      const d = fc.dial.getContext('2d').getImageData(0, 0, S4, S4).data; let n = 0, x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+      for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const i = (y * S4 + x) * 4;
+        if (d[i] > 190 && d[i + 1] < 90 && d[i + 2] < 90 && d[i + 3] > 200) { n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+      return { n, w: x1 - x0, h: y1 - y0 };
+    };
+    const z1 = artPx(it.faceOf({ sfArt: 'feat-a', sfSize: 120, sfZoom: 1 }));
+    const z2 = artPx(it.faceOf({ sfArt: 'feat-a', sfSize: 120, sfZoom: 2 }));
+    if (!(z1.n > 400)) return fail('the surface art is not on the dial at zoom 1, so the probe is blind: ' + z1.n);
+    if (!(z2.n > z1.n * 2.5 && z2.w > z1.w * 1.5 && z2.h > z1.h * 1.5)) return fail('zoom 2 painted no more art than zoom 1: ' + JSON.stringify([z1, z2]));
+    const spill = (() => {
+      const d = it.faceOf({ sfArt: 'feat-a', sfSize: 900, sfZoom: 4 }).dial.getContext('2d').getImageData(0, 0, S4, S4).data; let out = 0;
+      for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const dx = x - C4, dy = y - C4, i = (y * S4 + x) * 4;
+        if (dx * dx + dy * dy > 224 * 224 && d[i] > 190 && d[i + 1] < 90 && d[i + 3] > 200) out++; }
+      return out;
+    })();
+    if (spill > 0) return fail('zoomed art crossed the dial circle by ' + spill + ' px, so the clip is not applied after the zoom');
+    // facing: the ink's own centroid angle about the arbour, which is what "where it
+    // points" means. Probed on the drawn hands layer, not on a reported number.
+    const handsPx = (rot0, pivot) => {
+      const fc = it.faceOf({ centre: { hour: 1, minute: 0, second: 0 }, hands: { 'centre-hour': { art: 'feat-a', rot0: rot0, pivotX: pivot[0], pivotY: pivot[1] } } });
+      const hd = fc.hands.filter((h) => h.id === 'centre-hour')[0];
+      if (!hd || !hd.art) return fail('the hour hand is not art-backed, so the facing probe measures a procedural sprite');
+      const c = document.createElement('canvas'); c.width = S4; c.height = S4;
+      fc.drawHands(c.getContext('2d'), new Date(2026, 0, 1, 10, 9, 0));
+      const d = c.getContext('2d').getImageData(0, 0, S4, S4).data; let sx2 = 0, sy2 = 0, n = 0;
+      for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const i = (y * S4 + x) * 4; if (d[i + 3] > 60) { sx2 += x * d[i + 3]; sy2 += y * d[i + 3]; n += d[i + 3]; } }
+      if (!n) return fail('an art-backed hand painted no ink on the hands layer');
+      const cx = sx2 / n, cy = sy2 / n;
+      return { n, ang: ((Math.atan2(cx - hd.x, -(cy - hd.y)) * 180 / Math.PI) + 360) % 360, w: hd.sp.c.width, h: hd.sp.c.height, px: hd.sp.px, py: hd.sp.py };
+    };
+    // shortest signed difference between two dial angles, in degrees
+    const dAng = (a, b) => { let d = (b - a + 180) % 360; if (d < 0) d += 360; return d - 180; };
+    const a0 = handsPx(0, [30, 60]), a90 = handsPx(90, [30, 60]);
+    if (Math.abs(dAng(a0.ang, a90.ang) - 90) > 5) return fail('facing 90 did not turn the drawn ink a quarter of a way round: ' + a0.ang.toFixed(1) + ' -> ' + a90.ang.toFixed(1) + ' (delta ' + dAng(a0.ang, a90.ang).toFixed(1) + ')');
+    const off = handsPx(0, [-30, 60]);
+    if (!(off.h > 60 && off.py >= 0 && off.py <= off.h)) return fail('the off-art arbour did not grow the plane to hold it: ' + JSON.stringify([off.h, off.py]));
+    say('  no case: masked at r=150 with inset ' + fNone.inset.toFixed(3) + ', nothing painted inside it');
+    say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');
+    pass();
   }
   function calKitCheck(E, inst, DCLogic, bytesOf, say, calD, done) {
     const it = new (window.COMP_CLASS(DCLogic))({});
@@ -501,6 +661,19 @@
   try {
     const E = window.WatchEngine;
     if (!E || !window.COMP_CLASS) throw new Error('engine or component class missing');
+    /* ?ONLY=feat runs the feature block and nothing else. That block is whole-canvas
+     * pixel scans rather than timers, and --virtual-time-budget is a TIMER budget: a page
+     * still grinding through getImageData gets dumped before it finishes, which reads as
+     * a stranded suite instead of a failing one. Asking for one block is how you tell
+     * those two apart, so the guard sits ahead of every export the suite otherwise runs. */
+    if (/[?&]ONLY=feat/.test(location.search)) {
+      say('running the feature block alone');
+      featSetup(E, say, (err) => {
+        if (err) { say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n')); document.title = 'FAIL'; return; }
+        say('RESULT: PASS'); document.title = 'PASS';
+      });
+      return;
+    }
     const inst = new (window.COMP_CLASS(DCLogic))({});
     inst.ready = true; inst.rendering = false;
     inst.state.dial = 'calendar'; inst.state.timeMode = 'cycle'; inst.state.frame = 0; inst.state.hidden = {};
@@ -730,6 +903,11 @@
             say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
             document.title = 'FAIL'; return;
           }
+          featSetup(E, say, (err) => {                          // its own instance, so it cannot disturb the others
+          if (err) {
+            say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
           // last, because it rewrites inst.state.designs while it drives the controls
           try { uiCheck(E, inst, say); }
           catch (e) {
@@ -737,6 +915,7 @@
             document.title = 'FAIL'; return;
           }
           say('RESULT: PASS'); document.title = 'PASS';
+        });
         });
         });
       } catch (e) {

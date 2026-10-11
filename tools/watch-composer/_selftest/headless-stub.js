@@ -12,6 +12,10 @@ function stubCtx() {
     canvas: null, globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none',
     draws: [],                                        // every drawImage, for the assertions
     ops: [],                                          // ordered op log: what was drawn, and when
+    geom: [],                                         // path/turn calls, kept OUT of ops: the
+                                                      // ops cap is sized for drawImage/fillText
+                                                      // assertions, and folding these in would
+                                                      // evict them from a busy render
     lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', strokeStyle: '#000', fillStyle: '#000',
     shadowColor: 'rgba(0,0,0,0)', shadowBlur: 0, shadowOffsetX: 0, shadowOffsetY: 0,
     font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic', imageSmoothingQuality: null,
@@ -27,10 +31,14 @@ function stubCtx() {
     getImageData: (x, y, w, h) => ({ data: (c.canvas && c.canvas._alpha) || new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h }),
     putImageData: (d) => { if (c.canvas) c.canvas._alpha = d.data; },
     setTransform() { }, resetTransform() { }, save() { }, restore() { },
-    translate() { }, scale() { }, rotate() { }, transform() { }, setLineDash() { },
-    beginPath() { }, closePath() { }, moveTo() { }, lineTo() { }, bezierCurveTo() { },
-    quadraticCurveTo() { }, arc() { }, arcTo() { }, ellipse() { }, rect() { }, roundRect() { },
-    fill() { }, stroke() { }, clip() { }, fillRect() { }, strokeRect() { }, clearRect() { },
+    // The geometry calls record their arguments so an assertion can read the guide and
+    // the case mask as data. Each call stays a no-op apart from that push.
+    translate(x, y) { this._g('translate', x, y); }, scale(x, y) { this._g('scale', x, y); },
+    rotate(a) { this._g('rotate', a); }, transform() { }, setLineDash(d) { this._g('dash', d && d.length ? String(d) : 'solid'); },
+    beginPath() { }, closePath() { }, moveTo(x, y) { this._g('moveTo', x, y); }, lineTo(x, y) { this._g('lineTo', x, y); },
+    bezierCurveTo() { },
+    quadraticCurveTo() { }, arc(x, y, r, a0, a1) { this._g('arc', x, y, r, a0, a1); }, arcTo() { }, ellipse() { }, rect() { }, roundRect() { },
+    fill() { this._g('fill', this.fillStyle); }, stroke() { this._g('stroke', this.strokeStyle); }, clip() { this._op('clip'); }, fillRect(x, y, w, h) { this._g('fillRect', x, y, w, h); }, strokeRect(x, y, w, h) { this._g('strokeRect', x, y, w, h); }, clearRect() { },
     drawImage(img) {
       const s = (img && img._src && SIZES[img._src]) || [10, 10];
       this._w = s[0]; this._h = s[1];
@@ -40,8 +48,10 @@ function stubCtx() {
     },
     fillText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); },
     strokeText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); },
-    clip() { if (this.ops.length < 400) this.ops.push({ op: 'clip' }); },
   };
+  // Helper pushes live on the context so the method shorthands above can share one cap.
+  c._g = function (op) { if (this.geom.length < 600) this.geom.push({ op, a: Array.prototype.slice.call(arguments, 1) }); };
+  c._op = function (op) { if (this.ops.length < 400) this.ops.push({ op }); };
   return c;
 }
 const CANVASES = [];

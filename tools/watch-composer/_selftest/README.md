@@ -249,10 +249,30 @@ python3 -m pip install --user --break-system-packages nodeenv \
 
 | File | Checks |
 |---|---|
-| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate, sprite pivot scaling, centroid maths |
-| `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip, loader refusals |
-| `headless-ui.test.js` | the control row really offers each art field, prices the placement, and reports missing bytes |
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening, a round aperture |
+| `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
+| `headless-ui.test.js` | the control row offers each field, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
+
+The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
+`ctx.ops`: the ops cap is sized for the `drawImage`/`fillText` assertions the older
+suites make, and folding geometry in there would evict those entries from a busy
+render. Read `geom` to assert that an overlay was actually drawn, in what order, and
+at what radius.
+
+`pivot_passthrough_check.py` is the bake side of the same features, run offline with
+no browser at all:
+
+```sh
+python3 tools/watch-composer/_selftest/pivot_passthrough_check.py
+```
+
+It calls `prep_watch_kit._placed` and `bake_clock.snap_pivot_to_hub` directly and pins
+the two behaviours the composer now depends on: a declared arbour outside the artwork
+is placed as given and returned untouched (there is no hub ink to measure, so the
+scorer reads zero wobble and the pass-through must not be confused for a disabled
+snap — the file asserts both halves), and `zeroRotationDeg` reaches the theme record at
+tenth-of-a-degree precision, so a facing off the 15-degree steppers survives.
 
 These are stubs, not a renderer — gradients, shadows and text metrics are no-ops. Pixel
 truth is still `export-test.html` under Chrome. This box has no browser, so deploy it to
@@ -314,12 +334,60 @@ chrome --headless=new --disable-gpu --no-sandbox --virtual-time-budget=120000 \
 ```
 
 `--virtual-time-budget` matters: `exportKit()` yields between sprite renders, and
-without a budget the dump happens before the zip is built.
+without a budget the dump happens before the zip is built. Budget is a TIMER budget
+though, and blocks that just grind `getImageData` never yield to a timer, so they can
+be dumped mid-run and look stranded with no verdict at all. `?ONLY=feat` runs the
+feature block on its own and nothing else, which is how you tell a slow block from a
+broken one; the verdict lines it must print are listed in `deploy_test_folder.py`.
+
+The feature block (`featSetup` → `featAperture` → `featCaseZoomHands`) is the pixel
+evidence for the authoring controls the stub suites can only describe:
+
+* a round window is measured by how much of its own disc box the disc fills — 0.785
+  for a circle against ~1.0 for the square, both measured in the same run so the
+  square case calibrates the probe;
+* "no case" paints nothing inside the opening yet still masks outside it, and the
+  whole face scales by `caseOpen / DR`;
+* zoom 1→2 multiplies the art actually painted, and at zoom 4 nothing spills past the
+  dial circle, which is what proves the clip is applied after the zoom and not before;
+* a facing of 90 turns the drawn ink a quarter of the way round the arbour, and a
+  pivot 30 px outside the artwork grows the plane so the arbour is inside it.
+
+Two probe-design traps bit this block and are worth remembering, because both produced
+a confident wrong answer rather than an obvious one:
+
+* sample the DISC's box, not the hole's. The disc overshoots the aperture by `5*k` on
+  every side so its edge tucks under the frame; at `k = 2.2` that is 11 px over a 33 px
+  hole, and a correct round window measured 0.994 — indistinguishable from a square —
+  when sampled on the hole.
+* comparing two dial angles needs a shortest-signed-difference helper, not
+  `(b - a + 540) % 360 - 90`, which reported a real 90.4° turn as a failure.
 
 The width assertion in `export-test.html` is the regression guard for the bug where
 `manifest.json` declared a `currentWidth` narrower than the widest `byDate` run —
 `capL.w + capR.w + 2·padX + Σ advance` exceeded it and clipped a glyph. Formula lives
 in `watch-engine.js` `WatchEngine.textKits()`.
+
+## Assertions that never ran
+
+Three checks in `export-test.html` were committed red and stayed green-looking,
+because the block that owns them threw before reaching them and the exception died in
+a `setTimeout` callback with no handler. `artKitGo` now runs inside a `try/catch` and
+`featSetup` likewise, both reporting through `fail()`, so a throw there is a verdict
+instead of a page that simply stops printing. The specific traps:
+
+* the art fixture ran on `state.dial = 'art'`, an id with no entry in `PRESETS`, and
+  `handDef` dereferences `preset(id).hands` — so `face()` threw for the whole block.
+  A harness instance must use a **registered preset id** and key `state.designs` by
+  it; `face(id)` takes that id, not an options object, and per-face options come from
+  `state`, so a probe that wants `caseStyle`/`caseOpen` set has to assign them on the
+  instance.
+* `assetFits(id, 40, 40, 'contain')` on an 8×8 source is a 5× upscale and is refused,
+  because contain into a square box from a square source *is* cover. An upscale-gate
+  assertion needs an aspect that differs from the box, and `manifest.assets[]` is
+  keyed by asset id — one image filling four slots is legitimately one entry.
+
+If a block prints no `say()` line at all, suspect an exception, not a pass.
 
 ## Running the probes
 

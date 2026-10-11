@@ -90,6 +90,127 @@ setTimeout(() => {
   const ex = (it.state.tab = 'export', it.renderVals());
   ok(/art asset/.test(ex.bundleNote), 'the bundle button counts the art it will carry', ex.bundleNote);
   ok(/MISSING/.test(ex.artNote), 'the export tab warns before a kit ships without its art', ex.artNote);
+  // ---- selecting on the stage: the pane must follow what was grabbed -----------------
+  global.requestAnimationFrame = () => 1;                                  // onMove defers; the test flushes by hand
+  it.forceUpdate = () => { };
+  const stageEl = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 466, height: 466 }), setPointerCapture() { } };
+  const ev = (x, y) => ({ clientX: x, clientY: y, pointerId: 1, currentTarget: stageEl });
+  const fcS = it.face(), dS = it.now();
+  const top = fcS.hands[fcS.hands.length - 1];
+  it.state.tab = 'comps'; it.state.sel = null; it.state.selKind = null;
+  it.onDown(ev(top.x, top.y));                                             // the arbour is inside every hand's own plane
+  ok(it.state.selKind === 'hand' && it.state.sel === top.id, 'grabbing the top hand selects that hand', JSON.stringify([it.state.selKind, it.state.sel, top.id]));
+  ok(it.state.tab === 'hands', 'and the Editing Pane jumps to Hands, where its fields are', it.state.tab);
+  ok(!(it.drag && it.drag.kind === 'hand'), 'a procedural hand selects but arms no pivot drag: its arbour is built from the style, not authored', JSON.stringify(it.drag && it.drag.kind));
+  it.state.designs.calendar.hands = Object.assign({}, it.state.designs.calendar.hands, { [top.id]: { art: 'ui-big', pivotX: 150, pivotY: 150 } });
+  const fcA = it.face(), topA = fcA.hands[fcA.hands.length - 1];
+  it.state.tab = 'comps'; it._clickAt = null; it.onDown(ev(topA.x, topA.y));
+  ok(it.drag && it.drag.kind === 'hand' && it.drag.id === topA.id, 'an image-backed hand arms the pivot drag, which is the whole point of selecting one', JSON.stringify(it.drag && [it.drag.kind, it.drag.id, topA.id]));
+  ok(isFinite(it.drag.k) && it.drag.k > 0 && isFinite(it.drag.ang), 'the drag carries the sprite scale and the held angle, so the cursor maps into the frame of the art', JSON.stringify(it.drag && [it.drag.k, it.drag.ang]));
+  const p0 = it.design().hands[topA.id].pivotX;
+  it.onMove(ev(topA.x + 20, topA.y));
+  it.flushDrag();
+  ok(+it.design().hands[topA.id].pivotX !== p0, 'dragging the hand across the face moves its arbour', JSON.stringify([p0, it.design().hands[topA.id].pivotX]));
+  it.setHand(topA.id, { pivotX: -40, pivotY: -12 });
+  const neg = it.design().hands[topA.id];
+  ok(neg.pivotX === -40 && neg.pivotY === -12, 'a pivot outside the sprite survives, because an arbour hidden under a subdial is a real design', JSON.stringify([neg.pivotX, neg.pivotY]));
+  const want = 'centre ' + String(topA.id).slice(7);
+  const negRow = (it.state.tab = 'hands', it.renderVals().handRows.find((q) => q.label.toLowerCase() === want));
+  ok(negRow && /off the artwork/.test(negRow.artNote), 'and the row says so in words, rather than showing a number the author cannot interpret', negRow && negRow.artNote.slice(-70));
+  it.state.designs.calendar.hands = {};
+  let barePt = null;
+  for (let a = 0; a < 360 && !barePt; a += 15) for (const r of [190, 150, 60]) {
+    const s0 = fcS.pickAll(233 + Math.sin(a * Math.PI / 180) * r, 233 - Math.cos(a * Math.PI / 180) * r, dS);
+    if (s0.length && s0[0].kind === 'dial') { barePt = [233 + Math.sin(a * Math.PI / 180) * r, 233 - Math.cos(a * Math.PI / 180) * r]; break; }
+  }
+  ok(!!barePt, 'a bare stretch of the face exists to click at all', JSON.stringify(barePt));
+  // ---- overlapping stack: a second click on the same pixel steps down ---------------
+  // Without this a date window under the seconds hand is unreachable for the whole
+  // life of that hand, because the hand is drawn over it and always wins the pixel.
+  const at = [top.x, top.y];
+  const stackAt = fcS.pickAll(at[0], at[1], dS);
+  it._clickAt = null;
+  it.onDown(ev(at[0], at[1]));
+  const seq = [it.state.selKind + ':' + it.state.sel];
+  for (let n = 1; n < stackAt.length; n++) { it.onDown(ev(at[0], at[1])); seq.push(it.state.selKind + ':' + it.state.sel); }
+  ok(seq.length === stackAt.length && seq.every((s, n) => s === stackAt[n].kind + ':' + stackAt[n].id),
+    'repeated clicks on one pixel walk the stack top-down, so nothing under the top layer is ever unselectable', JSON.stringify(seq));
+  it.onDown(ev(at[0], at[1]));
+  ok(it.state.sel === stackAt[0].id, 'and the cycle wraps back to the top rather than dead-ending', JSON.stringify([it.state.sel, stackAt[0].id]));
+  it.onDown(ev(at[0] + 90, at[1] + 40));
+  const fresh = (it.face().pickAll(at[0] + 90, at[1] + 40, it.now()) || [])[0];
+  ok(it._clickAt && (fresh ? it._clickAt.id === fresh.id : !it._clickAt.id), 'a click somewhere else starts a fresh cycle instead of continuing the old one', JSON.stringify([it._clickAt && it._clickAt.id, fresh && fresh.id]));
+  it.state.tab = 'hands'; it.state.sel = 'nothing'; it.state.selKind = 'comp';
+  it.state.designs.calendar.sfArt = 'ui-big';
+  it.onDown(ev(barePt[0], barePt[1]));
+  ok(it.state.selKind === 'dial' && it.state.tab === 'dial', 'clicking the face selects the dial and opens the Dial tab', JSON.stringify([it.state.selKind, it.state.tab]));
+  ok(it.drag && it.drag.kind === 'dial' && it.drag.slot === 'sf', 'the dial drag is armed against the surface slot, the one holding art', it.drag && it.drag.slot);
+  const sx0 = +it.design().sfX || 0, sy0 = +it.design().sfY || 0;
+  it.onMove(ev(barePt[0] + 30, barePt[1] + 12));
+  it.flushDrag();
+  ok(Math.round((+it.design().sfX) - sx0) === 30 && Math.round((+it.design().sfY) - sy0) === 12, 'dragging the face pans that art by exactly the cursor move', JSON.stringify([sx0, sy0, it.design().sfX, it.design().sfY]));
+  // ---- the alignment overlay: on when it answers a question, off otherwise -----------
+  it.state.selKind = null; it.state.sel = null; it.drag = null; it.state.guide = 'auto';
+  ok(it.guideOn() === false, 'a plain look at the watch carries no overlay', String(it.guideOn()));
+  it.state.selKind = 'dial';
+  ok(it.guideOn() === true, 'aligning the dial art brings the guide up');
+  it.state.selKind = 'hand';
+  ok(it.guideOn() === true, 'aligning a hand brings it up too');
+  it.state.selKind = 'comp';
+  ok(it.guideOn() === false, 'a complication of its own does not need it');
+  it.state.selKind = null; it.state.guide = 'on';
+  ok(it.guideOn() === true, 'and the author can pin it on');
+  it.state.guide = 'off'; it.drag = { kind: 'dial' };
+  ok(it.guideOn() === false, 'off means off, even mid-drag', String(it.guideOn()));
+  it.drag = null; it.state.guide = 'auto';
+  const gCan = new S.FakeCanvas(); gCan.width = 466; gCan.height = 466;
+  it.state.selKind = 'dial'; it.state.artSlot = 'sf'; it.state.designs.calendar.sfZoom = 1.4;
+  it.drawGuide(gCan.getContext('2d'), fcS, dS, 1);
+  const gGeo = gCan.getContext('2d').geom;
+  const arcs = gGeo.filter((o) => o.op === 'arc');
+  ok(arcs.some((o) => Math.abs(o.a[0] - 233) < .01 && Math.abs(o.a[2] - 221.5) < .01), 'the guide circles the case opening the content must stay inside', JSON.stringify(arcs.map((o) => +o.a[2].toFixed(1))).slice(0, 60));
+  const spokes = gGeo.filter((o) => o.op === 'lineTo' && Math.abs(Math.hypot(o.a[0] - 233, o.a[1] - 233) - 216) < 0.01).length;
+  ok(spokes === 24, 'and lays exactly the 24 fifteen-degree spokes, no more and no fewer', 'spokes=' + spokes + ' arcs=' + arcs.length);
+  ok(gGeo.some((o) => o.op === 'moveTo' && Math.abs(o.a[0] - 233) < 0.01), 'with a ray through the centre, so vertical alignment is read against the dial axis');
+  ok(gGeo.some((o) => o.op === 'strokeRect'), 'the zoomed art is framed by a box, so the author sees what the crop will keep');
+  const ghostRot = (rot0) => {
+    it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: rot0 } };
+    it.state.selKind = 'hand'; it.state.sel = 'centre-hour';
+    const c = new S.FakeCanvas(); c.width = 466; c.height = 466;
+    it.drawHandGhost(c.getContext('2d'), it.face(), dS, 1, (v) => v);
+    const r = c.getContext('2d').geom.filter((o) => o.op === 'rotate');
+    return r.length ? r[r.length - 1].a[0] : null;
+  };
+  const gA = ghostRot(0), gB = ghostRot(90);
+  ok(gA !== null && gB !== null && Math.abs((gB - gA) - Math.PI / 2) < 1e-6,
+    'the virtual hand turns with its facing: the same hand at 90 degrees is drawn exactly a quarter turn round', JSON.stringify([gA, gB, gB - gA]));
+  it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: 90 } };
+  const gCan3 = new S.FakeCanvas(); gCan3.width = 466; gCan3.height = 466;
+  it.drawHandGhost(gCan3.getContext('2d'), it.face(), dS, 1, (v) => v);
+  ok(gCan3.getContext('2d').geom.some((o) => o.op === 'strokeRect'), 'and its sprite is outlined where it really lies, which is what shows a wrong facing');
+  it.state.designs.calendar.hands = {}; delete it.state.designs.calendar.sfZoom;
+  // ---- the controls themselves -------------------------------------------------------
+  const dialZ = labels('dial');
+  ok(!!byLabel(dialZ, 'Zoom'), 'each art slot offers a zoom, not only a box size');
+  it.state.caseStyle = 'none';
+  const caseNone = labels('case');
+  ok(!!byLabel(caseNone, 'Opening radius'), 'no case exposes the opening that lighting, shadow and clipping then use');
+  it.state.caseStyle = 'polished';
+  ok(!byLabel(labels('case'), 'Opening radius'), 'a real case hides it again: its own rim owns that number');
+  const winC = (it.state.designs.calendar.comps || []).find((c) => c.type === 'window');
+  ok(!!winC, 'the calendar preset has a window to test on');
+  if (winC) { winC.wshape = 'circle'; it.state.sel = winC.id; const cw = labels('comps'); ok(!!byLabel(cw, 'Aperture'), 'a window offers an aperture shape'); const ap = byLabel(cw, 'Aperture'); ok(ap && (ap.opts || []).some((o) => /Round/.test(o.label)), 'with round among its choices', JSON.stringify((ap || {}).opts || []).slice(0, 80)); winC.wshape = 'rect'; }
+  const hRows = (it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } }, it.state.tab = 'hands', it.renderVals().handRows);
+  const hr = hRows.find((q) => q.label === 'Centre hour');
+  for (const k of ['onRot0', 'onZoom', 'onFacingUp', 'onFacingDown', 'onFacingReset', 'rot0', 'zoom'])
+    ok(hr[k] !== undefined, 'a hand row exposes ' + k);
+  hr.onFacingUp();
+  ok(it.design().hands['centre-hour'].rot0 === 15, 'the facing stepper turns the art 15 degrees clockwise', String(it.design().hands['centre-hour'].rot0));
+  hr.onFacingDown(); hr.onFacingDown(); hr.onFacingDown();
+  ok(it.design().hands['centre-hour'].rot0 === 330, 'and keeps stepping off the live design (15 down to 0, then 345, then 330) instead of sticking on the value the row was drawn with', String(it.design().hands['centre-hour'].rot0));
+  hr.onFacingReset();
+  ok(!it.design().hands['centre-hour'].rot0, 'Facing to 12 clears it, which is the identity the Design ID already had');
+  it.state.designs.calendar.hands = {};
   if (checked < 20) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   // every {{ }} binding the template reads must exist on the props object, or the DC
   // runtime renders an empty control with no warning at all

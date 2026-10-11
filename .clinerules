@@ -680,9 +680,14 @@ Verdict rules, so a skipped block cannot read as success:
 
 - `export-test.html`: the tab title must read `PASS` and the last report line must be
   `RESULT: PASS`. The custom-art block prints its own line starting `custom art: backdrop
-  in the plate pixels`. Missing that line means the block never ran.
+  in the plate pixels`. Missing that line means the block never ran. The five evidence
+  lines, and `?ONLY=feat` to run the pixel block alone when the suite stops printing
+  without a verdict, are listed by `deploy_test_folder.py`.
 - Headless suites: each must print a nonzero check count. A suite reporting green with a
   suspiciously low count stopped exercising something.
+- After editing the component class, regenerate `_selftest/component.js` (the recipe is in
+  `_selftest/README.md`). It is an extracted copy, and a stale one keeps the UI suites green
+  while they test last week's code.
 
 What only a human can confirm in the app, after uploading art in the Dial and Hands tabs:
 
@@ -693,6 +698,22 @@ What only a human can confirm in the app, after uploading art in the Dial and Ha
 - the two slots are independent: different images, different offsets, and one image may fill
   both without the store counting it twice
 - the fit gate refuses an upscale, and names both sizes in the refusal
+- Zoom rescales the art about its centre without moving it off its offset, and the alignment
+  guide's frame tracks it exactly — the box drawn on the stage is the box that was painted
+- clicking the dial or a hand selects it AND opens the pane that can change it; clicking the
+  same pixel again steps down through whatever overlaps there, so nothing under the top layer
+  is unreachable
+- dragging the dial pans the art slot the chip names, not the other one
+- dragging a hand moves its arbour, and while the drag is held the hand stops sweeping so the
+  geometry under the cursor cannot rotate away
+- the virtual hand reads: dashed sprite, arbour cross, sweep ring and the intended-direction
+  ray. Set Facing to bring the ink onto the ray — art drawn pointing anywhere but 12 is fine
+  as long as Facing says where it points
+- a hand-sprite pivot outside the visible ink is accepted and reported as such, and the
+  thumbnail frames the ink inside the grown plane
+- "No case (baked into the device)" draws no metal at all, yet the opening still masks the
+  content and scales the face in, and the layer still ships as a mask
+- a window set to a round aperture is visibly round, including its frame and its digit
 - the hand-sprite pivot marker drags, and hub-snap lands on the visible ink centroid
 - a transparent sub-dial drops its plate, keeps its hosted window on the bare dial, and
   its pointer keeps a real pivot instead of a hub cap

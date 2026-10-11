@@ -149,9 +149,120 @@ setTimeout(() => {
     c2._alpha = d2;
     const ct = E.inkCentroidOf(c2);
     ok(Math.abs(ct[0] - 4.5) < 1e-6 && ct[1] === 0, 'inkCentroidOf weighs the ink, not the box', JSON.stringify(ct));
-    if (checked < 55) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
+    // ---- art zoom: the box that is drawn must be the box that is priced -------------
+    const FC2 = require('./headless-stub.js').FakeCanvas;
+    const zoomDraw = (z) => { const c = new FC2(); c.width = 466; c.height = 466; E.drawAsset(c.getContext('2d'), 'alpha-1', { x: 233, y: 233, w: 100, h: 100, fit: 'stretch', zoom: z }); return c.getContext('2d').draws.slice(-1)[0].args; };
+    const zb1 = zoomDraw(1), zb25 = zoomDraw(2.5);
+    ok(Math.abs(zb25[2] - zb1[2] * 2.5) < 1e-6 && Math.abs(zb25[3] - zb1[3] * 2.5) < 1e-6, 'drawAsset multiplies the drawn box by zoom', JSON.stringify([zb1.slice(2), zb25.slice(2)]));
+    ok(zb1[0] === -zb1[2] / 2 && zb1[1] === -zb1[3] / 2 && zb25[0] === -zb25[2] / 2 && zb25[1] === -zb25[3] / 2, 'the box stays centred on the anchor at every zoom, so scaling never slides the art off its offset', JSON.stringify([zb1.slice(0, 2), zb25.slice(0, 2)]));
+    ok(E.assetFits('alpha-1', 60, 60, 'contain', 1).ok === true, 'contain at zoom 1 is allowed');
+    const zup = E.assetFits('alpha-1', 60, 60, 'contain', 2);
+    ok(zup.ok === false && zup.upscale === true, 'that same contain at zoom 2 is an upscale and is refused, not silently resampled', zup.why);
+    const abz = E.artBox('alpha-1', { x: 253, y: 223, w: 100, h: 100, fit: 'stretch', zoom: 1.5 });
+    ok(abz.w === 150 && abz.x === 253, 'artBox reports the zoomed box in dial space, which is what the guide frames', JSON.stringify(abz));
+    const drawn = new FC2(); drawn.width = 466; drawn.height = 466;
+    E.drawAsset(drawn.getContext('2d'), 'alpha-1', { x: 253, y: 223, w: 100, h: 100, fit: 'stretch', zoom: 1.5 });
+    const dArgs = drawn.getContext('2d').draws.slice(-1)[0].args;
+    ok(Math.abs(dArgs[2] - abz.w) < 1e-6 && Math.abs(dArgs[3] - abz.h) < 1e-6, 'and the guide box is the box drawAsset paints: one implementation, no drift', JSON.stringify([dArgs, abz.w, abz.h]));
+    ok(!('sfZoom' in E.canonDesign({ sfArt: 'alpha-1', sfZoom: 1 })), 'a zoom of 1 is the identity and does not reach the Design ID');
+    ok(E.canonDesign({ sfArt: 'alpha-1', sfZoom: 1.4 }).sfZoom === 1.4, 'a real zoom is authored and shipped');
+    /* ---- the arbour outside the ink ----------------------------------------------
+     * A hand whose hub hides under a subdial has a pivot with no ink under it. The
+     * old code threw that number away and used the centroid, so the author could never
+     * say so. The plane must grow to hold the pivot instead, and the ink must not move
+     * relative to the arbour while it does. */
+    const tall = mk('tall-1', 20, 100, 'png'); E.assetRestore([{ id: 'tall-1', name: 'tall.png', kind: 'png', dataUrl: tall }]);
+    setTimeout(() => {
+      const inb = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 95 });
+      ok(inb && inb.padded === false && inb.c.height === 100, 'a pivot on the ink leaves the plane the size of the art');
+      const offp = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 140 });
+      ok(offp && offp.padded === true && offp.snapped === false, 'a pivot beyond the ink is accepted, not discarded', JSON.stringify(offp && [offp.py, offp.snapped]));
+      ok(offp && offp.py >= 2 && offp.py <= offp.c.height - 2 && offp.c.height > 100, 'the grown plane holds that pivot clear of every edge', JSON.stringify(offp && [offp.c.width, offp.c.height, offp.px, offp.py]));
+      ok(offp && offp.px === 10, 'the pad is added only where the arbour is, so the ink itself never shifts');
+      ok(E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: null, pivotY: null }).snapped === true, 'the centroid fallback is reserved for a pivot that was never set');
+      ok(E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10 }).snapped === true, 'a lone pivot with no partner falls back rather than turning about half a point');
+      const zz = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, zoom: 2 });
+      ok(zz && zz.c.height === 200 && zz.scale === 2, 'a hand zoom rescales the plane, so a small upload still reaches a long hand');
+      /* ---- the facing of art that was not drawn pointing north ---------------------
+       * Two probes 40 px from the arbour: straight up, and straight to the right. The
+       * art is 20×100 with its arbour on the bottom edge, so 40 is past the 10 px
+       * half-width and inside the 95 px reach — a probe answers only along whichever
+       * axis the ink actually lies on, which is exactly the thing Facing sets, so this
+       * pair fails if rot0 is parsed but never actually turns anything. */
+      const HF = (rot0) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', comps: [], centre: { hour: 0, minute: 0, second: 1 }, hands: { 'centre-second': { art: 'tall-1', rot0: rot0, pivotX: 10, pivotY: 95 } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const t0 = new Date(2026, 0, 1, 10, 9, 0);
+      const hd0 = HF(0).hands.find((q) => q.id === 'centre-second');
+      const hd90 = HF(90).hands.find((q) => q.id === 'centre-second');
+      ok(hd0 && hd0.artRot === 0, 'art with no facing set turns with no correction');
+      ok(hd90 && Math.abs(hd90.artRot - Math.PI / 2) < 1e-9, 'the facing rides the hand record in radians', String(hd90 && hd90.artRot));
+      const tipX = (hd, s) => E.handHit(hd, hd.x + s, hd.y, t0), tipY = (hd, s) => E.handHit(hd, hd.x, hd.y - s, t0);
+      ok(tipY(hd0, 40) && !tipX(hd0, 40), 'at facing 0 the art reads up out of the arbour, the way it was drawn', JSON.stringify([tipY(hd0, 40), tipX(hd0, 40)]));
+      ok(!tipY(hd90, 40) && tipX(hd90, 40), 'at facing 90 the same art reads to the right: the correction really turns it', JSON.stringify([tipY(hd90, 40), tipX(hd90, 40)]));
+      ok(E.handZeroDeg(hd0) === 0 && E.handZeroDeg(hd90) === 90, 'zeroRotationDeg ships the facing, so the device turns the sprite the same way', JSON.stringify([E.handZeroDeg(hd0), E.handZeroDeg(hd90)]));
+      const cal = { print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 30, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 0, minute: 0, second: 0 }, hands: { c1: { art: 'tall-1', rot0: 45 } } };
+      const hdSub = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(cal))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'c1');
+      ok(hdSub && Math.abs(E.handZeroDeg(hdSub) - 75) < 0.01, 'a tilted subdial hand ships its host tilt AND its own facing as one angle', String(hdSub && E.handZeroDeg(hdSub)));
+      const noArt = E.canonDesign({ hands: { 'centre-hour': { rot0: 90, pivotX: 4, pivotY: 4 } } });
+      ok(!noArt.hands, 'a facing and pivot on a hand with no art under them are stripped, not shipped as a no-op');
+      /* ---- what a click lands on ---------------------------------------------------
+       * The face answered for complications alone, so grabbing a hand or the dial read
+       * as empty space and deselected whatever the author had picked. The complication
+       * here is a SUBDIAL: its hit radius is geometric, while a window's is measured
+       * from its text -- which a stub cannot measure, and an assertion built on it
+       * would be about the stub rather than about the engine. */
+      const PF = { print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 110, rot: 0, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 1, minute: 1, second: 1 } };
+      const fp = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(PF))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const hdS = fp.hands.find((q) => q.id === 'centre-second');
+      const sub = fp.lay.subs[0];
+      const edge = fp.hands.reduce((m, q) => Math.max(m, Math.hypot(q.x, q.y)), 0);
+      ok(fp.pick(465, 465, t0) === null, 'a corner beyond the dial and clear of every hand picks nothing, as it always did', JSON.stringify([edge, fp.pick(465, 465, t0)]));
+      /* At 10:09:00 the hour hand reads 10, the minute 9 and the seconds 12, so the
+       * lower-right diagonal is the one stretch of face with nothing drawn on it. */
+      const bare = fp.pick(318, 318, t0);
+      ok(bare && bare.kind === 'dial', 'a bare stretch of face picks the dial, which is what makes its art draggable at all', JSON.stringify(bare));
+      const stack = fp.pickAll(sub.x, sub.y, t0);
+      ok(stack.length > 1 && stack[0].kind === 'hand', 'the subdial hand lies over its own plate, so the stack names both with the hand on top', JSON.stringify(stack));
+      ok(stack.some((q) => q.kind === 'comp' && q.id === 'c1'), 'and the plate under it is in that stack, which is what lets a second click reach it', JSON.stringify(stack));
+      ok(fp.hit(sub.x, sub.y) === 'c1', 'F.hit is untouched, so every caller that wanted a complication still gets exactly one');
+      const onHand = fp.pick(hdS.x, hdS.y - 8, t0);
+      ok(onHand && onHand.kind === 'hand' && onHand.id === 'centre-second', 'a hand is clickable now, which is the whole basis for dragging one', JSON.stringify(onHand));
+      /* ---- no case: nothing drawn, everything still clipped -------------------------
+       * The device owns the metal, so the layer adds no shading of its own while the
+       * opening still governs the mask, the scale of the face and the reach of hands. */
+      const NC = { print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1 } };
+      const mkFace = (o) => E.face(Object.assign({ design: E.canonDesign(JSON.parse(JSON.stringify(NC))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
+      ok(mkFace({ caseStyle: 'polished' }).inset === 1, 'a plain case leaves the content at full size');
+      ok(Math.abs(mkFace({ caseStyle: 'tachy' }).inset - 193.5 / 221) < 1e-9, 'a bezel style keeps its own fixed opening, exactly as before');
+      ok(mkFace({ caseStyle: 'none' }).inset === 1, 'no case at the default opening matches the old blank rim');
+      const none1 = mkFace({ caseStyle: 'none', caseOpen: 160 });
+      ok(none1.caseOpen === 160 && Math.abs(none1.inset - 160 / 221) < 1e-9, 'a smaller authored opening scales the whole face in, so nothing crosses it', JSON.stringify([none1.caseOpen, none1.inset]));
+      ok(mkFace({ caseStyle: 'none', caseOpen: 5 }).caseOpen === 90 && mkFace({ caseStyle: 'none', caseOpen: 9999 }).caseOpen === 233, 'a wild opening is clamped into the range the panel can show');
+      ok(E.caseOpenR({ caseStyle: 'tachy', caseOpen: 100 }) === 193.5, 'a bezel style ignores the authored opening it cannot use');
+      const noneG = E.caseLayer({ caseStyle: 'none', caseOpen: 160, outerTemp: 2200 }).getContext('2d').geom;
+      ok(noneG.filter((o) => o.op === 'stroke').length === 0, 'the no-case layer strokes no rim, groove or specular line', 'strokes=' + noneG.filter((o) => o.op === 'stroke').length);
+      const polG = E.caseLayer({ caseStyle: 'polished', caseOpen: 160, outerTemp: 2200 }).getContext('2d').geom.filter((o) => o.op === 'stroke').length;
+      ok(polG > 0, 'the same probe on a real case finds its rim lines, so the check above is not vacuous', 'strokes=' + polG);
+      const maskG = noneG.filter((o) => o.op === 'arc');
+      ok(maskG.length === 1 && maskG[0].a[2] === 160, 'and it still cuts the one opening the content is clipped to', JSON.stringify(maskG.map((o) => o.a[2])));
+      /* ---- a round window -----------------------------------------------------------
+       * The shape has to reach the hole, or the device ships a square disc inside a
+       * round punch and the four corners sit over the dial. */
+      const CW = { print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30, wshape: 'circle' }] };
+      const fcw = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(CW))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const hole9 = fcw.lay.comps.find((c) => c.id === 'w9').hole;
+      ok(hole9.kind === 'circle' && isFinite(hole9.r) && hole9.r > 0, 'a window asked for round is laid out round', JSON.stringify(hole9));
+      const dRound = E.canonDesign(JSON.parse(JSON.stringify(CW)));
+      const dSquare = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, CW, { comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }] }))));
+      ok(dRound.comps[0].wshape === 'circle' && !('wshape' in dSquare.comps[0]), 'round is authored; square is the identity and stays out of the Design ID');
+      const dg = E.canonDesign({ comps: [{ id: 'x', type: 'subdial', wshape: 'circle' }] });
+      ok(!('wshape' in dg.comps[0]), 'a shape on a complication that has no aperture is dropped');
+      const frect = E.face({ design: dSquare, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      ok(frect.lay.comps.find((c) => c.id === 'w9').hole.kind === 'rect', 'an unmarked window stays square, as every design made before this keeps it');
+      ok(fcw.lay.hits.some((h) => h.id === 'w9'), 'a round window is still clickable');
+      if (checked < 72) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
     process.exit(fails ? 1 : 0);
+    }, 20);
   }, 20);
 }, 20);
 

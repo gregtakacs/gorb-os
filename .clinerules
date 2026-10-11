@@ -646,3 +646,60 @@ the lifts were taken at import and the mutated text never reached the compiler �
 you touch this suite, check it can still fail.
 
   the deadlock in one boot, which is the argument for putting it in before the bisecting.
+
+## Testing the Watch Composer: deploy it to Windows and drive Chrome there
+
+The composer (`tools/watch-composer/Watch Composer.dc.html`) is a browser app. Its real
+behaviour lives in canvas pixels, file dialogs, and a localStorage asset store. This WSL
+box has no Chrome, so those three can only be exercised on the Windows side. Ask for
+"test the composer" and the expected action is this one command:
+
+```sh
+cd /home/greg/docker/Projects/gorb-os
+python3 tools/watch-composer/deploy_test_folder.py            # -> /mnt/c/Users/greg/Downloads/test
+/tmp/nodeenv/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side gate
+```
+
+The deploy script copies the four files the app loads (`Watch Composer.dc.html`,
+`support.js`, `dial-renderer.js`, `watch-engine.js`) into the target root, and all of
+`_selftest/` into a `_selftest/` subfolder. That depth is load-bearing: the selftest
+pages load `../watch-engine.js`. Flatten the layout and every probe 404s its engine.
+Each copy is compared by sha256 before and after, because a drvfs cache can hand Chrome
+stale JS with no error at all.
+
+Then open the two URLs the script prints:
+
+- `file:///C:/Users/greg/Downloads/test/Watch%20Composer.dc.html` — the app itself
+- `file:///C:/Users/greg/Downloads/test/_selftest/export-test.html` — the end-to-end suite
+
+Both need internet. `support.js` boots React, ReactDOM and Babel from unpkg, and the
+`<helmet>` pulls ~40 families from Google Fonts. Offline, the composer renders blank and
+looks broken when it is not.
+
+Verdict rules, so a skipped block cannot read as success:
+
+- `export-test.html`: the tab title must read `PASS` and the last report line must be
+  `RESULT: PASS`. The custom-art block prints its own line starting `custom art: backdrop
+  in the plate pixels`. Missing that line means the block never ran.
+- Headless suites: each must print a nonzero check count. A suite reporting green with a
+  suspiciously low count stopped exercising something.
+
+What only a human can confirm in the app, after uploading art in the Dial and Hands tabs:
+
+- the plate backdrop paints under an openwork dial and the apertures, and clips to the dial
+  circle — that is "Background art · behind the geartrain"
+- the dial-face art reads as a printed dial: chapter print, numerals and applied markers stay
+  legible ON TOP of it, and openwork and the apertures cut it away — "Dial surface art"
+- the two slots are independent: different images, different offsets, and one image may fill
+  both without the store counting it twice
+- the fit gate refuses an upscale, and names both sizes in the refusal
+- the hand-sprite pivot marker drags, and hub-snap lands on the visible ink centroid
+- a transparent sub-dial drops its plate, keeps its hosted window on the bare dial, and
+  its pointer keeps a real pivot instead of a hub cap
+- Export ships the layer kit plus the `.wckit`, and reloading keeps every upload
+
+The asset store is one shared `file://` origin in Chrome. Every local copy of the
+composer — repo folder, Downloads copy — reads and writes the same `wc.assets` key, so
+clearing it in one clears it everywhere. That sharing is also what makes redeploying safe:
+uploaded art survives the copy.
+

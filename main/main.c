@@ -21,6 +21,8 @@
 #include "menu_view.h"
 #include "knob.h"
 #include "input_router.h"
+#include "imu.h"
+#include "idle_dim.h"
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
@@ -98,6 +100,15 @@ void app_main(void)
     /* Route knob events to the active screen (color picker first) and start the
      * ~10 ms input poll, which runs on the LVGL task created below. */
     ESP_ERROR_CHECK(input_router_init());
+
+    /* Idle dim, last of the bring-up: it needs the panel (to write brightness)
+     * and the IMU (to poll it in the dark), and neither is worth a dependency
+     * elsewhere. The IMU is brought up only when motion wake is enabled, so
+     * ORB_IDLE_MOTION_ENABLE=n drops the driver out of the image entirely. */
+#if CONFIG_ORB_IDLE_MOTION_ENABLE
+    ESP_ERROR_CHECK(imu_init());
+#endif
+    ESP_ERROR_CHECK(idle_dim_init());
 
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);

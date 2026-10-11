@@ -48,6 +48,7 @@
 #include "art_bank.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 
 static const char *TAG = "orb_net";
 
@@ -1233,11 +1234,16 @@ static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
     /* 640, not the 512 this started with: the body has since grown a tz string
-     * (up to NET_TZ_MAX) plus the ap/assoc_fails pair, and a truncated body is
-     * worse than an error because the page just fails to parse it. The overflow
-     * check below is what makes that visible rather than subtle, and the host
-     * test pins the worst case. */
-    char json[832];
+     * (up to NET_TZ_MAX) plus the ap/assoc_fails pair and the idle block below,
+     * and a truncated body is worse than an error because the page just fails to
+     * parse it. The overflow check below is what makes that visible rather than
+     * subtle. Unlike the /api/v1/config buffer — whose worst case host_tz_test.py
+     * recomputes from the zone table and asserts — nothing on the host checks
+     * this one. It measured 563 B on the device with the tz at "US/Central" when
+     * the idle block was four fields; every field added since then has to be
+     * re-measured off the device (`curl -s ORB/api/v1/status | wc -c`) rather than
+     * estimated here, and 960 leaves room for that growth. */
+    char json[960];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -1291,6 +1297,32 @@ static esp_err_t h_status(httpd_req_t *req)
         rname = rbuf;
     }
 
+#if CONFIG_ORB_IDLE_DIM_ENABLE
+    /* Read once, before the format string, so the two booleans and the countdown
+     * describe the same instant rather than three races across the task that owns
+     * them. timeout_s/dim_pct are the compiled-in constants: they are the whole
+     * reason this block exists on the LAN, because a build's actual value could
+     * previously only be read from a boot log that the next flash destroys. */
+    const bool     idle_on        = true;
+    const char    *idle_dark      = idle_dim_dimmed() ? "true" : "false";
+    const unsigned idle_since_s   = (unsigned)(idle_dim_ms_since_touch() / 1000u);
+    const unsigned idle_timeout_s = (unsigned)CONFIG_ORB_IDLE_DIM_TIMEOUT_S;
+    const unsigned idle_dim_pct   = (unsigned)CONFIG_ORB_IDLE_DIM_PCT;
+#else
+    /* ORB_IDLE_DIM_TIMEOUT_S and _PCT do not exist in this build — they are
+     * depends-on children of the option that is off — so the only honest values
+     * here are "not on" and zeroes. */
+    const bool     idle_on        = false;
+    const char    *idle_dark      = "false";
+    const unsigned idle_since_s   = 0;
+    const unsigned idle_timeout_s = 0;
+    const unsigned idle_dim_pct   = 0;
+#endif
+    const unsigned idle_lit_pct   = (unsigned)idle_dim_user_level();
+    const unsigned idle_wakes     = (unsigned)idle_dim_motion_wakes();
+    const int      idle_worst_mg  = idle_dim_worst_mg();
+    const int      idle_worst_dk  = idle_dim_worst_dark_mg();
+
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -1308,7 +1340,29 @@ static esp_err_t h_status(httpd_req_t *req)
          * dial that is mostly shits is losing edges between the pin and the ISR, which
          * is a wiring or latency fault and no amount of retuning the rule would fix. */
         "\"knob\":{\"raw\":%ld,\"det\":%ld,\"spd10\":%ld,\"span\":%ld,"
-        "\"valley\":%ld,\"ab\":%ld,\"vhits\":%ld,\"shits\":%ld}}",
+        "\"valley\":%ld,\"ab\":%ld,\"vhits\":%ld,\"shits\":%ld},"
+        /* The idle dim, in the same shape as the feature's own two questions.
+         *
+         * since_s counts up to timeout_s and then dimmed goes true, which is the
+         * only way to tell "armed and waiting" from "never compiled in" or
+         * "something keeps resetting the clock" without a serial cable and a
+         * stopwatch — and timeout_s is the compiled-in Kconfig value, so the
+         * number a build actually carries is readable from the LAN instead of
+         * being inferred from a boot log that a reflash already scrolled away.
+         *
+         * wakes counts the dims the accelerometer ended, and worst_mg is
+         * the widest deviation it has ever measured against the learned rest
+         * vector. Settle ORB_IDLE_MOTION_MG from those two: a still orb that
+         * reports a worst_mg in the hundreds has a threshold below the desk's own
+         * vibration, and one that reports tens but never wakes for a hand lift has
+         * it too high. Neither is visible from behaviour alone, and \"is the IMU
+         * too sensitive\" cannot be answered at all without them. */
+        /* Off is not the same claim as "armed and idle", so it is said with its
+         * own flag and the numbers the disabled build cannot know are pinned to
+         * zero below, rather than being printed as if they were measurements. */
+        "\"idle\":{\"on\":%s,\"dimmed\":%s,\"since_s\":%u,\"timeout_s\":%u,"
+        "\"lit_pct\":%u,\"dim_pct\":%u,\"wakes\":%u,\"worst_mg\":%d,"
+        "\"worst_dark_mg\":%d,\"stamps\":%u}}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
         s_provisioning ? "provisioning" : "down",
@@ -1330,7 +1384,10 @@ static esp_err_t h_status(httpd_req_t *req)
         (long)knob_raw_position(), (long)knob_detent_count(),
         (long)knob_raw_steps_per_detent(), (long)knob_raw_span_max(),
         (long)knob_valley(), (long)knob_ab(),
-        (long)knob_valley_hits(), (long)knob_settle_hits());
+        (long)knob_valley_hits(), (long)knob_settle_hits(),
+        idle_on ? "true" : "false", idle_dark, idle_since_s, idle_timeout_s,
+        idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
+        (unsigned)idle_dim_activity_count());
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail

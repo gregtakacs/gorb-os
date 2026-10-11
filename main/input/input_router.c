@@ -10,6 +10,7 @@
 
 #include "input_router.h"
 #include "knob.h"
+#include "idle_dim.h"
 #include "clock_view.h"
 #include "color_picker.h"
 #include "menu_view.h"
@@ -117,11 +118,32 @@ static void poll_timer_cb(lv_timer_t *timer)
     bool lpress = knob_take_long_press();
 
     /* Fold in anything injected. Draining the whole pending delta keeps the
-     * injected path honest: it feeds the same stream a real turn feeds. */
+     * injected path honest: it feeds the same stream a real turn feeds. The three
+     * flags are latched first, because draining them here is what would otherwise
+     * erase the only record of whether the event came from the bench or from the
+     * encoder itself — see the touch report just below. */
     const int32_t inj = s_inj_delta;
+    const bool    ip  = s_inj_press;
+    const bool    il  = s_inj_long;
     if (inj) { s_inj_delta = 0; delta += inj; }
     if (s_inj_press) { s_inj_press = false; pressed = true; }
     if (s_inj_long)   { s_inj_long   = false; lpress   = true;  }
+
+    /* Any knob event is a touch, and the idle dim is told about it here — the
+     * one place every knob event, real or injected, is already gathered. After
+     * the injection fold on purpose: a turn driven over HTTP wakes the dial just
+     * as a hand does, which is what keeps the bench able to test the wake path
+     * without a finger on the encoder.
+     *
+     * The source is named rather than left implicit: folded into one `delta != 0`,
+     * a bench turn over HTTP and an encoder that bounced by itself are
+     * indistinguishable, and telling "nobody touched it" from "the bench touched
+     * it" is the whole question when the dial refuses to dim. */
+    if (delta || pressed || lpress)
+        idle_dim_activity(inj || ip || il
+                          ? "http"
+                          : (delta ? (pressed ? "turn+press" : "turn")
+                                    : (pressed ? "press" : "hold")));
 
     /* A screen requested over HTTP is applied here, on the LVGL task, before any
      * knob event is considered: lv_screen_load() off this task is the widget

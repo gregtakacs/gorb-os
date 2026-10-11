@@ -166,4 +166,136 @@ menu "Orb microSD (theme storage)"
             re-probed on every request, and a card inserted mid-life is only
             noticed at the next reboot.
 
+
+endmenu
+
+menu "Orb idle dim"
+
+    config ORB_IDLE_DIM_ENABLE
+        bool "Dim the dial after a period without a touch"
+        default y
+        help
+            The dial is a clock, so it is on the wall and unattended far more
+            than it is being read. After the timeout below with no detent, tap
+            or motion, the face drops to ORB_IDLE_DIM_PCT; the next touch returns
+            it to the recorded user level rather than to a hard-wired 100, so the
+            day a brightness control lands in the menu the dim ducks from and
+            returns to wherever the user left it. Nothing sets that level yet —
+            no menu control exists — so it is the 100% the panel's own init wrote,
+            and idle.lit_pct on /api/v1/status reports it as it really is.
+
+            Off leaves the panel exactly where its own init left it: the idle
+            task is never created and register 0x51 is never written.
+
+    config ORB_IDLE_DIM_TIMEOUT_S
+        int "Seconds without a touch before the face dims"
+        depends on ORB_IDLE_DIM_ENABLE
+        default 600
+        help
+            Ten minutes, the owner's number. Anything a hand can do counts:
+            turning the knob, pressing it, or moving the orb. Watch the countdown
+            rather than a stopwatch — idle.since_s climbs to idle.timeout_s on
+            /api/v1/status and idle.dimmed flips when it lands, and
+            tools/idle_watch.py does exactly that, injecting the wake detent for
+            the half no log line can speak for. Set low only for the bench — at
+            60 s the dim becomes the visible state and a long screenshot looks
+            like a broken display.
+
+    config ORB_IDLE_DIM_PCT
+        int "Brightness to drop to while idle, percent"
+        depends on ORB_IDLE_DIM_ENABLE
+        default 20
+        range 1 100
+        help
+            Written straight to the CO5300's 0x51 (display brightness) register
+            through the vendor driver, which maps 0..100 onto 0..255. Kept above
+            zero deliberately: an AMOLED that reads as off is indistinguishable
+            from an AMOLED that has died, and the dial must stay findable in a
+            dark room.
+
+    config ORB_IDLE_MOTION_ENABLE
+        bool "Wake on the accelerometer as well as the rotary"
+        depends on ORB_IDLE_DIM_ENABLE
+        default y
+        help
+            Brings up the board's QMI8658 over I2C (GPIO 15/14) and polls its
+            accelerometer for real motion: a pick-up, a knock on the desk, the
+            case shifting. Only a dimmed face acts on it; a lit one samples once
+            a second to keep the deviation high-water current, because that is
+            the figure the threshold below is set from and the orb is lit while
+            somebody is shaking it.
+
+            Off leaves the chip unaddressed and the driver unreferenced, so the
+            linker's section gc drops it from the image — which is what makes
+            this the control side of a current-draw A/B — and leaves the rotary
+            as the only wake source. Confirm it on the map file rather than
+            trusting the claim: imu_read_accel should be absent from
+            build/*.map when this is off and present when it is on.
+
+    config ORB_IDLE_MOTION_SAMPLES
+        int "Consecutive motion samples required to wake"
+        depends on ORB_IDLE_MOTION_ENABLE
+        default 3
+        range 1 20
+        help
+            How many tripping samples in a row the dimmed poll (20 Hz) must see
+            before it credits the accelerometer with a wake.
+
+            This exists because of what the dial does on a real desk: an orb left
+            untouched dimmed itself correctly and lifted again 3.0 s later, and
+            again 26.6 s later on the next cycle, both times on a single ~55 mg
+            spike on the gravity axis and with nobody near it. The dark poll is
+            20 Hz precisely so a knock tens of milliseconds long is not missed,
+            and that same rate lands on one-sample vibration the 1 Hz lit poll
+            almost never sees — which is why the same still orb reads a 7 mg
+            high-water lit and 62 mg within seconds of the dark.
+
+            Requiring a run separates those without spending sensitivity: a held
+            tilt reads motion on 12 consecutive samples at 160 mg and 19 at
+            400 mg, so a hand lifting the orb clears three easily while a desk
+            jolt never does. tools/host_idle_dim_test.py pins the run logic.
+
+            1 restores the old pass-through behaviour, which is the setting to
+            A/B against if a wake ever seems to be missed: raise this back to 3
+            only after confirming the missed wake was not simply this filter.
+
+    config ORB_IDLE_MOTION_MG
+        int "Motion threshold, milli-g"
+        depends on ORB_IDLE_MOTION_ENABLE
+        default 40
+        range 5 500
+        help
+            The deviation from the learned rest vector that counts as motion, on
+            any one axis. The detector follows the baseline while the orb is
+            still, so a slow tilt or an orb carried to another room re-baselines
+            instead of holding the face awake forever — which is the failure
+            mode a fixed magnitude test has.
+
+            40 mg is a starting point, NOT a measured number: it clears the
+            sensor's own quantisation step (4096 LSB per g at the ±8 g range
+            imu.c sets, so one LSB is a quarter mg) by a wide margin while
+            staying small enough to catch a hand lifting the orb.
+
+            Measure it rather than guessing, from the two idle.worst_* fields on
+            /api/v1/status — the widest deviation from the learned rest vector the
+            accelerometer has reported since boot, kept apart by which poll saw it:
+              1. Prop the orb on its final surface and let it dim (or set
+                 ORB_IDLE_DIM_TIMEOUT_S low for the bench). Read
+                 idle.worst_dark_mg: the dimmed poll is the one that competes with
+                 this threshold, and the lit figure understates it — measured on
+                 this bench, 7 mg lit against 62 mg dark, from single-sample desk
+                 jolt spikes at ~55 mg on the gravity axis, roughly every 20-30 s.
+              2. Lift the orb as a person would, read it again. The threshold must
+                 sit below that.
+              3. Set it between, nearer the floor than the lift. If the floor and
+                 the lift overlap, the floor is the desk talking: move the orb or
+                 raise ORB_IDLE_MOTION_SAMPLES rather than pushing the threshold
+                 above a real pick-up, which would leave the dial dimmed on a
+                 wall nobody can wake.
+            idle.wakes says how often motion alone ended a dim: a count climbing
+            with nobody near the orb means the threshold is under the floor, and a
+            count stuck at zero through deliberate lifts means it is over the lift.
+            tools/host_idle_dim_test.py pins the decision's logic, the high-water
+            and the run-of-N; only the orb can pin its threshold.
+
 endmenu

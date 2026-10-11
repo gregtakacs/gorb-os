@@ -7,6 +7,8 @@ idf_component_register(
         "color/color_picker.c"
         "menu/menu_view.c"
         "input/input_router.c"
+        "imu/imu.c"
+        "power/idle_dim.c"
         "art/art_bank.c"
         "art/orb_theme.c"
         "net/orb_net.c"
@@ -19,6 +21,8 @@ idf_component_register(
         "color"
         "menu"
         "input"
+        "imu"
+        "power"
         "art"
         "net"
         "sd"
@@ -26,6 +30,7 @@ idf_component_register(
     REQUIRES
         esp_driver_spi
         esp_driver_gpio
+        esp_driver_i2c         # imu: the QMI8658 on the shared I2C bus (GPIO 15/14)
         esp_lcd
         esp_timer
         esp_hw_support

@@ -83,6 +83,37 @@ setTimeout(() => {
   it.state.designs.calendar.hands['centre-hour'].pivotX = null; it.state.designs.calendar.hands['centre-hour'].pivotY = null;
   ok(/hub ink \(auto\)/.test(it.renderVals().handRows.find((q) => q.label === 'Centre hour').artNote), 'and the note says it is on hub ink');
 
+  // ---- the seconds row: the hand-style dropdown there chose nothing at all ----------
+  // handParts() ignores `style` once kind is 'second', so the seconds row carries the
+  // seconds list in that slot instead. isSec/notSec are what the template branches on,
+  // so a row that gets them backwards silently shows a control with no effect.
+  const handsBefore = JSON.stringify(it.state.designs.calendar.hands || {});
+  const twoRows = (it.state.tab = 'hands', it.renderVals().handRows);
+  const secRow = twoRows.find((q) => q.label === 'Centre second');
+  const hourRow = twoRows.find((q) => q.label === 'Centre hour');
+  ok(!!secRow && secRow.isSec === true && secRow.notSec === false, 'the centre seconds row is flagged as the row whose style slot holds the seconds list', JSON.stringify(secRow && [secRow.isSec, secRow.notSec]));
+  ok(hourRow.isSec === false && hourRow.notSec === true, 'every other row keeps its style list', JSON.stringify([hourRow.isSec, hourRow.notSec]));
+  ok(secRow.secOpts.length === Object.keys(E.SEC_STYLES).length + 1 && secRow.secOpts.slice(1).every((o) => E.SEC_STYLES[o.v] === o.label), 'that slot is filled from the seconds list, not the hand-style list', JSON.stringify(secRow.secOpts.map((o) => o.v).slice(0, 5)));
+  ok(secRow.secOpts.filter((o) => o.sel).length === 1 && secRow.secOpts.find((o) => o.sel).v === 'auto', 'with the preset/default entry selected to begin with', JSON.stringify(secRow.secOpts.filter((o) => o.sel).map((o) => o.v)));
+  ok(typeof secRow.onSec === 'function' && typeof secRow.onStyle === 'function', 'both handlers are still on the row, so either branch of the template has something to call');
+  secRow.onSec({ target: { value: 'lollipop' } });
+  ok(it.design().hands['centre-second'].sec === 'lollipop', 'choosing a seconds style writes what the engine reads', JSON.stringify(it.design().hands['centre-second']));
+  const secRow2 = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre second');
+  ok(secRow2.secOpts.filter((o) => o.sel).length === 1 && secRow2.secOpts.find((o) => o.sel).v === 'lollipop', 'and the select reads the choice back after a re-render', JSON.stringify(secRow2.secOpts.find((o) => o.sel)));
+  hourRow.onStyle({ target: { value: 'poire' } });
+  ok(it.design().hands['centre-hour'].style === 'poire' && !it.design().hands['centre-hour'].sec, 'the hour row still takes a hand style and no seconds value', JSON.stringify(it.design().hands['centre-hour']));
+  // a seconds SUBDIAL hand is the same kind to the engine, so it gets the same swap.
+  // design() hands back a canonDesign COPY, so the change has to land on the stored design.
+  const sub = it.state.designs.calendar.comps.find((c) => c.type === 'subdial');
+  ok(!!sub, 'the preset has a subdial to turn into a seconds counter', JSON.stringify(!!sub));
+  const subScale = sub.scale;
+  sub.scale = 'seconds';
+  const subRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor === 'hand-' + sub.id);
+  ok(!!subRow && subRow.isSec === true && subRow.notSec === false, 'a subdial counting seconds loses the dead style list too', JSON.stringify(subRow && [subRow.label, subRow.isSec, subRow.notSec]));
+  sub.scale = subScale;
+  it.state.designs.calendar.hands = JSON.parse(handsBefore);
+
+
   // ---- the subdial style list and the export row ----------------------------------
   it.state.designs.calendar.comps.forEach((c) => { if (c.type === 'subdial') c.style = 'transparent'; });
   const cs = labels('comps');

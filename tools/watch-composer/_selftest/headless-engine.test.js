@@ -252,6 +252,24 @@ setTimeout(() => {
       ok(E.artClipR({ caseStyle: 'none' }) === E.PANEL_R && E.artClipR({ caseStyle: 'polished' }) === 221 && E.artClipR({}) === 221,
         'the author\'s art is clipped to the panel under None, where their image carries the case, and to the dial circle under a drawn one, where the metal covers the rim',
         JSON.stringify([E.artClipR({ caseStyle: 'none' }), E.artClipR({ caseStyle: 'polished' }), E.artClipR({})]));
+      /* ---- what actually shapes a seconds hand --------------------------------------
+       * The hands pane put the hand-style dropdown on the seconds row as well, and it
+       * changed nothing: that branch of handParts() reads `style` in exactly one place,
+       * to decide whether the counterweight is hollow. So the row now offers the seconds
+       * list. If a hand style ever starts shaping a seconds hand for real, the first
+       * check fails and the row has to give the control back. */
+      const sig = (f) => { const log = []; const g = { moveTo: (...a) => log.push('M' + a), lineTo: (...a) => log.push('L' + a), arc: (...a) => log.push('A' + a), closePath: () => log.push('Z'), quadraticCurveTo: (...a) => log.push('Q' + a), bezierCurveTo: (...a) => log.push('B' + a), rect: (...a) => log.push('R' + a) }; ['save', 'restore', 'beginPath', 'translate', 'scale', 'rotate', 'transform', 'clip', 'fill', 'stroke', 'setLineDash'].forEach((k) => { g[k] = () => { }; }); f(g); return log.join(';'); };
+      const partsOf = (style, kind, sec) => { const p = E.handParts(style, kind, 200, 3, kind === 'second' ? 52 : 32, sec); return { body: p.Pp.map(sig).join('|'), holes: p.cut.map(sig).join('|'), span: Math.round(p.span * 100) }; };
+      const base = partsOf('dauphine', 'second', 'classic');
+      const off = Object.keys(E.HAND_STYLES).filter((s) => { const p = partsOf(s, 'second', 'classic'); return p.body !== base.body || p.holes !== base.holes || p.span !== base.span; });
+      ok(off.length === 2 && off.every((s) => s === 'breguet' || s === 'spade'),
+        'only two entries in the whole hand-style list reach a seconds sprite at all, so the style dropdown on that row chose nothing', JSON.stringify(off));
+      ok(off.every((s) => partsOf(s, 'second', 'classic').body === base.body),
+        'and even those two leave the seconds hand shaped identically: the style only punched the counterweight hole', JSON.stringify(off.map((s) => partsOf(s, 'second', 'classic').holes.length)));
+      const holesClassic = partsOf('breguet', 'second', 'classic').holes, holesLolly = partsOf('breguet', 'second', 'lollipop').holes;
+      ok(holesClassic !== holesLolly && partsOf('dauphine', 'second', 'lollipop').body !== base.body,
+        'while the seconds list moves the ink a hand style never touched', JSON.stringify([holesClassic.split(';').length, holesLolly.split(';').length]));
+      ok(partsOf('poire', 'hour', null).body !== partsOf('leaf', 'hour', null).body, 'the same probe on an hour hand finds the style does shape it, so the seconds checks above are not vacuous');
       /* ---- a round window -----------------------------------------------------------
        * The shape has to reach the hole, or the device ships a square disc inside a
        * round punch and the four corners sit over the dial. */

@@ -353,6 +353,12 @@ evidence for the authoring controls the stub suites can only describe:
   case the same art stays clipped to the dial circle (0 px outside it), where the metal does
   the covering. The opening slider is a measurement for the guide's ring, not a cut and not
   a resize handle;
+* the seconds hand is authored with the **seconds** list, not the hand-style list. Both are
+  measured on the sprite the kit ships (`hd.sp.c`): `classic` 801 px against `lollipop` 1060 px
+  proves the seconds list reshapes it, while none of six hand styles moves it by a single
+  pixel (breguet/spade cut a hollow counterweight there and the dark underlay strokes it back
+  in), and the hour hand on the same probe moves 342 px between `poire` and `leaf`. That is
+  the whole reason the hands pane swapped the two dropdowns on that row;
 * zoom 1→2 multiplies the art actually painted, and at zoom 4 nothing spills past the
   dial circle, which is what proves the clip is applied after the zoom and not before;
 * a facing of 90 turns the drawn ink a quarter of the way round the arbour, and a

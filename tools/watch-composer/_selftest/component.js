@@ -1885,6 +1885,11 @@ class Component extends DCLogic {
       handRows: slots.map((id, i) => {
         const hc = hcfg[id] || {}, isC = id.startsWith('centre-'), k = isC ? id.slice(7) : null, shown = isC ? !!ce[k] : hc.on !== false;
         const len = +hc.len || 1, wid = +hc.wid || 1;
+        // A seconds hand takes its shape from the seconds list, not the hand-style list:
+        // handParts() ignores `style` once kind is 'second' (only breguet/spade cut a hollow
+        // counterweight with it), so a style select on those rows was a dead control. The
+        // seconds list takes that slot; isSec/notSec keep the two mutually exclusive.
+        const secHand = id === 'centre-second' || !!D.comps.find((c) => c.id === id && c.scale === 'seconds');
         return {
           label: handLabel(id), meta: 'z ' + (slots.length - i) + (shown ? '' : ' · hidden'), op: shown ? 1 : 0.5, anchor: 'hand-' + id,
           styleOpts: mark([{ v: 'auto', label: 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
@@ -1894,7 +1899,8 @@ class Component extends DCLogic {
           len, wid, lenText: Math.round(len * 100) + '%', widText: wid.toFixed(2) + '×',
           onLen: (e) => this.setHand(id, { len: +e.target.value }),
           onWid: (e) => this.setHand(id, { wid: +e.target.value }),
-          isSec: id === 'centre-second' || !!D.comps.find((c) => c.id === id && c.scale === 'seconds'),
+          isSec: secHand,
+          notSec: !secHand,
           secOpts: mark([{ v: 'auto', label: 'Seconds · default (' + ((E && E.SEC_STYLES[D.secStyle || 'classic']) || '') + ')' }, ...(ready ? opt(E.SEC_STYLES) : [])], hc.sec || 'auto'),
           onSec: (e) => this.setHand(id, { sec: e.target.value }),
           lumeOpts: mark([{ v: 'auto', label: 'Lume · default (' + (D.handLume && D.handLume !== 'none' ? 'on' : 'none') + ')' }, { v: 'none', label: 'No lume' }, { v: '#cfe8b0', label: 'Lume · green' }, { v: '#e8d6a0', label: 'Lume · old radium' }, { v: '#9fd8ff', label: 'Lume · blue' }, { v: '#f4f1e6', label: 'Lume · white' }, { v: '#ff9a3c', label: 'Lume · orange' }, { v: '#ff7bd5', label: 'Lume · pink' }], hc.lume || 'auto'),

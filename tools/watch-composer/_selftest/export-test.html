@@ -677,6 +677,39 @@
     if (Math.abs(dAng(a0.ang, a90.ang) - 90) > 5) return fail('facing 90 did not turn the drawn ink a quarter of a way round: ' + a0.ang.toFixed(1) + ' -> ' + a90.ang.toFixed(1) + ' (delta ' + dAng(a0.ang, a90.ang).toFixed(1) + ')');
     const off = handsPx(0, [-30, 60]);
     if (!(off.h > 60 && off.py >= 0 && off.py <= off.h)) return fail('the off-art arbour did not grow the plane to hold it: ' + JSON.stringify([off.h, off.py]));
+    /* ---- the seconds row: which control actually moves that hand ------------------
+     * Every hand row used to carry the hand-style dropdown. On a seconds hand it chose
+     * nothing, so that slot now holds the seconds list instead. Measured on the sprite the
+     * kit ships (hd.sp.c is exactly the PNG prep_watch_kit writes): the seconds list has to
+     * reshape it, and a hand style has to leave it where it is. breguet/spade do punch a
+     * hollow counterweight in that branch, and the dark underlay strokes it back in, so even
+     * those two read as no change in the ink -- which is the whole complaint in one number. */
+    const spriteInk = (id, patch, centre) => {
+      const fc = it.faceOf({ centre: centre, hands: { [id]: patch } });
+      const hd = fc.hands.filter((h) => h.id === id)[0];
+      if (!hd) return fail('no ' + id + ' on the face, so the seconds probe is blind');
+      const c = hd.sp.c, g = c.getContext('2d');
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let n = 0, s = 0;
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) { const i = (y * c.width + x) * 4; if (d[i + 3] > 40) { n++; s += (y * c.width + x) * d[i + 3]; } }
+      if (!n) return fail('the ' + id + ' sprite has no ink, so every count below is blind');
+      return { n, sig: s / n, w: c.width, h: c.height };
+    };
+    const ONLY_SEC = { hour: 0, minute: 0, second: 1 }, ONLY_HOUR = { hour: 1, minute: 0, second: 0 };
+    const secClassic = spriteInk('centre-second', { sec: 'classic' }, ONLY_SEC);
+    const secLolly = spriteInk('centre-second', { sec: 'lollipop' }, ONLY_SEC);
+    if (Math.abs(secLolly.n - secClassic.n) < 40)
+      return fail('the seconds list barely moved the ink (classic ' + secClassic.n + ' px vs lollipop ' + secLolly.n + ' px), so the control that replaced the style dropdown is inert');
+    const STYLE_PROBE = ['dauphine', 'leaf', 'poire', 'sword', 'breguet', 'spade'];
+    const secByStyle = STYLE_PROBE.map((st) => [st, spriteInk('centre-second', { sec: 'classic', style: st }, ONLY_SEC)]);
+    const worst = secByStyle.reduce((a, [st, q]) => (Math.abs(q.n - secClassic.n) > Math.abs(a[1] - secClassic.n) ? [st, q.n] : a), [secByStyle[0][0], secByStyle[0][1].n]);
+    if (Math.abs(worst[1] - secClassic.n) > secClassic.n * 0.05)
+      return fail('the hand style ' + worst[0] + ' reshaped the seconds hand (' + secClassic.n + ' -> ' + worst[1] + ' px), so that row needs its style dropdown back');
+    const hA = spriteInk('centre-hour', { style: 'poire' }, ONLY_HOUR);
+    const hB = spriteInk('centre-hour', { style: 'leaf' }, ONLY_HOUR);
+    if (Math.abs(hA.n - hB.n) < 40) return fail('the hour hand answers its style as little as the seconds hand does (' + hA.n + ' vs ' + hB.n + ' px), so the probe above measures nothing');
+    say('  seconds row: the seconds list reshapes that hand (' + secClassic.n + ' px classic vs ' + secLolly.n + ' px lollipop in the sprite it ships), while none of ' + STYLE_PROBE.length + ' hand styles shifts it at all (worst ' + Math.abs(worst[1] - secClassic.n) + ' px off ' + secClassic.n + ', ' + worst[0] + '); the hour hand on the same probe moves ' + Math.abs(hA.n - hB.n) + ' px between poire and leaf (' + hA.n + ' vs ' + hB.n + ')');
+
     say('  no case: the case layer paints 0 px; off-centre art composited identical with that layer shown or hidden at openings 221.5 and 150 (' + wide.n + ' px, box ' + wide.box.join(',') + ', ' + masked.out + ' of them beyond r=150), and a full-bleed image reaches ' + rimNone + ' px into the corners a drawn case still clips off at the dial circle (' + rimBez + ')');
     say('  alignment reference: ' + shown.length + ' of ' + PROBES.length + ' grid points painted on the glass, every one of them at the same pixel with the art at offset 0 and at 120');
     say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');

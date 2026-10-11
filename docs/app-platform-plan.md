@@ -496,11 +496,33 @@ a 250 ms tick, so about a third of the tick budget spent. The 6-7 fps figure bel
 kit3 bank, which is not what is flashed. P1 therefore stays open on fps: it needs a flagship theme
 on this board, which is the same setup M2 needs.
 
-**M1: probe landed, measurement blocked.** `set_screen()` prints
-`switch <slug> <ms> frames <n> flush <us> worst <us>`; the boot-time switch reads `switch clock
-0 ms frames 0 flush 0 us`. A real clock-to-menu switch needs either the knob (three GPIOs and a
-finger) or `GET /api/v1/screen?to=menu`, and this bench has no radio, so the route is unreachable
-and no number was taken. Nothing is invented for it.
+**M1: measured — 2026-10-11, three clock-to-menu-to-clock round trips.** Taken over
+`GET /api/v1/screen?to=…` on the connected bench (`sta ip 192.168.2.32`, rssi -56). An
+earlier note here said the route was unreachable because "the bench has no radio"; that
+misread `.clinerules:136-166`, which says the *host* has no radio and so cannot play the
+phone joining the AP. The orb's own station joins the LAN and its routes answer curl, and
+`.clinerules:161` lists exactly that. A switch between two already-resident views costs:
+
+| direction | synchronous | request to glass | the commit it provoked |
+|---|---|---|---|
+| clock -> menu | 0 ms | 75, 75, 91 ms | 1, avg 68-80 ms |
+| menu -> clock | 0-1 ms | 256, 262, 266, 273 ms | 1, avg 239-255 ms |
+
+No reboot is involved in either direction, so D5's rule ("no reboot to rotate between
+resident apps") is satisfied by the only switch the firmware has today. Two things the
+numbers say, which the first version of the probe hid by sampling its counters inside the
+switch (a 1 ms window at a 250 ms tempo holds no commit, so it printed `frames 0` and
+printed display's all-time flush maximum as if the switch had caused it):
+
+1. **The app's half is free.** 0-1 ms for the pointer swap plus the widget rebuild. An
+   app host can spend the whole budget on locating a view and none on drawing it.
+2. **The asymmetry is the compositor's, and it is a full-damage commit.** Entering the
+   clock repaints every marked row (~250 ms), while the menu's first commit is ~70 ms.
+   The steady-state commit at this theme's 250 ms tick costs 74-84 ms, so the switch
+   costs ~3x a normal tick of the same compositor work: event-only row marking keeps
+   steady frames small, and a switch loses that advantage because nothing has a valid
+   delta bank yet. M3's two-app rotation should be judged against the ~273 ms figure, and
+   P2's bank swap must not add to it.
 
 **M2: not run.** One bank resident at 31 pages, per the boot line above. The two-bank residency
 question is P2's, once the loader can map a second bank.

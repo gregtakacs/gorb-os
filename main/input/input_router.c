@@ -69,23 +69,67 @@ static void disarm_all(void)
     color_picker_set_armed(false);
 }
 
+/* The deferred half of the M1 probe below. Every path that opens a window runs on
+ * the LVGL task — the poll timer's own switch handling and menu_view's exit — except
+ * boot, which opens one before the timer exists. So it needs no lock, and a zero
+ * s_sw_open_us means no window is open. */
+static int64_t     s_sw_open_us;
+static uint32_t    s_sw_frames;
+static uint64_t    s_sw_us;
+static const char *s_sw_name;
+
+/* If the new view has not painted inside this, that is itself the finding, and it
+ * is reported as one instead of waiting indefinitely for a commit that never
+ * comes. Comfortably longer than the 40 ms beat the fastest theme bakes. */
+#define SW_WINDOW_MS 1500
+
+/* Close the window set_screen() opened, once a real commit has landed since. */
+static void switch_window_close(int64_t now)
+{
+    uint32_t f;
+    uint64_t u;
+    uint32_t mx;
+    display_bench_snapshot(&f, &u, &mx);
+    if (f == s_sw_frames) {
+        if (now - s_sw_open_us > (int64_t)SW_WINDOW_MS * 1000) {
+            ESP_LOGW(TAG, "switch %s: no display commit within %d ms — the new view never painted",
+                     s_sw_name, SW_WINDOW_MS);
+            s_sw_open_us = 0;
+        }
+        return;
+    }
+    /* `avg` is the cost of the commit(s) this switch provoked. The worst figure is
+     * display's all-time high-water mark, not a window delta — there is no honest
+     * per-window maximum to take from a monotonic max — so it says so in the label. */
+    ESP_LOGI(TAG, "switch %s -> glass +%lld ms: %u commit(s), avg %llu us (all-time worst flush %llu us)",
+             s_sw_name, (long long)((now - s_sw_open_us) / 1000),
+             (unsigned)(f - s_sw_frames),
+             (unsigned long long)((u - s_sw_us) / (f - s_sw_frames)),
+             (unsigned long long)mx);
+    s_sw_open_us = 0;
+}
+
 static void set_screen(input_screen_t s, bool load)
 {
     if (s >= INPUT_SCREEN_COUNT) return;
     s_current = s;
 
-    /* M1 of the app platform plan (docs/app-platform-plan.md §8): what it costs
-     * to point the compositor at a different already-resident view decides
-     * whether app switching ever needs a reboot. This is the only such switch
-     * the firmware has today, so it is measured here and the number below is the
-     * baseline the app host is judged against. `ms` is the synchronous cost —
-     * the pointer swap plus the widget rebuild; frames/flush come from display's
-     * own monotonic commit counters, taken across the same window, and say how
-     * much glass work the switch left behind rather than how long it blocked. */
+    /* M1 of the app platform plan (docs/app-platform-plan.md §8): what it costs to
+     * point the compositor at a different already-resident view decides whether app
+     * switching ever needs a reboot (D5). This is the only such switch the firmware
+     * has today, so it is timed here and the app host is judged against the number.
+     *
+     * Two halves, because the switch is not the wait. `sync` is the pointer swap
+     * plus the widget rebuild, logged at the end of this function; the commit that
+     * puts the view on the glass is asynchronous, so the frame window opened here
+     * closes in switch_window_close(). Sampling the counters at switch time, as this
+     * probe first did, measured nothing: at a 250 ms tempo a 1 ms window holds no
+     * commit, so it printed `frames 0`, and it printed display's all-time flush
+     * maximum as a bare `worst` on every line — reading like a 303 ms switch. */
     const int64_t sw_t0 = esp_timer_get_time();
-    uint32_t sw_f0, sw_mx0;
-    uint64_t sw_u0;
-    display_bench_snapshot(&sw_f0, &sw_u0, &sw_mx0);
+    display_bench_snapshot(&s_sw_frames, &s_sw_us, NULL);
+    s_sw_open_us = sw_t0;
+    s_sw_name    = screen_name(s);
 
     /* Only the visible screen's animation should run: the GIF + hand beat burns
      * flush work on every tick, so park it when the clock is not on the glass. */
@@ -104,13 +148,9 @@ static void set_screen(input_screen_t s, bool load)
         if (s == INPUT_SCREEN_COLOR)     color_picker_show();
         else if (s == INPUT_SCREEN_MENU) menu_view_show();
     }
-    uint32_t sw_f1, sw_mx1;
-    uint64_t sw_u1;
-    display_bench_snapshot(&sw_f1, &sw_u1, &sw_mx1);
-    ESP_LOGI(TAG, "switch %s %lld ms frames %u flush %llu us worst %llu us",
-             screen_name(s), (long long)((esp_timer_get_time() - sw_t0) / 1000),
-             (unsigned)(sw_f1 - sw_f0), (unsigned long long)(sw_u1 - sw_u0),
-             (unsigned long long)sw_mx1);
+    /* The deferred half logs from poll_timer_cb once the view is actually painted. */
+    ESP_LOGI(TAG, "switch %s sync %lld ms", screen_name(s),
+             (long long)((esp_timer_get_time() - sw_t0) / 1000));
     ESP_LOGI(TAG, "screen -> %s", screen_name(s));
 }
 
@@ -133,6 +173,9 @@ static void arm_current(void)
 static void poll_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
+    /* First, and before the knob work can skew the timestamp: has the view this
+     * task last switched to actually reached the glass yet? */
+    if (s_sw_open_us) switch_window_close(esp_timer_get_time());
     knob_poll();
 
     int32_t delta   = knob_take_delta();

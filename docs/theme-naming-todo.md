@@ -106,8 +106,10 @@ under the bound. That margin is gone. Treat this as part of the same change, not
 
 What is green here proves less than it looks.
 
-- [ ] **Nothing in section 1 has run on a device with a card in the socket.** The bench has
-      no card and no radio (see `## Bench has no WiFi radio` in `.clinerules`).
+- [ ] **Nothing in section 1 has run on a device with a card in the socket.** The bench has no
+      card. Its radio is fine — the orb joins the LAN as a station and `curl`s its own routes;
+      the "no WiFi radio" heading in `.clinerules` means the *host* has no adapter, so it cannot
+      play the phone that joins the provisioning AP.
       `host_sd_test.py` lifts and lints shipped source; it does not execute scan, upload or
       install.
 - [ ] Load with the correct name, confirm the dial draws it, then exercise the failure paths

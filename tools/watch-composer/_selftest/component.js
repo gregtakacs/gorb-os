@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
@@ -199,6 +199,154 @@ class Component extends DCLogic {
     this.upd((d) => { d.order = order; });
   }
   setHand(hid, patch) { this.upd((d) => { d.hands = d.hands || {}; d.hands[hid] = { ...(d.hands[hid] || {}), ...patch }; }); }
+  // A dial carries ONE additional centre pointer beside hour, minute and seconds. What it indicates
+  // is the single choice, made in one dropdown offered on both tabs; the printed ring is derived
+  // from that choice through WatchEngine.EXTRA_RING, so the rim can never carry a scale that
+  // disagrees with the hand reading it, and there is no longer a show/hide box per calendar
+  // function to lose track of. The ring has one display switch of its own: Chapter pull-in 1.00
+  // leaves the chapter at full size, which leaves nothing out there to print.
+  calName(k) { return (window.WatchEngine.EXTRA_HANDS || {})[k] || k; }
+  // The option label carries the split count: the dropdown is the only place the ring is
+  // described, and n comes from PERIM_SPEC through perimGeom rather than from a second copy of
+  // the numbers that could fall out of step with the print.
+  extraOpts(E) {
+    return [{ v: 'none', label: 'None · hour, minute and seconds only' }].concat(E.CAL_HANDS.map((k) => {
+      const g = E.perimGeom({ perim: E.EXTRA_RING[k], perimShrink: 0.88 });
+      return { v: k, label: E.EXTRA_HANDS[k] + ' · reads ' + (g ? g.spec.n : '?') + ' divisions on the rim' };
+    }));
+  }
+  ringShown(D) { return !!D.extra && D.extra !== 'none' && (D.perimShrink == null || +D.perimShrink < 1); }
+  setExtra(k) {
+    const known = !!window.WatchEngine.EXTRA_HANDS[k];
+    this.upd((d) => { d.extra = known ? k : 'none'; });
+    if (known) this.setState({ status: this.calName(k) + ' hand on · the ring it reads prints with it' });
+  }
+  // Chapter pull-in 1.00 is the ring's off switch. Switching it back on hands the ring its
+  // default width rather than restoring a value the user may never have set.
+  setRingOn(on) {
+    const D = this.design();
+    if (!D.extra || D.extra === 'none') return;
+    this.upd((d) => { if (on) delete d.perimShrink; else d.perimShrink = 1; });
+    this.setState({ status: on
+      ? this.calName(D.extra) + ' ring printed on the rim'
+      : this.calName(D.extra) + ' ring hidden · the hand now stops inside the chapter print' });
+  }
+  /* Screen calibration lives with the browser, not with the dial: it describes the monitor the
+   * studio is open on, so it must survive a reload and must never reach a design id, a kit, or
+   * the artwork. localStorage can throw (file://, private mode), so every touch is guarded, and
+   * "the user has calibrated" is tracked on the instance rather than re-read from storage, so a
+   * blocked storage never makes an honest caption lie about itself. */
+  CAL_KEY = 'wc.viewCal';
+  CAL_MIN = 0.5;
+  CAL_MAX = 3;
+  _calSet = false;
+  cal() {
+    const c = +this.state.viewCal;
+    return c >= this.CAL_MIN && c <= this.CAL_MAX ? c : 1;
+  }
+  calibrated() { return !!this._calSet; }
+  /* A 0.005 step moves the true-size dial about 0.8 css px once past 2×, finer than the stage can
+   * show, so the steps widen there. One definition feeds the slider step and the −/+ buttons. */
+  calStep() { return this.cal() > 2 ? 0.01 : 0.005; }
+  loadCal() {
+    try {
+      const v = +window.localStorage.getItem(this.CAL_KEY);
+      if (v >= this.CAL_MIN && v <= this.CAL_MAX) { this._calSet = true; this.setState({ viewCal: v }); }
+    } catch (e) { /* no storage: calibrate per session */ }
+  }
+  setCal(v) {
+    const c = Math.min(this.CAL_MAX, Math.max(this.CAL_MIN, +v || 1));
+    this._calSet = true;
+    this.setState({ viewCal: +c.toFixed(4) });
+    try { window.localStorage.setItem(this.CAL_KEY, String(c)); } catch (e) { /* ignore */ }
+  }
+  /* The measured millimetres the user reads off a real ruler against the on-screen bar solve the
+   * factor outright, which beats hunting with a slider: the bar is nominal RULER_MM, so whatever
+   * it really measures says how many CSS px make a millimetre here. */
+  solveCal(mm) {
+    if (mm == null || String(mm).trim() === '') return;
+    const m = +mm;
+    if (!(m >= 5 && m <= 300)) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
+    this.setCal(this.cal() * (window.WatchEngine.RULER_MM / m));
+    this.setState({ status: 'Ruler matched at ' + m + ' mm · true size now draws the dial ' + (window.WatchEngine.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+  }
+  /* The stage is the studio's only claim about how big the dial will be, and the artwork's own
+   * 466 px is a misleading claim: the panel is 466 px across 1.75 in, so a preview drawn 1:1
+   * prints under a millimetre of type that still looks fine on the monitor, which is how dials
+   * got authored too small. True size is the default because it is the only honest preview, and
+   * it is the only view that needs the ruler: the page cannot know the screen's dpi, so the user
+   * sets the factor against a real ruler. Full keeps the old 1:1 view and Magnify scrolls a
+   * bigger frame through the stage for precision work. */
+  viewK() {
+    const s = this.state, E = window.WatchEngine;
+    if (s.view === 'full') return 1;
+    if (s.view === 'zoom') return Math.min(4, Math.max(1, +s.zoom || 2));
+    return ((E && E.REAL_Z) || 168 / 466) * this.cal();
+  }
+  setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
+  setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
+  /* Everything the stage row needs, derived from one number so the caption cannot disagree with
+   * the box the canvas sits in. Past 1.00x the box stops growing and the frame scrolls through it:
+   * every layer is baked at 466 px, so magnifying enlarges the artwork without inventing detail. */
+  viewVals() {
+    const E = window.WatchEngine, cal = this.cal(), k = this.viewK(), v = this.state.view;
+    const sel = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    // one source for each size: the engine owns what true size and the ruler mean
+    const css = v === 'true' ? E.realCss(cal) : Math.max(60, Math.round(466 * k)), inch = E.screenInch(css, cal);
+    // the stage box holds 466 px: the canvas only scrolls through it once it is physically
+    // bigger than that, whether the user picked Magnify or just calibrated a dense screen
+    const zoomed = v === 'zoom' || css > 466;
+    const bez = Math.max(3, Math.min(12, Math.round((12 * css) / 466)));
+    const mm = E.RULER_MM, mmPanel = (E.PANEL.inch * 25.4).toFixed(1);
+    const ticks = [];
+    for (let i = 0; i <= mm; i++) ticks.push({ left: (i / mm) * 100, h: i % 10 === 0 ? 14 : i % 5 === 0 ? 10 : 6, op: i % 5 === 0 ? '0.9' : '0.45', lab: i % 10 === 0 ? String(i) : '' });
+    const nudge = (d) => this.setCal(this.cal() + d * this.calStep());
+    return {
+      stageCv: css, stageWin: zoomed ? 466 : css, stageRing: bez, stageRing2: bez + 1,
+      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: zoomed ? '14px' : '50%',
+      hasZoom: zoomed,
+      // the ruler belongs to true size only: Full and Magnify are magnifications of the artwork,
+      // and a physical claim drawn there would be a claim about the zoom, not the watch
+      showRuler: v === 'true', rulerPx: E.rulerPx(cal), rulerMm: mm, rulerTicks: ticks,
+      calText: cal.toFixed(3) + '× · ' + Math.round(E.PANEL.cssInch * cal) + ' css px per screen in',
+      calVal: cal, calMin: this.CAL_MIN, calMax: this.CAL_MAX, calStep: this.calStep(),
+      setCal: (e) => this.setCal(e.target.value),
+      calUp: () => nudge(1), calDown: () => nudge(-1),
+      solve: (e) => this.solveCal(e.target.value),
+      resetCal: () => { this.setCal(1); this.setState({ status: 'Screen calibration reset to the 96 px/in standard' }); },
+      viewOpts: [['true', 'True size · 1.75 in', 'The whole dial at the size the panel is on the wrist. The only preview that tells you how print will read. Needs the ruler calibrated once.'],
+                 ['full', 'Full · 1:1 · 466 px', 'The whole dial at the artwork\'s own scale, magnified for authoring detail.'],
+                 ['zoom', 'Magnify', 'Scroll a bigger frame through the stage to inspect the print. The layers are baked at 466 px, so this enlarges them; it does not add detail.']]
+        .map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
+      zoomOpts: [1, 1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
+      viewText: (v === 'full'
+        ? 'Shown at the artwork\'s own scale: ' + inch.toFixed(2) + ' in across on this screen, ' + (inch / E.PANEL.inch).toFixed(1) + '× the 1.75 in panel'
+        : v === 'zoom'
+          ? 'Magnified ' + k.toFixed(2) + '× — the frame is baked at 466 px, so this enlarges it without adding detail'
+          : this.calibrated()
+            ? 'True size: ' + inch.toFixed(2) + ' in on this screen, the 1.75 in panel at ' + mmPanel + ' mm'
+            // a page cannot measure its own screen, so an uncalibrated 168 px is only an
+            // assumption — say so, and point at the instrument that fixes it once
+            : 'True size drawn at the 96 px/in standard, so the 1.75 in panel is ' + inch.toFixed(2) + ' in on this screen — on a denser monitor that is smaller than the watch; match the ruler below to a real one once and it is exact')
+        + ' · 1 dial px = ' + ((E && E.MM_PER_PX) || 0.0954).toFixed(4) + ' mm on the watch',
+    };
+  }
+
+  /* Where the ring starts is the user's call, and the label must say what the turn does rather
+   * than leave them guessing at a degree. The chips come off the same spec the ring prints from
+   * (WatchEngine.ringStarts), so picking 'MON at 12' cannot disagree with the print, and the
+   * pointer that reads the ring takes the same turn through perimGeom().offTurn. X is the field
+   * builder bundle the tab already uses, passed in so this stays one definition for both tabs. */
+  ringStartFields(E, D, X) {
+    const g = E.perimGeom(D); if (!g) return [];
+    const rot = g.rot, top = E.ringTop(g.spec, rot, g.between);
+    return [
+      X.Ch('Ring start', String(rot), E.ringStarts(g.spec, g.between), (v) => this.upd((d) => { d.perimRot = +v; })),
+      X.Rg('Turn', rot, 0, 359, 1, X.ud('perimRot'), rot.toFixed(0) + '°'),
+      X.Nt('', (rot === 0 ? 'Index 0 sits at 12 o\'clock.' : top.lab + ' now reads at 12 o\'clock, ' + rot.toFixed(0) + '° round.')
+        + ' Ticks, labels and the hand that reads them all turn together, and the kit\'s drive formula carries the same turn.'),
+    ];
+  }
   designId() {
     const c = this.cfg(), s = this.state, E = window.WatchEngine, P = this.ready ? this.preset() : null;
     if (this.ready && this.train().by) c.trainAngle = 0;
@@ -223,7 +371,7 @@ class Component extends DCLogic {
     const P = this.preset(), say = (t) => this.setState({ status: t + ' reset' });
     if (tab === 'dial') { this.upd((d) => { const keep = { comps: d.comps, hands: d.hands, order: d.order, centre: d.centre }; Object.keys(d).forEach((k) => delete d[k]); Object.assign(d, JSON.parse(JSON.stringify(P.design)), keep); }); say('Dial'); }
     if (tab === 'comps') { this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null }); say('Complications'); }
-    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp']); say('Hands'); }
+    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp']); say('Hands'); }
     if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
     if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
@@ -233,6 +381,7 @@ class Component extends DCLogic {
   async componentDidMount() {
     const p = {}; this.KEYS.forEach((k) => { if (this.props && this.props[k] != null) p[k] = this.props[k]; });
     if (Object.keys(p).length) this.setState({ cfg: p });
+    this.loadCal();
     while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
@@ -248,7 +397,7 @@ class Component extends DCLogic {
   }
   componentDidUpdate() {
     if (!this.ready) return;
-    const D0 = this.design(); [D0.font, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
+    const D0 = this.design(); [D0.font, D0.perimFont, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey()) {
       this.buildGate();
     } else if (this._artKey !== this.artKey()) {
@@ -740,6 +889,23 @@ class Component extends DCLogic {
       e.files.push(name);
     }
     const hands = [];
+    // The additional calendar pointer is studio-only today: prep_watch_kit.py and bake_clock.py
+    // accept hour/minute/second alone, so the firmware never sees them. Ship the angle each
+    // one needs anyway, in the same value x 360 form the hands layer note already uses, so
+    // wiring them up on the device is a loader change and not a reverse-engineering job.
+    const CAL_DRIVE = {
+      hours24: 'value = (H24 + min/60 + sec/3600) / 24 — one turn per 24 hours of local time, read against the 24-hour ring',
+      gmt: 'value = (((H24 + gmtOffset) mod 24) + min/60 + sec/3600) / 24 — a second hour hand on a whole-hour zone offset, read against the same 24-hour ring',
+      day: 'value = weekday / 7 — 0 = Sunday lands at 12 o\'clock, read against the day ring',
+      date: 'value = (dayOfMonth - 1) / 31 — 1 lands at 12 o\'clock, read against the date ring',
+    };
+    // One spare centre hand at most, and the ring it reads is the same decision: the drive formula
+    // the kit ships has to agree with where those labels were printed, so a ring that sets its
+    // labels between the division lines moves its own pointer by half a division too.
+    const pg = WatchEngine.perimGeom ? WatchEngine.perimGeom(D0) : null;
+    const ringHand = D0.extra && WatchEngine.EXTRA_HANDS[D0.extra] ? D0.extra : null;
+    const offTurn = pg ? pg.offTurn : 0;
+    const offWhy = pg ? [pg.between ? 'the labels print between the division lines (half a division)' : '', pg.rot ? 'the ring is turned ' + pg.rot.toFixed(2) + '° clockwise from 12 o\'clock' : ''].filter(Boolean).join(' and ') : '';
     for (const [z, h] of fc.hands.entries()) {
       const name = 'hands/' + pad(z + 1) + '_' + h.id + '.png';
       let sp = h.sp.c;
@@ -751,8 +917,23 @@ class Component extends DCLogic {
       const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
       files.push({ name: shName, data: await this.png(mc, true) });
       const shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
-      hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined });
+      hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && String(h.id).startsWith('centre-') ? { drive: CAL_DRIVE[h.kind] + (offTurn && h.kind === ringHand ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
     }
+    const perimeter = !pg ? undefined : {
+      scale: D0.perim, splits: pg.spec.n, outerPx: +M(pg.out + 1.6).toFixed(2), innerPx: +M(pg.inr - 1.6).toFixed(2),
+      tickPx: [+M(pg.tick1).toFixed(2), +M(pg.tick0).toFixed(2)], labelPx: +M(pg.lab).toFixed(2), fontSizePx: +M(pg.fs).toFixed(2),
+      clockwise: true, index0Deg: pg ? pg.rot : 0, chapterScale: +pg.k.toFixed(3),
+      rotationDeg: +pg.rot.toFixed(2),
+      labelPlacement: pg.between ? 'between the division lines' : 'on the division lines',
+      labelOffsetDeg: pg.between ? +(360 / pg.spec.n / 2).toFixed(3) : 0,
+      orientation: D0.perimOrient === 'radial' ? 'radial (each label turned to face out)' : 'upright (every label bottom-aligned)',
+      typeface: WatchEngine.FONT_NAME(D0.perimFont) || WatchEngine.FONT_NAME(D0.font) || 'dial default',
+      fontSizeMm: +(WatchEngine.pxMm(pg.fs)).toFixed(3),
+      colour: D0.perimColor || (D0.numColor && D0.numColor !== 'auto' ? D0.numColor : 'dial ink'),
+      labels: Array.from({ length: pg.spec.n }, (_, i) => pg.spec.lab(i)),
+      emphasised: Array.from({ length: pg.spec.n }, (_, i) => i).filter((i) => pg.spec.maj(i)),
+      note: 'printed into layers/dial.png — nothing to draw at runtime; the scale runs clockwise and index 0 sits at index0Deg degrees clockwise from 12 o\'clock, which is what the drive formula on each calendar hand assumes',
+    };
     const manifest = {
       size: 466, fps: F, frames: B, secondHand: this.cfg().tick === 'sweep' ? 'sweep' : this.cfg().tick + ' ticks per second', innerScale: K, preset: this.preset().name, movement: s0.train, designId: this.designId(), layout: this.design(),
       drawOrder: [
@@ -763,12 +944,13 @@ class Component extends DCLogic {
         ...(textKits.some((t) => t.host === 'dial') ? [{ layer: 'text', where: 'over dial', items: textKits.filter((t) => t.host === 'dial').map((t) => t.id), note: 'assemble from textKits' }] : []),
         ...subFiles.flatMap((sf) => [{ layer: 'complications', where: 'under subdial ' + sf.id, items: comps.filter((c) => c.host === sf.id && c.type !== 'flare-date').map((c) => c.id) }, { layer: 'subdial', id: sf.id, file: sf.file },
           ...(textKits.some((t) => t.host === sf.id) ? [{ layer: 'text', where: 'over subdial ' + sf.id, items: textKits.filter((t) => t.host === sf.id).map((t) => t.id), note: 'assemble from textKits' }] : [])]),
-        { layer: 'hands', note: 'draw in z order (1 = lowest); for each hand first draw its shadow mask rotated by the same angle about shadow.pivot, with the pivot placed at centre + shadow.offsetPx (offset stays fixed in screen space), then the hand sprite rotated about its pivot by value×360° + zeroRotationDeg with the pivot on centre' },
+        { layer: 'hands', note: 'draw in z order (1 = lowest); for each hand first draw its shadow mask rotated by the same angle about shadow.pivot, with the pivot placed at centre + shadow.offsetPx (offset stays fixed in screen space), then the hand sprite rotated about its pivot by value×360° + zeroRotationDeg with the pivot on centre; mount is the unique key — kind repeats when a subdial and a centre pointer show the same data, so never name a file by kind alone' },
         { layer: 'glass', file: 'layers/glass.png' },
         { layer: 'outer', file: 'layers/outer.png' },
       ],
       complications: comps.map((c) => ({ ...c, values: c.type === 'moon' ? '00…29 = moon age / 29.53 × 30' : c.type === 'custom' || c.type === 'flare-date' ? 'one PNG per distinct rendered string; look up today in byDate (YYYY-MM-DD → file stem), covers this year and next' : c.type })),
       hands,
+      ...(perimeter ? { perimeter } : {}),
       textKits,
       handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
@@ -966,6 +1148,28 @@ class Component extends DCLogic {
         Rg('Depth', ov('owDepth', 1), 0, 2.5, 0.05, ud('owDepth'), ov('owDepth', 1).toFixed(2) + '×'),
         ...(ow !== 'ring' ? [Ch('Inlay', +D.owInlay ? 'on' : 'off', [{ v: 'off', label: 'Plain bars' }, { v: 'on', label: 'Sparkle inlay' }], (v) => this.upd((d) => { d.owInlay = v === 'on' ? 1 : 0; }))] : []),
         Nt('', 'Openings and subdials get a rim of dial left around them automatically.'));
+      // ONE additional hand, chosen by what it indicates. The ring it reads is derived from that
+      // choice, so this group holds the whole decision -- the pointer, whether its scale prints,
+      // and how that scale is set -- and no half of it lives on another tab.
+      const ex = D.extra && E.EXTRA_HANDS[D.extra] ? D.extra : 'none', pkv = D.perimShrink == null ? 0.88 : +D.perimShrink, shown = this.ringShown(D);
+      fields.push(H('Additional hand · outer ring'), Sl('Additional hand', ex, this.extraOpts(E), (v) => this.setExtra(v)));
+      if (ex !== 'none') fields.push(
+        Ch('Outer ring', shown ? 'on' : 'off', [{ v: 'on', label: 'Printed on the rim' }, { v: 'off', label: 'Hidden' }], (v) => this.setRingOn(v === 'on')));
+      if (shown) {
+        const pss = D.perimSize == null ? 1 : +D.perimSize, pgD = E.perimGeom(D);
+        const mm = pgD ? pgD.fs * ((E.MM_PER_PX || 0.0954)) : 0;
+        fields.push(
+          Rg('Chapter pull-in', pkv, 0.70, 1.00, 0.01, ud('perimShrink'), pkv.toFixed(2) + '×'),
+          Nt('', 'The ring takes the rim, so the chapter print, its numerals and the hour, minute and seconds hands all scale inward by this factor to clear it. Pull in further for a wider ring; 1.00× hides it.'),
+          Co('Ring colour', D.perimColor, ud('perimColor'), 'Auto · same as numerals'),
+          Sl('Ring typeface', D.perimFont || 'same', [{ v: 'same', label: 'Same as dial' }, ...opt(E.TYPEFACES)], ud('perimFont')),
+          Ch('Orientation', D.perimOrient || 'upright', [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('perimOrient')),
+          Rg('Label size', pss, 0.6, 2.6, 0.05, ud('perimSize'), mm.toFixed(2) + ' mm'),
+          Ch('Position', D.perimPos || 'ontick', [{ v: 'ontick', label: 'On the lines' }, { v: 'between', label: 'Between the lines' }], ud('perimPos')),
+          ...this.ringStartFields(E, D, { Ch, Rg, Nt, ud }),
+          Nt('', 'The band the labels print in grows with Label size, so the seven day names can be spread across the rim without touching the chapter print. Between the lines moves the labels, and the hand that reads them, into the middle of each division. The figure beside Label size is the height that print really gets on the panel — a dial px is ' + ((E.MM_PER_PX || 0.0954)).toFixed(3) + ' mm there — and below about 1.4 mm the labels stop reading at arm\'s length, however comfortable they look at 466 px on a monitor.'));
+      } else if (ex !== 'none') fields.push(
+        Nt('', 'Nothing prints on the rim, so the hand stops short of the chapter print. Pick Printed on the rim to put its scale back.'));
       fields.push(H('Colour'), Sw('Classic', col, E.COLOR_GROUPS.classic, ud('color')), Sw('Vivid', col, E.COLOR_GROUPS.vivid, ud('color')),
         Co('Custom', E.isHex(col) ? col : null, (v) => ud('color')(v === 'auto' ? 'cream' : v), 'Preset', 'dial'),
         H('Surface'), Sl('Finish', surf, opt(E.SURFACES), ud('surface')));
@@ -999,6 +1203,21 @@ class Component extends DCLogic {
         Rg('Softness', +c0.shBlur, 0, 3, 0.05, cf('shBlur'), (+c0.shBlur).toFixed(2) + '×'),
         Rg('Opacity', +c0.shOp, 0, 2, 0.05, cf('shOp'), Math.round(+c0.shOp * 100) + '%'),
         H('Defaults'), Ch('Shading', D.handShade || '3d', [{ v: '3d', label: '3D · bevelled' }, { v: 'flat', label: 'Flat' }], (v) => this.upd((d) => { d.handShade = v; })), Co('Lume', D.handLume, (v) => this.upd((d) => { d.handLume = v; }), 'None'), Sl('Seconds style', D.secStyle || 'classic', opt(E.SEC_STYLES), (v) => this.upd((d) => { d.secStyle = v; })), Sl('Finish', s.handFinish, [{ v: 'auto', label: 'Preset · ' + E.HAND_FINISHES[PR.handFinish] }, ...opt(E.HAND_FINISHES)], (v) => this.setState({ handFinish: v })));
+      // The one spare hand is chosen here as much as on the Dial tab -- same dropdown, same rules,
+      // so the pair is never split across two tabs. Its row in the list above carries its style;
+      // this group decides what it indicates, whether its scale prints, and how wide the rim gets.
+      const exH = D.extra && E.EXTRA_HANDS[D.extra] ? D.extra : 'none', pkvH = D.perimShrink == null ? 0.88 : +D.perimShrink, shownH = this.ringShown(D);
+      const go = Math.round(+D.gmtOffset || 0);
+      fields.push(H('Additional hand · outer ring'),
+        Sl('Additional hand', exH, this.extraOpts(E), (v) => this.setExtra(v)),
+        ...(exH === 'none'
+          ? [Nt('', 'Hour, minute and seconds only. Pick what the one spare hand should indicate, and the scale it reads prints on the rim with it.')]
+          : [Ch('Outer ring', shownH ? 'on' : 'off', [{ v: 'on', label: 'Printed on the rim' }, { v: 'off', label: 'Hidden' }], (v) => this.setRingOn(v === 'on')),
+            ...(shownH ? [Rg('Chapter pull-in', pkvH, 0.70, 1.00, 0.01, (v) => this.upd((d) => { d.perimShrink = v; }), pkvH.toFixed(2) + '×')] : []),
+            Nt('', shownH
+              ? 'Its tip lands on its own ticks, and the Length slider in its row above trims it off them — 100% sits on the ticks, less stops short. Colour, typeface, orientation, position and where the ring starts are set with the rest of the dial, under Additional hand on the Dial tab.'
+              : 'Nothing prints on the rim, so the tip stops inside the chapter print and its Length trims it from there. Pick Printed on the rim to take the rim back.'),
+            ...(exH === 'gmt' ? [Rg('Zone offset', go, -12, 14, 1, (v) => this.upd((d) => { d.gmtOffset = v; }), go === 0 ? 'same as local' : (go > 0 ? '+' : '') + go + ' h')] : [])]));
     }
     if (ready && s.tab === 'move') {
       const fins = [{ v: 'train', label: 'Movement default · ' + (T.finish || 'brass') }, { v: 'brass', label: 'Brass' }, { v: 'copper', label: 'Copper' }, { v: 'gunmetal', label: 'Gunmetal' }, { v: 'rhodium', label: 'Rhodium' }, { v: 'random', label: 'Random per wheel' }];
@@ -1056,9 +1275,10 @@ class Component extends DCLogic {
 
     const slots = fc ? fc.handOrder.slice().reverse() : [];
     const hcfg = D.hands || {}, ce = D.centre || {};
-    const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + id.slice(7) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
+    const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + ({ hours24: '24-hour', gmt: 'GMT', day: 'day', date: 'date' }[id.slice(7)] || id.slice(7)) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
     return {
       metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      ...this.viewVals(),
       mainRef: this.mainRef, cursor: this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(),
       frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + F + ' fps)',
@@ -1117,8 +1337,10 @@ class Component extends DCLogic {
           shadeOpts: mark([{ v: 'auto', label: 'Shading · default (' + (D.handShade === 'flat' ? 'flat' : '3D') + ')' }, { v: '3d', label: 'Shading · 3D' }, { v: 'flat', label: 'Shading · flat' }], hc.shade || 'auto'),
           onShade: (e) => this.setHand(id, { shade: e.target.value }),
           up: () => this.moveHand(id, 1), down: () => this.moveHand(id, -1),
-          eye: shown ? 'shown' : 'hidden',
-          toggle: () => (isC ? this.upd((d) => { d.centre = { ...(d.centre || {}), [k]: d.centre && d.centre[k] ? 0 : 1 }; }) : this.setHand(id, { on: !shown })),
+          eye: isC && E.CAL_HANDS.indexOf(k) >= 0 ? 'remove' : shown ? 'shown' : 'hidden',
+          // the spare hand has no eye of its own: what it indicates is the choice, and taking that
+          // back to None is what removes it, so the button reads as the removal it performs
+          toggle: () => (isC && E.CAL_HANDS.indexOf(k) >= 0 ? this.setExtra('none') : this.setHand(id, { on: !shown })),
         };
       }),
       caseOpts: ready ? Object.entries(E.CASE_STYLES).map(([id, label]) => ({ ...on(id === s.caseStyle), label, ref: this.cb('caseEls', id, (i) => this.drawCaseThumb('case', i)), pick: () => this.setState({ caseStyle: id }) })) : [],

@@ -529,6 +529,25 @@ def main():
     json.dump({"name": os.path.basename(os.path.abspath(outdir))},
               open(f"{theme}/theme.json", "w"))
     json.dump(style, open(f"{theme}/clock_style.json", "w"), indent=1)
+
+    # ---- carry the kit's complications through to the bake -----------------
+    # bake_clock.bake_complications() reads manifest.json's layout.comps and the
+    # complications/<cid>_* tile folders from the bake's theme_dir. prep wipes the
+    # extracted kit on the way out, so unless these two land in theme/ the calendar
+    # is invisible to the bake and every window comp silently disappears. Copied
+    # verbatim: the bake keys tiles by the driving source (Monday-first weekdays,
+    # January-first months), not by any renaming here, so it must see the vendor's
+    # own tile filenames. A kit with no complications/ is not an error — a classic
+    # movement ships none, and the bake then emits the plain four-count blob.
+    if os.path.exists(f"{K}/manifest.json"):
+        shutil.copy2(f"{K}/manifest.json", f"{theme}/manifest.json")
+    comp_src = f"{K}/complications"
+    if os.path.isdir(comp_src):
+        shutil.copytree(comp_src, f"{theme}/complications", dirs_exist_ok=True)
+        print("  complications: {} folders carried to the bake".format(
+            len([d for d in os.listdir(comp_src)
+                 if os.path.isdir(os.path.join(comp_src, d))])))
+
     shutil.rmtree(K, ignore_errors=True)
 
     ink = lambda im: int((_al(im) > 0).sum())

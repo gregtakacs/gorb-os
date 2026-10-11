@@ -53,6 +53,118 @@
 #define ORB_THEME_SLOT_B_HDR  0x00400000u
 #define ORB_THEME_SLOT_B_ART  0x00410000u
 
+/* ---- complication records -------------------------------------------------
+ *
+ * A theme asks for a complication by shipping one of these per aperture, ring or
+ * indicator, and the paint path interprets it. Declared here and NOT in the
+ * generated header on purpose: that header is the bake's output for the
+ * compiled-in fallback, and a theme that ships no complications must keep booting
+ * exactly as it does today with a header the bake has not been changed to emit.
+ * Every field is one u32 word on the wire, widened so neither side has a padding
+ * rule to disagree about. The three lists that must stay in step are
+ * tools/theme_schema.py, tools/orbtheme.py and here; tools/host_theme_test.py
+ * packs through the Python and reads back through the lifted C.
+ */
+enum {
+    CLK_KIND_WINDOW = 0,   /* one whole-window tile per value (day/month/date/moon) */
+    CLK_KIND_STRIP  = 1,   /* value composed from per-glyph sprites + edge pieces    */
+    CLK_KIND_RING   = 2,   /* count sprites on a circle, ring rotated by value      */
+    CLK_KIND_FLARE  = 3,   /* one sprite picked by value, drawn with a blend        */
+    CLK_KIND__MAX
+};
+
+/* What drives a comp's value. Every one derives from the wall clock and the
+ * battery state the view already has, so a new theme feature needs no new input
+ * path and no new firmware build. */
+enum {
+    CLK_SRC_NONE = 0, CLK_SRC_WEEKDAY, CLK_SRC_MONTH, CLK_SRC_DATE,
+    CLK_SRC_HOUR12, CLK_SRC_HOUR24, CLK_SRC_MINUTE, CLK_SRC_SECOND,
+    CLK_SRC_MOON_AGE, CLK_SRC_BATTERY, CLK_SRC_POWER_RESERVE, CLK_SRC_TEXT,
+    CLK_SRC_AMPM, CLK_SRC_WEEK, CLK_SRC_DAY_OF_YEAR, CLK_SRC_QUARTER,
+    CLK_SRC_VALUE,
+    CLK_SRC__MAX
+};
+
+enum {
+    CLK_FLAG_UNDER_DIAL = 1 << 0,   /* tile pixels already include the dial art */
+    CLK_FLAG_ZERO_PAD   = 1 << 1,   /* strip: pad the number with the zero glyph */
+    CLK_FLAG_REVERSE    = 1 << 2,   /* ring/strip: walk frames the other way */
+    CLK_FLAG_JUMP       = 1 << 3,   /* aux hand: snap to whole units */
+    CLK_FLAG_24H        = 1 << 4,   /* aux hand: hour value is 0..23 */
+    CLK_FLAG_WRAP       = 1 << 5,   /* aux hand: keep sweeping past value_max */
+    CLK_FLAG_BLINK      = 1 << 6,   /* comp: draw every other second */
+    CLK_FLAG_DISABLED   = 1 << 7    /* parsed and validated, deliberately not drawn */
+};
+
+#define CLK_STRIP_GLYPHS_MAX 8   /* glyph image objects per strip, and the cap a
+                                  * strip's `count` may reach. Mirrors
+                                  * theme_schema.CLK_STRIP_GLYPHS, which is what
+                                  * the bake packed against. */
+#define CLK_COMP_MAX  16   /* complication records      — theme_schema.CLK_COMP_MAX  */
+#define CLK_AUX_MAX    8   /* extra hands beyond the 5  — theme_schema.CLK_AUX_MAX   */
+#define CLK_BANK_MAX 256   /* shared bank sprites       — theme_schema.CLK_BANK_MAX  */
+_Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
+                                   "bake and this reader must agree on its length");
+
+/* One window tile is w*h*3 bytes: the raw colour plane (w*h*2, stride w*2)
+ * with its planar alpha behind it (w*h, stride w). The bake packs tiles RAW —
+ * never composited against the dial — and the paint path lays the selected
+ * tile UNDER the live dial layer, so the dial's own window frame composites
+ * over the tile's edge the way a real bezel covers the disc beneath it. That
+ * runtime composite is the shipped policy. CLK_FLAG_UNDER_DIAL is the wire's
+ * historical other case (an opaque tile the bake had composited against the
+ * dial, w*h*2, no alpha plane): accepted by the reader so an older container
+ * still parses, but no current bake emits it and clock_view.c declines to
+ * draw one — an opaque square would bury the bezel it is supposed to sit
+ * under. Must agree with theme_schema.window_bytes(), which is what the bake
+ * checked on the way out. */
+#define CLK_WINDOW_BYTES(c) \
+    ((uint32_t)(c)->w * (uint32_t)(c)->h * \
+     (((c)->flags & CLK_FLAG_UNDER_DIAL) ? 2u : 3u))
+
+typedef struct {
+    uint16_t tag;              /* manifest comp id (c2 -> 2); 0 = synthetic */
+    uint8_t  kind;             /* CLK_KIND_*  */
+    uint8_t  src;              /* CLK_SRC_*   */
+    int16_t  x, y;             /* window/strip box origin */
+    uint16_t w, h;             /* box, one glyph, or one ring slot */
+    uint16_t count;            /* frames across the value domain */
+    uint16_t first;            /* bank index for strip/ring/flare */
+    uint32_t off;              /* window: blob offset of tile 0 */
+    uint32_t frame_bytes;      /* window: stride between tiles */
+    int16_t  cx, cy;           /* ring centre */
+    int16_t  radius;           /* ring radius, centre to sprite centre */
+    int16_t  angle0;           /* tenths of a degree, 0 = twelve o'clock */
+    int16_t  angle_step;       /* tenths of a degree between slots */
+    int16_t  value_min;        /* the value frame 0 stands for */
+    uint16_t scale;            /* frames per unit of value, x16 */
+    int16_t  glyph_step;       /* strip: px between glyph origins */
+    int16_t  glyph_lead;       /* strip: px from box edge to first glyph */
+    uint16_t edge_left;        /* strip: left window piece, bank index, 0xFFFF none */
+    uint16_t edge_right;       /* strip: right piece, 0xFFFF none */
+    uint16_t flags;            /* CLK_FLAG_*  */
+    uint8_t  blend;            /* 0 normal 1 multiply 2 screen */
+    uint8_t  show;             /* draw it */
+    uint32_t reserve;          /* must be 0: checked at load, so it stays free */
+} clk_comp_t;
+
+/* One extra hand: a baked sprite plus how it is driven. The sub-dial hour /
+ * hour+min / minute / second / 24h hands, the battery reserve and a retrograde
+ * sweep are all one record here, so none of them costs one of the five
+ * compiled-in hand slots or a new field in the generated header. */
+typedef struct {
+    clk_sprite_t spr;          /* w,h,off,pivot,centre,blend,show,color_off */
+    uint16_t tag;              /* manifest hand index, or the comp tag it belongs to */
+    uint8_t  src;              /* CLK_SRC_*   */
+    uint8_t  kind;             /* 0 rotating hand, 1 retrograde, 2 indexed pointer */
+    uint16_t host;             /* 0 = main dial centre, else a comp tag */
+    int16_t  span;             /* tenths of a degree swept across the value range */
+    int16_t  zero;             /* tenths of a degree at value_min */
+    uint16_t value_min;
+    uint16_t value_max;
+    uint16_t flags;            /* CLK_FLAG_*  */
+} clk_aux_t;
+
 /** What clock_view.c reads in place of the generated header's constants. */
 typedef struct {
     clk_theme_t   *theme;
@@ -60,6 +172,17 @@ typedef struct {
     uint16_t      *rect_first;
     uint16_t      *gif_delays;
     uint32_t      *bg_frames;
+    /* The complication/indicator tables. NULL/0 for any theme baked before they
+     * existed, which is why the paint path tests the counts and not the pointer.
+     * All three live in the one arena the loader allocated, and like the four
+     * tables above they are never freed while the dial is running. Non-const for
+     * the same reason rects is: orb_theme_geom_parse() fills them in place. */
+    clk_comp_t   *comps;
+    clk_aux_t    *aux;
+    clk_sprite_t *bank;
+    uint16_t      n_comps;
+    uint16_t      n_aux;
+    uint16_t      n_bank;
     size_t         art_size;          /* pixel bytes, not partition bytes */
     bool           from_container;    /* false = the compiled-in pair */
     char           slug[ORB_THEME_SLUG_MAX + 1];

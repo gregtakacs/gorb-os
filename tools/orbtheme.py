@@ -49,6 +49,14 @@ SPRITE_FIELDS = ("w", "h", "offx", "offy", "pivotx", "pivoty",
                  "centerx", "centery", "blend", "show", "color_off",
                  "diffx", "diffy", "diffw", "diffh")
 
+# Count words at the head of the geometry blob. The first four are the original
+# layout ("v1"); the last three carry the complication/indicator tables described
+# by tools/theme_schema.py. A blob's length is determined by these counts alone,
+# so a reader can tell the two layouts apart from geom_size and refuse a blob
+# that matches neither, instead of reading a truncated table as pixels.
+GEOM_COUNTS = ("n_rects", "n_first", "n_delays", "n_frames",
+               "n_comp", "n_aux", "n_bank")
+
 # Header word map. Kept in one place because slug and title are byte arrays
 # spread over whole words, and their ranges must stay DISJOINT: the first draft
 # of this put the 24-byte slug at word 14 (words 14..19) and the 32-byte title at
@@ -163,18 +171,37 @@ def pack_spr(rec):
 
 
 def pack_geom(scalars, hands, shadows, overlay, tourb,
-              rects, rect_first, gif_delays, bg_frames):
+              rects, rect_first, gif_delays, bg_frames,
+              comps=(), aux=(), bank=()):
     """The geometry blob, from the same values _finish() prints as C.
 
     scalars is keyed by THEME_FIELDS names; hands/shadows carry 5 records each
     and tourb up to 16 (short lists are padded with blanks so the reader always
     advances the same amount, exactly as the generated header does).
-    """
+
+    comps/aux/bank are the complication tables of tools/theme_schema.py, laid
+    down in that order at the tail. They are optional: a bake with none of them
+    emits the four original count words and nothing after bg_frames, which is the
+    blob every theme baked before the calendar existed and the one the device
+    still loads. Emitting any of them makes the blob seven-count, so one file
+    never mixes the two layouts — geom_layout() is how a reader tells them apart
+    from the length alone, without believing a version field. The firmware caps
+    the three tables at CLK_COMP_MAX/CLK_AUX_MAX/CLK_BANK_MAX (16/8/256, and the
+    host test's caps lint compares those against theme_schema), and pack_records
+    refuses more rows than that here, where a refusal is an error message on the
+    bench rather than art silently missing from someone's dial."""
     if len(rects) % 5:
         raise ValueError("rects must be (x, y, w, h, off) quintuples, got %d words"
                          % len(rects))
-    w = [_val("n_rects", "u32", len(rects) // 5), _val("n_first", "u32", len(rect_first)),
-         _val("n_delays", "u32", len(gif_delays)), _val("n_frames", "u32", len(bg_frames))]
+    import theme_schema as ts
+    rows = {"comp": list(comps), "aux": list(aux), "bank": list(bank)}
+    counts = (len(rects) // 5, len(rect_first), len(gif_delays), len(bg_frames),
+              len(rows["comp"]), len(rows["aux"]), len(rows["bank"]))
+    n_counts = 7 if (counts[4] or counts[5] or counts[6]) else 4
+    if n_counts == 4 and any(rows.values()):
+        raise ValueError("comp/aux/bank records need a seven-count blob; refusing "
+                         "to emit a blob a reader would misparse")
+    w = [_val(GEOM_COUNTS[i], "u32", c) for i, c in enumerate(counts[:n_counts])]
     w += [_val(n, t, scalars[n]) for n, t in THEME_FIELDS]
     for h in hands:
         w += pack_spr(h)
@@ -192,14 +219,53 @@ def pack_geom(scalars, hands, shadows, overlay, tourb,
     w += [_val("rect_first[%d]" % i, "u16", v) for i, v in enumerate(rect_first)]
     w += [_val("gif_delays[%d]" % i, "u16", v) for i, v in enumerate(gif_delays)]
     w += [_val("bg_frames[%d]" % i, "u32", v) for i, v in enumerate(bg_frames)]
+    for kind in ("comp", "aux", "bank"):
+        w += ts.pack_records(rows[kind], ts.fields_of(kind),
+                             getattr(ts, "CLK_%s_MAX" % kind.upper()), kind)
     return b"".join(struct.pack("<I", v) for v in w)
+
+
+def geom_need(counts, n_counts):
+    """The exact blob length, in words, that these counts declare.
+
+    The one place the size rule is written, so the packer, the host reader and
+    main/art/orb_theme.c's geom_sizes_ok() cannot each invent their own
+    arithmetic — a mismatch there is a theme refused as damaged."""
+    import theme_schema as ts
+    need = n_counts + len(THEME_FIELDS) + (5 + 5 + 1 + 16) * len(SPRITE_FIELDS)
+    need += counts[0] * 5 + counts[1] + counts[2] + counts[3]
+    if n_counts == 7:
+        need += (counts[4] * ts.words_of("comp") + counts[5] * ts.words_of("aux")
+                 + counts[6] * ts.words_of("bank"))
+    return need
+
+
+def geom_layout(words):
+    """(n_counts, counts) for a blob, or ValueError with the reason.
+
+    The four-count rule is tried first and the two rules are mutually exclusive:
+    a seven-count blob carries three head words the four-count rule cannot
+    account for, so it always leaves three words over, and a four-count blob with
+    no comp rows cannot satisfy the seven-count rule either. The length is the
+    evidence; no version field has to be believed."""
+    for n in (4, 7):
+        if len(words) < n:
+            continue
+        counts = list(words[:n]) + [0] * (7 - n)
+        if geom_need(counts, n) == len(words):
+            return n, counts
+    raise ValueError("geometry blob length %d words matches neither the four-count "
+                     "nor the seven-count layout — re-bake it" % len(words))
 
 
 def unpack_geom(b):
     """Inverse of pack_geom, as dicts. Used by the host test and --inspect."""
+    import theme_schema as ts
     w = list(struct.unpack("<" + "I" * (len(b) // 4), b))
-    n_rects, n_first, n_delays, n_frames = w[:4]
-    i = 4
+    n_counts, c = geom_layout(w)
+    n_rects, n_first, n_delays, n_frames = c[0], c[1], c[2], c[3]
+    n_comp, n_aux, n_bank = c[4], c[5], c[6]
+    i = n_counts
     scalars = {}
     for n, t in THEME_FIELDS:
         scalars[n] = _sext(w[i], t); i += 1
@@ -218,12 +284,19 @@ def unpack_geom(b):
     first   = w[i:i + n_first];     i += n_first
     delays  = w[i:i + n_delays];    i += n_delays
     frames  = w[i:i + n_frames];    i += n_frames
+    comps = ts.unpack_records(w[i:], ts.COMP_FIELDS, n_comp, "comp")
+    i += n_comp * ts.words_of("comp")
+    aux   = ts.unpack_records(w[i:], ts.AUX_FIELDS, n_aux, "aux")
+    i += n_aux * ts.words_of("aux")
+    bank  = ts.unpack_records(w[i:], ts.BANK_FIELDS, n_bank, "bank")
+    i += n_bank * ts.words_of("bank")
     if i != len(w):
         raise ValueError("geometry blob has %d words left over at word %d"
                          % (len(w) - i, i))
     return {"scalars": scalars, "hands": hands, "shadows": shadows,
             "overlay": overlay, "tourbillon": tourb, "rects": rects,
-            "rect_first": first, "gif_delays": delays, "bg_frames": frames}
+            "rect_first": first, "gif_delays": delays, "bg_frames": frames,
+            "comps": comps, "aux": aux, "bank": bank, "n_counts": n_counts}
 
 
 def _wordstr(hdr, base, nbytes):

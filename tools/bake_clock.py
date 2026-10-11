@@ -1754,6 +1754,150 @@ def main():
             plate_off, blob, args, gif, tourb_recs, matte_mask)
 
 
+# ---------------------------------------------------------------------------
+# Complications: the kit's complications/ tiles -> theme_schema records.
+#
+# Windows are packed RAW here and never composited against the dial: the pixel the
+# panel ends up showing is the dial's own window art drawn OVER the tile at runtime,
+# which is what gives an aperture its silvered gradient and bezel without the bake
+# having to know what the dial looks like. So each tile carries a planar alpha
+# (w*h*3) and the record does NOT set CLK_FLAG_UNDER_DIAL — a reader told 2 bytes
+# per tile would stride into the next frame. See CLK_WINDOW_BYTES in orb_theme.h.
+# ---------------------------------------------------------------------------
+
+# The order a window's value indexes tiles in. Index == the frame frame_index()
+# picks for that value, so a wall-clock value and the art baked for it cannot drift
+# out of step; the kit ships these names, we do not trust its own listing order.
+_WEEKDAY_TILES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]   # value 0..6, Mon first
+_MONTH_TILES   = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]           # value 0..11
+
+
+def _comp_dir_for(tdir, cid):
+    """The kit's complications/<cid>_* folder, or None if this comp ships no tiles.
+    Matched by the `<cid>_` prefix so the bake need not agree with prep on the
+    suffix word (`c2_day` vs `c2_weekday`)."""
+    root = os.path.join(tdir, "complications")
+    if not os.path.isdir(root):
+        return None
+    for name in sorted(os.listdir(root)):
+        if name.startswith(cid + "_") and os.path.isdir(os.path.join(root, name)):
+            return os.path.join(root, name)
+    return None
+
+
+def _pack_window_tile(blob, img):
+    """Append one raw RGBA tile as RGB565 then its alpha plane; return the blob
+    offset of the colour plane. The reader strides frames by w*h*3, the value the
+    caller writes into the record's frame_bytes."""
+    off = blob.add(rgb565_le(img))
+    blob.add(alpha_bytes(img))
+    return off
+
+
+def _tile_path(cdir, name):
+    for cand in (name, name + ".png", name + ".PNG"):
+        p = os.path.join(cdir, cand)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def bake_complications(tdir, blob, verbose=True):
+    """Read <tdir>/manifest.json's layout.comps + <tdir>/complications/ tiles and
+    return (comp_records, aux_records, bank_records) to hand to pack_geom.
+
+    Returns three empty lists whenever the kit has no manifest or no
+    complications/ folder, so the blob stays four-count and a classic kit boots
+    exactly as it did before the calendar existed — this runs on every bake.
+    """
+    import math
+    import theme_schema as ts
+    mpath = os.path.join(tdir, "manifest.json")
+    if not os.path.exists(mpath):
+        return [], [], []
+    comps = (json.load(open(mpath)).get("layout") or {}).get("comps") or []
+    if not comps:
+        return [], [], []
+
+    dial_c = (SCREEN_W // 2, SCREEN_H // 2)
+    centre = {}                                   # comp id -> (px, py) on the panel
+    comp_recs, aux_recs, bank_recs = [], [], []
+
+    for comp in comps:
+        cid  = comp.get("id") or ""
+        ctype = (comp.get("type") or "").strip().lower()
+        if ctype in ("opening", "subdial"):       # the balance aperture / the host
+            continue                              # plate are not window comps
+
+        # The angle is whole degrees with 0 at twelve, clockwise; dist is the radius.
+        # A comp hosted by another (the moon on its subdial) measures from THAT comp's
+        # resolved centre, which is why centres are stored as they are computed.
+        host = comp.get("host", "dial")
+        bx, by = centre.get(host, dial_c)
+        ang  = float(comp.get("angle", 0))
+        dist = float(comp.get("dist", 0))
+        px = bx + dist * math.sin(math.radians(ang))
+        py = by - dist * math.cos(math.radians(ang))
+        centre[cid] = (px, py)
+
+        cdir = _comp_dir_for(tdir, cid)
+        if cdir is None:
+            if verbose:
+                print("  comp {:5s} {:8s}: no complications/{}_* folder, skipped".format(
+                    cid, ctype, cid))
+            continue
+
+        word    = (comp.get("shows") or comp.get("scale") or comp.get("show") or ctype)
+        src_idx = ts.source_of(word)               # unknown kit word is a hard error here
+        src     = ts.SOURCES[src_idx]
+        if src == "weekday":
+            names = _WEEKDAY_TILES
+        elif src == "month":
+            names = _MONTH_TILES
+        else:                                       # moon/other: the folder's own order
+            names = [os.path.splitext(n)[0] for n in sorted(os.listdir(cdir))
+                     if n.lower().endswith(".png")]
+
+        imgs, size = [], None
+        for n in names:
+            p = _tile_path(cdir, n)
+            if p is None:
+                raise SystemExit("comp %s: source %r needs tile %r, absent from %s"
+                                 % (cid, word, n, cdir))
+            im = Image.open(p).convert("RGBA")
+            if size is None:
+                size = im.size
+            elif im.size != size:
+                raise SystemExit("comp %s: tile %r is %s but the box is %s — a window "
+                                 "strides by one fixed box" % (cid, n, im.size, size))
+            imgs.append(im)
+
+        w, h = size
+        off0 = _pack_window_tile(blob, imgs[0])
+        for im in imgs[1:]:
+            _pack_window_tile(blob, im)
+
+        rec = ts.blank("comp")
+        rec.update(tag=(int(cid[1:]) if cid[1:].isdigit() else 0),
+                   kind=ts.kind_of("window"), src=src_idx,
+                   x=int(round(px - w / 2)), y=int(round(py - h / 2)),
+                   w=w, h=h, count=len(imgs), first=0, off=off0,
+                   frame_bytes=ts.window_bytes({"w": w, "h": h, "flags": 0}),
+                   value_min=1 if src == "date" else 0, scale=16,
+                   blend=0, show=1, flags=0, reserve=0)
+        comp_recs.append(rec)
+        if verbose:
+            print("  comp {:5s} {:8s} src={:10s} {}x{} @({},{}) {} tiles @{:+d}deg r{:.0f}"
+                  .format(cid, ctype, src, w, h, rec["x"], rec["y"],
+                          len(imgs), int(ang), dist))
+
+    if len(comp_recs) > ts.CLK_COMP_MAX:
+        raise SystemExit("%d complications exceed the dial's cap of %d"
+                         % (len(comp_recs), ts.CLK_COMP_MAX))
+    return comp_recs, aux_recs, bank_recs
+
+
 def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
             plate_off, blob, args, gif=None, tourb_recs=None, matte_mask=0):
@@ -1961,8 +2105,15 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         frames = [int(o) for o in baked_frames] or [0]
         slug   = (getattr(args, "theme_slug", None) or theme_name)[: _ot.NAME_MAX - 1]
         title  = (getattr(args, "theme_title", None) or style.get("name") or theme_name)[: _ot.TITLE_MAX - 1]
+        # Complications are packed into the CONTAINER's art only, never the
+        # compiled-in .bin/.h pair: this call appends its window tiles to blob.buf
+        # first (so bytes(blob.buf) below carries them) and returns the records that
+        # point at those offsets. A kit with no manifest/complications yields empty
+        # tables, and pack_geom then emits the old four-count blob unchanged.
+        comps, auxs, banks = bake_complications(os.path.abspath(args.theme_dir), blob)
         geom   = _ot.pack_geom(scalars, hand_recs, shadow_recs, overlay,
-                              list(tourb_recs or []), rects, first, delays, frames)
+                              list(tourb_recs or []), rects, first, delays, frames,
+                              comps=comps, aux=auxs, bank=banks)
         os.makedirs(os.path.dirname(args.orbtheme) or ".", exist_ok=True)
         n = _ot.write_container(args.orbtheme, slug, title, geom, bytes(blob.buf),
                                 SCREEN_W, SCREEN_H,

@@ -71,6 +71,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <inttypes.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -1317,12 +1318,16 @@ typedef struct {
 
 /* Per-role blend counts AND time, one second's worth on the fps line (k0..k4
  * are the theme's layer slots — hour, minute, seconds/carriage, dial,
- * counterweight — and k5 is the glass overlay). The two together give cycles
+ * counterweight — and k5 is the glass overlay, k6 the baked complication
+ * tiles (windows, strip glyphs and edges)). The two together give cycles
  * per blend per layer, which is the only way to tell "the carriage pays for
  * scattered inverse-map fetches out of PSRAM" (→ stage its texel rows in
  * internal RAM) from "the static pair pays for sheer pixel count" (→ memoize
  * dial+glass per row). Counting blends alone cannot tell those apart. */
-#define CLK_PAINT_ROLES 6
+#define CLK_PAINT_ROLES 7                 /* hands/shadows are roles 0..4, glass 5,
+                                           * baked complications 6 (CLK_ROLE_*)     */
+#define CLK_ROLE_GLASS 5
+#define CLK_ROLE_COMP  6
 static uint32_t s_hk_role_blend[CLK_PAINT_ROLES];
 static uint32_t s_hk_role_blend0[CLK_PAINT_ROLES];
 static uint64_t s_hk_role_us[CLK_PAINT_ROLES];
@@ -1466,6 +1471,10 @@ static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
  * across the whole band, which is the difference between the carriage costing
  * ~55 ms and ~25 ms of a ~145 ms commit. */
 #define CLK_L4_MAX_JOBS 12           /* order[5] x (shadow+hand) + glass */
+#define CLK_COMP_JOBS_MAX 32         /* blits for the baked complications: 16
+                                      * windows, or ~3 strips' glyphs + window
+                                      * pieces. Overflow drops the rest with a
+                                      * one-line log (see comp_add_jobs). */
 #define CLK_COMMIT_BAND 8            /* rows staged at once               */
 #define CLK_PAINT_TILE  32           /* columns per rotated-pass tile     */
 /* Tile/band sizes measured on the tourbillon face, cycles per blend_px of the
@@ -1600,6 +1609,9 @@ static void bench_paint_band(int32_t y0, int nr)
  * hands vanish over freshly pushed background and leave a ghost at the pose the
  * first LVGL render had drawn. Rows that never get a commit simply stay marked
  * until one does. */
+static void clock_layer_commit(void);
+static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj);
+
 static void clock_layer_commit(void)
 {
     if (!l4_active()) return;
@@ -1616,9 +1628,14 @@ static void clock_layer_commit(void)
     /* One ctx per live layer, built once for this commit. Static rather than
      * stack: the hook has exactly one caller (the LVGL task's flush) and the
      * LVGL task stack is not ours to spend 900 B of. */
-    static paint_ctx_t jc[CLK_L4_MAX_JOBS];
+    static paint_ctx_t jc[CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX];
     int nj = 0;
-    for (int oi = 0; oi < clk_theme.order_n && nj < CLK_L4_MAX_JOBS - 1; ++oi) {
+    /* Bottom-most layer over the restored canvas: the complication tiles the
+     * bake packed for the values the tick resolved. The live dial's window
+     * frame — a job from the loop below — composites over their edges, which
+     * is why the bake left them raw (see the complication block). */
+    comp_add_jobs(orb_theme_geo(), jc, &nj);
+    for (int oi = 0; oi < clk_theme.order_n && nj < CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX - 1; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
         if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
@@ -1627,8 +1644,8 @@ static void clock_layer_commit(void)
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], layer_spr(k), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
     }
-    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_L4_MAX_JOBS)
-        if (paint_ctx_init(&jc[nj], &clk_theme.overlay, 0, CLK_PAINT_ROLES - 1)) nj++;  /* the glass */
+    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX)
+        if (paint_ctx_init(&jc[nj], &clk_theme.overlay, 0, CLK_ROLE_GLASS)) nj++;  /* the glass */
 
     /* Walk the marked rows in bands (see s_band). Runs of marked rows are the
      * normal case — a GIF rect or a hand's swept box marks a contiguous range —
@@ -1736,6 +1753,410 @@ static void clock_layer_commit(void)
 }
 #endif /* CLK_BG_DIRECT_PUSH */
 
+/* ---- complications: baked windows and strips under the live dial -----------
+ *
+ * The policy is locked with the baker (tools/bake_clock.py::bake_complications):
+ * window tiles pack RAW — colour plane w*h*2 then planar alpha w*h — never
+ * composited against the dial. The tile a value selects goes down as the
+ * bottom-most paint job and the live dial's own window frame composites over
+ * its edge, so a tile sits in its bezel the way a real disc sits behind a
+ * real aperture. Windows address the art blob directly
+ * (c->off + frame*c->frame_bytes); the shared sprite bank serves strips only
+ * — glyphs and window pieces — exactly as tools/orbtheme.py pack_geom packed
+ * them.
+ *
+ * The frame-selection maths is the exact mirror of
+ * tools/theme_schema.py::frame_index: the bake laid tiles out by that
+ * function, so the rounding, the clamp and the wrap must match to the pixel.
+ * Everything stays integer, so no libm floor can drift from the Python.
+ *
+ * What this pass draws: WINDOW and STRIP. RING and FLARE validate at
+ * orb_theme.c but ship on no bake and nothing here fixes how a value rotates
+ * one or blends: logged once, hidden, the same discipline the reader applies
+ * to a kind newer than the dial. Under-dial windows (opaque, bake-composited
+ * — see orb_theme.h) and battery-driven comps (the orb is wall-powered:
+ * main/net/orb_net.c) are likewise parsed, validated, and not drawn. */
+
+#define CLK_COMP_SLOTS (CLK_STRIP_GLYPHS_MAX + 2)  /* glyph positions + window pieces L/R */
+static lv_obj_t       *s_comp_obj[CLK_COMP_MAX][CLK_COMP_SLOTS];
+static lv_image_dsc_t  s_comp_dsc[CLK_COMP_MAX][CLK_COMP_SLOTS];
+/* The frame drawn right now, per comp: the window's tile index; the strip's
+ * digit at each glyph position and a 0 for each window piece; -1 = nothing
+ * drawn. Sole truth for both paths: the L4 commit hook builds its jobs from
+ * these, and the classic path reads the LVGL widgets comp_slot_show keeps in
+ * step. Any drift between the two is the one-tick ghost the hands paid for
+ * before apply_angles learned to hold its angles. */
+static int32_t         s_comp_frame[CLK_COMP_MAX][CLK_COMP_SLOTS];
+static uint32_t        s_comp_logged;        /* bit i: hide reason for comp i printed */
+static bool            s_comp_jobs_warned;   /* job-list overflow is a one-liner */
+
+/* theme_schema.frame_index() verbatim: sign-aware round-to-nearest at
+ * scale = frames-per-value-unit x16, clamp below the domain, and WRAP —
+ * never clamp — at count, so weekday and month keep cycling. */
+static uint16_t comp_frame_index(int32_t value, uint16_t count,
+                                 int16_t value_min, uint16_t scale)
+{
+    if (!count) return 0;
+    const int32_t s = scale ? (int32_t)scale : 16;
+    int64_t idx = (int64_t)(value - (int32_t)value_min) * s;
+    idx = (idx >= 0) ? (idx + 8) / 16 : -((-idx + 8) / 16);
+    if (idx < 0)               idx = 0;
+    if (idx >= (int64_t)count) idx %= (int64_t)count;
+    return (uint16_t)idx;
+}
+
+/* How many glyph positions a strip box holds: the same ceil(w / glyph_step)
+ * the reader took when it accepted the bake. That side refuses a bake this
+ * side cannot lay out, so this side only repeats the division. */
+static int comp_strip_positions(const clk_comp_t *c)
+{
+    if (c->glyph_step <= 0) return 0;             /* the reader refused such a strip */
+    const uint32_t pos = ((uint32_t)c->w + (uint32_t)c->glyph_step - 1u)
+                       / (uint32_t)c->glyph_step;
+    return (pos > CLK_STRIP_GLYPHS_MAX) ? CLK_STRIP_GLYPHS_MAX : (int)pos;
+}
+
+/* theme_schema.strip_indices() verbatim: the value's decimal, most
+ * significant first, each glyph reduced into the glyph set, cut to the last
+ * npos digits the box can hold. out[p] == -1 leaves position p empty, and
+ * the drawn run sits right-aligned like a real date drum; a zero-padded bake
+ * fills the spare left positions with the zero glyph instead. */
+static void comp_strip_digits(int32_t value, int npos, bool zero_pad,
+                              uint16_t count, int16_t *out)
+{
+    for (int p = 0; p < npos; p++) out[p] = -1;
+    if (npos <= 0) return;
+    char buf[12];
+    if (value < 0) value = 0;                     /* no source goes negative; belt */
+    snprintf(buf, sizeof buf, "%d", (int)value);
+    int len = (int)strlen(buf);
+    if (zero_pad && len < npos) {
+        memmove(buf + (npos - len), buf, (size_t)len);
+        memset(buf, '0', (size_t)(npos - len));
+        len = npos;
+    }
+    if (len > npos) { memmove(buf, buf + len - npos, (size_t)npos); len = npos; }
+    const int first = npos - len;
+    const int gmax  = count ? (int)count : 1;
+    for (int p = 0; p < len; p++)
+        out[first + p] = (int16_t)((buf[p] - '0') % gmax);
+}
+
+/* One known new moon (2000-01-06 18:14 UTC) and the mean synodic month, both
+ * whole seconds: the age stays integer end to end, 0..29 days. The 30-tile
+ * moon a bake lays out indexes the age once per day — the half-day the mean
+ * month carries over 29.53 costs a tile-edge rounding at most, which is what
+ * a float-free dial path buys. */
+#define MOON_NEW_MOON_S  947182440LL
+#define MOON_SYNODIC_S   2551443LL        /* 29.530588853 d */
+
+static bool comp_year_leap(int y) { return (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0); }
+
+/* ISO 8601 week number: week 1 holds the year's first Thursday, so the
+ * Thursday of the date's own week says which year the week belongs to. A
+ * Thursday past the year end is the coming year's week 1; one before its
+ * start is the outgoing year's LAST week — numbered off ITS Dec 28, which
+ * always sits inside that final week (Dec 31's Thursday can already be in the
+ * new year, which is exactly how numbering off Dec 31 over-counted). All from
+ * the tm fields compose_now already filled: no mktime round-trip here. */
+static int32_t comp_iso_week(const struct tm *ti)
+{
+    const int yday1 = ti->tm_yday + 1;
+    const int wd7   = (ti->tm_wday + 6) % 7 + 1;           /* Mon==1 .. Sun==7 */
+    const int pdays = comp_year_leap(ti->tm_year + 1900) ? 366 : 365;
+    const int th    = yday1 + 4 - wd7;                     /* week's Thursday  */
+    if (th > pdays) return 1;                              /* next year's W1   */
+    if (th >= 1)    return (yday1 + 10 - wd7) / 7;
+    const int py    = ti->tm_year + 1900 - 1;
+    const int pyd   = comp_year_leap(py) ? 366 : 365;
+    const int jan1  = ((wd7 - 1 - (ti->tm_yday % 7)) % 7 + 7) % 7 + 1;
+    const int d31   = ((jan1 - 2) % 7 + 7) % 7 + 1;        /* prev Dec 31      */
+    const int d28   = ((d31 - 4) % 7 + 7) % 7 + 1;         /* three days on    */
+    return (pyd - 3 + 10 - d28) / 7;
+}
+
+/* The value that drives a comp, from the same local struct tm and whole
+ * second compose_now sampled the hands from. The tile ORDER is the bake's
+ * (bake_clock._WEEKDAY_TILES is Monday-first, _MONTH_TILES January-first),
+ * so tm_wday/tm_mon map into the frame domain directly. Returns false = no
+ * input exists on this hardware for that source. */
+static bool comp_value(uint8_t src, const struct tm *ti, time_t t, int32_t *out)
+{
+    switch (src) {
+    case CLK_SRC_WEEKDAY:     *out = (ti->tm_wday + 6) % 7;   break;
+    case CLK_SRC_MONTH:       *out = ti->tm_mon;              break;
+    case CLK_SRC_DATE:        *out = ti->tm_mday;             break;
+    case CLK_SRC_HOUR12:      *out = ti->tm_hour % 12;        break;
+    case CLK_SRC_HOUR24:      *out = ti->tm_hour;             break;
+    case CLK_SRC_MINUTE:      *out = ti->tm_min;              break;
+    case CLK_SRC_SECOND:      *out = ti->tm_sec;              break;
+    case CLK_SRC_AMPM:        *out = ti->tm_hour >= 12;       break;
+    case CLK_SRC_WEEK:        *out = comp_iso_week(ti);       break;
+    case CLK_SRC_DAY_OF_YEAR: *out = ti->tm_yday + 1;         break;
+    case CLK_SRC_QUARTER:     *out = ti->tm_mon / 3 + 1;      break;
+    case CLK_SRC_MOON_AGE: {
+        int64_t m = ((int64_t)t - MOON_NEW_MOON_S) % MOON_SYNODIC_S;
+        if (m < 0) m += MOON_SYNODIC_S;
+        *out = (int32_t)(m / 86400);
+        break; }
+    default:                  return false;  /* none/text/value/battery/reserve */
+    }
+    return true;
+}
+
+/* Point one comp slot's image at blob pixels and un-hide it. Under L4 the
+ * widget never paints — nothing invalidates it — but it must still say what
+ * the job list says: whenever LVGL renders a page itself (bounce-on, a
+ * refused direct push) it renders the widget, and a tick of drift between
+ * the two is a ghost on the glass. */
+static void comp_slot_show(uint16_t i, int p, uint32_t color_off,
+                           uint16_t w, uint16_t h, int32_t x, int32_t y)
+{
+    lv_image_dsc_t *d = &s_comp_dsc[i][p];
+    memset(d, 0, sizeof *d);
+    d->header.magic  = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf     = LV_COLOR_FORMAT_RGB565A8;   /* planar colour+alpha, as packed */
+    d->header.w      = w;
+    d->header.h      = h;
+    d->header.stride = (uint32_t)w * 2u;
+    d->data_size     = (uint32_t)w * (uint32_t)h * 3u;
+    d->data          = blob() + color_off;
+    lv_obj_t *o = s_comp_obj[i][p];
+    if (!o) return;
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_pos(o, (lv_coord_t)x, (lv_coord_t)y);
+    lv_image_set_src(o, d);
+    lv_obj_set_hidden(o, false);
+}
+
+static void comp_slot_hide(uint16_t i, int p)
+{
+    if (s_comp_obj[i][p]) lv_obj_set_hidden(s_comp_obj[i][p], true);
+}
+
+/* Ask whoever owns the pixels to rebuild this comp's box: L4 marks the rows
+ * (the hook restores the canvas under them and repaints EVERY job, comps
+ * included), the classic path invalidates so LVGL re-renders plate and
+ * children over the area. box_h runs the mark down to the tallest thing the
+ * strip actually draws — the reader bounds the RECORD's box against the
+ * panel and the glyphs' art against the payload, not the glyphs against the
+ * box. */
+static void comp_touch_box(const clk_comp_t *c, int32_t box_h)
+{
+    int32_t x0 = c->x, y0 = c->y;
+    int32_t x1 = c->x + (int32_t)c->w - 1;
+    int32_t y1 = c->y + box_h - 1;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > CLK_SCR_W - 1) x1 = CLK_SCR_W - 1;
+    if (y1 > CLK_SCR_H - 1) y1 = CLK_SCR_H - 1;
+    if (x1 < x0 || y1 < y0) return;
+#if CLK_BG_DIRECT_PUSH
+    if (l4_active()) { mark_rows(y0, y1, x0, x1, false); return; }
+#endif
+    lv_area_t b = { x0, y0, x1, y1 };
+    lv_obj_invalidate_area(s_scr, &b);
+}
+
+/* The per-tick pass. A comp only dirties pixels when its SELECTION moved —
+ * tile index, glyph digits, shown/hidden — so a hung calendar costs one
+ * integer compare per comp per tick, and a theme with no complications costs
+ * one loop-exit. */
+static void comps_update(const struct tm *ti, time_t t)
+{
+    const orb_theme_geo_t *g = orb_theme_geo();
+    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
+        const clk_comp_t *c = &g->comps[i];
+        const bool window = (c->kind == CLK_KIND_WINDOW);
+        const bool strip  = (c->kind == CLK_KIND_STRIP);
+        const int  npos   = strip ? comp_strip_positions(c) : 0;
+        const int  slots  = window ? 1 : (strip ? npos + 2 : 0);
+        bool dirty = false;
+
+        /* What to draw, with every valid-but-hidden case logged once per
+         * comp: a kind with no painter, an opaque under-dial tile, a source
+         * with no input, an explicit DISABLED, a blink off-beat. */
+        bool live = c->show && !(c->flags & CLK_FLAG_DISABLED);
+        if (live && !window && !strip) {
+            live = false;
+            if (!(s_comp_logged & (1u << i))) {
+                s_comp_logged |= 1u << i;
+                ESP_LOGW(TAG, "comp %" PRIu32 ": kind %u has no painter yet — not drawn",
+                         (uint32_t)i, (unsigned)c->kind);
+            }
+        }
+        if (live && window && (c->flags & CLK_FLAG_UNDER_DIAL)) {
+            live = false;
+            if (!(s_comp_logged & (1u << i))) {
+                s_comp_logged |= 1u << i;
+                ESP_LOGW(TAG, "comp %" PRIu32 ": bake-composited under-dial tile — this dial "
+                              "draws raw tiles under the live frame only", (uint32_t)i);
+            }
+        }
+        int32_t value = 0;
+        if (live && !comp_value(c->src, ti, t, &value)) {
+            live = false;
+            if (!(s_comp_logged & (1u << i))) {
+                s_comp_logged |= 1u << i;
+                ESP_LOGW(TAG, "comp %" PRIu32 ": source %u has no input on this device — not drawn",
+                         (uint32_t)i, (unsigned)c->src);
+            }
+        }
+        if (live && (c->flags & CLK_FLAG_BLINK) && (t % 2) != 0) live = false;
+
+        int32_t box_h = (int32_t)c->h;
+        if (strip && npos > 0 && c->count) {
+            const clk_sprite_t *b = &g->bank[c->first];
+            if ((int32_t)b->h > box_h) box_h = b->h;
+        }
+
+        if (!live) {
+            for (int p = 0; p < slots; p++)
+                if (s_comp_frame[i][p] != -1) {
+                    comp_slot_hide(i, p);
+                    s_comp_frame[i][p] = -1;
+                    dirty = true;
+                }
+            if (dirty) comp_touch_box(c, box_h);
+            continue;
+        }
+
+        if (window) {
+            const int32_t f = (int32_t)comp_frame_index(value, c->count,
+                                                        c->value_min, c->scale);
+            if (s_comp_frame[i][0] != f) {
+                comp_slot_show(i, 0, c->off + (uint32_t)f * c->frame_bytes,
+                               c->w, c->h, c->x, c->y);
+                s_comp_frame[i][0] = f;
+                dirty = true;
+            }
+        } else {
+            int16_t dig[CLK_STRIP_GLYPHS_MAX];
+            comp_strip_digits(value, npos, (c->flags & CLK_FLAG_ZERO_PAD) != 0,
+                              c->count, dig);
+            for (int p = 0; p < npos; p++) {
+                if (s_comp_frame[i][p] == dig[p]) continue;
+                if (dig[p] < 0) {
+                    comp_slot_hide(i, p);
+                } else {
+                    const clk_sprite_t *b = &g->bank[c->first + (uint16_t)dig[p]];
+                    comp_slot_show(i, p, b->color_off, b->w, b->h,
+                                   c->x + c->glyph_lead + (int32_t)p * c->glyph_step,
+                                   c->y);
+                }
+                s_comp_frame[i][p] = dig[p];
+                dirty = true;
+            }
+            /* Window pieces: fixed pixels, drawn whenever the strip is, so
+             * their frame goes to -1 only while the whole comp is hidden. */
+            if (c->edge_left != 0xFFFFu && s_comp_frame[i][npos] < 0) {
+                const clk_sprite_t *b = &g->bank[c->edge_left];
+                comp_slot_show(i, npos, b->color_off, b->w, b->h, c->x, c->y);
+                s_comp_frame[i][npos] = 0;
+                dirty = true;
+            }
+            if (c->edge_right != 0xFFFFu && s_comp_frame[i][npos + 1] < 0) {
+                const clk_sprite_t *b = &g->bank[c->edge_right];
+                comp_slot_show(i, npos + 1, b->color_off, b->w, b->h,
+                               c->x + (int32_t)c->w - (int32_t)b->w, c->y);
+                s_comp_frame[i][npos + 1] = 0;
+                dirty = true;
+            }
+        }
+        if (dirty) comp_touch_box(c, box_h);
+    }
+}
+
+/* Build every drawable comp slot's LVGL widget, hidden until comp_slot_show.
+ * Runs right after the plate and before the hand/glass loop, so the classic
+ * path's sibling order — plate, comp tiles, S2 H2 S1 H1 S0 H0, glass —
+ * matches the L4 job order: the tile sits UNDER the live dial layer, not
+ * just somewhere on the page. */
+static void complications_create(void)
+{
+    const orb_theme_geo_t *g = orb_theme_geo();
+    memset(s_comp_obj,   0,    sizeof s_comp_obj);
+    memset(s_comp_frame, 0xFF, sizeof s_comp_frame);      /* -1: nothing drawn yet */
+    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
+        const clk_comp_t *c = &g->comps[i];
+        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
+        int slots = 0;
+        if      (c->kind == CLK_KIND_WINDOW) slots = 1;
+        else if (c->kind == CLK_KIND_STRIP)  slots = comp_strip_positions(c) + 2;
+        for (int p = 0; p < slots && p < CLK_COMP_SLOTS; p++) {
+            lv_obj_t *o = lv_image_create(s_scr);
+            lv_obj_set_align(o, LV_ALIGN_TOP_LEFT);
+            lv_obj_set_scrollable(o, false);
+            lv_image_set_blend_mode(o, map_blend(c->blend));
+            lv_obj_set_hidden(o, true);
+            s_comp_obj[i][p] = o;
+        }
+    }
+}
+
+#if CLK_BG_DIRECT_PUSH
+static void comp_jobs_overflow(void)
+{
+    if (s_comp_jobs_warned) return;
+    s_comp_jobs_warned = true;
+    ESP_LOGW(TAG, "complication blits exceed the %d-slot job list — later comps not drawn",
+             CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX);
+}
+
+/* One paint ctx per currently-drawn slot, front of the job list. Every comp
+ * blit is static (ang == 0) — the hook's cheapest path — and the ctxs rebuild
+ * each commit from s_comp_frame, exactly how the hands stay honest between
+ * the two paths. A bank row without pixels (w or h 0) is dropped inside
+ * paint_ctx_init's drawable test, matching the reader's rule. */
+static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
+{
+    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
+        const clk_comp_t *c = &g->comps[i];
+        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
+
+        if (c->kind == CLK_KIND_WINDOW) {
+            const int32_t f = s_comp_frame[i][0];
+            if (f < 0) continue;
+            if (*nj >= CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX) { comp_jobs_overflow(); return; }
+            const clk_sprite_t spr = {
+                .w = c->w, .h = c->h,
+                .pivotx = 0, .pivoty = 0,
+                .centerx = c->x, .centery = c->y,
+                .blend = c->blend, .show = 1,
+                .color_off = c->off + (uint32_t)f * c->frame_bytes,
+            };
+            if (paint_ctx_init(&jc[*nj], &spr, 0, CLK_ROLE_COMP)) (*nj)++;
+            continue;
+        }
+        if (c->kind != CLK_KIND_STRIP) continue;
+
+        const int npos = comp_strip_positions(c);
+        for (int p = 0; p < npos + 2 && p < CLK_COMP_SLOTS; p++) {
+            const int32_t f = s_comp_frame[i][p];
+            if (f < 0) continue;
+            uint16_t bidx;
+            int32_t x, y = c->y;
+            if      (p <  npos) { bidx = (uint16_t)(c->first + (uint16_t)f);
+                                  x = c->x + c->glyph_lead + (int32_t)p * c->glyph_step; }
+            else if (p == npos) { bidx = c->edge_left;  x = c->x; }
+            else                { bidx = c->edge_right; x = 0;    }
+            if (bidx >= g->n_bank) continue;
+            const clk_sprite_t *b = &g->bank[bidx];
+            if (p > npos) x = c->x + (int32_t)c->w - (int32_t)b->w;
+            if (*nj >= CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX) { comp_jobs_overflow(); return; }
+            const clk_sprite_t spr = {
+                .w = b->w, .h = b->h,
+                .pivotx = 0, .pivoty = 0,
+                .centerx = (int16_t)x, .centery = (int16_t)y,
+                .blend = c->blend, .show = 1,
+                .color_off = b->color_off,
+            };
+            if (paint_ctx_init(&jc[*nj], &spr, 0, CLK_ROLE_COMP)) (*nj)++;
+        }
+    }
+}
+#endif /* CLK_BG_DIRECT_PUSH */
+
 static void compose_now(void)
 {
     /* Two time sources, one anchor pair (see s_epoch_base). Sampled HERE, on the
@@ -1782,6 +2203,12 @@ static void compose_now(void)
     float ang[5];
     hand_angles(frac, ti.tm_hour, ti.tm_min, ti.tm_sec, ang);
     apply_angles(ang);
+
+    /* The complication pass: every window/strip re-reads its value from the
+     * SAME local minute the hands were sampled from, and only the comps whose
+     * selected frame actually changed dirty their rows (see the block above
+     * compose_now). A theme with no complications costs one counter here. */
+    comps_update(&ti, t);
 }
 
 /* Per-second throughput report while the clock is live: how many composited
@@ -1839,13 +2266,14 @@ static void report_fps_if_due(void)
      * carriage's wants those static passes memoized per row; a carriage sweep
      * far dearer per blend is paying for scattered inverse-map fetches out of
      * PSRAM and wants its texel rows staged in internal RAM. */
-    ESP_LOGI(TAG, "  blend/s by layer: hr %u/%llu ms min %u/%llu sec %u/%llu dial %u/%llu cw %u/%llu glass %u/%llu",
+    ESP_LOGI(TAG, "  blend/s by layer: hr %u/%llu ms min %u/%llu sec %u/%llu dial %u/%llu cw %u/%llu glass %u/%llu comp %u/%llu",
              (unsigned)drb[0], (unsigned long long)(dru[0] / 1000),
              (unsigned)drb[1], (unsigned long long)(dru[1] / 1000),
              (unsigned)drb[2], (unsigned long long)(dru[2] / 1000),
              (unsigned)drb[3], (unsigned long long)(dru[3] / 1000),
              (unsigned)drb[4], (unsigned long long)(dru[4] / 1000),
-             (unsigned)drb[5], (unsigned long long)(dru[5] / 1000));
+             (unsigned)drb[5], (unsigned long long)(dru[5] / 1000),
+             (unsigned)drb[6], (unsigned long long)(dru[6] / 1000));
 #if DISPLAY_BENCH
     /* Proof the synthetic ink is really on the glass: ink px/s must read
      * blocks x 3600 x fps, and the CAD bands/px fields must not collapse. */
@@ -2056,6 +2484,14 @@ esp_err_t clock_view_init(void)
     /* Fresh widgets are all at rotation 0, so forget the angles we last pushed;
      * otherwise a rebuilt view would skip the re-pose as "unchanged". */
     for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
+
+    /* Complication widgets, created BEFORE the hand/layer loop below so the
+     * classic path's sibling order is plate -> comp tiles -> S2 H2 S1 H1 S0 H0
+     * -> glass: the tile a value selects sits under the live dial frame, as
+     * the bake's runtime-composite policy requires. No-op for every theme
+     * that ships no complications (the compiled-in pair and every pre-calendar
+     * container both report n_comps == 0). */
+    complications_create();
 
     /* Each shadow goes down immediately before its OWN hand, walking the
      * theme's back-to-front order, so the z-stack is

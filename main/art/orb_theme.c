@@ -15,6 +15,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>                 // PRIu32 in the complication-loop logs (the
+                                      // riscv toolchain's uint32_t is not `int`)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,7 +94,22 @@ _Static_assert(W_WORDS == 32, "container header must be 128 bytes");
 #define TOURB_MAX        16                        /* CLK_TOURB_MAX */
 #define SPRITES_TOTAL    (5 + 5 + 1 + TOURB_MAX)   /* hands, shadows, overlay, tb */
 #define RECT_WORDS       5                         /* x, y, w, h, off */
-#define GEOM_FIXED_WORDS (4u + THEME_SCALARS_N + (uint32_t)SPRITES_TOTAL * SPRITE_WORDS_N)
+
+/* The complication/indicator tables of tools/theme_schema.py. COMPS_MAX etc.
+ * are the same caps the bake refuses to exceed, so a theme that would need a
+ * bigger firmware array is refused as unloadable instead of installing and
+ * silently losing its extra windows. */
+#define GEOM_COUNTS_V1   4                          /* rects, first, delays, bgf  */
+#define GEOM_COUNTS_V2   7                          /* + comps, aux rows, bank    */
+#define COMPS_MAX        16                         /* CLK_COMP_MAX               */
+#define AUX_MAX          8                          /* CLK_AUX_MAX                */
+#define BANK_MAX         256                        /* CLK_BANK_MAX               */
+#define COMP_WORDS       26                         /* len(theme_schema.COMP_FIELDS) */
+#define AUX_WORDS        24                         /* 15 sprite + 9 driving words   */
+#define BANK_WORDS       SPRITE_WORDS_N
+
+/* Words a blob of each layout must hold, given its own counts — see geom_counts()
+ * below, which is the definition and the only caller-facing form of this rule. */
 
 /* Bounds the loader accepts, from clock_view.c's own array sizes and from what
  * the shipped bake measures (128 rects, 8 GIF frames). A theme wanting more than
@@ -121,6 +138,9 @@ typedef struct {
     uint32_t geom_crc, art_crc;
     uint32_t serial;
     uint32_t n_rects, n_first, n_delays, n_bgf;
+    uint32_t n_comp, n_aux, n_bank;      /* the complication tables; 0 for a
+                                         * four-count blob, and the length is
+                                         * what proves they are really zero */
     char     slug[24 + 1];
     char     title[32 + 1];
 } orb_thdr_t;
@@ -166,6 +186,54 @@ static void rd_sprite(rd_t *r, clk_sprite_t *s, const char *tag)
     s->diffh     = rd_u16(r, tag);
 }
 
+/* One complication record, in tools/theme_schema.py's COMP_FIELDS order, and one
+ * aux-hand record in AUX_FIELDS order. Same reason rd_sprite exists: the field
+ * named in the refusal is the one somebody can act on, and the order is the
+ * whole contract between the bake and the dial. */
+static void rd_comp(rd_t *r, clk_comp_t *c, const char *tag)
+{
+    c->tag         = rd_u16(r, tag);
+    c->kind        = rd_u8 (r, tag);
+    c->src         = rd_u8 (r, tag);
+    c->x           = rd_i16(r, tag);
+    c->y           = rd_i16(r, tag);
+    c->w           = rd_u16(r, tag);
+    c->h           = rd_u16(r, tag);
+    c->count       = rd_u16(r, tag);
+    c->first       = rd_u16(r, tag);
+    c->off         = rdt   (r, tag);
+    c->frame_bytes = rdt   (r, tag);
+    c->cx          = rd_i16(r, tag);
+    c->cy          = rd_i16(r, tag);
+    c->radius      = rd_i16(r, tag);
+    c->angle0      = rd_i16(r, tag);
+    c->angle_step  = rd_i16(r, tag);
+    c->value_min   = rd_i16(r, tag);
+    c->scale       = rd_u16(r, tag);
+    c->glyph_step  = rd_i16(r, tag);
+    c->glyph_lead  = rd_i16(r, tag);
+    c->edge_left   = rd_u16(r, tag);
+    c->edge_right  = rd_u16(r, tag);
+    c->flags       = rd_u16(r, tag);
+    c->blend       = rd_u8 (r, tag);
+    c->show        = rd_u8 (r, tag);
+    c->reserve     = rdt   (r, tag);
+}
+
+static void rd_aux(rd_t *r, clk_aux_t *a, const char *tag)
+{
+    rd_sprite(r, &a->spr, tag);
+    a->tag       = rd_u16(r, tag);
+    a->src       = rd_u8 (r, tag);
+    a->kind      = rd_u8 (r, tag);
+    a->host      = rd_u16(r, tag);
+    a->span      = rd_i16(r, tag);
+    a->zero      = rd_i16(r, tag);
+    a->value_min = rd_u16(r, tag);
+    a->value_max = rd_u16(r, tag);
+    a->flags     = rd_u16(r, tag);
+}
+
 static void rd_wordstr(const uint32_t *w, int base, char *dst, int cap)
 {
     int i = 0;
@@ -206,24 +274,43 @@ static const char *hdr_parse(const uint32_t *w, orb_thdr_t *o)
      * SLOT_GEOM_OFF. Both check against their own layout. Sizes are checked here
      * because they decide how many bytes get streamed and how much RAM the
      * geometry lands in. */
-    if (o->geom_size < GEOM_FIXED_WORDS * 4u || o->geom_size > SLOT_GEOM_CAP)
+    if (o->geom_size < (GEOM_COUNTS_V1 + THEME_SCALARS_N
+                        + (uint32_t)SPRITES_TOTAL * SPRITE_WORDS_N) * 4u
+        || o->geom_size > SLOT_GEOM_CAP)
         return "geometry blob size is not credible for this dial";
     if (o->art_size < PLATE_BYTES || o->art_size > SLOT_CAP)
         return "pixel payload is bigger than a theme slot — re-bake it";
     rd_wordstr(w, W_SLUG,  o->slug,  sizeof(o->slug));
     rd_wordstr(w, W_TITLE, o->title, sizeof(o->title));
     o->n_rects = o->n_first = o->n_delays = o->n_bgf = 0;
+    o->n_comp = o->n_aux = o->n_bank = 0;
     return NULL;
 }
 
-/* The blob's length is fully determined by its four counts, so a header whose
- * numbers do not add up is refused before a single pixel is read. */
-static bool geom_sizes_ok(uint32_t geom_size, uint32_t n_rects, uint32_t n_first,
-                          uint32_t n_delays, uint32_t n_bgf)
+/* The blob's length is fully determined by its counts, so a header whose numbers
+ * do not add up is refused before a single pixel is read. Both the four-count
+ * layout every theme baked before the complication tables shipped, and the
+ * seven-count layout that carries them, are accepted: which one this is comes
+ * from the length, because the two rules cannot both fit one blob. */
+static int geom_counts(const uint32_t *w, size_t nwords, uint32_t c[7])
 {
-    const uint64_t need = (GEOM_FIXED_WORDS + (uint64_t)n_rects * RECT_WORDS +
-                           n_first + n_delays + n_bgf) * 4u;
-    return need == geom_size;
+    static const int ns[2] = { GEOM_COUNTS_V1, GEOM_COUNTS_V2 };
+    for (int k = 0; k < 2; k++) {
+        const int n = ns[k];
+        if (nwords < (size_t)n) continue;
+        uint32_t t[7] = { 0 };
+        for (int i = 0; i < n; i++) t[i] = w[i];
+        if (t[4] > COMPS_MAX || t[5] > AUX_MAX || t[6] > BANK_MAX) continue;
+        const uint64_t rows = (uint64_t)t[4] * COMP_WORDS + (uint64_t)t[5] * AUX_WORDS
+                            + (uint64_t)t[6] * BANK_WORDS;
+        const uint64_t body = (uint64_t)(t[0] * RECT_WORDS + t[1] + t[2] + t[3])
+                            + (uint64_t)(THEME_SCALARS_N + SPRITES_TOTAL * SPRITE_WORDS_N);
+        if ((uint64_t)(n + body + rows) * 4u == (uint64_t)nwords * 4u) {
+            for (int i = 0; i < 7; i++) c[i] = t[i];
+            return n;
+        }
+    }
+    return -1;
 }
 
 /* One rule, applied by the list, the uploader and the staging call alike: the name a
@@ -269,15 +356,29 @@ const char *orb_theme_geom_parse(const uint32_t *words, size_t nwords,
     rd_t r = { .w = words, .n = nwords };
     clk_theme_t *t = out->theme;
 
-    const uint32_t n_rects  = rdt(&r, "n_rects");
-    const uint32_t n_first  = rdt(&r, "n_first");
-    const uint32_t n_delays = rdt(&r, "n_delays");
-    const uint32_t n_bgf    = rdt(&r, "n_bg_frames");
-    if (r.why) return r.why;
+    /* The counts decide everything after them, including how many of them there
+     * are: four in a blob baked before the complication tables existed, seven in
+     * one that carries them. geom_counts() derives the layout from the blob's own
+     * length, so a four-count theme keeps loading with the firmware change and
+     * nobody has to re-bake art they already own. */
+    uint32_t cnt[7];
+    const int n_counts = geom_counts(words, nwords, cnt);
+    if (n_counts < 0) return "geometry blob length does not match its own tables";
+    r.i = (size_t)n_counts;
+    const uint32_t n_rects  = cnt[0], n_first = cnt[1];
+    const uint32_t n_delays = cnt[2], n_bgf   = cnt[3];
+    const uint32_t n_comp   = cnt[4], n_aux   = cnt[5], n_bank = cnt[6];
     if (n_rects  > RECTS_MAX)      return "too many delta rects for this dial";
     if (n_first  > GIFS_MAX + 1)   return "too many GIF frame indices";
     if (n_delays > GIFS_MAX)       return "too many GIF delays";
     if (n_bgf    > BG_FRAMES_MAX)  return "too many background frames";
+    /* The caller allocates these from the same counts, so a NULL alongside a
+     * non-zero count is a loader bug rather than a bad theme — say which. */
+    if ((n_comp && !out->comps) || (n_aux && !out->aux) || (n_bank && !out->bank))
+        return "loader gave no room for the complication tables";
+    out->n_comps = (uint16_t)n_comp;
+    out->n_aux   = (uint16_t)n_aux;
+    out->n_bank  = (uint16_t)n_bank;
 
     /* 26 scalars, tools/orbtheme.py's THEME_FIELDS order. */
     t->bg              = rdt(&r, "bg");
@@ -389,13 +490,114 @@ const char *orb_theme_geom_parse(const uint32_t *words, size_t nwords,
         if ((uint64_t)out->bg_frames[i] + PLATE_BYTES > art_size)
             return "background frame lies outside the declared payload";
     }
+    /* The complication tables. A four-count blob reaches here with all three
+     * counts zero and allocates nothing, which is what keeps the paint path's
+     * `if (n_comps)` test meaningful: a NULL is never merely unallocated. */
+    for (uint32_t i = 0; i < n_comp; i++) {
+        clk_comp_t *c = &out->comps[i];
+        rd_comp(&r, c, "comp");
+        if (r.why) return r.why;
+        if (c->reserve)             return "comp record uses a reserved word — re-bake it";
+        if (!c->count)              return "comp has no frames to index";
+        if (c->show && (!c->w || !c->h)) return "comp is shown but has no size";
+        if ((int)c->x + (int)c->w > CLK_SCR_W || (int)c->y + (int)c->h > CLK_SCR_H)
+            return "comp box lies outside the panel";
+        /* A kind or a driving value this dial cannot draw is one skipped row, not a
+         * refused theme: the word layout is the contract, so an older dial reads the
+         * whole record, hides the window it has no pixels for, and still shows the
+         * rest of the watch face. The log line is what tells the owner to update. */
+        if (c->kind >= CLK_KIND__MAX || c->src >= CLK_SRC__MAX) {
+            ESP_LOGW(TAG, "comp %" PRIu32 ": kind %u source %u is newer than this dial — not drawn",
+                     i, c->kind, c->src);
+            c->show = 0;
+            continue;
+        }
+        if (c->kind == CLK_KIND_WINDOW) {
+            /* frame_bytes is what the paint path strides between tiles, so a
+             * record whose own w/h disagree with it is a tile that would read
+             * off the end of its row — refuse, and say which comp. */
+            const uint64_t need = (uint64_t)c->count * c->frame_bytes;
+            if (c->frame_bytes != CLK_WINDOW_BYTES(c))
+                return "comp window tile stride disagrees with its own box";
+            if ((uint64_t)c->off + need > art_size)
+                return "comp window tiles lie outside the declared payload";
+        } else {
+            /* The record's own shape first: what a strip and a ring may ask for at
+             * all, before anything is looked up in the bank they share. For a strip
+             * `count` is the size of its glyph SET (ten rows for decimal digits), and
+             * how many of them fit in the box is arithmetic on the pitch — the same
+             * division clock_view.c does at paint time, done here so a box the dial
+             * cannot lay out is a refused bake and not a row of glyphs over the
+             * bezel. */
+            const uint32_t span = c->count;
+            if (c->kind == CLK_KIND_STRIP) {
+                if (c->glyph_step <= 0)
+                    return "strip has no pitch to lay its glyphs out on";
+                if (!c->w || (int)c->w < c->glyph_step)
+                    return "strip's box cannot hold even one glyph";
+                const uint32_t pos = ((uint32_t)c->w + (uint32_t)c->glyph_step - 1u)
+                                   / (uint32_t)c->glyph_step;
+                if (pos > CLK_STRIP_GLYPHS_MAX)
+                    return "strip's box needs more glyph slots than the dial creates";
+                if (c->edge_left  != 0xFFFFu && c->edge_left  >= n_bank)
+                    return "strip left edge piece is not in the bank";
+                if (c->edge_right != 0xFFFFu && c->edge_right >= n_bank)
+                    return "strip right edge piece is not in the bank";
+            }
+            if (c->kind == CLK_KIND_RING && c->angle_step == 0)
+                return "ring has no angle between its slots";
+            /* Then the shared bank: strip/ring/flare address it, so the index must
+             * exist and every row they can reach must have pixels inside the
+             * payload. */
+            if ((uint64_t)c->first + span > n_bank)
+                return "comp runs past the shared sprite bank";
+            for (uint32_t k = c->first; k < c->first + span; k++) {
+                const clk_sprite_t *b = &out->bank[k];
+                if (b->w && b->h &&
+                    (uint64_t)b->color_off + SPRITE_BYTES(b) > art_size)
+                    return "comp sprite lies outside the declared payload";
+            }
+        }
+    }
+    for (uint32_t i = 0; i < n_aux; i++) {
+        clk_aux_t *a = &out->aux[i];
+        rd_aux(&r, a, "aux");
+        if (r.why) return r.why;
+        /* Same rule as an unknown comp kind: a hand this dial cannot drive is
+         * hidden and logged, not a reason to refuse the theme it arrived on. The
+         * checks below are damage, not the future, and stay refusals. */
+        if (a->src >= CLK_SRC__MAX || a->kind > 2) {
+            ESP_LOGW(TAG, "aux %" PRIu32 ": src %u kind %u is newer than this dial — not drawn",
+                     i, a->src, a->kind);
+            a->spr.show = 0;
+            continue;
+        }
+        if (a->spr.show && (!a->spr.w || !a->spr.h))
+            return "aux hand is shown but has no size";
+        if (a->spr.show &&
+            (uint64_t)a->spr.color_off + SPRITE_BYTES(&a->spr) > art_size)
+            return "aux hand pixels lie outside the declared payload";
+        if (a->value_max < a->value_min) return "aux hand range is inverted";
+    }
+    for (uint32_t i = 0; i < n_bank; i++) {
+        rd_sprite(&r, &out->bank[i], "bank");
+        if (r.why) return r.why;
+        const clk_sprite_t *b = &out->bank[i];
+        if (b->w && b->h &&
+            (uint64_t)b->color_off + SPRITE_BYTES(b) > art_size)
+            return "shared sprite lies outside the declared payload";
+    }
     /* Trailing words mean the baker and this reader disagree on how much to
      * consume. Refusing is the only safe answer: reading on drops the tail of the
      * tables, and accepting them quietly is how a theme installs with a
      * half-populated rect table and shows a frame with a piece missing. */
     if (r.i != r.n) return "geometry blob has words this build does not recognise";
+    out->n_comps = (uint16_t)n_comp;
+    out->n_aux   = (uint16_t)n_aux;
+    out->n_bank  = (uint16_t)n_bank;
     return NULL;
 }
+
 
 /* ------------------------------------------------------------------------- *
  * The resolved geometry the dial draws with.
@@ -405,6 +607,9 @@ static clk_theme_t   s_theme;                    /* parsed container geometry */
 static clk_bg_rect_t *s_rects;
 static uint16_t     *s_first, *s_delays;
 static uint32_t     *s_bgframes;
+static clk_comp_t   *s_comps;
+static clk_aux_t    *s_aux;
+static clk_sprite_t *s_bank;
 static orb_theme_geo_t s_geo;
 static char          s_active_slug[ORB_THEME_SLUG_MAX + 1];
 static char          s_pending_slug[ORB_THEME_SLUG_MAX + 1];
@@ -423,6 +628,15 @@ static void use_baked_in(void)
     s_geo.rect_first = (uint16_t *)clk_bg_rect_first;
     s_geo.gif_delays = (uint16_t *)clk_gif_delays;
     s_geo.bg_frames  = (uint32_t *)clk_bg_frames;
+    /* The baked-in dial is the four-count blob: it has no complication tables, so
+     * clearing these is what stops a theme switch that lands here from leaving the
+     * paint path drawing windows out of an arena that has been freed. */
+    s_geo.comps      = NULL;
+    s_geo.aux        = NULL;
+    s_geo.bank       = NULL;
+    s_geo.n_comps    = 0;
+    s_geo.n_aux      = 0;
+    s_geo.n_bank     = 0;
     s_geo.art_size   = (size_t)CLK_BLOB_BYTES;
     s_geo.from_container = false;
     s_geo.slug[0] = '\0';
@@ -598,17 +812,19 @@ static int card_open_locked(const char *slug, orb_thdr_t *o, const char **why)
 
     /* The four counts decide the blob's whole length, so a header whose numbers do
      * not add up is refused here — before 4 MB is streamed off the card. */
-    uint32_t c[4];
+    uint32_t c[GEOM_COUNTS_V2];
     pos = o->geom_off;
-    if (rd_at(fd, &pos, (uint8_t *)c, 16) != 16) {
+    if (rd_at(fd, &pos, (uint8_t *)c, sizeof c) != (ssize_t)sizeof c) {
         close(fd); *why = "geometry blob is missing"; return -1;
     }
-    o->n_rects = c[0]; o->n_first = c[1]; o->n_delays = c[2]; o->n_bgf = c[3];
-    if (!geom_sizes_ok(o->geom_size, o->n_rects, o->n_first, o->n_delays, o->n_bgf)) {
+    uint32_t cnt[7];
+    if (geom_counts(c, o->geom_size / 4u, cnt) < 0) {
         close(fd);
         *why = "geometry blob size does not match its own tables — re-bake it";
         return -1;
     }
+    o->n_rects = cnt[0]; o->n_first = cnt[1]; o->n_delays = cnt[2]; o->n_bgf = cnt[3];
+    o->n_comp = cnt[4];  o->n_aux = cnt[5];    o->n_bank = cnt[6];
     return fd;
 }
 
@@ -673,10 +889,17 @@ static void slot_read(slot_t *s, const esp_partition_t *p)
     if (hdr_parse(hdr, &s->h)) return;
     /* The slot's own layout rule, against the SLOT offsets — not the file's. */
     if (s->h.geom_off != SLOT_GEOM_OFF || s->h.art_off != SLOT_ART_OFF) return;
-    uint32_t c[4];
-    if (esp_partition_read(p, s->hdr_base + SLOT_GEOM_OFF, c, 16) != ESP_OK) return;
-    if (!geom_sizes_ok(s->h.geom_size, c[0], c[1], c[2], c[3])) return;
-    s->h.n_rects = c[0]; s->h.n_first = c[1]; s->h.n_delays = c[2]; s->h.n_bgf = c[3];
+    /* The blob's own counts, and only the first four or the first seven words are
+     * counts depending on which layout its length proves it is: in a four-count
+     * blob word 4 is the bg colour, not a table length. geom_counts() returns the
+     * triple it actually believes, zeroing the rest. */
+    uint32_t c[GEOM_COUNTS_V2];
+    if (esp_partition_read(p, s->hdr_base + SLOT_GEOM_OFF, c, sizeof c) != ESP_OK) return;
+    uint32_t cnt[7];
+    if (geom_counts(c, s->h.geom_size / 4u, cnt) < 0) return;
+    s->h.n_rects = cnt[0]; s->h.n_first = cnt[1];
+    s->h.n_delays = cnt[2]; s->h.n_bgf = cnt[3];
+    s->h.n_comp = cnt[4]; s->h.n_aux = cnt[5]; s->h.n_bank = cnt[6];
     s->valid = true;
 }
 
@@ -718,11 +941,16 @@ static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
         if (e != ESP_OK) { free(blob); return e; }
     }
 
-    /* One arena for the four tables, sized from the counts the slot declared —
-     * geom_sizes_ok() already proved those counts and this length agree. */
+    /* One arena for every table, sized from the counts the slot declared —
+     * geom_counts() already proved those counts and this length agree, and proved
+     * the complication counts sit inside the dial's caps. */
     const size_t bytes = sizeof(clk_bg_rect_t) * (size_t)s->h.n_rects
                        + sizeof(uint16_t) * (size_t)(s->h.n_first + s->h.n_delays)
-                       + sizeof(uint32_t) * (size_t)s->h.n_bgf + 16;
+                       + sizeof(uint32_t) * (size_t)s->h.n_bgf
+                       + sizeof(clk_comp_t)   * (size_t)s->h.n_comp
+                       + sizeof(clk_aux_t)    * (size_t)s->h.n_aux
+                       + sizeof(clk_sprite_t) * (size_t)s->h.n_bank
+                       + 16;
     uint8_t *arena = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!arena) arena = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
     if (!arena) { free(blob); return ESP_ERR_NO_MEM; }
@@ -734,20 +962,25 @@ static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
     s_rects    = (clk_bg_rect_t *)q; q += sizeof(clk_bg_rect_t) * (size_t)s->h.n_rects;
     s_first    = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)s->h.n_first;
     s_delays   = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)s->h.n_delays;
-    s_bgframes = (uint32_t *)q;
+    s_bgframes = (uint32_t *)q;      q += sizeof(uint32_t) * (size_t)s->h.n_bgf;
+    s_comps    = (clk_comp_t *)q;    q += sizeof(clk_comp_t) * (size_t)s->h.n_comp;
+    s_aux      = (clk_aux_t *)q;     q += sizeof(clk_aux_t) * (size_t)s->h.n_aux;
+    s_bank     = (clk_sprite_t *)q;
 
     orb_theme_geo_t tmp = { .theme = &s_theme, .rects = s_rects, .rect_first = s_first,
-                            .gif_delays = s_delays, .bg_frames = s_bgframes };
+                            .gif_delays = s_delays, .bg_frames = s_bgframes,
+                            .comps = s_comps, .aux = s_aux, .bank = s_bank };
     const char *why = orb_theme_geom_parse(blob, s->h.geom_size / 4u, s->h.art_size, &tmp);
     free(blob);
     if (why) {
         free(arena);
-        /* All four, not just rects: the arena is gone, and a static still pointing
-         * into it is a trap for whoever reads these tables next. Nothing reads them
-         * on this path — orb_theme_boot() falls back to use_baked_in(), which
-         * repopulates every field of s_geo — but the dangling three were the only
-         * ones that could have. */
+        /* Every table, not just rects: the arena is gone, and a static still
+         * pointing into it is a trap for whoever reads these tables next. Nothing
+         * reads them on this path — orb_theme_boot() falls back to
+         * use_baked_in(), which repopulates every field of s_geo — but the dangling
+         * ones were the only ones that could have been. */
         s_rects = NULL; s_first = NULL; s_delays = NULL; s_bgframes = NULL;
+        s_comps = NULL; s_aux = NULL; s_bank = NULL;
         ESP_LOGE(TAG, "%s: %s — refusing to draw it", s->h.slug, why);
         return ESP_FAIL;
     }
@@ -758,6 +991,12 @@ static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
     s_geo.rect_first = s_first;
     s_geo.gif_delays = s_delays;
     s_geo.bg_frames  = s_bgframes;
+    s_geo.comps      = s_comps;
+    s_geo.aux        = s_aux;
+    s_geo.bank       = s_bank;
+    s_geo.n_comps    = (uint16_t)s->h.n_comp;
+    s_geo.n_aux      = (uint16_t)s->h.n_aux;
+    s_geo.n_bank     = (uint16_t)s->h.n_bank;
     s_geo.art_size   = s->h.art_size;
     s_geo.from_container = true;
     strlcpy(s_geo.slug, s->h.slug, sizeof(s_geo.slug));
@@ -1360,14 +1599,15 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, const char **why)
     if (!r && (h.geom_off != W_WORDS * 4u || h.art_off < h.geom_off + h.geom_size ||
                h.art_off % THEME_SECTOR))
         r = "container parts are not where this format puts them";
-    uint32_t c[4];
+    uint32_t c[GEOM_COUNTS_V2], cnt[7];
     if (!r) {
         pos = h.geom_off;
-        if (rd_at(fd, &pos, (uint8_t *)c, 16) != 16) r = "geometry blob is missing";
+        if (rd_at(fd, &pos, (uint8_t *)c, sizeof c) != (ssize_t)sizeof c) r = "geometry blob is missing";
+        else if (geom_counts(c, h.geom_size / 4u, cnt) < 0)
+            r = "geometry blob size does not match its own tables";
         else {
-            h.n_rects = c[0]; h.n_first = c[1]; h.n_delays = c[2]; h.n_bgf = c[3];
-            if (!geom_sizes_ok(h.geom_size, c[0], c[1], c[2], c[3]))
-                r = "geometry blob size does not match its own tables";
+            h.n_rects = cnt[0]; h.n_first = cnt[1]; h.n_delays = cnt[2]; h.n_bgf = cnt[3];
+            h.n_comp = cnt[4];  h.n_aux = cnt[5];    h.n_bank = cnt[6];
         }
     }
     /* Before verify_container(), not after: this refusal costs one strcmp and the

@@ -51,6 +51,7 @@ if "--src" in sys.argv:                      # mutation runs re-point the NET li
 
 sys.path.insert(0, P("tools"))
 import orbtheme
+import theme_schema as ts
 
 def lift(text, pattern, where):
     m = re.search(pattern, text, re.S)
@@ -81,6 +82,32 @@ i0 = gen_src.index("#define CLK_SCR_W")
 gen_types = gen_src[i0:gen_src.index("} clk_bg_rect_t;") + len("} clk_bg_rect_t;")]
 
 geo_t = lift(th_hdr, r"typedef struct \{\s*clk_theme_t\s+\*theme;[\s\S]*?\} orb_theme_geo_t;", TH_H)
+
+# The complication/indicator records: the kind/source/flag enums, the two caps the
+# reader refuses a strip over, and the two structs. Lifted, not restated, for the
+# same reason as the generated types above — a restatement could pass while the
+# device compiles against a different field order, and the field order IS the
+# contract between the bake and the dial.
+rec_types = lift(th_hdr, r"enum \{\s*CLK_KIND_WINDOW[\s\S]*?\} clk_aux_t;", TH_H)
+
+# The caps the loader refuses over, read out of the shipped .c rather than typed in
+# here, so the pair below compares the two definitions of the same number instead
+# of comparing one of them with itself.
+def cdefine(sym):
+    """A loader constant, read out of the shipped .c. A define whose value is itself a
+    define (BANK_WORDS is SPRITE_WORDS_N) is followed one level, because the number
+    the device uses is the one at the end of that chain."""
+    m = re.search(r"#define " + sym + r"\s+([A-Za-z_]\w*|\d+)[^\n]*", th_src)
+    if not m:
+        sys.exit("could not find #define " + sym + " in " + TH_C + " — did the caps move?")
+    v = m.group(1)
+    if not v.isdigit():
+        m2 = re.search(r"#define " + v + r"\s+\(?(\d+)\)?[^\n]*", th_src)
+        if not m2:
+            sys.exit("#define " + sym + " is " + v + ", and " + v +
+                     " is not defined in " + TH_C + " — the chain the caps use is broken")
+        v = m2.group(1)
+    return int(v)
 
 # Everything pure in the theme reader: word map, format constants, the slot geometry
 # the declared sizes are checked against, the cursor, and both parsers. The end of the
@@ -193,7 +220,8 @@ for i in range(5):                                      # the reader only checks
     SHADOWS[2]["show"] = 0                              # two is the honest case
 
 PLATE  = 466 * 466 * 2          # one full-screen RGB565 plane, as the reader computes it
-ART_BYTES = 2 * PLATE           # two plates: the reader checks plate/key extents against this
+ART_BYTES = 4 * PLATE           # plate + keyframe + the window tiles + the sprite bank
+
 PLATE_OFF, KEY_OFF = 0, PLATE
 SCALARS["bg_frames"] = 2
 SCALARS["plate_off"] = PLATE_OFF
@@ -220,7 +248,6 @@ HDR = orbtheme.pack_header("kit3-test-theme", "Kit Three (test)", len(GEOM),
                           0, 466, 466, serial=7, baked_ms=99)
 ART_OFF = orbtheme.art_offset(len(GEOM))
 HDR_WORDS = list(struct.unpack("<" + "I" * orbtheme.HDR_WORDS, HDR))
-
 def arr(name, words):
     body = ",".join(str(w & 0xFFFFFFFF) for w in words)
     return "static const uint32_t %s[%d] = {%s};\n" % (name, len(words), body)
@@ -280,6 +307,13 @@ NROWS = len(rows)
 def mutate_words(ws, idx, val):
     ws2 = list(ws); ws2[idx] = val & 0xFFFFFFFF; return ws2
 
+def mutate_pair(ws, i0, v0, i1, v1):
+    """Two fields damaged in one blob. The ink-extent cases need it: the payload is
+    big enough that neither width nor offset alone passes the bounds, and blowing
+    both up is also what proves the multiply is 64-bit — a 32-bit one would wrap
+    65535*65535*3 down into range and read as a sprite that fits."""
+    ws2 = mutate_words(ws, i0, v0); return mutate_words(ws2, i1, v1)
+
 # Offsets into the blob's fixed part: 4 counts, the 26 scalars, then the sprite
 # table in the order pack_geom writes it -- 5 hands, 5 shadows, the overlay and the
 # 16-frame tourbillon bank -- then the variable tables, sized by those counts. A
@@ -289,11 +323,122 @@ OFF_SCALAR  = 4
 OFF_SPRITE  = OFF_SCALAR + len(orbtheme.THEME_FIELDS)
 SPR_BYTES_N = len(orbtheme.SPRITE_FIELDS)
 FIELD_W     = orbtheme.SPRITE_FIELDS.index("w")
+FIELD_H     = orbtheme.SPRITE_FIELDS.index("h")
 SPRITE_N    = 5 + 5 + 1 + 16                       # hands, shadows, overlay, tourb
 RECT_WORDS  = 5                                    # x, y, w, h, off
 OFF_RECTS   = OFF_SPRITE + SPRITE_N * SPR_BYTES_N
 OFF_FIRST   = OFF_RECTS + N_RECTS * RECT_WORDS
 OFF_DELAY   = OFF_FIRST + N_FIRST
+
+# ---------------------------------------------------------------------------
+# The complication/indicator tables, one record per kind so every branch the
+# shipped reader takes is a branch this suite has walked: a window drawn from the
+# tiles composited under the dial, a strip of bank glyphs, a ring of bank slots,
+# and a flare. The offsets are chosen against the same declared payload the reader
+# bounds-checks, so a row that would read past the end of the mapping is refused
+# here instead of on a dial.
+# ---------------------------------------------------------------------------
+def rec(table, base=0, **over):
+    """One record of `table` with every field present: the schema's blank, then the
+    values the case cares about. A sprite-shaped row gets small distinct ink so the
+    reader's extent checks pass on it, which is what makes the row prove anything."""
+    d = ts.blank(table)
+    d.update(over)
+    if table != "comp":
+        for j, f in enumerate(orbtheme.SPRITE_FIELDS):
+            if f not in over:
+                d[f] = {"w": 12, "h": 16, "show": 1, "blend": j % 3,
+                        "color_off": base + j * 64,
+                        "diffw": 4 + j, "diffh": 3 + j,
+                        "diffx": -4 + j, "diffy": -2 + j}.get(f, j - 3)
+    return d
+
+N_BANK  = 13         # ten digits the strip indexes, its two window pieces, three
+                     # ring slots (shared with the strip's first three digits), and
+                     # one row nothing points at — which is what makes the reader's
+                     # own bank pass testable rather than merely reachable
+BANK    = [rec("bank", 3 * PLATE + 512 * i) for i in range(N_BANK)]
+COMPS   = [
+    rec("comp", tag=2, kind=ts.KINDS.index("window"), src=ts.SOURCES.index("weekday"),
+        x=40, y=60, w=60, h=30, count=7, off=2 * PLATE,
+        frame_bytes=60 * 30 * 2, value_min=1, scale=16,
+        flags=ts.FLAG_UNDER_DIAL, blend=0, show=1),
+    rec("comp", tag=3, kind=ts.KINDS.index("strip"), src=ts.SOURCES.index("date"),
+        x=100, y=300, w=26, h=16, count=10, first=0, glyph_step=13, glyph_lead=4,
+        edge_left=10, edge_right=11, value_min=1, scale=16,
+        flags=ts.FLAG_ZERO_PAD, show=1),
+    rec("comp", tag=7, kind=ts.KINDS.index("ring"), src=ts.SOURCES.index("battery"),
+        x=0, y=0, w=12, h=16, count=3, first=3, cx=233, cy=233, radius=120,
+        angle0=0, angle_step=1200, value_min=0, scale=16, show=1),
+    rec("comp", tag=9, kind=ts.KINDS.index("flare"), src=ts.SOURCES.index("ampm"),
+        x=200, y=200, w=12, h=16, count=2, first=1, blend=2, show=1),
+]
+AUX = [
+    rec("aux", 3 * PLATE + 512 * N_BANK, tag=1, src=ts.SOURCES.index("second"),
+        kind=0, host=0, span=3600, zero=0, value_min=0, value_max=59, flags=0),
+    rec("aux", 3 * PLATE + 512 * (N_BANK + 1), tag=2,
+        src=ts.SOURCES.index("power_reserve"), kind=1, host=2, span=2400, zero=-1200,
+        value_min=0, value_max=72, flags=ts.FLAG_JUMP),
+]
+GEOM2  = orbtheme.pack_geom(SCALARS, HANDS, SHADOWS, OVERLAY, TOURB,
+                            RECTS, FIRSTS, DELAYS, BGF,
+                            comps=COMPS, aux=AUX, bank=BANK)
+WORDS2 = list(struct.unpack("<" + "I" * (len(GEOM2) // 4), GEOM2))
+# Where the three tables sit in that blob, computed from the same packer rather
+# than counted by eye: every refusal below aims at a word in one of them, and an
+# offset guessed here would aim at nothing and still print ok.
+FIXED2   = 7 + len(orbtheme.THEME_FIELDS) + SPRITE_N * SPR_BYTES_N
+OFF_COMP = FIXED2 + N_RECTS * RECT_WORDS + N_FIRST + N_DELAY + N_BGF
+OFF_AUX  = OFF_COMP + len(COMPS) * ts.words_of("comp")
+OFF_BANK = OFF_AUX  + len(AUX)   * ts.words_of("aux")
+
+def _idx(fields, name):
+    return [n for n, _t in fields].index(name)
+
+def comp_i(i, name): return OFF_COMP + i * ts.words_of("comp") + _idx(ts.COMP_FIELDS, name)
+def aux_i(i, name):  return OFF_AUX  + i * ts.words_of("aux")  + _idx(ts.AUX_FIELDS, name)
+def bank_i(i, name): return OFF_BANK + i * ts.words_of("bank") + _idx(ts.BANK_FIELDS, name)
+
+# Field-by-field expectations, generated from the records the packer consumed, so a
+# field added to theme_schema.py adds its own assertion instead of shipping unread.
+rows2 = ['    CKV(G2.n_comps, %d);' % len(COMPS),
+         '    CKV(G2.n_aux, %d);' % len(AUX),
+         '    CKV(G2.n_bank, %d);' % len(BANK)]
+for i, c in enumerate(COMPS):
+    for n, _t in ts.COMP_FIELDS:
+        rows2.append('    CK(G2.comps[%d], %s, %d);' % (i, n, int(c[n])))
+for i, a in enumerate(AUX):
+    for n, _t in ts.BANK_FIELDS:
+        rows2.append('    CK(G2.aux[%d].spr, %s, %d);' % (i, n, int(a[n])))
+    for n, _t in ts.AUX_EXTRA_FIELDS:
+        rows2.append('    CK(G2.aux[%d], %s, %d);' % (i, n, int(a[n])))
+for i, b in enumerate(BANK):
+    for n, _t in ts.BANK_FIELDS:
+        rows2.append('    CK(G2.bank[%d], %s, %d);' % (i, n, int(b[n])))
+COMPCHECKS = "\n".join(rows2)
+NROWS2 = len(rows2)
+
+# The rows a dial newer than the bake must survive: an unknown kind or driver hides
+# that one record, and the theme still loads. Each case mutates one word of the good
+# seven-count blob and asserts both that the parse succeeded and that the record
+# that provoked it came back with show cleared.
+HIDE_CALLS, HIDE_IDX = [], []
+for i, c in enumerate(COMPS):
+    HIDE_IDX.append(comp_i(i, "kind"))
+    HIDE_IDX.append(comp_i(i, "src"))
+for i, a in enumerate(AUX):
+    HIDE_IDX.append(aux_i(i, "src"))
+    HIDE_IDX.append(aux_i(i, "kind"))
+for k, wi in enumerate(HIDE_IDX):
+    label = "word %d of the complication tables names a feature this dial lacks" % wi
+    HIDE_CALLS.append(arr("hide%d" % k, mutate_words(WORDS2, wi, 99)))
+    if k < 2 * len(COMPS):
+        which = "G3.comps[%d]" % (k // 2)
+    else:
+        which = "G3.aux[%d].spr" % ((k - 2 * len(COMPS)) // 2)
+    HIDE_CALLS.append('    if (ablob("%s", hide%d, %d, %uu)) CKV(%s.show, 0);'
+                      % (label, k, len(WORDS2), ART_BYTES, which))
+HIDES = "\n".join(HIDE_CALLS)
 
 def scalar_i(name):
     return OFF_SCALAR + SC_NAMES.index(name)
@@ -306,11 +451,12 @@ def scalar_i(name):
 # different reason than the one under test is a failure.
 REFUSALS = [
     ("trailing words the reader was not told about",
-     "geometry blob has words this build does not recognise",
+     "geometry blob length does not match its own tables",
      lambda: (list(WORDS) + [0], ART_BYTES)),
-    ("hand ink outside the payload (its width blown up)",
+    ("hand ink outside the payload (its extent blown up past the mapping)",
      "hand pixels lie outside the declared payload",
-     lambda: (mutate_words(WORDS, OFF_SPRITE + 0 * SPR_BYTES_N + FIELD_W, 60000), ART_BYTES)),
+     lambda: (mutate_pair(WORDS, OFF_SPRITE + 0 * SPR_BYTES_N + FIELD_W, 65535,
+                         OFF_SPRITE + 0 * SPR_BYTES_N + FIELD_H, 65535), ART_BYTES)),
     ("more tourbillon frames than the dial holds",
      "more tourbillon frames than the dial holds",
      lambda: (mutate_words(WORDS, scalar_i("tourbillon_n"), 999), ART_BYTES)),
@@ -355,6 +501,63 @@ REFUSALS = [
      "overlay pixels lie outside the declared payload",
      lambda: (mutate_words(WORDS, OFF_SPRITE + 10 * SPR_BYTES_N
                           + orbtheme.SPRITE_FIELDS.index("color_off"), 0x7FFF0000), ART_BYTES)),
+    # The complication tables, same rule: one damaged word of the seven-count blob,
+    # and the EXACT reason the shipped reader has to answer with. Each of these is a
+    # way a half-written theme would otherwise have the paint path read a window tile
+    # or a bank glyph out of the mapping its pixels did not fit in — the failure that
+    # shows up as a dial with a piece missing and no log line.
+    ("comp record leans on the reserved word",
+     "comp record uses a reserved word — re-bake it",
+     lambda: (mutate_words(WORDS2, comp_i(0, "reserve"), 1), ART_BYTES)),
+    ("window tile stride disagrees with the comp's own box",
+     "comp window tile stride disagrees with its own box",
+     lambda: (mutate_words(WORDS2, comp_i(0, "frame_bytes"), 60 * 30 * 2 + 4), ART_BYTES)),
+    ("window tiles run past the end of the payload",
+     "comp window tiles lie outside the declared payload",
+     lambda: (mutate_words(WORDS2, comp_i(0, "off"), ART_BYTES - 1000), ART_BYTES)),
+    ("comp box off the edge of the panel",
+     "comp box lies outside the panel",
+     lambda: (mutate_words(WORDS2, comp_i(2, "x"), 500), ART_BYTES)),
+    ("comp with no frames to index",
+     "comp has no frames to index",
+     lambda: (mutate_words(WORDS2, comp_i(3, "count"), 0), ART_BYTES)),
+    ("shown comp with no size",
+     "comp is shown but has no size",
+     lambda: (mutate_words(WORDS2, comp_i(3, "w"), 0), ART_BYTES)),
+    ("strip wider than the dial can lay glyphs out for",
+     "strip's box needs more glyph slots than the dial creates",
+     lambda: (mutate_words(WORDS2, comp_i(1, "w"), 200), ART_BYTES)),
+    ("strip with no pitch to space its glyphs on",
+     "strip has no pitch to lay its glyphs out on",
+     lambda: (mutate_words(WORDS2, comp_i(1, "glyph_step"), 0), ART_BYTES)),
+    ("strip whose box cannot hold even one glyph",
+     "strip's box cannot hold even one glyph",
+     lambda: (mutate_words(WORDS2, comp_i(1, "w"), 5), ART_BYTES)),
+    ("strip's left window piece not in the bank",
+     "strip left edge piece is not in the bank",
+     lambda: (mutate_words(WORDS2, comp_i(1, "edge_left"), 99), ART_BYTES)),
+    ("strip's glyph run past the shared bank",
+     "comp runs past the shared sprite bank",
+     lambda: (mutate_words(WORDS2, comp_i(1, "first"), 200), ART_BYTES)),
+    ("ring with no angle between its slots",
+     "ring has no angle between its slots",
+     lambda: (mutate_words(WORDS2, comp_i(2, "angle_step"), 0), ART_BYTES)),
+    ("aux hand whose range is inverted",
+     "aux hand range is inverted",
+     lambda: (mutate_words(WORDS2, aux_i(1, "value_min"), 100), ART_BYTES)),
+    ("aux hand ink past the end of the payload",
+     "aux hand pixels lie outside the declared payload",
+     lambda: (mutate_words(WORDS2, aux_i(0, "color_off"), 0x7FFF0000), ART_BYTES)),
+    ("shared sprite no comp points at, past the end of the payload",
+     "shared sprite lies outside the declared payload",
+     lambda: (mutate_words(WORDS2, bank_i(N_BANK - 1, "color_off"), 0x7FFF0000), ART_BYTES)),
+    # The length rule that keeps every theme baked before the calendar loading: a
+    # seven-count blob whose counts contradict its length is refused, because the
+    # only way to read such a blob would be to guess which table is truncated.
+    ("seven-count blob whose counts contradict its length",
+     "geometry blob length does not match its own tables",
+     lambda: (mutate_words(WORDS2, 4, len(COMPS) + 1), ART_BYTES)),
+
 ]
 
 REFUSE_CALLS = []
@@ -511,6 +714,7 @@ HARNESS = r'''
 @HELPERS@
 @CRC@
 @TYPES@
+@RECTYPES@
 @GEOT@
 @CONSTS@
 @NAMEOK@
@@ -523,10 +727,21 @@ HARNESS = r'''
 @ARRAYS@
 
 static orb_theme_geo_t G;
-static clk_theme_t     T1, T2;
-static clk_bg_rect_t   r1[64], r2[64];
-static uint16_t        f1[64], d1[64], f2[64], d2[64];
-static uint32_t        b1[64], b2[64];
+static clk_theme_t     T1, T2, T3;
+static clk_bg_rect_t   r1[64], r2[64], r3[64];
+static uint16_t        f1[64], d1[64], f2[64], d2[64], f3[64], d3[64];
+static uint32_t        b1[64], b2[64], b3[64];
+/* The complication tables for the accepted cases and for the refusals, so a blob
+ * that declares rows reaches the checks under test instead of the loader's own
+ * "no room" guard. Sized by the caps the shipped reader refuses over. */
+static clk_comp_t      cp1[@COMPS_MAX@], cp2[@COMPS_MAX@], cp3[@COMPS_MAX@];
+static clk_aux_t       ax1[@AUX_MAX@],   ax2[@AUX_MAX@],   ax3[@AUX_MAX@];
+static clk_sprite_t    bk1[@BANK_MAX@],  bk2[@BANK_MAX@],  bk3[@BANK_MAX@];
+static orb_theme_geo_t G2, G3;
+static clk_theme_t     T4;
+static clk_bg_rect_t   r4[64];
+static uint16_t        f4[64], d4[64];
+static uint32_t        b4[64];
 static int fails = 0;
 
 static void ncase(const char *n, int want)
@@ -577,12 +792,29 @@ static void rblob(const char *what, const char *want, const uint32_t *w,
     orb_theme_geo_t R;
     memset(&R, 0, sizeof R);
     R.theme = &T2; R.rects = r2; R.rect_first = f2; R.gif_delays = d2; R.bg_frames = b2;
+    R.comps = cp2; R.aux = ax2; R.bank = bk2;
     const char *got = orb_theme_geom_parse(w, n, art, &R);
     if (!got)     { fails++; printf("FAIL blob '%s' was ACCEPTED; wanted '%s'\n", what, want); }
     else if (strcmp(got, want))
                   { fails++; printf("FAIL blob '%s' refused as '%s'; wanted '%s'\n", what, got, want); }
     else          { printf("ok    blob refused as designed: %s\n", got); }
 }
+
+/* A blob that must be ACCEPTED, for the rows the reader is designed to hide rather
+ * than refuse — a kind or a driver newer than this build. Refusing those is the
+ * regression this catches: it would turn one feature the dial has never heard of
+ * into a blank screen. */
+static int ablob(const char *what, const uint32_t *w, uint32_t n, uint32_t art)
+{
+    memset(&G3, 0, sizeof G3);
+    G3.theme = &T3; G3.rects = r3; G3.rect_first = f3; G3.gif_delays = d3;
+    G3.bg_frames = b3; G3.comps = cp3; G3.aux = ax3; G3.bank = bk3;
+    const char *why = orb_theme_geom_parse(w, n, art, &G3);
+    if (why) { fails++; printf("FAIL blob '%s' was refused: %s\n", what, why); return 0; }
+    printf("ok    blob accepted as designed: %s\n", what);
+    return 1;
+}
+
 static void rhdr(const char *what, const char *want, const uint32_t *w)
 {
     orb_thdr_t o;
@@ -627,8 +859,24 @@ int main(void)
         const char *why = orb_theme_geom_parse(good, @NW@, @ART@u, &G);
         if (why) { fails++; printf("FAIL the writer's own blob was refused: %s\n", why); }
         else printf("ok    @NROWS@ fields agreed between the Python writer and the C reader\n");
+        /* The four-count blob is the layout every theme baked before the
+         * complication tables existed. It has to keep loading, with nothing drawn:
+         * this is the row that fails if the new tables ever make the reader reject a
+         * theme that was already on somebody's card. */
+        CKV(G.n_comps, 0); CKV(G.n_aux, 0); CKV(G.n_bank, 0);
 @CHECKS@
     }
+    puts("== the complication tables, field by field, through the shipped reader ==");
+    {
+        G2.theme = &T4; G2.rects = r4; G2.rect_first = f4; G2.gif_delays = d4;
+        G2.bg_frames = b4; G2.comps = cp1; G2.aux = ax1; G2.bank = bk1;
+        const char *why = orb_theme_geom_parse(good2, @NW2@, @ART@u, &G2);
+        if (why) { fails++; printf("FAIL the writer's own complication blob was refused: %s\n", why); }
+        else printf("ok    @NROWS2@ complication fields agreed between the two sides\n");
+@COMPCHECKS@
+    }
+    puts("== a feature this dial has never heard of costs one row, not the dial ==");
+@HIDES@
     puts("== the same reader's refusals ==");
 @REFUSES@
     puts("== the header's refusals ==");
@@ -642,8 +890,13 @@ for k, v in (("@HELPERS@", HELPERS), ("@CRC@", CRC_STUB), ("@TYPES@", gen_types)
              ("@THEMEPATH@", f_theme_pt), ("@PURE@", pure_theme), ("@CKV@", CKV),
              ("@EXT@", ext_define), ("@THEMEFILE@", f_theme_file),
              ("@FILECASES@", FILE_ROWS),
-             ("@CK@", CK), ("@ARRAYS@", arr("good", WORDS) + arr("hdr_ok", HDR_WORDS)),
+             ("@CK@", CK), ("@ARRAYS@", arr("good", WORDS) + arr("good2", WORDS2)
+                                             + arr("hdr_ok", HDR_WORDS)),
              ("@NAMES@", NAME_ROWS), ("@PATHS@", PATH_ROWS), ("@CHECKS@", CHECKS),
+             ("@RECTYPES@", rec_types), ("@COMPS_MAX@", str(ts.CLK_COMP_MAX)),
+             ("@AUX_MAX@", str(ts.CLK_AUX_MAX)), ("@BANK_MAX@", str(ts.CLK_BANK_MAX)),
+             ("@COMPCHECKS@", COMPCHECKS), ("@NROWS2@", str(NROWS2)),
+             ("@HIDES@", HIDES), ("@NW2@", str(len(WORDS2))),
              ("@REFUSES@", REFUSE_CALLS), ("@HDRREFUSES@", HDR_REFUSALS),
              ("@NW@", str(len(WORDS))), ("@ART@", str(ART_BYTES)),
              ("@GEOMLEN@", str(len(GEOM))), ("@NROWS@", str(NROWS))):
@@ -764,7 +1017,47 @@ MUTATIONS = [
     ("name length cap raised away",                  "sd",  "if (n >= ORB_SD_NAME_MAX) return false;", "/* no cap */"),
     ("path builder stops validating the name",       "sd",  "if (!orb_sd_name_ok(name)) { out[0] = '\\0'; return false; }", ""),
     ("leading dot allowed (hides the entry)",        "sd",  "if (name[0] == '.') return false;", ""),
-    ("reader stops checking trailing words",         "th",  "if (r.i != r.n) return \"geometry blob has words this build does not recognise\";", ""),
+    # The blob's length is the evidence for which layout it is, so the two rows below
+    # are the pair that keeps an old theme loading and a half-written one refused:
+    # relax the length equation and a trailing word slips in, and the reader's own
+    # trailing-word check is what answers it with a different message than the case
+    # expects. (That trailing check is unreachable while the length rule is exact, and
+    # exists for the day a table is added to one rule and not the other.)
+    ("reader accepts a blob longer than its own tables say", "th",
+     "if ((uint64_t)(n + body + rows) * 4u == (uint64_t)nwords * 4u) {",
+     "if ((uint64_t)(n + body + rows) * 4u <= (uint64_t)nwords * 4u) {"),
+    ("reader stops checking a comp's window tiles against the payload", "th",
+     'return "comp window tiles lie outside the declared payload";', "return NULL;"),
+    ("reader stops checking a comp's window tile stride", "th",
+     'return "comp window tile stride disagrees with its own box";', "return NULL;"),
+    ("reader stops checking a comp's run against the shared bank", "th",
+     'return "comp runs past the shared sprite bank";', "return NULL;"),
+    ("reader stops checking a strip's glyph cap", "th",
+     'return "strip\'s box needs more glyph slots than the dial creates";', "return NULL;"),
+    ("reader stops checking a strip's glyph pitch", "th",
+     'return "strip has no pitch to lay its glyphs out on";', "return NULL;"),
+    ("reader stops checking that a strip holds a glyph", "th",
+     'return "strip\'s box cannot hold even one glyph";', "return NULL;"),
+    ("reader stops checking a strip's window pieces", "th",
+     'return "strip left edge piece is not in the bank";', "return NULL;"),
+    ("reader stops checking the reserved word a comp must leave alone", "th",
+     'return "comp record uses a reserved word — re-bake it";', "return NULL;"),
+    ("reader stops checking a shared sprite against the payload", "th",
+     'return "shared sprite lies outside the declared payload";', "return NULL;"),
+    ("reader stops checking an aux hand's ink", "th",
+     'return "aux hand pixels lie outside the declared payload";', "return NULL;"),
+    ("reader stops checking an aux hand's value range", "th",
+     'return "aux hand range is inverted";', "return NULL;"),
+    # Forward compatibility is the design decision, so its regression is a mutation:
+    # refuse what you do not know and one window the dial has never seen turns into a
+    # theme that will not install at all. The accept-cases in the harness are what
+    # this bites.
+    ("reader refuses a comp kind it has never seen", "th",
+     "            c->show = 0;\n            continue;",
+     '            return "comp kind this dial cannot draw";'),
+    ("reader refuses an aux hand it has never seen", "th",
+     "            a->spr.show = 0;\n            continue;",
+     '            return "aux hand kind this dial cannot drive";'),
     ("reader stops checking rect vs panel",          "th",  "return \"delta rect lies outside the panel\";", "return NULL;"),
     ("reader stops checking rect vs payload",        "th",  "return \"delta rect lies outside the declared payload\";", "return NULL;"),
     ("reader stops checking the frame index table",  "th",  "if (out->rect_first[i] > n_rects) return \"frame index runs past the rect table\";", ""),
@@ -1166,10 +1459,67 @@ def naming_lint():
     return rc
 
 
+def caps_lint():
+    """The numbers the two sides share by name rather than by value.
+
+    theme_schema.py is the single authority: the bake, the packer, this reader and
+    the dial's arrays all take their widths and caps from it. Each of these lines is
+    one place a rename or an appended enum value on one side would otherwise ship as
+    a dial that skips a window the theme paid for, with nothing logged.
+    """
+    print("== the caps, word counts and enums the two sides share ==")
+    rc = 0
+    for sym, want in (("COMPS_MAX", ts.CLK_COMP_MAX),
+                      ("AUX_MAX", ts.CLK_AUX_MAX),
+                      ("BANK_MAX", ts.CLK_BANK_MAX),
+                      ("COMP_WORDS", ts.words_of("comp")),
+                      ("AUX_WORDS", ts.words_of("aux")),
+                      ("BANK_WORDS", ts.words_of("bank")),
+                      ("GEOM_COUNTS_V1", 4),
+                      ("GEOM_COUNTS_V2", 7)):
+        got = cdefine(sym)
+        ok = got == want
+        print("%-5s %-16s reader %4d  schema %4d" % ("ok" if ok else "FAIL", sym, got, want))
+        if not ok: rc = 1
+    m = re.search(r"#define CLK_STRIP_GLYPHS_MAX\s+(\d+)", th_hdr)
+    if not m:
+        sys.exit("could not find #define CLK_STRIP_GLYPHS_MAX in " + TH_H
+                 + " — the strip cap has no definition left to compare")
+    ok = int(m.group(1)) == ts.CLK_STRIP_GLYPHS
+    print("%-5s %-16s reader %4d  schema %4d"
+          % ("ok" if ok else "FAIL", "CLK_STRIP_GLYPHS", int(m.group(1)), ts.CLK_STRIP_GLYPHS))
+    if not ok: rc = 1
+    # The header's own guard, read rather than trusted: it pins the C enum's length
+    # to a literal, and that literal has to be the length of the Python tuple.
+    m = re.search(r"_Static_assert\(CLK_SRC__MAX == (\d+)", th_hdr)
+    if not m:
+        sys.exit("orb_theme.h no longer asserts the source enum's length — the "
+                 "17 driving values of theme_schema.py are unpinned")
+    ok = int(m.group(1)) == len(ts.SOURCES)
+    print("%-5s %-16s reader %4d  schema %4d"
+          % ("ok" if ok else "FAIL", "CLK_SRC__MAX", int(m.group(1)), len(ts.SOURCES)))
+    if not ok: rc = 1
+    # Names, not just lengths: a reordered enum keeps the count and silently swaps
+    # a day window for a month one, which is the bad-art-shaped bug every other
+    # check here is written to catch.
+    for stem, want in (("CLK_KIND_", ts.KINDS), ("CLK_SRC_", ts.SOURCES)):
+        names = re.findall(r"\b(" + stem + r"[A-Z0-9_]+)\b", rec_types)
+        names = [n for n in dict.fromkeys(names) if not n.endswith("__MAX")]
+        got = tuple(n[len(stem):].lower() for n in names)
+        ok = got == tuple(want)
+        print("%-5s %-16s order matches the schema tuple" % ("ok" if ok else "FAIL", stem + "*"))
+        if not ok:
+            print("      reader:", got, "\n      schema:", tuple(want))
+            rc = 1
+    return rc
+
+
 if "--mutations" in sys.argv:
     sys.exit(run_mutations())
 
 rc = run_harness()
+if rc == 0:
+    rc = caps_lint()
 if rc == 0:
     rc = themes_page_js()
 if rc == 0:

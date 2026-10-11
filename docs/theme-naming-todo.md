@@ -120,8 +120,10 @@ What is green here proves less than it looks.
       fail ladder falls back to the previous theme.
 - [ ] Build with 12 themes including long names and confirm the list answers instead of
       truncating, exercising section 5.
-- [ ] Flash the build. `/tmp/serflash.sh` still points at `B=.../Projects/gorb-os/build`, the
-      upstream clone, not this `gorb-os-2` tree. Fix `B` or the device re-flashes the old image.
+- [ ] Flash the build. `/tmp/serflash.sh` pointed at `B=.../Projects/gorb-os/build`, the
+      upstream clone, not this `gorb-os-2` tree. `B` is repointed at `.../gorb-os-2/build` as of
+      2026-10-11 (`/tmp/serflash.sh.bak` holds the old copy); this box stays open until a build
+      from this tree is actually flashed and the serial log is read back.
 
 ## 7. Housekeeping
 

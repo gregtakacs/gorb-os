@@ -751,6 +751,18 @@ void menu_view_apply_input(int32_t delta, bool pressed)
     if (next >= rows) next = rows - 1;
     if (next == s_cur) return;
     s_cur = next;
+    /* Where the cursor landed, in the log. The menu never said: it repaints the
+     * highlight and that was the only answer, so driving it blind over
+     * /api/v1/screen?turn=N could not tell a clamped turn from a registered one.
+     * Three scripted walks pressed the AP stub believing they had chosen DISPLAY,
+     * and fired JOB_TZ believing they were committing the dim timeout -- the
+     * symptoms all read as a swallowed knob, which is the exact report this
+     * feature already carries. The row text is this screen's own truth, so the
+     * line cannot drift from what the glass shows. */
+    char row[40];
+    bool hi;
+    row_text(s_cur, row, sizeof row, &hi);
+    ESP_LOGI(TAG, "cursor %s row %d/%d: %s", page_title(), s_cur, rows - 1, row);
     repaint();
 }
 

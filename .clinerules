@@ -509,6 +509,22 @@ picker had never been entered on hardware. `GET /api/v1/screen` is the bench doo
 | `?push=1` | one synthetic tap |
 | `?hold=1` | the long-press escape gesture |
 
+**Read the cursor before you trust a turn.** Until 2026-10-11 the menu said nothing about
+where its highlight was — `repaint()` moved the highlight and that was the only answer — so
+three scripted walks drove it blind and every one of them believed it had arrived somewhere
+else. Two pressed the `IT_AP` stub three times thinking they were choosing DISPLAY; a third
+fired `JOB_TZ` twice and left the dial on Europe/London while believing it had committed the
+dim timeout. `menu_view_apply_input()` now logs `cursor <PAGE> row N/M: <label>` on every
+move, and a walk that ignores that line is not to be trusted. `page_hint()`/`page_title()`
+already carried the page name; the log was the half that was missing.
+
+The clamp at row 0 is the specific thing the echo distinguishes: `if (next == s_cur) return;`
+means a turn already at the top of the list produces **no event at all**, which from the LAN
+is indistinguishable from a detent the decoder swallowed — the exact symptom the owner
+reports as "sometimes the notch does nothing". Note also that the injected sign is the
+electrical one: `?turn=-1` walks the cursor DOWN from row 0, because the delta arrives at the
+router already signed and does not pass through the encoder's own sign handling.
+
 Inject the long press too: it is the only exit from an armed screen, so a broken
 one soft-locks the dial with rotate belonging to the list. Prove it — verified here
 as armed zone-list → `menu idle` → `screen -> clock` inside one 10 ms poll.

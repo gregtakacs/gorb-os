@@ -68,7 +68,7 @@ def main():
     for rel in ["Watch Composer.dc.html", os.path.join(SELFTEST_DIR, "export-test.html")]:
         print("  " + win + rel.replace(" ", "%20"))
     print("\nselftest verdict: the page title must read PASS and the last report line")
-    print("must be 'RESULT: PASS'. Nine report lines are the evidence for the authoring")
+    print("must be 'RESULT: PASS'. Ten report lines are the evidence for the authoring")
     print("features; a missing line means that block never ran, which is a fail, not a pass:")
     print("  'custom art: backdrop in the plate pixels'               <- the plate slot")
     print("  'dial surface art: N art px ... print still reads'       <- the dial face, under the print")
@@ -79,6 +79,7 @@ def main():
     print("  'seconds row: the seconds list reshapes that hand ...'   <- the seconds row offers the list that actually shapes it")
     print("  'alignment reference: N of 53 grid points ...'           <- the guide is pinned to the watch, not the art")
     print("  'zoom 1->2: ... facing turned the ink N -> N deg'        <- art zoom + hand facing")
+    print("  'sprite length + frames: ... red-minus-blue fell ...'   <- uploads normalise to the drawn hand's reach at 100%; the aperture frame is struck in the author's metal")
     print("Run one block alone with ?ONLY=feat if the suite stops printing with no verdict:")
     print("that is a CPU-bound block outrunning --virtual-time-budget, not necessarily a bug.")
     print("localStorage is shared across every file:// page in Chrome, so assets uploaded")

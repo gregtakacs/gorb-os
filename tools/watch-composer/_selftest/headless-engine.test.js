@@ -172,6 +172,21 @@ setTimeout(() => {
      * say so. The plane must grow to hold the pivot instead, and the ink must not move
      * relative to the arbour while it does. */
     const tall = mk('tall-1', 20, 100, 'png'); E.assetRestore([{ id: 'tall-1', name: 'tall.png', kind: 'png', dataUrl: tall }]);
+    /* The length-normalisation fixtures carry real ink, so the measuring pass has
+     * something to find: an upright bar with its arbour under the tip, an identical
+     * bar lying east out of a left-hand hub, and the first bar again buried in
+     * transparent padding. tall-1 above deliberately has no ALPHAS entry: it is the
+     * no-ink control that must keep the old box fit. */
+    const inkBar = (tag, w, h, x0, x1, y0, y1) => {
+      const d = new Uint8ClampedArray(w * h * 4);
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const i = (y * w + x) * 4; d[i] = d[i + 1] = d[i + 2] = 200; d[i + 3] = 255; }
+      const u = 'data:image/png;base64,' + Buffer.from('ink-' + tag).toString('base64'); SIZES[u] = [w, h]; ALPHAS[u] = d; return u;
+    };
+    E.assetRestore([
+      { id: 'bar-up', name: 'barUp.png', kind: 'png', dataUrl: inkBar('up', 30, 240, 12, 18, 20, 219) },
+      { id: 'bar-east', name: 'barEast.png', kind: 'png', dataUrl: inkBar('east', 480, 40, 20, 419, 16, 24) },
+      { id: 'bar-pad', name: 'barPad.png', kind: 'png', dataUrl: inkBar('pad', 400, 400, 190, 210, 100, 300) },
+    ]);
     setTimeout(() => {
       const inb = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 95 });
       ok(inb && inb.padded === false && inb.c.height === 100, 'a pivot on the ink leaves the plane the size of the art');
@@ -322,6 +337,40 @@ setTimeout(() => {
       const frect = E.face({ design: dSquare, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       ok(frect.lay.comps.find((c) => c.id === 'w9').hole.kind === 'rect', 'an unmarked window stays square, as every design made before this keeps it');
       ok(fcw.lay.hits.some((h) => h.id === 'w9'), 'a round window is still clickable');
+      /* ---- Length 100% is the hand's reach, not the upload's pixel count -----------
+       * The complaint this answers: an uploaded hand's length used to follow its
+       * source resolution. The sprite is now scaled -- up OR down -- until the
+       * farthest ink along the reading axis lands at the reach of the drawn hand.
+       * bar-up: ink rows 20..219 under the arbour at (15,220): length 200 source px. */
+      const FIT = { maxW: 466, maxH: 466, pivotX: 15, pivotY: 220 };
+      const f1 = E.handSpriteAsset('bar-up', Object.assign({ fitTo: 100 }, FIT));
+      ok(!!f1 && Math.abs(f1.scale - 0.5) < 1e-6, 'art bigger than the reach is shrunk until its tip lands at it', f1 && f1.scale);
+      const f2 = E.handSpriteAsset('bar-up', Object.assign({ fitTo: 400 }, FIT));
+      ok(!!f2 && f2.scale > 1.99 && f2.scale < 2.01, 'art smaller than the reach enlarges to the same promise: 100% is the hand, never the image', f2 && f2.scale);
+      const f3 = E.handSpriteAsset('bar-up', Object.assign({ fitTo: 100, zoom: 2 }, FIT));
+      ok(!!f3 && Math.abs(f3.scale - 1) < 1e-6, 'and the author zoom still rides on top of the length fit', f3 && f3.scale);
+      const e1 = E.handSpriteAsset('bar-east', { maxW: 960, maxH: 960, pivotX: 20, pivotY: 20, fitTo: 199.5, rot0: -90 });
+      ok(!!e1 && Math.abs(e1.scale - 0.5) < 1e-6, 'art drawn east is measured along the axis the facing points at 12: its 399.5 px of ink draw at half scale', e1 && e1.scale);
+      const e2 = E.handSpriteAsset('bar-east', { maxW: 960, maxH: 960, pivotX: 20, pivotY: 20, fitTo: 200, rot0: 0 });
+      ok(!!e2 && e2.scale === 3000 / 480, 'with the ink lying across the reading axis the fit would ask for a giant, and the plane cap is what stops one', e2 && e2.scale);
+      const p1 = E.handSpriteAsset('bar-pad', { maxW: 960, maxH: 960, pivotX: 200, pivotY: 310, fitTo: 168 });
+      ok(!!p1 && Math.abs(p1.scale * 210 - 168) < 0.5, 'a hand buried in transparent padding reaches the same ring as the tight crop of the same bar', p1 && p1.scale);
+      const fb = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 95, fitTo: 200 });
+      ok(!!fb && fb.scale === 1, 'an asset with no measurable ink keeps the old fit-to-box, unenlarged', fb && fb.scale);
+      const MF = (lk) => E.face({ design: E.canonDesign({ print: 'roman', numerals: 'none', comps: [], centre: { hour: 0, minute: 1 }, hands: { 'centre-minute': { art: 'bar-up', pivotX: 15, pivotY: 220, len: lk } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'centre-minute');
+      const m1 = MF(1), mh = MF(0.5), mReac = Math.min(216, 205 * 0.96);
+      ok(!!m1 && !!m1.art && Math.abs(m1.sp.scale * 200 - mReac) < 0.5, 'at Length 100% an uploaded minute hand tips exactly where the drawn one would', m1 && m1.sp.scale.toFixed(4));
+      ok(!!mh && !!m1 && Math.abs(mh.sp.scale - m1.sp.scale / 2) < 1e-9, 'and half the slider halves that reach, whichever way the pixels came', mh && mh.sp.scale.toFixed(4));
+      /* ---- the metal an aperture is framed in --------------------------------------
+       * The ring used to be gilt by decree of the movement finish. The choice rides
+       * to the cut as hole.fc; the default never enters the Design ID. */
+      const GF = (o) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [Object.assign({ id: 'g1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }, o)] }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).lay.dialHoles.find((h) => !h.hidden);
+      ok(GF({ style: 'frame', frameColor: 'steel' }).fc === 'steel', 'a window struck in steel carries its metal down to the cut');
+      ok(!GF({ style: 'frame' }).fc, 'with no choice the frame is the movement metal and nothing rides along');
+      ok(!GF({ style: 'frame', frameColor: 'gilt' }).fc, 'naming Gilt is that same no-choice, and the field stays out of the Design ID');
+      ok(!GF({ style: 'bevel', frameColor: 'steel' }).fc, 'a bevel strikes no frame, so the metal choice is dropped with it');
+      ok(!('frameColor' in E.canonDesign({ print: 'none', centre: { hour: 1 }, comps: [{ id: 'g1', type: 'moon', style: 'sphere', frameColor: 'steel' }] }).comps[0]), 'a moon carries no frame colour: the field vanishes on types that draw no ring');
+      ok(!!(E.FRAME_COLORS && E.FRAME_COLORS.gilt && E.FRAME_COLORS.steel), 'the metal list ships with the engine');
       if (checked < 72) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
     process.exit(fails ? 1 : 0);

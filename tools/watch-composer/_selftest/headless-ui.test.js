@@ -229,22 +229,57 @@ setTimeout(() => {
   ok(spokes === 24, 'and lays exactly the 24 fifteen-degree spokes, no more and no fewer', 'spokes=' + spokes + ' arcs=' + arcs.length);
   ok(gGeo.some((o) => o.op === 'moveTo' && Math.abs(o.a[0] - 233) < 0.01), 'with a ray through the centre, so vertical alignment is read against the dial axis');
   ok(gGeo.some((o) => o.op === 'strokeRect'), 'the zoomed art is framed by a box, so the author sees what the crop will keep');
-  const ghostRot = (rot0) => {
+  const ghostRots = (rot0) => {
     it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: rot0 } };
     it.state.selKind = 'hand'; it.state.sel = 'centre-hour';
     const c = new S.FakeCanvas(); c.width = 466; c.height = 466;
     it.drawHandGhost(c.getContext('2d'), it.face(), dS, 1, (v) => v);
-    const r = c.getContext('2d').geom.filter((o) => o.op === 'rotate');
-    return r.length ? r[r.length - 1].a[0] : null;
+    return c.getContext('2d').geom.filter((o) => o.op === 'rotate').map((o) => o.a[0]);
   };
-  const gA = ghostRot(0), gB = ghostRot(90);
-  ok(gA !== null && gB !== null && Math.abs((gB - gA) - Math.PI / 2) < 1e-6,
-    'the virtual hand turns with its facing: the same hand at 90 degrees is drawn exactly a quarter turn round', JSON.stringify([gA, gB, gB - gA]));
+  const gr0 = ghostRots(0), gr90 = ghostRots(90);
+  ok(gr0.length === 2 && gr90.length === 2 && Math.abs((gr90[0] - gr0[0]) - Math.PI / 2) < 1e-6,
+    'the virtual hand\u2019s picture turns with its facing: the same art at 90 degrees is drawn exactly a quarter turn round', JSON.stringify([gr0, gr90]));
+  ok(Math.abs((gr90[0] + gr90[1]) - (gr0[0] + gr0[1])) < 1e-9,
+    'while the read ray stands still: it marks the angle the clock shows, and the facing swings the art under it instead of running away with it', JSON.stringify([gr0[0] + gr0[1], gr90[0] + gr90[1]]));
   it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: 90 } };
   const gCan3 = new S.FakeCanvas(); gCan3.width = 466; gCan3.height = 466;
   it.drawHandGhost(gCan3.getContext('2d'), it.face(), dS, 1, (v) => v);
   ok(gCan3.getContext('2d').geom.some((o) => o.op === 'strokeRect'), 'and its sprite is outlined where it really lies, which is what shows a wrong facing');
   it.state.designs.calendar.hands = {}; delete it.state.designs.calendar.sfZoom;
+  /* ---- the picked complication is dragged through the hand on top of it -----------
+   * Selected on the Complications tab, reached for on the dial: the author means that
+   * item, and a hand painted across it must not steal the grab. The same-spot cycle
+   * still walks the stack, so the hand over it remains reachable too. */
+  let overPt = null, overId = null;
+  for (const hh of fcS.lay.hits) {
+    const q = fcS.pickAll(hh.x, hh.y, dS);
+    if (q.length > 1 && q[0].kind === 'hand' && q.some((r) => r.kind === 'comp' && String(r.id) === String(hh.id))) { overPt = [hh.x, hh.y]; overId = hh.id; break; }
+  }
+  ok(!!overPt, 'the calendar dial really has a hand lying over a complication to test on', JSON.stringify(overPt));
+  it.state.tab = 'comps'; it._clickAt = null; it.drag = null;
+  it.state.sel = overId; it.state.selKind = 'comp';
+  it.onDown(ev(overPt[0], overPt[1]));
+  ok(it.state.selKind === 'comp' && String(it.state.sel) === String(overId) && it.drag && it.drag.kind === 'comp' && String(it.drag.id) === String(overId),
+    'a complication picked on the tab is grabbed on the dial straight through the hand painted over it', JSON.stringify([it.state.sel, it.state.selKind, it.drag && it.drag.kind, it.drag && it.drag.id]));
+  it.onDown(ev(overPt[0], overPt[1]));
+  ok(String(it.state.sel) !== String(overId), 'and a second click on the same spot still steps down the stack, so the hand above it is reachable', String(it.state.sel));
+  it.drag = null;
+  // the tab row's own pick marks the kind, which is what arms the sticky grab
+  it.state.sel = null; it.state.selKind = null;
+  const cIdx = it.design().comps.findIndex((c) => String(c.id) === String(overId));
+  it.renderVals().compRows[cIdx].pick();
+  ok(String(it.state.sel) === String(overId) && it.state.selKind === 'comp', 'picking the row from the Complications list sets it as the active complication, ready to grab on the stage', JSON.stringify([it.state.sel, it.state.selKind]));
+  /* ---- a click on the black around the watch lets go of everything -----------------
+   * The canvas cannot see a pointer-down outside itself; without the stage handler
+   * the only exits from a tab-side selection were Escape and the Deselect button. */
+  const stage = {};
+  it.state.sel = overId; it.state.selKind = 'comp';
+  it.renderVals().stageDown({ target: stage, currentTarget: stage });
+  ok(it.state.sel == null && it.state.selKind == null, 'clicking the surround clears the selection', JSON.stringify([it.state.sel, it.state.selKind]));
+  it.state.sel = overId; it.state.selKind = 'comp';
+  it.renderVals().stageDown({ target: {}, currentTarget: stage });
+  ok(String(it.state.sel) === String(overId) && it.state.selKind === 'comp', 'a pointer-down that bubbled up from the canvas keeps its own verdict', String(it.state.sel));
+  it.state.sel = null; it.state.selKind = null;
   // ---- the controls themselves -------------------------------------------------------
   const dialZ = labels('dial');
   ok(!!byLabel(dialZ, 'Zoom'), 'each art slot offers a zoom, not only a box size');
@@ -262,6 +297,21 @@ setTimeout(() => {
   const winC = (it.state.designs.calendar.comps || []).find((c) => c.type === 'window');
   ok(!!winC, 'the calendar preset has a window to test on');
   if (winC) { winC.wshape = 'circle'; it.state.sel = winC.id; const cw = labels('comps'); ok(!!byLabel(cw, 'Aperture'), 'a window offers an aperture shape'); const ap = byLabel(cw, 'Aperture'); ok(ap && (ap.opts || []).some((o) => /Round/.test(o.label)), 'with round among its choices', JSON.stringify((ap || {}).opts || []).slice(0, 80)); winC.wshape = 'rect'; }
+  /* ---- the gilt frame is a choice now, not a constant ------------------------------
+   * A cutout framed in steel is a different watch; the metal row appears exactly
+   * when a style actually strikes a raised ring, and the pick lands on the comp. */
+  if (winC) {
+    it.state.sel = winC.id; it.state.selKind = 'comp';
+    const winLive = () => it.state.designs.calendar.comps.find((c) => c.id === winC.id);
+    const fr0 = byLabel(labels('comps'), 'Frame colour');
+    ok(!!fr0 && fr0.isChips && (fr0.opts || []).some((o) => /Steel/.test(o.label || '')), 'a framed window offers the frame metal, steel among them', JSON.stringify(((fr0 || {}).opts || []).map((o) => o.label).slice(0, 8)));
+    const stOpt = fr0 && fr0.opts.find((o) => /Steel/.test(o.label || ''));
+    if (stOpt) stOpt.pick();
+    ok(winLive().frameColor === 'steel', 'and picking Steel writes the metal on the window', JSON.stringify(winLive().frameColor));
+    winLive().style = 'plain';
+    ok(!byLabel(labels('comps'), 'Frame colour'), 'a plain cut offers no frame: nothing there draws one');
+    winLive().style = 'frame'; winLive().frameColor = 'gilt';
+  }
   const hRows = (it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } }, it.state.tab = 'hands', it.renderVals().handRows);
   const hr = hRows.find((q) => q.label === 'Centre hour');
   for (const k of ['onRot0', 'onZoom', 'onFacingUp', 'onFacingDown', 'onFacingReset', 'rot0', 'zoom'])

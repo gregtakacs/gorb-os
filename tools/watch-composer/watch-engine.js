@@ -383,11 +383,53 @@
     }
     return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 + 1, y1 + 1];
   }
+  /* The hand's length in source pixels: the farthest visible ink measured along
+   * the direction the device will point this art, from the arbour. That slice --
+   * not the image's frame -- is what Length 100% normalizes to, so a 3000 px
+   * export and a 40 px doodle of the same drawing land the same tip on the
+   * chapter. th is the standing turn in radians (the author's facing plus the
+   * tilt of the subdial the hand rides): rotating the plane about the pivot
+   * carries the ink with it, so the slice that reads at the time angle sits at
+   * -th in the unrotated image. Measured once per asset and pivot from a copy
+   * reduced to at most 512 px; at that size the sub-pixel error is under one
+   * sprite pixel at the scales the composer actually draws. */
+  function inkTipOf(a, gx, gy, th) {
+    const snap = !(isFinite(gx) && isFinite(gy));
+    const key = (snap ? 's' : Math.round(gx) + ',' + Math.round(gy)) + '@' + Math.round((th * 180) / Math.PI);
+    a._tips = a._tips || {};
+    if (a._tips[key] != null) return a._tips[key];
+    const s0 = Math.min(1, 512 / Math.max(a.w, a.h)), rw = Math.max(1, Math.round(a.w * s0)), rh = Math.max(1, Math.round(a.h * s0));
+    const c = cv(rw, rh), x = c.getContext('2d');
+    x.drawImage(a.el, 0, 0, rw, rh);
+    let d; try { d = x.getImageData(0, 0, rw, rh).data; } catch (e) { return (a._tips[key] = 0); }
+    let px = snap ? NaN : gx * s0, py = snap ? NaN : gy * s0;
+    if (snap) {                                                  // no authored arbour: the ink's own centre of mass is the hub
+      let sw = 0, sx = 0, sy = 0;
+      for (let i = 3; i < d.length; i += 4) { const al = d[i]; if (al < 8) continue; const p = (i - 3) / 4; sw += al; sx += (p % rw) * al; sy += ((p / rw) | 0) * al; }
+      if (!sw) return (a._tips[key] = 0);
+      px = sx / sw; py = sy / sw;
+    }
+    const sn = Math.sin(th), cs = Math.cos(th);
+    let best = 0;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] < 8) continue;
+      const p = (i - 3) / 4, u = (px - (p % rw)) * sn + (py - ((p / rw) | 0)) * cs;
+      if (u > best) best = u;
+    }
+    return (a._tips[key] = best / s0);
+  }
   /* A hand sprite from art. Everything downstream (drawHands, the shadow
    * silhouette, the manifest's pivot/centre/size, prep's integral-margin proof)
    * reads exactly { c, px, py } off handSprite, so an image-backed record takes
    * the same path with no change anywhere else. (px,py) is the authored pivot in
    * sprite pixels, or the hub-ink centroid when the author did not set one.
+   *
+   * o.fitTo is the reach the tip of this art must land at, in device px -- the
+   * length the drawn hand of the same role has at Length 100%, times the author's
+   * Length slider. The scale then comes out of the measure in either direction:
+   * a huge upload shrinks, a small one enlarges, and the upload's own resolution
+   * never decides how long the hand is. With no measurable ink the old fit-to-box
+   * still decides, so an art-free stub and a vector frame keep their numbers.
    *
    * The pivot is NOT required to be inside the artwork. A hand whose arbour is
    * hidden behind a subdial, or one drawn so its hub sits off the ink, legitimately
@@ -407,12 +449,23 @@
     // on a raster that is an upscale, which the composer states rather than hides --
     // the ceiling of 8 keeps a mistyped 800 from allocating a canvas the size of a wall.
     const z = !o || o.zoom == null ? 1 : Math.min(8, Math.max(0.05, +o.zoom || 1));
-    const base = Math.min(1, maxW / w, maxH / h), k = base * z, cw = Math.ceil(w * k), ch = Math.ceil(h * k);
+    const gx = o && o.pivotX, gy = o && o.pivotY;
+    const given = gx != null && gy != null && isFinite(+gx) && isFinite(+gy);
+    // The standing turn the device applies on top of the data angle: the author's
+    // facing, plus the tilt of the subdial this pointer rides on. The measuring
+    // pass looks for the tip along that axis, so Length means the same thing for
+    // art drawn at 12 and for art drawn across the movement.
+    const th = rad(+(o && o.rot0) || 0) + (+(o && o.aimRad) || 0);
+    let k;
+    if (o && o.fitTo != null && isFinite(+o.fitTo) && +o.fitTo > 0) {
+      const tip = inkTipOf(a, given ? +gx : NaN, given ? +gy : NaN, th);
+      k = tip > 0.5 ? (+o.fitTo / tip) * z : Math.min(1, maxW / w, maxH / h) * z;
+      k = Math.min(k, 3000 / Math.max(w, h));       // no canvas the size of a wall, whatever the two numbers ask for
+    } else k = Math.min(1, maxW / w, maxH / h) * z;
+    const cw = Math.ceil(w * k), ch = Math.ceil(h * k);
     const c = cv(cw, ch), x = c.getContext('2d');
     if (x.imageSmoothingQuality != null) x.imageSmoothingQuality = 'high';
     x.drawImage(a.el, 0, 0, cw, ch);
-    const gx = o && o.pivotX, gy = o && o.pivotY;
-    const given = gx != null && gy != null && isFinite(+gx) && isFinite(+gy);
     let px = given ? (+gx * k) : NaN, py = given ? (+gy * k) : NaN;
     let snapped = !given;
     if (!isFinite(px) || !isFinite(py)) { const hub = inkCentroidOf(c); px = hub[0]; py = hub[1]; }
@@ -458,6 +511,18 @@
     window: { frame: 'Gilt frame', bevel: 'Bevelled', plain: 'Plain cut' },
     moon: { classic: 'Navy & gold', silver: 'Silver night', black: 'Black sky', sphere: 'Realistic sphere', graphic: 'Graphic', neon: 'Neon' },
     flare: { print: 'Printed', applied: 'Applied metal', lume: 'Lume', engraved: 'Engraved' },
+  };
+  /* The metal an aperture's raised frame is struck in -- the 'frame' style on an
+   * opening or a window. Gilt is the movement's own finish and stays the default;
+   * each other entry is a standing hi/mid/lo gradient so the ring still reads as
+   * metal under the lights instead of a flat crayon line. */
+  const FRAME_COLORS = { gilt: 'Gilt (movement metal)', steel: 'Steel', rose: 'Rose gold', rhodium: 'White gold', gunmetal: 'Gunmetal', black: 'Blackened' };
+  const FRAME_PALS = {
+    steel: { hi: '#f4f6f8', mid: '#8b9198', lo: '#3a3e44' },
+    rose: { hi: '#f6cbb6', mid: '#a8705e', lo: '#5d3122' },
+    rhodium: { hi: '#f7f9fb', mid: '#b3b9c0', lo: '#4a5057' },
+    gunmetal: { hi: '#d4d7db', mid: '#7f858c', lo: '#2c3034' },
+    black: { hi: '#6a6a68', mid: '#232120', lo: '#080706' },
   };
   const SUB_DISPLAYS = { classic: 'Classic track', railway: 'Railway', dots: 'Dots', minimal: 'Ticks only', bold: 'Bold numerals', numerals: 'Numerals only', sector: 'Sector' };
   const SCALES = { seconds: 'Seconds', date: 'Date 1–31', day: 'Day of week', month: 'Month', hours: 'Hours', none: 'No scale' };
@@ -676,6 +741,7 @@
           : sh === 'slot' ? Object.assign(b, { kind: 'slot', w: sz * 2.6, h: sz * 1.2 }) : sh === 'arch' ? Object.assign(b, { kind: 'arch', w: sz * 1.5, h: sz * 2 })
           : { kind: 'circle', x: g.x, y: g.y, r: sz };
         hole.style = c.style === 'lip' && !(centred && sh === 'circle') ? 'frame' : c.style || 'bevel';
+        if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
         if (centred && sh === 'circle' && !onSub) wearIn = Math.max(wearIn, sz);
         if (onSub && !thost) { subHoles[onSub].push(hole); dialHoles.push(Object.assign({}, hole, { hidden: true })); } else dialHoles.push(hole);
         const bb = holeBox(hole);
@@ -694,6 +760,7 @@
          * axis and clipping the glyph. */
         hole = c.wshape === 'circle' ? { kind: 'circle', x: g.x, y: g.y, r: Math.max(w, h) / 2, style: c.style || 'frame' }
           : { kind: 'rect', x: g.x, y: g.y, w, h, rad: 2.5 * sz, rot: g.rot, style: c.style || 'frame' };
+        if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
       }
       // A dial-hosted window/moon is an opaque data disc, not a viewport: seal its
       // aperture so the shipped dial carries no hole there. The value is composited
@@ -748,8 +815,12 @@
         _.specular(lx, h.r - 1.5, 3.2, [[0, 0.42, 1], [Math.PI, 0.42, 1]], '255,165,70', 0.95 * glow, 4, 21);
         _.specular(lx, h.r + 2.4, 1.8, [[0, 0.3, 0.8], [Math.PI, 0.3, 0.8], [Math.PI * 1.3, 0.35, 0.35]], '255,232,190', 0.7 * glow, 2, 22);
       } else if (h.style === 'frame') {
-        bl.beginPath(); p(bl); bl.lineWidth = 2.6; bl.strokeStyle = _.grad(bl, h.x, h.y, (b[2] - b[0]) / 2 + 3, pal); bl.stroke();
-        bl.beginPath(); p(bl, -0.5, -0.6); bl.lineWidth = 0.6; bl.strokeStyle = 'rgba(255,240,200,.55)'; bl.stroke();
+        // The raised ring is struck in the author's metal; gilt -- no choice made -- is
+        // still the movement's own finish, so an untouched dial keeps the palette it
+        // always had and the hairlines that go with its warmth.
+        const fp = h.fc && FRAME_PALS[h.fc] ? FRAME_PALS[h.fc] : pal;
+        bl.beginPath(); p(bl); bl.lineWidth = 2.6; bl.strokeStyle = _.grad(bl, h.x, h.y, (b[2] - b[0]) / 2 + 3, fp); bl.stroke();
+        bl.beginPath(); p(bl, -0.5, -0.6); bl.lineWidth = 0.6; bl.strokeStyle = fp === pal ? 'rgba(255,240,200,.55)' : 'rgba(255,255,255,.5)'; bl.stroke();
         bl.beginPath(); p(bl, 0.4, 0.8); bl.lineWidth = 0.6; bl.strokeStyle = 'rgba(0,0,0,.55)'; bl.stroke();
       } else if (h.style !== 'plain') {
         bl.beginPath(); p(bl); bl.lineWidth = 2.2; bl.strokeStyle = 'rgba(0,0,0,.55)'; bl.stroke();
@@ -2080,8 +2151,10 @@
       const base = sec ? secT : TURN[kind], turn = s.t && s.t.dir === 'ccw' ? (d) => -base(d) : base;
       // Uploaded art replaces the drawn hand wholesale. It still answers { c, px, py },
       // so drawHands, the shadow silhouette and the manifest record need no branch --
-      // and the metal hub cap steps aside because the art carries its own.
-      const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom }) : null;
+      // and the metal hub cap steps aside because the art carries its own. fitTo asks
+      // the ink's own tip to land at len, the reach of the drawn hand of this role, so
+      // the Length slider reads the same for an upload at any source resolution.
+      const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom, fitTo: len, rot0: +hc.rot0 || 0, aimRad: s.rot || 0 }) : null;
       all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
     });
     const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
@@ -2089,7 +2162,7 @@
       const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k] || hc.on === false) return;
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
-      const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom }) : null;
+      const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom, fitTo: len, rot0: +hc.rot0 || 0 }) : null;
       all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
     });
     // The four calendar pointers share the centre arbour. Each reaches the ring that feeds
@@ -3008,6 +3081,13 @@
       // rect is the identity for a window, so a design that never asks for a round
       // aperture keeps the Design ID it had before the shape was authorable
       if (c.type === 'window') { if (!c.wshape || c.wshape === 'rect') delete c.wshape; } else delete c.wshape;
+      // gilt is the movement's own metal: a design that never picked a frame colour
+      // serialises exactly as it did before the choice existed, and a frame colour on
+      // a comp that draws no raised frame (another style, a moon, a subdial) is noise
+      {
+        const framed = (c.type === 'window' && (!c.style || c.style === 'frame')) || (c.type === 'opening' && (c.style === 'frame' || c.style === 'lip'));
+        if (!framed || !c.frameColor || c.frameColor === 'gilt' || !FRAME_PALS[c.frameColor]) delete c.frameColor;
+      }
     });
     if (d.hands) {
       Object.keys(d.hands).forEach((id) => { const h = d.hands[id]; if (h.style === 'auto') delete h.style; if (h.finish === 'auto') delete h.finish; if (h.len != null && +h.len === 1) delete h.len; if (h.wid != null && +h.wid === 1) delete h.wid; if (h.on !== false) delete h.on; if (!h.sec || h.sec === 'auto') delete h.sec; if (!h.lume || h.lume === 'auto') delete h.lume; if (!h.shade || h.shade === 'auto') delete h.shade; if (!Object.keys(h).length) delete d.hands[id]; });
@@ -3021,7 +3101,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

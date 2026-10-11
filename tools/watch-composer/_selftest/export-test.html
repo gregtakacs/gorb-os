@@ -490,7 +490,12 @@
     const sx = src.getContext('2d');
     sx.fillStyle = '#ff0044'; sx.fillRect(0, 0, 60, 60);          // a colour no dial colour uses
     const urlA = src.toDataURL('image/png');
-    E.assetRestore([{ id: 'feat-a', name: 'feat.png', kind: 'png', dataUrl: urlA }]);
+    // one bar drawn three ways for the length probe: the tight crop, the same bar
+    // buried in transparent padding at a different scale, in a colour no hand wears
+    const spriteBar = (w, h, x, y, bw, bh) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.fillStyle = '#3fbf6f'; g.fillRect(x, y, bw, bh); return c.toDataURL('image/png'); };
+    E.assetRestore([{ id: 'feat-a', name: 'feat.png', kind: 'png', dataUrl: urlA },
+      { id: 'len-tight', name: 'tight.png', kind: 'png', dataUrl: spriteBar(12, 194, 3, 0, 6, 194) },
+      { id: 'len-padded', name: 'padded.png', kind: 'png', dataUrl: spriteBar(400, 414, 195, 10, 10, 394) }]);
     setTimeout(() => {
       // nothing above this is inside a .then, so an exception here would otherwise die as
       // an uncaught error in a timer callback and the suite would just stop reporting
@@ -768,6 +773,48 @@
     say('  no case: the case layer paints 0 px; off-centre art composited identical with that layer shown or hidden at openings 221.5 and 150 (' + wide.n + ' px, box ' + wide.box.join(',') + ', ' + masked.out + ' of them beyond r=150) while the drawn content follows the opening (dynK ' + fNone.dynK.toFixed(3) + ': hand ink beyond r=158 falls ' + hWide + ' -> ' + hCut + ' px), and a full-bleed image reaches ' + rimNone + ' px into the corners a drawn case still clips off at the dial circle (' + rimBez + ')');
     say('  alignment reference: ' + shown.length + ' of ' + PROBES.length + ' grid points painted on the glass, every one of them at the same pixel with the art at offset 0 and at 120');
     say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');
+    /* ---- Length 100% on an uploaded hand is the reach of the DRAWN hand -----------
+     * The upload's own resolution used to decide how long the hand was. One bar
+     * uploaded tight-cropped and again buried in transparent padding at a different
+     * size must both tip at the drawn minute hand's radius off the arbour -- read
+     * from the sprite's own pixels, the ones the kit ships -- and half Length must
+     * draw half that reach on the glass. */
+    if (!E.assetReady('len-tight') || !E.assetReady('len-padded')) return fail('the length fixtures never decoded');
+    const MINHAND = { centre: { hour: 0, minute: 1, second: 0 } };
+    const artFace = (id, pvx, pvy, lk) => it.faceOf(Object.assign({}, MINHAND, { hands: { 'centre-minute': Object.assign({ art: id, pivotX: pvx, pivotY: pvy }, lk != null && lk !== 1 ? { len: lk } : {}) } }));
+    const spriteTip = (hd) => {
+      const sp = hd && hd.sp; if (!sp || !sp.c || !sp.c.width || !isFinite(+sp.px)) return -1;
+      const W = sp.c.width, H = sp.c.height, d2 = sp.c.getContext('2d').getImageData(0, 0, W, H).data;
+      for (let py = 0; py < H; py++) { const row = py * W * 4 + 3; for (let px2 = 0; px2 < W; px2++) if (d2[row + px2 * 4] >= 8) return Math.max(0, sp.py - py); }
+      return 0;
+    };
+    const fcT = artFace('len-tight', 6, 194), fcP = artFace('len-padded', 200, 414);
+    const hdT = fcT.hands.find((q) => q.id === 'centre-minute'), hdP = fcP.hands.find((q) => q.id === 'centre-minute');
+    const hdD = it.faceOf(Object.assign({}, MINHAND)).hands.find((q) => q.id === 'centre-minute');
+    if (!(hdT && hdT.art && hdP && hdP.art)) return fail('the length fixtures did not become art-backed hands');
+    const tT = spriteTip(hdT), tP = spriteTip(hdP), t0 = spriteTip(hdD), tH = spriteTip(artFace('len-tight', 6, 194, 0.5).hands.find((q) => q.id === 'centre-minute'));
+    if (!(t0 > 120)) return fail('the drawn minute hand tips at only ' + t0 + ' px, so the probe is blind');
+    const spread = Math.max(Math.abs(tT - t0), Math.abs(tP - t0));
+    if (spread > 2.5) return fail('two uploads of one bar tip ' + spread.toFixed(1) + ' px off the drawn hand: tight ' + tT + ', padded ' + tP + ', drawn ' + t0);
+    if (Math.abs(tH - t0 / 2) > 2.5) return fail('Length 50% drew ' + tH + ' px of a normalised ' + t0);
+    const gL = document.createElement('canvas'); gL.width = S4; gL.height = S4;
+    fcP.drawHands(gL.getContext('2d'), new Date(2026, 0, 1, 10, 9, 0));
+    const gd = gL.getContext('2d').getImageData(0, 0, S4, S4).data; let gmax = 0;
+    for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const i = (y * S4 + x) * 4; if (gd[i + 3] > 120 && gd[i + 1] > 140 && gd[i] < 130) { const r = Math.hypot(x - C4, y - C4); if (r > gmax) gmax = r; } }
+    if (Math.abs(gmax - tP) > 3) return fail('the glass shows the padded upload tipping at ' + gmax.toFixed(0) + ' px while the fit promised ' + tP);
+    /* ---- the metal an aperture is framed in ----------------------------------------
+     * The raised ring followed the movement's finish, gold by decree. The same window
+     * struck in steel must come off cool on the shipped dial pixels where the gilt
+     * one comes off warm -- measured as a difference, so nothing about the dial
+     * underneath can fake the pass. */
+    const winF = (metal) => ({ comps: [{ id: 'wf', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 150, rot: 0, size: 2.4, style: 'frame', disc: 'light', frameColor: metal }] });
+    const dA = it.faceOf(winF('gilt')).dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+    const dB = it.faceOf(winF('steel')).dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+    let fn = 0, fw = 0, sb = 0;
+    for (let i = 0; i < dA.length; i += 4) if (Math.abs(dA[i] - dB[i]) + Math.abs(dA[i + 1] - dB[i + 1]) + Math.abs(dA[i + 2] - dB[i + 2]) > 24) { fn++; fw += dA[i] - dA[i + 2]; sb += dB[i] - dB[i + 2]; }
+    if (fn < 120) return fail('the frame metal changed only ' + fn + ' dial px, so no ring is struck in it');
+    if (!(fw / fn > 25 && sb / fn < fw / fn - 25)) return fail('a steel frame does not read cooler than the same window in gilt: gilt R−B ' + (fw / fn).toFixed(0) + ', steel ' + (sb / fn).toFixed(0));
+    say('  sprite length + frames: tight upload, padded upload and the drawn minute hand all tip within ' + spread.toFixed(1) + ' px of ' + t0 + ' px off the arbour, 50% Length draws ' + tH + ' and the glass agrees at ' + gmax.toFixed(0) + '; the steel frame moved ' + fn + ' dial px and their red-minus-blue fell from ' + (fw / fn).toFixed(0) + ' (gilt) to ' + (sb / fn).toFixed(0));
     pass();
   }
   /* ---- the Motion chips: a 4/s -> sweep -> 4/s round trip must not kill the train ---

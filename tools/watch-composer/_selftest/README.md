@@ -216,7 +216,7 @@ invisible on screen:
 |---|---|---|
 | Plate backdrop | drawn at the plate slot, so it is baked into the base frames and costs nothing per tick | `watch-engine.js` `movement()` |
 | Dial surface art | drawn into the dial canvas AFTER the surface and BEFORE the chapter print, so the user's numerals, markers and ring still paint over it and openwork still cuts it out; ships inside `layers/dial.png`, never as its own layer | `buildDial()`, `artInDial()` |
-| Hand sprite | answers the procedural contract `{c, px, py}` and suppresses the metal hub cap | `handSpriteAsset()`, `buildHands()` |
+| Hand sprite | answers the procedural contract `{c, px, py}` and suppresses the metal hub cap; Length 100% is normalised on the ink, not the image: the sprite is scaled up or down until its farthest ink along the facing's axis lands at the reach the drawn hand of that role has (`inkTipOf`, one alpha scan per asset and pivot, from a ≤512 px copy) | `handSpriteAsset()`, `inkTipOf()`, `buildHands()` |
 | Transparent sub-dial | ships no layer and no `drawOrder` entry; its holes, flares and hosted comps move to the dial | `layout()`, `buildSubdials()`, `exportKit()` |
 | Any asset | the design stores a reference; only the `.wckit` and `sources/` carry bytes | `canonDesign()`, `kitAssets()`, `exportBundle()` |
 
@@ -249,9 +249,9 @@ python3 -m pip install --user --break-system-packages nodeenv \
 
 | File | Checks |
 |---|---|
-| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry — and every hand shadow cast is the full-opening cast times `dynK`, proven on the recorded device-space offsets), the hands-row eye on a centre hand, a round aperture |
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the length-normalised sprite fit (big uploads shrink, small ones enlarge, zoom rides on top, the measure follows the facing's axis, an ink-free asset keeps the old box fit, and the minute hand's tip lands where the drawn one reaches at every slider value), the aperture frame metal (`hole.fc` plumbing, gilt is the no-choice and never reaches the Design ID, non-framed styles drop the field), the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry — and every hand shadow cast is the full-opening cast times `dynK`, proven on the recorded device-space offsets), the hands-row eye on a centre hand, a round aperture |
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
-| `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
+| `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, a complication already picked on the tab wins the pixel through the hand painted over it (and the same-spot cycle still reaches that hand), a pointer-down on the stage surround deselects while a bubbled canvas click does not, the ghost's picture turns with its facing while the read ray stands at the time angle, the frame-metal row appears only on styles that strike a ring, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
 
 The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
@@ -379,10 +379,26 @@ evidence for the authoring controls the stub suites can only describe:
   dial circle, which is what proves the clip is applied after the zoom and not before;
 * a facing of 90 turns the drawn ink a quarter of the way round the arbour, and a
   pivot 30 px outside the artwork grows the plane so the arbour is inside it;
+* an uploaded hand's **Length 100% is the drawn hand's reach, not the upload's
+  resolution**. One bar is uploaded twice — tight-cropped and buried in transparent
+  padding at a different scale — and both sprites, plus the procedural minute hand of
+  the same dial, must tip within 2.5 px of the same radius off the arbour, read from
+  each sprite's own alpha; 50% Length draws half that reach, and the composited hands
+  layer must show it at the same pixels. The old box fit capped every upload at 1:1,
+  which is the bug this answers;
+* the same window struck in **steel instead of gilt** moves a few hundred dial px and
+  their red-minus-blue mean falls from ~+80 to ~0 — the frame ring is the author's
+  metal now, and the comparison is a two-face difference so the dial underneath cannot
+  fake the pass;
 * the alignment reference — hub cross and the 24 spokes out of it — is painted at the
   same pixels with the dial art at offset 0 and at offset 120. The stub suites can say
   the strokes were asked for; only the pixels say the author has something stationary to
-  line an off-centre graphic up against.
+  line an off-centre graphic up against. The hand ghost's **read ray stands at the angle
+  the clock shows** while the facing swings the dashed picture under it — the headless
+  ui suite pins that geometry, so a facing change can never take the sightline with it;
+  and grabbing works sticky: a complication already picked on the tab wins its pixel
+  through the hand painted over it, while a click on the black around the watch lets go
+  of everything.
 
 Two probe-design traps bit this block and are worth remembering, because both produced
 a confident wrong answer rather than an obvious one:

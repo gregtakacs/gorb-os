@@ -193,7 +193,7 @@ class Component extends DCLogic {
       d.comps.push({ id, type, host, ...JSON.parse(JSON.stringify(E.NEW_COMP[type])), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22) : 1 } : {}) });
       this._pendingSel = id;
     });
-    setTimeout(() => this._pendingSel && this.setState({ sel: this._pendingSel }), 0);
+    setTimeout(() => this._pendingSel && this.setState({ sel: this._pendingSel, selKind: 'comp' }), 0);
   }
   delComp(cid) { this.upd((d) => { d.comps = d.comps.filter((c) => c.id !== cid); d.comps.forEach((c) => { if (c.host === cid) c.host = 'dial'; }); }); if (this.state.sel === cid) this.setState({ sel: null }); }
   moveComp(cid, dir) { this.upd((d) => { const i = d.comps.findIndex((c) => c.id === cid), j = i + dir; if (i < 0 || j < 0 || j >= d.comps.length) return; const t = d.comps[i]; d.comps[i] = d.comps[j]; d.comps[j] = t; }); }
@@ -884,9 +884,12 @@ class Component extends DCLogic {
    * sits. The dashed box is the sprite after its own turn AND the author's facing
    * correction; the cross is the pivot the device puts on the centre; the ring is how
    * far the ink sweeps, which is the box the device must dirty every tick; the ray is
-   * the direction the hand is meant to read at. Read the ink against the ray and a
-   * facing error is obvious: art drawn pointing east sits out to the side of a ray that
-   * means north, and the fix is the Facing field, not a redrawn PNG. */
+   * the line the CLOCK says this hand indicates -- the data angle plus the tilt of the
+   * subdial it rides on, and never the facing. That is deliberate: Facing is the author
+   * swinging the picture under a standing sightline, so an art drawn across the movement
+   * shows its tip on the ray exactly when the facing is right, and which slice of the
+   * art lands on the ray is the slice that truly indicates. If the ray rode with the
+   * facing too it would say "still perfect" at every wrong angle. */
   drawHandGhost(x, fc, d, k, px) {
     const E = window.WatchEngine, dr = this.drag;
     const hd = (fc.hands || []).find((q) => q.id === this.state.sel);
@@ -901,8 +904,10 @@ class Component extends DCLogic {
     x.rotate(ang); x.scale(k, k);
     x.setLineDash([4, 3]); x.lineWidth = 1.25 / k; x.strokeStyle = 'rgba(122,214,255,.95)';
     x.strokeRect(-sp.px, -sp.py, w, h);                                          // the sprite, turned
+    x.save(); x.rotate(-(hd.artRot || 0));                                       // off the facing, back onto the time
     x.strokeStyle = 'rgba(240,215,154,.8)'; x.lineWidth = 1 / k;
     x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -(reach - 6)); x.stroke();        // where it should read
+    x.restore();
     x.strokeStyle = '#f0d79a'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
     x.beginPath(); x.moveTo(-7 / k, 0); x.lineTo(7 / k, 0); x.moveTo(0, -7 / k); x.lineTo(0, 7 / k); x.stroke();
     x.beginPath(); x.arc(0, 0, 3 / k, 0, Math.PI * 2); x.stroke();
@@ -959,13 +964,20 @@ class Component extends DCLogic {
     /* Where several things overlap, a second click on the same spot steps down the
      * stack -- the layer picker every design tool has. Without it a 12 o'clock date
      * window is unreachable for the whole life of the seconds hand that sweeps it,
-     * because that hand is drawn over it and so always wins the pixel. */
+     * because that hand is drawn over it and so always wins the pixel.
+     * A complication already picked on the Complications tab wins that pixel outright
+     * on a fresh click: the author selected it on purpose, reached for it on the dial,
+     * and means to drag IT, not the hand someone else drew on top of it. The same-spot
+     * cycle still runs from wherever the pick landed, so nothing below stays hidden. */
     const stack = fc.pickAll ? fc.pickAll(x, y, d) : (function () { const id = fc.hit(x, y); return id ? [{ kind: 'comp', id }] : []; })();
     const last = this._clickAt;
     let i = 0;
     if (stack.length > 1 && last && Math.hypot(last.x - x, last.y - y) < 4) {
       const at = stack.findIndex((q) => q.kind === last.kind && q.id === last.id);
       if (at >= 0) i = (at + 1) % stack.length;
+    } else if (stack.length > 1 && this.state.selKind === 'comp' && this.state.sel != null) {
+      const at = stack.findIndex((q) => q.kind === 'comp' && String(q.id) === String(this.state.sel));
+      if (at > 0) i = at;
     }
     const t = stack[i] || null;
     this._clickAt = t ? { x, y, kind: t.kind, id: t.id } : null;
@@ -1025,6 +1037,15 @@ class Component extends DCLogic {
     if (this._pendHand) { const p = this._pendHand; this._pendHand = null; this.setHand(p.id, { pivotX: p.pivotX, pivotY: p.pivotY }); }
   }
   onUp() { if (this.drag) { this.flushDrag(); this.drag = null; this._tk = null; this._ck = null; this.forceUpdate(); } }
+  /* A click on the black around the watch, not on the watch, is the author putting the
+   * pen down: whatever was picked on the tabs or the stage is dropped. The canvas' own
+   * pointerdown bubbles through this handler too, so only a click whose target is the
+   * surround itself counts; an empty pixel INSIDE the canvas already deselects. */
+  stageDown(e) {
+    if (!e || e.target !== e.currentTarget) return;
+    if (this.state.sel == null && this.state.selKind == null && !this.drag) return;
+    this.clearSel();
+  }
   drawLayers() { this.LAYERS.forEach(([id]) => this.drawLayer(id)); }
   drawLayer(id) {
     const el = this.layerEls[id], fc = this.face(); if (!el || !fc) return;
@@ -1567,6 +1588,11 @@ class Component extends DCLogic {
       R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
       if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); }
       Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
+      // The raised ring only exists when the style draws it: the choice appears with the
+      // style that uses it, and Gilt is the movement's own metal -- nothing was decided
+      // until a different one is picked, so the Design ID of an untouched dial is unchanged.
+      if ((sel.type === 'window' && (!sel.style || sel.style === 'frame')) || (sel.type === 'opening' && (sel.style === 'frame' || sel.style === 'lip')))
+        Cx('Frame colour', 'frameColor', opt(E.FRAME_COLORS), 'gilt');
       if (sel.type === 'moon' && (sel.style === 'graphic' || sel.style === 'neon')) {
         const neon = sel.style === 'neon';
         selFields.push(Co(neon ? 'Glow colour' : 'Moon colour', sel.moonColor, set('moonColor'), neon ? 'Magenta' : 'Dial ink'));
@@ -1866,7 +1892,7 @@ class Component extends DCLogic {
       metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
       mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
-      onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(),
+      onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
       /* The two ways out of selection noise: a button because Escape is invisible, and a
        * guide toggle because "off means off" has to be the author's, not the component's
        * guess at when the overlay is answering a question. */
@@ -1900,7 +1926,7 @@ class Component extends DCLogic {
       compRows: D.comps.map((c, i) => ({
         ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c), anchor: 'comp-' + c.id,
         meta: 'on ' + hostName(c.host) + (c.type === 'opening' && c.show === 'balance' ? ' · follows balance' : ' · ' + Math.round(c.angle) + '° · ' + c.dist + 'px') + ' · ' + (ready ? E.COMP_STYLES[c.type][c.style] || c.style : ''),
-        pick: () => this.setState({ sel: c.id }),
+        pick: () => this.setState({ sel: c.id, selKind: 'comp' }),
         up: (e) => { e.stopPropagation(); this.moveComp(c.id, -1); },
         down: (e) => { e.stopPropagation(); this.moveComp(c.id, 1); },
         del: (e) => { e.stopPropagation(); this.delComp(c.id); },
@@ -1951,14 +1977,17 @@ class Component extends DCLogic {
           onFacingDown: () => this.stepFacing(id, -15),
           onFacingReset: () => this.setHand(id, { rot0: null }),
           artNote: (() => {
-            if (!hc.art) return 'PNG or SVG, authored at the size it will be drawn. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the device turns it the rest of the way. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
+            if (!hc.art) return 'PNG or SVG, any size: at Length 100% the art is scaled so the farthest ink along its point lands where this hand would reach drawn, and the slider scales from there. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the guide ray stands at the time the clock shows, and turning the facing swings the art under it. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
             const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — load the .wckit bundle that carries it.';
-            // the engine fits the sprite with k = min(1, box/w, box/h) and then applies the
-            // author's zoom, so the pair says whether the art lands 1:1 or is resampled
-            const box = Math.round(2 * (isC ? Math.min(216, 205 * 0.66) : 90) * len) + 8;
-            const z = hc.zoom == null ? 1 : Math.min(8, Math.max(0.05, +hc.zoom || 1));
-            const k = Math.min(1, box / (a.w || 1), box / (a.h || 1)) * z;
+            // The engine length-fits the sprite: it measures the ink's reach from the
+            // arbour and scales that -- in either direction -- so the upload's own
+            // resolution never decides how long the hand is. k is that fit times the
+            // author's zoom; it is read off the sprite the engine actually built, so
+            // this row reports the pixels that ship instead of re-deriving a box.
             const hd = fc && (fc.hands || []).find((q) => q.id === id);
+            const z = hc.zoom == null ? 1 : Math.min(8, Math.max(0.05, +hc.zoom || 1));
+            const box = Math.round(2 * (isC ? Math.min(216, 205 * 0.66) : 90) * len) + 8;
+            const k = hd && hd.sp && hd.sp.art && isFinite(+hd.sp.scale) ? +hd.sp.scale : Math.min(1, box / (a.w || 1), box / (a.h || 1)) * z;
             // The arbour can be off the visible ink in two ways worth telling apart: it
             // falls outside the artwork, or it merely crowds the plane edge and forced a
             // pad. Both sp.px/py and sp.ink are in plane px already, so the comparison is
@@ -1967,8 +1996,8 @@ class Component extends DCLogic {
             const outsideInk = !!(ib && (hd.sp.px < ib[0] || hd.sp.px > ib[2] || hd.sp.py < ib[1] || hd.sp.py > ib[3]));
             const piv = hc.pivotX == null ? 'hub ink (auto)' : (+hc.pivotX) + ',' + (+hc.pivotY)
               + (outsideInk ? ' (off the artwork; the plane is grown to hold it)' : (hd && hd.sp && hd.sp.padded ? ' (near the plane edge; grown by the pad)' : ''));
-            return a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · sweep box ' + box + '×' + box
-              + ' · drawn at ' + Math.round(a.w * k) + '×' + Math.round(a.h * k) + (k < 1 ? ' (shrunk once at load, never enlarged)' : k > 1 ? ' (upscaled ' + k.toFixed(2) + '× — the pixels are interpolated at every angle)' : ' (1:1)')
+            return a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · length-fitted to this hand’s reach'
+              + ' · drawn at ' + Math.round(a.w * k) + '×' + Math.round(a.h * k) + ' px' + (k < 0.985 ? ' (shrunk to fit the length)' : k > 1.015 ? ' (enlarged to fit the length — the pixels are interpolated at every angle)' : ' (1:1)')
               + ' · pivot ' + piv + ' · facing ' + (+(hc.rot0 || 0)) + '\u00b0' + (+(hc.rot0 || 0) ? '' : ' (assumed to point at 12)');
           })(),
           artRef: this.cb('artEls', id, (i) => this.drawArtThumb(i)),

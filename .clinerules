@@ -164,6 +164,16 @@ station:
   stays connected+synced, fires the probe endpoints, closes AP, greps serial).
 - **Audit loop**: flash, then confirm `/api/v1/status`'s `fw` is the git hash you
   built (`-dirty` = uncommitted edits). Ship = test = commit, same bytes.
+  **Caveat, measured 2026-10-11: that check can pass while lying.** `fw` comes from
+  `esp_app_desc_t`, which CMake stamps at *configure* time and caches; `idf.py build`
+  recompiles changed sources but keeps the old stamp. A tree with uncommitted edits
+  therefore flashed an image reporting a clean hash it was never built from (observed:
+  `art_bank.c` edited 14:46:10, image built 14:46:31, stamp still plain `54094e8`).
+  Trust the stamp only after `idf.py reconfigure && idf.py build`, and rely on
+  `tools/serflash.sh`, which now reads the version out of the `.bin` itself
+  (`esp_app_desc_t.version`, byte 48), compares it to `git describe --always --dirty`,
+  and exits 1 without flashing on a mismatch. The verdict goes to
+  `/tmp/serflash_audit.log`; `/tmp/serflash.sh` is a wrapper for it.
 
 Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how

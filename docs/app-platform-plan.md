@@ -466,9 +466,12 @@ deadline ladder, `report_fps_if_due`) are still in `clock_view.c`. They are the 
 `gfx_commit()` already takes the canvas as a parameter, so the bank moves without touching the
 paint path again.
 
-**Zero-behaviour-change proof, mechanical.** A checker (`/tmp/p1/parity2.py`) lifts each moved
-function out of `HEAD:main/clock/clock_view.c` and out of `orb_gfx.c`, canonicalises the renames
-and the row-state consolidation, and compares token streams. 12 of 14 are identical, including
+**Zero-behaviour-change proof, mechanical.** `tools/gfx_parity_test.py` lifts each moved
+function out of the pre-extraction `clock_view.c` (pinned at `786efcd`, the last revision
+whose clock still held the paint path whole) and out of `orb_gfx.c`, canonicalises the renames
+and the row-state consolidation, and compares token streams. It fails on anything but the
+accepted delta, and it was checked to fail: shifting one bit in `gfx_rot_sin_cos` (`>> 5` to
+`>> 6`) returns rc 1 naming the function. 12 of 14 are identical, including
 the entire commit band loop. The two that differ are `gfx_fill_sprite_dsc` and
 `gfx_paint_ctx_init`, and both differ only by the injected `const uint8_t *base` parameter: the
 bank base is threaded in per call so gfx never learns about art_bank. That is the intended delta

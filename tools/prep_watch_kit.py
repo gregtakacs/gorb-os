@@ -85,6 +85,7 @@ import os
 import sys
 import json
 import shutil
+import tempfile
 import zipfile
 
 from PIL import Image
@@ -239,14 +240,19 @@ def main():
         sys.exit("usage: prep_watch_kit.py <kit.zip> <outdir> [--tick]")
     kit_zip, outdir = args
 
-    # A stale /tmp/_kit from a DIFFERENT kit would otherwise ride along:
+    # A stale scratch dir from a DIFFERENT kit would otherwise ride along:
     # extractall overwrites what the new zip has and leaves what it lacks, so a
-    # kit without a subdial would inherit the previous kit's.
-    shutil.rmtree("/tmp/_kit", ignore_errors=True)
-    os.makedirs("/tmp/_kit")
+    # kit without a subdial would inherit the previous kit's. Unique per process,
+    # not just cleared on entry — two preps in flight (a bake script backgrounded
+    # while another finishes) share the fixed name, and the second one then reads
+    # the FIRST one's art out of the shared dir. That is how a classic kit with no
+    # tourbillon/ came to report a carriage and take the carriage's pivot: nothing
+    # failed, the dial was just quietly somebody else's.
+    K = os.path.join(tempfile.gettempdir(), "_kit_%d" % os.getpid())
+    shutil.rmtree(K, ignore_errors=True)
+    os.makedirs(K)
     with zipfile.ZipFile(kit_zip) as z:
-        z.extractall("/tmp/_kit")
-    K = "/tmp/_kit"
+        z.extractall(K)
     manifest = json.load(open(f"{K}/manifest.json"))
     if manifest.get("size") != SCREEN:
         sys.exit(f"kit size {manifest.get('size')} != {SCREEN}")
@@ -320,10 +326,19 @@ def main():
         if kind not in ("hour", "minute", "second"):
             continue
         hx, hy = h.get("pivot", [CX, CY])
-        hand = _placed(K, h["file"], hx, hy)
+        # The manifest's OWN per-hand centre, not CX,CY. The device pins a
+        # layer's stored pivot onto its stored centre and rotates about that, so
+        # a hand mounted on a subdial must be placed and recorded on the SUBDIAL.
+        # Hard-coding (233,233) is invisible on an on-centre kit, where the two
+        # agree, and on this one it would put the rotation point 57 px from the
+        # hand's own pivot: the hand would orbit its subdial instead of turning
+        # in it.
+        mcx, mcy = h.get("centre") or [CX, CY]
+        mcx, mcy = int(round(mcx)), int(round(mcy))
+        hand = _placed(K, h["file"], hx, hy, mcx, mcy)
         hand.save(f"{theme}/clock_hand_{kind}.png")
-        rec = {"show": bool((_al(hand) > 0).any()), "pivotX": CX, "pivotY": CY,
-               "centerX": CX, "centerY": CY, "blend": 0}
+        rec = {"show": bool((_al(hand) > 0).any()), "pivotX": mcx, "pivotY": mcy,
+               "centerX": mcx, "centerY": mcy, "blend": 0}
         sh = h.get("shadow")
         if sh and sh.get("file") and os.path.exists(f"{K}/{sh['file']}"):
             sx, sy = sh.get("pivot", [CX, CY])
@@ -344,7 +359,8 @@ def main():
                 sys.exit(f"{kind}: shadow pivot offset ({mx:+.3f},{my:+.3f}) is "
                          f"not integral — the shadow does not share the hand's "
                          f"rotation frame; refusing to bake it")
-            _placed(K, sh["file"], sx, sy).save(f"{theme}/clock_shadow_{kind}.png")
+            _placed(K, sh["file"], sx, sy, mcx, mcy).save(
+                f"{theme}/clock_shadow_{kind}.png")
             rec["shadowDx"], rec["shadowDy"] = int(round(ox)), int(round(oy))
             shadow_on = True
             print(f"  {kind:6s} shadow: canvas margin ({mx:+.2f},{my:+.2f}) "
@@ -367,13 +383,18 @@ def main():
     for k, rec in style_hands.items():
         if not rec["show"]:
             continue
+        # Measured about the hand's OWN centre: an off-centre subdial hand sweeps
+        # an annulus whose centre is not (233,233), and rating it from the dial
+        # centre would understate its reach and fold bezel pixels the hand then
+        # paints over — the refusal this proof exists to make exact.
+        hcx, hcy = rec["centerX"], rec["centerY"]
         movers.append((f"{k}-hand", Image.open(f"{theme}/clock_hand_{k}.png"),
-                       (CX, CY), (CX, CY)))
+                       (hcx, hcy), (hcx, hcy)))
         sp = f"{theme}/clock_shadow_{k}.png"
         if os.path.exists(sp):
-            movers.append((f"{k}-shadow", Image.open(sp), (CX, CY),
-                           (CX + rec.get("shadowDx", 0),
-                            CY + rec.get("shadowDy", 0))))
+            movers.append((f"{k}-shadow", Image.open(sp), (hcx, hcy),
+                           (hcx + rec.get("shadowDx", 0),
+                            hcy + rec.get("shadowDy", 0))))
     swept = np.zeros((SCREEN, SCREEN), dtype=bool)
     swept_r = {}
     for nm, im, (px, py), (cx, cy) in movers:
@@ -454,10 +475,16 @@ def main():
     base.update(style_hands)
     # The carriage rides the second-hand slot: its record is the geometry carrier
     # the rotator and the swept-box maths read, while its pixels come from the
-    # tourbillon bank the baker packs separately (--tourbillon).
-    base["second"] = {"show": bool(tb0 is not None and (_al(tb0) > 0).any()),
-                      "pivotX": tourb_c[0], "pivotY": tourb_c[1],
-                      "centerX": tourb_c[0], "centerY": tourb_c[1], "blend": 0}
+    # tourbillon bank the baker packs separately (--tourbillon). Only a kit that
+    # HAS a carriage may overwrite the slot — a classic kit's own seconds hand (a
+    # subdial hand on the classic movements) is a real, parsed record above, and
+    # clobbering it unconditionally hid the hand while the run line still printed
+    # "second-hand slot plain". Without a carriage, tourb_c is just the first
+    # hand's centre, so it would also hand a genuine record a borrowed pivot.
+    if has_tb:
+        base["second"] = {"show": bool((_al(tb0) > 0).any()),
+                          "pivotX": tourb_c[0], "pivotY": tourb_c[1],
+                          "centerX": tourb_c[0], "centerY": tourb_c[1], "blend": 0}
     base["static1"] = {"show": True, "pivotX": CX, "pivotY": CY,
                        "centerX": CX, "centerY": CY, "blend": 0}
     show2 = bool(sub_files and not merged)
@@ -472,9 +499,25 @@ def main():
         s2.save(f"{theme}/clock_hand_static2.png")
     # Earlier == lower, and the shadow always goes down directly under its OWN
     # hand (clock_view.c's etiquette), so the order list carries the movers only.
-    kind_order = [order_idx[k] for k in
-                  ("second", "static1", "static2", "hour", "minute")
-                  if base[k]["show"]]
+    #
+    # WHERE THE SECOND SLOT SITS IS NOT ONE RULE FOR EVERY KIT. The tuple that
+    # decided it put `second` below the statics unconditionally. That is right for
+    # a carriage — the orbital kits' drawOrder lists the tourbillon above the base
+    # and BELOW the dial — and wrong for a classic kit, whose seconds hand belongs
+    # to a subdial that this script merges INTO static1: the same drawOrder lists
+    # hands AFTER the subdial, so a hand parked under the statics is under an
+    # opaque plate (this kit's subdial disc measures 5525/5525 px at a=255) and
+    # would be baked, flagged shown, and never visible.
+    #
+    # The kit's own `z` orders the hands, so the old tuple's implied
+    # second<hour<minute is the manifest's claim and not this script's.
+    hands_below = ["second"] if has_tb else []
+    statics = [k for k in ("static1", "static2") if base[k]["show"]]
+    hands_above = [k for k in ("second", "hour", "minute")
+                   if base[k]["show"] and k not in hands_below]
+    zget = {h.get("kind"): h.get("z", 0) for h in manifest.get("hands", [])}
+    hands_above.sort(key=lambda k: zget.get(k, 0))
+    kind_order = [order_idx[k] for k in hands_below + statics + hands_above]
     base["shadow"] = {"on": shadow_on, "dx": 0, "dy": 0}
     # tickRate == bank fps makes hand_beat_ticks() 1, so the carriage angle is
     # read from the wall clock every tick: a true sweep. --tick pins it to one
@@ -486,7 +529,7 @@ def main():
     json.dump({"name": os.path.basename(os.path.abspath(outdir))},
               open(f"{theme}/theme.json", "w"))
     json.dump(style, open(f"{theme}/clock_style.json", "w"), indent=1)
-    shutil.rmtree("/tmp/_kit", ignore_errors=True)
+    shutil.rmtree(K, ignore_errors=True)
 
     ink = lambda im: int((_al(im) > 0).sum())
     sh_ink = sum(ink(Image.open(f"{theme}/clock_shadow_{k}.png"))

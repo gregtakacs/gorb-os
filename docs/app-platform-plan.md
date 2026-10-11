@@ -199,7 +199,9 @@ So the accepted failure is bounded: a bad install costs the owner that one app a
 
 | Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the two rows above |
 | Two flagships mapped together | 120 pages + `.rodata`'s 5 = **125 of 256** | arithmetic; leaves 131 pages of headroom |
+| Measured flagship, for calibration | `perpetual-calendar` = 2,503,747 B = **39 pages** on the board (§10); two of *these* plus `.rodata` = 83 of 256 | boot line `39 MMU pages`, `art_pages` in `/api/v1/status` |
 | Two flagships in `assets` | 7,848,820 B of 8,388,608, **539,788 B spare** | arithmetic; the partition is the binding limit, not the MMU |
+| Two *maximum*-size banks | 128+128+5 = **261 of 256 — overflows** | arithmetic; why `orb_art_reserve()` must cap the running sum, not each request |
 
 The DROM window is shared with the app's own `.rodata`, which is why `art_bank_init()` maps only `need_bytes` (`art_bank.h:37-41`). With `.rodata` at 298 KB the window is not the binding limit: the 8 MB `assets` partition is, at two flagship banks. That is exactly the capacity ruling C1 asks for, which is why mechanism A stops being a coin flip.
 
@@ -367,7 +369,7 @@ Instrument `orb_app_activate()` with `esp_timer_get_time()` at entry and after t
     app: switch "steam" -> "orbital": build 4 ms, first commit 142 ms
          (mirror 41, hook 88, te 9, dma 4 ms) rows 452 blends 214k
 
-Pass: full activate under 250 ms; a second switch under 60 ms (objects survive, only the model re-pushes); no new watchdog; the boot dial still reads 6-7 fps.
+Pass: full activate under 250 ms; a second switch under 60 ms (objects survive, only the model re-pushes); no new watchdog; the boot dial still reads its baked tempo (8 fps on the flagship bank measured in §10, whose art asks for 16 frames @ 125 ms).
 
 ### M2 — residency budget: prove two banks map at once
 
@@ -409,7 +411,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | Phase | Deliverable | Passes when |
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
-| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **compositor + commit pass + `orb_art_reserve()` landed and proven identical (§10); delta bank, scheduler, and the fps/M1/M2 measurements are still open** |
+| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **compositor + commit pass + `orb_art_reserve()` landed and proven identical, fps bar met at 8 fps on the flagship bank, M1 measured, M2's two numbers taken (§10); the delta bank and scheduler move is the remaining half** |
 | P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
@@ -489,12 +491,24 @@ path — `hook 435 (rest 23 paint 390 cmp 17) ms/s` and `blend/s by layer: hr 16
 sec 4105/8 ... glass 198085/246` — so the moved code is doing the real compositing and the
 per-role counters cross the TU boundary correctly.
 
-**fps: the bar was not evaluable here, so it is not claimed.** The bench's `assets` partition holds
-the `skeleton` theme: `bg gif delta bank: 8 frames @ 250 ms (4.0 fps), tick 250 ms`. The dial holds
-exactly its baked tempo — 4 fps steady after a 6 fps plate-only warm-up, flush avg 74-84 ms against
-a 250 ms tick, so about a third of the tick budget spent. The 6-7 fps figure belongs to a flagship
-kit3 bank, which is not what is flashed. P1 therefore stays open on fps: it needs a flagship theme
-on this board, which is the same setup M2 needs.
+**fps: the bar is met, measured on a flagship bank 2026-10-11.** An earlier version of this
+section declined the claim because the bench held only the `skeleton` theme
+(`8 frames @ 250 ms (4.0 fps)`, which it held exactly). The owner has since loaded
+`perpetual-calendar`, and the same build now reads:
+
+    art_bank: bank "assets" @0x430000, 2503747 B mapped of 8388608 B (theme blob 2503747 B), 39 MMU pages
+    orb_theme: theme "perpetual-calendar" from slot-A, 2503747 B of pixels
+    clock: 3 hand(s), shadow on(0,0), sweep on(sweep, every tick), bg gif delta bank: 16 frames @ 125 ms (8.0 fps)
+
+Steady state over 13 one-second samples past the warm-up: **8 fps** (min 8, peak 9 — it
+reaches the tempo the art asks for, so the plan's 6-7 fps bar is exceeded, not just met),
+947,844 px/s, flush avg 78 ms of the 125 ms tick — 62% spent, 38% of the tick unspent.
+The breakdown says where the remaining budget goes, and it is not the bus: of the
+compositor's 467 ms/s, `paint` is 415 (89%), `cmp` 19, `rest` 25, while DMA is 108 ms/s
+(13.5 ms per flush) and TE 61 ms/s (7.6 ms). Row-major paid for itself, and the next
+percent of frames is in the blend loop, not in the SPI path. Per layer: `glass` 440,334 px/s
+at 146 ns/px and `dial` 424,250 at 114 ns/px are the two costs; the three hands together are
+133,000.
 
 **M1: measured — 2026-10-11, three clock-to-menu-to-clock round trips.** Taken over
 `GET /api/v1/screen?to=…` on the connected bench (`sta ip 192.168.2.32`, rssi -56). An
@@ -503,10 +517,11 @@ misread `.clinerules:136-166`, which says the *host* has no radio and so cannot 
 phone joining the AP. The orb's own station joins the LAN and its routes answer curl, and
 `.clinerules:161` lists exactly that. A switch between two already-resident views costs:
 
-| direction | synchronous | request to glass | the commit it provoked |
+| theme / direction | synchronous | request to glass | the commit it provoked |
 |---|---|---|---|
-| clock -> menu | 0 ms | 75, 75, 91 ms | 1, avg 68-80 ms |
-| menu -> clock | 0-1 ms | 256, 262, 266, 273 ms | 1, avg 239-255 ms |
+| skeleton, clock -> menu | 0 ms | 75, 75, 91 ms | 1, avg 68-80 ms |
+| skeleton, menu -> clock | 0-1 ms | 256, 262, 266, 273 ms | 1, avg 239-255 ms |
+| perpetual-calendar, boot -> clock | 1 ms | 464 ms | 1, avg 446 ms |
 
 No reboot is involved in either direction, so D5's rule ("no reboot to rotate between
 resident apps") is satisfied by the only switch the firmware has today. Two things the
@@ -521,9 +536,22 @@ printed display's all-time flush maximum as if the switch had caused it):
    The steady-state commit at this theme's 250 ms tick costs 74-84 ms, so the switch
    costs ~3x a normal tick of the same compositor work: event-only row marking keeps
    steady frames small, and a switch loses that advantage because nothing has a valid
-   delta bank yet. M3's two-app rotation should be judged against the ~273 ms figure, and
-   P2's bank swap must not add to it.
+   delta bank yet. The flagship row scales that effect with the art — a cold first commit
+   is 446 ms at 8 fps against 256 ms at 4 — so M3's two-app rotation must be judged against
+   the ~273 ms figure at 4 fps and the ~450 ms one at 8, and P2's bank swap must not add to
+   either. Warming a delta bank instead of discarding it is the lever.
 
-**M2: not run.** One bank resident at 31 pages, per the boot line above. The two-bank residency
-question is P2's, once the loader can map a second bank.
+**M2: the two numbers are measured; the residency test itself is P2's.** With the flagship
+resident and the dial running its own 8 fps tempo, `/api/v1/status` reads
+`heap_psram 7,471,404` free and `heap_internal 26,111` (largest block 9,216). So the
+mechanism-B arena cap and C12's eviction headroom have a real budget to be cut against
+instead of an estimate. The page arithmetic is now checkable against a measured bank rather
+than a guessed one, and it is more generous than §3.1 assumed: at 64 KB per page, this
+2,503,747 B bank is 39 pages, so two flagships plus `.rodata`'s 5 cost **83 of 256**, not the
+125 §3.1 estimated — the conclusion (A is not what caps us) holds, and by a wider margin.
+Where the cap actually bites is the slot size, not the theme size: two *maximum* 8 MB banks
+would cost 128+128+5 = **261 of 256** and overflow, so `orb_art_reserve()` must refuse on the
+sum, not merely grant each request. Whether two mapped banks *actually* hold 8 fps under
+animation is still unmeasured: the loader cannot map a second bank until P2, and no number is
+claimed for it here.
 

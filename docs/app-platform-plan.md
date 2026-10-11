@@ -411,7 +411,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | Phase | Deliverable | Passes when |
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
-| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **compositor + commit pass + `orb_art_reserve()` landed and proven identical, fps bar met at 8 fps on the flagship bank, M1 measured, M2's two numbers taken (§10); the delta bank and scheduler move is the remaining half** |
+| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
 | P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
@@ -461,23 +461,54 @@ and the boot line now prints the page cost — measured on the bench:
 Section 3.3's page arithmetic is now a number the board printed, not one the plan asserted. Free
 PSRAM was already reported as `heap_psram`, so it was not duplicated under a second name.
 
-**Not landed, still P1's remaining work.** The delta bank (`s_canvas`, `gif_apply_frame`,
-`build_bg_dscs`, `show_plate_frame`, `bg_frame_now`, `bg_rate`, `gif_tick_ms`, `gif_mode`,
-`bg_live`) and the frame scheduler (`tick_timer_cb`, `tick_base_ms`, `hand_beat_ticks`, the
-deadline ladder, `report_fps_if_due`) are still in `clock_view.c`. They are the next commit.
-`gfx_commit()` already takes the canvas as a parameter, so the bank moves without touching the
+**Landed same day, second commit (`836a0c2`).** `main/gfx/orb_sched.h` (149 lines) and
+`main/gfx/orb_sched.c` (589) are the delta bank and the frame scheduler, carved out of
+`clock_view.c`, which fell from 2,441 to 1,957 lines. The bank owns the GIF-mode PSRAM canvas
+(`s_canvas`, `s_canvas_dsc`), the classic plate-frame bank (`s_bg_dsc`, `build_bg_dscs`,
+`bg_frame_now`, `show_plate_frame`), the frame cycling and the push (`gif_apply_frame`), and the
+three pacing predicates (`gif_mode`, `gif_tick_ms`, `bg_live`); the scheduler owns the `lv_timer`
+with its deadline ladder (`tick_timer_cb`), `tick_base_ms`, `bg_rate`, the commit nudge
+(`request_commit`), `l4_active`, and the per-second throughput report (`report_fps_if_due`).
+`gfx_commit()` already took the canvas as a parameter, so the bank moved without touching the
 paint path again.
 
+The seam is `orb_sched_policy_t`, installed at `orb_sched_start()`: the tick calls the app's
+`compose_now()`+`tourbillon_advance()` pair through `.tick`, and the L4 full-box re-mark and the
+bench plan through `.mark_all`/`.bench`. This TU includes no clock header, so the dependency
+stays app → gfx and never inverts — the same shape as `gfx_set_band_hook()`. Three things stayed
+in the app deliberately. `s_bt_ctr/sec/frac` stayed with `hand_angles()`, its only reader: the
+plan's original P1 line listed `hand_beat_ticks` under the scheduler, but the code graph shows
+the tick never touches it — it is sampled where the angles are made, so moving it would have
+meant inventing an accessor for one caller. `mark_all_layers()` stayed because it walks the
+app's own layer and shadow arrays. `l4_active()`'s eleven mark-site callers are policy-side; the
+predicate itself moved and is exported.
+
 **Zero-behaviour-change proof, mechanical.** `tools/gfx_parity_test.py` lifts each moved
-function out of the pre-extraction `clock_view.c` (pinned at `786efcd`, the last revision
-whose clock still held the paint path whole) and out of `orb_gfx.c`, canonicalises the renames
-and the row-state consolidation, and compares token streams. It fails on anything but the
-accepted delta, and it was checked to fail: shifting one bit in `gfx_rot_sin_cos` (`>> 5` to
-`>> 6`) returns rc 1 naming the function. 12 of 14 are identical, including
-the entire commit band loop. The two that differ are `gfx_fill_sprite_dsc` and
-`gfx_paint_ctx_init`, and both differ only by the injected `const uint8_t *base` parameter: the
-bank base is threaded in per call so gfx never learns about art_bank. That is the intended delta
-and the only one.
+function out of the pre-extraction `clock_view.c` (the paint path pinned at `786efcd`, the last
+revision whose clock still held it whole; the bank and the tick pinned at `3116942`, two
+revisions later, because `orb_gfx.c`'s own move had already rewritten `request_commit` and the
+fps report's per-role loop — comparing those against `786efcd` would read someone else's change
+as this one's) and out of `orb_gfx.c` / `orb_sched.c`, canonicalises the renames, the row-state
+consolidation and the policy callbacks, and compares token streams. 13 paint routines and 14
+bank/tick routines, all identical. It fails on anything but the accepted delta, and it was
+checked to fail four ways: shifting one bit in `gfx_rot_sin_cos` (`>> 5` to `>> 4`) returns rc 1
+naming the function, and so does `s_gif_due += d;` becoming `s_gif_due = d;`, the deadline
+ladder's `- 8` becoming `- 9`, and the `gif_tick_ms()` floor's `d < 20` becoming `d < 21`. The
+last three are pure scheduler, invisible to any dial-pixel test.
+Of the 28 comparisons, 26 are identical, including the entire commit band loop. The two that
+differ are `gfx_fill_sprite_dsc` and `gfx_paint_ctx_init`, and both differ only by the injected
+`const uint8_t *base` parameter: the bank base is threaded in per call so gfx never learns about
+art_bank. That is the intended delta and the only one.
+
+**Verified on the bench, not just on the host.** The aviator 15 fps bank was the stress case,
+since it is the only theme whose tick is over-subscribed. Pre- and post-extraction builds were
+flashed back to back over the same serial link, same theme, same 62 s capture: fps median 15
+both, p10 12 both, mean 14.41 vs 14.33; flush median 60 ms and p90 77 ms both; px/s median
+1,212,532 vs 1,231,172; chunks/s median 167 vs 165. The boot dial prints the identical lines:
+`bg gif delta bank: 15 frames @ 67 ms (14.9 fps), tick 67 ms` and `composite: baked static
+matte`. All eight host suites are green (`gfx_parity`, `host_tz`, `host_sd`, `host_comp_math`
+at 5933 vectors, `host_bake_comp`, `host_idle_dim`, `host_knob`, `host_menu`), and the app builds
+clean under `-Werror`.
 
 **Gates.** `idf.py build` clean, zero warnings under `-Wall -Wextra -Werror=all`.
 `host_comp_math_test.py` green at 5,933 vectors with all 14 mutants caught; `host_menu_test.py`

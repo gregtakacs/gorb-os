@@ -249,9 +249,9 @@ python3 -m pip install --user --break-system-packages nodeenv \
 
 | File | Checks |
 |---|---|
-| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere), a round aperture |
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry), the hands-row eye on a centre hand, a round aperture |
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
-| `headless-ui.test.js` | the control row offers each field, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
+| `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
 
 The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
@@ -347,12 +347,13 @@ evidence for the authoring controls the stub suites can only describe:
   for a circle against ~1.0 for the square, both measured in the same run so the
   square case calibrates the probe;
 * "no case" paints **no pixel at all** — no mask, no rim shade — and the composited art is
-  the same pixels with that layer shown or hidden, at opening 221.5 and at 150. Its own
-  uploaded image also reaches the panel corners there (59,571 px of it outside the dial
-  circle in the current run), because that image carries the device's case; under a drawn
-  case the same art stays clipped to the dial circle (0 px outside it), where the metal does
-  the covering. The opening slider is a measurement for the guide's ring, not a cut and not
-  a resize handle;
+  the same pixels with that layer shown or hidden, at opening 221.5 and at 150, at the same
+  box: the opening moves every other pixel and leaves the uploaded image exactly where the
+  author put it. Its own uploaded image also reaches the panel corners there (59,571 px of
+  it outside the dial circle in the current run), because that image carries the device's
+  case; under a drawn case the same art stays clipped to the dial circle (0 px outside it),
+  where the metal does the covering. The drawn pieces do follow the ring: hand ink beyond
+  r=158 falls from 104 px at the default opening to 0 at 150 (`dynScale`);
 * the seconds hand is authored with the **seconds** list, not the hand-style list. Both are
   measured on the sprite the kit ships (`hd.sp.c`): `classic` 801 px against `lollipop` 1060 px
   proves the seconds list reshapes it, while none of six hand styles moves it by a single

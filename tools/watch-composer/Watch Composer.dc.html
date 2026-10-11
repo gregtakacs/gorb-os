@@ -527,7 +527,8 @@ class Component extends DCLogic {
     const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
     return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
-  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
+  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
+    o.noCase = this.state.caseStyle === 'none' ? 1 : 0; if (noframes) delete o.frames; return JSON.stringify(o); }
   artKey(mvk) { return (mvk || this.mvKey(1)) + '|' + this.state.dial + '|' + JSON.stringify(this.design()); }   // priced-art signature: the movement art, the tempo-independent part, plus the dial that hides it
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
   faceKey(id) { return JSON.stringify([this.opts(id), id, this.handDef(id), this.design(id)]); }
@@ -937,7 +938,7 @@ class Component extends DCLogic {
    * wrong space: an all-zero alpha mask culls nothing and the row count falls back
    * to the old honest number. */
   occlMask() {
-    const fc = this.face(), k = (fc && fc.inset) || 1;
+    const fc = this.face(), k = (fc && (fc.inset || 1) * (fc.dynK || 1)) || 1;
     /* The '|noface' tail matters: a mask built while the face is still missing is
      * all zeros, and caching it under the dial's own key would keep culling nothing
      * for the rest of the session after the dial finally arrives -- the row count
@@ -1146,7 +1147,7 @@ class Component extends DCLogic {
     const f = this.state.frame, gt = this.gt[f] || this.gt.find(Boolean), d = this.now(), x = c.getContext('2d');
     WatchEngine.compose(x, this.base, gt, fc, d, this.state.hidden);
     if (+this.cfg().wb !== 6500) WatchEngine.wb(c, +this.cfg().wb);
-    const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = fc.inset || 1;
+    const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = ((fc.inset || 1) * (fc.dynK || 1));
     if (o) {
       x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
       x.beginPath(); x.arc(233 + (o.x - 233) * k, 233 + (o.y - 233) * k, (o.r + 3) * k, 0, Math.PI * 2); x.stroke(); x.restore();
@@ -1159,6 +1160,7 @@ class Component extends DCLogic {
     const s = this.state;
     if (s.guide === 'off') return false;
     if (s.guide === 'on') return true;
+    if (s.tab === 'case' && s.caseStyle === 'none') return true;   // the opening's gold ring is how the author sets where the glass ends
     return !!this.drag || s.selKind === 'dial' || s.selKind === 'hand';
   }
   /* Two ways out of the overlay, because they answer two different questions. Clearing
@@ -1221,13 +1223,18 @@ class Component extends DCLogic {
     x.beginPath(); x.arc(233, 233, 3.5, 0, TAU); x.stroke();     // THE hub: fixed, and not the art's centre
     const slot = (this.state.selKind === 'dial' && ((this.drag && this.drag.kind === 'dial' && this.drag.slot) || this.artSlot())) || null;
     if (slot && D[slot + 'Art'] && E.artBox) {
+      // The uploaded image is never eased in by the opening (see the engine's dynScale):
+      // the aim box is drawn at the art's own scale, which is the case inset, not the
+      // composited scale this overlay otherwise maps with.
+      const kA = (fc.inset == null ? k : fc.inset) || 1;
+      const pxa = (v) => 233 + (v - 233) * kA;
       const b = E.artBox(D[slot + 'Art'], { x: 233 + (+D[slot + 'X'] || 0), y: 233 + (+D[slot + 'Y'] || 0), w: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], h: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], fit: D[slot + 'Fit'] || 'cover', zoom: D[slot + 'Zoom'] == null ? 1 : +D[slot + 'Zoom'] });
       x.setLineDash([]); x.lineWidth = 1.25; x.strokeStyle = 'rgba(122,214,255,.9)';
-      const L = px(b.x - b.w / 2), T = px(b.y - b.h / 2), W = b.w * k, H = b.h * k;
+      const L = pxa(b.x - b.w / 2), T = pxa(b.y - b.h / 2), W = b.w * kA, H = b.h * kA;
       x.strokeRect(L, T, W, H);
       x.lineWidth = 2.5; x.strokeStyle = 'rgba(122,214,255,1)';   // corner ticks: the box reads even over busy art
       [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]].forEach((q) => { x.beginPath(); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0] + 9 * q[2], T + q[1]); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0], T + q[1] + 9 * q[3]); x.stroke(); });
-      const ox = px(233 + (+D[slot + 'X'] || 0)), oy = px(233 + (+D[slot + 'Y'] || 0));
+      const ox = pxa(233 + (+D[slot + 'X'] || 0)), oy = pxa(233 + (+D[slot + 'Y'] || 0));
       x.setLineDash([3, 4]); x.lineWidth = 1; x.strokeStyle = 'rgba(122,214,255,.55)';
       x.beginPath(); x.moveTo(ox - 30, oy); x.lineTo(ox + 30, oy); x.moveTo(ox, oy - 30); x.lineTo(ox, oy + 30); x.stroke();
       x.beginPath(); x.arc(ox, oy, 3, 0, TAU); x.stroke();         // the art's own centre, which is NOT the hub
@@ -1263,7 +1270,13 @@ class Component extends DCLogic {
     x.beginPath(); x.arc(0, 0, 3 / k, 0, Math.PI * 2); x.stroke();
     x.restore();
   }
-  pt(e) { const r = e.currentTarget.getBoundingClientRect(), fc = this.face(), k = (fc && fc.inset) || 1; const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
+  /* Screen -> dial space. Complications and hands are drawn through the composited scale
+   * (inset x dynK), so clicks map back through it; the two art slots are not -- under "no
+   * case" the opening moves every other pixel and leaves the author's image exactly where
+   * they put it -- so art pans map back through the art's own scale (the case inset). */
+  ptK(e, k) { const r = e.currentTarget.getBoundingClientRect(); const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
+  pt(e) { const fc = this.face(); return this.ptK(e, ((fc && fc.inset) || 1) * ((fc && fc.dynK) || 1)); }
+  ptArt(e) { const fc = this.face(); return this.ptK(e, (fc && fc.inset) || 1); }
   /* Which of the two art slots a dial drag pans. Asked outright rather than guessed:
    * both can hold art at once, and quietly moving the wrong one wastes more of the
    * author's time than one chip does. */
@@ -1337,7 +1350,7 @@ class Component extends DCLogic {
     }
     if (t.kind === 'dial') {
       const p = this.artSlot();
-      if (p) { const D = this.design() || {}; this.drag = { kind: 'dial', slot: p, px: x, py: y, sx: +D[p + 'X'] || 0, sy: +D[p + 'Y'] || 0 }; }
+      if (p) { const D = this.design() || {}; const [ax, ay] = this.ptArt(e); this.drag = { kind: 'dial', slot: p, px: ax, py: ay, sx: +D[p + 'X'] || 0, sy: +D[p + 'Y'] || 0 }; }
       grab(); return this.setState(jump);
     }
     const g = fc.lay.G[t.id];
@@ -1347,7 +1360,7 @@ class Component extends DCLogic {
   onMove(e) {
     const dr = this.drag; if (!dr) return;
     const fc = this.face(); if (!fc) return;
-    const [x, y] = this.pt(e);
+    const [x, y] = dr.kind === 'dial' ? this.ptArt(e) : this.pt(e);
     if (dr.kind === 'dial') {
       this._pendArt = { p: dr.slot, x: Math.round(dr.sx + (x - dr.px)), y: Math.round(dr.sy + (y - dr.py)) };
     } else if (dr.kind === 'hand') {
@@ -1379,7 +1392,7 @@ class Component extends DCLogic {
     const el = this.layerEls[id], fc = this.face(); if (!el || !fc) return;
     const x = el.getContext('2d'), sc = this.scr(), s = sc.getContext('2d'), d = this.now();
     s.setTransform(1, 0, 0, 1, 0, 0); s.globalCompositeOperation = 'source-over'; s.clearRect(0, 0, 466, 466);
-    if (id === 'movement' && this.base) { s.drawImage(this.base.plate, 0, 0); if (fc.plateFlares) s.drawImage(fc.plateFlares, 0, 0); }
+    if (id === 'movement' && this.base) { s.drawImage(this.base.plate, 0, 0); if (fc.bgL) s.drawImage(fc.bgL, 0, 0); if (fc.plateFlares) s.drawImage(fc.plateFlares, 0, 0); }
     if (id === 'geartrain' && this.gt[0]) { s.drawImage(this.gt[0], 0, 0); WatchEngine.drawCage(s, this.base, this.gt[0], d); }
     if (id === 'complications') { const cp = fc.comps(d); s.drawImage(cp.dial, 0, 0); Object.values(cp.subs).forEach((c) => s.drawImage(c, 0, 0)); }
     if (id === 'dial') s.drawImage(fc.dial, 0, 0);
@@ -1624,8 +1637,12 @@ class Component extends DCLogic {
       WatchEngine.compose(c.getContext('2d'), this.base, noCage, this.face(), this.now(), baseOnly);
       files.push({ name: 'base/frame_' + pad(f + 1) + '.png', data: await this.png(c) });
     }
-    const K = fc.inset || 1, M = (v) => 233 + (v - 233) * K;
-    const bake = (c) => { if (K === 1) return c; const o = document.createElement('canvas'); o.width = o.height = 466; const x = o.getContext('2d'); x.translate(233, 233); x.scale(K, K); x.translate(-233, -233); x.drawImage(c, 0, 0); return o; };
+    // Under "no case" the drawn content ships eased in by the opening (dynScale) and the
+    // author's art ships exactly as authored: the dial layer is already final (its art was
+    // merged untransformed at bake time), so only the plate-frame pass and the procedural
+    // layers take the dynamic scale -- and the dial.png bake must not rescale it again.
+    const K = (fc.inset || 1) * (fc.dynK || 1), M = (v) => 233 + (v - 233) * K;
+    const bake = (c, s) => { const q = s == null ? K : s; if (q === 1) return c; const o = document.createElement('canvas'); o.width = o.height = 466; const x = o.getContext('2d'); x.translate(233, 233); x.scale(q, q); x.translate(-233, -233); x.drawImage(c, 0, 0); return o; };
     // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes.
     // The day-of-month field is NOT filtered out even though it now assembles the same way: its aperture is sealed (layout's hole.seal),
     // so the shipped dial carries no hole there already, and dropping the comp would also stop printMain avoiding numerals under it.
@@ -1637,7 +1654,7 @@ class Component extends DCLogic {
     // so the geartrain under an aperture is never DMA'd -- and prep_watch_kit's fold and
     // bake_clock.py's --bg-occlude (opaque static1) already cull those rows. A holed dial
     // here would make the bank push a train the sealed disc plainly hides.
-    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dialSealed)) });
+    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dialSealed, fc.inset || 1)) });
     files.push({ name: 'layers/glass.png', data: await this.png(bake(fc.glass)) });
     files.push({ name: 'layers/outer.png', data: await this.png(fc.outer) });
     const subFiles = [];
@@ -2198,8 +2215,9 @@ class Component extends DCLogic {
         const mm = (v) => (v * (E.MM_PER_PX || 0.0954)).toFixed(2);
         fields.push(H('Case opening'),
           Rg('Opening radius', r, E.CASE_OPEN_MIN || 90, E.CASE_OPEN_MAX || 233, 0.5, (v) => this.setState({ caseOpen: +v }), mm(r) + ' mm'),
-          Nt('', 'Draws nothing, clips nothing, rescales nothing: your own image carries the case, so it runs to the edge of the panel untouched. '
-            + r.toFixed(1) + ' px (' + mm(r) + ' mm) is where the metal of the device begins — the guide paints the gold ring there, and everything you want visible stays inside it.'));
+          Nt('', 'Draws no metal and clips nothing: your own image carries the case, so it runs to the edge of the panel untouched at any setting. '
+            + r.toFixed(1) + ' px (' + mm(r) + ' mm) is where the metal of the device begins — the guide paints the gold ring there, and everything the composer draws '
+            + (r < 221 ? '(the chapter print, the complications, the subdials, the train, the hands, the glass) is eased about the centre to fit inside it.' : 'is at full size: the opening leaves the drawn face untouched at this radius.')));
       }
     }
 
@@ -2255,7 +2273,7 @@ class Component extends DCLogic {
         label: id === 'auto' ? 'Preset' : E.HAND_STYLES[id], pick: () => this.setState({ hands: id }),
       })),
       handRows: slots.map((id, i) => {
-        const hc = hcfg[id] || {}, isC = id.startsWith('centre-'), k = isC ? id.slice(7) : null, shown = isC ? !!ce[k] : hc.on !== false;
+        const hc = hcfg[id] || {}, isC = id.startsWith('centre-'), k = isC ? id.slice(7) : null, shown = isC ? (!!ce[k] && hc.on !== false) : hc.on !== false;
         const len = +hc.len || 1, wid = +hc.wid || 1;
         // A seconds hand takes its shape from the seconds list, not the hand-style list:
         // handParts() ignores `style` once kind is 'second' (only breguet/spade cut a hollow

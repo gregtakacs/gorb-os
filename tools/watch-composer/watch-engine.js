@@ -1305,8 +1305,11 @@
     sx.globalCompositeOperation = 'destination-in'; sx.beginPath(); sx.arc(C, C, DR, 0, TAU); sx.fill();
     ctx.save(); ctx.globalCompositeOperation = 'destination-over'; ctx.drawImage(sh, 0, 0); ctx.restore();
   }
-  function buildDial(D, lay, baseEn, pal, glow, seal, clipR) {
-    const c = cv(S), ctx = c.getContext('2d'), en = surfaceEn(colorEn(baseEn, D.color), D.surface);
+  function buildDial(D, lay, baseEn, pal, glow, seal, clipR, dynK) {
+    const _en = surfaceEn(colorEn(baseEn, D.color), D.surface);
+    const kk = dynK == null ? 1 : +dynK;
+    if (kk !== 1) return buildDialLens(D, lay, _en, pal, glow, seal, clipR, kk);
+    const c = cv(S), ctx = c.getContext('2d'), en = _en;
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
     /* Authored art on the dial face: over the surface material, under every mark the
      * dial prints itself. Everything the user can still add by hand -- chapter print,
@@ -1343,6 +1346,47 @@
     // the surface uncut there. Only genuine openings stay punched -- the seal flag
     // (layout) is set on dial-hosted windows/moons and never on an 'opening'.
     cutHoles(ctx, seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles, pal, glow);
+    return { canvas: c, en };
+  }
+  /* The dial baked through the opening lens -- dynScale under "no case". The engine's own
+   * drawing is eased in to fit inside the ring the guide paints, and the author's uploaded
+   * art is not: it is painted at exactly the size and place they left it, the one promise
+   * of the option. Every other block here is authored against the full dial circle, so each
+   * is drawn through one scale about the centre -- the same push/pop the perimeter ring
+   * already uses, extended. Erasures (apertures, openwork) run through the same transform,
+   * so they cut the art at the same scaled position as everything else and the movement
+   * and data discs under a window stay aligned with it. One canvas, one blend per tick. */
+  function buildDialLens(D, lay, en, pal, glow, seal, clipR, kk) {
+    const c = cv(S), ctx = c.getContext('2d');
+    const lens = () => { ctx.save(); ctx.translate(C, C); ctx.scale(kk, kk); ctx.translate(-C, -C); };
+    const unlens = () => { ctx.restore(); };
+    lens(); surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false); unlens();
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR });
+    const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
+    // chapter print and its holes go through the lens together -- the same pair perimK scales
+    const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
+    const pkHoles = pkd === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pkd, y: C + (h.y - C) * pkd, r: (h.r || 0) * pkd, w: h.w * pkd, h: h.h * pkd }));
+    const push = (x2) => { if (pkd === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pkd, pkd); x2.translate(-C, -C); return x2; };
+    const pop = (x2) => { if (x2) x2.restore(); };
+    const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
+    printMain(ctx, D, en, pkHoles, NM && NM.getContext('2d'));
+    pop(cxP); pop(nxP);
+    lens();
+    if (pk !== 1) drawPerimeter(ctx, D, en, holes);
+    weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
+    applied(ctx, D, pal, lay.dialHoles);
+    unlens();
+    // NM was filled through the push above -- composited at identity, like the plain path, or it lands scaled twice
+    if (NM) {
+      const okc = (v) => v && v !== 'auto', explicit = [D.numColor, D.n12Color, D.nQColor].some(okc);
+      finishMask(ctx, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ctx, C, C, DR * 0.9 * pkd, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
+    }
+    lens();
+    if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
+    const thost = {}; lay.subs.forEach((sb) => { if (sb.transparent) thost[sb.id] = 1; });
+    drawFlares(ctx, lay.flares.filter((f) => (f.host === 'dial' || thost[f.host]) && f.icon !== 'datetext'), en, pal);
+    cutHoles(ctx, seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles, pal, glow);
+    unlens();
     return { canvas: c, en };
   }
   // one canvas per subdial, so list order is stacking order (later covers earlier) and each one's openings only cut itself
@@ -1502,7 +1546,7 @@
    * inner edge is known. Everything that has to respect the case -- the glass, the
    * vignette, and the ring the author draws against on the stage -- reads this instead of
    * re-deriving it from the style name. It draws nothing itself and it does NOT decide how
-   * big the face is: see faceScale and artClipR. */
+   * big the face is: see faceScale, dynScale and artClipR. */
   const CASE_OPEN_DEFAULT = 221.5, CASE_OPEN_MIN = 90, CASE_OPEN_MAX = 233;
   function caseOpenR(o) {
     const st = o && o.caseStyle, v = o && o.caseOpen;
@@ -1520,10 +1564,22 @@
    * and a slider that resampled the dial would resample the artwork they uploaded along
    * with it, so a graphic positioned against the real dial would leave it the moment the
    * opening moved. There the option draws nothing at all (see buildOuter) and clips nothing
-   * (see artClipR): the author's own image carries the device's case, so the one thing the
-   * opening may do is tell the guide where the hardware begins. */
+   * (see artClipR); what it still does is hand the drawn content to dynScale below. */
   function faceScale(o) {
     if (o && o.caseStyle === 'none') return 1;
+    const r = caseOpenR(o);
+    return r < DR ? r / DR : 1;
+  }
+  /* How far the engine-drawn content is eased in under "no case", and the one number the
+   * opening slider still moves. A drawn case shrinks the whole face (author's art included)
+   * through faceScale, because the metal covers the rim and the art is clipped to the dial
+   * circle anyway. Under "none" the author's own image carries the device's metal, so it is
+   * the one thing the opening may not resample: it is blended at authored size (see the
+   * split build in buildDial and the bgL pass in compose), while everything the composer
+   * draws -- hands, chapter print, complications, subdials, train, glass -- is turned
+   * through this scale about the centre and so lands inside the ring the guide paints. */
+  function dynScale(o) {
+    if (!o || o.caseStyle !== 'none') return 1;
     const r = caseOpenR(o);
     return r < DR ? r / DR : 1;
   }
@@ -1634,8 +1690,9 @@
     // It used to ship the opaque mask alone -- rect-minus-circle filled with #000 -- to stop
     // our content reaching the hardware. That was still drawing, and it drew a black circle
     // that marched inward with the opening slider while painting the author's own case out.
-    // Nothing here clips either: artInDial lets their art reach the panel, and hands, glass
-    // and print are the author's to position against the ring the guide draws.
+    // Nothing here clips either: artInDial lets their art reach the panel, and the pieces the
+    // engine draws are eased inside this ring by dynScale -- the slider moves them, this layer
+    // never paints over them.
     if (style === 'none') return c;
     DA = -(LIGHT.outer - OUTER0);
     let g = ctx.createRadialGradient(150, 120, 0, 150, 120, 260);
@@ -2029,7 +2086,7 @@
     });
     const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
     ['hour', 'minute', 'second'].forEach((k) => {
-      const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k]) return;
+      const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k] || hc.on === false) return;
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
       const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom }) : null;
@@ -2046,7 +2103,7 @@
     // 161..174 and the four heads land at four different radii instead of one clump.
     const CAL_DIM = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165] };
     CAL_HANDS.forEach((k) => {
-      const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k]) return;
+      const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k] || hc.on === false) return;
       const [l, wf] = CAL_DIM[k], lk = +hc.len || 1, wk = +hc.wid || 1, fin = handFin(pickF(hc));
       const reach = PG ? PG.reach : R * l, len = Math.min(222, reach * lk), w = Math.max(1.7, R * wf) * wk;
       const base = k === 'gmt' ? gmtTurn(design.gmtOffset) : TURN[k];
@@ -2448,8 +2505,10 @@
      * base frames -- the art is a one-time store into the bank, not a per-tick blend
      * (docs/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
      * Slot two, the dial face, is in buildDial and costs nothing for the same kind of
-     * reason: that canvas is already blended every tick with or without the art. */
-    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) });
+     * reason: that canvas is already blended every tick with or without the art. Under
+     * "no case" the backdrop is NOT baked here at all — the face carries it as F.bgL and
+     * compose() blends it untransformed, so the opening can move without resampling it. */
+    if (o.caseStyle !== 'none') artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2534,15 +2593,24 @@
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
+      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), dynK: dynScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
-    const bd = buildDial(design, lay, en, pal, G, false, artClipR(o)); F.dial = bd.canvas; F.dialEn = bd.en;
+    // Under "no case" the opening pulls the DRAWN dial in through buildDial's lens; under a
+    // drawn case everything eases in through compose's inset instead, unsplit.
+    const dialK = o.caseStyle === 'none' ? F.dynK : 1;
+    const bd = buildDial(design, lay, en, pal, G, false, artClipR(o), dialK); F.dial = bd.canvas; F.dialEn = bd.en;
     // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
     // the device composites over them every day seals the geartrain beneath. Shipped as
     // the theme dial and used as the composer occluder -- both must match the bake's
     // opaque static1 cull. Built only when a dial-hosted disc exists; else fall back to
     // the holed dial (no apertures to seal).
-    F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true, artClipR(o)).canvas : bd.canvas;
+    F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true, artClipR(o), dialK).canvas : bd.canvas;
+    /* The plate-slot backdrop under "no case" is NOT baked into the plate: the base frames
+     * are banked once per movement and the opening can move while they are cached, and the
+     * one promise of the option is that the author's own image is never resampled. So the
+     * face carries it as its own layer and compose() blends it untransformed. */
+    F.bgL = null;
+    if (o.caseStyle === 'none') { const g = cv(S); if (artInDial(g.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) })) F.bgL = g; }
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     // a transparent subdial contributes geometry only: its centre and radius still place
@@ -2611,7 +2679,12 @@
       const hs = F.hands || [];
       for (let i = hs.length - 1; i >= 0; i--) { const hd = hs[i]; if (handHit(hd, x, y, date)) out.push({ kind: 'hand', id: hd.id }); }
       for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) out.push({ kind: 'comp', id: h.id }); }
-      if (Math.hypot(x - C, y - C) <= DR) out.push({ kind: 'dial', id: 'dial' });
+      // The dial target means "the art under the cursor": under "no case" the uploaded
+      // image keeps its authored reach while the drawn face eases inward, so its pixels
+      // stay clickable out to the panel edge, not just inside the shrunk dial circle.
+      const r = Math.hypot(x - C, y - C);
+      const artLive = o.caseStyle === 'none' && (assetReady(design.sfArt) || assetReady(o.bgArt));
+      if (r <= DR || (artLive && r * (F.dynK || 1) <= PANEL_R)) out.push({ kind: 'dial', id: 'dial' });
       return out;
     };
     F.pick = (x, y, date) => F.pickAll(x, y, date)[0] || null;
@@ -2650,6 +2723,13 @@
         //                   and travels with the shade, which is why it is clipped to the path and
         //                   not to the axis-aligned box.
         const hp = holePath(h);
+        /* Under "no case" the shipped dial carries the printed ring already eased in by
+         * dynScale (buildDial's lens), while this pass crops and reports in authored space.
+         * Sample the dial host back through the inverse lens so the caps and the shade are
+         * cut from the frame ring that is really there, not from where it would be without
+         * the opening. A subdial host is a raw unscaled canvas and passes straight through. */
+        const pre = (o.caseStyle === 'none' ? F.dynK : 1) || 1;
+        const put = (x, L, inv) => { if (inv && pre !== 1) { x.save(); x.translate(C, C); x.scale(1 / pre, 1 / pre); x.translate(-C, -C); x.drawImage(L, 0, 0); x.restore(); } else x.drawImage(L, 0, 0); };
         // The host plane that actually carries the frame ring at that spot. A
         // transparent subdial lays no plate, so the dial is the layer under the aperture
         // and the shade has to be sampled from it -- sampling the empty sub canvas would
@@ -2659,7 +2739,7 @@
         const hostCut = (keepInside) => {
           if (!hostL) return cv(1);
           const o = cv(S), x = o.getContext('2d');
-          x.drawImage(hostL, 0, 0);
+          put(x, hostL, hostL === F.dial);
           x.globalCompositeOperation = keepInside ? 'destination-in' : 'destination-out';
           x.beginPath(); hp(x); x.fillStyle = '#000'; x.fill();
           return o;
@@ -2668,13 +2748,13 @@
         // and nothing from inside the path — anything the band leaves transparent here is filled
         // by the strip underneath it, which was cut from the full engine crop.
         const paintPlate = (ctx) => {
-          if (c.host !== 'dial') ctx.drawImage(F.dial, 0, 0);
+          if (c.host !== 'dial') put(ctx, F.dial, true);
           paint(ctx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i);
           ctx.drawImage(hostCut(false), 0, 0);
         };
         const full = cv(S), fx = full.getContext('2d');
-        if (c.host === 'dial') { paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); fx.drawImage(F.dial, 0, 0); }
-        else { fx.drawImage(F.dial, 0, 0); paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); if (hostL) fx.drawImage(hostL, 0, 0); }
+        if (c.host === 'dial') { paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); put(fx, F.dial, true); }
+        else { put(fx, F.dial, true); paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); if (hostL) fx.drawImage(hostL, 0, 0); }
         const bandOnly = cv(S), bx0 = bandOnly.getContext('2d');
         paintPlate(bx0);
         const Wc = Math.ceil((h.w + 2 * m) * k), Hc = Math.ceil((h.h + 2 * m) * k), lc = local(full, h.x, h.y, h.rot, Wc, Hc);
@@ -2793,19 +2873,28 @@
     const k = F.inset || 1;
     let ctx = out;
     if (k < 1) { if (!F._in) F._in = cv(S); ctx = F._in.getContext('2d'); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, S, S); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, S, S); }
-    if (!hidden.movement && base) ctx.drawImage(base.plate, 0, 0);
-    if (!hidden.movement && F.plateFlares) ctx.drawImage(F.plateFlares, 0, 0);
-    if (!hidden.geartrain && gt) { ctx.drawImage(gt, 0, 0); drawCage(ctx, base, gt, date); }
-    if (base && !(hidden.movement && hidden.geartrain)) { ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(base.haze, 0, 0); ctx.globalCompositeOperation = 'source-over'; }
+    /* The opening under "no case": everything the engine RENDERS is eased in to fit inside
+     * the ring the guide paints, and the author's own images are not. The dial arrives
+     * already baked through this scale (buildDial's lens) so it blends as it stands, and
+     * the plate-slot backdrop rides F.bgL untransformed -- the two pieces that must never
+     * be resampled by the slider. A drawn case never reaches this: it eases the whole face
+     * (art included) through the inset pass above instead, exactly as always. */
+    const dk = F.dynK || 1;
+    const dz = (fn) => { if (dk === 1) return fn(); ctx.save(); ctx.translate(C, C); ctx.scale(dk, dk); ctx.translate(-C, -C); fn(); ctx.restore(); };
+    if (!hidden.movement && base) dz(() => ctx.drawImage(base.plate, 0, 0));
+    if (!hidden.movement && F.bgL) ctx.drawImage(F.bgL, 0, 0);
+    if (!hidden.movement && F.plateFlares) dz(() => ctx.drawImage(F.plateFlares, 0, 0));
+    if (!hidden.geartrain && gt) dz(() => { ctx.drawImage(gt, 0, 0); drawCage(ctx, base, gt, date); });
+    if (base && !(hidden.movement && hidden.geartrain)) dz(() => { ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(base.haze, 0, 0); ctx.globalCompositeOperation = 'source-over'; });
     const cp = F.comps(date), df = F.dateFlares ? F.dateFlares(date) : null;
-    if (!hidden.complications) ctx.drawImage(cp.dial, 0, 0);
-    if (!hidden.dial) { ctx.drawImage(F.dial, 0, 0); if (df) ctx.drawImage(df.dial, 0, 0); }
+    if (!hidden.complications) dz(() => ctx.drawImage(cp.dial, 0, 0));
+    if (!hidden.dial) { ctx.drawImage(F.dial, 0, 0); if (df) dz(() => ctx.drawImage(df.dial, 0, 0)); }
     F.subLayers.forEach((sl) => {
-      if (!hidden.complications && cp.subs[sl.id]) ctx.drawImage(cp.subs[sl.id], 0, 0);
-      if (!hidden.subdials) { ctx.drawImage(sl.canvas, 0, 0); if (df && df.subs[sl.id]) ctx.drawImage(df.subs[sl.id], 0, 0); }
+      if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
+      if (!hidden.subdials) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
     });
-    if (!hidden.hands) F.drawHands(ctx, date);
-    if (!hidden.glass) ctx.drawImage(F.glass, 0, 0);
+    if (!hidden.hands) dz(() => F.drawHands(ctx, date));
+    if (!hidden.glass) dz(() => ctx.drawImage(F.glass, 0, 0));
     if (k < 1) { out.save(); out.translate(C, C); out.scale(k, k); out.translate(-C, -C); out.drawImage(F._in, 0, 0); out.restore(); }
     if (!hidden.outer) out.drawImage(F.outer, 0, 0);
   }
@@ -2928,5 +3017,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

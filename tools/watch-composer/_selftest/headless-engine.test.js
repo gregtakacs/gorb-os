@@ -226,18 +226,37 @@ setTimeout(() => {
       ok(fp.hit(sub.x, sub.y) === 'c1', 'F.hit is untouched, so every caller that wanted a complication still gets exactly one');
       const onHand = fp.pick(hdS.x, hdS.y - 8, t0);
       ok(onHand && onHand.kind === 'hand' && onHand.id === 'centre-second', 'a hand is clickable now, which is the whole basis for dragging one', JSON.stringify(onHand));
-      /* ---- no case: nothing drawn at all --------------------------------------------
+      /* ---- no case: nothing drawn at all, and the opening fits the drawn face --------
        * The device owns its own metal and the author's own image carries it, so the case
        * layer must be empty. It used to ship an opaque mask instead: a black circle that
        * sat at the rim at full width and marched inward as the opening shrank, painting
-       * their printed case out. The opening is now a measurement for the guide alone. */
+       * their printed case out. The opening is now the ring the guide paints -- and the
+       * lens the DRAWN content is eased through (dynScale), never the author's art. */
       const NC = { print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1 } };
       const mkFace = (o) => E.face(Object.assign({ design: E.canonDesign(JSON.parse(JSON.stringify(NC))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
       ok(mkFace({ caseStyle: 'polished' }).inset === 1, 'a plain case leaves the content at full size');
       ok(Math.abs(mkFace({ caseStyle: 'tachy' }).inset - 193.5 / 221) < 1e-9, 'a bezel style keeps its own fixed opening, exactly as before');
       ok(mkFace({ caseStyle: 'none' }).inset === 1, 'no case at the default opening matches the old blank rim');
       const none1 = mkFace({ caseStyle: 'none', caseOpen: 160 });
-      ok(none1.caseOpen === 160 && none1.inset === 1, 'a smaller authored opening changes the author\'s pixels NOT at all: it is the hardware\'s rim, quoted for the guide, not a cut and not a resize handle', JSON.stringify([none1.caseOpen, none1.inset]));
+      ok(none1.caseOpen === 160 && none1.inset === 1 && Math.abs(none1.dynK - 160 / 221) < 1e-9, 'a smaller authored opening changes the author\'s pixels NOT at all: it is the hardware\'s rim, quoted for the guide, and the handle that eases the drawn face to fit it', JSON.stringify([none1.caseOpen, none1.inset, none1.dynK]));
+      ok(E.dynScale({ caseStyle: 'none', caseOpen: 90 }) === 90 / 221 && E.dynScale({ caseStyle: 'none', caseOpen: 233 }) === 1 && E.dynScale({ caseStyle: 'polished', caseOpen: 90 }) === 1,
+        'dynScale is the opening\'s other half: under None the drawn content fits the ring, and only the authorable opening moves it', JSON.stringify([E.dynScale({ caseStyle: 'none', caseOpen: 90 }), E.dynScale({ caseStyle: 'none', caseOpen: 233 }), E.dynScale({ caseStyle: 'polished', caseOpen: 90 })]));
+      const fLens = mkFace({ caseStyle: 'none', caseOpen: 160 });
+      const bLens = E.movement({ design: { comps: [] }, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, plate: 'classic' });
+      const cLens = document.createElement('canvas'); cLens.width = cLens.height = 466; const cxL = cLens.getContext('2d');
+      E.compose(cxL, bLens, {}, fLens, new Date(2026, 0, 1, 10, 9, 0), {});
+      const nLens = cxL.geom.filter((g) => g.op === 'scale' && Math.abs(g.a[0] - 160 / 221) < 1e-9).length;
+      ok(nLens >= 5, 'compose turns the plate, train, haze, complications, subdials, hands and glass through the opening scale -- and blends the dial and the backdrop art as baked', 'scaled layers=' + nLens);
+      /* ---- the hands row eye on a CENTRE hand ---------------------------------------
+       * The eye wrote hands['centre-hour'].on = false and nothing read it: buildHands
+       * skipped only the subdial rows, and the row read its label off design.centre alone.
+       * The button moved on the centre rows too -- and did nothing. */
+      const mkHidden = (hcfg) => { const d = JSON.parse(JSON.stringify(NC)); d.hands = hcfg; return E.face({ design: E.canonDesign(d), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'polished' }); };
+      const fHid = mkHidden({ 'centre-hour': { on: false } });
+      ok(fHid.hands.some((h) => h.id === 'centre-minute') && !fHid.hands.some((h) => h.id === 'centre-hour'),
+        'the eye hides a CENTRE hand: the engine drops it from the drawn list, as it always did for a subdial hand', (fHid.hands || []).map((h) => h.id).join(','));
+      ok(fHid.handSlots.some((s) => s.id === 'centre-hour'), 'and the hidden hand keeps its row -- an author who hides a hand must still be able to show it again', (fHid.handSlots || []).map((s) => s.id).join(','));
+      ok(mkHidden({ 'centre-hour': { on: true } }).hands.some((h) => h.id === 'centre-hour'), 'on:true is showing, not a second kind of hidden');
       ok(E.faceScale({ caseStyle: 'none', caseOpen: 90 }) === 1 && E.faceScale({ caseStyle: 'tachy' }) === 193.5 / 221,
         'faceScale agrees: the authorable opening never shrinks the face, a bezel style always does', JSON.stringify([E.faceScale({ caseStyle: 'none', caseOpen: 90 }), E.faceScale({ caseStyle: 'tachy' })]));
       ok(mkFace({ caseStyle: 'polished', caseOpen: 120 }).inset === 1, 'and an opening typed in beside a style that cannot use it changes nothing at all');

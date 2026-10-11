@@ -113,6 +113,31 @@ setTimeout(() => {
   sub.scale = subScale;
   it.state.designs.calendar.hands = JSON.parse(handsBefore);
 
+  // ---- the eye on the hands rows ---------------------------------------------------
+  // Centre rows read their label off design.centre alone and buildHands honoured
+  // hands[id].on only for subdial hands: the eye on a centre row wrote a flag nobody
+  // read, so the hand stayed on the glass and the button never changed. Round-trip it.
+  const eyeRow = (label) => (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === label);
+  ok(it.face().hands.some((h) => h.id === 'centre-hour'), 'the hour hand starts on the glass');
+  eyeRow('Centre hour').toggle();
+  ok(it.design().hands['centre-hour'].on === false, 'the eye writes the hide where the engine can read it');
+  ok(!it.face().hands.some((h) => h.id === 'centre-hour') && it.face().hands.some((h) => h.id === 'centre-minute'),
+    'and that hand is gone from the render while its neighbours keep turning');
+  const hidRow = eyeRow('Centre hour');
+  ok(hidRow.eye === 'hidden' && hidRow.op === 0.5 && /hidden/.test(hidRow.meta),
+    'the row admits it is hidden -- the button that never moved now moves', JSON.stringify([hidRow.eye, hidRow.op, hidRow.meta]));
+  hidRow.toggle();
+  ok(it.face().hands.some((h) => h.id === 'centre-hour'), 'and a second click puts the hand back');
+  ok(!('on' in (it.design().hands['centre-hour'] || {})), 'showing again canonicalises to no flag at all, so the Design ID survives the round trip');
+  const anySubRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor && !/^hand-centre-/.test(q.anchor));
+  if (anySubRow) {
+    const sid = anySubRow.anchor.slice(5);
+    anySubRow.toggle();
+    ok(it.face().hands.every((h) => h.id !== sid), 'the eye hides a subdial hand too', sid);
+    (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor === 'hand-' + sid).toggle();
+    ok(it.face().hands.some((h) => h.id === sid), 'and shows it again', sid);
+  }
+
 
   // ---- the subdial style list and the export row ----------------------------------
   it.state.designs.calendar.comps.forEach((c) => { if (c.type === 'subdial') c.style = 'transparent'; });

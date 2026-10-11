@@ -124,14 +124,18 @@ bool art_bank_ready(void)
 #define ORB_ART_PAGE_SIZE   SOC_MMU_PAGE_SIZE      /* 64 KB on the S3 default */
 #define ORB_ART_PAGE_ALIGN  ORB_ART_PAGE_SIZE      /* what mmap rounds each end to */
 
-/* The DROM window is 256 pages wide (docs/app-platform-plan.md §3.1), and it is shared:
- * the app's own .rodata occupies pages too, measured at 5 for the dial that shipped on
- * 2026-10-11 — 39 for the bank plus 5 leaves 212 of them for art. Re-measure it from
- * build/gorb-os.map when the image grows, the same way the §3.1 table is re-derived; an
- * app never sees this number, only the ESP_ERR_NO_MEM that follows from it. */
+/* The DROM window is 256 pages wide (docs/app-platform-plan.md §3.1), and art does not
+ * have it to itself: the image's own flash segments are mapped through it too. Re-read
+ * from `idf.py size` on 2026-10-11 — Flash Code .text 1,049,060 B = 17 pages, Flash Data
+ * .rodata + .appdesc 305,640 B = 5 pages — so 22 pages are spent before a bank is
+ * requested. §3.1 counted only .rodata's 5 and so understated the fixed cost by 17; the
+ * conclusion is unchanged because the headroom is enormous either way. Re-derive this
+ * whenever the image grows. Caveat M2 must settle: this assumes each segment reserves
+ * whole 64 KB pages independently, which is what the S3's DROM MMU does, but it is
+ * arithmetic from a size report rather than a reading of the live MMU table. */
 #define ORB_ART_DROM_PAGES       256u
-#define ORB_ART_RODATA_PAGES     5u
-#define ORB_ART_PAGE_BUDGET      (ORB_ART_DROM_PAGES - ORB_ART_RODATA_PAGES)
+#define ORB_ART_IMAGE_PAGES      22u   /* .text 17 + .rodata/.appdesc 5, per idf.py size */
+#define ORB_ART_PAGE_BUDGET      (ORB_ART_DROM_PAGES - ORB_ART_IMAGE_PAGES)
 
 static size_t s_reserved_bytes;
 static unsigned s_reserved_banks;

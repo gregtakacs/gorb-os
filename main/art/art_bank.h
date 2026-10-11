@@ -87,8 +87,9 @@ size_t art_bank_mmu_pages(void);
  *    request wastes a whole page at each end of the mapping, which is also why the
  *    `assets` slots are cut on 64 KB boundaries.
  *  - ESP_ERR_NO_MEM: the running total across the live bank and all accepted
- *    reservations would exceed the DROM window's 251 budgeted pages (256 less the
- *    image's own .rodata). The cap is on the total, deliberately: two banks that each
+ *    reservations would exceed the DROM window's 234 budgeted pages (256 less the 22
+ *    the image's own .text and .rodata consume). The cap is on the total, deliberately:
+ *    two banks that each
  *    fit alone are what overflows the window. Ask before mapping, and hold the error —
  *    an app that learns the budget at install can say "install fewer themes"; one that
  *    learns it at boot cannot.

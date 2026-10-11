@@ -35,7 +35,7 @@ Every number is read off a file or a build artifact in this tree, and the source
 | D4 | Native loadable code | Rejected for now | No loader anywhere in `~/esp/esp-idf/components`; it needs relocatable objects, a hand-rolled PIC loader, a pinned ABI, and the S3 gives no isolation for PSRAM data. Its one unique payoff is app-authored per-pixel painting, and D1's painter registry covers that cheaper |
 | D5 | Switching an app | No reboot to rotate between resident apps. Reboot stays on the commit path: loading new art, i.e. install | section 2 |
 | D6 | Where packages live durably | New `apps` data partition for catalog, manifests and geometry; art banks in three re-sliced `assets` slots; sector-granular, written off the visible path | An erase suspends the cache. `main.c:62-71` exists precisely so nothing erases under a live dial |
-| D7 | Where art lives while running | **Mechanism A (map many)** is the default now the page maths works for two flagships; M2/M3 confirm on the board | Both flagships plus `.rodata` cost 125 of 256 DROM pages (`orb_theme.h:48-55`, `build/gorb-os.map`); PSRAM was never the only option, it was the unmapped one |
+| D7 | Where art lives while running | **Mechanism A (map many)** is the default now the page maths works for two flagships; M2/M3 confirm on the board | Both flagships plus the image's own segments cost 142 of 256 DROM pages (`orb_theme.h:48-55`, `build/gorb-os.map`); PSRAM was never the only option, it was the unmapped one |
 | D8 | Working copy | `gorb-os-2`, branch `dev2`, at `a911468` | Owner's call. `/tmp/serflash.sh` repointed at this tree so a flash here cannot silently re-send the sibling's image |
 | D9 | App installs keep A/B? | **No.** One slot, write, read back and CRC, then write the header, then reboot | Owner ruling C1. A/B survives a torn write by keeping the *other* side bootable; the owner accepts that a torn app install costs that app and a re-copy of the card file instead, and section 2 keeps the header-last rule that makes a torn bank read as absent rather than corrupt |
 
@@ -198,10 +198,10 @@ So the accepted failure is bounded: a bad install costs the owner that one app a
 | Unallocated flash tail | 2.60 MB (0x29a000, ends 0xD66000 of 16 MB) | `partitions.csv` comment, verified by arithmetic |
 
 | Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the two rows above |
-| Two flagships mapped together | 120 pages + `.rodata`'s 5 = **125 of 256** | arithmetic; leaves 131 pages of headroom |
+| Two flagships mapped together | 120 pages + the image's own **22** (`.text` 17 + `.rodata`/`.appdesc` 5, per `idf.py size` 2026-10-11) = **142 of 256** | arithmetic; 114 pages of headroom. An earlier revision of this row counted only `.rodata`'s 5 and said 125 |
 | Measured flagship, for calibration | `perpetual-calendar` = 2,503,747 B = **39 pages** on the board (§10); two of *these* plus `.rodata` = 83 of 256 | boot line `39 MMU pages`, `art_pages` in `/api/v1/status` |
 | Two flagships in `assets` | 7,848,820 B of 8,388,608, **539,788 B spare** | arithmetic; the partition is the binding limit, not the MMU |
-| Two *maximum*-size banks | 128+128+5 = **261 of 256 — overflows** | arithmetic; why `orb_art_reserve()` must cap the running sum, not each request |
+| Two *maximum*-size banks | 128+128+22 = **278 of 256 — overflows** | arithmetic; why `orb_art_reserve()` caps the running sum, not each request |
 
 The DROM window is shared with the app's own `.rodata`, which is why `art_bank_init()` maps only `need_bytes` (`art_bank.h:37-41`). With `.rodata` at 298 KB the window is not the binding limit: the 8 MB `assets` partition is, at two flagship banks. That is exactly the capacity ruling C1 asks for, which is why mechanism A stops being a coin flip.
 
@@ -236,11 +236,11 @@ Do not shrink the two app slots to buy room: 1,476,128 B used of 2 MB, and `part
 |---|---|---|
 | Art lives | mmap'd flash, one slot per installed app | packed PSRAM arena, filled from the card at boot |
 | Cost per switch | one full-page commit, no flash I/O | copy on the worker, then one full-page commit |
-| Hard limit | 256 DROM pages, shared with `.rodata`: two flagships cost 125, so A is not what caps us | PSRAM free bytes after `s_canvas` (434 KB), `s_fb` (434 KB), the tile ring and the tourbillon chord buffers |
+| Hard limit | 256 DROM pages, shared with the image's own 22: two flagships cost 142, so A is not what caps us | PSRAM free bytes after `s_canvas` (434 KB), `s_fb` (434 KB), the tile ring and the tourbillon chord buffers |
 | Risk | none at two flagships; a third would be measured before it shipped | OPI bandwidth is already being paid for by the flush path and the canvas restore; sprite reads there can steal the very ms the fps model measures |
 | Precedent in this tree | exactly what `art_bank.c` does today, one bank at a time (`art_bank.h:37-41`) | the tourbillon chord caches (`clock_view.c:864`) and the GIF canvas already do this |
 
-A becomes the default because the page maths is no longer in doubt at two flagships: 125 of 256. What ships unchanged is the *single-bank* mapping of today; M2 now proves the two-bank case on the board rather than discovering it, and M3 checks A against B for the overflow path only. The ABI hides the choice behind `orb_art_reserve()` either way, so an app never learns which mechanism served its pixels — which is what keeps B viable if a third flagship is ever wanted.
+A becomes the default because the page maths is no longer in doubt at two flagships: 142 of 256, using the image's measured 22 pages rather than `.rodata` alone. What ships unchanged is the *single-bank* mapping of today; M2 now proves the two-bank case on the board rather than discovering it, and M3 checks A against B for the overflow path only. The ABI hides the choice behind `orb_art_reserve()` either way, so an app never learns which mechanism served its pixels — which is what keeps B viable if a third flagship is ever wanted.
 
 ## 4. Apps, capabilities, and gated configuration
 
@@ -546,12 +546,15 @@ resident and the dial running its own 8 fps tempo, `/api/v1/status` reads
 `heap_psram 7,471,404` free and `heap_internal 26,111` (largest block 9,216). So the
 mechanism-B arena cap and C12's eviction headroom have a real budget to be cut against
 instead of an estimate. The page arithmetic is now checkable against a measured bank rather
-than a guessed one, and it is more generous than §3.1 assumed: at 64 KB per page, this
-2,503,747 B bank is 39 pages, so two flagships plus `.rodata`'s 5 cost **83 of 256**, not the
-125 §3.1 estimated — the conclusion (A is not what caps us) holds, and by a wider margin.
-Where the cap actually bites is the slot size, not the theme size: two *maximum* 8 MB banks
-would cost 128+128+5 = **261 of 256** and overflow, so `orb_art_reserve()` must refuse on the
-sum, not merely grant each request. Whether two mapped banks *actually* hold 8 fps under
-animation is still unmeasured: the loader cannot map a second bank until P2, and no number is
-claimed for it here.
+than a guessed one: at 64 KB per page, this 2,503,747 B bank is 39 pages, so two flagships
+cost 78 of the **234 pages art actually gets** — 256 less the 22 the image's own `.text`
+(17) and `.rodata`/`.appdesc` (5) occupy, per `idf.py size`. §3.1's original "125 of 256"
+understated the fixed cost by 17 pages by counting `.rodata` alone; corrected there, and the
+conclusion (A is not what caps us) holds with more room than claimed. Where the cap bites is
+the slot, not the theme: two *maximum* 8 MB banks cost 128+128+22 = 278 of 256, so
+`orb_art_reserve()` refuses on the running total — implemented and its decisions replayed.
+Whether two mapped banks *actually* hold 8 fps under animation is still unmeasured: the
+loader cannot map a second bank until P2, and no number is claimed for it here. That the
+page figures above are size-report arithmetic rather than a reading of the live MMU table is
+exactly what M2 has to confirm.
 

@@ -155,7 +155,7 @@ class Component extends DCLogic {
     const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity', 'bgRot', 'bgFinishBlend', 'bgFinishColor'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
     // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
     // the texture has to travel with it: changing Surface re-bakes these base frames
-    if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; }
+    if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; if (dsg.weaveAngle != null) bg.bgWeaveAngle = dsg.weaveAngle; if (dsg.weaveScale != null) bg.bgWeaveScale = dsg.weaveScale; }
     return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
   mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
@@ -1783,10 +1783,11 @@ class Component extends DCLogic {
         /* The surface finish the dial would wear with no art (Surface, under Colour) is
          * drawn UNDER the picture, so an opaque image buries it. This lays the texture
          * back over the art in one composite pass, tinted to the author's target colour:
-         * multiply presses it in, screen brushes it on, overlay runs both. enamel has
-         * none and carbon/forged bring their own palette, so the control appears only
-         * for the finishes that have a texture to press through. */
-        if (['guilloche', 'azure', 'metal', 'matte'].indexOf(surf) >= 0) {
+         * multiply presses it in, screen brushes it on, overlay runs both. enamel has no
+         * texture at all, so the control appears for the six finishes that have one --
+         * the four engine-turned ones and both carbons, whose weave/flake relief and
+         * sheen are replayed as the mask instead of their own greyscale. */
+        if (['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
           out.push(Ch('Finish blend', bm, [{ v: 'off', label: 'Off \u00b7 art lies flat' }, { v: 'multiply', label: 'Multiply \u00b7 texture pressed in' }, { v: 'screen', label: 'Screen \u00b7 texture brushed on' }, { v: 'overlay', label: 'Overlay \u00b7 both' }], ud(p + 'FinishBlend')));
           if (bm !== 'off') out.push(Co('Blend colour', D[p + 'FinishColor'], (v) => this.upd((d) => { d[p + 'FinishColor'] = v; }), bm === 'screen' ? 'Warm white' : 'Umber', p),
             Nt('', 'The dial\u2019s ' + (E.SURFACES[surf] || surf) + ' texture lands on the image in this colour under the ' + bm + ' blend. The texture\u2019s own alpha is the mask, so only the raised and shadowed strokes tint \u2014 the flat picture stays untouched.'));

@@ -368,12 +368,14 @@
    * surface() texture block draws -- sunburst rays, azurage rings, grained specks and the
    * travelling conic sheen -- but every stroke lands in the author's target colour under
    * the chosen blend mode instead of the dial's own light/dark pair. enamel has no
-   * texture to lay; carbon and forged weave their own palette, which nothing here can
-   * honestly tint, so both decline and the art stays flat. */
+   * texture to lay, so it declines. carbon and forged build their look from their own
+   * greyscale palette (the weave's lit cells, the forged flakes, the diagonal sheen);
+   * those are real geometry, replayed here as the mask and painted in the author's
+   * colour, so the two finishes blend like the rest. */
   function finishOver(ctx, f, clipR) {
     if (!f || !f.blend || f.blend === 'off' || FINISH_BLENDS.indexOf(f.blend) < 0) return false;
     const style = f.style || 'enamel';
-    if (style === 'enamel' || style === 'carbon' || style === 'forged') return false;
+    if (style === 'enamel') return false;
     const T = f.tex == null ? 1 : +f.tex;
     if (!(T > 0)) return false;
     const mode = f.blend, r = clipR == null ? DR : +clipR, x = C, y = C;
@@ -404,6 +406,58 @@
       for (let i = 0; i < n2; i++) { const a = R() * TAU, d = Math.sqrt(R()) * r, up = R() < 0.5;
         if (mode === 'screen' && !up) continue; if (mode === 'multiply' && up) continue;
         ctx.fillStyle = ink(R() * (up ? 0.14 : 0.18) * T); ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, 1); }
+    } else if (style === 'carbon' || style === 'forged') {
+      /* The two carbon finishes build their look from a greyscale palette, so there is no
+       * light/dark pair to copy -- the value field carbon() computes IS the mask. Same
+       * cell pitch, weave angle, flake field and sheen, with each element's brightness
+       * turned into an alpha on the author's one colour: multiply keeps what the light
+       * missed, screen what it caught, overlay runs both. No base fill is painted, which
+       * is what keeps the art visible underneath. */
+      const Wv = f.weave || {}, tk = Math.min(1.8, T), La = LIGHT.outer;
+      const wa = rad(Wv.ang != null ? +Wv.ang : 0), wsc = Math.max(0.3, Wv.sc != null ? +Wv.sc : 1);
+      if (style === 'carbon') {
+        /* carbon() paints every cell as a bundle: dark at its two edges, brightest along
+         * the middle, the gradient running across the fibres. So the crest (the lit
+         * middle) is what screen brushes on and the groove (the dark edges) is what
+         * multiply presses in -- both with a floor, because at the default weave angle
+         * the two families catch the same light and a pure difference would paint nothing. */
+        const c = 8 * wsc, lh = (0.3 + 0.7 * Math.abs(Math.cos(La - wa))) * tk, lv = (0.3 + 0.7 * Math.abs(Math.sin(La - wa))) * tk;
+        const crestHz = lh >= lv;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(wa); ctx.translate(-x, -y);
+        const bundle = (crest, a) => {
+          for (let gy = Math.floor((y - r * 1.45) / c) * c; gy < y + r * 1.45; gy += c) for (let gx = Math.floor((x - r * 1.45) / c) * c; gx < x + r * 1.45; gx += c) {
+            if (Math.hypot(gx + c / 2 - x, gy + c / 2 - y) > r + c * 1.5) continue;
+            const i = Math.round(gx / c), j = Math.round(gy / c), hz = (((i + j) % 4) + 4) % 4 < 2;
+            if (hz !== (crest ? crestHz : !crestHz)) continue;    // crest = the family the light favours, groove = the one it passes over
+            const g = hz ? ctx.createLinearGradient(0, gy, 0, gy + c) : ctx.createLinearGradient(gx, 0, gx + c, 0);
+            const edge = ink(crest ? 0 : a), mid = ink(crest ? a : 0);
+            g.addColorStop(0, edge); g.addColorStop(0.5, mid); g.addColorStop(1, edge);
+            ctx.fillStyle = g; ctx.fillRect(gx, gy, c + 0.25, c + 0.25);
+          }
+        };
+        if (mode !== 'screen') bundle(false, Math.min(0.5, 0.44 - Math.min(lh, lv) * 0.2));
+        if (mode !== 'multiply') bundle(true, Math.min(0.45, 0.12 + Math.max(lh, lv) * 0.32));
+        ctx.restore();
+      } else {
+        const R = L().rng((f.seed == null ? 11 : +f.seed) * 7 + 11);
+        const n2 = (2400 * (r / DR) * (r / DR) + 200) / Math.max(0.5, wsc);
+        for (let i = 0; i < n2; i++) {
+          // consume the flake's whole draw sequence before the pass test, or the two
+          // carbon styles would diverge from the field carbon() actually laid down
+          const a = R() * TAU, d = Math.sqrt(R()) * (r + 6), px = x + Math.cos(a) * d, py = y + Math.sin(a) * d, rot = R() * Math.PI, fw = (4 + R() * 16) * wsc, fh = (2 + R() * 7) * wsc;
+          const fl = Math.pow(Math.abs(Math.cos(rot - La)), 3), v = 12 + 20 * R() + 72 * fl * tk, pts = [];
+          for (let q = 0; q < 5; q++) { const aa = (q / 5) * TAU, rr = 0.6 + R() * 0.5; pts.push([Math.cos(aa) * fw / 2 * rr, Math.sin(aa) * fh / 2 * rr]); }
+          const caught = v >= 48;
+          if (mode === 'multiply' && caught) continue; if (mode === 'screen' && !caught) continue;
+          ctx.save(); ctx.translate(px, py); ctx.rotate(rot); ctx.beginPath();
+          pts.forEach((q, i2) => { i2 ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+          ctx.closePath(); ctx.fillStyle = ink(caught ? Math.min(0.45, v / 255 * 0.6 * T) : Math.min(0.5, (48 - v) / 48 * 0.4 * T)); ctx.fill(); ctx.restore();
+        }
+      }
+      const lite = mode === 'multiply' ? 0 : Math.min(0.5, 0.14 * tk), shad = mode === 'screen' ? 0 : Math.min(0.5, 0.3 * tk);
+      const cg = ctx.createLinearGradient(x - r, y - r, x + r, y + r);
+      cg.addColorStop(0, ink(lite)); cg.addColorStop(0.5, ink(0)); cg.addColorStop(1, ink(shad));
+      ctx.fillStyle = cg; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
     } else { ctx.restore(); return false; }
     ctx.restore();
     return true;
@@ -1451,7 +1505,7 @@
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11 } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -1496,7 +1550,7 @@
     const unlens = () => { ctx.restore(); };
     lens(); surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false); unlens();
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11 } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // chapter print and its holes go through the lens together -- the same pair perimK scales
     const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
@@ -2654,7 +2708,7 @@
      * "no case" the backdrop is NOT baked here at all — the face carries it as F.bgL and
      * compose() blends it untransformed, so the opening can move without resampling it. */
     if (o.caseStyle !== 'none') artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
-      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11 } });
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2757,7 +2811,7 @@
      * face carries it as its own layer and compose() blends it untransformed. */
     F.bgL = null;
     if (o.caseStyle === 'none') { const g = cv(S); if (artInDial(g.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
-      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11 } })) F.bgL = g; }
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } })) F.bgL = g; }
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     // a transparent subdial contributes geometry only: its centre and radius still place

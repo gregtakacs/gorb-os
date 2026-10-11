@@ -724,6 +724,31 @@
       return out;
     })();
     if (spill > 0) return fail('zoomed art crossed the dial circle by ' + spill + ' px, so the clip is not applied after the zoom');
+    /* The finish pressed back over loaded art. An opaque image buries the surface texture,
+     * which is the whole reason the control exists, and the only version of a carbon blend
+     * that could fool a stub is one that paints nothing: the geometry calls would still be
+     * issued, the pixels would not move. So the proof here is a pixel diff against the same
+     * dial with the blend off, plus the art still being visible afterwards -- carbon() opens
+     * with an opaque near-black fill, and replaying THAT over the art would look like a
+     * brilliant blend mode and a dead image at the same time. */
+    const pxData = (patch) => it.faceOf(Object.assign({ sfArt: 'feat-a', sfSize: 442, sfFit: 'cover', surface: 'forged', texture: 2.5 }, patch)).dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+    const IN = []; for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const dx = x - C4, dy = y - C4; if (dx * dx + dy * dy <= 200 * 200) IN.push((y * S4 + x) * 4); }
+    const diff = (A, B) => { let n = 0; for (const i of IN) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 24) n++; return n; };
+    const reds = (D) => { let n = 0; for (const i of IN) if (D[i] > 190 && D[i + 1] < 90 && D[i + 2] < 90 && D[i + 3] > 200) n++; return n; };
+    const dOff = pxData({});
+    const cover = reds(dOff);
+    if (!(cover > 30000)) return fail('the red fixture covers only ' + cover + ' dial px, so the blend probe is blind');
+    const mu = pxData({ sfFinishBlend: 'multiply', sfFinishColor: '#223344' }), muN = diff(dOff, mu);
+    if (!(muN > 3000)) return fail('the forged-carbon blend moved only ' + muN + ' px of the art, which is what a blend that paints nothing looks like');
+    const muRed = reds(mu);
+    if (!(muRed > cover * 0.5)) return fail('the blend buried the art instead of pressing texture into it: red px ' + cover + ' -> ' + muRed);
+    const cwBase = pxData({ surface: 'carbon', weaveAngle: 30 }), cwBlend = pxData({ surface: 'carbon', weaveAngle: 30, sfFinishBlend: 'multiply', sfFinishColor: '#223344' }), cwN = diff(cwBase, cwBlend);
+    if (!(cwN > 3000)) return fail('the woven carbon blend moved only ' + cwN + ' px, so the weave never reached the pixels');
+    const scN = diff(dOff, pxData({ sfFinishBlend: 'screen', sfFinishColor: '#eaffff' }));
+    if (!(scN > 3000)) return fail('screen left no trace on the art: ' + scN + ' px changed');
+    const enN = diff(pxData({ surface: 'enamel' }), pxData({ surface: 'enamel', sfFinishBlend: 'multiply', sfFinishColor: '#223344' }));
+    if (enN !== 0) return fail('enamel blended a texture it does not have, moving ' + enN + ' px');
+    say('  finish over art: forged multiply moved ' + muN + ' px and kept ' + muRed + ' of ' + cover + ' still the art\u2019s own red; the weave at 30\u00b0 moved ' + cwN + ' px, screen ' + scN + ', and enamel under the same blend moved 0');
     // facing: the ink's own centroid angle about the arbour, which is what "where it
     // points" means. Probed on the drawn hands layer, not on a reported number.
     const handsPx = (rot0, pivot) => {

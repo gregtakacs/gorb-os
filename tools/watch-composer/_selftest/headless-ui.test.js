@@ -482,6 +482,17 @@ setTimeout(() => {
   ok(nxCo.length === 1 && nxCo[0].isColor, 'a live blend offers its target colour picker', nxCo.length);
   it.state.designs.calendar.bgFinishColor = '#223344';
   ok(labels('dial').filter((f) => f.label === 'Blend colour')[0].value === '#223344', 'and the picker reports the colour it holds');
+  // both carbon finishes were withheld on the theory that a palette cannot be tinted;
+  // their weave and their flake field are geometry, so the control must appear for them
+  it.state.designs.calendar.surface = 'carbon';
+  ok(labels('dial').filter((f) => f.label === 'Finish blend').length === 2, 'woven carbon offers the blend on both art slots, not just the engine-turned finishes');
+  it.state.designs.calendar.surface = 'forged';
+  ok(labels('dial').filter((f) => f.label === 'Finish blend').length === 2, 'forged carbon offers it too');
+  it.state.designs.calendar.surface = 'enamel';
+  ok(!labels('dial').some((f) => f.label === 'Finish blend'), 'and enamel still withholds it: there is genuinely nothing to press through');
+  it.state.designs.calendar.surface = 'forged';
+  it.state.designs.calendar.bgFinishBlend = 'multiply';
+  ok(labels('dial').filter((f) => f.label === 'Blend colour').length === 1, 'with the blend live on a carbon dial the colour picker is there');
   delete it.state.designs.calendar.bgFinishColor; delete it.state.designs.calendar.bgFinishBlend; delete it.state.designs.calendar.surface;
   it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } };
   const nxWRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');

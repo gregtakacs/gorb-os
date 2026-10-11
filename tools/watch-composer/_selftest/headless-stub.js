@@ -61,7 +61,7 @@ function stubCtx() {
     strokeText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); },
   };
   // Helper pushes live on the context so the method shorthands above can share one cap.
-  c._g = function (op) { if (this.geom.length < 600) this.geom.push({ op, a: Array.prototype.slice.call(arguments, 1) }); };
+  c._g = function (op) { if (this.geom.length < 6000) this.geom.push({ op, a: Array.prototype.slice.call(arguments, 1) }); };
   c._op = function (op) { if (this.ops.length < 400) this.ops.push({ op }); };
   return c;
 }

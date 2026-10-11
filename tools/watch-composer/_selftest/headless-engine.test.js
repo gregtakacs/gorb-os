@@ -396,7 +396,7 @@ setTimeout(() => {
       const oHole = oOval.lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
       ok(oHole.r === 30 && oHole.ry === 11, 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
       ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - 30) < 1e-6 && Math.abs(g.a[3] - 11) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
-      const fo = (f) => { const x = new FakeCanvas().getContext('2d'); const drew = E.finishOver(x, f, 100); return { drew, mode: x.globalCompositeOperation, strokes: x.geom.filter((g) => g.op === 'stroke'), }; };
+      const fo = (f) => { const x = new FakeCanvas().getContext('2d'); const drew = E.finishOver(x, f, 100); return { drew, mode: x.globalCompositeOperation, strokes: x.geom.filter((g) => g.op === 'stroke'), cells: x.geom.filter((g) => g.op === 'fillRect'), fills: x.geom.filter((g) => g.op === 'fill'), turns: x.geom.filter((g) => g.op === 'rotate'), }; };
       const fGu = fo({ style: 'guilloche', blend: 'multiply', color: '#223344' });
       ok(fGu.drew === true && fGu.strokes.length > 100 && fGu.mode === 'multiply', 'the sunburst texture is pressed over the art under multiply', fGu.strokes.length);
       ok(fGu.strokes.some((g) => /^rgba\(34,51,68,/.test(String(g.a[0]))), 'the pressed-in lines carry the author’s target colour, not the dial’s own ink');
@@ -405,7 +405,20 @@ setTimeout(() => {
       ok(fo({ style: 'matte', blend: 'screen', color: '#fffaf0' }).drew === true, 'the grained finish blends too');
       ok(fo({ style: 'guilloche', blend: 'overlay', color: '#223344' }).mode === 'overlay', 'overlay runs the whole texture through one composite');
       ok(fo({ style: 'enamel', blend: 'multiply', color: '#223344' }).drew === false, 'enamel has no texture to press through');
-      ok(fo({ style: 'carbon', blend: 'multiply', color: '#223344' }).drew === false, 'carbon keeps its own palette: the tinted blend declines');
+      // the two carbon finishes build their look from greyscale, so the value field is the mask
+      const fCb = fo({ style: 'carbon', blend: 'multiply', color: '#223344' });
+      ok(fCb.drew === true && fCb.mode === 'multiply' && fCb.cells.length > 100, 'the woven carbon fibre is pressed over the art as a cell field', fCb.cells.length);
+      const fCs = fo({ style: 'carbon', blend: 'screen', color: '#223344' });
+      ok(fCs.drew === true && fCs.mode === 'screen' && fCs.cells.length > 100, 'screen brushes the lit bundles on instead');
+      ok(Math.abs(fCb.cells.length - fCs.cells.length) <= 4, 'the two passes split the same checker, one the sunken cells and one the lit', fCb.cells.length + '/' + fCs.cells.length);
+      const fCw = fo({ style: 'carbon', blend: 'overlay', color: '#223344', weave: { ang: 30, sc: 1 } });
+      ok(fCw.mode === 'overlay' && fCw.turns.some((t) => Math.abs(t.a[0] - 30 * Math.PI / 180) < 1e-9), 'the weave angle turns the blended relief with it, exactly as the finish itself does');
+      const fFb = fo({ style: 'forged', blend: 'multiply', color: '#223344' });
+      ok(fFb.drew === true && fFb.fills.length > 200, 'forged carbon blends too: its flakes are the mask', fFb.fills.length);
+      ok(fFb.fills.some((g) => /^rgba\(34,51,68,/.test(String(g.a[0]))), 'and each flake carries the author’s colour, not carbon’s own grey');
+      const fFo = fo({ style: 'forged', blend: 'overlay', color: '#223344' });
+      ok(fFo.fills.length > fFb.fills.length, 'overlay runs both the lit and the shadowed flakes, where multiply takes only the shadowed half', fFo.fills.length + ' vs ' + fFb.fills.length);
+      ok(fo({ style: 'carbon', blend: 'off' }).drew === false && fo({ style: 'forged', blend: 'off' }).drew === false, 'off paints nothing on either carbon');
       ok(fo({ style: 'guilloche', blend: 'off' }).drew === false, 'off paints nothing at all');
       // the rotation reaches the pixels: drawAsset turns the picture about its centre
       const Rf = (rot) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });

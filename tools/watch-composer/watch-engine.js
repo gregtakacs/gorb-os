@@ -342,14 +342,18 @@
     ctx.restore();
     return true;
   }
-  /* Art laid into a static layer, clipped to the dial circle so a square upload cannot
-   * bleed out over the rehaut. Both backdrop slots (plate and dial surface) draw through
-   * here so they behave identically. Returns false when the id has no bytes, letting the
-   * caller report the gap instead of shipping a blank layer. */
+  /* Art laid into a static layer. The clip is the rehaut, and the rehaut only exists when
+   * the composer draws the case: under "none" the author's own image carries the device's
+   * metal, and clipping it to the dial circle would cut their case off and leave a black
+   * ring in its place -- so the clip opens to the whole panel and their pixels decide where
+   * the watch ends. Both backdrop slots (plate and dial surface) draw through here so they
+   * behave identically. Returns false when the id has no bytes, letting the caller report
+   * the gap instead of shipping a blank layer. */
   function artInDial(ctx, id, o) {
     if (!id || !assetReady(id)) return false;
     ctx.save();
-    ctx.beginPath(); ctx.arc(C, C, DR, 0, TAU); ctx.clip();
+    const r = o.clipR == null ? DR : +o.clipR;
+    if (r > 0) { ctx.beginPath(); ctx.arc(C, C, r, 0, TAU); ctx.clip(); }
     const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: o.size == null ? 2 * DR : +o.size, h: o.size == null ? 2 * DR : +o.size,
       fit: o.fit || 'cover', zoom: o.zoom, alpha: o.opacity == null ? 1 : +o.opacity });
     ctx.restore();
@@ -1301,7 +1305,7 @@
     sx.globalCompositeOperation = 'destination-in'; sx.beginPath(); sx.arc(C, C, DR, 0, TAU); sx.fill();
     ctx.save(); ctx.globalCompositeOperation = 'destination-over'; ctx.drawImage(sh, 0, 0); ctx.restore();
   }
-  function buildDial(D, lay, baseEn, pal, glow, seal) {
+  function buildDial(D, lay, baseEn, pal, glow, seal, clipR) {
     const c = cv(S), ctx = c.getContext('2d'), en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
     /* Authored art on the dial face: over the surface material, under every mark the
@@ -1310,7 +1314,7 @@
      * and the aperture punches cut through it, so an art dial reads as a printed dial
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
-    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity });
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -1495,9 +1499,10 @@
   /* The radius the case leaves open, in dial px, and the one place it is worked out.
    * A bezel style owns a fixed opening; "none" hands the number to the author, because
    * the metal that would have defined it is already baked into the device and only its
-   * inner edge is known. Everything that has to respect the case -- the outer mask, the
-   * glass, the vignette -- reads this instead of re-deriving it from the style name.
-   * It does NOT decide how big the face is: see faceScale. */
+   * inner edge is known. Everything that has to respect the case -- the glass, the
+   * vignette, and the ring the author draws against on the stage -- reads this instead of
+   * re-deriving it from the style name. It draws nothing itself and it does NOT decide how
+   * big the face is: see faceScale and artClipR. */
   const CASE_OPEN_DEFAULT = 221.5, CASE_OPEN_MIN = 90, CASE_OPEN_MAX = 233;
   function caseOpenR(o) {
     const st = o && o.caseStyle, v = o && o.caseOpen;
@@ -1514,13 +1519,24 @@
    * do that with. Under "none" the number is the author's, dragged about with a slider --
    * and a slider that resampled the dial would resample the artwork they uploaded along
    * with it, so a graphic positioned against the real dial would leave it the moment the
-   * opening moved. There the metal cuts and nothing scales: the mask alone (buildOuter)
-   * stops our content where the hardware begins, exactly as the hardware will. */
+   * opening moved. There the option draws nothing at all (see buildOuter) and clips nothing
+   * (see artClipR): the author's own image carries the device's case, so the one thing the
+   * opening may do is tell the guide where the hardware begins. */
   function faceScale(o) {
     if (o && o.caseStyle === 'none') return 1;
     const r = caseOpenR(o);
     return r < DR ? r / DR : 1;
   }
+  /* How far the author's own uploaded art may reach, and it follows the same fork as
+   * faceScale for the same reason: both limits exist to keep content under metal that the
+   * composer is drawing. Under a bezel style that is true -- the metal covers the rim, so
+   * art is clipped to the dial circle and the print is eased in. Under "none" there is no
+   * metal of ours at all, and the author's image is the one that carries the device's case.
+   * Clipping it there would cut their bezel off at the dial circle and paint a black ring
+   * into the gap, which is the opposite of what the option promises. So the clip opens to
+   * the panel's half-diagonal and their pixels say where the watch ends. */
+  const PANEL_R = Math.ceil(C * Math.SQRT2);
+  function artClipR(o) { return o && o.caseStyle === 'none' ? PANEL_R : DR; }
   const GLASS_STYLES = { domed: 'Domed', flat: 'Flat sapphire', box: 'Box acrylic', none: 'No glass' };
 
   // all glass and case art is authored for light from the upper left, then turned to the outer-light direction
@@ -1610,16 +1626,17 @@
   }
   function buildOuter(glow, style, metal, openR) {
     const _ = L(), c = cv(S), ctx = c.getContext('2d'), st = CASE_METALS[metal] || CASE_METALS.brass;
-    // No case: the device already owns everything outside the opening, so this layer
-    // adds no shading of its own -- double-drawing a rim the hardware already paints
-    // is how you get two edges. What it still has to do is stop OUR content from
-    // bleeding under that hardware, so it ships as the mask alone.
-    if (style === 'none') {
-      const r = openR == null ? CASE_OPEN_DEFAULT : openR;
-      ctx.beginPath(); ctx.rect(-50, -50, S + 100, S + 100); ctx.arc(C, C, r, 0, TAU, true);
-      ctx.fillStyle = '#000'; ctx.fill();
-      return c;
-    }
+    // No case: this layer draws NOTHING at all, and that is the whole meaning of the
+    // option. The device owns its own metal and the author's own image is what carries it,
+    // so any paint of ours lands on top of their artwork. The rim shade, the grooves, the
+    // speculars and the inner shadow all belong to a case we are not drawing.
+    //
+    // It used to ship the opaque mask alone -- rect-minus-circle filled with #000 -- to stop
+    // our content reaching the hardware. That was still drawing, and it drew a black circle
+    // that marched inward with the opening slider while painting the author's own case out.
+    // Nothing here clips either: artInDial lets their art reach the panel, and hands, glass
+    // and print are the author's to position against the ring the guide draws.
+    if (style === 'none') return c;
     DA = -(LIGHT.outer - OUTER0);
     let g = ctx.createRadialGradient(150, 120, 0, 150, 120, 260);
     g.addColorStop(0, 'rgba(' + _.tint('255,214,150') + ',' + Math.min(1, 0.13 * glow) + ')'); g.addColorStop(1, 'rgba(255,214,150,0)');
@@ -2432,7 +2449,7 @@
      * (docs/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
      * Slot two, the dial face, is in buildDial and costs nothing for the same kind of
      * reason: that canvas is already blended every tick with or without the art. */
-    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity });
+    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2519,13 +2536,13 @@
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
       hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
-    const bd = buildDial(design, lay, en, pal, G); F.dial = bd.canvas; F.dialEn = bd.en;
+    const bd = buildDial(design, lay, en, pal, G, false, artClipR(o)); F.dial = bd.canvas; F.dialEn = bd.en;
     // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
     // the device composites over them every day seals the geartrain beneath. Shipped as
     // the theme dial and used as the composer occluder -- both must match the bake's
     // opaque static1 cull. Built only when a dial-hosted disc exists; else fall back to
     // the holed dial (no apertures to seal).
-    F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true).canvas : bd.canvas;
+    F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true, artClipR(o)).canvas : bd.canvas;
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     // a transparent subdial contributes geometry only: its centre and radius still place
@@ -2911,5 +2928,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

@@ -226,16 +226,18 @@ setTimeout(() => {
       ok(fp.hit(sub.x, sub.y) === 'c1', 'F.hit is untouched, so every caller that wanted a complication still gets exactly one');
       const onHand = fp.pick(hdS.x, hdS.y - 8, t0);
       ok(onHand && onHand.kind === 'hand' && onHand.id === 'centre-second', 'a hand is clickable now, which is the whole basis for dragging one', JSON.stringify(onHand));
-      /* ---- no case: nothing drawn, everything still clipped -------------------------
-       * The device owns the metal, so the layer adds no shading of its own while the
-       * opening still governs the mask, the scale of the face and the reach of hands. */
+      /* ---- no case: nothing drawn at all --------------------------------------------
+       * The device owns its own metal and the author's own image carries it, so the case
+       * layer must be empty. It used to ship an opaque mask instead: a black circle that
+       * sat at the rim at full width and marched inward as the opening shrank, painting
+       * their printed case out. The opening is now a measurement for the guide alone. */
       const NC = { print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1 } };
       const mkFace = (o) => E.face(Object.assign({ design: E.canonDesign(JSON.parse(JSON.stringify(NC))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
       ok(mkFace({ caseStyle: 'polished' }).inset === 1, 'a plain case leaves the content at full size');
       ok(Math.abs(mkFace({ caseStyle: 'tachy' }).inset - 193.5 / 221) < 1e-9, 'a bezel style keeps its own fixed opening, exactly as before');
       ok(mkFace({ caseStyle: 'none' }).inset === 1, 'no case at the default opening matches the old blank rim');
       const none1 = mkFace({ caseStyle: 'none', caseOpen: 160 });
-      ok(none1.caseOpen === 160 && none1.inset === 1, 'a smaller authored opening cuts the face at its edge and rescales NOTHING: the slider is the hardware\'s rim, not a resize handle on the author\'s dial art', JSON.stringify([none1.caseOpen, none1.inset]));
+      ok(none1.caseOpen === 160 && none1.inset === 1, 'a smaller authored opening changes the author\'s pixels NOT at all: it is the hardware\'s rim, quoted for the guide, not a cut and not a resize handle', JSON.stringify([none1.caseOpen, none1.inset]));
       ok(E.faceScale({ caseStyle: 'none', caseOpen: 90 }) === 1 && E.faceScale({ caseStyle: 'tachy' }) === 193.5 / 221,
         'faceScale agrees: the authorable opening never shrinks the face, a bezel style always does', JSON.stringify([E.faceScale({ caseStyle: 'none', caseOpen: 90 }), E.faceScale({ caseStyle: 'tachy' })]));
       ok(mkFace({ caseStyle: 'polished', caseOpen: 120 }).inset === 1, 'and an opening typed in beside a style that cannot use it changes nothing at all');
@@ -245,8 +247,11 @@ setTimeout(() => {
       ok(noneG.filter((o) => o.op === 'stroke').length === 0, 'the no-case layer strokes no rim, groove or specular line', 'strokes=' + noneG.filter((o) => o.op === 'stroke').length);
       const polG = E.caseLayer({ caseStyle: 'polished', caseOpen: 160, outerTemp: 2200 }).getContext('2d').geom.filter((o) => o.op === 'stroke').length;
       ok(polG > 0, 'the same probe on a real case finds its rim lines, so the check above is not vacuous', 'strokes=' + polG);
-      const maskG = noneG.filter((o) => o.op === 'arc');
-      ok(maskG.length === 1 && maskG[0].a[2] === 160, 'and it still cuts the one opening the content is clipped to', JSON.stringify(maskG.map((o) => o.a[2])));
+      ok(noneG.length === 0, 'the no-case layer draws NOTHING: no mask, no ring, no shade -- any pixel it painted would sit on top of the case in the author\'s own image, which is what "None" promises', JSON.stringify(noneG.slice(0, 3).map((o) => o.op)));
+      ok(E.caseLayer({ caseStyle: 'polished', caseOpen: 160, outerTemp: 2200 }).getContext('2d').geom.length > 0, 'and a drawn case still paints its geometry, so the empty layer above is the option and not a broken probe');
+      ok(E.artClipR({ caseStyle: 'none' }) === E.PANEL_R && E.artClipR({ caseStyle: 'polished' }) === 221 && E.artClipR({}) === 221,
+        'the author\'s art is clipped to the panel under None, where their image carries the case, and to the dial circle under a drawn one, where the metal covers the rim',
+        JSON.stringify([E.artClipR({ caseStyle: 'none' }), E.artClipR({ caseStyle: 'polished' }), E.artClipR({})]));
       /* ---- a round window -----------------------------------------------------------
        * The shape has to reach the hole, or the device ships a square disc inside a
        * round punch and the four corners sit over the dial. */

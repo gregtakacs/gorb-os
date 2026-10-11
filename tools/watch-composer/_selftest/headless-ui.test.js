@@ -195,6 +195,12 @@ setTimeout(() => {
   it.state.caseStyle = 'none';
   const caseNone = labels('case');
   ok(!!byLabel(caseNone, 'Opening radius'), 'no case exposes the opening that lighting, shadow and clipping then use');
+  // The slider has no pixel effect of its own any more, so the only thing it still owes the
+  // author is the truth: a note that promised to clear or cut the content would describe the
+  // black ring this option used to paint over their own baked-in case.
+  const openNote = (caseNone.find((f) => f.isNote && /carries the case/.test(f.note || '')) || {}).note || '';
+  ok(!!openNote && !/clear|clip|cut|rescal/i.test(openNote.replace(/clips nothing|cuts nothing|rescales nothing|clipping/gi, '')),
+    'the opening note says what the option does, and promises no cut, no clip and no rescale', JSON.stringify(openNote).slice(0, 150));
   it.state.caseStyle = 'polished';
   ok(!byLabel(labels('case'), 'Opening radius'), 'a real case hides it again: its own rim owns that number');
   const winC = (it.state.designs.calendar.comps || []).find((c) => c.type === 'window');

@@ -73,7 +73,7 @@ def main():
     print("  'custom art: backdrop in the plate pixels'               <- the plate slot")
     print("  'dial surface art: N art px ... print still reads'       <- the dial face, under the print")
     print("  'round aperture: r=N fills 0.785 ...'                    <- a circular window")
-    print("  'no case: masked at r=N; art identical at two openings'  <- the case-free style clips, and rescales nothing")
+    print("  'no case: the case layer paints 0 px ...'                <- the case-free style draws nothing, cuts nothing, rescales nothing")
     print("  'alignment reference: N of 53 grid points ...'           <- the guide is pinned to the watch, not the art")
     print("  'zoom 1->2: ... facing turned the ink N -> N deg'        <- art zoom + hand facing")
     print("Run one block alone with ?ONLY=feat if the suite stops printing with no verdict:")

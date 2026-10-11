@@ -1393,7 +1393,19 @@ class Component extends DCLogic {
       on.forEach((h) => { delete h.freeze; });
     }
     if (id === 'glass') { s.fillStyle = '#2a2622'; s.beginPath(); s.arc(233, 233, 221, 0, Math.PI * 2); s.fill(); s.drawImage(fc.glass, 0, 0); }
-    if (id === 'outer') s.drawImage(fc.outer, 0, 0);
+    if (id === 'outer') {
+      s.drawImage(fc.outer, 0, 0);
+      // Under "no case" this layer is legitimately empty, and a bare blank square in the
+      // isolate reads as a broken render. Say what the empty means: here is the rim the
+      // device owns, and there is no pixel of ours on it.
+      if (this.state.caseStyle === 'none') {
+        s.setLineDash([5, 4]); s.lineWidth = 1.5; s.strokeStyle = 'rgba(240,215,154,.85)';
+        s.beginPath(); s.arc(233, 233, fc.caseOpen == null ? 221.5 : fc.caseOpen, 0, Math.PI * 2); s.stroke();
+        s.setLineDash([]);
+        s.font = "600 13px 'IBM Plex Mono',ui-monospace,monospace"; s.fillStyle = 'rgba(240,215,154,.9)';
+        s.fillText('no case drawn', 178, 30);
+      }
+    }
     x.clearRect(0, 0, el.width, el.height); x.drawImage(sc, 0, 0, el.width, el.height);
   }
   drawDialThumb(id) {
@@ -2175,16 +2187,17 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'case') {
       fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
-      /* The opening is only authorable under "no case": every other style owns its own
-       * rim geometry, and a slider that changed nothing (or fought the bezel) would be
-       * a lie. Here it is the whole of what the case layer does -- where our content
-       * stops and the hardware's begins. */
+      /* The opening is only authorable under "no case": every other style owns its own rim
+       * geometry, and a slider that changed nothing (or fought the bezel) would be a lie.
+       * Under "none" it is a measurement the author declares about the hardware, and it
+       * draws nothing -- it is where the guide's ring sits, so the art can be aimed at it. */
       if (s.caseStyle === 'none') {
         const r = E.caseOpenR ? E.caseOpenR({ caseStyle: 'none', caseOpen: s.caseOpen }) : +s.caseOpen;
         const mm = (v) => (v * (E.MM_PER_PX || 0.0954)).toFixed(2);
         fields.push(H('Case opening'),
           Rg('Opening radius', r, E.CASE_OPEN_MIN || 90, E.CASE_OPEN_MAX || 233, 0.5, (v) => this.setState({ caseOpen: +v }), mm(r) + ' mm'),
-          Nt('', 'Nothing is drawn here: the device owns its own metal. Everything outside ' + r.toFixed(1) + ' px (' + mm(r) + ' mm) is cleared, and NOTHING is rescaled — the dial, its art and the hands stay exactly where they were authored and are simply cut there, the way the hardware will cut them.'));
+          Nt('', 'Draws nothing, clips nothing, rescales nothing: your own image carries the case, so it runs to the edge of the panel untouched. '
+            + r.toFixed(1) + ' px (' + mm(r) + ' mm) is where the metal of the device begins — the guide paints the gold ring there, and everything you want visible stays inside it.'));
       }
     }
 

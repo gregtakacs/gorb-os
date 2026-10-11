@@ -249,7 +249,7 @@ python3 -m pip install --user --break-system-packages nodeenv \
 
 | File | Checks |
 |---|---|
-| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening, a round aperture |
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere), a round aperture |
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
 | `headless-ui.test.js` | the control row offers each field, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
@@ -346,10 +346,13 @@ evidence for the authoring controls the stub suites can only describe:
 * a round window is measured by how much of its own disc box the disc fills — 0.785
   for a circle against ~1.0 for the square, both measured in the same run so the
   square case calibrates the probe;
-* "no case" paints nothing inside the opening yet still masks outside it, and the
-  composited art lands pixel-identical whether the opening is 221.5 or 150 — the slider
-  is where the device's metal starts, not a resize handle on the author's dial (the face
-  scales only under a composer-drawn case, where the metal covers the rim);
+* "no case" paints **no pixel at all** — no mask, no rim shade — and the composited art is
+  the same pixels with that layer shown or hidden, at opening 221.5 and at 150. Its own
+  uploaded image also reaches the panel corners there (59,571 px of it outside the dial
+  circle in the current run), because that image carries the device's case; under a drawn
+  case the same art stays clipped to the dial circle (0 px outside it), where the metal does
+  the covering. The opening slider is a measurement for the guide's ring, not a cut and not
+  a resize handle;
 * zoom 1→2 multiplies the art actually painted, and at zoom 4 nothing spills past the
   dial circle, which is what proves the clip is applied after the zoom and not before;
 * a facing of 90 turns the drawn ink a quarter of the way round the arbour, and a
@@ -406,6 +409,13 @@ chrome --headless=new --disable-gpu --no-sandbox --hide-scrollbars \
   --window-size=3400,1600 --virtual-time-budget=600000 \
   --screenshot='C:\...\probe.png' 'file://<win-path>/_selftest/probe-calendar.html'
 ```
+
+`probe-case.html` is the one to run when someone reports a ring around the dial: it
+composites a solid-colour full-bleed upload under Case "None" at three openings and
+prints, per setting, the art pixel count with the case layer shown and hidden plus the
+number of black pixels left outside r=150. All three settings must print the same art
+count and `blackRingPx=0`; the polished line at the bottom is the control that says the
+mask still exists where a case is actually drawn.
 
 `probe-geom.html` renders 39 full dials, so give it a large virtual-time budget;
 frames are cached per design. Re-pose both probes by editing `POSE`.

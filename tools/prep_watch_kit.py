@@ -340,8 +340,18 @@ def main():
     # empty selection.
     no_rim = not rim_cand.any()
     if no_rim:
-        print("WARNING outer.png has no pixel at a>={}: nothing to fold, the whole "
-              "case stays a live layer (its px are charged per tick)".format(RIM_OPAQUE))
+        # Two different kits land here. A "no case" design ships outer.png with zero
+        # pixels at all: nothing to fold and nothing live either, and the blend charge
+        # for the layer is nil. A translucent custom rim is the other one, and that does
+        # pay per tick. Saying "charged" about an empty layer sends the operator hunting
+        # for a cost that is not there.
+        if not oa.any():
+            print("outer.png is empty: this kit draws no case layer at all (the design "
+                  "chose \"no case\"), so nothing folds and nothing blends for it")
+        else:
+            print("WARNING outer.png has no pixel at a>={}: nothing to fold, the whole "
+                  "case stays a live layer ({} px charged per tick)".format(
+                      RIM_OPAQUE, int((oa > 0).sum())))
     outer_arr = np.array(outer)
     tint_arr = outer_arr.copy(); tint_arr[rim_cand, 3] = 0
     tint = Image.fromarray(tint_arr)          # outer's sub-opaque half: stays live

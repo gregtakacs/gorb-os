@@ -546,18 +546,24 @@
   }
   /* ---- 2-4. the case mask, the zoom, and the facing -------------------------------- */
   function featCaseZoomHands(E, it, say, fail, pass) {
-    // no case: nothing painted where the device's own metal sits; the opening stops OUR
-    // content by cutting it there, and by nothing else -- no part of the face is rescaled,
-    // so the artwork the author positioned stays positioned however the slider is set.
+    // "None" means none: the case layer paints no pixel anywhere, because the author's own
+    // image carries the device's metal and anything we paint there covers their artwork. The
+    // old layer shipped an opaque mask for the opening -- a black circle that sat at the rim
+    // at full width and marched inward with the slider, painting their case out.
     const mask = E.caseLayer({ caseStyle: 'none', caseOpen: 150, outerTemp: 2200, outerHue: 0, outerSat: 0 });
     const mx = mask.getContext('2d'), alphaAt = (x, y) => mx.getImageData(x, y, 1, 1).data[3];
-    if (alphaAt(C4, C4) > 8) return fail('no-case paints something at the centre: alpha ' + alphaAt(C4, C4));
-    if (alphaAt(C4 + 175, C4) < 250) return fail('no-case leaves outside its opening unpainted: alpha ' + alphaAt(C4 + 175, C4));
-    if (alphaAt(C4 + 138, C4) > 8) return fail('no-case masks inside the opening it was given: alpha ' + alphaAt(C4 + 138, C4));
-    // "None" means the device owns its own metal: the opening cuts, and nothing rescales.
-    // The proof has to go through compose(), because the scale it replaces happened there
-    // -- reading fc.dial alone would show the art at authored size no matter what the case
-    // did to it on the way out, and the author's complaint was about the pixels.
+    const painted = [[C4, C4], [C4 + 138, C4], [C4 + 175, C4], [6, 6], [460, 460]].filter((p) => alphaAt(p[0], p[1]) > 0);
+    if (painted.length) return fail('no-case paints ' + painted.length + ' px of the panel, so it draws over the author\'s own case: ' + JSON.stringify(painted.map((p) => p + '@' + alphaAt(p[0], p[1]))));
+    // A case that IS drawn still has to mask, or the empty-layer probe above proves nothing.
+    // Sample a corner, not the authored radius: caseOpenR hands a drawn style its own fixed
+    // opening and ignores the slider, so only outside that rim is the mask testable.
+    const bez = E.caseLayer({ caseStyle: 'polished', caseOpen: 221.5, outerTemp: 2200, outerHue: 0, outerSat: 0 }).getContext('2d');
+    if (!(bez.getImageData(6, 6, 1, 1).data[3] >= 250 && bez.getImageData(460, 460, 1, 1).data[3] >= 250))
+      return fail('the control case stopped masking its corners, so the empty-layer probe above is blind');
+    // "None" means the device owns its own metal: the opening cuts nothing and rescales
+    // nothing. The proof has to go through compose(), because that is where both used to
+    // happen -- reading fc.dial alone would show the art whole no matter what the case did
+    // on the way out, and the author's complaint was about the pixels on the glass.
     const fNone = it.faceOf({}, { caseStyle: 'none', caseOpen: 150 });
     if (fNone.inset !== 1) return fail('no case rescaled the face to the authored opening: inset=' + fNone.inset);
     const ART = { sfArt: 'feat-a', sfSize: 140, sfX: 95, sfY: 0, sfFit: 'contain' };
@@ -582,7 +588,26 @@
     if (wide.n !== cut.n || String(wide.box) !== String(cut.box))
       return fail('the opening radius moved or resized the loaded dial art: ' + JSON.stringify([wide, cut]));
     const masked = comp_ink({ caseStyle: 'none', caseOpen: 150 }, true);
-    if (!(masked.out === 0 && masked.n < cut.n)) return fail('the no-case mask did not cut the art at the opening: ' + JSON.stringify([masked, cut]));
+    if (masked.n !== cut.n || masked.out !== cut.out || String(masked.box) !== String(cut.box))
+      return fail('the no-case case layer still paints over the author\'s art: ' + JSON.stringify([masked, cut]));
+    if (!(cut.out > 200)) return fail('no art reached beyond the 150 px opening, so nothing was at risk: ' + JSON.stringify(cut));
+    // The other half of the same complaint: an image whose own artwork runs to the edge of
+    // the panel must be allowed to get there. Clipped to the dial circle it lost its case at
+    // r=221 and the black underneath read as a ring that no slider setting could remove.
+    const FULL = { sfArt: 'feat-a', sfSize: 466, sfX: 0, sfY: 0, sfFit: 'stretch' };
+    const rimPx = (opts) => {
+      const d = it.faceOf(FULL, opts).dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+      let out = 0;
+      for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) {
+        const i = (y * S4 + x) * 4;
+        if (Math.hypot(x - C4, y - C4) > 224 && d[i] > 190 && d[i + 1] < 90 && d[i + 2] < 90 && d[i + 3] > 200) out++;
+      }
+      return out;
+    };
+    const rimNone = rimPx({ caseStyle: 'none', caseOpen: 150 }), rimBez = rimPx({ caseStyle: 'polished', caseOpen: 221.5 });
+    if (!(rimNone > 5000)) return fail('a case-free image still cannot reach the panel corners, so its own case is cut off: ' + rimNone + ' px outside the dial circle');
+    if (rimBez !== 0) return fail('art bled past the dial circle under a composer-drawn case, where the metal does the cutting: ' + rimBez + ' px');
+    it.faceOf({}, { caseStyle: 'polished', caseOpen: 221.5 });      // do not let the probe leak into the ones below
     // the stationary reference, painted: the stub can be told the spokes were asked for,
     // only the browser can say they are actually on the glass at the same pixels however
     // far the art has been dragged. Sample mid-spoke at radii chosen to land on a dash
@@ -652,7 +677,7 @@
     if (Math.abs(dAng(a0.ang, a90.ang) - 90) > 5) return fail('facing 90 did not turn the drawn ink a quarter of a way round: ' + a0.ang.toFixed(1) + ' -> ' + a90.ang.toFixed(1) + ' (delta ' + dAng(a0.ang, a90.ang).toFixed(1) + ')');
     const off = handsPx(0, [-30, 60]);
     if (!(off.h > 60 && off.py >= 0 && off.py <= off.h)) return fail('the off-art arbour did not grow the plane to hold it: ' + JSON.stringify([off.h, off.py]));
-    say('  no case: masked at r=150; off-centre art composited identical at openings 221.5 and 150 (' + wide.n + ' px, box ' + wide.box.join(',') + '), cut to ' + masked.n + ' px by the mask with ' + masked.out + ' art px outside it');
+    say('  no case: the case layer paints 0 px; off-centre art composited identical with that layer shown or hidden at openings 221.5 and 150 (' + wide.n + ' px, box ' + wide.box.join(',') + ', ' + masked.out + ' of them beyond r=150), and a full-bleed image reaches ' + rimNone + ' px into the corners a drawn case still clips off at the dial circle (' + rimBez + ')');
     say('  alignment reference: ' + shown.length + ' of ' + PROBES.length + ' grid points painted on the glass, every one of them at the same pixel with the art at offset 0 and at 120');
     say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');
     pass();

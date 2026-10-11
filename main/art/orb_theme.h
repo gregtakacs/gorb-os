@@ -93,7 +93,15 @@ enum {
     CLK_FLAG_24H        = 1 << 4,   /* aux hand: hour value is 0..23 */
     CLK_FLAG_WRAP       = 1 << 5,   /* aux hand: keep sweeping past value_max */
     CLK_FLAG_BLINK      = 1 << 6,   /* comp: draw every other second */
-    CLK_FLAG_DISABLED   = 1 << 7    /* parsed and validated, deliberately not drawn */
+    CLK_FLAG_DISABLED   = 1 << 7,   /* parsed and validated, deliberately not drawn */
+    CLK_FLAG_AUX_SHADOW = 1 << 8    /* aux row: the blur/offset TWIN of the row
+                                     * before it, same tag+src. It owns pixels and
+                                     * a centre (the hand's, moved by the light
+                                     * vector) and no input of its own: the driver
+                                     * rotates it by the previous row's angle, so
+                                     * a pointer over its plate gets a shadow
+                                     * without a second record's worth of state.
+                                     * Mirrors theme_schema.FLAG_AUX_SHADOW. */
 };
 
 #define CLK_STRIP_GLYPHS_MAX 8   /* glyph image objects per strip, and the cap a
@@ -122,6 +130,16 @@ _Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
     ((uint32_t)(c)->w * (uint32_t)(c)->h * \
      (((c)->flags & CLK_FLAG_UNDER_DIAL) ? 2u : 3u))
 
+/* A WINDOW's `first` is a z bucket, not a bank index: the theme layer slot
+ * (tools/bake_clock.py KINDS — 0 hour, 1 minute, 2 second, 3 static1/dial,
+ * 4 static2/sub-dial plates) whose live layer this tile must stay UNDER. 0
+ * means "below every live layer", which is every bake from before a sub-dial
+ * ever hosted a window, so an old container keeps drawing exactly as it did.
+ * The kit's own drawOrder is what decides it — the perpetual-calendar kit lists
+ * its moon between the dial and the c4 plate, and a moon drawn under the dial
+ * is a moon that never reaches the glass. clock_view.c honours the bucket in
+ * comp_add_jobs, and the orb_theme.c bank-range guard covers only the kinds
+ * that address the bank, so a bucket never reads as a sprite index. */
 typedef struct {
     uint16_t tag;              /* manifest comp id (c2 -> 2); 0 = synthetic */
     uint8_t  kind;             /* CLK_KIND_*  */
@@ -129,9 +147,11 @@ typedef struct {
     int16_t  x, y;             /* window/strip box origin */
     uint16_t w, h;             /* box, one glyph, or one ring slot */
     uint16_t count;            /* frames across the value domain */
-    uint16_t first;            /* bank index for strip/ring/flare */
+    uint16_t first;            /* bank index for strip/ring/flare; for a
+                                * WINDOW the z bucket, see above  */
     uint32_t off;              /* window: blob offset of tile 0 */
     uint32_t frame_bytes;      /* window: stride between tiles */
+
     int16_t  cx, cy;           /* ring centre */
     int16_t  radius;           /* ring radius, centre to sprite centre */
     int16_t  angle0;           /* tenths of a degree, 0 = twelve o'clock */

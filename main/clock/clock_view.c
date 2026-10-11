@@ -107,6 +107,19 @@ static lv_image_dsc_t s_overlay_dsc;
 static lv_image_dsc_t s_hand_dsc[5];
 static lv_image_dsc_t s_shadow_dsc[5];
 
+/* ---- the sub-dial pointers (the theme's clk_aux_t rows) -------------------
+ * One widget, descriptor, and last-shown angle per row — the same shape of
+ * state s_hand/s_shadow/s_ang_10 are for the five compiled-in slots, and for
+ * the same reason: the L4 hook paints from the angles, the classic path from
+ * the widgets, and both read ONE truth per tick. A hand and its blur/offset
+ * twin are two rows (see the aux block for the pairing rule), which is why the
+ * arrays are indexed by row and not by pointer. */
+static lv_obj_t *s_aux_obj[CLK_AUX_MAX];
+static lv_image_dsc_t s_aux_dsc[CLK_AUX_MAX];
+static int32_t   s_aux_ang_10[CLK_AUX_MAX];   /* INT32_MIN = nothing drawn */
+static uint32_t  s_aux_logged;                /* bit i: "no input" printed for row i */
+static int       s_aux_at = -1;               /* order index the block rides above */
+
 /* bgAnim plate frames (baked in assets/clock_assets.h -> clk_bg_frames). */
 #define CLK_BG_MAX 8
 static lv_image_dsc_t s_bg_dsc[CLK_BG_MAX];
@@ -1324,10 +1337,12 @@ typedef struct {
  * scattered inverse-map fetches out of PSRAM" (→ stage its texel rows in
  * internal RAM) from "the static pair pays for sheer pixel count" (→ memoize
  * dial+glass per row). Counting blends alone cannot tell those apart. */
-#define CLK_PAINT_ROLES 7                 /* hands/shadows are roles 0..4, glass 5,
-                                           * baked complications 6 (CLK_ROLE_*)     */
+#define CLK_PAINT_ROLES 8                 /* roles 0..4 the theme layer slots, 5 the
+                                           * glass overlay, 6 the baked complications,
+                                           * 7 the sub-dial (aux) pointers */
 #define CLK_ROLE_GLASS 5
 #define CLK_ROLE_COMP  6
+#define CLK_ROLE_AUX   7
 static uint32_t s_hk_role_blend[CLK_PAINT_ROLES];
 static uint32_t s_hk_role_blend0[CLK_PAINT_ROLES];
 static uint64_t s_hk_role_us[CLK_PAINT_ROLES];
@@ -1475,6 +1490,10 @@ static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
                                       * windows, or ~3 strips' glyphs + window
                                       * pieces. Overflow drops the rest with a
                                       * one-line log (see comp_add_jobs). */
+#define CLK_AUX_JOBS_MAX CLK_AUX_MAX /* one blit per aux row (a row is a hand OR
+                                      * its twin, never both); overflow is the
+                                      * same one-line log as the comp list */
+#define CLK_JOB_MAX (CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX + CLK_AUX_JOBS_MAX)
 #define CLK_COMMIT_BAND 8            /* rows staged at once               */
 #define CLK_PAINT_TILE  32           /* columns per rotated-pass tile     */
 /* Tile/band sizes measured on the tourbillon face, cycles per blend_px of the
@@ -1610,7 +1629,9 @@ static void bench_paint_band(int32_t y0, int nr)
  * first LVGL render had drawn. Rows that never get a commit simply stay marked
  * until one does. */
 static void clock_layer_commit(void);
-static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj);
+static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
+                          int bucket);
+static void aux_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj);
 
 static void clock_layer_commit(void)
 {
@@ -1628,23 +1649,51 @@ static void clock_layer_commit(void)
     /* One ctx per live layer, built once for this commit. Static rather than
      * stack: the hook has exactly one caller (the LVGL task's flush) and the
      * LVGL task stack is not ours to spend 900 B of. */
-    static paint_ctx_t jc[CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX];
+    static paint_ctx_t jc[CLK_JOB_MAX];
     int nj = 0;
-    /* Bottom-most layer over the restored canvas: the complication tiles the
-     * bake packed for the values the tick resolved. The live dial's window
-     * frame — a job from the loop below — composites over their edges, which
-     * is why the bake left them raw (see the complication block). */
-    comp_add_jobs(orb_theme_geo(), jc, &nj);
-    for (int oi = 0; oi < clk_theme.order_n && nj < CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX - 1; ++oi) {
+    /* Bucket 0 first: the tiles that belong below EVERY live layer, which is
+     * every window the bake has ever placed except a hosted one. A tile with a
+     * bucket (a WINDOW's `first`: the KINDS slot it must stay under) joins the
+     * list at that slot's own turn, so the plate's frame composites over its
+     * edge. The moon under the c4 plate only reaches the glass from UNDER the
+     * plate, and the plate only covers it if the tile went down first. */
+    comp_add_jobs(orb_theme_geo(), jc, &nj, 0);
+    int buckets_done = 1;                                 /* bit b = bucket drained */
+    bool aux_done = false;
+    for (int oi = 0; oi < clk_theme.order_n && nj < CLK_JOB_MAX - 1; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
-        if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
+        if (clk_theme.matte_mask & (1u << k)) {           /* baked into the bg */
+            if (!aux_done && oi == s_aux_at) {
+                aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
+            }
+            continue;
+        }
+        /* Tiles that must stay under THIS live layer, and only statics ever
+         * host one: buckets 1 and 2 would name a hand slot, which no bake
+         * emits, and bucket 0 is already down below the whole list — calling
+         * it again with k == 0 would blend every dial-hosted window a SECOND
+         * time, right under the hour hand. */
+        if (k >= 3) { comp_add_jobs(orb_theme_geo(), jc, &nj, k); buckets_done |= 1 << k; }
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], &clk_theme.shadow[k], s_ang_10[k], (uint8_t)k)) nj++;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             if (paint_ctx_init(&jc[nj], layer_spr(k), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
+        /* The sub-dial pointers join above the last live static, and below
+         * whatever the theme ordered after it (see aux_insert_at). */
+        if (!aux_done && oi == s_aux_at) {
+            aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
+        }
     }
-    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX)
+    if (!aux_done) aux_add_jobs(orb_theme_geo(), jc, &nj);  /* no live static at all */
+    /* A bucket whose layer never joined the stack — hidden, or folded into the
+     * bank by a --matte force — still has to draw its window: it rides above
+     * what does exist. The kit's plate is in the bank either way, so this is the
+     * same reading the classic path reaches for, and the bake printed the forced
+     * fold's pixel cost when it took it. */
+    for (int b = 1; b < 5; b++)
+        if (!(buckets_done & (1 << b))) comp_add_jobs(orb_theme_geo(), jc, &nj, b);
+    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_JOB_MAX)
         if (paint_ctx_init(&jc[nj], &clk_theme.overlay, 0, CLK_ROLE_GLASS)) nj++;  /* the glass */
 
     /* Walk the marked rows in bands (see s_band). Runs of marked rows are the
@@ -2067,31 +2116,59 @@ static void comps_update(const struct tm *ti, time_t t)
     }
 }
 
-/* Build every drawable comp slot's LVGL widget, hidden until comp_slot_show.
- * Runs right after the plate and before the hand/glass loop, so the classic
- * path's sibling order — plate, comp tiles, S2 H2 S1 H1 S0 H0, glass —
- * matches the L4 job order: the tile sits UNDER the live dial layer, not
+/* One comp's widgets, hidden until comp_slot_show points them at pixels — the
+ * same widgets the L4 hook mirrors, so both paths must create them in the same
+ * relative order or a row LVGL renders itself disagrees with a row the hook
+ * paints. The caller creates them at the point in the sibling chain that puts
+ * the tile UNDER the live layer the bake named: the classic path's only notion
+ * of z-order is creation order, and the tile must sit under its frame, not
  * just somewhere on the page. */
+static void comp_create_slots(const orb_theme_geo_t *g, uint16_t i)
+{
+    const clk_comp_t *c = &g->comps[i];
+    int slots = 0;
+    if      (c->kind == CLK_KIND_WINDOW) slots = 1;
+    else if (c->kind == CLK_KIND_STRIP)  slots = comp_strip_positions(c) + 2;
+    for (int p = 0; p < slots && p < CLK_COMP_SLOTS; p++) {
+        lv_obj_t *o = lv_image_create(s_scr);
+        lv_obj_set_align(o, LV_ALIGN_TOP_LEFT);
+        lv_obj_set_scrollable(o, false);
+        lv_image_set_blend_mode(o, map_blend(c->blend));
+        lv_obj_set_hidden(o, true);
+        s_comp_obj[i][p] = o;
+    }
+}
+
+/* The z bucket of one record: a WINDOW's `first` IS it, and every other kind
+ * addresses the bank with that field, so it rides the bottom bucket. */
+static int comp_bucket(const clk_comp_t *c)
+{
+    return (c->kind == CLK_KIND_WINDOW) ? (int)c->first : 0;
+}
+
+/* Create the widgets of ONE bucket, in record order. clock_view_init calls this
+ * at the point in the sibling chain that puts the tile UNDER the live layer the
+ * bake named — the classic path's only notion of z-order is creation order, so
+ * the bucket has to be honoured HERE and not just in the L4 job list, or the two
+ * paths disagree about who covers whom. Already-created records are skipped, so
+ * a bucket nobody asked for is not lost: the caller drains the rest afterwards. */
+static void complications_create_bucket(const orb_theme_geo_t *g, int bucket)
+{
+    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
+        const clk_comp_t *c = &g->comps[i];
+        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
+        if (s_comp_obj[i][0]) continue;                     /* created already */
+        if (comp_bucket(c) != bucket) continue;
+        comp_create_slots(g, i);
+    }
+}
+
 static void complications_create(void)
 {
     const orb_theme_geo_t *g = orb_theme_geo();
     memset(s_comp_obj,   0,    sizeof s_comp_obj);
     memset(s_comp_frame, 0xFF, sizeof s_comp_frame);      /* -1: nothing drawn yet */
-    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
-        const clk_comp_t *c = &g->comps[i];
-        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
-        int slots = 0;
-        if      (c->kind == CLK_KIND_WINDOW) slots = 1;
-        else if (c->kind == CLK_KIND_STRIP)  slots = comp_strip_positions(c) + 2;
-        for (int p = 0; p < slots && p < CLK_COMP_SLOTS; p++) {
-            lv_obj_t *o = lv_image_create(s_scr);
-            lv_obj_set_align(o, LV_ALIGN_TOP_LEFT);
-            lv_obj_set_scrollable(o, false);
-            lv_image_set_blend_mode(o, map_blend(c->blend));
-            lv_obj_set_hidden(o, true);
-            s_comp_obj[i][p] = o;
-        }
-    }
+    complications_create_bucket(g, 0);
 }
 
 #if CLK_BG_DIRECT_PUSH
@@ -2099,25 +2176,33 @@ static void comp_jobs_overflow(void)
 {
     if (s_comp_jobs_warned) return;
     s_comp_jobs_warned = true;
-    ESP_LOGW(TAG, "complication blits exceed the %d-slot job list — later comps not drawn",
-             CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX);
+    ESP_LOGW(TAG, "complication/aux blits exceed the %d-slot job list — later rows not drawn",
+             CLK_JOB_MAX);
 }
 
-/* One paint ctx per currently-drawn slot, front of the job list. Every comp
- * blit is static (ang == 0) — the hook's cheapest path — and the ctxs rebuild
- * each commit from s_comp_frame, exactly how the hands stay honest between
- * the two paths. A bank row without pixels (w or h 0) is dropped inside
- * paint_ctx_init's drawable test, matching the reader's rule. */
-static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
+/* One paint ctx per currently-drawn slot of ONE z bucket, in record order.
+ * Every comp blit is static (ang == 0) — the hook's cheapest path — and the
+ * ctxs rebuild each commit from s_comp_frame, exactly how the hands stay honest
+ * between the two paths. A bank row without pixels (w or h 0) is dropped inside
+ * paint_ctx_init's drawable test, matching the reader's rule.
+ *
+ * A WINDOW's `first` IS the bucket: the KINDS slot whose live layer this tile
+ * belongs under (0 = below every live layer, the case for every theme baked
+ * before a sub-dial ever hosted a window, and the reason 0 needs no plumbing).
+ * A STRIP's `first` is its bank index, so a strip cannot be bucketed and rides
+ * bucket 0 — the only place any strip has ever been baked to sit. */
+static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
+                          int bucket)
 {
     for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
         const clk_comp_t *c = &g->comps[i];
         if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
 
         if (c->kind == CLK_KIND_WINDOW) {
+            if ((int)c->first != bucket) continue;
             const int32_t f = s_comp_frame[i][0];
             if (f < 0) continue;
-            if (*nj >= CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX) { comp_jobs_overflow(); return; }
+            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
             const clk_sprite_t spr = {
                 .w = c->w, .h = c->h,
                 .pivotx = 0, .pivoty = 0,
@@ -2128,7 +2213,7 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
             if (paint_ctx_init(&jc[*nj], &spr, 0, CLK_ROLE_COMP)) (*nj)++;
             continue;
         }
-        if (c->kind != CLK_KIND_STRIP) continue;
+        if (c->kind != CLK_KIND_STRIP || bucket != 0) continue;
 
         const int npos = comp_strip_positions(c);
         for (int p = 0; p < npos + 2 && p < CLK_COMP_SLOTS; p++) {
@@ -2143,7 +2228,7 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
             if (bidx >= g->n_bank) continue;
             const clk_sprite_t *b = &g->bank[bidx];
             if (p > npos) x = c->x + (int32_t)c->w - (int32_t)b->w;
-            if (*nj >= CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX) { comp_jobs_overflow(); return; }
+            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
             const clk_sprite_t spr = {
                 .w = b->w, .h = b->h,
                 .pivotx = 0, .pivoty = 0,
@@ -2155,7 +2240,209 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
         }
     }
 }
+
+/* One ctx per pointer currently showing an angle, appended where the commit
+ * loop put the block: rotated, so the hook's transform path — the same one the
+ * hands pay for, and why an unchanged pointer is not in the list at all. */
+static void aux_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
+{
+    for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
+        if (s_aux_ang_10[i] == INT32_MIN) continue;       /* nothing drawn */
+        if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
+        if (paint_ctx_init(&jc[*nj], &g->aux[i].spr, s_aux_ang_10[i], CLK_ROLE_AUX))
+            (*nj)++;
+    }
+}
 #endif /* CLK_BG_DIRECT_PUSH */
+
+/* ---- aux hands: the sub-dial pointers a theme's style declares -------------
+ *
+ * One clk_aux_t row is a sprite plus how it is driven: the value named by `src`
+ * turns it through `span` tenths of a degree from `zero`, once across the domain
+ * value_max wide. The five compiled-in slots cannot carry them — a sub-dial
+ * pointer is not the dial's hour hand, and the clock cannot grow a compiled-in
+ * count for a theme that arrives on a card — and the kit's geometry mounts each
+ * one on its OWN sub-dial's centre, which is why the row owns its pivot/centre
+ * pair and its driver reads the same struct tm compose_now already sampled. The
+ * value comes from comp_value(), so a date ring and the date WINDOW can never
+ * disagree about what day it is.
+ *
+ * A shadowed pointer is TWO rows: the hand, then its blur/offset twin flagged
+ * CLK_FLAG_AUX_SHADOW (tools/bake_clock.py lays them down adjacent, hand first,
+ * and tools/theme_schema.py packs that pair). The twin owns pixels and a centre
+ * (the hand's, moved by the light vector) and no input of its own — the tick
+ * gives it the row before it's angle — so it can never come loose from the
+ * pixels it exists to darken. The bake packed it with the SAME pivot as its
+ * hand, which is what keeps the light direction fixed while the pointer sweeps.
+ *
+ * z-order: the block rides the stack above the last live static (a pointer
+ * belongs on top of the plate it points at) and below the dial's own hands,
+ * which is the kit's own reading — the date pointer is z=1, the hour z=2.
+ * s_aux_at is that order index, computed once per view in clock_view_init and
+ * honoured by BOTH paint paths, because a row LVGL renders itself has to come
+ * out identical to a row the L4 hook paints. */
+
+/* Where the block joins clk_theme.order: the index of the last live static, so
+ * the pointers paint after it. -1 when the theme has no live static at all (both
+ * folded into the bank, or a plain classic dial), which puts the block at the
+ * front of the list — still above the bank, and below every hand. */
+static int aux_insert_at(void)
+{
+    int at = -1;
+    for (int oi = 0; oi < (int)clk_theme.order_n; ++oi) {
+        const int k = clk_theme.order[oi];
+        if (k < 3 || k > 4) continue;
+        if (clk_theme.matte_mask & (1u << k)) continue;   /* folded into the bg */
+        at = oi;
+    }
+    return at;
+}
+
+/* The value that turns a pointer, in thousandths of one unit: day 5 is 5000, and
+ * a sub-dial seconds hand at 30.4 s is 30400. aux_angle_10() divides by
+ * value_max, so the fraction has to reach that division or a sweep becomes a
+ * stutter — and CLK_FLAG_JUMP is the kit ASKING for the stutter, the mechanical
+ * cadence of a date ring that only moves at midnight anyway. */
+static bool aux_value_1000(const clk_aux_t *a, const struct tm *ti, time_t t,
+                           double frac, int64_t *out)
+{
+    int32_t v;
+    if (!comp_value(a->src, ti, t, &v)) return false;   /* no input on this orb */
+
+    int64_t v1000 = (int64_t)v * 1000;
+    if (!(a->flags & CLK_FLAG_JUMP)) {                  /* next finer field = sweep */
+        switch (a->src) {
+        case CLK_SRC_SECOND:  v1000 += (int64_t)(frac * 1000.0);        break;
+        case CLK_SRC_MINUTE:  v1000 += (int64_t)ti->tm_sec * 1000 / 60; break;
+        case CLK_SRC_HOUR12:
+        case CLK_SRC_HOUR24:  v1000 += (int64_t)ti->tm_min * 1000 / 60; break;
+        default:                                                        break;
+        }
+    }
+    if (!(a->flags & CLK_FLAG_WRAP)) {        /* WRAP is the ring that keeps going */
+        const int64_t lo = (int64_t)a->value_min * 1000;
+        const int64_t hi = (int64_t)a->value_max * 1000;
+        if (v1000 < lo) v1000 = lo;
+        if (v1000 > hi) v1000 = hi;
+    }
+    *out = v1000;
+    return true;
+}
+
+/* ang = zero + value * span / value_max, in tenths of a degree — the formula
+ * tools/theme_schema.py states on the span field and the bake laid the ring out
+ * against. Half-up, not truncated: the bake placed day 5 at 58.1 degrees and a
+ * truncated read parks the pointer a tenth off the mark the art was drawn to. */
+static int32_t aux_angle_10(const clk_aux_t *a, int64_t v1000)
+{
+    const int64_t den = (int64_t)a->value_max * 1000;
+    const int64_t num = (int64_t)a->zero * den + v1000 * (int64_t)a->span;
+    int64_t ang = (num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den);
+    ang %= 3600;
+    if (ang < 0) ang += 3600;
+    return (int32_t)ang;
+}
+
+/* Widgets for every row the theme ships, twin before hand so a shadow goes down
+ * directly under its own pointer. make_layer() is the helper the five slots use,
+ * so the pivot/centre contract, the blend mapping, and the nearest-neighbour
+ * rotation are the same code here — the two paths cannot disagree about a layer
+ * they were not both built from. Called from clock_view_init at the order point
+ * s_aux_at marks, which is what puts the block above its plate. */
+static void aux_create(void)
+{
+    const orb_theme_geo_t *g = orb_theme_geo();
+    uint16_t n = g->n_aux; if (n > CLK_AUX_MAX) n = CLK_AUX_MAX;
+    for (uint16_t i = 0; i < n; i++) {
+        if (g->aux[i].flags & CLK_FLAG_AUX_SHADOW) continue;   /* with its hand */
+        if (i + 1 < n && (g->aux[i + 1].flags & CLK_FLAG_AUX_SHADOW))
+            s_aux_obj[i + 1] = make_layer(&g->aux[i + 1].spr, &s_aux_dsc[i + 1]);
+        s_aux_obj[i] = make_layer(&g->aux[i].spr, &s_aux_dsc[i]);
+    }
+}
+
+/* The per-tick pass. A pointer dirties pixels only when its angle actually
+ * moved, so a date hand costs one integer compare a tick until midnight, and a
+ * theme with no rows costs one loop exit. A row the reader hid (an unknown src
+ * or kind, a sprite with no size) and a row whose value this orb cannot supply
+ * are both INT32_MIN: no job, no widget, one log line each. */
+static void aux_update(const struct tm *ti, time_t t, double frac)
+{
+    const orb_theme_geo_t *g = orb_theme_geo();
+    uint16_t n = g->n_aux; if (n > CLK_AUX_MAX) n = CLK_AUX_MAX;
+    for (uint16_t i = 0; i < n; i++) {
+        const clk_aux_t *a = &g->aux[i];
+        int32_t a_new;
+        if (a->flags & CLK_FLAG_AUX_SHADOW) {
+            a_new = (i > 0) ? s_aux_ang_10[i - 1] : INT32_MIN;   /* follow the hand */
+        } else if (!a->spr.show) {
+            a_new = INT32_MIN;
+        } else {
+            int64_t v1000;
+            if (!aux_value_1000(a, ti, t, frac, &v1000)) {
+                a_new = INT32_MIN;
+                if (!(s_aux_logged & (1u << i))) {
+                    s_aux_logged |= 1u << i;
+                    ESP_LOGW(TAG, "aux %" PRIu32 ": source %u has no input on this "
+                                  "device — pointer not drawn", (uint32_t)i,
+                             (unsigned)a->src);
+                }
+            } else {
+                a_new = aux_angle_10(a, v1000);
+            }
+        }
+        if (a_new == s_aux_ang_10[i]) continue;               /* nothing moved */
+
+        /* The wedge to rebuild: where the pointer was and where it is going,
+         * about the point the device pins its pivot. Same discipline as
+         * apply_angles() — under L4 the commit hook owns those rows. */
+        const int32_t prev = s_aux_ang_10[i];
+        if (s_aux_obj[i]) {
+            lv_area_t u;
+            bool have = false;
+            if (prev != INT32_MIN) {
+                swept_box(&a->spr, prev, &u); have = true;
+                if (a_new != INT32_MIN) {
+                    lv_area_t nn; swept_box(&a->spr, a_new, &nn);
+                    area_union(&u, &nn);
+                }
+            } else if (a_new != INT32_MIN) {
+                swept_box(&a->spr, a_new, &u); have = true;
+            }
+            if (have) {
+                if (u.x1 < 0) u.x1 = 0;
+                if (u.y1 < 0) u.y1 = 0;
+                if (u.x2 > CLK_SCR_W - 1) u.x2 = CLK_SCR_W - 1;
+                if (u.y2 > CLK_SCR_H - 1) u.y2 = CLK_SCR_H - 1;
+#if CLK_BG_DIRECT_PUSH
+                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+                else
+#endif
+                    lv_obj_invalidate_area(s_scr, &u);
+            }
+        }
+        if (s_aux_obj[i]) {
+            /* Same discipline as apply_angles(): a rotation setter invalidates
+             * the FULL transformed box of both poses, which is the 36-48 ms a
+             * rotating layer used to cost every tick. Under L4 the hook owns the
+             * rows we just marked, so the setter runs with invalidation off; the
+             * first pose ever needs LVGL's own render because nothing has ever
+             * painted these pixels. */
+            lv_display_t *disp = lv_obj_get_display(s_scr);
+            if (a_new == INT32_MIN) {
+                lv_obj_set_hidden(s_aux_obj[i], true);
+            } else if (prev == INT32_MIN) {
+                lv_obj_set_hidden(s_aux_obj[i], false);
+                lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
+            } else {
+                lv_display_enable_invalidation(disp, false);
+                lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
+                lv_display_enable_invalidation(disp, true);
+            }
+        }
+        s_aux_ang_10[i] = a_new;
+    }
+}
 
 static void compose_now(void)
 {
@@ -2209,6 +2496,12 @@ static void compose_now(void)
      * selected frame actually changed dirty their rows (see the block above
      * compose_now). A theme with no complications costs one counter here. */
     comps_update(&ti, t);
+
+    /* Then the sub-dial pointers, off the SAME reading: a date ring and the date
+     * window are two views of one tm_mday, and the tick that moved one has moved
+     * the other. frac is the wall fraction hand_angles swept against, which is
+     * what lets a sub-dial second hand sweep too instead of stamping 6 degrees. */
+    aux_update(&ti, t, frac);
 }
 
 /* Per-second throughput report while the clock is live: how many composited
@@ -2266,14 +2559,15 @@ static void report_fps_if_due(void)
      * carriage's wants those static passes memoized per row; a carriage sweep
      * far dearer per blend is paying for scattered inverse-map fetches out of
      * PSRAM and wants its texel rows staged in internal RAM. */
-    ESP_LOGI(TAG, "  blend/s by layer: hr %u/%llu ms min %u/%llu sec %u/%llu dial %u/%llu cw %u/%llu glass %u/%llu comp %u/%llu",
+    ESP_LOGI(TAG, "  blend/s by layer: hr %u/%llu min %u/%llu sec %u/%llu dial %u/%llu cw %u/%llu glass %u/%llu comp %u/%llu aux %u/%llu",
              (unsigned)drb[0], (unsigned long long)(dru[0] / 1000),
              (unsigned)drb[1], (unsigned long long)(dru[1] / 1000),
              (unsigned)drb[2], (unsigned long long)(dru[2] / 1000),
              (unsigned)drb[3], (unsigned long long)(dru[3] / 1000),
              (unsigned)drb[4], (unsigned long long)(dru[4] / 1000),
              (unsigned)drb[5], (unsigned long long)(dru[5] / 1000),
-             (unsigned)drb[6], (unsigned long long)(dru[6] / 1000));
+             (unsigned)drb[6], (unsigned long long)(dru[6] / 1000),
+             (unsigned)drb[7], (unsigned long long)(dru[7] / 1000));
 #if DISPLAY_BENCH
     /* Proof the synthetic ink is really on the glass: ink px/s must read
      * blocks x 3600 x fps, and the CAD bands/px fields must not collapse. */
@@ -2485,13 +2779,18 @@ esp_err_t clock_view_init(void)
      * otherwise a rebuilt view would skip the re-pose as "unchanged". */
     for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
 
-    /* Complication widgets, created BEFORE the hand/layer loop below so the
-     * classic path's sibling order is plate -> comp tiles -> S2 H2 S1 H1 S0 H0
-     * -> glass: the tile a value selects sits under the live dial frame, as
-     * the bake's runtime-composite policy requires. No-op for every theme
-     * that ships no complications (the compiled-in pair and every pre-calendar
-     * container both report n_comps == 0). */
+    /* Complication widgets, bucket 0 first: created BEFORE the hand/layer loop
+     * below so the classic path's sibling order is plate -> comp tiles -> S2 H2
+     * S1 H1 S0 H0 -> glass — the tile a value selects sits under the live dial
+     * frame, as the bake's runtime-composite policy requires. The tiles with a
+     * bucket (a hosted window: the moon under its sub-dial's plate) are created
+     * INSIDE that loop, at the point that puts them under the layer the bake
+     * named, because creation order is the only z this path has. No-op for every
+     * theme that ships no complications (the compiled-in pair and every
+     * pre-calendar container both report n_comps == 0). */
     complications_create();
+    const orb_theme_geo_t *geo = orb_theme_geo();
+    s_aux_at = aux_insert_at();
 
     /* Each shadow goes down immediately before its OWN hand, walking the
      * theme's back-to-front order, so the z-stack is
@@ -2504,6 +2803,7 @@ esp_err_t clock_view_init(void)
      * that reads as a smudge on a hand the theme orders below, and it is the
      * one place this port diverges from it on purpose.)
      * Statics (3,4) are the face, not hands: they cast no shadow. */
+    bool aux_built = false;
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
@@ -2512,11 +2812,29 @@ esp_err_t clock_view_init(void)
          * object here would paint a SECOND copy over them. The bake also ships
          * the sprite blank, so this is the belt to that pair of braces -- it
          * is what keeps a half-swapped bin+header pair from double-blending. */
-        if (clk_theme.matte_mask & (1u << k)) continue;
+        if (clk_theme.matte_mask & (1u << k)) {
+            if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
+            continue;
+        }
+        complications_create_bucket(geo, k);      /* the tiles under layer k */
         if (k <= 2 && clk_theme.shadow_on)
             s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k]);
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
+        if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
     }
+    if (!aux_built) aux_create();                 /* no live static: ride the bank */
+    /* What the dial actually built for the sub-dials, in the line the owner reads
+     * after a re-bake: the count the theme declared, and the order position the
+     * block joined. A row with an src this build cannot drive is reported by
+     * aux_update the first time it tries, and shows no blends/s here either. */
+    if (geo->n_aux)
+        ESP_LOGI(TAG, "aux: %u sub-dial pointer row%s above order[%d]",
+                 (unsigned)geo->n_aux, (geo->n_aux == 1) ? "" : "s", s_aux_at);
+    /* Any bucket whose layer never got an object (hidden, or folded under a
+     * --matte force) lands above the layers that do exist, which is still the
+     * plate's own position in the kit's stack and better than never drawing the
+     * window at all. */
+    for (int b = 1; b < 5; b++) complications_create_bucket(geo, b);
 
     /* Glass / hub cap last, on top of everything. */
     s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc);

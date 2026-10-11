@@ -193,6 +193,44 @@ def _reach_r(mask):
     return float(np.hypot(xs - CX, ys - CY).max())
 
 
+def _under_layers(order, manifest, merged):
+    """comp id -> the KINDS slot its plate must stay UNDER.
+
+    The kit says where a complication sits — `drawOrder` lists the c5 moon in a
+    complications block placed between the dial and the c4 plate — and that is
+    the ONLY thing that decides whether a window tile is visible at all: a tile
+    baked under the plate it belongs to is bare art the plate paints over, which
+    is how this kit's moon vanished the first time it loaded. The bake cannot
+    make that call (it sees a manifest and a tiles folder, not the layer stack),
+    so the verdict is written onto the manifest entries themselves here, where
+    both the drawOrder and this script's own merge decision are in hand.
+
+    Two buckets, and only one of them is new. 4 = under static2, the sub-dial
+    plates: for a comp whose host chain ends at a subdial that stayed its own
+    live layer. Everything else stays 0, "below every live layer", which is what
+    every bake has always emitted for a dial-hosted window — including the
+    weekday/month apertures of THIS kit. 3 (under static1) is a bucket the wire
+    can carry and no producer writes: moving a dial-hosted tile above the
+    carriage would be a second, unrelated behaviour change, and the drawOrder
+    does not actually rank the carriage against those apertures.
+    """
+    comps = (manifest.get("layout") or {}).get("comps") or []
+    host_of = {c.get("id"): c.get("host", "dial") for c in comps}
+    # The sub-dial comp ids, but only while their plates stayed a live layer:
+    # merged into the dial, static2 is not there to sit under.
+    sub_ids = ({d.get("id") for d in order if d.get("layer") == "subdial"}
+               if not merged else set())
+    out = {}
+    for c in comps:
+        host, depth = c.get("host", "dial"), 0
+        while host in host_of and depth < 8:      # c5 -> c4 -> "dial"
+            if host in sub_ids:
+                break
+            host, depth = host_of.get(host, "dial"), depth + 1
+        out[c.get("id")] = 4 if host in sub_ids else 0
+    return out
+
+
 def _static_run(order):
     """Consecutive static layers from the kit drawOrder, bottom-up.
 
@@ -324,10 +362,35 @@ def main():
         print("  no tourbillon/ in this kit: carriage off, second-hand slot plain")
 
     # ---- hands + their shadows --------------------------------------------
+    # Which hand rides the aux table is the manifest's `mount`, not its
+    # `kind`: watch-engine's SUBKIND reuses the words hour/second for
+    # sub-dial pointers, and marks the three dial hands 'centre-<kind>' while
+    # a pointer carries its sub-dial's comp id. The kind word alone cannot
+    # tell them apart, and dropping a pointer on the floor is how this kit's
+    # date hand shipped absent for a whole round of flashes. value_max is one
+    # full turn of the ring (day d sits at d*360/value_max); the kit's own
+    # date art pins that reading — 31 at the top, 5 at 58 deg.
+    _AUX_KINDS = {                # vendor word -> src, value_min, value_max, snap
+        "date":   ("date",    1, 31, True),
+        "day":    ("weekday", 0,  7, True),
+        "month":  ("month",   0, 12, True),
+        "hour":   ("hour12",  0, 12, False),
+        "minute": ("minute",  0, 60, False),
+        "second": ("second",  0, 60, False),
+    }
     style_hands, shadow_on = {}, False
+    aux_hands = []
     for h in manifest.get("hands", []):
         kind = h.get("kind")
-        if kind not in ("hour", "minute", "second"):
+        centre = str(h.get("mount", "centre")).startswith("centre")
+        if kind not in ("hour", "minute", "second") or not centre:
+            if kind is None:
+                continue                        # a fixture entry, not a hand
+            if kind not in _AUX_KINDS:
+                sys.exit("hand kind %r is neither a dial hand nor a drivable aux "
+                         "kind (%s) — refusing to drop it silently"
+                         % (kind, ",".join(sorted(_AUX_KINDS))))
+            aux_hands.append(h)
             continue
         hx, hy = h.get("pivot", [CX, CY])
         # The manifest's OWN per-hand centre, not CX,CY. The device pins a
@@ -372,6 +435,49 @@ def main():
                   f"{rec['shadowDy']})")
         style_hands[kind] = rec
 
+    # ---- aux hands: sub-dial pointers, packed into the clk_aux_t table ----
+    # One entry per comp-mounted pointer, placed exactly like a dial hand
+    # (pivot pinned onto the manifest's centre, which for these is the
+    # SUB-DIAL's centre) and driven at runtime by the value in src. kind 0 =
+    # the rotating hand the driver implements; the wire already carries the
+    # retrograde and indexed-pointer kinds the vendor has not drawn yet.
+    aux_recs = []
+    for i, h in enumerate(aux_hands):
+        akind, (asrc, vmin, vmax, jump) = h["kind"], _AUX_KINDS[h["kind"]]
+        hx, hy = h.get("pivot", [CX, CY])
+        mcx, mcy = h.get("centre") or [CX, CY]
+        mcx, mcy = int(round(mcx)), int(round(mcy))
+        mount = str(h.get("mount", ""))
+        atag = int(mount[1:]) if mount[1:].isdigit() else 0
+        hand = _placed(K, h["file"], hx, hy, mcx, mcy)
+        hand.save(f"{theme}/clock_aux_{i}.png")
+        rec = {"file": f"clock_aux_{i}.png", "tag": atag, "src": asrc, "kind": 0,
+               "host": atag, "zero": int(round(float(h.get("zeroRotationDeg", 0)) * 10)),
+               "span": 3600, "valueMin": vmin, "valueMax": vmax, "jump": jump,
+               "show": bool((_al(hand) > 0).any()),
+               "pivotX": mcx, "pivotY": mcy, "centerX": mcx, "centerY": mcy,
+               "blend": 0}
+        sh = h.get("shadow")
+        if sh and sh.get("file") and os.path.exists(f"{K}/{sh['file']}"):
+            sx, sy = sh.get("pivot", [CX, CY])
+            ox, oy = sh.get("offsetPx", [0, 0])
+            mx, my = sx - hx, sy - hy        # the blur margin, as for a dial hand
+            if abs(mx - round(mx)) > 0.02 or abs(my - round(my)) > 0.02:
+                sys.exit(f"aux {i} ({h['kind']}): shadow pivot offset "
+                         f"({mx:+.3f},{my:+.3f}) is not integral — the shadow "
+                         f"does not share the hand's rotation frame")
+            _placed(K, sh["file"], sx, sy, mcx, mcy).save(
+                f"{theme}/clock_aux_{i}_shadow.png")
+            rec["shadowFile"] = f"clock_aux_{i}_shadow.png"
+            rec["shadowPivotX"], rec["shadowPivotY"] = int(round(sx)), int(round(sy))
+            rec["shadowDx"], rec["shadowDy"] = int(round(ox)), int(round(oy))
+        aux_recs.append(rec)
+        print("  aux {:d} {:6s} src={:8s} tag={:d} host={} pivot=({},{}) centre=({},{}) "
+              "value {}..{} zero={:+.0f}deg{}".format(
+                  i, h["kind"], asrc, atag, mount or "-", int(hx), int(hy),
+                  mcx, mcy, vmin, vmax, float(h.get("zeroRotationDeg", 0)),
+                  " jump" if jump else ""))
+
     # ---- the fold decision: which bezel px no mover can ever reach --------
     # (name, image, pivot, centre) for every layer that stays live AND rotates.
     # A mover's reachable set is the annulus its own ink traces about the point
@@ -397,6 +503,20 @@ def main():
         sp = f"{theme}/clock_shadow_{k}.png"
         if os.path.exists(sp):
             movers.append((f"{k}-shadow", Image.open(sp), (hcx, hcy),
+                           (hcx + rec.get("shadowDx", 0),
+                            hcy + rec.get("shadowDy", 0))))
+    for rec in aux_recs:
+        # A sub-dial pointer is a mover too: same annulus rule about its own
+        # centre. It reaches nowhere near the rim on this kit, but a future
+        # kit's long retrograde sweep must not be able to fold a bezel under it.
+        if not rec["show"]:
+            continue
+        hcx, hcy = rec["centerX"], rec["centerY"]
+        movers.append((f"aux{rec['tag']}-{rec['src']}",
+                       Image.open(f"{theme}/{rec['file']}"), (hcx, hcy), (hcx, hcy)))
+        if rec.get("shadowFile"):
+            movers.append((f"aux{rec['tag']}-{rec['src']}-shadow",
+                           Image.open(f"{theme}/{rec['shadowFile']}"), (hcx, hcy),
                            (hcx + rec.get("shadowDx", 0),
                             hcy + rec.get("shadowDy", 0))))
     swept = np.zeros((SCREEN, SCREEN), dtype=bool)
@@ -530,6 +650,14 @@ def main():
     style = {"hands": {"order": kind_order, **base},
              "secondSweep": not tick, "secondRailway": False,
              "textOverHands": False, "tickRate": 1 if tick else fps}
+    # The sub-dial pointers travel in the style, not as extra hand slots: five
+    # slots is a compiled-in constant (clk_theme.hand[5]) and a pointer belongs
+    # to a sub-dial, not to the dial. bake_clock.bake_aux() packs each into one
+    # clk_aux_t row (sprite + how it is driven) and clock_view.c drives it from
+    # the wall-clock value named by `src`. Empty for every classic kit, which is
+    # what keeps those bakes byte-for-byte what they were.
+    if aux_recs:
+        style["aux"] = aux_recs
     json.dump({"name": os.path.basename(os.path.abspath(outdir))},
               open(f"{theme}/theme.json", "w"))
     json.dump(style, open(f"{theme}/clock_style.json", "w"), indent=1)
@@ -544,7 +672,18 @@ def main():
     # own tile filenames. A kit with no complications/ is not an error — a classic
     # movement ships none, and the bake then emits the plain four-count blob.
     if os.path.exists(f"{K}/manifest.json"):
-        shutil.copy2(f"{K}/manifest.json", f"{theme}/manifest.json")
+        # Copied with one addition: each layout.comps entry gains `underLayer`,
+        # the KINDS slot its plate must stay under (see _under_layers). The
+        # bake's window records otherwise have no way to say "this tile belongs
+        # behind the sub-dial's own arch", and the tile then draws over it.
+        m = json.load(open(f"{K}/manifest.json"))
+        buckets = _under_layers(order, m, merged)
+        for c in ((m.get("layout") or {}).get("comps") or []):
+            c["underLayer"] = buckets.get(c.get("id"), 3)
+        json.dump(m, open(f"{theme}/manifest.json", "w"), indent=1)
+        if aux_hands:
+            print("  aux hands: {} sub-dial pointer{} -> clk_aux_t".format(
+                len(aux_hands), "s" if len(aux_hands) > 1 else ""))
     comp_src = f"{K}/complications"
     if os.path.isdir(comp_src):
         shutil.copytree(comp_src, f"{theme}/complications", dirs_exist_ok=True)

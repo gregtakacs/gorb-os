@@ -27,6 +27,78 @@ import bake_clock as bc
 MOON_NEW_MOON_S = 947182440
 MOON_SYNODIC_S  = 2551443
 
+# ---- the aux driver's expected behaviour, computed two ways ----------------
+# aux_expect restates the shipping formula on the same x1000 integer scale the
+# C uses, so it pins the exact tenth the dial must land on. aux_expect_deg
+# instead asks the ring's own GEOMETRY, in float degrees — where the value's
+# position along the sweep says its pointer points — and the integer path is
+# allowed only to round relative to that. A wrong divisor, a dropped span, or a
+# clamp applied to the wrong end shows up in the second one immediately, and
+# the first catches the off-by-one-tenth mistakes that read as bad art.
+def _aux_base(src, tmv):
+    return {"weekday": (tmv["wd"] + 6) % 7, "month": tmv["mon"],
+            "date": tmv["mday"], "hour12": tmv["hour"] % 12,
+            "hour24": tmv["hour"], "minute": tmv["min"],
+            "second": tmv["sec"]}[src]
+
+
+def _aux_frac_units(src, tmv, jump, frac):
+    """The fraction of one value unit the sweep adds, in value units (float)."""
+    if jump:
+        return 0.0
+    if src == "second":
+        return frac
+    if src == "minute":
+        return tmv["sec"] / 60.0
+    if src in ("hour12", "hour24"):
+        return tmv["min"] / 60.0
+    return 0.0
+
+
+def _aux_frac_thousandths(src, tmv, jump, frac):
+    """The same fraction as the dial builds it: thousandths of a value unit,
+    truncated the way the integer path truncates."""
+    if jump:
+        return 0
+    if src == "second":
+        return int(frac * 1000.0)
+    if src == "minute":
+        return tmv["sec"] * 1000 // 60
+    if src in ("hour12", "hour24"):
+        return tmv["min"] * 1000 // 60
+    return 0
+
+
+def _aux_clamped(v, jump, wrap, vmin, vmax):
+    if not wrap:
+        v = max(float(vmin), min(float(vmax), v))
+    return v
+
+
+def aux_expect(src, tmv, flags, vmin, vmax, zero, span, frac):
+    jump, wrap = bool(flags & ts.FLAG_JUMP), bool(flags & ts.FLAG_WRAP)
+    v1000 = _aux_base(src, tmv) * 1000 + _aux_frac_thousandths(src, tmv, jump, frac)
+    if not wrap:
+        v1000 = max(vmin * 1000, min(vmax * 1000, v1000))
+    den = vmax * 1000
+    num = zero * den + v1000 * span
+    ang = (num + den // 2) // den if num >= 0 else -(((-num) + den // 2) // den)
+    return ang % 3600
+
+
+def aux_expect_deg(src, tmv, flags, vmin, vmax, zero, span, frac):
+    jump, wrap = bool(flags & ts.FLAG_JUMP), bool(flags & ts.FLAG_WRAP)
+    v = _aux_clamped(_aux_base(src, tmv) + _aux_frac_units(src, tmv, jump, frac),
+                     jump, wrap, vmin, vmax)
+    return (zero + v * float(span) / float(vmax)) / 10.0
+
+
+def aux_tol_deg(span, vmax):
+    """Half a tenth of quantisation, plus one thousandth of a value unit — the
+    most the x1000 scale can hide, which on a narrow ring is wider than a tenth."""
+    return 0.05 + 0.001 * (span / 10.0 / vmax)
+
+
 def lift(src, sig):
     """One function's text, from its signature to the first column-0 }."""
     i = src.index(sig)
@@ -105,6 +177,44 @@ static void chk_novalue(uint8_t src)
         printf("FAIL src %u claimed an input it has no source for\\n",
                (unsigned)src); }
 }
+/* The aux driver, pinned the same way: value words from a tm the vector owns,
+ * angle from the shipped record's own zero/span/domain. chk_aux_deg is the
+ * independent expectation — the angle the ring's own geometry says that value
+ * sits at, in degrees, against which the integer path may only round. */
+static void chk_aux(const clk_aux_t *a, const struct tm *ti, time_t t,
+                    double frac, int32_t want)
+{
+    int64_t v1000 = 0;
+    if (!aux_value_1000(a, ti, t, frac, &v1000)) { fails++;
+        printf("FAIL aux src=%u declined a value it has a source for\\n",
+               (unsigned)a->src); return; }
+    const int32_t got = aux_angle_10(a, v1000);
+    if (got != want) { fails++;
+        printf("FAIL aux src=%u flags=%u zero=%d span=%d min=%u max=%u want=%d got=%d\\n",
+               (unsigned)a->src, (unsigned)a->flags, (int)a->zero, (int)a->span,
+               (unsigned)a->value_min, (unsigned)a->value_max, (int)want, (int)got); }
+}
+static void chk_aux_deg(const clk_aux_t *a, const struct tm *ti, time_t t,
+                        double frac, double want_deg, double tol)
+{
+    int64_t v1000 = 0;
+    if (!aux_value_1000(a, ti, t, frac, &v1000)) { fails++;
+        printf("FAIL aux deg src=%u declined\\n", (unsigned)a->src); return; }
+    double got = aux_angle_10(a, v1000) / 10.0;
+    double d = got - want_deg;
+    while (d > 180.0) d -= 360.0;
+    while (d < -180.0) d += 360.0;
+    if (d > tol || d < -tol) { fails++;
+        printf("FAIL aux deg src=%u want=%.4f got=%.4f tol=%.4f\\n",
+               (unsigned)a->src, want_deg, got, tol); }
+}
+static void chk_aux_none(const clk_aux_t *a, const struct tm *ti)
+{
+    int64_t v1000 = 0;
+    if (aux_value_1000(a, ti, 0, 0.0, &v1000)) { fails++;
+        printf("FAIL aux src=%u claimed an input it has none for\\n",
+               (unsigned)a->src); }
+}
 """
 
 # The eight single-token drifts that put a wrong tile on the glass. Each must
@@ -118,6 +228,17 @@ MUTATIONS = [
     ("out = (int32_t)(m / 86400);",  "out = (int32_t)(m / 86000);"),
     ("ti->tm_mon / 3 + 1",           "ti->tm_mon / 3"),
     ("buf[p] - '0'",                 "((buf[p] - '0') + 1)"),
+    # The aux driver: the rounding, the wrap, the two clamps, and the two
+    # sweeps. Each of these is a pointer a few tenths of a degree off the mark
+    # the kit painted, or parked on the wrong numeral — never an error message.
+    ("ang %= 3600;",                 "ang &= 3600 - 1;"),
+    ("(num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den)",
+     "num / den"),
+    ("if (v1000 > hi) v1000 = hi;",  ""),
+
+    ("ti->tm_sec * 1000 / 60",       "0"),
+    ("(int64_t)(frac * 1000.0)",     "0"),
+    ("!(a->flags & CLK_FLAG_JUMP)",  "1"),
 ]
 
 def build_body():
@@ -210,6 +331,83 @@ def build_body():
               "CLK_SRC_BATTERY", "CLK_SRC_POWER_RESERVE"):
         chk("chk_novalue(%s);" % s)
 
+    # ---- aux pointers: the sub-dial driver, value words and angle -------------
+    # Same contract as the windows, one story further: the value comes from the
+    # SAME comp_value (so a date ring cannot disagree with the date window), and
+    # the angle is theme_schema's documented ring formula — ang = zero +
+    # value*span/value_max, in tenths — which is what the bake laid the ring's
+    # numerals out against. Two expectations per vector: the exact tenths off a
+    # sign-aware integer restatement, and a float angle off the ring's own
+    # geometry, which the integer path may only round.
+    dom = {"date": (1, 31), "weekday": (0, 7), "month": (0, 12),
+           "hour12": (0, 12), "hour24": (0, 24), "minute": (0, 60),
+           "second": (0, 60)}
+    tms = [{"wd": 2, "mon": 4, "mday": 5,  "hour": 10, "min": 8,  "sec": 37},
+           {"wd": 0, "mon": 0, "mday": 1,  "hour": 0,  "min": 0,  "sec": 0},
+           {"wd": 6, "mon": 11, "mday": 31, "hour": 23, "min": 59, "sec": 59},
+           {"wd": 3, "mon": 6, "mday": 15, "hour": 12, "min": 30, "sec": 30},
+           {"wd": 5, "mon": 2, "mday": 35, "hour": 11, "min": 59, "sec": 59},
+           {"wd": 1, "mon": 8, "mday": 40, "hour": 13, "min": 45, "sec": 12}]
+    k = 0
+    for src in dom:
+        vmin, vmax = dom[src]
+        for jump in (False, True):
+            for zero, span in ((0, 3600), (900, 1800), (3599, 7200)):
+                for wrap in (False, True):
+                    for tmv in tms:
+                        flags = ((ts.FLAG_JUMP if jump else 0) |
+                                 (ts.FLAG_WRAP if wrap else 0))
+                        frac = ((tmv["sec"] % 60) / 60.0)      # the wall fraction
+                        ti = "tmx%d" % k
+                        decl("static const struct tm %s = { .tm_wday=%d, .tm_mon=%d,"
+                             " .tm_mday=%d, .tm_hour=%d, .tm_min=%d, .tm_sec=%d };"
+                             % (ti, tmv["wd"], tmv["mon"], tmv["mday"], tmv["hour"],
+                                tmv["min"], tmv["sec"]))
+                        ax = "ax%d" % k
+                        decl("static const clk_aux_t %s = { .src=%d, .kind=0, .host=4,"
+                             " .span=%d, .zero=%d, .value_min=%d, .value_max=%d,"
+                             " .flags=%d };"
+                             % (ax, ts.SOURCES.index(src), span, zero, vmin, vmax,
+                                flags))
+                        chk("chk_aux(&%s,&%s,0LL,%r,%d);"
+                            % (ax, ti, frac, aux_expect(src, tmv, flags, vmin, vmax,
+                                                        zero, span, frac)))
+                        chk("chk_aux_deg(&%s,&%s,0LL,%r,%r,%r);"
+                            % (ax, ti, frac,
+                               aux_expect_deg(src, tmv, flags, vmin, vmax, zero,
+                                              span, frac),
+                               aux_tol_deg(span, vmax)))
+                        k += 1
+
+    # The vendor's own reading, spelled out: the c4 date ring ships value 1..31
+    # over a full turn, so day 5 is 5*3600/31 = 581 tenths and day 31 comes back
+    # round to zero — the two numbers the kit's art pins (31 at the top, 5 at
+    # 58 degrees). Getting these wrong puts the date hand on the wrong numeral,
+    # which reads as bad art and never as an error.
+    decl("static const clk_aux_t date_ring = { .src=%d, .kind=0, .host=4,"
+         " .span=3600, .zero=0, .value_min=1, .value_max=31, .flags=%d };"
+         % (ts.SOURCES.index("date"), ts.FLAG_JUMP))
+    for mday, want in ((1, 116), (2, 232), (5, 581), (10, 1161), (15, 1742),
+                       (20, 2323), (25, 2903), (30, 3484), (31, 0), (0, 116),
+                       (35, 0)):
+        decl("static const struct tm dt%d = { .tm_mday=%d };" % (mday, mday))
+        chk("chk_aux(&date_ring,&dt%d,0LL,0.0,%d);" % (mday, want))
+    # A sub-dial second hand sweeps: 30.4 s on a 60-division ring is 182.4 deg.
+    decl("static const clk_aux_t sec_ring = { .src=%d, .kind=0, .host=4,"
+         " .span=3600, .zero=0, .value_min=0, .value_max=60, .flags=0 };"
+         % ts.SOURCES.index("second"))
+    decl("static const struct tm st30 = { .tm_sec=30 };")
+    chk("chk_aux(&sec_ring,&st30,0LL,0.4,1824);")
+    chk("chk_aux(&sec_ring,&st30,0LL,0.0,1800);")
+    # A row whose source this orb cannot read is hidden, not drawn at zero: a
+    # battery reserve on a wall-powered orb parks at 12 o'clock if the driver
+    # ever mistakes "no input" for "value 0".
+    decl("static const clk_aux_t reserve = { .src=%d, .kind=0, .host=4,"
+         " .span=2700, .zero=450, .value_min=0, .value_max=100, .flags=0 };"
+         % ts.SOURCES.index("battery"))
+    decl("static const struct tm tm0 = { 0 };")
+    chk("chk_aux_none(&reserve,&tm0);")
+
     n = sum(1 for l in lines if l.strip().startswith("chk_"))
     return "\n".join(lines) + "\n", n
 
@@ -235,9 +433,28 @@ def lifted_c(mutations=()):
         # caller. Lifting both separately would emit comp_iso_week twice.
         lift(cview, "static bool comp_year_leap("),
         lift(cview, "static bool comp_value("),
+        # The sub-dial driver, lifted from the same shipping file. It is pure
+        # arithmetic on the record and the tm, so the bench can hold it to the
+        # ring formula the bake packed against — a hand on the wrong numeral is
+        # the same class of failure as a window on the wrong tile.
+        lift(cview, "static bool aux_value_1000("),
+        lift(cview, "static int32_t aux_angle_10("),
     ])
     body, _ = build_body()
-    src = (C_PRE + m.group(0) + "\n" + mo.group(0) + "\n" + funcs + "\n" + C_HARNESS
+    # The record shape the driver reads. Lifted from the shipping headers rather
+    # than restated here: a field renamed on one side and not the other is the
+    # drift this bench exists to catch, and a copy would hide it.
+    spr = re.search(r"typedef struct \{[^{}]*\} clk_sprite_t;",
+                    open(os.path.join(ROOT, "assets", "clock_assets.h")).read())
+    auxt = re.search(r"typedef struct \{[^{}]*clk_sprite_t spr;[^{}]*\} clk_aux_t;",
+                     cheader)
+    flags = re.search(r"enum \{[^{}]*CLK_FLAG_UNDER_DIAL[^{}]*\};", cheader)
+    assert spr and auxt and flags, \
+        "clk_sprite_t / clk_aux_t / CLK_FLAG_* not found in the shipping " \
+        "headers — the aux driver's contract moved, update this bench too"
+
+    src = (C_PRE + m.group(0) + "\n" + flags.group(0) + "\n" + spr.group(0) + "\n"
+           + auxt.group(0) + "\n" + mo.group(0) + "\n" + funcs + "\n" + C_HARNESS
            + "int main(void)\n{\n" + body + "    return fails ? 1 : 0;\n}\n")
     for old, new in mutations:
         assert old in src, "mutation target vanished: %r" % old

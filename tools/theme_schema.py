@@ -101,6 +101,11 @@ FLAG_24H        = 1 << 4   # aux hand: hour value is 0..23, not 0..11
 FLAG_WRAP       = 1 << 5   # aux hand: past value_max, keep sweeping
 FLAG_BLINK      = 1 << 6   # comp: draw every other second (alarm/indicator)
 FLAG_DISABLED   = 1 << 7   # parsed, validated, deliberately not drawn
+FLAG_AUX_SHADOW = 1 << 8   # aux record: the blur/offset twin of the hand before
+                           # it with the same tag+src. The driver rotates it BY
+                           # THE HAND'S angle and gives it no input of its own,
+                           # so a value-driven layer above the plate still gets
+                           # its shadow without a second record's worth of state.
 
 # ---------------------------------------------------------------------------
 # Record layouts. (name, c-type) per word, in wire order. The C mirror reads the
@@ -135,7 +140,14 @@ COMP_FIELDS = (
     ("w", "u16"),             # window box / one glyph / one ring slot
     ("h", "u16"),
     ("count", "u16"),         # frames available across this value domain
-    ("first", "u16"),         # index into the bank (strip/ring/flare)
+    ("first", "u16"),         # index into the bank (strip/ring/flare); for a
+                              # WINDOW it is the z bucket: the KINDS slot whose
+                              # live layer this tile must stay UNDER, or 0 for
+                              # "below every live layer" — what every bake
+                              # before subdial-hosted windows emitted. A moon
+                              # hosted by a subdial ships first=4 so the plate
+                              # (static2) composites its arch over the disc and
+                              # the dial face (static1) cannot bury it.
     ("off", "u32"),           # window: blob offset of tile 0
     ("frame_bytes", "u32"),   # window: stride between consecutive tiles
     ("cx", "i16"), ("cy", "i16"),        # ring centre
@@ -162,8 +174,14 @@ AUX_EXTRA_FIELDS = (
     ("src", "u8"),            # SOURCES index: hour12, minute, battery, ...
     ("kind", "u8"),           # 0 rotating hand, 1 retrograde, 2 indexed pointer
     ("host", "u16"),          # 0 = main dial centre, else a comp tag
-    ("span", "i16"),          # tenths of a degree swept across the value range
-    ("zero", "i16"),          # tenths of a degree at value_min
+    ("span", "i16"),          # tenths of a degree for one full turn of the
+                              # value domain: ang = zero + value*span/value_max.
+                              # A date ring reads span 3600 / value_max 31, so
+                              # day 5 sits at 5*3600/31 = 581 tenths and day 31
+                              # returns to zero. The kit's own drawOrder note
+                              # ("value x 360deg + zeroRotationDeg") is this
+                              # formula in the vendor's words.
+    ("zero", "i16"),          # tenths of a degree at value 0
     ("value_min", "u16"),
     ("value_max", "u16"),
     ("flags", "u16"),
@@ -422,5 +440,21 @@ if __name__ == "__main__":
     assert strip_indices(7, 2, True, 10) == [0, 7]      # what "keep the alignment" means
     assert strip_indices(7, 2, False, 10) == [7]        # and what it means without it
     assert strip_indices(11, 1, False, 10) == [1]       # the box wins over the number
+
+    # The flag bits, against the header the firmware actually compiles. A bit
+    # added here and not there (or the reverse) means the bake sets a flag the
+    # dial reads as something else — a shadow that never draws, or a tile the
+    # reader thinks is disabled — with nothing printed on either side.
+    import os
+    import re
+    hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                       "main", "art", "orb_theme.h")
+    cflags = {n.lower(): 1 << int(v) for n, v in
+              re.findall(r"\bCLK_FLAG_(\w+)\s*=\s*1\s*<<\s*(\d+)", open(hdr).read())}
+    pyflags = {n[len("FLAG_"):].lower(): v for n, v in globals().items()
+               if n.startswith("FLAG_")}
+    assert cflags == pyflags, ("flag bits diverged from main/art/orb_theme.h: "
+                               "python %s vs C %s" % (pyflags, cflags))
+    assert len(SOURCES) == 17, "SOURCES grew; orb_theme.h's CLK_SRC__MAX assert must agree"
     print("theme_schema ok: %d sources, %d kinds, comp %d words, aux %d words, bank %d words"
           % (len(SOURCES), len(KINDS), words_of("comp"), words_of("aux"), words_of("bank")))

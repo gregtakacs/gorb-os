@@ -518,20 +518,24 @@ def build_live_stack(tdir, style, pivots, args, tourb_imgs):
     shadow_style = hands_style.get("shadow", {}) or {}
     shadow_on = bool(shadow_style.get("on", False))
     sdx = int(shadow_style.get("dx", 0)); sdy = int(shadow_style.get("dy", 0))
-    # ---- complication boxes: the device's LOWEST live layer, in the proof ----
-    # The paint pass prepends comp jobs to the L4 list so the dial's own frame
-    # art composites OVER every tile edge at runtime (the locked runtime-composite
-    # policy). If the dial were folded into the bank the tile would cover that
-    # frame instead of tucking under it — a real aperture overlaps its bezel by
-    # construction, so these layers are what makes matte_plan refuse the fold of
-    # static1/static2, with the violation count printed rather than a rule
-    # asserted. The whole tile box stands in for the tile's ink (worst case: an
-    # opaque frame). The box layers carry foldable=False: their pixels follow the
-    # wall clock, and folding one would freeze a single weekday into the bank.
+    # ---- complication boxes: where the kit says they sit -------------------
+    # The paint pass lays a tile down immediately BELOW the live layer named by
+    # its `first` (the z bucket prep took from the kit's own drawOrder), and the
+    # plate's own frame art composites OVER the tile edge at runtime (the locked
+    # runtime-composite policy). If that plate were folded into the bank the tile
+    # would cover the frame instead of tucking under it — a real aperture
+    # overlaps its bezel by construction — so the boxes ride the proof stack IN
+    # THAT POSITION and the violation count matte_plan prints is what refuses the
+    # fold. Putting every box at the bottom instead (as this did while only
+    # dial-hosted windows existed) proves the wrong stacking: the moon under the
+    # c4 plate proves nothing about the plate, and the fold then buries it. The
+    # whole tile box stands in for the tile's ink (worst case: an opaque frame).
+    # The box layers carry foldable=False: their pixels follow the wall clock,
+    # and folding one would freeze a single weekday into the bank.
     import numpy as np
     import theme_schema as _ts
     _cc, _, _ = bake_complications(tdir, Blob(), verbose=False)
-    live = []
+    boxes = {}
     for rec in _cc:
         if _ts.KINDS[rec["kind"]] not in ("window", "strip"):
             continue                                # ring/flare: validated, not painted
@@ -546,8 +550,11 @@ def build_live_stack(tdir, style, pivots, args, tourb_imgs):
         im = Image.fromarray(np.dstack([z, z, z, a]), mode="RGBA")
         L = _Layer("comp[%s]" % _ts.SOURCES[rec["src"]], [im], 0, 0, 0, False)
         L.foldable = False
-        live.append(L)
+        boxes.setdefault(int(rec["first"]), []).append(L)
+    live = list(boxes.pop(0, []))                   # below every live layer
     for k in order:
+        for L in boxes.pop(k, []):                  # directly under layer k
+            live.append(L)
         kind = KINDS[k]
         hs = hands_style.get(kind, {}) or {}
         if not bool(hs.get("show", False)):
@@ -575,6 +582,12 @@ def build_live_stack(tdir, style, pivots, args, tourb_imgs):
                 if sp:
                     live.append(_Layer(kind + "-shadow", sp, cx + sdx, cy + sdy,
                                        0, rotating))
+    # A bucket naming a layer that is not in the order at all (hidden, or one
+    # prep never emitted) still has a window that must draw, and the device puts
+    # it above every live layer — so the proof has to see it there too. Silently
+    # dropping the box is how a fold gets taken that buries a window.
+    for k in sorted(boxes):
+        live.extend(boxes[k])
     ov = load_rgba(tdir, "clock_overlay.png")
     if ov is not None:
         # The overlay ships with pivot == crop origin == its own canvas spot
@@ -1853,6 +1866,10 @@ def main():
 # picks for that value, so a wall-clock value and the art baked for it cannot drift
 # out of step; the kit ships these names, we do not trust its own listing order.
 _WEEKDAY_TILES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]   # value 0..6, Mon first
+# The moon styles the composer draws as a whole circle rather than a fan
+# (watch-engine.js ROUND_MOON). They must agree: the style decides the anchor
+# below, and a style this list forgets gets fanned and lands a radius high.
+_ROUND_MOON_STYLES = ("sphere", "graphic", "neon")
 _MONTH_TILES   = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]           # value 0..11
 
@@ -1903,6 +1920,10 @@ def bake_complications(tdir, blob, verbose=True):
     comps = (json.load(open(mpath)).get("layout") or {}).get("comps") or []
     if not comps:
         return [], [], []
+    # The aux table is NOT this function's: a sub-dial pointer is a sprite with
+    # a pivot, not a box of tiles, and it comes from the style prep wrote. This
+    # returns an empty middle list so the three-tuple the caller unpacks stays
+    # the same shape as the comp/bank tables it also hands pack_geom.
 
     dial_c = (SCREEN_W // 2, SCREEN_H // 2)
     centre = {}                                   # comp id -> (px, py) on the panel
@@ -1966,23 +1987,156 @@ def bake_complications(tdir, blob, verbose=True):
             _pack_window_tile(blob, im)
 
         rec = ts.blank("comp")
+        # For a WINDOW, `first` is not a bank index but the z bucket: the KINDS
+        # slot whose live layer this tile must stay UNDER (0 = below every live
+        # layer, what every bake emitted before a subdial ever hosted a window).
+        # The kit's own drawOrder decided it and prep wrote it into the manifest
+        # as `underLayer`, so the moon under the c4 plate gets 4 and the weekday
+        # window on the dial face gets 3. The paint pass honours it in
+        # comp_add_jobs; orb_theme.c's bank-range check covers only the kinds
+        # that address the bank, so a bucket never reads as a sprite index.
+        bucket = int(comp.get("underLayer", 0) or 0)
+        if not 0 <= bucket <= 4:
+            raise SystemExit("comp %s: underLayer %d is not a KINDS slot (0..4)"
+                             % (cid, bucket))
+        # ---- the anchor: the producer's own holeBox, not a guess -------------
+        # A fan moon's box is [x-a, y-a, x+a, y] (watch-engine.js holeBox for
+        # kind 'moon', and the tile exporter at its line 2058 that sized this
+        # very PNG): the resolved point is the middle of the tile's BOTTOM edge
+        # and the arc rises above it, because the fan's flat baseline is what
+        # sits on a sub-dial's arch line. Everything else -- a frame window, or
+        # one of the ROUND_MOON styles the composer paints as a whole circle --
+        # is centred on the point. Centring the fan (what this did) drops it
+        # h/2 low, and the perpetual calendar's moon then showed its top sliver
+        # under the arch while the guilloche filled the window: measured 318 vs
+        # the exporter's 304 for a=29. a is the authored fan radius and the tile
+        # is exactly 2a wide; h is a+2 (the exporter pads the foot), so h must
+        # not be used to place it or the answer drifts by that padding.
+        fan = (ctype == "moon"
+               and float(comp.get("rot", 0) or 0) == 0.0
+               and (comp.get("style") or "").strip().lower()
+                    not in _ROUND_MOON_STYLES)
         rec.update(tag=(int(cid[1:]) if cid[1:].isdigit() else 0),
                    kind=ts.kind_of("window"), src=src_idx,
-                   x=int(round(px - w / 2)), y=int(round(py - h / 2)),
-                   w=w, h=h, count=len(imgs), first=0, off=off0,
+                   x=int(round(px - w / 2)),
+                   y=int(round(py - (w / 2 if fan else h / 2))),
+                   w=w, h=h, count=len(imgs), first=bucket, off=off0,
                    frame_bytes=ts.window_bytes({"w": w, "h": h, "flags": 0}),
                    value_min=1 if src == "date" else 0, scale=16,
                    blend=0, show=1, flags=0, reserve=0)
         comp_recs.append(rec)
         if verbose:
-            print("  comp {:5s} {:8s} src={:10s} {}x{} @({},{}) {} tiles @{:+d}deg r{:.0f}"
-                  .format(cid, ctype, src, w, h, rec["x"], rec["y"],
-                          len(imgs), int(ang), dist))
+            print("  comp {:5s} {:8s} src={:10s} {}x{} @({},{}) {} tiles @{:+d}deg r{:.0f} "
+                  "{} under {}".format(cid, ctype, src, w, h, rec["x"], rec["y"],
+                                       len(imgs), int(ang), dist,
+                                       "baseline" if fan else "centred",
+                                       "the plate" if bucket == 4 else
+                                       "the dial" if bucket == 3 else "every live layer"))
 
     if len(comp_recs) > ts.CLK_COMP_MAX:
         raise SystemExit("%d complications exceed the dial's cap of %d"
                          % (len(comp_recs), ts.CLK_COMP_MAX))
     return comp_recs, aux_recs, bank_recs
+
+
+def bake_aux(tdir, style, blob, args, verbose=True):
+    """Pack the sub-dial pointers prep wrote into clk_aux_t rows.
+
+    prep_watch_kit placed every pointer on a full screen canvas with its pivot
+    already on its centre and left the (png, how-to-drive-it) pair in
+    clock_style.json's `aux` list; this turns each into one sprite in the art
+    bank plus the nine driving words the dial reads. The crop-to-ink that makes
+    a hand cheap makes a pointer cheap too, and it is the same emit_sprite call,
+    so a pointer costs exactly what a hand costs and no more.
+
+    A shadowed pointer is TWO rows: the hand, then its blur/offset twin flagged
+    FLAG_AUX_SHADOW. The twin carries no input of its own — the driver rotates
+    it by the row before it's angle, about its own centre offset by the light
+    vector — which is how the five baked hands already do it, and why one record
+    shape serves both.
+
+    Returns [] for a kit with no pointers, which is the overwhelmingly common
+    case and what keeps every bake that has never seen an aux hand emitting the
+    blob it emitted yesterday.
+    """
+    import theme_schema as ts
+    rows = []
+    for i, a in enumerate(style.get("aux") or []):
+        src_idx = ts.SOURCES.index(a["src"]) if a["src"] in ts.SOURCES else \
+            ts.source_of(a["src"])
+        img = load_rgba(tdir, a["file"])
+        if img is None:
+            raise SystemExit("aux %d: style names %s, absent from %s — re-run "
+                             "prep_watch_kit.py (the theme dir and its style must "
+                             "come from the same prep of the same kit)"
+                             % (i, a["file"], tdir))
+        px, py = int(a["pivotX"]), int(a["pivotY"])
+        cx, cy = int(a["centerX"]), int(a["centerY"])
+        show = bool(a.get("show", True))
+        blend = int(a.get("blend", 0))
+        flags = ts.FLAG_JUMP if a.get("jump") else 0
+        crop, ox, oy = crop_layer(img, args.pad)
+        rec = emit_sprite(blob, crop, ox, oy, px, py, cx, cy, blend, show)
+        rec = _aux_record(ts, rec, a, src_idx, flags)
+        rows.append(rec)
+        printed = "  aux {:<5d} {:8s} {}x{} @({},{}) pivot=({},{}) centre=({},{}) " \
+                  "value {}..{} zero={:+d} span={:+d}".format(
+                      i, a["src"], rec["w"], rec["h"], rec["offx"], rec["offy"],
+                      rec["pivotx"], rec["pivoty"], rec["centerx"], rec["centery"],
+                      rec["value_min"], rec["value_max"], rec["zero"], rec["span"])
+        sf = a.get("shadowFile")
+        if sf:
+            simg = load_rgba(tdir, sf)
+            if simg is None:
+                raise SystemExit("aux %d: style names %s, absent from %s" % (i, sf, tdir))
+            sdx, sdy = int(a.get("shadowDx", 0)), int(a.get("shadowDy", 0))
+            scrop, sox, soy = crop_layer(simg, args.pad)
+            srec = emit_sprite(blob, scrop, sox, soy, px, py,
+                               cx + sdx, cy + sdy, 0, show)
+            srec = _aux_record(ts, srec, a, src_idx, flags | ts.FLAG_AUX_SHADOW)
+            rows.append(srec)
+            printed += "  + shadow twin @({:+d},{:+d})".format(sdx, sdy)
+        if verbose:
+            print(printed)
+    if len(rows) > ts.CLK_AUX_MAX:
+        raise SystemExit("%d aux records exceed the dial's cap of %d"
+                         % (len(rows), ts.CLK_AUX_MAX))
+    return rows
+
+
+def _aux_record(ts, spr, a, src_idx, flags):
+    """The 15 sprite words emit_sprite built, widened to a full 24-word aux row."""
+    vmin, vmax = int(a.get("valueMin", 0)), int(a.get("valueMax", 0))
+    if vmax <= 0:
+        raise SystemExit("aux %s: value_max %d cannot divide a sweep" % (a["src"], vmax))
+    rec = ts.blank("aux")
+    rec.update(spr)
+    rec.update(tag=int(a.get("tag", 0)), src=src_idx, kind=int(a.get("kind", 0)),
+               host=int(a.get("host", 0)),
+               span=int(round(float(a.get("span", 3600)))),
+               zero=int(round(float(a.get("zero", 0)))),
+               value_min=vmin, value_max=vmax, flags=flags)
+    return rec
+
+
+def rebucket_comps(comps, matte_mask):
+    """Drop any window whose plate the bake folded into the background.
+
+    A WINDOW's `first` names the LIVE layer the tile must stay under. Once that
+    layer is matte-folded there is nothing left to composite over the tile, and
+    the device would be told to keep a tile under a layer it never paints. Zero
+    is the honest answer — below every live layer — and the return value is the
+    list of (source name, folded layer) pairs it changed, which is what the
+    caller prints beside the fold's own verdict: the fold is what changed it.
+    """
+    import theme_schema as ts
+    changed = []
+    for r in comps:
+        b = int(r["first"])
+        if b and (int(matte_mask) & (1 << b)):
+            changed.append((ts.SOURCES[r["src"]], KINDS[b]))
+            r["first"] = 0
+    return changed
 
 
 def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
@@ -2197,7 +2351,11 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         # first (so bytes(blob.buf) below carries them) and returns the records that
         # point at those offsets. A kit with no manifest/complications yields empty
         # tables, and pack_geom then emits the old four-count blob unchanged.
-        comps, auxs, banks = bake_complications(os.path.abspath(args.theme_dir), blob)
+        comps, _, banks = bake_complications(os.path.abspath(args.theme_dir), blob)
+        for src, layer in rebucket_comps(comps, matte_mask):
+            print("  comp src={} lost its plate: {} was folded, so the tile rides "
+                  "below every live layer".format(src, layer))
+        auxs = bake_aux(os.path.abspath(args.theme_dir), style, blob, args)
         geom   = _ot.pack_geom(scalars, hand_recs, shadow_recs, overlay,
                               list(tourb_recs or []), rects, first, delays, frames,
                               comps=comps, aux=auxs, bank=banks)

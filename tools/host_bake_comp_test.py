@@ -75,7 +75,11 @@ def build_kit(base):
              "shows": "month", "size": 1},
             {"id": "c4", "type": "subdial", "host": "dial", "angle": 180, "dist": 102,
              "size": 62, "scale": "date"},
-            {"id": "c5", "type": "moon", "host": "c4", "angle": 0, "dist": 2, "size": 29},
+            # underLayer is what prep_watch_kit writes from the kit's drawOrder;
+            # the two-host case is the whole point — the moon belongs under the
+            # c4 plate (bucket 4), the apertures on the dial face do not.
+            {"id": "c5", "type": "moon", "host": "c4", "angle": 0, "dist": 2,
+             "size": 29, "underLayer": 4},
         ]},
     }
     json.dump(manifest, open(os.path.join(theme, "manifest.json"), "w"))
@@ -86,7 +90,32 @@ def build_kit(base):
                  list(reversed(bc._MONTH_TILES)), 60, 30, (30, 20, 10, 255))
     _write_tiles(os.path.join(theme, "complications", "c5_moon"),
                  ["%02d" % i for i in range(30)], 56, 28, (5, 5, 5, 255))
+    # The sub-dial pointer prep emits: a hand and its blur/offset twin, each on
+    # a full canvas with its pivot already on the sub-dial's centre (233,335),
+    # which is what bake_aux's crop-to-ink then moves into the sprite's offx/offy.
+    _aux_pointer(os.path.join(theme, "clock_aux_0.png"), (200, 190, 40, 255))
+    _aux_pointer(os.path.join(theme, "clock_aux_0_shadow.png"), (0, 0, 0, 128))
     return theme
+
+
+def _aux_pointer(path, colour):
+    im = Image.new("RGBA", (bc.SCREEN_W, bc.SCREEN_H), (0, 0, 0, 0))
+    px = im.load()
+    for y in range(335 - 56, 335 + 14):                 # 56 above the pivot, 14 under
+        for x in range(233 - 3, 233 + 4):
+            px[x, y] = colour
+    im.save(path)
+
+
+# The style entry that pairs those two sprites with how to drive them, exactly
+# as prep_watch_kit writes it into clock_style.json's `aux` list.
+AUX_STYLE = {"aux": [{"file": "clock_aux_0.png", "tag": 4, "src": "date", "kind": 0,
+                     "host": 4, "zero": 0, "span": 3600, "valueMin": 1,
+                     "valueMax": 31, "jump": True, "show": True,
+                     "pivotX": 233, "pivotY": 335, "centerX": 233, "centerY": 335,
+                     "blend": 0, "shadowFile": "clock_aux_0_shadow.png",
+                     "shadowPivotX": 17, "shadowPivotY": 63,
+                     "shadowDx": 2, "shadowDy": 2}]}
 
 
 def roundtrip(comps, aux, bank):
@@ -144,13 +173,15 @@ def main():
            "270deg window sits left of centre: x=%d" % day["x"])
         # ---- host-relative placement: the moon rides its SUBDIAL's centre ------
         # c4 sits at angle 180 dist 102 (six o'clock); the c5 moon at angle 0
-        # dist 2 on host c4 is 2 px ABOVE that centre — 335 - 2 = 333, boxed by
-        # its own h. Before the bake computed centres for skipped kinds the
-        # host fell back to the dial centre and the moon drew over the pinion.
+        # dist 2 on host c4 is 2 px ABOVE that centre — 335 - 2 = 333 — and that
+        # point is the middle of the tile's BOTTOM edge, not its centre. The fan
+        # arc then rises from the arch baseline it is authored to sit on.
+        # Before the bake computed centres for skipped kinds the host fell back to
+        # the dial centre and the moon drew over the pinion.
         moon = by["moon_age"]
-        ok(abs(moon["y"] + moon["h"] // 2 - 333) <= 1,
-           "hosted moon measures from the subdial, not the dial: y=%d h=%d"
-           % (moon["y"], moon["h"]))
+        ok(abs(moon["y"] + moon["w"] // 2 - 333) <= 1,
+           "hosted fan moon is bottom-edge anchored on the subdial: y=%d w=%d"
+           % (moon["y"], moon["w"]))
         ok(abs(moon["x"] + moon["w"] // 2 - 233) <= 1,
            "hosted moon stays on the subdial's vertical axis: x=%d" % moon["x"])
         ok(min(c["off"] for c in comps) == 0, "first tile at blob offset 0")
@@ -159,6 +190,57 @@ def main():
         for c in comps:
             ok(c["off"] + c["frame_bytes"] * c["count"] <= len(blob.buf),
                "comp src=%s stays inside the payload" % ts.SOURCES[c["src"]])
+
+        # ---- the z bucket: a hosted window is kept UNDER its own plate -------
+        # For a WINDOW, `first` is not a bank index — it is the KINDS slot whose
+        # live layer the tile must stay under. The moon under the c4 plate needs
+        # 4 or the plate's opaque arch covers it whole (the owner's original
+        # "the moon is missing" report), while the dial's own apertures must keep
+        # 0 so nothing lifts them above the carriage. A wrong value here is a
+        # silently invisible or silently over-painted window, never an error, so
+        # it is pinned at the producer.
+        ok(by["moon_age"]["first"] == 4,
+           "moon hosted by the subdial is bucketed under static2: first=%d"
+           % by["moon_age"]["first"])
+        ok(by["weekday"]["first"] == 0 and by["month"]["first"] == 0,
+           "dial-hosted apertures stay below every live layer")
+        ok(abs(by["moon_age"]["y"] + by["moon_age"]["w"] // 2 - 333) <= 1,
+           "the bucketed moon still rides its host's centre by its bottom edge")
+
+        # ---- the anchor is the shape's, not the source's ---------------------
+        # Three kits differing only in the moon's style/rot must disagree about
+        # y and agree about x. A fan (style classic, rot 0) is authored as the arc
+        # from its baseline upward, so the host point is its bottom edge; the
+        # composer's ROUND_MOON styles and any rotating moon are drawn as a whole
+        # circle, so the same point is their centre. Getting this backwards puts
+        # the moon a radius off its window — the misalignment the owner reported —
+        # while every other number in the record stays correct, so nothing else
+        # would ever notice. h is 28 here and w 56: only the anchor rule decides
+        # whether y is 305 or 319.
+        for style, rot, want, label in (
+                ("classic", 0, 333 - 28, "fan, unrotated"),
+                ("sphere", 0, 333 - 14, "round (ROUND_MOON)"),
+                ("graphic", 0, 333 - 14, "graphic (ROUND_MOON)"),
+                ("neon",    0, 333 - 14, "neon (ROUND_MOON)"),
+                ("classic", 45, 333 - 14, "fan, rotated")):
+            rdir = os.path.join(base, "anchor_%s_%s" % (style, rot))
+            os.makedirs(os.path.join(rdir, "complications", "c5_moon"))
+            for n in ["%02d" % i for i in range(30)]:
+                _tile(56, 28, (5, 5, 5, 255)).save(
+                    os.path.join(rdir, "complications", "c5_moon", n + ".png"))
+            json.dump({"layout": {"comps": [
+                {"id": "c4", "type": "subdial", "host": "dial", "angle": 180,
+                 "dist": 102, "size": 62, "scale": "date"},
+                {"id": "c5", "type": "moon", "host": "c4", "angle": 0, "dist": 2,
+                 "size": 29, "style": style, "rot": rot, "underLayer": 4}]}},
+                open(os.path.join(rdir, "manifest.json"), "w"))
+            rc = bc.bake_complications(rdir, bc.Blob(), verbose=False)[0]
+            ok(len(rc) == 1 and rc[0]["y"] == want,
+               "moon style=%s rot=%s (%s) anchors at y=%d, got %s"
+               % (style, rot, label, want, [c["y"] for c in rc]))
+            ok(len(rc) == 1 and rc[0]["x"] == 233 - 28,
+               "moon style=%s rot=%s stays x-centred on its host: x=%s"
+               % (style, rot, [c["x"] for c in rc]))
 
         # ---- round-trip through the shipped packer + reader -------------------
         u = roundtrip(comps, aux, bank)
@@ -290,6 +372,131 @@ def main():
         gone = bc.matte_fold(basex, tinted).getpixel((4, 4))[:3]
         ok(gone == (8, 8, 8),
            "a sub-opaque layer pre-occludes nothing: base survives bit-exact")
+
+        # ---- aux: a sub-dial pointer packs as a sprite pair + 9 driving words --
+        ab = bc.Blob()
+        arows = bc.bake_aux(theme, AUX_STYLE, ab, margs, verbose=False)
+        ok(len(arows) == 2, "one pointer with its shadow is TWO rows: %d" % len(arows))
+        hand, twin = arows
+        ok(ts.SOURCES[hand["src"]] == "date" and hand["kind"] == 0,
+           "the hand row is a rotating date pointer")
+        ok(hand["value_min"] == 1 and hand["value_max"] == 31 and hand["span"] == 3600,
+           "a date ring turns once across 1..31: %s"
+           % [hand[k] for k in ("value_min", "value_max", "span")])
+        ok(hand["flags"] & ts.FLAG_JUMP and not (hand["flags"] & ts.FLAG_AUX_SHADOW),
+           "the kit's snap is JUMP on the hand, and the hand is not its own twin")
+        ok(bool(twin["flags"] & ts.FLAG_AUX_SHADOW), "the second row is the shadow twin")
+        ok((twin["centerx"], twin["centery"]) == (hand["centerx"] + 2, hand["centery"] + 2)
+           and (twin["pivotx"], twin["pivoty"]) == (hand["pivotx"], hand["pivoty"]),
+           "the twin shares the hand's pivot and moves only its centre")
+        ok(hand["color_off"] + hand["w"] * hand["h"] * 3 == twin["color_off"],
+           "the pair packs contiguously, twin right after hand")
+        au = roundtrip([], arows, [])
+        ok(au["n_counts"] == 7 and len(au["aux"]) == 2,
+           "aux rows make a seven-count blob the reader reads back whole")
+        adrift = [f for a, b in zip(arows, au["aux"])
+                  for f, _t in ts.AUX_FIELDS if a[f] != b[f]]
+        ok(not adrift, "every aux field survives pack/unpack: %s" % adrift[:4])
+        try:
+            bc.bake_aux(theme, {"aux": [dict(AUX_STYLE["aux"][0], valueMax=0)]},
+                        bc.Blob(), margs, verbose=False)
+            ok(False, "value_max 0 was accepted (a sweep cannot divide by it)")
+        except SystemExit:
+            ok(True, "an undivisible value_max is refused at the bench")
+        try:
+            bc.bake_aux(theme, {"aux": [dict(AUX_STYLE["aux"][0], file="nope.png")]},
+                        bc.Blob(), margs, verbose=False)
+            ok(False, "a style naming an absent sprite returned normally")
+        except SystemExit:
+            ok(True, "a style whose sprite is absent is refused, not silently hidden")
+
+        # ---- matte: the plate over a hosted window is never folded -------------
+        # static2 (the c4 plate) covering the moon's box is exactly the fold that
+        # buried this kit's moon. Placing the box at its BUCKET is what lets the
+        # proof see it: the same code, and the opposite verdict from the case with
+        # no manifest, which still folds.
+        moonr = by["moon_age"]
+        s2 = Image.new("RGBA", (bc.SCREEN_W, bc.SCREEN_H), (0, 0, 0, 0))
+        s2p = s2.load()
+        for yy in range(moonr["y"] - 4, moonr["y"] + moonr["h"] + 4):
+            for xx in range(moonr["x"] - 4, moonr["x"] + moonr["w"] + 4):
+                s2p[xx, yy] = (7, 7, 7, 255)
+        s2.save(os.path.join(theme, "clock_hand_static2.png"))
+        st2 = {"hands": {"order": [4], "shadow": {"on": False},
+                         "static2": {"show": True, "pivotX": 233, "pivotY": 233,
+                                     "centerX": 233, "centerY": 233, "blend": 0}}}
+        live2 = bc.build_live_stack(theme, st2,
+                                    {"static2": (233, 233, 233, 233, 0)}, margs, None)
+        nm2 = [L.name for L in live2]
+        ok(nm2.index("comp[moon_age]") < nm2.index("static2"),
+           "the hosted window rides the proof BELOW its plate: %s" % nm2)
+        ok(nm2.index("comp[weekday]") < nm2.index("comp[moon_age]"),
+           "a bucket-0 window rides the whole list: %s" % nm2)
+        chosen2, lines2 = bc.matte_plan(live2, "auto")
+        ok(all(L.name != "static2" for L in chosen2),
+           "the plate over a hosted window: fold REFUSED: %s" % [L.name for L in chosen2])
+        ok(any("REFUSED" in ln and "static2" in ln for ln in lines2),
+           "the refusal names the plate and its violation count: %s"
+           % [ln for ln in lines2 if "static2" in ln][:1])
+
+        # ---- re-bucket: a FORCED fold must not leave a window orphaned ---------
+        # --matte force takes the fold the proof refused. A record still naming
+        # the now-dead bucket would tell the reader to keep the tile under a layer
+        # that never paints, so the bake moves it and prints the change.
+        untouched = [c["first"] for c in comps if ts.SOURCES[c["src"]] != "moon_age"]
+        changed = bc.rebucket_comps(comps, 1 << 4)
+        ok([c[0] for c in changed] == ["moon_age"],
+           "only the plate-hosted window is re-bucketed: %s" % changed)
+        m = [c for c in comps if ts.SOURCES[c["src"]] == "moon_age"][0]
+        ok(m["first"] == 0, "its bucket is cleared once the plate is in the bank")
+        ok([c["first"] for c in comps if ts.SOURCES[c["src"]] != "moon_age"]
+           == untouched, "a bucket nobody folded is left exactly as prep wrote it")
+        ok(bc.rebucket_comps([{"src": ts.SOURCES.index("moon_age"), "first": 4}],
+                             1 << 3) == [],
+           "masking static1 does not touch a static2-hosted window")
+
+        # ---- an underLayer that is not a layer slot is refused, not ignored ----
+        bad2 = os.path.join(base, "bad_bucket")
+        os.makedirs(os.path.join(bad2, "complications", "c2_day"))
+        for n in bc._WEEKDAY_TILES:
+            _tile(8, 8, (1, 1, 1, 255)).save(
+                os.path.join(bad2, "complications", "c2_day", n + ".png"))
+        json.dump({"layout": {"comps": [
+            {"id": "c2", "type": "window", "host": "dial", "angle": 0, "dist": 0,
+             "shows": "day", "underLayer": 9}]}},
+            open(os.path.join(bad2, "manifest.json"), "w"))
+        try:
+            bc.bake_complications(bad2, bc.Blob(), verbose=False)
+            ok(False, "underLayer 9 was accepted (not a KINDS slot)")
+        except SystemExit:
+            ok(True, "an underLayer outside the 5 layer slots is refused")
+
+        # ---- prep derives the bucket from the kit's drawOrder, not a guess ------
+        import prep_watch_kit as pw2
+        perp_order = [
+            {"layer": "base"},
+            {"layer": "complications", "where": "under dial", "items": ["c2", "c3"]},
+            {"layer": "dial", "file": "layers/dial.png"},
+            {"layer": "complications", "where": "under subdial c4", "items": ["c5"]},
+            {"layer": "subdial", "id": "c4", "file": "layers/subdial_01_c4.png"},
+            {"layer": "hands"}, {"layer": "glass"}, {"layer": "outer"},
+        ]
+        man = {"layout": {"comps": [
+            {"id": "c2", "host": "dial"}, {"id": "c3", "host": "dial"},
+            {"id": "c4", "host": "dial"}, {"id": "c5", "host": "c4"}]}}
+        got = pw2._under_layers(perp_order, man, merged=False)
+        ok(got == {"c2": 0, "c3": 0, "c4": 0, "c5": 4},
+           "the moon under a live subdial plate is the only bucket-4 comp: %s" % got)
+        ok(set(pw2._under_layers(perp_order, man, merged=True).values()) == {0},
+           "a subdial merged into the dial leaves nothing to sit under: all bucket 0")
+        nested = {"layout": {"comps": [
+            {"id": "c4", "host": "dial"}, {"id": "c5", "host": "c4"},
+            {"id": "c6", "host": "c5"}]}}
+        ok(pw2._under_layers(perp_order, nested, merged=False)["c6"] == 4,
+           "a comp hosted by a hosted comp still walks up to the plate")
+        loop = {"layout": {"comps": [{"id": "a", "host": "b"}, {"id": "b", "host": "a"}]}}
+        ok(set(pw2._under_layers(perp_order, loop, merged=False).values()) == {0},
+           "a host cycle terminates (bounded walk) instead of hanging")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

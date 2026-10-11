@@ -93,6 +93,12 @@ size_t art_bank_mmu_pages(void);
  *    fit alone are what overflows the window. Ask before mapping, and hold the error —
  *    an app that learns the budget at install can say "install fewer themes"; one that
  *    learns it at boot cannot.
+ *
+ * Call with the PAGE-ROUNDED size, not the file size. No shipped bank is aligned —
+ * the flagship on the bench 2026-10-11 is 2,503,747 B, which must be passed as
+ * 2,555,904 B — so a caller that forwards an on-disk length gets ESP_ERR_INVALID_SIZE
+ * for a perfectly good theme. Round up first: art_bank_pages_for() is the same
+ * ceil-by-64-KB the implementation charges for.
  */
 esp_err_t orb_art_reserve(size_t bytes);
 

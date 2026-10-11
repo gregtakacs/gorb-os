@@ -1300,13 +1300,18 @@ static esp_err_t h_status(httpd_req_t *req)
 #if CONFIG_ORB_IDLE_DIM_ENABLE
     /* Read once, before the format string, so the two booleans and the countdown
      * describe the same instant rather than three races across the task that owns
-     * them. timeout_s/dim_pct are the compiled-in constants: they are the whole
-     * reason this block exists on the LAN, because a build's actual value could
-     * previously only be read from a boot log that the next flash destroys. */
-    const bool     idle_on        = true;
+     * them. on/timeout_s come from the runtime settings the DISPLAY menu writes:
+     * reporting the Kconfig values here instead would make a switched-off dial
+     * claim it was armed, which is the same lie the block exists to prevent --
+     * a build's and an owner's actual values must be readable from the LAN, not
+     * inferred from a boot log the next flash destroys. */
+    const bool     idle_on        = idle_dim_enabled();
     const char    *idle_dark      = idle_dim_dimmed() ? "true" : "false";
     const unsigned idle_since_s   = (unsigned)(idle_dim_ms_since_touch() / 1000u);
-    const unsigned idle_timeout_s = (unsigned)CONFIG_ORB_IDLE_DIM_TIMEOUT_S;
+    /* The EFFECTIVE timeout, via the getter: the DISPLAY menu can change it at
+     * runtime and the number here must be what the dial is actually counting
+     * against, not what Kconfig once said. */
+    const unsigned idle_timeout_s = (unsigned)idle_dim_timeout_s();
     const unsigned idle_dim_pct   = (unsigned)CONFIG_ORB_IDLE_DIM_PCT;
 #else
     /* ORB_IDLE_DIM_TIMEOUT_S and _PCT do not exist in this build — they are

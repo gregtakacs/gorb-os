@@ -179,10 +179,16 @@ menu "Orb idle dim"
             than it is being read. After the timeout below with no detent, tap
             or motion, the face drops to ORB_IDLE_DIM_PCT; the next touch returns
             it to the recorded user level rather than to a hard-wired 100, so the
-            day a brightness control lands in the menu the dim ducks from and
-            returns to wherever the user left it. Nothing sets that level yet —
-            no menu control exists — so it is the 100% the panel's own init wrote,
-            and idle.lit_pct on /api/v1/status reports it as it really is.
+            dim ducks from and returns to wherever the brightness control left
+            it. That level is the boot 100% until a brightness control exists —
+            idle.lit_pct on /api/v1/status reports it as it really is.
+
+            This is the BUILD switch. The dial's MENU -> DISPLAY also carries a
+            runtime switch, persisted to NVS; the saved choice wins on every
+            boot, and this option is what a factory-fresh orb (or one whose NVS
+            holds nothing) starts with. Turning the runtime switch off leaves
+            this task ticking but never dimming; turning this option off drops
+            the whole feature from the image.
 
             Off leaves the panel exactly where its own init left it: the idle
             task is never created and register 0x51 is never written.
@@ -192,14 +198,19 @@ menu "Orb idle dim"
         depends on ORB_IDLE_DIM_ENABLE
         default 600
         help
-            Ten minutes, the owner's number. Anything a hand can do counts:
+            Ten minutes, the owner's number, and the boot default: the dial's
+            MENU -> DISPLAY timeout picker overrides it at runtime and the
+            chosen value is persisted to NVS, winning on every boot after the
+            first change. Anything a hand can do counts:
             turning the knob, pressing it, or moving the orb. Watch the countdown
-            rather than a stopwatch — idle.since_s climbs to idle.timeout_s on
-            /api/v1/status and idle.dimmed flips when it lands, and
+            rather than a stopwatch -- idle.since_s climbs to idle.timeout_s on
+            /api/v1/status (the EFFECTIVE value, not this one) and idle.dimmed
+            flips when it lands, and
             tools/idle_watch.py does exactly that, injecting the wake detent for
-            the half no log line can speak for. Set low only for the bench — at
+            the half no log line can speak for. Set low only for the bench -- at
             60 s the dim becomes the visible state and a long screenshot looks
-            like a broken display.
+            like a broken display. The DISPLAY picker's 1 min entry usually
+            serves the same bench purpose without a rebuild.
 
     config ORB_IDLE_DIM_PCT
         int "Brightness to drop to while idle, percent"

@@ -17,10 +17,14 @@ silently tests a stale copy is worse than no suite.
 What is under test
 ------------------
   page_rows()          the single authority for "how many rows exist"; armed and
-                       busy gating
-  go_back()            which row the cursor lands on when a sub-page is left
+                       busy gating; the DISPLAY page and the preset picker, whose
+                       row count comes from the lifted s_to_preset table
+  go_back()            which row the cursor lands on when a sub-page is left, and
+                       from the timeout picker back to its parent at its own row
   row_text()           the labels, including the damaged-theme row that must be
-                       shown rather than hidden, and the current-zone marker
+                       shown rather than hidden, the current-zone marker, and the
+                       DISPLAY submenu's two rows (the dim switch reads the real
+                       enable, the timeout row reads the real seconds)
   menu_view_apply_input  the cursor clamp: one detent = one row, no wrapping
   menu_view_service()  a worker result landing while the screen is disarmed must
                        NOT paint a list on the title card
@@ -77,7 +81,17 @@ def lifts(src):
     """Return the (types, functions) spliced out of the given menu_view.c text."""
     f_row = lift(src, r"static void row_text\(int row,[\s\S]*?\n\}\n\nstatic const char \*page_title", MENU_C)
     f_row = f_row[:f_row.index("static const char *page_title")]
+    # The DISPLAY submenu's data, lifted rather than restated: which timeouts the
+    # picker offers IS the setting the owner chooses, so a hand-typed copy of the
+    # table would keep this suite green while the shipped menu offered something
+    # else. timeout_label is the same story one level up -- it is the row's claim
+    # about the value in force, and it must be the code that ships.
+    presets = lift(src, r"typedef struct \{ uint32_t s; const char \*lbl; \} to_preset_t;\n"
+                       r"static const to_preset_t s_to_preset\[\][\s\S]*?\n\};\n"
+                       r"#define TO_PRESET_N[^\n]*", MENU_C)
+    f_timeout = lift(src, r"static void timeout_label\(char \*out, size_t outsz\)\n\{[\s\S]*?\n\}", MENU_C)
     funcs = [
+        f_timeout,
         lift(src, r"static int page_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void go_back\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         f_row,
@@ -88,6 +102,7 @@ def lifts(src):
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
         lift(src, r"#define THEME_MAX\s+\d+[^\n]*", MENU_C),
+        presets,
         lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
         lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
         lift(src, r"typedef struct \{\n    int\s+n;[\s\S]*?\} ui_t;", MENU_C),
@@ -159,6 +174,17 @@ const char *orb_net_tz_label(int i) { return g_tz_labels[i < 8 ? i : 7]; }
 static void repaint(void) { }
 static void input_router_home(void) { }
 
+/* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
+ * settable globals, the way the zone list stubs orb_net: the menu must show the
+ * dim's real state and the timeout's real seconds, and which value counts as
+ * "current" is exactly what the checks below pin. The presets themselves are not
+ * stubbed — they are lifted from menu_view.c, so the rows this harness reads are
+ * the rows the dial draws. */
+static bool     g_dim_on  = true;
+static uint32_t g_dim_to  = 600;
+static bool     idle_dim_enabled(void)    { return g_dim_on; }
+static uint32_t idle_dim_timeout_s(void)  { return g_dim_to; }
+
 /* FreeRTOS semaphore calls inside menu_view_service(): the lifted code must keep
  * its publish/take pair, so these are recorded rather than dropped — deleting the
  * mutex from the lift would silently test a different function. */
@@ -175,8 +201,10 @@ static int g_activations;
 static void activate(void) { g_activations++; }
 
 /* job_post() is stubbed: the queue is FreeRTOS, and what matters here is that the
- * cursor moved (or did not), not that a packet was queued. */
-typedef enum { JOB_SCAN = 0, JOB_STAGE, JOB_TZ } job_kind_t;
+ * cursor moved (or did not), not that a packet was queued. The kind enum is
+ * lifted, not restated, so a job kind the menu starts posting but this file never
+ * learned about fails to compile instead of passing quietly. */
+__JOBKIND__
 static void job_post(job_kind_t k, const char *slug, int idx) { (void)k;(void)slug;(void)idx; }
 
 __CONSTS__
@@ -240,10 +268,11 @@ int main(void)
 
     /* ---- armed top page ---- */
     s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
-    ck("top page has 4 rows", page_rows() == 4);
-    ck("row order AP/TZ/THEME/exit",
+    ck("top page has 5 rows", page_rows() == 5);
+    ck("row order AP/TZ/THEME/DISPLAY/exit",
        !strcmp(rowline(0),"AP") && !strcmp(rowline(1),"TZ") &&
-       !strcmp(rowline(2),"THEME") && !strcmp(rowline(3),"exit"));
+       !strcmp(rowline(2),"THEME") && !strcmp(rowline(3),"DISPLAY") &&
+       !strcmp(rowline(4),"exit"));
 
     /* ---- the clamp, both ends, no wrap ---- */
     g_delta_down = knob_row_step(1);      /* derived, never assumed */
@@ -251,9 +280,9 @@ int main(void)
     s_cur = 0;
     turn_up(1);
     ck("rotate past the top clamps to 0", s_cur == 0);
-    s_cur = 3;
+    s_cur = 4;
     turn_down(1);
-    ck("rotate past the bottom clamps to last", s_cur == 3);
+    ck("rotate past the bottom clamps to last", s_cur == 4);
     s_cur = 1;
     turn_down(99);
     ck("one detent per event, no flying", s_cur == 2);
@@ -325,6 +354,48 @@ int main(void)
     ck("confirm offers to decline", !strcmp(rowline(1), "keep this dial"));
     ck("confirm has exactly 2 rows", page_rows() == 2);
 
+    /* ---- the DISPLAY submenu: the dim switch and the timeout picker ----
+     * These two rows are the only way to reach the idle dim on the dial, and the
+     * failure modes are invisible on a bench: a picker that marks the wrong preset
+     * tells the owner a 10 minute timer is in force while the panel actually dims
+     * after 45 seconds. */
+    s_page = PG_DISPLAY; s_cur = 0; g_dim_on = true; g_dim_to = 600;
+    ck("display page has dim, timeout and back", page_rows() == 3);
+    ck("the dim row reads the switch", !strcmp(rowline(0), "dim after idle:  on"));
+    ck("the dim row follows the switch off",
+       (g_dim_on = false, !strcmp(rowline(0), "dim after idle:  off")));
+    g_dim_on = true;
+    ck("the timeout row reads the preset in force", !strcmp(rowline(1), "timeout:  10 min"));
+    ck("a timeout no preset covers reads the truth, not the nearest preset",
+       (g_dim_to = 45, !strcmp(rowline(1), "timeout:  45 s")));
+    g_dim_to = 600;
+    ck("the display page ends with back", !strcmp(rowline(2), "<- back"));
+    ck("the display page offers push, not just rotate",
+       (s_page = PG_DISPLAY, !strcmp(page_hint(), "rotate: choose   push: change")));
+    ck("back from display returns to the DISPLAY row",
+       (s_page = PG_DISPLAY, go_back(), s_page == PG_TOP && s_cur == 3));
+
+    s_page = PG_TO; s_cur = 0;
+    ck("the picker offers every preset plus back", page_rows() == TO_PRESET_N + 1);
+    /* Rows that are not the current one, so the label is compared bare: the row in
+     * force carries the "  *" mark and is pinned on its own below. */
+    ck("the picker rows carry the preset labels",
+       !strcmp(rowline(1), "2 min") && !strcmp(rowline(6), "1 hour"));
+    ck("the preset in force is marked",
+       (g_dim_to = 600, !strcmp(rowline(3), "10 min  *")));
+    ck("a preset that is not in force is not marked", !strcmp(rowline(0), "1 min"));
+    ck("a timeout no preset covers marks nothing",
+       (g_dim_to = 45, !strcmp(rowline(3), "10 min")));
+    g_dim_to = 600;
+    ck("the picker ends with back", !strcmp(rowline(TO_PRESET_N), "<- back"));
+    ck("the picker page says what rotate and push do",
+       (s_page = PG_TO, !strcmp(page_hint(), "rotate: choose   push: set")));
+    s_cur = TO_PRESET_N;
+    turn_down(1);
+    ck("the picker clamps at its back row", s_cur == TO_PRESET_N);
+    ck("back from the picker lands on the timeout row, not the top page",
+       (s_page = PG_TO, go_back(), s_page == PG_DISPLAY && s_cur == 1));
+
     /* ---- a worker result landing while disarmed must NOT paint a list ---- */
     s_armed = true; s_page = PG_TOP; s_cur = 0;
     memset(&s_shared, 0, sizeof s_shared);
@@ -355,6 +426,7 @@ def assembled(src):
     return (HARNESS
             .replace("__CONSTS__", body + "\n" + KNOB_HELPERS)
             .replace("__FUNCS__", "\n".join(funcs))
+            .replace("__JOBKIND__", lift(src, r"typedef enum \{ JOB_SCAN[\s\S]*?\} job_kind_t;", MENU_C))
             .replace("__SLUGDEF__", "")
             .replace("__UNUSED_OK__", ""))
 
@@ -472,12 +544,34 @@ MUTATIONS = [
     ("the current zone stops being marked",
      "const bool cur = (row == orb_net_tz_current_index());", "const bool cur = false;"),
     ("back from the zone list loses its cursor position",
-     "s_cur  = (from == PG_TZ) ? IT_TZ : (from == PG_THEME ? IT_THEME : 0);", "s_cur = 0;"),
+     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_THEME)  ? IT_THEME\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : 0;",
+     "s_cur  = (from == PG_TZ) ? 0 : 0;"),
     ("a staged result paints a list onto the title card",
      "if (s_ui.staged) {", "if (s_ui.staged && !s_armed) {"),
     ("the card scan moves back onto the LVGL task",
      "const int n = orb_theme_scan(out.e, THEME_MAX);",
      "const int n = orb_theme_scan(out.e, THEME_MAX); lv_label_set_text(s_title, \"x\");"),
+    # The DISPLAY submenu. Each of these is a way the two rows can lie about the
+    # setting they claim to show, which is exactly the failure nobody notices until
+    # the panel dims at the wrong time.
+    ("the DISPLAY row drops off the top menu",
+     'case IT_DISPLAY:snprintf(out, outsz, "DISPLAY"); break;', ''),
+    ("the DISPLAY page loses a row",
+     "case PG_DISPLAY:return 3;", "case PG_DISPLAY:return 2;"),
+    ("the dim row stops reading the switch it is showing",
+     'idle_dim_enabled() ? "on" : "off"', 'true ? "on" : "off"'),
+    ("the timeout preset in force stops being marked",
+     "const bool cur = (s_to_preset[row].s == idle_dim_timeout_s());",
+     "const bool cur = false;"),
+    ("an off-preset timeout reads the nearest preset instead of the truth",
+     'snprintf(out, outsz, "%lu s", (unsigned long)cur);',
+     'snprintf(out, outsz, "%s", s_to_preset[0].lbl);'),
+    ("the timeout picker loses its back row",
+     "case PG_TO:     return TO_PRESET_N + 1;", "case PG_TO:     return TO_PRESET_N;"),
+    ("back from the picker loses its place in the parent",
+     "s_page = PG_DISPLAY;\n        s_cur  = 1;", "s_page = PG_DISPLAY;\n        s_cur  = 0;"),
+    ("a preset label drifts from what ships",
+     '{   600, "10 min" },', '{   600, "10 minutes" },'),
 ]
 
 

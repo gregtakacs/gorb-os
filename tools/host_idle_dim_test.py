@@ -42,41 +42,68 @@ def ok(cond, label):
         FAILS.append(label)
 
 
-def lifted_c(mutations=(), func="idle_motion_decide", argtype="idle_motion_t"):
-    """The shipping function, extracted verbatim, in a compile harness.
+def lifted_c(mutations=(), funcs=(("idle_motion_decide", "idle_motion_t", "bool"),)):
+    """The shipping functions, extracted verbatim, in a compile harness.
 
-    Parameterised by function because the file now ships two decisions worth
-    pinning on a host: the per-sample motion verdict, and the run-of-N that turns
-    verdicts into a wake. Both are pure, both are invisible until the orb is on a
-    real desk, and the second one is what stops an untouched dial dimming and
-    immediately un-dimming itself.
+    Parameterised by function because the file now ships four decisions worth
+    pinning on a host: the per-sample motion verdict, the run-of-N that turns
+    verdicts into a wake, the elapsed test behind the DISPLAY menu's timeout,
+    and the clamp that keeps a bad persisted value from dimming instantly.
+    All are pure, all are invisible until the orb is on a real desk or a real
+    49-day-old clock, and each is the only thing standing between a Kconfig
+    value and a dial that dims wrong.
+
+    funcs: iterable of (name, first-arg-type, return-type) triples.
     """
     src = open(SRC).read()
-    m = re.search(r"^bool " + func + r"\(" + argtype + r"[^\n]*\n\{", src, re.M)
-    if not m:
-        raise SystemExit(func + " not found in %s — this bench is "
-                         "pinning a function that no longer exists" % SRC)
-    # Cut at the first brace in column 0 after the opening one. Counting braces
-    # instead is wrong here: the prose comments carry braces and parentheses, and
-    # a counter cannot tell a comment from code. This file's style indents every
-    # nested block, so a column-0 brace is only ever the function's own.
-    tail = src[m.end():]
-    end = re.search(r"^\}", tail, re.M)
-    if not end:
-        raise SystemExit(func + " never closes in %s" % SRC)
-    body = src[m.start():m.end() + end.end()]
-    for old, new2 in mutations:
-        if old not in body:
-            raise SystemExit("mutation %r does not apply — rewrite the bench to "
+    hdr = open(os.path.join(ROOT, "main", "power", "idle_dim.h")).read()
+    # The timeout bounds are lifted from the header verbatim, not restated
+    # here: a bench copy that drifts from the shipped clamp tests a clamp the
+    # device does not run.
+    bounds = "\n".join(re.findall(r"^#define IDLE_DIM_TIMEOUT_\w+[^\n]*", hdr, re.M))
+    if bounds.count("#define") != 2:
+        raise SystemExit("the timeout bounds vanished from %s -- the bench "
+                         "cannot pin a clamp it cannot read" % hdr)
+    bodies = []
+    applied = {old: False for old, _ in mutations}
+    for func, argtype, ret in funcs:
+        # Lazy [\s\S] to the opening brace so two-line signatures (the elapsed
+        # decide wraps its four args) lift too; [\n{] is impossible before the
+        # body's brace because this file's style keeps every nested brace
+        # indented, so the match can only land on the function's own {.
+        m = re.search(r"^" + ret + " " + func + r"\(" + argtype +
+                      r"[\s\S]*?\n\{", src, re.M)
+        if not m:
+            raise SystemExit(func + " not found in %s -- this bench is "
+                             "pinning a function that no longer exists" % SRC)
+        # Cut at the first brace in column 0 after the opening one. Counting
+        # braces instead is wrong here: the prose comments carry braces and
+        # parentheses, and a counter cannot tell a comment from code. This
+        # file's style indents every nested block, so a column-0 brace is only
+        # ever the function's own.
+        tail = src[m.end():]
+        end = re.search(r"^\}", tail, re.M)
+        if not end:
+            raise SystemExit(func + " never closes in %s" % SRC)
+        body = src[m.start():m.end() + end.end()]
+        for old, new2 in mutations:
+            if old not in body:
+                continue          # the mutation belongs to one of the funcs;
+            body = body.replace(old, new2)
+            applied[old] = True
+        bodies.append(body)
+    for old, _ in mutations:
+        if not applied[old]:
+            raise SystemExit("mutation %r does not apply -- rewrite the bench to "
                              "match the shipped code" % old)
-        body = body.replace(old, new2)
     return """
 #include <stdint.h>
 #include <stdbool.h>
 typedef struct { int32_t base[3]; int32_t worst; bool have_base; } idle_motion_t;
 typedef struct { uint8_t run; bool fired; } idle_wake_t;
 %s
-""" % body
+%s
+""" % (bounds, NL.join(bodies))
 
 
 def run(vectors, mutations=()):
@@ -296,8 +323,9 @@ def run_wake(vectors, mutations=()):
         print("       wake vector %d: %s (need=%d, %d samples -> %d wakes, "
               "%s held)" % (n, label, need, len(seq), want,
                             "-" if want_kept is None else str(want_kept)))
-    open(cf, "w").write(lifted_c(mutations, func="idle_motion_wake_decide",
-                                 argtype="idle_wake_t") +
+    open(cf, "w").write(lifted_c(mutations,
+                                 funcs=(("idle_motion_wake_decide",
+                                         "idle_wake_t", "bool"),)) +
         '#include <stdio.h>' + NL +
         'static int bad = 0;' + NL +
         'static int run_all(void) {' + NL +
@@ -307,6 +335,124 @@ def run_wake(vectors, mutations=()):
         '        puts("a wake run-of-N came out wrong: first bad vector #");' + NL +
         '        printf("%d", bad);' + NL +
         '        puts("");' + NL +
+        '    }' + NL +
+        '    return fails;' + NL +
+        '}' + NL +
+        'int main(void) { return run_all(); }' + NL)
+    cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
+                         "-Werror", "-o", bf, cf], capture_output=True, text=True)
+    if cc.returncode:
+        raise SystemExit("host build failed:" + NL + cc.stderr)
+    out = subprocess.run([bf], capture_output=True, text=True)
+    sys.stdout.write(out.stdout)
+    return out.returncode != 0
+
+
+# ---- the DISPLAY menu's two pure decisions ---------------------------------
+#
+# idle_dim_elapsed_decide: the gate the timeout picker feeds. Two silent wrong
+# answers are pinned here. Ignore the enabled flag and the switch is cosmetic;
+# signed elapsed maths and the 49-day clock reads as a negative idle time, so
+# a dial that has been on the wall six weeks dims late (or never) with every
+# other case still passing. The wrap vectors exist because no bench session
+# ever sees them from behaviour alone.
+#
+# (label, enabled, now_ms, last_ms, timeout_ms, expect)
+ELAPSED_VECTORS = [
+    ("off_blocks_a_long_idle",  False, 7_200_000, 0,          600_000, False),
+    ("on_after_timeout",        True,    600_000, 0,          600_000, True),
+    ("on_one_ms_short",         True,    599_999, 0,          600_000, False),
+    ("equal_is_dim",            True,        100, 0,              100, True),
+    ("zero_timeout_dims",       True,          0, 0,                0, True),
+    # now has wrapped past last: elapsed 6912 ms across the 49-day boundary.
+    ("wrap_long_idle_dims",     True, 0x0000_0B00, 0xFFFF_F000,   6000, True),
+    # Touched 2560 ms ago, near the wrap: must NOT dim, and a subtraction that
+    # reads direction the wrong way sees "huge idle" here instead.
+    ("wrap_fresh_touch_stays",  True, 0x0000_0200, 0xFFFF_F800,   5000, False),
+    # Elapsed 4294967294 ms: unsigned says six weeks idle, signed says -2 and
+    # never dims. Only this shape of case separates the two.
+    ("wrap_huge_idle_dims",     True, 0xFFFF_FFFF, 0x0000_0001, 600_000, True),
+]
+
+ELAPSED_MUTATIONS = [
+    # neuter the gate rather than delete it: removing the line leaves `enabled`
+    # an unused parameter and -Werror kills the mutant before it can be judged
+    # (same trick the wake suite's reset mutant uses).
+    ("if (!enabled) return false;", "if (!enabled && false) return false;"),
+    (">= timeout_ms", "> timeout_ms"),                          # boundary lost
+    ("(uint32_t)(now_ms - last_ms)", "(uint32_t)(last_ms - now_ms)"),  # direction
+    # whole statement, both sides signed: an int-vs-uint comparison would die
+    # on -Wsign-compare before the vectors can judge it
+    ("return (uint32_t)(now_ms - last_ms) >= timeout_ms;",
+     "return (int32_t)((int32_t)now_ms - (int32_t)last_ms) >= (int32_t)timeout_ms;"),
+]
+
+# idle_dim_clamp_timeout_s: the setter clamps, and settings_load clamps on READ
+# too, because the value that reaches the task can arrive from a hand-flashed
+# NVS, not from this firmware's picker. An unclamped 0 dims the instant the
+# task starts -- the silent wrong answer the MIN bound exists for.
+#
+# (label, requested, expected)
+CLAMP_VECTORS = [
+    ("zero_becomes_min",              0,          5),
+    ("below_min_becomes_min",         4,          5),
+    ("min_stays",                     5,          5),
+    ("passthrough",                 600,        600),
+    ("max_stays",                 86400,      86400),
+    ("above_max_becomes_max",     86401,      86400),
+    ("wild_u32_becomes_max",  0xFFFF_FFFF,     86400),
+]
+
+CLAMP_MUTATIONS = [
+    ("if (s < IDLE_DIM_TIMEOUT_MIN_S) return IDLE_DIM_TIMEOUT_MIN_S;", ""),
+    ("if (s < IDLE_DIM_TIMEOUT_MIN_S) return IDLE_DIM_TIMEOUT_MIN_S;",
+     "if (s < IDLE_DIM_TIMEOUT_MIN_S) return 0;"),
+    ("if (s > IDLE_DIM_TIMEOUT_MAX_S) return IDLE_DIM_TIMEOUT_MAX_S;",
+     "if (s > IDLE_DIM_TIMEOUT_MAX_S) return s;"),
+]
+
+
+def run_cfg(elapsed_vectors, clamp_vectors, mutations=()):
+    """Compile both new decisions in one host binary and replay every case.
+
+    Lifted together rather than one at a time: the settings the menu writes are
+    the settings the elapsed test reads, and a bench that links them in the same
+    translation unit at least compiles them against the same header truth.
+    """
+    d = tempfile.mkdtemp(prefix="orb_idle_cfg_")
+    cf, bf = os.path.join(d, "t.c"), os.path.join(d, "t")
+    calls = []
+    for vec in elapsed_vectors:
+        label, en, now, last, to, expect = vec
+        calls.append(
+            "    {" + NL +
+            '        bool got = idle_dim_elapsed_decide(%uU, %uU, %uU, %s);'
+            % (now, last, to, "true" if en else "false") + NL +
+            '        fails += (got != %s) ? 1 : 0;' % ("true" if expect else "false") + NL +
+            '        if (got != %s && !bad) bad = %d;' % ("true" if expect else "false",
+                                                          len(calls) + 1) + NL +
+            '    }')
+    for vec in clamp_vectors:
+        label, req, want = vec
+        calls.append(
+            "    {" + NL +
+            '        uint32_t got = idle_dim_clamp_timeout_s(%uU);' % req + NL +
+            '        fails += (got != %uU) ? 1 : 0;' % want + NL +
+            '        if (got != %uU && !bad) bad = %d;' % (want, len(calls) + 1) + NL +
+            '    }')
+    open(cf, "w").write(lifted_c(mutations, funcs=(
+            ("idle_dim_elapsed_decide", "uint32_t", "bool"),
+            ("idle_dim_clamp_timeout_s", "uint32_t", "uint32_t"),
+        )) +
+        '#include <stdio.h>' + NL +
+        'static int bad = 0;' + NL +
+        'static int run_all(void) {' + NL +
+        '    int fails = 0;' + NL +
+        chr(10).join(calls) + NL +
+        '    if (bad) {' + NL +
+        '        puts("a DISPLAY-menu decision came out wrong: first bad vector #");' + NL +
+        '        printf("%d", bad);' + NL +
+        '        puts("(elapsed 1-%d, then clamp)");' % len(elapsed_vectors) + NL +
         '    }' + NL +
         '    return fails;' + NL +
         '}' + NL +
@@ -350,7 +496,20 @@ def main():
             else:
                 survivors += 1
                 print("FAIL  wake mutant SURVIVED: %s" % mut[0][:50])
-        total = len(MUTATIONS) + len(WAKE_MUTATIONS)
+        for mut in ELAPSED_MUTATIONS + CLAMP_MUTATIONS:
+            try:
+                bad = run_cfg(ELAPSED_VECTORS, CLAMP_VECTORS, mutations=[mut])
+            except SystemExit as e:
+                ok(False, "config mutant does not compile (%s): %s"
+                   % (mut[0][:40], str(e).splitlines()[0] if str(e) else "?"))
+                continue
+            if bad:
+                print("ok    config mutant caught: %s" % mut[0][:50])
+            else:
+                survivors += 1
+                print("FAIL  config mutant SURVIVED: %s" % mut[0][:50])
+        total = (len(MUTATIONS) + len(WAKE_MUTATIONS)
+                 + len(ELAPSED_MUTATIONS) + len(CLAMP_MUTATIONS))
         ok(survivors == 0, "%d mutants, %d survived" % (total, survivors))
     else:
         bad = run(VECTORS)
@@ -359,6 +518,10 @@ def main():
         bad = run_wake(WAKE_VECTORS)
         ok(not bad, "every wake run-of-N vector came out as expected "
                     "(%d cases)" % len(WAKE_VECTORS))
+        bad = run_cfg(ELAPSED_VECTORS, CLAMP_VECTORS)
+        ok(not bad, "every DISPLAY-menu decision came out as expected "
+                    "(%d elapsed + %d clamp cases)"
+                    % (len(ELAPSED_VECTORS), len(CLAMP_VECTORS)))
 
     print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED" % len(FAILS)))
     for f in FAILS:

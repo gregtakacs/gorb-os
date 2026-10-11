@@ -10,11 +10,15 @@
  * clock, so there is exactly one way out of every state and it never depends on
  * where the user got stuck.
  *
- * Armed list: AP, TZ, THEME, exit.
- *   AP     prints why it is not on the dial yet (it needs a keyboard).
- *   TZ     browses the zone table in orb_net.c and applies one.
- *   THEME  lists the card, stages one, and reboots to install it.
- *   exit   back to the clock.
+ * Armed list: AP, TZ, THEME, DISPLAY, exit.
+ *   AP       prints why it is not on the dial yet (it needs a keyboard).
+ *   TZ       browses the zone table in orb_net.c and applies one.
+ *   THEME    lists the card, stages one, and reboots to install it.
+ *   DISPLAY  the idle dim's two settings: the on/off switch and the timeout
+ *            picker. Both apply immediately and persist to NVS on the worker
+ *            task; idle_dim.h's settings block says why each half lives where
+ *            it does.
+ *   exit     back to the clock.
  *
  * Threading: every widget call in this file runs on the LVGL task, reached only
  * through menu_view_apply_input()/menu_view_service() from the router's poll.

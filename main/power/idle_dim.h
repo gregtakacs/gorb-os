@@ -1,10 +1,10 @@
 #pragma once
 /**
- * idle_dim — the dial dims itself when nobody has touched it for a while, and
+ * idle_dim -- the dial dims itself when nobody has touched it for a while, and
  * comes back the instant somebody does.
  *
  * The owner's rule: after ten minutes without a touch the face drops to 20 % of
- * its brightness, and a touch returns it to *wherever it was* — not to a fixed
+ * its brightness, and a touch returns it to *wherever it was* -- not to a fixed
  * full bright. That distinction is why the level is snapshotted when the dim
  * fires rather than assumed: the day a brightness control lands in the menu, the
  * dim must duck from the user's chosen level and come back to it, and the wake
@@ -14,13 +14,13 @@
  *
  * What counts as a touch (both call idle_dim_activity(), which is the whole
  * interface the rest of the firmware has):
- *   - the rotary encoder, from input_router's poll — a detent, a tap or a long
+ *   - the rotary encoder, from input_router's poll -- a detent, a tap or a long
  *     press, including the ones injected over HTTP, because the bench turns the
  *     dial with the same numbers the encoder does;
  *   - the accelerometer, but credited as a touch only while dimmed: awake, motion
  *     tells us nothing we would act on, so the IMU is polled at 20 Hz in the dark
- *     and 1 Hz in the light. "Any real motion" wakes it — a pick-up, a knock on
- *     the desk, the case shifting — so the test is a deviation from the learned
+ *     and 1 Hz in the light. "Any real motion" wakes it -- a pick-up, a knock on
+ *     the desk, the case shifting -- so the test is a deviation from the learned
  *     rest vector, not a magnitude, and the baseline tracks slow drift instead of
  *     latching. The lit poll exists to keep the deviation high-water warm, which
  *     is the number ORB_IDLE_MOTION_MG is set from.
@@ -61,6 +61,57 @@ uint32_t idle_dim_activity_count(void);
  *  this). While dimmed it also counts as a touch, so the change is visible. */
 void idle_dim_set_user_level(uint8_t percent);
 
+/* ---- the runtime settings, behind the DISPLAY menu ------------------------
+ * The Kconfig values are the boot defaults, not the shipped behaviour: the
+ * owner turns the feature off or picks a different timeout on the dial, the
+ * choice is written to NVS, and from then on the NVS value wins on every boot.
+ * Both getters are safe from any task (one 32-bit read each). Both setters
+ * write NVS and so belong on a worker task, not the LVGL one -- the same rule
+ * orb_net_tz_select() follows from the menu worker, because an NVS write is
+ * normally milliseconds but can hit a sector erase, and a dial that drops
+ * frames while somebody chooses is the un-reproducible bug this file keeps
+ * refusing. */
+
+/** True while the dim policy is in force: the feature compiled in AND the
+ *  user has not switched it off. /api/v1/status reports this, not the
+ *  compile-time option -- a switch you cannot verify is a switch you cannot
+ *  trust. */
+bool idle_dim_enabled(void);
+
+/** Apply and persist the switch. A failed NVS write still takes effect until
+ *  the next boot, and says so through the returned code. */
+esp_err_t idle_dim_set_enabled(bool on);
+
+/** The timeout actually in force, seconds. */
+uint32_t idle_dim_timeout_s(void);
+
+/** Apply and persist the timeout; clamped to idle_dim_clamp_timeout_s(). */
+esp_err_t idle_dim_set_timeout_s(uint32_t seconds);
+
+/* ---- the pure decisions, exposed for the host bench -----------------------
+ * The two new ones are the ones with silent wrong answers: an elapsed test
+ * that mishandles the 49-day wrap dims a freshly touched dial, and a clamp
+ * that passes 0 dims the instant the task starts. Both are one line to read
+ * and impossible to see on a bench that runs for minutes, so both are pinned
+ * like the motion decisions above. */
+
+/* Below one tick's rounding the feature reads broken; the DISPLAY menu's
+ * smallest preset (1 min) sits above it. The 24 h ceiling is a wall-clock's
+ * sane maximum and the figure a wild persisted value is clamped to -- the
+ * bench lifts these two defines verbatim (tools/host_idle_dim_test.py), so
+ * keep each on its own unbroken line. */
+#define IDLE_DIM_TIMEOUT_MIN_S   5u
+#define IDLE_DIM_TIMEOUT_MAX_S   86400u
+
+/** The timeout the setter actually stores for a requested one. */
+uint32_t idle_dim_clamp_timeout_s(uint32_t s);
+
+/** True when the face should sit at the dim level: the feature on, and the
+ *  unsigned elapsed subtraction -- same argument as the task's: a wrap of the
+ *  49-day clock reads as a big idle time, never a negative one. */
+bool idle_dim_elapsed_decide(uint32_t now_ms, uint32_t last_ms,
+                             uint32_t timeout_ms, bool enabled);
+
 /* ---- the pure decision, exposed for tools/host_idle_dim_test.py ----------
  * A motion detector's threshold maths has to be testable without a hand on the
  * device: it is the one part of this file that can silently wake the dial for
@@ -69,7 +120,7 @@ void idle_dim_set_user_level(uint8_t percent);
 typedef struct {
     int32_t base[3];   /* learned rest vector, in raw LSB   */
     int32_t worst;     /* widest |sample - base| ever seen, in LSB: the number a
-                        * threshold is actually set from — see idle_dim_worst_mg */
+                        * threshold is actually set from -- see idle_dim_worst_mg */
     bool    have_base; /* false until the first sample seeds it */
 } idle_motion_t;
 
@@ -78,7 +129,7 @@ typedef struct {
  *  still, so re-entering the dark after the orb was carried somewhere does not
  *  wake itself.
  *
- *  The baseline follows EVERY sample at 1/8, motion included — judged against
+ *  The baseline follows EVERY sample at 1/8, motion included -- judged against
  *  the pre-update value, so the follow cannot absorb the motion it reports. That
  *  is what makes a tilt-then-hold settle back to still: a follow reserved for
  *  still samples never runs while the lag is large, so the detector latches and
@@ -86,7 +137,7 @@ typedef struct {
 bool idle_motion_decide(idle_motion_t *st, const int16_t s[3], int16_t thresh_lsb);
 
 /* ---- the wake debounce, also exposed for the host bench -------------------
- * The dark poll runs at 20 Hz, which is what a knock on the case needs — and is
+ * The dark poll runs at 20 Hz, which is what a knock on the case needs -- and is
  * also 20x more likely than the 1 Hz lit poll to land on a single-sample spike.
  * Measured on the bench, an untouched orb on a desk produced two ~55 mg jolts on
  * the gravity axis 24 s apart, enough to dim the face and un-dim it again before
@@ -96,7 +147,7 @@ bool idle_motion_decide(idle_motion_t *st, const int16_t s[3], int16_t thresh_ls
  * A pick-up is not one sample. The same measurements that pin the follow say a
  * held tilt of 160 mg reads motion on 12 consecutive samples and 400 mg on 19, so
  * requiring a short run separates a real lift from a desk transient without
- * touching the threshold — which is the knob the owner does not have to reach. */
+ * touching the threshold -- which is the knob the owner does not have to reach. */
 typedef struct {
     uint8_t run;    /* consecutive samples judged motion */
     bool    fired;  /* this run has already been reported, so a continuing shake

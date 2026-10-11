@@ -47,6 +47,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_home() */
 
 static const char *TAG = "menu";
@@ -60,14 +61,46 @@ static const char *TAG = "menu";
 
 typedef enum {
     PG_LANDING = 0,   /* inert title; the knob belongs to the router  */
-    PG_TOP,           /* AP / TZ / THEME / exit                       */
+    PG_TOP,           /* AP / TZ / THEME / DISPLAY / exit             */
     PG_TZ,            /* the zone table                               */
     PG_THEME,         /* the card's themes                            */
     PG_ASK,           /* staged: reboot now, or keep the current dial */
+    PG_DISPLAY,       /* the two idle-dim settings                    */
+    PG_TO,            /* the timeout presets                          */
     PG_COUNT
 } page_t;
 
-typedef enum { IT_AP = 0, IT_TZ, IT_THEME, IT_EXIT, IT_TOP_N } top_item_t;
+typedef enum { IT_AP = 0, IT_TZ, IT_THEME, IT_DISPLAY, IT_EXIT, IT_TOP_N } top_item_t;
+
+/* The timeout choices on the DISPLAY sub-menu, seconds. Presets rather than a
+ * spinner: the setting is a wall-clock decision ("how long before a clock on
+ * the wall goes dark"), not a tuning knob, and six detent-turns to a number
+ * invite the kind of value — 7 m 23 s — that nobody can justify. 1 min exists
+ * for the bench (the Kconfig help's measurement procedure wants a short timer),
+ * 10 min is the owner's number, and 1 h covers a reading chair. */
+typedef struct { uint32_t s; const char *lbl; } to_preset_t;
+static const to_preset_t s_to_preset[] = {
+    {    60, "1 min"  },
+    {   120, "2 min"  },
+    {   300, "5 min"  },
+    {   600, "10 min" },
+    {   900, "15 min" },
+    {  1800, "30 min" },
+    {  3600, "1 hour" },
+};
+#define TO_PRESET_N ((int)(sizeof(s_to_preset) / sizeof(s_to_preset[0])))
+
+/* Row label for the timeout actually in force. A device flashed with a
+ * different Kconfig default can hold a value no preset covers, and the row
+ * must then read the truth ("45 s") rather than the nearest preset, which
+ * would be claiming a setting the dial does not have. */
+static void timeout_label(char *out, size_t outsz)
+{
+    const uint32_t cur = idle_dim_timeout_s();
+    for (int i = 0; i < TO_PRESET_N; i++)
+        if (s_to_preset[i].s == cur) { snprintf(out, outsz, "%s", s_to_preset[i].lbl); return; }
+    snprintf(out, outsz, "%lu s", (unsigned long)cur);
+}
 
 static page_t s_page = PG_LANDING;
 static bool   s_armed;
@@ -90,11 +123,12 @@ static QueueHandle_t     s_job_q;
 static volatile bool     s_dirty; /* worker published, UI has not reaped it */
 static volatile bool     s_busy;  /* a job is outstanding                   */
 
-typedef enum { JOB_SCAN = 0, JOB_STAGE, JOB_TZ } job_kind_t;
+typedef enum { JOB_SCAN = 0, JOB_STAGE, JOB_TZ, JOB_DIM_EN, JOB_DIM_TO } job_kind_t;
 typedef struct {
     job_kind_t kind;
     char       slug[ORB_THEME_SLUG_MAX + 1];
-    int        idx;                       /* JOB_TZ: the row to apply */
+    int        idx;                       /* JOB_TZ: the row to apply;
+                                           * JOB_DIM_TO: index into s_to_preset */
 } job_t;
 
 
@@ -159,6 +193,36 @@ static void job_worker(void *arg)
                 out.staged = true;
                 snprintf(out.staged_slug, sizeof(out.staged_slug), "%s", j.slug);
             }
+        } else if (j.kind == JOB_DIM_EN || j.kind == JOB_DIM_TO) {
+            /* The DISPLAY submenu's two writes, here for the JOB_TZ reason
+             * verbatim: both setters nvs_commit, and an NVS commit can hit a
+             * sector erase. The getters stay on the LVGL task (row_text reads
+             * RAM only); only the persistence crosses over. */
+            if (j.kind == JOB_DIM_EN) {
+                const bool want = !idle_dim_enabled();
+                const esp_err_t er = idle_dim_set_enabled(want);
+                if (er == ESP_ERR_NOT_SUPPORTED)
+                    snprintf(out.status, sizeof(out.status),
+                             "the dim is not in this build");
+                else
+                    /* NVS failure still left the RAM setting in force, and the
+                     * line says which it cost: without the qualifier a
+                     * "dim after idle: off" that dies at the next reboot reads
+                     * as a switch that un-toggles itself. */
+                    snprintf(out.status, sizeof(out.status),
+                             "dim after idle: %s%s", want ? "on" : "off",
+                             (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
+            } else {
+                const to_preset_t *p = &s_to_preset[j.idx];
+                const esp_err_t er = idle_dim_set_timeout_s(p->s);
+                if (er == ESP_ERR_NOT_SUPPORTED)
+                    snprintf(out.status, sizeof(out.status),
+                             "the dim is not in this build");
+                else
+                    snprintf(out.status, sizeof(out.status),
+                             "timeout: %s%s", p->lbl,
+                             (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
+            }
         } else {
             /* TZ is here rather than inline for the same reason as the card
              * work: net_tz_set() writes NVS and then tzset()s. An NVS write is
@@ -215,6 +279,8 @@ static int page_rows(void)
         case PG_TZ:     return orb_net_tz_count() + 1;      /* last row is back */
         case PG_THEME:  return s_busy ? 0 : (s_ui.n + 1);
         case PG_ASK:    return 2;
+        case PG_DISPLAY:return 3;                            /* dim, timeout, back */
+        case PG_TO:     return TO_PRESET_N + 1;              /* last row is back */
         default:        return 0;
     }
 }
@@ -223,8 +289,17 @@ static int page_rows(void)
 static void go_back(void)
 {
     const page_t from = s_page;
+    if (from == PG_TO) {                 /* the timeout picker returns to its
+                                          * parent, mid-list where it was left */
+        s_page = PG_DISPLAY;
+        s_cur  = 1;
+        return;
+    }
     s_page = PG_TOP;
-    s_cur  = (from == PG_TZ) ? IT_TZ : (from == PG_THEME ? IT_THEME : 0);
+    s_cur  = (from == PG_TZ)     ? IT_TZ
+           : (from == PG_THEME)  ? IT_THEME
+           : (from == PG_DISPLAY)? IT_DISPLAY
+           : 0;
 }
 
 static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
@@ -235,10 +310,11 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
     switch (s_page) {
         case PG_TOP:
             switch ((top_item_t)row) {
-                case IT_AP:    snprintf(out, outsz, "AP");      break;
-                case IT_TZ:    snprintf(out, outsz, "TZ");      break;
-                case IT_THEME: snprintf(out, outsz, "THEME");   break;
-                default:       snprintf(out, outsz, "exit");    break;
+                case IT_AP:     snprintf(out, outsz, "AP");      break;
+                case IT_TZ:     snprintf(out, outsz, "TZ");      break;
+                case IT_THEME:  snprintf(out, outsz, "THEME");   break;
+                case IT_DISPLAY:snprintf(out, outsz, "DISPLAY"); break;
+                default:        snprintf(out, outsz, "exit");    break;
             }
             return;
 
@@ -277,6 +353,30 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
             snprintf(out, outsz, (row == 0) ? "reboot now" : "keep this dial");
             return;
 
+        case PG_DISPLAY:
+            if (row == 0) {
+                snprintf(out, outsz, "dim after idle:  %s",
+                         idle_dim_enabled() ? "on" : "off");
+                if (sel_hi) *sel_hi = idle_dim_enabled();
+            } else if (row == 1) {
+                char lab[16];
+                timeout_label(lab, sizeof(lab));
+                snprintf(out, outsz, "timeout:  %s", lab);
+            } else {
+                snprintf(out, outsz, "<- back");
+            }
+            return;
+
+        case PG_TO: {
+            if (row >= TO_PRESET_N) { snprintf(out, outsz, "<- back"); return; }
+            /* Same current-value mark as the zone list: the picker must answer
+             * "which one am I on?" before anybody starts scrolling. */
+            const bool cur = (s_to_preset[row].s == idle_dim_timeout_s());
+            if (sel_hi) *sel_hi = cur;
+            snprintf(out, outsz, "%s%s", s_to_preset[row].lbl, cur ? "  *" : "");
+            return;
+        }
+
         default: return;
     }
 }
@@ -284,10 +384,12 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
 static const char *page_title(void)
 {
     switch (s_page) {
-        case PG_TZ:   return "TIME ZONE";
-        case PG_THEME:return "THEME ON CARD";
-        case PG_ASK:  return "THEME STAGED";
-        default:      return "MENU";
+        case PG_TZ:     return "TIME ZONE";
+        case PG_THEME:  return "THEME ON CARD";
+        case PG_ASK:    return "THEME STAGED";
+        case PG_DISPLAY:return "DISPLAY";
+        case PG_TO:     return "DIM TIMEOUT";
+        default:        return "MENU";
     }
 }
 
@@ -295,10 +397,12 @@ static const char *page_hint(void)
 {
     if (s_busy) return "working...";
     switch (s_page) {
-        case PG_TZ:    return "rotate: choose   push: set";
-        case PG_THEME: return "rotate: choose   push: stage";
-        case PG_ASK:   return "rotate: choose   push: confirm";
-        default:       return "rotate: choose   push: open";
+        case PG_TZ:      return "rotate: choose   push: set";
+        case PG_THEME:   return "rotate: choose   push: stage";
+        case PG_ASK:     return "rotate: choose   push: confirm";
+        case PG_DISPLAY: return "rotate: choose   push: change";
+        case PG_TO:      return "rotate: choose   push: set";
+        default:         return "rotate: choose   push: open";
     }
 }
 
@@ -313,8 +417,11 @@ static void job_post(job_kind_t kind, const char *slug, int idx)
     s_busy = true;
     if (xQueueSend(s_job_q, &j, 0) != pdTRUE) {
         s_busy = false;
-        ESP_LOGW(TAG, "job queue full — dropped %s",
-                 kind == JOB_SCAN ? "scan" : (kind == JOB_STAGE ? "stage" : "tz"));
+        ESP_LOGW(TAG, "job queue full -- dropped %s",
+                 kind == JOB_SCAN  ? "scan"  :
+                 kind == JOB_STAGE ? "stage" :
+                 kind == JOB_TZ    ? "tz"    :
+                 kind == JOB_DIM_EN? "dim toggle" : "dim timeout");
     }
 }
 
@@ -502,6 +609,11 @@ static void activate(void)
                     job_post(JOB_SCAN, NULL, 0);     /* the card walk, off-task */
                     repaint();
                     return;
+                case IT_DISPLAY:
+                    s_page = PG_DISPLAY;
+                    s_cur  = 0;
+                    repaint();
+                    return;
                 default:                             /* exit */
                     menu_view_set_armed(false);
                     input_router_home();
@@ -539,6 +651,35 @@ static void activate(void)
             /* Verified on the worker: this streams the whole container through
              * CRC, measured at 2952 ms for 3.87 MB on the bench. */
             job_post(JOB_STAGE, e->slug, 0);
+            repaint();                                  /* shows "working..." */
+            return;
+        }
+
+        case PG_DISPLAY: {
+            if (s_cur >= 2) { go_back(); repaint(); return; }        /* <- back */
+            if (s_cur == 0) {
+                /* The toggle runs on the worker: the setter nvs_commits, and the
+                 * rule in this file is that nothing which can block runs on the
+                 * task that paints the dial (same reason as JOB_TZ). The row
+                 * repaints from the getter as soon as the result lands. */
+                job_post(JOB_DIM_EN, NULL, 0);
+                repaint();                                  /* shows "working..." */
+                return;
+            }
+            /* Timeout row: open the picker, started on the row that matches the
+             * value in force -- the same "where am I?" courtesy PG_TZ gives. */
+            s_page = PG_TO;
+            s_cur  = 0;
+            const uint32_t cur = idle_dim_timeout_s();
+            for (int i = 0; i < TO_PRESET_N; i++)
+                if (s_to_preset[i].s == cur) { s_cur = i; break; }
+            repaint();
+            return;
+        }
+
+        case PG_TO: {
+            if (s_cur >= TO_PRESET_N) { go_back(); repaint(); return; }  /* back */
+            job_post(JOB_DIM_TO, NULL, s_cur);
             repaint();                                  /* shows "working..." */
             return;
         }

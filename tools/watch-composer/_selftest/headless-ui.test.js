@@ -462,6 +462,33 @@ setTimeout(() => {
   g1.setCfg('tick', '4');                                           // same value: still the same wanted rate
   g1.buildGate();
   ok(g1._bp === 5, 'and the cap still holds while the rate is unchanged -- a pathological dial cannot rebuild forever by moving a slider', 'bp=' + g1._bp);
+  // ---- the controls the new author decisions need -----------------------------------
+  // rotate, finish blend and its colour live in each art block; the blend exists only
+  // where a texture can be pressed through, and Width now belongs to drawn hands alone.
+  it.state.designs.calendar.bgArt = 'ui-art'; it.state.designs.calendar.sfArt = 'ui-art';
+  const nxRot = labels('dial');
+  ok(nxRot.filter((f) => f.label === 'Rotate').length === 2, 'both art blocks gained a Rotate slider', nxRot.filter((f) => f.label === 'Rotate').length);
+  const nxRf = nxRot.filter((f) => f.label === 'Rotate')[0];
+  ok(nxRf.isRange && nxRf.min === 0 && nxRf.max === 359, 'and it walks the whole circle in degrees');
+  ok(!nxRot.some((f) => f.label === 'Finish blend'), 'over enamel there is no texture to blend, so the control withholds itself');
+  it.state.designs.calendar.surface = 'guilloche';
+  const nxBl = labels('dial');
+  const nxChips = nxBl.filter((f) => f.label === 'Finish blend');
+  ok(nxChips.length === 2 && nxChips[0].isChips, 'a textured surface offers the blend on both art slots', nxChips.length);
+  const nxChipV = nxChips[0].opts.map((o) => o.label);
+  ok(['Off', 'Multiply', 'Screen', 'Overlay'].every((w) => nxChipV.some((l) => l.indexOf(w) === 0)), 'the modes offered are off, multiply, screen and overlay', JSON.stringify(nxChipV));
+  it.state.designs.calendar.bgFinishBlend = 'multiply';
+  const nxCo = labels('dial').filter((f) => f.label === 'Blend colour');
+  ok(nxCo.length === 1 && nxCo[0].isColor, 'a live blend offers its target colour picker', nxCo.length);
+  it.state.designs.calendar.bgFinishColor = '#223344';
+  ok(labels('dial').filter((f) => f.label === 'Blend colour')[0].value === '#223344', 'and the picker reports the colour it holds');
+  delete it.state.designs.calendar.bgFinishColor; delete it.state.designs.calendar.bgFinishBlend; delete it.state.designs.calendar.surface;
+  it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } };
+  const nxWRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
+  ok(nxWRow.hideWid === true && nxWRow.showWid === false, 'the sprite-hand row takes its Width slider away', nxWRow.artLabel);
+  delete it.state.designs.calendar.hands['centre-hour'].art;
+  const nxDRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
+  ok(nxDRow.showWid === true && nxDRow.hideWid === false, 'and the drawn hand keeps it: the slider shapes a silhouette a sprite does not have');
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 }, 15);

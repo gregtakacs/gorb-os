@@ -425,7 +425,9 @@
     const redOw = reds(pxC(faceOf(Object.assign({ sfArt: a.id, sfSize: 442, sfFit: 'cover', openwork: 'cross', owBar: 17, owRing: 178, owHub: 24, owRim: 7 }, BLANK))));
     if (redOw > redPlain * 0.9) return fail('openwork left the art in the cut-away: ' + redOw + ' art px on an openworked dial vs ' + redPlain + ' solid');
     say('  dial surface art: ' + redPlain + ' art px on the face, print still reads on top of it at ' + Math.round(visible / inkN * 100) + '% of ' + inkN + ' ink px (' + buried + ' taken by the art), openwork cut it to ' + redOw);
-    it.state.designs = { calendar: E.canonDesign(d) }; it.faces = {};
+    // rotation + finish-blend ride the same fixture on its way out: the manifest and
+    // the bundle are the device's only copy of these choices, so they must carry them.
+    it.state.designs = { calendar: E.canonDesign(Object.assign(d, { bgRot: 30, sfRot: 45, surface: 'guilloche', bgFinishBlend: 'multiply', bgFinishColor: '#223344', sfFinishBlend: 'screen', sfFinishColor: '#fffaf0' })) }; it.faces = {};
     it.exportKit().then(() => {
       try {
         const man = JSON.parse(new TextDecoder().decode(files.filter((f) => f.name === 'manifest.json')[0].data));
@@ -448,6 +450,9 @@
         if (bg.placed !== true || bg.naturalSize[0] !== 8) return fail('assets[] lost the measured source: ' + JSON.stringify(bg));
         if (!/^([0-9a-f]{64})?$/.test(bg.sha256 || '')) return fail('sha256 is neither a hex digest nor absent: ' + bg.sha256);
         if (!man.backgroundArt || man.backgroundArt.asset !== a.id) return fail('the manifest does not say where the backdrop was baked');
+        if (man.backgroundArt.rotDeg !== 30 || man.surfaceArt.rotDeg !== 45) return fail('a loaded backdrop rotation did not reach the manifest: bg=' + man.backgroundArt.rotDeg + ' sf=' + man.surfaceArt.rotDeg);
+        if (man.backgroundArt.finishBlend !== 'multiply' || man.backgroundArt.finishBlendColor !== '#223344') return fail('the plate-slot finish blend or its target colour is missing from the manifest: ' + JSON.stringify([man.backgroundArt.finishBlend, man.backgroundArt.finishBlendColor]));
+        if (man.surfaceArt.finishBlend !== 'screen' || man.surfaceArt.finishBlendColor !== '#fffaf0') return fail('the dial-slot finish blend is missing from the manifest: ' + JSON.stringify([man.surfaceArt.finishBlend, man.surfaceArt.finishBlendColor]));
         const hh = man.hands.filter((h) => h.mount === 'ct1')[0];
         if (!hh) return fail('the transparent subdial lost its hand from the manifest');
         if (!Array.isArray(hh.pivot) || !isFinite(hh.pivot[0]) || !isFinite(hh.pivot[1])) return fail('the art hand has no usable pivot: ' + JSON.stringify(hh.pivot));
@@ -464,10 +469,12 @@
               if (!o.assets.length || !o.assets.every((x) => /^data:image\//.test(x.dataUrl || ''))) return fail('a bundle asset has no bytes');
               if (o.design.bgArt !== a.id) return fail('the bundle lost the plate-backdrop reference');
               if (o.design.sfArt !== a.id) return fail('the bundle lost the dial-surface reference');
+              if (o.design.bgRot !== 30 || o.design.sfRot !== 45 || o.design.bgFinishBlend !== 'multiply' || o.design.sfFinishBlend !== 'screen') return fail('the bundle lost the rotation or the finish blend: ' + JSON.stringify([o.design.bgRot, o.design.sfRot, o.design.bgFinishBlend, o.design.sfFinishBlend]));
               if (new Set(o.assets.map((x) => x.id)).size !== o.assets.length) return fail('the bundle lists an asset twice, or double-counted the one image filling both slots');
               if (!o.assets.every((x) => (x.usedBy || []).length >= 1)) return fail('a bundled asset names no slot that uses it');
               say('  custom art: backdrop in the plate pixels, ' + src.length + ' sources, assets[]=' + man.assets.length +
-                ', svg stamped ' + c.w + 'x' + c.h + ', faint px killed, hand ' + hh.mount + ' pivot ' + hh.pivot.join(','));
+                ', svg stamped ' + c.w + 'x' + c.h + ', faint px killed, hand ' + hh.mount + ' pivot ' + hh.pivot.join(',') +
+                ', rot ' + o.design.bgRot + '/' + o.design.sfRot + '° blend ' + o.design.bgFinishBlend + '/' + o.design.bgFinishColor + ' + ' + o.design.sfFinishBlend + '/' + o.design.sfFinishColor);
               pass();
             } catch (e) { fail('bundle JSON: ' + e.message); }
           }, (e) => fail('bundle unreadable: ' + e.message));

@@ -371,6 +371,46 @@ setTimeout(() => {
       ok(!GF({ style: 'bevel', frameColor: 'steel' }).fc, 'a bevel strikes no frame, so the metal choice is dropped with it');
       ok(!('frameColor' in E.canonDesign({ print: 'none', centre: { hour: 1 }, comps: [{ id: 'g1', type: 'moon', style: 'sphere', frameColor: 'steel' }] }).comps[0]), 'a moon carries no frame colour: the field vanishes on types that draw no ring');
       ok(!!(E.FRAME_COLORS && E.FRAME_COLORS.gilt && E.FRAME_COLORS.steel), 'the metal list ships with the engine');
+      /* ---- art rotation, oval apertures, and the finish blended over the art -------
+       * Three author decisions the pixels must obey: a backdrop may turn about its own
+       * centre, a round window may stand taller than it is wide, and the dial's surface
+       * finish may be pressed back over an opaque image in a chosen colour. Identities
+       * (0°, off, equal Width/Height) serialise to nothing, so no Design ID in the
+       * field moves until the author actually chooses. */
+      const { FakeCanvas } = require('./headless-stub.js');
+      const CAN = (o) => E.canonDesign(Object.assign(JSON.parse(JSON.stringify(base)), o));
+      ok(!('bgRot' in CAN({ bgArt: 'x-1', bgRot: 0 })), 'a 0° backdrop rotation is the identity and stays out of the Design ID');
+      const rotShip = CAN({ bgArt: 'x-1', bgRot: 37, sfArt: 'y-2', sfRot: 180 });
+      ok(rotShip.bgRot === 37 && rotShip.sfRot === 180, 'a real rotation is authored and shipped on both art slots');
+      ok(!('bgRot' in CAN({ bgRot: 37 })), 'a rotation with no art reference vanishes with the rest of its group');
+      const bl = CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishColor: '#223344' });
+      ok(bl.bgFinishBlend === 'multiply' && bl.bgFinishColor === '#223344', 'the finish blend and its target colour ride with the art');
+      ok(!('bgFinishBlend' in CAN({ bgArt: 'x-1', bgFinishBlend: 'off' })), 'off is the identity here too');
+      ok(!('bgFinishBlend' in CAN({ bgArt: 'x-1', bgFinishBlend: 'xor' })), 'a mode the canvas cannot run is dropped, and the colour goes with it');
+      ok(!('bgFinishColor' in CAN({ bgArt: 'x-1', bgFinishColor: '#223344' })), 'a target colour with no blend mode paints nothing and is deleted');
+      ok(!('bgFinishBlend' in CAN({ bgFinishBlend: 'multiply', bgFinishColor: '#223344' })), 'a blend with no art reference vanishes with the art group');
+      const OW = (o) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const oRound = OW({ wshape: 'circle' }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
+      ok(oRound.ry == null && oRound.r === 15, 'an untouched round window is the long-side circle it always was', oRound.r);
+      const oOval = OW({ wshape: 'circle', ww: 2, wh: 1 });
+      const oHole = oOval.lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
+      ok(oHole.r === 30 && oHole.ry === 11, 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
+      ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - 30) < 1e-6 && Math.abs(g.a[3] - 11) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
+      const fo = (f) => { const x = new FakeCanvas().getContext('2d'); const drew = E.finishOver(x, f, 100); return { drew, mode: x.globalCompositeOperation, strokes: x.geom.filter((g) => g.op === 'stroke'), }; };
+      const fGu = fo({ style: 'guilloche', blend: 'multiply', color: '#223344' });
+      ok(fGu.drew === true && fGu.strokes.length > 100 && fGu.mode === 'multiply', 'the sunburst texture is pressed over the art under multiply', fGu.strokes.length);
+      ok(fGu.strokes.some((g) => /^rgba\(34,51,68,/.test(String(g.a[0]))), 'the pressed-in lines carry the author’s target colour, not the dial’s own ink');
+      const fSc = fo({ style: 'guilloche', blend: 'screen', color: '#223344' });
+      ok(fSc.drew === true && fSc.mode === 'screen' && fSc.strokes.length > 0, 'screen brushes the raised strokes on instead');
+      ok(fo({ style: 'matte', blend: 'screen', color: '#fffaf0' }).drew === true, 'the grained finish blends too');
+      ok(fo({ style: 'guilloche', blend: 'overlay', color: '#223344' }).mode === 'overlay', 'overlay runs the whole texture through one composite');
+      ok(fo({ style: 'enamel', blend: 'multiply', color: '#223344' }).drew === false, 'enamel has no texture to press through');
+      ok(fo({ style: 'carbon', blend: 'multiply', color: '#223344' }).drew === false, 'carbon keeps its own palette: the tinted blend declines');
+      ok(fo({ style: 'guilloche', blend: 'off' }).drew === false, 'off paints nothing at all');
+      // the rotation reaches the pixels: drawAsset turns the picture about its centre
+      const Rf = (rot) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });
+      ok(Rf(45).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 45 * Math.PI / 180) < 1e-9), 'a 45° dial-surface art really turns on the glass');
+      ok(!Rf(0).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 0) < 1e-9 && g.a.length === 1), 'an unrotated art is drawn exactly as it was before the slider existed');
       if (checked < 72) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
     process.exit(fails ? 1 : 0);

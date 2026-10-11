@@ -355,9 +355,58 @@
     const r = o.clipR == null ? DR : +o.clipR;
     if (r > 0) { ctx.beginPath(); ctx.arc(C, C, r, 0, TAU); ctx.clip(); }
     const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: o.size == null ? 2 * DR : +o.size, h: o.size == null ? 2 * DR : +o.size,
-      fit: o.fit || 'cover', zoom: o.zoom, alpha: o.opacity == null ? 1 : +o.opacity });
+      fit: o.fit || 'cover', zoom: o.zoom, alpha: o.opacity == null ? 1 : +o.opacity, rot: o.rot });
+    // The surface finish the dial would have worn without the art, laid back over it.
+    // surface() prints UNDER the art, so an opaque image buries the texture; this is the
+    // author's way to press it in (multiply), brush it on (screen) or both (overlay).
+    if (drew) finishOver(ctx, o.finish, r);
     ctx.restore();
     return drew;
+  }
+  const FINISH_BLENDS = ['multiply', 'screen', 'overlay'];
+  /* The finish's texture alone, one composite pass over loaded art. Same geometry the
+   * surface() texture block draws -- sunburst rays, azurage rings, grained specks and the
+   * travelling conic sheen -- but every stroke lands in the author's target colour under
+   * the chosen blend mode instead of the dial's own light/dark pair. enamel has no
+   * texture to lay; carbon and forged weave their own palette, which nothing here can
+   * honestly tint, so both decline and the art stays flat. */
+  function finishOver(ctx, f, clipR) {
+    if (!f || !f.blend || f.blend === 'off' || FINISH_BLENDS.indexOf(f.blend) < 0) return false;
+    const style = f.style || 'enamel';
+    if (style === 'enamel' || style === 'carbon' || style === 'forged') return false;
+    const T = f.tex == null ? 1 : +f.tex;
+    if (!(T > 0)) return false;
+    const mode = f.blend, r = clipR == null ? DR : +clipR, x = C, y = C;
+    const hex = isHex(f.color) ? f.color : (mode === 'multiply' ? '#3a2a14' : '#fffaf0');
+    const n = parseInt(hex.slice(1), 16), rgb = (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255);
+    const ink = (a) => 'rgba(' + rgb + ',' + Math.min(0.9, a) + ')';
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.clip();
+    ctx.globalCompositeOperation = mode;
+    if (style === 'guilloche') {
+      const n2 = Math.round(r * 2.6); ctx.lineWidth = 0.6;
+      if (mode !== 'screen') { ctx.strokeStyle = ink(0.24 * T); for (let i = 0; i < n2; i += 2) { const q = P(x, y, r, (i / n2) * TAU); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(q[0], q[1]); ctx.stroke(); } }
+      if (mode !== 'multiply') { ctx.strokeStyle = ink(0.20 * T); for (let i = 1; i < n2; i += 2) { const q = P(x, y, r, (i / n2) * TAU); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(q[0], q[1]); ctx.stroke(); } }
+      if (mode !== 'multiply') { const cg = ctx.createConicGradient(LIGHT.outer, x, y);
+        [[0, 0.2], [0.25, 0], [0.5, 0.2], [0.75, 0], [1, 0.2]].forEach(([p, a]) => cg.addColorStop(p, ink(Math.min(0.6, a * T)))); ctx.fillStyle = cg; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); }
+      if (mode === 'overlay') { const cd = ctx.createConicGradient(LIGHT.outer, x, y);
+        [[0, 0], [0.25, 0.18], [0.5, 0], [0.75, 0.18], [1, 0]].forEach(([p, a]) => cd.addColorStop(p, ink(Math.min(0.5, a * T)))); ctx.fillStyle = cd; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); }
+    } else if (style === 'azure' || style === 'metal') {
+      ctx.lineWidth = 0.7; let i = 0;
+      for (let q = 2; q < r; q += style === 'metal' ? 1.2 : 1.5, i++) {
+        if (mode === 'screen' && i % 2) continue; if (mode === 'multiply' && !(i % 2)) continue;
+        ctx.strokeStyle = ink((i % 2 ? 0.18 : 0.2) * T); ctx.beginPath(); ctx.arc(x, y, q, 0, TAU); ctx.stroke();
+      }
+      if (mode !== 'multiply') { const cz = ctx.createConicGradient(LIGHT.outer + Math.PI / 2, x, y);
+        [[0, 0.16], [0.07, 0], [0.43, 0], [0.5, 0.16], [0.57, 0], [0.93, 0], [1, 0.16]].forEach(([p, a]) => cz.addColorStop(p, ink(Math.min(0.55, a * T)))); ctx.fillStyle = cz; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); }
+    } else if (style === 'matte') {
+      const R = L().rng((f.seed == null ? 11 : +f.seed) * 7 + 3), n2 = Math.round(r * r * 0.5);
+      for (let i = 0; i < n2; i++) { const a = R() * TAU, d = Math.sqrt(R()) * r, up = R() < 0.5;
+        if (mode === 'screen' && !up) continue; if (mode === 'multiply' && up) continue;
+        ctx.fillStyle = ink(R() * (up ? 0.14 : 0.18) * T); ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, 1); }
+    } else { ctx.restore(); return false; }
+    ctx.restore();
+    return true;
   }
   /* Alpha-weighted centroid of the ink in a canvas: the same "the hub sits on the
    * pivot" intent bake_clock.py:snap_pivot_to_hub enforces at bake time, applied
@@ -653,7 +702,11 @@
   function holePath(h) {
     return (ctx, dx = 0, dy = 0) => {
       const x = h.x + dx, y = h.y + dy;
-      if (h.kind === 'circle') { ctx.moveTo(x + h.r, y); ctx.arc(x, y, h.r, 0, TAU); return; }
+      if (h.kind === 'circle') {
+        // an oval window carries an independent vertical radius; a round hole never sets it
+        if (h.ry != null && h.ry !== h.r) { ctx.ellipse(x, y, Math.max(0.1, h.r), Math.max(0.1, h.ry), 0, 0, TAU); return; }
+        ctx.moveTo(x + h.r, y); ctx.arc(x, y, h.r, 0, TAU); return;
+      }
       const m = ctx.getTransform(); ctx.translate(x, y); ctx.rotate(h.rot || 0);
       if (h.kind === 'rect') ctx.roundRect(-h.w / 2, -h.h / 2, h.w, h.h, h.rad || 0);
       else if (h.kind === 'slot') ctx.roundRect(-h.w / 2, -h.h / 2, h.w, h.h, h.h / 2);
@@ -670,7 +723,7 @@
     };
   }
   function holeBox(h) {
-    if (h.kind === 'circle' || h.kind === 'poly') return [h.x - h.r, h.y - h.r, h.x + h.r, h.y + h.r];
+    if (h.kind === 'circle' || h.kind === 'poly') { const rr = Math.max(h.r, h.ry || 0); return [h.x - rr, h.y - rr, h.x + rr, h.y + rr]; }
     if (h.kind === 'moon' && !h.rot) return [h.x - h.a, h.y - h.a, h.x + h.a, h.y];
     if (h.rot) { const r = h.kind === 'moon' ? h.a : Math.hypot(h.w, h.h) / 2; return [h.x - r, h.y - r, h.x + r, h.y + r]; }
     return [h.x - h.w / 2, h.y - h.h / 2, h.x + h.w / 2, h.y + h.h / 2];
@@ -678,7 +731,10 @@
   // true shape test (in the opening's own rotated frame), so a round centre window no longer hides numerals beside it
   function inside(h, x, y, m) {
     if (h.hidden) return false;
-    if (h.kind === 'circle') return Math.hypot(x - h.x, y - h.y) < h.r + m;
+    if (h.kind === 'circle') {
+      if (h.ry != null && h.ry !== h.r) { const ddx = (x - h.x) / (h.r + m), ddy = (y - h.y) / (h.ry + m); return ddx * ddx + ddy * ddy < 1; }
+      return Math.hypot(x - h.x, y - h.y) < h.r + m;
+    }
     const c = Math.cos(-(h.rot || 0)), sn = Math.sin(-(h.rot || 0)), dx = x - h.x, dy = y - h.y, lx = dx * c - dy * sn, ly = dx * sn + dy * c;
     if (h.kind === 'poly') return Math.hypot(lx, ly) < h.r + m;
     if (h.kind === 'moon') return Math.abs(lx) < h.a + m && ly > -h.a - m && ly < m;
@@ -757,8 +813,14 @@
          * aperture shape is the author's and not a consequence of the data it shows.
          * The circle takes the LONGER side as its diameter: flipping a square window
          * to round then keeps the text it framed instead of shrinking to the short
-         * axis and clipping the glyph. */
-        hole = c.wshape === 'circle' ? { kind: 'circle', x: g.x, y: g.y, r: Math.max(w, h) / 2, style: c.style || 'frame' }
+         * axis and clipping the glyph. Once the author pulls Width and Height apart
+         * the round aperture becomes a true ellipse: half of each side is a radius,
+         * which is the only way a window can be taller than it is wide and still
+         * show its whole date. */
+        const squarer = (+c.ww || 1) === (+c.wh || 1);
+        hole = c.wshape === 'circle' ? (squarer
+            ? { kind: 'circle', x: g.x, y: g.y, r: Math.max(w, h) / 2, style: c.style || 'frame' }
+            : { kind: 'circle', x: g.x, y: g.y, r: w / 2, ry: h / 2, style: c.style || 'frame' })
           : { kind: 'rect', x: g.x, y: g.y, w, h, rad: 2.5 * sz, rot: g.rot, style: c.style || 'frame' };
         if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
       }
@@ -1388,14 +1450,15 @@
      * and the aperture punches cut through it, so an art dial reads as a printed dial
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
-    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR });
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11 } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
     // the dial centre, and carry the holes into that same scaled space -- printMain tests
     // its own ink against them, and an unscaled hole list would cull the wrong ticks.
     const pk = perimK(D), holes = lay.dialHoles;
-    const pkHoles = pk === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pk, y: C + (h.y - C) * pk, r: (h.r || 0) * pk, w: h.w * pk, h: h.h * pk }));
+    const pkHoles = pk === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pk, y: C + (h.y - C) * pk, r: (h.r || 0) * pk, ry: h.ry == null ? h.ry : h.ry * pk, w: h.w * pk, h: h.h * pk }));
     const push = (x2) => { if (pk === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pk, pk); x2.translate(-C, -C); return x2; };
     const pop = (x2) => { if (x2) x2.restore(); };
     const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
@@ -1432,11 +1495,12 @@
     const lens = () => { ctx.save(); ctx.translate(C, C); ctx.scale(kk, kk); ctx.translate(-C, -C); };
     const unlens = () => { ctx.restore(); };
     lens(); surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false); unlens();
-    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR });
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11 } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // chapter print and its holes go through the lens together -- the same pair perimK scales
     const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
-    const pkHoles = pkd === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pkd, y: C + (h.y - C) * pkd, r: (h.r || 0) * pkd, w: h.w * pkd, h: h.h * pkd }));
+    const pkHoles = pkd === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pkd, y: C + (h.y - C) * pkd, r: (h.r || 0) * pkd, ry: h.ry == null ? h.ry : h.ry * pkd, w: h.w * pkd, h: h.h * pkd }));
     const push = (x2) => { if (pkd === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pkd, pkd); x2.translate(-C, -C); return x2; };
     const pop = (x2) => { if (x2) x2.restore(); };
     const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
@@ -2589,7 +2653,8 @@
      * reason: that canvas is already blended every tick with or without the art. Under
      * "no case" the backdrop is NOT baked here at all — the face carries it as F.bgL and
      * compose() blends it untransformed, so the opening can move without resampling it. */
-    if (o.caseStyle !== 'none') artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) });
+    if (o.caseStyle !== 'none') artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11 } });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2691,7 +2756,8 @@
      * one promise of the option is that the author's own image is never resampled. So the
      * face carries it as its own layer and compose() blends it untransformed. */
     F.bgL = null;
-    if (o.caseStyle === 'none') { const g = cv(S); if (artInDial(g.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o) })) F.bgL = g; }
+    if (o.caseStyle === 'none') { const g = cv(S); if (artInDial(g.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11 } })) F.bgL = g; }
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     // a transparent subdial contributes geometry only: its centre and radius still place
@@ -3030,13 +3096,16 @@
      * feature existed, or every design id already in the field would change. */
     const blank = (v) => v == null || v === '';
     const stripArt = (p, defSize) => {
-      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'];
+      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor'];
       if (blank(d[p + 'Art'])) { keys.forEach((k) => delete d[k]); return; }
       if (!d[p + 'Fit'] || d[p + 'Fit'] === 'cover') delete d[p + 'Fit'];
       [p + 'X', p + 'Y'].forEach((k) => { if (+d[k] === 0 || blank(d[k])) delete d[k]; });
       if (blank(d[p + 'Zoom']) || +d[p + 'Zoom'] === 1) delete d[p + 'Zoom'];   // 1 is the identity: a design that never zooms must not read as a different one
       if (blank(d[p + 'Size']) || +d[p + 'Size'] === defSize) delete d[p + 'Size'];
       if (blank(d[p + 'Opacity']) || +d[p + 'Opacity'] === 1) delete d[p + 'Opacity'];
+      if (blank(d[p + 'Rot']) || +d[p + 'Rot'] === 0) delete d[p + 'Rot'];       // 0° is the identity, same rule as the zoom
+      if (FINISH_BLENDS.indexOf(d[p + 'FinishBlend']) < 0) delete d[p + 'FinishBlend'];
+      if (!d[p + 'FinishBlend'] || !isHex(d[p + 'FinishColor'])) delete d[p + 'FinishColor'];
     };
     stripArt('bg', 442);
     stripArt('sf', 442);
@@ -3105,5 +3174,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, finishOver, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

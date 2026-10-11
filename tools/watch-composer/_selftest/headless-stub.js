@@ -46,7 +46,7 @@ function stubCtx() {
     rotate(a) { this._g('rotate', a); mul({ a: Math.cos(a), b: Math.sin(a), c: -Math.sin(a), d: Math.cos(a), e: 0, f: 0 }); }, transform() { }, setLineDash(d) { this._g('dash', d && d.length ? String(d) : 'solid'); },
     beginPath() { }, closePath() { }, moveTo(x, y) { this._g('moveTo', x, y); }, lineTo(x, y) { this._g('lineTo', x, y); },
     bezierCurveTo() { },
-    quadraticCurveTo() { }, arc(x, y, r, a0, a1) { this._g('arc', x, y, r, a0, a1); }, arcTo() { }, ellipse() { }, rect() { }, roundRect() { },
+    quadraticCurveTo() { }, arc(x, y, r, a0, a1) { this._g('arc', x, y, r, a0, a1); }, arcTo() { }, ellipse(x, y, rx, ry, rot, a0, a1) { this._g('ellipse', x, y, rx, ry, rot, a0, a1); }, rect() { }, roundRect() { },
     fill() { this._g('fill', this.fillStyle); }, stroke() { this._g('stroke', this.strokeStyle); }, clip() { this._op('clip'); }, fillRect(x, y, w, h) { this._g('fillRect', x, y, w, h); }, strokeRect(x, y, w, h) { this._g('strokeRect', x, y, w, h); }, clearRect() { },
     drawImage(img) {
       const s = (img && img._src && SIZES[img._src]) || [10, 10];

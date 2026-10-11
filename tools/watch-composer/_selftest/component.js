@@ -152,7 +152,10 @@ class Component extends DCLogic {
     // the backdrop travels with the dial, but it is drawn at the plate slot, so it has to
     // reach movement() through the movement options -- and mvKey() must see it, because
     // swapping the art swaps the base frames the whole budget is priced against
-    const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
+    const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity', 'bgRot', 'bgFinishBlend', 'bgFinishColor'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
+    // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
+    // the texture has to travel with it: changing Surface re-bakes these base frames
+    if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; }
     return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
   mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
@@ -867,15 +870,21 @@ class Component extends DCLogic {
       const kA = (fc.inset == null ? k : fc.inset) || 1;
       const pxa = (v) => 233 + (v - 233) * kA;
       const b = E.artBox(D[slot + 'Art'], { x: 233 + (+D[slot + 'X'] || 0), y: 233 + (+D[slot + 'Y'] || 0), w: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], h: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], fit: D[slot + 'Fit'] || 'cover', zoom: D[slot + 'Zoom'] == null ? 1 : +D[slot + 'Zoom'] });
+      // The engine spins the art about its own centre (drawAsset's rot); the frame owes
+      // the author the same turn about the same point, or the guide would lie about the crop.
+      const rotA = (Math.round(+D[slot + 'Rot'] || 0) * Math.PI) / 180;
+      const ox = pxa(233 + (+D[slot + 'X'] || 0)), oy = pxa(233 + (+D[slot + 'Y'] || 0));
+      x.save();
+      if (rotA) { x.translate(ox, oy); x.rotate(rotA); x.translate(-ox, -oy); }
       x.setLineDash([]); x.lineWidth = 1.25; x.strokeStyle = 'rgba(122,214,255,.9)';
       const L = pxa(b.x - b.w / 2), T = pxa(b.y - b.h / 2), W = b.w * kA, H = b.h * kA;
       x.strokeRect(L, T, W, H);
       x.lineWidth = 2.5; x.strokeStyle = 'rgba(122,214,255,1)';   // corner ticks: the box reads even over busy art
       [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]].forEach((q) => { x.beginPath(); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0] + 9 * q[2], T + q[1]); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0], T + q[1] + 9 * q[3]); x.stroke(); });
-      const ox = pxa(233 + (+D[slot + 'X'] || 0)), oy = pxa(233 + (+D[slot + 'Y'] || 0));
       x.setLineDash([3, 4]); x.lineWidth = 1; x.strokeStyle = 'rgba(122,214,255,.55)';
       x.beginPath(); x.moveTo(ox - 30, oy); x.lineTo(ox + 30, oy); x.moveTo(ox, oy - 30); x.lineTo(ox, oy + 30); x.stroke();
       x.beginPath(); x.arc(ox, oy, 3, 0, TAU); x.stroke();         // the art's own centre, which is NOT the hub
+      x.restore();
     }
     if (this.state.selKind === 'hand') this.drawHandGhost(x, fc, d, k, px);
     x.restore();
@@ -1439,10 +1448,10 @@ class Component extends DCLogic {
       textKits,
       handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
       assets: await this.kitAssets(files, D0),
-      backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
+      backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
       // on the dial face, so it ships inside dial.png rather than as its own layer:
       // print, numerals and markers were drawn over it, apertures cut through it
-      surfaceArt: D0.sfArt ? { asset: D0.sfArt, fit: D0.sfFit || 'cover', offsetPx: [+D0.sfX || 0, +D0.sfY || 0], sizePx: D0.sfSize == null ? 442 : +D0.sfSize, opacity: D0.sfOpacity == null ? 1 : +D0.sfOpacity, bakedInto: 'layers/dial.png (the dial face, under the chapter print)', note: 'the dial is already one blended layer per tick, so art inside it costs nothing; there is no separate art plane to composite' } : undefined,
+      surfaceArt: D0.sfArt ? { asset: D0.sfArt, fit: D0.sfFit || 'cover', offsetPx: [+D0.sfX || 0, +D0.sfY || 0], sizePx: D0.sfSize == null ? 442 : +D0.sfSize, rotDeg: Math.round(+D0.sfRot || 0), opacity: D0.sfOpacity == null ? 1 : +D0.sfOpacity, finishBlend: D0.sfFinishBlend || undefined, finishBlendColor: D0.sfFinishBlend ? (D0.sfFinishColor || (D0.sfFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, bakedInto: 'layers/dial.png (the dial face, under the chapter print)', note: 'the dial is already one blended layer per tick, so art inside it costs nothing; there is no separate art plane to composite' } : undefined,
       transparentSubdials: Object.keys(ghostSubs),
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
     };
@@ -1586,7 +1595,8 @@ class Component extends DCLogic {
       if (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle')) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
       const sr = E.SIZE_RANGE[sel.type];
       R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
-      if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); }
+      if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1);
+        if (sel.wshape === 'circle') selFields.push(Nt('', 'At equal Width and Height the round aperture takes the longer side as its diameter. Pull the two apart and the round opening becomes a true ellipse: half of each is a radius, so the aperture can stand taller than wide.')); }
       Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
       // The raised ring only exists when the style draws it: the choice appears with the
       // style that uses it, and Gilt is the movement's own metal -- nothing was decided
@@ -1744,8 +1754,10 @@ class Component extends DCLogic {
         const id = D[p + 'Art'] || null, a = id && E.assetGet(id);
         const box = D[p + 'Size'] == null ? 442 : +D[p + 'Size'];
         const zm = D[p + 'Zoom'] == null ? 1 : +D[p + 'Zoom'];
+        const rot = Math.round(+D[p + 'Rot'] || 0);
+        const bm = D[p + 'FinishBlend'] || 'off';
         const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
-        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'].forEach((k) => delete d[k]); });
+        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor'].forEach((k) => delete d[k]); });
         const out = [H(title, 'art-' + p),
           Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
@@ -1762,7 +1774,23 @@ class Component extends DCLogic {
           // centre. The dial clip is applied after both, so a zoomed image still
           // cannot cross the rehaut.
           Rg('Zoom', zm, 0.2, 4, 0.01, ud(p + 'Zoom'), zm.toFixed(2) + '\u00d7'),
+          // Rotation turns the picture about its own centre, the same point the pan
+          // offsets carry: aim an artwork that was scanned crooked without touching
+          // Size or Offset, and the guide's dashed frame turns with it.
+          Rg('Rotate', rot, 0, 359, 1, ud(p + 'Rot'), rot + '\u00b0'),
           Rg('Opacity', D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity'], 0, 1, 0.01, ud(p + 'Opacity'), Math.round((D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity']) * 100) + '%'));
+        if (rot) out.push(Nt('', 'A rotated cover image can bring its edge inside the dial: raise Size or Zoom until the corners are covered again.'));
+        /* The surface finish the dial would wear with no art (Surface, under Colour) is
+         * drawn UNDER the picture, so an opaque image buries it. This lays the texture
+         * back over the art in one composite pass, tinted to the author's target colour:
+         * multiply presses it in, screen brushes it on, overlay runs both. enamel has
+         * none and carbon/forged bring their own palette, so the control appears only
+         * for the finishes that have a texture to press through. */
+        if (['guilloche', 'azure', 'metal', 'matte'].indexOf(surf) >= 0) {
+          out.push(Ch('Finish blend', bm, [{ v: 'off', label: 'Off \u00b7 art lies flat' }, { v: 'multiply', label: 'Multiply \u00b7 texture pressed in' }, { v: 'screen', label: 'Screen \u00b7 texture brushed on' }, { v: 'overlay', label: 'Overlay \u00b7 both' }], ud(p + 'FinishBlend')));
+          if (bm !== 'off') out.push(Co('Blend colour', D[p + 'FinishColor'], (v) => this.upd((d) => { d[p + 'FinishColor'] = v; }), bm === 'screen' ? 'Warm white' : 'Umber', p),
+            Nt('', 'The dial\u2019s ' + (E.SURFACES[surf] || surf) + ' texture lands on the image in this colour under the ' + bm + ' blend. The texture\u2019s own alpha is the mask, so only the raised and shadowed strokes tint \u2014 the flat picture stays untouched.'));
+        }
         const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
           : fits && fits.ok ? price : fits.why;
         out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
@@ -1968,6 +1996,9 @@ class Component extends DCLogic {
            * the art path untouched. (px,py) is authored in SOURCE pixels and the engine
            * scales it with the sprite, so a resize never moves the pivot off the hub. */
           hasArt: !!hc.art, artLabel: (hc.art && E.assetGet(hc.art)) ? E.assetGet(hc.art).name : hc.art ? 'no bytes for this reference' : 'Procedural',
+          // the Width slider shapes the DRAWN silhouette (handParts' stroke); a sprite
+          // row has no stroke to widen, so the slider leaves the row instead of lying
+          showWid: !hc.art, hideWid: !!hc.art,
           rot0: hc.rot0 == null ? 0 : Math.round(+hc.rot0), zoom: hc.zoom == null ? 1 : +hc.zoom,
           onRot0: (e) => this.setHand(id, { rot0: +e.target.value || 0 }),
           onZoom: (e) => this.setHand(id, { zoom: Math.min(8, Math.max(0.05, +e.target.value || 1)) }),

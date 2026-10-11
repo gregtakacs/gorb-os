@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "display/display.c"
         "gfx/orb_gfx.c"
+        "gfx/orb_sched.c"
         "clock/clock_view.c"
         "knob/knob.c"
         "color/color_picker.c"

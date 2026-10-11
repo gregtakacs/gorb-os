@@ -78,6 +78,7 @@
 #include "lvgl.h"
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
+#include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
 #include "orb_net.h"   /* orb_net_time_synced(): the dial's second time source */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
@@ -97,13 +98,10 @@ static const char *TAG = "clock";
 #define CLOCK_EPOCH 1700000000  /* Nov 2023 baseline */
 
 static lv_obj_t *s_scr;
-static lv_obj_t *s_plate;
 static lv_obj_t *s_overlay;
 static lv_obj_t *s_hand[5];
 static lv_obj_t *s_shadow[5];
-static lv_timer_t *s_tick_timer;
 
-static lv_image_dsc_t s_plate_dsc;
 static lv_image_dsc_t s_overlay_dsc;
 static lv_image_dsc_t s_hand_dsc[5];
 static lv_image_dsc_t s_shadow_dsc[5];
@@ -121,65 +119,11 @@ static int32_t   s_aux_ang_10[CLK_AUX_MAX];   /* INT32_MIN = nothing drawn */
 static uint32_t  s_aux_logged;                /* bit i: "no input" printed for row i */
 static int       s_aux_at = -1;               /* order index the block rides above */
 
-/* bgAnim plate frames (baked in assets/clock_assets.h -> clk_bg_frames). */
-#define CLK_BG_MAX 8
-static lv_image_dsc_t s_bg_dsc[CLK_BG_MAX];
-static uint32_t s_bg_tick      = 0;   /* ticks since bounce-on, for the loop */
-static uint32_t s_bg_every     = 1;   /* ticks each bg frame is held for     */
-static int      s_bg_shown     = -1;  /* plate frame on the glass now (0=still) */
-static uint32_t s_bg_play_start = 0;  /* ms; 0 = no non-loop play running */
-static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    */
 
-/* ---- GIF delta bank (bg_mode == 1) --------------------------------------
- * s_canvas mirrors the pixels the panel currently holds under the plate.
- * The plate widget's image data points AT the canvas, so LVGL re-renders the
- * plate from it whenever an area is invalidated — blitting a frame's delta
- * rects into the canvas and invalidating exactly those areas (plus whatever
- * the hand rotations dirty themselves) is all it takes to animate the
- * background with no full-page repaint. */
-#define CLK_GIF_MAX 32
-#define CLK_GIF_TICK_MS 40            /* 25 fps target; flush self-throttles */
 
-/* Two motions share the one fast tick in GIF mode: the second hand sweeping
- * (which wants every tick to look smooth) and the GIF background advancing
- * (which does not -- a frame held a few ms longer is imperceptible). Flush cost
- * scales with the number of marked ROWS a commit DMA's, and the two motions
- * mark overlapping-but-not-identical row sets: gif_apply_frame marks the
- * changed rects, mark_all_layers marks the hands' swept boxes. Because flush
- * (~51 ms) exceeds the GIF's own ~40 ms delay, the GIF is perpetually behind and
- * advances EVERY tick, so every frame pays GIF-rows UNION hand-rows. Advancing
- * the GIF only every Nth tick lets the intervening ticks DMA just the hands.
- * Whether that actually drops tiles/frame (i.e. whether the GIF marks rows the
- * hands do not already cover) is the question this flag is here to answer --
- * read chunks/s in the fps line: 135 = GIF marks nothing extra, lower = it does.
- * N=1 = no throttle (original behaviour).
- *
- * Measured (tiles/frame = chunks/s / fps): /1 = 9.0 tiles, 15 fps; /2 = 8.0
- * tiles, 18 fps; /3 = 8.3 tiles, 18 fps. So the GIF contributes only ~1 tile/
- * frame; /2 was the perf sweet spot (the same 18 fps as /3 but a smoother
- * background, and fewer tiles/frame). The plateau at 18 fps is NOT the GIF -- it
- * is mark_all_layers() re-marking all three hands' FULL swept boxes (+shadows
- * +overlay) every tick, even the hour/minute that did not move. That ~8-tile
- * hand-box floor is what keeps flush >= ~47 ms; breaking past it needs a
- * stationary hand to mark only the rows it shares with a moving layer, not its
- * whole box -- which must be done without re-opening the freeze bug (see
- * mark_all_layers).
- *
- * SHIPPED DEFAULT IS 1: visual fidelity of the background wins over the +3 fps
- * that /2's half-speed GIF buys. Set to 2 only if throughput is prioritised
- * over background smoothness. */
-#define CLK_GIF_THROTTLE 1
-
-/* L3/L4: rather than invalidating the plate through LVGL whenever a GIF delta
- * rect or a hand rotation dirties it — the software image blit measured
- * ~250-300 cycles/px (~85 ms/frame on the orb ticks; experiment A: dropping the
- * plate invalidation took render~ 100->14 ms and fps 8->23) — the tick marks
- * the affected rows and the L4 commit hook (clock_layer_commit/paint_row)
- * rebuilds them straight
- * in the panel mirror: background restored out of the canvas, then the
- * hands/shadows/glass composited over it. 0 = old all-through-LVGL path
- * (A/B fallback). */
-#define CLK_BG_DIRECT_PUSH 1
+/* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
+ * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
+ * the hook can never disagree about who owns a row. */
 
 /* Re-mark every layer's full swept box each tick on L4/GIF themes (see
  * mark_all_layers). SHIPPED = 0: a layer marks only the rows it actually
@@ -196,37 +140,11 @@ static uint32_t s_bg_last_play  = 0;  /* ms; start of the last finished play    
 #define CLOCK_L4_MARK_STATIC_BOXES 0
 #endif
 
-static uint16_t        *s_canvas;      /* PSRAM, CLK_SCR_W*CLK_SCR_H RGB565 */
-static lv_image_dsc_t   s_canvas_dsc;
-static int              s_gif_shown = 0;   /* frame the canvas holds now */
-static uint32_t         s_gif_due;         /* lv_tick ms the next frame is due */
-static uint32_t         s_fps_t0, s_fps_ticks;
-/* Deadline ladder for the tick (see tick_timer_cb): lv_timer measures its
- * period from when the LAST RUN STARTED but we re-set the period from the
- * callback's END, so anything shorted from the requested period shows up
- * as schedule, not drift. 0 = not yet anchored (fresh start / unpark). */
-static uint32_t         s_tick_due;
 /* GIF-mode hand beat state (hand_angles): tick counter, the true seconds it
  * was last re-anchored to, and the wall fraction held between beats. */
 static uint32_t         s_bt_ctr = 0;
 static int              s_bt_sec = -1;
 static double           s_bt_frac = 0.0;
-static uint32_t         s_fps_bench_f0;
-static uint64_t         s_fps_bench_t0;
-static uint64_t         s_fps_pix0;
-static uint32_t         s_fps_chunk0;
-static uint64_t         s_fps_sub0;
-static uint32_t         s_fps_te0;        /* display_te_wait_us() last read */
-/* Commit-hook phase breakdown (per-second deltas on the fps line, ms). The
- * flush is one number in display's own bookkeeping; these say which of the
- * hook's three passes eats it, so an optimization is chosen by measurement and
- * not by which loop looks expensive: rest = take the mirror row + wipe the
- * staging row back to plain canvas, paint = every layer's gfx_blend_px traffic,
- * cmp = the flush gate (compare the staged row against the mirror and write
- * back what changed). Per-layer blend counts live next to gfx_paint_row_ctx. */
-static uint64_t         s_hk_rest_us0, s_hk_paint_us0, s_hk_cmp_us0;
-/* Previous-second baselines of display's commit-phase totals (mirror/hook/te/dma). */
-static uint64_t         s_fps_ph0, s_fps_ph1, s_fps_ph2, s_fps_ph3;
 
 /* ---- tourbillon: an animated second hand (frame bank + device rotation) ----
  * The kit's seconds layer is N full-canvas frames that share geometry and
@@ -263,38 +181,6 @@ static int32_t  s_wp_lo, s_wp_hi;
 
 
 
-static bool gif_mode(void)
-{
-    return clk_theme.bg_mode == 1 && clk_theme.gif_frames >= 2
-           && clk_theme.gif_frames <= CLK_GIF_MAX && s_canvas != NULL;
-}
-
-/* GIF-mode beat: the tick rides the GIF's OWN baked delay, so one tick is one
- * GIF frame and every frame is up for exactly the same number of ticks. A tick
- * faster than the GIF's delay does not yield that delay — the frame still
- * only flips on a tick, so a 67 ms GIF on a 40 ms tick lands on 2-tick holds
- * (~9 fps, and uneven when flush jitter crosses the due boundary). Slower is
- * impossible; equal is the only clean answer. The delay table is baked
- * uniform per theme (--bg-fps), so frame 0's delay is the tempo. The
- * sweeping hand composes on every tick but reads the wall clock, not the
- * tick count, so it stays time-accurate at any sampling rate — and with a
- * tickRate declared it quantises to 1/tickRate steps, so extra ticks between
- * beats cost no hand redraw (see hand_angles()). */
-static uint32_t gif_tick_ms(void)
-{
-    const uint32_t d = clk_gif_delays[0];
-    if (d < 20) return 20;              /* sanity floor: never spin past 50 fps */
-    return d;
-}
-
-static bool bg_live(void)
-{
-    if (clk_theme.bg_mode == 1)
-        return gif_mode();
-    return clk_theme.bg_frames > 0 && clk_theme.bg_frames <= CLK_BG_MAX;
-}
-
-static bool     s_active = false;     /* clock is the on-screen view */
 static int64_t  s_t0_us  = 0;         /* epoch anchor for the wall clock */
 static bool     s_warned_screen = false;
 
@@ -319,19 +205,12 @@ static const uint8_t *s_art;
  * the bank was linked into .rodata. See main/art/art_bank.h. */
 static const uint8_t *blob(void) { return s_art; }
 
+/* The tick's policy callback (below) reads the time through it; defined with the
+ * compose block further down, like tick_base_ms() used to be declared for
+ * tick_timer_cb. */
+static void compose_now(void);
 
-static void fill_plate_dsc(lv_image_dsc_t *d)
-{
-    memset(d, 0, sizeof(*d));
-    d->header.magic      = LV_IMAGE_HEADER_MAGIC;
-    d->header.cf         = LV_COLOR_FORMAT_RGB565;
-    d->header.flags      = 0;
-    d->header.w          = CLK_SCR_W;
-    d->header.h          = CLK_SCR_H;
-    d->header.stride     = (uint32_t)CLK_SCR_W * 2u;
-    d->data_size         = (uint32_t)CLK_SCR_W * (uint32_t)CLK_SCR_H * 2u;
-    d->data              = blob() + clk_theme.plate_off;
-}
+
 
 /* The sprite the given layer index draws RIGHT NOW: a tourbillon frame when
  * the theme has a frame bank on the second hand, the static hand otherwise.
@@ -345,130 +224,9 @@ static const clk_sprite_t *layer_spr(const int k)
     return &clk_theme.hand[k];
 }
 
-/* ---- bgAnim: port of orb-os bg_anim_frame() / bg_rate() ------------------
-
- * A looping theme cycles the still plate plus its baked extra frames forever,
- * advancing off the tick count so every frame is up for exactly the same
- * number of ticks; a non-looping theme holds the still plate until bg_every
- * seconds have passed, plays the extras through once at bg_fps, and holds
- * again. The tick period is chosen to divide the animation's frame period
- * (bg_rate) so the hand and the background share one beat instead of beating
- * against each other. */
-static uint32_t tick_base_ms(void);
-static uint32_t bg_rate(uint32_t base, uint32_t *every);
-
-static void build_bg_dscs(void)
-{
-    for (int i = 0; i < (int)clk_theme.bg_frames && i < CLK_BG_MAX; i++) {
-        s_bg_dsc[i]     = s_plate_dsc;            /* same w/h/stride/cf */
-        s_bg_dsc[i].data = blob() + clk_bg_frames[i];
-    }
-}
-
-static int bg_frame_now(void)
-{
-    if (!bg_live()) return 0;
-
-    if (clk_theme.bg_loop)
-        return (int)((s_bg_tick / (s_bg_every ? s_bg_every : 1))
-                     % (uint32_t)(clk_theme.bg_frames + 1));
-
-    const uint32_t now  = lv_tick_get();
-    const uint32_t step = 1000u / (uint32_t)(clk_theme.bg_fps < 1 ? 1 : clk_theme.bg_fps);
-    if (s_bg_play_start == 0) {
-        if (s_bg_last_play == 0) { s_bg_last_play = now; return 0; }
-        if (now - s_bg_last_play < (uint32_t)clk_theme.bg_every * 1000u) return 0;
-        s_bg_play_start = now ? now : 1;
-        ESP_LOGI(TAG, "bg play starts: %u frames at %u fps",
-                 (unsigned)clk_theme.bg_frames, (unsigned)clk_theme.bg_fps);
-    }
-    const uint32_t into = now - s_bg_play_start;
-    const int idx = (int)(into / (step ? step : 1));
-    if (idx > (int)clk_theme.bg_frames) {       /* played through: hold the still */
-        ESP_LOGI(TAG, "bg play ends after %lu ms, holding %u s",
-                 (unsigned long)into, (unsigned)clk_theme.bg_every);
-        s_bg_play_start = 0;
-        s_bg_last_play  = now;
-        return 0;
-    }
-    return idx;
-}
-
-static void show_plate_frame(int idx)
-{
-    if (!bg_live() || idx == s_bg_shown) return;
-    s_bg_shown = idx;
-    lv_image_set_src(s_plate, idx == 0 ? &s_plate_dsc : &s_bg_dsc[idx - 1]);
-    lv_obj_invalidate(s_plate);
-}
 
 
-#if CLK_BG_DIRECT_PUSH
-static bool l4_active(void);
-static void request_commit(void);
-#endif
 
-/* Apply frame `tgt`'s delta rects into the PSRAM canvas and get them onto the
- * glass. The canvas already holds frame tgt-1 (baked that way), so copying
- * the changed rects makes it hold tgt exactly where tgt differs perceptibly.
- *
- * L3 (CLK_BG_DIRECT_PUSH): the glass update is a straight push into the panel
- * mirror — LVGL's plate re-blit cost those pixels ~250-300 cycles each. The
- * layers that PAINT OVER the background (hand/shadow/glass) are restored by
- * the L4 commit hook (see paint_row): the pushed rows are marked, and just
- * before the bands DMA the mirror out, the affected layers are composited
- * directly into it with LVGL's own nearest-neighbour rotation maths.
- *
- * If the mirror is unavailable (no PSRAM) or a push is rejected, that rect
- * falls back to the classic path: invalidate the plate area and let LVGL
- * re-render plate and layers over it. */
-static void gif_apply_frame(int tgt)
-{
-    const uint16_t lo = clk_bg_rect_first[tgt];
-    const uint16_t hi = clk_bg_rect_first[tgt + 1];
-    const uint8_t *base = blob();
-
-    /* Bounding box of everything pushed this tick (screen coords). */
-    bool any_pushed = false;
-
-    for (uint16_t r = lo; r < hi; r++) {
-        const clk_bg_rect_t *rc = &clk_bg_rects[r];
-        if (rc->w == 0 || rc->h == 0) continue;
-        const uint16_t *src = (const uint16_t *)(base + rc->off);
-        for (int y = 0; y < rc->h; y++) {
-            uint16_t *dst = &s_canvas[(size_t)(rc->y + y) * CLK_SCR_W + rc->x];
-            memcpy(dst, src + (size_t)y * rc->w, (size_t)rc->w * sizeof(uint16_t));
-        }
-        bool pushed = false;
-#if CLK_BG_DIRECT_PUSH
-        /* L4: do NOT write the mirror here. The canvas is now up to date and the
-         * commit hook restores exactly these rows out of it at the one safe
-         * moment (every chunk mirrored, before the bands DMA). Pushing straight
-         * into the mirror here was the bug: a tick can run while an earlier
-         * frame's flush is still in flight, so the push overwrote rows whose
-         * hand pixels a previous commit had already composited, and the marks
-         * for them had been consumed -- hands vanished over precisely the
-         * pushed rects. One writer per row, and it is the hook. */
-        if (l4_active()) {
-            gfx_mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1, true);
-            pushed = true;
-        }
-#endif
-        if (!pushed) {
-            lv_area_t a = { rc->x, rc->y,
-                            (lv_coord_t)(rc->x + rc->w - 1),
-                            (lv_coord_t)(rc->y + rc->h - 1) };
-            lv_obj_invalidate_area(s_plate, &a);
-        }
-    }
-#if CLK_BG_DIRECT_PUSH
-    (void)any_pushed;
-    /* Rows were painted outside LVGL: give LVGL a 1 px job so a commit (and
-     * with it our hook, and the band DMA that ships the rows) actually runs. */
-    request_commit();
-#endif
-    s_gif_shown = tgt;
-}
 
 /* Map an orb-os blend (0 normal, 1 multiply, 2 screen) onto LVGL's image blend. */
 static lv_blend_mode_t map_blend(uint8_t b)
@@ -519,7 +277,7 @@ static uint32_t hand_beat_ticks(void)
 {
     int rate = clk_theme.tick_rate;
     if (rate < 1) rate = 1;
-    const uint32_t t = gif_tick_ms();
+    const uint32_t t = orb_bg_gif_tick_ms();
     const uint32_t n = (uint32_t)((1000.0 / (double)rate) / (double)t + 0.5);
     return n < 1 ? 1 : n;
 }
@@ -547,7 +305,7 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
      * tpb <= 1 means the tick is at or below the beat: a true sweep, wall
      * sampled every tick. Non-GIF themes are untouched — there the tick
      * already runs at tickRate and sampling once per tick IS the beat. */
-    if (sweep && clk_theme.tick_rate > 0 && gif_mode()) {
+    if (sweep && clk_theme.tick_rate > 0 && orb_bg_gif_mode()) {
         const uint32_t tpb = hand_beat_ticks();
         if (tpb > 1) {
             if (sec != s_bt_sec) {          /* true seconds re-anchor the phase */
@@ -671,7 +429,7 @@ static void apply_angles(const float ang[5])
          * classic path is back in charge and the wedge goes to LVGL. */
         if (have) {
 #if CLK_BG_DIRECT_PUSH
-            if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+            if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
             else
 #endif
                 lv_obj_invalidate_area(s_scr, &u);
@@ -694,7 +452,7 @@ static void apply_angles(const float ang[5])
              * box once more so a lost invalidation can never stick. */
             if (have) {
 #if CLK_BG_DIRECT_PUSH
-                if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+                if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
                 else
 #endif
                     lv_obj_invalidate_area(s_scr, &u);
@@ -857,7 +615,7 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
 static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 {
 #if CLK_BG_DIRECT_PUSH
-    if (!l4_active()) return false;
+    if (!orb_sched_l4_active()) return false;
 #endif
     if (clk_theme.tourbillon_n <= 0 || s_shadow[2]) return false;
     if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
@@ -911,7 +669,7 @@ static void tourbillon_advance(void)
     lv_image_set_src(s_hand[2], &s_tourb_dsc[f]);
     lv_display_enable_invalidation(disp, true);
 #if CLK_BG_DIRECT_PUSH
-    if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+    if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
     else
 #endif
         lv_obj_invalidate_area(s_scr, &u);
@@ -947,26 +705,18 @@ static void tourbillon_advance(void)
  * draws for the first paint and for the wedges it still renders itself.
  * Cost is the clipped box with two early-outs (source bounds, alpha==0):
  * the needles are mostly empty box, so the mask skip drops ~3/4 of it. */
-
-
-/* L4 only replaces LVGL when there is a canvas to restore background from;
- * without it (non-GIF themes, or the PSRAM canvas alloc failed) the classic
- * all-through-LVGL path stays in charge. */
-static bool l4_active(void)
+/* The per-tick dial policy the scheduler drives: read the time, pose the hands
+ * off it, and step the tourbillon's frame bank. Everything else the tick used to
+ * do — the background step, the marks, the commit nudge, the deadline ladder, the
+ * throughput report — is the scheduler's. Kept as ONE callback rather than two
+ * because the pair has no meaning apart: the frame bank advances against the
+ * angle compose_now just settled on, and a tick that ran one without the other
+ * would composite last second's carriage at this second's angle. */
+static void clock_tick_policy(lv_timer_t *timer)
 {
-    return CLK_BG_DIRECT_PUSH && s_canvas != NULL && gif_mode();
-}
-
-/* LVGL starts a commit only when it has something of its own to render, so a
- * tick that pushed background and moved hands purely through the painter has
- * to give it a reason: a 1 px plate nudge whose chunk mirrors a correct pixel
- * and whose is_last drives the commit our hook hangs on. */
-static void request_commit(void)
-{
-    if (!gfx_commit_needed() || !l4_active()) return;
-    gfx_commit_consumed();
-    static const lv_area_t nudge = { 0, 0, 0, 0 };
-    lv_obj_invalidate_area(s_plate, &nudge);
+    (void)timer;
+    compose_now();
+    tourbillon_advance();          /* no-op unless the theme has a frame bank */
 }
 
 /* Every layer the painter owns, at the angle it is currently held at.
@@ -1089,7 +839,8 @@ static void mark_all_layers(void)
 static uint16_t *s_bench_solid;                       /* PSRAM colour plane   */
 static int16_t   s_bench_x[BENCH_MAX_BLK], s_bench_y[BENCH_MAX_BLK];
 static uint32_t  s_bench_n;                           /* blocks this tick     */
-static uint64_t  s_bench_px, s_bench_px0;             /* ink px, + last report */
+/* The ink count lives in the scheduler (orb_sched_ink_px_add), which is the TU
+ * that reports it next to the flush numbers it has to agree with. */
 
 static void bench_paint_band(int32_t y0, int nr);   /* gfx band hook, below */
 
@@ -1169,7 +920,7 @@ static void bench_paint_band(int32_t y0, int nr)
             uint16_t *row = gfx_band(r);
             for (int32_t x = xa; x <= xb; x++)
                 gfx_blend_px(&row[x], src[x - bx0], DISPLAY_BENCH_ALPHA, 0);
-            s_bench_px += (uint32_t)(xb - xa + 1);
+            orb_sched_ink_px_add((uint32_t)(xb - xa + 1));
         }
     }
 }
@@ -1186,7 +937,7 @@ static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
 
 static void clock_layer_commit(void)
 {
-    if (!l4_active()) return;
+    if (!orb_sched_l4_active()) return;
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;
 
@@ -1250,7 +1001,7 @@ static void clock_layer_commit(void)
     /* The layers this dial asked for, in the order it asked: gfx_commit()
      * owns the restore, the band walk, the flush gate and the clearing.
      * Building the list above is the whole of the app's side. */
-    gfx_commit(nj, jc, s_canvas);
+    gfx_commit(nj, jc, orb_bg_canvas());
 
 }
 #endif /* CLK_BG_DIRECT_PUSH */
@@ -1454,7 +1205,7 @@ static void comp_touch_box(const clk_comp_t *c, int32_t box_h)
     if (y1 > CLK_SCR_H - 1) y1 = CLK_SCR_H - 1;
     if (x1 < x0 || y1 < y0) return;
 #if CLK_BG_DIRECT_PUSH
-    if (l4_active()) { gfx_mark_rows(y0, y1, x0, x1, false); return; }
+    if (orb_sched_l4_active()) { gfx_mark_rows(y0, y1, x0, x1, false); return; }
 #endif
     lv_area_t b = { x0, y0, x1, y1 };
     lv_obj_invalidate_area(s_scr, &b);
@@ -1868,7 +1619,7 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
                 if (u.x2 > CLK_SCR_W - 1) u.x2 = CLK_SCR_W - 1;
                 if (u.y2 > CLK_SCR_H - 1) u.y2 = CLK_SCR_H - 1;
 #if CLK_BG_DIRECT_PUSH
-                if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+                if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
                 else
 #endif
                     lv_obj_invalidate_area(s_scr, &u);
@@ -1957,200 +1708,7 @@ static void compose_now(void)
     aux_update(&ti, t, frac);
 }
 
-/* Per-second throughput report while the clock is live: how many composited
- * ticks we actually got, and what the flush path booked for the flushes they
- * produced (display_bench_snapshot counts every last-chunk DMA completion). */
-static void report_fps_if_due(void)
-{
-    const uint32_t now = lv_tick_get();
-    if (now - s_fps_t0 < 1000) return;
-    uint32_t bf; uint64_t bt; uint32_t bm;
-    display_bench_snapshot(&bf, &bt, &bm);
-    uint64_t bpix; uint32_t bchunk;
-    display_bench_stats(&bpix, &bchunk);
-    const uint32_t df = bf - s_fps_bench_f0;
-    const uint64_t dt = bt - s_fps_bench_t0;
-    const uint64_t dpx = bpix - s_fps_pix0;
-    const uint32_t dch = bchunk - s_fps_chunk0;
-    const uint64_t sub = display_bench_submit_us();
-    uint64_t pm, ph, pt, pd;
-    display_bench_phases_us(&pm, &ph, &pt, &pd);
-    const uint64_t dpm = pm - s_fps_ph0, dph = ph - s_fps_ph1;
-    const uint64_t dpt = pt - s_fps_ph2, dpd = pd - s_fps_ph3;
-    uint64_t rest, paint, cmp;
-    gfx_hook_phases(&rest, &paint, &cmp);
-    const uint64_t drest = rest - s_hk_rest_us0;
-    const uint64_t dpant = paint - s_hk_paint_us0;
-    const uint64_t dcmp  = cmp - s_hk_cmp_us0;
-    uint32_t drb[CLK_PAINT_ROLES];
-    uint64_t dru[CLK_PAINT_ROLES];
-    gfx_role_snapshot(drb, dru);
-    uint32_t dblend = 0;
-    for (int i = 0; i < CLK_PAINT_ROLES; i++)
-        dblend += drb[i];
-    const uint32_t te_now = display_te_wait_us();
-    ESP_LOGI(TAG, "clock %u fps | flush frames %u avg %llu ms | px/s %llu (%llu%% page) chunks/s %u te/s %llu ms submit/s %llu ms",
-             (unsigned)s_fps_ticks, (unsigned)df,
-             df ? (unsigned long long)(dt / df / 1000) : 0ULL,
-             (unsigned long long)dpx,
-             (unsigned long long)(dpx * 100 / ((uint64_t)CLK_SCR_W * CLK_SCR_H)),
-             (unsigned)dch,
-             (unsigned long long)((uint32_t)(te_now - s_fps_te0) / 1000),
-             (unsigned long long)((sub - s_fps_sub0) / 1000));
-    ESP_LOGI(TAG, "  phases ms/s: mirror %llu te %llu dma %llu | hook %llu (rest %llu paint %llu cmp %llu) | blend/s %u",
-             (unsigned long long)(dpm / 1000), (unsigned long long)(dpt / 1000),
-             (unsigned long long)(dpd / 1000), (unsigned long long)(dph / 1000),
-             (unsigned long long)(drest / 1000),
-             (unsigned long long)(dpant / 1000), (unsigned long long)(dcmp / 1000),
-             (unsigned)dblend);
-    /* Which layer owns the paint phase. Slots are the theme's: hr, min,
-     * sec/carriage, dial, counterweight, glass — each counting its own shadow
-     * too, as blends/s and the ms/s that took. Decides the next optimization by
-     * measurement: a glass/dial-heavy sweep whose per-blend cost matches the
-     * carriage's wants those static passes memoized per row; a carriage sweep
-     * far dearer per blend is paying for scattered inverse-map fetches out of
-     * PSRAM and wants its texel rows staged in internal RAM. */
-    ESP_LOGI(TAG, "  blend/s by layer: hr %u/%llu min %u/%llu sec %u/%llu dial %u/%llu cw %u/%llu glass %u/%llu comp %u/%llu aux %u/%llu",
-             (unsigned)drb[0], (unsigned long long)(dru[0] / 1000),
-             (unsigned)drb[1], (unsigned long long)(dru[1] / 1000),
-             (unsigned)drb[2], (unsigned long long)(dru[2] / 1000),
-             (unsigned)drb[3], (unsigned long long)(dru[3] / 1000),
-             (unsigned)drb[4], (unsigned long long)(dru[4] / 1000),
-             (unsigned)drb[5], (unsigned long long)(dru[5] / 1000),
-             (unsigned)drb[6], (unsigned long long)(dru[6] / 1000),
-             (unsigned)drb[7], (unsigned long long)(dru[7] / 1000));
-#if DISPLAY_BENCH
-    /* Proof the synthetic ink is really on the glass: ink px/s must read
-     * blocks x 3600 x fps, and the CAD bands/px fields must not collapse. */
-    ESP_LOGI(TAG, "  bench: blocks %u ink px/s %llu",
-             (unsigned)DISPLAY_BENCH_PX,
-             (unsigned long long)(s_bench_px - s_bench_px0));
-    s_bench_px0 = s_bench_px;
-#endif
-#if DISPLAY_CADENCE_PROBE
-    display_cadence_drain();
-#endif
-    s_fps_sub0 = sub;
-    s_fps_te0 = te_now;
-    s_fps_ph0 = pm; s_fps_ph1 = ph; s_fps_ph2 = pt; s_fps_ph3 = pd;
-    s_hk_rest_us0 = rest;
-    s_hk_paint_us0 = paint; s_hk_cmp_us0 = cmp;
-    s_fps_ticks = 0;
-    s_fps_t0 = now;
-    s_fps_bench_f0 = bf;
-    s_fps_bench_t0 = bt;
-    s_fps_pix0 = bpix;
-    s_fps_chunk0 = bchunk;
-}
 
-static void tick_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    if (!s_active) return;      /* parked: clock not on the glass */
-    s_fps_ticks++;
-    const uint32_t t_start_ms = lv_tick_get();
-    if (gif_mode()) {
-        /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay
-         * (gif_tick_ms), so the background advances exactly one frame per tick
-         * at the authoring tempo — no due-time quantisation, no uneven holds.
-         * The sweeping hand is sampled on the same beat (time-accurate angles
-         * from the wall clock, just stepped at the GIF's rate). */
-        const uint32_t now  = lv_tick_get();
-        const int      next = (s_gif_shown + 1) % (int)clk_theme.gif_frames;
-        if ((int32_t)(now - s_gif_due) >= 0) {
-            gif_apply_frame(next);
-            const uint32_t d = (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
-            /* Anchor to the previous deadline so tick jitter cannot inflate
-             * the tempo; if we fell more than a frame behind, drop missed
-             * deadlines (no burst-catch-up: deltas are chained per frame). */
-            s_gif_due += d;
-            if ((int32_t)(now - s_gif_due) >= (int32_t)d)
-                s_gif_due = now + d;
-        }
-    } else {
-        s_bg_tick++;
-        show_plate_frame(bg_frame_now());
-    }
-    compose_now();
-    tourbillon_advance();          /* no-op unless the theme has a frame bank */
-#if CLK_BG_DIRECT_PUSH
-    /* Own every pixel any layer can reach, not just the ones that moved:
-     * apply_angles marked the swept union (which clears the vacated wedge), this
-     * marks the full box of each layer at its present pose (which is what a
-     * hand that stands still or is clipped by the GIF rect's x-extent needs to
-     * be restored and redrawn every tick). Marks union per row, so both
-     * contributions apply, and the commit consumes them. */
-    if (l4_active()) mark_all_layers();
-#if DISPLAY_BENCH
-    if (l4_active()) bench_plan();     /* walks the blocks + marks their rows */
-#endif
-    request_commit();
-#endif
-    report_fps_if_due();
-
-    /* The GIF delta bank always runs on its own fastest beat; a non-looping
-     * plate background only needs the fast beat while a play is running (the
-     * check in bg_frame_now() may have just started one).
-     * Deadline-anchored, not callback-anchored: lv_timer decides lateness
-     * against a fixed 62.5 ms ladder we advance by the beat each tick, so
-     * this callback's own work (and the LVGL refresh it queues) is schedule
-     * to absorb, not drift to accumulate. Ask for a hair less than what is
-     * left: the timer can only fire on a handler wake and lvgl_task's sleeps
-     * quantise to ~5 ms, so an exact ask reliably lands one wake late.
-     * Measured reality for this bank: the display pipeline books ~54 ms of
-     * TE-wait + band submits per commit, so the tick still arrives ~67 ms
-     * apart (~15 fps, loop ~1.07 s) — the ladder keeps the SCHEDULE honest;
-     * true 16 needs ~5 ms shaved off the flush path, not the timer. */
-    uint32_t period;
-    if (gif_mode())                              period = gif_tick_ms();
-    else if (bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
-                                                 period = bg_rate(tick_base_ms(), &s_bg_every);
-    else                                         { s_bg_every = 1; period = tick_base_ms(); }
-    if (gif_mode()) {
-        if (!s_tick_due) s_tick_due = t_start_ms + period;
-        else             s_tick_due += period;
-        if ((int32_t)(t_start_ms - s_tick_due) >= (int32_t)period)
-            s_tick_due = t_start_ms + period;       /* fell a beat behind */
-        const int32_t left = (int32_t)(s_tick_due - t_start_ms) - 8;
-        lv_timer_set_period(timer, (left < 2) ? 2 : (uint32_t)left);
-#if DISPLAY_CADENCE_PROBE
-        ESP_LOGI(TAG, "CAD tk now=%u due=%u gif_due=%u shown=%d",
-                 (unsigned)t_start_ms, (unsigned)s_tick_due,
-                 (unsigned)s_gif_due, s_gif_shown);
-#endif
-        return;
-    }
-    lv_timer_set_period(timer, period);
-}
-
-/* The plain hand beat: 1 s ticking, or 1000/tickRate (>= 33 ms) sweeping.
- * In GIF delta mode the whole dial runs on the fastest shared beat. */
-static uint32_t tick_base_ms(void)
-{
-    if (gif_mode()) return gif_tick_ms();
-    if (!clk_theme.second_sweep) return 1000;
-    int rate = clk_theme.tick_rate;
-    if (rate < 1) rate = 1;
-    if (rate > 30) rate = 30;
-    uint32_t p = 1000 / (uint32_t)rate;
-    if (p < 33) p = 33;
-    return p;
-}
-
-/* Port of bg_rate(): the fastest tick period that divides the background's
- * frame period evenly, holding `*every` ticks per frame. Never faster than
- * 33 ms (the panel ceiling) nor slower than the hand asked for. */
-static uint32_t bg_rate(uint32_t base, uint32_t *every)
-{
-    const uint32_t need = 1000u / (uint32_t)(clk_theme.bg_fps < 1 ? 1 : clk_theme.bg_fps);
-    uint32_t k = (need + base - 1) / base;                 /* ceil(need / base) */
-    if (k < 1) k = 1;
-    uint32_t per = need / k;
-    if (per < 33) { per = 33; k = (need + per - 1) / per; }
-    if (per > base) per = base;
-    *every = k < 1 ? 1 : k;
-    return per;
-}
 
 esp_err_t clock_view_init(void)
 {
@@ -2170,6 +1728,7 @@ esp_err_t clock_view_init(void)
         return art_err;
     }
     s_art = art_bank_ptr();
+    orb_bg_init(s_art);   /* the delta bank reads the same mapping, through the app */
     ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B) from %s",
              (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES, orb_theme_source());
 
@@ -2189,43 +1748,19 @@ esp_err_t clock_view_init(void)
      * and make the plate widget read ITS pixels. Classic mode: plate + baked
      * bgAnim frames come straight out of the blob (zero RAM). */
     const lv_image_dsc_t *plate_src = NULL;
-    if (clk_theme.bg_mode == 1) {
-        const size_t canvas_bytes = (size_t)CLK_SCR_W * CLK_SCR_H * sizeof(uint16_t);
-        s_canvas = heap_caps_malloc(canvas_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (s_canvas) {
-            memcpy(s_canvas, blob() + clk_theme.bg_key_off, canvas_bytes);
-            memset(&s_canvas_dsc, 0, sizeof(s_canvas_dsc));
-            s_canvas_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
-            s_canvas_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
-            s_canvas_dsc.header.w      = CLK_SCR_W;
-            s_canvas_dsc.header.h      = CLK_SCR_H;
-            s_canvas_dsc.header.stride = (uint32_t)CLK_SCR_W * 2u;
-            s_canvas_dsc.data_size     = (uint32_t)canvas_bytes;
-            s_canvas_dsc.data          = (const uint8_t *)s_canvas;
-            plate_src = &s_canvas_dsc;
-        } else {
-            ESP_LOGE(TAG, "canvas alloc failed (%u B); background held on keyframe",
-                     (unsigned)canvas_bytes);
-        }
-        if (clk_theme.gif_frames > CLK_GIF_MAX)
-            ESP_LOGE(TAG, "gif_frames %u exceeds baked max %d; background held still",
-                     (unsigned)clk_theme.gif_frames, CLK_GIF_MAX);
-    }
+    if (clk_theme.bg_mode == 1)
+        plate_src = orb_bg_gif_canvas_init();
     if (!plate_src) {
-        fill_plate_dsc(&s_plate_dsc);   /* plate_off == key_off in gif mode */
-        build_bg_dscs();
-        if (clk_theme.bg_frames > CLK_BG_MAX)
-            ESP_LOGE(TAG, "bg_frames %u exceeds baked max %d; background held still",
-                     (unsigned)clk_theme.bg_frames, CLK_BG_MAX);
-        plate_src = &s_plate_dsc;
+        orb_bg_classic_init();
+        plate_src = orb_bg_plate_dsc();
     }
-    s_plate = lv_image_create(s_scr);
-    lv_obj_set_size(s_plate, CLK_SCR_W, CLK_SCR_H);
-    lv_obj_set_pos(s_plate, 0, 0);
-    lv_obj_set_scrollable(s_plate, false);
-    lv_image_set_src(s_plate, plate_src);
-    s_bg_shown = 0;
-    s_gif_shown = 0;
+    lv_obj_t *plate = lv_image_create(s_scr);
+    lv_obj_set_size(plate, CLK_SCR_W, CLK_SCR_H);
+    lv_obj_set_pos(plate, 0, 0);
+    lv_obj_set_scrollable(plate, false);
+    lv_image_set_src(plate, plate_src);
+    orb_bg_set_plate(plate);
+    orb_bg_init_frames();
     /* Fresh widgets are all at rotation 0, so forget the angles we last pushed;
      * otherwise a rebuilt view would skip the re-pose as "unchanged". */
     for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
@@ -2308,12 +1843,19 @@ esp_err_t clock_view_init(void)
 #endif
 #endif
 
+    static const orb_sched_policy_t clock_policy = {
+        .tick     = clock_tick_policy,
+        .mark_all = mark_all_layers,
+#if DISPLAY_BENCH
+        .bench    = bench_plan,
+#endif
+    };
     uint32_t start_period;
-    if (gif_mode())                            start_period = gif_tick_ms();
-    else if (bg_live() && clk_theme.bg_loop)   start_period = bg_rate(tick_base_ms(), &s_bg_every);
-    else                                       { s_bg_every = 1; start_period = tick_base_ms(); }
-    s_tick_timer = lv_timer_create(tick_timer_cb, start_period, NULL);
-    lv_timer_pause(s_tick_timer);   /* parked until the clock is on the glass */
+    if (orb_bg_gif_mode())                               start_period = orb_bg_gif_tick_ms();
+    else if (orb_bg_bg_live() && clk_theme.bg_loop)      start_period = orb_sched_bg_rate(orb_sched_tick_base_ms(), orb_bg_every_p());
+    else                                          { *orb_bg_every_p() = 1;
+                                                     start_period = orb_sched_tick_base_ms(); }
+    orb_sched_start(start_period, &clock_policy);   /* parked until the dial is on the glass */
 
     /* Report the cadence the bake actually recorded instead of a literal that
      * drifts out of date: the GIF and the tick share clk_gif_delays[] (the
@@ -2324,15 +1866,15 @@ esp_err_t clock_view_init(void)
      * no longer prove the worst case fits and -Werror=format-truncation says so. The
      * strings are still short — this is headroom for the widest digits, not a guess. */
     char bgdesc[96];
-    if (gif_mode()) {
+    if (orb_bg_gif_mode()) {
         uint32_t d0 = clk_gif_delays[0] > 0 ? (uint32_t)clk_gif_delays[0]
                                             : (uint32_t)CLK_GIF_TICK_MS;
         snprintf(bgdesc, sizeof bgdesc,
                  "gif delta bank: %u frames @ %u ms (%u.%u fps), tick %u ms",
                  (unsigned)clk_theme.gif_frames, (unsigned)d0,
                  (unsigned)(1000 / d0), (unsigned)((1000 % d0) * 10 / d0),
-                 (unsigned)gif_tick_ms());
-    } else if (bg_live()) {
+                 (unsigned)orb_bg_gif_tick_ms());
+    } else if (orb_bg_bg_live()) {
         snprintf(bgdesc, sizeof bgdesc, "plate anim");
     } else {
         snprintf(bgdesc, sizeof bgdesc, "still");
@@ -2340,11 +1882,11 @@ esp_err_t clock_view_init(void)
 
     char sweepdesc[48] = "off";   /* 32 -> 48 for the same reason as bgdesc above */
     if (clk_theme.second_sweep) {
-        const uint32_t tpb = gif_mode() ? hand_beat_ticks() : 1;
-        if (gif_mode() && tpb > 1)
+        const uint32_t tpb = orb_bg_gif_mode() ? hand_beat_ticks() : 1;
+        if (orb_bg_gif_mode() && tpb > 1)
             snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps, every %u ticks)",
                      (unsigned)clk_theme.tick_rate, (unsigned)tpb);
-        else if (gif_mode())
+        else if (orb_bg_gif_mode())
             snprintf(sweepdesc, sizeof sweepdesc, "on(sweep, every tick)");
         else
             snprintf(sweepdesc, sizeof sweepdesc, "on");
@@ -2380,28 +1922,18 @@ void clock_view_set_bounce(bool on)
      * "clock is the visible screen" gate. Park the tick timer when the clock is
      * not on the glass so a hidden dial burns no flush work; on re-show, repaint
      * the whole face cleanly and resume. */
-    s_active = on;
-    if (!s_tick_timer) return;
+    orb_sched_set_running(on);
+    if (!orb_sched_started()) return;
     if (on) {
-        if (gif_mode()) {
+        if (orb_bg_gif_mode()) {
             /* The canvas still mirrors exactly what the glass held when we
              * parked — repaint it whole and keep cycling from the current
              * frame; resetting the counter would desync canvas vs deltas. */
-            s_gif_due = lv_tick_get();
-            s_tick_due = 0;                 /* re-anchor the beat ladder */
+            orb_sched_reanchor_gif();
             s_bt_ctr = 0;                   /* first tick back is a beat */
-            s_fps_t0 = lv_tick_get();
-            s_fps_ticks = 0;
-            uint32_t bf; uint64_t bt; uint32_t bm;
-            display_bench_snapshot(&bf, &bt, &bm);
-            s_fps_bench_f0 = bf;
-            s_fps_bench_t0 = bt;
+            orb_sched_reset_fps();
         } else {
-            s_bg_tick = 0;                     /* restart the beat, as orb-os does
-                                                * when a theme is (re)applied */
-            s_bg_shown = -1;
-            s_bg_play_start = 0;
-            s_bg_last_play  = 0;
+            orb_bg_reset_play();
         }
         /* Tourbillon: force a whole first draw and restart the frame clock,
          * same discipline as the angle reset — nothing was composited while
@@ -2409,17 +1941,17 @@ void clock_view_set_bounce(bool on)
         s_tourb_shown = -1;
         s_tourb_t0 = lv_tick_get();
         lv_obj_invalidate(s_scr);
-        if (!gif_mode()) show_plate_frame(bg_frame_now());
+        if (!orb_bg_gif_mode()) orb_bg_show_plate_frame(orb_bg_frame_now());
         compose_now();
-        lv_timer_resume(s_tick_timer);
+        orb_sched_resume();
     } else {
-        lv_timer_pause(s_tick_timer);
+        orb_sched_pause();
     }
 }
 
 bool clock_view_bounce(void)
 {
-    return s_active;
+    return orb_sched_running();
 }
 
 

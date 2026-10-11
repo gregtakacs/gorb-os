@@ -412,7 +412,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); the registry, the carousel and M3 are still open** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -423,7 +423,12 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 
 Rulings B1–B5 and C1–C12 are in section 0.1 and are not open questions. What remains is only what the board can answer or what a second app will force:
 
-1. **M2's two numbers.** Whether two flagship banks really stay resident at 6-7 fps, and the free-PSRAM figure that sets the arena cap. Everything in section 3.3 is arithmetic until M2 runs; the plan does not need the answer to start P1, but it forbids shipping three flagship banks without it.
+1. **M2's two numbers. — answered 2026-10-11, §11.** Five banks (the live dial's,
+   both installed payloads, two 59-page stress banks — 206 art pages) stayed resident
+   with CRCs verified through the mapping while the dial held its 15 fps baseline, and
+   free PSRAM at the refusal was 7.9 MB. The plan's pass line held; what stays open is
+   the MMU's true refusal point (the probe never reached it — §11's third finding),
+   which M3 measures with a second partition.
 2. **The behaviour vocabulary's first cut.** Which `CLK_KIND_*`/`CLK_SRC_*` become the OS's registered kinds, and which stay clock-app-private. `theme_schema.py`'s SOURCES/KINDS/FLAGS is the inventory; naming the subset is a P0 paper task, not a code one, and it is the last thing that must be agreed before the ABI is frozen.
 3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
 4. **NVS quota per app** against the 24 KB `storage` partition with `string` settings enabled (C9) and 8 apps allowed (B5): the byte budget is a number to be chosen at P3 with the real key shapes in hand, then enforced at install.
@@ -588,4 +593,85 @@ Whether two mapped banks *actually* hold 8 fps under animation is still unmeasur
 loader cannot map a second bank until P2, and no number is claimed for it here. That the
 page figures above are size-report arithmetic rather than a reading of the live MMU table is
 exactly what M2 has to confirm.
+
+---
+
+## 11. P2's art loader, and the M2 residency result — 2026-10-11
+
+**Landed.** `art_bank.c` is no longer single-bank. The static mapping is joined by a
+resident table — `art_bank_map_extra(offset, bytes, &slot)`, `art_bank_extra_ptr/bytes`,
+`art_bank_extra_count`, `art_bank_unmap_extra` — capped at `ART_BANK_EXTRA_MAX` = 8
+(one bank per installed app, ruling B5; the page budget, not the table, is what
+runs out for flagship art). A re-request of a live offset returns or grows that entry
+rather than billing a second region — same-app-asking-again, not a second copy. The
+reservations are a per-bank table now, and a map of the same page-rounded size
+consumes its booking, so reserve-then-map charges the window once;
+`art_bank_mmu_pages()` sums each live map and each outstanding booking separately,
+because each is its own virtual region. The primary's contract is untouched: still
+`art_bank_init()`, still never unmapped, so every cached LVGL descriptor in
+`clock_view.c` keeps working and the dial's boot path is byte-identical to P1's.
+An app hands its bank to the compositor through the seam P1 already cut: whatever
+pointer the app passes to `orb_bg_init()` is just `art_bank_extra_ptr(slot)` instead
+of `blob()`, and gfx still never learns `art_bank.h` exists. `/api/v1/status` needed
+no change — its `art_pages`/`art_banks`/`art_refusals` read the same accessors, and
+they now describe a real multi-bank window.
+
+**M2: measured on the bench, probe compiled out afterwards.**
+`ORB_ART_M2_PROBE` (art_bank.h, the `DISPLAY_BENCH` one-line switch) maps the primary
+plus the two installed payloads still on flash — slot A's perpetual-calendar at
+0x10000 (2,503,747 B, 39 pages) and slot B's at 0x410000 (1,978,973 B, 31 pages) —
+books both sizes through `orb_art_reserve()` first to prove the consumption rule,
+CRCs every bank through the mapping against chunked `esp_partition_read` ground
+truth, then pushes 59-page stress banks until the budget itself refuses. Boot log,
+verbatim (`/tmp/p2/boot.txt`, fw `6e91c47-dirty`):
+
+    I (716) art_bank: bank "assets" @0x420000, 1173563 B mapped ... 18 MMU pages
+    I (716) art_bank: m2: start — primary 1173563 B (18 pages, resident); budget 234 of 256 pages, image claims 22
+    I (717) art_bank: m2: booked A 2555904 B: ESP_OK
+    I (717) art_bank: m2: booked B 2031616 B: ESP_OK
+    I (1177) art_bank: m2: bank A — 3 banks resident = 110 pages of 256, ok; crc verified through the mapping
+    I (1541) art_bank: m2: bank B — 3 banks resident = 110 pages of 256, ok; crc verified through the mapping
+    I (2249) art_bank: m2: stress bank — 4 banks resident = 169 pages of 256, ok; crc verified through the mapping
+    I (2958) art_bank: m2: stress bank — 5 banks resident = 228 pages of 256, ok; crc verified through the mapping
+    E (2958) art_bank: m2: stress bank 3 refused (ESP_ERR_NO_MEM): need 59 more, art holds 206 of 234 budgeted; psram 7.9 MB
+
+Both of the plan's numbers, and both wanted results. (1) Two flagship-sized banks
+plus the live dial's own — five banks, 206 art pages — stayed mapped, CRC-verified
+through the mapping, and the dial ran at its requested tempo under them: the same
+boot's `clock N fps` lines read 15 for nine consecutive seconds and 12-16 after
+(60 lines sampled), matching the P1 aviator A/B baseline of median 15, with no
+watchdog and no reboot. The no-reboot carousel is real on this board. (2) Free
+PSRAM at the refusing instant: 7.9 MB — mechanism B's arena cap and C12's eviction
+headroom input, measured before the canvas, `s_fb` and the tile ring claim theirs,
+which is the same basis §10's `heap_psram` figure uses and the same caveat applies.
+`/api/v1/status` after boot read `art_pages: 206, art_banks: 5, art_refusals: 1` —
+the budget's decision, the residency it granted, and the refusal are all visible
+from the LAN without the serial cable.
+
+**And one finding the plan did not ask for.** The probe's second loop maps every
+distinct 64 KB page of the 8 MB partition, unaccounted, looking for the flash MMU's
+own refusal point — and never found one: all 128 requests succeeded, 127 of them to
+fresh pointers, one folded (page 0 returned the primary's own base, which is the
+mmap layer deduping an identical physical request; it is also why the first version
+of this loop, hammering one offset 256 times, "succeeded" without measuring
+anything). Together with the 22 pages the image claims and the 206 of art already
+resident, the window accepted 356 region-pages' worth of mappings without a single
+ESP_ERR_NO_MEM from the allocator itself. Those numbers are region sums and the
+spans overlap, so this bounds requests-accepted, not entries-consumed — but it is
+already past §3.1's 256-page figure, which is therefore a `soc/mmu.h` region-count
+reading, not the capacity this allocator refuses at. It was never the binding limit;
+the 8 MB partition was, and still is. `ORB_ART_PAGE_BUDGET` 234 stays as the enforced
+contract — it is what the installer's refusal reasons are cut against, and a
+conservative budget that refuses early is a bug report, not a liability. The true
+refusal point is unmeasured: the partition ran out before the MMU did. M3 should
+find it with a second mmap-able region (the www partition is at hand) — that number
+decides whether the budget can rise, and it belongs there, not in the loader.
+
+**Verified.** `idf.py build` clean under `-Werror` with the probe at 0 and at 1;
+all eight host suites green after the change (the reserve semantics — per-bank
+entries, consumption on map — are not host-liftable, so the boot log's page
+arithmetic stands as their check: 57 → 88 → 88, no double-billing, across
+book+map); shipping-image boot re-captured after the flip-back — no `m2:` lines,
+same primary map line, same dial ramp. The aviator swap in `assets/` remains
+uncommitted and unrelated, as filed under P1.
 

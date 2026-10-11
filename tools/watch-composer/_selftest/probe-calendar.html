@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-calendar</title>
+<style>
+  body { background: #0b0a09; margin: 0; padding: 14px; font: 500 12px 'IBM Plex Mono', ui-monospace, monospace; color: #b5ab97; }
+  #rows { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-top: 12px; }
+  figure { margin: 0; }
+  figcaption { padding: 5px 2px 0; font-size: 11px; color: #8d8472; }
+  canvas { border-radius: 50%; display: block; }
+</style>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<div id="note">booting…</div>
+<div id="rows"></div>
+<script>
+// Renders the one additional hand in each of its four roles, each with the ring that role
+// prints, every invented tip isolated, and the ring display controls (size, position,
+// orientation, colour, face) shown rather than described. Judging a hand style is a visual
+// call, so this exists to be looked at. probe-geom.html measures the same cases in pixels.
+// Re-pose by editing POSE.
+(function () {
+  const E = window.WatchEngine;
+  const POSE = new Date(2026, 0, 15, 9, 41, 31);   // Thursday the 15th, 09:41:31
+  const OPTS = (design, pose) => ({ train: 'classic', caseStyle: 'polished', caseMetal: 'steel', glassStyle: 'domed',
+    hands: 'dauphine', handFinish: 'steel', design: E.canonDesign(design), tick: 'sweep', temp: 4600, glow: 1 });
+  const shot = (design, label, pose) => {
+    const o = OPTS(design, pose), mv = E.movement(o), gt = mv.render(0).gt, f = E.face(o);
+    const c = document.createElement('canvas'); c.width = c.height = 466;
+    E.compose(c.getContext('2d'), mv, gt, f, pose || POSE, {});
+    const fg = document.createElement('figure'), g = document.createElement('figcaption');
+    g.textContent = label; fg.appendChild(c); fg.appendChild(g);
+    document.getElementById('rows').appendChild(fg);
+  };
+  const base = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+  base.print = 'arabic'; base.color = 'cream'; base.comps = [];
+  const ON = { hour: 1, minute: 1, second: 0, hours24: 0, gmt: 0, day: 0, date: 0 };
+  const with_ = (extra) => { const q = JSON.parse(JSON.stringify(base)); q.centre = Object.assign({}, ON); Object.assign(q, extra); return q; };
+  const hands = (h) => Object.fromEntries(Object.entries(h).map(([k, v]) => ['centre-' + k, v]));
+
+  // one additional hand per dial: what it indicates decides the ring that prints
+  shot(with_({ extra: 'hours24', gmtOffset: -6, perimShrink: 1 }), 'no ring: 24-hour hand stops inside the chapter print');
+  shot(with_({ extra: 'hours24', gmtOffset: -6 }), 'the 24-hour hand and the ring it reads');
+  shot(with_({ extra: 'gmt', gmtOffset: -6 }), 'the GMT hand, same ring, own zone offset');
+  shot(with_({ extra: 'date' }), 'the date hand and the 1-31 ring');
+  shot(with_({ extra: 'day' }), 'the day hand and the SUN..SAT ring');
+  ['sunburst', 'diamond', 'crescent', 'pierced', 'pennant'].forEach((st) => {
+    const kindFor = { sunburst: 'hours24', diamond: 'gmt', pierced: 'hours24', crescent: 'day', pennant: 'date' };
+    const k = kindFor[st];
+    shot(with_({ extra: k, gmtOffset: -6, hands: hands({ [k]: { style: st, finish: 'blued', wid: 2.2 } }) }), 'tip: ' + st + ' / ' + E.EXTRA_HANDS[k]);
+  });
+  [[1, 'thin'], [2.2, 'wide'], [3.2, 'widest']].forEach(([wk, cap]) =>
+    shot(with_({ extra: 'date', hands: hands({ date: { style: 'pennant', finish: 'black', wid: wk, shade: 'flat' } }) }), 'pennant ' + cap));
+  shot(with_({ extra: 'hours24', gmtOffset: -6, perimShrink: 0.75 }), 'pull-in 0.75 (widest ring, smallest chapter)');
+  shot(with_({ extra: 'hours24', gmtOffset: -6, perimShrink: 0.97 }), 'pull-in 0.97 (chapter nearly full size)');
+  // how the ring is set, as much as any other dial element
+  shot(with_({ extra: 'day', perimSize: 2.2 }), 'day ring at 2.2x labels (the band grows with the type)');
+  shot(with_({ extra: 'day', perimPos: 'between' }), 'day ring between the lines · the hand moved with them');
+  shot(with_({ extra: 'day', perimOrient: 'radial' }), 'day ring written radially');
+  shot(with_({ extra: 'day', perimColor: '#c8322a', perimFont: 'cinzel' }), 'day ring in red Cinzel');
+  shot(with_({ extra: 'date', perimOrient: 'radial', perimSize: 1.5 }), 'date ring radial at 1.5x');
+  // the rotator: each turn is taken from the engine's own chip table, so this proves the same
+  // numbers the Dial tab's Ring start chips write
+  const chip = (per, i) => { const s = E.ringStarts(E.perimGeom({ perim: per, perimShrink: 0.88 }).spec, false); return s[Math.min(i, s.length - 1)] || { v: 0, label: '' }; };
+  const dChip = chip('day', 1), tChip = chip('date', 2);
+  shot(with_({ extra: 'day', perimRot: dChip.v }), 'day ring turned to bring ' + dChip.label.replace(' at 12', '') + ' to 12 · the hand turned with it');
+  shot(with_({ extra: 'date', perimRot: tChip.v }), 'date ring turned to bring ' + tChip.label.replace(' at 12', '') + ' to 12');
+  shot(with_({ extra: 'day', perimRot: 45, perimSize: 2, perimPos: 'between' }), 'day ring between the lines and turned 45°');
+  document.getElementById('note').textContent = 'pose ' + POSE.toString();
+})();
+</script>

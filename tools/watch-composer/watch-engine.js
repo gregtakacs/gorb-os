@@ -69,11 +69,70 @@
     date: (t) => (t.getDate() - 1) / 31,
     day: (t) => t.getDay() / 7,
     month: (t) => (t.getMonth() + (t.getDate() - 1) / 31) / 12,
+    hours24: (t) => (t.getHours() + t.getMinutes() / 60 + t.getSeconds() / 3600) / 24,
   };
+  // A GMT hand is a second hour hand wound to another zone: the same 24-hour
+  // revolution, offset in WHOLE hours so it still lands squarely on a bezel hour.
+  const gmtTurn = (off) => { const o = Math.round(+off || 0); return (t) => ((((t.getHours() + o) % 24) + 24) % 24 + t.getMinutes() / 60 + t.getSeconds() / 3600) / 24; };
   const SUBKIND = { seconds: 'second', date: 'date', day: 'day', month: 'month', hours: 'hour' };
+  // Centre-pointer kinds that read a printed perimeter scale, in stack order (lowest first).
+  const CAL_HANDS = ['hours24', 'gmt', 'day', 'date'];
+  const PERIMS = { none: 'No perimeter', hours24: '24 hours', date: 'Date 1–31', day: 'Day of week' };
+  // One spec per perimeter scale: splits, which are emphasised, their label, and the tick
+  // geometry. Index 0 always sits at 12 o'clock and runs clockwise, matching TURN above.
+  const PERIM_SPEC = {
+    hours24: { n: 24, maj: (i) => i % 6 === 0, lab: (i) => String(i || 24), fs: 9.5, tw: 2.4, qw: 0.9, tl: 9 },
+    date: { n: 31, maj: (i) => (i + 1) % 5 === 0 || i === 30, lab: (i) => String(i + 1), fs: 9, tw: 2.2, qw: 0.8, tl: 8 },
+    day: { n: 7, maj: () => true, lab: (i) => DAYS[i], fs: 11, tw: 3, qw: 3, tl: 10 },
+  };
+  // A dial carries ONE additional centre pointer besides hour/minute/second. Its role is the
+  // single choice; the printed ring is derived from it (EXTRA_RING), never chosen separately,
+  // so a ring can never disagree with the hand that reads it.
+  const EXTRA_HANDS = { hours24: '24-hour', gmt: 'GMT · second time zone', day: 'Day of week', date: 'Day of month' };
+  const EXTRA_RING = { hours24: 'hours24', gmt: 'hours24', day: 'day', date: 'date' };
+  const PERIM_KEYS = ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot'];
+  // The panel this dial ships on is a 466x466 CO5300 AMOLED 1.75 in across, so one engine px
+  // is 0.095 mm on the wrist. A preview drawn 2.7x the real dial flatters small type, and that
+  // is how a dial gets authored with day names nobody can read at arm's length. The composer
+  // therefore quotes print sizes in millimetres and can draw the dial at true size.
+  const PANEL = { px: S, inch: 1.75, cssInch: 96 };
+  const MM_PER_PX = (PANEL.inch * 25.4) / PANEL.px;
+  const pxMm = (px) => px * MM_PER_PX;
+  // CSS px the whole dial occupies at true size, and the zoom factor that means (1.0 = today's
+  // 466 px stage). 1 CSS in is nominally 96 px, but the page cannot measure the screen it lands
+  // on: Chrome draws 1 CSS px as 1 device px at 100% zoom, so the same 168 px is 1.75 in on a
+  // 96 ppi monitor and 0.9 in on a 185 ppi one, and browser zoom shifts it again. True size
+  // therefore carries a user calibration, and the composer draws a ruler of RULER_MM the user
+  // matches against a real one. The claimed size stays 1.75 in at any calibration — what the
+  // calibration decides is whether the CSS px chosen actually realise it on this screen.
+  const REAL_CSS = Math.round(PANEL.inch * PANEL.cssInch);
+  const REAL_Z = REAL_CSS / PANEL.px;
+  const RULER_MM = 40;
+  const realCss = (cal) => Math.max(60, Math.round(REAL_CSS * (cal > 0 ? cal : 1)));
+  const rulerPx = (cal) => Math.round((RULER_MM / 25.4) * PANEL.cssInch * (cal > 0 ? cal : 1));
+  const screenInch = (css, cal) => css / (PANEL.cssInch * (cal > 0 ? cal : 1));
+  // Ring rotation: which label of a turned ring sits nearest 12, and the turn that puts a
+  // chosen division there. Both read the same spec the print does, so the control row and the
+  // dial can never disagree about where the first day of the week or month starts.
+  const perimRotDeg = (D) => ((((+D.perimRot || 0) % 360) + 360) % 360);
+  const perimRotAt = (spec, i, between) => perimRotDeg({ perimRot: -(((i + (between ? 0.5 : 0)) / spec.n) * 360) });
+  function ringTop(spec, rot, between) {
+    let best = 0, bd = 1e9;
+    for (let i = 0; i < spec.n; i++) {
+      const a = (((i + (between ? 0.5 : 0)) / spec.n) * 360 + rot + 180) % 360 - 180;
+      if (Math.abs(a) < bd) { bd = Math.abs(a); best = i; }
+    }
+    return { i: best, lab: spec.lab(best), off: +bd.toFixed(2) };
+  }
+  // The rotator's preset chips: every division of a small ring (the seven days), the quarters
+  // of a big one. 31 chips for the date ring would be a wall, not a control.
+  function ringStarts(spec, between) {
+    const idx = spec.n <= 12 ? Array.from({ length: spec.n }, (_, i) => i) : [0, Math.round(spec.n / 4), Math.round(spec.n / 2), Math.round((3 * spec.n) / 4)];
+    return idx.map((i) => ({ v: +perimRotAt(spec, i, between).toFixed(2), label: spec.lab(i) + ' at 12' }));
+  }
 
   const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs' };
-  const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', arrow: 'Arrow', broad: 'Broad arrow' };
+  const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', arrow: 'Arrow', broad: 'Broad arrow', crescent: 'Crescent tip', diamond: 'Diamond tip', sunburst: 'Sunburst tip', pierced: 'Pierced ring', pennant: 'Pennant' };
   const HAND_FINISHES = { blued: 'Blued', gilt: 'Gilt', black: 'Black', steel: 'Steel', white: 'White', orange: 'Orange', red: 'Red', magenta: 'Magenta', yellow: 'Yellow', lime: 'Lime', mint: 'Mint', cyan: 'Cyan', violet: 'Violet' };
   const DENSITY = { all: () => true, even: (h) => h % 2 === 0, quarters: (h) => h % 3 === 0, twelve: (h) => h === 0, none: () => false };
   const NUMERALS = { all: 'All twelve', even: 'Even hours', quarters: 'Quarters', twelve: '12 only', none: 'None' };
@@ -410,6 +469,54 @@
     });
   }
 
+  // A dial that carries an outer calendar ring cannot also keep its chapter print and
+  // its hour/minute hands out there. So the whole chapter -- numerals and minute track
+  // alike -- pulls inward about the dial centre by ONE shared factor, which the hands
+  // read too, and the freed band outside prints the perimeter scale. perimShrink lets
+  // the user trade chapter size against ring width.
+  const perimK = (D) => (D && D.perim && D.perim !== 'none' && PERIM_SPEC[D.perim]) ? Math.min(1, Math.max(0.7, +D.perimShrink || 0.88)) : 1;
+  function perimGeom(D) {
+    const k = perimK(D); if (k === 1) return null;
+    // ring sits just inside the reed; ticks occupy the outer part of the band, labels the
+    // inner part, and the hand tip is asked to stop on the ticks, not past them. perimSize
+    // grows the printed label only -- the band it lives in follows it, so a wide day never
+    // has to overlap the chapter print, and perimPos 'between' moves the labels into the
+    // space between two divisions (with their pointer, so the pair still reads).
+    const spec = PERIM_SPEC[D.perim], out = DR - 3, tl = spec.tl;
+    const fs = spec.fs * Math.min(2.6, Math.max(0.6, +D.perimSize || 1)), between = D.perimPos === 'between';
+    const rot = perimRotDeg(D), rotR = (rot * Math.PI) / 180;
+    const tick1 = out - tl, lab = tick1 - fs * 0.52 - 3;
+    // offTurn is what the pointer that reads this ring must add to its own angle: half a
+    // division when the labels moved into the gaps, plus the whole ring rotation the user set.
+    return { spec, k, out, inr: lab - fs * 0.62 - 3, tl, fs, between, rot, rotR, offTurn: (between ? 0.5 / spec.n : 0) + rot / 360, tick0: out, tick1, lab, reach: out - tl * 0.35 };
+  }
+  function drawPerimeter(ctx, D, en, holes) {
+    const g = perimGeom(D); if (!g) return;
+    const spec = g.spec, okc = (v) => v && v !== 'auto';
+    const NI = okc(D.perimColor) ? D.perimColor : (D.perimColor === 'ink' ? en.ink : (D.numColor && D.numColor !== 'auto' ? D.numColor : en.ink));
+    const radial = D.perimOrient === 'radial';
+    const A = (i, n) => ((i + (g.between ? 0.5 : 0)) / n) * TAU - Math.PI / 2 + g.rotR;
+    const TA = (i, n) => (i / n) * TAU - Math.PI / 2 + g.rotR;
+    ctx.save(); inkCtx(ctx, en); ctx.strokeStyle = NI; ctx.fillStyle = NI;
+    ctx.lineWidth = 0.6;
+    ctx.beginPath(); ctx.arc(C, C, g.out + 1.6, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(C, C, g.inr - 1.6, 0, TAU); ctx.stroke();
+    for (let i = 0; i < spec.n; i++) {
+      const a = TA(i, spec.n), p1 = P(C, C, g.tick1, a), p2 = P(C, C, g.tick0, a);
+      if (blocked(p2[0], p2[1], holes, 1)) continue;
+      ctx.lineWidth = spec.maj(i) ? spec.tw : spec.qw;
+      ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke();
+    }
+    const fk = D.perimFont && D.perimFont !== 'auto' && D.perimFont !== 'same' ? D.perimFont : (D.font && D.font !== 'auto' ? D.font : 'auto');
+    setFace(fk);
+    ctx.font = '600 ' + g.fs.toFixed(2) + 'px ' + (FONTS[fk] ? FONTS[fk][1] : SANS);
+    for (let i = 0; i < spec.n; i++) {
+      const a = A(i, spec.n), q = P(C, C, g.lab, a); if (blocked(q[0], q[1], holes, g.fs * 0.55)) continue;
+      if (radial) { ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(a + Math.PI / 2); ctx.fillText(spec.lab(i), 0, 0.5); ctx.restore(); }
+      else ctx.fillText(spec.lab(i), q[0], q[1] + 0.5);
+    }
+    ctx.restore();
+  }
   // ---------- printing
   function inkCtx(ctx, en) { ctx.strokeStyle = en.ink; ctx.fillStyle = en.ink; ctx.globalAlpha = 0.86; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
   function printMain(ctx, D, en, holes, NX) {
@@ -906,7 +1013,18 @@
     const c = cv(S), ctx = c.getContext('2d'), en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
-    printMain(ctx, D, en, lay.dialHoles, NM && NM.getContext('2d'));
+    // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
+    // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
+    // the dial centre, and carry the holes into that same scaled space -- printMain tests
+    // its own ink against them, and an unscaled hole list would cull the wrong ticks.
+    const pk = perimK(D), holes = lay.dialHoles;
+    const pkHoles = pk === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pk, y: C + (h.y - C) * pk, r: (h.r || 0) * pk, w: h.w * pk, h: h.h * pk }));
+    const push = (x2) => { if (pk === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pk, pk); x2.translate(-C, -C); return x2; };
+    const pop = (x2) => { if (x2) x2.restore(); };
+    const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
+    printMain(ctx, D, en, pkHoles, NM && NM.getContext('2d'));
+    pop(cxP); pop(nxP);
+    if (pk !== 1) drawPerimeter(ctx, D, en, holes);
     weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
     applied(ctx, D, pal, lay.dialHoles);
     if (NM) {
@@ -1420,6 +1538,43 @@
       Pp.push(poly([[-w * 0.2, tail], [-w * 0.16, y0 + 2], [w * 0.16, y0 + 2], [w * 0.2, tail]]));
       Pp.push((x) => { x.moveTo(0, y0); x.bezierCurveTo(-s * 1.25, y0 + w * 0.3, -s * 1.1, ym, 0, y1); x.bezierCurveTo(s * 1.1, ym, s * 1.25, y0 + w * 0.3, 0, y0); x.closePath(); });
       Pp.push(poly([[-w * 0.14, y1 + 3], [0, -len], [w * 0.14, y1 + 3]]));
+    } else if (style === 'crescent' || style === 'diamond' || style === 'sunburst' || style === 'pierced' || style === 'pennant') {
+      // Pointer hand for a printed perimeter scale: a fine needle whose entire character
+      // sits at the extreme tip, where it actually indicates. The needle stays narrow so it
+      // never hides the numerals it is read against, which is also why w is the needle's
+      // real thickness here -- a fraction of it would vanish at e-ink resolution.
+      const R = Math.max(len * 0.085, w * 1.9), tip = [], orn = [], nsw = Math.max(w * 0.5, 1.5), cw = Math.max(w * 0.95, 2.2);
+      let cy = -len + R, ny = cy;
+      if (style === 'crescent') {
+        // a moon at the tip whose opening faces OUTWARD, toward the scale it indicates: the
+        // second disc is offset along the hand's own axis, so the tick being read sits in
+        // the cup between the horns. cy is hung off the horn line rather than the disc
+        // centre, because the reach is only real where there is ink to put the tick under.
+        const d = R * 0.62, rc = R * 0.88, horn = (rc * rc - R * R - d * d) / (2 * d);
+        cy = -len - horn; ny = cy + R * 0.4;
+        orn.push(circ(0, cy, R)); tip.push(orn[0]); cut.push(circ(0, cy - d, rc));
+      } else if (style === 'diamond') {
+        const a = R * 0.78, b = R * 1.3; cy = -len + b;
+        orn.push(poly([[0, cy - b], [a, cy], [0, cy + b], [-a, cy]])); tip.push(orn[0]);
+        cut.push(poly([[0, cy - b * 0.5], [a * 0.42, cy], [0, cy + b * 0.5], [-a * 0.42, cy]]));
+      } else if (style === 'sunburst') {
+        const ro = R * 1.08; cy = -len + ro;
+        orn.push(star(0, cy, ro, ro * 0.34, 8)); tip.push(orn[0]); orn.push(circ(0, cy, ro * 0.32)); tip.push(orn[1]);
+      } else if (style === 'pierced') {
+        const rp = R * 0.98; cy = -len + rp;
+        orn.push(circ(0, cy, rp)); tip.push(orn[0]); cut.push(circ(0, cy, rp * 0.54));
+      } else {
+        const a = R * 1.02, b = R * 1.62; cy = -len + b * 0.62;
+        orn.push(poly([[0, -len], [-a, -len + b], [0, -len + b * 0.6], [a, -len + b]])); tip.push(orn[0]);
+      }
+      // needle, and a lozenge counterweight outboard of the arbour so the hand balances.
+      // ny is the needle's end: at the disc centre for the solid heads, sunk into the belly
+      // for the crescent, whose middle is scooped out by the opening.
+      Pp.push(poly([[-nsw, tail * 0.9], [-nsw * 0.55, ny], [nsw * 0.55, ny], [nsw, tail * 0.9]]));
+      Pp.push(poly([[0, tail + cw * 0.85], [cw, tail * 0.55], [0, tail * 0.1], [-cw, tail * 0.55]]));
+      orn.forEach((p) => Pp.push(p));
+      span = Math.max(span, R * 1.15 + 1.5);
+      lumeOnly = tip;
     } else {
       const cy = -len * 0.7, Ro = w * 1.3, Ri = w * 0.8;
       Pp.push(poly([[-w * 0.22, tail], [-w * 0.17, cy], [w * 0.17, cy], [w * 0.22, tail]]));
@@ -1474,21 +1629,25 @@
     ox.setTransform(1, 0, 0, 1, 0, 0); ox.drawImage(c, 0, 0);
     return { c: out, px, py };
   }
-  // every hand the layout offers, in natural depth order (subdial hands under the centre stack)
-  function handSlots(lay) {
+  // every hand the layout offers, in natural depth order (subdial hands under the centre stack).
+  // The additional calendar pointer is listed only while it is the one the dial shows: a dial has
+  // a single spare hand, so the hands list never carries four hidden rows to tick on and off.
+  function handSlots(lay, design) {
     const out = [];
     lay.subs.forEach((s) => { if (SUBKIND[s.scale]) out.push({ id: s.id, kind: SUBKIND[s.scale], sub: true }); });
     ['hour', 'minute', 'second'].forEach((k) => out.push({ id: 'centre-' + k, kind: k, sub: false }));
+    const ce = (design && design.centre) || {};
+    CAL_HANDS.forEach((k) => { if (+ce[k]) out.push({ id: 'centre-' + k, kind: k, sub: false }); });
     return out;
   }
   function handOrder(lay, design) {
-    const nat = handSlots(lay).map((h) => h.id), saved = (design.order || []).filter((id) => nat.includes(id));
+    const nat = handSlots(lay, design).map((h) => h.id), saved = (design.order || []).filter((id) => nat.includes(id));
     return saved.concat(nat.filter((id) => !saved.includes(id)));
   }
   function buildHands(lay, design, defStyle, defFin, tick) {
     const secT = tickTurn(tick === 'sweep' || !tick ? 0 : +tick);
-    const cfg = design.hands || {}, ce = design.centre || {}, R = REACH[design.print] || 205, all = {};
-    const pickS = (hc) => (hc.style && hc.style !== 'auto' ? hc.style : defStyle), pickF = (hc) => (hc.finish && hc.finish !== 'auto' ? hc.finish : defFin), pickL = (hc) => (hc.lume && hc.lume !== 'auto' ? hc.lume : design.handLume), pickFlat = (hc) => (hc.shade && hc.shade !== 'auto' ? hc.shade : design.handShade || '3d') === 'flat';
+    const cfg = design.hands || {}, ce = design.centre || {}, PG = perimGeom(design), R = (REACH[design.print] || 205) * (PG ? PG.k : 1), all = {};
+    const pickS = (hc, df) => (hc.style && hc.style !== 'auto' ? hc.style : df || defStyle), pickF = (hc) => (hc.finish && hc.finish !== 'auto' ? hc.finish : defFin), pickL = (hc) => (hc.lume && hc.lume !== 'auto' ? hc.lume : design.handLume), pickFlat = (hc) => (hc.shade && hc.shade !== 'auto' ? hc.shade : design.handShade || '3d') === 'flat';
     lay.subs.forEach((s) => {
       const kind = SUBKIND[s.scale], hc = cfg[s.id] || {}; if (!kind || hc.on === false) return;
       const lk = +hc.len || 1, wk = +hc.wid || 1;
@@ -1502,6 +1661,28 @@
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
       all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: handSprite(pickS(hc), k === 'second' ? 'second' : k, Math.min(216, R * l * lk), w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk)), fin };
+    });
+    // The four calendar pointers share the centre arbour. Each reaches the ring that feeds
+    // it: with a perimeter printed its tip lands on the ticks, without one it stops short
+    // of the chapter print. The default tip names the data the hand carries, so the dial
+    // reads without a legend -- sun for the 24-hour, diamond for the second-zone GMT,
+    // crescent for the day, pennant for the date.
+    const CAL_DEF = { hours24: 'sunburst', gmt: 'diamond', day: 'crescent', date: 'pennant' };
+    // length applies ONLY with no ring printed, where the tip must fall inside the chapter
+    // print -- the numerals print at 181..190 depending on the style, so all four stop at
+    // 161..174 and the four heads land at four different radii instead of one clump.
+    const CAL_DIM = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165] };
+    CAL_HANDS.forEach((k) => {
+      const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k]) return;
+      const [l, wf] = CAL_DIM[k], lk = +hc.len || 1, wk = +hc.wid || 1, fin = handFin(pickF(hc));
+      const reach = PG ? PG.reach : R * l, len = Math.min(222, reach * lk), w = Math.max(1.7, R * wf) * wk;
+      const base = k === 'gmt' ? gmtTurn(design.gmtOffset) : TURN[k];
+      // labels between the lines move by half a division, and the pointer that reads them must
+      // move with them or it indicates the neighbour; the same holds for the ring rotation the
+      // user set. offTurn carries both, and only the hand whose own ring prints picks it up.
+      const off = PG && EXTRA_RING[k] === design.perim ? PG.offTurn : 0;
+      const turn = off ? ((d) => base(d) + off) : base;
+      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: handSprite(pickS(hc, CAL_DEF[k]), 'hour', len, w, fin, null, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: Math.max(2.2, w * 1.1), fin };
     });
     const list = handOrder(lay, design).filter((id) => all[id]).map((id) => all[id]);
     // each hand sits higher than the one below it, so shadows lengthen up the stack; the cap crowns the top hand of each arbor
@@ -1954,7 +2135,7 @@
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: BEZEL[o.caseStyle] ? BEZEL_IN / DR : 1, handOrder: handOrder(lay, design), handSlots: handSlots(lay), light: Object.assign({}, LIGHT),
+      hands: buildHands(lay, design, style, hf, o.tick), inset: BEZEL[o.caseStyle] ? BEZEL_IN / DR : 1, handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
     const bd = buildDial(design, lay, en, pal, G); F.dial = bd.canvas; F.dialEn = bd.en;
     // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
@@ -2216,6 +2397,38 @@
     if (!d.numStyle || d.numStyle === 'print') delete d.numStyle;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
     if (!d.secStyle || d.secStyle === 'classic') delete d.secStyle;
+    // ONE additional centre pointer besides hour/minute/second: what it indicates is the choice, and
+    // the printed ring is derived from it through EXTRA_RING, so a ring can never disagree with the
+    // hand that reads it. A design naming several (an old preset, an old design ID) keeps the one its
+    // ring points at, else the first in stack order. perimShrink 1.00 leaves the chapter at full
+    // size, which leaves nothing out there to print, and is how the ring is switched off.
+    if (d.extra !== 'none' && !EXTRA_HANDS[d.extra]) {
+      const ce0 = d.centre || {};
+      d.extra = CAL_HANDS.find((k) => +ce0[k] && EXTRA_RING[k] === d.perim) || CAL_HANDS.find((k) => +ce0[k]) || 'none';
+    }
+    if (!EXTRA_HANDS[d.extra]) d.extra = 'none';
+    if (d.centre) CAL_HANDS.forEach((k) => { if (k !== d.extra) delete d.centre[k]; });
+    if (d.extra === 'none') {
+      if (d.centre) CAL_HANDS.forEach((k) => delete d.centre[k]);
+      // A dial with no additional hand must canonicalise to exactly the shape it had before the
+      // feature existed. The PRESENCE of the key, not only its value, changes the JSON the design
+      // id hashes, so shipping extra:'none' would re-key every dial on the shelf and file an
+      // unchanged watch under a new kit name.
+      delete d.extra;
+      PERIM_KEYS.forEach((k) => delete d[k]);
+    } else {
+      d.centre = Object.assign({}, d.centre); d.centre[d.extra] = 1;
+      d.perim = EXTRA_RING[d.extra];
+      const ps = +d.perimShrink;
+      if (!(ps >= 0.7 && ps <= 1) || ps === 0.88) delete d.perimShrink;
+      if (!d.perimColor || d.perimColor === 'auto' || d.perimColor === 'ink') delete d.perimColor;
+      if (!d.perimFont || d.perimFont === 'auto' || d.perimFont === 'same') delete d.perimFont;
+      if (!d.perimOrient || d.perimOrient === 'upright') delete d.perimOrient;
+      if (d.perimSize != null && +d.perimSize === 1) delete d.perimSize;
+      if (!d.perimPos || d.perimPos === 'ontick') delete d.perimPos;
+      if (d.perimRot != null && perimRotDeg(d) === 0) delete d.perimRot;
+    }
+    if (d.gmtOffset != null && (Math.round(+d.gmtOffset || 0) === 0 || !(d.centre && d.centre.gmt))) delete d.gmtOffset;
     if (!d.handLume || d.handLume === 'none' || d.handLume === 'auto') delete d.handLume;
     if (!d.handShade || d.handShade === '3d') delete d.handShade;
     if (d.surface !== 'carbon') delete d.weaveAngle; else if (d.weaveAngle != null && +d.weaveAngle === 0) delete d.weaveAngle;
@@ -2253,5 +2466,5 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
 })();

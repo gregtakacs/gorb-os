@@ -1,0 +1,194 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-geom</title>
+<style>
+  body { background: #0b0a09; margin: 0; padding: 14px; font: 500 12px 'IBM Plex Mono', ui-monospace, monospace; color: #b5ab97; }
+  pre { white-space: pre-wrap; }
+</style>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<pre id="out">booting…</pre>
+<script>
+/*
+ * Measures where each calendar pointer's tip actually lands, in device pixels,
+ * against the band its perimeter prints. Each case is rendered twice -- once with
+ * the hand hidden, once shown -- and the two frames diffed, so what is measured is
+ * the shipped sprite and not a restatement of the formulas that built it.
+ *
+ * Read the verdict: the tip belongs in [tick1 .. out], on the ticks it indicates.
+ * SHORT = it stops inside the labels; OVERSHOOT = it rides over the reed.
+ */
+(function () {
+  const E = window.WatchEngine, S = E.SIZE, C = S / 2, TAU = Math.PI * 2;
+  const POSE = new Date(2026, 0, 15, 9, 41, 31);          // Thursday the 15th, 09:41:31
+  // One additional hand per dial: the ring it reads is derived from its role, so a case names the
+  // role (extra) and switches the ring off with perimShrink 1.00 rather than by deleting a scale.
+  const TIPRING = { sunburst: 'hours24', diamond: 'hours24', pierced: 'date', crescent: 'day', pennant: 'date' };
+  const TIPHAND = { sunburst: 'hours24', diamond: 'gmt', pierced: 'hours24', crescent: 'day', pennant: 'date' };
+  const say = (t) => { document.getElementById('out').textContent += '\n' + t; };
+  document.getElementById('out').textContent = '';
+
+  const CACHE = new Map();
+  let renders = 0;
+  function frame(design, hidden) {
+    const key = JSON.stringify(design);
+    if (CACHE.has(key)) return CACHE.get(key);
+    const o = { train: 'classic', caseStyle: 'polished', caseMetal: 'steel', glassStyle: 'flat',
+      hands: 'baton', handFinish: 'black', design: E.canonDesign(design), tick: 'sweep', temp: 4600, glow: 0 };
+    const mv = E.movement(o), gt = mv.render(0).gt, f = E.face(o);
+    const c = document.createElement('canvas'); c.width = c.height = S;
+    E.compose(c.getContext('2d'), mv, gt, f, POSE, hidden || {});
+    renders++;
+    const d = c.getContext('2d').getImageData(0, 0, S, S).data;
+    CACHE.set(key, d);
+    return d;
+  }
+  function pair(a, b, turn, label) {           // one line: the hand shown minus the hand hidden
+    const m = measure(diffOf(frame(a), frame(b)), turn);
+    // the ring is derived from the hand's role by canonDesign, so geometry is read off that
+    say(row(label, E.perimGeom(E.canonDesign(JSON.parse(JSON.stringify(b)))) || E.perimGeom(E.canonDesign(JSON.parse(JSON.stringify(a)))), m) + '  [renders=' + renders + ']');
+    return m;
+  }
+
+  const lum = (d, i) => (d[i] + d[i + 1] + d[i + 2]) / 3;
+  function diffOf(a, b) { const n = a.length / 4, o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = Math.abs(lum(a, i * 4) - lum(b, i * 4)); return o; }
+  /* Walk the hand's own ray outward from the arbour. Pixels on the ray are sampled
+   * every 0.5 px across a +-1.6 degree wedge and a +-16 px swath beside it, so a thin
+   * needle is not lost to one antialiased column. The outermost sample still carrying
+   * ink is the tip; the widest is the ornament's head; the needle is measured at 45 %
+   * of the reach, where nothing but the shaft is present. The tail is walked outboard
+   * of the arbour on the reverse ray, which is where the counterweight lives. */
+  function measure(diff, turn) {
+    const a0 = turn * TAU - Math.PI / 2;
+    const ink = (r, da, off) => {
+      const a = a0 + da * Math.PI / 180;
+      const x = Math.round(C + Math.cos(a) * r - Math.sin(a) * off);
+      const y = Math.round(C + Math.sin(a) * r + Math.cos(a) * off);
+      return x >= 0 && y >= 0 && x < S && y < S && diff[y * S + x] > 20;
+    };
+    const DA = [-1.6, -0.8, 0, 0.8, 1.6];
+    /* The cross swath has to clear the widest ornament head, which for the crescent means
+     * the two horn tips sit ~0.9R off the ray: 24 px covers the largest head without ever
+     * reaching the neighbouring hand's ink, since only one hand differs between the pair. */
+    const spanAt = (r) => {
+      let w = 0;
+      for (const da of DA) for (let off = -24; off <= 24; off += 1)
+        if (ink(r, da, off)) w = Math.max(w, Math.abs(off));
+      return w;
+    };
+    let tip = 0, headW = 0;
+    for (let r = 1; r < 236; r += 0.5) {
+      const w = spanAt(r);
+      if (w > 0) { tip = r; if (r > 6 && w > headW) headW = w; }
+      else if (tip && r - tip > 8) break;
+    }
+    let needleW = 0;
+    for (let r = 30; r < Math.min(tip * 0.55, 150); r += 1) needleW = Math.max(needleW, spanAt(r));
+    let tailR = 0;
+    for (let r = 1; r < 52; r += 0.5) if (spanAt(-r) > 0) tailR = r;
+    return { tip, headW, needleW, tailR };
+  }
+  function turnOf(kind, d) {
+    if (kind === 'gmt') return E.TURN.hours24(new Date(d.getTime() - 3 * 3600e3));
+    const t = E.TURN[kind];
+    if (!t) { say('!! no TURN function for ' + kind + ' (have: ' + Object.keys(E.TURN).join(',') + ')'); return NaN; }
+    return t(d);
+  }
+  const fix = (v) => (v == null ? '??' : (+v).toFixed(1));
+  const pad = (s, n) => (s + '                              ').slice(0, n);
+  const NUMR_IN = 175;                     // arabic numerals print at 190 with a 30px cap, so ink starts at ~175
+  function verdict(m, g) {
+    if (!g) return m.tip <= NUMR_IN && m.tip > 150 ? 'inside numerals' : 'CHECK: overprint / too short';
+    if (m.tip > g.out + 0.6) return 'OVERSHOOT past reed';
+    if (m.tip < g.tick1 - 1) return 'SHORT of ticks';
+    return 'on ticks';
+  }
+  const row = (n, g, m) => pad(n, 26) + ' tip=' + fix(m && m.tip) + ' tick1=' + fix(g ? g.tick1 : 0) +
+    ' out=' + fix(g ? g.out : 0) + ' needle=' + fix(m && (m.needleW || 0) * 2) +
+    ' head=' + fix(m && (m.headW || 0) * 2) + ' tail=' + fix(m && m.tailR) + '  ' + verdict(m || {}, g);
+
+  const base = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+  base.print = 'arabic'; base.color = 'cream'; base.comps = [];
+  const off = { hour: 0, minute: 0, second: 0, hours24: 0, gmt: 0, day: 0, date: 0 };
+  const design0 = JSON.parse(JSON.stringify(base)); design0.centre = Object.assign({}, off);
+  const clone = (d) => JSON.parse(JSON.stringify(d));
+
+  say('ring geometry @' + S + 'px  (k = perimShrink, default 0.88, the band follows Label size)');
+  E.CAL_HANDS.forEach((k) => {
+    const d = clone(design0); d.extra = k; const g = E.perimGeom(E.canonDesign(d));
+    say('  ' + pad(k + ' / ' + E.EXTRA_RING[k], 16) + ' out=' + fix(g.out) + ' tick1=' + fix(g.tick1) + ' lab=' + fix(g.lab) +
+      ' inr=' + fix(g.inr) + ' reach=' + fix(g.reach) + ' tl=' + g.tl + ' fs=' + g.fs + ' k=' + fix(g.k));
+  });
+  ['0.7', '1', '2.4'].forEach((sz) => {
+    const d = clone(design0); d.extra = 'day'; d.perimSize = +sz; const g = E.perimGeom(E.canonDesign(d));
+    say('  ' + pad('day size=' + sz, 16) + ' fs=' + fix(g.fs) + ' lab=' + fix(g.lab) + ' inr=' + fix(g.inr) + ' (the band grows with the type)');
+  });
+
+  say('\nshipped defaults, hand at its real pose ' + POSE.toString().slice(0, 21));
+  // ring=on prints the scale the role reads; ring=off is perimShrink 1.00, chapter at full size
+  const offCase = (ring, k, extra) => {
+    const a = clone(design0);
+    const b = clone(a); b.extra = k; if (!ring) b.perimShrink = 1; if (k === 'gmt') b.gmtOffset = -3;
+    Object.entries(extra || {}).forEach(([kk, v]) => { a[kk] = v; b[kk] = v; });
+    return [a, b];
+  };
+  const turnOf2 = (k, d, patch) => turnOf(k, d) + (patch && patch.perimPos === 'between' ? 0.5 / E.perimGeom({ perim: E.EXTRA_RING[k] }).spec.n : 0);
+  E.CAL_HANDS.forEach((k) => {
+    const [a, b] = offCase(true, k); pair(a, b, turnOf(k, POSE), k + ' / ' + E.EXTRA_RING[k]);
+  });
+
+  say('\nsame hand with the ring switched off, where it must stop short of the chapter print');
+  E.CAL_HANDS.forEach((k) => {
+    const [a, b] = offCase(false, k); pair(a, b, turnOf(k, POSE), k + ' / no ring');
+  });
+
+  say('\nfive invented tips over the ring their role reads (wid 2.2, flat, black)');
+  Object.keys(TIPRING).forEach((st) => {
+    const k = TIPHAND[st];
+    const [a, b] = offCase(true, k, { hands: { ['centre-' + k]: { style: st, finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(a, b, turnOf(k, POSE), st + ' on ' + E.EXTRA_RING[k]);
+  });
+
+  say('\nneedle width sweep (pennant on the date ring)');
+  [1, 1.5, 2.2, 3].forEach((wid) => {
+    const [a, b] = offCase(true, 'date', { hands: { 'centre-date': { style: 'pennant', finish: 'black', wid, shade: 'flat' } } });
+    pair(a, b, turnOf('date', POSE), 'pennant wid=' + wid);
+  });
+
+  say('\nlength slider on the sunburst 24-hour pointer (24h ring)');
+  [0.9, 1, 1.1].forEach((lk) => {
+    const [a, b] = offCase(true, 'hours24', { hands: { 'centre-hours24': { style: 'sunburst', finish: 'black', len: lk, wid: 2.2, shade: 'flat' } } });
+    pair(a, b, turnOf('hours24', POSE), 'sunburst len=' + lk);
+  });
+
+  say('\nperimShrink sweep (both chapter and tip follow the one factor; 1.00 = ring off)');
+  [0.72, 0.88, 1].forEach((ps) => {
+    const [a, b] = offCase(ps < 1, 'date', { perimShrink: ps });
+    const g = E.perimGeom(E.canonDesign(clone(b)));
+    pair(a, b, turnOf('date', POSE), 'shrink=' + ps + (g ? '' : ' (ring suppressed)'));
+  });
+
+  say('\nthe day ring set between the lines, and set big (the hand follows the labels)');
+  {
+    const [a, b] = offCase(true, 'day', { perimPos: 'between', hands: { 'centre-day': { style: 'crescent', finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(a, b, turnOf2('day', POSE, { perimPos: 'between' }), 'crescent between lines');
+    const [c, d] = offCase(true, 'day', { perimSize: 2.4, hands: { 'centre-day': { style: 'crescent', finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(c, d, turnOf('day', POSE), 'crescent @2.4x labels');
+    const [e, f] = offCase(true, 'day', { perimSize: 2.4, perimPos: 'between', hands: { 'centre-day': { style: 'crescent', finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(e, f, turnOf2('day', POSE, { perimPos: 'between' }), 'crescent @2.4x between');
+  }
+
+  /* The rotator turns the whole ring, so the pointer must be found along the TURNED ray: walk
+   * the unturned angle and a desynchronised hand would show no ink at all (tip=0, SHORT). */
+  say('\nring turned (the pointer must ride its own ticks at the new angle)');
+  [[0, 'as printed'], [90, 'quarter turn'], [308.57, 'MON brought to 12']].forEach(([rot, why]) => {
+    const [a, b] = offCase(true, 'day', { perimRot: rot, hands: { 'centre-day': { style: 'crescent', finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(a, b, turnOf('day', POSE) + rot / 360, 'day ring turned ' + rot + '° (' + why + ')');
+  });
+  {
+    const [a, b] = offCase(true, 'day', { perimPos: 'between', perimRot: 45, hands: { 'centre-day': { style: 'crescent', finish: 'black', wid: 2.2, shade: 'flat' } } });
+    pair(a, b, turnOf2('day', POSE, { perimPos: 'between' }) + 45 / 360, 'between + 45° turn');
+  }
+  document.title = 'probe-geom done';
+})();
+</script>

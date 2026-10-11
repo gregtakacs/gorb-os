@@ -834,7 +834,7 @@
       if (blocked(x, y, holes, 6 * sc)) return;
       X.save(); X.font = hF(h); X.globalAlpha = NX ? 1 : ctx.globalAlpha; X.textAlign = 'center'; X.textBaseline = 'middle';
       X.translate(x, y); if (radial) X.rotate(a + Math.PI / 2); X.scale(sc, sc); X.fillStyle = hC(h, NI);
-      if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; X.shadowBlur = 1.3; X.shadowOffsetY = 1; } X.fillText(s, 0, 1); X.restore();
+      if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; const sk = devS(X); X.shadowBlur = 1.3 * sk; X.shadowOffsetY = sk; } X.fillText(s, 0, 1); X.restore();
     };
     const dot = (r, rr, h) => { const q = P(C, C, r, A(h, 12)); if (blocked(q[0], q[1], holes, 2)) return; ctx.beginPath(); ctx.arc(q[0], q[1], rr, 0, TAU); ctx.fill(); };
     const P_ = D.print;
@@ -887,7 +887,7 @@
         if (h === 0) { X.moveTo(-13, -12); X.lineTo(13, -12); X.lineTo(0, 12); X.closePath(); }
         else if (h % 3 === 0) X.rect(-5.5, -16, 11, 32);
         else { X.moveTo(9, 0); X.arc(0, 0, 9, 0, TAU); }
-        if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; X.shadowBlur = 2; X.shadowOffsetY = 1.2; }
+        if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; const sk = devS(X); X.shadowBlur = 2 * sk; X.shadowOffsetY = 1.2 * sk; }
         X.fillStyle = hC(h, okc(D.numColor) ? D.numColor : '#efe8d2'); X.fill(); X.shadowColor = 'transparent';
         if (!NX) { X.lineWidth = 1.4 / hs; X.strokeStyle = 'rgba(190,190,190,.9)'; X.stroke(); }
         X.restore();
@@ -909,7 +909,7 @@
         const hs = hS(0), a = A(0, 12), q = P(C, C, 141.5, a);
         if (!blocked(q[0], q[1], holes, 12 * hs)) {
           X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = NX ? 1 : 0.97; X.fillStyle = hC(0, NI);
-          if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; X.shadowBlur = 1.3; X.shadowOffsetY = 1; }
+          if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; const sk = devS(X); X.shadowBlur = 1.3 * sk; X.shadowOffsetY = sk; }
           X.beginPath(); X.moveTo(0, -25.5); X.lineTo(28, 25.5); X.lineTo(-28, 25.5); X.closePath(); X.fill();
           [-1, 1].forEach((sd) => { X.beginPath(); X.arc(sd * 27, -10.5, 6.6, 0, TAU); X.fill(); });
           X.restore();
@@ -932,7 +932,7 @@
       (h === 0 ? [-4.5, 4.5] : [0]).forEach((o) => {
         const hs = ns * (h === 0 ? +D.n12Scale || 1 : h % 3 === 0 ? +D.nQScale || 1 : 1), w = (h % 3 === 0 ? 6 : 4.5) * Math.sqrt(hs), r0 = 204 - (h % 3 === 0 ? 28 : 20) * hs;
         ctx.save(); ctx.translate(C, C); ctx.rotate(a); ctx.translate(0, o);
-        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.65)'; ctx.shadowBlur = 3; [ctx.shadowOffsetX, ctx.shadowOffsetY] = away(2.1);
+        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.65)'; const sk = devS(ctx); ctx.shadowBlur = 3 * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = away(2.1 * sk);
         ctx.fillStyle = pal.lo; ctx.fillRect(r0, -w / 2, 204 - r0, w); ctx.restore();
         const g = ctx.createLinearGradient(0, -w / 2, 0, w / 2);
         g.addColorStop(0, pal.hi); g.addColorStop(0.48, pal.mid); g.addColorStop(0.52, pal.lo); g.addColorStop(1, pal.mid);
@@ -2145,9 +2145,17 @@
     const auto = !(+o.shAngle >= 0), a = auto ? Lt.outer + Math.PI : rad(+o.shAngle - 90);
     return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, kk: Math.min(1.5, Lt.outerK) };
   }
+  /* Canvas casts shadows in DEVICE space: shadowOffsetX/Y and shadowBlur ignore the CTM.
+   * compose eases the "no case" opening through one scale about the centre and the chapter
+   * pull-in pushes another, so every live cast here pre-multiplies its distances by the
+   * CTM's own scale -- sqrt|det|, so a translate or a rotate cannot stretch a distance.
+   * Without this the hand's cast stays full size (and, offset by the 3000px silhouette
+   * stand-in, drifts by OFF*(1-k)) while the hand shrinks: the projection peels off and
+   * the hand reads as lifted off the dial the moment the opening slider moves. */
+  const devS = (x) => { const m = x.getTransform && x.getTransform(); if (!m) return 1; const s = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)); return s > 1e-6 ? s : 1; };
   function drawHands(ctx, hands, date, Lt, SH) {
     SH = SH || shadowCfg({}, Lt);
-    const [ax, ay] = SH.dir, kk = SH.kk, dm = SH.dist, bm = SH.blur, om = SH.op;
+    const [ax, ay] = SH.dir, kk = SH.kk, dm = SH.dist, bm = SH.blur, om = SH.op, sk = devS(ctx);
     if (!HT.c) HT.c = cv(S);
     const t = HT.c.getContext('2d');
     hands.forEach((hd) => {
@@ -2155,13 +2163,13 @@
       t.translate(hd.x, hd.y); t.rotate(handAngle(hd, date)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
       const h = hd.h;
       [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
-        ctx.save(); ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = b; ctx.shadowOffsetX = OFF + ox; ctx.shadowOffsetY = oy;
+        ctx.save(); ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = b * sk; ctx.shadowOffsetX = (OFF + ox) * sk; ctx.shadowOffsetY = oy * sk;
         ctx.drawImage(HT.c, -OFF, 0); ctx.restore();
       });
       ctx.drawImage(HT.c, 0, 0);
       if (hd.cap) {
         const r = hd.cap, f = hd.fin;
-        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')'; ctx.shadowBlur = 3 * bm; [ctx.shadowOffsetX, ctx.shadowOffsetY] = [ax * 2.2 * dm, ay * 2.2 * dm];
+        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')'; ctx.shadowBlur = 3 * bm * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = [ax * 2.2 * dm * sk, ay * 2.2 * dm * sk];
         let g = f.m;
         if (!hd.flat) { g = ctx.createRadialGradient(hd.x - r * 0.35, hd.y - r * 0.35, r * 0.1, hd.x, hd.y, r); g.addColorStop(0, f.b); g.addColorStop(0.6, f.m); g.addColorStop(1, f.a); }
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(hd.x, hd.y, r, 0, TAU); ctx.fill(); ctx.restore();

@@ -249,9 +249,9 @@ python3 -m pip install --user --break-system-packages nodeenv \
 
 | File | Checks |
 |---|---|
-| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry), the hands-row eye on a centre hand, a round aperture |
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry — and every hand shadow cast is the full-opening cast times `dynK`, proven on the recorded device-space offsets), the hands-row eye on a centre hand, a round aperture |
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
-| `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
+| `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
 
 The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
@@ -274,7 +274,9 @@ scorer reads zero wobble and the pass-through must not be confused for a disable
 snap — the file asserts both halves), and `zeroRotationDeg` reaches the theme record at
 tenth-of-a-degree precision, so a facing off the 15-degree steppers survives.
 
-These are stubs, not a renderer — gradients, shadows and text metrics are no-ops. Pixel
+These are stubs, not a renderer — gradients, shadows and text metrics are no-ops, though
+the 2D context now tracks the real CTM (so `getTransform()` answers under `compose`'s
+opening lens) and records each draw's live shadow offsets for assertions. Pixel
 truth is still `export-test.html` under Chrome. This box has no browser, so deploy it to
 the Windows side and open it there:
 
@@ -354,6 +356,19 @@ evidence for the authoring controls the stub suites can only describe:
   case; under a drawn case the same art stays clipped to the dial circle (0 px outside it),
   where the metal does the covering. The drawn pieces do follow the ring: hand ink beyond
   r=158 falls from 104 px at the default opening to 0 at 150 (`dynScale`);
+* the hands' **projected shadows stay pinned** while the opening shrinks. Canvas draws
+  shadows in device space — offsets and blur ignore the CTM — so `drawHands` pre-scales
+  every cast by `dynK` itself (`devS`). The probe measures the dark low-alpha cloud around
+  hands-only ink at both openings: the cloud must survive at ~dynK² of its pixels and its
+  centroid offset must land at dynK× the full-opening offset, or the hands read as lifted
+  off the dial;
+* the Motion chips survive a **4/s → sweep → 4/s round trip** on Broad arrow (a
+  15-fps-capable config). Each flip re-prices the tempo and needs its own rebuild; the
+  build-gate seatbelt counts passes per art **and** wanted rate, and the frame timer only
+  advances while `gt.length === B`. The check drives the real lifecycle and requires the
+  train to still be advancing frames after every flip — the reported bug froze it on the
+  third;
+
 * the seconds hand is authored with the **seconds** list, not the hand-style list. Both are
   measured on the sprite the kit ships (`hd.sp.c`): `classic` 801 px against `lollipop` 1060 px
   proves the seconds list reshapes it, while none of six hand styles moves it by a single
@@ -417,12 +432,11 @@ chrome --headless=new --disable-gpu --no-sandbox --hide-scrollbars \
   --screenshot='C:\...\probe.png' 'file://<win-path>/_selftest/probe-calendar.html'
 ```
 
-`probe-case.html` is the one to run when someone reports a ring around the dial: it
-composites a solid-colour full-bleed upload under Case "None" at three openings and
-prints, per setting, the art pixel count with the case layer shown and hidden plus the
-number of black pixels left outside r=150. All three settings must print the same art
-count and `blackRingPx=0`; the polished line at the bottom is the control that says the
-mask still exists where a case is actually drawn.
+The full-bleed-upload ring check that `probe-case.html` used to provide is folded into
+`export-test.html`'s no-case block: it composites a solid-colour full-bleed upload under
+Case "None" at openings 221.5 and 150 and prints the art pixel count with the case layer
+shown and hidden. Both settings must print the same ink box, and the polished control line
+says the mask still exists where a case is actually drawn.
 
 `probe-geom.html` renders 39 full dials, so give it a large virtual-time budget;
 frames are cached per design. Re-pose both probes by editing `POSE`.

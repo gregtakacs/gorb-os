@@ -617,6 +617,35 @@
     const hWide = hand_ink(221.5), hCut = hand_ink(150);
     if (!(hWide > 60)) return fail('no hand ink reaches beyond r=158 at the default opening, so the shrink probe is blind: ' + hWide);
     if (hCut > hWide / 6) return fail('the opening left the drawn hands outside the glass: ' + hCut + ' px of hand ink past r=158 at opening 150 (from ' + hWide + ')');
+    // The projected shadows must shrink WITH the hands. Canvas casts shadows in DEVICE
+    // space -- offset and blur ignore the CTM -- so if drawHands did not pre-scale every
+    // cast by dynK, the projection (shifted by the 3000px silhouette stand-in) would peel
+    // off the eased-in hand the moment the opening moved, and the hand would read as
+    // lifted off the dial. Hands only, fixed pose, transparent panel: the dark low-alpha
+    // cloud around the ink is the cast; its centroid sits dynK-times closer to the ink
+    // at opening 150 than at the default.
+    const cast_ink = (open) => {
+      const fc = it.faceOf({}, { caseStyle: 'none', caseOpen: open });
+      const c = document.createElement('canvas'); c.width = S4; c.height = S4;
+      const x = c.getContext('2d');
+      if (fc.dynK !== 1) { x.translate(S4 / 2, S4 / 2); x.scale(fc.dynK, fc.dynK); x.translate(-S4 / 2, -S4 / 2); }   // compose's dz, verbatim
+      fc.drawHands(x, new Date(2026, 0, 1, 10, 9, 0));
+      const d = x.getImageData(0, 0, S4, S4).data;
+      let inkN = 0, ix = 0, iy = 0, shN = 0, sx = 0, sy = 0;
+      for (let y = 0; y < S4; y++) for (let px = 0; px < S4; px++) {
+        const i = (y * S4 + px) * 4, a = d[i + 3]; if (a < 3) continue;
+        if (a > 200 && (d[i] > 24 || d[i + 1] > 24 || d[i + 2] > 24)) { inkN++; ix += px; iy += y; }
+        else if (a <= 170 && d[i] <= 24 && d[i + 1] <= 24 && d[i + 2] <= 24) { shN++; sx += px; sy += y; }
+      }
+      return { inkN, shN, dx: shN ? sx / shN - ix / inkN : 1e9, dy: shN ? sy / shN - iy / inkN : 1e9 };
+    };
+    const wCast = cast_ink(221.5), cCast = cast_ink(150), kC = 150 / 221;
+    if (!(wCast.shN > 400 && wCast.inkN > 800)) return fail('hands at the default opening cast no measurable shadow, so the pin test is blind: ' + JSON.stringify(wCast));
+    if (!(cCast.shN > wCast.shN * kC * kC * 0.35)) return fail('the opening stripped the hands\u2019 projected shadow, which reads as the hands lifting off the dial: ' + JSON.stringify([wCast.shN, cCast.shN]));
+    if (Math.abs(cCast.dx - kC * wCast.dx) > Math.max(2, Math.abs(kC * wCast.dx) * 0.3) || Math.abs(cCast.dy - kC * wCast.dy) > Math.max(2, Math.abs(kC * wCast.dy) * 0.3))
+      return fail('the projected shadow kept its full-size device offset while the hand shrank: ' + JSON.stringify([wCast, cCast, kC]));
+    say('  hand casts stay pinned at opening 150: shadow cloud ' + wCast.shN + ' -> ' + cCast.shN + ' px, centroid offset (' + wCast.dx.toFixed(1) + ',' + wCast.dy.toFixed(1) + ') -> (' + cCast.dx.toFixed(1) + ',' + cCast.dy.toFixed(1) + ') against the x' + kC.toFixed(3) + ' the opening asked for');
+
     // The other half of the same complaint: an image whose own artwork runs to the edge of
     // the panel must be allowed to get there. Clipped to the dial circle it lost its case at
     // r=221 and the black underneath read as a ring that no slider setting could remove.
@@ -740,6 +769,45 @@
     say('  alignment reference: ' + shown.length + ' of ' + PROBES.length + ' grid points painted on the glass, every one of them at the same pixel with the art at offset 0 and at 120');
     say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');
     pass();
+  }
+  /* ---- the Motion chips: a 4/s -> sweep -> 4/s round trip must not kill the train ---
+   * Every flip re-prices the tempo the bank is rendered for. The seatbelt that stops
+   * pathological rebuilds used to count all of them against the one unchanged art
+   * signature, so the flip that needed the rebuild was the one that never got it: the
+   * bank kept the old length, the timer's length guard refused to advance frames, and
+   * the movement sat still while the readout claimed a working rate. */
+  function tickFlipCheck(E, say, done) {
+    const it = new (window.COMP_CLASS(DCLogic))({});
+    it.forceUpdate = () => { };                              // React-less harness: componentDidMount and the trailing price both call it
+    it.state.dial = 'diver';                                  // Broad arrow: the reported 15-fps-capable config
+    const stop = () => { try { it.componentWillUnmount(); } catch (e) { } };
+    const fail = (m) => { stop(); done(new Error('tick round trip: ' + m)); };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const settle = async () => {
+      for (let i = 0; i < 240; i++) {
+        it.componentDidUpdate();
+        if (!it.rendering && it._mk === it.mvKey() && it.gt.length === it.B && it.gt[0]) return true;
+        await wait(50);
+      }
+      return false;
+    };
+    const snap = () => JSON.stringify({ tick: it.cfg().tick, fps: it.budget().fps, B: it.B, gt: it.gt.length, mk: it._mk === it.mvKey(), bp: it._bp, rows: it.budgetStats && it.budgetStats.rows });
+    const advanced = async (ms) => { const f0 = it.state.frame; await wait(ms); return it.state.frame !== f0; };
+    (async () => {
+      await it.componentDidMount();
+      if (!await settle()) return fail('never settled after mount: ' + snap());
+      it.state.playing = true;
+      if (!await advanced(600)) return fail('the train was already frozen on load: ' + snap());
+      const marks = [];
+      for (const t of ['4', 'sweep', '4']) {
+        it.setCfg('tick', t);
+        if (!await settle()) return fail('never settled after Motion ' + t + ': ' + snap());
+        if (!await advanced(600)) return fail('movement stopped beating after Motion ' + t + ': ' + snap());
+        const b = it.budget(); marks.push(t + '@' + b.fps + 'fps/bank' + it.B);
+      }
+      say('  motion round trip on Broad arrow stayed live through ' + marks.join(' -> ') + ' (seatbelt passes never exceeded ' + it._bp + ')');
+      stop(); done();
+    })().catch((e) => fail('(async) threw ' + (e && e.message)));
   }
   function calKitCheck(E, inst, DCLogic, bytesOf, say, calD, done) {
     const it = new (window.COMP_CLASS(DCLogic))({});
@@ -1051,6 +1119,16 @@
             say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
             document.title = 'FAIL'; return;
           }
+          // the hands-tab motion round trip: 4/s -> sweep -> 4/s on a 15-fps-capable
+          // config must leave the gear train still beating. The old seatbelt counted
+          // every rebuild against the ART, and tick changes do not change the art --
+          // the last flip never rebuilt, the bank length never matched the tempo, and
+          // the frame timer's guard froze the movement on screen forever.
+          tickFlipCheck(E, say, (err) => {
+          if (err) {
+            say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
           // last, because it rewrites inst.state.designs while it drives the controls
           try { uiCheck(E, inst, say); }
           catch (e) {
@@ -1058,6 +1136,7 @@
             document.title = 'FAIL'; return;
           }
           say('RESULT: PASS'); document.title = 'PASS';
+        });
         });
         });
         });

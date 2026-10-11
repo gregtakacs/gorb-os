@@ -8,6 +8,12 @@ const DIR = path.join(__dirname, '..');
 const SIZES = {};                                    // dataUrl -> [w,h] for the fake Image
 const ALPHAS = {};                                   // dataUrl -> Uint8ClampedArray RGBA fixture
 function stubCtx() {
+  // Real 2x3 CTM tracking: compose's opening lens and the shadow pre-scale it drives are
+  // invisible unless getTransform answers with the matrix the call sequence built.
+  let m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }, stack = [];
+  const mul = (n) => {
+    m = { a: m.a * n.a + m.c * n.b, b: m.b * n.a + m.d * n.b, c: m.a * n.c + m.c * n.d, d: m.b * n.c + m.d * n.d, e: m.a * n.e + m.c * n.f + m.e, f: m.b * n.e + m.d * n.f + m.f };
+  };
   const c = {
     canvas: null, globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none',
     draws: [],                                        // every drawImage, for the assertions
@@ -24,17 +30,20 @@ function stubCtx() {
     createRadialGradient: () => ({ addColorStop() { } }),
     createConicGradient: () => ({ addColorStop() { } }),
     createPattern: () => null,
-    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    getTransform: () => ({ a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f }),
     getImage: () => null,
+
     createImageData: (w, h) => ({ data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h }),
     measureText: (t) => ({ width: 6 * String(t).length }),
     getImageData: (x, y, w, h) => ({ data: (c.canvas && c.canvas._alpha) || new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h }),
     putImageData: (d) => { if (c.canvas) c.canvas._alpha = d.data; },
-    setTransform() { }, resetTransform() { }, save() { }, restore() { },
+    setTransform(a, b, c2, d, e, f) { m = arguments.length === 1 ? { a: a.a, b: a.b, c: a.c, d: a.d, e: a.e, f: a.f } : { a, b, c: c2, d, e, f }; }, resetTransform() { m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+    save() { stack.push({ ...m }); }, restore() { if (stack.length) m = stack.pop(); },
     // The geometry calls record their arguments so an assertion can read the guide and
     // the case mask as data. Each call stays a no-op apart from that push.
-    translate(x, y) { this._g('translate', x, y); }, scale(x, y) { this._g('scale', x, y); },
-    rotate(a) { this._g('rotate', a); }, transform() { }, setLineDash(d) { this._g('dash', d && d.length ? String(d) : 'solid'); },
+    translate(x, y) { this._g('translate', x, y); mul({ a: 1, b: 0, c: 0, d: 1, e: x, f: y }); },
+    scale(x, y) { this._g('scale', x, y); mul({ a: x, b: 0, c: 0, d: y === undefined ? x : y, e: 0, f: 0 }); },
+    rotate(a) { this._g('rotate', a); mul({ a: Math.cos(a), b: Math.sin(a), c: -Math.sin(a), d: Math.cos(a), e: 0, f: 0 }); }, transform() { }, setLineDash(d) { this._g('dash', d && d.length ? String(d) : 'solid'); },
     beginPath() { }, closePath() { }, moveTo(x, y) { this._g('moveTo', x, y); }, lineTo(x, y) { this._g('lineTo', x, y); },
     bezierCurveTo() { },
     quadraticCurveTo() { }, arc(x, y, r, a0, a1) { this._g('arc', x, y, r, a0, a1); }, arcTo() { }, ellipse() { }, rect() { }, roundRect() { },
@@ -42,7 +51,9 @@ function stubCtx() {
     drawImage(img) {
       const s = (img && img._src && SIZES[img._src]) || [10, 10];
       this._w = s[0]; this._h = s[1];
-      this.draws.push({ src: img && img._src, args: Array.prototype.slice.call(arguments, 1) });
+      const d = { src: img && img._src, args: Array.prototype.slice.call(arguments, 1) };
+      if (this.shadowColor && this.shadowColor !== 'rgba(0,0,0,0)') d.sh = { x: this.shadowOffsetX, y: this.shadowOffsetY, b: this.shadowBlur, c: this.shadowColor };
+      this.draws.push(d);
       if (this.ops.length < 400) this.ops.push({ op: 'drawImage', src: img && img._src });
       if (img && img._src && ALPHAS[img._src] && c.canvas) c.canvas._alpha = ALPHAS[img._src];
     },

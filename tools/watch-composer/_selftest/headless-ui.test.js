@@ -394,6 +394,24 @@ setTimeout(() => {
   ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
   for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
   ok(rv.bundleNote === ex2.bundleNote, 'the bundle label is stable across renders');
+  // ---- the build-gate seatbelt: a tempo flip must always be able to rebuild ----------
+  // tick is absent from the art signature. Counting every rebuild against the art alone
+  // let a 4/s -> sweep -> 4/s round trip on a Broad arrow spend the budget, so the last
+  // flip -- the one that needed a re-render -- was silently refused: the bank length
+  // stopped matching the tempo, the timer guard froze the frames, and the movement died
+  // on screen. The window now opens per wanted rate.
+  const g1 = new Comp({});
+  g1.ready = true;
+  let gBuilds = 0; g1.buildMovement = () => { gBuilds++; };
+  for (let i = 0; i < 7; i++) g1.buildGate();                       // exhaust the per-rate budget
+  ok(gBuilds === 5 && g1._bp === 5, 'the seatbelt still caps one wanted rate, at enough passes to walk the whole tier ladder', 'builds=' + gBuilds);
+  g1.setCfg('tick', '4');
+  g1.buildGate();
+  ok(gBuilds === 6 && g1._bp === 1, 'a seconds-rate flip opens a fresh rebuild window on unchanged art, so the movement always re-rates for the new bank', 'builds=' + gBuilds + ' bp=' + g1._bp);
+  for (let i = 0; i < 7; i++) g1.buildGate();
+  g1.setCfg('tick', '4');                                           // same value: still the same wanted rate
+  g1.buildGate();
+  ok(g1._bp === 5, 'and the cap still holds while the rate is unchanged -- a pathological dial cannot rebuild forever by moving a slider', 'bp=' + g1._bp);
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 }, 15);

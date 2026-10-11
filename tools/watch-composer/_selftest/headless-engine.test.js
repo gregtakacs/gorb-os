@@ -247,6 +247,24 @@ setTimeout(() => {
       E.compose(cxL, bLens, {}, fLens, new Date(2026, 0, 1, 10, 9, 0), {});
       const nLens = cxL.geom.filter((g) => g.op === 'scale' && Math.abs(g.a[0] - 160 / 221) < 1e-9).length;
       ok(nLens >= 5, 'compose turns the plate, train, haze, complications, subdials, hands and glass through the opening scale -- and blends the dial and the backdrop art as baked', 'scaled layers=' + nLens);
+      /* Canvas draws shadows in DEVICE space -- shadowOffsetX/Y and shadowBlur ignore the
+       * CTM. The opening's lens must therefore pre-scale every hand cast by dynK itself,
+       * or the projection peels off the shrinking hand and the hands read as lifted off
+       * the dial. The two runs below take the identical code path compose uses; each
+       * cast's recorded device-space offsets must be exactly the full-opening cast × dynK. */
+      const castOf = (open) => {
+        const f = mkFace({ caseStyle: 'none', caseOpen: open });
+        const c = document.createElement('canvas'); c.width = c.height = 466; const x = c.getContext('2d');
+        E.compose(x, null, null, f, new Date(2026, 0, 1, 10, 9, 0), { movement: 1, geartrain: 1, complications: 1, subdials: 1, dial: 1, glass: 1, outer: 1 });
+        return x.draws.filter((d) => d.sh && d.sh.x > 1000).map((d) => [d.sh.x, d.sh.y, d.sh.b]);
+      };
+      const castFull = castOf(221.5), castFit = castOf(160), kFit = 160 / 221;
+      ok(castFull.length >= 4 && castFit.length === castFull.length, 'every hand ships its two shadow passes at both openings', JSON.stringify([castFull.length, castFit.length]));
+      ok(castFull.length === castFit.length && castFull.every((row, i) =>
+        Math.abs(castFit[i][0] - row[0] * kFit) < 1e-6 && Math.abs(castFit[i][1] - row[1] * kFit) < 1e-6 && Math.abs(castFit[i][2] - row[2] * kFit) < 1e-6),
+        'the projected hand shadows are pinned to the hands: offsets and blur at opening 160 are the full cast times dynK, not the unscaled device-space numbers',
+        JSON.stringify([castFull[0], castFit[0]]));
+
       /* ---- the hands row eye on a CENTRE hand ---------------------------------------
        * The eye wrote hands['centre-hour'].on = false and nothing read it: buildHands
        * skipped only the subdial rows, and the row read its label off design.centre alone.

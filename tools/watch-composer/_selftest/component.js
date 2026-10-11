@@ -506,7 +506,12 @@ class Component extends DCLogic {
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
     if (!this.ready) return;
     const D0 = this.design(); [D0.font, D0.perimFont, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
-    if (this._mk !== this.mvKey()) {
+    if (this._mk !== this.mvKey() || (!this.rendering && this.gt.length && this.gt.length !== this.B)) {
+      /* The second clause is the self-heal for a superseded build: buildMovement
+       * stamps _mk at its start, so a discarded build can leave the key matching
+       * while the frames on screen still belong to the old bank. Without this the
+       * mismatch hides from both branches and the timer's length guard strands
+       * the movement. */
       this.buildGate();
     } else if (this._artKey !== this.artKey()) {
       /* Dial-only change: the base frames still describe the train exactly, and
@@ -598,11 +603,16 @@ class Component extends DCLogic {
    * lowering the export fps is the one mvKey field the build itself can move:
    * rows grow as the tempo drops, so the tier only ever walks down (_ftier) and
    * settles within a pass or two. This counter is the seatbelt that keeps a
-   * pathological dial from rebuilding the movement forever. */
+   * pathological dial from rebuilding the movement forever.
+   * The window opens per WANTED rate, not per art: tick is absent from artKey,
+   * so a 4/s -> sweep -> 4/s round trip asks three or four legitimate rebuilds of
+   * one unchanged art signature -- counted against a per-art budget of three, the
+   * last flip never builds, gt.length no longer equals the bank B, and the frame
+   * timer's guard freezes the movement on screen forever. */
   buildGate() {
-    const ak = this.artKey();
+    const ak = this.artKey() + '|' + this.cfg().tick;
     if (ak !== this._bk) { this._bk = ak; this._bp = 0; }
-    if (this._bp < 3) { this._bp++; this.buildMovement(); }
+    if (this._bp < 5) { this._bp++; this.buildMovement(); }
   }
   async buildMovement() {
     const id = (this.buildId = (this.buildId || 0) + 1);

@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "display/display.c"
+        "gfx/orb_gfx.c"
         "clock/clock_view.c"
         "knob/knob.c"
         "color/color_picker.c"
@@ -16,6 +17,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "display"
+        "gfx"
         "clock"
         "knob"
         "color"

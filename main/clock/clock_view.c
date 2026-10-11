@@ -77,6 +77,7 @@
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "display.h"
+#include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
 #include "orb_net.h"   /* orb_net_time_synced(): the dial's second time source */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
@@ -220,10 +221,9 @@ static uint32_t         s_fps_te0;        /* display_te_wait_us() last read */
  * flush is one number in display's own bookkeeping; these say which of the
  * hook's three passes eats it, so an optimization is chosen by measurement and
  * not by which loop looks expensive: rest = take the mirror row + wipe the
- * staging row back to plain canvas, paint = every layer's blend_px traffic,
+ * staging row back to plain canvas, paint = every layer's gfx_blend_px traffic,
  * cmp = the flush gate (compare the staged row against the mirror and write
- * back what changed). Per-layer blend counts live next to paint_row_ctx. */
-static uint64_t         s_hk_rest_us, s_hk_paint_us, s_hk_cmp_us;
+ * back what changed). Per-layer blend counts live next to gfx_paint_row_ctx. */
 static uint64_t         s_hk_rest_us0, s_hk_paint_us0, s_hk_cmp_us0;
 /* Previous-second baselines of display's commit-phase totals (mirror/hook/te/dma). */
 static uint64_t         s_fps_ph0, s_fps_ph1, s_fps_ph2, s_fps_ph3;
@@ -261,30 +261,6 @@ static uint16_t *s_tourb_cx1[CLK_TOURB_MAX];
 static int16_t  s_wp_x0[CLK_SCR_H], s_wp_x1[CLK_SCR_H];
 static int32_t  s_wp_lo, s_wp_hi;
 
-/* LVGL's integer-degree sine, /32768 scale (see paint path; pair it with
- * >> 15, or scale up yourself — declared early because the orbit stamps
- * below use it before the paint block defines it). */
-static inline int32_t trigo_sin(int32_t angle);
-
-/* The rotation pair SHARED by paint_row's inverse map and the orbit chord
- * stamps: LVGL's lv_draw_sw_transform interpolation of trigo_sin at the exact
- * tenth of a degree, quantised the way LVGL quantises it (>> 5), LVGL's /1024
- * scale (1.0 == 1024 — NOT a 16.16 value: callers that multiply these into a
- * >> 16 product must scale by 64, see tourb_stamp_pose). Stamps and painter
- * must consume exactly these numbers: any other pair (the whole-degree table,
- * or a different scale) displaces the stamped pose from the painted one, and
- * rows outside the stamped spans are neither restored nor repainted — ghost
- * and missing ink that no fps counter can see. */
-static void rot_sin_cos(int32_t ang_10, int32_t *sinma, int32_t *cosma)
-{
-    const int32_t tr_ang = -(ang_10 % 3600);
-    if (tr_ang == 0) { *sinma = 0; *cosma = 1024; return; }   /* LVGL's bit-exact case */
-    const int32_t low = tr_ang / 10, rem = tr_ang - low * 10;
-    const int32_t s1 = trigo_sin(low),      s2 = trigo_sin(low + 1);
-    const int32_t c1 = trigo_sin(low + 90), c2 = trigo_sin(low + 91);
-    *sinma = ((s1 * (10 - rem) + s2 * rem) / 10) >> 5;
-    *cosma = ((c1 * (10 - rem) + c2 * rem) / 10) >> 5;
-}
 
 
 static bool gif_mode(void)
@@ -343,30 +319,6 @@ static const uint8_t *s_art;
  * the bank was linked into .rodata. See main/art/art_bank.h. */
 static const uint8_t *blob(void) { return s_art; }
 
-static uint32_t sprite_bytes(const clk_sprite_t *s)
-{
-    return (uint32_t)s->w * (uint32_t)s->h * 3u;   /* colour w*h*2 + alpha w*h */
-}
-
-static bool sprite_drawable(const clk_sprite_t *s)
-{
-    return s->show && s->w > 0 && s->h > 0 && s->color_off != 0;
-}
-
-/* Build an LVGL RGB565A8 descriptor for a cropped sprite: planar colour plane
- * (w*h*2, stride w*2) with the alpha plane (w*h, stride w) appended in the blob. */
-static void fill_sprite_dsc(lv_image_dsc_t *d, const clk_sprite_t *s)
-{
-    memset(d, 0, sizeof(*d));
-    d->header.magic      = LV_IMAGE_HEADER_MAGIC;
-    d->header.cf         = LV_COLOR_FORMAT_RGB565A8;
-    d->header.flags      = 0;
-    d->header.w          = s->w;
-    d->header.h          = s->h;
-    d->header.stride     = (uint32_t)s->w * 2u;
-    d->data_size         = sprite_bytes(s);
-    d->data              = blob() + s->color_off;
-}
 
 static void fill_plate_dsc(lv_image_dsc_t *d)
 {
@@ -450,14 +402,8 @@ static void show_plate_frame(int idx)
     lv_obj_invalidate(s_plate);
 }
 
-static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out);
-static void swept_rect_box(const clk_sprite_t *spr, int32_t ang_10,
-                           int32_t rx1, int32_t ry1, int32_t rx2, int32_t ry2,
-                           lv_area_t *out);
 
-static void area_union(lv_area_t *a, const lv_area_t *b);
 #if CLK_BG_DIRECT_PUSH
-static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1, bool force);
 static bool l4_active(void);
 static void request_commit(void);
 #endif
@@ -504,7 +450,7 @@ static void gif_apply_frame(int tgt)
          * for them had been consumed -- hands vanished over precisely the
          * pushed rects. One writer per row, and it is the hook. */
         if (l4_active()) {
-            mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1, true);
+            gfx_mark_rows(rc->y, rc->y + rc->h - 1, rc->x, rc->x + rc->w - 1, true);
             pushed = true;
         }
 #endif
@@ -546,9 +492,9 @@ static lv_blend_mode_t map_blend(uint8_t b)
  * centre; LVGL then rotates it about that pivot. */
 static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc)
 {
-    if (!sprite_drawable(spr)) return NULL;
+    if (!gfx_sprite_drawable(spr)) return NULL;
 
-    fill_sprite_dsc(dsc, spr);
+    gfx_fill_sprite_dsc(dsc, spr, blob());
 
     lv_obj_t *o = lv_image_create(s_scr);
     lv_obj_set_size(o, spr->w, spr->h);
@@ -626,80 +572,6 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
     ang[4] = 0.0f;
 }
 
-/* ---- rotated-layer invalidation ------------------------------------------
- * A hand rotates about a pivot that sits far outside its own box (the second
- * hand's ink is a slim sliver whose box is nowhere near the sub-dial centre it
- * swings around), so the pixels it paints this tick and uncovers next tick form
- * a wedge, and that wedge's bounding box walks tens of pixels outside the
- * widget's box as it sweeps.
- *
- * lv_image_set_rotation() does invalidate both the old and the new transformed
- * box, but every one of those calls routes through lv_obj_invalidate_area(),
- * which clips the area to the widget's own coords expanded by ext_draw_size --
- * and ext_draw_size is refreshed for the NEW angle only. The outgoing wedge's
- * anti-aliased fringe therefore lands outside the clip and is never repainted
- * from the plate. On the glass that is exactly the two artifacts we had:
- * sparkle pixels stranded where the hand used to be, and a hairline running
- * along the edge of the hand's rectangle.
- *
- * Pushing the union of both wedges in through the PARENT sidesteps the child
- * clip (the screen's box is the whole panel), so LVGL re-renders the plate under
- * the entire swept region before drawing the hand back over it. Padded by a few
- * pixels because the software transform blends its edge AA past the geometric
- * box, which is precisely the band the clip was dropping. */
-#define SWEPT_PAD 3
-
-static void swept_rect_box(const clk_sprite_t *spr, int32_t ang_10,
-                           int32_t rx1, int32_t ry1, int32_t rx2, int32_t ry2,
-                           lv_area_t *out)
-{
-    /* ang_10 is TENTHS of a degree: deg = ang_10/10, rad = ang_10 * PI/1800.
-     * (The divisor here was 3600, i.e. the box was built for HALF the angle:
-     * right at 12 o'clock, progressively wrong as the hand swept, which is why
-     * the hour hand lost its tip and the second hand looked clipped at a straight
-     * edge wherever the box stopped short of the ink paint_layer maps onto.) */
-    const double rad = (double)ang_10 * (M_PI / 1800.0);
-    const double c = cos(rad), s = sin(rad);
-    int32_t x1 = 0x7fffffff, y1 = 0x7fffffff;
-    int32_t x2 = -0x7fffffff, y2 = -0x7fffffff;
-
-    for (int i = 0; i < 4; i++) {
-        const double cx = (i & 1) ? (double)rx2 : (double)rx1;
-        const double cy = (i & 2) ? (double)ry2 : (double)ry1;
-        const double dx = cx - (double)spr->pivotx;
-        const double dy = cy - (double)spr->pivoty;
-        /* lv_point_transform()'s convention, with the pivot pinned to the
-         * sprite's screen centre (obj->coords = center - pivot). */
-        const double px = (double)spr->centerx + (c * dx - s * dy);
-        const double py = (double)spr->centery + (s * dx + c * dy);
-        const int32_t ix = (int32_t)floor(px), iy = (int32_t)floor(py);
-        if (ix < x1) x1 = ix;
-        if (iy < y1) y1 = iy;
-        if (ix > x2) x2 = ix;
-        if (iy > y2) y2 = iy;
-    }
-
-    x1 -= SWEPT_PAD; y1 -= SWEPT_PAD;
-    x2 += SWEPT_PAD; y2 += SWEPT_PAD;
-    out->x1 = (lv_coord_t)(x1 < 0 ? 0 : x1);
-    out->y1 = (lv_coord_t)(y1 < 0 ? 0 : y1);
-    out->x2 = (lv_coord_t)(x2 > CLK_SCR_W - 1 ? CLK_SCR_W - 1 : x2);
-    out->y2 = (lv_coord_t)(y2 > CLK_SCR_H - 1 ? CLK_SCR_H - 1 : y2);
-}
-
-static void swept_box(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
-{
-    swept_rect_box(spr, ang_10, 0, 0, (int32_t)spr->w - 1, (int32_t)spr->h - 1, out);
-}
-
-
-static void area_union(lv_area_t *a, const lv_area_t *b)
-{
-    if (b->x1 < a->x1) a->x1 = b->x1;
-    if (b->y1 < a->y1) a->y1 = b->y1;
-    if (b->x2 > a->x2) a->x2 = b->x2;
-    if (b->y2 > a->y2) a->y2 = b->y2;
-}
 
 /* Last angle pushed onto each hand layer, so an unchanged hand is a no-op and
  * so the outgoing wedge is known when a hand does move. INT_MIN = never set. */
@@ -769,24 +641,24 @@ static void apply_angles(const float ang[5])
             /* Union of the old and new wedge of every layer sharing this angle,
              * in both their un-shifted (hand) and shifted (shadow) positions. */
             if (s_hand[i]) {
-                swept_box(&clk_theme.hand[i],   prev, &u);
-                lv_area_t n; swept_box(&clk_theme.hand[i], a, &n);
-                area_union(&u, &n);
+                gfx_swept_box(&clk_theme.hand[i],   prev, &u);
+                lv_area_t n; gfx_swept_box(&clk_theme.hand[i], a, &n);
+                gfx_area_union(&u, &n);
                 have = true;
             }
             if (s_shadow[i]) {
-                lv_area_t su; swept_box(&clk_theme.shadow[i], prev, &su);
-                lv_area_t sn; swept_box(&clk_theme.shadow[i], a, &sn);
-                area_union(&su, &sn);
-                if (have) area_union(&u, &su);
+                lv_area_t su; gfx_swept_box(&clk_theme.shadow[i], prev, &su);
+                lv_area_t sn; gfx_swept_box(&clk_theme.shadow[i], a, &sn);
+                gfx_area_union(&su, &sn);
+                if (have) gfx_area_union(&u, &su);
                 else { u = su; have = true; }
             }
         }
         else if (!inked && s_hand[i]) {
-            swept_box(&clk_theme.hand[i], a, &u);
+            gfx_swept_box(&clk_theme.hand[i], a, &u);
             if (s_shadow[i]) {
-                lv_area_t sn; swept_box(&clk_theme.shadow[i], a, &sn);
-                area_union(&u, &sn);
+                lv_area_t sn; gfx_swept_box(&clk_theme.shadow[i], a, &sn);
+                gfx_area_union(&u, &sn);
             }
             have = true;
         }
@@ -799,7 +671,7 @@ static void apply_angles(const float ang[5])
          * classic path is back in charge and the wedge goes to LVGL. */
         if (have) {
 #if CLK_BG_DIRECT_PUSH
-            if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+            if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
             else
 #endif
                 lv_obj_invalidate_area(s_scr, &u);
@@ -822,7 +694,7 @@ static void apply_angles(const float ang[5])
              * box once more so a lost invalidation can never stick. */
             if (have) {
 #if CLK_BG_DIRECT_PUSH
-                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+                if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
                 else
 #endif
                     lv_obj_invalidate_area(s_scr, &u);
@@ -842,11 +714,11 @@ static void apply_angles(const float ang[5])
 static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
 {
     if (spr->diffw && spr->diffh)
-        swept_rect_box(spr, ang_10, spr->diffx, spr->diffy,
+        gfx_swept_rect_box(spr, ang_10, spr->diffx, spr->diffy,
                        (int32_t)spr->diffx + (int32_t)spr->diffw - 1,
                        (int32_t)spr->diffy + (int32_t)spr->diffh - 1, out);
     else
-        swept_box(spr, ang_10 == INT32_MIN ? 0 : ang_10, out);
+        gfx_swept_box(spr, ang_10 == INT32_MIN ? 0 : ang_10, out);
 }
 
 /* Build frame f's per-source-row ink chords (min/max x with alpha>0), once.
@@ -858,7 +730,7 @@ static bool tourb_chords(int f)
         return false;
     if (s_tourb_cx0[f]) return true;
     const clk_sprite_t *s = &clk_theme.tourbillon[f];
-    if (!sprite_drawable(s) || !s->w || !s->h) return false;
+    if (!gfx_sprite_drawable(s) || !s->w || !s->h) return false;
 
     const size_t sz = (size_t)s->h * sizeof(uint16_t);
     uint16_t *c0 = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -885,14 +757,14 @@ static bool tourb_chords(int f)
 }
 
 /* Rotate frame f's source-row chords by ang_10 (TENTHS of a degree, the
- * swept_rect_box convention) and accumulate the device rows each segment
+ * gfx_swept_rect_box convention) and accumulate the device rows each segment
  * passes through into the s_wp_* spans. All-integer inner loop — the earlier
- * double-trig, mark_rows-per-segment version cost ~90k calls per tick at the
+ * double-trig, gfx_mark_rows-per-segment version cost ~90k calls per tick at the
  * worst carriage angle and starved the tick task to 1-2 fps with an
  * angle-periodic wave; the same work done here is tens of thousands of ALU
  * ops into static memory.
  *
- * The forward rotation reuses paint_layer's exact trig pair (rot_sin_cos),
+ * The forward rotation reuses paint_layer's exact trig pair (gfx_rot_sin_cos),
  * operation for operation, so the stamped pose cannot disagree with what the
  * commit paints: any residual is nearest-neighbour texel spread (±1 px/row),
  * inside the pads. */
@@ -902,7 +774,7 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
     /* Forward map = transpose of paint_layer's inverse map: sin(+a) =
      * -sinma(-a), cos(+a) = cosma(-a). The products below land in a >> 16,
      * so the pair must be sin/cos in 16.16 (1.0 == 65536): sinma is LVGL's
-     * /1024 value, hence *64. (The first builds used trigo_sin's /32768
+     * /1024 value, hence *64. (The first builds used gfx_trigo_sin's /32768
      * table — or sinma*32 — straight into the >>16 form: the stamped pose
      * sat at HALF radius, so the carriage's outer ring never got marked,
      * never got restored or repainted, and ghosted through the whole orbit
@@ -910,7 +782,7 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
      * escapement against it — the exact three reported artifacts. LVGL's
      * own consumers pair lv_trigo_sin with >> 15, not >> 16.) */
     int32_t sma, cma;
-    rot_sin_cos(ang_10, &sma, &cma);
+    gfx_rot_sin_cos(ang_10, &sma, &cma);
     const int32_t si = -sma * 64, co = cma * 64;
     const int32_t pvx = (int32_t)spr->pivotx, pvy = (int32_t)spr->pivoty;
     const int32_t cxs = (int32_t)spr->centerx, cys = (int32_t)spr->centery;
@@ -972,7 +844,7 @@ static void tourb_stamp_pose(const clk_sprite_t *spr, int f, int32_t ang_10)
 }
 
 /* The sweeping carriage's mark for one tick: the union of the poses' rotated
- * ink for frame f, released in <= 466 mark_rows calls. prev_ang_10 ==
+ * ink for frame f, released in <= 466 gfx_mark_rows calls. prev_ang_10 ==
  * INT32_MIN stamps only the new pose (the frame swap calls it that way: the
  * old frame's ink was already marked at this angle by its own moves, and the
  * INCOMING frame's ink — the balance at its new position — is what the baked
@@ -1004,7 +876,7 @@ static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 
     for (int32_t y = s_wp_lo; y <= s_wp_hi; y++)
         if (s_wp_x1[y] >= s_wp_x0[y])
-            mark_rows(y, y, s_wp_x0[y], s_wp_x1[y], false);
+            gfx_mark_rows(y, y, s_wp_x0[y], s_wp_x1[y], false);
     return true;
 }
 
@@ -1023,12 +895,12 @@ static void tourbillon_advance(void)
     if (s_tourb_shown < 0 || a == INT32_MIN) {
         /* First draw of this layer: no prior composite exists to diff against,
          * so the whole (rotation-0 if not posed yet) swept box goes dirty. */
-        swept_box(&clk_theme.tourbillon[f], a == INT32_MIN ? 0 : a, &u);
+        gfx_swept_box(&clk_theme.tourbillon[f], a == INT32_MIN ? 0 : a, &u);
     } else {
         tourb_mark(&clk_theme.tourbillon[s_tourb_shown], a, &u);
         lv_area_t v;
         tourb_mark(&clk_theme.tourbillon[f], a, &v);
-        area_union(&u, &v);
+        gfx_area_union(&u, &v);
     }
 
     /* Mirror apply_angles' etiquette: the src setter would invalidate the
@@ -1039,7 +911,7 @@ static void tourbillon_advance(void)
     lv_image_set_src(s_hand[2], &s_tourb_dsc[f]);
     lv_display_enable_invalidation(disp, true);
 #if CLK_BG_DIRECT_PUSH
-    if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+    if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
     else
 #endif
         lv_obj_invalidate_area(s_scr, &u);
@@ -1076,65 +948,6 @@ static void tourbillon_advance(void)
  * Cost is the clipped box with two early-outs (source bounds, alpha==0):
  * the needles are mostly empty box, so the mask skip drops ~3/4 of it. */
 
-/* Rows this tick has dirtied and that the commit hook must re-composite from
- * scratch: background restored out of s_canvas, then every layer painted over
- * it in z-order.
- *
- * Two things are essential and were the source of the "hands missing /
- * trailing" bug:
- *  - the rows must ALSO be marked in the display's band set
- *    (display_mark_rows_clocked), or the mirror we repaint is never DMA'd and
- *    the glass keeps the old rows;
- *  - each marked row's whole painted span must be restored from the canvas
- *    first, or a layer that moved out of a pixel leaves it behind (ghost) and
- *    a layer that is re-painted blends over its own previous copy.
- * Restoring first also makes the hook idempotent, so the marks stay set for
- * the duration of the tick and are cleared at tick start, not at commit.
- *
- * Each row remembers the x-extent that must be restored: the union of every
- * pushed rect and every layer box that touched it. Narrower than the row, and
- * it can only grow within a tick, so a later mark never loses coverage.
- *
- * FORCE rows had their mirror content replaced outside the hook (the GIF
- * delta push writes mirror+canvas directly between commits), so the panel has
- * never seen those pixels: they always join the flush. The other marked rows
- * are candidates for the hook's byte-compare flush gate -- the orbit disc
- * re-composites ~450 rows a tick but only the wedge under the carriage comes
- * out different, and re-DMA-ing 130 KB of unchanged pixels every tick is what
- * capped sweep at 5 fps once the blend work itself was gone. */
-static uint8_t   s_layer_need_row[CLK_SCR_H];
-static uint8_t   s_layer_force_row[CLK_SCR_H];
-static int32_t   s_layer_row_x0[CLK_SCR_H];
-static int32_t   s_layer_row_x1[CLK_SCR_H];
-static bool      s_need_commit;      /* something marked rows since last tick  */
-
-static inline void mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1,
-                             bool force)
-{
-    if (y0 < 0) y0 = 0;
-    if (y1 >= CLK_SCR_H) y1 = CLK_SCR_H - 1;
-    if (x0 < 0) x0 = 0;
-    if (x1 >= CLK_SCR_W) x1 = CLK_SCR_W - 1;
-    if (y1 < y0 || x1 < x0) return;
-
-    bool any = false;
-    for (int32_t y = y0; y <= y1; y++) {
-        if (!s_layer_need_row[y]) {
-            s_layer_need_row[y] = 1;
-            s_layer_row_x0[y] = x0;
-            s_layer_row_x1[y] = x1;
-        } else {
-            if (x0 < s_layer_row_x0[y]) s_layer_row_x0[y] = x0;
-            if (x1 > s_layer_row_x1[y]) s_layer_row_x1[y] = x1;
-        }
-        if (force) s_layer_force_row[y] = 1;
-        any = true;
-    }
-    if (any) {
-        s_need_commit = true;
-        display_mark_rows_clocked(y0, y1);
-    }
-}
 
 /* L4 only replaces LVGL when there is a canvas to restore background from;
  * without it (non-GIF themes, or the PSRAM canvas alloc failed) the classic
@@ -1150,8 +963,8 @@ static bool l4_active(void)
  * and whose is_last drives the commit our hook hangs on. */
 static void request_commit(void)
 {
-    if (!s_need_commit || !l4_active()) return;
-    s_need_commit = false;
+    if (!gfx_commit_needed() || !l4_active()) return;
+    gfx_commit_consumed();
     static const lv_area_t nudge = { 0, 0, 0, 0 };
     lv_obj_invalidate_area(s_plate, &nudge);
 }
@@ -1211,8 +1024,8 @@ static void mark_all_layers(void)
             if (k == 2 && clk_theme.tourbillon_n && s_tourb_shown >= 0)
                 tourb_mark(&clk_theme.tourbillon[s_tourb_shown], s_ang_10[k], &b);
             else
-                swept_box(&clk_theme.hand[k], s_ang_10[k], &b);
-            mark_rows(b.y1, b.y2, b.x1, b.x2, false);
+                gfx_swept_box(&clk_theme.hand[k], s_ang_10[k], &b);
+            gfx_mark_rows(b.y1, b.y2, b.x1, b.x2, false);
         }
         if (s_shadow[k]) {
             /* Its OWN box, never the hand's fallthrough: the shadow record is
@@ -1220,8 +1033,8 @@ static void mark_all_layers(void)
              * vacated shadow edge on themes with shadows, and re-marked a
              * tourbillon diff box twice at hand coords on themes without. */
             lv_area_t sb;
-            swept_box(&clk_theme.shadow[k], s_ang_10[k], &sb);
-            mark_rows(sb.y1, sb.y2, sb.x1, sb.x2, false);
+            gfx_swept_box(&clk_theme.shadow[k], s_ang_10[k], &sb);
+            gfx_mark_rows(sb.y1, sb.y2, sb.x1, sb.x2, false);
         }
     }
 
@@ -1237,254 +1050,11 @@ static void mark_all_layers(void)
      * change. */
 }
 
-/* lv_trigo_sin(), copied from lv_math.c: bit-exact table + 32767 clamp. */
-static const uint16_t s_sin0_90[91] = {
-    0,     572,   1144,  1715,  2286,  2856,  3425,  3993,  4560,  5126,
-    5690,  6252,  6813,  7371,  7927,  8481,  9032,  9580,  10126, 10668,
-    11207, 11743, 12275, 12803, 13328, 13848, 14365, 14876, 15384, 15886,
-    16384, 16877, 17364, 17847, 18324, 18795, 19261, 19720, 20174, 20622,
-    21063, 21498, 21926, 22348, 22763, 23170, 23571, 23965, 24351, 24730,
-    25102, 25466, 25822, 26170, 26510, 26842, 27166, 27482, 27789, 28088,
-    28378, 28660, 28932, 29197, 29452, 29698, 29935, 30163, 30382, 30592,
-    30792, 30983, 31164, 31336, 31499, 31651, 31795, 31928, 32052, 32166,
-    32270, 32365, 32449, 32524, 32588, 32643, 32688, 32723, 32748, 32763,
-    32768
-};
 
-static inline int32_t trigo_sin(int32_t angle)
-{
-    while (angle < 0)    angle += 360;
-    while (angle >= 360) angle -= 360;
-    int32_t ret;
-    if (angle < 90)        ret =  s_sin0_90[angle];
-    else if (angle < 180)  ret =  s_sin0_90[180 - angle];
-    else if (angle < 270)  ret = -s_sin0_90[angle - 180];
-    else                   ret = -s_sin0_90[360 - angle];
-    return (ret == 32767) ? 32768 : (ret == -32767) ? -32768 : ret;
-}
 
-/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h. */
-static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
-{
-    if (mix == 255) return c1;
-    if (mix == 0)   return c2;
-    if (c1 == c2)   return c1;
-    uint32_t mix5 = ((uint32_t)mix + 4) >> 3;
-    uint32_t bg = (uint32_t)(c2 | ((uint32_t)c2 << 16)) & 0x7E0F81F;
-    uint32_t fg = (uint32_t)(c1 | ((uint32_t)c1 << 16)) & 0x7E0F81F;
-    uint32_t res = ((((fg - bg) * mix5) >> 5) + bg) & 0x7E0F81F;
-    return (uint16_t)((res >> 16) | res);
-}
 
-/* Blend one sampled texel onto the mirror. Shared by the rotated and the
- * static loop in paint_row so the two can never drift apart. */
-static inline void blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
-{
-    const uint16_t dest = __builtin_bswap16(*d);
-    uint16_t out;
-    if (bmode == 1) {                      /* MULTIPLY (shadow layers) */
-        if (c == 0xffff) return;
-        const uint16_t res =
-            (uint16_t)((((dest >> 11) * (c >> 11) >> 5) << 11) |
-                       ((((dest >> 5) & 0x3F) * ((c >> 5) & 0x3F) >> 6) << 5) |
-                       (((dest & 0x1F) * (c & 0x1F)) >> 5));
-        out = mix_16_16(res, dest, a);
-    }
-    else if (bmode == 2) {                 /* SCREEN (mapped to ADDITIVE) */
-        if (c == 0x0000) return;
-        const uint32_t dr = dest >> 11, dg = (dest >> 5) & 0x3F, db = dest & 0x1F;
-        const uint32_t sr = c >> 11,    sg = (c >> 5) & 0x3F,    sb = c & 0x1F;
-        const uint32_t r = (dr + sr < 31 ? dr + sr : 31) << 11;
-        const uint32_t g = (dg + sg < 63 ? dg + sg : 63) << 5;
-        const uint32_t b = db + sb < 31 ? db + sb : 31;
-        out = mix_16_16((uint16_t)(r | g | b), dest, a);
-    }
-    else {                                 /* NORMAL */
-        out = (a >= 255) ? c : mix_16_16(c, dest, a);
-    }
-    *d = __builtin_bswap16(out);
-}
 
-/* One layer's row-independent blend maths, resolved ONCE per commit.
- *
- * Hoisting this is not a micro-optimisation, it is the whole reason the hook
- * can be row-major at all: swept_box() runs on double-precision libm (sin,
- * cos, floor, four corners). Measured, calling it from inside the row loop
- * (layer x row = ~1500 calls per commit instead of ~6) cost MORE than the
- * PSRAM traffic the restructure saved — the sweep fell 7 fps -> 4-5 fps with
- * identical blend counts. Build the box + inverse-map coefficients once here,
- * and the per-pixel work stays exactly the maths lv_draw_sw_transform() runs
- * (see tools/sim_tourb_mark.py, which models this mapping). */
-typedef struct {
-    const uint16_t *col;
-    const uint8_t  *alp;
-    int32_t  bx1, by1, bx2, by2;      /* the (padded) swept box, screen coords */
-    int32_t  posx, posy;
-    int32_t  sxx, sxy, syx, syy;      /* rotated path: trig*64 */
-    int32_t  x0_ups, y0_ups;          /* rotated path: LVGL's row origins */
-    int32_t  xa_lim;                  /* static path: posx + w - 1 */
-    uint32_t w, h;
-    uint8_t  bmode;
-    uint8_t  role;                    /* paint bucket for the fps line (below) */
-    bool     rot;                     /* false == identity (ang == 0) path */
-} paint_ctx_t;
 
-/* Per-role blend counts AND time, one second's worth on the fps line (k0..k4
- * are the theme's layer slots — hour, minute, seconds/carriage, dial,
- * counterweight — and k5 is the glass overlay, k6 the baked complication
- * tiles (windows, strip glyphs and edges)). The two together give cycles
- * per blend per layer, which is the only way to tell "the carriage pays for
- * scattered inverse-map fetches out of PSRAM" (→ stage its texel rows in
- * internal RAM) from "the static pair pays for sheer pixel count" (→ memoize
- * dial+glass per row). Counting blends alone cannot tell those apart. */
-#define CLK_PAINT_ROLES 8                 /* roles 0..4 the theme layer slots, 5 the
-                                           * glass overlay, 6 the baked complications,
-                                           * 7 the sub-dial (aux) pointers */
-#define CLK_ROLE_GLASS 5
-#define CLK_ROLE_COMP  6
-#define CLK_ROLE_AUX   7
-static uint32_t s_hk_role_blend[CLK_PAINT_ROLES];
-static uint32_t s_hk_role_blend0[CLK_PAINT_ROLES];
-static uint64_t s_hk_role_us[CLK_PAINT_ROLES];
-static uint64_t s_hk_role_us0[CLK_PAINT_ROLES];
-
-static bool paint_ctx_init(paint_ctx_t *pc, const clk_sprite_t *spr,
-                           int32_t ang_10, uint8_t role)
-{
-    if (!sprite_drawable(spr)) return false;
-    pc->role = role;
-
-    const uint8_t *base = blob();
-    pc->col = (const uint16_t *)(base + spr->color_off);
-    pc->alp = base + spr->color_off
-              + (uint32_t)spr->w * (uint32_t)spr->h * 2u;
-    pc->w = (uint32_t)spr->w;
-    pc->h = (uint32_t)spr->h;
-    pc->posx = (int32_t)spr->centerx - (int32_t)spr->pivotx;
-    pc->posy = (int32_t)spr->centery - (int32_t)spr->pivoty;
-    pc->bmode = (uint8_t)spr->blend;
-
-    /* The (padded) swept box is a superset of LVGL's transformed area;
-     * out-of-image samples fall through the bounds test in paint_row_ctx. */
-    lv_area_t box;
-    swept_box(spr, ang_10, &box);
-    pc->bx1 = box.x1; pc->by1 = box.y1;
-    pc->bx2 = box.x2; pc->by2 = box.y2;
-
-    pc->rot = (ang_10 % 3600 != 0);
-    pc->sxx = pc->sxy = pc->syx = pc->syy = 0;
-    pc->x0_ups = pc->y0_ups = 0;
-    pc->xa_lim = pc->posx + (int32_t)spr->w - 1;
-    if (!pc->rot) return true;
-
-    /* Inverse-transform setup, copied from lv_draw_sw_transform(): scale is
-     * fixed 256, so sxx..syy reduce to trig*64; x0_ups/y0_ups keep LVGL's
-     * exact operation order (int32 products, truncating /256). The pair comes
-     * from the same helper the orbit chord stamps use — see rot_sin_cos. */
-    int32_t sinma, cosma;
-    rot_sin_cos(ang_10, &sinma, &cosma);
-    pc->sxx =  cosma * 64; pc->sxy = -(sinma * 64);
-    pc->syx =  sinma * 64; pc->syy =  cosma * 64;
-    const int32_t xin0 = -(int32_t)spr->pivotx, yin0 = -(int32_t)spr->pivoty;
-    pc->x0_ups =
-        (int32_t)(((cosma * xin0 - sinma * yin0) * 64) / 256)
-        + (int32_t)spr->pivotx * 256 + 0x80;
-    pc->y0_ups =
-        (int32_t)(((sinma * xin0 + cosma * yin0) * 64) / 256)
-        + (int32_t)spr->pivoty * 256 + 0x80;
-    return true;
-}
-
-/* Composite one layer into ONE already-staged device row, over the caller's
- * [xa..xb] intersected with the layer's swept box (never outside it: those
- * pixels already hold a correct composite and re-blending them would
- * double-darken). Pure integer maths on internal-RAM pixels — everything that
- * does not depend on the row lives in paint_ctx_init. Blends are counted per
- * role (see s_hk_role_blend): one total cannot say WHICH layer owns the cost,
- * and that is the difference between staging the carriage's texels and
- * memoizing the static dial+glass pair. */
-static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
-                          int32_t xa, int32_t xb, uint16_t *row)
-{
-    uint32_t n = 0;
-    if (y < pc->by1 || y > pc->by2) return;
-    if (xa < pc->bx1) xa = pc->bx1;
-    if (xb > pc->bx2) xb = pc->bx2;
-    if (xa > xb) return;
-
-    if (!pc->rot) {
-        /* ---- static path (ang == 0): dial, glass, hub ----
-         * A layer that never turns maps screen px to texel by a constant
-         * offset (the identity case of LVGL's transform is exact: xs_int =
-         * x - posx, ys_int = y - posy — verified by reducing the general
-         * maths at sinma=0/cosma=1024). Per-pixel multiply chains, shifts and
-         * bounds tests are pure waste here; clip the span up front instead.
-         * A full-coverage semi-transparent "glass" overlay makes this the
-         * single biggest line item in the commit (77% of its texels carry
-         * real alpha), so it has to be exact AND cheap: ~1 us/px of real
-         * blending otherwise caps the whole dial at 4 fps once the art is
-         * full-coverage rather than a hub cap. */
-        const int32_t sy = y - pc->posy;
-        if (sy < 0 || sy >= (int32_t)pc->h) return;
-        if (xa < pc->posx) xa = pc->posx;
-        if (xb > pc->xa_lim) xb = pc->xa_lim;
-        if (xa > xb) return;
-        const uint16_t *col = pc->col;
-        const uint8_t *alp = pc->alp;
-        uint32_t si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
-        for (int32_t x = xa; x <= xb; x++, si++) {
-            const uint8_t a = alp[si];
-            if (!a) continue;
-            blend_px(&row[x], col[si], a, pc->bmode);
-            n++;
-        }
-        if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
-        return;
-    }
-
-    const uint16_t *col = pc->col;
-    const uint8_t *alp = pc->alp;
-    const int32_t y_abs = y - pc->posy;
-    const int32_t xs_r = pc->x0_ups + (int32_t)(((int64_t)pc->sxy * y_abs) >> 8);
-    const int32_t ys_r = pc->y0_ups + (int32_t)(((int64_t)pc->syy * y_abs) >> 8);
-
-    for (int32_t x = xa; x <= xb; x++) {
-        const int32_t x_abs = x - pc->posx;
-        const int32_t xs_int = (xs_r + ((pc->sxx * x_abs) >> 8)) >> 8;
-        const int32_t ys_int = (ys_r + ((pc->syx * x_abs) >> 8)) >> 8;
-        if (xs_int < 0 || xs_int >= (int32_t)pc->w ||
-            ys_int < 0 || ys_int >= (int32_t)pc->h) continue;
-
-        const uint32_t sidx = (uint32_t)ys_int * pc->w + (uint32_t)xs_int;
-        const uint8_t a = alp[sidx];
-        if (!a) {
-            continue;                   /* 3/4 of the box: skip  */
-        }
-        blend_px(&row[x], col[sidx], a, pc->bmode);
-        n++;
-    }
-    if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
-}
-
-/* The commit's staging band, in INTERNAL RAM (plain .bss — PSRAM is exactly
- * what this pass must stop touching so often). The mirror is the panel's
- * source of truth: every byte that ever reached the glass was mirrored there
- * first, so the row still in the mirror IS a faithful "what the glass shows"
- * and the flush gate compares the staged composite against it in place — the
- * whole-page PSRAM snapshot buffer this replaces cost a read AND a write per
- * marked row on top of the compare, and 200 KB of the heap.
- *
- * It is a BAND of rows, not one, because of how the rotated pass reads its
- * texels. Measured cycles per blend_px on the tourbillon face (the "blend/s by
- * layer" line): the static glass holds at 82 cycles at every orbit angle, the
- * static dial at ~95, but the rotating carriage swings 111 -> 317 depending
- * only on where it is in the orbit. One device row of a rotated layer samples
- * a DIAGONAL through the colour and alpha planes (stride w*2 and w), so it
- * touches a fresh 32-byte PSRAM cache line per texel and never revisits one.
- * Walking a band of rows a few columns at a time keeps the source footprint
- * (tile_w + band) x (tile_w + band) small enough to live in the 32 KB cache
- * across the whole band, which is the difference between the carriage costing
- * ~55 ms and ~25 ms of a ~145 ms commit. */
 #define CLK_L4_MAX_JOBS 12           /* order[5] x (shadow+hand) + glass */
 #define CLK_COMP_JOBS_MAX 32         /* blits for the baked complications: 16
                                       * windows, or ~3 strips' glyphs + window
@@ -1494,22 +1064,12 @@ static void paint_row_ctx(const paint_ctx_t *pc, int32_t y,
                                       * its twin, never both); overflow is the
                                       * same one-line log as the comp list */
 #define CLK_JOB_MAX (CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX + CLK_AUX_JOBS_MAX)
-#define CLK_COMMIT_BAND 8            /* rows staged at once               */
-#define CLK_PAINT_TILE  32           /* columns per rotated-pass tile     */
-/* Tile/band sizes measured on the tourbillon face, cycles per blend_px of the
- * rotating carriage across a whole orbit (32-px / 8-row): untiled 111/174/317
- * min/avg/max, tile 32 = 114/157/193, tile 16 = 121/161/194 — 16 is dearer
- * (per-tile call overhead starts to dominate) and 32 is the flattest, which is
- * the point: the angle-dependent cliff is gone. Static layers were unaffected
- * at 82 (glass) / 95 (dial) in every configuration — they read sequentially
- * and are already at the blend's ALU floor, so the tiling is rotated-only. */
-static uint16_t s_band[CLK_COMMIT_BAND][CLK_SCR_W];
 
 #if DISPLAY_BENCH
 /* ---- Synthetic live layer, to price a blended pixel --------------------------
  * docs/fps-budget-benchmark-plan.md Phase 2. DISPLAY_BENCH_PX solid 60x60
  * blocks (3600 px each, so 18/36/72/112 add the planned 65k/130k/259k/403k
- * px/tick) are painted through the very blend_px() the real layers use, with
+ * px/tick) are painted through the very gfx_blend_px() the real layers use, with
  * the colour plane in PSRAM like a real sprite. Positions are chosen at tick
  * time and consumed by the hook at commit, exactly like a hand's swept box,
  * and each block walks every tick so the flush gate cannot settle the ink out
@@ -1531,9 +1091,15 @@ static int16_t   s_bench_x[BENCH_MAX_BLK], s_bench_y[BENCH_MAX_BLK];
 static uint32_t  s_bench_n;                           /* blocks this tick     */
 static uint64_t  s_bench_px, s_bench_px0;             /* ink px, + last report */
 
+static void bench_paint_band(int32_t y0, int nr);   /* gfx band hook, below */
+
 static void bench_init(void)
 {
     if (DISPLAY_BENCH_PX == 0 || s_bench_solid) return;
+    /* The commit loop moved to gfx; the synthetic ink still has to ride inside
+     * its timed paint window, so it is registered as the band hook rather than
+     * called from the hook that no longer exists here. */
+    gfx_set_band_hook(bench_paint_band);
     const size_t n = (size_t)BENCH_BLK * BENCH_BLK * sizeof(uint16_t);
     s_bench_solid = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_bench_solid) return;
@@ -1577,7 +1143,7 @@ static void bench_plan(void)
 #endif
         s_bench_x[i] = (int16_t)x;
         s_bench_y[i] = (int16_t)y;
-        mark_rows(y, y + BENCH_BLK - 1, x, x + BENCH_BLK - 1, false);
+        gfx_mark_rows(y, y + BENCH_BLK - 1, x, x + BENCH_BLK - 1, false);
     }
 }
 
@@ -1587,6 +1153,7 @@ static void bench_plan(void)
 static void bench_paint_band(int32_t y0, int nr)
 {
     if (!s_bench_solid || !s_bench_n) return;
+    const gfx_rows_t *R = gfx_rows();
     for (uint32_t i = 0; i < s_bench_n; i++) {
         const int32_t by0 = s_bench_y[i];
         if (by0 > y0 + nr - 1 || by0 + BENCH_BLK - 1 < y0) continue;
@@ -1595,43 +1162,27 @@ static void bench_paint_band(int32_t y0, int nr)
             const int32_t y = y0 + r;
             if (y < by0 || y > by0 + BENCH_BLK - 1) continue;
             int32_t xa = bx0, xb = bx0 + BENCH_BLK - 1;
-            if (xa < s_layer_row_x0[y]) xa = s_layer_row_x0[y];
-            if (xb > s_layer_row_x1[y]) xb = s_layer_row_x1[y];
+            if (xa < R->x0[y]) xa = R->x0[y];
+            if (xb > R->x1[y]) xb = R->x1[y];
             if (xa > xb) continue;
             const uint16_t *src = &s_bench_solid[(size_t)(y - by0) * BENCH_BLK];
-            uint16_t *row = s_band[r];
+            uint16_t *row = gfx_band(r);
             for (int32_t x = xa; x <= xb; x++)
-                blend_px(&row[x], src[x - bx0], DISPLAY_BENCH_ALPHA, 0);
+                gfx_blend_px(&row[x], src[x - bx0], DISPLAY_BENCH_ALPHA, 0);
             s_bench_px += (uint32_t)(xb - xa + 1);
         }
     }
 }
 #endif /* DISPLAY_BENCH */
 
-/* display commit hook: rebuild the rows this tick dirtied from the ground up —
- * background out of the canvas, then every layer in the screen's z-order (each
- * shadow directly under its own hand, walking the theme's order, then the glass
- * overlay) painted over it.
- *
- * Row-major on purpose. This used to be layer-major — restore one pass over
- * the marked rows, then one pass per live layer, then the gate's snapshot and
- * compare — which read-modified-wrote the PSRAM mirror ~6 times per pixel and
- * measured (see the fps line's phase breakdown) at ~90 ms of a ~145 ms commit
- * for 6-7 fps, of which DMA was only ~15 ms. Now the mirror is read once per
- * row and written only where the composite actually came out different, and
- * all ~190k blend_px calls happen inside internal RAM.
- *
- * The marks are consumed HERE, not at the next tick. A commit only happens when
- * LVGL gets around to starting one, and at 47 ms per flush against a 40 ms GIF
- * beat the commit trails the tick that dirtied the rows: clearing at tick start
- * handed rows to a commit that never ran and dropped them, which is what made
- * hands vanish over freshly pushed background and leave a ghost at the pose the
- * first LVGL render had drawn. Rows that never get a commit simply stay marked
- * until one does. */
+/* The app's half of the composite: decide WHICH layers go down, in which order,
+ * and hand the list to gfx_commit() (main/gfx/orb_gfx.c), which owns the restore,
+ * the band walk, the flush gate and the mark clearing. The row-major layout and
+ * the measurement behind it are documented there. */
 static void clock_layer_commit(void);
-static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
+static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj,
                           int bucket);
-static void aux_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj);
+static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj);
 
 static void clock_layer_commit(void)
 {
@@ -1644,12 +1195,12 @@ static void clock_layer_commit(void)
      * under its OWN hand, not under every hand. The two paths must agree
      * exactly — a row LVGL paints itself has to come out identical to one this
      * hook paints — so the interleave lives here too. All the row-independent
-     * maths (including swept_box's double-precision libm) is hoisted into the
+     * maths (including gfx_swept_box's double-precision libm) is hoisted into the
      * ctx: one build per layer per commit, not per layer per row. */
     /* One ctx per live layer, built once for this commit. Static rather than
      * stack: the hook has exactly one caller (the LVGL task's flush) and the
      * LVGL task stack is not ours to spend 900 B of. */
-    static paint_ctx_t jc[CLK_JOB_MAX];
+    static gfx_paint_ctx_t jc[CLK_JOB_MAX];
     int nj = 0;
     /* Bucket 0 first: the tiles that belong below EVERY live layer, which is
      * every window the bake has ever placed except a hosted one. A tile with a
@@ -1676,9 +1227,9 @@ static void clock_layer_commit(void)
          * time, right under the hour hand. */
         if (k >= 3) { comp_add_jobs(orb_theme_geo(), jc, &nj, k); buckets_done |= 1 << k; }
         if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
-            if (paint_ctx_init(&jc[nj], &clk_theme.shadow[k], s_ang_10[k], (uint8_t)k)) nj++;
+            if (gfx_paint_ctx_init(&jc[nj], &clk_theme.shadow[k], blob(), s_ang_10[k], (uint8_t)k)) nj++;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
-            if (paint_ctx_init(&jc[nj], layer_spr(k), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
+            if (gfx_paint_ctx_init(&jc[nj], layer_spr(k), blob(), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
         /* The sub-dial pointers join above the last live static, and below
          * whatever the theme ordered after it (see aux_insert_at). */
         if (!aux_done && oi == s_aux_at) {
@@ -1694,111 +1245,13 @@ static void clock_layer_commit(void)
     for (int b = 1; b < 5; b++)
         if (!(buckets_done & (1 << b))) comp_add_jobs(orb_theme_geo(), jc, &nj, b);
     if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_JOB_MAX)
-        if (paint_ctx_init(&jc[nj], &clk_theme.overlay, 0, CLK_ROLE_GLASS)) nj++;  /* the glass */
+        if (gfx_paint_ctx_init(&jc[nj], &clk_theme.overlay, blob(), 0, CLK_ROLE_GLASS)) nj++;  /* the glass */
 
-    /* Walk the marked rows in bands (see s_band). Runs of marked rows are the
-     * normal case — a GIF rect or a hand's swept box marks a contiguous range —
-     * so the band costs nothing over the one-row walk and it is what lets the
-     * rotated pass run in column tiles instead of a full-width diagonal. */
-    for (int32_t y0 = 0; y0 < CLK_SCR_H; ) {
-        if (!s_layer_need_row[y0]) { y0++; continue; }
-        int nr = 1;
-        while (nr < CLK_COMMIT_BAND && y0 + nr < CLK_SCR_H && s_layer_need_row[y0 + nr]) nr++;
+    /* The layers this dial asked for, in the order it asked: gfx_commit()
+     * owns the restore, the band walk, the flush gate and the clearing.
+     * Building the list above is the whole of the app's side. */
+    gfx_commit(nj, jc, s_canvas);
 
-        int32_t bx0 = s_layer_row_x0[y0], bx1 = s_layer_row_x1[y0];
-        for (int r = 1; r < nr; r++) {
-            if (s_layer_row_x0[y0 + r] < bx0) bx0 = s_layer_row_x0[y0 + r];
-            if (s_layer_row_x1[y0 + r] > bx1) bx1 = s_layer_row_x1[y0 + r];
-        }
-
-        /* Restore each row of the band from the canvas the plate itself reads
-         * from, byte-swapped into mirror order. The restore is what makes the
-         * pass idempotent: a layer that moved away has its pixels wiped back to
-         * plain background, and a layer painted twice over the same row lands on
-         * clean pixels each time. Doing it here (rather than leaning on LVGL to
-         * re-render the plate) is what removes the re-composite cost. One PSRAM
-         * read pass; the mirror side of the row is still untouched at this
-         * point, which is what lets the gate below compare against it in place
-         * instead of keeping a snapshot copy. */
-        int64_t t0 = esp_timer_get_time();
-        for (int r = 0; r < nr; r++) {
-            const int32_t y = y0 + r;
-            const int32_t xa = s_layer_row_x0[y], xb = s_layer_row_x1[y];
-            const uint16_t *src = &s_canvas[(size_t)y * CLK_SCR_W + xa];
-            uint16_t *d = s_band[r] + xa;
-            for (int32_t x = xa; x <= xb; x++) {
-                const uint16_t v = *src++;
-                *d++ = (uint16_t)((v >> 8) | (v << 8));
-            }
-        }
-        s_hk_rest_us += (uint64_t)(esp_timer_get_time() - t0);
-
-        t0 = esp_timer_get_time();
-        for (int i = 0; i < nj; i++) {
-            /* One timer pair per (layer, band), not per (layer, row): the
-             * per-layer split is what found the carriage, and at ~1500 calls
-             * per commit esp_timer_get_time() itself was starting to cost the
-             * ~0.2 ms being measured. */
-            const int64_t tr = esp_timer_get_time();
-            if (!jc[i].rot) {
-                /* Static (identity) layer: texels are read straight across the
-                 * row, so one call per row is already the cheapest order. */
-                for (int r = 0; r < nr; r++) {
-                    const int32_t y = y0 + r;
-                    paint_row_ctx(&jc[i], y, s_layer_row_x0[y], s_layer_row_x1[y], s_band[r]);
-                }
-            } else {
-                /* Rotated layer: column tiles, rows innermost. The rows of a
-                 * band sample parallel diagonals, so one tile's texel strip
-                 * (≈ tile + band rows wide) is reused by every row in the band
-                 * while it is still in the PSRAM cache — the whole reason the
-                 * carriage's cost stops tracking its angle. */
-                for (int32_t tx = bx0; tx <= bx1; tx += CLK_PAINT_TILE) {
-                    const int32_t te = tx + CLK_PAINT_TILE - 1;
-                    for (int r = 0; r < nr; r++) {
-                        const int32_t y = y0 + r;
-                        int32_t xa = s_layer_row_x0[y], xb = s_layer_row_x1[y];
-                        if (xb < tx || xa > te) continue;
-                        if (xa < tx) xa = tx;
-                        if (xb > te) xb = te;
-                        paint_row_ctx(&jc[i], y, xa, xb, s_band[r]);
-                    }
-                }
-            }
-            const uint8_t role = jc[i].role;
-            if (role < CLK_PAINT_ROLES) s_hk_role_us[role] += (uint64_t)(esp_timer_get_time() - tr);
-        }
-#if DISPLAY_BENCH
-        /* Inside the same timed paint window: the CAD hook/px fields must
-         * carry the ink's cost, not hide it in an untimed phase. */
-        bench_paint_band(y0, nr);
-#endif
-        s_hk_paint_us += (uint64_t)(esp_timer_get_time() - t0);
-
-        /* Flush gate: write back and send only the rows whose re-composite
-         * came out different (the mirror is the panel's truth, so identical
-         * needs no DMA at all). Force rows (GIF pushes, whose pixels reached
-         * the mirror but never the panel) and rows LVGL rendered itself this
-         * frame (chunk path) ride regardless of the compare. */
-        t0 = esp_timer_get_time();
-        for (int r = 0; r < nr; r++) {
-            const int32_t y = y0 + r;
-            const int32_t xa = s_layer_row_x0[y], xb = s_layer_row_x1[y];
-            uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
-            bool send = s_layer_force_row[y] != 0;
-            for (int32_t x = xa; x <= xb; x++) {
-                const uint16_t v = s_band[r][x];
-                if (fbrow[x] != v) { fbrow[x] = v; send = true; }
-            }
-            display_commit_row(y, send);
-        }
-        s_hk_cmp_us += (uint64_t)(esp_timer_get_time() - t0);
-
-        y0 += nr;
-    }
-
-    memset(s_layer_need_row, 0, sizeof(s_layer_need_row));
-    memset(s_layer_force_row, 0, sizeof(s_layer_force_row));
 }
 #endif /* CLK_BG_DIRECT_PUSH */
 
@@ -2001,7 +1454,7 @@ static void comp_touch_box(const clk_comp_t *c, int32_t box_h)
     if (y1 > CLK_SCR_H - 1) y1 = CLK_SCR_H - 1;
     if (x1 < x0 || y1 < y0) return;
 #if CLK_BG_DIRECT_PUSH
-    if (l4_active()) { mark_rows(y0, y1, x0, x1, false); return; }
+    if (l4_active()) { gfx_mark_rows(y0, y1, x0, x1, false); return; }
 #endif
     lv_area_t b = { x0, y0, x1, y1 };
     lv_obj_invalidate_area(s_scr, &b);
@@ -2184,14 +1637,14 @@ static void comp_jobs_overflow(void)
  * Every comp blit is static (ang == 0) — the hook's cheapest path — and the
  * ctxs rebuild each commit from s_comp_frame, exactly how the hands stay honest
  * between the two paths. A bank row without pixels (w or h 0) is dropped inside
- * paint_ctx_init's drawable test, matching the reader's rule.
+ * gfx_paint_ctx_init's drawable test, matching the reader's rule.
  *
  * A WINDOW's `first` IS the bucket: the KINDS slot whose live layer this tile
  * belongs under (0 = below every live layer, the case for every theme baked
  * before a sub-dial ever hosted a window, and the reason 0 needs no plumbing).
  * A STRIP's `first` is its bank index, so a strip cannot be bucketed and rides
  * bucket 0 — the only place any strip has ever been baked to sit. */
-static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
+static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj,
                           int bucket)
 {
     for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
@@ -2210,7 +1663,7 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
                 .blend = c->blend, .show = 1,
                 .color_off = c->off + (uint32_t)f * c->frame_bytes,
             };
-            if (paint_ctx_init(&jc[*nj], &spr, 0, CLK_ROLE_COMP)) (*nj)++;
+            if (gfx_paint_ctx_init(&jc[*nj], &spr, blob(), 0, CLK_ROLE_COMP)) (*nj)++;
             continue;
         }
         if (c->kind != CLK_KIND_STRIP || bucket != 0) continue;
@@ -2236,7 +1689,7 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
                 .blend = c->blend, .show = 1,
                 .color_off = b->color_off,
             };
-            if (paint_ctx_init(&jc[*nj], &spr, 0, CLK_ROLE_COMP)) (*nj)++;
+            if (gfx_paint_ctx_init(&jc[*nj], &spr, blob(), 0, CLK_ROLE_COMP)) (*nj)++;
         }
     }
 }
@@ -2244,12 +1697,12 @@ static void comp_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj,
 /* One ctx per pointer currently showing an angle, appended where the commit
  * loop put the block: rotated, so the hook's transform path — the same one the
  * hands pay for, and why an unchanged pointer is not in the list at all. */
-static void aux_add_jobs(const orb_theme_geo_t *g, paint_ctx_t *jc, int *nj)
+static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
 {
     for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
         if (s_aux_ang_10[i] == INT32_MIN) continue;       /* nothing drawn */
         if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-        if (paint_ctx_init(&jc[*nj], &g->aux[i].spr, s_aux_ang_10[i], CLK_ROLE_AUX))
+        if (gfx_paint_ctx_init(&jc[*nj], &g->aux[i].spr, blob(), s_aux_ang_10[i], CLK_ROLE_AUX))
             (*nj)++;
     }
 }
@@ -2401,13 +1854,13 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
             lv_area_t u;
             bool have = false;
             if (prev != INT32_MIN) {
-                swept_box(&a->spr, prev, &u); have = true;
+                gfx_swept_box(&a->spr, prev, &u); have = true;
                 if (a_new != INT32_MIN) {
-                    lv_area_t nn; swept_box(&a->spr, a_new, &nn);
-                    area_union(&u, &nn);
+                    lv_area_t nn; gfx_swept_box(&a->spr, a_new, &nn);
+                    gfx_area_union(&u, &nn);
                 }
             } else if (a_new != INT32_MIN) {
-                swept_box(&a->spr, a_new, &u); have = true;
+                gfx_swept_box(&a->spr, a_new, &u); have = true;
             }
             if (have) {
                 if (u.x1 < 0) u.x1 = 0;
@@ -2415,7 +1868,7 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
                 if (u.x2 > CLK_SCR_W - 1) u.x2 = CLK_SCR_W - 1;
                 if (u.y2 > CLK_SCR_H - 1) u.y2 = CLK_SCR_H - 1;
 #if CLK_BG_DIRECT_PUSH
-                if (l4_active()) mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+                if (l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
                 else
 #endif
                     lv_obj_invalidate_area(s_scr, &u);
@@ -2524,19 +1977,17 @@ static void report_fps_if_due(void)
     display_bench_phases_us(&pm, &ph, &pt, &pd);
     const uint64_t dpm = pm - s_fps_ph0, dph = ph - s_fps_ph1;
     const uint64_t dpt = pt - s_fps_ph2, dpd = pd - s_fps_ph3;
-    const uint64_t drest = s_hk_rest_us  - s_hk_rest_us0;
-    const uint64_t dpant = s_hk_paint_us - s_hk_paint_us0;
-    const uint64_t dcmp  = s_hk_cmp_us   - s_hk_cmp_us0;
+    uint64_t rest, paint, cmp;
+    gfx_hook_phases(&rest, &paint, &cmp);
+    const uint64_t drest = rest - s_hk_rest_us0;
+    const uint64_t dpant = paint - s_hk_paint_us0;
+    const uint64_t dcmp  = cmp - s_hk_cmp_us0;
     uint32_t drb[CLK_PAINT_ROLES];
     uint64_t dru[CLK_PAINT_ROLES];
+    gfx_role_snapshot(drb, dru);
     uint32_t dblend = 0;
-    for (int i = 0; i < CLK_PAINT_ROLES; i++) {
-        drb[i] = s_hk_role_blend[i] - s_hk_role_blend0[i];
-        dru[i] = s_hk_role_us[i] - s_hk_role_us0[i];
-        s_hk_role_blend0[i] = s_hk_role_blend[i];
-        s_hk_role_us0[i] = s_hk_role_us[i];
+    for (int i = 0; i < CLK_PAINT_ROLES; i++)
         dblend += drb[i];
-    }
     const uint32_t te_now = display_te_wait_us();
     ESP_LOGI(TAG, "clock %u fps | flush frames %u avg %llu ms | px/s %llu (%llu%% page) chunks/s %u te/s %llu ms submit/s %llu ms",
              (unsigned)s_fps_ticks, (unsigned)df,
@@ -2582,8 +2033,8 @@ static void report_fps_if_due(void)
     s_fps_sub0 = sub;
     s_fps_te0 = te_now;
     s_fps_ph0 = pm; s_fps_ph1 = ph; s_fps_ph2 = pt; s_fps_ph3 = pd;
-    s_hk_rest_us0 = s_hk_rest_us;
-    s_hk_paint_us0 = s_hk_paint_us; s_hk_cmp_us0 = s_hk_cmp_us;
+    s_hk_rest_us0 = rest;
+    s_hk_paint_us0 = paint; s_hk_cmp_us0 = cmp;
     s_fps_ticks = 0;
     s_fps_t0 = now;
     s_fps_bench_f0 = bf;
@@ -2842,8 +2293,8 @@ esp_err_t clock_view_init(void)
     /* Tourbillon frame bank: descriptors for the second-hand layer's swap.
      * Reset the frame state so the first tick (re)draws it whole. */
     for (int i = 0; i < (int)clk_theme.tourbillon_n && i < CLK_TOURB_MAX; i++)
-        if (sprite_drawable(&clk_theme.tourbillon[i]))
-            fill_sprite_dsc(&s_tourb_dsc[i], &clk_theme.tourbillon[i]);
+        if (gfx_sprite_drawable(&clk_theme.tourbillon[i]))
+            gfx_fill_sprite_dsc(&s_tourb_dsc[i], &clk_theme.tourbillon[i], blob());
     s_tourb_shown = -1;
     s_tourb_t0 = lv_tick_get();
 
@@ -2906,7 +2357,7 @@ esp_err_t clock_view_init(void)
              sweepdesc, bgdesc);
     /* Which compositing method this art was baked for. A set bit means that
      * static layer is already folded into the plate/bank and costs no
-     * blend_px on any commit (tools/bake_clock.py --matte, which only ever
+     * gfx_blend_px on any commit (tools/bake_clock.py --matte, which only ever
      * sets a bit it PROVED pixel-identical); mask 0 is the ordinary dial where
      * every layer is composited by clock_layer_commit each tick. */
     ESP_LOGI(TAG, "composite: %s",

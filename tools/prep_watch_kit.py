@@ -221,8 +221,12 @@ def _static_run(order):
         elif nm == "complications" and not d.get("items"):
             run.append((None, True))       # an empty list composites nothing
         elif nm == "complications":
-            run.append((None, False))      # something WILL paint in the gap
-            break
+            # Something WILL paint in this gap: unmergeable, but the docstring's
+            # promise is that the run is COLLECTED, not truncated — subdials
+            # listed AFTER the complication still ship (together, as static2).
+            # Breaking here is how the perpetual-calendar kit lost its date
+            # subdial: that kit lists the c5 moon between dial and c4's plate.
+            run.append((None, False))
         else:
             break                          # hands / glass / outer ends the run
     if dial is None:

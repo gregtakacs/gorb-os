@@ -193,6 +193,103 @@ def main():
             ok(True, "unknown manifest source word raises, not a silent frame-0 comp")
         except BaseException as e:                    # noqa: BLE001
             ok(False, "unknown source raised %s, expected KeyError" % type(e).__name__)
+
+        # The blocks below re-bake the kit: put back the tile the refusal test
+        # just deleted — it has already proved its point.
+        _write_tiles(os.path.join(theme, "complications", "c2_day"),
+                     ["WED"], 60, 30, (10, 20, 30, 255))
+
+        # ---- prep: a complication between dial and subdial still ships it -----
+        # The perpetual-calendar kit's REAL drawOrder: the c5 moon is listed
+        # between the dial and the c4 plate. A break at the complication entry
+        # never collects the plate after it, prep prints "no subdial in this
+        # kit", and the dial loses its day ring under the moon — exactly what
+        # the owner saw on the panel after the first load of this kit.
+        import prep_watch_kit as pw
+        porder = [
+            {"layer": "base", "files": "base/frame_*.png"},
+            {"layer": "complications", "where": "under dial", "items": ["c2", "c3"]},
+            {"layer": "dial", "file": "layers/dial.png"},
+            {"layer": "complications", "where": "under subdial c4", "items": ["c5"]},
+            {"layer": "subdial", "id": "c4", "file": "layers/subdial_01_c4.png"},
+            {"layer": "hands"},
+            {"layer": "glass", "file": "layers/glass.png"},
+        ]
+        dfile, subs, merged = pw._static_run(porder)
+        ok(dfile == "layers/dial.png" and subs == ["layers/subdial_01_c4.png"]
+           and merged is False,
+           "subdial listed AFTER the complication is collected, unmerged: %r %r"
+           % (subs, merged))
+        df2, subs2, merged2 = pw._static_run(
+            [o for o in porder if not (o["layer"] == "complications" and o.get("items"))])
+        ok(df2 == "layers/dial.png" and subs2 == ["layers/subdial_01_c4.png"]
+           and merged2 is True,
+           "with nothing in the gap the subdial still merges into static1: %r %r"
+           % (subs2, merged2))
+
+        # ---- matte proof: the dial frame above a window is never folded --------
+        # A fake of the fold this kit's art really makes: static1 (the dial, as
+        # prep emits it) carries ink across the weekday window's box — the bezel
+        # the tile tucks UNDER at runtime. With the boxes in the stack the proof
+        # must refuse the fold (a folded dial would sit below the tile and the
+        # window would show bare, frameless — the owner's second complaint).
+        # With no manifest the identical static1 must still fold: the refusal is
+        # a proof outcome, not a blanket rule that costs every classic kit a
+        # layer of blend traffic.
+        import types
+        day = by["weekday"]
+        s1 = Image.new("RGBA", (bc.SCREEN_W, bc.SCREEN_H), (0, 0, 0, 0))
+        s1p = s1.load()
+        for yy in range(day["y"] - 6, day["y"] + day["h"] + 6):
+            for xx in range(day["x"] - 6, day["x"] + day["w"] + 6):
+                s1p[xx, yy] = (9, 9, 9, 255)
+        s1.save(os.path.join(theme, "clock_hand_static1.png"))
+        style = {"hands": {"order": [3], "shadow": {"on": False},
+                           "static1": {"show": True, "pivotX": 233, "pivotY": 233,
+                                       "centerX": 233, "centerY": 233, "blend": 0}}}
+        pivots = {"static1": (233, 233, 233, 233, 0)}
+        margs = types.SimpleNamespace(pad=2, tourbillon=None,
+                                      bg_gif=None, bg_frames=None)
+        live = bc.build_live_stack(theme, style, pivots, margs, None)
+        comp_names = sorted(L.name for L in live if L.name.startswith("comp["))
+        ok(comp_names == ["comp[month]", "comp[moon_age]", "comp[weekday]"],
+           "every drawn window rides the proof stack: %s" % comp_names)
+        chosen, lines = bc.matte_plan(live, "auto")
+        ok(all(L.name != "static1" for L in chosen),
+           "dial frame over a window box: fold REFUSED, not silently taken: %s"
+           % [L.name for L in chosen])
+        ok(all(not L.name.startswith("comp[") for L in chosen),
+           "a value-driven comp box is never a fold candidate (would freeze): %s"
+           % [L.name for L in chosen])
+        ok(any("REFUSED" in ln and "static1" in ln for ln in lines),
+           "the refusal is printed with its violation numbers: %s"
+           % [ln for ln in lines if "static1" in ln][:1])
+        mp = os.path.join(theme, "manifest.json")
+        cd = os.path.join(theme, "complications")
+        os.rename(mp, mp + ".off"); os.rename(cd, cd + ".off")
+        live_n = bc.build_live_stack(theme, style, pivots, margs, None)
+        chosen_n, _ = bc.matte_plan(live_n, "auto")
+        os.rename(mp + ".off", mp); os.rename(cd + ".off", cd)
+        ok([L.name for L in chosen_n] == ["static1"],
+           "the same static1 with no windows below it still folds: %s"
+           % [L.name for L in chosen_n])
+
+        # ---- pre-occlusion gate: the exactness argument rests on ==255 only ---
+        # Refused statics ride the bank packer as opaque-only copies because
+        # the live layer re-blits identical pixels over them. One sub-opaque
+        # texel riding along would be composited twice — these two pins are
+        # what keeps that trade lossless rather than merely cheap.
+        src = Image.new("RGBA", (8, 8), (10, 20, 30, 247))
+        sp = src.load(); sp[0, 0] = (1, 2, 3, 255); sp[3, 4] = (4, 5, 6, 255)
+        gp = bc._opaque_only(src).load()
+        ok(gp[0, 0][:3] == (1, 2, 3) and gp[0, 0][3] == 255
+           and gp[3, 4][3] == 255 and gp[1, 1][3] == 0 and gp[7, 7][3] == 0,
+           "_opaque_only keeps only a==255 texels, colours untouched")
+        basex = Image.new("RGBA", (8, 8), (8, 8, 8, 255))   # exact in 565
+        tinted = bc._opaque_only(Image.new("RGBA", (8, 8), (0, 0, 0, 247)))
+        gone = bc.matte_fold(basex, tinted).getpixel((4, 4))[:3]
+        ok(gone == (8, 8, 8),
+           "a sub-opaque layer pre-occludes nothing: base survives bit-exact")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

@@ -214,6 +214,21 @@ def matte_fold(base_img, over_img):
     return Image.fromarray(_unq565(out), "RGB").convert("RGBA")
 
 
+def _opaque_only(img):
+    """A copy of a layer keeping ONLY its fully opaque pixels. The bg-bank
+    packer pre-composites this and still ships the layer live: an opaque
+    source texel wins that blend outright no matter what sits below it, so
+    the baked copy and the later live blit agree exactly, everywhere. Any
+    texel below full alpha is gated out -- a half-alpha pixel composited
+    twice (once folded into the bank, once live over it) is composited
+    wrong, which is precisely why the whole-page glass tint (a<=247) gains
+    nothing here and the AA fringe of a dial aperture must not ride along."""
+    import numpy as np
+    a = np.asarray(img.convert("RGBA")).copy()
+    a[a[..., 3] != 255] = 0
+    return Image.fromarray(a, "RGBA")
+
+
 def ink_count(img):
     """How many texels a layer actually paints (what a fold takes off the
     commit's blend budget). A frame bank counts the UNION over its frames --
@@ -295,6 +310,7 @@ class _Layer:
         self.cx, self.cy = cx, cy
         self.blend, self.rotating = blend, rotating
         self.forced = False    # set by matte_plan when the fold overrode the proof
+        self.foldable = True   # matte_plan also skips value-driven layers (comps)
 
 
 def matte_plan(live, mode):
@@ -309,15 +325,19 @@ def matte_plan(live, mode):
     SCREEN layer goes through mix_16_16 with a *computed* colour, so folding it
     changes pixels its own alpha never covered. plateFollow forbids all folding
     -- a layer baked into the plate would slide across the glass with it.
-
     mode: auto = fold only the proved ones, off = never, force = fold the
     statics regardless (the caller must then report matte_fidelity, because the
-    fold is lossy by construction)."""
+    fold is lossy by construction).
+    Complication boxes ride the stack as foldable=False layers: their pixels
+    follow the wall clock, so folding one would freeze a single frame into the
+    bank, and their very presence is what refuses the fold of the dial frame
+    that composites OVER them (the runtime-composite policy — the proof sees it
+    instead of being told)."""
     chosen, lines = [], []
     for idx in range(len(live)):
         cand = live[idx]
-        if cand.rotating:
-            continue                            # a mover is never a matte
+        if cand.rotating or not getattr(cand, "foldable", True):
+            continue                            # a mover/value-layer is never a matte
         import numpy as np
         al = None
         for im in cand.panels:
@@ -378,7 +398,28 @@ def matte_plan(live, mode):
 # The cull is safe because nothing changes a layer's visibility at runtime: the
 # show flags come from clock_style.json at load and clock_view.c never writes
 # one (checked: no write to .show outside the style parse).
+#
+# Worth the trouble: on the skeleton calendar kit, where the matte proof
+# correctly refuses to fold the dial at all, the cull took the bank from 39.1% to
+# ~5% of a full page per frame.
 # ---------------------------------------------------------------------------
+
+
+def bg_occluders(live, folded):
+    """The live statics allowed to hide the bank, bottom-to-top.
+
+    One list, used BOTH to build the mask and to print the per-layer count, so
+    the bake log can never describe a cull the packer did not make. The gates and
+    their reasons are bg_occluder's; loopcheck's seal check pins their shape.
+    """
+    keep = []
+    for L in live:
+        if L.rotating or L.blend != 0 or L in folded:
+            continue                        # a mover, a non-NORMAL blend, or in the bank
+        if not getattr(L, "foldable", True):
+            continue                        # value-driven: its art changes with the clock
+        keep.append(L)
+    return keep
 
 
 def bg_occluder(live, folded):
@@ -387,15 +428,21 @@ def bg_occluder(live, folded):
     `live` is the runtime stack bottom-to-top as build_live_stack returns it,
     `folded` the layers matte_plan chose (those are IN the bank now). A texel is
     occluded when one static layer paints it at alpha 255 -- the exact case
-    blend_px() short-circuits to `out = c`.
+    blend_px() short-circuits to `out = c`. The alpha predicate is _opaque_only's,
+    so the fold proof and this cull cannot drift apart on what "opaque" means.
+
+    A value-driven comp box (foldable False) never occludes: its art is the date,
+    the moon, the weekday, so what it paints at a==255 this hour is not what it
+    paints at midnight. Culled texels under it are bank pixels the device never
+    pushes, and the moment that box's value changes they are the canvas underneath
+    -- which is exactly the stale rectangle this cull is only allowed to ignore
+    while something opaque sits on it permanently.
     """
     import numpy as np
     occ = None
-    for L in live:
-        if L.rotating or L.blend != 0 or L in folded:
-            continue                        # a mover, or a non-NORMAL blend mode
+    for L in bg_occluders(live, folded):
         for im in L.panels:
-            a = np.asarray(im.split()[3])
+            a = np.asarray(_opaque_only(im).split()[3])
             full = a >= 255                 # opaque on its own, or not at all
             occ = full if occ is None else (occ | full)
     return occ if occ is not None and occ.any() else None
@@ -471,7 +518,35 @@ def build_live_stack(tdir, style, pivots, args, tourb_imgs):
     shadow_style = hands_style.get("shadow", {}) or {}
     shadow_on = bool(shadow_style.get("on", False))
     sdx = int(shadow_style.get("dx", 0)); sdy = int(shadow_style.get("dy", 0))
+    # ---- complication boxes: the device's LOWEST live layer, in the proof ----
+    # The paint pass prepends comp jobs to the L4 list so the dial's own frame
+    # art composites OVER every tile edge at runtime (the locked runtime-composite
+    # policy). If the dial were folded into the bank the tile would cover that
+    # frame instead of tucking under it — a real aperture overlaps its bezel by
+    # construction, so these layers are what makes matte_plan refuse the fold of
+    # static1/static2, with the violation count printed rather than a rule
+    # asserted. The whole tile box stands in for the tile's ink (worst case: an
+    # opaque frame). The box layers carry foldable=False: their pixels follow the
+    # wall clock, and folding one would freeze a single weekday into the bank.
+    import numpy as np
+    import theme_schema as _ts
+    _cc, _, _ = bake_complications(tdir, Blob(), verbose=False)
     live = []
+    for rec in _cc:
+        if _ts.KINDS[rec["kind"]] not in ("window", "strip"):
+            continue                                # ring/flare: validated, not painted
+        a = np.zeros((SCREEN_H, SCREEN_W), dtype=np.uint8)
+        x0, y0 = max(0, rec["x"]), max(0, rec["y"])
+        x1 = min(SCREEN_W, rec["x"] + rec["w"])
+        y1 = min(SCREEN_H, rec["y"] + rec["h"])
+        if x1 <= x0 or y1 <= y0:
+            continue                                # fully off-panel: nothing to prove
+        a[y0:y1, x0:x1] = 255
+        z = np.zeros_like(a)
+        im = Image.fromarray(np.dstack([z, z, z, a]), mode="RGBA")
+        L = _Layer("comp[%s]" % _ts.SOURCES[rec["src"]], [im], 0, 0, 0, False)
+        L.foldable = False
+        live.append(L)
     for k in order:
         kind = KINDS[k]
         hs = hands_style.get(kind, {}) or {}
@@ -1598,16 +1673,19 @@ def main():
     bg_src = args.bg_gif or args.bg_frames
     occl = None
     occl_lines = []
-    if bg_src and args.bg_occlude != "off":
+    # plateFollow drops the cull for the reason it drops every fold: what is
+    # baked into a background that moves with the plate moves with it, and a
+    # texel the bank no longer pushes would sit stale under a layer that only
+    # LOOKS permanent from the plate's own point of view.
+    if bg_src and args.bg_occlude != "off" and not int(style.get("plateFollow", 0) or 0):
         # Decided after the fold: a layer matte_plan folded into the bank is part
         # of the background now and can hide nothing, and a mover can never hide
         # anything either -- it lifts off the texel on its next step.
         import numpy as np
-        occl = bg_occluder(live_stack, set(matte_chosen))
-        for L in live_stack:
-            if L.rotating or L.blend != 0 or L in matte_chosen:
-                continue
-            n_op = sum(int((np.asarray(im.split()[3]) >= 255).sum())
+        folded = set(matte_chosen)
+        occl = bg_occluder(live_stack, folded)
+        for L in bg_occluders(live_stack, folded):
+            n_op = sum(int((np.asarray(_opaque_only(im).split()[3]) >= 255).sum())
                        for im in L.panels)
             occl_lines.append("  occludes {:<16s} {:>6} px at a==255".format(
                 L.name, n_op))
@@ -1624,6 +1702,12 @@ def main():
         # clock's background now, whether it came from one GIF or one folder of
         # PNG frames. Both take the identical packer below. ----
         bg = style.get("bgAnim", {}) or {}
+        # The occlusion cull was decided above (--bg-occlude, see bg_occluder):
+        # the rects a permanently-opaque live static covers would cost delta
+        # traffic the eye can never observe. A folded layer is already in the
+        # matte list, a value-driven comp box is excluded by name, and
+        # plateFollow drops the cull for the reason it drops every fold: what is
+        # baked into a moving background moves with it.
         gif = bake_bg_bank(blob, bg_src, args.diff_thresh,
                            denoise=args.bg_denoise, fit=args.bg_fit,
                            fps=(args.bg_fps or (0.0 if args.bg_gif

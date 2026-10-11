@@ -1239,10 +1239,11 @@ static esp_err_t h_status(httpd_req_t *req)
      * parse it. The overflow check below is what makes that visible rather than
      * subtle. Unlike the /api/v1/config buffer — whose worst case host_tz_test.py
      * recomputes from the zone table and asserts — nothing on the host checks
-     * this one. It measured 563 B on the device with the tz at "US/Central" when
-     * the idle block was four fields; every field added since then has to be
-     * re-measured off the device (`curl -s ORB/api/v1/status | wc -c`) rather than
-     * estimated here, and 960 leaves room for that growth. */
+     * this one. It measured 629 B on the device on 2026-10-11 with the tz at
+     * "US/Central" (563 B before the idle block and the art residency fields); every
+     * field added since then has to be re-measured off the device
+     * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
+     * room for that growth. */
     char json[960];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
@@ -1331,7 +1332,7 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
-        "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"slot\":\"%s\",\"img\":\"%s\","
+        "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
         /* What the encoder actually did, not what the driver chose to believe. raw is
@@ -1377,6 +1378,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
+        (unsigned)orb_art_refusals(),
         (slot ? slot->label : "?"), img_str,
         s_time_synced ? "true" : "false", (long long)now,
         s_tz[0] ? s_tz : "UTC", tz_offset_min(now),

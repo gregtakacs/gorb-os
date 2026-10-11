@@ -79,15 +79,28 @@ size_t art_bank_mmu_pages(void);
 
 /**
  * Account for a bank the app host intends to keep resident. Accounts only —
- * mapping secondary banks is P2's job — but it enforces the rule the slot layout
- * depends on: `bytes` must be a multiple of the 64 KB MMU page, because a ragged
- * request wastes a whole page at each end of the mapping.
+ * mapping secondary banks is P2's job — but it enforces the two rules the residency
+ * arithmetic depends on, so an install can be refused with a reason instead of
+ * turning into a page fault at boot:
+ *
+ *  - ESP_ERR_INVALID_SIZE: `bytes` is not a multiple of the 64 KB MMU page. A ragged
+ *    request wastes a whole page at each end of the mapping, which is also why the
+ *    `assets` slots are cut on 64 KB boundaries.
+ *  - ESP_ERR_NO_MEM: the running total across the live bank and all accepted
+ *    reservations would exceed the DROM window's 251 budgeted pages (256 less the
+ *    image's own .rodata). The cap is on the total, deliberately: two banks that each
+ *    fit alone are what overflows the window. Ask before mapping, and hold the error —
+ *    an app that learns the budget at install can say "install fewer themes"; one that
+ *    learns it at boot cannot.
  */
 esp_err_t orb_art_reserve(size_t bytes);
 
 /** How many banks are resident or reserved, and the bytes reserved so far. */
 size_t orb_art_resident_count(void);
 size_t orb_art_reserved_bytes(void);
+
+/** How many orb_art_reserve() calls have been refused for want of MMU pages. */
+unsigned orb_art_refusals(void);
 
 /**
  * The `assets` partition itself, found by label — for the erase/write path in

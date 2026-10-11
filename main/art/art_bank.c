@@ -124,8 +124,18 @@ bool art_bank_ready(void)
 #define ORB_ART_PAGE_SIZE   SOC_MMU_PAGE_SIZE      /* 64 KB on the S3 default */
 #define ORB_ART_PAGE_ALIGN  ORB_ART_PAGE_SIZE      /* what mmap rounds each end to */
 
+/* The DROM window is 256 pages wide (docs/app-platform-plan.md §3.1), and it is shared:
+ * the app's own .rodata occupies pages too, measured at 5 for the dial that shipped on
+ * 2026-10-11 — 39 for the bank plus 5 leaves 212 of them for art. Re-measure it from
+ * build/gorb-os.map when the image grows, the same way the §3.1 table is re-derived; an
+ * app never sees this number, only the ESP_ERR_NO_MEM that follows from it. */
+#define ORB_ART_DROM_PAGES       256u
+#define ORB_ART_RODATA_PAGES     5u
+#define ORB_ART_PAGE_BUDGET      (ORB_ART_DROM_PAGES - ORB_ART_RODATA_PAGES)
+
 static size_t s_reserved_bytes;
 static unsigned s_reserved_banks;
+static unsigned s_reserve_refusals;
 
 esp_err_t orb_art_reserve(size_t bytes)
 {
@@ -134,17 +144,40 @@ esp_err_t orb_art_reserve(size_t bytes)
      * slot layout is cut on 64 KB boundaries and this refuses anything else
      * instead of quietly eating the slack. */
     if (bytes % ORB_ART_PAGE_ALIGN) return ESP_ERR_INVALID_SIZE;
+    /* The cap is on the running total, not on this request: two banks that each
+     * fit alone are exactly what overflows the window (two maximum-size 8 MB
+     * slots would cost 128+128 pages against a 251-page budget). Refusing here is
+     * also the reason the accounting exists at all — an installer that can only
+     * report a page fault at boot has no answer for the owner. */
+    const size_t want = art_bank_mmu_pages() + art_bank_pages_for(bytes);
+    if (want > ORB_ART_PAGE_BUDGET) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "reserve %u B refused: would cost %u pages, total %u of %u budgeted "
+                      "(%u banks resident). Install fewer themes, or shrink this one.",
+                 (unsigned)bytes, (unsigned)art_bank_pages_for(bytes),
+                 (unsigned)want, (unsigned)ORB_ART_PAGE_BUDGET, s_reserved_banks);
+        return ESP_ERR_NO_MEM;
+    }
     s_reserved_bytes += bytes;
     s_reserved_banks++;
-    ESP_LOGI(TAG, "reserve %u B (%u pages), %u reservations / %u B accounted",
+    ESP_LOGI(TAG, "reserve %u B (%u pages), %u reservations / %u B accounted (%u of %u pages)",
              (unsigned)bytes, (unsigned)art_bank_pages_for(bytes),
-             s_reserved_banks, (unsigned)s_reserved_bytes);
+             s_reserved_banks, (unsigned)s_reserved_bytes,
+             (unsigned)want, (unsigned)ORB_ART_PAGE_BUDGET);
     return ESP_OK;
 }
 
 size_t art_bank_pages_for(size_t bytes)
 {
     return (bytes + ORB_ART_PAGE_SIZE - 1) / ORB_ART_PAGE_SIZE;
+}
+
+unsigned orb_art_refusals(void)
+{
+    /* How often a requested residency was refused for want of MMU pages. Non-zero
+     * with art_banks looking healthy is the signature of an install that "did
+     * nothing": the app asked, the budget said no, and only this counter knows. */
+    return s_reserve_refusals;
 }
 
 size_t art_bank_mmu_pages(void)

@@ -17,6 +17,8 @@
 
 #include <stdint.h>
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "display.h"        /* display_bench_snapshot(): the M1 switch probe's frame counters */
 #include "lvgl.h"
 
 static const char *TAG = "input";
@@ -72,6 +74,19 @@ static void set_screen(input_screen_t s, bool load)
     if (s >= INPUT_SCREEN_COUNT) return;
     s_current = s;
 
+    /* M1 of the app platform plan (docs/app-platform-plan.md §8): what it costs
+     * to point the compositor at a different already-resident view decides
+     * whether app switching ever needs a reboot. This is the only such switch
+     * the firmware has today, so it is measured here and the number below is the
+     * baseline the app host is judged against. `ms` is the synchronous cost —
+     * the pointer swap plus the widget rebuild; frames/flush come from display's
+     * own monotonic commit counters, taken across the same window, and say how
+     * much glass work the switch left behind rather than how long it blocked. */
+    const int64_t sw_t0 = esp_timer_get_time();
+    uint32_t sw_f0, sw_mx0;
+    uint64_t sw_u0;
+    display_bench_snapshot(&sw_f0, &sw_u0, &sw_mx0);
+
     /* Only the visible screen's animation should run: the GIF + hand beat burns
      * flush work on every tick, so park it when the clock is not on the glass. */
     clock_view_set_bounce(s == INPUT_SCREEN_CLOCK);
@@ -89,6 +104,13 @@ static void set_screen(input_screen_t s, bool load)
         if (s == INPUT_SCREEN_COLOR)     color_picker_show();
         else if (s == INPUT_SCREEN_MENU) menu_view_show();
     }
+    uint32_t sw_f1, sw_mx1;
+    uint64_t sw_u1;
+    display_bench_snapshot(&sw_f1, &sw_u1, &sw_mx1);
+    ESP_LOGI(TAG, "switch %s %lld ms frames %u flush %llu us worst %llu us",
+             screen_name(s), (long long)((esp_timer_get_time() - sw_t0) / 1000),
+             (unsigned)(sw_f1 - sw_f0), (unsigned long long)(sw_u1 - sw_u0),
+             (unsigned long long)sw_mx1);
     ESP_LOGI(TAG, "screen -> %s", screen_name(s));
 }
 

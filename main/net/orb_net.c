@@ -1331,7 +1331,7 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
-        "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
+        "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
         /* What the encoder actually did, not what the driver chose to believe. raw is
@@ -1376,6 +1376,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
+        (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
         (slot ? slot->label : "?"), img_str,
         s_time_synced ? "true" : "false", (long long)now,
         s_tz[0] ? s_tz : "UTC", tz_offset_min(now),

@@ -211,6 +211,112 @@ setTimeout(() => {
   hr.onFacingReset();
   ok(!it.design().hands['centre-hour'].rot0, 'Facing to 12 clears it, which is the identity the Design ID already had');
   it.state.designs.calendar.hands = {};
+  // ---- the reference is the clock's, so it cannot ride along with the art ----------
+  // The complaint this answers: every pointer on the overlay moved with the thing being
+  // dragged, leaving nothing fixed to line an off-centre graphic up against.
+  it.state.selKind = 'dial'; it.state.sel = null; it.state.artSlot = 'sf'; it.state.guide = 'auto'; it.drag = null;
+  it.state.designs.calendar.sfArt = 'ui-big'; it.state.designs.calendar.sfSize = 200;
+  const gRef = (x, y) => {
+    it.state.designs.calendar.sfX = x; it.state.designs.calendar.sfY = y;
+    const c = new S.FakeCanvas(); c.width = 466; c.height = 466;
+    it.drawGuide(c.getContext('2d'), it.face(), it.now(), 1);
+    const G = c.getContext('2d').geom;
+    return {
+      ref: G.filter((o) => (o.op === 'lineTo' && Math.abs(Math.hypot(o.a[0] - 233, o.a[1] - 233) - 216) < 0.01)
+        || (o.op === 'lineTo' && Math.abs(Math.hypot(o.a[0] - 233, o.a[1] - 233) - 13) < 0.01)
+        || (o.op === 'arc' && (Math.abs(o.a[2] - 221.5) < 0.01 || (o.a[0] === 233 && o.a[1] === 233 && o.a[2] === 3.5))))
+        .map((o) => o.op + ':' + o.a.join(',')).sort().join('|'),
+      box: (G.filter((o) => o.op === 'strokeRect').pop() || { a: [] }).a.slice(0, 2),
+      n233: G.filter((o) => o.op === 'moveTo' && o.a[0] === 233 && o.a[1] === 233).length,
+    };
+  };
+  const r0 = gRef(0, 0), r1 = gRef(40, -20);
+  ok(r0.ref.length > 100 && r0.n233 === 24, 'the reference is drawn out of the hub, with all 24 spokes starting at the centre', 'n233=' + r0.n233);
+  ok(r0.ref === r1.ref, 'and it does not budge a single line when the dial art is dragged: it is the thing an off-centre graphic gets aimed at, not another thing to aim', JSON.stringify([r0.ref.length, r1.ref.length]));
+  ok(Math.abs(r1.box[0] - r0.box[0] - 40) < 0.01 && Math.abs(r1.box[1] - r0.box[1] + 20) < 0.01,
+    'while the art does move, exactly the amount dragged, so placed art and fixed grid read against each other', JSON.stringify([r0.box, r1.box]));
+  const gHub = new S.FakeCanvas(); gHub.width = 466; gHub.height = 466;
+  it.state.designs.calendar.sfX = 120; it.state.designs.calendar.sfY = 120;
+  it.drawGuide(gHub.getContext('2d'), it.face(), it.now(), 1);
+  ok(gHub.getContext('2d').geom.some((o) => o.op === 'arc' && o.a[0] === 233 && o.a[1] === 233 && o.a[2] === 3.5),
+    'the hub cross stays at the centre of the watch even with the art shoved into a corner');
+  // Under a style that scales the face, the ring must still be drawn where the metal cuts
+  // (raw panel space), not where the scaled content reaches: a ring that shrinks with the
+  // content tells the author the rim is somewhere it is not.
+  const gBez = new S.FakeCanvas(); gBez.width = 466; gBez.height = 466;
+  const kb = it.face().inset, fcB = Object.assign({}, it.face(), { caseOpen: 193.5, inset: 0.876 });
+  it.drawGuide(gBez.getContext('2d'), fcB, it.now(), 0.876);
+  const bezArcs = gBez.getContext('2d').geom.filter((o) => o.op === 'arc').map((o) => +o.a[2].toFixed(2));
+  ok(bezArcs.indexOf(193.5) >= 0 && bezArcs.indexOf(+(193.5 * 0.876).toFixed(2)) < 0,
+    'the opening ring is drawn at the radius the mask cuts at, not at the scaled one', JSON.stringify(bezArcs) + ' inset=' + kb);
+  it.state.designs.calendar.sfX = 0; it.state.designs.calendar.sfY = 0; it.state.designs.calendar.sfSize = null;
+  // ---- a way out of the selection, which clicking cannot provide ------------------
+  it.state.sel = 'cd1'; it.state.selKind = 'comp';
+  ok(it.onKey({ key: 'Escape' }) === true, 'Escape answers a selection');
+  ok(it.state.sel === null && it.state.selKind === null, 'and clears it: with the dial selected every pixel of the face IS the dial, so there is no empty pixel to click instead', JSON.stringify([it.state.sel, it.state.selKind]));
+  it.state.sel = 'cd1';
+  ok(it.onKey({ key: 'Escape', target: { tagName: 'INPUT' } }) === false, 'Escape inside a text field is left to the field');
+  ok(it.state.sel === 'cd1', 'and leaves the selection alone there');
+  it.state.sel = null; it.state.selKind = null; it.state.guide = 'auto';
+  ok(it.onKey({ key: 'Escape' }) === false, 'Escape with nothing to undo is not an event');
+  it.state.selKind = 'hand'; it.drag = { kind: 'hand', id: 'centre-hour' };
+  ok(it.onKey({ key: 'Escape' }) === true && !it.drag && it.state.selKind === null, 'Escape drops an in-flight pivot drag too, which is the moment it is needed most');
+  it.state.guide = 'auto';
+  ok(it.guideOn() === false, 'and the overlay goes back to auto, so a clean look at the watch is one keypress away');
+  it.state.sel = 'centre-hour'; it.state.selKind = 'hand';
+  const rvOv = it.renderVals();
+  ok(/Deselect hand/.test(rvOv.clearLabel), 'the button under the stage names what it will clear', rvOv.clearLabel);
+  ok(rvOv.clearOp === 1, 'and is lit while there is something to clear', String(rvOv.clearOp));
+  it.state.sel = null; it.state.selKind = null;
+  ok(it.renderVals().clearOp === 0.45, 'faded when there is nothing to clear');
+  it.state.guide = 'auto';
+  it.cycleGuide(); ok(it.state.guide === 'on', 'the Guide button pins the overlay on');
+  it.cycleGuide(); ok(it.state.guide === 'off', 'off');
+  it.cycleGuide(); ok(it.state.guide === 'auto', 'and back to auto');
+  const rvG = it.renderVals().g;
+  ok(rvG.label === 'Guide: auto' && rvG.bd === '#c9a25a', 'and the button says which of the three it is', JSON.stringify(rvG));
+  // ---- the pane must scroll to the section, not merely change tab ------------------
+  it.state.selKind = 'hand'; it.state.sel = 'centre-second';
+  ok(it.scrollTarget() === 'hand-centre-second', 'a selected hand asks for its own row', String(it.scrollTarget()));
+  it.state.selKind = 'comp'; it.state.sel = it.design().comps[0].id;
+  ok(it.scrollTarget() === 'comp-' + it.design().comps[0].id, 'a selected complication asks for its row in the list', String(it.scrollTarget()));
+  it.state.selKind = 'dial'; it.state.artSlot = 'sf'; it.state.designs.calendar.sfArt = 'ui-big';
+  ok(it.scrollTarget() === 'art-sf', 'and the dial asks for the section holding the slot being panned', String(it.scrollTarget()));
+  it.state.designs.calendar.sfArt = null; it.state.designs.calendar.bgArt = null;
+  ok(it.scrollTarget() === '#', 'a dial with no art in either slot asks for the top of the pane instead of nowhere');
+  it.state.designs.calendar.sfArt = 'ui-big';
+  // a target is only worth having if the pane really emits that anchor: a mismatch is a
+  // silent no-op, and a silent no-op is exactly the bug that let the tab change while the
+  // view stayed put
+  const rvH = (it.state.tab = 'hands', it.renderVals());
+  ok(rvH.handRows.some((q) => q.anchor === 'hand-centre-second'), 'the hands pane emits the anchor a selected hand aims at', JSON.stringify(rvH.handRows.map((q) => q.anchor)));
+  const rvD = (it.state.tab = 'dial', it.renderVals());
+  ok(rvD.fields.some((f) => f.anchor === 'art-sf'), 'and the dial pane anchors its surface-art section', JSON.stringify(rvD.fields.filter((f) => f.anchor).map((f) => f.anchor)));
+  const rvC = (it.state.tab = 'comps', it.renderVals());
+  ok(rvC.compRows.some((q) => q.anchor === 'comp-' + it.design().comps[0].id), 'and the comps pane anchors each complication', JSON.stringify(rvC.compRows.map((q) => q.anchor)));
+  it._clickAt = null; it.state.tab = 'comps'; it.state.sel = null; it.state.selKind = null;
+  it.onDown(ev(top.x, top.y));
+  ok(it._scrollTo === 'hand-' + top.id, 'a stage click arms the scroll target for whatever it grabbed', String(it._scrollTo));
+  const armed = it._scrollTo;
+  const pane = {
+    scrollTop: 500,
+    getBoundingClientRect: () => ({ top: 0, bottom: 400, left: 0, right: 0 }),
+    querySelector: (s) => (s === '[data-a="' + armed + '"]' ? { getBoundingClientRect: () => ({ top: 900, bottom: 1000, left: 0, right: 0 }) } : null),
+  };
+  it.paneRef.current = pane;
+  const wasReady = it.ready; it.ready = false;              // the consume runs ahead of the ready guard; the rest of the hook wants the build gate
+  it.componentDidUpdate();
+  ok(it._scrollTo === null, 'componentDidUpdate spends the armed target instead of leaving it for a render that may never come');
+  ok(pane.scrollTop !== 500, 'and that spend moves the pane, which is the whole difference between changing a tab and seeing the field', String(pane.scrollTop));
+  it.ready = wasReady;
+  it.paneRef.current = null;
+  ok(it.scrollToAnchor('art-sf') === false, 'with no pane bound there is nothing to scroll, and it reports that rather than pretending');
+  it.paneRef.current = { scrollTop: 0, getBoundingClientRect: () => ({ top: 0, bottom: 400, left: 0, right: 0 }), querySelector: () => null };
+  ok(it.scrollToAnchor('#') === true, 'the top anchor needs no element to find');
+  ok(it.scrollToAnchor('hand-nothing') === false, 'an anchor the pane does not emit is reported as not scrolled, not as success');
+  it.paneRef.current = null;
+  it.state.designs.calendar.sfArt = null;
+  it.state.designs.calendar.hands = {};
   if (checked < 20) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   // every {{ }} binding the template reads must exist on the props object, or the DC
   // runtime renders an empty control with no warning at all
@@ -219,8 +325,12 @@ setTimeout(() => {
   const r3 = rv.handRows.find((q) => q.label === 'Centre hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
-  for (const k of ['exportKit', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll'])
+  for (const k of ['exportKit', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
+    // the three bindings the deselect/scroll row reads: a missing one renders a dead button
+    'clearSel', 'clearLabel', 'clearOp', 'pickGuide', 'g', 'paneRef'])
     ok(rv[k] !== undefined, 'the template binding ' + k + ' has a backing property');
+  ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
+  for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
   ok(rv.bundleNote === ex2.bundleNote, 'the bundle label is stable across renders');
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);

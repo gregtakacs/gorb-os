@@ -347,11 +347,17 @@ evidence for the authoring controls the stub suites can only describe:
   for a circle against ~1.0 for the square, both measured in the same run so the
   square case calibrates the probe;
 * "no case" paints nothing inside the opening yet still masks outside it, and the
-  whole face scales by `caseOpen / DR`;
+  composited art lands pixel-identical whether the opening is 221.5 or 150 — the slider
+  is where the device's metal starts, not a resize handle on the author's dial (the face
+  scales only under a composer-drawn case, where the metal covers the rim);
 * zoom 1→2 multiplies the art actually painted, and at zoom 4 nothing spills past the
   dial circle, which is what proves the clip is applied after the zoom and not before;
 * a facing of 90 turns the drawn ink a quarter of the way round the arbour, and a
-  pivot 30 px outside the artwork grows the plane so the arbour is inside it.
+  pivot 30 px outside the artwork grows the plane so the arbour is inside it;
+* the alignment reference — hub cross and the 24 spokes out of it — is painted at the
+  same pixels with the dial art at offset 0 and at offset 120. The stub suites can say
+  the strokes were asked for; only the pixels say the author has something stationary to
+  line an off-centre graphic up against.
 
 Two probe-design traps bit this block and are worth remembering, because both produced
 a confident wrong answer rather than an obvious one:

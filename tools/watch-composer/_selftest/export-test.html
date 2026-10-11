@@ -546,15 +546,73 @@
   }
   /* ---- 2-4. the case mask, the zoom, and the facing -------------------------------- */
   function featCaseZoomHands(E, it, say, fail, pass) {
-    // no case: nothing painted where the device's own metal sits, but the opening still
-    // stops OUR content, and the whole face still scales in to stay under it.
+    // no case: nothing painted where the device's own metal sits; the opening stops OUR
+    // content by cutting it there, and by nothing else -- no part of the face is rescaled,
+    // so the artwork the author positioned stays positioned however the slider is set.
     const mask = E.caseLayer({ caseStyle: 'none', caseOpen: 150, outerTemp: 2200, outerHue: 0, outerSat: 0 });
     const mx = mask.getContext('2d'), alphaAt = (x, y) => mx.getImageData(x, y, 1, 1).data[3];
     if (alphaAt(C4, C4) > 8) return fail('no-case paints something at the centre: alpha ' + alphaAt(C4, C4));
     if (alphaAt(C4 + 175, C4) < 250) return fail('no-case leaves outside its opening unpainted: alpha ' + alphaAt(C4 + 175, C4));
     if (alphaAt(C4 + 138, C4) > 8) return fail('no-case masks inside the opening it was given: alpha ' + alphaAt(C4 + 138, C4));
+    // "None" means the device owns its own metal: the opening cuts, and nothing rescales.
+    // The proof has to go through compose(), because the scale it replaces happened there
+    // -- reading fc.dial alone would show the art at authored size no matter what the case
+    // did to it on the way out, and the author's complaint was about the pixels.
     const fNone = it.faceOf({}, { caseStyle: 'none', caseOpen: 150 });
-    if (Math.abs(fNone.inset - 150 / 221) > 1e-6) return fail('the face did not scale to the authored opening: inset=' + fNone.inset);
+    if (fNone.inset !== 1) return fail('no case rescaled the face to the authored opening: inset=' + fNone.inset);
+    const ART = { sfArt: 'feat-a', sfSize: 140, sfX: 95, sfY: 0, sfFit: 'contain' };
+    const comp_ink = (opts, mask) => {
+      const fc = it.faceOf(ART, opts);
+      const c = document.createElement('canvas'); c.width = S4; c.height = S4;
+      const hid = { movement: 1, geartrain: 1, complications: 1, subdials: 1, hands: 1, glass: 1, outer: mask ? 0 : 1 };
+      E.compose(c.getContext('2d'), it.base, it.gt[0], fc, new Date(2026, 0, 1, 10, 9, 0), hid);
+      const d = c.getContext('2d').getImageData(0, 0, S4, S4).data;
+      let n = 0, out = 0, x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+      for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) {
+        const i = (y * S4 + x) * 4, dx = x - C4, dy = y - C4;
+        if (d[i] > 190 && d[i + 1] < 90 && d[i + 2] < 90 && d[i + 3] > 200) {
+          n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          if (Math.hypot(dx, dy) > 150) out++;
+        }
+      }
+      return { n, out, box: [x0, y0, x1, y1] };
+    };
+    const wide = comp_ink({ caseStyle: 'none', caseOpen: 221.5 }, false), cut = comp_ink({ caseStyle: 'none', caseOpen: 150 }, false);
+    if (!(wide.n > 400)) return fail('the off-centre art is not on the composited face, so the opening probe is blind: ' + JSON.stringify(wide));
+    if (wide.n !== cut.n || String(wide.box) !== String(cut.box))
+      return fail('the opening radius moved or resized the loaded dial art: ' + JSON.stringify([wide, cut]));
+    const masked = comp_ink({ caseStyle: 'none', caseOpen: 150 }, true);
+    if (!(masked.out === 0 && masked.n < cut.n)) return fail('the no-case mask did not cut the art at the opening: ' + JSON.stringify([masked, cut]));
+    // the stationary reference, painted: the stub can be told the spokes were asked for,
+    // only the browser can say they are actually on the glass at the same pixels however
+    // far the art has been dragged. Sample mid-spoke at radii chosen to land on a dash
+    // (the pattern is 3 on / 5 off from the hub, so r % 8 < 3), never within 3 px of a
+    // range ring -- and report what was missed rather than a bare count, because a probe
+    // that quietly measures nothing is the failure mode this suite keeps hitting.
+    const goldA = (d, x, y) => { let m = 0; for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) { const px = Math.round(x) + i, py = Math.round(y) + j; if (px < 0 || py < 0 || px >= S4 || py >= S4) continue; const k = (py * S4 + px) * 4; if (d[k] > 190 && d[k + 1] > 150 && d[k + 2] < 180 && d[k + 3] > m) m = d[k + 3]; } return m; };
+    const blueA = (d, x, y) => { let m = 0; for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) { const px = Math.round(x) + i, py = Math.round(y) + j; if (px < 0 || py < 0 || px >= S4 || py >= S4) continue; const k = (py * S4 + px) * 4; if (d[k + 2] > 190 && d[k] < 170 && d[k + 3] > m) m = d[k + 3]; } return m; };
+    const PROBES = [[233, 233], [233, 221], [233, 245], [221, 233], [245, 233]];
+    for (let i = 0; i < 24; i++) { const a = (i / 24) * Math.PI * 2; for (const r of [145, 209]) PROBES.push([233 + Math.sin(a) * r, 233 - Math.cos(a) * r]); }
+    const guideProbe = (xoff) => {
+      const fc = it.faceOf({ sfArt: 'feat-a', sfSize: 140, sfX: xoff, sfY: 0 }, { caseStyle: 'none', caseOpen: 221.5 });
+      const c = document.createElement('canvas'); c.width = S4; c.height = S4;
+      it.state.selKind = 'dial'; it.state.artSlot = 'sf';
+      it.drawGuide(c.getContext('2d'), fc, new Date(2026, 0, 1, 10, 9, 0), fc.inset || 1);
+      const d = c.getContext('2d').getImageData(0, 0, S4, S4).data;
+      // gold-tinted pixels only, so the guide's own drop shadow cannot fake a pass, and a
+      // deliberately low floor: an antialiased 1 px diagonal at .3 alpha peaks near 60, and
+      // this probe asks "is the grid on the glass", not "is it bold". The blue the placed
+      // item draws over the grid is recorded separately and excluded from the comparison,
+      // because where the art has been put IS where its frame belongs.
+      return { gold: PROBES.map((p) => goldA(d, p[0], p[1])), blue: PROBES.map((p) => blueA(d, p[0], p[1])), at: PROBES };
+    };
+    const g0 = guideProbe(0), g1 = guideProbe(120);
+    const shown = PROBES.map((p, i) => i).filter((i) => g0.blue[i] <= 60 && g1.blue[i] <= 60);
+    const dim = shown.filter((i) => g0.gold[i] <= 18 || g1.gold[i] <= 18).map((i) => Math.round(PROBES[i][0]) + ',' + Math.round(PROBES[i][1]) + '@' + g0.gold[i] + '/' + g1.gold[i]);
+    if (shown.length < 34) return fail('too few reference samples were outside the placed item to say anything: ' + shown.length + ' of ' + PROBES.length);
+    if (dim.length) return fail('the stationary reference is not painted where an author would look for it: ' + JSON.stringify(dim.slice(0, 6)));
+    if (shown.some((i) => g0.gold[i] !== g1.gold[i])) return fail('the reference moved with the art, which is the one thing it must never do: ' + JSON.stringify(shown.filter((i) => g0.gold[i] !== g1.gold[i]).map((i) => [Math.round(PROBES[i][0]), Math.round(PROBES[i][1]), g0.gold[i], g1.gold[i]]).slice(0, 6)));
+    it.state.selKind = null;
     it.faceOf({}, { caseStyle: 'polished', caseOpen: 221.5 });      // do not let the probe leak into the ones below
     // zoom: count the fixture's colour on the dial, and confirm the clip holds at 4x
     const artPx = (fc) => {
@@ -594,7 +652,8 @@
     if (Math.abs(dAng(a0.ang, a90.ang) - 90) > 5) return fail('facing 90 did not turn the drawn ink a quarter of a way round: ' + a0.ang.toFixed(1) + ' -> ' + a90.ang.toFixed(1) + ' (delta ' + dAng(a0.ang, a90.ang).toFixed(1) + ')');
     const off = handsPx(0, [-30, 60]);
     if (!(off.h > 60 && off.py >= 0 && off.py <= off.h)) return fail('the off-art arbour did not grow the plane to hold it: ' + JSON.stringify([off.h, off.py]));
-    say('  no case: masked at r=150 with inset ' + fNone.inset.toFixed(3) + ', nothing painted inside it');
+    say('  no case: masked at r=150; off-centre art composited identical at openings 221.5 and 150 (' + wide.n + ' px, box ' + wide.box.join(',') + '), cut to ' + masked.n + ' px by the mask with ' + masked.out + ' art px outside it');
+    say('  alignment reference: ' + shown.length + ' of ' + PROBES.length + ' grid points painted on the glass, every one of them at the same pixel with the art at offset 0 and at 120');
     say('  zoom 1->2: ' + z1.n + ' -> ' + z2.n + ' art px, spill beyond the dial circle ' + spill + '; facing turned the ink ' + a0.ang.toFixed(0) + ' -> ' + a90.ang.toFixed(0) + ' deg; off-art pivot ' + off.py.toFixed(0) + ' inside a ' + off.h + ' px plane');
     pass();
   }

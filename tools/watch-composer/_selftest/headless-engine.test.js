@@ -235,7 +235,10 @@ setTimeout(() => {
       ok(Math.abs(mkFace({ caseStyle: 'tachy' }).inset - 193.5 / 221) < 1e-9, 'a bezel style keeps its own fixed opening, exactly as before');
       ok(mkFace({ caseStyle: 'none' }).inset === 1, 'no case at the default opening matches the old blank rim');
       const none1 = mkFace({ caseStyle: 'none', caseOpen: 160 });
-      ok(none1.caseOpen === 160 && Math.abs(none1.inset - 160 / 221) < 1e-9, 'a smaller authored opening scales the whole face in, so nothing crosses it', JSON.stringify([none1.caseOpen, none1.inset]));
+      ok(none1.caseOpen === 160 && none1.inset === 1, 'a smaller authored opening cuts the face at its edge and rescales NOTHING: the slider is the hardware\'s rim, not a resize handle on the author\'s dial art', JSON.stringify([none1.caseOpen, none1.inset]));
+      ok(E.faceScale({ caseStyle: 'none', caseOpen: 90 }) === 1 && E.faceScale({ caseStyle: 'tachy' }) === 193.5 / 221,
+        'faceScale agrees: the authorable opening never shrinks the face, a bezel style always does', JSON.stringify([E.faceScale({ caseStyle: 'none', caseOpen: 90 }), E.faceScale({ caseStyle: 'tachy' })]));
+      ok(mkFace({ caseStyle: 'polished', caseOpen: 120 }).inset === 1, 'and an opening typed in beside a style that cannot use it changes nothing at all');
       ok(mkFace({ caseStyle: 'none', caseOpen: 5 }).caseOpen === 90 && mkFace({ caseStyle: 'none', caseOpen: 9999 }).caseOpen === 233, 'a wild opening is clamped into the range the panel can show');
       ok(E.caseOpenR({ caseStyle: 'tachy', caseOpen: 100 }) === 193.5, 'a bezel style ignores the authored opening it cannot use');
       const noneG = E.caseLayer({ caseStyle: 'none', caseOpen: 160, outerTemp: 2200 }).getContext('2d').geom;

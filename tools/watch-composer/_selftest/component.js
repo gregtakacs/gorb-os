@@ -19,6 +19,7 @@ class Component extends DCLogic {
   base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
+  paneRef = React.createRef();
   cfg() {
     const c = { ...this.DEF, ...this.state.cfg }, E = window.WatchEngine, T = E && E.TRAINS[this.state.train];
     if (T) { if (c.plate === T.plate) c.plate = 'train'; if (c.spokes === (T.spokes || 'arched')) c.spokes = 'train'; if (c.finish === (T.finish || 'brass')) c.finish = 'train'; }
@@ -479,6 +480,11 @@ class Component extends DCLogic {
     if (Object.keys(p).length) this.setState({ cfg: p });
     this.loadCal();
     window.__assetDirty = () => { if (this.ready) this.artDirty(); };
+    // Escape on the stage deselects. Bound on the window rather than the canvas because
+    // a canvas takes no focus: the key has to arrive whether the cursor is on the watch
+    // or on the pane, and onKey ignores it while a field has it.
+    this._onKey = (e) => { this.onKey(e); };
+    window.addEventListener('keydown', this._onKey);
     while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
     this.loadArt();                                       // needs the engine's registry, so after the wait
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
@@ -486,7 +492,7 @@ class Component extends DCLogic {
     this.ready = true;
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); this.buildId = -1; }
+  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -494,6 +500,9 @@ class Component extends DCLogic {
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
   componentDidUpdate() {
+    // A selection armed a scroll target in onDown; the rows it names only exist once
+    // this commit has bound them, so this is the first place the jump can be honoured.
+    if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
     if (!this.ready) return;
     const D0 = this.design(); [D0.font, D0.perimFont, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey()) {
@@ -774,28 +783,70 @@ class Component extends DCLogic {
     const s = d.getSeconds();
     if (s !== this._sec) { this._sec = s; this.drawLayer('hands'); if (this.base && this.base.cageAt) this.drawLayer('geartrain'); }
   }
-  /* The alignment overlay. It is on while it is answering the question being asked:
-   * during a drag, while the dial art or a hand is selected (the two things positioned
-   * by eye), and whenever the author pins it on. Otherwise a look at the watch stays a
-   * look at the watch. Everything it draws comes out of the engine's own geometry --
-   * fc.caseOpen, artBox, handAngle -- so the guide and the pixels cannot disagree. */
   guideOn() {
     const s = this.state;
     if (s.guide === 'off') return false;
     if (s.guide === 'on') return true;
     return !!this.drag || s.selKind === 'dial' || s.selKind === 'hand';
   }
+  /* Two ways out of the overlay, because they answer two different questions. Clearing
+   * the selection is the one that matters: with the dial selected, EVERY pixel inside
+   * the dial belongs to it, so "click somewhere empty" cannot deselect it -- there is no
+   * empty pixel to click. Escape does it, and the button under the stage says so. The
+   * guide toggle is the other half: it hides the overlay while the selection is kept,
+   * for the author who wants to place by eye first and check the numbers after. */
+  clearSel() { this.drag = null; this._clickAt = null; this._pend = this._pendArt = this._pendHand = null; this.setState({ sel: null, selKind: null }); }
+  onKey(e) {
+    if (!e || e.key !== 'Escape') return false;
+    const t = e.target || {}, tag = String(t.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return false;   // Escape in a field is the field's business
+    const s = this.state;
+    if (!this.drag && s.sel == null && s.selKind == null && s.guide === 'auto') return false;
+    this.drag = null; this._clickAt = null; this.setState({ sel: null, selKind: null, guide: 'auto' });
+    return true;
+  }
+  cycleGuide() { this.setState({ guide: this.state.guide === 'auto' ? 'on' : this.state.guide === 'on' ? 'off' : 'auto' }); }
+  /* The alignment overlay. It is on while it is answering the question being asked:
+   * during a drag, while the dial art or a hand is selected (the two things positioned
+   * by eye), and whenever the author pins it on. Otherwise a look at the watch stays a
+   * look at the watch. Everything it draws comes out of the engine's own geometry --
+   * fc.caseOpen, artBox, handAngle -- so the guide and the pixels cannot disagree.
+   *
+   * Two things are drawn here and they must never be confused, so they never share a
+   * colour. The REFERENCE (the opening, the 15-degree spokes, the range rings, the
+   * complication centres, the hub cross) is pinned to the WATCH: it is the fixed thing
+   * an off-centre graphic gets walked onto, so it cannot be allowed to ride along with
+   * the thing being moved. The PLACED ITEM (art frame, art centre, hand ghost) is drawn
+   * in blue and does move, because it is the thing under the cursor. */
   drawGuide(x, fc, d, k) {
     const E = window.WatchEngine, D = this.design() || {}, TAU = Math.PI * 2;
     const px = (v) => 233 + (v - 233) * k;                       // dial space -> composited screen space
+    const OP = fc.caseOpen == null ? 221.5 : fc.caseOpen;        // where the device's metal starts
     x.save(); x.shadowColor = 'rgba(0,0,0,.85)'; x.shadowBlur = 3;
+    // The mask cuts here in panel space, so the ring is drawn there and not through the
+    // face's own scale: asking the author to line art up to a ring the metal is not on
+    // would be a guide that lies.
     x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.55)';
-    x.beginPath(); x.arc(233, 233, (fc.caseOpen == null ? 221.5 : fc.caseOpen) * k, 0, TAU); x.stroke();
-    x.setLineDash([3, 5]); x.strokeStyle = 'rgba(240,215,154,.3)';
-    for (let i = 0; i < 24; i++) {                               // 15 degree spokes: the dial's own grid
+    x.beginPath(); x.arc(233, 233, OP, 0, TAU); x.stroke();
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.3)';
+    for (let i = 0; i < 24; i++) {                               // 15 degree spokes, out of the hub: the dial's own grid, and the axis an off-centre print is set by
       const a = (i / 24) * TAU;
-      x.beginPath(); x.moveTo(px(233 + Math.sin(a) * 152), px(233 - Math.cos(a) * 152)); x.lineTo(px(233 + Math.sin(a) * 216), px(233 - Math.cos(a) * 216)); x.stroke();
+      x.beginPath(); x.moveTo(233, 233); x.lineTo(233 + Math.sin(a) * 216, 233 - Math.cos(a) * 216); x.stroke();
     }
+    [0.25, 0.5, 0.75].forEach((f) => {                           // range rings, so radius is as readable as angle
+      x.beginPath(); x.arc(233, 233, OP * f, 0, TAU); x.stroke();
+    });
+    if (this.state.selKind === 'dial' && fc.lay && fc.lay.G) {   // the centres the graphic is usually being aimed at
+      Object.keys(fc.lay.G).forEach((id) => {
+        const g = fc.lay.G[id]; if (!g || g.x == null) return;
+        const gx = px(g.x), gy = px(g.y);
+        x.beginPath(); x.moveTo(gx - 7, gy); x.lineTo(gx + 7, gy); x.moveTo(gx, gy - 7); x.lineTo(gx, gy + 7); x.stroke();
+        x.beginPath(); x.arc(gx, gy, 3, 0, TAU); x.stroke();
+      });
+    }
+    x.setLineDash([]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)';
+    x.beginPath(); x.moveTo(220, 233); x.lineTo(246, 233); x.moveTo(233, 220); x.lineTo(233, 246); x.stroke();
+    x.beginPath(); x.arc(233, 233, 3.5, 0, TAU); x.stroke();     // THE hub: fixed, and not the art's centre
     const slot = (this.state.selKind === 'dial' && ((this.drag && this.drag.kind === 'dial' && this.drag.slot) || this.artSlot())) || null;
     if (slot && D[slot + 'Art'] && E.artBox) {
       const b = E.artBox(D[slot + 'Art'], { x: 233 + (+D[slot + 'X'] || 0), y: 233 + (+D[slot + 'Y'] || 0), w: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], h: D[slot + 'Size'] == null ? 442 : +D[slot + 'Size'], fit: D[slot + 'Fit'] || 'cover', zoom: D[slot + 'Zoom'] == null ? 1 : +D[slot + 'Zoom'] });
@@ -804,9 +855,10 @@ class Component extends DCLogic {
       x.strokeRect(L, T, W, H);
       x.lineWidth = 2.5; x.strokeStyle = 'rgba(122,214,255,1)';   // corner ticks: the box reads even over busy art
       [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]].forEach((q) => { x.beginPath(); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0] + 9 * q[2], T + q[1]); x.moveTo(L + q[0], T + q[1]); x.lineTo(L + q[0], T + q[1] + 9 * q[3]); x.stroke(); });
-      const ox = 233 + (+D[slot + 'X'] || 0), oy = 233 + (+D[slot + 'Y'] || 0);
+      const ox = px(233 + (+D[slot + 'X'] || 0)), oy = px(233 + (+D[slot + 'Y'] || 0));
       x.setLineDash([3, 4]); x.lineWidth = 1; x.strokeStyle = 'rgba(122,214,255,.55)';
-      x.beginPath(); x.moveTo(px(ox - 30), px(oy)); x.lineTo(px(ox + 30), px(oy)); x.moveTo(px(ox), px(oy - 30)); x.lineTo(px(ox), px(oy + 30)); x.stroke();
+      x.beginPath(); x.moveTo(ox - 30, oy); x.lineTo(ox + 30, oy); x.moveTo(ox, oy - 30); x.lineTo(ox, oy + 30); x.stroke();
+      x.beginPath(); x.arc(ox, oy, 3, 0, TAU); x.stroke();         // the art's own centre, which is NOT the hub
     }
     if (this.state.selKind === 'hand') this.drawHandGhost(x, fc, d, k, px);
     x.restore();
@@ -850,8 +902,34 @@ class Component extends DCLogic {
   }
   /* Selecting is not only a highlight: the Editing Pane jumps to the pane that can
    * change what was grabbed, because a selected hand under the Dial tab is a tool that
-   * cannot touch the thing under the cursor. */
+   * cannot touch the thing under the cursor. Switching the tab is the half that was
+   * missing: the Hands tab opens at its Default-style grid and the selected hand's own
+   * row -- pivot fields, facing, sprite -- sits well below the fold, so the pane the
+   * author arrived at still showed none of it. Each place that can be jumped to carries
+   * a data-a anchor, and the target is decided here rather than in the DOM so the pair
+   * can be checked against the anchors renderVals actually emits. */
   selTab = { comp: 'comps', dial: 'dial', hand: 'hands' };
+  scrollTargetFor(t) {
+    if (!t) return null;
+    const D = this.design() || {};
+    if (t.kind === 'hand' || t.kind === 'comp') return t.id ? t.kind + '-' + t.id : null;
+    if (t.kind === 'dial') { const p = this.artSlot(); return p && D[p + 'Art'] ? 'art-' + p : '#'; }
+    return null;
+  }
+  scrollTarget() { const s = this.state; return s.selKind ? this.scrollTargetFor({ kind: s.selKind, id: s.sel }) : null; }
+  /* '#' means the top of the pane. The retry loop is not decoration: Declarative
+   * Components rebinds the field list after this component's own commit, so the row can
+   * legitimately not exist yet in the frame the selection landed. */
+  scrollToAnchor(a, tries) {
+    const pane = this.paneRef && this.paneRef.current;
+    if (!pane || !a || typeof pane.querySelector !== 'function') return false;
+    if (a === '#') { pane.scrollTop = 0; return true; }
+    const el = pane.querySelector('[data-a="' + a.replace(/["\\]/g, '') + '"]');
+    if (!el) { if ((tries || 0) < 8) setTimeout(() => this.scrollToAnchor(a, (tries || 0) + 1), 16); return false; }
+    const pr = pane.getBoundingClientRect(), er = el.getBoundingClientRect();
+    if (er.top - pr.top < 12 || er.bottom - pr.bottom > -24) { pane.scrollTop += (er.top - pr.top) - 12; return true; }
+    return true;
+  }
   onDown(e) {
     const fc = this.face(); if (!fc) return;
     const d = this.now(), [x, y] = this.pt(e);
@@ -868,6 +946,7 @@ class Component extends DCLogic {
     }
     const t = stack[i] || null;
     this._clickAt = t ? { x, y, kind: t.kind, id: t.id } : null;
+    this._scrollTo = this.scrollTargetFor(t);
     const grab = () => { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {} };
     this.drag = null;
     if (!t) return this.setState({ sel: null, selKind: null });
@@ -1369,8 +1448,11 @@ class Component extends DCLogic {
     const feats = ready ? E.features(s.train) : [];
     const opt = (obj) => Object.entries(obj).map(([v, label]) => ({ v, label }));
     const mark = (list, v) => list.map((o) => ({ ...o, sel: String(o.v) === String(v) }));
-    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', ...o });
-    const H = (label) => mk({ label, isHead: true, isRow: false });
+    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', anchor: null, ...o });
+    /* anchor: the pane's scroll destination for a selection (see scrollTargetFor). An
+     * optional second argument, because only a handful of sections are ever aimed at --
+     * a label alone would leave the field objects carrying names nothing reads. */
+    const H = (label, anchor) => mk({ label, isHead: true, isRow: false, anchor });
     const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, on: (e) => onv(+e.target.value), valText });
     const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value) });
     const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
@@ -1599,7 +1681,7 @@ class Component extends DCLogic {
         const zm = D[p + 'Zoom'] == null ? 1 : +D[p + 'Zoom'];
         const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
         const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'].forEach((k) => delete d[k]); });
-        const out = [H(title),
+        const out = [H(title, 'art-' + p),
           Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
             this.pickArt(file, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => { d[p + 'Art'] = aid; }));
@@ -1732,7 +1814,7 @@ class Component extends DCLogic {
         const mm = (v) => (v * (E.MM_PER_PX || 0.0954)).toFixed(2);
         fields.push(H('Case opening'),
           Rg('Opening radius', r, E.CASE_OPEN_MIN || 90, E.CASE_OPEN_MAX || 233, 0.5, (v) => this.setState({ caseOpen: +v }), mm(r) + ' mm'),
-          Nt('', 'No case metal is drawn. Everything outside ' + r.toFixed(1) + ' px from the centre (' + mm(r) + ' mm on the panel) is cleared, so the dial, the hands and their shadows stop where the metal baked into the hardware begins — and the whole face scales in to stay under it, the same way it does under a bezel.'));
+          Nt('', 'Nothing is drawn here: the device owns its own metal. Everything outside ' + r.toFixed(1) + ' px (' + mm(r) + ' mm) is cleared, and NOTHING is rescaled — the dial, its art and the hands stay exactly where they were authored and are simply cut there, the way the hardware will cut them.'));
       }
     }
 
@@ -1742,8 +1824,15 @@ class Component extends DCLogic {
     return {
       metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
-      mainRef: this.mainRef, cursor: this.drag ? 'grabbing' : 'pointer',
+      mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(),
+      /* The two ways out of selection noise: a button because Escape is invisible, and a
+       * guide toggle because "off means off" has to be the author's, not the component's
+       * guess at when the overlay is answering a question. */
+      clearSel: () => this.clearSel(), clearLabel: (s.sel != null ? 'Deselect ' + (s.selKind === 'hand' ? 'hand' : s.selKind === 'dial' ? 'dial' : 'item') : 'Deselect') + ' (Esc)',
+      clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
+      pickGuide: () => this.cycleGuide(),
+      g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, bg: lit ? '#2a2722' : '#1f1d1a', bd: lit ? '#c9a25a' : '#3a352d', fg: lit ? '#f0d79a' : '#8d8472' }; })(),
       frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + F + ' fps)',
       playLabel: s.playing ? 'Pause' : 'Play',
       slowLabel: s.slow ? Math.max(1, Math.round(F / 5)) + ' fps' : F + ' fps',
@@ -1768,7 +1857,7 @@ class Component extends DCLogic {
       resetComps: () => { const P = E.PRESETS[s.dial]; this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
       trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],
       compRows: D.comps.map((c, i) => ({
-        ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c),
+        ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c), anchor: 'comp-' + c.id,
         meta: 'on ' + hostName(c.host) + (c.type === 'opening' && c.show === 'balance' ? ' · follows balance' : ' · ' + Math.round(c.angle) + '° · ' + c.dist + 'px') + ' · ' + (ready ? E.COMP_STYLES[c.type][c.style] || c.style : ''),
         pick: () => this.setState({ sel: c.id }),
         up: (e) => { e.stopPropagation(); this.moveComp(c.id, -1); },
@@ -1784,7 +1873,7 @@ class Component extends DCLogic {
         const hc = hcfg[id] || {}, isC = id.startsWith('centre-'), k = isC ? id.slice(7) : null, shown = isC ? !!ce[k] : hc.on !== false;
         const len = +hc.len || 1, wid = +hc.wid || 1;
         return {
-          label: handLabel(id), meta: 'z ' + (slots.length - i) + (shown ? '' : ' · hidden'), op: shown ? 1 : 0.5,
+          label: handLabel(id), meta: 'z ' + (slots.length - i) + (shown ? '' : ' · hidden'), op: shown ? 1 : 0.5, anchor: 'hand-' + id,
           styleOpts: mark([{ v: 'auto', label: 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
           finOpts: mark([{ v: 'auto', label: 'Default finish' }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
           onStyle: (e) => this.setHand(id, { style: e.target.value }),

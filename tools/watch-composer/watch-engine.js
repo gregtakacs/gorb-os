@@ -1491,13 +1491,13 @@
     steel: ['#202326', '#8b9198', '#f4f6f8', '#6c7178', '#0c0d0e'],
     rose: ['#2a1410', '#a8705e', '#f6cbb6', '#8a5444', '#140806'],
   };
-  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', tachy: 'Tachymetre', none: 'No case (baked into the device)' };
+  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', tachy: 'Tachymetre', none: 'None' };
   /* The radius the case leaves open, in dial px, and the one place it is worked out.
    * A bezel style owns a fixed opening; "none" hands the number to the author, because
    * the metal that would have defined it is already baked into the device and only its
    * inner edge is known. Everything that has to respect the case -- the outer mask, the
-   * glass, the vignette, and how far the whole face scales to stay under it -- reads
-   * this instead of re-deriving it from the style name. */
+   * glass, the vignette -- reads this instead of re-deriving it from the style name.
+   * It does NOT decide how big the face is: see faceScale. */
   const CASE_OPEN_DEFAULT = 221.5, CASE_OPEN_MIN = 90, CASE_OPEN_MAX = 233;
   function caseOpenR(o) {
     const st = o && o.caseStyle, v = o && o.caseOpen;
@@ -1505,6 +1505,21 @@
     if (st !== 'none') return CASE_OPEN_DEFAULT;
     const r = +v;
     return Math.min(CASE_OPEN_MAX, Math.max(CASE_OPEN_MIN, isFinite(r) && r > 0 ? r : CASE_OPEN_DEFAULT));
+  }
+  /* How far the whole face is scaled about the centre, and it is NOT a second reading of
+   * the opening. The exported layers are baked through this number (see the kit's bake()),
+   * so it decides what the device shows, not merely what the composer previews. Under a
+   * composer-drawn case that is the point: the metal covers the rim, so the print and the
+   * hands are eased in to stay visible under it, and each style owns one fixed opening to
+   * do that with. Under "none" the number is the author's, dragged about with a slider --
+   * and a slider that resampled the dial would resample the artwork they uploaded along
+   * with it, so a graphic positioned against the real dial would leave it the moment the
+   * opening moved. There the metal cuts and nothing scales: the mask alone (buildOuter)
+   * stops our content where the hardware begins, exactly as the hardware will. */
+  function faceScale(o) {
+    if (o && o.caseStyle === 'none') return 1;
+    const r = caseOpenR(o);
+    return r < DR ? r / DR : 1;
   }
   const GLASS_STYLES = { domed: 'Domed', flat: 'Flat sapphire', box: 'Box acrylic', none: 'No glass' };
 
@@ -2417,7 +2432,7 @@
      * (docs/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
      * Slot two, the dial face, is in buildDial and costs nothing for the same kind of
      * reason: that canvas is already blended every tick with or without the art. */
-    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, opacity: o.bgOpacity });
+    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2502,7 +2517,7 @@
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: caseOpenR(o) < DR ? caseOpenR(o) / DR : 1, caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
+      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
     const bd = buildDial(design, lay, en, pal, G); F.dial = bd.canvas; F.dialEn = bd.en;
     // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
@@ -2896,5 +2911,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, handSpriteAsset, artBox, caseOpenR, faceScale, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

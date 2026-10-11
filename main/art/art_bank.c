@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "soc/soc_caps.h"   /* SOC_MMU_PAGE_SIZE: what a resident bank costs the DROM window */
 
 static const char *TAG = "art_bank";
 
@@ -76,9 +77,10 @@ esp_err_t art_bank_init(size_t offset, size_t need_bytes)
     s_bytes = need_bytes;
     s_off   = offset;
 
-    ESP_LOGI(TAG, "bank \"%s\" @0x%x, %u B mapped of %u B (theme blob %u B)",
+    ESP_LOGI(TAG, "bank \"%s\" @0x%x, %u B mapped of %u B (theme blob %u B), %u MMU pages",
              s_part->label, (unsigned)(s_part->address + offset), (unsigned)s_bytes,
-             (unsigned)s_part->size, (unsigned)need_bytes);
+             (unsigned)s_part->size, (unsigned)need_bytes,
+             (unsigned)art_bank_mmu_pages());
     return ESP_OK;
 }
 
@@ -109,4 +111,56 @@ size_t art_bank_bytes(void)
 bool art_bank_ready(void)
 {
     return s_map != NULL;
+}
+
+/* ---- residency accounting (P1) --------------------------------------------
+ * The whole app platform rests on one arithmetic fact: every resident bank costs
+ * ceil(bytes / MMU page) pages out of the 256 the S3 gives DROM, so "two flagship
+ * banks plus the app's own .rodata" is decidable on paper before it is decided on
+ * the bench (docs/app-platform-plan.md §3). Until the loader maps secondary banks,
+ * orb_art_reserve() accounts and never maps — that keeps the ABI compiling and
+ * keeps /api/v1/status reporting a real number rather than an aspiration. */
+
+#define ORB_ART_PAGE_SIZE   SOC_MMU_PAGE_SIZE      /* 64 KB on the S3 default */
+#define ORB_ART_PAGE_ALIGN  ORB_ART_PAGE_SIZE      /* what mmap rounds each end to */
+
+static size_t s_reserved_bytes;
+static unsigned s_reserved_banks;
+
+esp_err_t orb_art_reserve(size_t bytes)
+{
+    if (bytes == 0) return ESP_ERR_INVALID_SIZE;
+    /* A ragged request costs a whole page at each end of the mapping, so the
+     * slot layout is cut on 64 KB boundaries and this refuses anything else
+     * instead of quietly eating the slack. */
+    if (bytes % ORB_ART_PAGE_ALIGN) return ESP_ERR_INVALID_SIZE;
+    s_reserved_bytes += bytes;
+    s_reserved_banks++;
+    ESP_LOGI(TAG, "reserve %u B (%u pages), %u reservations / %u B accounted",
+             (unsigned)bytes, (unsigned)art_bank_pages_for(bytes),
+             s_reserved_banks, (unsigned)s_reserved_bytes);
+    return ESP_OK;
+}
+
+size_t art_bank_pages_for(size_t bytes)
+{
+    return (bytes + ORB_ART_PAGE_SIZE - 1) / ORB_ART_PAGE_SIZE;
+}
+
+size_t art_bank_mmu_pages(void)
+{
+    /* What the flash MMU is actually carrying for art right now: the live
+     * mapping plus every accepted reservation, which are the same thing once
+     * the loader starts honouring them. */
+    return art_bank_pages_for(s_bytes) + art_bank_pages_for(s_reserved_bytes);
+}
+
+size_t orb_art_resident_count(void)
+{
+    return (s_map != NULL ? 1u : 0u) + s_reserved_banks;
+}
+
+size_t orb_art_reserved_bytes(void)
+{
+    return s_reserved_bytes;
 }

@@ -67,6 +67,28 @@ size_t art_bank_bytes(void);
 /** True when the bank is mapped and safe to read. */
 bool art_bank_ready(void);
 
+/** ---- residency accounting (P1, docs/app-platform-plan.md §3) ----
+ *
+ * MMU pages a bank of `bytes` costs the flash DROM window: 256 pages exist, and
+ * every resident bank plus the app's own .rodata spends from them.
+ */
+size_t art_bank_pages_for(size_t bytes);
+
+/** Pages the art bank plus all accepted reservations occupy now. */
+size_t art_bank_mmu_pages(void);
+
+/**
+ * Account for a bank the app host intends to keep resident. Accounts only —
+ * mapping secondary banks is P2's job — but it enforces the rule the slot layout
+ * depends on: `bytes` must be a multiple of the 64 KB MMU page, because a ragged
+ * request wastes a whole page at each end of the mapping.
+ */
+esp_err_t orb_art_reserve(size_t bytes);
+
+/** How many banks are resident or reserved, and the bytes reserved so far. */
+size_t orb_art_resident_count(void);
+size_t orb_art_reserved_bytes(void);
+
 /**
  * The `assets` partition itself, found by label — for the erase/write path in
  * orb_theme.c. NULL if the partition is not in the table at all.

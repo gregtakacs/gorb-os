@@ -680,7 +680,12 @@ static void activate(void)
         case PG_TO: {
             if (s_cur >= TO_PRESET_N) { go_back(); repaint(); return; }  /* back */
             job_post(JOB_DIM_TO, NULL, s_cur);
-            repaint();                                  /* shows "working..." */
+            /* Choosing IS leaving: back to DISPLAY, parked on the timeout row,
+             * rather than leaving the picker up showing "working...". The row
+             * repaints from the getter when the worker's write lands, so the
+             * value the user just picked is already right when they arrive. */
+            go_back();
+            repaint();
             return;
         }
 

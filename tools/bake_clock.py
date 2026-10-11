@@ -1827,12 +1827,13 @@ def bake_complications(tdir, blob, verbose=True):
     for comp in comps:
         cid  = comp.get("id") or ""
         ctype = (comp.get("type") or "").strip().lower()
-        if ctype in ("opening", "subdial"):       # the balance aperture / the host
-            continue                              # plate are not window comps
 
         # The angle is whole degrees with 0 at twelve, clockwise; dist is the radius.
         # A comp hosted by another (the moon on its subdial) measures from THAT comp's
-        # resolved centre, which is why centres are stored as they are computed.
+        # resolved centre, which is why centres are stored as they are computed — and
+        # why this runs BEFORE the skip below: a hosted comp cannot see its host's
+        # centre if the subdial/opening never got one (the moon landed on the dial
+        # centre with the real perpetual-calendar kit's art because of exactly that).
         host = comp.get("host", "dial")
         bx, by = centre.get(host, dial_c)
         ang  = float(comp.get("angle", 0))
@@ -1840,6 +1841,8 @@ def bake_complications(tdir, blob, verbose=True):
         px = bx + dist * math.sin(math.radians(ang))
         py = by - dist * math.cos(math.radians(ang))
         centre[cid] = (px, py)
+        if ctype in ("opening", "subdial"):       # the balance aperture / the host
+            continue                              # plate are not window comps
 
         cdir = _comp_dir_for(tdir, cid)
         if cdir is None:

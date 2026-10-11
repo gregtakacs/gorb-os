@@ -142,6 +142,17 @@ def main():
         cx = 466 // 2
         ok(abs(day["x"] + day["w"] // 2 - (cx - 91)) <= 1,
            "270deg window sits left of centre: x=%d" % day["x"])
+        # ---- host-relative placement: the moon rides its SUBDIAL's centre ------
+        # c4 sits at angle 180 dist 102 (six o'clock); the c5 moon at angle 0
+        # dist 2 on host c4 is 2 px ABOVE that centre — 335 - 2 = 333, boxed by
+        # its own h. Before the bake computed centres for skipped kinds the
+        # host fell back to the dial centre and the moon drew over the pinion.
+        moon = by["moon_age"]
+        ok(abs(moon["y"] + moon["h"] // 2 - 333) <= 1,
+           "hosted moon measures from the subdial, not the dial: y=%d h=%d"
+           % (moon["y"], moon["h"]))
+        ok(abs(moon["x"] + moon["w"] // 2 - 233) <= 1,
+           "hosted moon stays on the subdial's vertical axis: x=%d" % moon["x"])
         ok(min(c["off"] for c in comps) == 0, "first tile at blob offset 0")
         ends = [c["off"] + c["frame_bytes"] * c["count"] for c in comps]
         ok(max(ends) == len(blob.buf), "comp tiles fill the payload with no trailing gap")

@@ -175,10 +175,224 @@
     flame: 'M12 1c1.2 4.4 7 6.6 7 13.3A7 7 0 0 1 5 14.3c0-3.3 2.2-5.6 3.4-7.7 0 2.3 1.1 3.4 2.3 3.4C10.7 6.6 9.8 4.3 12 1z', eye: 'M12 4.5C5.5 4.5 1 12 1 12s4.5 7.5 11 7.5S23 12 23 12s-4.5-7.5-11-7.5zm0 3.7a3.8 3.8 0 1 1 0 7.6a3.8 3.8 0 1 1 0-7.6z',
   };
   let FLARE_P = null;
+  // ---------------------------------------------------------------------------
+  // Uploaded art. An asset record holds the BYTES plus everything a re-render
+  // needs, so a design can be rebuilt from a bundle alone and the art never has
+  // to be re-supplied by hand: `dataUrl` is the source of record, `el` is only a
+  // session cache of the decoded image, `sha` is the identity the Design ID and
+  // the kit manifest reference it by. IMAGES stays as the element view the flare
+  // path already reads, so the existing code keeps working.
+  // ---------------------------------------------------------------------------
+  const ASSETS = new Map();
   const IMAGES = {};
+  const INVISIBLE_ALPHA = 6;        // == prep_watch_kit.py INVISIBLE: one rule for "no ink"
+  const MAX_ASSET_BYTES = 1.5e6;    // localStorage is per-origin and small; refuse big files at ingest
+  const ASSET_TOTAL_BYTES = 4e6;    // warn past this much art held in the browser
+  // FNV-1a-32 over the bytes: an identity for dedupe and for spotting a stale
+  // cache, NOT a security claim. The kit manifest asks for a real sha256 too
+  // (sha256Of below) and records honestly when the browser will not give one.
+  const sha32 = (u8) => { let h = 0x811c9dc5; for (let i = 0; i < u8.length; i++) { h ^= u8[i]; h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0; } return ('0000000' + h.toString(16)).slice(-8); };
+  const bytesOf = (dataUrl) => { const b = atob(String(dataUrl).slice(String(dataUrl).indexOf(',') + 1)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+  const textOf = (dataUrl) => { try { return new TextDecoder().decode(bytesOf(dataUrl)); } catch (e) { return ''; } };
+  /* SubtleCrypto is absent outside a secure context, file:// included, so the
+   * 64-hex digest is best effort. null means "the browser would not", which the
+   * manifest records rather than invents. */
+  function sha256Of(u8) {
+    if (!window.crypto || !window.crypto.subtle || !window.crypto.subtle.digest) return Promise.resolve(null);
+    return window.crypto.subtle.digest('SHA-256', u8).then((buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')).catch(() => null);
+  }
+  /* A viewBox-only SVG carries no intrinsic size, so the browser's fallback
+   * (300x150 in Chrome) silently decides how drawImage scales it: the art lands
+   * blurry or gone. Stamp explicit width/height off the viewBox before decode. */
+  const isSvgUrl = (u) => /^data:image\/svg/i.test(String(u));
+  function svgStamp(dataUrl) {
+    const t = textOf(dataUrl);
+    const vb = t.match(/viewBox\s*=\s*["']\s*([-\d.eE+]+)[\s,]+([-\d.eE+]+)[\s,]+([-\d.eE+]+)[\s,]+([-\d.eE+]+)\s*["']/);
+    if (!vb) return dataUrl;
+    const w = +vb[3], h = +vb[4];
+    if (!(w > 0 && h > 0)) return dataUrl;
+    const tag = t.match(/<svg\b[^>]*>/i);
+    if (!tag) return dataUrl;
+    let open = tag[0];
+    open = /\bwidth\s*=/.test(open) ? open.replace(/\bwidth\s*=\s*["'][^"']*["']/i, 'width="' + w + '"') : open.replace(/<svg/i, '<svg width="' + w + '"');
+    open = /\bheight\s*=/.test(open) ? open.replace(/\bheight\s*=\s*["'][^"']*["']/i, 'height="' + h + '"') : open.replace(/<svg/i, '<svg height="' + h + '"');
+    const fixed = t.replace(tag[0], open);
+    return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(fixed)));
+  }
+  function assetPut(rec) {
+    if (!rec || !rec.id || !rec.dataUrl) return null;
+    const a = { id: rec.id, name: rec.name || rec.id, mime: rec.mime || (isSvgUrl(rec.dataUrl) ? 'image/svg+xml' : 'image/png'),
+      kind: rec.kind || (isSvgUrl(rec.dataUrl) ? 'svg' : 'png'), dataUrl: rec.dataUrl, sha: rec.sha || null,
+      w: rec.w || 0, h: rec.h || 0, el: null, missing: false };
+    if (!a.sha) { try { a.sha = sha32(bytesOf(a.dataUrl)); } catch (e) { a.sha = 'unread'; } }
+    ASSETS.set(a.id, a); return a;
+  }
+  /* Decode, and for a bitmap drop texels the eye cannot weigh so they cost the
+   * device nothing and so prep_watch_kit's fold proof sees the same alpha the
+   * bake does. Re-encoding happens once, here -- never per draw. */
+  function assetLoad(a, done) {
+    const im = new Image();
+    im.onload = () => {
+      a.missing = false;
+      if (a.kind === 'svg') { a.el = im; IMAGES[a.id] = im; a.w = a.w || im.naturalWidth || im.width || 0; a.h = a.h || im.naturalHeight || im.height || 0; if (typeof window.__assetDirty === 'function') window.__assetDirty(a.id); done(a); return; }
+      a.w = im.naturalWidth || im.width || 0; a.h = im.naturalHeight || im.height || 0;
+      if (!a.w || !a.h) { a.el = im; IMAGES[a.id] = im; done(a); return; }
+      let cleaned = a.dataUrl;
+      try {
+        const c = cv(a.w, a.h), x = c.getContext('2d');
+        x.drawImage(im, 0, 0, a.w, a.h);
+        const d = x.getImageData(0, 0, a.w, a.h), p = d.data; let faint = 0;
+        for (let i = 3; i < p.length; i += 4) if (p[i] > 0 && p[i] < INVISIBLE_ALPHA) { p[i] = 0; faint++; }
+        if (faint) { x.putImageData(d, 0, 0); cleaned = c.toDataURL('image/png'); }
+      } catch (e) { /* a weird source can taint the canvas: keep the original bytes */ }
+      const finish = (el) => { a.el = el; IMAGES[a.id] = el; if (typeof window.__assetDirty === 'function') window.__assetDirty(a.id); done(a); };
+      if (cleaned === a.dataUrl) { finish(im); return; }
+      a.dataUrl = cleaned; try { a.sha = sha32(bytesOf(cleaned)); } catch (e) { }
+      const im2 = new Image();
+      im2.onload = () => finish(im2); im2.onerror = () => finish(im); im2.src = cleaned;
+    };
+    im.onerror = () => { a.missing = true; a.el = null; IMAGES[a.id] = null; done(a); };
+    im.src = a.dataUrl;
+  }
+  /* The one front door for an upload: read, normalise, decode, report. A failure
+   * carries the measured numbers, because "your art is too small" only helps if
+   * it says how small and how big it needed to be. */
+  function assetFromFile(file) {
+    return new Promise((res) => {
+      if (!file) { res({ error: 'No file chosen' }); return; }
+      const mime = String(file.type || '');
+      const png = mime === 'image/png', svg = mime === 'image/svg+xml';
+      if (!png && !svg) { res({ error: 'Accepted types are image/png and image/svg+xml (got ' + (mime || 'unknown') + ')' }); return; }
+      if (file.size > MAX_ASSET_BYTES) { res({ error: file.name + ' is ' + (file.size / 1024).toFixed(0) + ' KB; the limit is ' + (MAX_ASSET_BYTES / 1e6).toFixed(1) + ' MB' }); return; }
+      const rd = new FileReader();
+      rd.onerror = () => res({ error: 'That file could not be read' });
+      rd.onload = () => {
+        let url = String(rd.result);
+        if (svg) url = svgStamp(url);
+        let sha = 'unread'; try { sha = sha32(bytesOf(url)); } catch (e) { }
+        const stem = (file.name.replace(/\.[a-z0-9]+$/i, '').replace(/[^\w.-]+/g, '-') || 'art').slice(0, 40);
+        const a = assetPut({ id: stem + '-' + sha.slice(0, 8), name: file.name, mime, dataUrl: url, sha });
+        assetLoad(a, () => a.missing ? res({ error: (svg ? 'That SVG could not be decoded' : 'That PNG could not be decoded') + ': ' + file.name }) : res(a));
+      };
+      rd.readAsDataURL(file);
+    });
+  }
+  const assetGet = (id) => (id ? ASSETS.get(id) || null : null);
+  /* Ready means drawable in this session: bytes present AND decoded. A design
+   * restored from a bare Design ID holds references with no bytes, and the UI has
+   * to be able to say so instead of quietly drawing nothing. */
+  const assetReady = (id) => { const a = assetGet(id); return !!(a && a.el && !a.missing); };
+  const assetKnown = (id) => !!assetGet(id);
+  const assetCount = () => ASSETS.size;
+  function assetBytes() { let n = 0; ASSETS.forEach((a) => { n += a.dataUrl.length; }); return n; }
+  /* Refuse a bitmap that would be resampled UP into its box: the device rotates
+   * with antialiasing off (clock_view.c lv_image_set_antialias false), so that
+   * loss is plainly visible and stays the author's call, not a silent default. */
+  /* Refuse a bitmap that would be resampled UP into its box: the device rotates with
+   * antialiasing off (clock_view.c lv_image_set_antialias false), so that loss is plainly
+   * visible and stays the author's call, not a silent default. The scale that matters is
+   * the one the chosen fit will actually apply -- cover fills and so magnifies the short
+   * axis, contain fits and magnifies nothing, stretch ignores the aspect on each axis. */
+  function assetFits(id, w, h, fit) {
+    const a = assetGet(id);
+    if (!a) return { ok: false, why: 'asset ' + id + ' is not in this browser — load its .wckit bundle' };
+    if (a.kind === 'svg') return { ok: true, vector: true, srcW: a.w, srcH: a.h, drawW: w, drawH: h };
+    const iw = a.w || 1, ih = a.h || 1;
+    const f = fit || 'cover';
+    const k = f === 'contain' ? Math.min(w / iw, h / ih) : f === 'stretch' ? Math.max(w / iw, h / ih) : Math.max(w / iw, h / ih);
+    if (k > 1.02) return { ok: false, upscale: true, fit: f, srcW: a.w, srcH: a.h, drawW: w, drawH: h, scale: +k.toFixed(3),
+      why: a.name + ' is ' + a.w + '×' + a.h + ' but ' + f + '-fills a ' + Math.round(w) + '×' + Math.round(h) + ' box at ' + k.toFixed(2) + '× — re-export the art at or above ' + Math.ceil(iw * k) + '×' + Math.ceil(ih * k) };
+    return { ok: true, fit: f, srcW: a.w, srcH: a.h, drawW: w, drawH: h, scale: +k.toFixed(3) };
+  }
+  /* Draw centred on (o.x, o.y) into a w×h box. cover fills the box and lets the
+   * caller clip (the dial already clips to DR); contain letterboxes inside it;
+   * stretch ignores the source aspect. Returns false when the asset cannot draw,
+   * so a caller can flag the gap instead of shipping a silently blank layer. */
+  function drawAsset(ctx, id, o) {
+    const a = assetGet(id);
+    if (!a || !a.el || a.missing) return false;
+    const iw = a.w || 1, ih = a.h || 1, w = o.w, h = o.h;
+    if (!(w > 0 && h > 0)) return false;
+    const fit = o.fit || 'cover';
+    let sw = w, sh = h;
+    if (fit === 'cover') { const k = Math.max(w / iw, h / ih); sw = iw * k; sh = ih * k; }
+    else if (fit === 'contain') { const k = Math.min(w / iw, h / ih); sw = iw * k; sh = ih * k; }
+    ctx.save();
+    if (ctx.imageSmoothingQuality != null) ctx.imageSmoothingQuality = 'high';
+    ctx.translate(o.x, o.y);
+    if (o.rot) ctx.rotate(o.rot);
+    if (o.alpha != null) ctx.globalAlpha *= o.alpha;
+    ctx.drawImage(a.el, -sw / 2, -sh / 2, sw, sh);
+    ctx.restore();
+    return true;
+  }
+  /* Art laid into a static layer, clipped to the dial circle so a square upload cannot
+   * bleed out over the rehaut. Both backdrop slots (plate and dial surface) draw through
+   * here so they behave identically. Returns false when the id has no bytes, letting the
+   * caller report the gap instead of shipping a blank layer. */
+  function artInDial(ctx, id, o) {
+    if (!id || !assetReady(id)) return false;
+    const d = o.size == null ? 2 * DR : +o.size;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(C, C, DR, 0, TAU); ctx.clip();
+    const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: d, h: d,
+      fit: o.fit || 'cover', alpha: o.opacity == null ? 1 : +o.opacity });
+    ctx.restore();
+    return drew;
+  }
+  /* Alpha-weighted centroid of the ink in a canvas: the same "the hub sits on the
+   * pivot" intent bake_clock.py:snap_pivot_to_hub enforces at bake time, applied
+   * here so the authored number starts right instead of being corrected later. */
+  function inkCentroidOf(canvas) {
+    const w = canvas.width, h = canvas.height, x = canvas.getContext('2d');
+    let d; try { d = x.getImageData(0, 0, w, h).data; } catch (e) { return [w / 2, h / 2]; }
+    let sw = 0, sx = 0, sy = 0;
+    for (let i = 3; i < d.length; i += 4) { const a = d[i]; if (!a) continue; const p = (i - 3) / 4, px = p % w, py = (p / w) | 0; sw += a; sx += px * a; sy += py * a; }
+    return sw ? [sx / sw, sy / sw] : [w / 2, h / 2];
+  }
+  /* A hand sprite from art. Everything downstream (drawHands, the shadow
+   * silhouette, the manifest's pivot/centre/size, prep's integral-margin proof)
+   * reads exactly { c, px, py } off handSprite, so an image-backed record takes
+   * the same path with no change anywhere else. (px,py) is the authored pivot in
+   * sprite pixels, or the hub-ink centroid when the author did not set one. */
+  function handSpriteAsset(id, o) {
+    const a = assetGet(id);
+    if (!a || !a.el || a.missing) return null;
+    const maxW = (o && o.maxW) || 466, maxH = (o && o.maxH) || 466;
+    const w = a.w, h = a.h; if (!w || !h) return null;
+    const k = Math.min(1, maxW / w, maxH / h), cw = Math.ceil(w * k), ch = Math.ceil(h * k);
+    const c = cv(cw, ch), x = c.getContext('2d');
+    if (x.imageSmoothingQuality != null) x.imageSmoothingQuality = 'high';
+    x.drawImage(a.el, 0, 0, cw, ch);
+    const given = o && o.pivotX != null && o.pivotY != null;
+    let px = given ? (o.pivotX * k) : NaN, py = given ? (o.pivotY * k) : NaN;
+    if (!isFinite(px) || !isFinite(py) || px < 0 || py < 0 || px > cw || py > ch) { const hub = inkCentroidOf(c); px = hub[0]; py = hub[1]; }
+    return { c, px, py, asset: id, name: a.name, srcW: a.w, srcH: a.h, scale: k, snapped: !given };
+  }
+  /* Serialise for localStorage and .wckit: the references a Design ID carries,
+   * plus the bytes a bundle carries. */
+  function assetDump(withBytes) {
+    const out = [];
+    ASSETS.forEach((a) => { const r = { id: a.id, name: a.name, mime: a.mime, kind: a.kind, sha: a.sha, w: a.w, h: a.h }; if (withBytes) r.dataUrl = a.dataUrl; out.push(r); });
+    return out;
+  }
+  function assetRestore(list) {
+    let added = 0, needBytes = 0;
+    (Array.isArray(list) ? list : []).forEach((r) => {
+      if (!r || !r.id) return;
+      const have = ASSETS.get(r.id);
+      if (have && (have.el || !r.dataUrl)) return;
+      if (!r.dataUrl) { needBytes++; return; }
+      assetLoad(assetPut(r), () => { if (typeof window.__assetDirty === 'function') window.__assetDirty(); }); added++;
+    });
+    return { added, needBytes };
+  }
+  function assetDrop(id) { ASSETS.delete(id); delete IMAGES[id]; }
+  function assetClear() { ASSETS.clear(); for (const k in IMAGES) delete IMAGES[k]; }
+
   const COMP_STYLES = {
     opening: { bevel: 'Bevelled', lip: 'Lit lip (centred)', frame: 'Gilt frame', plain: 'Plain cut' },
-    subdial: { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged' },
+    subdial: { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', transparent: 'Transparent · no plate (art lives in the dial)' },
     window: { frame: 'Gilt frame', bevel: 'Bevelled', plain: 'Plain cut' },
     moon: { classic: 'Navy & gold', silver: 'Silver night', black: 'Black sky', sphere: 'Realistic sphere', graphic: 'Graphic', neon: 'Neon' },
     flare: { print: 'Printed', applied: 'Applied metal', lume: 'Lume', engraved: 'Engraved' },
@@ -371,12 +585,21 @@
       const s = { id: c.id, x: g.x, y: g.y, r, rot: g.rot, scale: c.scale || 'none', style: c.style || 'enamel', color: c.color || 'match', open: c.open > 0 ? r * Math.min(0.85, +c.open) : 0,
         t: { font: c.tfont, orient: c.torient, dir: c.tdir, weight: c.tweight, size: c.tsize, style: c.tstyle, color: c.tcolor }, height: c.height == null ? 1 : +c.height, tex: c.tex, wa: c.weaveAngle, ws: c.weaveScale };
       subs.push(s); subHoles[c.id] = []; subZ[c.id] = 1 + subs.length * 0.01;
-      if (s.open) dialHoles.push({ kind: 'circle', x: s.x, y: s.y, r: s.open + 4, hidden: true });
+      // The open-centre punch exists to expose the movement under a plate that is
+      // otherwise opaque. A transparent subdial lays no plate, so punching would only
+      // erase the author's baked-in art: the layout skips it and exportKit skips the
+      // layer, which is the same "no subdial in this kit" route prep already supports.
+      s.transparent = s.style === 'transparent';
+      if (s.open && !s.transparent) dialHoles.push({ kind: 'circle', x: s.x, y: s.y, r: s.open + 4, hidden: true });
       hits.push({ id: c.id, x: g.x, y: g.y, r: r + 2.5, z: subZ[c.id] });
     });
     list.forEach((c) => {
       if (c.type === 'subdial') return;
       const g = G[c.id], sz = +c.size || 1, onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
+      // A transparent subdial ships no plate of its own, so anything hosted on it has
+      // to be carried by the dial instead -- otherwise it exists only in the pointer
+      // hand's geometry and vanishes from both the preview and the kit.
+      const thost = onSub ? subs.some((q) => q.id === onSub && q.transparent) : false;
       if (c.type === 'flare') {
         const onPlate = c.host === 'plate';
         flares.push(Object.assign({}, c, { x: g.x, y: g.y, rot: g.rot, hx: g.hx, hy: g.hy, host: onPlate ? 'plate' : onSub || 'dial' }));
@@ -392,7 +615,7 @@
           : { kind: 'circle', x: g.x, y: g.y, r: sz };
         hole.style = c.style === 'lip' && !(centred && sh === 'circle') ? 'frame' : c.style || 'bevel';
         if (centred && sh === 'circle' && !onSub) wearIn = Math.max(wearIn, sz);
-        if (onSub) { subHoles[onSub].push(hole); dialHoles.push(Object.assign({}, hole, { hidden: true })); } else dialHoles.push(hole);
+        if (onSub && !thost) { subHoles[onSub].push(hole); dialHoles.push(Object.assign({}, hole, { hidden: true })); } else dialHoles.push(hole);
         const bb = holeBox(hole);
         hits.push({ id: c.id, x: g.x, y: g.y, r: Math.max(bb[2] - bb[0], bb[3] - bb[1]) / 2, z: onSub ? subZ[onSub] + 0.005 : 0 });
         return;
@@ -405,9 +628,9 @@
       // subdial-hosted disc is NOT sealed -- the subdial is opaque already, so its
       // punch stays to show the disc, and the geartrain under it is culled by the
       // subdial itself. Skeleton openings ('opening', below) keep their holes.
-      if (!onSub) hole.seal = true;
+      if (!onSub || thost) hole.seal = true;
       comps.push({ id: c.id, type: c.type === 'moon' ? 'moon' : c.shows || 'date', fmt: c.fmt || 'ddd DD MMM', fcase: c.fcase, style: c.style, disc: c.disc || 'auto', dc: c.discColor, tc: c.textColor, wf: c.wfont, mc: c.moonColor, mc2: c.moonColor2, mbg: c.moonBg, host: onSub || 'dial', hole, k: sz });
-      (onSub ? subHoles[onSub] : dialHoles).push(hole);
+      (onSub && !thost ? subHoles[onSub] : dialHoles).push(hole);
       const b = holeBox(hole);
       hits.push({ id: c.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: onSub ? subZ[onSub] + 0.005 : 0 });
     });
@@ -986,7 +1209,7 @@
     if (pat === 'xarch') { k.lineWidth = bw * 0.85; k.beginPath(); k.arc(C, C, ar, rad(-90 - 44), rad(-90 + 44)); k.stroke(); }
     k.lineWidth = rim * 2;
     lay.dialHoles.forEach((h) => { k.beginPath(); holePath(h)(k); k.stroke(); });
-    lay.subs.forEach((sb) => { k.lineWidth = rim + 3; k.beginPath(); k.arc(sb.x, sb.y, sb.r + rim / 2, 0, TAU); k.stroke(); });
+    lay.subs.forEach((sb) => { if (sb.transparent) return; k.lineWidth = rim + 3; k.beginPath(); k.arc(sb.x, sb.y, sb.r + rim / 2, 0, TAU); k.stroke(); });
     // brushed-in inlay down the middle of each bar
     if (+D.owInlay) {
       const I = cv(S), ix = I.getContext('2d'); ix.strokeStyle = '#fff'; ix.lineCap = 'round'; ix.lineWidth = bw * 0.42;
@@ -1012,6 +1235,13 @@
   function buildDial(D, lay, baseEn, pal, glow, seal) {
     const c = cv(S), ctx = c.getContext('2d'), en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
+    /* Authored art on the dial face: over the surface material, under every mark the
+     * dial prints itself. Everything the user can still add by hand -- chapter print,
+     * numerals, applied markers, the perimeter ring -- is drawn after it, and openwork
+     * and the aperture punches cut through it, so an art dial reads as a printed dial
+     * rather than a picture laid on top. Costs nothing per tick: compose() already
+     * blends this one canvas, so the art only changes pixels in a layer that exists. */
+    artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, opacity: D.sfOpacity });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -1032,7 +1262,10 @@
       finishMask(ctx, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ctx, C, C, DR * 0.9, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
     }
     if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
-    drawFlares(ctx, lay.flares.filter((f) => f.host === 'dial' && f.icon !== 'datetext'), en, pal);
+    // flares hosted on a transparent subdial are carried by the dial, which is the
+    // only shipped plane left at that spot once the plate is dropped
+    const thost = {}; lay.subs.forEach((sb) => { if (sb.transparent) thost[sb.id] = 1; });
+    drawFlares(ctx, lay.flares.filter((f) => (f.host === 'dial' || thost[f.host]) && f.icon !== 'datetext'), en, pal);
     // seal: an opaque date/moon disc covers its aperture, so the shipped dial keeps
     // the surface uncut there. Only genuine openings stay punched -- the seal flag
     // (layout) is set on dial-hosted windows/moons and never on an 'opening'.
@@ -1046,6 +1279,12 @@
       const c = cv(S), ctx = c.getContext('2d');
       const en = surfaceEn(colorEn(baseEn, s.color && s.color !== 'match' ? s.color : D.color), s.style);
       const { x, y, r } = s, k = r / 78.5, holes = lay.subHoles[s.id] || [];
+      // No plate at all: no shadow stack, no gradient band, no surface, no rim, no
+      // weathering, no print. The canvas stays empty and exportKit drops the layer, so
+      // the device pays for the art baked into the dial rather than blending a second
+      // full plane over it. The caller keeps the record for handSlots, which still
+      // mounts the pointer hand on this centre.
+      if (s.transparent) return { id: s.id, canvas: c, en, transparent: true };
       const band = (cx) => { cx.beginPath(); cx.moveTo(x + r + 2.5, y); cx.arc(x, y, r + 2.5, 0, TAU); if (s.open) { cx.moveTo(x + s.open - 2.5, y); cx.arc(x, y, s.open - 2.5, 0, TAU, true); } };
       const ht = s.height, dir = SH ? SH.dir : away(1), dm = SH ? SH.dist : 1, bm = SH ? SH.blur : 1, om = SH ? SH.op : 1;
       if (ht > 0) [[2, 3, 4, 0.8], [8, 13, 20, 0.7], [14, 22, 34, 0.5]].forEach(([ox, oy, b, a]) => {
@@ -1653,14 +1892,19 @@
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const sec = kind === 'second', len = (s.r - 5) * 0.93 * lk, w = (sec ? Math.max(1.8, s.r * 0.026) : Math.max(3, s.r * 0.07)) * wk, fin = handFin(pickF(hc));
       const base = sec ? secT : TURN[kind], turn = s.t && s.t.dir === 'ccw' ? (d) => -base(d) : base;
-      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: Math.max(2.6, w * 1.2), fin };
+      // Uploaded art replaces the drawn hand wholesale. It still answers { c, px, py },
+      // so drawHands, the shadow silhouette and the manifest record need no branch --
+      // and the metal hub cap steps aside because the art carries its own.
+      const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY }) : null;
+      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null };
     });
     const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
     ['hour', 'minute', 'second'].forEach((k) => {
       const id = 'centre-' + k, hc = cfg[id] || {}; if (!ce[k]) return;
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
-      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: handSprite(pickS(hc), k === 'second' ? 'second' : k, Math.min(216, R * l * lk), w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk)), fin };
+      const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY }) : null;
+      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null };
     });
     // The four calendar pointers share the centre arbour. Each reaches the ring that feeds
     // it: with a perimeter printed its tip lands on the ticks, without one it stops short
@@ -2051,6 +2295,13 @@
     o = _.configure(Object.assign(resolve(o), { trainRot: tr - lr }));
     const gold = o.finish === 'brass' ? _.FIN.copper : _.FIN.brass, pal = _.FIN[o.finish] || _.FIN.brass, G = +o.glow || 1, bp = T.bridgePal === 'black' ? BLACK : T.bridgePal === 'rhodium' ? RHOD : _.STEEL;
     const plate = cv(S); drawPlate(plate.getContext('2d'), o.plate && o.plate !== 'train' ? o.plate : T.plate, G, lr, o);
+    /* Backdrop slot one, the plate: under the geartrain, so the art reads through an
+     * openwork dial and the apertures. Free because the plate is one of the two static
+     * base frames -- the art is a one-time store into the bank, not a per-tick blend
+     * (docs/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
+     * Slot two, the dial face, is in buildDial and costs nothing for the same kind of
+     * reason: that canvas is already blended every tick with or without the art. */
+    artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, opacity: o.bgOpacity });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2146,7 +2397,11 @@
     F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true).canvas : bd.canvas;
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
-    const dfHost = (f) => (f.host === 'dial' ? { x: C, y: C, r: DR, en: F.dialEn } : (() => { const s = lay.subs.find((q) => q.id === f.host), l = F.subLayers.find((q) => q.id === f.host); return s ? { x: s.x, y: s.y, r: s.r, en: (l && l.en) || F.dialEn } : { x: C, y: C, r: DR, en: F.dialEn }; })());
+    // a transparent subdial contributes geometry only: its centre and radius still place
+    // the flare, but the ink and its colour are the dial's, because the dial is the plane
+    // the art actually prints on
+    const hostEn = (id, alt) => { const l = id ? F.subLayers.find((q) => q.id === id) : null; return !l || l.transparent ? F.dialEn : (l.en || alt || F.dialEn); };
+    const dfHost = (f) => (f.host === 'dial' ? { x: C, y: C, r: DR, en: F.dialEn } : (() => { const s = lay.subs.find((q) => q.id === f.host); return s ? { x: s.x, y: s.y, r: s.r, en: hostEn(f.host, en) } : { x: C, y: C, r: DR, en: F.dialEn }; })());
     const paintDF = (x, f, date, noClip) => { const h = dfHost(f); setFace(design.font || 'auto'); x.save(); x.beginPath(); if (noClip) x.rect(0, 0, S, S); else x.arc(h.x, h.y, h.r, 0, TAU); x.clip(); drawFlares(x, [f], h.en, pal, date); x.restore(); setFace(fontKey); };
     let dk = null, dv = null;
     F.dateFlares = (date) => {
@@ -2231,7 +2486,12 @@
         //                   and travels with the shade, which is why it is clipped to the path and
         //                   not to the axis-aligned box.
         const hp = holePath(h);
-        const hostL = c.host === 'dial' ? F.dial : (F.subLayers.find((q) => q.id === c.host) || {}).canvas;
+        // The host plane that actually carries the frame ring at that spot. A
+        // transparent subdial lays no plate, so the dial is the layer under the aperture
+        // and the shade has to be sampled from it -- sampling the empty sub canvas would
+        // ship a window with no frame and no inner shade at all.
+        const hostSub = c.host === 'dial' ? null : (F.subLayers.find((q) => q.id === c.host) || null);
+        const hostL = hostSub && !hostSub.transparent ? hostSub.canvas : F.dial;
         const hostCut = (keepInside) => {
           if (!hostL) return cv(1);
           const o = cv(S), x = o.getContext('2d');
@@ -2429,6 +2689,29 @@
       if (d.perimRot != null && perimRotDeg(d) === 0) delete d.perimRot;
     }
     if (d.gmtOffset != null && (Math.round(+d.gmtOffset || 0) === 0 || !(d.centre && d.centre.gmt))) delete d.gmtOffset;
+    /* Uploaded art is REFERENCED here, never embedded: a design carries the asset id
+     * (and the placed geometry), the bytes live in the browser's asset store, and a
+     * .wckit bundle is what ships them. Every default is deleted on purpose -- a
+     * design with no art must serialise to exactly the JSON it produced before this
+     * feature existed, or every design id already in the field would change. */
+    const blank = (v) => v == null || v === '';
+    const stripArt = (p, defSize) => {
+      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity'];
+      if (blank(d[p + 'Art'])) { keys.forEach((k) => delete d[k]); return; }
+      if (!d[p + 'Fit'] || d[p + 'Fit'] === 'cover') delete d[p + 'Fit'];
+      [p + 'X', p + 'Y'].forEach((k) => { if (+d[k] === 0 || blank(d[k])) delete d[k]; });
+      if (blank(d[p + 'Size']) || +d[p + 'Size'] === defSize) delete d[p + 'Size'];
+      if (blank(d[p + 'Opacity']) || +d[p + 'Opacity'] === 1) delete d[p + 'Opacity'];
+    };
+    stripArt('bg', 442);
+    stripArt('sf', 442);
+    if (d.hands) Object.keys(d.hands).forEach((k) => {
+      const h = d.hands[k]; if (!h) return;
+      // an art-backed hand keeps its reference plus the authored pivot, in source
+      // pixels, so a re-render can rebuild the sprite without the file
+      if (blank(h.art)) { ['art', 'pivotX', 'pivotY'].forEach((q) => delete h[q]); return; }
+      if (+h.pivotX === 0 && +h.pivotY === 0) { delete h.pivotX; delete h.pivotY; }
+    });
     if (!d.handLume || d.handLume === 'none' || d.handLume === 'auto') delete d.handLume;
     if (!d.handShade || d.handShade === '3d') delete d.handShade;
     if (d.surface !== 'carbon') delete d.weaveAngle; else if (d.weaveAngle != null && +d.weaveAngle === 0) delete d.weaveAngle;
@@ -2466,5 +2749,9 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    // uploaded art: the registry the composer persists, and the two draw helpers
+    // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
+    assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
+    drawAsset, artInDial, handSpriteAsset, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

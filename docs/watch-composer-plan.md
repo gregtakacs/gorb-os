@@ -123,6 +123,51 @@ A well-built generator that already embeds our hardest geometry lessons and expo
 exact art knobs the 8 fps plan needs, held back today by no-offline, no-persistence, a
 non-blocking gate, and no visibility into the device's blend budget.
 
+## Custom assets — implemented 2026-10-11
+
+Two dial backdrops (behind the geartrain, and on the dial face under the print), hand
+sprites and transparent sub-dials now take uploaded art, with persistence and a bundle
+format. This supersedes the P4/P5 lines above for those slots.
+
+| Slot | Where | What ships |
+|---|---|---|
+| Plate backdrop | Dial tab → Background art · behind the geartrain | drawn at the plate slot inside `movement()`, so it is baked into the base frames |
+| Dial surface art | Dial tab → Dial surface art · on the dial, under the print | drawn into the dial canvas inside `buildDial()`, over the surface material and under the chapter print, so it ships inside `layers/dial.png` |
+| Hand sprite | Hands tab, one per hand row | replaces the procedural `{c, px, py}` sprite; the hub cap steps aside |
+| Sub-dial plate | Style → Transparent · no plate | no layer, no drawOrder entry; its comps, holes and flares are carried by the dial |
+
+Three decisions carry the design:
+
+**Placement is the fps budget — but only relative to a layer that is already drawn.** An
+opaque full-size plane blended as an EXTRA layer costs 217,156 blends at the measured
+447 ns (`docs/fps-budget-findings-2026-10-10.md`) — 97 ms of a 125 ms tick. Both backdrop
+slots avoid that by changing pixels in a canvas the device already draws either way: the
+plate is stored into the bank once at 76 ns/px, and the dial is the one static1 layer
+`compose()` blends every frame with or without art in it. Neither slot adds a blend, so
+art on the dial face is not more expensive than art behind the geartrain. An earlier note
+here claimed only the plate slot was affordable; that priced a second plane and was wrong.
+What stays mandatory is that art never becomes its own layer. `assetFits()` also refuses a
+bitmap its chosen fit would resample UP, because `clock_view.c` rotates hand sprites with
+`lv_image_set_antialias(false)`.
+
+**A design references art; a bundle carries it.** `canonDesign` stores the asset id and
+the placed geometry and deletes every default, so a design with no art serializes to
+exactly the JSON it produced before this feature and no Design ID in the field changes.
+`.wckit` (named, versioned JSON: design + settings + base64 assets) is the transfer
+format. The layer kit also writes `sources/` and lists each asset in
+`manifest.json → assets[]` with its slot, source size, drawn size, byte count and a
+SHA-256 when the browser's Web Crypto offers one — it does not under `file://`, and the
+manifest records that instead of inventing a digest.
+
+**No on-the-fly vectorization.** Tracing in the browser would break prep's
+integral-margin and reachability proofs and make the Design ID non-reproducible. SVG is
+accepted and rasterized against its stamped `viewBox`; a viewBox-only SVG otherwise
+decodes at Chrome's 300x150 fallback and arrives blurry or blank.
+
+`prep_watch_kit.py` now warns instead of exiting when `layers/outer.png` has no opaque
+pixel: that kit has no bezel to fold, so it bakes live, which is what the old message
+promised and the old code refused to do.
+
 ## Verification limits
 
 No browser on this box: this is a full code read plus a live schema match against

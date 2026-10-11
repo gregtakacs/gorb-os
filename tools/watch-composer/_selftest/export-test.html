@@ -282,6 +282,162 @@
   // Read the shipped kit back and check what the device is TOLD about these hands: the
   // angle formula each one needs, deviceReady:false so no one mistakes them for wired-up
   // movers, their PNGs and shadows present, and the printed ring's split geometry.
+  /* Custom art. Each assertion here pins something that otherwise fails silently: a
+   * transparent subdial that still ships its empty plate, a backdrop that never reaches
+   * the base frames, an art-backed hand whose manifest record lost its pivot. */
+  function artKitCheck(E, say, done) {
+    const it = new (window.COMP_CLASS(DCLogic))({});
+    it.ready = true; it.rendering = false;
+    it.state.dial = 'art'; it.state.timeMode = 'pose'; it.state.frame = 0; it.state.hidden = {};
+    it.state.tab = 'export'; it.state.playing = false; it.state.designs = {}; it.faces = {};
+    const d = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+    d.comps = (d.comps || []).filter((c) => c.type !== 'subdial');
+    d.comps.push({ id: 'ct1', type: 'subdial', host: 'dial', angle: 30, dist: 100, rot: 0, size: 58, scale: 'seconds', style: 'transparent', color: 'match' });
+    d.comps.push({ id: 'wt1', type: 'window', host: 'ct1', angle: 30, dist: 100, rot: 0, size: 1, shows: 'date', style: 'frame', disc: 'auto' });
+    d.centre = { hour: 1, minute: 1 };
+    const files = [];
+    const fail = (m) => done(new Error('art kit: ' + m)), pass = () => done();
+    it.png = async (c) => bytesOf(c);
+    it.zip = (f) => { files.push.apply(files, f); return new Blob([]); };
+    it.download = () => { };
+    it.budget = () => ({ fps: 8 });
+    // an 8x8 solid PNG, and an 8x8 whose ONLY ink sits at alpha 3 -- below the threshold
+    // prep_watch_kit calls no ink -- so the ingest rule is exercised on real bytes
+    const mkSolid = () => { const c = document.createElement('canvas'); c.width = c.height = 8; const x = c.getContext('2d'); x.fillStyle = 'rgba(200,40,40,1)'; x.fillRect(0, 0, 8, 8); return c.toDataURL('image/png'); };
+    const mkFaint = () => { const c = document.createElement('canvas'); c.width = c.height = 8; const x = c.getContext('2d'); const im = x.createImageData(8, 8); for (let i = 3; i < im.data.length; i += 4) { im.data[i] = 3; im.data[i - 3] = 200; } x.putImageData(im, 0, 0); return c.toDataURL('image/png'); };
+    // a viewBox-only SVG has no intrinsic size: without the stamp Chrome decodes it 300x150
+    const svgSrc = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect width="200" height="100" fill="#3a6"/></svg>');
+    const mkFile = (name, mime, dataUrl) => { const bin = atob(dataUrl.split(',')[1]), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new File([u], name, { type: mime }); };
+    const solid = mkFile('solid.png', 'image/png', mkSolid());
+    const faint = mkFile('faint.png', 'image/png', mkFaint());
+    const svg = mkFile('viewbox-only.svg', 'image/svg+xml', svgSrc);
+    Promise.all([E.assetFromFile(solid), E.assetFromFile(faint), E.assetFromFile(svg)]).then((rs) => {
+      const [a, b, c] = rs;
+      if (a.error) return fail('solid png refused: ' + a.error);
+      if (c.error) return fail('viewBox-only SVG refused: ' + c.error);
+      if (a.w !== 8 || a.h !== 8) return fail('natural size lost: ' + a.w + 'x' + a.h);
+      if (c.kind !== 'svg' || c.w !== 200 || c.h !== 100) return fail('viewBox not stamped onto the SVG: ' + c.kind + ' ' + c.w + 'x' + c.h);
+      if (!/viewBox/.test(atob(c.dataUrl.split(',')[1]))) return fail('the stamped svg lost its viewBox');
+      const f1 = E.assetFits(a.id, 40, 40, 'contain'), f2 = E.assetFits(a.id, 40, 40, 'cover');
+      if (!f1.ok) return fail('a contain into a bigger box was refused: ' + f1.why);
+      if (f2.ok || !(f2.scale > 4)) return fail('a 5x cover upsample was not refused: ' + JSON.stringify(f2));
+      if (E.assetFits('nope-not-here', 10, 10).ok) return fail('a dangling reference reported as drawable');
+      const chk = new Image();
+      chk.onload = () => {
+        const cc = document.createElement('canvas'); cc.width = cc.height = 8; const x = cc.getContext('2d');
+        x.drawImage(chk, 0, 0); const d8 = x.getImageData(0, 0, 8, 8).data;
+        let left = 0; for (let i = 3; i < d8.length; i += 4) if (d8[i] > 0 && d8[i] < E.INVISIBLE_ALPHA) left++;
+        if (left) return fail(b.name + ' kept ' + left + ' texels below alpha ' + E.INVISIBLE_ALPHA);
+        if (b.dataUrl === faint._url) return fail('sub-threshold ink was left in the stored bytes');
+        artKitGo(E, say, it, d, a, c, files, fail, pass);
+      };
+      chk.onerror = () => fail('the cleaned png cannot be re-read');
+      chk.src = b.dataUrl;
+    }, (e) => fail('ingest threw ' + (e && e.message)));
+  }
+  /* The shipped half: does the kit still hang together once art is in it. */
+  function artKitGo(E, say, it, d, a, c, files, fail, pass) {
+    d.bgArt = a.id; d.bgSize = 442;
+    d.sfArt = a.id; d.sfSize = 442;   // same bytes in both slots: shares one stored asset
+    d.hands = { 'centre-hour': { art: a.id, pivotX: 4, pivotY: 4 }, ct1: { art: a.id } };
+    it.state.designs = { art: E.canonDesign(d) };
+    it.faces = {};
+    // the backdrop must be IN the plate pixels, not merely referenced by them
+    const withArt = E.movement(it.opts()).plate, x1 = withArt.getContext('2d');
+    const bareOpts = Object.assign({}, it.opts()); delete bareOpts.bgArt;
+    const without = E.movement(bareOpts).plate, x2 = without.getContext('2d');
+    const p1 = x1.getImageData(233, 233, 1, 1).data, p2 = x2.getImageData(233, 233, 1, 1).data;
+    if (p1[0] === p2[0] && p1[1] === p2[1] && p1[2] === p2[2]) return fail('the plate is identical with and without the backdrop, so it was never drawn');
+    it.base = E.movement(it.opts());
+    it.gt = Array.from({ length: it.B }, (_, f) => it.base.render(f).gt);
+    const fc = it.face();
+    if (!fc.subLayers.some((l) => l.transparent)) return fail('face() lost the transparent flag on the subdial layer');
+    if (fc.handOrder.indexOf('ct1') < 0) return fail('dropping the plate dropped the hand that reads it too');
+    const artHand = fc.hands.filter((h) => h.id === 'ct1')[0];
+    if (!artHand || !artHand.art) return fail('the subdial pointer is not art-backed');
+    if (artHand.cap !== 0) return fail('a metal hub cap is still laid over authored art: cap=' + artHand.cap);
+    /* ---- slot two: the dial face. Three properties have to hold and none is provable
+     * from one pixel: the art is IN the dial pixels, it is UNDER the chapter print (the
+     * user still sets numerals and markers themselves), and it is CUT where the dial is
+     * cut. The ink mask is measured, not assumed -- it is the set of pixels the print
+     * contributes, found by differencing the same dial printed against the same dial
+     * blanked. If the art were laid over the print, that whole set would move. */
+    const S4 = 466, C4 = 233, DISC = 215;
+    const inDisc = (() => { const m = new Uint8Array(S4 * S4); for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) { const dx = x - C4, dy = y - C4; m[y * S4 + x] = (dx * dx + dy * dy <= DISC * DISC) ? 1 : 0; } return m; })();
+    const pxC = (fc) => fc.dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+    const dif = (A, B, i) => Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]);
+    const diffPx = (A, B) => { let n = 0; for (let i = 0; i < A.length; i += 4) if (dif(A, B, i) > 24) n++; return n; };
+    const faceOf = (patch) => {
+      const dd = JSON.parse(JSON.stringify(d));
+      Object.keys(patch || {}).forEach((k) => { dd[k] = patch[k]; });
+      it.state.designs = { art: E.canonDesign(dd) }; it.faces = {};
+      return it.face();
+    };
+    // the test art is solid (200,40,40), so "is this the art showing" is a colour test
+    const reds = (X) => { let n = 0; for (let p = 0, i = 0; i < X.length; i += 4, p++) if (inDisc[p] && X[i + 3] > 200 && X[i] > 150 && X[i + 1] < 90 && X[i + 2] < 90) n++; return n; };
+    const BLANK = { print: 'none', numerals: 'none' };
+    const barePrinted = pxC(faceOf({ sfArt: null })), barePlain = pxC(faceOf(Object.assign({ sfArt: null }, BLANK)));
+    const mask = new Uint8Array(S4 * S4); let inkN = 0;
+    for (let p = 0, i = 0; i < barePrinted.length; i += 4, p++) if (inDisc[p] && dif(barePrinted, barePlain, i) > 24) { mask[p] = 1; inkN++; }
+    if (inkN < 2000) return fail('the chapter print contributes only ' + inkN + ' px, so the layering cannot be tested');
+    const artPrinted = pxC(faceOf({ sfArt: a.id, sfSize: 442, sfFit: 'cover' }));
+    const artPlain = pxC(faceOf(Object.assign({ sfArt: a.id, sfSize: 442, sfFit: 'cover' }, BLANK)));
+    const moved = diffPx(barePlain, artPlain);
+    if (moved < 30000) return fail('the dial barely changed when the surface art was set: ' + moved + ' px, so it is not drawn into the dial');
+    const redPlain = reds(artPlain);
+    if (redPlain < 40000) return fail('the surface art paints only ' + redPlain + ' of the ~145k dial px in its own colour: it is not covering the face');
+    let kept = 0; for (let p = 0, i = 0; i < barePrinted.length; i += 4, p++) if (mask[p] && dif(barePrinted, artPrinted, i) <= 24) kept++;
+    if (kept < inkN * 0.95) return fail('the chapter print does not survive the dial art: ' + (inkN - kept) + ' of ' + inkN + ' ink px moved, so the art is laid OVER the print');
+    const redOw = reds(pxC(faceOf(Object.assign({ sfArt: a.id, sfSize: 442, sfFit: 'cover', openwork: 'cross', owBar: 17, owRing: 178, owHub: 24, owRim: 7 }, BLANK))));
+    if (redOw > redPlain * 0.9) return fail('openwork left the art in the cut-away: ' + redOw + ' art px on an openworked dial vs ' + redPlain + ' solid');
+    say('  dial surface art: ' + redPlain + ' art px on the face, print ink held at ' + Math.round(kept / inkN * 100) + '% of ' + inkN + ', openwork cut it to ' + redOw);
+    it.state.designs = { art: E.canonDesign(d) }; it.faces = {};
+    it.exportKit().then(() => {
+      try {
+        const man = JSON.parse(new TextDecoder().decode(files.filter((f) => f.name === 'manifest.json')[0].data));
+        if (man.drawOrder.some((o) => o.layer === 'subdial')) return fail('a transparent subdial still appears in drawOrder');
+        if (files.some((f) => /^layers\/subdial_/.test(f.name))) return fail('an empty plate shipped as layers/subdial_*.png');
+        if (!man.transparentSubdials || man.transparentSubdials.indexOf('ct1') < 0) return fail('the manifest does not say the subdial was transparent');
+        const src = files.filter((f) => /^sources\//.test(f.name));
+        if (!src.length) return fail('the kit carries no sources/ payload');
+        if (!/^data:image\/(png|svg\+xml);base64,/.test(new TextDecoder().decode(src[0].data))) return fail('sources/ is not the base64 source');
+        if (!man.assets || man.assets.length < 2) return fail('manifest.assets[] is missing or short: ' + JSON.stringify(man.assets && man.assets.length));
+        const bg = man.assets.filter((x) => x.id === a.id)[0];
+        if (!bg || bg.usedBy.indexOf('plate backdrop') < 0 || bg.usedBy.indexOf('dial surface') < 0) return fail('an art slot is not attributed to itself: ' + JSON.stringify(bg && bg.usedBy));
+        if (!man.surfaceArt || man.surfaceArt.asset !== a.id) return fail('the manifest does not say where the dial-surface art was baked');
+        if (!/layers\/dial\.png/.test(man.surfaceArt.bakedInto)) return fail('surface art claims to ship anywhere but inside the dial sprite: ' + man.surfaceArt.bakedInto);
+        if (man.backgroundArt && man.backgroundArt.bakedInto === man.surfaceArt.bakedInto) return fail('both backdrop slots claim the same plane');
+        if (!bg.file || !files.some((f) => f.name === bg.file)) return fail('assets[] names a file the zip lacks: ' + bg.file);
+        if (bg.placed !== true || bg.naturalSize[0] !== 8) return fail('assets[] lost the measured source: ' + JSON.stringify(bg));
+        if (!/^([0-9a-f]{64})?$/.test(bg.sha256 || '')) return fail('sha256 is neither a hex digest nor absent: ' + bg.sha256);
+        if (!man.backgroundArt || man.backgroundArt.asset !== a.id) return fail('the manifest does not say where the backdrop was baked');
+        const hh = man.hands.filter((h) => h.mount === 'ct1')[0];
+        if (!hh) return fail('the transparent subdial lost its hand from the manifest');
+        if (!Array.isArray(hh.pivot) || !isFinite(hh.pivot[0]) || !isFinite(hh.pivot[1])) return fail('the art hand has no usable pivot: ' + JSON.stringify(hh.pivot));
+        if (hh.cap !== 0) return fail('the art hand still carries a hub cap radius');
+        if (!man.assets.some((x) => x.usedBy.join().indexOf('hand ct1') >= 0)) return fail('the art-backed hand is not in manifest.assets[]');
+        let cap = null;
+        it.download = (bl, nm) => { cap = { bl, nm }; };
+        it.exportBundle().then(() => {
+          if (!cap || !/\.wckit$/.test(cap.nm)) return fail('exportBundle produced no .wckit');
+          cap.bl.text().then((t) => {
+            try {
+              const o = JSON.parse(t);
+              if (o.format !== 'wckit' || o.version !== 1) return fail('the bundle is not a named v1 wckit');
+              if (!o.assets.length || !o.assets.every((x) => /^data:image\//.test(x.dataUrl || ''))) return fail('a bundle asset has no bytes');
+              if (o.design.bgArt !== a.id) return fail('the bundle lost the plate-backdrop reference');
+              if (o.design.sfArt !== a.id) return fail('the bundle lost the dial-surface reference');
+              if (new Set(o.assets.map((x) => x.id)).size !== o.assets.length) return fail('the bundle lists an asset twice, or double-counted the one image filling both slots');
+              if (!o.assets.every((x) => (x.usedBy || []).length >= 1)) return fail('a bundled asset names no slot that uses it');
+              say('  custom art: backdrop in the plate pixels, ' + src.length + ' sources, assets[]=' + man.assets.length +
+                ', svg stamped ' + c.w + 'x' + c.h + ', faint px killed, hand ' + hh.mount + ' pivot ' + hh.pivot.join(','));
+              pass();
+            } catch (e) { fail('bundle JSON: ' + e.message); }
+          }, (e) => fail('bundle unreadable: ' + e.message));
+        }, (e) => fail('exportBundle threw ' + (e && e.message)));
+      } catch (e) { fail(e.message); }
+    }, (e) => fail('exportKit threw ' + (e && e.message)));
+  }
   function calKitCheck(E, inst, DCLogic, bytesOf, say, calD, done) {
     const it = new (window.COMP_CLASS(DCLogic))({});
     it.ready = true; it.rendering = false;
@@ -562,7 +718,14 @@
       if (diffPoseBox > area * 0.01) throw new Error('preview.png is not pixel-identical to the posed render (' + diffPoseBox + ' px)');
       if (Math.abs(ph - E.PREVIEW_MOON) > 0.12 && diffLiveBox < area * 0.02 && diff5 < (b5[2] - b5[0]) * (b5[3] - b5[1]) * 0.02) throw new Error('preview moon still tracks the live date');
         const calD = calEngineCheck(E, inst, say);
-        calKitCheck(E, inst, DCLogic, bytesOf, say, calD, (err) => {
+        // custom art first: it builds its own instance, so it cannot disturb the others,
+        // and a broken art path is the more likely new failure of this change set
+        artKitCheck(E, say, (err) => {
+          if (err) {
+            say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
+          calKitCheck(E, inst, DCLogic, bytesOf, say, calD, (err) => {
           if (err) {
             say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
             document.title = 'FAIL'; return;
@@ -574,6 +737,7 @@
             document.title = 'FAIL'; return;
           }
           say('RESULT: PASS'); document.title = 'PASS';
+        });
         });
       } catch (e) {
         say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'));

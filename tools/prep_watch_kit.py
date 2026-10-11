@@ -331,15 +331,24 @@ def main():
     outer = Image.open(f"{K}/layers/outer.png").convert("RGBA")
     oa = _al(outer)
     rim_cand = oa >= RIM_OPAQUE
-    if not rim_cand.any():
-        sys.exit("outer.png has no opaque pixels: nothing to fold; bake it live")
+    # An art kit may legitimately have no bezel at all: a custom case ring drawn
+    # translucent, or a designer who wants the frame live and blending every tick.
+    # That is the "bake it live" path the old message promised, so it has to RUN
+    # rather than exit -- fold and live_rim just come out empty, and every check
+    # below stays true about nothing. What must NOT happen is a crash in the rim
+    # radius print, which is why rim_rmin stays None instead of a min() of an
+    # empty selection.
+    no_rim = not rim_cand.any()
+    if no_rim:
+        print("WARNING outer.png has no pixel at a>={}: nothing to fold, the whole "
+              "case stays a live layer (its px are charged per tick)".format(RIM_OPAQUE))
     outer_arr = np.array(outer)
     tint_arr = outer_arr.copy(); tint_arr[rim_cand, 3] = 0
     tint = Image.fromarray(tint_arr)          # outer's sub-opaque half: stays live
     # How far in the bezel reaches, reported with the proof so a reader can see
     # how much clearance the movers had.
     Y, X = np.mgrid[0:SCREEN, 0:SCREEN]
-    rim_rmin = float(np.hypot(X - CX, Y - CY)[rim_cand].min())
+    rim_rmin = None if no_rim else float(np.hypot(X - CX, Y - CY)[rim_cand].min())
 
     # ---- tourbillon bank: copied into outdir, because the bake needs it --
     # prep wipes /tmp/_kit on the way out, so leaving the operator to point
@@ -535,7 +544,7 @@ def main():
               int(live_rim.sum())))
     for nm in sorted(swept_r, key=lambda n: -swept_r[n]):
         print("   mover {:14s} sweeps out to r={:6.1f}  (bezel ink starts at "
-              "r={:.1f})".format(nm, swept_r[nm], rim_rmin))
+              "{})".format(nm, swept_r[nm], "r=None, nothing is folded" if rim_rmin is None else "r={:.1f}".format(rim_rmin)))
 
 
     # ---- dial (+ merged subdials), minus the ink the fold would bury ------

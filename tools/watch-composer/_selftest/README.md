@@ -207,6 +207,66 @@ plates: caps and slice from the engine crop (shade included — nothing is drawn
 over them), and the glyph band from the same crop with the host layer subtracted
 inside the hole path, so a tile's ink is composited over the bare disc.
 
+## Custom art: what the five slots must keep doing
+
+Uploaded art reaches the kit through five places, and each has a failure mode that is
+invisible on screen:
+
+| Slot | Rule that must hold | Where |
+|---|---|---|
+| Plate backdrop | drawn at the plate slot, so it is baked into the base frames and costs nothing per tick | `watch-engine.js` `movement()` |
+| Dial surface art | drawn into the dial canvas AFTER the surface and BEFORE the chapter print, so the user's numerals, markers and ring still paint over it and openwork still cuts it out; ships inside `layers/dial.png`, never as its own layer | `buildDial()`, `artInDial()` |
+| Hand sprite | answers the procedural contract `{c, px, py}` and suppresses the metal hub cap | `handSpriteAsset()`, `buildHands()` |
+| Transparent sub-dial | ships no layer and no `drawOrder` entry; its holes, flares and hosted comps move to the dial | `layout()`, `buildSubdials()`, `exportKit()` |
+| Any asset | the design stores a reference; only the `.wckit` and `sources/` carry bytes | `canonDesign()`, `kitAssets()`, `exportBundle()` |
+
+`export-test.html` asserts these on a live kit build (`artKitCheck`): that the plate
+pixels change when a backdrop is placed, that the dial pixels change for the surface art,
+that the print ink measured from the same dial with the print blanked stays put under the
+surface art (art laid OVER the print moves that whole set), that `cross` openwork removes
+the surface art from the cut-away rather than leaving it in the hole, that a
+`viewBox`-only SVG is stamped to 200x100 rather than decoded at Chrome's 300x150 fallback,
+that texels below alpha 6 are gone from the stored bytes, that an upsample is refused with
+its scale named, that the transparent plate is absent from both `layers/` and `drawOrder`,
+that the manifest names the plane each backdrop was baked into, and that the `.wckit`
+round-trips the bytes into a browser that never held them.
+
+The headless `headless-engine.test.js` proves the same ordering without pixels: the canvas
+stub logs its op sequence, and the art's `drawImage` must be indexed before the first
+numeral `fillText` on the dial canvas.
+
+## Headless suites (no browser)
+
+`headless-test.js` runs the decisions that a pixel diff cannot see, against stubbed
+canvas/DOM — what a design serializes, what a kit ships, what the control row offers,
+and that nothing throws when an asset reference dangles:
+
+```sh
+python3 -m pip install --user --break-system-packages nodeenv \
+  && python3 -m nodeenv --node=lts /tmp/nodeenv
+/tmp/nodeenv/bin/node headless-test.js          # or one suite: ... headless-test.js ui
+```
+
+| File | Checks |
+|---|---|
+| `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate, sprite pivot scaling, centroid maths |
+| `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip, loader refusals |
+| `headless-ui.test.js` | the control row really offers each art field, prices the placement, and reports missing bytes |
+| `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
+
+These are stubs, not a renderer — gradients, shadows and text metrics are no-ops. Pixel
+truth is still `export-test.html` under Chrome. This box has no browser, so deploy it to
+the Windows side and open it there:
+
+```sh
+python3 ../deploy_test_folder.py     # -> /mnt/c/Users/greg/Downloads/test, prints both file:// URLs
+```
+
+`make_art_kit.py` turns a real kit zip into a custom-art kit (transparent sub-dial,
+art-backed hand, translucent case) so `prep_watch_kit.py` and `bake_clock.py` can be run
+end to end offline. Run the bake from outside the repo root: it also writes
+`assets/clock_assets.h` into its cwd, and that file is tracked here.
+
 ## Regression guards
 
 The width assertion is the guard for the bug where `manifest.json` declared a

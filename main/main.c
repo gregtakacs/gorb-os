@@ -26,6 +26,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "art_bank.h"
 
 static const char *TAG = "main";
 
@@ -76,6 +77,14 @@ void app_main(void)
     if (theme_err != ESP_OK)
         ESP_LOGE(TAG, "theme bring-up degraded (%s) — clock runs on the fallback bank",
                  esp_err_to_name(theme_err));
+
+#if ORB_ART_M2_PROBE
+    /* M2 residency protocol (docs/app-platform-plan.md §6): runs after the
+     * theme's art_bank_init() so the primary counts, and before display_init()
+     * so the dial's own fps lines, later in the same boot log, are measured
+     * with every probed bank still mapped. */
+    art_bank_m2_probe();
+#endif
 
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());

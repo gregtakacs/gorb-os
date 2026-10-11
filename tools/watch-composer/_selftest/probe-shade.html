@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<body><pre id="out">boot</pre>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="component.js"></script>
+<script src="probe-shade.js"></script>
+<script>document.getElementById('out').textContent = window.__SHADE || 'nothing';</script>

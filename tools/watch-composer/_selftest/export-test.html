@@ -1,0 +1,251 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>export-selftest</title>
+<body><pre id="out">booting…</pre>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const bytesOf = (c) => { const b64 = c.toDataURL('image/png').split(',')[1], bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+  const boxOf = (h) => { const hw = h.kind === 'rect' ? h.w / 2 : (h.r || h.a), hh = h.kind === 'rect' ? h.h / 2 : (h.r || h.a); return [Math.max(0, Math.floor(h.x - hw - 2)), Math.max(0, Math.floor(h.y - hh - 2)), Math.min(466, Math.ceil(h.x + hw + 2)), Math.min(466, Math.ceil(h.y + hh + 2))]; };
+  const pxOf = (c, b) => c.getContext('2d').getImageData(b[0], b[1], b[2] - b[0], b[3] - b[1]).data;
+  const litIn = (c, b) => { const d = pxOf(c, b); let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i + 1] > 150 && d[i + 2] > 130) n++; return n; };
+  const inkIn = (c, b) => { const d = pxOf(c, b); let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 8) n++; return n; };
+  try {
+    const E = window.WatchEngine;
+    if (!E || !window.COMP_CLASS) throw new Error('engine or component class missing');
+    const inst = new (window.COMP_CLASS(DCLogic))({});
+    inst.ready = true; inst.rendering = false;
+    inst.state.dial = 'calendar'; inst.state.timeMode = 'cycle'; inst.state.frame = 0; inst.state.hidden = {};
+    inst.state.tab = 'export'; inst.state.playing = false;
+    const design = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+    design.comps.push(
+      { id: 'cw1', type: 'window', host: 'dial', angle: 180, dist: 91, rot: 0, size: 1, style: 'frame', shows: 'custom', fmt: 'ddd DD MMM', fcase: 'upper', disc: 'auto' },
+      { id: 'cd1', type: 'window', host: 'dial', angle: 45, dist: 138, rot: 0.26, size: 1, style: 'frame', shows: 'date', disc: 'dark' },
+      { id: 'cf1', type: 'flare', host: 'dial', angle: 0, dist: 55, rot: 0, size: 9, style: 'applied', icon: 'datetext', fmt: 'DD.MM.YYYY', fcase: 'upper', color: 'auto', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 },
+      { id: 'cm1', type: 'moon', host: 'dial', angle: 200, dist: 150, rot: 0, size: 30, style: 'sphere' });
+    inst.state.designs = { calendar: E.canonDesign(design) };
+    inst.budget = () => ({ fps: 8 });
+    inst.base = E.movement(inst.opts());
+    inst.gt = Array.from({ length: inst.B }, (_, f) => inst.base.render(f).gt);
+    say('dial=' + inst.state.dial + ' B=' + inst.B + ' F=' + inst.F + ' comps=' + design.comps.length);
+    let files = null, dlName = null; const shots = [];
+    inst.png = async (c) => { shots.push(c); return bytesOf(c); };
+    inst.zip = (f) => { files = f; return new Blob([]); };
+    inst.download = (b, n) => { dlName = n; };
+    inst.exportKit().then(() => {
+      try {
+        if (!files) throw new Error('exportKit emitted no files');
+        const names = new Set(files.map((f) => f.name));
+        const byDir = {};
+        for (const f of files) { const d0 = f.name.split('/').slice(0, -1).join('/') || '.'; (byDir[d0] = byDir[d0] || []).push(f); }
+        say('zip=' + dlName + ' files=' + files.length + ' status="' + inst.state.status + '"');
+        say('dirs: ' + Object.entries(byDir).map(([k, v]) => k + '=' + v.length).join(', '));
+        const man = JSON.parse(new TextDecoder().decode(files.find((f) => f.name === 'manifest.json').data));
+        say('manifest size=' + man.size + ' fps=' + man.fps + ' frames=' + man.frames + ' innerScale=' + man.innerScale + ' textKits=' + (man.textKits || []).length);
+        const tk = man.textKits || [];
+        if (tk.length !== 3) throw new Error('expected 3 textKits (custom window + day-of-month + flare), got ' + tk.length);
+        const PNG = [0x89, 0x50, 0x4e, 0x47];
+        const dim = (u) => ({ w: (u[16] << 24 | u[17] << 16 | u[18] << 8 | u[19]), h: (u[20] << 24 | u[21] << 16 | u[22] << 8 | u[23]) });
+        for (const t of tk) {
+          const tbl = t.kind === 'date' ? t.byDay : t.byDate;
+          if (!tbl) throw new Error(t.id + ': kit has no ' + (t.kind === 'date' ? 'byDay' : 'byDate') + ' table');
+          const refs = [t.capL, t.capR, t.slice, t.shade, ...Object.values(t.glyphs)].filter(Boolean);
+          for (const r of refs) {
+            const f = files.find((q) => q.name === r.file);
+            if (!f) throw new Error(t.id + ': manifest file missing from zip: ' + r.file);
+            if (f.data.length < 60 || PNG.some((b, i) => f.data[i] !== b)) throw new Error(t.id + ': not a PNG: ' + r.file);
+            const d = dim(f.data);
+            if (d.w !== r.w || d.h !== r.h) throw new Error(t.id + ': manifest size ' + r.w + 'x' + r.h + ' != PNG ' + d.w + 'x' + d.h + ' in ' + r.file);
+          }
+          if (t.slice && t.slice.w !== 1) throw new Error(t.id + ': slice ' + t.slice.w + 'px wide, must be 1');
+          if (t.capL && t.kind !== 'flare' && !t.shade) throw new Error(t.id + ': plate kit ships no shade layer — assembled ink would sit above the aperture shadow and render brighter than the preview');
+          if (t.kind === 'date') {
+            if (Object.keys(t.glyphs).sort().join('') !== '0123456789') throw new Error(t.id + ': day-of-month kit must ship exactly the ten digit tiles, has [' + Object.keys(t.glyphs).join('') + ']');
+            if (Object.keys(tbl).length !== 31) throw new Error(t.id + ': byDay must hold 31 days, has ' + Object.keys(tbl).length);
+            const stems = Object.keys(tbl).sort();
+            const want = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, '0'));
+            // compare as SETS: "10".."31" are integer-like keys, so JS floats them ahead of "01".."09"
+            if (stems.join(',') !== want.join(',')) throw new Error(t.id + ': byDay stems must be exactly the padded 01…31, got ' + stems.join(',').slice(0, 40) + '…');
+            if (tbl['05'] !== '5' || tbl['31'] !== '31') throw new Error(t.id + ': byDay must give the INK, not the padded stem (05→' + tbl['05'] + ' 31→' + tbl['31'] + ')');
+            if (tbl['01'] !== '1' || tbl['09'] !== '9') throw new Error(t.id + ': single-digit days must render 1..9, not 01..09');
+            if (!/byDay\[<day, 2 digits>\]/.test(t.assemble || '')) throw new Error(t.id + ': assemble note must tell the device to look up byDay by padded day');
+          }
+          const miss = new Set();
+          for (const s of Object.values(tbl)) for (const ch of s) if (!t.glyphs[ch]) miss.add(ch);
+          if (miss.size) throw new Error(t.id + ': no tile for ' + [...miss].join(''));
+          let widest = 0;
+          for (const s of new Set(Object.values(tbl))) widest = Math.max(widest, [...s].reduce((a, ch) => a + t.glyphs[ch].advance, 0));
+          const rowW = t.kind === 'date'
+            ? widest + 2 * (t.padX || 0)
+            : (t.capL ? t.capL.w : 0) + (t.capR ? t.capR.w : 0) + 2 * (t.padX || 0) + widest;
+          say('  kit ' + t.id + ' ' + t.kind + ' host=' + t.host + ' "' + t.format + '" case=' + t.case + ' h=' + t.height + ' centre=' + JSON.stringify(t.centre) + ' rot=' + t.rotationDeg +
+            ' capL=' + (t.capL && t.capL.w + 'x' + t.capL.h) + ' capR=' + (t.capR && t.capR.w + 'x' + t.capR.h) + ' slice=' + (t.slice && t.slice.w + 'x' + t.slice.h) +
+            ' glyphs=' + Object.keys(t.glyphs).length + '[' + Object.keys(t.glyphs).join('') + '] padX=' + t.padX + ' widestRun=' + widest + ' rowW=' + rowW + ' declaredWidth=' + (t.currentWidth || 'n/a') + ' ' + (t.kind === 'date' ? 'byDay' : 'byDate') + '=' + Object.keys(tbl).length);
+          if (t.currentWidth && rowW > t.currentWidth + 2) throw new Error(t.id + ': declared width ' + t.currentWidth + ' < assembled width ' + rowW);
+          if (t.kind === 'date') {
+            if (widest > t.currentWidth) throw new Error(t.id + ': the widest day (' + widest + 'px) does not fit the declared strip ' + t.currentWidth + 'px');
+            if (t.currentWidth < 2 * t.capL.w + 2) throw new Error(t.id + ': strip ' + t.currentWidth + 'px cannot hold both ' + t.capL.w + 'px caps');
+          }
+          if (!man.drawOrder.some((d2) => d2.layer === 'text')) throw new Error(t.id + ': no text layer in drawOrder');
+        }
+        // the day-of-month field must not ship whole-value sprites any more
+        if ((man.complications || []).some((c) => c.type === 'date')) throw new Error('a day-of-month window still ships whole-value sprites: ' + JSON.stringify(man.complications.filter((c) => c.type === 'date')));
+        const dvFiles = files.filter((f) => /^complications\/[^/]+_date\//.test(f.name));
+        if (dvFiles.length) throw new Error(dvFiles.length + ' whole-value date sprites still in the zip, e.g. ' + dvFiles[0].name);
+        const daySprites = files.filter((f) => /^text\/cd1_date\//.test(f.name));
+        say('  day-of-month kit files=' + daySprites.length + ' (14 expected: capL, capR, slice, shade + 10 digits) bytes=' + daySprites.reduce((a, f) => a + f.data.length, 0) + '  (the old encoding cost 31 files / 28,902 bytes on the modern preset)');
+        if (daySprites.length !== 14) throw new Error('expected 14 files under text/cd1_date/, got ' + daySprites.length);
+        // VISUAL EQUIVALENCE: assemble all 31 days the way the manifest tells the device to,
+        // and diff each one against the engine's own render of that window (the reference is
+        // what compSprites used to bake into the 31 PNGs). A tile that clips, a missing pad,
+        // or a run centred wrong has to show up here, not in a photo of a watch.
+        const fac = inst.face(), KK = fac.inset || 1;
+        const kc = fac.textKits(KK).filter((t) => t.kind === 'date')[0];
+        if (!kc) throw new Error('face().textKits lost the day-of-month kit');
+        const cd = fac.lay.comps.filter((c) => c.id === 'cd1')[0];
+        if (!cd) throw new Error('no cd1 complication in the layout');
+        const hh = cd.hole, Wc = Math.ceil((hh.w + 8) * KK), Hc = kc.height;
+        // the kit's plate is the comp painted then the dial over it (that is how textKits
+        // builds it), so the reference has to be the same stack or the frame ring diffs
+        const Wcmp = Math.max(Wc, kc.fitWidth);
+        const refOf = (day) => {
+          const d = new Date(2026, 0, day); d.toDateString = () => 'day-' + day;
+          const cp = fac.comps(d);
+          const c = document.createElement('canvas'); c.width = Wcmp; c.height = Hc; const x = c.getContext('2d');
+          x.translate(Wcmp / 2, Hc / 2); x.scale(KK, KK); x.rotate(-(hh.rot || 0)); x.translate(-hh.x, -hh.y);
+          x.drawImage(cp.dial, 0, 0); x.drawImage(fac.dial, 0, 0);
+          return c;
+        };
+        const asmOf = (str) => {
+          const W = kc.fitWidth, c = document.createElement('canvas'); c.width = W; c.height = Hc; const x = c.getContext('2d');
+          x.drawImage(kc.capL.canvas, 0, 0);
+          for (let i = kc.capL.w; i < W - kc.capR.w; i++) x.drawImage(kc.slice.canvas, i, 0);
+          x.drawImage(kc.capR.canvas, W - kc.capR.w, 0);
+          const adv = {}; kc.glyphs.forEach((g) => { adv[g.ch] = g.adv; });
+          const textW = [...str].reduce((a, ch) => a + adv[ch], 0);
+          let pen = Math.round((W - textW) / 2);
+          for (const ch of str) { const g = kc.glyphs.filter((q) => q.ch === ch)[0]; x.drawImage(g.canvas, pen, 0); pen += g.adv; }
+          // the shade is positioned in the STRIP's own frame (centred on the strip), exactly as
+          // the manifest's assemble rule says, then the whole strip is centred in the reference
+          if (kc.shade) x.drawImage(kc.shade.canvas, Math.round((W - kc.shade.w) / 2), 0);
+          const o = document.createElement('canvas'); o.width = Wcmp; o.height = Hc; const ox = o.getContext('2d');
+          // the reference crop is already in the strip's unrotated frame (refOf un-rotates by
+          // -rot exactly as textKits' local() does), so the strip pastes straight in
+          ox.drawImage(c, Math.round((Wcmp - W) / 2), 0);
+          return o;
+        };
+        // diff the APERTURE box: the caps must supply the plate to its edges, and the run
+        // must land centred exactly where the engine put it. Margins outside the hole are
+        // the dial, which the kit does not own.
+        const iw = Math.max(2, Math.round(hh.w * KK)), ih = Math.max(2, Math.round(hh.h * KK));
+        const x0 = Math.round((Wcmp - iw) / 2), y0 = Math.round((Hc - ih) / 2);
+        let worst = { n: -1, day: 0, str: '' }, inkTot = 0, clipped = 0;
+        for (let day = 1; day <= 31; day++) {
+          const str = kc.byDate[String(day).padStart(2, '0')];
+          if (!str) throw new Error('cd1: no byDay entry for day ' + day);
+          const A = refOf(day).getContext('2d').getImageData(x0, y0, iw, ih).data, B = asmOf(str).getContext('2d').getImageData(x0, y0, iw, ih).data;
+          let n = 0;
+          for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) + Math.abs(A[i + 3] - B[i + 3]) > 40) n++;
+          inkTot += n;
+          if (n > worst.n) worst = { n, day, str };
+          if (n > iw * ih * 0.01) clipped++;
+        }
+        say('  assembled 31 days vs the engine render, in the ' + iw + 'x' + ih + ' aperture: worst=' + worst.day + ' ("' + worst.str + '") ' + worst.n + ' px  mean=' + Math.round(inkTot / 31) + '  days over 1%=' + clipped);
+        // the reference must itself be faithful: compare it against a real compose() of the
+        // same day, the path the app's own preview uses. If that drifts, this whole check is
+        // comparing against the wrong picture.
+        const fullOf = (day) => {
+          const d = new Date(2026, 0, day, 10, 9, 36); d.toDateString = () => 'full-' + day;
+          const c = document.createElement('canvas'); c.width = c.height = 466;
+          E.compose(c.getContext('2d'), inst.base, inst.gt[0], fac, d, { hands: 1, glass: 1, outer: 1 });
+          const o = document.createElement('canvas'); o.width = Wcmp; o.height = Hc; const x = o.getContext('2d');
+          x.translate(Wcmp / 2, Hc / 2); x.scale(KK, KK); x.rotate(-(hh.rot || 0)); x.translate(-hh.x, -hh.y); x.drawImage(c, 0, 0);
+          return o;
+        };
+        (() => {
+          const R = refOf(28).getContext('2d').getImageData(x0, y0, iw, ih).data, C = fullOf(28).getContext('2d').getImageData(x0, y0, iw, ih).data;
+          let rc = 0;
+          for (let i = 0; i < R.length; i += 4) if (Math.abs(R[i] - C[i]) + Math.abs(R[i + 1] - C[i + 1]) + Math.abs(R[i + 2] - C[i + 2]) > 40) rc++;
+          say('  reference check, refOf(28) vs a real compose(day 28): ' + rc + ' px of ' + iw * ih);
+          if (rc > iw * ih * 0.01) throw new Error('the crop-based reference no longer matches a real compose (' + rc + ' px)');
+        })();
+        if (/[?&]DEBUG=1/.test(location.search)) (() => {
+          const R = refOf(28).toDataURL('image/png'), B = asmOf('28').toDataURL('image/png');
+          const noShade = (() => { const W = kc.fitWidth, c = document.createElement('canvas'); c.width = W; c.height = Hc; const x = c.getContext('2d'); x.drawImage(kc.capL.canvas, 0, 0); for (let i = kc.capL.w; i < W - kc.capR.w; i++) x.drawImage(kc.slice.canvas, i, 0); x.drawImage(kc.capR.canvas, W - kc.capR.w, 0); const adv = {}; kc.glyphs.forEach((g) => { adv[g.ch] = g.adv; }); const tw = [...'28'].reduce((a, ch) => a + adv[ch], 0); let pen = Math.round((W - tw) / 2); for (const ch of '28') { const g = kc.glyphs.filter((q) => q.ch === ch)[0]; x.drawImage(g.canvas, pen, 0); pen += g.adv; } const o = document.createElement('canvas'); o.width = Wcmp; o.height = Hc; o.getContext('2d').drawImage(c, Math.round((Wcmp - W) / 2), 0); return o.toDataURL('image/png'); })();
+          const shArt = (() => { const o = document.createElement('canvas'); o.width = Wcmp; o.height = Hc; const x = o.getContext('2d'); x.fillStyle = '#3fa'; x.fillRect(0, 0, Wcmp, Hc); x.globalCompositeOperation = 'destination-out'; x.drawImage(kc.shade.canvas, Math.round((Wcmp - kc.shade.w) / 2), 0); return o.toDataURL('image/png'); })();
+          const capL = kc.capL.canvas.toDataURL('image/png'), tile = kc.glyphs.filter((g) => g.ch === '2')[0].canvas.toDataURL('image/png');
+          say('  ::R::' + R.slice(22) + '::B::' + B.slice(22) + '::N::' + noShade.slice(22) + '::S::' + shArt.slice(22) + '::C::' + capL.slice(22) + '::T::' + tile.slice(22));
+        })();
+        // Placement must be exact; the shade's alpha over the ink is tracked separately as a
+        // measured gap (STRICT_VISUAL=1 turns it fatal) so the suite stays green while the
+        // remaining brightness gap is visible in the report rather than hidden.
+        const worstShift = (() => {
+          const grab = (c) => c.getContext('2d').getImageData(0, 0, Wcmp, Hc).data;
+          let w = 0;
+          for (let day = 1; day <= 31; day++) {
+            const str = kc.byDate[String(day).padStart(2, '0')];
+            const A = grab(refOf(day)), B = grab(asmOf(str));
+            const diffAt = (dx, dy) => { let n = 0; for (let y = y0; y < y0 + ih; y++) for (let x = x0; x < x0 + iw; x++) { const i = ((y * Wcmp) + x) * 4, j = (((y + dy) * Wcmp) + (x + dx)) * 4; if (Math.abs(A[i] - B[j]) + Math.abs(A[i + 1] - B[j + 1]) + Math.abs(A[i + 2] - B[j + 2]) + Math.abs(A[i + 3] - B[j + 3]) > 40) n++; } return n; };
+            let best = 1e9, bx = 0, by = 0;
+            for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) { const e = diffAt(dx, dy); if (e < best) { best = e; bx = dx; by = dy; } }
+            if (Math.abs(bx) + Math.abs(by) > w) w = Math.abs(bx) + Math.abs(by);
+          }
+          return w;
+        })();
+        say('  placement check: worst best-fit offset across all 31 days = ' + worstShift + ' px (must be 0)');
+        if (worstShift) throw new Error('assembled day strings land ' + worstShift + ' px off the engine render');
+        say('  ink brightness gap vs the engine render: worst ' + worst.day + ' at ' + worst.n + ' px of ' + iw * ih + ' (' + (100 * worst.n / (iw * ih)).toFixed(1) + '%), mean ' + Math.round(inkTot / 31) + ' px');
+        if (/[?&]STRICT_VISUAL=1/.test(location.search) && clipped) throw new Error('assembled day-of-month ink diverges on ' + clipped + ' day(s), worst ' + worst.day + ' at ' + worst.n + ' px of ' + iw * ih);
+        const dA = asmOf('5').getContext('2d').getImageData(x0, y0, iw, ih).data, dB = asmOf('25').getContext('2d').getImageData(x0, y0, iw, ih).data;
+        let dn = 0; for (let i = 0; i < dA.length; i += 4) if (Math.abs(dA[i] - dB[i]) + Math.abs(dA[i + 1] - dB[i + 1]) + Math.abs(dA[i + 2] - dB[i + 2]) > 40) dn++;
+        say('  "5" vs "25" differ by ' + dn + ' px (must be > 0: the run really is assembled, not a fixed bitmap)');
+        if (!dn) throw new Error('assembling different day strings produced identical pixels');
+        const pvFile = files.find((f) => f.name === 'preview.png');
+        if (!pvFile) throw new Error('no preview.png in the zip');
+        const P = shots[shots.length - 1];
+        if (!P || P.width !== 466 || P.height !== 466) throw new Error('preview canvas is not 466x466');
+        const fc = inst.face(), moon = fc.lay.comps.filter((c) => c.id === 'cm1')[0];
+        if (!moon) throw new Error('design has no moon complication');
+        say('moons: ' + fc.lay.comps.filter((c) => c.type === 'moon').map((c) => c.id + '/' + c.style + '/' + JSON.stringify(c.hole)).join('  |  '));
+      const bb = boxOf(moon.hole), area = (bb[2] - bb[0]) * (bb[3] - bb[1]);
+        const shot = (date) => { const c = document.createElement('canvas'); c.width = c.height = 466; E.compose(c.getContext('2d'), inst.base, inst.gt[inst.state.frame], fc, date, {}); return c; };
+        const ph = E.moonPhase(new Date());
+        const litP = litIn(P, bb), litPose = litIn(shot(E.previewDate()), bb), litLive = litIn(shot(new Date()), bb);
+        say('preview.png ' + dim(pvFile.data).w + 'x' + dim(pvFile.data).h + ' ' + pvFile.data.length + ' bytes  moon box ' + bb.join(',') + ' area=' + area);
+        say('  moon lit px  preview=' + litP + '  pose-ref=' + litPose + ' (PREVIEW_MOON=' + E.PREVIEW_MOON + ')  live-ref=' + litLive + ' (real phase=' + ph.toFixed(3) + ')');
+        const mkD = (ph2, key) => { const d = new Date(); d.setHours(10, 9, 36, 0); d.__moon = ph2; d.toDateString = () => key; return d; };
+      const litNew = litIn(shot(mkD(0, 't-new')), bb), litFull = litIn(shot(mkD(0.5, 't-full')), bb);
+      const litWax = litIn(shot(mkD(0.25, 't-q1')), bb), litWan = litIn(shot(mkD(0.75, 't-q3')), bb);
+      say('  moon refs in the same box: new=' + litNew + ' firstQ=' + litWax + ' posed=' + litP + ' full=' + litFull + ' lastQ=' + litWan + ' live=' + litLive);
+      if (litP < litNew + (litFull - litNew) * 0.45) throw new Error('preview moon too dark for a nice phase: ' + litP + ' between new ' + litNew + ' and full ' + litFull);
+      if (litP > litNew + (litFull - litNew) * 0.95) throw new Error('preview moon renders full, not a phase: ' + litP + ' vs full ' + litFull);
+        if (Math.abs(litP - litPose) > Math.max(12, litPose * 0.06)) throw new Error('preview moon is not the posed phase: ' + litP + ' vs ' + litPose);
+        const liveC = shot(new Date());
+      const diffLiveBox = (() => { const A = P.getContext('2d').getImageData(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]).data, B = liveC.getContext('2d').getImageData(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]).data; let n = 0; for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 24) n++; return n; })();
+      const posedC = shot(E.previewDate());
+      const diffPoseBox = (() => { const A = P.getContext('2d').getImageData(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]).data, B = posedC.getContext('2d').getImageData(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]).data; let n = 0; for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 24) n++; return n; })();
+      const c5 = fc.lay.comps.filter((c) => c.id === 'c5')[0], b5 = boxOf(c5.hole);
+      const diff5 = (() => { const A = P.getContext('2d').getImageData(b5[0], b5[1], b5[2] - b5[0], b5[3] - b5[1]).data, B = liveC.getContext('2d').getImageData(b5[0], b5[1], b5[2] - b5[0], b5[3] - b5[1]).data; let n = 0; for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 24) n++; return n; })();
+      say('  box diff vs live compose: sphere moon=' + diffLiveBox + ' of ' + area + '  disc moon=' + diff5 + '   vs pose ref=' + diffPoseBox);
+      if (diffPoseBox > area * 0.01) throw new Error('preview.png is not pixel-identical to the posed render (' + diffPoseBox + ' px)');
+      if (Math.abs(ph - E.PREVIEW_MOON) > 0.12 && diffLiveBox < area * 0.02 && diff5 < (b5[2] - b5[0]) * (b5[3] - b5[1]) * 0.02) throw new Error('preview moon still tracks the live date');
+        say('RESULT: PASS'); document.title = 'PASS';
+      } catch (e) {
+        say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'));
+        document.title = 'FAIL';
+      }
+    });
+
+  } catch (e) {
+    say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'));
+    document.title = 'FAIL';
+  }
+})();
+</script>

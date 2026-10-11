@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>selftest</title>
+<body><pre id="out">running…</pre>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const alphaIn = (c, b) => {
+    const x = c.getContext('2d'), d = x.getImageData(b[0], b[1], b[2] - b[0], b[3] - b[1]).data;
+    let n = 0, lit = 0, sum = 0;
+    for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) n++; if (d[i] > 150 && d[i + 1] > 150 && d[i + 2] > 130) lit++; sum += d[i + 3]; }
+    return { px: (b[2] - b[0]) * (b[3] - b[1]), ink: n, lit: lit, meanA: Math.round(sum / ((b[2] - b[0]) * (b[3] - b[1]) + 1)) };
+  };
+  const box = (h, pad) => {
+    const hw = h.kind === 'rect' ? h.w / 2 : (h.r || h.a), hh = h.kind === 'rect' ? h.h / 2 : (h.r || h.a);
+    return [Math.max(0, Math.floor(h.x - hw - pad)), Math.max(0, Math.floor(h.y - hh - pad)),
+      Math.min(466, Math.ceil(h.x + hw + pad)), Math.min(466, Math.ceil(h.y + hh + pad))];
+  };
+  try {
+    const E = window.WatchEngine;
+    if (!E || !window.DialRenderer) throw new Error('engine did not load');
+    say('engine SIZE=' + E.SIZE + ' previewDate=' + (typeof E.previewDate) + ' PREVIEW_MOON=' + E.PREVIEW_MOON);
+    const DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, caseStyle: 'polished', caseMetal: 'auto', glassStyle: 'domed', train: 'classic', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, frames: 8 };
+    const design = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+    design.comps.push({ id: 'cw1', type: 'window', host: 'dial', angle: 180, dist: 91, rot: 0, size: 1, style: 'frame', shows: 'custom', fmt: 'ddd DD MMM', fcase: 'upper', disc: 'auto' });
+    design.comps.push({ id: 'cf1', type: 'flare', host: 'dial', angle: 0, dist: 55, rot: 0, size: 9, style: 'applied', icon: 'datetext', fmt: 'DD.MM.YYYY', fcase: 'upper', color: 'auto', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 });
+    design.comps.push({ id: 'cn1', type: 'flare', host: 'dial', angle: 90, dist: 40, rot: 0, size: 8, style: 'print', icon: 'datetext', fmt: 'D MMMM YYYY', fcase: 'title', color: 'auto' });
+    design.comps.push({ id: 'cm1', type: 'moon', host: 'dial', angle: 0, dist: 120, rot: 0, size: 26, style: 'sphere' });
+    const M = E.movement(DEF);
+    const fc = E.face(Object.assign({}, DEF, { design: E.canonDesign(design), hands: 'leaf', handFinish: 'gilt' }));
+    if (!fc.dialSealed) throw new Error('face() exposes no dialSealed canvas');
+    const kits = fc.textKits(1);
+    say('');
+    say('textKits -> ' + kits.length + ' set(s)');
+    for (const kt of kits) {
+      const capL = kt.capL ? alphaIn(kt.capL.canvas, [0, 0, kt.capL.w, kt.capL.h]) : null;
+      const capR = kt.capR ? alphaIn(kt.capR.canvas, [0, 0, kt.capR.w, kt.capR.h]) : null;
+      const sl = kt.slice ? alphaIn(kt.slice.canvas, [0, 0, kt.slice.w, kt.slice.h]) : null;
+      const inkOf = (g) => alphaIn(g.canvas, [0, 0, g.w, g.h]).ink;
+      const advs = kt.glyphs.map((g) => g.adv);
+      const have = new Set(kt.glyphs.map((g) => g.ch));
+      const missing = new Set();
+      for (const s of Object.values(kt.byDate)) for (const ch of s) if (!have.has(ch)) missing.add(ch);
+      const blank = kt.glyphs.filter((g) => g.ch !== ' ' && inkOf(g) === 0).map((g) => g.ch);
+      say('  ' + kt.id + ' ' + kt.kind + ' host=' + kt.host + ' fmt="' + kt.format + '" case=' + kt.fcase + ' h=' + kt.height + ' opaque=' + (kt.opaque ? 1 : 0) +
+        ' capL=' + (kt.capL ? kt.capL.w + 'x' + kt.capL.h + ' ink' + capL.ink : 'none') +
+        ' capR=' + (kt.capR ? kt.capR.w + 'x' + kt.capR.h + ' ink' + capR.ink : 'none') +
+        ' slice=' + (kt.slice ? kt.slice.w + 'x' + kt.slice.h + ' ink' + sl.ink : 'none') +
+        ' glyphs=' + kt.glyphs.length + ' [' + kt.glyphs.map((g) => g.ch).join('') + ']' +
+        ' adv[' + Math.min.apply(null, advs) + '..' + Math.max.apply(null, advs) + '] blank=' + (blank.length ? blank.join('|') : 'none') +
+        ' missingGlyphs=' + (missing.size ? [...missing].join('') : 'none') +
+        ' padX=' + kt.padX + ' width=' + (kt.currentWidth || kt.fitWidth || 'n/a') +
+        ' byDate=' + Object.keys(kt.byDate).length + ' 2026-10-10="' + kt.byDate['2026-10-10'] + '"');
+      if (!kt.glyphs.length) throw new Error(kt.id + ': no glyphs emitted');
+      if (missing.size) throw new Error(kt.id + ': byDate strings need glyphs with no tile: ' + [...missing].join(''));
+      if (blank.length) throw new Error(kt.id + ': blank glyph tiles for ' + blank.join('|'));
+      if (kt.capL && (!capL.ink || !sl.ink)) throw new Error(kt.id + ': caps/slice carry no ink');
+      if (Object.keys(kt.byDate).length < 700) throw new Error(kt.id + ': byDate covers only ' + Object.keys(kt.byDate).length + ' days');
+    }
+    const moon = fc.lay.comps.filter((c) => c.id === 'cm1')[0];
+    if (!moon) throw new Error('sphere moon cm1 not in layout');
+    const mb = box(moon.hole, 2);
+    const shot = (date) => { const c = document.createElement('canvas'); c.width = c.height = 466; E.compose(c.getContext('2d'), M, M.render(0).gt, fc, date, {}); return c; };
+    const mk = (ph, key) => { const d = new Date(); d.setHours(10, 9, 36, 0); d.__moon = ph; d.toDateString = () => key; return d; };
+    const shots = {}, shotOf = (key, date) => (shots[key] = shots[key] || shot(date));
+    const aLive = alphaIn(shotOf('live', new Date()), mb), aPosed = alphaIn(shotOf('posed', E.previewDate()), mb), aNew = alphaIn(shotOf('new', mk(0, 'test-new')), mb), aFull = alphaIn(shotOf('full', mk(0.5, 'test-full')), mb);
+    const diffLive = (() => { const A = shots.live.getContext('2d').getImageData(mb[0], mb[1], mb[2] - mb[0], mb[3] - mb[1]).data, B = shots.posed.getContext('2d').getImageData(mb[0], mb[1], mb[2] - mb[0], mb[3] - mb[1]).data; let n = 0; for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) + Math.abs(A[i + 3] - B[i + 3]) > 12) n++; return n; })();
+    say('');
+    say('preview.png moon box ' + mb.join(',') + ' area=' + aPosed.px + 'px');
+    say('  posed (phase ' + E.PREVIEW_MOON + ') : lit ' + aPosed.lit + '  ink ' + aPosed.ink + '  meanA ' + aPosed.meanA);
+    say('  new moon control     : lit ' + aNew.lit + '  ink ' + aNew.ink + '  meanA ' + aNew.meanA);
+    say('  full moon control    : lit ' + aFull.lit + '  ink ' + aFull.ink + '  meanA ' + aFull.meanA);
+    say('  today, unposed       : lit ' + aLive.lit + '  meanA ' + aLive.meanA + '  real phase ' + E.moonPhase(new Date()).toFixed(3));
+    say('  posed vs unposed moon pixels differing: ' + diffLive);
+    const phErr = Math.min(Math.abs(E.PREVIEW_MOON - E.moonPhase(new Date())), 1 - Math.abs(E.PREVIEW_MOON - E.moonPhase(new Date())));
+    if (phErr > 0.08 && diffLive < 200) throw new Error('preview pose reused the cached live-date moon (diff ' + diffLive + ')');
+    if (aPosed.lit < aPosed.px * 0.15) throw new Error('preview moon barely lit: ' + aPosed.lit + '/' + aPosed.px);
+    const ang = (t) => [((t.getHours() % 12) + t.getMinutes() / 60 + t.getSeconds() / 3600) / 12 * 360, (t.getMinutes() + t.getSeconds() / 60) / 60 * 360];
+    const ha = ang(E.previewDate());
+    say('  posed hand deg ' + ha.map((v) => v.toFixed(1)).join(' / ') + '  (10:09:36 = 304.8 / 57.6)');
+    const pd = E.previewDate();
+    if (!(pd.getHours() === 10 && pd.getMinutes() === 9 && pd.getSeconds() === 36)) throw new Error('preview pose is not 10:09:36 (' + pd.toTimeString().slice(0, 8) + ')');
+    if (Math.abs(ha[0] - 304.8) > 0.2 || Math.abs(ha[1] - 57.6) > 0.2) throw new Error('posed hands do not land at 10:09:36: ' + ha.map((v) => v.toFixed(2)).join(' / '));
+    if (aPosed.lit > aFull.lit * 0.95) throw new Error('preview moon renders as full: lit ' + aPosed.lit + ' vs full ' + aFull.lit);
+    if (aPosed.lit < aNew.lit * 1.6) throw new Error('preview moon too dark to read as a phase: lit ' + aPosed.lit + ' vs new ' + aNew.lit);
+    say('');
+    say('RESULT: PASS');
+
+  } catch (e) {
+    say('');
+    say('RESULT: FAIL — ' + (e && e.message));
+    say(String((e && e.stack) || '').split('\n').slice(0, 5).join('\n'));
+    document.title = 'FAIL';
+  }
+  if (document.title !== 'FAIL') document.title = 'PASS';
+
+})();
+</script>

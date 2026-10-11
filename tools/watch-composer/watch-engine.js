@@ -48,6 +48,20 @@
     d.getDate = () => dd; d.getDay = () => wd; d.getMonth = () => mo; d.__moon = (n % 30) / 30; d.toDateString = () => 'cycle-' + n;
     return d;
   }
+  // Kit preview pose: the marketing look every shipped theme is judged by. Hands at
+  // 10:09:36 (both needles off the 12, mirrors reading up), and the moon held at a
+  // waxing gibbous -- phase 0.34 lights ~77% of the disc with the terminator clear of
+  // both the new-moon empty frame and the full-moon coin, so a shipped preview.png
+  // always shows a moon rather than a bare sky.
+  // toDateString is overridden on purpose: F.comps and F.dateFlares cache their canvas
+  // by date.toDateString(), so a pose that kept the real string would be served the
+  // already-cached live-date canvas (tonight's real phase) instead of this one.
+  const PREVIEW_MOON = 0.34;
+  function previewDate(base) {
+    const d = new Date(base ? base.getTime() : Date.now());
+    d.setHours(10, 9, 36, 0); d.__moon = PREVIEW_MOON; d.toDateString = () => 'preview-1009';
+    return d;
+  }
   const TURN = {
     hour: (t) => ((t.getHours() % 12) + t.getMinutes() / 60 + t.getSeconds() / 3600) / 12,
     minute: (t) => (t.getMinutes() + t.getSeconds() / 60) / 60,
@@ -948,7 +962,7 @@
   function drawComp(ctx, c, date, en, pal, seed, ph) {
     const h = c.hole;
     if (c.type === 'moon') { const p = ph == null ? moonPhase(date) : ph; return ROUND_MOON[c.style] ? moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c) : moonDisc(ctx, h.x, h.y, h.a, p, pal, seed, h.rot, c.style); }
-    const v = c.type === 'custom' ? fmtDate(c.fmt, date, c.fcase) : c.type === 'date' ? String(date.getDate()) : c.type === 'day' ? DAYS[date.getDay()] : MONTHS[date.getMonth()];
+    const v = c.blank ? '' : c.type === 'custom' ? fmtDate(c.fmt, date, c.fcase) : c.type === 'date' ? String(date.getDate()) : c.type === 'day' ? DAYS[date.getDay()] : MONTHS[date.getMonth()];
     const k = c.k || 1, w = h.w + 10 * k, hh = h.h + 10 * k, dark = c.disc === 'dark' || (c.disc !== 'light' && !!en.dark);
     ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(h.rot || 0);
     ctx.fillStyle = c.dc && c.dc !== 'auto' ? c.dc : dark ? '#1b1916' : '#f2ecdd'; ctx.fillRect(-w / 2, -hh / 2, w, hh);
@@ -2013,24 +2027,84 @@
       const tileOf = (slice, w) => { const c = cv(Math.max(1, w), slice.height), x = c.getContext('2d'); for (let i = 0; i < w; i++) x.drawImage(slice, i, 0); return c; };
       const iso = (t) => t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
       lay.comps.forEach((c, i) => {
-        if (c.type !== 'custom') return;
-        const h = c.hole, kk = c.k || 1, m = 4, full = cv(S), fx = full.getContext('2d');
-        if (c.host === 'dial') { paint(fx, Object.assign({}, c, { fmt: '' }), new Date(), i); fx.drawImage(F.dial, 0, 0); }
-        else { fx.drawImage(F.dial, 0, 0); paint(fx, Object.assign({}, c, { fmt: '' }), new Date(), i); const sl = F.subLayers.find((q) => q.id === c.host); if (sl) fx.drawImage(sl.canvas, 0, 0); }
+        // The built-in day-of-month window rides the same rail as the custom windows:
+        // its 31 whole-value PNGs were one 40x32 disc re-inked 31 times (only ~4.5k of
+        // the 40k pixels in the set ever differ), while ten digit tiles plus the plate
+        // cover every date the field can hold. Weekday and month stay whole-value --
+        // SUN..SAT needs 14 letters and JAN..DEC needs ~19, both more files than the
+        // 7 / 12 whole-word sprites they replace.
+        const isDate = c.type === 'date';
+        if (!isDate && c.type !== 'custom') return;
+        const h = c.hole, kk = c.k || 1, m = 4;
+        // A window's shade depends on where a pixel sits in the WINDOW, never on the string: the
+        // host layer (the dial, or the host subdial) carries the frame ring, its drop shadow and
+        // the aperture's inner shade, and the engine composes disc+ink FIRST and that host layer
+        // SECOND, so the ink sits UNDER the shade. Measured on the modern preset's date field the
+        // shade runs α 186 in the middle of a strip to 207 at either edge — a moving digit cannot
+        // carry that on its own tile. So it ships once per window as shade.png, full window rect,
+        // and the assembler lays it on LAST. Three pieces follow from that ordering:
+        //   caps / slice  = the engine crop, shade included (nothing will be drawn over them)
+        //   glyph band    = the same crop with the host subtracted INSIDE the hole path, so the
+        //                   ink on a tile sits under exactly one shade instead of two
+        //   shade.png     = the host clipped to the hole path — the ring band straddles that edge
+        //                   and travels with the shade, which is why it is clipped to the path and
+        //                   not to the axis-aligned box.
+        const hp = holePath(h);
+        const hostL = c.host === 'dial' ? F.dial : (F.subLayers.find((q) => q.id === c.host) || {}).canvas;
+        const hostCut = (keepInside) => {
+          if (!hostL) return cv(1);
+          const o = cv(S), x = o.getContext('2d');
+          x.drawImage(hostL, 0, 0);
+          x.globalCompositeOperation = keepInside ? 'destination-in' : 'destination-out';
+          x.beginPath(); hp(x); x.fillStyle = '#000'; x.fill();
+          return o;
+        };
+        // band plate: the disc with the host's OUTSIDE-the-path art (ring, drop shadow) laid in,
+        // and nothing from inside the path — anything the band leaves transparent here is filled
+        // by the strip underneath it, which was cut from the full engine crop.
+        const paintPlate = (ctx) => {
+          if (c.host !== 'dial') ctx.drawImage(F.dial, 0, 0);
+          paint(ctx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i);
+          ctx.drawImage(hostCut(false), 0, 0);
+        };
+        const full = cv(S), fx = full.getContext('2d');
+        if (c.host === 'dial') { paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); fx.drawImage(F.dial, 0, 0); }
+        else { fx.drawImage(F.dial, 0, 0); paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); if (hostL) fx.drawImage(hostL, 0, 0); }
+        const bandOnly = cv(S), bx0 = bandOnly.getContext('2d');
+        paintPlate(bx0);
         const Wc = Math.ceil((h.w + 2 * m) * k), Hc = Math.ceil((h.h + 2 * m) * k), lc = local(full, h.x, h.y, h.rot, Wc, Hc);
         const e = Math.ceil((Math.max(h.rad || 2.5, 3) + m + 2) * k), mid = Math.floor(Wc / 2), slice = crop(lc, mid, 0, 1, Hc);
+        const band = crop(local(bandOnly, h.x, h.y, h.rot, Wc, Hc), mid, 0, 1, Hc);
+        const shadeArt = { canvas: local(hostCut(true), h.x, h.y, h.rot, Wc, Hc), w: Wc, h: Hc };
         const en0 = enOf(c), dark = c.disc === 'dark' || (c.disc !== 'light' && !!en0.dark), ink = c.tc && c.tc !== 'auto' ? c.tc : dark ? '#ecdfbf' : '#18120b';
         setFace(fontKey);
-        const font = winFont(c, kk * k), ls = 1.5 * kk * k, mx = cv(4).getContext('2d'); mx.font = font;
-        const glyphs = charset(c.fmt, c.fcase).map((ch) => {
-          const wNo = mx.measureText(ch).width, w = Math.max(1, Math.round(wNo + ls)), t = tileOf(slice, w), tx = t.getContext('2d');
+        // the date field prints with no tracking and no 0.75k nudge (drawComp), so the
+        // tiles have to be cut on those same metrics or the assembled run sits wrong
+        const font = winFont(c, kk * k), ls = isDate ? 0 : 1.5 * kk * k, mx = cv(4).getContext('2d'); mx.font = font;
+        const glyphs = (isDate ? '0123456789'.split('') : charset(c.fmt, c.fcase)).map((ch) => {
+          const wNo = mx.measureText(ch).width, w = Math.max(1, Math.round(wNo + ls)), t = tileOf(band, w), tx = t.getContext('2d');
           tx.font = font; tx.fillStyle = ink; tx.textAlign = 'left'; tx.textBaseline = 'middle'; tx.fillText(ch, Math.round(ls / 2), Hc / 2 + kk * k);
           return { ch, canvas: t, w, h: Hc, adv: w, ox: 0 };
         });
-        const idx = {}; for (let t = new Date(y0, 0, 1); t.getFullYear() <= y0 + 1; t.setDate(t.getDate() + 1)) idx[iso(t)] = fmtDate(c.fmt, t, c.fcase);
-        kits.push({ id: c.id, kind: 'window', host: c.host, centre: [+Mk(h.x).toFixed(2), +Mk(h.y).toFixed(2)], rotDeg: +((h.rot || 0) * 180 / Math.PI).toFixed(2), height: Hc,
+        const idx = {};
+        if (isDate) for (let d = 1; d <= 31; d++) idx[String(d).padStart(2, '0')] = String(d);   // padded key, unpadded ink: what to draw on the 5th is '5', not '05'
+        else for (let t = new Date(y0, 0, 1); t.getFullYear() <= y0 + 1; t.setDate(t.getDate() + 1)) idx[iso(t)] = fmtDate(c.fmt, t, c.fcase);
+        const advOf = {}; glyphs.forEach((g) => { advOf[g.ch] = g.adv; });
+        const widestOf = (str) => [...str].reduce((a, ch) => a + (advOf[ch] || 0), 0);
+        const widest = Math.max(0, ...Object.values(idx).map(widestOf));
+        // The date field is authored, not fitted: the strip is exactly the plate the dial was
+        // cut for, so the caps land on the frame ring they were cropped from. padX is the
+        // clearance that is left over once the widest run is centred — the run is drawn LAST
+        // and may legally overlap the cap zone, because that zone is flat disc there. It only
+        // grows past the plate if the digits no longer fit the aperture at all.
+        const runW = widest, spill = Math.max(0, runW - Math.floor(h.w * k));
+        const padX = isDate ? Math.max(0, Math.floor((Wc - runW) / 2)) : Math.round((4 + m) * k);
+        const fitWidth = isDate ? (spill ? e * 2 + runW + 2 * Math.ceil(k) : Wc) : Math.max(Wc, e * 2 + 2 * padX + widest);
+        if (isDate && spill) console.warn(c.id + ': the widest day needs ' + runW + 'px and the aperture is ' + h.w + 'px — the run spills the frame');
+        kits.push({ id: c.id, kind: isDate ? 'date' : 'window', host: c.host, centre: [+Mk(h.x).toFixed(2), +Mk(h.y).toFixed(2)], rotDeg: +((h.rot || 0) * 180 / Math.PI).toFixed(2), height: Hc,
           capL: { canvas: crop(lc, 0, 0, e, Hc), w: e, h: Hc }, capR: { canvas: crop(lc, Wc - e, 0, e, Hc), w: e, h: Hc }, slice: { canvas: slice, w: 1, h: Hc },
-          glyphs, padX: Math.round((4 + m) * k), fitWidth: Math.max(Wc, e * 2 + 2 + Math.max(0, ...Object.values(idx).map((tx) => [...tx].reduce((a, ch) => a + ((glyphs.find((g) => g.ch === ch) || { adv: 0 }).adv), 0)))), format: c.fmt, fcase: c.fcase || 'upper', byDate: idx, opaque: true });
+          shade: shadeArt,
+          glyphs, padX, fitWidth, widest, format: isDate ? 'D' : c.fmt, fcase: c.fcase || 'upper', byDate: idx, opaque: true });
       });
       DF.forEach((f) => {
         const sz = (+f.size || 16), plate = f.bg && f.bg !== 'none', s2 = sz * (plate ? +f.fgScale || 1 : 1), pad = 6;
@@ -2039,10 +2113,12 @@
         const mx = cv(4).getContext('2d'); mx.font = font;
         const Hc = Math.ceil((plate ? ph : s2 * 2.8) * k + 2 * pad * k), base = Object.assign({}, f, { x: C, y: C, rot: 0, bgX: 0, bgY: 0 });
         const render = (ff) => { const full = cv(S); paintDF(full.getContext('2d'), ff, new Date(), true); return full; };
-        let capL = null, capR = null, slice = null;
+        let capL = null, capR = null, slice = null, Wc = 0, e = 0;
         if (plate) {
-          const Wc = Math.ceil((pw + 2 * pad) * k), pl = local(render(Object.assign({}, base, { color: 'none' })), C, C, 0, Wc, Hc);
-          const r = shp === 'pill' || shp === 'circle' ? ph / 2 : shp === 'rounded' ? Math.min(pw, ph) * 0.18 : 0, e = Math.ceil((r + pad + 2) * k);
+          Wc = Math.ceil((pw + 2 * pad) * k);
+          const pl = local(render(Object.assign({}, base, { color: 'none' })), C, C, 0, Wc, Hc);
+          const r = shp === 'pill' || shp === 'circle' ? ph / 2 : shp === 'rounded' ? Math.min(pw, ph) * 0.18 : 0;
+          e = Math.ceil((r + pad + 2) * k);
           slice = crop(pl, Math.floor(Wc / 2), 0, 1, Hc); capL = { canvas: crop(pl, 0, 0, e, Hc), w: e, h: Hc }; capR = { canvas: crop(pl, Wc - e, 0, e, Hc), w: e, h: Hc };
         }
         const glyphs = charset(f.fmt == null ? 'ddd DD MMM' : f.fmt, f.fcase).map((ch) => {
@@ -2056,8 +2132,18 @@
           return { ch, canvas: local(g, C, C, 0, w, Hc), w, h: Hc, adv, ox };
         });
         const idx = {}; for (let t = new Date(y0, 0, 1); t.getFullYear() <= y0 + 1; t.setDate(t.getDate() + 1)) idx[iso(t)] = fmtDate(f.fmt == null ? 'ddd DD MMM' : f.fmt, t, f.fcase);
+        const advOf = {}; glyphs.forEach((g) => { advOf[g.ch] = g.adv; });
+        const widestOf = (str) => [...str].reduce((a, ch) => a + (advOf[ch] || 0), 0);
+        const widest = Math.max(0, ...Object.values(idx).map(widestOf));
+        // padX is the inner padding the assembler keeps between a cap and the run. Reading it
+        // off today's string made the manifest shift whenever the export day changed. Derive it
+        // from the widest string the format can produce: the authored plate survives whenever the
+        // run fits inside it, and the strip only grows past the plate (by tiling the slice) when
+        // it does not -- so a long date never overruns the caps it is drawn between.
+        const padX = plate ? Math.max(Math.ceil(2 * k), Math.floor((Wc - e * 2 - widest) / 2)) : 0;
+        const fitWidth = plate ? Math.max(Wc, e * 2 + widest + 2 * padX) : widest;
         kits.push({ id: f.id, kind: 'flare', host: f.host, centre: [+Mk(f.x).toFixed(2), +Mk(f.y).toFixed(2)], rotDeg: +((f.rot || 0) * 180 / Math.PI).toFixed(2), height: Hc,
-          capL, capR, slice: slice ? { canvas: slice, w: 1, h: Hc } : null, glyphs, padX: plate ? Math.max(0, Math.round(((pw - mx.measureText(fmtDate(f.fmt == null ? 'ddd DD MMM' : f.fmt, new Date(), f.fcase)).width / k) / 2) * k)) : 0,
+          capL, capR, slice: slice ? { canvas: slice, w: 1, h: Hc } : null, glyphs, padX, fitWidth, widest,
           format: f.fmt == null ? 'ddd DD MMM' : f.fmt, fcase: f.fcase || 'upper', byDate: idx, opaque: !!plate });
       });
       setFace(fontKey);
@@ -2066,7 +2152,9 @@
     F.compSprites = () => {
       const out = [];
       lay.comps.forEach((c, i) => {
-        if (c.type === 'custom') return;
+        // 'custom' ships its letters through textKits(); so does the day-of-month field
+        // now (see textKits), so neither needs a whole-value sprite here.
+        if (c.type === 'custom' || c.type === 'date') return;
         const vals = c.type === 'date' ? Array.from({ length: 31 }, (_, k) => [String(k + 1).padStart(2, '0'), new Date(2026, 0, k + 1)])
           : c.type === 'day' ? DAYS.map((d, k) => [d, new Date(2026, 1, 1 + k)])
           : c.type === 'month' ? MONTHS.map((m, k) => [m, new Date(2026, k, 1)])
@@ -2165,5 +2253,5 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
 })();

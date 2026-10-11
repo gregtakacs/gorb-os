@@ -263,6 +263,8 @@
           <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
           <button onClick="{{ exportFrames }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Flattened frames</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ zipNote }}</span></button>
           <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand pointing at 12 with its pivot — plus manifest.json with draw order and positions.</div>
+          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Custom-format date windows and date flares ship as a sprite kit under <span style="font-family:'IBM Plex Mono',monospace">text/&lt;id&gt;_&lt;kind&gt;/</span>: the two end caps, one tileable 1px vertical slice of the frame, and a tile for every glyph the format can ever produce. The device assembles the day's string to whatever width manifest.json declares. The zip's preview.png is always posed at 10:09:36 with a waxing gibbous moon, never the transport you are watching.</div>
+          <div style="font-size:11px;line-height:1.5;color:#c9a25a;font-family:'IBM Plex Mono',monospace">{{ dateKitNote }}</div>
           <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;padding-top:12px;margin-top:4px;border-top:1px solid #25221e">Design ID</div>
           <div style="display:flex;gap:8px">
             <input readonly value="{{ designId }}" onFocus="{{ selectAll }}" style="flex:1;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#f0d79a;padding:9px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace">
@@ -904,7 +906,10 @@ class Component extends DCLogic {
     return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type: 'application/zip' });
   }
   busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
-  frameCanvas(f, hidden) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), this.now(), hidden); return c; }
+  frameCanvas(f, hidden, date) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden); return c; }
+  // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
+  // hands at 10:09:36 and the moon at PREVIEW_MOON whatever mode the preview is playing in.
+  previewCanvas() { const f = Math.min(this.state.frame, Math.max(0, this.gt.length - 1)); return this.frameCanvas(f, {}, WatchEngine.previewDate()); }
   // mirror of kit_check.py: red staff jewel (alpha>=60, R>100, R-max(G,B)>40), 8-connected, blob nearest the centre
   kitCheck(bank, T) {
     const W = 466, out = [], lines = [], fails = []; let ink = [W, W, -1, -1];
@@ -950,7 +955,9 @@ class Component extends DCLogic {
     }
     const K = fc.inset || 1, M = (v) => 233 + (v - 233) * K;
     const bake = (c) => { if (K === 1) return c; const o = document.createElement('canvas'); o.width = o.height = 466; const x = o.getContext('2d'); x.translate(233, 233); x.scale(K, K); x.translate(-233, -233); x.drawImage(c, 0, 0); return o; };
-    // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes
+    // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes.
+    // The day-of-month field is NOT filtered out even though it now assembles the same way: its aperture is sealed (layout's hole.seal),
+    // so the shipped dial carries no hole there already, and dropping the comp would also stop printMain avoiding numerals under it.
     const D0 = this.design(), hasCustom = D0.comps.some((c) => c.type === 'window' && c.shows === 'custom'), hd0 = this.handDef(this.state.dial);
     const lf = hasCustom ? WatchEngine.face({ ...this.opts(), design: { ...D0, comps: D0.comps.filter((c) => !(c.type === 'window' && c.shows === 'custom')) }, hands: hd0.style, handFinish: hd0.finish }) : fc;
     // layers/dial.png is the baked static layer the device paints over the bank: ship it
@@ -988,13 +995,17 @@ class Component extends DCLogic {
     const textKits = [];
     for (const kt of fc.textKits ? fc.textKits(K) : []) {
       const dir = 'text/' + kt.id + '_' + kt.kind + '/', piece = async (nm, p) => { if (!p) return null; files.push({ name: dir + nm, data: await this.png(p.canvas) }); return { file: dir + nm, w: p.w, h: p.h }; };
-      const capL = await piece('cap_l.png', kt.capL), capR = await piece('cap_r.png', kt.capR), slice = await piece('slice.png', kt.slice), glyphs = {};
+      const capL = await piece('cap_l.png', kt.capL), capR = await piece('cap_r.png', kt.capR), slice = await piece('slice.png', kt.slice), shade = await piece('shade.png', kt.shade), glyphs = {};
       for (const g of kt.glyphs) { const nm = 'glyph_' + g.ch.codePointAt(0).toString(16).padStart(4, '0') + '.png'; files.push({ name: dir + nm, data: await this.png(g.canvas) }); glyphs[g.ch] = { file: dir + nm, w: g.w, h: g.h, advance: g.adv, offsetX: g.ox }; }
+      const shadeNote = shade ? ' Finally draw shade.png centred on the strip at x = (W − shade.w)/2, y = 0 (before the rotation): it is the window ring, its drop shadow and the aperture inner shade, which depend on where a pixel sits in the WINDOW and not on the string being drawn, so it must go on LAST — ink left on top of it reads brighter than the same watch in the dial preview.' : '';
       textKits.push({ id: kt.id, kind: kt.kind, host: kt.host, centre: kt.centre, rotationDeg: kt.rotDeg, height: kt.height, opaque: kt.opaque, format: kt.format, case: kt.fcase,
-        capL, capR, slice, padX: kt.padX, ...(kt.kind === 'window' ? { currentWidth: kt.fitWidth } : {}), glyphs, byDate: kt.byDate,
-        assemble: kt.capL
-          ? 'text = byDate[YYYY-MM-DD] (or format it yourself). textW = Σ glyphs[ch].advance. W = capL.w + padX + textW + padX + capR.w (use currentWidth instead to keep the dial-fitted size). Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then glyph tiles from x = (W − textW)/2, each advancing by its advance (tiles already include the background). Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
-          : 'text = byDate[YYYY-MM-DD]. textW = Σ advance. Pen starts at centre.x − textW/2; draw each glyph tile at pen − offsetX, vertically centred on centre.y (tiles are transparent and may overlap), pen += advance. Rotate the run by rotationDeg about centre.' });
+        capL, capR, slice, shade, padX: kt.padX, currentWidth: kt.fitWidth, widestRun: kt.widest, glyphs,
+        ...(kt.kind === 'date' ? { byDay: kt.byDate } : { byDate: kt.byDate }),
+        assemble: (kt.capL && kt.kind !== 'date'
+          ? 'text = byDate[YYYY-MM-DD] (or format it yourself). textW = Σ glyphs[ch].advance. W = capL.w + padX + textW + padX + capR.w; for a strip the dial was cut to fit, use currentWidth, which is never narrower than any string this format can render. Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then glyph tiles from x = (W − textW)/2, each advancing by its advance (tiles already include the background). Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
+          : kt.kind === 'date'
+            ? 'Day of month, assembled from ten digit tiles: byDay[<day, 2 digits>] gives the string to draw (a bare 1…9 for the first nine days — no leading zero). Use W = currentWidth, the width the dial was cut for; it is the same box every day of the month. textW = Σ glyphs[ch].advance (at most widestRun). Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then the glyph tiles from x = (W − textW)/2, each advancing by its advance — the run is drawn last, over the plate, and may cross the cap zone because the tiles carry the disc behind their ink. Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
+            : 'text = byDate[YYYY-MM-DD]. textW = Σ advance = widestRun at most (currentWidth). Pen starts at centre.x − textW/2; draw each glyph tile at pen − offsetX, vertically centred on centre.y (tiles are transparent and may overlap), pen += advance. Rotate the run by rotationDeg about centre.') + shadeNote });
     }
     for (const s0 of fc.compSprites()) {
       let s = s0;
@@ -1044,9 +1055,9 @@ class Component extends DCLogic {
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
     };
     files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
-    files.push({ name: 'preview.png', data: await this.png(this.frameCanvas(this.state.frame, {})) });
+    files.push({ name: 'preview.png', data: await this.png(this.previewCanvas()) });
     this.download(this.zip(files), 'watch-' + slug + '-kit.zip');
-    this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files)' });
+    this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files' + (textKits.length ? ', ' + textKits.length + ' date-sprite kit' + (textKits.length > 1 ? 's' : '') : '') + ', preview at 10:09)' });
   }
   renderVals() {
     const s = this.state, F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
@@ -1399,6 +1410,11 @@ class Component extends DCLogic {
         toggle: () => this.setState((st) => ({ hidden: { ...st.hidden, [id]: !st.hidden[id] } })),
       })),
       kitNote: F + ' base frames + layers + sprites · .zip',
+      dateKitNote: (() => {
+        const cs = D.comps.filter((c) => (c.type === 'window' && (c.shows === 'custom' || c.shows === 'date')) || (c.type === 'flare' && c.icon === 'datetext'));
+        if (!cs.length) return '';
+        return 'Date sprite kits in this kit: ' + cs.map((c) => c.id + ' (' + (c.type === 'window' ? (c.shows === 'date' ? 'day-of-month' : 'window') : 'flare') + ' · "' + (c.type === 'window' && c.shows === 'date' ? 'D' : c.type === 'flare' && c.fmt == null ? 'ddd DD MMM' : c.fmt) + '" · ' + hostName(c.host) + ')').join(', ') + '. Each ships caps + a 1px tileable slice + one tile per glyph its field can ever produce, plus one shared shade.png for the window (the ring and its shadow depend on where a pixel sits in the window, not on the string, so it is drawn last over the finished strip) — the day-of-month field gets ten digit tiles instead of 31 whole-value PNGs, so one string is assembled on device instead of a sprite per value. manifest.json declares currentWidth per kit: the width the dial was cut for, never narrower than what the assemble rule builds.';
+      })(),
       zipNote: F + ' × .png, hands at shown time · .zip',
       exportKit: () => this.exportKit(),
       exportFrames: async () => {

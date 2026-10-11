@@ -44,6 +44,7 @@
 
 #include "orb_net.h"
 #include "input_router.h"
+#include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
 #include "knob.h"     /* h_screen injection; h_status reads the raw/detent pair */
 #include "art_bank.h"
 #include "orb_sd.h"
@@ -2230,7 +2231,7 @@ static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
 }
 
 
-/* GET /api/v1/screen?to=clock|menu|hue — put a screen on the glass from the LAN.
+/* GET /api/v1/screen?to=<slug> - put a registered app on the glass from the LAN.
  *
  * This exists so the menu and the picker can be verified without a hand on the
  * knob. The encoder is three GPIOs driven only by a human finger, so every other
@@ -2247,7 +2248,7 @@ static esp_err_t h_screen(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    char to[8] = "";
+    char to[24] = "";
     char turn[8] = "";
     char push[4] = "";
     char hold[4] = "";
@@ -2260,20 +2261,27 @@ static esp_err_t h_screen(httpd_req_t *req)
      * are one test: go to the menu, arm it, scroll, choose. Keeping them apart
      * would mean a caller had to trust ordering between two URLs. */
     if (have_to) {
-        input_screen_t s;
-        if      (strcmp(to, "clock") == 0) s = INPUT_SCREEN_CLOCK;
-        else if (strcmp(to, "menu")  == 0) s = INPUT_SCREEN_MENU;
-        else if (strcmp(to, "hue")   == 0) s = INPUT_SCREEN_COLOR;
-        else {
+        /* A registry slug, resolved by orb_app_find_slug() - no longer a
+         * three-way strcmp against input_screen_t values that had to be kept in
+         * step with an enum by hand. "clock" and "menu" are the entries' own
+         * slugs and "hue" is the color picker's registered alias, so every URL
+         * that worked before still works, and an app added to the table is
+         * reachable here the moment it is in it with nothing to edit in this
+         * file. */
+        const orb_app_t *app = orb_app_find_slug(to);
+        if (!app) {
             /* The bad value goes to the log, never into the body: it is
              * caller-controlled text, and an error page that repeats it is how a
-             * quoting bug becomes someone else's problem. */
+             * quoting bug becomes someone else's problem. The body names only
+             * what the device accepts, which is device-owned text. */
             ESP_LOGW(TAG, "screen: unknown to=\"%s\"", to);
             httpd_resp_set_status(req, "400 Bad Request");
-            return httpd_resp_sendstr(req, "{\"error\":\"to must be clock, menu or hue\"}");
+            return httpd_resp_sendstr(req,
+                   "{\"error\":\"unknown app\",\"known\":"
+                   "[\"clock\",\"color_picker\",\"hue\",\"menu\"]}");
         }
-        ESP_LOGI(TAG, "screen request -> %s", to);
-        input_router_request(s);
+        ESP_LOGI(TAG, "screen request -> %s", app->slug);
+        input_router_request(app);
     }
 
     if (have_turn) {

@@ -16,9 +16,7 @@
 
 #include "board_config.h"
 #include "display.h"
-#include "clock_view.h"
-#include "color_picker.h"
-#include "menu_view.h"
+#include "orb_app.h"
 #include "knob.h"
 #include "input_router.h"
 #include "imu.h"
@@ -89,19 +87,23 @@ void app_main(void)
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 
-    /* Build the three screens. Each registers its own LVGL screen object; the
-     * input router decides which one is loaded. The GIF background animates
-     * from inside the clock view (delta-rect bank), so there is no separate
-     * orb/bench screen any more.
+    /* Build the apps and their screens. Each registers its own LVGL screen
+     * object; the input router decides which one is loaded. The GIF background
+     * animates from inside the clock view (delta-rect bank), so there is no
+     * separate orb/bench screen any more. */
+    /* Build the apps, in registry table order. main.c no longer names any of
+     * them: the table in main/app/orb_app.c decides what boots, in what order,
+     * and an app whose init fails is dropped from the carousel with its reason
+     * logged instead of taking the dial down with it.
      *
-     * menu_view_init() creates the worker task that runs the blocking card
-     * calls. Doing that before the LVGL task exists is deliberate and safe: the
-     * worker only ever calls the orb_theme and orb_net APIs and copies results
-     * into its own buffer — it never touches a widget, which is the one thing
-     * the LVGL task's existence is required for. */
-    ESP_ERROR_CHECK(clock_view_init());
-    ESP_ERROR_CHECK(color_picker_init());
-    ESP_ERROR_CHECK(menu_view_init());
+     * The order the table encodes is the order these three were called in
+     * before, and it is not arbitrary: the clock creates the worker task the
+     * theme path needs, and the menu creates the worker task the blocking card
+     * calls run on. Creating that second worker before the LVGL task exists is
+     * deliberate and safe — it only ever calls the orb_theme and orb_net APIs
+     * and copies results into its own buffer, never a widget, which is the one
+     * thing that needs the LVGL task to exist first. */
+    ESP_ERROR_CHECK(orb_app_init_all());
 
     /* Rotary knob: GPIO edge ISRs feed the detent + press streams. */
     ESP_ERROR_CHECK(knob_init());

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "app/orb_app.c"
         "display/display.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
@@ -17,6 +18,7 @@ idf_component_register(
         "sd/orb_sd.c"
     INCLUDE_DIRS
         "."
+        "app"
         "display"
         "gfx"
         "clock"

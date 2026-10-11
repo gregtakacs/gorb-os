@@ -62,6 +62,7 @@ These are decided. An implementer who disagrees edits this table, not the code.
 | C10 | Card writes | No `sd_write`. Apps persist through NVS inside their quota |
 | C11 | Tooling | `tools/orbapp.py` writes the container; upload lands `/sd/apps/<slug>.orbapp.part` then renames, exactly the theme path |
 | C12 | Arena exhaustion | Evict least-recently-visible, log it |
+| C13 | Vocabulary freeze | **Ratified 2026-10-11.** The whole vocabulary is OS-frozen, none of it is app-extensible: all 4 `KINDS` (window, strip, ring, flare), all 9 `FLAGS` bits, and the 17 `SOURCES` are OS-owned names resolved through one internal table fed by the `time` and `config` capabilities. An app declares which frozen names it uses; it cannot add one. Only `text` needs a config grant (it reads an app's own NVS keys). `battery` and `power_reserve` stay reserved and unimplemented — no power source is wired, so the bake tool must refuse them. The 12 calendar sources plus `none`/`value` are OS-internal to the clock's own theme schema and need no per-app grant at all |
 
 ---
 
@@ -412,7 +413,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); the registry, the carousel and M3 are still open** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12) — the carousel, the `opt_*` shell rendering and M3 are still open, and **M1 has not been re-run against the registry switches**** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -675,3 +676,120 @@ book+map); shipping-image boot re-captured after the flip-back — no `m2:` line
 same primary map line, same dial ramp. The aviator swap in `assets/` remains
 uncommitted and unrelated, as filed under P1.
 
+---
+
+## 12. P2's first half — the app registry lands (2026-10-11)
+
+`main/app/orb_app.{h,c}`, ~500 lines of registry plus a 43-check host suite. §1's
+three hardcoded couplings are gone: `main.c` builds whatever the table lists, the
+router walks the table, and `?to=` resolves through it.
+
+### 12.1 What actually changed
+
+| Was | Now |
+|---|---|
+| `main.c` called `clock_view_init()`, `color_picker_init()`, `menu_view_init()` in a fixed order | `orb_app_init_all()` walks `s_apps[]` in order; table order IS boot order, so the clock's worker still comes first and the invariant moved into the table instead of being deleted |
+| `input_screen_t {MENU, COLOR, CLOCK}` + five switch statements in the router | `orb_app_neighbour()`, `orb_app_current_armed()`, `orb_app_input()`, `orb_app_disarm_all()`, `orb_app_home()` |
+| `orb_net.c` tested three literals against an enum | `orb_app_find_slug()`, exact slug before alias |
+| long-press hardcoded `INPUT_SCREEN_CLOCK` | `orb_app_home()` reads the `is_home` flag (C8, as §1.4 anticipated) |
+
+An entry whose `init()` fails is dropped from the carousel with its reason
+logged; the boot continues. `ESP_ERROR_CHECK` on an app init would turn a broken
+app into a bricked device on a board in a sealed case.
+
+The table's three entries: **clock** (`is_home`, primary bank), **color_picker**
+(app #1, `alias="hue"`, vector-only), **menu** (`ORB_APP_KIND_SHELL` — OS chrome
+that walks in the carousel, not an app). Tagging the shell page rather than
+faking it into apphood is what keeps B5's cap and the uninstall page honest:
+only `ORB_APP_KIND_APP` rows are uninstallable.
+
+### 12.2 The one deliberate behaviour change
+
+The knob cycle was menu→picker→dial. It is now dial→picker→menu, because the P2
+pass line asks for "knob walks both apps (clock → color_picker → clock)".
+Everything else — the two-level gate, one step per poll, the direction coming
+from `knob_col_step`, long--home — is unchanged, and `tools/host_menu_test.py`
+still pins each of those.
+
+`?to=clock|menu|hue` all still work: two are slugs, `hue` is the picker's
+registered alias, so `/tmp/p2/cap.sh`, `tools/idle_watch.py` and the bench table
+in `.clinerules` did not need editing to keep functioning.
+
+### 12.3 The ABI moved from §1.4's paper list, by three hooks
+
+`activate`/`suspend`/`resume`/`input`/`armed`/`set_armed`/`service`/`opt_*` are
+§1.4's, with the same meanings. Three additions, all because these entries are
+compiled in rather than shipped on the card:
+
+- **`init`** — §1.4 has `activate` build the widgets, which is right for a VM app
+  handed a container. A compiled app's widgets are built by its own `*_init()` on
+  the boot ladder, where `main.c` can order the clock's worker task before the
+  LVGL task exists. `activate` is therefore the *pre-load* half: claim art,
+  restart the tick.
+- **`screen`** — §1.4's "activation returns its owning obj", spelled for the tier
+  that already has one.
+- **`show`** — the post-load model re-push. It cannot fold into `activate`: LVGL
+  invalidates on `lv_screen_load()`, and the order that has always run is
+  park-outgoing → restart-incoming tick → load → re-push. The picker's chosen
+  colour surviving a trip to the dial depends on that order specifically.
+
+Nothing in the scheduler, the arming gate or the residency path reads `init` or
+`screen`, so a VM-tier app that never supplies them is still ABI-complete.
+
+
+
+### 12.4 The refusal paths, found by writing the test
+
+The registry's art-claim failure paths were where the real bugs were, and the
+host suite caught one on first run: a refused activation suspended the outgoing
+app and then restored it via `resume`, which the clock did not implement — so
+the dial stayed on the glass with its tick parked. A refused switch would have
+left a frozen clock, caused by an app that never appeared.
+
+Three refusals now share one `app_restore()`: art claim refused, `activate`
+refused, no screen to load. Each re-claims the outgoing bank, restarts what its
+`suspend` parked, and returns the code. The re-claim can itself fail (the budget
+that refused the incoming bank is the same budget), which is logged as the
+emergency it is: an app on the glass with no bank reads `NULL` from
+`art_bank_extra_ptr()` and paints the silent garbage the loader's header has
+been fencing off since it was written. `activate` returning non-NULL is not
+enough; an unimplemented `resume` had to be caught by something other than the
+glass.
+
+### 12.5 Two findings this step settled
+
+**`art_bank_extra_ptr()` has no shipping consumer yet, and will not get one from
+P2.** `color_picker` is vector-only (LVGL draws the whole editor; 327 lines, no
+bank), and ruling C5 makes the carousel text-only, so nothing P2 introduces owns
+a secondary bank. The dial's own bank is the PRIMARY mapping, taken by
+`art_bank_init()` before `display_init()` and never unmapped, because
+`clock_view.c`'s descriptors cache raw pointers into it. `orb_app_t.art_bytes`
+is therefore zero for all three entries today: the claim/release pairing is
+implemented and host-tested, but its first real caller is P4's first banked app,
+not the carousel. An earlier reading of this step ("wire the dial's bank
+through `art_bank_map_extra`") would have moved a mapping the compositor cannot
+survive losing, so it is recorded here as not happening.
+
+**The residency arithmetic has no host suite.** `orb_art_reserve`,
+`art_bank_map_extra` and the page-budget checks in `art_bank.c` are exercised on
+the bench by the M2 probe's log and nowhere else; no `tools/` file referenced
+them before this step. My registry suite drives the *registry's* pairing through
+stubs, which is not the same claim. The loader's own arithmetic — page rounding,
+the 234-page budget, reservation consumption, refusal counting — is untested on
+a host, and `art_bank.c`'s behaviour after a bulk flash is not a rebuildable
+fact. Flagged, not fixed here: it belongs with P3/P4, where a second banked app
+makes it observable.
+
+### 12.6 What P2 still owes
+
+| Item | Note |
+|---|---|
+| Text carousel (C5) | The shell's own chrome, between apps, 400 ms settle before it accepts input (C1). First real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
+| `opt_*` through the shell (B1/B2) | The hooks are in the ABI and NULL everywhere; the clock's settings tiles are still painted by its own view code until the shell renders them |
+| APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
+| Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
+| **M1 re-run** | **Not yet done on hardware.** The pass lines are full activate under 250 ms, second switch under 60 ms, no new watchdog, and the boot dial at its baked tempo. The `switch %s sync %lld ms` and frame-window probes in `input_router.c` are intact, so the run is a capture, not a build task |
+
+Re-running M1 against registry switches is the gate that says this step worked.
+Until it is captured on the wall-powered bench, the registry is host-proven and
+hardware-unproven, and the honest reading of P2 is "half landed".

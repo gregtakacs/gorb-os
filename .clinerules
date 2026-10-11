@@ -504,10 +504,10 @@ picker had never been entered on hardware. `GET /api/v1/screen` is the bench doo
 
 | Query | Effect |
 |---|---|
-| `?to=clock\|menu\|hue` | switch screen (posted, applied on the LVGL task) |
+| `?to=<slug>` | switch to a registered app (posted, applied on the LVGL task). Slugs come from the table in `main/app/orb_app.c`: `clock`, `color_picker` (alias `hue`), `menu`. An unknown slug is a 400 whose body lists the known ones — the value itself never reaches the response. |
 | `?turn=N` | N synthetic detents, **electrical** sense: +1 = CW = up/right on screen |
 | `?push=1` | one synthetic tap |
-| `?hold=1` | the long-press escape gesture |
+| `?hold=1` | the long-press escape gesture, which goes to the entry flagged `is_home` — the dial (C8) |
 
 **Read the cursor before you trust a turn.** Until 2026-10-11 the menu said nothing about
 where its highlight was — `repaint()` moved the highlight and that was the only answer — so

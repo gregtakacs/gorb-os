@@ -109,17 +109,38 @@ def lifts(src):
     ]
     return consts, funcs
 
-# The router's screen order and its two-level gate, both pinned below: rotate
-# cycling screens and long-press going home are the contract the menu assumes.
-ENUM_SCREEN = lift(router_hdr, r"typedef enum \{\s*INPUT_SCREEN_MENU\s*=\s*0[\s\S]*?\} input_screen_t;",
-                   ROUTER_H)
-ARM_STEP = lift(router_src, r"const int step = \(knob_col_step\(delta\) > 0\) \? 1\n\s*: \(INPUT_SCREEN_COUNT - 1\);",
-                ROUTER_C)
+# The app registry owns what the menu is registered IN: the carousel order, the
+# home entry, and the fact the router no longer names a single view. These were
+# pinned here against the router's own INPUT_SCREEN_* enum until the registry
+# replaced it (docs/app-platform-plan.md §1), so the lifts below moved to
+# main/app/orb_app.c rather than being dropped: the contract the menu assumes
+# ("rotate cycles me, long-press goes home") is still checked, and it still dies
+# loudly if the table ever loses the menu row or the home flag.
+APP_C = P("main", "app", "orb_app.c")
+APP_H = P("main", "app", "orb_app.h")
+for _p in (APP_C, APP_H):
+    if not os.path.exists(_p):
+        sys.exit("missing " + _p + " — the registry is where the menu's carousel "
+                 "entry lives now; the lifts below have no fallback")
+app_src = open(APP_C).read()
+
+APP_TABLE = lift(app_src, r"static orb_app_t s_apps\[\] = \{[\s\S]*?\n\};", APP_C)
+ARM_STEP = lift(router_src,
+                r"const orb_app_t \*next = orb_app_neighbour\(s_current,[\s\S]*?"
+                r"if \(next\) set_screen\(next, true\);", ROUTER_C)
 # The carousel must keep asking the knob layer what "right" means. A screen that
 # negates the delta itself is the bug host_knob_test.py exists for, and this lift
 # dies loudly if the router ever goes back to reading a raw sign.
 check("the screen carousel routes direction through the knob layer",
       "knob_col_step" in ARM_STEP, ARM_STEP.strip())
+# The menu must still be a walkable carousel entry, tagged as shell chrome
+# rather than pretending to be an app it is not.
+check("the menu is a registered walkable entry",
+      '"menu"' in APP_TABLE and "ORB_APP_KIND_SHELL" in APP_TABLE)
+# And the long-press's target must still be the dial, spelled as a table flag
+# rather than as an enum value the router hardcodes.
+check("the dial is the registered home entry",
+      re.search(r'"clock"[\s\S]{0,500}\.is_home\s*=\s*true', APP_TABLE) is not None)
 
 # orb_theme_entry_t, from the shipped header — row_text() indexes its fields.
 KNOB_C = P("main", "knob", "knob.c")
@@ -617,10 +638,20 @@ def main():
     check("rotate still owns the screen swap (router)",
           "if (!screen_armed(s_current))" in _code_only(router_src))
     check("long-press goes home to the clock (router)",
-          re.search(r"if \(lpress\) \{\s*disarm_all\(\);\s*set_screen\(INPUT_SCREEN_CLOCK, true\);\s*return;",
+          re.search(r"if \(lpress\) \{\s*disarm_all\(\);\s*set_screen\(orb_app_home\(\), true\);",
                     router_src) is not None)
-    check("menu screen registered with the router",
-          "menu_view_screen()" in router_src and "menu_view_service()" in router_src)
+    # Inverted since the registry landed: the router must NOT name a single view
+    # any more, and the registry must name all three. The old form of this check
+    # required menu_view_screen() to appear in input_router.c, which is precisely
+    # the coupling docs/app-platform-plan.md §1 sets out to remove.
+    check("the registry, not the router, names the views",
+          all(n in app_src for n in ("menu_view_screen()", "menu_view_service()",
+                                     "color_picker_screen()", "clock_view_screen()"))
+          and not any(n in _code_only(router_src)
+                      for n in ("menu_view_", "color_picker_", "clock_view_")))
+    check("main.c builds the apps through the registry, not by name",
+          "orb_app_init_all()" in open(P("main", "main.c")).read()
+          and "clock_view_init()" not in _code_only(open(P("main", "main.c")).read()))
     check("picker gained the same two-level gate",
           "bool color_picker_armed(void)" in open(P("main", "color", "color_picker.c")).read()
           and "if (!s_armed) return;" in open(P("main", "color", "color_picker.c")).read())

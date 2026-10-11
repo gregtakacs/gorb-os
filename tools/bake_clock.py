@@ -1969,6 +1969,23 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                                 baked_ms=int(time.time() * 1000) & 0xFFFFFFFF)
         print("wrote {} ({} B, {} B of pixels + {} B of geometry)".format(
             args.orbtheme, n, len(blob.buf), len(geom)))
+        # The device refuses any card file whose name is not exactly the slug baked into
+        # it, and the /themes page takes that name from this filename when the box is
+        # left blank. So a mismatch here is the one way to produce a container that
+        # uploads, lists as loadable, and then will not stage — which is how a bake
+        # written out as skeleton_theme.orbtheme with --theme-slug skeleton came back
+        # as "that theme cannot be loaded" with nothing to explain it.
+        stem = os.path.splitext(os.path.basename(args.orbtheme))[0]
+        if stem != slug:
+            print("  WARNING: the orb files card themes under the slug baked inside them, so the "
+                  "name on the card must be \"{}\", not the filename's \"{}\". Name the file "
+                  "\"{}.orbtheme\", or type \"{}\" in the page's name box.".format(
+                      slug, stem, slug, slug))
+        bad = sorted(set(slug) - set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"))
+        if bad or slug[:1] == ".":
+            print("  WARNING: slug {} contains {} the card cannot name a file with, so no name "
+                  "on the card can ever match it and the theme cannot be loaded. Re-bake with "
+                  "only A-Z a-z 0-9 . _ - in --theme-slug.".format(repr(slug), bad or "a leading dot"))
 
     if args.dump_dir:
         dump_inspection(args.dump_dir, blob.buf, gif,

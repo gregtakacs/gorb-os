@@ -806,6 +806,24 @@ MUTATIONS = [
     ("card_open stops mounting before it locks", "th",
      "    if (orb_sd_ensure_mounted() != ESP_OK) { *why = \"no card in the socket\"; return -1; }\n",
      ""),
+    # The bug the owner found for real, from the page and with no serial cable: the
+    # card-name == header-slug rule lived only in orb_theme_stage_load(), so a theme
+    # uploaded as "Skeleton" while calling itself "skeleton" was listed as loadable,
+    # offered a Load button, and then answered the tap with a 422 that named nothing.
+    # Each mutation below deletes one consumer's reach for the rule; a battery where the
+    # rule can go missing again from any of the four is a battery that did not learn.
+    ("list stops applying the theme-name rule", "th",
+     "const bool named = filed_as_its_own_slug(&h, slug, name_why, sizeof name_why);",
+     "const bool named = true;"),
+    ("uploader stops applying the theme-name rule", "th",
+     "if (!r && !filed_as_its_own_slug(&h, up->slug, s_up_why, sizeof s_up_why)) {",
+     "if (!r && false) {"),
+    ("theme-name rule compares the title instead of the slug", "th",
+     "if (strcmp(o->slug, card_name) == 0) return true;",
+     "if (strcmp(o->title, card_name) == 0) return true;"),
+    ("theme-name rule removed entirely", "th",
+     "static bool filed_as_its_own_slug(const orb_thdr_t *o, const char *card_name,",
+     "static bool filed_as_its_own_slug_REMOVED(const orb_thdr_t *o, const char *card_name,"),
 ]
 
 def run_mutations():
@@ -1098,6 +1116,56 @@ def lock_lint():
     return rc
 
 
+def naming_lint():
+    """Every consumer of a card theme must apply the card-name == header-slug rule.
+
+    The rule keeps the name on the card and the slug baked into the file as one identity:
+    two entries claiming to be the same theme means the page lists one theme while flash
+    holds another. It shipped in orb_theme_stage_load() alone, and that single-placement
+    is what made the mismatch undiagnosable from the page — orb_theme_scan() validated the
+    container, found nothing wrong with it, and rendered a Load button for a file staging
+    would always refuse, so the owner saw "that theme cannot be loaded" while the only
+    sentence explaining it went to USB serial with no cable attached.
+
+    Executing the helper cannot catch that, so this is a check over the shipped source like
+    the two above it: the helper must exist, must compare the pair it is named for, and
+    must be reached by every function that lists, accepts, stages or installs a card file.
+    """
+    lines = _code_only(th_src).split("\n")
+    spans = {}
+    for n, a, b in _defs(lines):
+        spans.setdefault(n, (a, b))
+    HELPER = "filed_as_its_own_slug"
+    if HELPER not in spans:
+        sys.exit("no %s() in main/art/orb_theme.c — this lint has nothing to check, "
+                 "which means it silently stopped working" % HELPER)
+    rc = 0
+    ha, hb = spans[HELPER]
+    if not re.search(r"strcmp\s*\(\s*\w+->slug\s*,\s*card_name\s*\)",
+                     "\n".join(lines[ha:hb + 1])):
+        print("FAIL main/art/orb_theme.c:%d: %s() no longer compares the header slug with the "
+              "card name — the one rule this lint exists to keep" % (ha + 1, HELPER))
+        rc = 1
+    # boot is in the list because it installs: it reads the pixels under a name NVS
+    # remembered, and a card edited after staging is exactly when the two diverge.
+    for n in ("orb_theme_scan", "orb_theme_upload_end", "orb_theme_stage_load", "orb_theme_boot"):
+        if n not in spans:
+            print("FAIL main/art/orb_theme.c: %s() is not a column-0 definition any more; the "
+                  "lint can no longer prove it applies the naming rule" % n)
+            rc = 1
+            continue
+        a, b = spans[n]
+        if not any(HELPER in lines[k] for k in range(a, b + 1)):
+            print("FAIL main/art/orb_theme.c:%d: %s() touches a card theme without calling %s() "
+                  "— a file filed under a name it does not call itself gets through, and the "
+                  "page can only offer a Load button that fails" % (a + 1, n, HELPER))
+            rc = 1
+    if not rc:
+        print("ok    card-name rule applied by all 4 theme consumers, compared against the "
+              "header slug")
+    return rc
+
+
 if "--mutations" in sys.argv:
     sys.exit(run_mutations())
 
@@ -1110,5 +1178,7 @@ if rc == 0:
     rc = chunk_lint()
 if rc == 0:
     rc = lock_lint()
+if rc == 0:
+    rc = naming_lint()
 sys.exit(rc)
 

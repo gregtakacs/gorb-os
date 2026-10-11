@@ -226,6 +226,35 @@ static bool geom_sizes_ok(uint32_t geom_size, uint32_t n_rects, uint32_t n_first
     return need == geom_size;
 }
 
+/* One rule, applied by the list, the uploader and the staging call alike: the name a
+ * theme is filed under on the card must be the slug baked INTO it. Two entries claiming
+ * to be the same theme is a card somebody has copied by hand, and the page lists one
+ * while flash holds the other.
+ *
+ * This used to live only in orb_theme_stage_load(), which is what made a mismatch
+ * undiagnosable from the page: the row validated clean, so it got a Load button, and
+ * tapping the button answered "that theme cannot be loaded" while the only sentence
+ * explaining it went to USB serial. Checked here, in the function all three callers
+ * reach, so the reason appears next to the file before anybody taps anything.
+ *
+ * The name is formatted into the CALLER's buffer, and may be NULL: verify_container()
+ * and friends hand back string literals, and a static here would be readable after
+ * card_close() had dropped the lock that serialises the walk.
+ *
+ * The wanted name is always the one in the file. The bake wrote it, and the page's
+ * blank-name default reproduces it from the filename, so "file it under the name the
+ * file calls itself" is both the rule and the fix. It is also the only line that can
+ * say so: orb_sd_name_ok() accepts 31 bytes for a card name, the header field holds
+ * NAME_MAX 24 (W_SLUG), and a longer card name therefore can never match at all. */
+static bool filed_as_its_own_slug(const orb_thdr_t *o, const char *card_name,
+                                  char *buf, size_t bufsz)
+{
+    if (buf && bufsz) buf[0] = '\0';
+    if (strcmp(o->slug, card_name) == 0) return true;
+    if (buf && bufsz) snprintf(buf, bufsz, "must be filed as \"%s\"", o->slug);
+    return false;
+}
+
 /* Fill `out` from the blob; the caller allocates, which keeps this free of side
  * effects for the host test. Returns NULL or the reason to refuse the theme.
  *
@@ -942,13 +971,22 @@ esp_err_t orb_theme_boot(void)
         if (h) nvs_get_u8(h, THEME_NVS_FAILS, &fails);
 
         const char *why = NULL;
+        char name_why[64];
         orb_thdr_t h2;
         int fd = card_open(s_pending_slug, &h2, &why);
         esp_err_t e = ESP_FAIL;
         if (fd >= 0) {
+            /* The identity check the page applied before it staged this slug, applied
+             * again here: NVS holds a name and the card holds bytes, and those are only
+             * the same theme if the bytes still say so. An installed slot takes its slug
+             * from the file, so a file swapped under a still-staged name would leave
+             * flash claiming a name the list does not carry — and the fail ladder below
+             * is what turns that into a fallen-back dial rather than a permanent state. */
+            const bool named = filed_as_its_own_slug(&h2, s_pending_slug,
+                                                     name_why, sizeof name_why);
             /* Checksum the copy on the card BEFORE it is written anywhere, so a
              * damaged file costs a message instead of a slot. */
-            const char *vv = verify_container(fd, &h2);
+            const char *vv = named ? verify_container(fd, &h2) : name_why;
             if (vv) {
                 why = vv;
             } else {
@@ -1069,10 +1107,14 @@ esp_err_t orb_theme_stage_load(const char *slug)
         return ESP_ERR_INVALID_CRC;
     }
 
-    /* The file's own slug must match the name it is filed under: two entries claiming
-     * to be the same theme is a card somebody has copied by hand, and the page lists
-     * one while flash holds the other. */
-    if (strcmp(h.slug, slug) != 0) {
+    /* The same rule the list applied above the row and the uploader applied before it
+     * renamed the .part, reached from the one implementation of it. Normally
+     * unreachable — the Load button only exists when the scan said ok — and kept
+     * because the page is not the only way a slug gets here, and staging is the last
+     * moment where a refusal is cheaper than a reboot into a slot that will not
+     * validate. */
+    char name_why[64];
+    if (!filed_as_its_own_slug(&h, slug, name_why, sizeof name_why)) {
         ESP_LOGW(TAG, "stage \"%s\": the file calls itself \"%s\" — rename one of them",
                  slug, h.slug);
         return ESP_ERR_INVALID_ARG;
@@ -1182,12 +1224,20 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
             continue;
         }
         card_close_locked(fd);
+        /* Validated is not the same as loadable: a well-formed container filed under a
+         * name it does not call itself installs nothing, and the owner deserves that
+         * sentence from the list rather than from the log line a Load tap leaves behind.
+         * The title is kept here, unlike the damaged-entry path below, because the file
+         * is readable and the title is what the owner uploaded it to recognise. */
+        char name_why[64];
+        const bool named = filed_as_its_own_slug(&h, slug, name_why, sizeof name_why);
+        if (!named) ESP_LOGW(TAG, "\"%s\" on the card calls itself \"%s\"", slug, h.slug);
         strlcpy(out[n].slug, slug, sizeof(out[n].slug));
         strlcpy(out[n].title, h.title[0] ? h.title : slug, sizeof(out[n].title));
-        out[n].why[0] = '\0';
+        strlcpy(out[n].why, named ? "" : name_why, sizeof(out[n].why));
         out[n].art_size = h.art_size;
         out[n].serial   = h.serial;
-        out[n].err      = ESP_OK;
+        out[n].err      = named ? ESP_OK : ESP_ERR_INVALID_ARG;
         out[n].active   = strcmp(slug, s_active_slug) == 0;
         out[n].pending  = strcmp(slug, s_pending_slug) == 0;
         n++;
@@ -1207,10 +1257,17 @@ struct orb_theme_up {
     int    fd;
     char   tmp[ORB_SD_PATH_MAX];
     char   final[ORB_SD_PATH_MAX];
+    char   slug[ORB_THEME_SLUG_MAX + 1];   /* the ?name= this upload is filed under */
     uint32_t got;
 };
 
 static orb_theme_up_t *s_up;                  /* the one upload in progress */
+
+/* The formatted refusal upload_end() hands back, whose lifetime has to outlast that
+ * function because h_theme_upload() is the one that puts it on the wire. Safe for the
+ * same reason s_up itself is: orb_theme_upload_busy() admits one upload at a time and
+ * only the httpd worker drives one. */
+static char s_up_why[80];
 
 bool orb_theme_upload_busy(void) { return s_up != NULL; }
 
@@ -1230,6 +1287,9 @@ esp_err_t orb_theme_upload_begin(const char *slug, orb_theme_up_t **out)
      * from the client: the page sends ?name=, and the destination is whatever this
      * function decides. */
     if (!theme_file(slug, u->final, sizeof u->final)) { free(u); return ESP_ERR_INVALID_ARG; }
+    /* Kept for the rule upload_end() applies against the parsed header, and taken from
+     * the same argument theme_file() used, so the two cannot describe different names. */
+    strlcpy(u->slug, slug, sizeof u->slug);
     /* Built by hand rather than with "%s.part" on u->final: gcc is right that the
      * result can outgrow the buffer, and the honest fix is to measure it and refuse
      * the slug, not to enlarge the array and truncate quietly. orb_sd_name_ok already
@@ -1309,6 +1369,14 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, const char **why)
             if (!geom_sizes_ok(h.geom_size, c[0], c[1], c[2], c[3]))
                 r = "geometry blob size does not match its own tables";
         }
+    }
+    /* Before verify_container(), not after: this refusal costs one strcmp and the
+     * checksum walk costs seconds of card reads, and a mistyped name should come back
+     * at the speed of a mistyped name. */
+    if (!r && !filed_as_its_own_slug(&h, up->slug, s_up_why, sizeof s_up_why)) {
+        ESP_LOGW(TAG, "upload %s: the file calls itself \"%s\" — the two names must agree",
+                 up->slug, h.slug);
+        r = s_up_why;
     }
     if (!r) r = verify_container(fd, &h);
     close(fd);

@@ -12,11 +12,336 @@
   const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  /* view() is pure derivation off this.state, so mutating state in place then calling it
+   * reads exactly what the on-screen control row would offer. That is the only way to pin
+   * the one-additional-hand contract: the pointer, the ring it reads, and how that ring is
+   * set must all be taken from one choice on either tab. */
+  function uiCheck(E, inst, say) {
+    const lab = (f) => (f.opts || []).map((o) => o.label).join(' | ');
+    const field = (v, label) => v.fields.find((f) => f.label === label);
+    const head = (v) => v.fields.filter((f) => f.isHead).map((f) => f.label);
+    const D0 = JSON.parse(JSON.stringify(E.PRESETS.calendar.design));
+    D0.centre = Object.assign({}, D0.centre, { hour: 1, minute: 1, second: 1 });
+    inst.state.tab = 'dial'; inst.state.designs = { calendar: E.canonDesign(D0) };
+    let v = inst.renderVals();
+    if (!head(v).includes('Additional hand · outer ring')) throw new Error('Dial tab no longer offers the additional hand; heads=' + head(v).join(','));
+    const sel = field(v, 'Additional hand');
+    if (!sel || !sel.isSelect) throw new Error('the additional hand is not a dropdown');
+    if (sel.opts.length !== E.CAL_HANDS.length + 1) throw new Error('the hand dropdown must offer none + every role, got ' + lab(sel));
+    if (!E.CAL_HANDS.every((k) => sel.opts.some((o) => o.v === k && /\d+ divisions/.test(o.label)))) throw new Error('a hand option does not say what it reads: ' + lab(sel));
+    if (field(v, 'Chapter pull-in') || field(v, 'Ring colour')) throw new Error('ring controls offered with no additional hand');
+    // one choice prints the matching ring and switches the pointer on; nothing else is needed
+    sel.on({ target: { value: 'day' } });
+    let d = inst.design();
+    if (d.extra !== 'day' || d.perim !== 'day' || !+d.centre.day) throw new Error('choosing the day hand printed perim=' + d.perim + ' centre.day=' + d.centre.day);
+    if (!/Day of week hand on/.test(inst.state.status)) throw new Error('the pairing said nothing to the user: ' + inst.state.status);
+    v = inst.renderVals();
+    for (const f of ['Chapter pull-in', 'Ring colour', 'Ring typeface', 'Orientation', 'Label size', 'Position'])
+      if (!field(v, f)) throw new Error('the ring prints but the dial offers no ' + f + ' control; fields=' + v.fields.map((x) => x.label).join(','));
+    // the ring can be switched off without losing the hand, and the pull-in reaches 1.00
+    const pi = field(v, 'Chapter pull-in');
+    if (pi.max !== 1) throw new Error('Chapter pull-in cannot reach 1.00, max=' + pi.max);
+    pi.on({ target: { value: '1' } });
+    d = inst.design();
+    if (E.perimGeom(d)) throw new Error('pull-in 1.00 must leave nothing printed on the rim');
+    v = inst.renderVals();
+    if (field(v, 'Ring colour')) throw new Error('type controls still offered with the ring hidden');
+    if (!field(v, 'Additional hand')) throw new Error('hiding the ring took the hand choice away too');
+    inst.ringShown(inst.design()) && (() => { throw new Error('ringShown true with the ring hidden'); })();
+    field(v, 'Outer ring').opts.find((o) => /Printed on the rim/.test(o.label)).pick();
+    d = inst.design();
+    if (!E.perimGeom(d) || +d.perimShrink === 1) throw new Error('switching the ring back on left it suppressed');
+    // the day can sit between the division lines, and the type size is the user's
+    v = inst.renderVals();
+    field(v, 'Position').opts.find((o) => /Between the lines/.test(o.label)).pick();
+    field(v, 'Label size').on({ target: { value: '2.2' } });
+    d = inst.design();
+    if (d.perimPos !== 'between' || +d.perimSize !== 2.2) throw new Error('ring display choice did not land: ' + d.perimPos + ' ' + d.perimSize);
+    if (!E.perimGeom(d).between) throw new Error('perimGeom ignores perimPos');
+    // the rotator: named start chips off the live spec, plus a degree slider that agrees with them
+    v = inst.renderVals();
+    const rs = field(v, 'Ring start'), tn = field(v, 'Turn');
+    if (!rs || !rs.isChips || rs.opts.length !== 7) throw new Error('the day ring offers no per-day start chips: ' + (rs && rs.opts.map((o) => o.label)));
+    if (!tn || !tn.isRange || tn.max !== 359) throw new Error('no 0-359 ring turn slider, got ' + (tn && tn.max));
+    tn.on({ target: { value: '120' } });
+    d = inst.design();
+    if (+d.perimRot !== 120 || E.perimGeom(d).rot !== 120) throw new Error('the turn slider did not reach the design: ' + d.perimRot);
+    const monOpt = rs.opts.filter((o) => /^MON at 12/.test(o.label))[0];
+    monOpt.pick();
+    d = inst.design();
+    if (!E.perimGeom(d)) throw new Error('turning the ring hid it');
+    if (E.ringTop(E.perimGeom(d).spec, E.perimGeom(d).rot, E.perimGeom(d).between).lab !== 'MON') throw new Error('"MON at 12" did not bring MON to 12 o\'clock (turn ' + d.perimRot + ')');
+    if (!/MON now reads at 12/.test(inst.renderVals().fields.filter((f) => f.isNote).map((f) => f.note).join(' '))) throw new Error('the ring start row never says which day ended up at 12');
+    inst.upd((dd) => { delete dd.perimRot; });
+    if (inst.design().perimRot !== undefined) throw new Error('an unturned ring still carries a turn, so the design id would change for nothing');
+    // the same one dropdown is offered on the Hands tab, where the pointers are
+    inst.state.tab = 'hands';
+    v = inst.renderVals();
+    if (!head(v).includes('Additional hand · outer ring')) throw new Error('Hands tab has no additional-hand group; heads=' + head(v).join(','));
+    const hs = field(v, 'Additional hand');
+    if (!hs || !hs.isSelect || hs.opts.length !== sel.opts.length) throw new Error('the Hands tab hand dropdown is not the same choice');
+    if (!/tip lands on its own ticks/.test(v.fields.filter((f) => f.isNote).map((f) => f.note).join(' '))) throw new Error('Hands tab does not explain the tip/Length relationship');
+    // exactly one additional hand row, and taking the choice back retires hand and ring together
+    const cal = v.handRows.filter((r) => /^Centre (24-hour|GMT|day|date)$/.test(r.label));
+    if (cal.length !== 1 || cal[0].label !== 'Centre day') throw new Error('the hands list carries ' + cal.length + ' additional-hand rows: ' + cal.map((r) => r.label));
+    if (cal[0].eye !== 'remove') throw new Error('the additional hand row still reads as a show/hide: ' + cal[0].eye);
+    cal[0].toggle();
+    d = inst.design();
+    if (d.perim || 'extra' in d || +d.centre.day) throw new Error('removing the hand left perim=' + d.perim + ' extra=' + JSON.stringify(d.extra) + ' — a default left in the canonical design re-keys the id of every dial that never had the feature');
+    if (inst.renderVals().handRows.some((r) => /^Centre (24-hour|GMT|day|date)$/.test(r.label))) throw new Error('the hands list still shows a row for a hand that is gone');
+    // switching straight to another function swaps the pointer and the ring together
+    inst.renderVals().fields.find((f) => f.label === 'Additional hand').on({ target: { value: 'date' } });
+    d = inst.design();
+    if (d.perim !== 'date' || +d.centre.day || !+d.centre.date) throw new Error('switching functions left the old hand or its ring behind: ' + JSON.stringify({ perim: d.perim, centre: d.centre }));
+    if (!+d.centre.hour || !+d.centre.minute) throw new Error('the hour and minute hands are not the additional hand business: ' + JSON.stringify(d.centre));
+    // the stage: true size is the default and the only honest preview, Full is the old 1:1 view,
+    // Magnify scrolls a bigger frame through the same window
+    let vw = inst.viewVals();
+    if (inst.state.view !== 'true') throw new Error('the stage does not open at true size, it opens at ' + inst.state.view);
+    if (vw.stageCv !== E.REAL_CSS || vw.stageWin !== E.REAL_CSS) throw new Error('true size must draw the 466 px frame into ' + E.REAL_CSS + ' css px at cal 1, drew ' + vw.stageCv + '/' + vw.stageWin);
+    if (!/True size/.test(vw.viewText) || !/1\.75 in/.test(vw.viewText) || !/0\.0954 mm/.test(vw.viewText)) throw new Error('the stage caption does not say what it is showing: ' + vw.viewText);
+    if (inst.calibrated() || !/96 px\/in standard/.test(vw.viewText)) throw new Error('an uncalibrated stage presents true size as exact: calibrated=' + inst.calibrated() + ' ' + vw.viewText);
+    // the page cannot know the screen's dpi, so true size is only honest once calibrated against a
+    // real ruler; the ruler, the slider, the nudges and the solve must all move the one factor
+    if (!vw.showRuler || vw.rulerTicks.length !== E.RULER_MM + 1) throw new Error('true size offers no usable ruler: shown=' + vw.showRuler + ' ticks=' + vw.rulerTicks.length);
+    if (vw.rulerPx !== E.rulerPx(1)) throw new Error('the ruler is not the nominal ' + E.RULER_MM + ' mm at cal 1: ' + vw.rulerPx);
+    // the factor describes the monitor, so it survives a reload — and a browser that refuses
+    // storage must degrade to per-session calibration, not throw
+    const store = {}; let throwNext = false;
+    window.localStorage = {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { if (throwNext) throw new Error('private mode'); store[k] = String(v); },
+    };
+    const idBefore = inst.designId();
+    inst.setCal(2); vw = inst.viewVals();
+    if (vw.stageCv !== Math.round(E.REAL_CSS * 2) || vw.rulerPx !== E.rulerPx(2)) throw new Error('calibration moved the dial but not the ruler: ' + vw.stageCv + '/' + vw.rulerPx);
+    if (!/1\.75 in/.test(vw.viewText) || !/44\.[45] mm/.test(vw.viewText)) throw new Error('true size must still claim 1.75 in / 44.5 mm after calibration: ' + vw.viewText);
+    if (!/2\.000×/.test(vw.calText)) throw new Error('the calibration readout is missing: ' + vw.calText);
+    const it2 = new (window.COMP_CLASS(DCLogic))({});
+    if (it2.calibrated() || it2.cal() !== 1) throw new Error('a fresh instance claims a calibration it never took');
+    it2.loadCal();
+    if (!it2.calibrated() || Math.abs(it2.cal() - 2) > 1e-6) throw new Error('the calibration did not come back from storage: ' + it2.cal() + ' set=' + it2.calibrated());
+    throwNext = true;
+    it2.setCal(1.5);
+    if (!it2.calibrated() || Math.abs(it2.cal() - 1.5) > 1e-6) throw new Error('a blocked localStorage broke calibration instead of degrading it');
+    throwNext = false;
+    if (inst.designId() !== idBefore) throw new Error('screen calibration leaked into the design id — it describes the monitor, not the dial');
+    const step = +vw.calStep;
+    if (!(step > 0) || vw.calMin !== inst.CAL_MIN || vw.calMax !== inst.CAL_MAX) throw new Error('the calibration slider publishes no usable range: ' + vw.calMin + '-' + vw.calMax + ' step ' + step);
+    const before = inst.cal();
+    vw.calUp();
+    if (Math.abs(inst.cal() - (before + step)) > 1e-9) throw new Error('the + nudge moved by ' + (inst.cal() - before) + ', expected the published step ' + step);
+    const here = inst.cal(), fine = inst.calStep();
+    inst.viewVals().calDown();
+    if (Math.abs(inst.cal() - (here - fine)) > 1e-9) throw new Error('the − nudge moved by ' + (here - inst.cal()) + ', expected ' + fine);
+    const back = inst.cal();
+    inst.viewVals().calUp(); inst.viewVals().calDown();
+    if (Math.abs(inst.cal() - back) > 1e-9) throw new Error('− does not undo + at the same calibration: ' + back + ' → ' + inst.cal());
+    inst.viewVals().solve({ target: { value: '' } });
+    if (Math.abs(inst.cal() - back) > 1e-9) throw new Error('an empty ruler field reset the calibration: ' + inst.cal());
+    inst.viewVals().solve({ target: { value: '500' } });
+    if (Math.abs(inst.cal() - back) > 1e-9 || !/between 5 and 300/.test(inst.state.status)) throw new Error('an absurd measurement was accepted: ' + inst.cal() + ' ' + inst.state.status);
+    inst.setCal(1); vw = inst.viewVals();
+    vw.solve({ target: { value: '30' } });   // the 40 mm bar really measures 30 → 1.333×
+    if (Math.abs(inst.cal() - 4 / 3) > 1e-3) throw new Error('matching the ruler to 30 mm should solve 1.333×, got ' + inst.cal());
+    if (!/Ruler matched at 30 mm/.test(inst.state.status)) throw new Error('solving the calibration said nothing: ' + inst.state.status);
+    vw = inst.viewVals();
+    if (vw.stageCv !== Math.round(E.REAL_CSS * (4 / 3)) || vw.rulerPx !== E.rulerPx(4 / 3)) throw new Error('ruler and dial disagreed after solving: ' + vw.stageCv + '/' + vw.rulerPx);
+    vw.resetCal(); if (inst.cal() !== 1) throw new Error('reset did not return to the 96 px/in standard: ' + inst.cal());
+    if (inst.viewVals().stageCv !== E.REAL_CSS) throw new Error('true size did not come back to ' + E.REAL_CSS + ' px');
+    if (vw.viewOpts.length !== 3 || vw.hasZoom) throw new Error('the preview row offers ' + vw.viewOpts.length + ' views, hasZoom=' + vw.hasZoom);
+    inst.setView('full'); vw = inst.viewVals();
+    if (vw.stageCv !== 466 || vw.stageWin !== 466 || vw.stageFlow !== 'hidden') throw new Error('Full must be the old 1:1 stage: ' + vw.stageCv + '/' + vw.stageWin + ' ' + vw.stageFlow);
+    if (vw.showRuler) throw new Error('the ruler is offered outside true size, where no physical claim is being made');
+    if (!/2\.8× the 1\.75 in panel/.test(vw.viewText)) throw new Error('Full does not tell the user how far the preview is from the watch: ' + vw.viewText);
+    inst.setView('zoom'); vw = inst.viewVals();
+    if (vw.stageWin !== 466 || vw.stageCv <= 466 || vw.stageFlow !== 'auto' || vw.stageRound === '50%') throw new Error('Magnify must hold the window and scroll a bigger frame: ' + vw.stageWin + '/' + vw.stageCv + ' ' + vw.stageFlow + ' ' + vw.stageRound);
+    if (!/baked at 466 px/.test(vw.viewText)) throw new Error('Magnify does not say that zooming adds no detail: ' + vw.viewText);
+    if (vw.showRuler) throw new Error('Magnify shows a ruler, which would be a claim about the zoom rather than the watch');
+    if (!vw.hasZoom || vw.zoomOpts.length !== 5) throw new Error('no magnify steps offered: ' + vw.zoomOpts.length);
+    vw.zoomOpts[4].pick(); vw = inst.viewVals();
+    if (vw.stageCv !== 466 * 4 || !/4\.00×/.test(vw.viewText)) throw new Error('the 4× step drew ' + vw.stageCv + ' css px: ' + vw.viewText);
+    vw.zoomOpts[0].pick(); inst.setView('true');
+    say('  additional-hand UI: one dropdown on both tabs, ring derived, display controls, pull-in reaches 1.00; ruler-calibrated true size');
+
+  }
   const bytesOf = (c) => { const b64 = c.toDataURL('image/png').split(',')[1], bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
   const boxOf = (h) => { const hw = h.kind === 'rect' ? h.w / 2 : (h.r || h.a), hh = h.kind === 'rect' ? h.h / 2 : (h.r || h.a); return [Math.max(0, Math.floor(h.x - hw - 2)), Math.max(0, Math.floor(h.y - hh - 2)), Math.min(466, Math.ceil(h.x + hw + 2)), Math.min(466, Math.ceil(h.y + hh + 2))]; };
   const pxOf = (c, b) => c.getContext('2d').getImageData(b[0], b[1], b[2] - b[0], b[3] - b[1]).data;
   const litIn = (c, b) => { const d = pxOf(c, b); let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i + 1] > 150 && d[i + 2] > 130) n++; return n; };
   const inkIn = (c, b) => { const d = pxOf(c, b); let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 8) n++; return n; };
+  // The additional centre pointer is the studio half of a GMT/calendar watch. ONE per dial: it
+  // must build on the centre arbour, reach the ring it is read against, turn on the right fraction
+  // of a turn, and print its scale. The ring is derived from the hand's role, so every case here
+  // sets `extra` and nothing else. prep_watch_kit.py still drops these hands, which is why each
+  // one ships deviceReady:false.
+  function calEngineCheck(E, inst, say) {
+    const clone = (d) => JSON.parse(JSON.stringify(d));
+    const base = clone(E.PRESETS.calendar.design);
+    base.centre = { hour: 1, minute: 1, second: 1 };
+    base.gmtOffset = 5;
+    // a design that names several functions collapses to the one its ring reads
+    const legacy = clone(base); E.CAL_HANDS.forEach((k) => { legacy.centre[k] = 1; }); legacy.perim = 'date';
+    const leg = E.canonDesign(legacy);
+    if (leg.extra !== 'date') throw new Error('several pointers named: the one its ring reads must survive, extra=' + leg.extra);
+    if (E.CAL_HANDS.filter((k) => +(leg.centre || {})[k]).length !== 1) throw new Error('canonDesign left more than one additional hand: ' + JSON.stringify(leg.centre));
+    const design = (extra, patch) => { const c = clone(base); if (extra) c.extra = extra; Object.assign(c, patch || {}); return E.canonDesign(c); };
+    const faceOf = (d) => E.face({ ...inst.opts(), design: d, hands: 'breguet', handFinish: 'blued' });
+    for (const k of E.CAL_HANDS) {
+      const d = design(k), PG = E.perimGeom(d);
+      if (!PG) throw new Error(k + ' hand printed no ring for it to read');
+      if (d.perim !== E.EXTRA_RING[k]) throw new Error(k + ' hand must read ' + E.EXTRA_RING[k] + ', the rim prints ' + d.perim);
+      if (E.CAL_HANDS.filter((q) => +d.centre[q]).length !== 1) throw new Error(k + ' design shows more than one additional hand: ' + JSON.stringify(d.centre));
+      const F = faceOf(d), mine = F.hands.filter((h) => String(h.id).startsWith('centre-') && E.CAL_HANDS.indexOf(h.kind) >= 0);
+      if (mine.length !== 1 || mine[0].id !== 'centre-' + k) throw new Error('the ' + k + ' case built ' + mine.length + ' additional hands: ' + mine.map((h) => h.id));
+      const h = mine[0];
+      if (Math.abs(h.x - 233) > 0.01 || Math.abs(h.y - 233) > 0.01) throw new Error(k + ' hand is off the centre arbour at ' + h.x + ',' + h.y);
+      if (!h.sp || !h.sp.c.width || !h.sp.c.height) throw new Error(k + ' hand has no sprite');
+      if (Math.abs(h.sp.py - 3 - Math.min(222, PG.reach)) > 7) throw new Error(k + ' pointer reaches ' + (h.sp.py - 3) + 'px but its ring ticks end at ' + PG.reach.toFixed(1) + 'px');
+      const dd = h.sp.c.getContext('2d').getImageData(0, 0, h.sp.c.width, h.sp.c.height).data;
+      let ink = 0; for (let i = 3; i < dd.length; i += 4) if (dd[i] > 8) ink++;
+      if (ink < 150) throw new Error(k + ' hand sprite is essentially empty (' + ink + ' px)');
+      if (!(F.hands.indexOf(h) > F.hands.findIndex((q) => q.id === 'centre-second'))) throw new Error(k + ' hand sits under the seconds hand');
+    }
+    const pose = new Date(2026, 0, 1, 18, 0, 0), late = new Date(2026, 0, 1, 20, 0, 0);
+    const chk = (nm, got, want) => { if (Math.abs(got - want) > 1e-6) throw new Error(nm + ' angle ' + got.toFixed(6) + ', expected ' + want.toFixed(6)); };
+    const want = { hours24: 0.75, gmt: 23 / 24, day: 4 / 7, date: 0 };
+    const handOf = (extra, patch) => faceOf(design(extra, patch)).hands.find((q) => q.id === 'centre-' + extra);
+    for (const k of E.CAL_HANDS) chk(k + ' @18:00 Thursday the 1st', handOf(k).turn(pose), want[k]);
+    chk('gmt wraps past midnight @20:00 +5h', handOf('gmt').turn(late), 1 / 24);
+    if (handOf('gmt').turn === handOf('hours24').turn) throw new Error('GMT hand shares the 24-hour turn: the zone offset is not wired');
+    // the ring's zero point is a contract with the drive formula each hand ships with
+    const g24 = E.perimGeom({ perim: 'hours24', perimShrink: 0.88 }), gday = E.perimGeom({ perim: 'day', perimShrink: 0.88 });
+    if (!g24 || g24.spec.n !== 24 || g24.spec.lab(0) !== '24' || g24.spec.lab(12) !== '12') throw new Error('the 24-hour ring must read 24 at 12 o\'clock then 1..23, got n=' + (g24 && g24.spec.n) + ' lab0=' + (g24 && g24.spec.lab(0)));
+    if (!(g24.spec.maj(0) && g24.spec.maj(6) && g24.spec.maj(12) && g24.spec.maj(18)) || g24.spec.maj(3)) throw new Error('the 24-hour ring must emphasise only 24/6/12/18');
+    if (!gday || gday.spec.n !== 7 || gday.spec.lab(0) !== 'SUN' || gday.spec.lab(6) !== 'SAT') throw new Error('the day ring must be SUN..SAT, 7 splits, got ' + (gday && gday.spec.n));
+    // what the rim really prints, measured against the same dial with no additional hand
+    const bandCount = (A, B) => {
+      const pa = A.getContext('2d').getImageData(0, 0, 466, 466).data, pb = B.getContext('2d').getImageData(0, 0, 466, 466).data;
+      let n = 0;
+      for (let y = 0; y < 466; y++) for (let x = 0; x < 466; x++) {
+        const r = Math.hypot(x - 233, y - 233); if (r < 198 || r > 222) continue;
+        const i = (y * 466 + x) * 4; if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 24) n++;
+      }
+      return n;
+    };
+    const bandDiff = (extra, patch) => bandCount(faceOf(design(extra, patch)).dial, faceOf(design(null, patch)).dial);
+    // two rings on the same hand: only the ring display differs, so any movement is the control's
+    const ringDiff = (a, b) => bandCount(faceOf(design('day', a)).dial, faceOf(design('day', b)).dial);
+    const dN = bandDiff('hours24', { perimShrink: 1 }), d24 = bandDiff('hours24'), dDt = bandDiff('date'), dDay = bandDiff('day');
+    say('  perimeter ink in the 198-222px band: pull-in 1.00=' + dN + ' 24h=' + d24 + ' date=' + dDt + ' day=' + dDay);
+    if (dN > 400) throw new Error('pull-in 1.00 still prints ' + dN + ' px out there');
+    if (!(dDt > 1200 && d24 > 1200 && dDay > 800)) throw new Error('a perimeter scale printed no ink: 24h=' + d24 + ' date=' + dDt + ' day=' + dDay);
+    if (!(dDt > d24 && d24 > dDay)) throw new Error('the scales are not 31 > 24 > 7 splits of ink: date=' + dDt + ' 24h=' + d24 + ' day=' + dDay);
+    // the ring's own display controls must move ink, not just sit in the design
+    const dSize = ringDiff({}, { perimSize: 2.4 }), dOrient = ringDiff({}, { perimOrient: 'radial' });
+    const dColor = ringDiff({}, { perimColor: '#ff0000' }), dFont = ringDiff({}, { perimFont: 'cinzel' });
+    const dPos = ringDiff({}, { perimPos: 'between' });
+    say('  ring display controls move ' + dDay + ' px of day ring: size=' + dSize + ' radial=' + dOrient + ' colour=' + dColor + ' face=' + dFont + ' between=' + dPos);
+    if (dSize < 400) throw new Error('Label size did not spread the day names across the rim: only ' + dSize + ' px changed');
+    if (dOrient < 200) throw new Error('radial ring labels print the same ink as bottom-aligned ones');
+    if (dColor < 200) throw new Error('the ring colour control changes nothing');
+    if (dFont < 200) throw new Error('the ring typeface control changes nothing');
+    // between the lines moves the labels and the hand that reads them together
+    chk('day between the lines', handOf('day', { perimPos: 'between' }).turn(pose), 4 / 7 + 0.5 / 7);
+    if (dPos < 200) throw new Error('perimPos between did not move the printed day');
+    // ---------- the rotator: where the first day of the week/month/hour starts
+    if (!(Math.abs(E.MM_PER_PX - 0.0954) < 0.001) || E.REAL_CSS !== 168) throw new Error('the panel mapping is off: 1 px = ' + E.MM_PER_PX + ' mm, true size = ' + E.REAL_CSS + ' px');
+    // calibration must not move the CLAIM, only whether the css px realise it: at any factor the
+    // true-size box is 1.75 screen inches and the ruler box is RULER_MM millimetres
+    for (const c of [0.5, 1, 1.3333, 2, 3]) {
+      if (Math.abs(E.screenInch(E.realCss(c), c) - E.PANEL.inch) > 0.01) throw new Error('true size stopped claiming 1.75 in at calibration ' + c + ': ' + E.screenInch(E.realCss(c), c));
+      if (Math.abs(E.screenInch(E.rulerPx(c), c) * 25.4 - E.RULER_MM) > 0.4) throw new Error('the ruler stopped measuring ' + E.RULER_MM + ' mm at calibration ' + c);
+    }
+    if (E.rulerPx(2) !== E.rulerPx(1) * 2) throw new Error('the ruler does not scale linearly with the calibration');
+    const gRot = E.perimGeom({ perim: 'day', perimShrink: 0.88, perimRot: 90 });
+    if (!gRot || gRot.rot !== 90 || Math.abs(gRot.offTurn - 0.25) > 1e-9) throw new Error('a 90° ring turn must add a quarter turn to the hand that reads it, got rot=' + (gRot && gRot.rot) + ' offTurn=' + (gRot && gRot.offTurn));
+    const gNeg = E.perimGeom({ perim: 'day', perimShrink: 0.88, perimRot: -51.4285714 });
+    if (!gNeg || Math.abs(gNeg.rot - 308.5714286) > 1e-4) throw new Error('a negative turn must wrap into the dial, got ' + (gNeg && gNeg.rot));
+    if (E.perimGeom({ perim: 'day', perimShrink: 0.88 }).rot !== 0) throw new Error('an untouched ring must start at 12');
+    const gHalf = E.perimGeom({ perim: 'day', perimShrink: 0.88, perimPos: 'between', perimRot: 90 });
+    if (Math.abs(gHalf.offTurn - (0.5 / 7 + 0.25)) > 1e-9) throw new Error('between-the-lines and the turn must stack: offTurn=' + gHalf.offTurn);
+    chk('day hand follows the turn', handOf('day', { perimRot: 90 }).turn(pose), 4 / 7 + 0.25);
+    chk('date hand follows the turn', handOf('date', { perimRot: 180 }).turn(pose), 0.5);
+    if (Math.abs((handOf('day', { perimRot: 90 }).turn(pose) - handOf('hours24', { perimRot: 90 }).turn(pose)) - (4 / 7 - 0.75)) > 1e-9) throw new Error('the turn is not shared by every ring hand');
+    const dTurn = ringDiff({}, { perimRot: 90 }), dTurnS = ringDiff({ perimRot: 45 }, { perimRot: 46 });
+    say('  ring turn moves ' + dDay + ' px of day ring: 90°=' + dTurn + '  1°=' + dTurnS);
+    if (dTurn < 400) throw new Error('turning the ring a quarter turn left its print where it was (' + dTurn + ' px)');
+    if (dTurnS < 20) throw new Error('a single degree of ring rotation prints the same pixels — the slider has no effect that fine');
+    // the preset chips must come off the print: the day named on a chip is the day that ends up at 12
+    const starts = E.ringStarts(gday.spec, false);
+    if (starts.length !== 7 || !starts.some((s) => /^SUN at 12/.test(s.label))) throw new Error('the day ring offers no per-day start chips: ' + starts.map((s) => s.label));
+    for (const s of starts) {
+      const t = E.perimGeom({ perim: 'day', perimShrink: 0.88, perimRot: s.v }), w = E.ringTop(t.spec, t.rot, t.between);
+      if (w.lab !== s.label.slice(0, 3) || w.off > 0.02) throw new Error('chip "' + s.label + '" leaves ' + w.lab + ' at 12 o\'clock, ' + w.off + '° out');
+    }
+    const dStart = E.ringStarts(E.perimGeom({ perim: 'date', perimShrink: 0.88 }).spec, false);
+    if (dStart.length > 6) throw new Error('the 31-division ring offers ' + dStart.length + ' start chips, which is a wall not a control');
+    return design('date', { perimRot: 180 });
+  }
+  // Read the shipped kit back and check what the device is TOLD about these hands: the
+  // angle formula each one needs, deviceReady:false so no one mistakes them for wired-up
+  // movers, their PNGs and shadows present, and the printed ring's split geometry.
+  function calKitCheck(E, inst, DCLogic, bytesOf, say, calD, done) {
+    const it = new (window.COMP_CLASS(DCLogic))({});
+    it.ready = true; it.rendering = false;
+    it.state.dial = 'calendar'; it.state.timeMode = 'cycle'; it.state.frame = 0; it.state.hidden = {}; it.state.tab = 'export'; it.state.playing = false;
+    it.state.designs = { calendar: calD };
+    it.budget = () => ({ fps: 8 });
+    it.base = E.movement(it.opts());
+    it.gt = Array.from({ length: it.B }, (_, f) => it.base.render(f).gt);
+    let files2 = null;
+    it.png = async (c) => bytesOf(c); it.zip = (f) => { files2 = f; return new Blob([]); }; it.download = () => { };
+    it.exportKit().then(() => {
+      try {
+        if (!files2) throw new Error('the calendar kit emitted no files');
+        const man2 = JSON.parse(new TextDecoder().decode(files2.find((f) => f.name === 'manifest.json').data));
+        const per = man2.perimeter;
+        if (!per) throw new Error('manifest carries no perimeter block');
+        if (per.scale !== 'date' || per.splits !== 31) throw new Error('perimeter block wrong: ' + per.scale + ' splits=' + per.splits);
+        if (per.labels.length !== 31 || per.labels[0] !== '1' || per.labels[30] !== '31') throw new Error('perimeter labels are not 1…31: [' + per.labels[0] + '…' + per.labels[30] + ']');
+        if (per.emphasised.join(',') !== '4,9,14,19,24,29,30') throw new Error('date majors must be the 5th,10th,15th,20th,25th,30th and 31st, got ' + per.emphasised);
+        if (per.clockwise !== true || Math.abs(per.index0Deg - E.perimGeom(calD).rot) > 0.01) throw new Error('perimeter must declare where index 0 sits, got ' + per.index0Deg + ' but the dial turned ' + E.perimGeom(calD).rot + '°');
+        if (Math.abs(per.rotationDeg - E.perimGeom(calD).rot) > 0.01) throw new Error('manifest does not report the ring turn: ' + per.rotationDeg);
+        if (!(per.fontSizeMm > 0.4 && per.fontSizeMm < 4)) throw new Error('manifest must declare the physical label size in mm, got ' + per.fontSizeMm);
+        if (Math.abs(per.chapterScale - 0.88) > 0.001) throw new Error('manifest must report the chapter pull-in, got ' + per.chapterScale);
+        const byMount = {}; for (const h of man2.hands) byMount[h.mount] = h;
+        // exactly the one additional hand this design chose, and no ghost of the other three
+        if (E.CAL_HANDS.filter((k) => byMount['centre-' + k]).length !== 1 || !byMount['centre-date']) throw new Error('the kit ships the wrong additional hand set: ' + E.CAL_HANDS.filter((k) => byMount['centre-' + k]));
+        for (const k of ['date']) {
+          const h = byMount['centre-' + k];
+          if (!h) throw new Error('the kit ships no centre-' + k + ' hand');
+          if (h.kind !== k) throw new Error('centre-' + k + ' reports kind ' + h.kind);
+          if (!h.drive || !/value =/.test(h.drive)) throw new Error(k + ' hand ships no drive formula for the device');
+          if (!/add 0\.5/.test(h.drive || '')) throw new Error('the ring is turned 180° but the ' + k + ' drive formula does not carry the turn: ' + h.drive);
+          if (h.deviceReady !== false) throw new Error(k + ' hand claims the device can drive it; prep_watch_kit.py accepts only hour/minute/second');
+          if (!h.file || !files2.some((f) => f.name === h.file)) throw new Error(k + ' hand PNG missing from the zip: ' + h.file);
+          if (!h.shadow || !files2.some((f) => f.name === h.shadow.file)) throw new Error(k + ' hand shadow PNG missing from the zip');
+          if (Math.abs(h.centre[0] - 233) > 0.02 || Math.abs(h.centre[1] - 233) > 0.02) throw new Error(k + ' hand declares centre ' + h.centre + ', must be the dial centre');
+        }
+        if (!per.labelPlacement || !/on the division lines/.test(per.labelPlacement)) throw new Error('the manifest must say where the ring labels sit, got ' + per.labelPlacement);
+        if (per.labelOffsetDeg !== 0 || !/upright/.test(per.orientation)) throw new Error('a default ring must declare upright labels on the lines: ' + per.labelOffsetDeg + ' ' + per.orientation);
+        // 'date' and 'day' are NOT unique keys: a watch may carry a date SUBDIAL and a centre
+        // date pointer at once, and both report the same kind. mount is the only unique key,
+        // so pin uniqueness on the filenames the loader will read and prove this design
+        // actually exercises the overlap instead of quietly passing.
+        const dupes = {}; for (const h of man2.hands) (dupes[h.kind] = dupes[h.kind] || []).push(h);
+        const clash = Object.entries(dupes).filter(([, hs]) => hs.length > 1 && hs.some((h) => h.mount.startsWith('centre-')) && hs.some((h) => !h.mount.startsWith('centre-')));
+        if (!clash.length) throw new Error('this design no longer exercises the centre/subdial kind overlap, so the uniqueness guard below is untested');
+        for (const [, hs] of clash) {
+          const [a, b] = hs;
+          if (Math.hypot(a.centre[0] - b.centre[0], a.centre[1] - b.centre[1]) < 20) throw new Error('two ' + a.kind + ' hands share an arbour but must not: ' + a.mount + ' and ' + b.mount);
+        }
+        if (new Set(man2.hands.map((h) => h.file)).size !== man2.hands.length) throw new Error('two hands would overwrite the same PNG in the zip');
+        for (const k of ['date', 'day']) {
+          const sub = man2.hands.filter((h) => h.kind === k && !h.mount.startsWith('centre-'));
+          if (sub.some((h) => h.drive || h.deviceReady === false)) throw new Error('a subdial ' + k + ' hand carries centre-pointer metadata; drive is reserved for the centre arbour');
+        }
+        say('  kit hands: ' + man2.hands.map((h) => h.mount + (h.drive ? '*' : '')).join(' ') + '  perimeter=' + per.scale + '/' + per.splits + ' splits @' + per.outerPx + 'px');
+        done();
+      } catch (e) { done(e); }
+    }, (e) => done(e));
+  }
   try {
     const E = window.WatchEngine;
     if (!E || !window.COMP_CLASS) throw new Error('engine or component class missing');
@@ -236,7 +561,20 @@
       say('  box diff vs live compose: sphere moon=' + diffLiveBox + ' of ' + area + '  disc moon=' + diff5 + '   vs pose ref=' + diffPoseBox);
       if (diffPoseBox > area * 0.01) throw new Error('preview.png is not pixel-identical to the posed render (' + diffPoseBox + ' px)');
       if (Math.abs(ph - E.PREVIEW_MOON) > 0.12 && diffLiveBox < area * 0.02 && diff5 < (b5[2] - b5[0]) * (b5[3] - b5[1]) * 0.02) throw new Error('preview moon still tracks the live date');
-        say('RESULT: PASS'); document.title = 'PASS';
+        const calD = calEngineCheck(E, inst, say);
+        calKitCheck(E, inst, DCLogic, bytesOf, say, calD, (err) => {
+          if (err) {
+            say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
+          // last, because it rewrites inst.state.designs while it drives the controls
+          try { uiCheck(E, inst, say); }
+          catch (e) {
+            say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
+          say('RESULT: PASS'); document.title = 'PASS';
+        });
       } catch (e) {
         say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'));
         document.title = 'FAIL';

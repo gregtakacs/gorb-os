@@ -120,10 +120,14 @@ What is green here proves less than it looks.
       fail ladder falls back to the previous theme.
 - [ ] Build with 12 themes including long names and confirm the list answers instead of
       truncating, exercising section 5.
-- [ ] Flash the build. `/tmp/serflash.sh` pointed at `B=.../Projects/gorb-os/build`, the
+- [x] Flash the build. `/tmp/serflash.sh` pointed at `B=.../Projects/gorb-os/build`, the
       upstream clone, not this `gorb-os-2` tree. `B` is repointed at `.../gorb-os-2/build` as of
-      2026-10-11 (`/tmp/serflash.sh.bak` holds the old copy); this box stays open until a build
-      from this tree is actually flashed and the serial log is read back.
+      2026-10-11 (`/tmp/serflash.sh.bak` holds the old copy). **Done 2026-10-11 13:53:** this
+      tree's `build/gorb-os.bin` flashed to ota_0 with `EXIT=0`, and the serial log was read back
+      over an RTS reset — clean boot, no `E (`/Guru/abort, `theme "skeleton" from slot-B`,
+      `bank "assets" @0x830000, 1978973 B ... 31 MMU pages`, tick timer running at the theme's
+      baked 250 ms. (Build under test = `dev2` + the P1 compositor extraction,
+      `docs/app-platform-plan.md` §10.)
 
 ## 7. Housekeeping
 

@@ -409,7 +409,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | Phase | Deliverable | Passes when |
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
-| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red |
+| P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **compositor + commit pass + `orb_art_reserve()` landed and proven identical (§10); delta bank, scheduler, and the fps/M1/M2 measurements are still open** |
 | P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
@@ -425,3 +425,80 @@ Rulings B1–B5 and C1–C12 are in section 0.1 and are not open questions. What
 2. **The behaviour vocabulary's first cut.** Which `CLK_KIND_*`/`CLK_SRC_*` become the OS's registered kinds, and which stay clock-app-private. `theme_schema.py`'s SOURCES/KINDS/FLAGS is the inventory; naming the subset is a P0 paper task, not a code one, and it is the last thing that must be agreed before the ABI is frozen.
 3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
 4. **NVS quota per app** against the 24 KB `storage` partition with `string` settings enabled (C9) and 8 apps allowed (B5): the byte budget is a number to be chosen at P3 with the real key shapes in hand, then enforced at install.
+
+---
+
+## 10. P1 result — what landed 2026-10-11
+
+**Landed.** `main/gfx/orb_gfx.h` (165 lines) and `main/gfx/orb_gfx.c` (568) are the OS
+compositor, carved out of `clock_view.c`, which fell from 2,974 to 2,441 lines. gfx owns the
+rotation and blend maths (`gfx_trigo_sin`, `gfx_rot_sin_cos`, the private `blend_px`/`mix_16_16`,
+`gfx_paint_ctx_t`, `gfx_paint_ctx_init`, `gfx_paint_row_ctx`), the swept-box geometry
+(`gfx_swept_box`, `gfx_swept_rect_box`, `gfx_area_union`, and `SWEPT_PAD` — which the header now
+owns, because the tourbillon's orbit chords must pad by the same value the compositor's box
+carries), the sprite-record helpers, the row mark set (`gfx_mark_rows` plus a `gfx_rows_t` read
+view), the staging band, and the whole commit pass: `gfx_commit()` restores each marked row from
+the canvas, paints the job list, byte-compares against the mirror, and DMAs only what came out
+different. `clock_view.c` keeps the policy — which layers exist, at what angles, in what order,
+plus the complication and sub-dial job lists — and ends `clock_layer_commit()` with one call into
+gfx. That call is the whole app-side surface today.
+
+`blend_px`/`mix_16_16` stayed file-static inside gfx on purpose: they are the measured
+185-232 ns/px loop, and keeping `gfx_commit()` in the same TU preserves the inlining they had
+when the hook lived in the clock. `gfx_blend_px` exists only so the DISPLAY_BENCH synthetic ink
+can still reach the paint window, now through `gfx_set_band_hook()` instead of a call from the
+hook that moved.
+
+`art_bank` gained the residency accounting P1 promised: `orb_art_reserve()` (accounts, never
+maps — mapping secondary banks is P2's job), `art_bank_pages_for()`, `art_bank_mmu_pages()`,
+`orb_art_resident_count()` and `orb_art_reserved_bytes()`. A request that is not a multiple of
+the 64 KB MMU page is refused, since a ragged span wastes a page at each end of the mapping.
+`/api/v1/status` answers `art_pages` and `art_banks` beside the existing `art_ready`/`art_bytes`,
+and the boot line now prints the page cost — measured on the bench:
+`bank "assets" @0x830000, 1978973 B mapped of 8388608 B (theme blob 1978973 B), 31 MMU pages`.
+Section 3.3's page arithmetic is now a number the board printed, not one the plan asserted. Free
+PSRAM was already reported as `heap_psram`, so it was not duplicated under a second name.
+
+**Not landed, still P1's remaining work.** The delta bank (`s_canvas`, `gif_apply_frame`,
+`build_bg_dscs`, `show_plate_frame`, `bg_frame_now`, `bg_rate`, `gif_tick_ms`, `gif_mode`,
+`bg_live`) and the frame scheduler (`tick_timer_cb`, `tick_base_ms`, `hand_beat_ticks`, the
+deadline ladder, `report_fps_if_due`) are still in `clock_view.c`. They are the next commit.
+`gfx_commit()` already takes the canvas as a parameter, so the bank moves without touching the
+paint path again.
+
+**Zero-behaviour-change proof, mechanical.** A checker (`/tmp/p1/parity2.py`) lifts each moved
+function out of `HEAD:main/clock/clock_view.c` and out of `orb_gfx.c`, canonicalises the renames
+and the row-state consolidation, and compares token streams. 12 of 14 are identical, including
+the entire commit band loop. The two that differ are `gfx_fill_sprite_dsc` and
+`gfx_paint_ctx_init`, and both differ only by the injected `const uint8_t *base` parameter: the
+bank base is threaded in per call so gfx never learns about art_bank. That is the intended delta
+and the only one.
+
+**Gates.** `idf.py build` clean, zero warnings under `-Wall -Wextra -Werror=all`.
+`host_comp_math_test.py` green at 5,933 vectors with all 14 mutants caught; `host_menu_test.py`
+green with its 3 mutations caught. Both suites lift complication and sub-dial maths — app code
+that did not move — so the extraction left the benches' lift anchors alone, which is what the
+context note about `host_comp_math_test.py` breaking at P6 will have to revisit.
+
+**On the bench.** Flashed app-only to ota_0 through `/tmp/serflash.sh` (EXIT=0), boot log captured
+over an RTS reset with `/tmp/p1/cap.py`. Clean: no `E (`, no Guru, no abort. The dial runs the L4
+path — `hook 435 (rest 23 paint 390 cmp 17) ms/s` and `blend/s by layer: hr 16054/31 min 17468/220
+sec 4105/8 ... glass 198085/246` — so the moved code is doing the real compositing and the
+per-role counters cross the TU boundary correctly.
+
+**fps: the bar was not evaluable here, so it is not claimed.** The bench's `assets` partition holds
+the `skeleton` theme: `bg gif delta bank: 8 frames @ 250 ms (4.0 fps), tick 250 ms`. The dial holds
+exactly its baked tempo — 4 fps steady after a 6 fps plate-only warm-up, flush avg 74-84 ms against
+a 250 ms tick, so about a third of the tick budget spent. The 6-7 fps figure belongs to a flagship
+kit3 bank, which is not what is flashed. P1 therefore stays open on fps: it needs a flagship theme
+on this board, which is the same setup M2 needs.
+
+**M1: probe landed, measurement blocked.** `set_screen()` prints
+`switch <slug> <ms> frames <n> flush <us> worst <us>`; the boot-time switch reads `switch clock
+0 ms frames 0 flush 0 us`. A real clock-to-menu switch needs either the knob (three GPIOs and a
+finger) or `GET /api/v1/screen?to=menu`, and this bench has no radio, so the route is unreachable
+and no number was taken. Nothing is invented for it.
+
+**M2: not run.** One bank resident at 31 pages, per the boot line above. The two-bank residency
+question is P2's, once the loader can map a second bank.
+

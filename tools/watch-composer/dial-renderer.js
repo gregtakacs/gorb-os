@@ -1,8 +1,53 @@
 // Procedural steampunk skeleton dial, 466x466. Seamless loop: every wheel advances
 // exactly K teeth per loop, and spoke/pinion counts are N/K multiples, so the
 // per-loop rotation is a symmetry of every rotating part. Lighting is world-fixed.
+// K must stay coprime with every bank length (8/16/24/15 frames), or a step of a
+// whole number of teeth makes the rim identical to itself and the teeth read as
+// still. K = 4 was the worst case: on a 1:1 bank at 4 fps it stepped exactly one
+// tooth and only the spokes crawled. K = 7 is coprime with all four, so every
+// frame is distinct. Teeth are therefore free to be as fine as they look best:
+// tooth size follows the module, and the module follows the pitch radius m*N/2,
+// so K = 7 lets every train keep its size at a much finer tooth (watch-engine
+// TRAINS).
+// Distinct frames are NOT unambiguous ones, and the first K = 7 build got that
+// wrong: coprimality guarantees no frame repeats, but an unmarked rim repeats
+// every single tooth, so a tick stepping 0.875 teeth is pixel-identical to one
+// stepping -0.125 and the eye takes the slower reading — the rim crawled
+// backwards while the spokes (period K) crawled correctly forward. Measured on
+// the 21-tooth pinion at the shipped module: at an 8-frame bank the reversed
+// reading costs 0 px of mismatch with no mark, and 58 px with the index tooth
+// present. So the index tooth is keyed on the STEP, not on coprimality:
+// markPeriod engages it whenever one tick turns more than half a tooth, which
+// these bank depths leave to the 4 fps tier (7/8) alone. The 8 and 12 fps banks
+// are deep enough to step under half a tooth by themselves, and 15 fps sits just
+// under at 7/15. loopcheck.py rasterises the rim and asserts both the freeze and
+// the direction, so a bank or a K that breaks either one fails the suite.
 (function () {
-  const S = 466, C = 233, WIN = 160, K = 4, TAU = Math.PI * 2;
+  const S = 466, C = 233, WIN = 160, K = 7, TAU = Math.PI * 2;
+  const TEMPOS = [4, 8, 12, 15];
+  // Bank depth per tempo. The device advances the background bank exactly one
+  // frame per tick (clock_view.c: gif_tick_ms() = clk_gif_delays[0] = 1000/the
+  // bank's own fps), so a deeper bank plays the SAME loop more slowly: each tick
+  // turns half as far and dirties fewer rows than the 1:1 bank the row caps were
+  // measured against. 8/16/24 frames at 4/8/12 fps holds the train at half its
+  // old speed, the cadence the watch actually reads best; 15 stays 1:1, where
+  // the step is already 7/15 of a tooth.
+  const BANKS = { 4: 8, 8: 16, 12: 24, 15: 15 };
+  const bankFrames = (fps) => BANKS[fps] || fps;
+  // A rim that repeats every `period` pitches reads its motion honestly only
+  // while one tick steps at most half a period. Past that the frames are
+  // pixel-identical to a step of (step - period) running the other way, and the
+  // eye always picks the slower reading. This is why the index tooth exists, and
+  // why it is keyed on the STEP and not on coprimality: coprime frames are
+  // DISTINCT, which is not the same as UNAMBIGUOUS.
+  const aliases = (loopTeeth, frames) => Math.abs(loopTeeth / (frames || 1)) > 0.5;
+  let BANKF = 15;                                        // frames in the bank being rendered
+  // The index tooth: every K-th tooth is filed short and narrow. The mark may
+  // only move INWARD -- a meshing pair leaves just 0.25 * m of tip-to-root
+  // clearance, so a taller marked tooth would overlap the wheel it drives.
+  // loopcheck.py measures the pixels this changes per tick and fails the kit if
+  // it drops to none, which is the frozen-rim bug these numbers exist to stop.
+  const MK_DEEP = 0.30, MK_TIP = 0.045, MK_BASE = 0.255;
   const FIN = {
     brass: { hi: '#f6dc96', mid: '#c99b47', lo: '#5e3e14', edge: '#2e1d08' },
     copper: { hi: '#f4bb92', mid: '#b5653a', lo: '#4f2410', edge: '#260f05' },
@@ -44,18 +89,18 @@
     return out;
   }
   let FD = [
-    { x: 178, y: 193, N: 32, p: 0.1 },
-    { parent: 0, ang: -20, N: 24 },
-    { parent: 0, ang: 120, N: 20 },
-    { parent: 1, ang: 80, N: 16 },
-    { parent: 2, ang: 30, N: 24 },
+    { x: 178, y: 193, N: 56, p: 0.1 },
+    { parent: 0, ang: -20, N: 42 },
+    { parent: 0, ang: 120, N: 35 },
+    { parent: 1, ang: 80, N: 28 },
+    { parent: 2, ang: 30, N: 42 },
   ], RD = [
-    { x: 270, y: 250, N: 32, p: 0.3 },
-    { parent: 0, ang: 200, N: 20 },
-    { parent: 0, ang: -70, N: 24 },
+    { x: 270, y: 250, N: 56, p: 0.3 },
+    { parent: 0, ang: 200, N: 35 },
+    { parent: 0, ang: -70, N: 42 },
   ];
-  let FM = 4, RM = 5.5, TRN = null;
-  const FRONT0 = chain(FD, 4, 1), REAR0 = chain(RD, 5.5, -1), FRONT = chain(FD, 4, 1), REAR = chain(RD, 5.5, -1);
+  let FM = 2.3, RM = 3.15, TRN = null;
+  const FRONT0 = chain(FD, FM, 1), REAR0 = chain(RD, RM, -1), FRONT = chain(FD, FM, 1), REAR = chain(RD, RM, -1);
   const BAL0 = { x: 206, y: 98, r: 34 }, BAL = { x: 206, y: 98, r: 34, rot: 0 };
   let ROT = 0;
   // rigid rotation of the whole train about the dial centre; meshing and loop symmetry are preserved
@@ -104,13 +149,30 @@
   function shadow(ctx, blur, ox, oy, a) {
     ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = blur; ctx.shadowOffsetX = ox; ctx.shadowOffsetY = oy;
   }
-  function teethPath(ctx, x, y, N, rr, ra, th) {
-    const pitch = TAU / N;
+  // A rim repeating every single tooth is blind to a whole-tooth step, and to a
+  // step of any whole number of teeth: the frames come out pixel-identical to a
+  // step running the OTHER way by (step - one tooth), and the eye always takes
+  // the slower reading. So the index tooth is engaged by the STEP, not by
+  // coprimality -- coprime frames are distinct, which was the old freeze bug,
+  // but distinct frames can still read as reverse motion, which was the bug that
+  // followed it. A mark must repeat a whole number of times both around the gear
+  // and over the per-loop advance, or the last frame would not return to the
+  // first and the loop would pop once per bank; markPeriod enforces both, and
+  // returns 1 (no mark) whenever the step already sits under half a tooth.
+  function markPeriod(loopTeeth, copies) {
+    if (!aliases(loopTeeth, BANKF)) return 1;
+    if (!Number.isInteger(loopTeeth)) return 1;
+    for (const d of [K, 2]) if (loopTeeth % d === 0 && copies % d === 0) return d;
+    return 1;
+  }
+  function teethPath(ctx, x, y, N, rr, ra, th, mp) {
+    const pitch = TAU / N, lo = ra - MK_DEEP * (ra - rr), mark = (i) => mp > 1 && ((i % mp) === mp - 1);
     for (let i = 0; i < N; i++) {
-      const a = th + i * pitch;
-      const p1 = P(x, y, rr, a - 0.3 * pitch), p2 = P(x, y, ra, a - 0.13 * pitch), p3 = P(x, y, ra, a + 0.13 * pitch), p4 = P(x, y, rr, a + 0.3 * pitch);
+      const a = th + i * pitch, mk = mark(i), nx = mark(i + 1);
+      const tip = mk ? lo : ra, ld = mk ? MK_TIP : 0.13, bs = mk ? MK_BASE : 0.3, nb = nx ? MK_BASE : 0.3;
+      const p1 = P(x, y, rr, a - bs * pitch), p2 = P(x, y, tip, a - ld * pitch), p3 = P(x, y, tip, a + ld * pitch), p4 = P(x, y, rr, a + bs * pitch);
       ctx.lineTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.lineTo(p3[0], p3[1]); ctx.lineTo(p4[0], p4[1]);
-      ctx.arc(x, y, rr, a + 0.3 * pitch, a + 0.7 * pitch);
+      ctx.arc(x, y, rr, a + bs * pitch, a + pitch - nb * pitch);
     }
     ctx.closePath();
   }
@@ -243,7 +305,7 @@
     return (dx, dy) => {
       const x = g.x + dx, y = g.y + dy;
       ctx.beginPath();
-      teethPath(ctx, x, y, N, rr, ra, th);
+      teethPath(ctx, x, y, N, rr, ra, th, markPeriod(K, N));
       ctx.moveTo(x + ri, y); ctx.arc(x, y, ri, 0, TAU, true);
       if (g.sp === 'tapered') {
         const rh2 = rh * 1.3, rht = rh2 * 1.15, wh = Math.max(16, m * 6), wr = 0.84 * Math.max(5, m * 2.3);
@@ -348,7 +410,7 @@
     gearSpec(ctx, g, th, pal, rear);
     if (g.pinOn) {
       const n = g.pin, pr = rh * 1.25, pm = (2 * pr) / (n + 2.5);
-      const pin = (dx, dy) => { ctx.beginPath(); teethPath(ctx, x + dx, y + dy, n, pr - 1.25 * pm, pr + pm, th + 0.2); };
+      const pin = (dx, dy) => { ctx.beginPath(); teethPath(ctx, x + dx, y + dy, n, pr - 1.25 * pm, pr + pm, th + 0.2, markPeriod((K * n) / g.N, n)); };
       solid(ctx, pin, x, y, pr + pm, pal, { shadows: sideShadows(x, 0.35), depth: 3, sheen: rear ? 0.5 : 0.9 });
     }
     if (rear) {
@@ -670,6 +732,9 @@
 
   function configure(o) {
     o = Object.assign({ finish: 'brass', enamel: 'aged', subdial: true, frames: 15, glow: 1 }, o);
+    // The bank being rendered decides whether a rim can alias, so the mark
+    // decision has to see it. A zeroed/absent count falls back to the top tier.
+    BANKF = +o.frames > 0 ? +o.frames : 15;
     GLOW = +o.glow; setRot(+o.trainRot || 0);
     setTemp(o.temp, o.hue, o.hueSat);
     const SD = o.seeds || {};
@@ -719,5 +784,6 @@
     };
   }
   window.DialRenderer = { create, SIZE: S, TEETH_PER_LOOP: K,
+    TEMPOS, BANKS, bankFrames, aliases, markPeriod,
     _: { configure, setTemp, kelvin, setTrain, FRONT0, REAR0, BAL0, rng, P, canvas, FRONT, REAR, BAL, tint, grad, shadow, jewel, screw, castShadow, sideShadows, sideWash, sheen, solid, drawGear, post, bridge, drawBalance, specular, wear, enamelFill, FIN, BACK, STEEL, ENAMEL } };
 })();

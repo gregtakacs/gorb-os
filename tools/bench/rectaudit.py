@@ -18,9 +18,15 @@ prediction worth the flash it saves.
 Usage:
   rectaudit.py FRAMES_DIR [--fps N] [--thresh T] [--denoise E] [--tick]
   rectaudit.py FRAMES_DIR --check-committed
+  rectaudit.py FRAMES_DIR --occlude THEME_DIR [--matte auto]
+
+  --occlude applies the bake's --bg-occlude cull (the texels an opaque static
+  layer covers alone at alpha 255 can never reach the panel, so the bank must
+  not be charged for them). Without it the audit replays the un-culled bank.
 """
 import argparse
 import importlib.util
+import json
 import os
 import re
 
@@ -35,10 +41,39 @@ import numpy as np  # noqa: E402  (comes from the bake venv)
 W, H = bc.SCREEN_W, bc.SCREEN_H
 
 
+def occluder_from_theme(theme_dir, matte="auto", pad=2):
+    """The bg_occluder() a bake of this theme would apply, or None.
+
+    Rebuilds the runtime stack the same way main() does -- resolve_hand_pivots,
+    build_live_stack, matte_plan -- because a layer matte_plan folds INTO the
+    bank can hide nothing, so the fold verdict is part of the cull. Returns None
+    when the theme has no opaque static, which is the case for every openwork
+    kit shipped so far: the audit then describes the bank exactly as before.
+
+    The tourbillon bank is passed as None: carriage kits take the flat 4 fps
+    rule before rows are ever consulted, so the cull cannot change their price.
+    """
+    import argparse
+    tdir = os.path.abspath(theme_dir)
+    sp = os.path.join(tdir, "clock_style.json")
+    if not os.path.exists(sp):
+        raise SystemExit(f"--occlude: no clock_style.json under {tdir}")
+    style = json.load(open(sp))
+    args = argparse.Namespace(pad=pad, no_pivot_snap=False, bg_frames=None,
+                              bg_gif=None, bg_glob=None)
+    pivots = bc.resolve_hand_pivots(tdir, style.get("hands", {}) or {}, args)
+    live = bc.build_live_stack(tdir, style, pivots, args, None)
+    chosen, _lines = bc.matte_plan(live, matte)
+    return bc.bg_occluder(live, set(chosen))
+
+
 def bake_rects(frames_dir, fps=8.0, thresh=12, denoise=2, frame_glob=None,
-               max_rects=16, max_flush=0.62):
+               max_rects=16, max_flush=0.62, occl=None):
     """-> (per_frame, n) with per_frame[f] = (rects, changed_mask) for the LAST
-    warm cycle, i.e. exactly what bake_bg_bank writes into the blob."""
+    warm cycle, i.e. exactly what bake_bg_bank writes into the blob.
+
+    `occl` is the --bg-occlude cull (see occluder_from_theme); None leaves the
+    replay byte-for-byte the pre-occlusion one."""
     imgs, delays = bc._load_png_frames(frames_dir, frame_glob=frame_glob,
                                        fps=fps, fit="cover")
     F = [bc._frames_to_u16(im) for im in imgs]
@@ -53,7 +88,7 @@ def bake_rects(frames_dir, fps=8.0, thresh=12, denoise=2, frame_glob=None,
             tgt_i = (k + 1) % n
             lst, mask = bc._gif_transition(canvas, F[tgt_i], painted, thresh,
                                            max_rects=max_rects,
-                                           max_flush=max_flush)
+                                           max_flush=max_flush, occl=occl)
             for x, y, w, h in lst:
                 canvas[y:y + h, x:x + w] = F[tgt_i][y:y + h, x:x + w]
                 painted[y:y + h, x:x + w] = True
@@ -84,10 +119,18 @@ def row_union(per, n):
 
 
 def report(frames_dir, fps, thresh, denoise, frame_glob, check_committed,
-           max_rects=16, max_flush=0.62):
+           max_rects=16, max_flush=0.62, occlude=None, matte="auto"):
+    occl = occluder_from_theme(occlude, matte=matte) if occlude else None
+    if occl is not None:
+        nrow = int((~occl.any(axis=1)).sum())
+        print(f"occlusion ({occlude}): {int(occl.sum())} px and {nrow} of {H} "
+              f"rows sit under an opaque static and will not be pushed")
+    elif occlude:
+        print(f"occlusion ({occlude}): no opaque static covers a texel alone, "
+              f"so the bank is the unculled one")
     per, n = bake_rects(frames_dir, fps=fps, thresh=thresh, denoise=denoise,
                         frame_glob=frame_glob, max_rects=max_rects,
-                        max_flush=max_flush)
+                        max_flush=max_flush, occl=occl)
     push = sum(w * h for f in per for x, y, w, h in per[f][0]) // n
     chg = sum(int(per[f][1].sum()) if per[f][1] is not None else 0
               for f in per) // n
@@ -112,10 +155,16 @@ def report(frames_dir, fps, thresh, denoise, frame_glob, check_committed,
         rot = max(sum(a == b[s % len(b)] for a, b in zip(mine, ship))
                   for s in range(len(ship)))
         sp = sum(w * h for t in ship for x, y, w, h in t) // len(ship)
+        tag = 'MATCH' if exact == len(ship) else 'DIVERGENT'
+        if occl is not None and exact != len(ship):
+            # Expected: the committed bank was packed before the texels under an
+            # opaque static were dropped. Re-bake with --bg-occlude to get a bank
+            # this replay can match rect-for-rect.
+            tag = 'DIVERGENT (culled replay vs an unculled bank; re-bake with --bg-occlude auto)'
         print(f"fidelity vs committed bank: {exact}/{len(ship)} transitions "
               f"identical (best rotation {rot}/{len(ship)}), "
               f"committed push {sp} px/tick "
-              f"{'MATCH' if exact == len(ship) else 'DIVERGENT'}")
+              f"{tag}")
         return 0 if exact == len(ship) else 1
     return 0
 
@@ -131,10 +180,18 @@ if __name__ == "__main__":
                     help="match the bake's --bg-max-rects")
     ap.add_argument("--max-flush", type=float, default=0.62,
                     help="match the bake's --bg-max-flush")
+    ap.add_argument("--occlude", default=None, metavar="THEME_DIR",
+                    help="apply the bake's --bg-occlude cull, deriving the "
+                         "opaque statics from this theme's clock_style.json "
+                         "(default off: the un-culled replay stays "
+                         "byte-for-byte the pre-occlusion audit)")
+    ap.add_argument("--matte", choices=("auto", "off", "force"), default="auto",
+                    help="with --occlude: the fold verdict to assume, since a "
+                         "layer folded into the bank can hide nothing")
     ap.add_argument("--check-committed", action="store_true",
                     help="fail (exit 1) unless the replay is rect-for-rect "
                          "identical to assets/clock_assets.h's bank")
     a = ap.parse_args()
     raise SystemExit(report(a.frames_dir, a.fps, a.thresh, a.denoise,
                             a.bg_glob, a.check_committed, a.max_rects,
-                            a.max_flush))
+                            a.max_flush, a.occlude, a.matte))

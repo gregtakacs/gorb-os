@@ -295,7 +295,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; cbs = {};
   mainRef = React.createRef();
   cfg() {
@@ -306,66 +306,131 @@ class Component extends DCLogic {
   setCfg(k, v) {
     this.setState((st) => ({ cfg: { ...st.cfg, [k]: v }, ...(this.RND.includes(k) && v === 'random' ? { seeds: { ...st.seeds, [k]: Math.floor(Math.random() * 1e6) } } : {}) }));
   }
-  get F() { return this.budget().fps; }
+  _bG = 0;
+  /* The budget is reached through this very getter, and the movement key it
+   * builds goes through opts(). If that key ever reads the tempo again the two
+   * calls fold into each other and the page dies on "maximum call stack" before
+   * anything renders. Fail loudly and name the culprit instead. */
+  get F() {
+    if (this._bG) throw new Error('rows budget read this.F: the key it builds must not depend on the export frame count -- call opts(id, 1) / mvKey(1), which leave frames out');
+    return this.budget().fps;
+  }
+  /* The bank: how many PNGs one authored loop is chopped into. Deliberately
+   * deeper than the tempo -- see BANKS in dial-renderer.js. The device advances
+   * exactly one bank frame per tick, so a deeper bank plays the SAME loop more
+   * slowly for the same rows-per-tick price, and a rim that would step past half
+   * a tooth pitch (and so read as running backwards) is stepped under it instead.
+   * COUNT frames with this; PACE them with F. budgetStats.f stays F: the row
+   * price is per tick, and the ladder compares per-tick prices. */
+  get B() { return window.DialRenderer.bankFrames(this.F); }
   /* Device rows budget (docs/rows-capacity-2026-10-10.md, batch-6 numbers
    * under CLOCK_L4_MARK_STATIC_BOXES=0 -- now the shipped marking): the tick
    * that flushes the whole clock must fit 1000/fps minus ~17 ms of idle+TE,
    * and flush grows ~0.2 ms per DMA'd background row. buildMovement() measures
-   * the widest per-tick union of rows that change between consecutive base
-   * frames (the animated geartrain; what the bg delta bank pushes). Caps below
-   * are the largest holding band at each target from the decision table; a
-   * visible moving second hand owns ~130 rows of its swept box on every tick
-   * it moves, so it eats the same budget as that many background rows.
+   * the widest per-tick union of rows the bg delta bank pushes -- consecutive
+   * BASE frames culled to the texels that can reach the glass (rowPrice()).
+   * Caps below are the largest holding band at each target from the decision
+   * table; a visible moving second hand owns ~130 rows of its swept box on
+   * every tick it moves, so it eats the same budget as that many background rows.
+   * rowPrice() is an UPPER bound (it cannot see the bake's --matte fold), so a
+   * fully closed dial still prices a ~48-row geartrain sliver it never DMA's.
+   * A binary 15-fps cap of 0 would strand such a dial on the 12 tier -- the
+   * needle's 15 cap is the measured sweeping-needle frontier instead: the tick
+   * held 15.5 fps on a static bg (54.5 ms) and missed at a 96-row band (72.8 ms,
+   * 13.1 fps), so ~64 rows is the largest band a needle still sweeps at 15 fps
+   * (docs/rows-capacity-2026-10-10.md). It clears a closed dial's sliver while an
+   * open skeleton (300 rows) and a busy needle band (96) still fall to 4 and 12.
    *
-   * Two things keep this from fighting the renderer. (1) budgetStats is keyed on
-   * artKey() -- mvKey() without the frames field -- because opts() carries
-   * frames: this.F, so keying on _mk let the cap invalidate its own measurement:
-   * fps dropped, mvKey changed, the rebuild republished _mk, the stats key no
-   * longer matched, fps snapped back to want and the movement rebuilt forever.
-   * That runaway re-render is the flicker and the flipping numbers. (2) The tier
+   * Three things keep this from fighting the renderer. (1) A measurement is
+   * valid while the MOVEMENT signature is unchanged (budgetStats.mv), not while
+   * a full key matches: the rows depend on the dial too (it hides most of the
+   * train), and an art key that moved a frame before the new number was priced
+   * is exactly the window where the cap snaps back to want and the train
+   * re-renders -- the flicker and the walking numbers. A dial edit therefore
+   * keeps quoting the last priced rows until remeasureRows lands. (2) The tier
    * ladder only ever compares rows measured at the delivered tempo, and _ftier
    * makes the choice monotone downward for a given art key, so buildMovement
-   * settles after at most one or two extra passes instead of chasing fps. Each
-   * pass is capped by _bp in componentDidUpdate. forceWant prices a hypothetical
-   * sweep for the Hands tab, conservatively: it reuses the rows measured at the
-   * current tempo, which are the most any tier can ask for. */
+   * settles after at most one or two extra passes. (3) Each pass is capped by
+   * _bp in componentDidUpdate. forceWant pins the target tier without the
+   * monotone clamp -- the emulator uses it to price a chosen tier directly. */
   budget(forceWant) {
+    this._bG = 1;
+    try { return this._budget(forceWant); } finally { this._bG = 0; }
+  }
+  _budget(forceWant) {
     const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train];
     const car = !!(T && (T.cage || T.orbital));
     const c = this.cfg(), D = this.design();
     const needle = !!(D.centre && D.centre.second === 1) || (D.comps || []).some((x) => x.scale === 'seconds');
-    const want = car ? 8 : (forceWant || (c.tick === 'sweep' ? 15 : 12));
-    const CAPS = needle ? { 15: 0, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
-    if (car) return { fps: 4, want: 8, car, needle, rows: 0, cap: 0, measured: false, measuredAt: 0,
-      why: 'Tourbillon carriages re-export at 4 fps: the carriage composite alone costs 117-135 ms per tick on the panel (measured), so 8 fps only holds with a fully frozen dial. This is the art limit for carriage kits.' };
-    const s = this.budgetStats && this.budgetStats.key === this._artKey ? this.budgetStats : null;
+    const want = forceWant || (c.tick === 'sweep' ? 15 : 12);
+    /* CAPS are rows-per-TICK, measured on the panel with a 1:1 bank (one frame
+   * per tick), which is the largest step any tier can be asked to make. The
+   * bank is now deeper than the tempo below 15 fps, so each tick turns a
+   * SMALLER fraction of a tooth and changes fewer rows than the figure the cap
+   * was struck against. A cap measured at the bigger step therefore still
+   * bounds the smaller one; deepening a bank can only buy rows back, never
+   * spend rows the cap does not already allow. */
+  const CAPS = needle ? { 15: 64, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
+  /* The carriage bank is a fixed frame count on the device (bake_clock.py holds
+   * CLK_TOURB_MAX=16), so a carriage kit may not sit at a tempo whose bank is
+   * deeper than that -- the 12 fps tier's 24-frame bank cannot be baked. This is
+   * a device limit, not an art limit: the carriage's ROWS are priced by
+   * baseImgs()/rowPrice() like every other mover, so an exposed carriage still
+   * costs rows (and falls to 4 fps) while one sealed behind an opaque dial costs
+   * none and earns the full 15 fps a closed dial gets. */
+  const MAXBANK = 16;
+    const mvk = this.mvKey(1), ak = this.artKey(mvk);
+    const s = this.budgetStats && this.budgetStats.mv === mvk ? this.budgetStats : null;
+    /* Three cases. (1) Nothing measured for this movement: quote the wanted rate
+     * so the build renders and measures something -- the _bp seatbelt bounds it.
+     * (2) Measured, and it is THIS art that was priced: compute the tier.
+     * (3) Measured for this movement but priced through the dial before the last
+     * edit -- the rows in hand describe a dial the user no longer has. Quote the
+     * rate already delivered and let remeasureRows, in this very commit, bring
+     * the honest number. Pricing case 3 is the bug: the stale rows run through
+     * the monotone _ftier clamp keyed on the NEW art key, so closing an openwork
+     * dial hands the clamp the open dial's cap (420 rows -> 4 fps) as the new
+     * key's ceiling and it never claws back up. The readout and the frames
+     * on screen would then belong to different tempos. */
+    if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '' };
     if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '' };
     const r = s.rows;
     let fps = 4;
-    for (const t of [15, 12, 8]) { if (t > want) continue; if (r <= CAPS[t]) { fps = t; break; } }
+    for (const t of [15, 12, 8]) { if (t > want) continue; if (car && WatchEngine.bankFrames(t) > MAXBANK) continue; if (r <= CAPS[t]) { fps = t; break; } }
     if (!forceWant) {
-      const fk = this._artKey + '|' + want;
-      if (this._ftierKey !== fk) { this._ftierKey = fk; this._ftier = 15; }
-      fps = Math.min(fps, this._ftier); this._ftier = fps;   // never claw fps back up on the same art
+      const fk = ak + '|' + want;
+      if (this._ftierKey !== fk) { this._ftierKey = fk; this._ftier = 15; this._ftierOcc = null; }
+      /* The pin stops the tiers flicking between two prices of ONE measurement, so
+       * it may only hold against the measurement that set it -- identified by the
+       * occluder mask the number was taken against, which is the one input that can
+       * silently land late (dial canvas still building, an upload arriving). Without
+       * the release a single bad first price pins a 0-row closed dial at 8 fps for
+       * the whole session, because min(15, 8) is 8 forever. Rows cannot be the
+       * trigger: a lower count is often just fewer frames to differ over, and a
+       * lower tempo is no new information about the art at all. */
+      if (this._ftierOcc != null && s.occ !== this._ftierOcc) this._ftier = 15;
+      fps = Math.min(fps, this._ftier); this._ftier = fps;
+      this._ftierOcc = s.occ;                                   // the mask this measurement used
+      this._hbFps = fps;                                         // the rate the frames on screen were rendered at
     }
-    let why = '';
-    if (fps < want) {
-      why = want + ' fps allows ' + CAPS[want] + ' animated background rows' + (needle ? ' while the second hand moves every tick' : '') +
-        '; the geartrain animation under the dial changes ' + r + ' rows per tick. The frame rate dropped to ' + fps +
-        ' fps -- shrink the skeleton openings or freeze train wheels to win it back.';
-      if (needle && want === 15) why += ' With a running second hand the 15 fps tier allows ZERO animated background: the hand’s swept box (~130 rows) plus a 96-row band already busts the 66 ms budget.';
-    }
-    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why };
+    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '' };
   }
   preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
   design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
   train(id) { WatchEngine.tune(this.cfg()); return WatchEngine.trainAngle(this.design(id), this.cfg().trainAngle, this.state.train); }
-  opts(id) {
+  /* noframes MUST be resolved here rather than by deleting o.frames afterwards:
+   * `frames: this.B` is the getter for the budget (through this.F), and budget()
+   * calls mvKey(1). Building the full opts() and then dropping the field
+   * evaluates that getter, so budget -> mvKey -> opts -> F -> budget recursed
+   * until the stack died. The ternary below is what breaks the cycle -- with
+   * noframes set, neither this.B nor this.F is ever read. Every other consumer
+   * still sees the real tempo and the real bank. */
+  opts(id, noframes) {
     const c = this.cfg(), s = this.state;
-    return { finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: this.F };
+    return { finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B };
   }
-  mvKey(noframes) { const o = this.opts(); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
-  artKey() { return this.mvKey(1); }   // movement-art signature: the same key minus the export frame count
+  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'glassStyle'].forEach((k) => delete o[k]); if (noframes) delete o.frames; return JSON.stringify(o); }
+  artKey(mvk) { return (mvk || this.mvKey(1)) + '|' + this.state.dial + '|' + JSON.stringify(this.design()); }   // priced-art signature: the movement art, the tempo-independent part, plus the dial that hides it
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
   faceKey(id) { return JSON.stringify([this.opts(id), id, this.handDef(id), this.design(id)]); }
   face(id) {
@@ -453,7 +518,7 @@ class Component extends DCLogic {
     this.ready = true;
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearInterval(this.timer); this.buildId = -1; }
+  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -464,14 +529,30 @@ class Component extends DCLogic {
     if (!this.ready) return;
     const D0 = this.design(); [D0.font, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey()) {
-      /* budget() lowering the export fps is the one mvKey field the build itself
-       * can move. Rows grow as the tempo drops, so the tier only ever walks down
-       * (_ftier) and settles within a pass or two; this counter is the seatbelt
-       * that keeps a pathological dial from rebuilding forever. */
-      const ak = this.artKey();
-      if (ak !== this._bk) { this._bk = ak; this._bp = 0; }
-      if (this._bp < 3) { this._bp++; this.buildMovement(); }
+      this.buildGate();
+    } else if (this._artKey !== this.artKey()) {
+      /* Dial-only change: the base frames still describe the train exactly, and
+       * only what the dial hides has moved. Re-price the rows against the cached
+       * frames -- remeasureRows advances _artKey itself. Re-rendering the train
+       * for a skeleton slider is what flickered. If the cache no longer matches
+       * the tempo the frames must be re-rendered, and the key is only allowed to
+       * move once the new number is priced: advancing it early would strand the
+       * cap on a stale row count, because budget() holds the tempo for an art key
+       * it has never priced rather than trust the pairing. */
+      const st = this.remeasureSoon();
+      if (st === 'stale') this.buildGate();                       // frames must be re-rendered
+      /* Closing the dial can buy the tempo back, and the matching bank has to
+       * re-render in this SAME commit -- leaving it shows one rate while the
+       * frames on screen belong to another. A 'pending' trailing price re-checks
+       * this on landing, in its own commit. */
+      else if (st === 'priced' && this._mk !== this.mvKey()) this.buildGate();
     }
+    /* The escapement cannot beat 4 times a second at a tempo that paints fewer
+     * than 12 frames a second -- it just aliases. The chips hide the option, and
+     * this drops a selection made while the dial was tighter. Reading this.F here
+     * is safe (not inside a budget build) and the write is monotone -- balance
+     * only falls to 2, so the precondition cannot return and re-fire. */
+    if (this._mk === this.mvKey() && +this.cfg().balance > 2 && this.F < 12) this.setCfg('balance', '2');
     if (this._lastSlow !== this.state.slow || this._lastF !== this.F) this.startTimer();
     const fk = this.faceKey(this.state.dial) + this.state.timeMode;
     if (fk !== this._fk) { this._fk = fk; this.drawLayers(); this.drawHandOpts(); }
@@ -487,58 +568,229 @@ class Component extends DCLogic {
     this._lastSlow = this.state.slow; this._lastF = this.F;
     const F = this.F;
     this.timer = setInterval(() => {
-      if (this.state.playing && !this.rendering && this.gt.length === F) this.setState((s) => ({ frame: (s.frame + 1) % F }));
+      if (this.state.playing && !this.rendering && this.gt.length === this.B) this.setState((s) => ({ frame: (s.frame + 1) % this.B }));
       else this.drawMain();
     }, this.state.slow ? 1000 / Math.max(1, F / 5) : 1000 / F);
   }
+  /* Alpha of the layers that sit ABOVE the bg delta bank and never change during
+   * a tick: the dial (SEALED over the date/moon apertures), the glass, the outer
+   * ring. Those are the only layers that may excuse a row cull (bake_clock.py's
+   * --bg-occlude). The dial is the fc.dialSealed canvas, not fc.dial: a dial-hosted
+   * window or moon is an opaque data disc composited over its own aperture every
+   * day, so the geartrain under it never reaches the panel and must not be priced
+   * -- and the shipped layer, so the bake's opaque static1, seals it the same way.
+   * A genuine skeleton opening keeps its hole (seal is never set on an 'opening'),
+   * so an exposed train is still charged. The complication VALUE and the subdial
+   * scales change when the date rolls and the hands are movers that lift off a
+   * texel later, so they are not occluders. A design drawn through the inset lens
+   * (fc.inset < 1) composites its statics through a scaled sub-canvas that flat()
+   * does not reproduce, so the cull is skipped there rather than applied in the
+   * wrong space: an all-zero alpha mask culls nothing and the row count falls back
+   * to the old honest number. */
+  occlMask() {
+    const fc = this.face(), k = (fc && fc.inset) || 1;
+    /* The '|noface' tail matters: a mask built while the face is still missing is
+     * all zeros, and caching it under the dial's own key would keep culling nothing
+     * for the rest of the session after the dial finally arrives -- the row count
+     * would then charge for a train the closed dial plainly hides. */
+    const ck = this.faceKey(this.state.dial) + '|i' + k + (fc ? '' : '|noface');
+    if (this._occKey === ck) return this._occ;
+    const N = 466 * 466, occ = new Uint8Array(N);   // 1 = a single layer covers alone
+    if (fc && k === 1) {
+      const c = document.createElement('canvas'); c.width = c.height = 466;
+      const g = c.getContext('2d');
+      // Compositing the three and testing the RESULT's alpha would be wrong: 200
+      // over 200 over 200 lands on 255, yet the panel still blends through every
+      // one of those texels, so the row is not free. bg_occluder demands one layer
+      // cover the texel BY ITSELF, so each layer is read back on its own and the
+      // verdicts are OR'd. fc.dialSealed (not fc.dial) seals the date/moon apertures.
+      [fc.dialSealed, fc.glass, fc.outer].forEach((L) => {
+        if (!L) return;
+        g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'source-over';
+        g.clearRect(0, 0, 466, 466); g.drawImage(L, 0, 0);
+        const d = g.getImageData(0, 0, 466, 466).data;
+        for (let t = 0, p = 3; t < N; t++, p += 4) if (d[p] >= 255) occ[t] = 1;
+      });
+    }
+    let ncov = 0; for (let t = 0; t < N; t++) ncov += occ[t];
+    this._occ = occ; this._occKey = ck; this._occCover = ncov;
+    return this._occ;
+  }
+  /* The build gate, shared by both triggers in componentDidUpdate. budget()
+   * lowering the export fps is the one mvKey field the build itself can move:
+   * rows grow as the tempo drops, so the tier only ever walks down (_ftier) and
+   * settles within a pass or two. This counter is the seatbelt that keeps a
+   * pathological dial from rebuilding the movement forever. */
+  buildGate() {
+    const ak = this.artKey();
+    if (ak !== this._bk) { this._bk = ak; this._bp = 0; }
+    if (this._bp < 3) { this._bp++; this.buildMovement(); }
+  }
   async buildMovement() {
     const id = (this.buildId = (this.buildId || 0) + 1);
-    this._mk = this.mvKey(); this._artKey = this.mvKey(1);
+    this._mk = this.mvKey(); this._artKey = this.artKey();
     await new Promise((r) => setTimeout(r, 30));
     if (id !== this.buildId) return;
-    const M = WatchEngine.movement(this.opts()), F = this.F;
-    const start = Math.min(this.state.frame, F - 1), order = Array.from({ length: F }, (_, i) => (start + i) % F);
-    const ng = new Array(F);
+    const F = this.F, B = this.B, M = WatchEngine.movement(this.opts());
+    /* Snapshot the movement signature the instant the art is built: the render
+     * loop below awaits between frames, and a slider move in that window would
+     * otherwise key these frames under a signature they were not rendered for.
+     * Keyed to the art actually measured, stale stats simply fail the mvKey()
+     * check in componentDidUpdate and the movement rebuilds -- self-correcting. */
+    const mvk = this.mvKey(1);
+    const start = Math.min(this.state.frame, B - 1), order = Array.from({ length: B }, (_, i) => (start + i) % B);
+    const ng = new Array(B);
     this.base = M; this.rendering = true;
-    this.setState({ seam: 'Rendering movement…', status: 'Rendering 1 / ' + F + '…', frame: start });
-    for (let k = 0; k < F; k++) {
+    this.setState({ seam: 'Rendering movement…', status: 'Rendering 1 / ' + B + '…', frame: start });
+    for (let k = 0; k < B; k++) {
       if (id !== this.buildId) return;
       const f = order[k], r = M.render(f);
       ng[f] = r.gt; this.gt[f] = r.gt;
-      if (k === 0) { this.gt.length = F; this.drawMain(); this.drawLayers(); }
-      if (k % 2 === 1 || k === F - 1) this.setState({ status: 'Rendering ' + (k + 1) + ' / ' + F + '…' });
+      if (k === 0) { this.gt.length = B; this.drawMain(); this.drawLayers(); }
+      if (k % 2 === 1 || k === B - 1) this.setState({ status: 'Rendering ' + (k + 1) + ' / ' + B + '…' });
       await new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
     }
     if (id !== this.buildId) return;
     this.gt = ng; this.rendering = false;
-    const end = M.render(F), a = this.scr(), b = document.createElement('canvas'); b.width = b.height = 466;
+    const end = M.render(B), a = this.scr(), b = document.createElement('canvas'); b.width = b.height = 466;
     const flat = (c, m, g, noCage) => { const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, 466, 466); x.drawImage(m, 0, 0); x.drawImage(g, 0, 0); if (g.cage && !noCage) x.drawImage(g.cage, 0, 0); return x.getImageData(0, 0, 466, 466).data; };
     const da = flat(a, M.plate, ng[0]), db = flat(b, M.plate, end.gt);
     let max = 0, n = 0;
     for (let i = 0; i < da.length; i += 4) { const d = Math.max(Math.abs(da[i] - db[i]), Math.abs(da[i + 1] - db[i + 1]), Math.abs(da[i + 2] - db[i + 2])); if (d > max) max = d; if (d > 2) n++; }
-    const seam = n === 0 ? 'Seam check, frame ' + (F + 1) + ' vs 1: ✓ identical' : n < 50 ? 'Seam check: ✓ seamless (' + n + ' px rounding)' : 'Seam check: ✗ ' + n + ' px differ, max Δ ' + max;
-    /* Device budget: rows that change between consecutive BASE frames (no
-     * cage -- the carriage bank is priced separately by the tourbillon rule).
-     * The bg delta bank pushes exactly these rows every tick, so the worst
-     * consecutive pair is the tick the flush must fit. */
+    const seam = n === 0 ? 'Seam check, frame ' + (B + 1) + ' vs 1: ✓ identical' : n < 50 ? 'Seam check: ✓ seamless (' + n + ' px rounding)' : 'Seam check: ✗ ' + n + ' px differ, max Δ ' + max;
+    /* Device budget: rows that change between consecutive BASE frames. For a
+     * carriage kit baseImgs() also composites the cage through a full minute
+     * orbit (flatCar), so the carriage's swept rows enter this price and the
+     * occluder cull drops whatever the dial seals -- an exposed carriage costs
+     * rows, a sealed one costs none. The bg delta bank pushes exactly these
+     * rows every tick, so the worst consecutive pair is the tick the flush fits. */
     let bgRows = 0;
-    try {
-      const imgs = [];
-      for (let f = 0; f < F; f++) { const cv = document.createElement('canvas'); cv.width = cv.height = 466; imgs.push(flat(cv, M.plate, ng[f], true)); }
-      for (let f = 0; f < F; f++) {
-        const p = imgs[f], q = imgs[(f + 1) % F], row = new Uint8Array(466);
-        for (let y = 0; y < 466; y++) {
-          const o = y * 466 * 4;
-          for (let x = 0; x < 466; x++) { const i = o + x * 4; if (Math.abs(p[i] - q[i]) > 2 || Math.abs(p[i + 1] - q[i + 1]) > 2 || Math.abs(p[i + 2] - q[i + 2]) > 2) { row[y] = 1; break; } }
-        }
-        let c = 0; for (let y = 0; y < 466; y++) c += row[y];
-        if (c > bgRows) bgRows = c;
-      }
-    } catch (e) { bgRows = -1; }
-    this.budgetStats = bgRows >= 0 ? { key: this._artKey, f: F, rows: bgRows } : null;
+    /* Read the dial and the occluder off the SAME commit as the price, and key
+     * the number on the movement signature the frames were rendered for (mvk). */
+    const occ = this.occlMask(), ak = this.artKey(), occk = this._occKey;
+    try { bgRows = this.rowPrice(this.baseImgs(flat, M, ng, B, mvk), occ); }
+    catch (e) { bgRows = -1; }
+    if (bgRows >= 0) { this._artKey = ak; this.budgetStats = { mv: mvk, ak: ak, f: F, rows: bgRows, diag: this._rpDiag, occ: occk }; }
+    else this.budgetStats = null;
     this._tk = null; this._ck = null;
     this.setState({ seam, status: '' });
     this.drawLayers();
+  }
+  /* The flattened base frames (plate + geartrain, no cage) the row diff runs
+   * on, kept between builds. They depend on the movement art and the tempo only
+   * -- the dial never touches them -- so a skeleton-slider move re-prices the
+   * rows against these instead of re-rendering every frame, which is what the
+   * flicker was. The caller passes the signature its frames were rendered for
+   * (mvKey(1): the movement minus the export frame count, since a cap change
+   * alone must not throw the cache away), never a live mvKey(). */
+  isCarriage(ng) { const g = ng || this.gt; return !!(this.base && this.base.cageAt && g && g[0] && g[0].cage); }
+  biKey(mvk, B, ng) { return mvk + '|' + B + (this.isCarriage(ng) ? '|car' : ''); }
+  baseImgs(flat, M, ng, B, mvk) {
+    /* Carriage kits price the carriage too: flatten the cage through a FULL
+     * minute orbit, so the union of consecutive frames marks every device row
+     * the carriage ever sweeps. The occluder cull in rowPrice() then drops the
+     * rows the dial, glass and bezel cover -- an exposed carriage costs rows,
+     * one opened ring at a time, and one sealed behind an opaque dial costs
+     * none. Rotating the whole way round (not one tick's step) is deliberate:
+     * it makes the bound independent of where in the minute the tick lands, and
+     * rowPrice wants an upper bound that never underestimates. */
+    const car = this.isCarriage(ng);
+    const k = this.biKey(mvk, B, ng);
+    if (this._bi && this._biKey === k && this._bi.length === B) return this._bi;
+    const imgs = [];
+    for (let f = 0; f < B; f++) { const cv = document.createElement('canvas'); cv.width = cv.height = 466; imgs.push(car ? this.flatCar(cv, M.plate, ng[f], (f / B) * Math.PI * 2) : flat(cv, M.plate, ng[f], true)); }
+    this._bi = imgs; this._biKey = k;
+    return imgs;
+  }
+  /* Plate + geartrain + the cage bitmap rotated th about the carriage staff.
+   * Same composite drawCage() does on the panel, minus the live seconds angle:
+   * the sweep across frames f=0..B-1 IS the orbit for pricing purposes. */
+  flatCar(c, m, g, th) {
+    const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, 466, 466);
+    x.drawImage(m, 0, 0); x.drawImage(g, 0, 0);
+    if (g.cage && this.base.cageAt) { const a = this.base.cageAt; x.save(); x.translate(a[0], a[1]); x.rotate(th); x.translate(-a[0], -a[1]); x.drawImage(g.cage, 0, 0); x.restore(); }
+    return x.getImageData(0, 0, 466, 466).data;
+  }
+  /* Widest per-tick DMA'd row count over the bank, as the packer counts it.
+   * A texel the layers in occlMask() cover at alpha 255 is dropped: the commit
+   * hook paints that layer back over any row it rebuilds, so the pixel can never
+   * reach the panel and the row must not be paid for (bake_clock.py's
+   * --bg-occlude applies the identical cull at bake time, which is the gate).
+   * Rows are then taken off the 16 px tile grid _pack_mask uses, and a frame
+   * whose tiles cover >0.62 of the page is the packer's full-page collapse.
+   * This is an UPPER bound on what the bank pushes: the composer cannot know
+   * which statics the bake folds into the bank with --matte auto, and a folded
+   * static paints the same pixels in every frame, so those rows never differ and
+   * disappear from the bank anyway (measured on the synthetic closed dial: 432
+   * uncullled, 64 here, fewer still once the dial folds). A bound that is never
+   * underestimates is the only kind that cannot choose an fps the flush misses. */
+  rowPrice(imgs, occ) {
+    const n = imgs.length;                            // the BANK, not the tempo
+    let worst = 0;
+    /* Where the worst tick's rows sit, kept for the Movement readout. A solid dial
+     * priced at a handful of rows is the signature of a sliver -- a tile row or two
+     * surviving the cull -- and the bands name them instead of leaving it to guess. */
+    this._rpDiag = { rows: 0, texels: 0, bands: [], rmin: 0, rmax: 0, cover: this._occCover };
+    for (let f = 0; f < n; f++) {
+      const p = imgs[f], q = imgs[(f + 1) % n], tm = new Uint8Array(30 * 30);
+      let ch = 0, rmin = 999, rmax = 0;
+      for (let y = 0; y < 466; y++) {
+        const o = y * 466 * 4, ro = y * 466;
+        for (let x = 0; x < 466; x++) {
+          const i = o + x * 4;
+          if (occ[ro + x]) continue;        // one static covers it alone at a=255
+          if (Math.abs(p[i] - q[i]) > 2 || Math.abs(p[i + 1] - q[i + 1]) > 2 || Math.abs(p[i + 2] - q[i + 2]) > 2) { const t = (y >> 4) * 30 + (x >> 4); if (!tm[t]) { tm[t] = 1; ch++; const rr = Math.hypot(x - 233, y - 233); if (rr < rmin) rmin = rr; if (rr > rmax) rmax = rr; } }
+        }
+      }
+      let nt = 0; for (let k = 0; k < tm.length; k++) nt += tm[k];
+      let c, bands = null;
+      if (nt / tm.length > 0.62) c = 466;
+      else { c = 0; for (let ty = 0; ty < 30; ty++) { let a = 0; for (let tx = 0; tx < 30; tx++) a |= tm[ty * 30 + tx]; if (a) { c += Math.min(16, 466 - ty * 16); (bands || (bands = [])).push(ty); } } }
+      if (c > worst) { worst = c; this._rpDiag = { rows: c, texels: ch, bands: bands || [], rmin: ch ? Math.round(rmin) : 0, rmax: ch ? Math.round(rmax) : 0, cover: this._occCover }; }
+    }
+    return worst;
+  }
+  /* Throttled front door to remeasureRows. A skeleton slider fires one React
+   * commit per mousemove, and a price costs one getImageData plus a diff of
+   * every exported frame -- running that inline would make the exact control
+   * that flickered feel laggy. The wait is safe only because budget() quotes the
+   * delivered tempo for an art key it has not priced: the number on screen stays
+   * truthful while the trailing price is in flight, and it corrects itself when
+   * the pointer settles. 'stale' means the cache does not describe the tempo, so
+   * the frames themselves have to be re-rendered -- never deferred. */
+  remeasureSoon() {
+    if (this._rmTimer) return 'pending';
+    const now = performance.now();
+    if (now - (this._rmAt || 0) < 120) {
+      this._rmTimer = setTimeout(() => {
+        this._rmTimer = 0; this._rmAt = performance.now();
+        if (!this.remeasureRows()) { this.buildGate(); return; }
+        // The tempo may have just been earned back: the bank has to follow in this
+        // same pass, or the readout quotes a rate the frame bank does not hold.
+        if (this._mk !== this.mvKey()) this.buildGate();
+        this.forceUpdate();                      // republish the readout with the new rows
+      }, 120 - (now - (this._rmAt || 0)));
+      return 'pending';
+    }
+    this._rmAt = now;
+    return this.remeasureRows() ? 'priced' : 'stale';
+  }
+  /* Re-price the rows after a dial-only change: the cached frames still describe
+   * the art, only the occlusion moved. Cheap enough to run from componentDidUpdate
+   * -- one getImageData + a diff, no gear re-render. Advances _artKey itself, so
+   * the caller never has to guess whether the number it is quoting is the current
+   * one. Returns false when the cache does not describe the tempo being priced,
+   * which means the frames themselves must be re-rendered. */
+  remeasureRows() {
+    const F = this.F, B = this.B;
+    if (!this._bi || this._bi.length !== B || this._biKey !== this.biKey(this.mvKey(1), B)) return false;
+    const occ = this.occlMask(), ak = this.artKey(), occk = this._occKey;
+    try {
+      const r = this.rowPrice(this._bi, occ);
+      this.budgetStats = { mv: this.mvKey(1), ak: ak, f: F, rows: r, diag: this._rpDiag, occ: occk };
+      this._artKey = ak;
+      return true;
+    } catch (e) { return false; }
   }
   drawMain() {
     const c = this.mainRef.current, fc = this.face(); if (!c || !fc) return;
@@ -686,10 +938,10 @@ class Component extends DCLogic {
   }
   async exportKit() {
     if (this.busy()) return;
-    const fc = this.face(), F = this.F, pad = (n) => String(n).padStart(2, '0'), files = [], slug = this.state.dial, s0 = this.state;
+    const fc = this.face(), F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), files = [], slug = this.state.dial, s0 = this.state;
     this.setState({ status: 'Packing layer kit…' });
     const baseOnly = { complications: 1, dial: 1, subdials: 1, hands: 1, glass: 1, outer: 1 };
-    for (let f = 0; f < F; f++) {
+    for (let f = 0; f < B; f++) {
       const c = document.createElement('canvas'); c.width = c.height = 466;
       const g = this.gt[f], noCage = g && g.cage ? Object.assign(document.createElement('canvas'), { width: 466, height: 466 }) : g;
       if (g && g.cage) noCage.getContext('2d').drawImage(g, 0, 0);
@@ -701,16 +953,28 @@ class Component extends DCLogic {
     // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes
     const D0 = this.design(), hasCustom = D0.comps.some((c) => c.type === 'window' && c.shows === 'custom'), hd0 = this.handDef(this.state.dial);
     const lf = hasCustom ? WatchEngine.face({ ...this.opts(), design: { ...D0, comps: D0.comps.filter((c) => !(c.type === 'window' && c.shows === 'custom')) }, hands: hd0.style, handFinish: hd0.finish }) : fc;
-    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dial)) });
+    // layers/dial.png is the baked static layer the device paints over the bank: ship it
+    // SEALED, with the date/moon apertures left solid. The complication value is a separate
+    // per-day sprite composited on top at frame build (updates once a day, jitter accepted),
+    // so the geartrain under an aperture is never DMA'd -- and prep_watch_kit's fold and
+    // bake_clock.py's --bg-occlude (opaque static1) already cull those rows. A holed dial
+    // here would make the bank push a train the sealed disc plainly hides.
+    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dialSealed)) });
     files.push({ name: 'layers/glass.png', data: await this.png(bake(fc.glass)) });
     files.push({ name: 'layers/outer.png', data: await this.png(fc.outer) });
     const subFiles = [];
     for (const [i, l] of lf.subLayers.entries()) { const name = 'layers/subdial_' + pad(i + 1) + '_' + l.id + '.png'; subFiles.push({ id: l.id, file: name }); files.push({ name, data: await this.png(bake(l.canvas)) }); }
     let cage = null;
     if (this.base.cageAt && this.base.cageFrame && this.gt[0] && this.gt[0].cage) {
+      /* The baker holds the carriage bank at CLK_TOURB_MAX = 16 frames, so a
+       * deeper one ships a zip prep_watch_kit.py cannot bake. budget()'s MAXBANK
+       * guard already keeps a carriage kit off any tier whose bank exceeds 16 --
+       * the only such tier is 12 fps (bank 24) -- so this catches a bank that
+       * outran the guard, and a half-written kit is worse than none. */
+      if (B > 16) { this.setState({ status: 'Carriage bank is ' + B + ' frames but the baker holds at 16 (CLK_TOURB_MAX). This tempo should have been skipped by the budget.' }); return; }
       // put the staff axis on a texel centre: art centre at T + 0.5 in canvas space == pixel index T
       const want = this.base.cageAt.map((v) => M(v)), T = want.map((v) => Math.round(v)), WB = +this.cfg().wb, bank = [];
-      for (let f = 0; f < F; f++) {
+      for (let f = 0; f < B; f++) {
         let c = this.base.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
         if (WB !== 6500) c = WatchEngine.wb(c, WB);
         bank.push(c); files.push({ name: 'tourbillon/frame_' + pad(f + 1) + '.png', data: await this.png(c, true) });
@@ -718,7 +982,7 @@ class Component extends DCLogic {
       const chk = this.kitCheck(bank, T);
       files.push({ name: 'kit_check.txt', data: new TextEncoder().encode(chk.report) });
       if (!chk.pass) this.setState({ status: 'Tourbillon geometry check FAILED — see kit_check.txt in the zip' });
-      cage = { files: 'tourbillon/frame_01…' + pad(F) + '.png', centre: T, pivot: T.slice(), size: chk.size, hubJewel: { bbox: chk.bbox, centroid: chk.centroid }, zeroRotationDeg: +(-(this.base.cageOff || 0) * 180 / Math.PI).toFixed(2), note: (this.base.orbital ? 'orbital carriage = seconds hand; ' : '') + 'full-size layers; rotate about centre by seconds/60 × 360° + zeroRotationDeg and draw over the base frame' };
+      cage = { files: 'tourbillon/frame_01…' + pad(B) + '.png', centre: T, pivot: T.slice(), size: chk.size, hubJewel: { bbox: chk.bbox, centroid: chk.centroid }, zeroRotationDeg: +(-(this.base.cageOff || 0) * 180 / Math.PI).toFixed(2), note: (this.base.orbital ? 'orbital carriage = seconds hand; ' : '') + 'full-size layers; rotate about centre by seconds/60 × 360° + zeroRotationDeg and draw over the base frame' };
     }
     const comps = [];
     const textKits = [];
@@ -760,9 +1024,9 @@ class Component extends DCLogic {
       hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined });
     }
     const manifest = {
-      size: 466, fps: F, frames: F, secondHand: this.cfg().tick === 'sweep' ? 'sweep' : this.cfg().tick + ' ticks per second', innerScale: K, preset: this.preset().name, movement: s0.train, designId: this.designId(), layout: this.design(),
+      size: 466, fps: F, frames: B, secondHand: this.cfg().tick === 'sweep' ? 'sweep' : this.cfg().tick + ' ticks per second', innerScale: K, preset: this.preset().name, movement: s0.train, designId: this.designId(), layout: this.design(),
       drawOrder: [
-        { layer: 'base', files: 'base/frame_01…' + pad(F) + '.png', note: 'static plate + geartrain, lit by the inner light, opaque, loops every second' },
+        { layer: 'base', files: 'base/frame_01…' + pad(B) + '.png', note: 'static plate + geartrain, lit by the inner light, opaque, one ' + B + '-frame loop played at ' + F + ' fps (' + (B / F).toFixed(B % F ? 2 : 0) + ' s)' },
         ...(cage ? [{ layer: 'tourbillon', ...cage }] : []),
         { layer: 'complications', where: 'under dial', items: comps.filter((c) => c.host === 'dial' && c.type !== 'flare-date').map((c) => c.id) },
         { layer: 'dial', file: 'layers/dial.png' },
@@ -785,7 +1049,7 @@ class Component extends DCLogic {
     this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files)' });
   }
   renderVals() {
-    const s = this.state, F = this.F, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
+    const s = this.state, F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
@@ -989,17 +1253,15 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'hands') {
       const HB = this.budget();
-      const SW = HB.car ? HB : this.budget(15);   // what a sweeping seconds hand would cost, if picked
-      const sweepCapped = !HB.car && SW.measured && SW.rows > SW.cap;
+      /* Sweep is always offered: the seconds hand motion is a look, and the
+       * tempo is decided separately by the row price below. Picking sweep asks
+       * for the 15 fps tier; if the art cannot pay for it, budget() silently
+       * clamps to the highest tier it can (never a hard refusal -- the user
+       * chooses the look, the dial decides the rate). */
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
-        { v: 'sweep', label: sweepCapped ? 'Sweep — needs a still dial (' + SW.rows + ' animated rows)' : 'Sweep' }];
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, (v) => {
-        if (v === 'sweep' && sweepCapped) { this.setState({ status: 'Sweep needs 15 fps; the geartrain animation under your skeleton openings (' + SW.rows + ' changed rows/tick) caps the dial at ' + SW.fps + ' fps. Shrink the openings (Dial → Openwork) or freeze the wheels to unlock sweep.' }); return; }
-        this.setCfg('tick', v);
-      }), valText: HB.fps + ' fps' }),
-        Nt('', HB.car ? 'Carriage kit: the tourbillon is the second hand; the dial runs at ' + HB.fps + ' fps (carriage art is the 4 fps limit — see Movement tab).'
-          : sweepCapped ? 'Sweeping the seconds at 15 fps would cap the frame rate at ' + SW.fps + ' (' + (SW.why || HB.why) + ') Keep ticking (1/2/4 per second) or shrink the skeleton openings to hold 15 fps.'
-          : 'Ticking seconds export at 12 fps, sweep at 15 fps; tourbillon movements run at 4 fps (device rows budget — docs/rows-capacity-2026-10-10.md).'),
+        { v: 'sweep', label: 'Sweep' }];
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' }),
+        Nt('', 'Available frame rates depend on how much of the dial opening is visible.'),
         H('Drop shadow · hands and raised/sunken subdials'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
         ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
@@ -1033,14 +1295,13 @@ class Component extends DCLogic {
       if (tr.by) fields.push(Nt('Train angle', tr.deg + '° — set by #' + num(tr.by) + ' ' + compTitle(D.comps.find((c) => c.id === tr.by) || {}) + '. Move that opening to turn the train.'));
       else fields.push(Rg('Train angle', +c0.trainAngle || 0, 0, 359, 1, cf('trainAngle'), (+c0.trainAngle || 0) + '°'));
       const HB = this.budget();
+      const balV = String(HB.fps < 12 && +c0.balance > 2 ? 2 : c0.balance);
+      const balOpts = [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }].concat(HB.fps >= 12 ? [{ v: '4', label: '4 / s' }] : []);
       fields.push(H('Loop'),
-        Nt('Frame rate', F + ' fps — ' + (HB.why || ((T && (T.cage || T.orbital))
-          ? 'carriage kit: the tourbillon composite is 117-135 ms per tick on the panel (measured), so exports run at 4 fps; 8 fps needs a frozen dial.'
-          : HB.measured
-            ? 'the geartrain animation changes ' + HB.rows + ' rows per tick (measured over the ' + HB.measuredAt + ' exported frames); the tick budget holds the highest target whose cap it clears (no hand: 96/160/304 rows at 15/12/8; with a moving second hand: 0/96/240).'
-            : 'measuring the geartrain row footprint…'))),
-        Nt('Why art limits exist', 'The panel DMA costs ~0.2 ms per changed row per tick (docs/rows-capacity-2026-10-10.md). Skeleton openings widen the row band the animated geartrain must repaint; carriages never fit above 4 fps at any opening size.'),
-        Ch('Balance beats', String(c0.balance), [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' }], cf('balance')));
+        Nt('Frame rate', F + ' fps — ' + (HB.measured
+          ? 'available frame rates depend on how much of the dial opening is visible'
+          : 'measuring the geartrain row footprint…')),
+        Ch('Balance beats', balV, balOpts, cf('balance')));
     }
     if (ready && s.tab === 'light') {
       fields.push(H('Inner glow · sources under the dial ring'),
@@ -1067,13 +1328,15 @@ class Component extends DCLogic {
     const hcfg = D.hands || {}, ce = D.centre || {};
     const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + id.slice(7) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
     return {
-      metaLabel: '466 × 466 · ' + F + ' fps · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       mainRef: this.mainRef, cursor: this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(),
-      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + F,
+      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + F + ' fps)',
       playLabel: s.playing ? 'Pause' : 'Play',
       slowLabel: s.slow ? Math.max(1, Math.round(F / 5)) + ' fps' : F + ' fps',
-      prev: stop((f) => (f + F - 1) % F), next: stop((f) => (f + 1) % F),
+      // step the BANK: the frames on the glass are the bank's, while F only
+      // paces them, so wrapping here by F would strand half of a deep bank
+      prev: stop((f) => (f + B - 1) % B), next: stop((f) => (f + 1) % B),
       toggle: () => this.setState((st) => ({ playing: !st.playing })),
       toggleSlow: () => this.setState((st) => ({ slow: !st.slow })),
       timeOpts: [['live', 'Live'], ['pose', '10:09'], ['cycle', 'Cycle dates']].map(([id, label]) => ({ ...on(s.timeMode === id), label, pick: () => this.setState({ timeMode: id }) })),
@@ -1142,7 +1405,7 @@ class Component extends DCLogic {
         if (this.busy()) return;
         this.setState({ status: 'Packing frames…' });
         const files = [];
-        for (let f = 0; f < F; f++) files.push({ name: 'frame_' + pad(f + 1) + '.png', data: await this.png(this.frameCanvas(f, s.hidden)) });
+        for (let f = 0; f < B; f++) files.push({ name: 'frame_' + pad(f + 1) + '.png', data: await this.png(this.frameCanvas(f, s.hidden)) });
         this.download(this.zip(files), 'watch-' + s.dial + '-frames.zip');
         this.setState({ status: 'Downloaded watch-' + s.dial + '-frames.zip' });
       },

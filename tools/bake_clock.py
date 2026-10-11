@@ -351,6 +351,55 @@ def matte_plan(live, mode):
     return chosen, lines
 
 
+# ---------------------------------------------------------------------------
+# Background occlusion cull -- see --bg-occlude.
+#
+# Why this exists: the kit's base frames are the bare plate and gear train, and
+# the delta bank is a diff of exactly those. The dial, the raised dials and the
+# glass stay LIVE layers that the commit hook paints back over every row it
+# rebuilds. So a texel one of those covers at alpha 255 can never reach the
+# panel, and pushing it buys nothing while charging ~0.2 ms for every row it is
+# alone in (docs/rows-capacity-2026-10-10.md). A closed dial with one small
+# escapement opening was still paying for the whole train.
+#
+# Only a NON-ROTATING, NORMAL-blend layer may occlude: a hand, a shadow or the
+# carriage lifts off the texel later and the stale canvas behind it would show.
+# Requiring alpha EXACTLY 255 is what makes the cut invisible rather than nearly
+# so -- at a=250 one fifty-first of every moving gear texel still reaches the
+# glass, and blend_px()'s mix_16_16 has no shortcut for it. A layer folded into
+# the bank by matte_plan is not an occluder either: it is part of the background
+# now, and cannot hide anything.
+#
+# One layer must cover the texel BY ITSELF. A stack of partial alphas is not
+# allowed to add up to a cull: it would take the panel's own blend maths to say
+# what those texels are worth, and the answer is "not zero".
+#
+# The cull is safe because nothing changes a layer's visibility at runtime: the
+# show flags come from clock_style.json at load and clock_view.c never writes
+# one (checked: no write to .show outside the style parse).
+# ---------------------------------------------------------------------------
+
+
+def bg_occluder(live, folded):
+    """Panel texels no background pixel can ever reach, or None.
+
+    `live` is the runtime stack bottom-to-top as build_live_stack returns it,
+    `folded` the layers matte_plan chose (those are IN the bank now). A texel is
+    occluded when one static layer paints it at alpha 255 -- the exact case
+    blend_px() short-circuits to `out = c`.
+    """
+    import numpy as np
+    occ = None
+    for L in live:
+        if L.rotating or L.blend != 0 or L in folded:
+            continue                        # a mover, or a non-NORMAL blend mode
+        for im in L.panels:
+            a = np.asarray(im.split()[3])
+            full = a >= 255                 # opaque on its own, or not at all
+            occ = full if occ is None else (occ | full)
+    return occ if occ is not None and occ.any() else None
+
+
 def shadow_offsets(hands_style, kind):
     """The screen-space offset a hand's shadow centre sits at.
 
@@ -965,7 +1014,7 @@ def _pack_mask(mask, tile=16, max_rects=16, max_flush=0.62):
 
 
 def _gif_transition(canvas, tgt, painted, diff_thresh, K=12, max_rects=16,
-                    max_flush=0.62):
+                    max_flush=0.62, occl=None):
     """One canvas->target transition -> (rect list [(x,y,w,h),...], kept mask).
 
     A pixel counts as changed when its perceptual RGB565 max-channel step
@@ -978,6 +1027,11 @@ def _gif_transition(canvas, tgt, painted, diff_thresh, K=12, max_rects=16,
     `painted` map, seeded by this simulation's own rect copies) are exempt
     from the cluster test when DIMMING: that is the canvas undoing its own
     leftover, and keeping it makes the loop drift-free.
+
+    `occl` (see bg_occluder) drops texels no live layer above the bank can ever
+    uncover. It is applied to the ACCEPTED mask only, AFTER the cluster test:
+    the density count has to see the whole moving gear, or a tooth tip visible
+    through a narrow opening would lose its cluster and never be pushed at all.
 
     Heavier frames fall back through escalating thresholds before collapsing
     to a full-page transition (cheaper than a cover that spills anyway)."""
@@ -1000,12 +1054,14 @@ def _gif_transition(canvas, tgt, painted, diff_thresh, K=12, max_rects=16,
         mask = raw & (dens >= K)
         if painted is not None:
             mask = mask | (raw & (lum < 0) & painted)   # undo own leftovers
+        if occl is not None:
+            mask = mask & ~occl                        # cannot reach the glass
         lst = _pack_mask(mask, max_rects=max_rects, max_flush=max_flush)
         if (len(lst) == 1 and lst[0] == (0, 0, SCREEN_W, SCREEN_H)
                 and t != diff_thresh * 5):
             continue                             # collapsed: try a stricter view
         return lst, mask
-    return [(0, 0, SCREEN_W, SCREEN_H)], raw
+    return [(0, 0, SCREEN_W, SCREEN_H)], (raw & ~occl if occl is not None else raw)
 
 
 def _temporal_snap(F, eps):
@@ -1053,7 +1109,7 @@ def bake_gif_bg(blob, gif_path, diff_thresh, denoise=2, fit="cover"):
 
 def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
                  fps=0.0, frame_glob=None, frame_step=1, matte=None,
-                 max_rects=16, max_flush=0.62):
+                 max_rects=16, max_flush=0.62, occl=None):
     """Bake an animated background (GIF or PNG frame sequence) into the blob
     as one keyframe + per-frame delta rects.
 
@@ -1081,7 +1137,13 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
     `src` is either a GIF (paced by its own per-frame delays) or anything
     --bg-frames accepts as a PNG sequence (paced at `fps`, since PNGs have no
     timing of their own). Both go through the identical snap/warm/replay packer
-    so a bank baked from PNGs behaves exactly like one baked from a GIF."""
+    so a bank baked from PNGs behaves exactly like one baked from a GIF.
+
+    `occl` (see bg_occluder) drops texels no live layer above the bank can ever
+    uncover: the commit hook rebuilds a marked row from the canvas and paints
+    those layers over it, so a texel one of them covers at alpha 255 costs DMA
+    and buys no pixel. It is a pack-time cull only -- the frames themselves are
+    untouched, so a bake with --bg-occlude off is byte-for-byte the old one."""
     import numpy as np
     is_gif = src.lower().endswith(".gif")
     if is_gif:
@@ -1152,7 +1214,7 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
             tgt = F[tgt_i]
             lst, _mask = _gif_transition(canvas, tgt, painted, diff_thresh,
                                          max_rects=max_rects,
-                                         max_flush=max_flush)
+                                         max_flush=max_flush, occl=occl)
             blitted = []
             for x, y, w, h in lst:
                 canvas[y:y + h, x:x + w] = tgt[y:y + h, x:x + w]
@@ -1180,7 +1242,7 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
     print(f"  delta bank: {len(rects)} rects, packed "
           f"{100.0 * tot * 2 / (n * SCREEN_W * SCREEN_H * 2):.1f}% of a full bank")
     return dict(frames=n, key_off=key_off, rects=rects, first=first, delays=delays,
-                masks=per_m, key_start=start, frames_u16=F)
+                masks=per_m, key_start=start, frames_u16=F, occl=occl)
 
 
 def dump_inspection(dump_dir, blob_buf, gif, sprites):
@@ -1248,6 +1310,7 @@ def dump_inspection(dump_dir, blob_buf, gif, sprites):
     # ---- per-frame replay of the baked rects, as the device performs it ----
     canvas = key.copy()
     stale_tot = 0
+    stale_hid = 0
     for j in range(n):
         if j:                                    # frame 0 IS the keyframe
             for x, y, w, h, off in gif["rects"][gif["first"][j]:gif["first"][j + 1]]:
@@ -1271,12 +1334,24 @@ def dump_inspection(dump_dir, blob_buf, gif, sprites):
             np.abs(((t >> 5) & 0x3F).astype(np.int32) - ((canvas >> 5) & 0x3F)),
             np.abs((t & 0x1F).astype(np.int32) - (canvas & 0x1F))])
         stale = e >= 4
+        # Texels an opaque static layer above the bank covers are never pushed
+        # (--bg-occlude), so the canvas under them is stale ON PURPOSE and the
+        # hook paints that layer over it whatever it holds. Reported apart from
+        # the visible ones, so a real ghost cannot hide inside the cull.
+        occl = gif.get("occl")
+        hidden = None if occl is None else (stale & occl)
+        stale = stale & ~occl if occl is not None else stale
         stale_tot += int(stale.sum())
+        stale_hid += int(hidden.sum()) if hidden is not None else 0
         mask_png(stale, os.path.join(dump_dir, f"stale_{j:02d}.png"))
 
     print("  dumped {} frames + sprites to {}/".format(n, dump_dir))
     print("  stale map totals {} px/frame >4 codes off (0 = the panel's canvas "
           "matches the GIF exactly)".format(stale_tot // max(1, n)))
+    if stale_hid:
+        print("           ({} px/frame of that sit under an opaque static the "
+              "bank does not push -- expected, see --bg-occlude)".format(
+                  stale_hid // max(1, n)))
 
 
 def resize_full(img):
@@ -1340,6 +1415,17 @@ def main():
                          "pass stays one authored second: 30-pack -> step 2 for "
                          "15 fps; a 60-pack -> step 4 for 15 fps or step 5 for "
                          "12 fps. Must divide the frame count.")
+    ap.add_argument("--bg-occlude", choices=("auto", "off"), default="auto",
+                    help="do not pack delta rects for background texels that a "
+                         "live STATIC layer above the bank (the dial, a raised "
+                         "dial, the glass) covers at alpha 255: the commit hook "
+                         "paints that layer back over any row it rebuilds, so "
+                         "those texels can never reach the panel, yet pushing "
+                         "them still charges ~0.2 ms for every row they are "
+                         "alone in. auto (default) culls them; off packs every "
+                         "changed texel as before. A closed dial with one small "
+                         "opening is the case this pays for. Decided from the "
+                         "art, printed whatever it finds.")
     ap.add_argument("--diff-thresh", type=int, default=12,
                     help="min perceptual RGB565 step (0-248) for a pixel to count "
                          "as changed when packing delta rects (default 12)")
@@ -1494,6 +1580,28 @@ def main():
 
     gif = None
     bg_src = args.bg_gif or args.bg_frames
+    occl = None
+    occl_lines = []
+    if bg_src and args.bg_occlude != "off":
+        # Decided after the fold: a layer matte_plan folded into the bank is part
+        # of the background now and can hide nothing, and a mover can never hide
+        # anything either -- it lifts off the texel on its next step.
+        import numpy as np
+        occl = bg_occluder(live_stack, set(matte_chosen))
+        for L in live_stack:
+            if L.rotating or L.blend != 0 or L in matte_chosen:
+                continue
+            n_op = sum(int((np.asarray(im.split()[3]) >= 255).sum())
+                       for im in L.panels)
+            occl_lines.append("  occludes {:<16s} {:>6} px at a==255".format(
+                L.name, n_op))
+        npix = 0 if occl is None else int(occl.sum())
+        nrow = 0 if occl is None else int((~occl.any(axis=1)).sum())
+        print("bg occlusion (--bg-occlude {}): {:>6} px and {:>3} of {} rows are "
+              "under an opaque static, so the bank will not push them".format(
+                  args.bg_occlude, npix, nrow, SCREEN_H))
+        for ln in occl_lines:
+            print(ln)
     if bg_src:
         # ---- animated background bank: one keyframe + per-frame delta rects.
         # The theme's own plate/bgAnim art is skipped entirely — the bank IS the
@@ -1506,7 +1614,7 @@ def main():
                                                 else float(bg.get("fps", 0) or 0))),
                            frame_glob=args.bg_glob, frame_step=args.frame_step,
                            matte=matte_stack, max_rects=args.bg_max_rects,
-                           max_flush=args.bg_max_flush)
+                           max_flush=args.bg_max_flush, occl=occl)
         gif["src"] = bg_src
         plate_off = gif["key_off"]   # the keyframe doubles as the "static plate"
         baked_frames, anim_frames = [], 0

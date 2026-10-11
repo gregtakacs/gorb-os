@@ -139,7 +139,7 @@ rate from this table: `buildMovement()` diffs consecutive base frames to get
 the per-tick changed-row count (the bg delta bank's real row footprint under
 the skeleton cutout), and `budget()` caps the fps ladder to the largest
 target whose row cap it clears — no-hand 96/160/304 at 15/12/8, moving
-second hand 0/96/240, carriage kits a flat 4. The Hands and Movement tabs
+second hand 64/96/240, carriage kits a flat 4. The Hands and Movement tabs
 state the reason with the measured numbers (e.g. sweep refuses to select
 while the geartrain changes rows under an open skeleton, with the rows and
 the cap printed).

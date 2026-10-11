@@ -211,3 +211,78 @@ on top.
   own 40.8 ms of rotated blends. Closing that is the internal-RAM texel staging
   experiment the axis spec already priced, not another art iteration.
 
+
+## The frozen-rim finding (same day)
+
+Reported symptom: at 4 fps the gear spokes crawl but the teeth look stationary.
+
+`dial-renderer.js` turns every wheel exactly `K = 4` of its own teeth per loop,
+and derives the spoke count as `s = N/K` (`chain()`), which is what makes the
+loop seamless: one spoke pitch equals exactly four teeth. Frames equal fps, so
+the loop plays once a second and the per-frame step is `K/F` teeth.
+
+A feature repeats `F / gcd(K, F)` positions per bank. Teeth are identical, so
+their period is one tooth:
+
+| fps | step | teeth | spokes (period 4 teeth) |
+|---|---|---|---|
+| 4 | 1 tooth | **1** | 4 |
+| 8 | 1/2 | 2 | 8 |
+| 12 | 1/3 | 3 | 12 |
+| 15 | 4/15 | 15 | 15 |
+
+`gearSpec` shades with a world-fixed conic gradient, so landing exactly one
+tooth later reproduces the same pixels: the rim is a fixed point of the frame
+schedule while the spokes still resolve four positions. That is the report
+exactly. It is geometry, not a row-cull or cache fault.
+
+No frame schedule fixes it. Seam closure forces the total rotation to be a
+multiple of the spoke pitch, so with `K = 4` every legal total is divisible by
+4 and every 4-frame step is a whole tooth. Raising teeth-per-spoke to an odd
+number does work, but only `T = 7` (or 11) is coprime with 4, 8, 12 and 15
+together; `T = 5` fixes those three and collapses the 15 fps tier to 3
+positions. `T = 7` also requires every wheel's tooth count to be a multiple of 7, which
+re-proportions all 76 wheels across 11 trains and invalidates the measured caps
+in `rows-capacity-2026-10-10.md`.
+
+What shipped is `T = 7`, and the re-proportioning is the reason rather than the
+obstacle: the teeth were too coarse to begin with, and finer teeth are only
+available by buying more of them. Holding each pitch radius `rp = m * N / 2`
+while stepping `N` to the nearest multiple of 7 lets the module drop roughly
+half, so tooth height halves with it. Classic's front goes from `m = 4` / 9 px
+teeth to `m = 2.3` / 5.2 px at `N = 32,24,20,16,24 -> 56,42,35,28,42`. Spoke and
+pinion counts are unchanged, because `N / K` is preserved: 56/7 = 8 where 32/4
+was 8. Every train is re-toothed the same way in `watch-engine.js` `TRAINS`,
+with the fallback `FD`/`RD`/`FM`/`RM` in `dial-renderer.js` matching `classic`.
+
+The method per side: the module is shared, because it sets tooth size for the
+whole side and the meshing centre distance `dist = m(Na+Nb)/2` derives from it,
+so it cannot be tuned per wheel. Pick the module for the tooth size wanted, then
+snap each wheel to the multiple of 7 that best preserves its pitch radius. All
+18 sides fit within 2.5 px, most within 0.5 px. The floor is `2.25m >= 3` px,
+below which a tooth is sub-pixel decoration that cannot be seen to move.
+
+Caps must be re-measured. Rows per tick come from the widest per-tick union of
+changed rows across the delta bank, measured in-browser, and finer teeth change
+fewer pixels per tick than coarse ones.
+
+The index tooth (`MK_DEEP`, `MK_TIP`, `MK_BASE`) is retained but demoted to a
+guard. Marking one tooth in `K` makes the rim's period `K` teeth, which fixes
+the same aliasing without touching geometry — the right move if `K` must stay
+even, and it is what shipped in the first pass. With `K = 7` it is redundant, so
+`markPeriod()` now returns 1 (no mark, uniform rim) whenever `K` already shares
+no factor with 4, 8, 12 or 15, and engages the mark only if a future `K`
+reintroduces a common factor. The mark may only move **inward**: a meshing pair
+has just `0.25 * m` of tip-to-root clearance, so the first attempt, a taller
+marked tooth at `+0.495m`, drove the tooth into the wheel it meshes with.
+
+`loopcheck.gear_marking_check()` rasterises every wheel and asserts the bank
+resolves one distinct rim image per frame at all four tiers, in the feature's
+own pitch units — `K/F` for teeth, `K * pin / N / F` for pinions. Three controls
+stop it passing vacuously: a whole-tooth step on an unmarked rim must still
+measure 0 pixels, proving the rasteriser can see a frozen rim at all; the
+`K = 4` arithmetic must still resolve `[1, 2, 3, 15]`; and each tooth must still
+change at least one pixel per tick, which catches a wheel shrunk to a blob.
+Mutants confirm each bites: `K` reverted to 4, `K = 5`, one wheel moved off the
+7 lattice, the mark grown outward, and the mark neutralised at `K = 4`
+(reproducing the original fault) all fail.

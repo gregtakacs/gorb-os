@@ -326,6 +326,13 @@
       }
       if (c.type === 'moon') hole = ROUND_MOON[c.style] ? { kind: 'circle', x: g.x, y: g.y, r: sz * 0.62, style: c.style === 'sphere' ? 'frame' : 'bevel' } : { kind: 'moon', x: g.x, y: g.y, a: sz, rot: g.rot, style: 'frame' };
       else { const ws = c.shows === 'custom' ? [customWidth(c), 22] : WIN_SIZE[c.shows] || WIN_SIZE.date; hole = { kind: 'rect', x: g.x, y: g.y, w: ws[0] * sz * (+c.ww || 1), h: ws[1] * sz * (+c.wh || 1), rad: 2.5 * sz, rot: g.rot, style: c.style || 'frame' }; }
+      // A dial-hosted window/moon is an opaque data disc, not a viewport: seal its
+      // aperture so the shipped dial carries no hole there. The value is composited
+      // over the dial at frame build (once a day); the bank never DMA's under it. A
+      // subdial-hosted disc is NOT sealed -- the subdial is opaque already, so its
+      // punch stays to show the disc, and the geartrain under it is culled by the
+      // subdial itself. Skeleton openings ('opening', below) keep their holes.
+      if (!onSub) hole.seal = true;
       comps.push({ id: c.id, type: c.type === 'moon' ? 'moon' : c.shows || 'date', fmt: c.fmt || 'ddd DD MMM', fcase: c.fcase, style: c.style, disc: c.disc || 'auto', dc: c.discColor, tc: c.textColor, wf: c.wfont, mc: c.moonColor, mc2: c.moonColor2, mbg: c.moonBg, host: onSub || 'dial', hole, k: sz });
       (onSub ? subHoles[onSub] : dialHoles).push(hole);
       const b = holeBox(hole);
@@ -881,7 +888,7 @@
     sx.globalCompositeOperation = 'destination-in'; sx.beginPath(); sx.arc(C, C, DR, 0, TAU); sx.fill();
     ctx.save(); ctx.globalCompositeOperation = 'destination-over'; ctx.drawImage(sh, 0, 0); ctx.restore();
   }
-  function buildDial(D, lay, baseEn, pal, glow) {
+  function buildDial(D, lay, baseEn, pal, glow, seal) {
     const c = cv(S), ctx = c.getContext('2d'), en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
@@ -894,7 +901,10 @@
     }
     if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
     drawFlares(ctx, lay.flares.filter((f) => f.host === 'dial' && f.icon !== 'datetext'), en, pal);
-    cutHoles(ctx, lay.dialHoles, pal, glow);
+    // seal: an opaque date/moon disc covers its aperture, so the shipped dial keeps
+    // the surface uncut there. Only genuine openings stay punched -- the seal flag
+    // (layout) is set on dial-hosted windows/moons and never on an 'opening'.
+    cutHoles(ctx, seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles, pal, glow);
     return { canvas: c, en };
   }
   // one canvas per subdial, so list order is stacking order (later covers earlier) and each one's openings only cut itself
@@ -1541,8 +1551,8 @@
   const TRAINS = {
     classic: {
       name: 'Classic', blurb: 'Arched bridges on a warm plate', plate: 'classic',
-      gears: { front: [{ x: 178, y: 193, N: 32, p: 0.1 }, { parent: 0, ang: -20, N: 24 }, { parent: 0, ang: 120, N: 20 }, { parent: 1, ang: 80, N: 16 }, { parent: 2, ang: 30, N: 24 }], fm: 4,
-        rear: [{ x: 270, y: 250, N: 32, p: 0.3 }, { parent: 0, ang: 200, N: 20 }, { parent: 0, ang: -70, N: 24 }], rm: 5.5, bal: { x: 206, y: 98, r: 34 } },
+      gears: { front: [{ x: 178, y: 193, N: 56, p: 0.1 }, { parent: 0, ang: -20, N: 42 }, { parent: 0, ang: 120, N: 35 }, { parent: 1, ang: 80, N: 28 }, { parent: 2, ang: 30, N: 42 }], fm: 2.3,
+        rear: [{ x: 270, y: 250, N: 56, p: 0.3 }, { parent: 0, ang: 200, N: 35 }, { parent: 0, ang: -70, N: 42 }], rm: 3.15, bal: { x: 206, y: 98, r: 34 } },
       names: ['Centre wheel', 'Third wheel', 'Fourth wheel', 'Escape wheel', 'Intermediate wheel', 'Barrel', 'Rear wheel A', 'Rear wheel B'],
       parts: [{ k: 'bridge', pts: [[330, 30], [323, 105], [395, 160]], w: 20 }, { k: 'screw', x: 323, y: 105, sl: 0.6 }, { k: 'front' },
         { k: 'bridge', pts: [[40, 330], [126, 283]], w: 22 }, { k: 'post', i: 2 }, { k: 'screw', x: 82, y: 307, sl: 2.1 }, { k: 'balance' },
@@ -1550,15 +1560,15 @@
     },
     tourbillon: {
       name: 'Flying tourbillon', blurb: 'Balance in a cage that turns once a minute', plate: 'classic', cage: 48,
-      gears: { front: [{ x: 233, y: 160, N: 40, p: 0 }, { parent: 0, ang: 180, N: 24 }, { parent: 0, ang: 0, N: 24 }, { parent: 0, ang: 118, N: 16 }, { parent: 1, ang: 100, N: 20 }], fm: 4,
-        rear: [{ x: 320, y: 300, N: 32, p: 0.2 }, { parent: 0, ang: -110, N: 20 }], rm: 5, bal: { x: 233, y: 340, r: 32 } },
+      gears: { front: [{ x: 233, y: 160, N: 70, p: 0 }, { parent: 0, ang: 180, N: 42 }, { parent: 0, ang: 0, N: 42 }, { parent: 0, ang: 118, N: 28 }, { parent: 1, ang: 100, N: 35 }], fm: 2.3,
+        rear: [{ x: 320, y: 300, N: 56, p: 0.2 }, { parent: 0, ang: -110, N: 35 }], rm: 2.85, bal: { x: 233, y: 340, r: 32 } },
       names: ['Centre wheel', 'Third wheel', 'Crown wheel', 'Fourth wheel', 'Intermediate wheel', 'Rear wheel A', 'Rear wheel B'],
       parts: [{ k: 'front' }, { k: 'bridge', pts: [[50, 190], [140, 112], [233, 160], [326, 112], [416, 190]], w: 22 }, { k: 'screw', x: 140, y: 112, sl: 0.3 }, { k: 'screw', x: 326, y: 112, sl: 2.4 },
         { k: 'post', i: 0 }, { k: 'bridge', pts: [[38, 262], [90, 247]], w: 20 }, { k: 'post', i: 4 }, { k: 'screw', x: 52, y: 258, sl: 1 }, { k: 'cage' }],
     },
     architect: {
       name: 'Architect', blurb: 'Rhodium wheels with lightening holes on a sandblasted plate', plate: 'sandblast', bridgePal: 'rhodium', finish: 'rhodium', spokes: 'holes',
-      gears: { front: [{ x: C, y: C, N: 48, p: 0 }, { parent: 0, ang: 30, N: 24 }, { parent: 0, ang: 210, N: 24 }, { parent: 1, ang: -30, N: 16 }, { parent: 2, ang: 150, N: 20 }], fm: 3.2, rear: [], rm: 5, bal: { x: 150, y: 345, r: 32 } },
+      gears: { front: [{ x: C, y: C, N: 84, p: 0 }, { parent: 0, ang: 30, N: 42 }, { parent: 0, ang: 210, N: 42 }, { parent: 1, ang: -30, N: 28 }, { parent: 2, ang: 150, N: 35 }], fm: 1.85, rear: [], rm: 5, bal: { x: 150, y: 345, r: 32 } },
       names: ['Centre wheel', 'Third wheel', 'Fourth wheel', 'Escape wheel', 'Seconds wheel'],
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(72, 211, 233, 233, 14) }, { k: 'poly', pts: bar(233, 233, 388, 259, 14) },
         { k: 'screw', x: 80, y: 212, r: 4.5 }, { k: 'screw', x: 380, y: 258, r: 4.5 }, { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 2 }, { k: 'post', i: 3 }, { k: 'post', i: 4 },
@@ -1567,13 +1577,13 @@
     orbital: {
       name: 'Orbital arrow', blurb: 'Exotic: an arrow-shaped tourbillon carriage that is the seconds hand', plate: 'sandblast', bridgePal: 'rhodium', finish: 'rhodium', spokes: 'thin',
       orbital: { D: 128, tip: 194, tail: 62 },
-      gears: { front: [{ x: C, y: C, N: 56, p: 0 }, { parent: 0, ang: 45, N: 16 }, { parent: 0, ang: 135, N: 16 }, { parent: 0, ang: 225, N: 16 }, { parent: 0, ang: 315, N: 16 }], fm: 3, rear: [], rm: 5, bal: { x: C, y: C - 128, r: 28 } },
+      gears: { front: [{ x: C, y: C, N: 98, p: 0 }, { parent: 0, ang: 45, N: 28 }, { parent: 0, ang: 135, N: 28 }, { parent: 0, ang: 225, N: 28 }, { parent: 0, ang: 315, N: 28 }], fm: 1.7, rear: [], rm: 5, bal: { x: C, y: C - 128, r: 28 } },
       names: ['Centre wheel', 'Satellite NE', 'Satellite SE', 'Satellite SW', 'Satellite NW'],
       parts: [{ k: 'front' }, { k: 'post', i: 1 }, { k: 'post', i: 2 }, { k: 'post', i: 3 }, { k: 'post', i: 4 }, { k: 'cage' }],
     },
     openworked: {
       name: 'Openworked', blurb: 'Anthracite plate, black angular bridges, fine spokes', plate: 'anthracite', bridgePal: 'black', spokes: 'thin', finish: 'rhodium',
-      gears: { front: [{ x: C, y: C, N: 48, p: 0 }, { parent: 0, ang: -45, N: 24 }, { parent: 0, ang: 135, N: 24 }, { parent: 1, ang: -90, N: 16 }, { parent: 2, ang: 90, N: 16 }], fm: 3.5, rear: [], rm: 5, bal: { x: 128, y: 128, r: 34 } },
+      gears: { front: [{ x: C, y: C, N: 84, p: 0 }, { parent: 0, ang: -45, N: 42 }, { parent: 0, ang: 135, N: 42 }, { parent: 1, ang: -90, N: 28 }, { parent: 2, ang: 90, N: 28 }], fm: 2, rear: [], rm: 5, bal: { x: 128, y: 128, r: 34 } },
       names: ['Centre wheel', 'Third wheel', 'Fourth wheel', 'Escape wheel', 'Seconds wheel'],
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(60, 300, 300, 60, 20) }, { k: 'poly', pts: bar(144, 322, 392, 290, 18) },
         { k: 'screw', x: 66, y: 294 }, { k: 'screw', x: 294, y: 66 }, { k: 'screw', x: 384, y: 291 }, { k: 'post', i: 2 }, { k: 'post', i: 0 },
@@ -1582,14 +1592,14 @@
     kite: {
       name: 'Kite carriage', blurb: 'Bold kite-shaped tourbillon bridge orbiting the dial, blued inlay', plate: 'anthracite', bridgePal: 'rhodium', finish: 'rhodium', spokes: 'thin', rear: 'match',
       orbital: { D: 128, tip: 194, tail: 58, shape: 'kite', inlay: 'blued' },
-      gears: { front: [{ x: C, y: C, N: 56, p: 0 }, { parent: 0, ang: 45, N: 16 }, { parent: 0, ang: 135, N: 16 }, { parent: 0, ang: 225, N: 16 }, { parent: 0, ang: 315, N: 16 }], fm: 3, rear: [], rm: 5, bal: { x: C, y: C - 128, r: 26 } },
+      gears: { front: [{ x: C, y: C, N: 98, p: 0 }, { parent: 0, ang: 45, N: 28 }, { parent: 0, ang: 135, N: 28 }, { parent: 0, ang: 225, N: 28 }, { parent: 0, ang: 315, N: 28 }], fm: 1.7, rear: [], rm: 5, bal: { x: C, y: C - 128, r: 26 } },
       names: ['Centre wheel', 'Satellite NE', 'Satellite SE', 'Satellite SW', 'Satellite NW'],
       parts: [{ k: 'front' }, { k: 'post', i: 1 }, { k: 'post', i: 2 }, { k: 'post', i: 3 }, { k: 'post', i: 4 }, { k: 'cage' }],
     },
     fineclassic: {
       name: 'Fine classic', blurb: 'Delicate · small-module gilt wheels, slim bridges, Geneva stripes', plate: 'stripes', spokes: 'thin', finish: 'brass',
-      gears: { front: [{ x: 200, y: 200, N: 36, p: 0.1 }, { parent: 0, ang: -30, N: 24 }, { parent: 1, ang: -100, N: 16 }, { parent: 0, ang: 120, N: 24 }, { parent: 3, ang: 60, N: 16 }, { parent: 2, ang: -20, N: 20 }], fm: 2.2,
-        rear: [{ x: 300, y: 290, N: 32, p: 0.2 }, { parent: 0, ang: 200, N: 20 }, { parent: 0, ang: -80, N: 16 }], rm: 3, bal: { x: 128, y: 140, r: 28 } },
+      gears: { front: [{ x: 200, y: 200, N: 49, p: 0.1 }, { parent: 0, ang: -30, N: 35 }, { parent: 1, ang: -100, N: 21 }, { parent: 0, ang: 120, N: 35 }, { parent: 3, ang: 60, N: 21 }, { parent: 2, ang: -20, N: 28 }], fm: 1.55,
+        rear: [{ x: 300, y: 290, N: 56, p: 0.2 }, { parent: 0, ang: 200, N: 35 }, { parent: 0, ang: -80, N: 28 }], rm: 1.7, bal: { x: 128, y: 140, r: 28 } },
       names: ['Centre wheel', 'Third wheel', 'Fourth wheel', 'Intermediate wheel', 'Seconds wheel', 'Escape wheel', 'Barrel', 'Ratchet wheel', 'Crown wheel'],
       parts: [{ k: 'front' }, { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 3 }, { k: 'post', i: 5 },
         { k: 'poly', pts: bar(250, 372, 372, 300, 9) }, { k: 'screw', x: 258, y: 367, r: 3.4 }, { k: 'screw', x: 364, y: 305, r: 3.4, sl: 1.2 },
@@ -1597,16 +1607,16 @@
     },
     finetour: {
       name: 'Fine tourbillon', blurb: 'Delicate · slender cage at 6, fine rhodium wheels on anthracite', plate: 'anthracite', bridgePal: 'rhodium', finish: 'rhodium', spokes: 'thin', rear: 'match', cage: 38,
-      gears: { front: [{ x: C, y: C - 20, N: 40, p: 0 }, { parent: 0, ang: -90, N: 24 }, { parent: 1, ang: -30, N: 16 }, { parent: 1, ang: 210, N: 16 }, { parent: 0, ang: 70, N: 20 }], fm: 2.2,
-        rear: [{ x: 120, y: 300, N: 28, p: 0.3 }, { parent: 0, ang: -70, N: 16 }], rm: 2.6, bal: { x: C, y: C + 107, r: 22 } },
+      gears: { front: [{ x: C, y: C - 20, N: 56, p: 0 }, { parent: 0, ang: -90, N: 35 }, { parent: 1, ang: -30, N: 21 }, { parent: 1, ang: 210, N: 21 }, { parent: 0, ang: 70, N: 28 }], fm: 1.55,
+        rear: [{ x: 120, y: 300, N: 49, p: 0.3 }, { parent: 0, ang: -70, N: 28 }], rm: 1.5, bal: { x: C, y: C + 107, r: 22 } },
       names: ['Centre wheel', 'Third wheel', 'Seconds wheel', 'Intermediate wheel', 'Fourth wheel', 'Barrel', 'Ratchet wheel'],
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(150, 140, 316, 140, 8) }, { k: 'screw', x: 156, y: 140, r: 3.2 }, { k: 'screw', x: 310, y: 140, r: 3.2, sl: 1 },
         { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 4 }, { k: 'cage' }],
     },
     filigree: {
       name: 'Filigree', blurb: 'Delicate · seven fine copper wheels around the centre, hairline bridges', plate: 'sandblast', bridgePal: 'rhodium', finish: 'copper', spokes: 'thin', rear: 'match',
-      gears: { front: [{ x: C, y: C, N: 44, p: 0 }, { parent: 0, ang: 0, N: 28 }, { parent: 1, ang: -90, N: 20 }, { parent: 0, ang: 180, N: 28 }, { parent: 3, ang: 90, N: 20 }, { parent: 0, ang: -90, N: 20 }, { parent: 0, ang: 90, N: 24 }], fm: 2,
-        rear: [{ x: 130, y: 120, N: 28, p: 0.1 }, { parent: 0, ang: 30, N: 16 }], rm: 2.4, bal: { x: 336, y: 334, r: 26 } },
+      gears: { front: [{ x: C, y: C, N: 63, p: 0 }, { parent: 0, ang: 0, N: 42 }, { parent: 1, ang: -90, N: 28 }, { parent: 0, ang: 180, N: 42 }, { parent: 3, ang: 90, N: 28 }, { parent: 0, ang: -90, N: 28 }, { parent: 0, ang: 90, N: 35 }], fm: 1.4,
+        rear: [{ x: 130, y: 120, N: 49, p: 0.1 }, { parent: 0, ang: 30, N: 28 }], rm: 1.35, bal: { x: 336, y: 334, r: 26 } },
       names: ['Centre wheel', 'Third wheel', 'Fourth wheel', 'Intermediate wheel', 'Seconds wheel', 'Minute wheel', 'Hour wheel', 'Barrel', 'Ratchet wheel'],
       parts: [{ k: 'front' }, { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 3 }, { k: 'post', i: 5 }, { k: 'post', i: 6 },
         { k: 'bridge', pts: [[52, 300], [110, 336], [200, 352]], w: 8 }, { k: 'screw', x: 110, y: 336, r: 3.2, sl: 0.8 },
@@ -1614,16 +1624,16 @@
     },
     skeltour: {
       name: 'Skeleton tourbillon', blurb: 'Fine small-module wheels on a carbon plate, tourbillon at 6', plate: 'carbon', bridgePal: 'rhodium', finish: 'rhodium', spokes: 'thin', cage: 46, rear: 'match',
-      gears: { front: [{ x: C, y: C, N: 40, p: 0 }, { parent: 0, ang: -90, N: 24 }, { parent: 1, ang: -35, N: 16 }, { parent: 1, ang: -145, N: 16 }, { parent: 0, ang: 90, N: 16 }, { parent: 0, ang: 150, N: 16 }, { parent: 0, ang: 30, N: 16 }], fm: 2.4,
-        rear: [{ x: 128, y: 312, N: 32, p: 0.2 }, { parent: 0, ang: -60, N: 20 }, { parent: 0, ang: 200, N: 16 }], rm: 3, bal: { x: C, y: C + 107, r: 27 } },
+      gears: { front: [{ x: C, y: C, N: 70, p: 0 }, { parent: 0, ang: -90, N: 42 }, { parent: 1, ang: -35, N: 28 }, { parent: 1, ang: -145, N: 28 }, { parent: 0, ang: 90, N: 28 }, { parent: 0, ang: 150, N: 28 }, { parent: 0, ang: 30, N: 28 }], fm: 1.35,
+        rear: [{ x: 128, y: 312, N: 56, p: 0.2 }, { parent: 0, ang: -60, N: 35 }, { parent: 0, ang: 200, N: 28 }], rm: 1.7, bal: { x: C, y: C + 107, r: 27 } },
       names: ['Centre wheel', 'Third wheel', 'Seconds wheel', 'Intermediate wheel', 'Fourth wheel', 'Hour wheel', 'Minute wheel', 'Barrel', 'Ratchet wheel', 'Keyless wheel'],
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(C - 78, 128, C + 78, 128, 9) }, { k: 'screw', x: C - 72, y: 128, r: 3.6 }, { k: 'screw', x: C + 72, y: 128, r: 3.6, sl: 1.1 },
         { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 4 }, { k: 'post', i: 5 }, { k: 'post', i: 6 }, { k: 'cage' }],
     },
     inline: {
       name: 'Inline', blurb: 'Vertical train between rails, Geneva stripes', plate: 'stripes', spokes: 'straight',
-      gears: { front: [{ x: C, y: 96, N: 32, p: 0 }, { parent: 0, ang: 90, N: 24 }, { parent: 1, ang: 90, N: 32 }, { parent: 2, ang: 90, N: 16 }], fm: 3.5,
-        rear: [{ x: 120, y: 250, N: 24, p: 0.1 }, { parent: 0, ang: -80, N: 20 }], rm: 5, bal: { x: 352, y: 292, r: 34 } },
+      gears: { front: [{ x: C, y: 96, N: 56, p: 0 }, { parent: 0, ang: 90, N: 42 }, { parent: 1, ang: 90, N: 56 }, { parent: 2, ang: 90, N: 28 }], fm: 2,
+        rear: [{ x: 120, y: 250, N: 42, p: 0.1 }, { parent: 0, ang: -80, N: 35 }], rm: 2.85, bal: { x: 352, y: 292, r: 34 } },
       names: ['Barrel', 'Centre wheel', 'Third wheel', 'Escape wheel', 'Rear wheel A', 'Rear wheel B'],
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(158, 44, 158, 408, 16) }, { k: 'poly', pts: bar(308, 44, 308, 408, 16) },
         { k: 'screw', x: 158, y: 60 }, { k: 'screw', x: 158, y: 392 }, { k: 'screw', x: 308, y: 60 }, { k: 'screw', x: 308, y: 392 },
@@ -1933,6 +1943,12 @@
       hands: buildHands(lay, design, style, hf, o.tick), inset: BEZEL[o.caseStyle] ? BEZEL_IN / DR : 1, handOrder: handOrder(lay, design), handSlots: handSlots(lay), light: Object.assign({}, LIGHT),
     };
     const bd = buildDial(design, lay, en, pal, G); F.dial = bd.canvas; F.dialEn = bd.en;
+    // dialSealed: the dial with the date/moon apertures left uncut, so the opaque disc
+    // the device composites over them every day seals the geartrain beneath. Shipped as
+    // the theme dial and used as the composer occluder -- both must match the bake's
+    // opaque static1 cull. Built only when a dial-hosted disc exists; else fall back to
+    // the holed dial (no apertures to seal).
+    F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true).canvas : bd.canvas;
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     const dfHost = (f) => (f.host === 'dial' ? { x: C, y: C, r: DR, en: F.dialEn } : (() => { const s = lay.subs.find((q) => q.id === f.host), l = F.subLayers.find((q) => q.id === f.host); return s ? { x: s.x, y: s.y, r: s.r, en: (l && l.en) || F.dialEn } : { x: C, y: C, r: DR, en: F.dialEn }; })());
@@ -2144,5 +2160,10 @@
     return d;
   }
 
-  window.WatchEngine = { SIZE: S, PRESETS, DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
+  /* The bank depth and the teeth-per-loop constant live in dial-renderer.js; the
+   * composer's copy and the packer both read them back through here so no
+   * second copy of the number exists to drift. */
+  window.WatchEngine = { SIZE: S, PRESETS,
+    TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES };
 })();

@@ -79,6 +79,12 @@
 #include "orb_net.h"   /* orb_net_time_synced(): the dial's second time source */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
+/* Second, deliberately: this header #defines the names clock_assets.h just defined
+ * as objects, so including it before would expand a macro inside the generated
+ * struct definition. Everything below this line reads the theme through
+ * orb_theme_geo() — which is the whole firmware change for a theme that arrives on
+ * an SD card instead of in the build. */
+#include "orb_theme_geo.h"
 #include "art_bank.h"       /* the bank the above offsets index into */
 
 static const char *TAG = "clock";
@@ -1975,19 +1981,24 @@ static uint32_t bg_rate(uint32_t base, uint32_t *every)
 
 esp_err_t clock_view_init(void)
 {
-    /* Map the art bank before anything reads it. The bake records the exact blob
-     * size in the generated header, so a stale bin/partition pair (rebaked one
-     * but not the other, or a bin flashed over an older layout) is caught loudly
-     * here rather than as a wild read off the end of the mapping. */
-    const esp_err_t art_err = art_bank_init(CLK_BLOB_BYTES);
+    /* The bank was already found and mapped by orb_theme_boot(), which ran BEFORE
+     * display_init() — a theme install must complete before anything reads pixels,
+     * and only orb_theme knows which A/B slot the bank is in. What is checked here
+     * is that the mapping exists and covers what the geometry says it must: a stale
+     * bin/partition pair, or a theme that would not load, fails loudly at this line
+     * rather than as a wild read past the end of the mapping. */
+    const esp_err_t art_err = art_bank_ready() && art_bank_bytes() >= CLK_BLOB_BYTES
+                            ? ESP_OK : ESP_ERR_INVALID_SIZE;
     if (art_err != ESP_OK) {
-        ESP_LOGE(TAG, "clock art bank unavailable (%s) — re-flash the \"%s\" partition?",
-                 esp_err_to_name(art_err), ART_BANK_PARTITION_NAME);
+        ESP_LOGE(TAG, "clock art bank unavailable (%s, %u B mapped for %u B) — "
+                      "re-flash the \"%s\" partition or load another theme?",
+                 esp_err_to_name(art_err), (unsigned)art_bank_bytes(),
+                 (unsigned)CLK_BLOB_BYTES, ART_BANK_PARTITION_NAME);
         return art_err;
     }
     s_art = art_bank_ptr();
-    ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B)",
-             (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES);
+    ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B) from %s",
+             (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES, orb_theme_source());
 
     s_scr = lv_obj_create(NULL);
     /* Screen bg stays TRANSPARENT: the plate covers the full 466x466 opaquely,
@@ -2103,7 +2114,11 @@ esp_err_t clock_view_init(void)
      * drifts out of date: the GIF and the tick share clk_gif_delays[] (the
      * GIF's own per-frame delays), and the sweeping hand beats at
      * tickRate when the theme declares one. */
-    char bgdesc[64];
+    /* 96, not the 64 this shipped with: gif_frames, tick_rate and the delays are
+     * runtime values now that a theme can arrive on an SD card, so the compiler can
+     * no longer prove the worst case fits and -Werror=format-truncation says so. The
+     * strings are still short — this is headroom for the widest digits, not a guess. */
+    char bgdesc[96];
     if (gif_mode()) {
         uint32_t d0 = clk_gif_delays[0] > 0 ? (uint32_t)clk_gif_delays[0]
                                             : (uint32_t)CLK_GIF_TICK_MS;
@@ -2118,7 +2133,7 @@ esp_err_t clock_view_init(void)
         snprintf(bgdesc, sizeof bgdesc, "still");
     }
 
-    char sweepdesc[32] = "off";
+    char sweepdesc[48] = "off";   /* 32 -> 48 for the same reason as bgdesc above */
     if (clk_theme.second_sweep) {
         const uint32_t tpb = gif_mode() ? hand_beat_ticks() : 1;
         if (gif_mode() && tpb > 1)

@@ -92,6 +92,13 @@ static lv_obj_t *s_chip_lbl[CH_COUNT];
 static lv_obj_t *s_value_lbl;
 static lv_obj_t *s_hint_lbl;
 
+/* The title card shown while unarmed: a big "HSB" and the one gesture that
+ * leaves it. It is a separate label rather than a retextured s_value_lbl so the
+ * armed editor's layout is never half-drawn behind the title. */
+static lv_obj_t *s_title_lbl;
+static lv_obj_t *s_title_hint;
+static bool      s_armed;
+
 static const char *const CH_LETTER[CH_COUNT] = { "H", "S", "B" };
 
 /* Paint one chip: active = white text on the current color; inactive = dim. */
@@ -110,8 +117,31 @@ static void style_chip(channel_t c)
     }
 }
 
+/* Show exactly one of the two views. LVGL keeps drawing hidden objects out of
+ * the tree cost, so the editor is hidden rather than moved off-screen — the
+ * swatch and chips must not bleed into the title card. */
+static void set_views(bool armed)
+{
+    lv_obj_set_hidden(s_title_lbl,  armed);
+    lv_obj_set_hidden(s_title_hint, armed);
+    lv_obj_set_hidden(s_swatch,    !armed);
+    lv_obj_set_hidden(s_value_lbl, !armed);
+    lv_obj_set_hidden(s_hint_lbl,  !armed);
+    for (int i = 0; i < CH_COUNT; i++) lv_obj_set_hidden(s_chip[i], !armed);
+}
+
 static void refresh(void)
 {
+    if (!s_armed) {
+        /* Title card: nothing editable is drawn, and the swatch is not painted
+         * either, so the screen cannot hint at a color it is not showing. */
+        lv_label_set_text(s_title_lbl, "HSB");
+        lv_label_set_text(s_title_hint, "push to edit");
+        set_views(false);
+        return;
+    }
+    set_views(true);
+
     lv_color_t c = lv_color_hsv_to_rgb(s_hue, s_sat, s_val);
     lv_obj_set_style_bg_color(s_swatch, c, 0);
 
@@ -208,6 +238,23 @@ esp_err_t color_picker_init(void)
     lv_label_set_text(s_hint_lbl, "rotate: adjust   push: option");
     lv_obj_align(s_hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -30);
 
+    /* The unarmed title card, built once and swapped for the editor by
+     * set_views(). Same 48 px face the menu's landing uses. */
+    s_title_lbl = lv_label_create(s_scr);
+    lv_obj_set_style_text_color(s_title_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(s_title_lbl, &lv_font_montserrat_48, 0);
+    lv_label_set_text(s_title_lbl, "HSB");
+    lv_obj_align(s_title_lbl, LV_ALIGN_CENTER, 0, -20);
+
+    s_title_hint = lv_label_create(s_scr);
+    lv_obj_set_style_text_color(s_title_hint, lv_color_make(0x90, 0x90, 0x90), 0);
+    lv_obj_set_style_text_font(s_title_hint, &lv_font_montserrat_14, 0);
+    lv_label_set_text(s_title_hint, "push to edit");
+    lv_obj_align(s_title_hint, LV_ALIGN_CENTER, 0, 40);
+
+    /* Boot unarmed: the picker is reached by rotating to it, and a screen that
+     * is merely passing through must not be mid-edit. */
+    s_armed = false;
     refresh();
     ESP_LOGI(TAG, "color picker ready (HUE=%u SAT=%u BRI=%u)",
              (unsigned)s_hue, (unsigned)s_sat, (unsigned)s_val);
@@ -230,6 +277,10 @@ void color_picker_show(void)
 
 void color_picker_apply_input(int32_t delta, bool pressed)
 {
+    /* Armed only. input_router keeps the turn while this screen is a title card,
+     * so a stray call here must not edit a color nobody is looking at. */
+    if (!s_armed) return;
+
     if (pressed) {
         const channel_t before = s_ch;
         cycle_channel();
@@ -239,6 +290,11 @@ void color_picker_apply_input(int32_t delta, bool pressed)
         s_dps = 0.0f;
         ESP_LOGI(TAG, "push %s -> %s", CH_LETTER[before], CH_LETTER[s_ch]);
     } else if (delta) {
+        /* The channel value deliberately reads the RAW delta, not knob_row_step():
+         * a value is not a list position. Turning clockwise raises it, which agrees
+         * with the documented axis anyway (CW = up = right, see knob.h) and is the
+         * feel the owner already has under his hand. If that ever needs to change,
+         * add a named constant beside KNOB_DIR_DOWN_IS_CW rather than negating here. */
         const int step = update_velocity(delta);
         adjust(delta, step);
         uint16_t h; uint8_t s, v; color_picker_get(&h, &s, &v);
@@ -252,4 +308,20 @@ void color_picker_get(uint16_t *h, uint8_t *s, uint8_t *v)
     if (h) *h = s_hue;
     if (s) *s = s_sat;
     if (v) *v = s_val;
+}
+
+bool color_picker_armed(void) { return s_armed; }
+
+void color_picker_set_armed(bool armed)
+{
+    if (s_armed == armed) return;
+    s_armed = armed;
+    /* Drop any stale velocity on every transition, so the first turn after
+     * entering the editor is always priced as a slow start rather than
+     * inheriting how fast the last exit happened. */
+    s_last_turn_us = 0;
+    s_dps = 0.0f;
+    refresh();
+    if (s_scr) lv_obj_invalidate(s_scr);
+    ESP_LOGI(TAG, "%s", armed ? "editor open" : "title card");
 }

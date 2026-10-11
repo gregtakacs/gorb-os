@@ -18,9 +18,12 @@
 #include "display.h"
 #include "clock_view.h"
 #include "color_picker.h"
+#include "menu_view.h"
 #include "knob.h"
 #include "input_router.h"
 #include "orb_net.h"
+#include "orb_sd.h"
+#include "orb_theme.h"
 
 static const char *TAG = "main";
 
@@ -54,15 +57,40 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    /* Resolve the theme — and carry out any install the config page staged — BEFORE
+     * the display comes up. Two reasons, both load-bearing:
+     *   - An install is an erase-and-rewrite of the multi-megabyte region the dial
+     *     reads its pixels from. Doing it while the LVGL task is mid-paint is how a
+     *     device shows half of one theme and half of another.
+     *   - art_bank_init() must map the slot the CHOSEN theme lives in, and only this
+     *     call knows which of the two that is.
+     * The cost is that a boot with a staged load shows a dark screen for the seconds
+     * the copy takes. That is the correct trade: it happens once, only when somebody
+     * asked for a new theme, and the alternative is a dial that can corrupt.
+     * Deliberately not ESP_ERROR_CHECK — a failed load falls back to the theme that
+     * was already installed (or to the baked-in one), and the clock still has to tell
+     * the time. */
+    const esp_err_t theme_err = orb_theme_boot();
+    if (theme_err != ESP_OK)
+        ESP_LOGE(TAG, "theme bring-up degraded (%s) — clock runs on the fallback bank",
+                 esp_err_to_name(theme_err));
+
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 
-    /* Build the two screens. Both register their own LVGL screen object; the
+    /* Build the three screens. Each registers its own LVGL screen object; the
      * input router decides which one is loaded. The GIF background animates
      * from inside the clock view (delta-rect bank), so there is no separate
-     * orb/bench screen any more. */
+     * orb/bench screen any more.
+     *
+     * menu_view_init() creates the worker task that runs the blocking card
+     * calls. Doing that before the LVGL task exists is deliberate and safe: the
+     * worker only ever calls the orb_theme and orb_net APIs and copies results
+     * into its own buffer — it never touches a widget, which is the one thing
+     * the LVGL task's existence is required for. */
     ESP_ERROR_CHECK(clock_view_init());
     ESP_ERROR_CHECK(color_picker_init());
+    ESP_ERROR_CHECK(menu_view_init());
 
     /* Rotary knob: GPIO edge ISRs feed the detent + press streams. */
     ESP_ERROR_CHECK(knob_init());
@@ -74,7 +102,7 @@ void app_main(void)
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "gorb-os running — knob HSB editor live (long-press: switch screen)");
+    ESP_LOGI(TAG, "gorb-os running — knob: turn swaps menu/hue/clock, push opens, hold returns to clock");
 
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
     /* Rollback handshake. With the safety net compiled in, the bootloader boots a
@@ -108,6 +136,16 @@ void app_main(void)
      * product, and this is a device in a sealed case. */
     if (orb_net_start() != ESP_OK)
         ESP_LOGE(TAG, "networking down — clock running without config page");
+#endif
+
+#if CONFIG_ORB_SD_ENABLE
+    /* Same rule as the network, and for the same reason: the TF socket has no
+     * card-detect line, so finding out whether a card is in it means driving
+     * the SPI bus through an init ladder that can take a second per failed
+     * rung. That belongs after the dial is drawing, never before it. */
+    if (orb_sd_init() != ESP_OK)
+        ESP_LOGW(TAG, "no SD card — themes can still be installed from the "
+                      "card once one is inserted (POST /api/v1/sd/rescan)");
 #endif
 }
 

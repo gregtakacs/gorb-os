@@ -125,3 +125,45 @@ menu "Orb networking"
             the printed http://192.168.4.1/ either way.
 
 endmenu
+
+menu "Orb microSD (theme storage)"
+
+    config ORB_SD_ENABLE
+        bool "Mount the microSD card (1-bit SPI) at /sd"
+        default n
+        help
+            Brings up the TF socket on the Waveshare board as SDSPI on
+            SPI3_HOST (GPIO 1/2/3, CS 41) with FATFS, and creates /sd/themes.
+            This is the theme import path; the dial NEVER reads art from here
+            while running (1-bit SPI caps at ~1.5 MB/s — see
+            docs/usb-sd-msc-plan.md §9 and main/sd/orb_sd.h).
+
+            Off means the socket is not probed at all and esp_vfs_fat, sdmmc
+            and esp_driver_sdspi drop out of the image, which is what makes it
+            usable as the control side of a frame-time A/B.
+
+    config ORB_SD_SPI_MAX_KHZ
+        int "Highest SPI clock to try first, in kHz"
+        depends on ORB_SD_ENABLE
+        default 20000
+        help
+            The card is driven at this clock first and falls back to 10 MHz
+            then 4 MHz if the data phase fails, exactly like the Arduino
+            original (orb-os/src/sdcard.cpp). The fallback matters: an SDSC
+            card powers up, answers the init commands at the 400 kHz probe
+            clock and then fails the data phase at 20 MHz with no hint why —
+            without the ladder that card is reported as absent.
+
+    config ORB_SD_RETRY_S
+        int "Seconds to wait before re-probing an absent card"
+        depends on ORB_SD_ENABLE
+        default 30
+        help
+            The socket has no card-detect line, so presence is discovered by
+            talking to it, and a failed attempt costs the command timeout at
+            every clock rate in the ladder. The theme page lists /sd while a
+            person browses it; without this back-off an empty socket is
+            re-probed on every request, and a card inserted mid-life is only
+            noticed at the next reboot.
+
+endmenu

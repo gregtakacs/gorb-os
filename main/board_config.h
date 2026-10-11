@@ -31,6 +31,22 @@
 #define PIN_I2C_SDA     15
 #define PIN_I2C_SCL     14
 
+// ---------- microSD, 1-bit SPI mode ----------
+// The Waveshare schematic's SD-CARD block labels the socket CMD/CLK/D0/D3
+// (generic microSD naming) but wires only the four SPI-mode lines to the S3:
+// CMD->MOSI, CLK->SCK, D0->MISO, D3->CS. D1/D2/card-detect are NOT connected,
+// so there is no 4-bit SDIO and no hot-plug sense — the card cannot be noticed
+// being swapped, which is why main/sd re-attempts the mount on demand instead
+// of relying on a detect line. Same pins the Arduino upstream uses
+// (orb-os/src/sdcard.cpp), where the card measured ~1.5 MB/s.
+//
+// These four GPIOs are claimed by nothing else here: the display is 12/39/38/
+// 4-7 (+13 TE), I2C is 15/14, the knob is 16/17/18.
+#define PIN_SD_MOSI      1
+#define PIN_SD_SCK       2
+#define PIN_SD_MISO      3
+#define PIN_SD_CS       41   // the socket's D3 line
+
 // ---------- Rotary knob (KY-040 on the 8-pin header H2) ----------
 // Same wiring as the Arduino reference orb-os/src/knob.cpp: A/B are the
 // quadrature phases, SW is the active-low push switch. These three GPIOs are

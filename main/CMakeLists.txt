@@ -5,18 +5,23 @@ idf_component_register(
         "clock/clock_view.c"
         "knob/knob.c"
         "color/color_picker.c"
+        "menu/menu_view.c"
         "input/input_router.c"
         "art/art_bank.c"
+        "art/orb_theme.c"
         "net/orb_net.c"
+        "sd/orb_sd.c"
     INCLUDE_DIRS
         "."
         "display"
         "clock"
         "knob"
         "color"
+        "menu"
         "input"
         "art"
         "net"
+        "sd"
         "../assets"
     REQUIRES
         esp_driver_spi
@@ -36,6 +41,9 @@ idf_component_register(
         app_update             # OTA: esp_ota_begin/write/end + set_boot_partition + rollback confirm
         bootloader_support     # esp_ota_img_states_t / esp_flash_partitions.h (status "img" field)
         nvs_flash
+        fatfs                    # microSD: esp_vfs_fat_sdspi_mount + FATFS volume
+        sdmmc                    # "            (sdmmc_card_t, card info)
+        esp_driver_sdspi         # "            (SDSPI host on SPI3_HOST)
         lvgl__lvgl
         espressif__esp_lcd_co5300
 )

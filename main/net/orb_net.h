@@ -59,3 +59,39 @@ const char *orb_net_ip_str(void);
  * a stale dial beats a 1970 dial.
  */
 bool orb_net_time_synced(void);
+
+/* ---- the zone table, for the on-dial menu (see main/menu/menu_view.c) --------
+ *
+ * These exist so the dial can offer the same zone choice the config page does
+ * without a browser. They are deliberately accessors over the ONE table
+ * orb_net.c already serves rather than a second copy: s_tz_tbl is the device's
+ * truth about which zones exist, and the NVS write, the validation and the
+ * setenv/tzset all stay inside net_tz_set() — one behaviour, three doors (the
+ * page's POST, the join's optional tz field, and now the knob).
+ *
+ * All safe from any task: the table is const, and the only mutation is the one
+ * orb_net_tz_select() makes through the same path the HTTP handler uses.
+ */
+
+/** Rows in the zone table; 0 when networking is compiled out. */
+int orb_net_tz_count(void);
+
+/** The stored key for row i (what NVS holds), or "" out of range. */
+const char *orb_net_tz_key(int i);
+
+/** The city-style label for row i, or "" out of range. */
+const char *orb_net_tz_label(int i);
+
+/** The zone currently in effect ("UTC" when none is set), or "" if unavailable. */
+const char *orb_net_tz_current(void);
+
+/** Row index of the zone currently in effect, or -1 if it is not in the table. */
+int orb_net_tz_current_index(void);
+
+/**
+ * Validate, persist and apply row i — the identical sequence POST /api/v1/config
+ * runs. ESP_ERR_INVALID_ARG out of range; ESP_FAIL if the device refused the
+ * stored rule (a row that no longer validates), which is reported rather than
+ * silently left on the old zone.
+ */
+esp_err_t orb_net_tz_select(int i);

@@ -764,7 +764,11 @@ MUTATIONS = [
      'CET-1CEST,M3.5.0,M10.4.0/3'),
     ('iana never emitted', '? "" : "\\"iana\\":\\"",', '? "" : "",'),
     ('config buffer shrunk', 'static char json[6144];', 'static char json[2048];'),
-    ('httpd route cap lowered', 'cfg.max_uri_handlers  = 20;', 'cfg.max_uri_handlers  = 12;'),
+    # The cap must stay above the registered-route count (22 today: /, /timezone, /themes,
+    # status, 3 wifi, 2 config, ota, reboot, 5 sd/theme, 5 captive probes). Lowering it
+    # past the count is the bug: httpd_register_uri_handler fails and the route 404s
+    # forever with nothing in the log.
+    ('httpd route cap lowered', 'cfg.max_uri_handlers  = 24;', 'cfg.max_uri_handlers  = 12;'),
 ]
 
 def run_mutations():

@@ -53,15 +53,16 @@ Two launch gotchas that burned time this session, both avoided by using a
   duration under ~12 s inline; longer captures go detached.
 
 ### Known operations that are SAFE inline (under 30 s)
-- `python3 tools/host_tz_test.py` (~1 s).
+- `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s).
 - Steady-state `idf.py build` after editing a single source file (~10 s).
 - `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
 - Short serial captures (≤ ~12 s) like `/tmp/cap_reset.py`.
 
 ## sdkconfig is local + untracked — a NEW Kconfig `default y` does NOT appear on a rebuild
 
-`sdkconfig` and any `sdkconfig.defaults` are NOT committed here (and there is no
-`*_defconfig`). `idf.py build` treats an existing `sdkconfig` as authoritative:
+Only `sdkconfig` is untracked here (there is no `*_defconfig`; `sdkconfig.defaults`
+IS tracked, and a new option needs a line in it for a fresh clone to get it).
+`idf.py build` treats an existing `sdkconfig` as authoritative:
 adding a `config FOO` with `default y` to `main/Kconfig` does **not** materialize
 `FOO=y` into the existing `sdkconfig`/`build/config/sdkconfig.h` — so
 `#if CONFIG_FOO` silently compiles the feature **out**, and the only tell is a
@@ -328,3 +329,320 @@ Before the rotated-ink marks + commit flush gate, sweep ran 5 fps at ~450
 rows/commit.
 `assets/preview-orbital/` holds the bake's own inspection
 PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).
+
+## The theme upload path, and what the no-card bench can prove about it
+
+`main/sd/orb_sd.c` owns the card, the name/path validators, the write-to-temp
+rename and the upload destination. `main/art/orb_theme.c` owns the container
+header parser and the boot/load decisions. `main/net/orb_net.c`'s `/themes` page
+owns the browser side. An SD socket empty and a radio off prove nothing about
+that path, so `tools/host_sd_test.py` covers it on the host instead. It needs no
+IDF, no radio and no card, and takes ~2 s. It lifts the shipped
+functions verbatim from `orb_sd.c` / `orb_theme.c` / `orb_net.c`. Same rule as
+`host_tz_test.py`: the real functions, not a re-typed copy. Its checks:
+
+- **Name + path validation**, every rejection reason spelled out (traversal,
+  embedded slash, leading dot, empty, over-long, all-dots, control bytes,
+  over-ASCII), the built path compared byte for byte, the buffer boundary
+  measured both ways (`outsz` that must fit and one byte less, with a canary
+  tail that catches any write past it).
+- **The geometry reader's refusals**, the shipped parser must reject each
+  damaged-blob case with the *exact* reason the firmware emits. Non-NULL is not
+  enough: the first draft of this suite let the tourbillon-extent mutation
+  survive because a different downstream check caught the same blob for a
+  different reason, and the vacated check stayed invisible.
+- **The header reader**, real containers from `tools/orbtheme.py` plus
+  deliberately damaged ones (bad magic, wrong format/version, wrong device,
+  wrong panel size, implausible blob, oversized payload, torn header, trailing
+  words). One known-answer row: the shipped `orbital-arrow-3.orbtheme` header
+  must be ACCEPTED. A stub of `esp_rom_crc32_le` sits in the harness and must
+  match the ROM's init/final inversion, that row is what proves the stub.
+- **`/themes`' own `<script>`**, parsed with esprima (a missing parser is a
+  loud SKIP, never a pass), every function it calls matched against the
+  functions actually lifted out of the shipped `.c`, and each critical
+  interaction pinned to a substring: the delete confirmation, the upload's
+  `XMLHttpRequest` with `upload.onprogress` (a `fetch` cannot report upload
+  progress), the 50 KB chunk, the `.part` cleanup in the `finally`.
+
+- **Two source lints over the card code**, `chunk_lint()` and `lock_lint()`. See the
+  next section: neither is a lift, both are regex over `_code_only()` output.
+
+`python3 tools/host_sd_test.py --mutations` re-runs the whole suite against
+24 deliberate regressions (validator loosened, each extent check deleted, the
+header's checksum ignored, the delete confirmation gone, the destination builder
+trusting its caller) and every one must fail it with a named verdict. A battery
+that cannot fail is not a test.
+
+One check is a lint rather than a lift: `err_t_lint()` reads the return types out of
+`orb_sd.h` / `orb_theme.h` and fails any call site in `orb_theme.c` / `orb_net.c`
+that puts `!` in front of a function declared `esp_err_t`. ESP_OK is 0, so
+`if (!orb_sd_ensure_mounted())` means "if the card is mounted, refuse". It compiles
+with no warning, and a bench with an empty socket cannot observe it. That inversion
+shipped here first and is the mutation this lint owns.
+
+Four real defects this suite caught before any card went in: a stray `'` in a
+JS comment that broke the whole `/themes` `<script>`, `theme_file()` building its
+own path with `snprintf` and validating nothing (it now delegates to
+`orb_sd_theme_path()` so the extension append shares the validator and the
+bounds check), a signed/unsigned comparison in the GIF-frame check
+(`n_first < t->gif_frames + 1`, which silently promoted a `uint16_t` to a signed
+int), and `orb_theme_upload_begin()` testing `orb_sd_ensure_mounted()` with `!`,
+which inverted the mount test and refused every card that was present. glibc's
+`strlcpy` differs from the IDF one, so the lifted code is renamed
+`host_strlcpy`. That rename is the only edit the lift is allowed to make.
+
+What hardware proved, and the two rules it cost a boot cycle each to learn, are in
+the next section. Numbers measured on the board are there too.
+
+## The card lock: two rules, and why the bench cannot see either
+
+`orb_sd_lock()` is a plain non-recursive FreeRTOS mutex, and `esp_http_server`
+services every session from ONE task at priority 4. A second take by the holder never
+returns. The symptom is not a slow route: it is every web route stopping at once while
+the dial keeps drawing and ping keeps replying, because the render task and lwip do not
+need that mutex. A card lock bug therefore looks like a dead web server.
+
+Three defects of that family were found on the board, none of them observable on the
+bench:
+
+1. `s_chunk` NULL on the upload path. The upload opens its `.part` with a bare `open()`
+   and never passes through `card_open()`, so nothing had reserved the 4 KB buffer.
+   FatFs stored through NULL and the dial died with a StoreProhibited at the end of a
+   successful 3.87 MB upload. `ensure_chunk()` now sits at the top of
+   `verify_container()`, `copy_into()` and `orb_theme_upload_begin()`: in
+   `orb_theme_upload_begin()` it is an early no before the radio carries anything, and
+   in the other two it is defensive and idempotent. `chunk_lint()` owns that rule.
+2. Self-deadlock in `orb_theme_scan()`. It holds the lock across the whole directory
+   walk and validated each entry through `card_open()`, which took the same mutex. An
+   empty themes directory runs that loop body zero times, so the bench passed while the
+   device wedged on the first real theme. `card_open()` is now a wrapper around
+   `card_open_locked()`, and the scan calls the `_locked` pair.
+3. The reverse mistake, made while fixing 2. `card_open_locked()` kept a
+   `orb_sd_ensure_mounted()` call, which takes the mutex its caller already holds. The
+   device's own new log line named it on the first boot: `waiting for the card: held by
+   "httpd" for 16002 ms`.
+
+Rule 1: nothing reachable between a take and the give that matches it may take the
+mutex again. Call the `_locked` variant.
+
+Rule 2: a lock holder must already be mounted. Mounting is the one card operation that
+cannot happen while the mutex is held, because `orb_sd_ensure_mounted()` takes it.
+`orb_theme_boot()` runs from `main.c:72` and `orb_sd_init()` only from `main.c:138`, so
+the boot install can mount the card only through `card_open()`'s wrapper. With the check
+in the core instead, a staged theme burned attempt 1 of 3 over a file the card had the
+whole time, and the dial drew the baked-in bank with nothing to blame.
+
+`lock_lint()` checks both rules: the held region is the first take to the LAST give
+(not a depth walk, because `orb_theme_scan()` unlocks on an early return and a depth
+walk then stops before the walk body), followed through the local call graph, plus the
+cross-file lockers in `orb_sd.c`, plus a mount call before the first take. Both rules
+are pinned by named mutations: `locked core re-asks for the mount it is holding` and
+`card_open stops mounting before it locks`. `_code_only()` is not cosmetic: with doc
+comments left in, `lock_lint()` reported three deadlocks that did not exist, from the
+function names the comments discuss.
+
+### Measured on the board (2026-10-10, SD16G SDHC 29.4 GB @ 20 MHz SPI)
+
+| Step | Result |
+|---|---|
+| Upload 3 867 066 B | `state:stored` in 38.8 s and 48.1 s, RSSI -53 to -74 |
+| `cfg.recv_wait_timeout` | 30 s. At the IDF default of 5 s a live 3.87 MB stream was aborted |
+| Scan with one real theme | `listing /sd/themes` / `checking "kit3"` / `1 entry listed in 6 ms` |
+| Scan with the directory emptied | `0 entries listed in 3 ms` |
+| Load (full CRC of the container) | `stage "kit3": container verified in 2952 ms`, routes still answering |
+| Boot install | `install of "kit3" from the card: ok`, `theme "kit3" from slot-B`, then `slot-A` |
+| Clock | `art bank mapped: 3858874 B ... from slot-B`, bank at `@0x830000` not `@0x420000` |
+| Delete the installed theme | `deleted "kit3" from the card (still installed on the dial)`, free_mb +3 |
+| Delete, then reboot | boots straight into slot-B with no install attempt and no burned retry |
+| Pending theme with the file gone | `theme install attempt 1 of 3 failed`, falls back to the baked-in bank |
+
+Two method rules, both learned the hard way in this session:
+
+- **Read the address from the serial log, not from memory.** The device prints
+  `esp_netif_handlers: sta ip:` when DHCP completes. Two full rounds were lost probing a
+  stale `192.168.68.251` after the board joined a different SSID at `192.168.2.32`. Every
+  symptom of that (TCP connects, zero bytes, whole server "wedged") looked like the mutex
+  bug and was not.
+- **Capture serial unfiltered, then grep the file.** A keep-regex in the first capture
+  script matched `orb_theme|orb_sd|load|card` and dropped the watchdog and boot lines, so
+  a hang looked like silence. `orb_sd_lock()` now logs the holder task name, reports the
+  wait every 5 s, and logs an ESP_LOGE on a same-task reentry; that instrumentation named
+  the deadlock in one boot, which is the argument for putting it in before the bisecting.
+
+## The on-dial menu, and the one knob gesture you cannot inject from the bench
+
+`main/menu/menu_view.c` adds a third screen. `main/input/input_router.c` is still the
+only reader of the knob; it now has two levels. Roaming, a turn swaps
+MENU → HUE → CLOCK and a press arms the screen you are on. Armed, the screen owns the
+turn and a long-press returns to the clock. Long-press no longer cycles screens —
+one button cannot mean "next screen" two ways depending on how long it is held.
+
+**The card calls must not run where the widgets are touched.** `orb_theme_scan()`
+takes the card mutex for its whole walk and `orb_theme_stage_load()` measured 2952 ms;
+either can additionally queue behind a browser upload holding that mutex for 38–48 s.
+The router's poll is an `lv_timer` on the LVGL task and is simultaneously the dial's
+animation and the only input reader, so both calls live on the `orb_menu` worker task
+(4096 B, priority 3, matching the httpd worker that already runs them). `host_menu_test.py`
+lints this: a blocking call in any function that also calls `lv_label_set_text()`/
+`lv_obj_set_style_*()`/`lv_obj_invalidate()` fails the suite, and
+`the card scan moves back onto the LVGL task` is one of its named mutations.
+
+### Verifying a screen nobody turned a knob on
+
+The encoder is three GPIOs driven only by a finger, so before this the menu and the
+picker had never been entered on hardware. `GET /api/v1/screen` is the bench door:
+
+| Query | Effect |
+|---|---|
+| `?to=clock\|menu\|hue` | switch screen (posted, applied on the LVGL task) |
+| `?turn=N` | N synthetic detents, **electrical** sense: +1 = CW = up/right on screen |
+| `?push=1` | one synthetic tap |
+| `?hold=1` | the long-press escape gesture |
+
+Inject the long press too: it is the only exit from an armed screen, so a broken
+one soft-locks the dial with rotate belonging to the list. Prove it — verified here
+as armed zone-list → `menu idle` → `screen -> clock` inside one 10 ms poll.
+
+Two bench traps, both hit for real on this feature:
+
+- **Reset before a scripted walk.** A previous run can leave `s_inj_delta` set if it
+  exited before the 10 ms poll drained it, and the next run then swerves to another
+  screen ~500 ms in with no request behind it. Real detents cannot go stale, so this
+  is harness hygiene, not a firmware defect.
+- **Wait for the radio, do not sleep.** After a reset the association ladder costs
+  ~5 s at −57 dBm; poll `/api/v1/status` until it answers or the first request of the
+  walk times out and reads as a crash.
+
+It reaches only `input_router_request()`/`input_router_inject()`, cannot touch the
+card, radio or bootloader, and sits beside `/api/v1/reboot` and `/api/v1/ota`, which
+are far more capable. `input_router.c` is still the only code that calls
+`lv_screen_load()`.
+
+### The trap that cost two wasted hardware runs
+
+**One detent per event is a clamp, not a bug.** `menu_view_apply_input()` moves the
+cursor a single row whatever the magnitude of `delta`, so a burst of `+2` in one poll
+is ONE row of travel — deliberate, because a fast turn must not fly past the row you
+were heading for. Both my first drivers asked for `turn=2` expecting two rows, landed
+on TZ instead of THEME, and I read that as a routing bug twice. Drive it with one
+`?turn=1` request per row, and read the row you are on from the server's own
+`/api/v1/sd` `themes` list rather than from an assumed order.
+
+Also: the card must actually hold a *non-active* theme. Staging the theme already on
+the dial is correctly refused with "is already on the dial" and leaves `pending` empty,
+which looks identical to a broken staging path. Upload a second container under a
+different name to test the real transition.
+
+`/api/v1/status` does **not** report a staged theme. Read `pending` from `/api/v1/sd`.
+
+## How the knob is measured, and what decides how it feels
+
+`main/knob/knob.c`. `knob_rot_isr` shares one `s_prevAB` across A and B, decodes each
+edge through `kQuadTable`, and calls `knob_edge()` — the one function that decides
+whether an edge was a click. `knob_edge()`, `knob_detent_from_net()` and
+`knob_detents_rounded()` are pure over plain integers and take time as an argument, so
+`tools/host_knob_test.py` lifts them verbatim and replays synthetic AB state sequences.
+That is the only way any of this was getable right: the three reported failures below
+each survived being read twice.
+
+**A detent is an arrival at the valley, not a count of edges.** The valley is the
+quadrature state the detent spring parks the shaft in — measured on this unit as
+`knob: valley 3 (11)` at boot, i.e. A=B=HIGH. On arrival at it, the net travel since
+the last arrival decides the direction, and one arrival credits at most ONE detent.
+`knob_poll()` then settles anything left over once the stream has been idle for
+`KNOB_SETTLE_MS`, which recovers clicks whose valley edge never arrived.
+
+Why the edge count had to go. The reference driver (and my first two attempts here)
+committed after a full detent of net raw travel, and the owner's report after that
+design was three complaints in one sentence — **"it moves mostly one but sometimes two
+and sometimes none"**:
+
+| Report | Cause | Fix |
+|---|---|---|
+| first notch does nothing | the click's fourth edge lands past the click stop, so a hand stopping on the notch never reaches a whole-detent gate | net travel, not edge count; the settle recovers the short click |
+| sometimes two | make-bounce lands extra net steps in ONE notch, and an edge counter cannot tell that from two clicks | one credit per valley arrival, plus `KNOB_CLICK_GUARD_MS` (20 ms — above any contact bounce, below any wrist) |
+| sometimes none | edges lost between pin and ISR leave no valley arrival | the idle settle rounds the stranded net into detents |
+
+Rocking a knob is still inert, which is the hysteresis the reference needed and the
+reason a naive commit-on-every-edge is not the answer: out-and-back nets zero, so
+nothing is credited. `host_knob_test.py` asserts all three failure modes and catches
+16/16 mutations, including "restore the edge-count rule", so the regression cannot come
+back quietly.
+
+**`KNOB_STEPS_PER_DETENT` is a property of the unit, not a feel knob.** Read
+`knob.spd10` on `/api/v1/status` after turning it by hand: 40 means four edges per
+click as assumed, 20 means the constant is wrong by half — indistinguishable from the
+hand. `knob.vhits` against `knob.shits` splits the detents by how they arrived; a
+session that is mostly `shits` means edges are being lost between the pin and the ISR,
+which is wiring or interrupt latency and no retuning of the rule will fix.
+
+### The turn direction, and where it is allowed to be interpreted
+
+The encoder sits on the case side above the dial's centre, so the arc the finger
+travels is not the arc the list scrolls. `KNOB_DIR_DOWN_IS_CW` (0 now) is the single
+switch. What a committed turn *means* comes only from `knob_row_step()` and
+`knob_col_step()` in `knob.c`; `knob_take_delta()` keeps the raw electrical sense
+(CW = positive) so the bench door and any future gesture code see the truth.
+**A screen that negates a delta itself is a bug** — `host_knob_test.py` fails on
+`(delta > 0 ? 1 : -1)` appearing in a screen file.
+
+The owner's ruling, on record because the mounting fixes it and the code cannot
+derive it:
+
+> the direction that means **DOWN** is the good direction for **LEFT**;
+> the direction that means **UP** is the good direction for **RIGHT**.
+
+`knob_col_step()` is `knob_row_step()` negated, so a future horizontal screen calls it
+and cannot drift out of that agreement, and flipping the one constant moves both axes
+together. Today: CW = up = right, CCW = down = left. The hue editor deliberately reads
+the raw delta instead — a value is not a list position — with the reason recorded at
+its call site.
+
+Verified on hardware 2026-10-10 (`/tmp/dirwalk2.py`): baseline `US/Mountain`, one
+injected `?turn=-1` then a press applied `US/Pacific` (one row down) and one
+`?turn=+1` applied `US/Central` (one row up).
+
+**Bench trap, hit for real:** `?turn=N` is the *electrical* sense and the screens now
+map it, so any saved walk script that used `?turn=1` to step **down** a list now steps
+**up** and silently selects the wrong row — `/tmp/homewalk.py` still passes its
+escape-hatch checks while pressing `AP (stub)` instead of `TZ`. Read the row you reached
+out of the serial log (`menu: AP selected`), not out of the script's intent.
+
+**Injection proves nothing about the encoder.** `/api/v1/screen?turn=N` enters at
+`input_router_inject()` and never touches `knob_rot_isr`, so `knob.raw`/`knob.det` stay
+at zero through a fully successful injected walk. Any claim about quadrature, the
+valley, the commit rule or debounce needs a finger on the knob and a read of
+`/api/v1/status`'s `knob` block (`/tmp/turnsession.py` drives exactly that).
+
+### Measured on the board (2026-10-10, menu build)
+
+| Step | Result |
+|---|---|
+| Boot | `menu ready (worker up, 62 zones, no card)`, `router running (poll 10 ms, 3 screens)`, boots on the clock, no new crash |
+| Theme scan off-task | `listing /sd/themes` → `1 entry listed in 5 ms`, dial kept 6 fps throughout |
+| Worker stack | `job N done, 608 B stack never used` (scan) / `336 B` — headroom, not exhaustion |
+| TZ apply through the menu | `US/Central` → `US/Eastern`, status offset `-300` → `-240`, then restored to `US/Central` via the same path |
+| Theme stage through the menu | `stage "kit4": container verified in 3900 ms` → `staged "kit4"` → `job 1 done`, poll still answering |
+| Decline the staged theme | `orb_theme_unstage()` from the menu's own row; `pending` back to `""` |
+| HSB two-level gate | unarmed turn logged `screen -> clock` and no colour change; armed turns logged `-> H = 211/212/213`, push logged `push H -> S` |
+| Cost | app 0x15e590 → 0x15ff30 (~7 kB) |
+
+Two refusals that are features, not bugs — both cost me a debugging cycle here:
+
+- Staging the theme already on the dial answers `"x" is already on the dial` and leaves
+  `pending` empty, which looks exactly like a broken staging path. Test with a second,
+  non-active container.
+- `orb_theme_stage_load()` rejects a container whose header slug disagrees with its
+  filename: `the file calls itself "kit3" — rename one of them`. Copying a `.orbtheme`
+  to a second name therefore does not create a second theme; patch `W_SLUG`/`W_TITLE`
+  and re-run `_hdr_crc()`, leaving the pixel payload byte-identical.
+
+`tools/host_menu_test.py` covers what the bench cannot reach by hand: the cursor clamp
+at both ends, the no-wrap rule, the 62-row windowing, the back row on both sub-pages,
+the damaged-theme row that must be *shown* with its reason, and a worker result
+landing while the screen is disarmed (which must not paint a list on the title card).
+`--mutations` must stay red on all twelve; one round of it "survived" eleven because
+the lifts were taken at import and the mutated text never reached the compiler — if
+you touch this suite, check it can still fail.
+
+  the deadlock in one boot, which is the argument for putting it in before the bisecting.

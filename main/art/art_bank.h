@@ -28,22 +28,35 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "esp_partition.h"   /* esp_partition_t, for art_bank_partition() below */
 
 #define ART_BANK_PARTITION_NAME "assets"
 
 /**
- * Find the `assets` partition and map the first `need_bytes` of it.
+ * Find the `assets` partition and map `need_bytes` of it starting at `offset`.
  *
  * Only `need_bytes` is mapped, not the whole partition: MMU entries in the DROM
  * window are shared with the app's own .rodata, and the 8 MB partition is far
  * larger than any single theme's bank.
+ *
+ * `offset` exists because a theme installed from the card does not live at the
+ * start of the partition — see the A/B slot layout in main/art/orb_theme.h. Both
+ * slot payload offsets are 64 KB aligned, which is what esp_partition_mmap wants
+ * anyway; passing anything else wastes an MMU entry on rounding at each end, and
+ * orb_theme never does.
  *
  * Idempotent — a second call with a size the current mapping already covers is a
  * no-op. Returns ESP_ERR_NOT_FOUND if the partition is absent (old partition
  * table still on the device), ESP_ERR_INVALID_SIZE if it is too small for the
  * theme, or the esp_partition_mmap failure code.
  */
-esp_err_t art_bank_init(size_t need_bytes);
+esp_err_t art_bank_init(size_t offset, size_t need_bytes);
+
+/** The traditional layout: the bank at partition offset 0, as esptool writes it. */
+static inline esp_err_t art_bank_init_at_0(size_t need_bytes)
+{
+    return art_bank_init(0, need_bytes);
+}
 
 /** Mapped base pointer, or NULL if art_bank_init() has not succeeded. */
 const uint8_t *art_bank_ptr(void);
@@ -53,3 +66,9 @@ size_t art_bank_bytes(void);
 
 /** True when the bank is mapped and safe to read. */
 bool art_bank_ready(void);
+
+/**
+ * The `assets` partition itself, found by label — for the erase/write path in
+ * orb_theme.c. NULL if the partition is not in the table at all.
+ */
+const esp_partition_t *art_bank_partition(void);

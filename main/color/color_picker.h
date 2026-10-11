@@ -40,6 +40,20 @@ void color_picker_show(void);
  */
 void color_picker_apply_input(int32_t delta, bool pressed);
 
+/**
+ * True while the editor (not the "HSB" title card) owns the knob. input_router
+ * keeps the picker unarmed until a press asks for it, so arriving here by
+ * rotation shows a title rather than a swatch mid-edit, and a turn still means
+ * "swap screen".
+ */
+bool color_picker_armed(void);
+
+/**
+ * Arm/disarm. Disarming collapses the editor and shows the "HSB" title card;
+ * the chosen H/S/B values are kept, so re-arming returns to the same color.
+ */
+void color_picker_set_armed(bool armed);
+
 /** Read back the current channel values (0..359, 0..100, 0..100). */
 void color_picker_get(uint16_t *h, uint8_t *s, uint8_t *v);
 

@@ -43,7 +43,11 @@
 #include "nvs_flash.h"
 
 #include "orb_net.h"
+#include "input_router.h"
+#include "knob.h"     /* h_screen injection; h_status reads the raw/detent pair */
 #include "art_bank.h"
+#include "orb_sd.h"
+#include "orb_theme.h"
 
 static const char *TAG = "orb_net";
 
@@ -493,6 +497,68 @@ static const char *net_tz_set(const char *tz)
     snprintf(s_tz, sizeof(s_tz), "%s", tz);
     tz_apply(s_tz);
     return NULL;
+}
+
+/* ---- the zone table, as the on-dial menu sees it (see orb_net.h) -------------
+ *
+ * Thin accessors over the one table this file already serves, each reaching the
+ * model through the same helpers the HTTP handlers use. Nothing here validates
+ * twice: orb_net_tz_select() hands the row's own key to net_tz_set(), which is
+ * the same call POST /api/v1/config makes after its body parse. */
+int orb_net_tz_count(void)
+{
+    return NET_TZ_N;
+}
+
+const char *orb_net_tz_key(int i)
+{
+    if (i < 0 || i >= NET_TZ_N) return "";
+    return s_tz_tbl[i].name;
+}
+
+const char *orb_net_tz_label(int i)
+{
+    if (i < 0 || i >= NET_TZ_N) return "";
+    return s_tz_tbl[i].label;
+}
+
+const char *orb_net_tz_current(void)
+{
+    return s_tz[0] ? s_tz : "UTC";
+}
+
+int orb_net_tz_current_index(void)
+{
+    /* Match on the key the dial would have stored, and fall back to the row that
+     * resolves to the same place: a zone set from the phone by IANA name, or a raw
+     * POSIX rule typed into the page, is still one of these rows in effect, and a
+     * picker with nothing highlighted reads as "the dial has no zone". */
+    const char *cur = orb_net_tz_current();
+    char posix[NET_TZ_MAX + 1];
+    tz_resolve(s_tz, posix, sizeof(posix));
+
+    for (int i = 0; i < NET_TZ_N; i++) {
+        if (strcmp(s_tz_tbl[i].name, cur) == 0) return i;
+    }
+    for (int i = 0; i < NET_TZ_N; i++) {
+        if (strcmp(s_tz_tbl[i].posix, posix) == 0) return i;
+    }
+    return -1;
+}
+
+esp_err_t orb_net_tz_select(int i)
+{
+    if (i < 0 || i >= NET_TZ_N) return ESP_ERR_INVALID_ARG;
+    /* Through net_tz_set() and nothing else: it validates before it writes, so a
+     * row this build no longer accepts cannot land in NVS and un-set the dial on
+     * the next boot. */
+    const char *why = net_tz_set(s_tz_tbl[i].name);
+    if (why) {
+        ESP_LOGW(TAG, "menu tz: row %d (\"%s\") refused (%s)", i, s_tz_tbl[i].name, why);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "menu tz: set to \"%s\"", s_tz_tbl[i].name);
+    return ESP_OK;
 }
 
 /* --------------------------------------------------------------------------
@@ -1171,7 +1237,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * worse than an error because the page just fails to parse it. The overflow
      * check below is what makes that visible rather than subtle, and the host
      * test pins the worst case. */
-    char json[768];
+    char json[832];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -1230,7 +1296,19 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
-        "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\"}",
+        "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
+        /* What the encoder actually did, not what the driver chose to believe. raw is
+         * the quadrature count and det the stream the UI sees, so the pair separates
+         * "edges are not arriving" from "the rule is not believing them". spd10 is the
+         * measured raw cost of one detent in TENTHS, which is how KNOB_STEPS_PER_DETENT
+         * gets set from this unit rather than from a datasheet for a family of them:
+         * 40 is a healthy KY-040, 20 means the click emits two and the constant has
+         * been asking for two clicks per step. valley/ab are the 2-bit quadrature
+         * states, and vhits/shits split the detents by how they were recognised — a
+         * dial that is mostly shits is losing edges between the pin and the ISR, which
+         * is a wiring or latency fault and no amount of retuning the rule would fix. */
+        "\"knob\":{\"raw\":%ld,\"det\":%ld,\"spd10\":%ld,\"span\":%ld,"
+        "\"valley\":%ld,\"ab\":%ld,\"vhits\":%ld,\"shits\":%ld}}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
         s_provisioning ? "provisioning" : "down",
@@ -1248,7 +1326,11 @@ static esp_err_t h_status(httpd_req_t *req)
          * exactly the question that motivated this change. assoc_fails rides
          * along because "how long until the rescue AP" is the next question. */
         s_ap_up ? "true" : "false", (unsigned)s_assoc_fails,
-        (unsigned)s_last_reason, rname);
+        (unsigned)s_last_reason, rname,
+        (long)knob_raw_position(), (long)knob_detent_count(),
+        (long)knob_raw_steps_per_detent(), (long)knob_raw_span_max(),
+        (long)knob_valley(), (long)knob_ab(),
+        (long)knob_valley_hits(), (long)knob_settle_hits());
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail
@@ -1851,7 +1933,7 @@ static esp_err_t h_wifi_ap(httpd_req_t *req)
  * image is untouched until that second request.
  * ------------------------------------------------------------------------- */
 
-#define OTA_CHUNK 4096   /* static buffer, not stack: httpd's task stack is 8 KB */
+#define OTA_CHUNK 4096   /* static buffer, not stack — see cfg.stack_size in httpd_start() */
 
 /* Smallest credible app image: 24 B image header + one segment header + the
  * appended SHA-256. Below this it is not an image, and rejecting it here saves
@@ -2033,6 +2115,370 @@ static esp_err_t h_reboot(httpd_req_t *req)
  * asking a first-time user mid-join to read POSIX rules served neither job. The
  * clock is set on its own page (/timezone, HTML_TZ below), which the success
  * confirmation links to. */
+/* ===========================================================================
+ * SD card + themes.
+ *
+ * The device cannot notice a card being inserted — the socket's detect line is not
+ * wired (main/sd/orb_sd.h) — so every route here asks the SD module to mount on
+ * demand and tolerates the answer being "no card". None of them can take the clock
+ * down; the worst they do is say so in JSON.
+ * ======================================================================== */
+
+/* Read one query parameter into out. httpd_query_key_value() is two-pass (length,
+ * then copy); doing it by hand instead keeps the URL-decode in one place and lets the
+ * refusals below happen BEFORE any string reaches the path builder. A '%' that is not
+ * a valid %XX escape is rejected outright rather than passed on, because the classic
+ * way "?name=%2e%2e%2f" turns into a traversal is a decoder that is generous and a
+ * path check that runs afterwards on a different string than the one it inspected. */
+static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
+{
+    char qbuf[192], raw[ORB_SD_NAME_MAX * 3 + 8];
+    /* The two-call API, not req->query: the query string is only parsed on demand
+     * and httpd_req_get_url_query_str() is the documented accessor (and the only one
+     * that exists — httpd_req_t has no query member in IDF v5.4). */
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof qbuf) != ESP_OK) return false;
+    if (httpd_query_key_value(qbuf, key, raw, sizeof raw) != ESP_OK) return false;
+
+    size_t o = 0;
+    for (const char *p = raw; *p && o + 1 < outsz; p++) {
+        if (*p != '%') { out[o++] = *p; continue; }
+        if (!p[1] || !p[2]) return false;                        /* truncated escape */
+        int v = 0;
+        for (int i = 1; i <= 2; i++) {
+            const char c = p[i];
+            int d;
+            if      (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else return false;                                   /* not a hex pair */
+            v = v * 16 + d;
+        }
+        /* NUL and '/' can never be part of a valid slug; refusing them at decode time
+         * is what keeps the value the path builder receives identical to the value
+         * orb_sd_name_ok() looked at. */
+        if (v == 0 || v == '/') return false;
+        out[o++] = (char)v;
+        p += 2;
+    }
+    out[o] = '\0';
+    return o > 0;
+}
+
+
+/* GET /api/v1/screen?to=clock|menu|hue — put a screen on the glass from the LAN.
+ *
+ * This exists so the menu and the picker can be verified without a hand on the
+ * knob. The encoder is three GPIOs driven only by a human finger, so every other
+ * route into lv_screen_load() is unreachable from the bench, and a screen that
+ * has never been painted has never actually been looked at. It is a debug door,
+ * not a feature: it changes what is displayed and nothing else, cannot reach the
+ * card, the radio or the bootloader, and is strictly less capable than the
+ * /api/v1/reboot and /api/v1/ota endpoints registered beside it.
+ *
+ * The switch is requested, not performed: lv_screen_load() touches widgets and
+ * belongs on the LVGL task, so the router applies it on its next poll tick. */
+static esp_err_t h_screen(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char to[8] = "";
+    char turn[8] = "";
+    char push[4] = "";
+    char hold[4] = "";
+    const bool have_to   = q_param(req, "to",   to,   sizeof to);
+    const bool have_turn = q_param(req, "turn", turn, sizeof turn);
+    q_param(req, "push", push, sizeof push);   /* both tested by content below */
+    q_param(req, "hold", hold, sizeof hold);
+
+    /* Screen switch and synthetic knob events are the same endpoint because they
+     * are one test: go to the menu, arm it, scroll, choose. Keeping them apart
+     * would mean a caller had to trust ordering between two URLs. */
+    if (have_to) {
+        input_screen_t s;
+        if      (strcmp(to, "clock") == 0) s = INPUT_SCREEN_CLOCK;
+        else if (strcmp(to, "menu")  == 0) s = INPUT_SCREEN_MENU;
+        else if (strcmp(to, "hue")   == 0) s = INPUT_SCREEN_COLOR;
+        else {
+            /* The bad value goes to the log, never into the body: it is
+             * caller-controlled text, and an error page that repeats it is how a
+             * quoting bug becomes someone else's problem. */
+            ESP_LOGW(TAG, "screen: unknown to=\"%s\"", to);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"to must be clock, menu or hue\"}");
+        }
+        ESP_LOGI(TAG, "screen request -> %s", to);
+        input_router_request(s);
+    }
+
+    if (have_turn) {
+        /* atoi and not strtol: the saturating add in input_router_inject() makes
+         * the range irrelevant here, and a rejected 400 for "turn=abc" would just
+         * be a slower way of landing on zero. */
+        const int32_t d = (int32_t)atoi(turn);
+        ESP_LOGI(TAG, "synthetic turn %+ld detent(s)", (long)d);
+        input_router_inject(d, false, false);
+    }
+
+    if (push[0] == '1') {
+        ESP_LOGI(TAG, "synthetic push");
+        input_router_inject(0, true, false);
+    }
+
+    if (hold[0] == '1') {
+        /* The escape hatch, exercised over HTTP: an armed screen with a broken
+         * long-press is a dial you cannot leave. */
+        ESP_LOGI(TAG, "synthetic long-press");
+        input_router_inject(0, false, true);
+    }
+
+    if (!have_to && !have_turn && !push[0] && !hold[0]) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req,
+               "{\"error\":\"to, turn, push or hold required\"}");
+    }
+    return httpd_resp_sendstr(req, "{\"state\":\"accepted\"}");
+}
+
+/* Copy src into dst as JSON string contents. Every string on this page came from a
+ * filename on somebody's card or from a browser, and a title containing a quote would
+ * otherwise break the page's JSON.parse with nothing on the device to explain why. */
+static void json_put(char *dst, size_t dsz, const char *src)
+{
+    size_t o = 0;
+    for (const char *p = src; *p && o + 2 < dsz; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\')                              { dst[o++] = '\\'; dst[o++] = (char)c; }
+        else if (c == '\n')                                     { dst[o++] = '\\'; dst[o++] = 'n'; }
+        else if (c == '\r')                                     { dst[o++] = '\\'; dst[o++] = 'r'; }
+        else if (c == '\t')                                     { dst[o++] = '\\'; dst[o++] = 't'; }
+        else if (c < 0x20)                                      { dst[o++] = '?'; }
+        else                                                    { dst[o++] = (char)c; }
+    }
+    dst[o] = '\0';
+}
+
+#define THEME_LIST_MAX 12
+
+/* GET /api/v1/sd — the card, the installed theme, and what is on the card. */
+static esp_err_t h_sd(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static orb_theme_entry_t ent[THEME_LIST_MAX];
+    const int n = orb_theme_scan(ent, THEME_LIST_MAX);
+    uint64_t total = 0, freeb = 0;
+    orb_sd_space(&total, &freeb);
+
+    /* 2300 = 12 rows at the ~150 B each can cost plus a ~300 B base. The overflow
+     * check is the point: a truncated body is worse than an error because the page
+     * fails to parse it and shows an empty list, which is also what "no card" looks
+     * like. Same reason h_status carries its own bound. */
+    static char json[2300];
+    int off = snprintf(json, sizeof json,
+        "{\"mounted\":%s,\"card\":\"%.40s\",\"uploading\":%s,\"total_mb\":%u,\"free_mb\":%u,"
+        "\"source\":\"%s\",\"active\":\"%.32s\",\"pending\":\"%.32s\",\"themes\":[",
+        orb_sd_mounted() ? "true" : "false",
+        orb_sd_mounted() ? orb_sd_card_id() : "",
+        orb_theme_upload_busy() ? "true" : "false",
+        (unsigned)(total / (1024 * 1024)), (unsigned)(freeb / (1024 * 1024)),
+        orb_theme_source(), orb_theme_active_slug(), orb_theme_pending_slug());
+
+    for (int i = 0; n > 0 && i < n; i++) {
+        char e_slug[ORB_SD_NAME_MAX * 2 + 3], e_title[84], e_why[116];
+        json_put(e_slug, sizeof e_slug, ent[i].slug);
+        json_put(e_title, sizeof e_title, ent[i].title);
+        json_put(e_why,  sizeof e_why,  ent[i].why);
+        off += snprintf(json + off, sizeof json - (size_t)off,
+            "%s{\"name\":\"%s\",\"title\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
+            "\"ok\":%s,\"active\":%s,\"pending\":%s}",
+            i ? "," : "", e_slug, e_title, e_why,
+            (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
+            ent[i].err == ESP_OK ? "true" : "false",
+            ent[i].active ? "true" : "false", ent[i].pending ? "true" : "false");
+    }
+    off += snprintf(json + off, sizeof json - (size_t)off, "]}");
+    if (off < 0 || (size_t)off >= sizeof json) {
+        ESP_LOGE(TAG, "sd status overflow (%d B) — raise the json[] bound", off);
+        return httpd_resp_sendstr(req, "{\"error\":\"sd status too large\"}");
+    }
+    return httpd_resp_sendstr(req, json);
+}
+
+/* POST /api/v1/sd/load?name=X — stage a card theme; the caller then reboots.
+ *
+ * Two requests on purpose, exactly like /api/v1/ota: a device showing the time to a
+ * household must not restart because a fetch completed, and staging first means a
+ * load whose install fails costs nothing — the other A/B slot, or the baked-in bank,
+ * is what boots. */
+static esp_err_t h_theme_load(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char name[ORB_SD_NAME_MAX + 1] = "";
+    if (!q_param(req, "name", name, sizeof name) || !orb_sd_name_ok(name)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name is missing or not a theme name\"}");
+    }
+    if (orb_theme_stage_load(name) != ESP_OK) {
+        /* 422, not 400: the request is well formed and the theme on the card is not.
+         * The specific reason is already in the list's why field and in the log — the
+         * file cannot change between the list and this call without becoming a new
+         * file, so the page has the string to show. */
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        char b[128];
+        snprintf(b, sizeof b, "{\"error\":\"that theme cannot be loaded\",\"name\":\"%s\"}", name);
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    const int n = snprintf(b, sizeof b,
+        "{\"state\":\"staged\",\"name\":\"%s\",\"reboot\":\"POST /api/v1/reboot\"}", name);
+    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"name too long\"}");
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/sd/unstage — the undo. The staged theme is what installs at the next
+ * boot, so "actually, no" has to exist or a mistaken tap is a reboot away from being
+ * the theme on the wall. */
+static esp_err_t h_theme_unstage(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, orb_theme_unstage() == ESP_OK
+        ? "{\"state\":\"unstaged\"}" : "{\"error\":\"could not clear the staged load\"}");
+}
+
+/* POST /api/v1/sd/delete?name=X */
+static esp_err_t h_theme_del(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char name[ORB_SD_NAME_MAX + 1] = "";
+    if (!q_param(req, "name", name, sizeof name) || !orb_sd_name_ok(name)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name is missing or not a theme name\"}");
+    }
+    const esp_err_t e = orb_theme_delete(name);
+    if (e == ESP_ERR_NOT_FOUND) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such theme on the card\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"delete failed\"}");
+    }
+    char b[160];
+    const int n = snprintf(b, sizeof b, "{\"state\":\"deleted\",\"name\":\"%s\"}", name);
+    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"name too long\"}");
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/sd/rescan — the card-detect replacement. With no detect line wired,
+ * this is the only way a card inserted after boot becomes visible without opening the
+ * case or rebooting. */
+static esp_err_t h_sd_rescan(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t e = orb_sd_remount();
+    char b[176];
+    snprintf(b, sizeof b, "{\"mounted\":%s,\"card\":\"%.40s\"}",
+             e == ESP_OK ? "true" : "false", e == ESP_OK ? orb_sd_card_id() : "");
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/sd/theme?name=X, body = the .orbtheme bytes.
+ *
+ * Raw body, not multipart: a boundary-following parser is ~200 lines of state machine
+ * in a device that also renders a clock, and the page can set the request body to the
+ * File object directly. Content-Length is mandatory for the reason h_ota gives for the
+ * same rule — without it, a finished upload and a client that vanished are the same
+ * request, and a partial file must never be reachable under a loadable name. */
+static esp_err_t h_theme_upload(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char name[ORB_SD_NAME_MAX + 1] = "";
+    if (!q_param(req, "name", name, sizeof name) || !orb_sd_name_ok(name)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name is missing or not a theme name\"}");
+    }
+    const int clen = (int)req->content_len;
+    if (clen <= 0) {
+        httpd_resp_set_status(req, "411 Length Required");
+        return httpd_resp_sendstr(req, "{\"error\":\"Content-Length required\"}");
+    }
+    if (clen > (int)ORB_THEME_UPLOAD_MAX) {
+        /* Refused on the declared length before a byte is written. An unbounded upload
+         * route is a way to fill somebody's card with junk from a browser tab. */
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"too large\",\"max\":%u}", (unsigned)ORB_THEME_UPLOAD_MAX);
+        return httpd_resp_sendstr(req, b);
+    }
+    if (orb_theme_upload_busy()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"an upload is already in progress\"}");
+    }
+
+    orb_theme_up_t *up = NULL;
+    const esp_err_t be = orb_theme_upload_begin(name, &up);
+    if (be != ESP_OK) {
+        /* Three distinct refusals, because the page has to say which one it hit: no
+         * card, no 4 KB for the card read buffer (orb_theme_upload_begin() checks that
+         * before the radio carries anything, so the owner can free the memory by
+         * closing the other tab rather than by retrying blindly), and a card that
+         * would not open the file. */
+        httpd_resp_set_status(req, be == ESP_ERR_NOT_FOUND ? "503 Service Unavailable"
+                                       : be == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+                                                              : "500 Internal Server Error");
+        return httpd_resp_sendstr(req, be == ESP_ERR_NOT_FOUND
+            ? "{\"error\":\"no card in the socket\"}"
+            : be == ESP_ERR_NO_MEM
+                ? "{\"error\":\"out of memory for the card read buffer\"}"
+                : "{\"error\":\"could not open the theme file on the card\"}");
+    }
+
+    /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096
+     * (esp_http_server.h:57), which is also why the OTA chunk buffer is static. */
+    static char rx[4096];
+    int got = 0;
+    while (got < clen) {
+        const int room = clen - got;
+        const int r = httpd_req_recv(req, rx,
+                                    (size_t)(room < (int)sizeof rx ? room : (int)sizeof rx));
+        if (r <= 0) {
+            /* Client vanished: cancel() deletes the .part, so nothing is left on the
+             * card that could later be listed as a theme and fail to load. */
+            orb_theme_upload_cancel(&up);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
+        }
+        if (orb_theme_upload_data(up, rx, (size_t)r) != ESP_OK) {
+            orb_theme_upload_cancel(&up);
+            httpd_resp_set_status(req, "413 Payload Too Large");
+            return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+        }
+        got += r;
+    }
+
+    const char *why = NULL;
+    if (orb_theme_upload_end(&up, &why) != ESP_OK) {
+        /* The reason goes in the body and not only the status line: whoever is at this
+         * page has no serial cable and no reason to go and get one. */
+        char b[256];
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\"}",
+                 why ? why : "not a valid theme file");
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    snprintf(b, sizeof b, "{\"state\":\"stored\",\"name\":\"%s\",\"bytes\":%d}", name, got);
+    return httpd_resp_sendstr(req, b);
+}
+
 static const char HTML_LANDING[] =
 "<!doctype html><html><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -2194,6 +2640,7 @@ static const char HTML_TZ[] =
 "button.cur{background:#14421f}"
 "</style></head><body>"
 "<h1>orb clock</h1>"
+"<div style='margin-bottom:.6rem'><a href=/themes style='color:#7ad'>themes on the card</a></div>"
 "<div id=msg>loading&hellip;</div>"
 "<input id=q placeholder='Type your city' autocomplete=off>"
 "<div id=zs></div>"
@@ -2326,6 +2773,112 @@ static esp_err_t h_timezone(httpd_req_t *req)
     return httpd_resp_send(req, HTML_TZ, HTTPD_RESP_USE_STRLEN);
 }
 
+/* The themes page: what is on the card, and the three things a person does with
+ * that list — put a file on it, load one, delete one.
+ *
+ * Three rules, all learned from these pages breaking on a real phone:
+ *   - Every statement in the script ends with a semicolon. The C fragments below
+ *     concatenate with NO newline between them (that is how the compiler builds the
+ *     page), so anything relying on automatic semicolon insertion is a syntax error
+ *     that only appears on a phone — and one error kills the whole <script>, which
+ *     presents as a page stuck at "loading" with an empty list.
+ *   - Nothing destructive happens without saying what it costs. Delete removes the
+ *     FILE and states that the dial keeps drawing that theme until another is
+ *     loaded, because otherwise delete looks like it did nothing.
+ *   - The upload is the only long operation (3.7 MB at the ~1.5 MB/s this card can
+ *     do), so it runs in an XHR with a real percentage: a fetch gives no upload
+ *     progress, and a bar parked at 0% for four seconds reads as a hung device.
+ */
+static const char HTML_THEMES[] =
+"<!doctype html><html><head><meta charset=utf-8>"
+"<meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>orb themes</title><style>"
+"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
+"h1{font-size:1.2rem}"
+"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0}"
+"#msg.ok{background:#14421f}#msg.bad{background:#4a1414}"
+"#card{color:#8a8;font-size:.9rem;margin:.2rem 0 1rem}"
+"input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;margin:.4rem 0}"
+"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;margin:.15rem 0}"
+"button.cur{background:#14421f}button.warn{background:#5a1d1d}"
+".row{border-bottom:1px solid #262626;padding:.5rem 0}"
+".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
+"a{color:#7ad}"
+"</style></head><body>"
+"<h1>orb themes</h1>"
+"<div id=msg>loading&hellip;</div>"
+"<div id=card></div>"
+"<div id=list></div>"
+"<div class=row>"
+"<input id=file type=file accept=.orbtheme>"
+"<input id=slug placeholder='name on the card (blank = file name)' autocomplete=off>"
+"<button onclick=doUp()>Upload to card</button>"
+"</div>"
+"<div class=row>"
+"<button onclick=scan()>Rescan card</button> "
+"<a href=/timezone>clock setup</a> &nbsp; <a href=/>network</a>"
+"</div>"
+"<script>"
+"var data=null;"
+"function say(t,c){var m=document.getElementById('msg');m.textContent=t;m.className=c||'';}"
+"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
+"function bytes(n){return n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(0)+' KB';}"
+"function j(u,o){return fetch(u,o).then(function(r){return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});});}"
+"function qa(s){return document.querySelectorAll(s);}"
+"function draw(){"
+"var L=document.getElementById('list'),C=document.getElementById('card');"
+"if(!data){return;}"
+"if(data.uploading){say('upload in progress','');return;}"
+"if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
+"C.textContent=data.card+' \\u2014 '+data.free_mb+' MB free of '+data.total_mb+' MB; dial is on '+data.source+' ('+(data.active||'baked-in')+')';"
+"var h='';"
+"if(data.pending){h=h+'<div class=row><b>staged: '+esc(data.pending)+'</b> installs at the next reboot. '"
+"  +'<button class=cur onclick=go()>Reboot and install now</button>'"
+"  +'<button class=warn onclick=unstage()>Cancel</button></div>';}"
+"if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
+"for(var i=0;i<data.themes.length;i++){var t=data.themes[i];"
+"h=h+'<div class=row><div class=nm>'+esc(t.title||t.name)"
+"  +(t.active?' <span class=sub>on the dial</span>':'')+(t.pending?' <span class=sub>staged</span>':'')+'</div>';"
+"h=h+'<div class=sub>'+esc(t.name)+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
+"if(t.ok){h=h+'<button'+(t.active?' class=cur':'')+' onclick=\"load(\\''+esc(t.name)+'\\')\">Load</button>';}"
+"else{h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why)+'</div>';}"
+"h=h+'<button class=warn onclick=\"del(\\''+esc(t.name)+'\\')\">Delete file</button></div>';}"
+"L.innerHTML=h;}"
+"function loadn(){var f=document.getElementById('file').files[0];var s=document.getElementById('slug').value.trim();"
+"if(s){return s;}if(f){return f.name.replace(/\\.orbtheme$/i,'');}return '';}"
+"function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
+"function load(n){say('staging '+n+'\\u2026','');"
+"j('/api/v1/sd/load?name='+encodeURIComponent(n),{method:'POST'}).then(function(r){"
+"if(!r.ok){say('could not stage '+n+': '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}refresh();});}"
+"function del(n){if(!confirm('Delete '+n+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
+"j('/api/v1/sd/delete?name='+encodeURIComponent(n),{method:'POST'}).then(function(r){"
+"if(!r.ok){say('delete failed: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}refresh();});}"
+"function unstage(){j('/api/v1/sd/unstage',{method:'POST'}).then(function(){refresh();});}"
+"function go(){say('rebooting \\u2014 the theme installs while the screen is dark','ok');"
+"j('/api/v1/reboot',{method:'POST'}).catch(function(){say('the orb is rebooting','ok');});}"
+"function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'}).then(function(){refresh();});}"
+"function doUp(){var f=document.getElementById('file').files[0];"
+"if(!f){say('choose a .orbtheme file first','bad');return;}"
+"var n=loadn();if(!n){say('give the theme a name','bad');return;}"
+"var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/theme?name='+encodeURIComponent(n),true);x.timeout=900000;"
+"x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};"
+"x.onload=function(){var d={};"
+"try{d=JSON.parse(x.responseText);}catch(e){}"
+"if(x.status==200){say('uploaded as '+n,'ok');refresh();}"
+"else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};"
+"x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};"
+"x.ontimeout=function(){say('upload timed out','bad');};"
+"say('copying to the card\\u2026','');x.send(f);}"
+"refresh();"
+"</script></body></html>";
+
+static esp_err_t h_themes(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, HTML_THEMES, HTTPD_RESP_USE_STRLEN);
+}
+
 /* Captive-portal probes. A phone that joins an open AP with no internet
  * immediately fires these to decide whether the network is usable; if we do not
  * answer, it declares the AP dead and drops it, and the user's browser never
@@ -2416,10 +2969,30 @@ static esp_err_t net_start_httpd(void)
      * it with room for the endpoints this feature needs, and check the return
      * below rather than trusting the count. The /timezone page brings the table
      * to 15 registered routes; 20 keeps headroom for the next one. */
-    cfg.max_uri_handlers  = 20;
+    cfg.max_uri_handlers  = 24;
+    /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
+     * theme routes put a FATFS file operation on this task: f_open/f_write walk the
+     * FAT with their own buffers, and the OTA chunk and upload receive buffers are
+     * static precisely so they do not stack-allocate — but the FatFs call chain itself
+     * still burns stack, and the old comment beside the OTA buffer claiming this task
+     * was 8 KB was simply wrong about the default. Doubling it costs 4 KB of internal
+     * RAM once, against a stack overflow on the first theme upload — which presents as
+     * a device that reboots when someone presses Upload. */
+    cfg.stack_size         = 8192;
     /* Below the LVGL task's priority 5: a slow or chatty client must never
      * preempt a paint and show up as a dropped frame on the dial. */
     cfg.task_priority    = 4;
+    /* 30 s, not the 5 s HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:65).
+     * Measured on the bench at -76 dBm with a 3.87 MB theme: the radio stalled
+     * past 5 s twice, httpd_req_recv() returned EAGAIN, and h_theme_upload()
+     * deleted a .part whose client was still sending and said "upload aborted
+     * by client". A stalled link is not a vanished client, and the difference
+     * is the whole upload path: the delete-then-refuse branch is correct for
+     * the real thing and wrong for this. Bounded because both POST-body routes
+     * refuse a declared length over their cap before reading a byte, only the
+     * two big-body routes block in recv at all, and lru_purge_enable reclaims
+     * the slot the moment a new connection needs one. */
+    cfg.recv_wait_timeout  = 30;
 
     const esp_err_t e = httpd_start(&s_server, &cfg);
     if (e != ESP_OK) {
@@ -2439,6 +3012,17 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
+        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
+        /* microSD + themes. /themes is the page; the six under /api/v1/sd are its
+         * backing calls, and none of them can do anything to the clock beyond
+         * staging a theme the owner then chooses to reboot into. */
+        { .uri = "/themes",            .method = HTTP_GET,  .handler = h_themes },
+        { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
+        { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
+        { .uri = "/api/v1/sd/load",     .method = HTTP_POST, .handler = h_theme_load },
+        { .uri = "/api/v1/sd/unstage",  .method = HTTP_POST, .handler = h_theme_unstage },
+        { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
+        { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },
         /* Android + iOS/macOS captive-portal probes (see h_captive). The last two
          * are Firefox's network-check and the old-Chromium/Kindle endpoint: a phone
          * that finds them covered pops its own "Sign in to network" notification,
@@ -2655,5 +3239,15 @@ bool orb_net_is_provisioning(void) { return false; }
 const char *orb_net_ip_str(void) { return ""; }
 
 bool orb_net_time_synced(void) { return false; }
+
+/* Zone accessors, disabled build: the menu must still compile and must not offer
+ * a picker over an empty table, so count 0 is the honest answer rather than a
+ * fake UTC row the dial would let you "select" into nowhere. */
+int orb_net_tz_count(void) { return 0; }
+const char *orb_net_tz_key(int i) { (void)i; return ""; }
+const char *orb_net_tz_label(int i) { (void)i; return ""; }
+const char *orb_net_tz_current(void) { return ""; }
+int orb_net_tz_current_index(void) { return -1; }
+esp_err_t orb_net_tz_select(int i) { (void)i; return ESP_ERR_NOT_SUPPORTED; }
 
 #endif /* CONFIG_ORB_NET_ENABLE */

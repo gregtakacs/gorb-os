@@ -79,6 +79,7 @@ import json
 import os
 import re
 import sys
+import time
 import zipfile
 from PIL import Image
 
@@ -1371,6 +1372,21 @@ def main():
     ap.add_argument("theme_dir")
     ap.add_argument("--bin", default="assets/clock_assets.bin")
     ap.add_argument("--header", default="assets/clock_assets.h")
+    ap.add_argument("--orbtheme", default=None, metavar="PATH",
+                    help="also emit a self-describing .orbtheme container to PATH, for "
+                         "the SD card and the device's /themes page. The container carries "
+                         "the same geometry this bake prints into --header plus the identical "
+                         "pixel bytes, which is the only way a theme can reach a device that "
+                         "was not built around it. Empty by default: a normal bake does not "
+                         "grow a third artefact it did not ask for.")
+    ap.add_argument("--theme-slug", default=None,
+                    help="name the container is filed and listed under on the card "
+                         "(default: the theme directory's name). [A-Za-z0-9._-] only, "
+                         "23 chars max — the device refuses anything else, because the "
+                         "slug becomes a path segment it builds from client input.")
+    ap.add_argument("--theme-title", default=None,
+                    help="label the /themes page shows (default: the theme's own name "
+                         "from theme.json, else the slug). Up to 31 bytes.")
     ap.add_argument("--pad", type=int, default=2, help="ink-bbox grow px (AA fringe room)")
     ap.add_argument("--no-bg", action="store_true",
                     help="bake only the static plate (skip bgAnim frames): lean blob "
@@ -1895,6 +1911,64 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
     os.makedirs(os.path.dirname(args.header) or ".", exist_ok=True)
     with open(args.header, "w") as f:
         f.write("".join(hdr))
+
+    # ---- the .orbtheme container, for the SD card and the /themes page ---------
+    # Why this exists next to the pair rather than instead of it: the .h is compiled
+    # into the app, so a theme that only exists as a .bin + .h pair can never be
+    # loaded by a device that was not built around it. The container carries the SAME
+    # numbers this function just printed as C, so one bake feeds both paths and they
+    # cannot drift -- there is no second geometry here, only a second encoding.
+    if getattr(args, "orbtheme", None):
+        import orbtheme as _ot
+        scalars = {
+            "bg": bgcolor & 0xFFFFFF,
+            "plate_follow": int(plate_follow),
+            "shadow_on": int(bool(shadow_on)),
+            "shadow_dx": int(shadow_dx), "shadow_dy": int(shadow_dy),
+            "second_sweep": int(bool(second_sweep)),
+            "second_railway": int(bool(second_railway)),
+            "text_over_hands": int(bool(text_over_hands)),
+            "tick_rate": int(tick_rate),
+            "bg_frames": int(anim_frames),
+            "bg_fps": int(bg.get("fps", 6)),
+            "bg_loop": int(bool(bg.get("loop", False))),
+            "bg_every": int(bg.get("everySec", 3600)),
+            "plate_off": int(plate_off),
+            "order0": int(order[0]) if order_n > 0 else 0,
+            "order1": int(order[1]) if order_n > 1 else 0,
+            "order2": int(order[2]) if order_n > 2 else 0,
+            "order3": int(order[3]) if order_n > 3 else 0,
+            "order4": int(order[4]) if order_n > 4 else 0,
+            "order_n": int(order_n),
+            "matte_mask": int(matte_mask),
+            "bg_mode": 1 if gif else 0,
+            "bg_key_off": int(gif["key_off"]) if gif else 0,
+            "gif_frames": int(gif["frames"]) if gif else 0,
+            "tourbillon_n": int(len(tourb_recs or [])),
+            "tourbillon_fps": int(getattr(args, "tourbillon_fps", 15) or 15),
+        }
+        # Mirrors the generated header's tables EXACTLY, including the placeholder
+        # rows it emits for a classic (non-GIF) theme so clock_view.c's GIF path
+        # always compiles: one zero rect, one index, one 40 ms delay. Feeding the
+        # device empty tables instead would make the two artefacts of this one bake
+        # describe different themes.
+        if gif:
+            rects  = [int(v) for r in (gif["rects"] or [(0, 0, 0, 0, 0)]) for v in r]
+            first  = [int(v) for v in gif["first"]]
+            delays = [int(v) for v in gif["delays"]]
+        else:
+            rects, first, delays = [0, 0, 0, 0, 0], [0], [40]
+        frames = [int(o) for o in baked_frames] or [0]
+        slug   = (getattr(args, "theme_slug", None) or theme_name)[: _ot.NAME_MAX - 1]
+        title  = (getattr(args, "theme_title", None) or style.get("name") or theme_name)[: _ot.TITLE_MAX - 1]
+        geom   = _ot.pack_geom(scalars, hand_recs, shadow_recs, overlay,
+                              list(tourb_recs or []), rects, first, delays, frames)
+        os.makedirs(os.path.dirname(args.orbtheme) or ".", exist_ok=True)
+        n = _ot.write_container(args.orbtheme, slug, title, geom, bytes(blob.buf),
+                                SCREEN_W, SCREEN_H,
+                                baked_ms=int(time.time() * 1000) & 0xFFFFFFFF)
+        print("wrote {} ({} B, {} B of pixels + {} B of geometry)".format(
+            args.orbtheme, n, len(blob.buf), len(geom)))
 
     if args.dump_dir:
         dump_inspection(args.dump_dir, blob.buf, gif,

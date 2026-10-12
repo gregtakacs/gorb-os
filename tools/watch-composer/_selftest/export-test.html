@@ -5,6 +5,7 @@
 <script src="../dial-renderer.js"></script>
 <script src="../watch-engine.js"></script>
 <script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
 <script src="component.js"></script>
 <script>
 (function () {
@@ -568,6 +569,51 @@
     const r = hCi.r, sq = Math.max(hole(fSq).w, hole(fSq).h);
     if (Math.abs(r * 2 - sq) > 0.51) return fail('round did not take the longer side as its diameter: r=' + r + ' box=' + sq);
     say('  round aperture: r=' + r.toFixed(1) + ' fills ' + qCi.frac.toFixed(3) + ' of its disc box, against ' + qSq.frac.toFixed(3) + ' for the square window — a circle is pi/4');
+    /* ---- the same window through the kit door ---------------------------------------
+     * exportKit walks F.textKits() for every date and custom window, and that pass sized
+     * its crop from h.w/h.h. A circle hole states radii, never sides, so the box came out
+     * NaN, cv(NaN) is a zero-size canvas, and the first drawImage from it threw the whole
+     * export away: a watch that previews perfectly and downloads nothing. Measured on the
+     * circle's own diameter, the strip has to be 2r wide plus the 4 px margin the crop
+     * takes on each side, and the caps have to reach past the ring the frame strikes. */
+    const k1 = (fCi.textKits(1) || [])[0], k2 = (fCi.textKits(2.2) || [])[0];
+    if (!k1 || !k2) return fail('a round date window produced no text kit, so the export has nothing to assemble');
+    const boxCi = (kk) => Math.ceil((2 * r + 8) * kk);
+    if (k1.height !== boxCi(1)) return fail('the round window\'s strip is ' + k1.height + ' px tall, where the circle\'s own box is ' + boxCi(1) + ' (2r + 2*4): ' + JSON.stringify([k1.height, r]));
+    if (k2.height !== boxCi(2.2)) return fail('at kit scale 2.2 the strip is ' + k2.height + ' px, expected ' + boxCi(2.2));
+    const piece = (p, nm) => { if (!p || !isFinite(p.w) || !isFinite(p.h) || p.w < 1 || p.h < 1) return nm + ' is ' + JSON.stringify(p && [p.w, p.h]); return null; };
+    for (const [nm, bad] of [['capL', piece(k1.capL, 'capL')], ['capR', piece(k1.capR, 'capR')], ['slice', piece(k1.slice, 'slice')], ['shade', piece(k1.shade, 'shade')]].filter((x) => x[1]))
+      return fail('the round window ships a broken ' + nm + ': ' + bad);
+    if (k1.capL.w < r || k1.capL.w > k1.fitWidth) return fail('the end cap is ' + k1.capL.w + ' px on a window whose radius is ' + r.toFixed(1) + ' (strip ' + k1.fitWidth + ' px): it must reach past the circle\'s edge without spanning the strip');
+    if (k1.slice.w !== 1) return fail('the tileable strip slice is ' + k1.slice.w + ' px wide; the assembler repeats a single column');
+    if (k1.glyphs.length !== 10 || k1.glyphs.some((g) => !(g.w >= 1 && g.h >= 1 && isFinite(g.adv)))) return fail('a round date window must still ship ten sound digit tiles, got ' + JSON.stringify(k1.glyphs.map((g) => [g.w, g.h, g.adv])));
+    if (k1.glyphs.some((g) => g.h !== k1.height)) return fail('a glyph tile is off the strip height: ' + JSON.stringify(k1.glyphs.map((g) => g.h)) + ' vs ' + k1.height);
+    say('  round window exports a kit: strip ' + k1.fitWidth + 'x' + k1.height + ' at 1x and ' + k2.height + ' px at 2.2x, caps ' + k1.capL.w + ' px, ten glyphs at ' + k1.glyphs[0].h + ' px — sized off the diameter, since a circle names no sides');
+    /* ---- the oval: an independent vertical radius -----------------------------------
+     * Pull Width and Height apart and the aperture stops being a circle: half of each
+     * side is a radius, the only way a window can be taller than it is wide and still
+     * show its whole date. Nothing in the codebase read h.ry outside holePath and the
+     * true-shape hit test, so both the painted disc (clipped to a circle of the WIDTH
+     * radius) and the kit strip (squared off at the overshoot) were wrong there. The
+     * probe puts one texel above the circle's top edge and inside the ellipse, where
+     * only an elliptical clip paints, and one outside both, where nothing may. */
+    const ov = { comps: [{ id: 'wo', type: 'window', shows: 'date', host: 'dial', angle: 90, dist: 110, rot: 0, size: 2.2, style: 'frame', disc: 'light', wshape: 'circle', ww: 1, wh: 2.4 }] };
+    const fOv = it.faceOf(ov), co = fOv.lay.comps.filter((q) => q.id === 'wo')[0], hOv = co.hole;
+    if (hOv.kind !== 'circle' || !(hOv.ry > hOv.r)) return fail('an oval window lost its independent vertical radius: ' + JSON.stringify([hOv.kind, hOv.r, hOv.ry]));
+    const kOv = (fOv.textKits(1) || [])[0];
+    if (!kOv) return fail('the oval window produced no text kit, so the export has nothing to assemble');
+    // textKits(kit) crops the AUTHORED hole by the kit scale, so the oval's own vertical
+    // radius has to show up in the strip exactly once -- not once for the comp's k and
+    // once again for the kit's.
+    const wantH = Math.ceil(2 * hOv.ry + 8);
+    if (kOv.height !== wantH) return fail('the oval strip is ' + kOv.height + ' px tall, but the ellipse stands ' + (2 * hOv.ry) + ' px plus the 4 px crop margin on each side = ' + wantH + ' (r=' + hOv.r + ' ry=' + hOv.ry + ')');
+    const cg = fOv.comps(new Date(2026, 0, 1, 10, 9, 36)).dial.getContext('2d');
+    const inkAt = (dx, dy) => cg.getImageData(Math.round(hOv.x + dx), Math.round(hOv.y + dy), 1, 1).data[3];
+    const upIn = inkAt(0, -(hOv.ry - 3)), sideIn = inkAt(hOv.r - 2, 0), cornerOut = inkAt(hOv.r + 4, -(hOv.ry - 3));
+    if (!(upIn > 40)) return fail('nothing paints above the oval\'s circle radius (' + hOv.r + ') though the ellipse reaches ' + hOv.ry + ': the disc is clipped to a circle');
+    if (!(sideIn > 40)) return fail('the oval disc has no ink on its width axis at all: alpha ' + sideIn);
+    if (cornerOut > 40) return fail('the oval disc paints ' + cornerOut + ' alpha outside its own ellipse (dx=' + (hOv.r + 4) + ', dy=' + (hOv.ry - 3) + '): the clip is a box');
+    say('  oval window: ' + (2 * hOv.r).toFixed(1) + 'x' + (2 * hOv.ry).toFixed(1) + ' aperture paints above its circle radius (alpha ' + upIn + ' inside the ellipse, ' + cornerOut + ' outside it) and ships a ' + kOv.fitWidth + 'x' + kOv.height + ' strip');
     next();
   }
   /* ---- 2-4. the case mask, the zoom, and the facing -------------------------------- */
@@ -940,6 +986,105 @@
       stop(); done();
     })().catch((e) => fail('(async) threw ' + (e && e.message)));
   }
+  /* The .orbtheme button, run on bytes Chrome encoded itself.
+   *
+   * Node pins the bake byte-for-byte against the Python bench, but it feeds both sides
+   * the SHIPPED kit's PNGs. Only the browser can prove the chain the button actually
+   * walks: canvas -> toBlob -> DecompressionStream -> the baker. A premultiplied canvas
+   * would bake a washed-out plate through that chain without throwing anything, which is
+   * what the alpha probe below is for. The rest checks the card's own acceptance rules:
+   * orb_theme.c re-CRCs the geometry and the payload before it loads a theme, and files
+   * it by the slug baked inside rather than by its filename.
+   *
+   * It bakes the files the suite already collected rather than exporting again: a second
+   * exportKit is 16 more whole-canvas renders, and --virtual-time-budget is a timer
+   * budget a heavy suite can outrun. */
+  function themeCheck(E, G, say, bytesOf, files, man, done) {
+    if (!G) return done(new Error('theme: orbtheme-baker.js did not load beside the page'));
+    const it = new (window.COMP_CLASS(DCLogic))({});
+    it.state = { status: '' };
+    it.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+    let cap = null;
+    it.download = (bl, nm) => { cap = { bl, nm }; };
+    const slug = 'themechk';
+    it.finishTheme(files, man, slug).then(async () => {
+      try {
+        if (!cap) throw new Error('the bake produced no download; status was "' + it.state.status + '"');
+        if (cap.nm !== slug + '.orbtheme') throw new Error('the file is named "' + cap.nm + '" but the card files a theme by the slug baked inside it');
+        if (!/^Downloaded themechk\.orbtheme/.test(it.state.status)) throw new Error('the status does not read as a completed bake: ' + it.state.status);
+        const b = new Uint8Array(await cap.bl.arrayBuffer());
+        const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), HW = G.HDR_WORDS;
+        const w = (i) => dv.getUint32(i * 4, true);
+        const at = (off, n) => { let s = ''; for (let i = 0; i < n; i++) { const c = b[off + i]; if (!c) break; s += String.fromCharCode(c); } return s; };
+        const at2 = (u, off, n) => { let s = ''; for (let i = 0; i < n; i++) { const c = u[off + i]; if (!c) break; s += String.fromCharCode(c); } return s; };
+        if (w(0) !== (G.MAGIC >>> 0)) throw new Error('container magic is 0x' + (w(0) >>> 0).toString(16) + ', not the TRGO the reader looks for');
+        if (w(1) !== G.FORMAT || w(2) !== G.GEOM_ABI) throw new Error('container format/abi are ' + w(1) + '/' + w(2) + ', not ' + G.FORMAT + '/' + G.GEOM_ABI);
+        if (w(3) !== HW * 4) throw new Error('header declares ' + w(3) + ' bytes but the baker\'s header is ' + (HW * 4) + ' bytes');
+        if (w(9) !== 466 || w(10) !== 466) throw new Error('container screen is ' + w(9) + 'x' + w(10) + ', must be the 466x466 panel');
+        const geomSize = w(5), geomCrc = w(6), artSize = w(7), artCrc = w(8), artOff = w(13);
+        const geom = b.subarray(HW * 4, HW * 4 + geomSize);
+        if (G.crc32(geom) !== geomCrc) throw new Error('geometry CRC does not match the blob in the file, so the card would reject it');
+        if (artOff % G.SECTOR) throw new Error('art starts at ' + artOff + ', not on a ' + G.SECTOR + ' B sector the device can map');
+        if (artOff + artSize > b.length) throw new Error('the art declared at ' + artOff + ' runs past the end of the file');
+        if (G.crc32(b.subarray(artOff, artOff + artSize)) !== artCrc) throw new Error('pixel payload CRC does not match its bytes, so a torn upload would load');
+        if (artOff !== G.artOffset(geomSize)) throw new Error('art offset ' + artOff + ' is not where the geometry size puts it');
+        if (b.length !== artOff + artSize) throw new Error('container is ' + b.length + ' B but its last payload byte is at ' + (artOff + artSize));
+        if (at(G.W_SLUG * 4, G.NAME_MAX) !== slug) throw new Error('the header slug is "' + at(G.W_SLUG * 4, G.NAME_MAX) + '", not the name the file downloaded as');
+        const z = b.slice(0, HW * 4); for (let i = 0; i < 4; i++) z[G.W_HDR_CRC * 4 + i] = 0;
+        if (G.crc32(z) !== w(G.W_HDR_CRC)) throw new Error('header CRC does not verify with its own checksum word zeroed');
+        const gdw = new DataView(geom.buffer, geom.byteOffset, geom.byteLength);
+        const nc = (i) => gdw.getUint32(i * 4, true);
+        const counts = { rects: nc(0), comps: nc(4), aux: nc(5), bank: nc(6) };
+        const nCounts = counts.comps || counts.aux || counts.bank ? 7 : 4;
+        if (!counts.rects) throw new Error('the bake declares 0 bank rects: there would be nothing to blit and the face would be blank');
+        const over = Object.entries({ rects: counts.rects, comps: counts.comps, aux: counts.aux }).filter(([k, v]) => v > G.caps[k]);
+        if (over.length) throw new Error('past a device cap: ' + over.map(([k, v]) => k + '=' + v + '/' + G.caps[k]));
+        // The one texel whose colour survives only if Chrome's encoder and the baker's
+        // inflate both kept it straight rather than premultiplied. Premultiplying at
+        // alpha 128 would bring back about (100,30,10): 100 levels off on red, so a
+        // tolerance of 3 cannot hide that failure mode.
+        const pc = document.createElement('canvas'); pc.width = pc.height = 8;
+        const pg = pc.getContext('2d');
+        pg.clearRect(0, 0, 8, 8);
+        pg.fillStyle = 'rgba(200,60,20,0.5019607843137255)';      // exactly alpha 128
+        pg.fillRect(3, 4, 1, 1);
+        const pd = await G.decodePngAsync(bytesOf(pc));
+        const gi = pg.getImageData(3, 4, 1, 1).data, pi = (4 * 8 + 3) * 4;
+        const got = [pd.rgba[pi], pd.rgba[pi + 1], pd.rgba[pi + 2], pd.rgba[pi + 3]];
+        const want = [gi[0], gi[1], gi[2], gi[3]];
+        if (got.some((v, i) => Math.abs(v - want[i]) > 3)) throw new Error('the browser PNG round trip lost the texel: decoded ' + got + ' where the canvas holds ' + want + ' — a premultiplied plate bakes washed out');
+        // The pure baker on the same planes must return the button's bytes exactly, with
+        // the header's own serial and stamp fed back so only a real divergence shows: if
+        // the page touched a plane on the way, or baked state the kit never carried, the
+        // two containers part company.
+        const planes = {};
+        for (const f of files) if (/[.]png$/i.test(f.name) && f.name.indexOf('sources/') !== 0) planes[f.name] = await G.decodePngAsync(f.data);
+        const again = G.bakeKit({ manifest: man, planes, slug: slug, title: slug, serial: w(11), bakedMs: w(12) });
+        if (again.bytes.length !== b.length) throw new Error('the pure baker came out ' + again.bytes.length + ' B against the button\'s ' + b.length + ' B');
+        for (let i = 0; i < b.length; i++) if (b[i] !== again.bytes[i]) throw new Error('the button\'s container differs from the pure baker at byte ' + i + ': 0x' + b[i].toString(16) + ' against 0x' + again.bytes[i].toString(16));
+        // Two refusals the card would make for us, made here instead: a name it would not
+        // file, and a page that loaded without the baker at all.
+        // Two slug cases the card would make for us. A dirty but rescuable name must come
+        // back filed under what the header says, not what was typed; a name nothing can
+        // rescue must be refused here rather than on the card.
+        let cap2 = null; it.download = (bl, nm) => { cap2 = { bl, nm }; };
+        await it.finishTheme(files, man, '../Bad Name!');
+        if (!cap2) throw new Error('a rescuable card slug refused to bake: ' + it.state.status);
+        if (cap2.nm !== 'bad-name.orbtheme') throw new Error('a rescuable slug downloaded as "' + cap2.nm + '" instead of the normalized name the header carries');
+        const b2 = new Uint8Array(await cap2.bl.arrayBuffer());
+        if (at2(b2, G.W_SLUG * 4, G.NAME_MAX) !== 'bad-name') throw new Error('the file is named bad-name.orbtheme but baked the slug "' + at2(b2, G.W_SLUG * 4, G.NAME_MAX) + '" — the card files it by the header, not the name');
+        cap2 = null;
+        await it.finishTheme(files, man, '***');
+        if (cap2 || !/Not baked/.test(it.state.status)) throw new Error('an unsalvageable card slug still shipped a container: ' + it.state.status);
+        const keepG = window.GorbBake; window.GorbBake = undefined;
+        await it.finishTheme(files, man, 'nope');
+        window.GorbBake = keepG;
+        if (cap2 || !/did not load/.test(it.state.status)) throw new Error('a bake with no baker loaded still reported: ' + it.state.status);
+        say('  theme: ' + (b.length / 1048576).toFixed(2) + ' MB baked from Chrome PNGs · header, geometry and payload CRCs all verify · ' + counts.rects + ' bank rects in a ' + nCounts + '-count blob · ' + counts.comps + ' complications · ' + counts.aux + ' pointers · an alpha-128 texel kept its colour through toBlob and inflate · bad slug and missing baker both refused');
+        done();
+      } catch (e) { done(e); }
+    }, (e) => done(e));
+  }
   function calKitCheck(E, inst, DCLogic, bytesOf, say, calD, done) {
     const it = new (window.COMP_CLASS(DCLogic))({});
     it.ready = true; it.rendering = false;
@@ -1245,6 +1390,11 @@
             say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
             document.title = 'FAIL'; return;
           }
+          themeCheck(E, window.GorbBake, say, bytesOf, files, man, (err) => {
+          if (err) {
+            say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
+            document.title = 'FAIL'; return;
+          }
           featSetup(E, say, (err) => {                          // its own instance, so it cannot disturb the others
           if (err) {
             say('RESULT: FAIL — ' + (err && err.message)); say(String((err && err.stack) || '').split('\n').slice(0, 6).join('\n'));
@@ -1267,6 +1417,7 @@
             document.title = 'FAIL'; return;
           }
           say('RESULT: PASS'); document.title = 'PASS';
+        });
         });
         });
         });

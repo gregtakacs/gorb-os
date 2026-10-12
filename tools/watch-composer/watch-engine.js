@@ -842,6 +842,15 @@
     if (h.rot) { const r = h.kind === 'moon' ? h.a : Math.hypot(h.w, h.h) / 2; return [h.x - r, h.y - r, h.x + r, h.y + r]; }
     return [h.x - h.w / 2, h.y - h.h / 2, h.x + h.w / 2, h.y + h.h / 2];
   }
+  /* The hole's width and height along its OWN axes, before any rotation is expanded:
+   * what a disc or a text strip has to be cut to. holeBox is not it -- for a rotated
+   * hole that returns the circumscribed square, which would widen every window by the
+   * extra reach the diagonal sweeps. Only the two shapes a data window can take arrive
+   * here: an opening's slot/arch/poly holes never reach drawComp or textKits. */
+  function holeExtents(h) {
+    if (h.kind === 'circle') return [2 * h.r, 2 * (h.ry != null ? h.ry : h.r)];
+    return [h.w, h.h];
+  }
   // true shape test (in the opening's own rotated frame), so a round centre window no longer hides numerals beside it
   function inside(h, x, y, m) {
     if (h.hidden) return false;
@@ -1687,11 +1696,16 @@
     if (c.type === 'moon') { const p = ph == null ? moonPhase(date) : ph; return ROUND_MOON[c.style] ? moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c) : moonDisc(ctx, h.x, h.y, h.a, p, pal, seed, h.rot, c.style); }
     const v = c.blank ? '' : c.type === 'custom' ? fmtDate(c.fmt, date, c.fcase) : c.type === 'date' ? String(date.getDate()) : c.type === 'day' ? DAYS[date.getDay()] : MONTHS[date.getMonth()];
     const k = c.k || 1, round = h.kind === 'circle';
-    const w = (round ? 2 * h.r : h.w) + 10 * k, hh = (round ? 2 * h.r : h.h) + 10 * k, dark = c.disc === 'dark' || (c.disc !== 'light' && !!en.dark);
+    /* One measure for the aperture, shared with the kit's textKits crop: a rect states
+     * w/h, a circle or an oval carries radii. Reading h.w on a round window yields NaN,
+     * and the oval's independent vertical radius is what lets a window be taller than it
+     * is wide and still show its whole date. */
+    const he = holeExtents(h);
+    const w = he[0] + 10 * k, hh = he[1] + 10 * k, dark = c.disc === 'dark' || (c.disc !== 'light' && !!en.dark);
     ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(round ? 0 : (h.rot || 0));
     // A round window clips its disc to the aperture, so the disc, the inner shadow
     // and the glyph all stop at the circle instead of squaring off outside it.
-    if (round) { ctx.beginPath(); ctx.arc(0, 0, w / 2, 0, TAU); ctx.clip(); }
+    if (round) { ctx.beginPath(); if (h.ry != null && h.ry !== h.r) ctx.ellipse(0, 0, w / 2, hh / 2, 0, 0, TAU); else ctx.arc(0, 0, w / 2, 0, TAU); ctx.clip(); }
     ctx.fillStyle = c.dc && c.dc !== 'auto' ? c.dc : dark ? '#1b1916' : '#f2ecdd'; ctx.fillRect(-w / 2, -hh / 2, w, hh);
     const g = ctx.createLinearGradient(0, -hh / 2, 0, hh / 2);
     g.addColorStop(0, 'rgba(0,0,0,.22)'); g.addColorStop(0.35, 'rgba(0,0,0,0)'); g.addColorStop(0.65, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.22)');
@@ -2970,6 +2984,13 @@
         const isDate = c.type === 'date';
         if (!isDate && c.type !== 'custom') return;
         const h = c.hole, kk = c.k || 1, m = 4;
+        /* The crop box is the hole's OWN extents. A rect states w/h; a round window -- a
+         * cyclops under a domed crystal, an opening punched through an enamel dial for one
+         * numeral -- carries radii instead, and reading h.w off it produced NaN, then a
+         * zero-size canvas, then a drawImage throw that killed the whole kit export. The
+         * circle's bounding box is the right box: the device assembles a strip and the
+         * dial's own hole path clips what the strip's corners show. */
+        const he = holeExtents(h), hw = he[0], hh = he[1];
         // A window's shade depends on where a pixel sits in the WINDOW, never on the string: the
         // host layer (the dial, or the host subdial) carries the frame ring, its drop shadow and
         // the aperture's inner shade, and the engine composes disc+ink FIRST and that host layer
@@ -3018,8 +3039,13 @@
         else { put(fx, F.dial, true); paint(fx, Object.assign({}, c, { fmt: '', blank: true }), new Date(), i); if (hostL) fx.drawImage(hostL, 0, 0); }
         const bandOnly = cv(S), bx0 = bandOnly.getContext('2d');
         paintPlate(bx0);
-        const Wc = Math.ceil((h.w + 2 * m) * k), Hc = Math.ceil((h.h + 2 * m) * k), lc = local(full, h.x, h.y, h.rot, Wc, Hc);
-        const e = Math.ceil((Math.max(h.rad || 2.5, 3) + m + 2) * k), mid = Math.floor(Wc / 2), slice = crop(lc, mid, 0, 1, Hc);
+        const Wc = Math.ceil((hw + 2 * m) * k), Hc = Math.ceil((hh + 2 * m) * k), lc = local(full, h.x, h.y, h.rot, Wc, Hc);
+        // The end cap is the strip's own end: half the aperture's WIDTH. A rect states it as
+        // h.rad; a circle or an oval carries it as the horizontal radius, which is hw/2.
+        // Taking the larger radius instead would strike a wide oval's caps twice as deep
+        // as the ring it ends with.
+        const cr = h.kind === 'circle' ? hw / 2 : (h.rad || 2.5);
+        const e = Math.ceil((Math.max(cr, 3) + m + 2) * k), mid = Math.floor(Wc / 2), slice = crop(lc, mid, 0, 1, Hc);
         const band = crop(local(bandOnly, h.x, h.y, h.rot, Wc, Hc), mid, 0, 1, Hc);
         const shadeArt = { canvas: local(hostCut(true), h.x, h.y, h.rot, Wc, Hc), w: Wc, h: Hc };
         const en0 = enOf(c), dark = c.disc === 'dark' || (c.disc !== 'light' && !!en0.dark), ink = c.tc && c.tc !== 'auto' ? c.tc : dark ? '#ecdfbf' : '#18120b';
@@ -3043,10 +3069,10 @@
         // clearance that is left over once the widest run is centred — the run is drawn LAST
         // and may legally overlap the cap zone, because that zone is flat disc there. It only
         // grows past the plate if the digits no longer fit the aperture at all.
-        const runW = widest, spill = Math.max(0, runW - Math.floor(h.w * k));
+        const runW = widest, spill = Math.max(0, runW - Math.floor(hw * k));
         const padX = isDate ? Math.max(0, Math.floor((Wc - runW) / 2)) : Math.round((4 + m) * k);
         const fitWidth = isDate ? (spill ? e * 2 + runW + 2 * Math.ceil(k) : Wc) : Math.max(Wc, e * 2 + 2 * padX + widest);
-        if (isDate && spill) console.warn(c.id + ': the widest day needs ' + runW + 'px and the aperture is ' + h.w + 'px — the run spills the frame');
+        if (isDate && spill) console.warn(c.id + ': the widest day needs ' + runW + 'px and the aperture is ' + hw + 'px — the run spills the frame');
         kits.push({ id: c.id, kind: isDate ? 'date' : 'window', host: c.host, centre: [+Mk(h.x).toFixed(2), +Mk(h.y).toFixed(2)], rotDeg: +((h.rot || 0) * 180 / Math.PI).toFixed(2), height: Hc,
           capL: { canvas: crop(lc, 0, 0, e, Hc), w: e, h: Hc }, capR: { canvas: crop(lc, Wc - e, 0, e, Hc), w: e, h: Hc }, slice: { canvas: slice, w: 1, h: Hc },
           shade: shadeArt,

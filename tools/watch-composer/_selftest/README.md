@@ -8,7 +8,7 @@ human to read; they assert nothing.
 | File | Covers |
 |---|---|
 | `selftest.html` | engine level: `WatchEngine.textKits()` caps/slice/glyph/byDate output, plus the posed preview frame (`previewDate`, `PREVIEW_MOON`) against new/full controls |
-| `export-test.html` | end to end: drives the real `Component.exportKit()` and inspects the bytes of the zip it builds (manifest, `text/<id>_<kind>/` sprites, `preview.png` moon pose, calendar-hand + perimeter blocks) |
+| `export-test.html` | end to end: drives the real `Component.exportKit()` and inspects the bytes of the zip it builds (manifest, `text/<id>_<kind>/` sprites, `preview.png` moon pose, calendar-hand + perimeter blocks), and bakes the same files through the real `Component.finishTheme()` to re-read the `.orbtheme` container Chrome's own PNG encoder produced (`themeCheck`, below) |
 | `probe-shade.html` + `probe-shade.js` | measurement probe: per-row/per-column alpha profile of a window kit's `shade.png` and how a digit-cell's mean shade changes as it slides across the strip |
 | `probe-geom.html` | measurement probe: where the additional hand's tip really lands, in device pixels, against the band its ring prints |
 | `probe-calendar.html` | visual probe: the additional hand in each of its four roles, each ring with the hand that reads it, the five invented tips, and the ring display controls (size, position, orientation, colour, face) shown rather than described |
@@ -360,7 +360,12 @@ evidence for the authoring controls the stub suites can only describe:
 
 * a round window is measured by how much of its own disc box the disc fills — 0.785
   for a circle against ~1.0 for the square, both measured in the same run so the
-  square case calibrates the probe;
+  square case calibrates the probe. The same window then goes through the kit door:
+  `textKits()` must produce a strip, two caps, a slice, a shade and ten digit tiles of
+  one height. A circle hole names radii and never `w`/`h`, so sizing that crop off the
+  sides gave `NaN`, a zero-size canvas, and a `drawImage` throw that killed the whole
+  export — the watch previewed perfectly and downloaded nothing, which is what an
+  importing author hit;
 * "no case" paints **no pixel at all** — no mask, no rim shade — and the composited art is
   the same pixels with that layer shown or hidden, at opening 221.5 and at 150, at the same
   box: the opening moves every other pixel and leaves the uploaded image exactly where the
@@ -435,6 +440,30 @@ The width assertion in `export-test.html` is the regression guard for the bug wh
 `manifest.json` declared a `currentWidth` narrower than the widest `byDate` run —
 `capL.w + capR.w + 2·padX + Σ advance` exceeded it and clipped a glyph. Formula lives
 in `watch-engine.js` `WatchEngine.textKits()`.
+
+## The .orbtheme block (`themeCheck`)
+
+`headless-orbtheme.test.js` proves the baker matches `prep_watch_kit.py` + `bake_clock.py`
+byte-for-byte, but it feeds both sides the SHIPPED kit's PNGs. Only Chrome can prove the
+chain the export button walks: canvas -> `toBlob()` -> `DecompressionStream` ->
+`GorbBake.decodePngAsync` -> `bakeKit`. So `themeCheck` bakes the files the suite already
+collected and reads the container back the way `orb_theme.c` does — magic, format, ABI,
+the 466x466 panel, the sector-aligned payload start, and a re-CRC of the header (with its
+own checksum word zeroed), the geometry blob and the pixel payload. It then demands the
+button's bytes equal a fresh `bakeKit` of the same planes byte for byte, which is what
+catches a page that handed the baker a plane it had already touched.
+
+The block exists for one texel. A canvas composited onto a premultiplied backing store
+would bake a washed-out plate through that chain and throw nothing at all, so the block
+paints `rgba(200,60,20,alpha 128)`, encodes it with Chrome's own encoder, decodes it back
+and compares against `getImageData`: 100 levels of red separate pass from fail, so no
+tolerance can hide the bug. Two refusals close it out — a dirty-but-rescuable slug must
+download under the normalized name the header itself carries, and `***` plus a missing
+`window.GorbBake` must report rather than ship a container.
+
+All three gates are mutation-verified: premultiplying the decoder's RGB, flipping the last
+payload byte after its CRC was taken, and renaming the download each turn the block red
+with its own message.
 
 ## Assertions that never ran
 

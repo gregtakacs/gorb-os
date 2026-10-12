@@ -207,6 +207,16 @@ void         orb_svc_app_suspended(const orb_app_t *a);
  * orb_svc_clear_faults(); the HOME entry counts but never fails, because
  * "boot into the clock" needs the clock. */
 int          orb_svc_reset_verdict(uint32_t magic, uint32_t booted); /* pure, host-pinned */
+/** The verdict's other half, pure and host-pinned: the record says a boot ended
+ *  without its mark, the chip says who ended it. An owner's reset (EN, power,
+ *  an esptool RTS pulse) never bills an app; only a code-caused one does. The
+ *  argument is an esp_reset_reason_t widened to int: the frozen app header
+ *  stays out of esp_system.h, so an app TU never sees esp_restart() in scope. */
+bool         orb_reset_blames_code(int rr);
+/** C2's owner half: an unbilled reset (the chip says EN, power, USB, an
+ *  esptool RTS pulse) breaks the two-consecutive chain and heals a mark that
+ *  chain set from a reset alone. A fault with a real reason stands. */
+void         orb_svc_note_owner_reset(int slot);
 void         orb_svc_note_fault(const orb_app_t *a, const char *why);
 uint32_t     orb_svc_fault_count(const orb_app_t *a);
 bool         orb_svc_faulted(const orb_app_t *a);

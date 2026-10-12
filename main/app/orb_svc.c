@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_system.h"       /* esp_reset_reason_t — who ended last boot */
 #include "esp_timer.h"        /* the anchor half of the time pair */
 #include "nvs.h"
 #include "nvs_flash.h"        /* nvs_flash_init_partition("storage") — the
@@ -673,10 +674,18 @@ esp_err_t orb_svc_init(void)
     /* C2, first act: read last boot's reset record BEFORE anything else can
      * crash, bill the slot it names if the verdict says the reset was not
      * the owner's, and re-arm for this boot. The registry has not run yet,
-     * so this reads only the broker's own NVS words. */
+     * so this reads only the broker's own NVS words. The record is half the
+     * evidence: the chip's own account of the reset decides, because the
+     * bench's RTS pulses and the owner's EN button leave a live record
+     * behind exactly like a crash does (orb_reset_blames_code). */
     if (orb_svc_reset_verdict(s_rec.magic, s_rec.booted)) {
         const int slot = (s_rec.slot < ORB_SVC_ROWS) ? (int)s_rec.slot : -1;
-        if (slot >= 0) note_fault_slot(slot, "unexpected reset");
+        const int rr = (int)esp_reset_reason();
+        if (!orb_reset_blames_code(rr)) {
+            ESP_LOGW(TAG, "reset record live but the chip says reason %d — the "
+                          "owner's hand, nothing billed", rr);
+            if (slot >= 0) orb_svc_note_owner_reset(slot);
+        } else if (slot >= 0) note_fault_slot(slot, "unexpected reset");
         else ESP_LOGW(TAG, "unexpected reset with no app on the glass — nothing billed");
     }
     s_rec.magic  = FAULT_MAGIC_ARM;
@@ -799,6 +808,39 @@ int orb_svc_reset_verdict(uint32_t magic, uint32_t booted)
     return 0;   /* 0, garbage after a cold boot, or a boot that finished */
 }
 
+/* The other half of the verdict, and the half the record alone cannot supply.
+ * The .noinit word says a boot ended without its boot-done mark; it cannot say
+ * who ended it. Only the silicon can, and the difference is the whole rule:
+ * the bench pulses RTS on every esptool run and every serial capture (§1.2's
+ * own bench protocol), the owner reaches for the EN button or pulls the
+ * battery, and none of that is the app's doing — yet every one of those leaves
+ * a live record behind, and two of them mark an app failed (§1.4's C2). So an
+ * unexplained record is billed only when the chip itself accuses the code.
+ * ESP_RST_SW is in the accused set on purpose: each OS-owned reboot disarms
+ * the record first (orb_svc_note_clean_reboot), so a live record behind a
+ * software restart means something the OS did not route reached for it.
+ * Anything the chip cannot name (UNKNOWN, and the supply-side POWERON/EXT/USB/
+ * BROWNOUT/PWR_GLITCH family) reads as the owner's hand: unbilled, and said out
+ * loud, because a fault that disappears quietly is a fault the owner cannot see.
+ * Enumerators, not numbers: a rename in IDF lands on the two host vectors that
+ * name them, not on the board. */
+bool orb_reset_blames_code(int rr)
+{
+    switch (rr) {
+    case ESP_RST_PANIC:       /* abort()/panic — the crash path itself        */
+    case ESP_RST_SW:          /* esp_restart() from outside the OS's own paths */
+    case ESP_RST_INT_WDT:     /* wedged in an interrupt loop                   */
+    case ESP_RST_TASK_WDT:    /* the frame path never yielded — C2's wedge      */
+    case ESP_RST_WDT:         /* some other watchdog bit                       */
+    case ESP_RST_CPU_LOCKUP:  /* double exception                              */
+        return true;
+    default:                  /* UNKNOWN, POWERON, EXT, USB, JTAG, SDIO,
+                               * DEEPSLEEP, BROWNOUT, PWR_GLITCH, EFUSE: the
+                               * owner or the supply moved the board.          */
+        return false;
+    }
+}
+
 static esp_err_t fault_word(int slot, const char *prefix, uint32_t *rw, bool write)
 {
     nvs_handle_t h;
@@ -838,6 +880,32 @@ static void fault_load_row(svc_row_t *r, int slot)
                 snprintf(r->fault_reason, sizeof r->fault_reason, "unexpected reset");
             nvs_close(h);
         }
+    }
+}
+
+/* A reset the chip blames on the owner, not the code, proves nothing about the
+ * app it interrupted — so it breaks the "two consecutive" chain C2 counts on
+ * (plan §1.4: the rule is consecutive crashes, not any two resets in the
+ * device's life) and heals a mark that chain had set from a reset alone. A
+ * fault the worker recorded with its own reason stands until a reinstall: an
+ * owner's reboot does not un-crash an app. A door, not a static: orb_svc_init
+ * calls it on the owner's side of the verdict, and the host suite drives it
+ * through the same front the broker does. */
+void orb_svc_note_owner_reset(int slot)
+{
+    if (slot < 0 || slot >= ORB_SVC_ROWS) return;
+    svc_row_t *r = &s_row[slot];
+    if (!r->faults_loaded) fault_load_row(r, slot);
+    if (r->faults) {
+        r->faults = 0;
+        uint32_t zero = 0;
+        (void)fault_word(slot, "c", &zero, true);
+    }
+    if (r->faulted && !strcmp(r->fault_reason, "unexpected reset")) {
+        r->faulted = false;
+        r->fault_reason[0] = '\0';
+        uint32_t zero = 0;
+        (void)fault_word(slot, "x", &zero, true);
     }
 }
 

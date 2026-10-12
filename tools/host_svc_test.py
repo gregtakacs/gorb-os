@@ -58,6 +58,7 @@ STUBS = r'''
 #include <math.h>
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "nvs.h"
 #include "orb_app.h"
 #include "orb_svc.h"
@@ -217,6 +218,11 @@ esp_err_t orb_jobs_post(orb_job_fn fn, void *arg, size_t n)
 /* ---- the time leaves: everything orb_time_now reads, scripted ------------- */
 int64_t g_timer_us;           /* the esp_timer half of the anchor pair  */
 int64_t esp_timer_get_time(void) { return g_timer_us; }
+/* Who ended last boot, per the silicon. Scripted, never the host's own: the
+ * C2 verdict reads this, and a suite that took the real value would be testing
+ * whatever this process happened to survive. */
+int g_rst;
+esp_reset_reason_t esp_reset_reason(void) { return (esp_reset_reason_t)g_rst; }
 time_t  g_real;               /* the time() half — scripted, never the host RTC */
 time_t time(time_t *tloc) { if (tloc) *tloc = g_real; return g_real; }
 bool    g_sync;
@@ -541,6 +547,62 @@ int main(int argc, char **argv)
            x1 && !x1->is_str && x1->u32 == 0);
     }
 
+    /* C2's other half, and the half the record alone cannot supply: the chip
+     * says who ended the boot. The bench pulses RTS on every esptool run and
+     * every serial capture, so an owner-side reason must never bill — and a
+     * panic must always. Names the rule by id, so an IDF rename is a compile
+     * error on this vector, not a panic that quietly stops being billable. */
+    {
+        /* id order: UNKNOWN POWERON EXT SW PANIC INT_WDT TASK_WDT WDT
+           DEEPSLEEP BROWNOUT SDIO USB JTAG EFUSE PWR_GLITCH CPU_LOCKUP */
+        static const char *want = "0001111100000001";
+        int bad = 0;
+        for (int i = 0; i <= (int)ESP_RST_CPU_LOCKUP; i++)
+            if ((orb_reset_blames_code(i) ? 1 : 0) != (want[i] - '0')) bad++;
+        CK("all sixteen reset causes classified by the rule, id by id",
+           (int)ESP_RST_CPU_LOCKUP + 1 == 16 && bad == 0);
+    }
+    CK("the crash causes bill the app",
+       orb_reset_blames_code(ESP_RST_PANIC) && orb_reset_blames_code(ESP_RST_SW) &&
+       orb_reset_blames_code(ESP_RST_INT_WDT) && orb_reset_blames_code(ESP_RST_TASK_WDT) &&
+       orb_reset_blames_code(ESP_RST_WDT) && orb_reset_blames_code(ESP_RST_CPU_LOCKUP));
+    CK("the owner's hand and the supply bill nobody — the esptool RTS pulse lives here",
+       !orb_reset_blames_code(ESP_RST_UNKNOWN) && !orb_reset_blames_code(ESP_RST_POWERON) &&
+       !orb_reset_blames_code(ESP_RST_EXT) && !orb_reset_blames_code(ESP_RST_USB) &&
+       !orb_reset_blames_code(ESP_RST_JTAG) && !orb_reset_blames_code(ESP_RST_SDIO) &&
+       !orb_reset_blames_code(ESP_RST_DEEPSLEEP) && !orb_reset_blames_code(ESP_RST_BROWNOUT) &&
+       !orb_reset_blames_code(ESP_RST_PWR_GLITCH) && !orb_reset_blames_code(ESP_RST_EFUSE));
+    orb_svc_note_fault(B, "unexpected reset");
+    orb_svc_note_fault(B, "unexpected reset");
+    CK("setup: failed on the reset cause alone", orb_svc_faulted(B) &&
+       orb_svc_fault_count(B) == 2);
+    orb_svc_note_owner_reset(1);                        /* B is registry slot 1 */
+    CK("the owner's reset breaks the chain and heals a reset-only mark",
+       !orb_svc_faulted(B) && orb_svc_fault_count(B) == 0);
+    {
+        ent *c1 = find_ent("orb.fault", "c1");
+        ent *x1 = find_ent("orb.fault", "x1");
+        CK("the NVS words go with it, so the next boot does not resume the count",
+           c1 && c1->u32 == 0 && x1 && x1->u32 == 0);
+    }
+    orb_svc_note_fault(B, "worker: tick timeout");
+    orb_svc_note_fault(B, "worker: tick timeout");
+    orb_svc_note_owner_reset(1);
+    CK("a reboot does not un-crash an app: a recorded reason keeps its ban",
+       orb_svc_faulted(B) && orb_svc_fault_reason(B)[0] != '\0');
+    CK("it does break the chain, which is what consecutive means",
+       orb_svc_fault_count(B) == 0);
+    orb_svc_clear_faults(B);
+    {
+        uint32_t before = orb_svc_fault_count(A);
+        orb_svc_note_owner_reset(-1);
+        orb_svc_note_owner_reset(-999);
+        orb_svc_note_owner_reset(4095);      /* past any table the broker ships */
+        CK("a slot outside the table touches nothing",
+           orb_svc_fault_count(A) == before && find_ent("orb.fault", "c-1") == NULL &&
+           find_ent("orb.fault", "c4095") == NULL);
+    }
+
     /* ---- status / ghost ---------------------------------------------------- */
     S->status(A, "beat %d", 7);
     CK("status line stored for the OS page", !strcmp(orb_svc_last_status(A), "beat 7"));
@@ -574,6 +636,16 @@ HDRS = {
                  "#define ESP_LOGW(t,...)\n#define ESP_LOGD(t,...)\n",
     "esp_timer.h": "#pragma once\n#include <stdint.h>\n"
                    "int64_t esp_timer_get_time(void);\n",
+    # Copied verbatim from IDF 5.4's esp_system.h, order included: the shipped
+    # classifier switches on these enumerators, so a drift here or a rename in
+    # IDF lands on the table vectors below rather than silently unbilling a panic.
+    "esp_system.h": "#pragma once\ntypedef enum {\n"
+                    "    ESP_RST_UNKNOWN, ESP_RST_POWERON, ESP_RST_EXT, ESP_RST_SW,\n"
+                    "    ESP_RST_PANIC, ESP_RST_INT_WDT, ESP_RST_TASK_WDT, ESP_RST_WDT,\n"
+                    "    ESP_RST_DEEPSLEEP, ESP_RST_BROWNOUT, ESP_RST_SDIO, ESP_RST_USB,\n"
+                    "    ESP_RST_JTAG, ESP_RST_EFUSE, ESP_RST_PWR_GLITCH, ESP_RST_CPU_LOCKUP,\n"
+                    "} esp_reset_reason_t;\n"
+                    "esp_reset_reason_t esp_reset_reason(void);\n",
     "esp_partition.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
                        "typedef struct esp_partition esp_partition_t;\n",
     "nvs_flash.h": "#pragma once\n#include \"esp_err.h\"\n"

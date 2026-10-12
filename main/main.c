@@ -215,8 +215,9 @@ void app_main(void)
     /* C2, last act of the ladder: the boot survived to here — the dial is
      * built, the router polls, the network and card tried — so the reset
      * record moves from ARM to RUN and starts following the glass. A reset
-     * seen by the NEXT boot's orb_svc_init is then an unexpected one, and
-     * the app it names pays for it. */
+     * seen by the NEXT boot's orb_svc_init bills the app it names only if the
+     * chip blames the code for it: the bench's RTS pulses and the owner's EN
+     * button leave a live record too, and pay nobody (orb_reset_blames_code). */
     orb_svc_boot_done();
 }
 

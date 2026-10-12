@@ -39,6 +39,21 @@ type Status struct {
 // Client fetches orb JSON over plain HTTP with bounded timeouts.
 type Client struct {
 	h *http.Client
+	// DevicePort is the TCP port every dial to an orb uses. The device's httpd
+	// listens on 80, so this is unset in production; it exists because the hub must
+	// dial the proxy and the API on ONE port, and a second port setting somewhere
+	// else is how the two drifted apart in tests. A bench test against a local fake
+	// orb is the only thing that sets it.
+	DevicePort string
+}
+
+// Port is the dial port, defaulted. Every caller takes the port from here so there
+// is exactly one answer to "which port does the hub reach an orb on".
+func (c *Client) Port() string {
+	if c.DevicePort == "" {
+		return "80"
+	}
+	return c.DevicePort
 }
 
 // NewClient returns a client tuned for a flaky bench link: a per-request
@@ -61,7 +76,7 @@ func (c *Client) HTTP() *http.Client { return c.h }
 
 func (c *Client) url(ip, path string) string {
 	if !strings.Contains(ip, ":") {
-		ip = net.JoinHostPort(ip, "80")
+		ip = net.JoinHostPort(ip, c.Port())
 	}
 	return "http://" + ip + path
 }

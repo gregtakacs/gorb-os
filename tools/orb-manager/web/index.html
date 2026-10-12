@@ -126,6 +126,37 @@
     <button id="mn-scan" class="primary">Load</button>
   </div>
   <div id="mn-list" class="orbs"></div>
+
+  <article class="card" id="mn-themecard" hidden>
+    <h3>Themes on this orb</h3>
+    <p class="hint" id="mn-themestate">Load an orb to see its themes.</p>
+    <ul id="mn-themes" class="themelist"></ul>
+    <div class="row">
+      <button id="mn-default" class="ghost" title="Restore the built-in face">Restore built-in</button>
+      <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
+    </div>
+    <div class="row">
+      <input type="file" id="mn-fw-file" accept=".bin,application/octet-stream" hidden>
+      <button id="mn-up-btn" class="ghost" title="Send a theme.bin to the orb">Add a theme…</button>
+      <input id="mn-up-name" size="14" maxlength="31" placeholder="theme name" aria-label="theme name">
+      <span id="mn-up-state" class="hint"></span>
+    </div>
+  </article>
+
+  <article class="card" id="mn-consolecard">
+    <h3>USB console (read-only)</h3>
+    <p class="hint">Nothing is sent to the orb and it is not restarted: the port is opened, read for a few seconds, and closed.
+      IDF only emits console output while a host holds the port, so this is also how you see a running orb talk.</p>
+    <div class="row">
+      <label class="inline">Port
+        <select id="mn-con-port" class="portlist"></select>
+      </label>
+      <button id="mn-con-go" class="ghost">Read console</button>
+      <button id="mn-con-stop" class="ghost" hidden>Stop</button>
+      <span id="mn-con-state" class="hint"></span>
+    </div>
+    <pre id="mn-con-log" class="log" aria-live="polite"></pre>
+  </article>
 </section>
 
 <template id="orb-tpl">

@@ -121,6 +121,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		if st, err := s.orb.Status(ip); err == nil {
 			s.grants.learn(ip)
 			s.setOrbIP(ip)
+			s.saveState()
 			send(map[string]any{"log": "orb joined its network as a station at " + ip + " (" + source + ")"})
 			send(map[string]any{"result": map[string]any{"mode": "lan", "ip": ip, "status": st}})
 			return

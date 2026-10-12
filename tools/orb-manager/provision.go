@@ -113,6 +113,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		// never learned over the cable, and was never handed, stays undialable.
 		s.grants.learn(res.IP)
 		s.setOrbIP(res.IP)
+		s.saveState()
 	}
 	send(map[string]any{"result": map[string]any{
 		"ap_seen":  res.APSeen,

@@ -323,7 +323,47 @@ func (s *Server) handleAllowIP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.grants.learn(ip)
 	s.setOrbIP(ip)
+	s.saveState()
 	s.jsonOK(w, map[string]any{"ip": ip, "allowed": true})
+}
+
+// handleForgetIP drops a remembered address, so an operator can take an orb out of
+// the dialable set without restarting the hub.
+func (s *Server) handleForgetIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonErr(w, "bad request: "+err.Error())
+		return
+	}
+	ip := strings.TrimSpace(req.IP)
+	s.grants.revoke(ip)
+	s.saveState()
+	s.jsonOK(w, map[string]any{"ip": ip, "allowed": false})
+}
+
+// handleRememberedIP answers the Manage card's pre-fill: the address this hub (or a
+// previous run of it) last had an orb at.
+func (s *Server) handleRememberedIP(w http.ResponseWriter, r *http.Request) {
+	s.jsonOK(w, map[string]any{
+		"ip":          s.currentOrbIP(),
+		"learned":     s.grants.list(),
+		"stateError":  errText(s.stateErr),
+		"stateFile":   s.statePath,
+		"deviceReady": s.device.Port(),
+	})
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // setOrbIP records the address the onboarding flow last learned, for /api/status's

@@ -379,6 +379,30 @@ func boolInt(v bool) uint32 {
 	return 0
 }
 
+// ReadConsole opens a port briefly and returns every line the running app prints
+// within secs, then closes it. It is the read-only half of cap.py: no download-mode
+// entry, no reset, nothing written to the wire. DTR is asserted because IDF's
+// USB-Serial-JTAG console drops its output unless a host holds the port ready.
+//
+// ctx aborts the read; a cancelled read returns the lines captured so far with no
+// error, because stopping is what the operator asked for.
+func ReadConsole(ctx context.Context, port string, secs int) ([]string, error) {
+	if secs <= 0 {
+		secs = 8
+	}
+	pt, err := OpenPort(port)
+	if err != nil {
+		return nil, err
+	}
+	defer pt.Close()
+	var out []string
+	observeBootOn(ctx, pt, secs, func(line string) bool {
+		out = append(out, line)
+		return false
+	})
+	return out, nil
+}
+
 // CaptureBoot asserts DTR, then forwards every line the boot console emits for
 // secs. It opens no port: the caller holds one already. ctx aborts the read early
 // for a caller that has been cancelled; a nil ctx reads the whole window, which is

@@ -654,6 +654,11 @@ async function scan() {
     const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
     list.innerHTML = "";
     list.appendChild(renderOrb({ ip: ip, status: st }));
+    // The orb answered, so this is the address worth remembering for next launch,
+    // and the theme card and the status poll belong to it.
+    loadThemes(ip);
+    startPolling(ip);
+    hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) }).catch(() => {});
   } catch (e) {
     list.innerHTML = "<div class='hint err'>no orb answering at " + esc(ip) + " \u2014 " + esc(e.message) + "</div>";
   }
@@ -708,8 +713,236 @@ async function postOrb(ip, path, body, out) {
 $("#mn-scan").onclick = scan;
 $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
 
+// ---- themes -----------------------------------------------------------------
+// Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.
+// That indirection is deliberate: docs/theme-identity-plan.md is going to put an orb
+// id on every device theme call, and the one place that must change is
+// internal/orbnet/themes.go on the server. The card keeps calling hub endpoints.
+let themeIP = "";
+
+async function themePost(path, payload) {
+  const r = await hubFetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+  return j.data;
+}
+
+async function loadThemes(ip) {
+  const state = $("#mn-themestate"), list = $("#mn-themes"), card = $("#mn-themecard");
+  if (!ip) { card.hidden = true; return; }
+  themeIP = ip;
+  card.hidden = false;
+  state.textContent = "reading the orb's theme list\u2026";
+  list.innerHTML = "";
+  let d;
+  try {
+    d = await themePost("/api/theme/list", { ip });
+  } catch (e) {
+    state.textContent = "no theme list from " + ip + ": " + e.message;
+    return;
+  }
+  if (!d.mounted) {
+    state.textContent = "no SD card mounted on this orb — themes live on the card";
+    return;
+  }
+  const rows = Array.isArray(d.themes) ? d.themes : [];
+  state.textContent = rows.length + " theme(s) on " + (d.card || "the card") +
+    ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "");
+  for (const t of rows) list.appendChild(themeRow(t, state));
+  if (!rows.length) {
+    const empty = document.createElement("li");
+    empty.className = "hint";
+    empty.textContent = "the card holds no themes yet";
+    list.appendChild(empty);
+  }
+}
+
+// themeRow builds one row with DOM APIs rather than a template string: theme names
+// and titles are bytes off the orb's card and must never be parsed as markup.
+function themeRow(t, state) {
+  const li = document.createElement("li");
+  const label = document.createElement("b");
+  label.textContent = t.title || t.name;
+  li.appendChild(label);
+  if (t.active) {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = "active";
+    li.appendChild(tag);
+  }
+  if (!t.ok) {
+    const bad = document.createElement("span");
+    bad.className = "tag err";
+    bad.textContent = "not loadable: " + (t.why || "unknown");
+    li.appendChild(bad);
+  }
+  const use = document.createElement("button");
+  use.className = "ghost";
+  use.textContent = "Use";
+  use.disabled = !t.ok || t.active;
+  use.onclick = async () => {
+    use.disabled = true;
+    state.textContent = "installing " + (t.title || t.name) + " — the orb copies it and restarts itself";
+    try { await themePost("/api/theme/install", { ip: themeIP, name: t.name }); }
+    catch (e) { state.textContent = "install refused: " + e.message; }
+    use.disabled = false;
+  };
+  li.appendChild(use);
+  // Delete is the one theme action that cannot be undone from here, so it asks
+  // first: the firmware's own delete is a plain unlink on the card.
+  const del = document.createElement("button");
+  del.className = "ghost";
+  del.textContent = "Delete";
+  del.onclick = async () => {
+    if (!confirm('Delete theme "' + t.name + '" from the orb SD card? This cannot be undone from here.')) return;
+    del.disabled = true;
+    state.textContent = "deleting " + t.name + "\u2026";
+    try { await themePost("/api/theme/delete", { ip: themeIP, name: t.name }); await loadThemes(themeIP); }
+    catch (e) { state.textContent = "delete refused: " + e.message; del.disabled = false; }
+  };
+  li.appendChild(del);
+  return li;
+}
+
+$("#mn-default").onclick = async () => {
+  if (!themeIP) return;
+  const state = $("#mn-themestate");
+  state.textContent = "restoring the built-in face — the orb restarts itself";
+  try { await themePost("/api/theme/default", { ip: themeIP }); }
+  catch (e) { state.textContent = "refused: " + e.message; }
+};
+$("#mn-rescan").onclick = async () => {
+  if (!themeIP) return;
+  const state = $("#mn-themestate");
+  state.textContent = "asking the orb to re-read its card\u2026";
+  try { await themePost("/api/theme/rescan", { ip: themeIP }); await loadThemes(themeIP); }
+  catch (e) { state.textContent = "refused: " + e.message; }
+};
+
+// A theme.bin exported from the Theme Editor goes straight to the orb. The hub never
+// writes it to disk, so there is no dropped-file state to reason about afterwards.
+$("#mn-up-btn").onclick = () => $("#mn-fw-file").click();
+$("#mn-fw-file").onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  const st = $("#mn-up-state");
+  e.target.value = "";
+  if (!f) return;
+  if (!themeIP) { st.textContent = "load an orb first"; return; }
+  const name = $("#mn-up-name").value.trim();
+  if (!name) { st.textContent = "give the theme a name: letters, digits, . _ -, up to 31, no leading dot"; return; }
+  st.textContent = "sending " + f.size + " B\u2026";
+  try {
+    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&name=" + encodeURIComponent(name),
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    st.textContent = "sent; the orb verifies it before it will draw it";
+    await loadThemes(themeIP);
+  } catch (err) { st.textContent = "upload failed: " + err.message; }
+};
+
+// ---- remembered orb ---------------------------------------------------------
+// The hub remembers the address it last had an orb at — learned over USB or typed in
+// — so the operator does not retype it every launch. It is a pre-fill, not a
+// decision: nothing is dialled until Load is pressed, which is the act that registers
+// the address with the proxy in the first place.
+async function prefillOrbIP() {
+  const el = $("#mn-ip");
+  if (!el || el.value.trim()) return;
+  try {
+    const d = await getJSON("/api/orb/known");
+    if (d && d.ip && !el.value.trim()) el.value = d.ip;
+  } catch (e) { /* a hub with no history is the normal first run */ }
+}
+
+// ---- status polling, with backoff -------------------------------------------
+// A fixed poll is rude to a device whose httpd is single-worker and busy, and it is
+// also how a loop keeps hammering an orb that has left the network. So: poll while it
+// answers, and double the gap on each miss up to a cap, resetting the moment it
+// answers again.
+let pollTimer = null;
+let pollDelay = 15000;
+
+function startPolling(ip) {
+  clearTimeout(pollTimer);
+  const tick = async () => {
+    const row = $("#mn-list .state");
+    if (!row) return; // the card was cleared; stop rather than dial unbidden
+    try {
+      const st = await readDeviceJSON(await hubFetch("/orb/" + ip + "/api/v1/status"));
+      row.textContent = st.state || "?";
+      pollDelay = 15000;
+    } catch (e) {
+      pollDelay = Math.min(pollDelay * 2, 240000);
+    }
+    pollTimer = setTimeout(tick, pollDelay);
+  };
+  pollTimer = setTimeout(tick, pollDelay);
+}
+
+// ---- USB console ------------------------------------------------------------
+// Read-only: the hub opens the port, forwards lines for a bounded window, and closes.
+// No reset and nothing written to the orb; the hub registers it as a port operation so
+// it cannot overlap a flash and Stop reaches it.
+let consoleLive = false;
+
+async function readConsole() {
+  const port = $("#mn-con-port").value;
+  const log = $("#mn-con-log"), state = $("#mn-con-state");
+  if (!port || port.startsWith("(")) { state.textContent = "no port selected"; return; }
+  log.textContent = "";
+  state.textContent = "listening on " + port + "\u2026";
+  $("#mn-con-go").disabled = true;
+  $("#mn-con-stop").hidden = false;
+  consoleLive = true;
+  await streamPost("/api/console", { port }, (ev) => {
+    if (!consoleLive) return;
+    if (ev.line) log.textContent += ev.line + "\n";
+    else if (ev.log) log.textContent += ev.log + "\n";
+    else if (ev.done) state.textContent = ev.done;
+    else if (ev.error) state.textContent = ev.error;
+    log.scrollTop = log.scrollHeight;
+  });
+  consoleLive = false;
+  $("#mn-con-go").disabled = false;
+  $("#mn-con-stop").hidden = true;
+}
+
+$("#mn-con-go").onclick = readConsole;
+$("#mn-con-stop").onclick = () => {
+  consoleLive = false;
+  $("#mn-con-state").textContent = "stopped";
+  $("#mn-con-go").disabled = false;
+  $("#mn-con-stop").hidden = true;
+};
+
+// The console picker lists the same cables the Onboard card lists, so an operator
+// who can flash an orb can always read it.
+async function fillConsolePorts() {
+  const sel = $("#mn-con-port");
+  if (!sel) return;
+  try {
+    const { ports } = await getJSON("/api/ports");
+    const list = Array.isArray(ports) ? ports : [];
+    sel.innerHTML = "";
+    if (!list.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
+    for (const entry of list) {
+      const o = document.createElement("option");
+      const p = typeof entry === "string" ? entry : entry.port;
+      o.value = p;
+      o.textContent = portLabel(p, entry);
+      sel.appendChild(o);
+    }
+  } catch (e) { sel.innerHTML = `<option>(${esc(e.message)})</option>`; }
+}
+
 // ---- boot ------------------------------------------------------------------
 route();
+prefillOrbIP();
+fillConsolePorts();
+
 refreshPorts();
 refreshBuild();
 

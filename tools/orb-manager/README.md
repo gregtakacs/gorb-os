@@ -270,6 +270,28 @@ comparison against every cached identity without probing again.
   up on your router) and it dials that single address through the same-origin
   proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
   through that same proxy. No subnet scan, no ARP table.
+  - **Theme card.** List the orb's SD themes, `Use` one, restore the built-in
+    face, `Re-read card`, delete one (it asks first — the firmware's delete is a
+    plain unlink and there is no undo from here), and push a `theme.bin` exported
+    from the Theme Editor straight to the orb. The hub never writes that file to
+    its own disk. Every one of these is a call to
+    `internal/orbnet/themes.go`, the single module that dials the device theme
+    API, so the orb-`id` scheme `docs/theme-identity-plan.md` plans for lands in
+    one file rather than six handlers. This card does not pre-empt that plan and
+    does not rename what the firmware still calls a slug.
+  - **USB console (read-only).** Opens the port, forwards what the running app
+    prints for a bounded window, closes. Nothing is written to the wire and the
+    orb is not reset — this is `tools/cap.py` for someone with no Python and no
+    clone. It registers as a port operation, so it refuses to share a cable with
+    a flash, appears in `/api/ops`, and is cancellable.
+  - **Remembered orb.** The address the hub last had an orb at — learned over
+    USB or typed in — comes back on the next launch, so the address is typed once
+    rather than every session. It lives in `state.json` under the OS config dir
+    (mode 0600, beside the app-window profile) and holds **addresses only**: no
+    launch token, no Wi-Fi passphrase, no SSID. A corrupt file reads as
+    "nothing remembered", never as a dial list, and only IPv4 literals are ever
+    accepted into it — a hostname in that file cannot make the hub resolve
+    something.
 
 ## Headless flasher
 
@@ -303,7 +325,16 @@ headless; a mismatch aborts before erasing.
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
-| `POST /api/orb/allow` | `{"ip"}` — register the address the operator just typed, which is what lets `/orb/` dial it |
+| `POST /api/orb/allow` | `{"ip"}` — register the address the operator just committed to, which is what lets `/orb/` dial it |
+| `POST /api/orb/forget` | `{"ip"}` — drop an address from the dialable set without restarting the hub |
+| `GET  /api/orb/known` | the remembered address, the learned set, and where the state file lives |
+| `POST /api/theme/list` | `{"ip"}` — the orb's SD themes plus card state, mount, active face, and the last refused install |
+| `POST /api/theme/install` | `{"ip","name"}` — queue an install; the device reboots itself when the copy verifies |
+| `POST /api/theme/default` | `{"ip"}` — restore the built-in face |
+| `POST /api/theme/delete` | `{"ip","name"}` — remove a theme from the card (the UI confirms first) |
+| `POST /api/theme/rescan` | `{"ip"}` — re-read the card without rebooting |
+| `POST /api/theme/upload` | `?ip&name`, body = raw `theme.bin` — push a theme to the orb; never written to the hub's disk |
+| `POST /api/console` | `{"port","secs"}` — NDJSON of what the running app prints; read-only, and a port operation |
 
 Every route above that CHANGES something (`/api/flash`, `/api/flash/cancel`,
 `/api/provision`, `/api/watch`, `/api/ports/probe`, `/api/firmware`,
@@ -414,6 +445,11 @@ identity.go          port identity: the probe cache, /api/ports and /api/ports/p
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
+theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal name
+console.go           POST /api/console: read-only USB console, registered as a port operation
+state.go             remembered orb addresses (state.json under the OS config dir; addresses only)
+ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
+security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
 composer.go          serves the repo's watch-composer at /composer/
 cmd/orbflash/        headless face of the same flasher
@@ -448,6 +484,25 @@ make flash PORT=/dev/ttyACM0   # headless full flash of that port
 make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe
 make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
+
+### What the client cannot be checked with here
+
+`web/app.js` has no JavaScript parser available on the machine this suite runs on —
+no node, deno, bun, or d8 — so it is never handed to a real grammar. The suite does
+what it can without one, in `jscheck_test.go` and `ui_test.go`:
+
+- grouping characters must balance once comments, string literals, template literals
+  and regex literals are stripped;
+- the checker itself is tested against seven fragments (a dropped brace, a dropped
+  paren, an unclosed template, a regex holding a quote, a comment holding braces, a
+  division that is not a regex) so it cannot silently pass everything;
+- every `$("#id")` the client uses must exist in `index.html`, which is the failure
+  mode that makes a button do nothing with no error anywhere;
+- the functions and endpoints each card depends on must still be present by name.
+
+That is a smoke check, not a parser, and it will not catch a semantic JS error. If a
+JavaScript engine is available to you, add `node --check web/app.js` to `check` and
+delete this paragraph.
 ```
 
 `make crosscheck` is not decoration. The port lock was written against

@@ -259,7 +259,23 @@ Updated at each commit.
   (it was interpolated raw while its neighbours were escaped), pinned by a scan that
   fails on any unescaped server interpolation in that template. Confirmed by
   mutation: restoring the raw `${b.version}` fails the new test.
-- Hardware: nothing in iterations 0-4 was run against a cable. The cancel path
-  drives real ROM timing and needs one live cancel on orb-B before it is called
-  verified.
+- Iteration 5: the Manage card became a manager. Theme card (list, install,
+  restore built-in, re-read card, delete behind a confirm, `theme.bin` upload that
+  never touches the hub's disk), all device theme calls isolated in
+  `internal/orbnet/themes.go` so the future orb-`id` has one home; read-only USB
+  console registered as a port operation; learned addresses remembered in
+  `state.json` (0600, addresses only) and restored at startup; status poll that
+  backs off to 4 min on misses and resets on a hit. Two dial-port owners were
+  caught disagreeing and collapsed into `orbnet.Client.DevicePort`, with an
+  `-orb-port` bench override and `cmd/orbfake` to drive it.
+  Verified live end-to-end against the real hub binary plus the fake orb: refused
+  before `allow`, list/install/delete/upload after, the firmware's own refusal text
+  preserved, traversal names refused pre-dial, `/api/v1/ota` still refused through
+  the proxy, and a fresh process dialling the remembered address with no typing.
+  The client has no JS engine here: the balance/selector checks are documented as a
+  smoke check in the README, not a parser.
+- Hardware: nothing in iterations 0-5 was run against a cable. The cancel path and
+  the console read both drive real ROM/CDC timing and need one live run on orb-B
+  before either is called verified. The theme card was verified against
+  `cmd/orbfake`, which reproduces `h_sd`'s shapes but is not the firmware.
 

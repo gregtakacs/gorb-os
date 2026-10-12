@@ -34,7 +34,9 @@ func proxyWith(t *testing.T, backend *httptest.Server) *Server {
 			t.Fatalf("test backend must sit on %s so the learned address matches; got %s", testOrbIP, host)
 		}
 		s.grants.learn(host)
-		s.devicePort = port
+		c := orbnet.NewClient(2 * time.Second)
+		c.DevicePort = port
+		s.device = c
 	}
 	return s
 }

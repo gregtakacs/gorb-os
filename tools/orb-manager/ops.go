@@ -36,6 +36,9 @@ const (
 	opFlash     opKind = "flash"
 	opProvision opKind = "provision"
 	opProbe     opKind = "identify"
+	// opConsole is a read, but it still HOLDS the port, so it claims the same slot a
+	// flash does: reading a console while a write is in flight is how a flash dies.
+	opConsole opKind = "console"
 )
 
 // op is one in-flight operation on one physical port.

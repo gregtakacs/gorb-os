@@ -80,11 +80,12 @@ type Server struct {
 	// convenience: the proxy decides with grants, never with this field.
 	imu   sync.Mutex
 	orbIP string
-	// devicePort is the TCP port the proxy dials on an orb. It is the hub's
-	// setting, never part of the /orb/ URL: a client-chosen port would turn the
-	// learned-address gate into a port scanner on the orb's host. Only a bench
-	// test against a local fake orb overrides it.
-	devicePort string
+	// statePath is where learned orb addresses are remembered across launches
+	// (state.go). stateErr holds the last failure writing or reading it, so a hub
+	// that cannot persist says so once in the log instead of silently forgetting.
+	statePath string
+	stateErr  error
+	pmu       sync.Mutex
 
 	// boots holds the verdicts the flash session read off the boot console while
 	// it held the port across its own HardReset, keyed by the chip MAC. /api/watch
@@ -160,7 +161,7 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
-	var addr, browser, repo, fwPath string
+	var addr, browser, repo, fwPath, orbPort string
 	var noWindow, allowRemote bool
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
@@ -168,6 +169,7 @@ func main() {
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
+	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.Parse()
 
 	// Loopback is the whole of the hub's exposure story, so binding off it has to
@@ -192,9 +194,36 @@ func main() {
 		repoDir = detectRepoDir()
 	}
 
-	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir,
-		identities: newIdentityCache(), ops: newOpRegistry(),
-		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL)}
+	// One construction site, shared with the tests through newHub(), so a field added
+	// to Server cannot be wired in one and forgotten in the other — which is how the
+	// boot-verdict map nearly shipped nil in the real binary.
+	s := newHub()
+	s.orb = orbnet.NewClient(scanTimeout)
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.repoDir = repoDir
+
+	// The dial port is validated here rather than at first use, so a typo surfaces as
+	// a startup message instead of as every orb timing out.
+	if orbPort == "" {
+		orbPort = "80"
+	}
+	if _, err := net.LookupPort("tcp", orbPort); err != nil {
+		log.Fatalf("orb-manager: -orb-port %q is not a TCP port: %v", orbPort, err)
+	}
+	s.orb.DevicePort = orbPort
+	s.device.DevicePort = orbPort
+	if orbPort != "80" {
+		log.Printf("orb-manager: dialing orbs on port %s (the device's own httpd uses 80; this is a bench setting)", orbPort)
+	}
+
+	// Remembered before the first request is served: an operator who found their orb
+	// last session should not have to type its address into this one, and the proxy
+	// will not dial an address the hub has not learned.
+	if n := s.armState(); n > 0 {
+		log.Printf("orb-manager: remembered %d orb address(es) from a previous run", n)
+	} else if s.stateErr != nil {
+		log.Printf("orb-manager: orb address history unavailable (%v); starting with none remembered", s.stateErr)
+	}
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -400,6 +429,21 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
+	mux.Handle("/api/orb/forget", s.requireControl(http.HandlerFunc(s.handleForgetIP)))
+	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
+
+	// Theme management for the Manage card. Each of these dials the orb itself, so
+	// each passes the same learned-address gate the proxy uses, and each names a
+	// route main/net/orb_net.c actually registers. They are separate endpoints rather
+	// than /orb/ forwards so the theme name is checked before a byte leaves the box,
+	// and so the orb `id` that docs/theme-identity-plan.md adds later has exactly one
+	// module to land in (internal/orbnet/themes.go).
+	mux.Handle("/api/theme/list", s.requireControl(http.HandlerFunc(s.handleThemeList)))
+	mux.Handle("/api/theme/install", s.requireControl(http.HandlerFunc(s.handleThemeInstall)))
+	mux.Handle("/api/theme/default", s.requireControl(http.HandlerFunc(s.handleThemeDefault)))
+	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
+	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))
+	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))
 
 	// Everything below changes something: it resets a chip, writes a flash, drives
 	// the device, or puts a file in the repo. requireControl is the whole reason a
@@ -415,6 +459,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/flash/cancel", s.requireControl(http.HandlerFunc(s.handleCancel)))
 	mux.Handle("/api/watch", s.requireControl(http.HandlerFunc(s.handleWatch)))         // streaming post-flash probe
 	mux.Handle("/api/provision", s.requireControl(http.HandlerFunc(s.handleProvision))) // streaming wired-provisioning round-trip
+	// Read-only USB console: a port operation, because holding the cable to read it
+	// must exclude a flash for the same reason writing one does.
+	mux.Handle("/api/console", s.requireControl(http.HandlerFunc(s.handleConsole)))
 
 	// Same-origin proxy for the orb's device API. The browser only ever talks
 	// to us; we reach the orb. This is what the missing CORS headers force.

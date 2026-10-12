@@ -51,7 +51,7 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 			"Device firmware, not an arbitrary path, is flashed from the Onboard card.")
 		return
 	}
-	target := "http://" + host + ":" + s.devicePortOrDefault() + route
+	target := "http://" + host + ":" + s.device.Port() + route
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -127,15 +127,9 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// devicePortOrDefault is the port the proxy dials. The orb's httpd listens on 80;
-// only a test pointing the hub at a local fake orb sets something else, and the URL
-// the browser sends can never choose it.
-func (s *Server) devicePortOrDefault() string {
-	if s.devicePort == "" {
-		return "80"
-	}
-	return s.devicePort
-}
+// devicePortOrDefault lived on the hub until the proxy and the device API were
+// caught dialing different ports; the answer now comes from orbnet.Client, which both
+// use. See Client.DevicePort.
 
 // proxyError writes a hub-side proxy failure in the same {"error":...} envelope
 // the device API uses, so /orb/... never hands the browser a non-JSON body to

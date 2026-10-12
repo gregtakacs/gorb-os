@@ -6,27 +6,20 @@
  * router owns the only knob, so a real scrollable container would fight the
  * gesture that is supposed to drive it.
  *
- * ---- why there is a task in here ---------------------------------------------
+ * ---- why there is a task in here -------------------------------------------
  *
- * Two of the four options block for seconds, on the CARD MUTEX, which a browser
- * theme upload can be holding for 38-48 s (measured, .clinerules):
+ * What still blocks on this screen is NVS: the zone write (net_tz_select) and the
+ * two DISPLAY setters, each of which can hit a sector erase. A theme walk used to
+ * be here too; B2 gave the theme picker to the clock app, and its card work runs
+ * on the shell's one worker (main/app/orb_jobs.c) rather than on a task this file
+ * owns, so the dial's repaint is never held up by a directory read.
  *
- *   orb_theme_scan()        walks /sd/themes and opens every container to read
- *                           its header — unbounded by whatever else holds the card.
- *   orb_theme_stage_load()  streams a ~3.7 MB container through CRC — measured at
- *                           2952 ms on the bench.
+ * The reason for a worker at all is unchanged: input_router's poll is an lv_timer
+ * on the LVGL task, and that same callback is the ONLY reader of the knob and the
+ * only thing that repaints the dial. Blocking it freezes the screen and swallows
+ * the knob for as long as the write takes.
  *
- * Neither may run where the widgets are touched. input_router's poll is an
- * lv_timer on the LVGL task, and that same callback is the ONLY reader of the
- * knob and the only thing that repaints the dial. Calling them inline means a
- * frozen screen and a dead knob for as long as the card takes — the exact failure
- * orb_theme.c's upload_busy guard was written to avoid for the web page, one
- * layer up. So those calls happen on the `orb_menu` task below and only their
- * small, already-copied results reach widgets, via menu_view_service().
- *
- * This module never takes the card lock itself; it goes through the public
- * orb_theme_* entry points, which own their own locking. Holding the mutex
- * across a repaint would be a self-deadlock with a screen attached.
+ * This module takes no locks of its own.
  */
 
 #include "menu_view.h"
@@ -38,15 +31,14 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "orb_jobs.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
-#include "esp_system.h"
-#include "esp_timer.h"
 
 #include "orb_net.h"
 #include "orb_sd.h"
-#include "orb_theme.h"
+#include "orb_app.h"
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_home() */
 
@@ -55,22 +47,55 @@ static const char *TAG = "menu";
 /* Rows painted at once. The dial is round: content stays inside a centred
  * ~320 px column so the curve never clips a label. */
 #define ROW_MAX      5
-#define THEME_MAX    8        /* a card realistically holds a handful of themes */
 
 /* ---- the model ---- */
 
 typedef enum {
     PG_LANDING = 0,   /* inert title; the knob belongs to the router  */
-    PG_TOP,           /* AP / TZ / THEME / DISPLAY / exit             */
+    PG_TOP,           /* OS items, then one row per app with options, then exit */
     PG_TZ,            /* the zone table                               */
-    PG_THEME,         /* the card's themes                            */
-    PG_ASK,           /* staged: reboot now, or keep the current dial */
+    PG_APP,           /* one app's own options, rendered from its opt_* answers */
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO,            /* the timeout presets                          */
     PG_COUNT
 } page_t;
 
-typedef enum { IT_AP = 0, IT_TZ, IT_THEME, IT_DISPLAY, IT_EXIT, IT_TOP_N } top_item_t;
+/* The OS's own rows on the top page. The theme picker is NOT among them: B2
+ * rules the clock app supplies it and the shell only renders it, so it arrives
+ * through the app rows below rather than as a page this file knows about.
+ *
+ * APPS and ABOUT are the plan's §7.2 top level too; they wait for P4, because
+ * an APPS page has nothing to list until a card app and a catalog exist, and a
+ * row that says "nothing installed yet" on a device with two compiled-in apps
+ * would be a lie about the thing the page is for. */
+typedef enum { IT_AP = 0, IT_TZ, IT_DISPLAY, IT_OS_N } top_item_t;
+
+/** How many app rows the top page carries: one per walkable entry that declares
+ *  options, in table order, which is the carousel's order — so the menu's list
+ *  and the knob's walk cannot disagree about what exists. */
+static int app_rows(void)
+{
+    int n = 0;
+    for (size_t i = 0; i < orb_app_count(); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (a && orb_app_has_options(a)) n++;
+    }
+    return n;
+}
+
+/** The i-th app that declares options, or NULL. Resolved through the registry
+ *  every time rather than cached: P4 enables and disables apps at runtime, and
+ *  a cached entry is a screen the owner can reach and find nothing on. */
+static const orb_app_t *app_row(int i)
+{
+    if (i < 0) return NULL;
+    for (size_t k = 0; k < orb_app_count(); k++) {
+        const orb_app_t *a = orb_app_at(k);
+        if (!a || !orb_app_has_options(a)) continue;
+        if (i-- == 0) return a;
+    }
+    return NULL;
+}
 
 /* The timeout choices on the DISPLAY sub-menu, seconds. Presets rather than a
  * spinner: the setting is a wall-clock decision ("how long before a clock on
@@ -103,151 +128,79 @@ static void timeout_label(char *out, size_t outsz)
 }
 
 static page_t s_page = PG_LANDING;
+/* Which app PG_APP is showing. Set on entry from the registry and cleared on
+ * leave, so a repaint can never render the previous app's rows under the new
+ * one's header — the two-second card walk that lands after the owner has
+ * already rotated away is exactly when that would show. */
+static const orb_app_t *s_app;
 static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
+static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
 
 /* What the worker last brought back, copied out for the UI. */
 typedef struct {
-    int               n;                                    /* themes listed */
-    orb_theme_entry_t e[THEME_MAX];
-    bool              staged;                               /* stage_load ok */
-    char              staged_slug[ORB_THEME_SLUG_MAX + 1];
     char              status[72];                           /* line, or ""   */
 } ui_t;
 
 static ui_t   s_ui;               /* read by the repaint, LVGL task only  */
 static ui_t   s_shared;           /* written by the worker, under s_res_mx */
 static SemaphoreHandle_t s_res_mx;
-static TaskHandle_t      s_job_task;
-static QueueHandle_t     s_job_q;
 static volatile bool     s_dirty; /* worker published, UI has not reaped it */
-static volatile bool     s_busy;  /* a job is outstanding                   */
-
-typedef enum { JOB_SCAN = 0, JOB_STAGE, JOB_TZ, JOB_DIM_EN, JOB_DIM_TO } job_kind_t;
-typedef struct {
-    job_kind_t kind;
-    char       slug[ORB_THEME_SLUG_MAX + 1];
-    int        idx;                       /* JOB_TZ: the row to apply;
-                                           * JOB_DIM_TO: index into s_to_preset */
-} job_t;
-
-
-/* Reboot is armed on a timer rather than called inline so the "installed" frame
- * actually reaches the panel: esp_restart() from inside the repaint would make
- * the last thing the owner ever sees be the frame before it. Same shape as
- * h_reboot()'s 750 ms one-shot in orb_net.c, for the same reason. */
-static void reboot_fire(void *arg)
-{
-    (void)arg;
-    ESP_LOGW(TAG, "rebooting to install the staged theme");
-    esp_restart();
-}
 
 static void worker_publish(const ui_t *src)
 {
     xSemaphoreTake(s_res_mx, portMAX_DELAY);
     s_shared = *src;
     xSemaphoreGive(s_res_mx);
-    s_busy  = false;
     s_dirty = true;                 /* published last: the reader trusts the copy */
 }
 
-static void job_worker(void *arg)
+/* The three jobs this screen still needs. Each takes the copied payload the
+ * shell's worker hands it and writes only its own status line: nothing here
+ * touches a widget, which is the half of the rule that keeps the dial moving
+ * while NVS erases a sector. */
+static void job_tz(void *arg)
+{
+    const int idx = *(const int *)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    const esp_err_t er = orb_net_tz_select(idx);
+    if (er != ESP_OK)
+        snprintf(out.status, sizeof(out.status), "\"%s\" not set (%s)",
+                 orb_net_tz_label(idx), esp_err_to_name(er));
+    else
+        snprintf(out.status, sizeof(out.status), "zone set: %s", orb_net_tz_label(idx));
+    worker_publish(&out);
+}
+
+static void job_dim_en(void *arg)
 {
     (void)arg;
-    job_t j;
-    for (;;) {
-        if (xQueueReceive(s_job_q, &j, portMAX_DELAY) != pdTRUE) continue;
+    ui_t out; memset(&out, 0, sizeof out);
+    const bool want = !idle_dim_enabled();
+    const esp_err_t er = idle_dim_set_enabled(want);
+    if (er == ESP_ERR_NOT_SUPPORTED)
+        snprintf(out.status, sizeof(out.status), "the dim is not in this build");
+    else
+        /* NVS failure still left the RAM setting in force, and the line says
+         * which it cost: without the qualifier a "dim after idle: off" that
+         * dies at the next reboot reads as a switch that un-toggles itself. */
+        snprintf(out.status, sizeof(out.status), "dim after idle: %s%s",
+                 want ? "on" : "off", (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
+    worker_publish(&out);
+}
 
-        ui_t out;
-        memset(&out, 0, sizeof(out));
-
-        if (j.kind == JOB_SCAN) {
-            /* An upload owns the card for tens of seconds; say so rather than
-             * queueing behind it, which from the dial would just look like a
-             * menu that stopped answering. */
-            if (orb_theme_upload_busy()) {
-                snprintf(out.status, sizeof(out.status),
-                         "an upload is using the card");
-            } else if (!orb_sd_mounted()) {
-                snprintf(out.status, sizeof(out.status), "no card in the socket");
-            } else {
-                const int n = orb_theme_scan(out.e, THEME_MAX);
-                if (n < 0) {
-                    snprintf(out.status, sizeof(out.status),
-                             "the card could not be read");
-                } else {
-                    out.n = n;
-                    if (n == 0) {
-                        snprintf(out.status, sizeof(out.status),
-                                 "no themes on the card yet");
-                    }
-                }
-            }
-        } else if (j.kind == JOB_STAGE) {
-            const esp_err_t er = orb_theme_stage_load(j.slug);
-            if (er != ESP_OK) {
-                snprintf(out.status, sizeof(out.status), "\"%s\" refused: %s",
-                         j.slug, esp_err_to_name(er));
-            } else {
-                out.staged = true;
-                snprintf(out.staged_slug, sizeof(out.staged_slug), "%s", j.slug);
-            }
-        } else if (j.kind == JOB_DIM_EN || j.kind == JOB_DIM_TO) {
-            /* The DISPLAY submenu's two writes, here for the JOB_TZ reason
-             * verbatim: both setters nvs_commit, and an NVS commit can hit a
-             * sector erase. The getters stay on the LVGL task (row_text reads
-             * RAM only); only the persistence crosses over. */
-            if (j.kind == JOB_DIM_EN) {
-                const bool want = !idle_dim_enabled();
-                const esp_err_t er = idle_dim_set_enabled(want);
-                if (er == ESP_ERR_NOT_SUPPORTED)
-                    snprintf(out.status, sizeof(out.status),
-                             "the dim is not in this build");
-                else
-                    /* NVS failure still left the RAM setting in force, and the
-                     * line says which it cost: without the qualifier a
-                     * "dim after idle: off" that dies at the next reboot reads
-                     * as a switch that un-toggles itself. */
-                    snprintf(out.status, sizeof(out.status),
-                             "dim after idle: %s%s", want ? "on" : "off",
-                             (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
-            } else {
-                const to_preset_t *p = &s_to_preset[j.idx];
-                const esp_err_t er = idle_dim_set_timeout_s(p->s);
-                if (er == ESP_ERR_NOT_SUPPORTED)
-                    snprintf(out.status, sizeof(out.status),
-                             "the dim is not in this build");
-                else
-                    snprintf(out.status, sizeof(out.status),
-                             "timeout: %s%s", p->lbl,
-                             (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
-            }
-        } else {
-            /* TZ is here rather than inline for the same reason as the card
-             * work: net_tz_set() writes NVS and then tzset()s. An NVS write is
-             * normally milliseconds but can hit a sector erase, and a dial that
-             * drops frames while somebody chooses a city is exactly the sort of
-             * thing nobody can reproduce later. */
-            const esp_err_t er = orb_net_tz_select(j.idx);
-            if (er != ESP_OK) {
-                snprintf(out.status, sizeof(out.status), "\"%s\" not set (%s)",
-                         orb_net_tz_key(j.idx), esp_err_to_name(er));
-            } else {
-                snprintf(out.status, sizeof(out.status), "zone set: %s",
-                         orb_net_tz_label(j.idx));
-            }
-        }
-
-        worker_publish(&out);
-
-        /* High-water mark after every job: the sizing above is a copy of the
-         * httpd worker's proven value, and this is the line that says whether it
-         * is actually holding for the file sizes on a real card. Zero-ish here
-         * means the next theme that overflows is a crash, not a log line. */
-        ESP_LOGI(TAG, "job %d done, %u B stack never used",
-                 (int)j.kind, (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    }
+static void job_dim_to(void *arg)
+{
+    const int idx = *(const int *)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    const to_preset_t *p = &s_to_preset[idx];
+    const esp_err_t er = idle_dim_set_timeout_s(p->s);
+    if (er == ESP_ERR_NOT_SUPPORTED)
+        snprintf(out.status, sizeof(out.status), "the dim is not in this build");
+    else
+        snprintf(out.status, sizeof(out.status), "timeout: %s%s", p->lbl,
+                 (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
+    worker_publish(&out);
 }
 
 /* ---- the view ---- */
@@ -275,10 +228,9 @@ static int page_rows(void)
     if (!s_armed) return 0;
 
     switch (s_page) {
-        case PG_TOP:    return IT_TOP_N;
+        case PG_TOP:    return IT_OS_N + app_rows() + 1;   /* +1: exit */
+        case PG_APP:    return s_app ? orb_app_opt_count(s_app) + 1 : 0;  /* +1: back */
         case PG_TZ:     return orb_net_tz_count() + 1;      /* last row is back */
-        case PG_THEME:  return s_busy ? 0 : (s_ui.n + 1);
-        case PG_ASK:    return 2;
         case PG_DISPLAY:return 3;                            /* dim, timeout, back */
         case PG_TO:     return TO_PRESET_N + 1;              /* last row is back */
         default:        return 0;
@@ -295,9 +247,20 @@ static void go_back(void)
         s_cur  = 1;
         return;
     }
+    if (from == PG_APP) {
+        /* Leave the page the way it was entered: back on the row that opened it,
+         * and the app disarmed. An app left armed off-glass would take the next
+         * detent from the view actually showing. */
+        int ai = 0;
+        for (int i = 0; app_row(i); i++) { if (app_row(i) == s_app) { ai = i; break; } }
+        orb_app_opt_arm(s_app, false);
+        s_app  = NULL;
+        s_page = PG_TOP;
+        s_cur  = IT_OS_N + ai;
+        return;
+    }
     s_page = PG_TOP;
     s_cur  = (from == PG_TZ)     ? IT_TZ
-           : (from == PG_THEME)  ? IT_THEME
            : (from == PG_DISPLAY)? IT_DISPLAY
            : 0;
 }
@@ -309,11 +272,22 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
 
     switch (s_page) {
         case PG_TOP:
+            /* Rows after the OS's own are one per app that declares options,
+             * labelled with the app's TITLE; the row after those is exit. Two
+             * ways to get this wrong and both read as the knob being ignored:
+             * casting the index to top_item_t and letting default answer "exit"
+             * paints "exit" on the Clock row, and testing only `>= IT_OS_N`
+             * sends the exit row looking for an app that is not there. */
+            if (row >= IT_OS_N && row < IT_OS_N + app_rows()) {
+                const orb_app_t *a = app_row(row - IT_OS_N);
+                if (!a) { snprintf(out, outsz, "?"); return; }   /* unreachable: page_rows sized it */
+                snprintf(out, outsz, "%s", a->title ? a->title : a->slug);
+                return;
+            }
             switch ((top_item_t)row) {
                 case IT_AP:     snprintf(out, outsz, "AP");      break;
                 case IT_TZ:     snprintf(out, outsz, "TZ");      break;
-                case IT_THEME:  snprintf(out, outsz, "THEME");   break;
-                case IT_DISPLAY:snprintf(out, outsz, "DISPLAY"); break;
+                case IT_DISPLAY: snprintf(out, outsz, "DISPLAY"); break;
                 default:        snprintf(out, outsz, "exit");    break;
             }
             return;
@@ -330,28 +304,18 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
             return;
         }
 
-        case PG_THEME: {
-            if (row >= s_ui.n) { snprintf(out, outsz, "<- back"); return; }
-            const orb_theme_entry_t *e = &s_ui.e[row];
-            if (e->err != ESP_OK) {
-                /* A damaged theme is shown, not hidden — "no themes" and "three
-                 * damaged themes" are different problems, and the owner has to
-                 * be able to tell a bad card from a bad bake. */
-                snprintf(out, outsz, "%s  (%s)", e->title[0] ? e->title : e->slug,
-                         e->why[0] ? e->why : "not loadable");
-            } else if (e->active) {
-                snprintf(out, outsz, "%s  (on the dial)", e->title[0] ? e->title : e->slug);
-            } else if (e->pending) {
-                snprintf(out, outsz, "%s  (waiting to install)", e->title[0] ? e->title : e->slug);
-            } else {
-                snprintf(out, outsz, "%s", e->title[0] ? e->title : e->slug);
-            }
+        case PG_APP: {
+            if (!s_app) return;
+            const int rows = orb_app_opt_count(s_app);
+            if (row >= rows) { snprintf(out, outsz, "<- back"); return; }
+            /* Label then value, in the shell's own words, off the app's answers:
+             * this is the one line every options page shares, which is why the
+             * dial's theme page and the browser's copy cannot drift. */
+            const char *v = orb_app_opt_value(s_app, row);
+            if (v && v[0]) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);
+            else           snprintf(out, outsz, "%s", orb_app_opt_label(s_app, row));
             return;
         }
-
-        case PG_ASK:
-            snprintf(out, outsz, (row == 0) ? "reboot now" : "keep this dial");
-            return;
 
         case PG_DISPLAY:
             if (row == 0) {
@@ -385,8 +349,7 @@ static const char *page_title(void)
 {
     switch (s_page) {
         case PG_TZ:     return "TIME ZONE";
-        case PG_THEME:  return "THEME ON CARD";
-        case PG_ASK:    return "THEME STAGED";
+        case PG_APP:    return (s_app && s_app->title) ? s_app->title : "OPTIONS";
         case PG_DISPLAY:return "DISPLAY";
         case PG_TO:     return "DIM TIMEOUT";
         default:        return "MENU";
@@ -395,12 +358,11 @@ static const char *page_title(void)
 
 static const char *page_hint(void)
 {
-    if (s_busy) return "working...";
+    if (orb_jobs_busy()) return "working...";
     switch (s_page) {
         case PG_TZ:      return "rotate: choose   push: set";
-        case PG_THEME:   return "rotate: choose   push: stage";
-        case PG_ASK:     return "rotate: choose   push: confirm";
         case PG_DISPLAY: return "rotate: choose   push: change";
+        case PG_APP:     return "rotate: choose   push: change";
         case PG_TO:      return "rotate: choose   push: set";
         default:         return "rotate: choose   push: open";
     }
@@ -409,20 +371,15 @@ static const char *page_hint(void)
 /* Ask the worker for a job. Drops the request while one is outstanding — a
  * double-tap on a row must not queue two multi-second card walks, and the first
  * result repaints the list anyway. */
-static void job_post(job_kind_t kind, const char *slug, int idx)
+static void job_post(orb_job_fn fn, int idx)
 {
-    if (s_busy) return;
-    job_t j = { .kind = kind, .idx = idx };
-    if (slug) snprintf(j.slug, sizeof(j.slug), "%s", slug);
-    s_busy = true;
-    if (xQueueSend(s_job_q, &j, 0) != pdTRUE) {
-        s_busy = false;
-        ESP_LOGW(TAG, "job queue full -- dropped %s",
-                 kind == JOB_SCAN  ? "scan"  :
-                 kind == JOB_STAGE ? "stage" :
-                 kind == JOB_TZ    ? "tz"    :
-                 kind == JOB_DIM_EN? "dim toggle" : "dim timeout");
-    }
+    /* The gate is the worker's, not a local flag: with one task serving every
+     * app, the menu asking "am I busy" and the theme page asking it have to get
+     * the same answer, or two card walks and two NVS commits queue up behind
+     * each other on a screen that shows "working..." for one of them. */
+    const esp_err_t e = orb_jobs_post(fn, &idx, sizeof idx);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+        ESP_LOGW(TAG, "job refused (%s)", esp_err_to_name(e));
 }
 
 /* Repaint from the model. Called only from the LVGL task (via apply_input or
@@ -432,6 +389,7 @@ static void repaint(void)
     if (!s_scr) return;
 
     const int rows = page_rows();
+    s_painted_rows = rows;
 
     /* Window the list around the cursor so a 62-row zone table scrolls inside
      * five physical rows; clamped at both ends so the last row stays reachable
@@ -487,22 +445,10 @@ static void repaint(void)
 
 esp_err_t menu_view_init(void)
 {
+    /* No task of its own: the shell's single orb_jobs worker runs this
+     * screen's NVS writes alongside every app's blocking work. */
     s_res_mx = xSemaphoreCreateMutex();
     if (!s_res_mx) return ESP_ERR_NO_MEM;
-
-    /* Depth 2: the scan and the stage that follows it. More would let a fumbled
-     * sequence of presses queue card work nobody is waiting for. */
-    s_job_q = xQueueCreate(2, sizeof(job_t));
-    if (!s_job_q) return ESP_ERR_NO_MEM;
-
-    /* 4096, not net_task_loop's 3072: this worker runs the same two calls the
-     * httpd worker runs (orb_theme_scan / orb_theme_stage_load, through FatFs
-     * with its own stack frames), and 4096 is the size that has been proven on
-     * hardware against a real 3.87 MB container. The watermark log below is what
-     * turns "it worked" into a number to check on the next change. */
-    if (xTaskCreate(job_worker, "orb_menu", 4096, NULL, 3, &s_job_task) != pdPASS) {
-        return ESP_ERR_NO_MEM;
-    }
 
     s_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scr, lv_color_black(), 0);
@@ -581,6 +527,21 @@ static void activate(void)
 {
     switch (s_page) {
         case PG_TOP:
+            /* Rows IT_OS_N .. IT_OS_N+app_rows()-1 are apps; the row after them
+             * is exit. Testing the index range rather than falling through the
+             * switch is the only way to keep both, because the enum has no name
+             * for a row the table decides at runtime. */
+            if (s_cur >= IT_OS_N && s_cur < IT_OS_N + app_rows()) {
+                const int ai = s_cur - IT_OS_N;
+                const orb_app_t *a = app_row(ai);
+                if (!a) { s_ui.status[0] = '\0'; repaint(); return; }
+                s_app  = a;
+                s_page = PG_APP;
+                s_cur  = 0;
+                orb_app_opt_arm(a, true);
+                repaint();
+                return;
+            }
             switch ((top_item_t)s_cur) {
                 case IT_AP:
                     /* Stubbed on purpose: joining needs a passphrase, and a
@@ -601,25 +562,34 @@ static void activate(void)
                     repaint();
                     return;
                 }
-                case IT_THEME:
-                    s_page = PG_THEME;
-                    s_cur  = 0;
-                    s_ui.n = 0;
-                    s_ui.status[0] = '\0';
-                    job_post(JOB_SCAN, NULL, 0);     /* the card walk, off-task */
-                    repaint();
-                    return;
                 case IT_DISPLAY:
                     s_page = PG_DISPLAY;
                     s_cur  = 0;
                     repaint();
                     return;
-                default:                             /* exit */
+                default:
+                    /* Reaching past the OS rows means an app row, and the only
+                     * row after those is exit. Both were handled above by the
+                     * PG_TOP guard, so this arm is exit alone: disarming here
+                     * rather than leaving it to the home path is what stops an
+                     * app being left armed off-glass after the owner leaves. */
                     menu_view_set_armed(false);
                     input_router_home();
                     return;
             }
             return;
+
+        case PG_APP: {
+            if (!s_app) { go_back(); repaint(); return; }
+            const int rows = orb_app_opt_count(s_app);
+            if (s_cur >= rows) { go_back(); repaint(); return; }    /* <- back */
+            /* The press belongs to the app; the cursor never leaves this file.
+             * opt_sel() may start a job, and it may not paint: repaint() below
+             * is what puts the app's new answer on the glass. */
+            orb_app_opt_sel(s_app, s_cur);
+            repaint();
+            return;
+        }
 
         case PG_TZ: {
             const int n = orb_net_tz_count();
@@ -628,29 +598,7 @@ static void activate(void)
              * the rule in this file is that nothing which can block runs on the
              * task that paints the dial. The result line arrives via
              * menu_view_service(). */
-            job_post(JOB_TZ, NULL, s_cur);
-            repaint();                                  /* shows "working..." */
-            return;
-        }
-
-        case PG_THEME: {
-            if (s_cur >= s_ui.n) { go_back(); repaint(); return; }   /* <- back */
-            const orb_theme_entry_t *e = &s_ui.e[s_cur];
-            if (e->err != ESP_OK) {
-                snprintf(s_ui.status, sizeof(s_ui.status), "\"%s\": %s", e->slug,
-                         e->why[0] ? e->why : "not loadable");
-                repaint();
-                return;
-            }
-            if (e->active) {
-                snprintf(s_ui.status, sizeof(s_ui.status),
-                         "\"%s\" is already on the dial", e->slug);
-                repaint();
-                return;
-            }
-            /* Verified on the worker: this streams the whole container through
-             * CRC, measured at 2952 ms for 3.87 MB on the bench. */
-            job_post(JOB_STAGE, e->slug, 0);
+            job_post(job_tz, s_cur);
             repaint();                                  /* shows "working..." */
             return;
         }
@@ -660,9 +608,9 @@ static void activate(void)
             if (s_cur == 0) {
                 /* The toggle runs on the worker: the setter nvs_commits, and the
                  * rule in this file is that nothing which can block runs on the
-                 * task that paints the dial (same reason as JOB_TZ). The row
+                 * task that paints the dial (same reason as the zone write). The row
                  * repaints from the getter as soon as the result lands. */
-                job_post(JOB_DIM_EN, NULL, 0);
+                job_post(job_dim_en, 0);
                 repaint();                                  /* shows "working..." */
                 return;
             }
@@ -679,42 +627,12 @@ static void activate(void)
 
         case PG_TO: {
             if (s_cur >= TO_PRESET_N) { go_back(); repaint(); return; }  /* back */
-            job_post(JOB_DIM_TO, NULL, s_cur);
+            job_post(job_dim_to, s_cur);
             /* Choosing IS leaving: back to DISPLAY, parked on the timeout row,
              * rather than leaving the picker up showing "working...". The row
              * repaints from the getter when the worker's write lands, so the
              * value the user just picked is already right when they arrive. */
             go_back();
-            repaint();
-            return;
-        }
-
-        case PG_ASK: {
-            if (s_cur == 0) {                            /* reboot now */
-                snprintf(s_ui.status, sizeof(s_ui.status), "rebooting...");
-                repaint();
-                static esp_timer_handle_t rt;
-                if (!rt) {
-                    const esp_timer_create_args_t ta = { .callback = reboot_fire };
-                    if (esp_timer_create(&ta, &rt) != ESP_OK) {
-                        snprintf(s_ui.status, sizeof(s_ui.status), "reboot timer failed");
-                        repaint();
-                        return;
-                    }
-                }
-                if (esp_timer_start_once(rt, 750 * 1000) != ESP_OK) {
-                    snprintf(s_ui.status, sizeof(s_ui.status), "reboot refused");
-                    repaint();
-                }
-                return;
-            }
-            /* "keep this dial" must un-stage: a pending slot installs itself at
-             * the next reboot whoever triggers, so leaving it set would apply
-             * this theme on some later boot the owner never asked for. */
-            const esp_err_t us = orb_theme_unstage();
-            snprintf(s_ui.status, sizeof(s_ui.status), "%s",
-                     (us == ESP_OK) ? "kept current dial" : "left staged (nvs)");
-            s_page = PG_THEME;
             repaint();
             return;
         }
@@ -732,7 +650,7 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * being applied and the status line would arrive about the old row. The
      * worker cannot be cancelled, so the honest UI is to freeze and show
      * "working..." (page_hint) until the result lands. */
-    if (s_busy) return;
+    if (orb_jobs_busy()) return;
 
     if (pressed) { activate(); return; }
     if (delta == 0) return;
@@ -751,25 +669,48 @@ void menu_view_apply_input(int32_t delta, bool pressed)
     if (next >= rows) next = rows - 1;
     if (next == s_cur) return;
     s_cur = next;
+    /* Where the cursor landed, in the log. The menu never said: it repaints the
+     * highlight and that was the only answer, so driving it blind over
+     * /api/v1/screen?turn=N could not tell a clamped turn from a registered one.
+     * Three scripted walks pressed the AP stub believing they had chosen DISPLAY,
+     * and fired the zone write believing they were committing the dim timeout -- the
+     * symptoms all read as a swallowed knob, which is the exact report this
+     * feature already carries. The row text is this screen's own truth, so the
+     * line cannot drift from what the glass shows. */
+    char row[40];
+    bool hi;
+    row_text(s_cur, row, sizeof row, &hi);
+    ESP_LOGI(TAG, "cursor %s row %d/%d: %s", page_title(), s_cur, rows - 1, row);
     repaint();
 }
 
 void menu_view_service(void)
 {
-    if (!s_dirty) return;
+    /* Two independent reasons to repaint, either of which can fire without the
+     * other: this screen's own worker landing a result (s_dirty), and the app
+     * PG_APP is showing gaining or losing rows out from under a paint. The
+     * second is the one that makes a theme page reachable at all — entering it
+     * posts the clock's card walk, that walk reaps in orb_app_service_all()
+     * BEFORE menu_service is ever reached, so by the time this runs the app
+     * already has four rows the glass has never drawn. Without the count
+     * re-check the page opens on an empty list and only fills in once the owner
+     * turns the knob, which reads as the card being ignored. */
+    const bool app_grew = (s_page == PG_APP && s_app &&
+                           page_rows() != s_painted_rows);
+    const bool own_result = s_dirty;
+    if (!own_result && !app_grew) return;
     s_dirty = false;
 
-    xSemaphoreTake(s_res_mx, portMAX_DELAY);
-    s_ui = s_shared;
-    xSemaphoreGive(s_res_mx);
-
-    /* A finished stage moves to the reboot question; a finished scan merely
-     * populates the list it was already showing as pending. */
-    if (s_ui.staged) {
-        s_page = PG_ASK;
-        s_cur  = 0;
-        ESP_LOGI(TAG, "staged \"%s\" from the card", s_ui.staged_slug);
+    if (own_result) {
+        xSemaphoreTake(s_res_mx, portMAX_DELAY);
+        s_ui = s_shared;
+        xSemaphoreGive(s_res_mx);
     }
+
+    /* The theme page's own results are the clock's to reap, through its
+     * service() hook: a card walk that finishes while the owner has rotated to
+     * the dial must still land, and the app owns what it means. What is left
+     * here is this screen's own status line. */
     repaint();
 }
 

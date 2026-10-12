@@ -164,6 +164,16 @@ station:
   stays connected+synced, fires the probe endpoints, closes AP, greps serial).
 - **Audit loop**: flash, then confirm `/api/v1/status`'s `fw` is the git hash you
   built (`-dirty` = uncommitted edits). Ship = test = commit, same bytes.
+  **Caveat, measured 2026-10-11: that check can pass while lying.** `fw` comes from
+  `esp_app_desc_t`, which CMake stamps at *configure* time and caches; `idf.py build`
+  recompiles changed sources but keeps the old stamp. A tree with uncommitted edits
+  therefore flashed an image reporting a clean hash it was never built from (observed:
+  `art_bank.c` edited 14:46:10, image built 14:46:31, stamp still plain `54094e8`).
+  Trust the stamp only after `idf.py reconfigure && idf.py build`, and rely on
+  `tools/serflash.sh`, which now reads the version out of the `.bin` itself
+  (`esp_app_desc_t.version`, byte 48), compares it to `git describe --always --dirty`,
+  and exits 1 without flashing on a mismatch. The verdict goes to
+  `/tmp/serflash_audit.log`; `/tmp/serflash.sh` is a wrapper for it.
 
 Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how
@@ -494,10 +504,26 @@ picker had never been entered on hardware. `GET /api/v1/screen` is the bench doo
 
 | Query | Effect |
 |---|---|
-| `?to=clock\|menu\|hue` | switch screen (posted, applied on the LVGL task) |
+| `?to=<slug>` | switch to a registered app (posted, applied on the LVGL task). Slugs come from the table in `main/app/orb_app.c`: `clock`, `color_picker` (alias `hue`), `menu`. An unknown slug is a 400 whose body lists the known ones — the value itself never reaches the response. |
 | `?turn=N` | N synthetic detents, **electrical** sense: +1 = CW = up/right on screen |
 | `?push=1` | one synthetic tap |
-| `?hold=1` | the long-press escape gesture |
+| `?hold=1` | the long-press escape gesture, which goes to the entry flagged `is_home` — the dial (C8) |
+
+**Read the cursor before you trust a turn.** Until 2026-10-11 the menu said nothing about
+where its highlight was — `repaint()` moved the highlight and that was the only answer — so
+three scripted walks drove it blind and every one of them believed it had arrived somewhere
+else. Two pressed the `IT_AP` stub three times thinking they were choosing DISPLAY; a third
+fired `JOB_TZ` twice and left the dial on Europe/London while believing it had committed the
+dim timeout. `menu_view_apply_input()` now logs `cursor <PAGE> row N/M: <label>` on every
+move, and a walk that ignores that line is not to be trusted. `page_hint()`/`page_title()`
+already carried the page name; the log was the half that was missing.
+
+The clamp at row 0 is the specific thing the echo distinguishes: `if (next == s_cur) return;`
+means a turn already at the top of the list produces **no event at all**, which from the LAN
+is indistinguishable from a detent the decoder swallowed — the exact symptom the owner
+reports as "sometimes the notch does nothing". Note also that the injected sign is the
+electrical one: `?turn=-1` walks the cursor DOWN from row 0, because the delta arrives at the
+router already signed and does not pass through the encoder's own sign handling.
 
 Inject the long press too: it is the only exit from an armed screen, so a broken
 one soft-locks the dial with rotate belonging to the list. Prove it — verified here

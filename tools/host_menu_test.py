@@ -91,6 +91,8 @@ def lifts(src):
                        r"#define TO_PRESET_N[^\n]*", MENU_C)
     f_timeout = lift(src, r"static void timeout_label\(char \*out, size_t outsz\)\n\{[\s\S]*?\n\}", MENU_C)
     funcs = [
+        lift(src, r"static int app_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        lift(src, r"static const orb_app_t \*app_row\(int i\)\n\{[\s\S]*?\n\}", MENU_C),
         f_timeout,
         lift(src, r"static int page_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void go_back\(void\)\n\{[\s\S]*?\n\}", MENU_C),
@@ -101,25 +103,66 @@ def lifts(src):
     ]
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
-        lift(src, r"#define THEME_MAX\s+\d+[^\n]*", MENU_C),
         presets,
         lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
         lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
-        lift(src, r"typedef struct \{\n    int\s+n;[\s\S]*?\} ui_t;", MENU_C),
+        "static const orb_app_t *s_app;   /* the app PG_APP is showing */",
+        "static bool s_busy;",
+        "static bool orb_jobs_busy(void) { return s_busy; }",
+        lift(src, r"typedef struct \{\n    char\s+status\[72\];[\s\S]*?\} ui_t;", MENU_C),
     ]
     return consts, funcs
 
-# The router's screen order and its two-level gate, both pinned below: rotate
-# cycling screens and long-press going home are the contract the menu assumes.
-ENUM_SCREEN = lift(router_hdr, r"typedef enum \{\s*INPUT_SCREEN_MENU\s*=\s*0[\s\S]*?\} input_screen_t;",
-                   ROUTER_H)
-ARM_STEP = lift(router_src, r"const int step = \(knob_col_step\(delta\) > 0\) \? 1\n\s*: \(INPUT_SCREEN_COUNT - 1\);",
-                ROUTER_C)
+# The app registry owns what the menu is registered IN: the carousel order, the
+# home entry, and the fact the router no longer names a single view. These were
+# pinned here against the router's own INPUT_SCREEN_* enum until the registry
+# replaced it (docs/app-platform-plan.md §1), so the lifts below moved to
+# main/app/orb_app.c rather than being dropped: the contract the menu assumes
+# ("rotate cycles me, long-press goes home") is still checked, and it still dies
+# loudly if the table ever loses the menu row or the home flag.
+APP_C = P("main", "app", "orb_app.c")
+APP_H = P("main", "app", "orb_app.h")
+for _p in (APP_C, APP_H):
+    if not os.path.exists(_p):
+        sys.exit("missing " + _p + " — the registry is where the menu's carousel "
+                 "entry lives now; the lifts below have no fallback")
+app_src = open(APP_C).read()
+
+APP_TABLE = lift(app_src, r"static orb_app_t s_apps\[\] = \{[\s\S]*?\n\};", APP_C)
+# Lifted from the roaming branch of the router's poll. It changed shape when the
+# carousel landed (docs/app-platform-plan.md ruling C5): a turn now NAMES the
+# next stop through orb_carousel_step() and the activate happens on the settle,
+# so the block that must survive is "direction comes from the knob layer" and
+# "the only switch is still set_screen(), which is where the M1 probe lives".
+ARM_STEP = lift(router_src,
+                r"const int step = knob_col_step\(delta\)[\s\S]*?"
+                r"if \(next\) set_screen\(next, true\);", ROUTER_C)
 # The carousel must keep asking the knob layer what "right" means. A screen that
 # negates the delta itself is the bug host_knob_test.py exists for, and this lift
 # dies loudly if the router ever goes back to reading a raw sign.
 check("the screen carousel routes direction through the knob layer",
       "knob_col_step" in ARM_STEP, ARM_STEP.strip())
+# The turn must be deferred, not immediate: a roaming detent that called
+# set_screen() itself would put the flick's cost back to one full-page commit per
+# detent, which is the only reason the carousel exists. The fallback branch is
+# allowed exactly one set_screen, behind orb_carousel_ready().
+check("a turn peeks instead of switching, and only the settle switches",
+      "orb_carousel_step(" in ARM_STEP
+      and ARM_STEP.count("set_screen(") == 1
+      and "orb_carousel_ready()" in ARM_STEP, ARM_STEP.strip())
+# And the settle must commit through the registry's own switch path, so the M1
+# frame window still wraps every screen change the knob causes.
+check("the settle commits through set_screen, not around it",
+      re.search(r"orb_carousel_due\(now\)[\s\S]{0,160}orb_carousel_commit\(\);[\s\S]{0,60}"
+                r"set_screen\(named, true\);", router_src) is not None)
+# The menu must still be a walkable carousel entry, tagged as shell chrome
+# rather than pretending to be an app it is not.
+check("the menu is a registered walkable entry",
+      '"menu"' in APP_TABLE and "ORB_APP_KIND_SHELL" in APP_TABLE)
+# And the long-press's target must still be the dial, spelled as a table flag
+# rather than as an enum value the router hardcodes.
+check("the dial is the registered home entry",
+      re.search(r'"clock"[\s\S]{0,500}\.is_home\s*=\s*true', APP_TABLE) is not None)
 
 # orb_theme_entry_t, from the shipped header — row_text() indexes its fields.
 KNOB_C = P("main", "knob", "knob.c")
@@ -149,6 +192,7 @@ ENTRY_T = lift(th_hdr, r"typedef struct \{\n    char      slug\[[\s\S]*?\} orb_t
 HARNESS = r"""
 #include <stdbool.h>
 #include <stddef.h>
+#include "orb_app.h"   /* orb_app_t: the fake app the shell renders */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -171,7 +215,16 @@ int  orb_net_tz_current_index(void) { return g_tz_current; }
 const char *orb_net_tz_key(int i) { static char b[8]; snprintf(b,sizeof b,"k%d",i); return b; }
 const char *orb_net_tz_label(int i) { return g_tz_labels[i < 8 ? i : 7]; }
 
-static void repaint(void) { }
+/* The lifted repaint is a no-op in the pure-state harness; the real one's only
+ * observable effect is that it stamps s_painted_rows, so the stub mirrors that
+ * alone. Without it the app-grew reap check would never fire (s_painted_rows
+ * would sit at 0 forever), and deleting that check from the shipped
+ * menu_view_service() would leave the whole suite green — the exact
+ * unfalsifiable-fix repaint_lint was later added to catch. */
+static int  s_painted_rows;      /* stamped by the stub below, read by the lifted service() */
+static int  page_rows(void);     /* the lifted definition follows */
+static int  g_repaints;
+static void repaint(void) { g_repaints++; s_painted_rows = page_rows(); }
 static void input_router_home(void) { }
 
 /* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
@@ -204,8 +257,7 @@ static void activate(void) { g_activations++; }
  * cursor moved (or did not), not that a packet was queued. The kind enum is
  * lifted, not restated, so a job kind the menu starts posting but this file never
  * learned about fails to compile instead of passing quietly. */
-__JOBKIND__
-static void job_post(job_kind_t k, const char *slug, int idx) { (void)k;(void)slug;(void)idx; }
+static void job_post(void (*fn)(void *), int idx) { (void)fn; (void)idx; g_activations++; }
 
 __CONSTS__
 
@@ -213,7 +265,7 @@ static page_t s_page = PG_LANDING;
 static bool   s_armed;
 static int    s_cur;
 static ui_t   s_ui;
-static bool   s_busy;
+static bool   s_busy;   /* the shell worker's gate, faked below */
 static bool   s_dirty;
 static ui_t   s_shared;
 
@@ -235,23 +287,61 @@ static void ck(const char *name, int ok) {
     printf("%s %s\n", ok ? "PASS" : "FAIL", name);
     if (!ok) fails++;
 }
+/* A ring, not one static buffer: with a single buffer, every rowline() call in
+ * one expression overwrites the last, so a check like
+ *   !strcmp(rowline(1), "2 min") && !strcmp(rowline(6), "1 hour")
+ * compares row 6 against both strings and can only pass by luck — and it passed
+ * while the row it named was wrong. Sixteen slots is more than any single check
+ * asks for; the count is not a tuning knob, going lower would reintroduce the
+ * aliasing. */
 static const char *rowline(int r) {
-    static char b[96];
-    bool hi = false; row_text(r, b, sizeof b, &hi);
-    return b;
+    static char b[16][96];
+    static int i;
+    char *const out = b[i = (i + 1) % 16];
+    bool hi = false; row_text(r, out, 96, &hi);
+    return out;
 }
-static void one_theme(const char *slug, const char *title, esp_err_t err,
-                      int active, int pending, const char *why) {
-    memset(&s_ui, 0, sizeof s_ui);
-    s_ui.n = 1;
-    snprintf(s_ui.e[0].slug, sizeof s_ui.e[0].slug, "%s", slug);
-    snprintf(s_ui.e[0].title, sizeof s_ui.e[0].title, "%s", title);
-    s_ui.e[0].err = err; s_ui.e[0].active = (bool)active; s_ui.e[0].pending = (bool)pending;
-    snprintf(s_ui.e[0].why, sizeof s_ui.e[0].why, "%s", why);
+
+/* ---- the registry, as the menu sees it ------------------------------------
+ * The menu's only contact with an app is through the orb_app_opt_* dispatchers,
+ * so those are what a fake has to answer. The dispatchers themselves are lifted
+ * and tested against the real registry in host_app_registry_test.py; restating
+ * them here would test a copy. */
+static char g_opt_label0[40], g_opt_val0[40], g_opt_label1[40], g_opt_val1[40];
+static int  g_opt_n;
+static int  g_arms;
+static int  g_last_opt_sel = -1;
+static size_t g_opt_app_count = 1;
+static orb_app_t g_fake_app, g_fake_app2;
+#define FAKE_APP (&g_fake_app)
+#define FAKE_APP2 (&g_fake_app2)
+bool orb_app_has_options(const orb_app_t *a) { (void)a; return g_opt_n > 0; }
+int  orb_app_opt_count(const orb_app_t *a) { (void)a; return g_opt_n; }
+const char *orb_app_opt_label(const orb_app_t *a, int i)
+{ (void)a; return (i == 0) ? g_opt_label0 : g_opt_label1; }
+const char *orb_app_opt_value(const orb_app_t *a, int i)
+{ (void)a; return (i == 0) ? g_opt_val0 : g_opt_val1; }
+void orb_app_opt_sel(const orb_app_t *a, int i) { (void)a; g_activations++; g_last_opt_sel = i; }
+void orb_app_opt_arm(const orb_app_t *a, bool on) { (void)a; g_arms += on ? 1 : -1; }
+size_t orb_app_count(void) { return g_opt_app_count; }
+const orb_app_t *orb_app_at(size_t i)
+{
+    /* Only index 0 is a real entry. Past that there is nothing, so the row
+     * after the app stays exit: a fake that ignored i would answer app_row(1)
+     * with the same app and print its title where the word "exit" belongs. */
+    if (!g_opt_app_count) return NULL;
+    if (i == 0) return FAKE_APP;
+    return (i == 1 && g_opt_app_count > 1) ? FAKE_APP2 : NULL;
 }
 
 int main(void)
 {
+    /* The fake app carries a title so the header check means something. */
+    g_fake_app.slug = "clock"; g_fake_app.title = "Clock";
+    /* A distinct second app, so "a second app adds a row" cannot pass by
+     * reading the first one's title twice. */
+    g_fake_app2.slug = "hue"; g_fake_app2.title = "HSB";
+
     /* ---- unarmed is a title card, not a list ---- */
     s_armed = false; s_page = PG_LANDING; s_cur = 0; s_busy = false;
     g_delta_down = knob_row_step(1);
@@ -268,11 +358,36 @@ int main(void)
 
     /* ---- armed top page ---- */
     s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
-    ck("top page has 5 rows", page_rows() == 5);
-    ck("row order AP/TZ/THEME/DISPLAY/exit",
-       !strcmp(rowline(0),"AP") && !strcmp(rowline(1),"TZ") &&
-       !strcmp(rowline(2),"THEME") && !strcmp(rowline(3),"DISPLAY") &&
-       !strcmp(rowline(4),"exit"));
+    /* One fake app declaring two option rows, which is what earns it a line on
+     * the top page. g_opt_n starts at 0 for the earlier unarmed checks. */
+    g_opt_app_count = 1; g_opt_n = 2;
+    snprintf(g_opt_label0, sizeof g_opt_label0, "diver");
+    snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
+    snprintf(g_opt_label1, sizeof g_opt_label1, "neon"); g_opt_val1[0] = '\0';
+    /* The OS's own three rows, then one per app that declares options, then
+     * exit — the plan's §7.2. THEME is gone from the list because the shell no
+     * longer knows what a theme is: "Clock" is there because the clock ANSWERS
+     * opt_*, and it disappears again below when the hook stops answering. A
+     * hardcoded IT_TOP_N could not show that, which is exactly why it was
+     * listed as the thing to remove. */
+    ck("top page is the OS's three rows, one app row, then exit", page_rows() == 5);
+    { const char *r0=rowline(0),*r1=rowline(1),*r2=rowline(2),*r3=rowline(3),*r4=rowline(4);
+      ck("row order AP/TZ/DISPLAY/<app>/exit",
+         !strcmp(r0,"AP") && !strcmp(r1,"TZ") && !strcmp(r2,"DISPLAY") &&
+         !strcmp(r3,"Clock") && !strcmp(r4,"exit")); }
+    /* The row comes from the registry, not from this file's text: an app that
+     * stops answering opt_* loses its row without the shell being edited. */
+    g_opt_n = 0;                                    /* the app stops answering */
+    ck("an app with no options has no row, and exit moves up",
+       page_rows() == 4 && !strcmp(rowline(3),"exit"));
+    g_opt_n = 2;
+    /* And a second app that declares options adds a second row, which is the
+     * half IT_TOP_N could never do without an edit to the shell. */
+    g_opt_app_count = 2;
+    { const char *r3=rowline(3), *r4=rowline(4);
+      ck("a second app declaring options adds a row, in table order",
+         page_rows() == 6 && !strcmp(r3,"Clock") && !strcmp(r4,"HSB")); }
+    g_opt_app_count = 1;
 
     /* ---- the clamp, both ends, no wrap ---- */
     g_delta_down = knob_row_step(1);      /* derived, never assumed */
@@ -307,24 +422,53 @@ int main(void)
     s_page = PG_TZ;
     ck("a non-current zone is not marked", !strcmp(rowline(2), "Chicago"));
 
-    /* ---- the card theme list ---- */
-    s_page = PG_THEME;
-    one_theme("kit3", "Arrow 3", ESP_OK, 1, 0, "");
-    s_cur = 0;
-    ck("active theme is labelled", strstr(rowline(0), "on the dial") != NULL);
-    ck("theme title preferred over slug", strstr(rowline(0), "Arrow 3") != NULL);
-    one_theme("kit3", "Arrow 3", ESP_OK, 0, 1, "");
-    ck("pending theme is labelled", strstr(rowline(0), "waiting to install") != NULL);
-    one_theme("kit3", "Broken", 0x102, 0, 0, "checksum mismatch");
-    ck("damaged theme is SHOWN with its reason",
-       strstr(rowline(0), "checksum mismatch") != NULL);
-    ck("damaged theme still names itself", strstr(rowline(0), "Broken") != NULL);
-    one_theme("kit3", "", 0x102, 0, 0, "");
-    ck("blank title falls back to the slug", strstr(rowline(0), "kit3") != NULL);
-    ck("blank why falls back to a default", strstr(rowline(0), "not loadable") != NULL);
-    ck("theme list has a back row", !strcmp(rowline(1), "<- back"));
-    ck("back from theme returns to THEME row",
-       (s_page = PG_THEME, go_back(), s_page == PG_TOP && s_cur == 2));
+    /* ---- the app options page, rendered from the registry ---- *
+     * The theme rows themselves are answered by the clock app (B2), so what is
+     * checked here is the SHELL's half: that it renders an app's label and value
+     * through one line, clamps on its own cursor, and puts "<- back" after the
+     * app's rows whatever the app says. The answers are pinned against the
+     * shipped clock_themes.c in tools/host_clock_opts_test.py. */
+    /* The shell renders an app's rows without knowing what they mean (B1/B2).
+     * g_opt_n/g_opt_v are the fake app's answers; the clock's real ones are
+     * pinned against the shipped clock_themes.c in host_clock_opts_test.py. */
+    s_page = PG_APP; s_app = FAKE_APP; s_cur = 0; g_opt_n = 2;
+    snprintf(g_opt_label0, sizeof g_opt_label0, "diver"); snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
+    snprintf(g_opt_label1, sizeof g_opt_label1, "neon");   g_opt_val1[0] = '\0';
+    ck("an app row reads the app's label and value",
+       !strcmp(rowline(0), "diver  (on the dial)"));
+    ck("a row with no value reads the label alone", !strcmp(rowline(1), "neon"));
+    ck("the app page ends with the shell's back row", !strcmp(rowline(2), "<- back"));
+    ck("the shell counts the app's rows plus its own back row", page_rows() == 3);
+    ck("the header is the app's own title", (s_app->title && !strcmp(s_app->title, "Clock")));
+    ck("back from an app page returns to that app's row",
+       (s_page = PG_APP, go_back(), s_page == PG_TOP && s_cur == IT_OS_N));
+
+    /* ---- the app's own scan landing must repaint the shell (B2 reachability) --
+     * Entering the theme page posts the clock's card walk; that walk reaps in
+     * orb_app_service_all() before menu_service runs, so the app already has its
+     * rows and the menu's OWN s_dirty is still false. If menu_view_service()
+     * repainted only on s_dirty, the page would open empty and only fill once
+     * the owner turned the knob. g_repaints is the witness: the count going up
+     * with s_dirty clear is exactly the fixed behaviour, and deleting the
+     * app_grew re-check from the shipped file drops it back to no repaint. */
+    g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    s_dirty = false;
+    repaint();                                 /* stamp the settled baseline */
+    const int base_paints = g_repaints;
+    g_opt_n = 4;                               /* the walk landed: rows appeared */
+    s_dirty = false;                           /* ... and the menu's worker is idle */
+    menu_view_service();
+    ck("the app's scan landing repaints with the menu's own flag clear",
+       g_repaints > base_paints && page_rows() == 5);
+    menu_view_service();
+    ck("and settles once it has caught up", g_repaints == base_paints + 1);
+    g_opt_n = 2;
+    /* Entered properly: the go_back() above left PG_TOP with s_app cleared, and
+     * an app page that was never entered proves nothing about leaving one. */
+    g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0;
+    ck("an app page whose app answers nothing still lets you out", page_rows() == 1);
+    ck("that one row is the back row", !strcmp(rowline(0), "<- back"));
+    g_opt_n = 2;
 
     /* ---- a running job freezes the list ---- */
     /* Tested on PG_TZ, not PG_THEME: page_rows() already returns 0 while busy on
@@ -340,19 +484,6 @@ int main(void)
     s_busy = false;
     turn_down(1);
     ck("the cursor moves again once the job lands", s_cur == 1);
-
-    /* ---- the theme page while scanning shows nothing ---- */
-    s_page = PG_THEME; one_theme("a","A",ESP_OK,0,0,""); s_ui.n = 3; s_cur = 0; s_busy = true;
-    ck("scanning shows no rows", page_rows() == 0);
-    ck("scanning shows working...", !strcmp(page_hint(), "working..."));
-    s_busy = false;
-    ck("rows return when the job lands", page_rows() == 4);
-
-    /* ---- the confirm page ---- */
-    s_page = PG_ASK; s_cur = 0;
-    ck("confirm offers reboot", !strcmp(rowline(0), "reboot now"));
-    ck("confirm offers to decline", !strcmp(rowline(1), "keep this dial"));
-    ck("confirm has exactly 2 rows", page_rows() == 2);
 
     /* ---- the DISPLAY submenu: the dim switch and the timeout picker ----
      * These two rows are the only way to reach the idle dim on the dial, and the
@@ -373,7 +504,7 @@ int main(void)
     ck("the display page offers push, not just rotate",
        (s_page = PG_DISPLAY, !strcmp(page_hint(), "rotate: choose   push: change")));
     ck("back from display returns to the DISPLAY row",
-       (s_page = PG_DISPLAY, go_back(), s_page == PG_TOP && s_cur == 3));
+       (s_page = PG_DISPLAY, go_back(), s_page == PG_TOP && s_cur == IT_DISPLAY));
 
     s_page = PG_TO; s_cur = 0;
     ck("the picker offers every preset plus back", page_rows() == TO_PRESET_N + 1);
@@ -399,17 +530,27 @@ int main(void)
     /* ---- a worker result landing while disarmed must NOT paint a list ---- */
     s_armed = true; s_page = PG_TOP; s_cur = 0;
     memset(&s_shared, 0, sizeof s_shared);
-    s_shared.staged = true; s_dirty = true;
-    s_armed = false;                       /* the user rotated away mid-stage */
+    snprintf(s_shared.status, sizeof s_shared.status, "zone set: Europe/Budapest");
+    s_dirty = true;
+    s_armed = false;                       /* the user rotated away mid-job */
     menu_view_service();
-    ck("staged result still recorded", s_ui.staged);
-    ck("title card stays a title card", page_rows() == 0);
+    ck("a landing never becomes a list because a result landed", page_rows() == 0);
+    ck("the landing keeps its title", s_page == PG_TOP);
+
 
     s_armed = true; s_page = PG_TOP; s_cur = 0;
     memset(&s_shared, 0, sizeof s_shared);
-    s_shared.staged = true; s_dirty = true;
+    snprintf(s_shared.status, sizeof s_shared.status, "zone set: Europe/Budapest");
+    s_dirty = true;
     menu_view_service();
-    ck("armed, a staged result opens the confirm page", s_page == PG_ASK);
+    /* Armed, the same result must NOT move the page: menu_view_service() used to
+     * jump to the theme confirm screen whenever a stage landed, which yanked a
+     * page out from under an owner who had already scrolled elsewhere. Whether a
+     * staged theme deserves a question is the clock's decision now; the shell's
+     * job is to repaint and stay put. */
+    ck("armed, a landing result does not change the page", s_page == PG_TOP);
+    ck("armed, the result line is taken from the worker",
+       !strcmp(s_ui.status, "zone set: Europe/Budapest"));
 
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
@@ -426,7 +567,6 @@ def assembled(src):
     return (HARNESS
             .replace("__CONSTS__", body + "\n" + KNOB_HELPERS)
             .replace("__FUNCS__", "\n".join(funcs))
-            .replace("__JOBKIND__", lift(src, r"typedef enum \{ JOB_SCAN[\s\S]*?\} job_kind_t;", MENU_C))
             .replace("__SLUGDEF__", "")
             .replace("__UNUSED_OK__", ""))
 
@@ -434,13 +574,22 @@ def assembled(src):
 def build_and_run(src):
     import tempfile
     d = tempfile.mkdtemp(prefix="hostmenu_")
+    # orb_app.h reaches for esp_err.h, which does not exist on a host. The two
+    # stubs the registry header needs are written into the build dir so the
+    # harness reads the SHIPPED orb_app.h rather than a restated struct — a
+    # hand-copied orb_app_t would stay green while the device's field order
+    # moved underneath it.
+    for n, body in (("esp_err.h", "#pragma once\ntypedef int esp_err_t;\n"
+                                   "#define ESP_OK 0\n"),
+                    ("esp_log.h", "#pragma once\n#define ESP_LOGI(t,...)\n")):
+        open(os.path.join(d, n), "w").write(body)
     exe = os.path.join(d, "h")
     cf = os.path.join(d, "h.c")
     with open(cf, "w") as f:
         f.write(src)
     r = subprocess.run(["cc", "-O0", "-std=gnu11", "-Wall", "-Wextra",
                         "-Wno-unused-parameter", "-Wno-unused-function",
-                        "-Werror", "-o", exe, cf],
+                        "-Werror", "-I", d, "-I", P("main","app"), "-o", exe, cf],
                        capture_output=True, text=True)
     if r.returncode:
         return False, "COMPILE FAILED:\n" + r.stderr[-2500:]
@@ -485,6 +634,8 @@ def _code_only(src):
 
 
 BLOCKING = ("orb_theme_scan(", "orb_theme_stage_load(")
+CT_C = P("main","clock","clock_themes.c")
+JOBS_C = P("main","app","orb_jobs.c")
 WIDGET = r"lv_label_set_text\(|lv_obj_set_style_|lv_obj_invalidate\("
 
 
@@ -494,7 +645,11 @@ def threading_lint(src):
     input_router's poll is an lv_timer on the LVGL task and the only reader of the
     knob, so a card call there freezes the dial and swallows input for as long as
     the card mutex is held elsewhere — 38-48 s behind a browser upload, measured.
-    The shipped design confines both calls to job_worker().
+    The card work used to sit in this file's own job_worker(); B2 gave the theme
+    picker to the clock app, so the same rule is now checked across the shipped
+    clock_themes.c (which issues the calls) and orb_jobs.c (which owns the one
+    worker they run on). A call that migrates back into a widget-touching function
+    is the regression this catches.
     """
     code = _code_only(src)
     defs = [(m.group(1), m.start())
@@ -511,14 +666,76 @@ def threading_lint(src):
     return bad
 
 
-def worker_lint(src):
-    """The card calls must live in the worker task, and only there."""
+def repaint_lint(src):
+    """The landing must stay a landing when a worker result lands.
+
+    The state machine above cannot see this: page_rows() already answers 0 while
+    unarmed, so deleting the guard inside repaint() leaves every pure check green
+    while the dial shows a title card wearing a menu's hint and status line — the
+    screen looks interactive with nothing in it, which is the report "the knob
+    stopped working" that this feature already had once. So the guard is read out
+    of the shipped function rather than reimplemented here.
+    """
     code = _code_only(src)
-    m = re.search(r"static void job_worker\(void \*arg\)\n\{([\s\S]*?)\n\}", code)
+    m = re.search(r"static void repaint\(void\)\s*\{([\s\S]*?)\n\}", code)
     if not m:
-        return ["job_worker() not found — the card work has nowhere to run"]
+        return ["repaint() is not a column-0 static any more; the landing rule cannot be checked"]
     body = m.group(1)
-    return ["job_worker() no longer calls %s" % b for b in BLOCKING if b not in body]
+    bad = []
+    if "if (!s_armed)" not in body:
+        bad.append("repaint() no longer branches on s_armed, so a landed result can paint a list on the title card")
+        return bad
+    # The unarmed branch is the whole guard: it must restore the landing's own
+    # title and hint, in that branch, before the else. Comparing the text cannot
+    # work — _code_only() blanks string literals, so "MENU" is not findable and
+    # never will be. What is findable is that the landing sets a big font and the
+    # armed path sets the small one: swap them and the title card is gone.
+    arm = body.index("if (!s_armed)")
+    el = body.index("} else {", arm)
+    unarmed, armed = body[arm:el], body[el:]
+    if "lv_label_set_text(s_title" not in unarmed:
+        bad.append("the unarmed branch no longer sets the landing's title")
+    if "montserrat_48" not in unarmed:
+        bad.append("the landing's title lost its large font, so a title card and a list header are now indistinguishable")
+    if "montserrat_48" in armed:
+        bad.append("the armed branch sets the large title, which is the landing's")
+    if "s_ui.status" not in armed:
+        bad.append("the result line is no longer written by the armed branch alone")
+    return bad
+
+
+def worker_lint(menu_src, ct=None):
+    """The card calls run on the shell's one worker, posted by the clock app.
+
+    B2 moved the theme picker out of this file, so the pair that used to be
+    checked inside menu_view.c's job_worker() is checked where it now lives:
+    clock_themes.c issues both calls, and it issues them from job functions
+    handed to orb_jobs_post() — never from a function the LVGL task runs. Two
+    worker tasks would also be caught here, because the shell owns the only
+    xTaskCreate below main.c's ladder and an app growing a private one is the
+    duplication the shell worker exists to prevent.
+    """
+    bad = []
+    ct = ct if ct is not None else open(CT_C).read()
+    code = _code_only(ct)
+    jobs = re.findall(r"static void (job_\w+)\(void \*arg\)\s*\{([\s\S]*?)\n\}", code)
+    if not jobs:
+        return ["clock_themes.c has no job_*() functions — the card work has no worker"]
+    body = "".join(b for _, b in jobs)
+    for b in BLOCKING:
+        if b not in body:
+            bad.append("no card job in clock_themes.c calls %s" % b)
+    if "orb_jobs_post(" not in code:
+        bad.append("clock_themes.c never posts to the shell worker")
+    # A widget call inside a job would paint from the worker task.
+    if re.search(WIDGET, body):
+        bad.append("a card job in clock_themes.c touches a widget")
+    # The menu must not have grown a private task back.
+    if "xTaskCreate" in _code_only(menu_src):
+        bad.append("menu_view.c created its own worker task again")
+    if "xTaskCreate" not in _code_only(open(JOBS_C).read()):
+        bad.append("orb_jobs.c owns no task — nothing runs the posted jobs")
+    return bad
 
 
 MUTATIONS = [
@@ -531,31 +748,46 @@ MUTATIONS = [
     ("unarmed menu starts accepting input",
      "if (!s_armed) return;                    /* the router owns the knob here */", ""),
     ("a running job no longer freezes the cursor",
-     "if (s_busy) return;\n\n    if (pressed)", "if (0) return;\n\n    if (pressed)"),
+     "    if (orb_jobs_busy()) return;\n\n    if (pressed)", "    if (0) return;\n\n    if (pressed)"),
+    # The bug that made a theme page unreachable-but-not-obvious: the app's scan
+    # lands with the menu's own worker idle, so a service() that repaints only on
+    # s_dirty opens the page empty. Forcing that back must red the new check.
+    ("the app's scan landing no longer repaints the shell",
+     "    const bool own_result = s_dirty;\n    if (!own_result && !app_grew) return;",
+     "    const bool own_result = s_dirty;\n    (void)app_grew;\n    if (!own_result) return;"),
     ("page_rows forgets that unarmed means no list",
      "if (!s_armed) return 0;", "if (0) return 0;"),
     ("the back row is dropped from the zone list",
      "case PG_TZ:     return orb_net_tz_count() + 1;", "case PG_TZ:   return orb_net_tz_count();"),
-    ("the back row is dropped from the theme list",
-     "case PG_THEME:  return s_busy ? 0 : (s_ui.n + 1);", "case PG_THEME: return s_busy ? 0 : s_ui.n;"),
-    ("a damaged theme is hidden instead of shown",
-     "snprintf(out, outsz, \"%s  (%s)\", e->title[0] ? e->title : e->slug,\n                         e->why[0] ? e->why : \"not loadable\");",
-     "out[0] = '\\0';"),
+    # The theme list's own rows left for the clock app (B2), so the two pins that
+    # watched them now watch the shell's rendering of ANY app's answer: drop the
+    # back row and the owner is trapped; drop the value and the page stops saying
+    # which theme is on the dial. host_clock_opts_test.py pins the answers.
+    ("the back row is dropped from the app options page",
+     "case PG_APP:    return s_app ? orb_app_opt_count(s_app) + 1 : 0;  /* +1: back */",
+     "case PG_APP:    return s_app ? orb_app_opt_count(s_app) : 0;"),
+    ("an app's value stops being rendered",
+     'const char *v = orb_app_opt_value(s_app, row);\n            if (v && v[0]) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);',
+     'const char *v = orb_app_opt_value(s_app, row);\n            if (0) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);'),
     ("the current zone stops being marked",
      "const bool cur = (row == orb_net_tz_current_index());", "const bool cur = false;"),
     ("back from the zone list loses its cursor position",
-     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_THEME)  ? IT_THEME\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : 0;",
+     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : 0;",
      "s_cur  = (from == PG_TZ) ? 0 : 0;"),
-    ("a staged result paints a list onto the title card",
-     "if (s_ui.staged) {", "if (s_ui.staged && !s_armed) {"),
+    ("a worker result paints a list onto the title card",
+     "if (!s_armed) {\n        /* Rows are already blank", "if (0) {\n        /* Rows are already blank"),
+    # Cross-file: the scan now lives in the clock app. Painting from the posted
+    # job is the same regression the menu's own worker used to guard, so it is
+    # mutated where the call sits.
     ("the card scan moves back onto the LVGL task",
-     "const int n = orb_theme_scan(out.e, THEME_MAX);",
-     "const int n = orb_theme_scan(out.e, THEME_MAX); lv_label_set_text(s_title, \"x\");"),
+     "        const int n = orb_theme_scan(out.e, THEME_MAX);",
+     "        const int n = orb_theme_scan(out.e, THEME_MAX); lv_label_set_text(NULL, \"x\");",
+     CT_C),
     # The DISPLAY submenu. Each of these is a way the two rows can lie about the
     # setting they claim to show, which is exactly the failure nobody notices until
     # the panel dims at the wrong time.
     ("the DISPLAY row drops off the top menu",
-     'case IT_DISPLAY:snprintf(out, outsz, "DISPLAY"); break;', ''),
+     'case IT_DISPLAY: snprintf(out, outsz, "DISPLAY"); break;', ''),
     ("the DISPLAY page loses a row",
      "case PG_DISPLAY:return 3;", "case PG_DISPLAY:return 2;"),
     ("the dim row stops reading the switch it is showing",
@@ -577,17 +809,30 @@ MUTATIONS = [
 
 def run_mutations():
     rc = 0
-    shipped = open(MENU_C).read()
-    for name, old, new in MUTATIONS:
+    for entry in MUTATIONS:
+        name, old, new, target = (entry + (MENU_C,))[:4] if len(entry) == 4 else (*entry, MENU_C)
+        shipped = open(target).read()
         if shipped.count(old) != 1:
-            print("FAIL  mutation %-54r target appears %d times — the pin is stale"
-                  % (name, shipped.count(old)))
+            print("FAIL  mutation %-54r target appears %d times in %s — the pin is stale"
+                  % (name, shipped.count(old), os.path.relpath(target, ROOT)))
             rc = 1
             continue
         mutated = shipped.replace(old, new, 1)
-        ok_c, out_c = build_and_run(assembled(mutated))
+        if target == MENU_C:
+            ok_c, out_c = build_and_run(assembled(mutated))
+        else:
+            # A cross-file pin cannot be spliced into the menu harness; it is
+            # checked by the lints that read that file, which is exactly how the
+            # "painting from the worker" class of bug is caught.
+            ok_c, out_c = True, ""   # judged by the lints over the mutated file
+        # Every check the suite runs must be in this disjunction, or a pin can
+        # "survive" simply because the lint that would catch it is not consulted
+        # here — which is exactly what repaint_lint did until it was added.
         caught = ((not ok_c) or ("FAIL" in out_c)
-                  or bool(threading_lint(mutated)) or bool(worker_lint(mutated)))
+                  or bool(threading_lint(mutated))
+                  or bool(repaint_lint(mutated))
+                  or bool(worker_lint(shipped,
+                                      mutated if target == CT_C else None)))
         if caught:
             first = next((l for l in out_c.splitlines() if l.startswith("FAIL")),
                          (out_c.splitlines() or ["lint"])[0])
@@ -612,15 +857,28 @@ def main():
     bad = threading_lint(menu_src)
     check("no blocking card call shares a function with a widget call",
           not bad, "; ".join(bad))
+    rbad = repaint_lint(menu_src)
+    check("a landed result cannot paint a list onto the title card",
+          not rbad, "; ".join(rbad))
     wbad = worker_lint(menu_src)
     check("the worker task still owns both card calls", not wbad, "; ".join(wbad))
     check("rotate still owns the screen swap (router)",
           "if (!screen_armed(s_current))" in _code_only(router_src))
     check("long-press goes home to the clock (router)",
-          re.search(r"if \(lpress\) \{\s*disarm_all\(\);\s*set_screen\(INPUT_SCREEN_CLOCK, true\);\s*return;",
-                    router_src) is not None)
-    check("menu screen registered with the router",
-          "menu_view_screen()" in router_src and "menu_view_service()" in router_src)
+          re.search(r"if \(lpress\) \{\s*orb_carousel_cancel\(\);\s*disarm_all\(\);"
+                    r"\s*set_screen\(orb_app_home\(\), true\);", router_src) is not None)
+    # Inverted since the registry landed: the router must NOT name a single view
+    # any more, and the registry must name all three. The old form of this check
+    # required menu_view_screen() to appear in input_router.c, which is precisely
+    # the coupling docs/app-platform-plan.md §1 sets out to remove.
+    check("the registry, not the router, names the views",
+          all(n in app_src for n in ("menu_view_screen()", "menu_view_service()",
+                                     "color_picker_screen()", "clock_view_screen()"))
+          and not any(n in _code_only(router_src)
+                      for n in ("menu_view_", "color_picker_", "clock_view_")))
+    check("main.c builds the apps through the registry, not by name",
+          "orb_app_init_all()" in open(P("main", "main.c")).read()
+          and "clock_view_init()" not in _code_only(open(P("main", "main.c")).read()))
     check("picker gained the same two-level gate",
           "bool color_picker_armed(void)" in open(P("main", "color", "color_picker.c")).read()
           and "if (!s_armed) return;" in open(P("main", "color", "color_picker.c")).read())

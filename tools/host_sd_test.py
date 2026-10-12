@@ -1084,10 +1084,15 @@ MUTATIONS = [
      'if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";', ""),
     ("installer copies through an unreserved buffer",   "th",
      'if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }', ""),
-    # The bug the card found for real: scan holds orb_sd_lock() and card_open() takes it
-    # again. The walk ran zero times on an empty card, so only hardware could show it.
+    # The bug the card found for real: a card-lock holder reaching something that takes
+    # the mutex again. The scan's walk now lives in orb_files_walk(), so the shape to
+    # test is a holder calling a locked orb_files entry point — which is only caught
+    # because orb_files_walk/orb_files_delete are in the lint's cross set. Delete is a
+    # real holder, so asking it for a second walk is the same deadlock.
     ("scan re-asks for the card lock inside its walk", "th",
-     "const int fd = card_open_locked(slug, &h, &why);", "const int fd = card_open(slug, &h, &why);"),
+     "    orb_sd_lock();\n    const int r = unlink(path);",
+     "    orb_sd_lock();\n    orb_files_walk(orb_files_src(\"clock\", \"themes\"), NULL, NULL);\n"
+     "    const int r = unlink(path);"),
     # The second one hardware found: the lock-free core asking for the mount, which is
     # the same mutex again. This is the bug the plain call-graph version of the lint
     # missed, because ensure_mounted is legitimate a few lines EARLIER in the caller.
@@ -1106,7 +1111,7 @@ MUTATIONS = [
     # Each mutation below deletes one consumer's reach for the rule; a battery where the
     # rule can go missing again from any of the four is a battery that did not learn.
     ("list stops applying the theme-name rule", "th",
-     "const bool named = filed_as_its_own_slug(&h, slug, name_why, sizeof name_why);",
+     "const bool named = filed_as_its_own_slug(&h, rec->name, name_why, sizeof name_why);",
      "const bool named = true;"),
     ("uploader stops applying the theme-name rule", "th",
      "if (!r && !filed_as_its_own_slug(&h, up->slug, s_up_why, sizeof s_up_why)) {",
@@ -1320,7 +1325,13 @@ def lock_lint():
     # orb_sd.c side of the same mutex. The card-off stubs and the pure helpers are not
     # here because they take nothing: orb_sd_space()'s comment is explicit that it runs
     # outside the lock on purpose, and name_ok/theme_path never touch the volume.
-    cross = {"orb_sd_ensure_mounted", "orb_sd_remount", "orb_sd_init"}
+    # orb_files.c holds the same mutex: walk() and delete() take it for their whole
+    # operation, so a card theme path that reaches either while holding the lock is the
+    # same deadlock the scan used to have. path() and src() are deliberately NOT here —
+    # they are pure, which is what lets a lock holder build a filename, and adding a
+    # take to path() is caught here rather than on a wall.
+    cross = {"orb_sd_ensure_mounted", "orb_sd_remount", "orb_sd_init",
+             "orb_files_walk", "orb_files_delete"}
     holders = {n for n, t in text.items() if "orb_sd_lock()" in t}
     contract = {n for n, t in text.items() if "orb_sd_unlock()" in t} - holders
     if not holders:
@@ -1441,7 +1452,13 @@ def naming_lint():
         rc = 1
     # boot is in the list because it installs: it reads the pixels under a name NVS
     # remembered, and a card edited after staging is exactly when the two diverge.
-    for n in ("orb_theme_scan", "orb_theme_upload_end", "orb_theme_stage_load", "orb_theme_boot"):
+    # scan_entry rather than orb_theme_scan because the walk moved to orb_files: the
+    # OS enumerates the directory now and hands this layer one open file at a time, so
+    # the function that lists a card theme is the callback, not the caller. The
+    # invariant is unchanged — whoever touches a card theme applies the rule — and
+    # re-aiming the anchor at the callback keeps that bite. orb_theme_scan staying in
+    # the list would be a check on a function that no longer reads a file at all.
+    for n in ("scan_entry", "orb_theme_upload_end", "orb_theme_stage_load", "orb_theme_boot"):
         if n not in spans:
             print("FAIL main/art/orb_theme.c: %s() is not a column-0 definition any more; the "
                   "lint can no longer prove it applies the naming rule" % n)

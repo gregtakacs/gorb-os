@@ -16,9 +16,9 @@
 
 #include "board_config.h"
 #include "display.h"
-#include "clock_view.h"
-#include "color_picker.h"
-#include "menu_view.h"
+#include "orb_app.h"
+#include "orb_jobs.h"
+#include "orb_carousel.h"
 #include "knob.h"
 #include "input_router.h"
 #include "imu.h"
@@ -26,6 +26,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "art_bank.h"
 
 static const char *TAG = "main";
 
@@ -77,22 +78,45 @@ void app_main(void)
         ESP_LOGE(TAG, "theme bring-up degraded (%s) — clock runs on the fallback bank",
                  esp_err_to_name(theme_err));
 
+#if ORB_ART_M2_PROBE
+    /* M2 residency protocol (docs/app-platform-plan.md §6): runs after the
+     * theme's art_bank_init() so the primary counts, and before display_init()
+     * so the dial's own fps lines, later in the same boot log, are measured
+     * with every probed bank still mapped. */
+    art_bank_m2_probe();
+#endif
+
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 
-    /* Build the three screens. Each registers its own LVGL screen object; the
-     * input router decides which one is loaded. The GIF background animates
-     * from inside the clock view (delta-rect bank), so there is no separate
-     * orb/bench screen any more.
+    /* Build the apps and their screens. Each registers its own LVGL screen
+     * object; the input router decides which one is loaded. The GIF background
+     * animates from inside the clock view (delta-rect bank), so there is no
+     * separate orb/bench screen any more. */
+    /* Build the apps, in registry table order. main.c no longer names any of
+     * them: the table in main/app/orb_app.c decides what boots, in what order,
+     * and an app whose init fails is dropped from the carousel with its reason
+     * logged instead of taking the dial down with it.
      *
-     * menu_view_init() creates the worker task that runs the blocking card
-     * calls. Doing that before the LVGL task exists is deliberate and safe: the
-     * worker only ever calls the orb_theme and orb_net APIs and copies results
-     * into its own buffer — it never touches a widget, which is the one thing
-     * the LVGL task's existence is required for. */
-    ESP_ERROR_CHECK(clock_view_init());
-    ESP_ERROR_CHECK(color_picker_init());
-    ESP_ERROR_CHECK(menu_view_init());
+     * The order the table encodes is the order these three were called in
+     * before, and it is not arbitrary: the dial must exist before the router can
+     * home to it, and the menu's pages are built after the display exists.
+     * Blocking work belongs to nobody's private task — the shell's one orb_jobs
+     * worker, started below, runs every app's card and NVS work, which is what
+     * keeps a second 4 KB stack out of the internal heap the framebuffer also
+     * spends. */
+    ESP_ERROR_CHECK(orb_jobs_start());
+    ESP_ERROR_CHECK(orb_app_init_all());
+
+    /* The carousel's name chip, on the top layer, built once here so no flick
+     * ever allocates. Deliberately NOT an ESP_ERROR_CHECK: the chip is chrome,
+     * and a dial that cannot paint a destination falls back to switching
+     * immediately on each turn (orb_carousel_ready()) rather than refusing to
+     * boot into a sealed case. */
+    const esp_err_t carousel_err = orb_carousel_init();
+    if (carousel_err != ESP_OK)
+        ESP_LOGE("carousel", "chip refused (%s) — the knob walks without a peek",
+                 esp_err_to_name(carousel_err));
 
     /* Rotary knob: GPIO edge ISRs feed the detent + press streams. */
     ESP_ERROR_CHECK(knob_init());

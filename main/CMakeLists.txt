@@ -1,8 +1,14 @@
 idf_component_register(
     SRCS
         "main.c"
+        "app/orb_app.c"
+        "app/orb_carousel.c"
+        "app/orb_jobs.c"
         "display/display.c"
+        "gfx/orb_gfx.c"
+        "gfx/orb_sched.c"
         "clock/clock_view.c"
+        "clock/clock_themes.c"
         "knob/knob.c"
         "color/color_picker.c"
         "menu/menu_view.c"
@@ -13,9 +19,12 @@ idf_component_register(
         "art/orb_theme.c"
         "net/orb_net.c"
         "sd/orb_sd.c"
+        "sd/orb_files.c"
     INCLUDE_DIRS
         "."
+        "app"
         "display"
+        "gfx"
         "clock"
         "knob"
         "color"

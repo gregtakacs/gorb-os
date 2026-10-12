@@ -106,8 +106,10 @@ under the bound. That margin is gone. Treat this as part of the same change, not
 
 What is green here proves less than it looks.
 
-- [ ] **Nothing in section 1 has run on a device with a card in the socket.** The bench has
-      no card and no radio (see `## Bench has no WiFi radio` in `.clinerules`).
+- [ ] **Nothing in section 1 has run on a device with a card in the socket.** The bench has no
+      card. Its radio is fine — the orb joins the LAN as a station and `curl`s its own routes;
+      the "no WiFi radio" heading in `.clinerules` means the *host* has no adapter, so it cannot
+      play the phone that joins the provisioning AP.
       `host_sd_test.py` lifts and lints shipped source; it does not execute scan, upload or
       install.
 - [ ] Load with the correct name, confirm the dial draws it, then exercise the failure paths
@@ -120,8 +122,14 @@ What is green here proves less than it looks.
       fail ladder falls back to the previous theme.
 - [ ] Build with 12 themes including long names and confirm the list answers instead of
       truncating, exercising section 5.
-- [ ] Flash the build. `/tmp/serflash.sh` still points at `B=.../Projects/gorb-os/build`, the
-      upstream clone, not this `gorb-os-2` tree. Fix `B` or the device re-flashes the old image.
+- [x] Flash the build. `/tmp/serflash.sh` pointed at `B=.../Projects/gorb-os/build`, the
+      upstream clone, not this `gorb-os-2` tree. `B` is repointed at `.../gorb-os-2/build` as of
+      2026-10-11 (`/tmp/serflash.sh.bak` holds the old copy). **Done 2026-10-11 13:53:** this
+      tree's `build/gorb-os.bin` flashed to ota_0 with `EXIT=0`, and the serial log was read back
+      over an RTS reset — clean boot, no `E (`/Guru/abort, `theme "skeleton" from slot-B`,
+      `bank "assets" @0x830000, 1978973 B ... 31 MMU pages`, tick timer running at the theme's
+      baked 250 ms. (Build under test = `dev2` + the P1 compositor extraction,
+      `docs/app-platform-plan.md` §10.)
 
 ## 7. Housekeeping
 

@@ -34,6 +34,7 @@
 
 #include "orb_theme.h"
 #include "orb_sd.h"
+#include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
 #include "art_bank.h"
 
 static const char *TAG = "orb_theme";
@@ -757,20 +758,65 @@ static const char *verify_container(int fd, const orb_thdr_t *h)
 }
 
 
-/* Opens and validates everything short of the pixels. On success returns an open
- * fd and the CALLER OWNS BOTH the fd and the card lock — release them together
- * with card_close(), never separately. FATFS keeps one window per volume and this
- * board has one CS line, so two tasks holding files open at once is how a directory
- * entry gets written by one and cached as something else by the other. */
-/* The card-lock-free core: the caller must already hold orb_sd_lock(), and on
- * success keeps holding it until card_close_locked(). Taking the mutex in here is
- * what deadlocked the device for real: orb_theme_scan() holds the lock across its
- * whole directory walk and validated each entry through card_open(), which asked for
- * the same non-recursive mutex again. With an empty themes directory the loop body
- * never runs, so the bench saw nothing; the first real theme on a real card left the
+/* Header, layout and geometry counts from an ALREADY-OPEN file. Returns the
+ * reason the file is not a theme, or NULL.
+ *
+ * The caller owns the fd: refusing a file and closing one are two different
+ * acts. orb_theme_scan()'s entries arrive already open from orb_files_walk(),
+ * and card_open_locked() opens its own and must close it on every refusal.
+ * Duplicating these checks instead of sharing them is how a card theme ends up
+ * listed on one path and refused on the other. */
+static const char *card_check(int fd, orb_thdr_t *o)
+{
+    if (ensure_chunk() != ESP_OK) return "out of memory";
+
+    uint32_t hdr[W_WORDS];
+    size_t pos = 0;
+    if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
+        return "file is too short to be a theme";
+
+    const char *r = hdr_parse(hdr, o);
+    if (r) return r;
+
+    /* The file's own layout rule, which hdr_parse leaves open deliberately: an
+     * installed slot puts its blob somewhere else and is checked separately. */
+    if (o->geom_off != W_WORDS * 4u || o->art_off < o->geom_off + o->geom_size ||
+        o->art_off % THEME_SECTOR)
+        return "container parts are not where this format puts them";
+
+    /* The four counts decide the blob's whole length, so a header whose numbers do
+     * not add up is refused here — before 4 MB is streamed off the card. */
+    uint32_t c[GEOM_COUNTS_V2];
+    pos = o->geom_off;
+    if (rd_at(fd, &pos, (uint8_t *)c, sizeof c) != (ssize_t)sizeof c)
+        return "geometry blob is missing";
+
+    uint32_t cnt[7];
+    if (geom_counts(c, o->geom_size / 4u, cnt) < 0)
+        return "geometry blob size does not match its own tables — re-bake it";
+
+    o->n_rects = cnt[0]; o->n_first = cnt[1]; o->n_delays = cnt[2]; o->n_bgf = cnt[3];
+    o->n_comp = cnt[4];  o->n_aux = cnt[5];    o->n_bank = cnt[6];
+    return NULL;
+}
+
+/* Opens and validates everything short of the pixels, for callers that do NOT
+ * hold the card lock — card_open() below is that wrapper. On success it returns
+ * an open fd and the CALLER OWNS BOTH the fd and the card lock: release them
+ * together with card_close(), never separately. FATFS keeps one window per
+ * volume and this board has one CS line, so two tasks holding files open at
+ * once is how a directory entry gets written by one and cached as something
+ * else by the other.
+ *
+ * The mutex must never be taken in here. That is what deadlocked the device for
+ * real: orb_theme_scan() held the lock across its whole directory walk and
+ * validated each entry through card_open(), which asked for the same
+ * non-recursive mutex again. With an empty themes directory the loop body never
+ * runs, so the bench saw nothing; the first real theme on a real card left the
  * one httpd worker blocked in xSemaphoreTake forever, and every route stopped
- * answering while ping kept replying. card_open() below is the wrapper for callers
- * that do not hold the lock. */
+ * answering while ping kept replying. The walk is orb_files_walk()'s now, which
+ * takes the lock once for the whole operation and hands the callback an open fd,
+ * so no caller of a validation path has to reason about the lock at all. */
 static int card_open_locked(const char *slug, orb_thdr_t *o, const char **why)
 {
     char path[ORB_SD_PATH_MAX];
@@ -783,7 +829,6 @@ static int card_open_locked(const char *slug, orb_thdr_t *o, const char **why)
      * \"httpd\"" — which is every web route dead and the dial still ticking. This
      * version only asks whether the card is still in, and refuses if it is not. */
     if (!orb_sd_mounted())                        { *why = "no card in the socket"; return -1; }
-    if (ensure_chunk() != ESP_OK)                 { *why = "out of memory"; return -1; }
 
     const int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -791,46 +836,9 @@ static int card_open_locked(const char *slug, orb_thdr_t *o, const char **why)
         return -1;
     }
 
-    uint32_t hdr[W_WORDS];
-    size_t pos = 0;
-    if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr) {
-        close(fd);
-        *why = "file is too short to be a theme";
-        return -1;
-    }
-    const char *r = hdr_parse(hdr, o);
-    if (r) { close(fd); *why = r; return -1; }
-
-    /* The file's own layout rule, which hdr_parse leaves open deliberately: an
-     * installed slot puts its blob somewhere else and is checked separately. */
-    if (o->geom_off != W_WORDS * 4u || o->art_off < o->geom_off + o->geom_size ||
-        o->art_off % THEME_SECTOR) {
-        close(fd);
-        *why = "container parts are not where this format puts them";
-        return -1;
-    }
-
-    /* The four counts decide the blob's whole length, so a header whose numbers do
-     * not add up is refused here — before 4 MB is streamed off the card. */
-    uint32_t c[GEOM_COUNTS_V2];
-    pos = o->geom_off;
-    if (rd_at(fd, &pos, (uint8_t *)c, sizeof c) != (ssize_t)sizeof c) {
-        close(fd); *why = "geometry blob is missing"; return -1;
-    }
-    uint32_t cnt[7];
-    if (geom_counts(c, o->geom_size / 4u, cnt) < 0) {
-        close(fd);
-        *why = "geometry blob size does not match its own tables — re-bake it";
-        return -1;
-    }
-    o->n_rects = cnt[0]; o->n_first = cnt[1]; o->n_delays = cnt[2]; o->n_bgf = cnt[3];
-    o->n_comp = cnt[4];  o->n_aux = cnt[5];    o->n_bank = cnt[6];
+    *why = card_check(fd, o);
+    if (*why) { close(fd); return -1; }
     return fd;
-}
-
-static void card_close_locked(int fd)
-{
-    if (fd >= 0) close(fd);
 }
 
 /* For callers that do not hold the card lock: the mutex is taken here and released by
@@ -1400,92 +1408,102 @@ esp_err_t orb_theme_delete(const char *slug)
     return ESP_OK;
 }
 
+/* One walk's accumulation. The OS hands the callback one entry at a time so the
+ * list is built under a single hold of the card lock, which is the only way an
+ * entry cannot be edited into something else between being listed and being
+ * read. */
+typedef struct {
+    orb_theme_entry_t *out;
+    int                cap;
+    int                n;
+} scan_ctx_t;
+
+/* The app's half of the walk. The OS found a <slug>.orbtheme, checked the name
+ * is one path segment, and has it open; what the file MEANS — whether it is a
+ * theme at all, whether it calls itself by the name it is filed under, whether
+ * it is the one on the dial — is this layer's business and not the card's. */
+static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
+{
+    scan_ctx_t *const c = arg;
+    if (c->n >= c->cap) return false;
+
+    orb_theme_entry_t *e = &c->out[c->n];
+    ESP_LOGI(TAG, "checking \"%s\" on the card", rec->name);
+    strlcpy(e->slug, rec->name, sizeof(e->slug));
+    e->title[0] = '\0';
+    e->why[0] = '\0';
+    e->art_size = 0; e->serial = 0;
+
+    orb_thdr_t h;
+    const char *why = card_check(fd, &h);
+    if (why) {
+        /* Listed with its reason rather than skipped. "no themes on the card" and
+         * "three themes, all damaged" are different problems — the card's or the
+         * bake's — and hiding the entries is what makes that undiagnosable. The
+         * reason goes in .why, NOT in .title: the page shows the title as a label
+         * and the reason as a warning, and overloading one field with the other
+         * means a damaged theme is listed under the name "geometry checksum".
+         * active/pending stay false: an unreadable file is not the dial's theme,
+         * whatever it is called. */
+        strlcpy(e->why, why, sizeof(e->why));
+        e->err = ESP_ERR_INVALID_ARG;
+        c->n++;
+        return true;
+    }
+
+    e->active  = strcmp(rec->name, s_active_slug) == 0;
+    e->pending = strcmp(rec->name, s_pending_slug) == 0;
+    /* Validated is not the same as loadable: a well-formed container filed under a
+     * name it does not call itself installs nothing, and the owner deserves that
+     * sentence from the list rather than from the log line a Load tap leaves behind.
+     * The title is kept here, unlike the damaged-entry path above, because the file
+     * is readable and the title is what the owner uploaded it to recognise. */
+    strlcpy(e->title, h.title[0] ? h.title : rec->name, sizeof(e->title));
+    char name_why[64];
+    const bool named = filed_as_its_own_slug(&h, rec->name, name_why, sizeof name_why);
+    if (!named) {
+        ESP_LOGW(TAG, "\"%s\" on the card calls itself \"%s\"", rec->name, h.slug);
+        strlcpy(e->why, name_why, sizeof(e->why));
+    }
+    e->art_size = h.art_size;
+    e->serial   = h.serial;
+    e->err      = named ? ESP_OK : ESP_ERR_INVALID_ARG;
+    c->n++;
+    return true;
+}
+
 int orb_theme_scan(orb_theme_entry_t *out, int cap)
 {
+    if (!out || cap <= 0) return -1;
     /* While an upload owns the card, do not open a second file on it: FatFs is
      * reentrant per volume, but this walk plus a 3.7 MB write on the same
      * directory would serialise the httpd worker behind the upload for seconds, and
      * a page that cannot poll its own list looks exactly like a device that has
      * stopped answering. The caller reports "uploading" instead. */
     if (orb_theme_upload_busy()) return -1;
-    if (orb_sd_ensure_mounted() != ESP_OK) return -1;
 
-    orb_sd_lock();
+    /* The directory and the extension are the clock app's declaration, not a
+     * constant here: the OS owns the walk, so this layer asks where its themes
+     * live rather than assuming. A missing declaration is a build order bug —
+     * nothing on the card has been read, so -1 is the honest answer and the line
+     * says which invariant broke. */
+    const orb_file_src_t *src = orb_files_src("clock", "themes");
+    if (!src) {
+        ESP_LOGE(TAG, "no \"themes\" file source declared — the clock app did not register");
+        return -1;
+    }
+
+    scan_ctx_t c = { .out = out, .cap = cap, .n = 0 };
     /* Both ends logged, with the wait: a scan that never comes back is the one card
      * failure that looks like a dead web server from outside (the dial keeps drawing
      * and ping keeps replying), and which of the two lines is missing says whether the
      * worker is waiting on the mutex or inside FatFs. */
     const int64_t t_scan = esp_timer_get_time();
-    ESP_LOGI(TAG, "listing %s", ORB_SD_THEME_DIR);
-    DIR *d = opendir(ORB_SD_THEME_DIR);
-    if (!d) {
-        orb_sd_unlock();
-        /* The directory not existing is the no-card-ever-used state, not an error:
-         * orb_sd_init() creates it at mount, so an absent one means the volume came
-         * up read-only or somebody formatted it on a laptop. */
-        ESP_LOGW(TAG, "%s is not a directory (%s)", ORB_SD_THEME_DIR, strerror(errno));
-        return -1;
-    }
-
-    int n = 0;
-    struct dirent *de;
-    while (n < cap && (de = readdir(d)) != NULL) {
-        /* Only <slug>.orbtheme, and the slug is taken from BEFORE the extension so a
-         * file named from the page can be deleted and loaded by what it is listed as. */
-        const size_t len = strlen(de->d_name);
-        const size_t ext = sizeof(ORB_THEME_EXT) - 1;
-        if (len <= ext || strcmp(de->d_name + (len - ext), ORB_THEME_EXT) != 0) continue;
-        char slug[ORB_THEME_SLUG_MAX + 1];
-        if (len - ext > sizeof(slug) - 1) continue;
-        memcpy(slug, de->d_name, len - ext);
-        slug[len - ext] = '\0';
-        if (!orb_sd_name_ok(slug)) continue;                 // hides junk, not themes
-
-        orb_thdr_t h;
-        const char *why = NULL;
-        ESP_LOGI(TAG, "checking \"%s\" on the card", slug);
-        const int fd = card_open_locked(slug, &h, &why);   /* this walk already holds the lock */
-        if (fd < 0) {
-            /* Listed with its reason rather than skipped. "no themes on the card" and
-             * "three themes, all damaged" are different problems — the card's or the
-             * bake's — and hiding the entries is what makes that undiagnosable. The
-             * reason goes in .why, NOT in .title: the page shows the title as a label
-             * and the reason as a warning, and overloading one field with the other
-             * means a damaged theme is listed under the name "geometry checksum". */
-            if (!why) why = "unreadable";
-            strlcpy(out[n].slug, slug, sizeof(out[n].slug));
-            out[n].title[0] = '\0';
-            strlcpy(out[n].why, why, sizeof(out[n].why));
-            out[n].art_size = 0; out[n].serial = 0;
-            out[n].err = ESP_ERR_INVALID_ARG;
-            out[n].active = false; out[n].pending = false;
-            n++;
-            continue;
-        }
-        card_close_locked(fd);
-        /* Validated is not the same as loadable: a well-formed container filed under a
-         * name it does not call itself installs nothing, and the owner deserves that
-         * sentence from the list rather than from the log line a Load tap leaves behind.
-         * The title is kept here, unlike the damaged-entry path below, because the file
-         * is readable and the title is what the owner uploaded it to recognise. */
-        char name_why[64];
-        const bool named = filed_as_its_own_slug(&h, slug, name_why, sizeof name_why);
-        if (!named) ESP_LOGW(TAG, "\"%s\" on the card calls itself \"%s\"", slug, h.slug);
-        strlcpy(out[n].slug, slug, sizeof(out[n].slug));
-        strlcpy(out[n].title, h.title[0] ? h.title : slug, sizeof(out[n].title));
-        strlcpy(out[n].why, named ? "" : name_why, sizeof(out[n].why));
-        out[n].art_size = h.art_size;
-        out[n].serial   = h.serial;
-        out[n].err      = named ? ESP_OK : ESP_ERR_INVALID_ARG;
-        out[n].active   = strcmp(slug, s_active_slug) == 0;
-        out[n].pending  = strcmp(slug, s_pending_slug) == 0;
-        n++;
-    }
-    closedir(d);
-    orb_sd_unlock();
-    ESP_LOGI(TAG, "%d entr%slisted in %lld ms", n, n == 1 ? "y " : "ies ",
+    ESP_LOGI(TAG, "listing %s", src->dir);
+    if (orb_files_walk(src, scan_entry, &c) < 0) return -1;
+    ESP_LOGI(TAG, "%d entr%slisted in %lld ms", c.n, c.n == 1 ? "y " : "ies ",
              (long long)((esp_timer_get_time() - t_scan) / 1000));
-    return n;
+    return c.n;
 }
 
 /* ------------------------------------------------------------------------- *

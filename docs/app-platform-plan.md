@@ -423,7 +423,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12) — the carousel, the `opt_*` shell rendering and M3 are still open, and M1 re-run on hardware (§12.7)** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11 and hardware-verified 2026-10-12 (§12.8); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering and M3 are still open** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -850,15 +850,21 @@ makes it observable.
 
 | Item | Note |
 |---|---|
-| Text carousel (C5) | The shell's own chrome, between apps, 400 ms settle before it accepts input (C1). First real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
+| Text carousel (C5) | **DONE on hardware 2026-10-12 (§12.8)**, by `tools/bench/carousel_bench.py`: a burst inside the settle window costs ONE activation and ONE full-page commit, and the same detents spaced beyond it cost one each. Its first real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
 | `opt_*` through the shell (B1/B2) | The hooks are in the ABI and NULL everywhere; the clock's settings tiles are still painted by its own view code until the shell renders them |
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
 | **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
 | **Clock app bundled default (P2 clock theme-options E2E)** | **Owner ruling D10 (§0.2), 2026-10-12.** The OS ships no art; the clock app carries its own bundled default, ingested from the SD card. Its source of truth — Design ID `WCD5-W1sic2…`, the compiled `clock_app_default.orbtheme` (both CRCs verified through `tools/orbtheme.py read_container`), and the `skeleton_theme.zip` layer kit the ID refers to — is committed at `assets/sources/clock-app-default/`, byte-identical to the owner's originals. It is **recorded, not wired**: booting it as the clock's art needs the P4/P6 `.orbapp` container, the `apps`-partition ingest, and a container→`clock_assets.{bin,h}` reverse tool that do not exist yet. Its slug `skeleton` also collides with orb-A's installed card theme, so a card install under that name is refused by the duplicate-slug check. The compiled-in `assets/clock_assets.{bin,h}` pair (av-kit) stays the card-less boot fallback and has never itself rendered on hardware — slot headers validate first |
 
-M1 is captured (§12.7), so the registry is host-proven and hardware-proven. What
-keeps P2 open is the carousel, the `opt_*` shell rendering, and M3.
+M1 is captured (§12.7) and the carousel is captured (§12.8), so the registry is
+host-proven and hardware-proven, and C5's deferral is hardware-proven. What keeps
+P2 open is the `opt_*` shell rendering and M3. The pass line's third clause, "the
+carousel survives a disable/enable cycle," is **not testable at P2 and is not a
+blocker**: the registry exposes no enable/disable/set-failed entry point at all
+(`orb_app.h`'s surface is init/activate/arm/service/opt), `enabled` is a plain
+field written from the compiled table, and `orb_app.h:129` defers `enabled` and
+`failed` to P4. The clause belongs to the P4 catalog, where the state exists.
 
 ### 12.7 M1 re-run against the registry — captured 2026-10-11, `8535154`
 
@@ -917,3 +923,89 @@ echoing the caller's value. The registry costs **2,256 B** of app image
 fixed sleep. The dial auto-dims at 60 s on this build, so the usable lit window
 is t≈12-58 s; every figure above is from that window, and `frames` in each fps
 line is a one-second count, not the cumulative total.
+
+---
+
+### 12.8 C5's carousel on hardware — captured 2026-10-12, `71947dd`
+
+The ruling-C5 promise is that a flick costs one full-page commit instead of one
+per detent. `host_carousel_test.py` proved it against a synthetic clock and
+stubbed leaves; this proves it on the board, driving the shipping build through
+`tools/bench/carousel_bench.py`. Detents are fired as separate
+`GET /api/v1/screen?turn=+1` requests, which reach the router through
+`input_router_inject()` — the same fold the encoder's own detent uses
+(`input_router.c:202`) — so from the fold down the path is the shipping one: real
+LVGL task, real registry, real display, and the commit count read from the
+router's own M1 probe line (`input: switch X -> glass +N ms: N commit(s)`).
+
+Run: orb-A (`44:bd:8d:60:80:88`, ARP-confirmed by the tool's own gate), `fw
+71947dd`, slot ota_0, `art_banks 1`, `art_refusals 0`, rssi -56 to -69 across
+three passes. The tool reads the two constants under test **from the device's
+boot log** (`chip ready (settle 400 ms)`, `router running (poll 10 ms, 3 walkable
+app(s))`), so if `ORB_CAROUSEL_SETTLE_MS` changes the control case moves with it
+instead of silently testing a window the board does not use. Exit 0, all cases
+held.
+
+| Case | Detents | Device-side gap | Activations | Commits | Glass |
+|---|---|---|---|---|---|
+| coalesce-2 | 2 | 97-206 ms | **1** | **1** | 73-80 ms |
+| coalesce-w+1 | 4 | 148-247 ms | **1** | 1 | 74-80 ms |
+| wrap-w | 3 (= walkable) | 105-209 ms | **0** | — | — |
+| control-2 | 2, spaced beyond window | 635-720 ms | **2** | 1 / 1 | 67-77 ms |
+| control-3x600 | 3, spaced beyond window | 726 ms | **3** | 1 / 1 / 1 | 64 / 70 / 294 ms |
+| hold-c8 | long-press from `color_picker` | — | lands on **`clock`** | 1 | 315 ms |
+
+The differential is the whole result. Two detents inside the window: one
+activation, one commit. The same two detents spaced past the window: two
+activations, two commits. Without the control, an infinite window (never
+switches) and a zero window (switches every detent, i.e. the pre-carousel
+behaviour) would both pass the coalesce row. Five tight detents also cost one
+activation, after one mid-burst wrap-cancel.
+
+**Falsification checked, not assumed.** Forcing the control's spacing inside the
+window (300 ms) must break the suite, and it did: `control-2 ... acts=1 want 2 |
+FAIL`, exit 1. A second guard proved itself unprompted — one pass returned `VOID
+(HTTP jitter pushed detents to 446 ms)` rather than claiming a coalesce it had not
+tested. That matters because HTTP round-trip at bench rssi is the noise floor: a
+requested 25 ms spacing arrives as 92-446 ms apart, so the x-axis is the device's
+own `synthetic turn` timestamps and a drifted burst is voided, never passed.
+
+**Bracketing the window.** Coalesced at gaps up to 326 ms observed; split at 510 ms
+and above. Both straddle the coded 400 ms, so the constant behaves as written. The
+bracket is ~180 ms wide because of the HTTP jitter above, which is why this
+**cannot** ratify the number — see the limit below.
+
+**Two findings the pass produced.**
+
+1. **A full-circle flick does nothing, by design.** With three walkable entries
+   (`clock → color_picker → menu`), a burst of exactly three names its way back
+   onto the entry already on the glass, and `orb_carousel.c:164` cancels rather
+   than commit a phantom switch — `wrap-w` prints 0 activations and one
+   `cancelled on … — no switch`, and the hops counter resets. The host suite already
+   pinned the no-phantom rule; what is new is the ergonomic consequence the table
+   makes visible: on a three-app carousel, a three-detent flick returns the user
+   exactly where they started. Correct, but worth knowing before a fourth app is
+   not in the table.
+2. **Switch cost reproduced, dial return still the outlier.** Picker and menu
+   activate in 63-83 ms against §12.7's 63-87 ms, so the carousel added nothing to
+   the switch. The clock's own return is the expensive one again: 294-315 ms here,
+   411-476 ms in §12.7 — the dial's full-page commit, not the switch.
+
+**What this run cannot say, stated by evidence.** Synthetic turns bypass the
+encoder: `/api/v1/status` reads `raw 0, det 0, spd10 0, vhits 0, shits 0` after the
+31 injected turns of the first pass, while the walk visibly happens. Injection
+enters at `input_router_inject()`, downstream of `knob.c`'s valley/bounce logic, so
+**the gap distribution of a real hand is not measurable this way**, and the 400 ms
+window is therefore still un-ratified against fingers. It is derived from
+`KNOB_SETTLE_MS` (30 ms, `knob.c:82`) and the picker's `VEL_IDLE_US` (220 ms), not
+measured — `orb_carousel.c:40-47`'s own note, flagged "not owner-ratified" when the
+module landed. Ratifying it needs a hand on the knob while the encoder telemetry is
+read, which is a two-minute ask rather than an engineering task.
+
+Health: zero `Guru`/`abort()`/watchdog, zero `no display commit within` (the
+parked beat was never leaked — the commit handover and the cancel-unpark both held
+across 46 fired detents), and the dial resumed its 10-15 fps baseline after the
+run. The device was re-flashed to `71947dd` first: it had come up on
+`8eb4bf0-dirty` (branch `main` plus uncommitted edits), which the `serflash.sh`
+audit caught as a stamp mismatch before anything was written.
+

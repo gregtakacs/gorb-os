@@ -62,7 +62,7 @@ function route() {
 (async () => {
   try {
     const m = await getJSON("/api/status");
-    $("#meta").textContent = `${m.platform} · build ${m.buildDir || "—"}`;
+    $("#meta").textContent = `${m.platform} · firmware ${m.firmware || "none"}`;
   } catch (e) { $("#meta").textContent = e.message; }
 })();
 
@@ -89,17 +89,67 @@ async function refreshBuild() {
   const el = $("#ob-build");
   try {
     const b = await getJSON("/api/build");
-    if (!b.present) { el.textContent = "no build detected — run idf.py build, or start with --build <dir>"; return; }
+    if (!b.present) { el.textContent = "no firmware is loaded — restart orb-manager"; return; }
     // Same discipline as the port picker: .length and .map on a value the server
     // could hand back as null or undefined throws, and the catch below then
     // blames the browser for what is a payload-shape bug.
     const imgs = Array.isArray(b.images) ? b.images : [];
-    const dir = b.buildDir || "(unknown build dir)";
-    if (!imgs.length) { el.textContent = "build detected but no images listed under " + dir; return; }
-    el.innerHTML = "<b>" + imgs.length + " image(s) from " + dir + ":</b><br>" +
-      imgs.map((i) => `${i.offset}  ${i.name}  (${i.bytes} B)`).join("<br>");
+    const who = b.version ? `${b.project || "gorb-os"} ${b.version}` : (b.source || "unknown firmware");
+    if (!imgs.length) { el.textContent = "firmware " + who + " lists no images"; return; }
+    el.innerHTML = `<b>Firmware ${who}</b> — ${b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)}<br>` +
+      imgs.map((i) => `${i.offset}  ${esc(i.name)}  (${i.bytes} B)`).join("<br>") +
+      (b.sha256 ? `<br><span class="hint">sha256 ${esc(b.sha256.slice(0, 16))}… · ${imgs.length} image(s)</span>` : "");
+    const reset = $("#ob-fwreset"), pick = $("#ob-fwpick");
+    const custom = b.source && b.source !== "built-in";
+    reset.hidden = !custom;
+    pick.textContent = custom ? "Pick a different firmware…" : "Use my own firmware…";
   } catch (e) { el.textContent = e.message; }
 }
+
+// esc keeps a filename the user chose from closing the panel's markup: it arrives
+// from an upload and is written into innerHTML.
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// pickFirmware uploads the chosen bundle. The hub validates it and only then makes
+// it active, so a wrong pick leaves the built-in firmware in place rather than
+// leaving the Flash button broken.
+async function pickFirmware(file) {
+  const state = $("#ob-fwstate");
+  state.textContent = "checking " + file.name + "…";
+  const form = new FormData();
+  form.append("firmware", file, file.name);
+  try {
+    const res = await fetch("/api/firmware", { method: "POST", body: form });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) {
+      state.textContent = (j.error || ("HTTP " + res.status)) + " — still flashing the built-in firmware";
+      return;
+    }
+    state.textContent = "flashing " + file.name;
+    await refreshBuild();
+  } catch (e) {
+    state.textContent = e.message + " — still flashing the built-in firmware";
+  }
+}
+
+$("#ob-fwpick").onclick = () => $("#ob-fwfile").click();
+$("#ob-fwfile").onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) await pickFirmware(f);
+  e.target.value = ""; // let the same file be picked again after a reset
+};
+$("#ob-fwreset").onclick = async () => {
+  const state = $("#ob-fwstate");
+  state.textContent = "restoring the built-in firmware…";
+  try {
+    const res = await fetch("/api/firmware/reset", { method: "POST" });
+    const j = await res.json().catch(() => ({}));
+    state.textContent = (res.ok && j.ok) ? "using the firmware built into this app" : (j.error || "HTTP " + res.status);
+  } catch (e) { state.textContent = e.message; }
+  await refreshBuild();
+};
 
 // streamPost POSTs payload to url and feeds each newline-delimited JSON event
 // to onEvent. Its whole reason for existing is to keep a transport failure from

@@ -44,6 +44,12 @@
     <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them — check this to send the orb to its provisioning AP.</label>
   </div>
   <div id="ob-build" class="buildlist"></div>
+  <div class="row" id="ob-fwrow">
+    <input type="file" id="ob-fwfile" accept=".zip,application/zip" hidden>
+    <button id="ob-fwpick" class="ghost" title="Flash a firmware bundle (.zip) from disk instead of the one built into this app">Use my own firmware…</button>
+    <button id="ob-fwreset" class="ghost" hidden>Use built-in firmware</button>
+    <span id="ob-fwstate" class="hint"></span>
+  </div>
   <div class="row">
     <button id="ob-go" class="primary">Flash orb</button>
   </div>

@@ -2,8 +2,10 @@
 
 A single static Go binary that onboards, themes, and manages gorb-os orbs on
 the LAN. It drives the flasher itself — no esptool, no Python, no stub loader.
-The serial library is compiled in. The UI is embedded. Users install nothing,
-and the hub opens in its own window rather than a browser tab.
+The serial library is compiled in, the UI is embedded, and the firmware is
+bundled inside. Users install nothing, need no ESP-IDF, and hold no build
+directory: one file flashes an orb. The hub opens in its own window rather than
+a browser tab.
 
 It lives at `tools/orb-manager/` inside the gorb-os clone and drives the same
 native flasher as the bash/Python bench tools (`tools/serflash.sh`), but it
@@ -59,9 +61,30 @@ make build                       # -> bin/orb-manager, bin/orbflash
 ./bin/orb-manager                # opens the hub in its own app window
 ```
 
-`orb-manager` auto-detects the clone root (`git rev-parse --show-toplevel`) so it
-finds `build/` and the embedded Theme Editor's source on its own. Point it
-elsewhere with `--build <dir>` or bind another address with `--addr host:port`.
+That is the whole procedure. The firmware is compiled into the binary, so the
+hub needs no ESP-IDF, no `build/` directory, no `git`, and no clone to flash an
+orb. It reads one file: the firmware bundle it ships with.
+
+To flash a different firmware — a downgrade, or a build newer than this binary —
+click **Use my own firmware…** on the Onboard card and pick a `*.zip` bundle.
+**Use built-in firmware** returns to the shipped one. `--firmware <bundle.zip>`
+starts on one from the command line.
+
+A bundle is a zip of `flasher_args.json` plus the images it names, under
+`images/`. `make firmware` produces one from a build dir on the machine that has
+the toolchain:
+
+```
+idf.py build && make firmware    # repacks internal/firmware/bundle/orb-firmware.zip
+```
+
+It is committed, which is what lets a plain `make build` work without ESP-IDF.
+Run it whenever the firmware changes; `TestBuiltInBundleMatchesBuildDirWhenPresent`
+fails if the committed bundle has gone stale against `ORB_BUILD_DIR`.
+
+Offsets are still never hardcoded: the manifest travels inside the bundle beside
+the exact bytes it describes, so a plan cannot mix one build's offsets with
+another build's images.
 
 By default the hub opens in a **chromeless Chromium window** (`window.go`) — no
 tabs, no address bar, taskbar entry named "Orb Manager" — instead of a browser
@@ -90,7 +113,9 @@ Three switches cover the exceptions:
 | `--no-window` | serve only and print the URL — the bench, SSH, and CI path |
 | `--browser=browser` | old behaviour: a normal tab in the default browser |
 | `--browser=/path/to/chrome` | name the binary instead of autodetecting |
-| `--repo=<clone root>` | name the gorb-os clone when auto-detection cannot (see "Testing on Windows") |
+| `--firmware=<bundle.zip>` | flash a firmware bundle instead of the one built into the binary |
+| `--repo=<clone root>` | serve the Theme Editor from the live clone instead of the copy built in |
+| `--addr=host:port` | bind somewhere other than `127.0.0.1:3779` |
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
 dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
@@ -106,11 +131,15 @@ The three hub cards:
   either mode, a successful flash runs the same post-flash onboarding probe; the
   boot verdict the flash captured picks the branch (AP card vs. connected panel),
   not the flash mode.
-- **Theme Editor** — serves the repo's watch-composer at `/composer/`, so edits
-  to the composer appear on reload with no rebuild. The card is a plain link into
-  it; the hub adds a "← Orb Manager" link to get back (an app window has no back
-  button) and, when React never arrives from the CDN, a line saying so rather
-  than a blank page. Both are added at serve time; the composer file is untouched.
+- **Theme Editor** — the watch-composer at `/composer/`. With a gorb-os clone
+  reachable it is served from `tools/watch-composer`, so edits to the composer
+  appear on reload with no rebuild; with no clone, as on every end user's machine,
+  the copy compiled into the binary is served instead (`make composer` refreshes
+  it, and `TestEmbeddedComposerMatchesSource` fails if it drifts). The card is a
+  plain link into it; the hub adds a "← Orb Manager" link to get back (an app
+  window has no back button) and, when React never arrives from the CDN, a line
+  saying so rather than a blank page. Both are added at serve time; neither copy
+  of the composer file is ever modified.
 - **Manage** — point at one orb by the IP provisioning reported (or one you look
   up on your router) and it dials that single address through the same-origin
   proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
@@ -119,12 +148,13 @@ The three hub cards:
 ## Headless flasher
 
 `orbflash` drives the identical `esprom.Session` without the web UI, for scripted
-bench use:
+bench use. It flashes the same embedded bundle, so it needs no build dir either:
 
 ```
 make orbflash
-./bin/orbflash -mode full -port /dev/ttyACM0 -build ../build   # whole manifest
-./bin/orbflash -mode app  -port /dev/ttyACM0 -build ../build -mac 44:bd:8d:60:80:88
+./bin/orbflash -mode full -port /dev/ttyACM0                    # whole manifest
+./bin/orbflash -mode app  -port /dev/ttyACM0 -mac 44:bd:8d:60:80:88
+./bin/orbflash -mode full -port /dev/ttyACM0 -firmware ./some-bundle.zip
 ```
 
 The default `-mode probe` only enters download mode, syncs, reads the chip id and
@@ -135,9 +165,11 @@ headless; a mismatch aborts before erasing.
 
 | Route | Purpose |
 |---|---|
-| `GET  /api/status` | platform, build stamp, repo/build dirs |
+| `GET  /api/status` | platform, hub stamp, firmware version and source |
 | `GET  /api/ports`  | serial ports enumerated from the host, as `{"ports":[...]}` |
-| `GET  /api/build`  | the flash manifest resolved from `flasher_args.json` |
+| `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
+| `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
+| `POST /api/firmware/reset` | return to the firmware compiled into the binary |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
@@ -145,9 +177,11 @@ headless; a mismatch aborts before erasing.
 
 Every route wraps its payload in `{ok,data}`. The port list sits under
 `data.ports`, not as a bare array, because `app.js` destructures that field. The
-build panel reads `data.present`, `data.buildDir`, and `data.images` — the last
-as `[{offset,name,bytes}]`, empty rather than null when the manifest lists
-nothing, because the UI takes `.length` on it. Two tests in `api_test.go` read
+firmware panel reads `data.present`, `data.images`, `data.source`, `data.version`,
+`data.project` and `data.sha256` — `images` as `[{offset,name,bytes}]`, empty
+rather than null when the manifest lists nothing, because the UI takes `.length`
+on it. A rejected upload answers `{ok:false,error}` and leaves the built-in
+firmware active: picking the wrong file cannot disable the Flash button. Two tests in `api_test.go` read
 those field names off `app.js` and fail if a handler stops sending them, which is
 how the port picker's blank dropdown got through once.
 
@@ -218,7 +252,8 @@ cannot become an open proxy or a path-traversal foothold.
 main.go              flag parsing, embeds web/, routes, app-window wiring, run log
 window.go            app-window mode: Chromium discovery, --app launch, window-lifetime shutdown
 window_devtools.go   DevTools page-target watch: shutdown follows the window through Chrome's single-instance hand-off
-api.go               the /api/* JSON handlers (status, ports, build)
+api.go               the /api/* JSON handlers (status, ports)
+firmware.go          the active firmware bundle, its upload/reset handlers, and the Onboard panel payload
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
@@ -227,6 +262,8 @@ composer.go          serves the repo's watch-composer at /composer/
 cmd/orbflash/        headless face of the same flasher
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
+internal/firmware/   the bundle: pack, load, verify, and the embedded orb-firmware.zip it ships with
+cmd/orbpack/         release-time packer: build dir + manifest -> the committed bundle
 internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
                      unshared CreateFile handle on Windows
 internal/orbnet/     single-orb status client (no sweep, no ARP)
@@ -240,6 +277,8 @@ make test       # go test ./... — SLIP framing, block checksum, SHA256 recalc,
                 # MAC decode, FLASH_BEGIN 5-word framing
 make vet        # go vet ./...
 make fmt        # go fmt ./...
+make firmware   # re-pack the embedded firmware bundle from this clone's build dir
+make composer   # re-copy the Theme Editor into web/composer/ for the shipped binary
 make run        # rebuild + open the app window against 127.0.0.1:3779
                 # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
@@ -284,15 +323,19 @@ found)`, correctly. Release it, and check Device Manager shows the
 usbipd detach --busid <busid>
 ```
 
-Start headless and check the three things the browser cannot tell you:
+No `-build`, no clone, no git on `PATH`: the firmware is inside the `.exe`. Start
+headless and check the two things the browser cannot tell you:
 
 ```powershell
 cd C:\Users\<you>\Downloads
-.\orb-manager.exe -no-window -build C:\gorb-os\build
+.\orb-manager.exe -no-window
 Invoke-RestMethod http://127.0.0.1:3779/api/status   # platform : windows
+Invoke-RestMethod http://127.0.0.1:3779/api/build    # source   : built-in
 Invoke-RestMethod http://127.0.0.1:3779/api/ports    # ports    : COM5 ...
 ```
 
+`/api/build` enumerates the five images from the embedded bundle and reports the
+firmware's own version and sha256 — from the binary, not from a directory.
 `/api/ports` answers `{"ports":[]}` on a machine with no COM ports at all; an
 empty list is a real answer, not a failure. `/api/status` reporting something
 other than `windows` means you are looking at a WSL hub still holding the port.
@@ -300,7 +343,7 @@ other than `windows` means you are looking at a WSL hub still holding the port.
 Then the window:
 
 ```powershell
-.\orb-manager.exe -build C:\gorb-os\build
+.\orb-manager.exe
 ```
 
 Chrome is not on `PATH`, so discovery reads the standard install roots
@@ -312,19 +355,22 @@ where Chrome's own named-pipe and GCM complaints go instead of your terminal.
 Closing the window must end the process: `Get-Process orb-manager` should find
 nothing.
 
-The clone usually lives in the WSL filesystem. A `.exe` on `C:` run from a
-directory outside the clone, with no git installed on Windows, cannot find it,
-and says so: `build dir: not detected`, and `/composer/` answers 503 naming the
-directory it searched. Point it at the clone explicitly:
+Nothing needs the clone. The firmware is compiled in, and so is the Theme Editor,
+so a bare `.\orb-manager.exe` serves every card from `C:\Users\<you>\Downloads`
+with `repoDir` empty and `git` absent from `PATH`. Add `-repo` only to edit the
+composer against the live source — then your edits to `tools/watch-composer/`
+appear on reload instead of coming from the copy built into the binary. Quote the
+UNC path: the shell collapses an unquoted `\\` to `\`, and the hub reports the
+mangled path it tried. Go reads the WSL filesystem over UNC fine:
 
 ```powershell
 .\orb-manager.exe -repo '\\wsl.localhost\Ubuntu\home\<you>\Projects\gorb-os'
 ```
 
-Quote the UNC path: the shell collapses an unquoted `\\` to `\`, and the hub
-then reports the mangled path it tried. Go reads the WSL filesystem over UNC
-fine — `/api/build` enumerates the images and `/composer/` serves 236 KB of
-editor from it.
+To flash a firmware that is not the one built in, click **Use my own firmware…**
+and pick a bundle zip. It is validated before it becomes active, and the card
+names the file, the version read out of the image, and its sha256, so you can see
+what will actually land on the orb. **Use built-in firmware** undoes it.
 
 To run the unit tests on Windows, install Go there and use PowerShell inside
 `tools\orb-manager`: `go test ./...`. Eight tests skip: they drive a `#!/bin/sh`
@@ -338,7 +384,7 @@ From WSL you can also exercise the Windows binary without leaving the keyboard,
 because WSL runs `.exe` files natively:
 
 ```
-make win-test                     # build and run both Windows test binaries
+make win-test                     # build and run the Windows test binaries
 make win-test TEST_ARGS=-test.v   # name-by-name
 ```
 

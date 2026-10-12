@@ -179,18 +179,59 @@ func TestComposerRefusesTraversal(t *testing.T) {
 	}
 }
 
-func TestComposerNeedsAClone(t *testing.T) {
+// An end user has no clone and never will, so the hub must still serve the
+// editor. This is the case that used to answer 503 and strand the Theme Editor
+// card on every machine except the bench.
+func TestComposerServesFromTheBinaryWithoutAClone(t *testing.T) {
 	s := &Server{} // no repoDir: the binary ran outside any gorb-os clone
 	rr := httptest.NewRecorder()
 	s.serveComposer(rr, httptest.NewRequest(http.MethodGet, "/composer/", nil))
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 with an explanation", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 from the copy built into the binary (%s)", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "clone") {
-		t.Errorf("body = %q, want it to say the editor needs a clone", rr.Body.String())
+	body := rr.Body.String()
+	if !strings.Contains(body, "<body") {
+		t.Errorf("embedded editor body = %.120q, want the composer document", body)
 	}
-	if !strings.Contains(rr.Body.String(), "-repo") {
-		t.Errorf("body = %q, want it to name the -repo flag that fixes this", rr.Body.String())
+	if !strings.Contains(body, "Orb Manager") {
+		t.Error("embedded editor lost the hub back link")
+	}
+
+	// Its siblings must come from the embed too: the editor loads them by relative
+	// URL, and a 503 on watch-engine.js is a blank editor with a 200 on the page.
+	for _, sibling := range []string{"watch-engine.js", "dial-renderer.js", "support.js", "orbtheme-baker.js"} {
+		sr := httptest.NewRecorder()
+		s.serveComposer(sr, httptest.NewRequest(http.MethodGet, "/composer/"+sibling, nil))
+		if sr.Code != http.StatusOK || sr.Body.Len() < 1000 {
+			t.Errorf("%s: status %d, %d B — the editor cannot run without it", sibling, sr.Code, sr.Body.Len())
+		}
+	}
+}
+
+// The embedded copy is a snapshot, so it must be pinned to the source it came
+// from. Without this, `make composer` drifts silently and the shipped app edits
+// an older composer than the repo does.
+func TestEmbeddedComposerMatchesSource(t *testing.T) {
+	repo := detectRepoDir()
+	if repo == "" {
+		t.Skip("no gorb-os clone reachable: nothing to compare the embedded copy against")
+	}
+	src := filepath.Join(repo, composerDirRel)
+	if _, err := os.Stat(filepath.Join(src, composerEntry)); err != nil {
+		t.Skipf("clone at %s has no composer: %v", src, err)
+	}
+	for _, name := range []string{composerEntry, "watch-engine.js", "dial-renderer.js", "support.js", "orbtheme-baker.js"} {
+		want, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			t.Fatalf("read source %s: %v", name, err)
+		}
+		got, err := webFS.ReadFile(composerEmbedDir + "/" + name)
+		if err != nil {
+			t.Fatalf("embedded %s missing: %v — run make composer", name, err)
+		}
+		if !bytes.Equal(want, got) {
+			t.Errorf("embedded %s differs from %s by %d bytes — run make composer", name, src, len(want)-len(got))
+		}
 	}
 }
 

@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"os"
-	"path/filepath"
+	"fmt"
 	"testing"
 )
 
@@ -307,6 +306,12 @@ func partEntry(typ, sub uint8, off, size uint32, label string) []byte {
 	return e
 }
 
+func TestNvsRegionsRefuseEmptyTable(t *testing.T) {
+	if _, err := NvsRegions(nil); err == nil {
+		t.Error("NvsRegions(nil): want error, got nil")
+	}
+}
+
 func TestNvsRegions(t *testing.T) {
 	// Mirror the repo's real layout: nvs esp_wifi owns + storage the orb writes.
 	table := bytes.Join([][]byte{
@@ -316,14 +321,7 @@ func TestNvsRegions(t *testing.T) {
 		partEntry(0x01, 0x06, 0xC20000, 0x140000, "www"),   // data but not nvs
 		partEntry(0x01, 0x02, 0xE00000, 0x1500, "stray"),   // nvs subtype, unknown label
 	}, nil)
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "partition_table"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "partition_table", "partition-table.bin"), table, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := NvsRegions(dir)
+	got, err := NvsRegions(table)
 	if err != nil {
 		t.Fatalf("NvsRegions: %v", err)
 	}
@@ -338,28 +336,80 @@ func TestNvsRegions(t *testing.T) {
 	}
 
 	// A table with no nvs/storage must refuse, not silently erase nothing.
-	dir2 := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir2, "partition_table"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir2, "partition_table", "partition-table.bin"),
-		table[:32], 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NvsRegions(dir2); err == nil {
+	if _, err := NvsRegions(table[:32]); err == nil {
 		t.Error("NvsRegions on empty table: want error, got nil")
 	}
 
 	// Unaligned size must refuse outright.
-	dir3 := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir3, "partition_table"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir3, "partition_table", "partition-table.bin"),
-		partEntry(0x01, 0x02, 0x9000, 0x1234, "nvs"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NvsRegions(dir3); err == nil {
+	if _, err := NvsRegions(partEntry(0x01, 0x02, 0x9000, 0x1234, "nvs")); err == nil {
 		t.Error("NvsRegions unaligned: want error, got nil")
 	}
+}
+
+// pad4 exists to satisfy the ROM's 4-byte write granularity, but the slice it is
+// handed comes from a bundle shared by every flash the hub serves. An append into
+// spare capacity would write padding over whatever follows in that backing array,
+// corrupting the next flash from an operation meant to be read-only.
+func TestPad4NeverWritesThroughSharedBytes(t *testing.T) {
+	// Three bytes of payload with three bytes of spare capacity behind it: the
+	// exact shape that makes append mutate the caller's array.
+	backing := make([]byte, 6)
+	copy(backing, []byte{0x11, 0x22, 0x33})
+	shared := backing[:3] // len 3, cap 6: append here would write backing[3]
+
+	got := pad4(shared)
+
+	if len(got) != 4 {
+		t.Fatalf("pad4 len = %d, want 4", len(got))
+	}
+	if got[0] != 0x11 || got[1] != 0x22 || got[2] != 0x33 || got[3] != 0 {
+		t.Errorf("pad4 = %v, want the payload then one zero byte", got)
+	}
+	// The tell: the original three bytes must be untouched, and the spare capacity
+	// behind them unwritten.
+	if !bytes.Equal(backing[:3], []byte{0x11, 0x22, 0x33}) {
+		t.Errorf("pad4 changed the caller's bytes: %v", backing[:3])
+	}
+	if backing[3] != 0 {
+		t.Errorf("pad4 wrote into the caller's spare capacity: backing[3] = %#x, want untouched 0", backing[3])
+	}
+	if &got[0] == &shared[0] {
+		t.Error("pad4 returned the caller's array; a flash must not share it")
+	}
+
+	// Already aligned: returned as-is, no needless copy of a megabyte app image.
+	if again := pad4([]byte{1, 2, 3, 4}); len(again) != 4 {
+		t.Errorf("pad4 on aligned input len = %d, want 4", len(again))
+	}
+}
+
+// A plan's images must be usable twice in a row with identical bytes: that is what
+// flashing twice without re-reading from disk has to guarantee.
+func TestPlanImagesAreReusableAcrossFlashes(t *testing.T) {
+	boot := espLikeImage(0xE9, 0x02, 0x22) // magic, dio mode, size/freq nibble
+	manifest := []byte(`{"flash_settings":{"flash_mode":"qio","flash_size":"16MB","flash_freq":"80m"},` +
+		`"flash_files":{"0x0":"bootloader/bootloader.bin"}}`)
+	open := func(string) ([]byte, error) { return append([]byte{}, boot...), nil }
+
+	plan, err := PlanFromManifest(manifest, open)
+	if err != nil {
+		t.Fatalf("PlanFromManifest: %v", err)
+	}
+	before := fmt.Sprintf("%x", plan.Images[0].Data)
+	// The two transforms Session applies, run twice as two flashes would.
+	for round := 0; round < 2; round++ {
+		patched, err := patchBootloaderFlashParams(plan.Images[0].Data, plan.Images[0].Offset, plan)
+		if err != nil {
+			t.Fatalf("round %d patch: %v", round, err)
+		}
+		_ = pad4(patched)
+		if got := fmt.Sprintf("%x", plan.Images[0].Data); got != before {
+			t.Fatalf("round %d mutated the shared image bytes\n before %s\n after  %s", round, before, got)
+		}
+	}
+}
+
+func espLikeImage(magic, mode, sizeFreq byte) []byte {
+	b := []byte{magic, 0x01, mode, sizeFreq, 0, 0, 0, 0}
+	return append(b, bytes.Repeat([]byte{0x42}, 100)...)
 }

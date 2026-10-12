@@ -4,11 +4,17 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// OpenImage resolves one manifest-relative path (as written in
+// flasher_args.json, e.g. bootloader/bootloader.bin or
+// ../assets/clock_assets.bin) to its bytes. The bundle is the only image
+// source: the flasher never consults the OS filesystem, so offsets and bytes
+// always describe the same artifact and a firmware picked from disk can never
+// disagree with the manifest that shipped beside it.
+type OpenImage func(rel string) ([]byte, error)
 
 // flasher_args.json is the manifest idf.py emits describing exactly which
 // .bin goes at which offset and how to configure the SPI flash. Reading it is
@@ -23,14 +29,11 @@ type flasherArgs struct {
 	FlashFiles map[string]string `json:"flash_files"`
 }
 
-// PlanFromBuildDir reads <buildDir>/flasher_args.json and resolves every
-// listed image path against buildDir (paths there are build-relative, e.g.
-// bootloader/bootloader.bin and ../assets/clock_assets.bin).
-func PlanFromBuildDir(buildDir string) (FlashPlan, error) {
-	raw, err := os.ReadFile(filepath.Join(buildDir, "flasher_args.json"))
-	if err != nil {
-		return FlashPlan{}, fmt.Errorf("esprom: read flasher_args.json: %w (build the project first?)", err)
-	}
+// PlanFromManifest turns the flasher_args.json bytes an artifact carries into
+// the full-device plan, resolving every listed image through open. It reads no
+// filesystem: the manifest and the images arrive together, so a plan can never
+// describe offsets from one build and bytes from another.
+func PlanFromManifest(raw []byte, open OpenImage) (FlashPlan, error) {
 	var fa flasherArgs
 	if err := json.Unmarshal(raw, &fa); err != nil {
 		return FlashPlan{}, fmt.Errorf("esprom: parse flasher_args.json: %w", err)
@@ -68,11 +71,15 @@ func PlanFromBuildDir(buildDir string) (FlashPlan, error) {
 	}
 	for _, off := range offsets {
 		rel := rev[off]
-		full := filepath.Clean(filepath.Join(buildDir, rel))
-		p.Images = append(p.Images, Image{Offset: off, Path: full})
+		data, err := open(rel)
+		if err != nil {
+			return FlashPlan{}, fmt.Errorf("esprom: image %q at 0x%X: %w", rel, off, err)
+		}
+		name := baseName(rel)
+		p.Images = append(p.Images, Image{Offset: off, Name: name, Data: data})
 	}
 	if len(p.Images) == 0 {
-		return FlashPlan{}, fmt.Errorf("esprom: no images listed in %s/flasher_args.json", buildDir)
+		return FlashPlan{}, fmt.Errorf("esprom: no images listed in flasher_args.json")
 	}
 	return p, nil
 }
@@ -86,10 +93,10 @@ const (
 	appFlashSize  = 16 << 20
 )
 
-func AppOnlyPlan(appBin, otaDataInitial string) FlashPlan {
-	imgs := []Image{{Offset: appOffset, Path: appBin}}
-	if otaDataInitial != "" {
-		imgs = append(imgs, Image{Offset: otaDataOffset, Path: otaDataInitial})
+func AppOnlyPlan(appName string, appBin []byte, otaDataInitial []byte) FlashPlan {
+	imgs := []Image{{Offset: appOffset, Name: appName, Data: appBin}}
+	if len(otaDataInitial) > 0 {
+		imgs = append(imgs, Image{Offset: otaDataOffset, Name: "ota_data_initial.bin", Data: otaDataInitial})
 	}
 	return FlashPlan{
 		Images:    imgs,
@@ -142,10 +149,15 @@ type EraseTarget struct {
 // Partition-table entry layout is gen_esp32part.py's STRUCT_FORMAT
 // '<2sBBLL16sL': magic AA50, type, subtype, offset, size, label[16], flags.
 // type 1 = data, subtype 2 = nvs.
-func NvsRegions(buildDir string) ([]EraseTarget, error) {
-	raw, err := os.ReadFile(filepath.Join(buildDir, "partition_table", "partition-table.bin"))
-	if err != nil {
-		return nil, fmt.Errorf("esprom: read partition table: %w", err)
+// NvsRegions parses partition-table bytes for the NVS/storage regions the
+// factory reset erases. The caller passes the same bytes the plan writes at
+// 0x8000 — never a file read off disk — so a wipe can only ever target the
+// regions of the firmware actually being flashed. Pointing a built-in firmware
+// at a stale on-disk table could erase a region that the new table uses for
+// something else.
+func NvsRegions(raw []byte) ([]EraseTarget, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("esprom: no partition table in the selected firmware")
 	}
 	out := []EraseTarget{}
 	for i := 0; i+32 <= len(raw); i += 32 {

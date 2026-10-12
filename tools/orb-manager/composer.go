@@ -8,17 +8,27 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-// The Theme Editor is the existing watch-composer, which lives in the repo as
-// "Watch Composer.dc.html" plus four sibling .js files it loads by relative
-// URL. Serving the directory (not embedding a copy) keeps one source of truth:
-// edits to the composer show up on next reload with no rebuild. index.html is
-// remapped to the .dc.html so the hub's /composer/index.html link resolves.
+// The Theme Editor is the existing watch-composer: "Watch Composer.dc.html" plus
+// four sibling .js files it loads by relative URL.
+//
+// Two sources, chosen per request. When the gorb-os clone is reachable the hub
+// serves the composer straight from tools/watch-composer, which keeps one source
+// of truth for the developer: edits appear on the next reload with no rebuild.
+// When it is not — which is every end user, who has no clone and never will — the
+// copy compiled into the binary is served instead, so the card works.
+// `make composer` refreshes that copy; TestEmbeddedComposerMatchesSource pins it
+// against the repo so the two cannot drift silently.
+//
+// index.html is remapped to the .dc.html so the hub's /composer/index.html link
+// resolves.
 const (
-	composerDirRel  = "tools/watch-composer"
-	composerEntry   = "Watch Composer.dc.html"
-	composerBodyCap = 1 << 16 // how far into the file to look for the <body> tag
+	composerDirRel   = "tools/watch-composer"
+	composerEntry    = "Watch Composer.dc.html"
+	composerBodyCap  = 1 << 16 // how far into the file to look for the <body> tag
+	composerEmbedDir = "web/composer"
 )
 
 // hubBackLink lands right after the composer's <body> tag when the hub serves
@@ -49,11 +59,6 @@ func (s *Server) routesComposer(mux *http.ServeMux) {
 }
 
 func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
-	if s.repoDir == "" {
-		http.Error(w, "theme editor unavailable: the hub could not find the gorb-os clone; start it with -repo <clone root>", http.StatusServiceUnavailable)
-		return
-	}
-	dir := filepath.Join(s.repoDir, composerDirRel)
 	name := strings.TrimPrefix(r.URL.Path, "/composer/")
 	if name == "" || name == "index.html" {
 		name = composerEntry
@@ -63,18 +68,18 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	full := filepath.Join(dir, name)
-	st, err := os.Stat(full)
-	if err != nil || st.IsDir() {
+
+	raw, modTime, source, err := s.readComposerFile(name)
+	if err != nil {
 		// Name the directory that was searched. A -repo value mangled by a shell
 		// (cmd.exe eats one leading backslash from a UNC path) otherwise reads as
 		// "the editor does not exist" rather than "I looked in the wrong place".
-		http.Error(w, fmt.Sprintf("theme editor unavailable: no %s under %s", name, dir), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("theme editor unavailable: no %s under %s", name, source), http.StatusServiceUnavailable)
 		return
 	}
 	if name != composerEntry {
 		// The sibling .js files load by relative URL and must stay byte-exact.
-		http.ServeFile(w, r, full)
+		http.ServeContent(w, r, name, modTime, bytes.NewReader(raw))
 		return
 	}
 	// ServeContent, not ServeFile: ServeFile answers a request whose path ends
@@ -82,12 +87,39 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 	// through a redirect is a card click that can go wrong. Content type and
 	// range handling are inferred from the name's extension either way, and the
 	// file's own mtime keeps If-Modified-Since honest so a reload picks up edits.
-	raw, err := os.ReadFile(full)
-	if err != nil {
-		http.Error(w, "theme editor unavailable: "+err.Error(), http.StatusServiceUnavailable)
-		return
+	http.ServeContent(w, r, name, modTime, bytes.NewReader(injectAfterBody(raw, hubBackLink+hubDepWatch)))
+}
+
+// readComposerFile returns one composer file and where it came from. The clone
+// wins when it has the file, so a developer's edits are live; the copy compiled
+// into the binary answers when the clone is absent or incomplete, which is the
+// normal state for a downloaded app.
+func (s *Server) readComposerFile(name string) (raw []byte, modTime time.Time, source string, err error) {
+	if s.repoDir != "" {
+		dir := filepath.Join(s.repoDir, composerDirRel)
+		full := filepath.Join(dir, name)
+		if st, serr := os.Stat(full); serr == nil && !st.IsDir() {
+			data, rerr := os.ReadFile(full)
+			if rerr != nil {
+				return nil, time.Time{}, dir, rerr
+			}
+			return data, st.ModTime(), dir, nil
+		}
+		// A named clone that lacks the file is a mistake worth surfacing, not a
+		// silent fallback to a possibly older embedded copy.
+		return nil, time.Time{}, dir, os.ErrNotExist
 	}
-	http.ServeContent(w, r, name, st.ModTime(), bytes.NewReader(injectAfterBody(raw, hubBackLink+hubDepWatch)))
+	data, serr := webFS.ReadFile(composerEmbedDir + "/" + name)
+	if serr != nil {
+		return nil, time.Time{}, "the copy built into this binary", serr
+	}
+	return data, embeddedComposerTime(), "built into orb-manager", nil
+}
+
+// embeddedComposerTime is a fixed stamp for embedded files: they cannot change
+// under a running process, and a stable mtime lets If-Modified-Since work.
+func embeddedComposerTime() time.Time {
+	return time.Unix(0, 0).UTC()
 }
 
 // injectAfterBody drops snippet immediately after the opening <body> tag. With

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 )
 
@@ -61,7 +62,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := s.planFor(req.Mode)
+	b, plan, err := s.planFor(req.Mode)
 	if err != nil {
 		send("error", err.Error())
 		return
@@ -88,12 +89,13 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	defer pt.Close()
 
 	opts.Plan = plan
-	// The factory reset resolves its targets from the built partition table
-	// (the same authoritative bytes flashed at 0x8000), never from constants,
-	// and only on the explicit request — an ordinary flash must keep the
-	// orb's credentials and tz alive.
+	// The factory reset resolves its targets from the partition table inside the
+	// very bundle being flashed, never from constants and never from a build dir.
+	// A stale table could otherwise point the erase at a region the new layout
+	// uses for something else. An ordinary flash must still keep the orb's
+	// credentials and tz alive, so it erases nothing.
 	if req.Wipe {
-		regions, werr := esprom.NvsRegions(s.buildDir)
+		regions, werr := esprom.NvsRegions(b.PartitionTable())
 		if werr != nil {
 			send("error", werr.Error())
 			return
@@ -156,20 +158,27 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	send("done", "flash complete — orb rebooting into the new firmware")
 }
 
-// planFor resolves the flash manifest for a mode, always from the build so
-// offsets/mode are never hardcoded (the serflash.sh discipline).
-func (s *Server) planFor(mode string) (esprom.FlashPlan, error) {
-	if s.buildDir == "" {
-		return esprom.FlashPlan{}, fmt.Errorf("no build dir — start the manager with --build")
+// planFor resolves the flash manifest for a mode out of the selected firmware
+// bundle — the bytes the binary shipped with, or the one the user picked. It
+// returns the bundle beside the plan so a factory reset erases regions of the
+// same artifact being written, even if a new firmware is picked mid-flash.
+//
+// It never consults an ESP-IDF build dir: offsets and geometry come from the
+// manifest that travelled inside the same bundle, so they still cannot drift
+// from the images they describe (the serflash.sh lesson), and an end user needs
+// nothing installed but this app.
+func (s *Server) planFor(mode string) (*firmware.Bundle, esprom.FlashPlan, error) {
+	b := s.firmwareBundle()
+	if b == nil {
+		return nil, esprom.FlashPlan{}, fmt.Errorf("no firmware loaded — restart the hub, or pick a firmware file on the Onboard card")
 	}
 	switch mode {
 	case "app":
-		app := s.buildDir + "/gorb-os.bin"
-		ota := s.buildDir + "/ota_data_initial.bin"
-		return esprom.AppOnlyPlan(app, ota), nil
+		plan, err := b.AppPlan()
+		return b, plan, err
 	case "full", "":
-		return esprom.PlanFromBuildDir(s.buildDir)
+		return b, b.Plan(), nil
 	default:
-		return esprom.FlashPlan{}, fmt.Errorf("unknown flash mode %q", mode)
+		return nil, esprom.FlashPlan{}, fmt.Errorf("unknown flash mode %q", mode)
 	}
 }

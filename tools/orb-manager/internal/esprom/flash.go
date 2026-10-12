@@ -4,16 +4,21 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"time"
 )
 
-// Image is one blob to place at a flash offset, mirroring an entry in
-// build/flasher_args.json's flash_files map. Offset must be sector-aligned
-// for the ROM (no-stub) path.
+// Image is one blob to place at a flash offset, mirroring an entry in a
+// bundle's flash_files map. Offset must be sector-aligned for the ROM
+// (no-stub) path.
 type Image struct {
 	Offset uint32
-	Path   string
+	// Name is the display basename from the manifest (bootloader.bin, ...). It
+	// is never joined with a directory: the bytes travel with the plan, so there
+	// is no path left to resolve, and no OS path semantics to get wrong.
+	Name string
+	// Data is the image as packaged. Treat it as read-only: a bundle is built
+	// once and reused across every flash of the hub's lifetime.
+	Data []byte
 }
 
 // FlashPlan is the ordered set of images to write plus the flash geometry the
@@ -34,11 +39,19 @@ func parseImageHeader(b []byte) (magic byte, numSeg byte, flashMode byte, sizeFr
 }
 
 // pad4 appends 0xFF so len(b) is a multiple of 4 (esptool pad_to(image,4)).
+// pad4 rounds an image up to a 4-byte flash boundary. It always copies: the
+// bytes it is handed come from a bundle shared by every flash this hub serves,
+// and append would write the padding into that slice's spare capacity —
+// corrupting the next flash, and any sibling slice sharing the same backing
+// array, from an operation that is supposed to be read-only.
 func pad4(b []byte) []byte {
-	if r := len(b) % 4; r != 0 {
-		b = append(b, make([]byte, 4-r)...)
+	r := len(b) % 4
+	if r == 0 {
+		return b
 	}
-	return b
+	out := make([]byte, len(b)+4-r)
+	copy(out, b)
+	return out
 }
 
 // patchBootloaderFlashParams replicates esptool _update_image_flash_params for
@@ -200,16 +213,13 @@ func Session(pt *Port, o Options) error {
 
 	n := len(o.Plan.Images)
 	for i, img := range o.Plan.Images {
-		raw, err := os.ReadFile(img.Path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", img.Path, err)
-		}
+		raw := img.Data
 		if len(raw) == 0 {
 			continue
 		}
 		if img.Offset == 0 {
 			if _, _, _, _, _, err := parseImageHeader(raw); err != nil {
-				return fmt.Errorf("%s: %w", img.Path, err)
+				return fmt.Errorf("%s: %w", img.Name, err)
 			}
 		}
 		data, err := patchBootloaderFlashParams(raw, img.Offset, o.Plan)
@@ -217,14 +227,14 @@ func Session(pt *Port, o Options) error {
 			return err
 		}
 		data = pad4(data)
-		logf(fmt.Sprintf("writing %s (%d B) @0x%X", baseName(img.Path), len(data), img.Offset))
+		logf(fmt.Sprintf("writing %s (%d B) @0x%X", img.Name, len(data), img.Offset))
 		iprog := func(written, total int) {
 			if o.OnProgress != nil {
 				o.OnProgress(i, n, img.Offset, written, total)
 			}
 		}
 		if err := d.WriteImage(img.Offset, data, iprog); err != nil {
-			return fmt.Errorf("flash %s @0x%X: %w", baseName(img.Path), img.Offset, err)
+			return fmt.Errorf("flash %s @0x%X: %w", img.Name, img.Offset, err)
 		}
 	}
 

@@ -9,11 +9,12 @@ import (
 	"os"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 )
 
 func main() {
 	port := flag.String("port", "", "serial device (e.g. /dev/ttyACM0 or a /dev/serial/by-id path)")
-	build := flag.String("build", "", "gorb-os build dir (has flasher_args.json)")
+	fwPath := flag.String("firmware", "", "a firmware bundle (.zip) to flash instead of the built-in one")
 	mode := flag.String("mode", "probe", "probe | app | full")
 	macStr := flag.String("mac", "", "require this bound MAC (aa:bb:cc:dd:ee:ff) before flashing")
 	flag.Parse()
@@ -61,20 +62,24 @@ func main() {
 
 	// Flash modes re-enter download mode inside Session (idempotent) and apply
 	// the MAC gate if --mac was given.
-	var plan esprom.FlashPlan
-	var want [6]byte
-	if *mode == "full" {
-		plan, err = esprom.PlanFromBuildDir(*build)
-	} else {
-		if *build == "" {
-			fmt.Fprintln(os.Stderr, "orbflash: --build is required")
-			os.Exit(2)
-		}
-		plan = esprom.AppOnlyPlan(*build+"/gorb-os.bin", *build+"/ota_data_initial.bin")
-	}
+	// Firmware comes from the bundle compiled into this binary, or from one named
+	// with -firmware. There is no --build: the flasher is a standalone tool, and a
+	// person flashing an orb has no ESP-IDF installed.
+	b, err := loadFlasherFirmware(*fwPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orbflash:", err)
 		os.Exit(1)
+	}
+	var plan esprom.FlashPlan
+	var want [6]byte
+	if *mode == "full" {
+		plan = b.Plan()
+	} else {
+		plan, err = b.AppPlan()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "orbflash:", err)
+			os.Exit(1)
+		}
 	}
 	if macStr != nil && *macStr != "" {
 		w, perr := parseMAC(*macStr)
@@ -114,4 +119,16 @@ func parseMAC(s string) ([6]byte, error) {
 		return m, fmt.Errorf("orbflash: bad MAC %q: %w", s, err)
 	}
 	return m, nil
+}
+
+// loadFlasherFirmware returns the built-in bundle, or the one -firmware names.
+func loadFlasherFirmware(path string) (*firmware.Bundle, error) {
+	if path == "" {
+		return firmware.BuiltIn()
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read firmware file %s: %w", path, err)
+	}
+	return firmware.Load(raw, path)
 }

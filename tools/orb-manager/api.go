@@ -2,11 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
@@ -29,7 +26,13 @@ func (s *Server) json(h jsonHandler) http.HandlerFunc {
 }
 
 func (s *Server) hello(*http.Request) (any, error) {
-	return map[string]any{"platform": runtime.GOOS, "version": version, "repoDir": s.repoDir, "buildDir": s.buildDir}, nil
+	b := s.firmwareBundle()
+	fwVersion, fwSource := "", ""
+	if b != nil {
+		fwVersion, fwSource = b.Version, b.Source
+	}
+	return map[string]any{"platform": runtime.GOOS, "version": version, "repoDir": s.repoDir,
+		"firmware": fwVersion, "firmwareSource": fwSource}, nil
 }
 
 // listPorts feeds the Onboard port picker. The payload is an object, not the
@@ -50,35 +53,6 @@ func portsPayload(ports []string) map[string]any {
 		ports = []string{}
 	}
 	return map[string]any{"ports": ports}
-}
-
-// describeBuild feeds the Onboard "what will I be flashing" panel. Its keys are
-// a UI contract, pinned by TestBuildPanelFieldsMatchBetweenClientAndHandler:
-// app.js reads present, images, and buildDir here, and takes .length/.map on
-// images, so that list must be a (possibly empty) array and never null.
-func (s *Server) describeBuild(*http.Request) (any, error) {
-	if s.buildDir == "" {
-		return map[string]any{"present": false, "buildDir": ""}, nil
-	}
-	if _, err := os.Stat(filepath.Join(s.buildDir, "flasher_args.json")); err != nil {
-		return map[string]any{"present": false, "buildDir": s.buildDir}, nil
-	}
-	plan, err := esprom.PlanFromBuildDir(s.buildDir)
-	if err != nil {
-		return nil, err
-	}
-	imgs := make([]map[string]any, 0, len(plan.Images))
-	for _, im := range plan.Images {
-		size := int64(0)
-		if st, err := os.Stat(im.Path); err == nil {
-			size = st.Size()
-		}
-		// filepath, not path: im.Path is an OS filesystem path, and a Windows build
-		// dir (a UNC path under \\wsl.localhost) is one long backslash string that
-		// path.Base would hand back whole as the image's display name.
-		imgs = append(imgs, map[string]any{"name": filepath.Base(im.Path), "offset": fmt.Sprintf("0x%X", im.Offset), "bytes": size})
-	}
-	return map[string]any{"present": true, "buildDir": s.buildDir, "images": imgs}, nil
 }
 
 // openBrowser launches the default browser once, best-effort, after bind.

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -52,8 +53,12 @@ type Server struct {
 	flashing bool           // one flash at a time, process-wide (belt to the flock)
 	orb      *orbnet.Client // status-probe tuned: short timeout for a single known IP
 	device   *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
-	repoDir  string         // the gorb-os clone root, for the embedded Theme Editor
-	buildDir string         // <repoDir>/build, where flasher_args.json lives
+	repoDir  string         // the gorb-os clone root, for the Theme Editor only
+	// fw is the firmware to flash: the bundle compiled in, replaced only by a
+	// file the user picks on the Onboard card. There is no build-dir fallback —
+	// an end user has no ESP-IDF and never will.
+	fmu sync.RWMutex
+	fw  *firmware.Bundle
 
 	// lastBoot holds the verdict the flash session read off the boot console
 	// while it held the port across its own HardReset. /api/watch consumes it:
@@ -103,11 +108,11 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
-	var addr, buildDir, browser, repo string
+	var addr, browser, repo, fwPath string
 	var noWindow bool
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
-	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root; empty detects it")
-	flag.StringVar(&buildDir, "build", "", "path to a gorb-os build dir (defaults to <repo>/build)")
+	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
+	flag.StringVar(&fwPath, "firmware", "", "a firmware bundle (.zip) to flash instead of the one built into this binary")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.Parse()
@@ -116,11 +121,14 @@ func main() {
 	if repoDir == "" {
 		repoDir = detectRepoDir()
 	}
-	if buildDir == "" && repoDir != "" {
-		buildDir = filepath.Join(repoDir, "build")
-	}
 
-	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir, buildDir: buildDir}
+	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir}
+
+	// Firmware is settled before anything is served: an Onboard card that would
+	// flash nothing is worse than a hub that refuses to start.
+	if err := s.startFirmware(strings.TrimSpace(fwPath)); err != nil {
+		log.Fatalf("orb-manager: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -129,7 +137,7 @@ func main() {
 	// really listening — the default port can be taken by a stale hub, and a
 	// window pointed at a port nobody holds is just an error page.
 	ln, url := bindHub(addr)
-	log.Printf("orb-manager %s on %s (build dir: %s)", version, url, orElse(buildDir, "not detected"))
+	log.Printf("orb-manager %s on %s (firmware: %s)", version, url, s.firmwareName())
 
 	srv := &http.Server{Handler: s.log(mux)}
 	browser = strings.TrimSpace(browser)
@@ -263,7 +271,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
 	mux.HandleFunc("/api/ports", s.json(s.listPorts))
-	mux.HandleFunc("/api/build", s.json(s.describeBuild))
+	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
+	// Firmware the user picks, uploaded rather than named: the hub never walks
+	// the filesystem looking for a build, so there is no traversal to get wrong.
+	mux.HandleFunc("/api/firmware", s.handleFirmwareUpload)
+	mux.HandleFunc("/api/firmware/reset", s.handleFirmwareReset)
 	mux.HandleFunc("/api/flash", s.handleFlash)         // streaming, not s.json
 	mux.HandleFunc("/api/watch", s.handleWatch)         // streaming post-flash probe
 	mux.HandleFunc("/api/provision", s.handleProvision) // streaming wired-provisioning round-trip

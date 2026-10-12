@@ -168,6 +168,11 @@ management lives only on the device page.
    the switch to the `?id=` form that `docs/theme-identity-plan.md` mandates is a
    one-file change when that plan lands. This plan does not pre-empt it and does
    not rename anything the firmware still calls a slug.
+
+   (*As written at iteration 5. The FORMAT 2 plan has since landed: the device takes
+   `?id=` only, the slug fields are gone, and the switch this item deferred is done —
+   see "Closed 2026-10-12" below. The routes above are what the card was built against,
+   not what an orb answers now.)*
 2. Add theme upload through the same module.
 3. Persist the last-used orb IP across restarts, and poll status with backoff.
 4. Add a read-only USB console card, replacing `tools/cap.py` for an end user who
@@ -238,10 +243,11 @@ Commit: `feat(orb-manager): serve the composer offline and ship a release set`
 convention, so it stays out of this run. A workflow running vet, `go test ./...`
 and `make crosscheck` on push is the intended content.
 
-### Open — the hub and its Theme Editor are FORMAT 1; the device is now FORMAT 2
+### Closed 2026-10-12 — the hub spoke FORMAT 1 while the device spoke FORMAT 2
 
-Filed 2026-10-12, still open. The two clones merged the same day in `448a703`, which is
-what turns every item below from a forecast into a present defect in one tree.
+Filed 2026-10-12 and closed the same day. The two clones merged in `448a703`, which is
+what turned every item below from a forecast into a present defect in one tree; the
+follow-up commit on the merged tree is what closed it.
 
 The firmware, `tools/orbtheme.py` and `tools/watch-composer/` are FORMAT 2. Each row was
 read off the merged file on 2026-10-12:
@@ -251,9 +257,10 @@ read off the merged file on 2026-10-12:
 | `FORMAT = 2`, `NAME_MAX = 56` (55 usable bytes + NUL) | `tools/orbtheme.py:52,56` |
 | the baker packs one `name`, not the `slug`+`title` pair | `tools/watch-composer/orbtheme-baker.js:28` |
 | the copy the hub embeds and serves is that same FORMAT 2 baker | `tools/orb-manager/web/composer/orbtheme-baker.js:28` |
-| install, delete and upload still send `?name=` | `tools/orb-manager/internal/orbnet/themes.go:94,108,131` |
-| `ThemeEntry` has no `id` field, and still has a dead `Title` | `tools/orb-manager/internal/orbnet/themes.go:28-36` |
-| `CheckThemeName` allows ASCII only, 31 characters max | `tools/orb-manager/internal/orbnet/themes.go:61` |
+| install and delete send `?id=`, the handle the firmware reads | `internal/orbnet/themes.go` `ThemeInstall`, `ThemeDelete` |
+| `ThemeEntry` carries `ID` and `Changed`, and no `Title` | `internal/orbnet/themes.go` |
+| `CheckThemeName` allows free-text UTF-8 to 55 bytes; `CheckThemeID` is the 12-hex gate | `internal/orbnet/themes.go` |
+| an upload is filed by the name inside the container; the hub reads it with `ContainerName` and refuses FORMAT 1 before dialling | `internal/orbnet/themecontainer.go` |
 
 The device answers the other way. `h_theme_install` and `h_theme_del` both refuse unless
 `?id=` is exactly 12 chars of `[0-9a-f]` (`main/net/orb_net.c:2719,2774`, `theme_id_ok` at
@@ -263,33 +270,44 @@ The device answers the other way. `h_theme_install` and `h_theme_del` both refus
 container header (`:2825,2829`). The id is `sha256(name)[:12]` lowercase hex
 (`main/art/orb_theme.h:53`, mirrored by `theme_id()` at `tools/orbtheme.py:340-356`).
 
-Three breaks are live now, not hypothetical:
+Three breaks were live on the merged tree, not hypothetical. All three are closed on the
+hub side; none of them could be closed by a green `make check`, which is the real finding.
 
-1. Install and delete send `?name=` to routes that read `?id=`. Both answer 400
-   `"id is missing or not a theme id"`. The card's buttons go dead with no local error.
-2. `ThemeUpload` sends `?name=`. The firmware reads the name from the container header
-   instead, so that parameter is inert, and the hub never sends the `?overwrite=1` the
+1. Install and delete sent `?name=` to routes that read `?id=`. Both answered 400
+   `"id is missing or not a theme id"`. The card's buttons were dead with no local error.
+2. `ThemeUpload` sent `?name=`. The firmware reads the name from the container header
+   instead, so that parameter was inert, and the hub never sent the `?overwrite=1` the
    device offers.
-3. `CheckThemeName` refuses every valid FORMAT 2 name. Names are free-text UTF-8 up to
-   55 bytes. The regex is ASCII-only and caps at 31 characters.
+3. `CheckThemeName` refused every valid FORMAT 2 name. Names are free-text UTF-8 up to
+   55 bytes. The regex was ASCII-only and capped at 31 characters, so it rejected
+   `Ünit ☃` and `Mirage — Gold` — names the baker had already accepted and baked.
 
 The fourth break from the original list — the hub serving a FORMAT 1 baker — closed with
 the merge. Both bakers report `FORMAT = 2` and `make vendor-composer` verifies.
 
-The worst part is that the suite cannot see any of this. The client, its unit test and the
-fake device all encode the FORMAT 1 contract together, so they agree with each other and
-disagree with the firmware: `themes_test.go:105,107,109` assert `?name=` on install, delete
-and upload, and `cmd/orbfake/main.go:77,102` answer `?name=`. `make check` is green while a
-real orb 400s every install. Rebuilding `orbfake` and those assertions against
-`orb_net.c` is part of the fix, not an afterthought — a mock that copies the client's own
-wrong assumption proves nothing.
+The worst part was that the suite could not see any of this. The client, its unit test and
+the fake device all encoded the FORMAT 1 contract together, so they agreed with each other
+and disagreed with the firmware: `themes_test.go` asserted `?name=` on install, delete and
+upload, and `cmd/orbfake` answered `?name=`. `make check` was green while a real orb 400s
+every install.
 
+That is fixed structurally, not by editing assertions. The device double moved out of
+`cmd/orbfake` into `internal/orbfake/`, where the suite and the live binary run one copy,
+and it was rebuilt from `orb_net.c`: it refuses any name-addressed verb with the
+firmware's own 400, holds its own copy of the 12-hex rule and the container read, and
+files uploads by the embedded name. `internal/orbfake/orbfake_test.go` pins those
+refusals, so the double cannot quietly agree with the client again.
+`themes_contract_test.go` then drives the real client against it, taking ids off the
+list the device returned rather than typing them. Seven mutations of the client — revert
+`?id=` to `?name=`, drop the container gate, loosen the id regex, count the name cap in
+characters, hash the padded field, drop `changed`, revert `try_id` to `try_slug` — each
+one turns that suite red.
 
-One naming trap deserves its own paragraph. The comment at `themes.go:14-17` reads the
-plan's `id` as an orb id, "so one hub can address more than the orb it last happened to
-learn". The `id` that landed is a theme id: `sha256(name)` truncated to 12 hex. Same
-token, two meanings. Correct that comment in the same commit that changes the code, or
-the next reader repeats the mistake.
+One naming trap deserved its own paragraph, and is now closed in the code. The comment at
+`themes.go` read the plan's `id` as an orb id, "so one hub can address more than the orb
+it last happened to learn". The `id` that landed is a theme id: `sha256(name)` truncated
+to 12 hex. Same token, two meanings. The module comment now says so out loud, because the
+orb's own device identity is a third thing and will need its own parameter.
 
 The merge already settled what the editor ships. `support.js`, `dial-renderer.js` and
 `watch-engine.js` were byte-identical between the two clones, so iteration 6's offline
@@ -298,18 +316,11 @@ against the merged `tools/watch-composer/` today. Only `orbtheme-baker.js` and
 `Watch Composer.dc.html` moved.
 
 Not verified, and no one should claim it: the hub's theme card has never driven a real
-device. Iteration 5 verified it against `cmd/orbfake`, which mimics `h_sd`. It mimics the
-FORMAT 1 shapes, so any statement that the hub talks to a FORMAT 2 device is untested.
-That gap is why the merge could land without anyone noticing the card was already wrong.
-
-The fix is one commit on the merged tree: `feat(orb-manager): speak theme ids`. Scope is
-`internal/orbnet/themes.go` (send `?id=`, add `ID` to `ThemeEntry`, drop the dead `Title`,
-rename `TrySlug`/`DamageSlug` to the device's `try_id`/`damage_id`), the `CheckThemeName`
-rule (UTF-8, 55 bytes, matching `ORB_THEME_NAME_MAX`), the theme card in `web/app.js`,
-`cmd/orbfake`, and the three `themes_test.go` assertions above. Then re-run `make composer`
-and `make vendor-composer` so the embedded editor matches. `make check` is the gate, but a
-green check does not prove the contract: only a real orb, or a fake built from `orb_net.c`,
-does.
+device. What now stands behind that claim is a double built from `orb_net.c`, plus the
+host suite `tools/host_sd_test.py`, which pins the firmware's `theme_id()` against
+`tools/orbtheme.py` on the same vectors `internal/orbnet/themes_test.go` pins the Go copy
+against — so C, Python and Go agree on the hash, and only the physical orb remains
+unproven.
 
 ## 3. Deliberately NOT changed
 
@@ -399,13 +410,18 @@ Updated at each commit.
   Linux, the positive branch still needs one capture from a real Mac.
 - Hardware: nothing in iterations 0-5 was run against a cable. The cancel path and
   the console read both drive real ROM/CDC timing and need one live run on orb-B
-  before either is called verified. The theme card was verified against
-  `cmd/orbfake`, which reproduces `h_sd`'s shapes but is not the firmware.
-- Outstanding, and not an iteration: the hub's theme client still speaks FORMAT 1 while
-  the firmware in this same tree now requires FORMAT 2. The two clones merged in
-  `448a703` on 2026-10-12, so this is a live defect in one tree rather than a pending
-  cross-clone merge; the embedded Theme Editor landed FORMAT 2 with it and is closed out.
-  See "Open — the hub and its Theme Editor are FORMAT 1" above. No plan owns that work
-  today: `docs/theme-identity-plan.md` §8 lists ten steps and none of them names
-  `tools/orb-manager/`.
+  before either is called verified. The theme card was verified against the device
+  double in `internal/orbfake`, which is written from `main/net/orb_net.c` and holds
+  its own copy of the id rule — a faithful stand-in, but not the firmware.
+- Theme identity: closed 2026-10-12 in `feat(orb-manager): speak theme ids`. The hub
+  spoke FORMAT 1 (`?name=`, `Title`, `try_slug`, a 31-char ASCII name rule) while the
+  firmware in the same tree, merged in `448a703`, required FORMAT 2 — so install and
+  delete were dead against a real orb and nothing in `make check` noticed. The client
+  now addresses by `?id=`, `ThemeEntry` carries `ID`/`Changed`, the name rule matches
+  the header's 55 UTF-8 bytes, upload reads the name out of the container and refuses
+  FORMAT 1 before dialling, and `?overwrite=1` is wired to the firmware's 409. The
+  device double moved to `internal/orbfake/` and was rewritten from `orb_net.c`, so
+  client, test and double no longer share one wrong assumption; seven mutations of the
+  client each turn the contract suite red. `docs/theme-identity-plan.md` §8 never named
+  `tools/orb-manager/` as a consumer, which is how the gap survived the merge.
 

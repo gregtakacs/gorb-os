@@ -266,14 +266,29 @@ than an error, so measure it against the live device, do not estimate.
 2. **The four themes on orb-A's card become unloadable until re-baked** —
    `skeleton`, `diver`, `perpetual-calendar`, `neon` are all FORMAT 1. No
    migration logic is written; the owner re-bakes.
-3. **`assets/sources/clock-app-default/clock_app_default.orbtheme` (2,658,351 B)
-   is regenerated** and its bytes change. They were already not reproducible —
-   `bake_clock.py:2393` stamps `baked_ms` from `time.time()`. Rewrite the
-   "byte-identical to the owner's originals" wording in
-   `docs/app-platform-plan.md:875` (§12.6) to what is actually true: `DESIGN_ID`
-   and `skeleton_theme.zip` are the untouched source of truth, the container is a
-   regenerated build product. Nothing in `tools/` or `.github/` reads that
-   container today (verified by grep), so no test breaks.
+3. **`assets/sources/clock-app-default/clock_app_default.orbtheme` (2,658,351 B) is
+   NOT regenerated, and is still FORMAT 1.** This plan forecast regenerating it; the
+   bench did not, because the kit bake renders `show=[1,1,0,0,0]` against the
+   archived `show=[1,1,0,1,0]` (the c2 enamel subdial's seconds hand), so the
+   original bake flags are unknown and re-baking would silently change the dial
+   the owner approved. Measured on the file itself, 2026-10-12, so this is a fact
+   and not an inference: `w[FORMAT]` is 1; `orbtheme.read_container` refuses it at
+   the format gate (`theme format 1; this build reads format 2`) before it ever
+   reaches the checksums, so the "both CRCs verified through `read_container`"
+   sentence in `docs/app-platform-plan.md` §0.2 no longer describes what that call
+   does — although the stored header CRC (`86092E66`) and art CRC (`DB5CC981`) both
+   still match when recomputed directly, so the archive is intact, merely unreadable
+   by current tools. Its name field — 56 bytes at word 14 that FORMAT 1 filled with
+   the slug — parses as `skeleton`, which is a leftover reading, not an identity
+   under FORMAT 2. The archive is kept as a byte-faithful record of what the owner
+   shipped, not as an installable theme; `DESIGN_ID` and `skeleton_theme.zip` are
+   the source of truth. Nothing in `tools/` or CI reads the container (verified by
+   grep; `.github/` does not exist), so no test breaks either way. It cannot be
+   pushed to an orb: the firmware rejects it at the same format gate, and the hub
+   now refuses it locally and names the format
+   (`tools/orb-manager/internal/orbnet/themecontainer.go`).
+   `assets/sources/clock-app-default/README.md` says so beside the file, so nobody
+   discovers it by trying to install it.
 4. **`docs/theme-naming-todo.md` is deleted**, not updated. §1–§2 (the cap
    disagreement) and §3 (FATFS case ambiguity) describe a class that cannot exist
    once filenames carry no identity. §4 cites `orb_theme_stage_load()`/
@@ -394,30 +409,40 @@ Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits
   `show=[1,1,0,0,0]` against the archived `show=[1,1,0,1,0]` (the c2 enamel
   subdial's seconds hand), so the original bake flags are not yet known and the
   archived `clock_app_default.orbtheme` stays until they are.
-- NOT COVERED BY THIS PLAN: the orb-manager hub. The §8 work order names the firmware,
-  `tools/orbtheme.py`, `tools/bake_clock.py` and the device's own page JS. It never
-  names `tools/orb-manager/`, and that consumer is still speaking the old contract after
-  the two clones merged in `448a703` on 2026-10-12:
-  - the tree now carries both halves together, so the mismatch is live rather than
-    prospective — `internal/orbnet/themes.go:94,108,131` send `?name=` on install, delete
-    and upload, while `h_theme_install` and `h_theme_del` (`main/net/orb_net.c:2719,2774`)
-    answer 400 unless `?id=` is exactly 12 chars of `[0-9a-f]`;
-  - `ThemeEntry` (`themes.go:28-36`) has no `id` field and still carries a `Title` the
-    device stopped emitting; `try_slug`/`damage_slug` became `try_id`/`damage_id`
-    (`main/net/orb_net.c:2662,2681`);
-  - `CheckThemeName` (`themes.go:61`) caps a name at 31 ASCII characters against the
-    55-byte UTF-8 this scheme allows.
-  The hub's embedded editor DID land with the merge: both `tools/watch-composer/
+- CLOSED 2026-10-12 — the orb-manager hub, which this plan never named as a consumer.
+  The §8 work order covers the firmware, `tools/orbtheme.py`, `tools/bake_clock.py` and
+  the device's own page JS. It never names `tools/orb-manager/`, so the merge in
+  `448a703` landed a tree where the hub still spoke FORMAT 1 to a FORMAT 2 device. The
+  follow-up commit closed all three breaks:
+  - `internal/orbnet/themes.go` addresses install and delete with `?id=`, the 12-hex
+    handle `h_theme_install` and `h_theme_del` demand, and refuses a malformed id before
+    the dial rather than collecting the firmware's 400;
+  - `ThemeEntry` carries `ID` and `Changed` and dropped the `Title` the device stopped
+    emitting; `try_slug`/`damage_slug` became `try_id`/`damage_id`, matching
+    `main/net/orb_net.c:2662,2681`;
+  - `CheckThemeName` enforces the field's real rule — free-text UTF-8, 55 bytes, an
+    embedded NUL refused — instead of FORMAT 1's 31-character ASCII slug, which had been
+    rejecting names the baker itself accepted.
+  Upload went further than the original list asked. The firmware takes no name argument
+  at all, so the hub's typed-name box was removed rather than repointed: the hub now reads
+  the name out of the container header (`internal/orbnet/themecontainer.go`), refuses
+  FORMAT 1 before the bytes cross the room, and reports the id the theme will be filed
+  under. `?overwrite=1` is wired to the firmware's 409, so a same-name re-bake is an
+  operator decision instead of a dead end.
+  The hub's embedded editor landed with the merge: both `tools/watch-composer/
   orbtheme-baker.js` and `tools/orb-manager/web/composer/orbtheme-baker.js` report
-  `FORMAT = 2`, so the fourth break originally recorded here is closed.
-  The suite cannot see the remaining three: `themes_test.go:105,107,109` and
-  `cmd/orbfake/main.go:77,102` encode the same `?name=` assumption as the client, so
-  client, test and mock agree with each other and disagree with `orb_net.c`. Fixing the
-  fake is part of the work, not a check after it. Full detail and the suggested single
-  commit are in `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor
-  are FORMAT 1". It is open and unassigned. `support.js`, `dial-renderer.js` and
-  `watch-engine.js` were byte-identical across the two clones, so iteration 6's offline
-  vendor work and its SRI/manifest pins came through the merge untouched.
+  `FORMAT = 2`.
+  The suite blindness is fixed in structure, not in assertions. The device double moved
+  to `internal/orbfake/`, was rewritten from `orb_net.c`, holds its own copy of the
+  12-hex rule so client and double cannot co-drift, and refuses every name-addressed
+  verb the way an orb does. `themes_contract_test.go` drives the real client against it.
+  Seven independent mutations of the client each turn that suite red.
+  Still unproven, and nobody should claim it: the card has never driven a physical orb.
+  `tools/host_sd_test.py` pins the firmware's `theme_id()` against `tools/orbtheme.py`,
+  and `internal/orbnet/themes_test.go` pins the Go copy on the same vectors, so all
+  three agree on the hash. `support.js`, `dial-renderer.js` and `watch-engine.js` were
+  byte-identical across the two clones, so iteration 6's offline vendor work and its
+  SRI/manifest pins came through the merge untouched.
 - Defect found by this verification and fixed: bake_clock.py truncated an
   over-55-byte `--theme-name` SILENTLY, twice over and disagreeing — a Python
   55-CHARACTER slice before the id hash and a 55-BYTE slice in

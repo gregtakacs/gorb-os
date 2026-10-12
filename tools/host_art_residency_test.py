@@ -33,6 +33,7 @@ IMAGE_PAGES = 22
 PAGE_BUDGET = DROM_PAGES - IMAGE_PAGES        # 234
 RESERVE_MAX = 8                               # ORB_ART_RESERVE_MAX (ruling B5)
 EXTRA_MAX = 8                                 # ART_BANK_EXTRA_MAX
+ARENA_MARGIN = 2 * 1024 * 1024                # ORB_ART_ARENA_MARGIN: PSRAM the arena gate keeps
 
 FAILS = []
 QUIET = [False]                 # the per-mutation replay silences the ok chatter
@@ -65,14 +66,28 @@ def lint_shipped_source():
         "art_consume_reservation(art_round_pages(need_bytes));",
         "if (s_res_bytes[i] == bytes) {",
         "return (s_map != NULL ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();",
+        # ---- mechanism B (docs/app-platform-plan.md §3.3/§6 M3): the arena rules.
+        # Same contract as above — if any of these stops matching the shipping
+        # source, the mirror below describes dead code and must be re-read.
+        "#define ORB_ART_MECH_B 0",          # ships off: the measurement, not a default
+        "#define ORB_ART_M3_PROBE 0",        # ditto the probe that prices it
+        "#define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)",
+        "return e->map != NULL || e->psram;",                       # liveness: both kinds
+        "if (art_extra_live(&s_extra[i]) && !s_extra[i].psram)",    # arena bills ZERO pages
+        "return s_extra[slot].psram ? s_extra[slot].plane : s_extra[slot].map;",  # one ptr, two sources
+        "if (free_p < need_bytes + ORB_ART_ARENA_MARGIN)",          # the PSRAM gate
+        "if (s_extra[slot].psram) heap_caps_free(s_extra[slot].plane);",  # arena release
+        "art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot)",    # the probe uses the REAL API
     ]
     for tok in must:
         ok(tok in src, "lint: shipping art_bank.c contains %r" % tok[:52])
-    # The refusal-counter placement is subtle: the two budget rejects and the
-    # reservation-slot-full reject bump it; the secondary-slot-full map reject does
-    # NOT. Pin the exact count so a wrong placement fails the lint, not the mirror.
-    ok(src.count("s_reserve_refusals++;") == 3,
-       "lint: exactly 3 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
+    # The refusal-counter placement is subtle: the two budget rejects, the
+    # reservation-slot-full reject and the TWO arena capacity gates (free-PSRAM
+    # margin and the arena malloc itself) bump it; the secondary-slot-full map
+    # reject does NOT. Pin the exact count so a wrong placement fails the lint,
+    # not the mirror.
+    ok(src.count("s_reserve_refusals++;") == 5,
+       "lint: exactly 5 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
     ok("all %u reservation slots are booked" in src and "all %u secondary slots hold banks" in src,
        "lint: both exhaustion reasons present (reservation-full counts, secondary-full does not)")
 
@@ -88,18 +103,22 @@ def art_round_pages(b):
     return (b + PAGE_SIZE - 1) // PAGE_SIZE * PAGE_SIZE
 
 class ArtResidency:
-    def __init__(self):
+    def __init__(self, mech_b=False, psram_free=16 * 1024 * 1024):
         self.primary = 0                 # s_bytes (the dial's own bank)
-        self.extra = [None] * EXTRA_MAX  # each entry: (bytes, offset) once mapped
+        self.extra = [None] * EXTRA_MAX  # each entry: (bytes, offset, is_psram) once mapped
         self.res = [0] * RESERVE_MAX     # s_res_bytes (booked, not yet mapped)
         self.refusals = 0
         self.part_size = 0x800000        # 8 MB 'assets' partition
+        self.mech_b = mech_b             # ORB_ART_MECH_B: map_extra fills arenas, not maps
+        self.psram_free = psram_free     # heap_caps_get_free_size(MALLOC_CAP_SPIRAM)
 
     def pages_accounted(self):
         # Each region rounds up on its own -- never a rounded sum of the bytes.
+        # An arena bank is skipped: mechanism B never occupies the MMU window,
+        # so it bills it nothing (the mirror of art_extra_live(...) && !psram).
         pages = art_bank_pages_for(self.primary) if self.primary else 0
         for e in self.extra:
-            if e is not None:
+            if e is not None and not e[2]:
                 pages += art_bank_pages_for(e[0])
         for r in self.res:
             if r:
@@ -156,13 +175,23 @@ class ArtResidency:
             slot = next((i for i, e in enumerate(self.extra) if e is None), -1)
         if slot < 0:
             return (ERR_NOT_FOUND, -1)          # secondary table full: NOT a refusal
+        if self.mech_b:
+            # Mechanism B: no window check at all — an arena bank takes no
+            # pages, so billing it against them would rig the A-vs-B measure.
+            # Its gate is free PSRAM minus the margin, counted as a refusal.
+            if self.psram_free < need_bytes + ARENA_MARGIN:
+                self.refusals += 1
+                return (ERR_NO_MEM, -1)
+            self.extra[slot] = (need_bytes, offset, True)
+            self._consume(art_round_pages(need_bytes))
+            return (ESP_OK, slot)
         want = self.pages_accounted() + art_bank_pages_for(need_bytes)
-        if self.extra[slot] is not None:
+        if self.extra[slot] is not None and not self.extra[slot][2]:
             want -= art_bank_pages_for(self.extra[slot][0])   # credit what it already pays
         if want > PAGE_BUDGET:
             self.refusals += 1
             return (ERR_NO_MEM, -1)
-        self.extra[slot] = (need_bytes, offset)
+        self.extra[slot] = (need_bytes, offset, False)
         self._consume(art_round_pages(need_bytes))
         return (ESP_OK, slot)
 
@@ -185,13 +214,16 @@ def model(mutations=()):
     # collide with the `% PAGE_SIZE` modulo operators inside the model body).
     ns = dict(PAGE_SIZE=PAGE_SIZE, PAGE_BUDGET=PAGE_BUDGET,
               RESERVE_MAX=RESERVE_MAX, EXTRA_MAX=EXTRA_MAX,
+              ARENA_MARGIN=ARENA_MARGIN,
               ESP_OK=0, ERR_INVALID_SIZE=1, ERR_NOT_FOUND=2, ERR_NO_MEM=3)
     exec(compile(text, "art_residency_mirror", "exec"), ns)
     return ns
 
 
-def new_model(mutations=()):
-    return model(mutations)["ArtResidency"]()
+def new_model(mutations=(), **kw):
+    """**kw reaches the ArtResidency ctor (mech_b=, psram_free=) so the
+    mechanism-B checks share the mutation pipeline with the rest."""
+    return model(mutations)["ArtResidency"](**kw)
 
 
 # ---- the checks, run against a new_model() instance (mutations may replace it) ----
@@ -294,6 +326,55 @@ def run_checks(mutations=()):
     ok(m7.mmu_pages() == 31, "unmap returns the extra's pages to the window")
     ok(m7.map_extra(PAGE_SIZE // 2, PAGE_SIZE)[0] == E_ISZ, "map_extra rejects a ragged offset")
 
+    # ---- mechanism B: the arena rules (§3.3/§6 M3), same mutation pipeline ----
+    # 11. an arena bank bills ZERO MMU pages but is resident art.
+    mB = new_model(mutations, mech_b=True)
+    mB.primary = 31 * PAGE_SIZE
+    eB, sB = mB.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
+    ok(eB == E_OK, "MECH_B: flagship-sized (59-page) arena map is granted")
+    ok(mB.mmu_pages() == 31, "MECH_B: the arena bills the window NOTHING — only the primary counts")
+    ok(mB.resident_count() == 2, "MECH_B: the arena bank still counts as resident art")
+
+    # 12. the window can never refuse mechanism B: the exact map check 6 refused
+    # under A is granted under B, and the refusal counter stays clean.
+    mB2 = new_model(mutations, mech_b=True)
+    mB2.primary = 100 * PAGE_SIZE
+    ok(mB2.map_extra(2 * PAGE_SIZE, 100 * PAGE_SIZE)[0] == E_OK,
+       "MECH_B: a map the A window refused for want of pages is GRANTED by B")
+    ok(mB2.refusals == 0, "MECH_B: bypassing the window is not a refusal")
+
+    # 13. the ONLY capacity gate is free PSRAM, and it counts as a refusal —
+    # exactly one byte below the gate refuses, exactly on it passes.
+    mB3 = new_model(mutations, mech_b=True, psram_free=59 * PAGE_SIZE + ARENA_MARGIN - 1)
+    e3, s3 = mB3.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
+    ok(e3 == E_NM and mB3.refusals == 1, "MECH_B: bank+margin-1 free PSRAM -> NO_MEM, counted")
+    ok(all(x is None for x in mB3.extra), "MECH_B: the refused map took no secondary slot")
+    mB4 = new_model(mutations, mech_b=True, psram_free=59 * PAGE_SIZE + ARENA_MARGIN)
+    ok(mB4.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)[0] == E_OK,
+       "MECH_B: exactly bank+margin free PSRAM is enough (gate is >=, not >)")
+
+    # 14. reserve-then-arena-map bills the booking once (symmetric with A).
+    mB5 = new_model(mutations, mech_b=True)
+    mB5.primary = 31 * PAGE_SIZE
+    mB5.reserve(29 * PAGE_SIZE)
+    e5, s5 = mB5.map_extra(40 * PAGE_SIZE, 29 * PAGE_SIZE)
+    ok(e5 == E_OK and mB5.reserved_bytes() == 0, "MECH_B: the arena map consumes the booking")
+    ok(mB5.mmu_pages() == 31, "MECH_B: booking consumed AND the arena unbilled — primary alone")
+
+    # 15/16. a covered re-request of a live arena is the NO-OP the covered
+    # branch promises — no re-gate (PSRAM could have gone), no refusal, same
+    # slot; and unmap frees it back so the slot can be filled again.
+    mB6 = new_model(mutations, mech_b=True, psram_free=59 * PAGE_SIZE + ARENA_MARGIN)
+    e6, s6 = mB6.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
+    mB6.psram_free = 0                       # a re-request must not consult the gate
+    e6b, s6b = mB6.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
+    ok(e6b == E_OK and s6b == s6 and mB6.refusals == 0,
+       "MECH_B: covered arena re-map is a no-op — no re-gate, no second copy, same slot")
+    ok(mB6.unmap_extra(s6) == E_OK, "MECH_B: unmap_extra releases the arena slot")
+    mB6.psram_free = 59 * PAGE_SIZE + ARENA_MARGIN
+    e6c, s6c = mB6.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
+    ok(e6c == E_OK and s6c == s6, "MECH_B: an emptied arena slot refills at the same index")
+
 
 MUTATIONS = [
     ("def art_bank_pages_for(b):\n    return (b + PAGE_SIZE - 1) // PAGE_SIZE",
@@ -308,6 +389,13 @@ MUTATIONS = [
      "if False:\n            return ERR_INVALID_SIZE"),                     # ragged reserve allowed
     ("                self.res[i] = 0\n                return",
      "                pass\n                return"),                        # consume dropped -> double-bill
+    # ---- mechanism B mutations: the arena rules must have bite too ----
+    ("if e is not None and not e[2]:", "if e is not None:"),         # arena billed as a map
+    ("if self.psram_free < need_bytes + ARENA_MARGIN:", "if False:"),  # arena gate gone
+    ("self.extra[slot] = (need_bytes, offset, True)",
+     "self.extra[slot] = (need_bytes, offset, False)"),              # 'arena' silently an MMU map
+    ("self._consume(art_round_pages(need_bytes))\n            return (ESP_OK, slot)",
+     "pass\n            return (ESP_OK, slot)"),                     # arena fill drops the booking
 ]
 
 

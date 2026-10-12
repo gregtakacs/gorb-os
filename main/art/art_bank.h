@@ -69,6 +69,88 @@ void art_bank_m2_probe(void);
  *  the primary bank and before display_init(). No-op unless ORB_ART_LAT_PROBE 1. */
 void art_bank_lat_probe(void);
 
+/* ---- mechanism B: the PSRAM arena (docs/app-platform-plan.md §3.3, §6 M3) ----
+ * Set to 1 and art_bank_map_extra() fills a secondary bank by COPYING the bank
+ * from the `assets` partition into a PSRAM arena (esp_partition_read, chunked,
+ * on the calling task — the worker at boot for the shipping path) instead of
+ * claiming flash MMU pages for it. The compositor contract is unchanged:
+ * art_bank_extra_ptr() hands out a readable base either way, so an app never
+ * learns which mechanism fed its pixels — the §3.3 promise that keeps A and B
+ * one measurement apart rather than two code paths. The bank then costs ZERO
+ * pages of the DROM window (art_bank_mmu_pages() does not count it; the map
+ * never enters it) and costs PSRAM instead: the arena gate is free PSRAM minus
+ * ORB_ART_ARENA_MARGIN, the margin the LVGL task, the worker and the stack
+ * still need at boot — the M2 line that printed 7.9 MB free is the figure this
+ * gate was cut against. An arena bank that will not fit is refused with
+ * ESP_ERR_NO_MEM like a page-budget overflow, with the free figure in the log:
+ * "refuse the app with a reason and continue booting" (§3.3), not a surprise.
+ *
+ * The LAT probe priced the MMU op itself and found it scales with pages, not
+ * bytes — mechanism B exists for the OTHER half of the cost: every sprite read
+ * through the map is a flash-cache miss against the window, where every read
+ * from the arena is a plain PSRAM dereference. Which one wins on the glass is
+ * the M3 measurement (ORB_ART_M3_PROBE), not a code change: the two M3 builds
+ * are this define at 0 and at 1 with everything else held equal.
+ *
+ * Deliberately compile-time, not a per-bank flag: a mixed regime is P4's
+ * installer question (per-theme residency flags), and a runtime switch today
+ * would be a second residency table the host mirror cannot pin. Ships 0. */
+#define ORB_ART_MECH_B 0
+
+/* PSRAM the arena gate keeps off the table on top of the bank itself. */
+#define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)
+
+/* ---- M3 bench probe: overflow bank, re-map (A) vs arena (B) ----------------
+ * The §6 M3 protocol, same one-line-switch family as ORB_ART_M2_PROBE,
+ * ORB_ART_LAT_PROBE and DISPLAY_BENCH; ships 0. It measures the ONE bank the
+ * §3.2 slot layout has no room for — the third flagship, here the kit3 bytes
+ * flashed at a slot-free offset of the `assets` partition — on both arms:
+ *
+ *   arm A (ORB_ART_MECH_B 0): one app switch = art_bank_unmap_extra() +
+ *     cold art_bank_map_extra() + the first full-page commit through the
+ *     fresh mapping — the page-miss storm the plan's "one full-page commit +
+ *     fresh mmap" prices. Read against the LAT probe's map/unmap medians: the
+ *     first commit is what the µs-scale MMU op hides on top of.
+ *   arm B (ORB_ART_MECH_B 1): the bank is copied once at boot (timed, printed
+ *     as the boot cost with free-PSRAM before/after), and a switch is the
+ *     re-point the ABI performs around this API — no MMU op, no copy — so its
+ *     switch cost is the same first-read pattern WITHOUT the cold mapping.
+ *
+ * The first-commit pass blends through the very gfx_blend_px() the layers use,
+ * at DISPLAY_BENCH_ALPHA 128 (255 prices the wrong op — .clinerules), with the
+ * block sources scattered across the WHOLE bank so every one of its 59 pages
+ * is touched each pass: a bank half-read from cache measures neither arm. The
+ * bank is then left resident, so the dial's own fps lines later in the same
+ * boot log — and the DISPLAY_BENCH ladder if it is swept on — are the
+ * rotation steady state, exactly as the M2 probe's residency verdict works.
+ *
+ * The bank must be REAL: unlike the LAT probe (which bills address ranges,
+ * not contents), M3 reads the pixels. The probe CRC-checks the mapping against
+ * the read path and refuses to measure — loudly, with the esptool command —
+ * when the offset holds erased flash, so a forgotten bench write can never
+ * turn into a number that looks like the other arm.
+ *
+ * It also runs m3_refusal_hunt(): §11 left M3 the job of finding the flash
+ * MMU allocator's TRUE refusal point (M2 never reached it — the partition ran
+ * out first), by mapping www plus overlapping regions of assets and unmapping
+ * everything again before the dial starts. Its one line answers whether
+ * ORB_ART_PAGE_BUDGET can rise; the budget itself is not touched here. */
+#define ORB_ART_M3_PROBE 0
+
+/** Run the A-vs-B overflow protocol once, at boot, after the theme has mapped
+ *  the primary bank and before display_init(). No-op unless ORB_ART_M3_PROBE 1. */
+void art_bank_m3_probe(void);
+
+/** The resident bench bank's base — the flash map (arm A) or the PSRAM arena
+ *  (arm B) — for clock_view.c's DISPLAY_BENCH blocks to read their colours
+ *  from, so the steady-state ladder measures the SAME source the probe just
+ *  priced. NULL/0/false until the probe has mapped successfully: a bench build
+ *  whose plane never arrived logs that fact rather than silently blending its
+ *  synthetic mag plane under an "M3" label. */
+const uint8_t *art_bank_m3_plane(void);
+size_t art_bank_m3_bytes(void);
+bool art_bank_m3_is_psram(void);
+
 /**
  * Find the `assets` partition and map `need_bytes` of it starting at `offset`.
  *

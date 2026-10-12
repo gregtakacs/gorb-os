@@ -8,14 +8,19 @@
 #include "esp_partition.h"
 #include "soc/soc_caps.h"   /* SOC_MMU_PAGE_SIZE: what a resident bank costs the DROM window */
 
-#if ORB_ART_M2_PROBE
+#if ORB_ART_M2_PROBE || ORB_ART_M3_PROBE
 #include "esp_rom_crc.h"    /* crc of a bank through the mapping vs through the read path */
 #include "esp_heap_caps.h"  /* free PSRAM at the failing instant: mechanism B's arena cap */
 #endif
 
-#if ORB_ART_LAT_PROBE
+#if ORB_ART_LAT_PROBE || ORB_ART_M3_PROBE
 #include "esp_timer.h"      /* esp_timer_get_time(): the µs clock the reclaim is timed against */
 #endif
+
+#include "esp_heap_caps.h"  /* arena allocation + free-PSRAM gate (MECH_B), and
+                             * heap_caps_free in the re-grow/unmap dispatch —
+                             * reachable textually in every build, so included
+                             * always, not under an ORB_ART_MECH_B guard. */
 
 static const char *TAG = "art_bank";
 
@@ -29,13 +34,29 @@ static const esp_partition_t      *s_part;
 /* Secondary banks (P2, §3.3 mechanism A): one entry per mapped bank, stable
  * slot indices, resident until art_bank_unmap_extra() empties one. Index i
  * keeps its mapping until explicitly emptied so an app's cached slot number
- * outlives its neighbours' churn. */
+ * outlives its neighbours' churn.
+ *
+ * An entry is EITHER a flash map (map/handle from esp_partition_mmap — the
+ * mechanism-A residency the page budget bills) or a PSRAM arena copy
+ * (psram/plane, filled by art_bank_map_extra() under ORB_ART_MECH_B — the
+ * mechanism-B residency the page budget never sees). Exactly one side is set,
+ * so art_extra_live() is the one liveness test every walk of this table uses:
+ * a loop that keyed on .map alone would silently ignore every arena bank the
+ * moment MECH_B ships on. */
 typedef struct {
     const uint8_t              *map;
     size_t                      bytes;
     size_t                      offset;   /* partition offset map points at */
     esp_partition_mmap_handle_t handle;
+    bool                        psram;    /* entry is an arena copy, not a map */
+    uint8_t                    *plane;    /* arena base when psram, else NULL */
 } art_extra_t;
+
+/* A live secondary slot: a resident map, or (MECH_B only) a resident arena. */
+static bool art_extra_live(const art_extra_t *e)
+{
+    return e->map != NULL || e->psram;
+}
 
 static art_extra_t s_extra[ART_BANK_EXTRA_MAX];
 
@@ -192,11 +213,13 @@ bool art_bank_ready(void)
 
 static unsigned s_reserve_refusals;
 
+/* Liveness goes through art_extra_live(): an arena bank is resident art too,
+ * so it counts here even though it bills no MMU pages below. */
 unsigned art_bank_extra_count(void)
 {
     unsigned n = 0;
     for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
-        if (s_extra[i].map) n++;
+        if (art_extra_live(&s_extra[i])) n++;
     return n;
 }
 
@@ -219,12 +242,13 @@ static size_t art_reserved_total(void)
 /* Pages every region costs: each resident map and each outstanding booking
  * rounds up on its own, because each is its own virtual region. One rounded
  * sum of their bytes would understate a ragged pair — the same reason the
- * slots are cut on page boundaries. */
+ * slots are cut on page boundaries. A PSRAM arena bank is DELIBERATELY absent
+ * from this sum (MECH_B): it never occupies the window, so it cannot cost it. */
 static size_t art_pages_accounted(void)
 {
     size_t pages = art_bank_pages_for(s_bytes);
     for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
-        if (s_extra[i].map)
+        if (art_extra_live(&s_extra[i]) && !s_extra[i].psram)
             pages += art_bank_pages_for(s_extra[i].bytes);
     for (unsigned i = 0; i < ORB_ART_RESERVE_MAX; i++)
         if (s_res_bytes[i])
@@ -339,7 +363,7 @@ esp_err_t art_bank_map_extra(size_t offset, size_t need_bytes, int *out_slot)
      * stress loop does) goes through the probe's raw path and pays for it. */
     int slot = -1;
     for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
-        if (s_extra[i].map && s_extra[i].offset == offset) {
+        if (art_extra_live(&s_extra[i]) && s_extra[i].offset == offset) {
             if (s_extra[i].bytes >= need_bytes) {          /* already covered */
                 if (out_slot) *out_slot = (int)i;
                 return ESP_OK;
@@ -349,7 +373,7 @@ esp_err_t art_bank_map_extra(size_t offset, size_t need_bytes, int *out_slot)
         }
     if (slot < 0)
         for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
-            if (!s_extra[i].map) { slot = (int)i; break; }
+            if (!art_extra_live(&s_extra[i])) { slot = (int)i; break; }
     if (slot < 0) {
         ESP_LOGE(TAG, "extra map %u B @0x%x refused: all %u secondary slots hold banks",
                  (unsigned)need_bytes, (unsigned)offset, (unsigned)ART_BANK_EXTRA_MAX);
@@ -359,9 +383,13 @@ esp_err_t art_bank_map_extra(size_t offset, size_t need_bytes, int *out_slot)
     /* Budget on the running total, minus what this entry already pays for if it
      * is a re-grow — the same rule orb_art_reserve() applies, applied to a map
      * that arrived with no booking behind it. Checked before the munmap below,
-     * so a refused request never disturbs what is already resident. */
+     * so a refused request never disturbs what is already resident. Under
+     * MECH_B the window check is skipped on purpose: an arena bank takes no
+     * pages, and refusing it for want of pages it will never spend is the
+     * rigging M3 exists to avoid — its gate is free PSRAM, at the copy below. */
+#if !ORB_ART_MECH_B
     size_t want = art_pages_accounted() + art_bank_pages_for(need_bytes);
-    if (s_extra[slot].map)
+    if (art_extra_live(&s_extra[slot]) && !s_extra[slot].psram)
         want -= art_bank_pages_for(s_extra[slot].bytes);
     if (want > ORB_ART_PAGE_BUDGET) {
         s_reserve_refusals++;
@@ -372,17 +400,69 @@ esp_err_t art_bank_map_extra(size_t offset, size_t need_bytes, int *out_slot)
                  (unsigned)ORB_ART_PAGE_BUDGET, (unsigned)orb_art_resident_count());
         return ESP_ERR_NO_MEM;
     }
+#endif
 
-    if (s_extra[slot].map) {
-        /* Re-grow: drop the old map first, as the primary's re-map does — the
+    if (art_extra_live(&s_extra[slot])) {
+        /* Re-grow: drop the old bank first, as the primary's re-map does — the
          * caller owns the question of who was still reading it. */
         ESP_LOGI(TAG, "extra bank %d re-mapping @0x%x %u B -> %u B",
                  slot, (unsigned)offset, (unsigned)s_extra[slot].bytes,
                  (unsigned)need_bytes);
-        esp_partition_munmap(s_extra[slot].handle);
+        if (s_extra[slot].psram) heap_caps_free(s_extra[slot].plane);
+        else                     esp_partition_munmap(s_extra[slot].handle);
         s_extra[slot] = (art_extra_t){ 0 };
     }
 
+#if ORB_ART_MECH_B
+    /* ---- mechanism B: fill the slot by copying, never by mapping ---- */
+    const size_t free_p = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    if (free_p < need_bytes + ORB_ART_ARENA_MARGIN) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "arena map %u B @0x%x refused: %u B PSRAM free, %u B bank + %u B "
+                      "margin needed — refuse the app, not the boot.",
+                 (unsigned)need_bytes, (unsigned)offset, (unsigned)free_p,
+                 (unsigned)need_bytes, (unsigned)ORB_ART_ARENA_MARGIN);
+        return ESP_ERR_NO_MEM;
+    }
+    uint8_t *arena = (uint8_t *)heap_caps_malloc(need_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!arena) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "arena map %u B @0x%x refused: heap_caps_malloc failed with %u B free",
+                 (unsigned)need_bytes, (unsigned)offset, (unsigned)free_p);
+        return ESP_ERR_NO_MEM;
+    }
+    static uint8_t s_arena_chunk[4096];   /* static: main/LVGL stack is not ours */
+    esp_err_t rerr = ESP_OK;
+    for (size_t done = 0; done < need_bytes; ) {
+        size_t chunk = need_bytes - done;
+        if (chunk > sizeof s_arena_chunk) chunk = sizeof s_arena_chunk;
+        if (esp_partition_read(part, offset + done, arena + done, chunk) != ESP_OK) {
+            rerr = ESP_FAIL;
+            break;
+        }
+        done += chunk;
+    }
+    if (rerr != ESP_OK) {
+        heap_caps_free(arena);
+        ESP_LOGE(TAG, "arena copy %u B from \"%s\" @0x%x failed — slot left empty",
+                 (unsigned)need_bytes, part->label, (unsigned)(part->address + offset));
+        return rerr;
+    }
+    s_extra[slot].plane  = arena;
+    s_extra[slot].psram  = true;
+    s_extra[slot].bytes  = need_bytes;
+    s_extra[slot].offset = offset;
+    art_consume_reservation(art_round_pages(need_bytes));
+
+    ESP_LOGI(TAG, "extra bank %d \"%s\" @0x%x, %u B copied to the PSRAM arena (%u B free after), "
+                  "%u of %u art pages, %u banks accounted",
+             slot, part->label, (unsigned)(part->address + offset), (unsigned)need_bytes,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)art_bank_mmu_pages(), (unsigned)ORB_ART_PAGE_BUDGET,
+             (unsigned)orb_art_resident_count());
+    if (out_slot) *out_slot = slot;
+    return ESP_OK;
+#else
     const void *map = NULL;
     esp_err_t err = esp_partition_mmap(part, offset, need_bytes, ESP_PARTITION_MMAP_DATA,
                                        &map, &s_extra[slot].handle);
@@ -409,13 +489,16 @@ esp_err_t art_bank_map_extra(size_t offset, size_t need_bytes, int *out_slot)
              (unsigned)orb_art_resident_count());
     if (out_slot) *out_slot = slot;
     return ESP_OK;
+#endif /* ORB_ART_MECH_B */
 }
 
 
 const uint8_t *art_bank_extra_ptr(int slot)
 {
     if (slot < 0 || slot >= ART_BANK_EXTRA_MAX) return NULL;
-    return s_extra[slot].map;
+    /* One accessor, two sources: the arena base and the flash map are the same
+     * readable pixels to a compositor — that equivalence IS the §3.3 ABI. */
+    return s_extra[slot].psram ? s_extra[slot].plane : s_extra[slot].map;
 }
 
 size_t art_bank_extra_bytes(int slot)
@@ -427,14 +510,15 @@ size_t art_bank_extra_bytes(int slot)
 esp_err_t art_bank_unmap_extra(int slot)
 {
     if (slot < 0 || slot >= ART_BANK_EXTRA_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_extra[slot].map) return ESP_OK;                 /* already empty */
+    if (!art_extra_live(&s_extra[slot])) return ESP_OK;         /* already empty */
     /* The munmap voids every pointer into the region, so "which app just lost
      * its pixels" must be answerable from the boot log alone: silent unmaps are
      * how a garbage paint becomes unexplainable. */
     ESP_LOGI(TAG, "extra bank %d unmapped (%u B @0x%x freed, %u banks accounted)",
              slot, (unsigned)s_extra[slot].bytes, (unsigned)s_extra[slot].offset,
              (unsigned)(orb_art_resident_count() - 1u));
-    esp_partition_munmap(s_extra[slot].handle);
+    if (s_extra[slot].psram) heap_caps_free(s_extra[slot].plane);   /* mechanism B */
+    else                     esp_partition_munmap(s_extra[slot].handle);
     s_extra[slot] = (art_extra_t){ 0 };
     return ESP_OK;
 }
@@ -454,7 +538,7 @@ esp_err_t art_bank_unmap_extra(int slot)
  * CRC is what proves a mapped read returns the same bytes the read path
  * returns — the only difference between a sprite read that works and one that
  * paints garbage. */
-#if ORB_ART_M2_PROBE
+#if ORB_ART_M2_PROBE || ORB_ART_M3_PROBE
 
 #define M2_BANK_A_OFF   0x00010000u
 #define M2_BANK_A_BYTES 2503747u   /* the perpetual-calendar flagship: 39 pages */
@@ -469,20 +553,34 @@ esp_err_t art_bank_unmap_extra(int slot)
 #define M2_STRESS_BYTES  3858874u     /* the kit3 flagship size: 59 pages */
 #define M2_PUSH_MAX      16u
 
-/* Static: the main task's stack would not thank us for 4 KB of scratch. */
-static uint8_t s_m2_chunk[4096];
+/* Shared flash-read staging buffer — PSRAM, deliberately. These probes run on
+ * a heap whose largest internal block measured 7,168 B this bench week: a 4 KB
+ * static .bss chunk here is what put httpd_start's 8 KB task stack over the
+ * line (ESP_ERR_HTTPD_TASK at boot, observed 2026-10-12 with the M3 probe's
+ * two staging statics resident). Boot-probe scratch earns no internal RAM.
+ * One buffer serves every caller (erase gate, CRC loops) — no two reads
+ * overlap in a probe pass, so aliasing it is safe and halves the footprint. */
+static uint8_t *s_m2_chunk;
+static uint8_t *m2_stage_buf(void)
+{
+    if (!s_m2_chunk)
+        s_m2_chunk = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return s_m2_chunk;
+}
 
 static bool m2_crc_verified(const esp_partition_t *part, const uint8_t *map,
                             size_t off, size_t bytes)
 {
+    uint8_t *chunk = m2_stage_buf();
+    if (!chunk) { ESP_LOGE(TAG, "m2: no 4 KB PSRAM stage — cannot CRC-verify"); return false; }
     const uint32_t crc_map = esp_rom_crc32_le(0, map, (uint32_t)bytes);
     uint32_t crc_read = 0;
     for (size_t done = 0; done < bytes; ) {
         size_t want = bytes - done;
-        if (want > sizeof s_m2_chunk) want = sizeof s_m2_chunk;
-        if (esp_partition_read(part, off + done, s_m2_chunk, want) != ESP_OK)
+        if (want > 4096) want = 4096;
+        if (esp_partition_read(part, off + done, chunk, want) != ESP_OK)
             return false;
-        crc_read = esp_rom_crc32_le(crc_read, s_m2_chunk, (uint32_t)want);
+        crc_read = esp_rom_crc32_le(crc_read, chunk, (uint32_t)want);
         done += want;
     }
     return crc_map == crc_read;
@@ -490,7 +588,9 @@ static bool m2_crc_verified(const esp_partition_t *part, const uint8_t *map,
 
 #define M2_MB_U(free) (unsigned)((free) >> 20)
 #define M2_MB_T(free) (unsigned)((((free) * 10) >> 20) % 10)
+#endif /* shared M2/M3 preamble */
 
+#if ORB_ART_M2_PROBE
 /* The plan's M2 line: banks resident, pages of 256 claimed (art + the image's
  * own), and whether the bytes through the mapping are the bytes on the flash. */
 static void m2_log_resident(const esp_partition_t *part, const char *what,
@@ -743,4 +843,385 @@ void art_bank_lat_probe(void)
              (unsigned)orb_art_resident_count(), (unsigned)art_bank_mmu_pages());
 }
 #endif /* ORB_ART_LAT_PROBE */
+
+/* ---- M3 bench probe: the overflow bank, mechanism A vs mechanism B (§6 M3)
+ * The bank is the third flagship — kit3 bytes, flashed by the bench lane at
+ * the slot-free M3_BANK_OFF (orb_theme's installs never touch this offset, and
+ * a stale half-written region is caught by the CRC gate below before a single
+ * number is printed). One build measures one arm: ORB_ART_MECH_B decides at
+ * compile time, everything else about the two builds is identical bytes.
+ *
+ * What is timed, per arm:
+ *   A — release (unmap_extra), cold reclaim (map_extra), and the FIRST full-
+ *       page commit through the fresh map. The last term is why M3 is not
+ *       simply the LAT probe re-run: the LAT numbers priced the MMU table write
+ *       (µs, scales with pages), while the compositor's first read after a
+ *       remap pays the flash-cache miss storm the plan's "one full-page commit
+ *       + fresh mmap" line means. Expect this to dominate the switch.
+ *   B — the boot-time arena copy (once, priced as a boot cost with PSRAM free
+ *       before/after — the §3.3 gate's real numbers), then the same pass with
+ *       the MMU ops reduced to what the ABI actually calls: a same-offset
+ *       map_extra that finds the entry already covered (a no-op lookup) and a
+ *       suspend that releases nothing. The first-commit pass repeats against
+ *       the arena: 3.86 MB against a 32 KB cache means every block reads cold
+ *       PSRAM each pass, which is the steady state of an app paging through a
+ *       bank that never fits the cache — the same regime as A minus the map.
+ *
+ * The blend runs through gfx_blend_px() at alpha 128 — the real mix_16_16 —
+ * and the block sources are one per 64 KB page band with a per-pass stride, so
+ * a pass touches every page of the bank: half-read from cache measures nothing
+ * (the same all-pages discipline the header's comment promises). */
+#if ORB_ART_M3_PROBE
+
+#include "orb_gfx.h"            /* gfx_blend_px(): the very blend the layers use */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"      /* vTaskDelay between passes: the boot task yields */
+
+#define M3_ITERS      31u               /* odd, like the lat probe: the median is a sample */
+/* Slot-free offset inside slot A's dead band: the baked-in bank ends near
+ * 0x11E000, orb_theme installs land in slot B (0x400000+). 64 KB aligned. */
+#define M3_BANK_OFF   0x00100000u
+#define M3_BANK_BYTES 3858874u          /* the kit3 flagship — the flashed bench bank */
+#define M3_BLK        60u               /* the DISPLAY_BENCH block, same 3600-px footprint */
+#define M3_BLK_PX     (M3_BLK * M3_BLK)
+#define M3_BLOCKS     60u               /* ~one full page of blended px per pass */
+#define M3_ALPHA      128               /* the real mix; 255 prices the wrong op (.clinerules) */
+#define M3_BLK_BYTES  (M3_BLK_PX * 2u)  /* bytes of bank read per block (colour window only) */
+
+static uint64_t s_m3_rls[M3_ITERS], s_m3_rcl[M3_ITERS], s_m3_fc[M3_ITERS];
+static const uint8_t *s_m3_plane;
+static size_t s_m3_bytes;
+static uint16_t *s_m3_dst;          /* the blend's dst page-equivalent (PSRAM) */
+
+const uint8_t *art_bank_m3_plane(void) { return s_m3_plane; }
+size_t art_bank_m3_bytes(void)         { return s_m3_bytes; }
+bool art_bank_m3_is_psram(void)        { return ORB_ART_MECH_B; }
+
+static void m3_sort(uint64_t *a, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++)
+        for (unsigned j = i + 1; j < n; j++)
+            if (a[j] < a[i]) { uint64_t t = a[i]; a[i] = a[j]; a[j] = t; }
+}
+
+/* One op's report, same shape as the lat probe's so §14's table reads evenly. */
+static void m3_stats(const char *arm, const char *op, const uint64_t *a, unsigned n)
+{
+    if (!n) { ESP_LOGE(TAG, "m3: %s %s produced no samples", arm, op); return; }
+    uint64_t min = a[0], max = a[0], sum = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (a[i] < min) min = a[i];
+        if (a[i] > max) max = a[i];
+        sum += a[i];
+    }
+    ESP_LOGI(TAG, "m3: %s %-16s min %8llu median %8llu max %8llu us (mean %llu us)",
+             arm, op,
+             (unsigned long long)min, (unsigned long long)a[n / 2],
+             (unsigned long long)max, (unsigned long long)(sum / n));
+}
+
+/* One first-commit pass: M3_BLOCKS 60x60 blocks, each sourced from a distinct
+ * 64 KB band of the bank (plus a per-pass rotation so consecutive passes do
+ * not re-measure one cache state), blended into the scratch dst through the
+ * shipping gfx_blend_px at the real alpha. dst is written AND read (the mix
+ * reads its destination), mirroring a commit over a stale canvas. */
+static uint64_t m3_first_commit(const uint8_t *plane, size_t bytes, unsigned pass)
+{
+    const size_t band = bytes / M3_BLOCKS;            /* > M3_BLK_BYTES on any flagship */
+    const uint64_t t0 = esp_timer_get_time();
+    for (unsigned b = 0; b < M3_BLOCKS; b++) {
+        size_t off = (size_t)b * band
+                   + (size_t)(((pass * 0x1150u + b * 77u) % (band - M3_BLK_BYTES)) & ~1u);
+        const uint16_t *src = (const uint16_t *)(plane + off);
+        uint16_t *d = s_m3_dst + (size_t)b * M3_BLK_PX;
+        for (unsigned i = 0; i < M3_BLK_PX; i++)
+            gfx_blend_px(&d[i], src[i], M3_ALPHA, 0);
+    }
+    return esp_timer_get_time() - t0;
+}
+
+/* ---- the MMU's true refusal point (§11's third finding, handed to M3) ------
+ * M2 mapped every distinct 64 KB page of the 8 MB assets partition — all 128,
+ * one folded to the primary's own base by the mmap layer's dedup of identical
+ * physical requests — and the allocator never refused. That bounds accepted
+ * regions at 128+ and nowhere near decides whether ORB_ART_PAGE_BUDGET (234)
+ * could rise: the partition ran out before the MMU did. The hunt goes further
+ * by going WIDER, not denser — only physically DISTINCT pages are countable
+ * (an earlier version walked assets at 8 KB stride and the mmap cache folded
+ * every overlapping request onto an existing pointer, measuring nothing), and
+ * the board has four 64 KB-aligned partitions: assets (128 pages), www (20),
+ * ota_0 (32) and ota_1 (32) — 212 distinct regions on top of the ~99 pages
+ * already resident for the image, the primary and the bench bank, past the
+ * 256-page window the budget arithmetic claims. First refusal by name (and
+ * where) is the number §11 asked for; if the hunt still exhausts, that too is
+ * reported as the bound it is. Every mapping is UNMAPPED on the way out:
+ * unlike M2's residency leave-behind, this probe must hand the dial back the
+ * shipping MMU table, so the fps lines that follow measure the arm under test
+ * and nothing else. */
+#define M3_HUNT_MAX 300u         /* 212 distinct pages available; refuse-cap beyond that */
+
+/* PSRAM, allocated at hunt entry — see m2_stage_buf's note on why boot-probe
+ * scratch earns no internal .bss on this heap. */
+static const void **s_hunt_map;
+static esp_partition_mmap_handle_t *s_hunt_h;
+static unsigned s_hunt_n;
+
+static void m3_hunt_unmap_all(void)
+{
+    for (unsigned i = 0; i < s_hunt_n; i++)
+        if (s_hunt_h[i]) { esp_partition_munmap(s_hunt_h[i]); s_hunt_h[i] = 0; }
+    s_hunt_n = 0;
+}
+
+/** Returns 0 if a genuine refusal was caught (and logged with its where),
+ *  1 if the hunt exhausted without one. */
+static int m3_refusal_hunt(const esp_partition_t *assets)
+{
+    /* Fold detection also counts the boot's own mappings — a page that
+     * returns the primary's base is dedup, not a granted region (M2's
+     * lesson, in both directions). */
+    const void *residents[ART_BANK_EXTRA_MAX + 2];
+    unsigned n_res = 0;
+    residents[n_res++] = art_bank_ptr();
+    residents[n_res++] = s_m3_plane;
+    for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
+        residents[n_res++] = art_bank_extra_ptr((int)i);
+
+    s_hunt_n = 0;
+    s_hunt_map = (const void **)heap_caps_malloc(M3_HUNT_MAX * sizeof s_hunt_map[0],
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_hunt_h = (esp_partition_mmap_handle_t *)heap_caps_malloc(
+        M3_HUNT_MAX * sizeof s_hunt_h[0], MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_hunt_map || !s_hunt_h) {
+        ESP_LOGE(TAG, "m3: hunt skipped — no PSRAM for the handle arrays");
+        return 1;
+    }
+    unsigned fresh = 0, folded = 0, attempts = 0;
+    esp_err_t rerr = ESP_OK;
+    const char *where = "?"; size_t woff = 0;
+    /* Every 64 KB-aligned partition the table can give a data map: the two
+     * data banks and BOTH app slots (mmap of an app image's bytes as DATA is
+     * legal — the first hunt pass searched them as TYPE_DATA and skipped
+     * them, which is why its legs logged "no ota_0 partition" on a board that
+     * boots from one). */
+    static const struct { const char *label; esp_partition_type_t type; } hunt_legs[] = {
+        { NULL,       ESP_PARTITION_TYPE_DATA },  /* NULL label = the assets arg */
+        { "www",      ESP_PARTITION_TYPE_DATA },
+        { "ota_0",    ESP_PARTITION_TYPE_APP },
+        { "ota_1",    ESP_PARTITION_TYPE_APP },
+    };
+
+    for (unsigned pi = 0; pi < 4 && rerr == ESP_OK; pi++) {
+        const esp_partition_t *part = hunt_legs[pi].label
+            ? esp_partition_find_first(hunt_legs[pi].type,
+                                       ESP_PARTITION_SUBTYPE_ANY, hunt_legs[pi].label)
+            : assets;
+        if (!part) {
+            ESP_LOGW(TAG, "m3: hunt: no \"%s\" partition on this table — leg skipped",
+                     hunt_legs[pi].label ? hunt_legs[pi].label : "assets");
+            continue;
+        }
+        where = part->label;
+        for (size_t off = 0; off + ORB_ART_PAGE_SIZE <= part->size; off += ORB_ART_PAGE_SIZE) {
+            const void *m = NULL;
+            esp_partition_mmap_handle_t h = 0;
+            woff = off;
+            rerr = esp_partition_mmap(part, off, ORB_ART_PAGE_SIZE,
+                                      ESP_PARTITION_MMAP_DATA, &m, &h);
+            attempts++;
+            if (rerr != ESP_OK) break;
+            if (m == NULL) { esp_partition_munmap(h); rerr = ESP_FAIL; break; }
+            bool dup = false;
+            for (unsigned i = 0; i < n_res && !dup; i++) dup = (residents[i] == m);
+            for (unsigned i = 0; i < s_hunt_n && !dup; i++) dup = (s_hunt_map[i] == m);
+            if (dup) folded++;
+            else fresh++;
+            if (s_hunt_n < M3_HUNT_MAX) { s_hunt_map[s_hunt_n] = m; s_hunt_h[s_hunt_n] = h; s_hunt_n++; }
+            else esp_partition_munmap(h);              /* cap: state held either way */
+            if ((attempts % 64u) == 0) vTaskDelay(1);
+        }
+    }
+
+    const uint32_t internal_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const unsigned kept = s_hunt_n;
+    m3_hunt_unmap_all();
+    if (rerr == ESP_OK) {
+        ESP_LOGE(TAG, "m3: refusal-hunt EXHAUSTED without a refusal — %u attempts, %u fresh "
+                      "(%u folded), never refused; the ceiling is above %u distinct regions "
+                      "and budget 234 remains a contract, not a measurement. internal free %u B",
+                 attempts, fresh, folded, fresh, (unsigned)internal_free);
+        return 1;
+    }
+    ESP_LOGI(TAG, "m3: refusal-hunt: \"%s\" @0x%x REFUSED with %s — attempt %u, %u fresh regions "
+                  "(%u folded) live when it happened (plus %u B internal free). That is the "
+                  "allocator's real page ceiling; all %u hunt mappings unmapped again.",
+             where, (unsigned)woff, esp_err_to_name(rerr), attempts, fresh, folded,
+             (unsigned)internal_free, kept);
+    return 0;
+}
+
+void art_bank_m3_probe(void)
+{
+    const esp_partition_t *part = art_bank_partition();
+    if (!part) { ESP_LOGE(TAG, "m3: no \"assets\" partition — nothing to measure"); return; }
+
+    const char *arm = ORB_ART_MECH_B ? "B(arena)" : "A(re-map)";
+    /* Erased-flash gate FIRST: measuring on 0xFF reads is how a forgotten bench
+     * write becomes a fake number that still looks like the other arm. The
+     * printed fix is the one-shot esptool write, not a re-flash of the app. */
+    uint8_t *head = m2_stage_buf();   /* PSRAM, shared with the CRC loop — never both at once */
+    if (!head) { ESP_LOGE(TAG, "m3: no 4 KB PSRAM stage — measure nothing"); return; }
+    if (esp_partition_read(part, M3_BANK_OFF, head, 4096) != ESP_OK) {
+        ESP_LOGE(TAG, "m3: cannot read bench bank at 0x%x — measure nothing", (unsigned)M3_BANK_OFF);
+        return;
+    }
+    bool ff = true, zero = true;
+    for (unsigned i = 0; i < 4096; i++) { if (head[i] != 0xFF) ff = false; if (head[i]) zero = false; }
+    if (ff || zero) {
+        ESP_LOGE(TAG, "m3: bench bank at 0x%x is ERASED — flash it first: write_flash "
+                      "0x520000 /tmp/m3-kit3.bin on the bound port. Measuring nothing.",
+                 (unsigned)M3_BANK_OFF);
+        return;
+    }
+
+    s_m3_dst = (uint16_t *)heap_caps_malloc((size_t)M3_BLOCKS * M3_BLK_PX * sizeof(uint16_t),
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_m3_dst) { ESP_LOGE(TAG, "m3: no %u B PSRAM scratch — measure nothing",
+                              (unsigned)(M3_BLOCKS * M3_BLK_PX * 2u)); return; }
+
+    ESP_LOGI(TAG, "m3: arm %s, bank %u B @0x%x (%u pages), iters %u, primary %u B %s, "
+                  "free PSRAM %u B, margin gate %u B",
+             arm, (unsigned)M3_BANK_BYTES, (unsigned)M3_BANK_OFF,
+             (unsigned)art_bank_pages_for(M3_BANK_BYTES), (unsigned)M3_ITERS,
+             (unsigned)art_bank_bytes(), art_bank_ready() ? "resident" : "NOT RESIDENT",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)ORB_ART_ARENA_MARGIN);
+
+    /* Warm-up acquire (never sampled). For arm B this call IS the boot-time
+     * arena copy — timed once and printed as the boot cost §3.3 prices. */
+    const size_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const uint64_t t_acq0 = esp_timer_get_time();
+    int slot = -1;
+    esp_err_t err = art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot);
+    const uint64_t boot_us = esp_timer_get_time() - t_acq0;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "m3: first map refused (%s) — measure nothing", esp_err_to_name(err));
+        heap_caps_free(s_m3_dst); s_m3_dst = NULL;
+        return;
+    }
+    if (ORB_ART_MECH_B)
+        ESP_LOGI(TAG, "m3: %s BOOT COST: arena fill of %u B in %llu us; free PSRAM "
+                      "%u → %u B (margin gate %u B)", arm, (unsigned)M3_BANK_BYTES,
+                 (unsigned long long)boot_us, (unsigned)psram_before,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)ORB_ART_ARENA_MARGIN);
+
+    const uint8_t *plane = art_bank_extra_ptr(slot);
+    if (!m2_crc_verified(part, plane, M3_BANK_OFF, M3_BANK_BYTES)) {
+        ESP_LOGE(TAG, "m3: CRC MISMATCH through the %s at 0x%x — the bytes measured "
+                      "would not be the bytes painted. Measure nothing.",
+                 arm, (unsigned)M3_BANK_OFF);
+        art_bank_unmap_extra(slot);
+        heap_caps_free(s_m3_dst); s_m3_dst = NULL;
+        return;
+    }
+    (void)m3_first_commit(plane, M3_BANK_BYTES, 0);   /* warm the pattern once */
+
+    /* The sweep. A pays a real release + a cold reclaim + the first read
+     * through the fresh map, every iteration — the shape of the carousel
+     * switched away and back. B must NOT free its arena per iteration: the
+     * re-fill would re-bill the 3.86 MB copy inside the reclaim column and
+     * corrupt the final residency. B's shipping shape is a carrying host, so
+     * its switch is exactly the two ABI calls that remain live under MECH_B:
+     * the suspend that releases nothing this probe can see, and the resume's
+     * covered-entry lookup. The release-for-free variant of B (a non-carrying
+     * arena host) is the single unmap+re-fill pair timed below, OUTSIDE the
+     * samples, in the boot-cost line's shape. */
+    unsigned n = 0;
+    for (unsigned it = 0; it < M3_ITERS; it++) {
+        uint64_t rls, rcl;
+#if ORB_ART_MECH_B
+        int s2 = -1;
+        rls = 0;                                     /* carrying host: nothing to release */
+        const uint64_t m0 = esp_timer_get_time();
+        err = art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &s2);   /* covered → no-op */
+        rcl = esp_timer_get_time() - m0;
+        slot = s2;
+#else
+        const uint64_t u0 = esp_timer_get_time();
+        art_bank_unmap_extra(slot);
+        const uint64_t u1 = esp_timer_get_time();
+        rls = u1 - u0;
+        slot = -1;
+        const uint64_t m0 = esp_timer_get_time();
+        err = art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot); /* cold reclaim */
+        rcl = esp_timer_get_time() - m0;
+#endif
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "m3: re-acquire failed at iter %u (%s) — sweep truncated",
+                     it, esp_err_to_name(err));
+            break;
+        }
+        plane = art_bank_extra_ptr(slot);
+        s_m3_rls[n] = rls;
+        s_m3_rcl[n] = rcl;
+        s_m3_fc[n]  = m3_first_commit(plane, M3_BANK_BYTES, it + 1);
+        n++;
+        vTaskDelay(1);
+    }
+    if (!n) { ESP_LOGE(TAG, "m3: the sweep produced no samples — nothing to report");
+              heap_caps_free(s_m3_dst); s_m3_dst = NULL; return; }
+
+    m3_stats(arm, "release(suspend)", s_m3_rls, n);
+    m3_stats(arm, "reclaim(resume)",  s_m3_rcl, n);
+    m3_stats(arm, "first-commit",     s_m3_fc, n);
+#if ORB_ART_MECH_B
+    /* The B variant the release-vs-carry ruling also needs: what suspending
+     * an ARENA app would cost if the host did NOT carry it — one real unmap
+     * (heap_caps_free) plus the re-fill that follows. Once, outside the
+     * samples: it is the price of the OTHER carrier choice, not the switch. */
+    {
+        const uint64_t f0 = esp_timer_get_time();
+        art_bank_unmap_extra(slot);
+        const uint64_t f1 = esp_timer_get_time();
+        slot = -1;
+        if (art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot) == ESP_OK) {
+            const uint64_t f2 = esp_timer_get_time();
+            plane = art_bank_extra_ptr(slot);
+            ESP_LOGI(TAG, "m3: %s release-for-free variant: unmap %llu us, arena re-fill %llu us "
+                          "(boot-cost shape, one pair — not a switch sample)",
+                     arm, (unsigned long long)(f1 - f0), (unsigned long long)(f2 - f1));
+        } else {
+            ESP_LOGE(TAG, "m3: variant re-fill FAILED — arena could not be re-taken; "
+                          "the dial follows without the bank (degraded pass)");
+            slot = -1;
+        }
+    }
+#endif
+    if (n) {
+        /* The plan asks about the SWITCH, so price it from matched samples —
+         * summing three medians would quietly invent an independence the
+         * iterations do not have. */
+        static uint64_t s_tot[M3_ITERS];
+        for (unsigned i = 0; i < n; i++) s_tot[i] = s_m3_rls[i] + s_m3_rcl[i] + s_m3_fc[i];
+        m3_sort(s_tot, n);
+        m3_stats(arm, "SWITCH TOTAL", s_tot, n);
+    }
+
+    /* Re-acquire once more if the truncated sweep left the bank down, then
+     * LEAVE IT RESIDENT: the dial's fps lines later in this boot log — and
+     * the DISPLAY_BENCH blocks, which clock_view points at art_bank_m3_plane()
+     * when armed — are then the rotation steady state of an app reading this
+     * bank, the M2 residency convention. */
+    if (slot < 0 && art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot) != ESP_OK)
+        ESP_LOGE(TAG, "m3: FINAL map refused — the dial follows WITHOUT the bank; "
+                      "its fps lines are a degraded pass, not a rotation measure");
+    s_m3_plane = art_bank_extra_ptr(slot);
+    s_m3_bytes = M3_BANK_BYTES;
+    (void)m3_refusal_hunt(part);   /* logs its own verdict; unmaps everything it mapped */
+    ESP_LOGI(TAG, "m3: done — %u samples, bank LEFT RESIDENT %u B via %s. Plane for "
+                  "DISPLAY_BENCH blocks: %s. Read against §12.7's M1 activate 63-87 ms.",
+             (unsigned)n, (unsigned)M3_BANK_BYTES, arm, s_m3_plane ? "armed" : "NOT ARMED");
+}
+#endif /* ORB_ART_M3_PROBE */
 

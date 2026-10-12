@@ -96,6 +96,18 @@ void app_main(void)
     art_bank_lat_probe();
 #endif
 
+#if ORB_ART_M3_PROBE
+    /* A-vs-B overflow protocol (docs/app-platform-plan.md §6 M3): prices the
+     * one bank the slot layout has no room for, re-map against PSRAM arena.
+     * Same placement rule as M2 — after the theme's art_bank_init() so the
+     * primary counts, before display_init() so the dial's own fps lines later
+     * in this boot log are made with the bench bank still resident (the probe
+     * leaves it mapped/armes the DISPLAY_BENCH plane; see the m3: done line).
+     * Requires the bench bank flashed at assets+0x100000 — the probe refuses
+     * to measure erased flash rather than printing a confident lie. */
+    art_bank_m3_probe();
+#endif
+
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 

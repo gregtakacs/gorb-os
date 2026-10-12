@@ -847,6 +847,36 @@ static uint32_t  s_bench_n;                           /* blocks this tick     */
 
 static void bench_paint_band(int32_t y0, int nr);   /* gfx band hook, below */
 
+#if ORB_ART_M3_PROBE
+/* M3 graft: point the blocks at the bank the M3 probe left resident instead
+ * of the synthetic mag plane — same px count, same blend, the ONLY variable
+ * is where the colours live (flash MMU map on arm A, PSRAM arena on arm B).
+ * Offsets re-stripe every tick in bench_plan so each pass reads every page of
+ * the bank; a bench that reread one cache line proves nothing. If the plane
+ * never arrived the bench says so and stays dark — mag ink under an "M3"
+ * label would be the confident lie the probe already refuses to print. */
+static size_t  s_m3_off[BENCH_MAX_BLK];
+static size_t  s_m3_bytes;
+static unsigned s_m3_pass;
+
+static bool m3_arm_plane(void)
+{
+    s_m3_bytes = art_bank_m3_bytes();
+    const uint8_t *plane = art_bank_m3_plane();
+    const size_t need = (size_t)BENCH_MAX_BLK * BENCH_BLK * BENCH_BLK * 2u;
+    if (!plane || s_m3_bytes < need + (size_t)BENCH_BLK * BENCH_BLK * 2u) {
+        ESP_LOGE(TAG, "bench M3: no bench plane (bank %u B, need >%u B) — NO blocks will "
+                      "paint; read the m3: lines above for why",
+                 (unsigned)s_m3_bytes, (unsigned)need);
+        return false;
+    }
+    s_bench_solid = (uint16_t *)(void *)(uintptr_t)plane;   /* read-only from here */
+    ESP_LOGI(TAG, "bench M3: colour source := %s bank, %u B — the reads ARE the measurement",
+             art_bank_m3_is_psram() ? "PSRAM arena" : "flash-map", (unsigned)s_m3_bytes);
+    return true;
+}
+#endif /* ORB_ART_M3_PROBE */
+
 static void bench_init(void)
 {
     if (DISPLAY_BENCH_PX == 0 || s_bench_solid) return;
@@ -854,11 +884,15 @@ static void bench_init(void)
      * its timed paint window, so it is registered as the band hook rather than
      * called from the hook that no longer exists here. */
     gfx_set_band_hook(bench_paint_band);
+#if ORB_ART_M3_PROBE
+    if (!m3_arm_plane()) return;
+#else
     const size_t n = (size_t)BENCH_BLK * BENCH_BLK * sizeof(uint16_t);
     s_bench_solid = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_bench_solid) return;
     uint16_t *p = s_bench_solid;
     for (size_t i = 0; i < n / sizeof(uint16_t); i++) p[i] = 0xF81F;   /* mag */
+#endif
     /* Seed inside the band: a block that starts at y=0 marks rows the GIF
      * never touches, and the first ~60 ticks would then measure a row change
      * as well as a px change -- exactly the confound this sweep must not have. */
@@ -899,6 +933,22 @@ static void bench_plan(void)
         s_bench_y[i] = (int16_t)y;
         gfx_mark_rows(y, y + BENCH_BLK - 1, x, x + BENCH_BLK - 1, false);
     }
+#if ORB_ART_M3_PROBE
+    /* Re-stripe the colour-source windows so every pass sweeps the WHOLE bank:
+     * one block per band of it, rotated by the pass counter — no block pair
+     * shares a source page, and a tick that read only the cache would show up
+     * as a zero row-cost difference between arms. This is the M3 variable:
+     * identical blends, different source location. */
+    if (s_bench_n && s_m3_bytes) {
+        const size_t win  = (size_t)BENCH_BLK * BENCH_BLK * 2u;
+        const size_t band = s_m3_bytes / s_bench_n;
+        const size_t span = s_m3_bytes - win;
+        for (uint32_t i = 0; i < s_bench_n; i++)
+            s_m3_off[i] = (((size_t)i * band + (size_t)s_m3_pass * 0x1150u) % span)
+                        & ~(size_t)1u;
+        s_m3_pass++;
+    }
+#endif
 }
 
 /* Hook side: blend the planned blocks into the staged band rows, after the
@@ -919,7 +969,14 @@ static void bench_paint_band(int32_t y0, int nr)
             if (xa < R->x0[y]) xa = R->x0[y];
             if (xb > R->x1[y]) xb = R->x1[y];
             if (xa > xb) continue;
+#if ORB_ART_M3_PROBE
+            /* Source walks the bank, not a 7.2 KB mag plane: this line's
+             * memory location IS the A-vs-B question, at cadence. */
+            const uint16_t *src = s_bench_solid + (s_m3_off[i] >> 1)
+                                + (size_t)(y - by0) * BENCH_BLK;
+#else
             const uint16_t *src = &s_bench_solid[(size_t)(y - by0) * BENCH_BLK];
+#endif
             uint16_t *row = gfx_band(r);
             for (int32_t x = xa; x <= xb; x++)
                 gfx_blend_px(&row[x], src[x - bx0], DISPLAY_BENCH_ALPHA, 0);

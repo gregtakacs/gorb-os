@@ -105,7 +105,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	if ip == "" {
 		send(map[string]any{"result": map[string]any{
 			"mode":   "no_ip",
-			"reason": "the orb joined its network but announced no lease on the console — enter its IP to manage it",
+			"reason": "the orb joined its network but announced no lease on the console - enter its IP to manage it",
 		}})
 		return
 	}
@@ -128,7 +128,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	}
 	send(map[string]any{"result": map[string]any{
 		"mode":   "unknown",
-		"reason": ip + " (" + source + ") did not answer as an orb — re-check the IP, or the network it joined",
+		"reason": ip + " (" + source + ") did not answer as an orb - re-check the IP, or the network it joined",
 		"ip":     ip,
 	}})
 }

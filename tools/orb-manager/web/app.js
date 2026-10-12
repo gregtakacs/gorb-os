@@ -80,15 +80,27 @@ async function refreshPorts() {
       const o = document.createElement("option");
       const p = typeof entry === "string" ? entry : entry.port;
       o.value = p;
-      // The MAC beside the name is what makes two cables distinguishable; it is
-      // shown only once something has actually identified the port, never
-      // guessed at.
-      o.textContent = typeof entry === "string" || !entry.known ? p
-        : `${p}  —  ${entry.isOrb ? (entry.mac || "orb") + "  ·  " + (entry.version || "version unknown") : entry.reason}`;
+      o.textContent = portLabel(p, entry);
       sel.appendChild(o);
     }
     renderIdentity(list);
   } catch (e) { sel.innerHTML = `<option>(${e.message})</option>`; }
+}
+
+// portLabel spells a port out. The MAC is free — the host reads it off the USB
+// descriptor without opening the port — so two cables on the bench are tellable
+// apart before anyone pays for a probe. The version only appears once one has
+// been identified, and is never guessed at.
+function portLabel(p, entry) {
+  if (typeof entry === "string" || !entry) { return p; }
+  if (entry.probed) {
+    return entry.isOrb
+      ? `${p}  —  ${(entry.mac || entry.usbMac || "orb")}  ·  ${entry.version || "version unknown"}`
+      : `${p}  —  ${entry.reason || "not an orb"}`;
+  }
+  if (entry.usbMac) { return `${p}  —  ${entry.usbMac}  ·  not identified`; }
+  if (entry.hint) { return `${p}  —  ${entry.hint}  ·  not identified`; }
+  return p;
 }
 
 // renderIdentity shows the cached verdict for the selected port. It never probes:
@@ -98,7 +110,7 @@ function renderIdentity(list) {
   const card = $("#ob-idcard"), state = $("#ob-idstate");
   const sel = $("#ob-port");
   const chosen = list.find((e) => e && e.port === sel.value);
-  if (!chosen || !chosen.known) { card.hidden = true; return; }
+  if (!chosen || !chosen.probed) { card.hidden = true; return; }
   card.hidden = false;
   const rows = [];
   if (chosen.isOrb) {

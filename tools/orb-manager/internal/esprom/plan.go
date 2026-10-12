@@ -172,7 +172,7 @@ func NvsRegions(raw []byte) ([]EraseTarget, error) {
 		off := binary.LittleEndian.Uint32(e[4:8])
 		size := binary.LittleEndian.Uint32(e[8:12])
 		if off%4096 != 0 || size%4096 != 0 {
-			return nil, fmt.Errorf("esprom: NVS partition %q at 0x%X+0x%X is not sector aligned — refusing to erase", label, off, size)
+			return nil, fmt.Errorf("esprom: NVS partition %q at 0x%X+0x%X is not sector aligned - refusing to erase", label, off, size)
 		}
 		out = append(out, EraseTarget{Label: label, Offset: off, Size: size})
 	}

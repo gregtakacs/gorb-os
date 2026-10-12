@@ -247,7 +247,7 @@ func Session(pt *Port, o Options) error {
 		if er.Offset%4096 != 0 || er.Size%4096 != 0 {
 			return fmt.Errorf("erase %s @0x%X+0x%X: not sector aligned", er.Label, er.Offset, er.Size)
 		}
-		logf(fmt.Sprintf("erasing %s @0x%X (%d B) — config wipe", er.Label, er.Offset, er.Size))
+		logf(fmt.Sprintf("erasing %s @0x%X (%d B) - config wipe", er.Label, er.Offset, er.Size))
 		if err := d.EraseRegion(er.Offset, er.Size); err != nil {
 			return fmt.Errorf("erase %s @0x%X: %w", er.Label, er.Offset, err)
 		}

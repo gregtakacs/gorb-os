@@ -143,7 +143,7 @@ func ProbeOrb(port string) (OrbInfo, error) {
 	if err := d.Sync(); err != nil {
 		// No ROM answer: a genuine serial device that is not an ESP32 in download
 		// mode — the FTDI cable, the meter, the Arduino on the desk.
-		info.Reason = "no bootloader answer — not an orb"
+		info.Reason = "no bootloader answer - not an orb"
 		return info, nil
 	}
 	if err := d.VerifyS3(); err != nil {

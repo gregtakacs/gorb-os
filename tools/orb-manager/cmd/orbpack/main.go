@@ -37,7 +37,7 @@ func main() {
 	}
 	manifest, err := os.ReadFile(filepath.Join(*build, firmware.ManifestName))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orbpack: %v — run idf.py build first\n", err)
+		fmt.Fprintf(os.Stderr, "orbpack: %v - run idf.py build first\n", err)
 		os.Exit(1)
 	}
 	blob, err := firmware.WriteBundle(manifest, open)
@@ -56,7 +56,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "orbpack: wrote a bundle the hub cannot load:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("orbpack: %s — %d image(s), %s %s, %d B -> %s (%d B)\n",
+	fmt.Printf("orbpack: %s - %d image(s), %s %s, %d B -> %s (%d B)\n",
 		filepath.Base(*out), len(b.Images), b.Project, b.Version, len(manifest), *out, len(blob))
 }
 

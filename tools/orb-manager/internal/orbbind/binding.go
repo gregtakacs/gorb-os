@@ -38,7 +38,7 @@ func LockPort(path string) (*PortLock, error) {
 		return nil, fmt.Errorf("orbbind: lock port %s: %w", canon, err)
 	}
 	if !held {
-		return nil, fmt.Errorf("port %s is busy — another flash or provision holds its lock", canon)
+		return nil, fmt.Errorf("port %s is busy - another flash or provision holds its lock", canon)
 	}
 	return &PortLock{f: f, name: canon}, nil
 }

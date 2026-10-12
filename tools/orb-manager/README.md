@@ -214,7 +214,7 @@ headless; a mismatch aborts before erasing.
 | Route | Purpose |
 |---|---|
 | `GET  /api/status` | platform, hub stamp, firmware version and source |
-| `GET  /api/ports`  | ports as `{"ports":[{port,known,hint,...}]}`, with each cached identity inlined |
+| `GET  /api/ports`  | ports as `{"ports":[{port,attributed,hint,usbMac?,probed,...}],"count":N}`, with each cached identity inlined |
 | `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit |
 | `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |

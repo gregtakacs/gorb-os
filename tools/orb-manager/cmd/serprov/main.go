@@ -73,12 +73,12 @@ func main() {
 		fmt.Printf("    ch%-2d rssi%-4d %s %q\n", n.Ch, n.RSSI, map[bool]string{true: "open", false: "   "}[n.Open], n.SSID)
 	}
 	if !res.Ack {
-		fmt.Println("\nserprov: NOT PROVEN — no PROV-ACK after writing the PROV line.")
+		fmt.Println("\nserprov: NOT PROVEN - no PROV-ACK after writing the PROV line.")
 		os.Exit(1)
 	}
 	if res.IP != "" {
-		fmt.Printf("\nserprov: PROVEN — orb joined and took DHCP lease %s (read off the USB console).\n", res.IP)
+		fmt.Printf("\nserprov: PROVEN - orb joined and took DHCP lease %s (read off the USB console).\n", res.IP)
 	} else {
-		fmt.Println("\nserprov: PROVEN — orb accepted the PROV line and is joining (no lease banner seen yet; find it on the LAN).")
+		fmt.Println("\nserprov: PROVEN - orb accepted the PROV line and is joining (no lease banner seen yet; find it on the LAN).")
 	}
 }

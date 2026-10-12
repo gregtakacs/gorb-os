@@ -104,8 +104,8 @@ func TestAPIPortsEndpointWrapsThePortsArray(t *testing.T) {
 			// Entries are objects, not bare strings: each carries the cached
 			// identity so the card can show a MAC without rebooting anything.
 			Ports []struct {
-				Port  string `json:"port"`
-				Known bool   `json:"known"`
+				Port   string `json:"port"`
+				Probed bool   `json:"probed"`
 			} `json:"ports"`
 		} `json:"data"`
 		Error string `json:"error"`
@@ -623,7 +623,7 @@ func TestIdentityFieldsMatchBetweenClientAndHandler(t *testing.T) {
 
 	// Fields app.js reads from a port entry inside renderIdentity.
 	body := blockContaining(t, src, "function renderIdentity")
-	for _, f := range []string{"known", "isOrb", "mac", "version", "project", "verdict", "reason", "probedAt", "compileTime", "ip"} {
+	for _, f := range []string{"probed", "isOrb", "mac", "version", "project", "verdict", "reason", "probedAt", "compileTime", "ip"} {
 		if !strings.Contains(body, "chosen."+f) {
 			t.Errorf("renderIdentity no longer reads chosen.%s — if that is deliberate, drop it from this list too", f)
 		}
@@ -673,13 +673,13 @@ func TestIdentityFieldsMatchBetweenClientAndHandler(t *testing.T) {
 	if entry == nil {
 		t.Fatalf("the cached port is absent from %d entries: the hub dropped a port it knew about", len(payload.Ports))
 	}
-	for _, f := range []string{"port", "known", "isOrb", "mac", "project", "version", "compileTime", "compiledAt", "elfSha256", "idf", "ip", "reason", "probedAt", "verdict"} {
+	for _, f := range []string{"port", "probed", "isOrb", "mac", "project", "version", "compileTime", "compiledAt", "elfSha256", "idf", "ip", "reason", "probedAt", "verdict"} {
 		if _, ok := entry[f]; !ok {
 			t.Errorf("the hub sends no %q but app.js reads chosen.%s", f, f)
 		}
 	}
-	if entry["known"] != true || entry["isOrb"] != true {
-		t.Errorf("known/isOrb = %v/%v, want true/true for a cached orb", entry["known"], entry["isOrb"])
+	if entry["probed"] != true || entry["isOrb"] != true {
+		t.Errorf("probed/isOrb = %v/%v, want true/true for a cached orb", entry["probed"], entry["isOrb"])
 	}
 	if entry["verdict"] == nil || entry["verdict"] == "" {
 		t.Error("no verdict sent: the card cannot tell the user what flashing would do")
@@ -840,5 +840,71 @@ func TestProbeTakesThePortLock(t *testing.T) {
 	}
 	if !strings.Contains(src, "s.flashRunning()") {
 		t.Error(`handleProbe must test the flash flag via flashRunning(); probing the mutex is not the same check`)
+	}
+}
+
+// The MAC the host reads off the USB descriptor costs nothing: no port open, no
+// reset, no nine-second wait. It has to reach the picker label for an unprobed
+// cable, which is the only thing that tells two of them apart. An earlier version
+// gated the whole label on the probe flag and threw that free information away.
+func TestUnprobedPortStillCarriesTheFreeUSBLabel(t *testing.T) {
+	s := newHub()
+	rec := httptest.NewRecorder()
+	s.handlePorts(rec, httptest.NewRequest(http.MethodGet, "/api/ports", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var payload struct {
+		Ports []map[string]any `json:"data"`
+	}
+	// The envelope is {ok,data:{ports:[...]}}; decode the same shape twice rather
+	// than assume this host has an orb cable plugged in.
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if err := json.Unmarshal(env.Data, &struct {
+		Ports *[]map[string]any
+	}{Ports: &payload.Ports}); err != nil {
+		t.Fatalf("data: %v", err)
+	}
+
+	// Whatever is on this host, every entry must expose the attribution fields
+	// independently: nothing may be gated on having been probed.
+	for i, e := range payload.Ports {
+		if _, ok := e["port"]; !ok {
+			t.Fatalf("entry %d has no port", i)
+		}
+		if _, ok := e["hint"]; !ok {
+			t.Errorf("entry %d has no hint; the free label is gone", i)
+		}
+		if _, ok := e["attributed"]; !ok {
+			t.Errorf("entry %d has no attributed flag; the client cannot tell a cable it can name from one it cannot", i)
+		}
+		if p, _ := e["probed"].(bool); p {
+			t.Errorf("entry %d reports probed=true with an empty cache", i)
+		}
+	}
+
+	// And the client must render the label without a probe. Pinning the source
+	// rather than a browser is deliberate: this is the line that regressed.
+	label := blockContaining(t, readAppJS(t), "function portLabel")
+	if !strings.Contains(label, "entry.usbMac") {
+		t.Error(`portLabel ignores entry.usbMac, so an unprobed cable loses its MAC`)
+	}
+	if !strings.Contains(label, "not identified") {
+		t.Error(`portLabel does not say "not identified": it cannot distinguish an unprobed cable from an identified orb`)
+	}
+	// The free path must not consult the probe-only fields, or the label pretends
+	// to know the version of a chip it never asked. Guarded so a regression fails
+	// the test instead of panicking the slice.
+	atProbed := strings.Index(label, "entry.probed")
+	atMac := strings.Index(label, "entry.usbMac")
+	if atProbed < 0 || atMac < 0 || atProbed > atMac {
+		t.Error("portLabel has no readable probe branch ahead of its free-MAC branch; cannot check what it reads when unprobed")
+	} else if strings.Contains(label[atProbed:atMac], "entry.version") {
+		t.Error("portLabel reads the version before the probe branch; the version is only ever known from a probe")
 	}
 }

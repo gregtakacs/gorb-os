@@ -92,12 +92,26 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 	cached := s.identities.all()
 	entries := make([]map[string]any, 0, len(ports))
 	for _, p := range ports {
-		// The hint costs nothing — sysfs, no port open, no reset — so it is on
-		// every entry. It is what labels an unprobed cable as an orb at all, and
-		// an identity left behind the cache would make the picker look empty.
-		e := map[string]any{"port": p, "known": false, "hint": usbHint(p)}
+		// Two separate facts, because the client needs them for different things:
+		// "attributed" is what the host can say about the cable for free (sysfs or
+		// the registry, no port open, no reset), and "probed" is whether someone has
+		// paid a reboot to ask the chip. Collapsing them once hid the free MAC from
+		// the picker label, which is the only thing that tells two cables apart.
+		u := esprom.ClassifyPort(p)
+		e := map[string]any{
+			"port":       p,
+			"hint":       usbLabel(u),
+			"attributed": u.Known,
+			"probed":     false,
+		}
+		// The MAC the host read off the descriptor, as opposed to the one a probe
+		// heard on the console. Kept separate so the client never has to unpick a
+		// display string to label a cable.
+		if u.IsOrbDevice() && u.Serial != "" {
+			e["usbMac"] = u.Serial
+		}
 		if info, ok := cached[p]; ok {
-			e["known"] = true
+			e["probed"] = true
 			e["isOrb"] = info.IsOrb
 			e["mac"] = info.MAC
 			e["project"] = info.Project
@@ -118,10 +132,11 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, map[string]any{"ports": entries, "count": len(entries)})
 }
 
-// usbHint is what the host already knows about the device behind a port, without
+// usbLabel is what the host already knows about the device behind a port, without
 // touching it: the Espressif peripheral names itself, and its serial is the MAC.
-func usbHint(port string) string {
-	u := esprom.ClassifyPort(port)
+// It is deliberately a display string, not something to parse decisions out of —
+// the machine-readable form goes out as usbMac.
+func usbLabel(u esprom.USBClass) string {
 	switch {
 	case u.IsOrbDevice():
 		if u.Serial != "" {

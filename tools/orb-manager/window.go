@@ -375,7 +375,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 					if childGone {
 						// Launcher detached and no page is visible anywhere:
 						// we have nothing to watch, so never shut down on a guess.
-						log.Printf("orb-manager: browser detached with no watchable window; the hub keeps serving %s — stop it with Ctrl-C, or run with --no-window", url)
+						log.Printf("orb-manager: browser detached with no watchable window; the hub keeps serving %s - stop it with Ctrl-C, or run with --no-window", url)
 						return
 					}
 				}

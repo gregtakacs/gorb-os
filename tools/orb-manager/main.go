@@ -147,7 +147,7 @@ func main() {
 	browser = strings.TrimSpace(browser)
 	switch {
 	case noWindow:
-		log.Printf("orb-manager: headless — open %s in a browser", url)
+		log.Printf("orb-manager: headless - open %s in a browser", url)
 	case strings.EqualFold(browser, browserSentinel):
 		// --browser=browser: the pre-app-window behaviour, a plain tab in the
 		// default browser, kept for the devtools and profile it brings along.

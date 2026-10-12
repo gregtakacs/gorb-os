@@ -162,7 +162,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		s.identities.forget(req.Port)
 		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootIP, bootNetworks)
 	}
-	send("done", "flash complete — orb rebooting into the new firmware")
+	send("done", "flash complete - orb rebooting into the new firmware")
 }
 
 // flashRunning reports whether a flash holds the wire right now. Callers that must
@@ -186,13 +186,13 @@ func (s *Server) flashRunning() bool {
 func (s *Server) planFor(mode string) (*firmware.Bundle, esprom.FlashPlan, error) {
 	b := s.firmwareBundle()
 	if b == nil {
-		return nil, esprom.FlashPlan{}, fmt.Errorf("no firmware loaded — restart the hub, or pick a firmware file on the Onboard card")
+		return nil, esprom.FlashPlan{}, fmt.Errorf("no firmware loaded - restart the hub, or pick a firmware file on the Onboard card")
 	}
 	// Always the full manifest. A partial write is the thing that leaves an orb
 	// bricked-looking, and an end user has no way to know which half they asked
 	// for; the bench keeps that rope on purpose, in orbflash -mode app.
 	if mode != "" && mode != "full" {
-		log.Printf("orb-manager: ignoring flash mode %q — the hub always writes the full manifest", mode)
+		log.Printf("orb-manager: ignoring flash mode %q - the hub always writes the full manifest", mode)
 	}
 	return b, b.Plan(), nil
 }

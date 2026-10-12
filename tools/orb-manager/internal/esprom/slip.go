@@ -91,7 +91,7 @@ func (d *slipDecoder) Feed(p []byte) (pkt []byte, ok bool) {
 
 var (
 	ErrTimeout      = errors.New("esprom: no response from target (timeout)")
-	ErrNoSync       = errors.New("esprom: chip did not answer SYNC — not in download mode?")
+	ErrNoSync       = errors.New("esprom: chip did not answer SYNC - not in download mode?")
 	ErrBadChecksum  = errors.New("esprom: flash write rejected (checksum error on the wire)")
 	ErrChipMismatch = errors.New("esprom: attached chip is not an ESP32-S3")
 )

@@ -34,7 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !info.IsOrb {
-		fmt.Printf("%s: not an orb — %s\n", info.Port, info.Reason)
+		fmt.Printf("%s: not an orb - %s\n", info.Port, info.Reason)
 		return
 	}
 	fmt.Printf("%s: gorb-os %s\n  mac        %s\n  built      %s\n  elf sha256 %s\n  idf        %s\n",

@@ -318,7 +318,15 @@ def _wordstr(hdr, base, nbytes):
 
 
 def _setword(hdr, base, text, nbytes):
-    for i, c in enumerate(text.encode("utf-8")[:nbytes - 1]):
+    b = text.encode("utf-8")
+    # Refuse, never truncate: the name inside the header IS the theme's identity
+    # (the card filename is theme_id of these bytes). Silently cutting an over-long
+    # name in half would file the theme under the hash of a string its owner never
+    # typed. The studio's nameOk applies the same byte cap before the bake runs.
+    if len(b) > nbytes - 1:
+        raise ValueError("name is %d UTF-8 bytes; the header holds at most %d"
+                         % (len(b), nbytes - 1))
+    for i, c in enumerate(b):
         hdr[base + i // 4] |= c << (8 * (i % 4))
 
 

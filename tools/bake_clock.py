@@ -2375,14 +2375,20 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         frames = [int(o) for o in baked_frames] or [0]
         # FORMAT 2 has ONE name field, and it is both the identity and the label the
         # /themes page shows. --theme-name wins; --theme-title remains as a deprecated
-        # alias for the same value (FORMAT 1's separate title is gone). Truncated to
-        # the container's NAME_MAX-1 usable bytes so pack_header cannot overflow it.
+        # alias for the same value (FORMAT 1's separate title is gone). An over-long
+        # name is refused with its byte count, never truncated: the card id is the
+        # hash of these bytes, so half a name would name a theme nobody typed.
         name = (getattr(args, "theme_name", None)
                 or getattr(args, "theme_title", None)
-                or style.get("name") or theme_name)[: _ot.NAME_MAX - 1]
+                or style.get("name") or theme_name)
         if not name.strip():
             raise SystemExit("--theme-name is empty: a nameless theme would hash every "
                              "such theme to one card id and collide, so it is refused.")
+        name_bytes = len(name.encode("utf-8"))
+        if name_bytes > _ot.NAME_MAX - 1:
+            raise SystemExit("--theme-name is %d UTF-8 bytes; the container holds at "
+                             "most %d. Nothing was truncated, and the bake stopped "
+                             "before writing anything." % (name_bytes, _ot.NAME_MAX - 1))
         # Complications are packed into the CONTAINER's art only, never the
         # compiled-in .bin/.h pair: this call appends its window tiles to blob.buf
         # first (so bytes(blob.buf) below carries them) and returns the records that

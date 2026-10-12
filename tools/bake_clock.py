@@ -1495,14 +1495,15 @@ def main():
                          "pixel bytes, which is the only way a theme can reach a device that "
                          "was not built around it. Empty by default: a normal bake does not "
                          "grow a third artefact it did not ask for.")
-    ap.add_argument("--theme-slug", default=None,
-                    help="name the container is filed and listed under on the card "
-                         "(default: the theme directory's name). [A-Za-z0-9._-] only, "
-                         "23 chars max — the device refuses anything else, because the "
-                         "slug becomes a path segment it builds from client input.")
+    ap.add_argument("--theme-name", default=None,
+                    help="the theme's one name, baked into the container and hashed to "
+                         "form the card filename (default: the theme's name from "
+                         "theme.json, else the theme directory's name). Up to 55 bytes. "
+                         "The device files the card copy under sha256(name)[:12].orbtheme, "
+                         "so this string — not the file's name on disk — is its identity.")
     ap.add_argument("--theme-title", default=None,
-                    help="label the /themes page shows (default: the theme's own name "
-                         "from theme.json, else the slug). Up to 31 bytes.")
+                    help="deprecated alias for --theme-name (FORMAT 1's separate title is "
+                         "gone; the one name is both identity and label).")
     ap.add_argument("--pad", type=int, default=2, help="ink-bbox grow px (AA fringe room)")
     ap.add_argument("--no-bg", action="store_true",
                     help="bake only the static plate (skip bgAnim frames): lean blob "
@@ -2372,8 +2373,22 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
         else:
             rects, first, delays = [0, 0, 0, 0, 0], [0], [40]
         frames = [int(o) for o in baked_frames] or [0]
-        slug   = (getattr(args, "theme_slug", None) or theme_name)[: _ot.NAME_MAX - 1]
-        title  = (getattr(args, "theme_title", None) or style.get("name") or theme_name)[: _ot.TITLE_MAX - 1]
+        # FORMAT 2 has ONE name field, and it is both the identity and the label the
+        # /themes page shows. --theme-name wins; --theme-title remains as a deprecated
+        # alias for the same value (FORMAT 1's separate title is gone). An over-long
+        # name is refused with its byte count, never truncated: the card id is the
+        # hash of these bytes, so half a name would name a theme nobody typed.
+        name = (getattr(args, "theme_name", None)
+                or getattr(args, "theme_title", None)
+                or style.get("name") or theme_name)
+        if not name.strip():
+            raise SystemExit("--theme-name is empty: a nameless theme would hash every "
+                             "such theme to one card id and collide, so it is refused.")
+        name_bytes = len(name.encode("utf-8"))
+        if name_bytes > _ot.NAME_MAX - 1:
+            raise SystemExit("--theme-name is %d UTF-8 bytes; the container holds at "
+                             "most %d. Nothing was truncated, and the bake stopped "
+                             "before writing anything." % (name_bytes, _ot.NAME_MAX - 1))
         # Complications are packed into the CONTAINER's art only, never the
         # compiled-in .bin/.h pair: this call appends its window tiles to blob.buf
         # first (so bytes(blob.buf) below carries them) and returns the records that
@@ -2388,28 +2403,23 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                               list(tourb_recs or []), rects, first, delays, frames,
                               comps=comps, aux=auxs, bank=banks)
         os.makedirs(os.path.dirname(args.orbtheme) or ".", exist_ok=True)
-        n = _ot.write_container(args.orbtheme, slug, title, geom, bytes(blob.buf),
+        n = _ot.write_container(args.orbtheme, name, geom, bytes(blob.buf),
                                 SCREEN_W, SCREEN_H,
                                 baked_ms=int(time.time() * 1000) & 0xFFFFFFFF)
         print("wrote {} ({} B, {} B of pixels + {} B of geometry)".format(
             args.orbtheme, n, len(blob.buf), len(geom)))
-        # The device refuses any card file whose name is not exactly the slug baked into
-        # it, and the /themes page takes that name from this filename when the box is
-        # left blank. So a mismatch here is the one way to produce a container that
-        # uploads, lists as loadable, and then will not stage — which is how a bake
-        # written out as skeleton_theme.orbtheme with --theme-slug skeleton came back
-        # as "that theme cannot be loaded" with nothing to explain it.
+        # FORMAT 2 makes the card filename a pure function of the name baked inside the
+        # container: the device files the card copy under sha256(name)[:12].orbtheme, so
+        # what this file is named on disk is irrelevant — the page and the card derive it
+        # from the header. The name you typed here is therefore the only thing to get
+        # right; print the id it produces so a hand-copied card can be named to match.
+        tid = _ot.theme_id(name)
+        print("  name {:<24s} -> card file {}.orbtheme".format(repr(name), tid))
         stem = os.path.splitext(os.path.basename(args.orbtheme))[0]
-        if stem != slug:
-            print("  WARNING: the orb files card themes under the slug baked inside them, so the "
-                  "name on the card must be \"{}\", not the filename's \"{}\". Name the file "
-                  "\"{}.orbtheme\", or type \"{}\" in the page's name box.".format(
-                      slug, stem, slug, slug))
-        bad = sorted(set(slug) - set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"))
-        if bad or slug[:1] == ".":
-            print("  WARNING: slug {} contains {} the card cannot name a file with, so no name "
-                  "on the card can ever match it and the theme cannot be loaded. Re-bake with "
-                  "only A-Z a-z 0-9 . _ - in --theme-slug.".format(repr(slug), bad or "a leading dot"))
+        if stem != tid:
+            print("  (to hand-copy this to the card, name it \"{}.orbtheme\"; the page "
+                  "renames the upload by its header name and ignores this file's name)"
+                  .format(tid))
 
     if args.dump_dir:
         dump_inspection(args.dump_dir, blob.buf, gif,

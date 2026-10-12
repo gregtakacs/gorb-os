@@ -146,24 +146,24 @@ void clock_themes_pick(int idx)
 {
     if (s_ui.n <= 0 || idx < 0 || idx >= s_ui.n) return;
     const orb_theme_entry_t *e = &s_ui.e[idx];
-    ESP_LOGI(TAG, "pick %d/%d: %s", idx, s_ui.n - 1,
-             e->title[0] ? e->title : e->slug);
+    ESP_LOGI(TAG, "pick %d/%d: %s (%s)", idx, s_ui.n - 1,
+             e->name[0] ? e->name : e->id, e->id);
     if (e->err != ESP_OK) {
         strlcpy(s_ui.status, e->why[0] ? e->why : "not loadable", sizeof s_ui.status);
         return;
     }
     if (e->active) {
-        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->slug);
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->name);
         return;
     }
-    const esp_err_t q = orb_theme_post_install(e->slug);
+    const esp_err_t q = orb_theme_post_install(e->id);
     if (q == ESP_ERR_INVALID_STATE)
         strlcpy(s_ui.status, "one theme is already being installed", sizeof s_ui.status);
     else if (q != ESP_OK)
         snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" could not start: %s",
-                 e->slug, esp_err_to_name(q));
+                 e->name, esp_err_to_name(q));
     else
-        snprintf(s_ui.status, sizeof s_ui.status, "installing \"%s\" …", e->slug);
+        snprintf(s_ui.status, sizeof s_ui.status, "installing \"%s\" …", e->name);
 }
 
 /* The "Factory default" row: the other half of ruling D13's promise that there is
@@ -242,7 +242,7 @@ const char *clock_opt_label(orb_app_t *app, int idx)
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
-    return e->title[0] ? e->title : e->slug;
+    return e->name[0] ? e->name : e->id;
 }
 
 const char *clock_opt_value(orb_app_t *app, int idx)
@@ -265,7 +265,7 @@ const char *clock_opt_value(orb_app_t *app, int idx)
         for (int i = 0; i < s_ui.n; i++) {
             if (!s_ui.e[i].active) continue;
             snprintf(v, sizeof v, "%d of %d: %.20s", i + 1, s_ui.n,
-                     s_ui.e[i].title[0] ? s_ui.e[i].title : s_ui.e[i].slug);
+                     s_ui.e[i].name[0] ? s_ui.e[i].name : s_ui.e[i].id);
             return v;
         }
         return strcmp(orb_theme_live(), THEME_LIVE_CARD) == 0 ? "the card copy did not load"
@@ -280,15 +280,20 @@ const char *clock_opt_value(orb_app_t *app, int idx)
      *   - a file the card holds but cannot load: the list's own reason
      *   - the slot boot was asked to draw and could not: boot's sentence
      *   - the install that was just refused: the install ladder's sentence
-     * The last two are named for one slug each, so the page says which theme. */
+     * The last two name one theme each, by id, so the page says which theme. */
     if (e->err != ESP_OK) return e->why[0] ? e->why : "not loadable";
-    if (s_ui.n > 0 && orb_theme_damage_slug()[0] &&
-        strcmp(e->slug, orb_theme_damage_slug()) == 0)
+    if (s_ui.n > 0 && orb_theme_damage_id()[0] &&
+        strcmp(e->id, orb_theme_damage_id()) == 0)
         return orb_theme_damage_why();
-    if (orb_theme_try_slug()[0] && strcmp(e->slug, orb_theme_try_slug()) == 0 &&
+    if (orb_theme_try_id()[0] && strcmp(e->id, orb_theme_try_id()) == 0 &&
         orb_theme_try_why()[0])
         return orb_theme_try_why();
     if (e->active) return "on the dial";
+    /* §6's other half on the glass: the name matches the wall's and the bytes do
+     * not, so this row is the one that will actually change the dial. Without the
+     * hint an overwrite leaves two rows that both say nothing, and pressing the
+     * stale one is the silent no-op ruling D11 exists to prevent. */
+    if (e->changed) return "card copy changed since install";
     return "";
 }
 

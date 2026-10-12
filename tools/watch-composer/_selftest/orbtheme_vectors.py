@@ -74,7 +74,7 @@ def build_units(out):
     not merely a value it agrees with."""
     blob = bc.Blob()
     IMGS = {}                                          # the planes, kept for the packers
-    m = {"slug": "mirror-check", "title": "Mirror — a theme with a long display name",
+    m = {"name": "Mirror — a theme with a long display name",
          "serial": 41, "bakedMs": 1600000000456 & 0xFFFFFFFF, "scrW": W, "scrH": H,
          "pad": 2, "fps": 8, "diffThresh": 12, "denoise": 2, "maxRects": 16, "maxFlush": 0.62}
 
@@ -150,8 +150,14 @@ def build_units(out):
                         [int(v) for v in m["bank"]["first"]], [int(v) for v in m["bank"]["delays"]],
                         [0], comps=m["comps"], aux=m["auxRecs"], bank=[])
     dump(geom, os.path.join(out, "geom.bin"))
-    ot.write_container(os.path.join(out, "container.bin"), m["slug"], m["title"], geom, art,
+    ot.write_container(os.path.join(out, "container.bin"), m["name"], geom, art,
                        W, H, serial=m["serial"], baked_ms=m["bakedMs"])
+    # The card filename the device will file this container under, from the name inside
+    # it. The JS suite pins its own themeIdFromDigest against this value, which is the
+    # only check anywhere that the third implementation of the identity rule agrees with
+    # the first two (tools/orbtheme.py and the firmware's theme_id()).
+    m["themeId"] = ot.theme_id(m["name"])
+    m["nameBytes"] = len(m["name"].encode("utf-8"))
     m["geomHex"] = geom.hex()
     m["geomSize"], m["artSize"] = len(geom), len(art)
     m["geomCrc"], m["artCrc"] = zlib.crc32(geom) & 0xFFFFFFFF, zlib.crc32(art) & 0xFFFFFFFF

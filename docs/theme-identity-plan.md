@@ -1,20 +1,10 @@
 # Theme identity: the name lives in the file, never in the filename
 
-> **STALE COPY — read the live one instead.** This design was implemented and
-> hardware-verified on orb-A in the sibling clone
-> `/home/greg/docker/Projects/gorb-os-2` on 2026-10-12. That clone holds the
-> authoritative copy of this file, and `tools/orbtheme.py` there is at `FORMAT = 2`
-> / `NAME_MAX = 56`. The text below is the approval snapshot taken before that work
-> and still describes the pre-change tree. Do not implement from it. Expect this
-> file to be replaced by the next clone merge.
->
-> **One gap the live copy does not record: the orb-manager hub.** Its theme client
-> and its embedded Theme Editor are still FORMAT 1, and the §8 work order never
-> listed `tools/orb-manager/`. That dependency is documented in
-> `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor are
-> FORMAT 1". It is open, not implemented.
-
-**Status: APPROVED — design finalized with owner 2026-10-12, not started.**
+**Status: IMPLEMENTED on the bench and hardware-verified on orb-A — all layers
+landed 2026-10-12 (§8 steps 1–9; step 10 is partial: skeleton re-baked and
+installed, the other three themes wait on their owner's kits). See §10 for what
+is green, what is open, and the two node-gated suites that still have never been
+executed.**
 Self-contained implementation plan; pick it up cold. This document supersedes
 `docs/theme-naming-todo.md`, which is deleted at the end of this work (its §1–§3
 describe a defect class this design removes outright).
@@ -348,20 +338,102 @@ them into one commit — the battery is the safety net between steps.
 
 ## 10. Bench state at hand-off
 
-- HEAD `ea5043c`; working tree clean; all 11 host suites green; `idf.py build`
-  rc=0.
-- Board orb-A is alive on the network at **192.168.2.32** — usable for reads
-  (`/api/v1/status`, `GET /api/v1/sd` for the headroom measure) without USB.
-- Physical reflash is **blocked** on a Windows-side USB re-attach
-  (`usbipd attach --wsl`). The board reports `fw":"fc74aa9"`, a cosmetic stamp
-  mismatch only; the flashed image is bit-identical to HEAD content.
-- Tag `pre-squash-backup` is retained as the history-rewrite safety net. Delete it
+Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits.
+
+- §8 steps 1–7 and 9 are done. orbtheme.py defines FORMAT 2 (FORMAT = 2,
+  NAME_MAX = 56, W_NAME = 14, the canonical theme_id()); orb_theme.{h,c} reads and
+  writes the single name field, resolves load/delete by id, refuses duplicates and
+  carries s_active_crc[2] plus the changed flag; orb_sd keeps name_ok/theme_path as
+  defence in depth; orb_net.c speaks ?id= and ?overwrite=1 and emits
+  {name,id,changed}; clock_themes.c labels and posts by id and shows the §6/D11
+  changed hint; bake_clock.py takes --theme-name (--theme-title remains as a
+  deprecated alias).
+- The watch composer is FORMAT 2 end to end: the baker packs the one name block,
+  the studio page carries a free-text Theme name field with a live UTF-8 byte
+  counter, and the download is named sha256(name)[:12].orbtheme from the browser's
+  own crypto.subtle. The id has three independent implementations — orbtheme.py, the
+  C reader, and the baker in the page — pinned against each other by the themeId
+  field orbtheme_vectors.py emits and asserted by the node mirror.
+- Green on this bench: all 11 C-host suites. host_sd_test.py reports 139 ok lines
+  and its mutation battery kills 64 of 64 mutants, above the ≥51 §9 asks for; the
+  other ten exit 0. idf.py build rc=0, with only the four pre-existing
+  orb_carousel.c deprecation warnings.
+- NOT EXECUTED ANYWHERE: _selftest/headless-orbtheme.test.js (needs node) and
+  _selftest/export-test.html (needs Chrome). This container has neither, so the
+  mirror suite has been parsed but never run. Run both on a host with node and
+  Chrome: the FORMAT 2 name/id assertions, the nameOk byte rules and the
+  themeIdFromDigest pin are unproven until then.
+- Hardware ladder RUN 2026-10-12 on orb-A. `tools/serflash.sh` flashed the
+  `73a5acf` build (MAC-gated, stamp-audited, hash-verified; `/api/v1/status`
+  reports `fw:"73a5acf"`). On the device: the four FORMAT 1 card containers
+  list as `ok:false` with "theme format this firmware cannot read"; the
+  FORMAT 1 slot B copy is refused at boot and the dial degrades to the
+  baked-in bank; upload files the card copy under sha256(name)[:12] (raw body,
+  no ?name=); identical re-send is idempotent; same-name-different-bytes
+  refuses 409 with `overwrite:false` and `?overwrite=1` replaces; install by
+  id mirrors into slot B and the dial reboots to it (the knob row and
+  POST /api/v1/sd/install both verified); the changed hint lights when the
+  card file drifts from the installed mirror; delete by id removes the file,
+  and `id=skeleton` or uppercase hex answers 400. The skeleton theme —
+  re-baked from the committed `assets/sources/clock-app-default/` kit under
+  `--theme-name skeleton` — is the first FORMAT 2 theme on the wall: boot
+  logs `theme "skeleton" from slot-B (chosen), 1978973 B of pixels`.
+- §8 step 8 headroom measure DONE. With the card at its eight-entry cap and
+  three 55-byte UTF-8 names (accents, CJK-adjacent emoji rows) plus the
+  active/changed/reason strings, GET /api/v1/sd answers 1395 B and parses.
+  The buffer is `static char json[6144]` at `orb_net.c:2638` — the "json[2400]"
+  figure this plan and §7.4 cited is stale; the code comment's own bound
+  arithmetic (~4.2 kB + base for the true worst case) is comfortable.
+- §8 step 10 PARTIAL. `skeleton` re-baked and installed as above. `diver`,
+  `perpetual-calendar` and `neon` need their owner's layer kits — only preset
+  keys survive on this bench and the preset→kit export needs the browser, which
+  this machine has no node or Chrome to drive headless. The D10 default
+  container is deliberately NOT regenerated: the kit bake renders
+  `show=[1,1,0,0,0]` against the archived `show=[1,1,0,1,0]` (the c2 enamel
+  subdial's seconds hand), so the original bake flags are not yet known and the
+  archived `clock_app_default.orbtheme` stays until they are.
+- NOT COVERED BY THIS PLAN: the orb-manager hub. The §8 work order names the firmware,
+  `tools/orbtheme.py`, `tools/bake_clock.py` and the device's own page JS. It never
+  names `tools/orb-manager/`, and the tool has since diverged across the two clones:
+  - this clone refreshed its embedded editor to FORMAT 2
+    (`tools/orb-manager/web/composer/orbtheme-baker.js` reports `FORMAT = 2`), but its
+    `internal/orbnet/` has no theme client at all — only `client.go`, `scan.go` and the
+    test file;
+  - the sibling clone `/home/greg/docker/Projects/gorb-os`, where hub iterations 0-6
+    landed, holds the theme card and `internal/orbnet/themes.go`. That client still
+    speaks the FORMAT 1 contract: `?name=` on install, delete and upload, no `id` field
+    on `ThemeEntry`, and `CheckThemeName` caps a name at 31 ASCII characters against
+    the 55-byte UTF-8 this scheme allows. Its embedded editor is still `FORMAT = 1`.
+  No checkout on this machine therefore has the FORMAT 2 firmware and a working hub
+  theme card together. What the merge breaks, and the `?name=` to `?id=` trap where
+  `themes.go:14-17` reads the theme `id` as an orb `id`, are recorded in that clone's
+  `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor are
+  FORMAT 1". It is open and unassigned. `support.js`, `dial-renderer.js` and
+  `watch-engine.js` are byte-identical across the two clones, so only
+  `orbtheme-baker.js` and `Watch Composer.dc.html` move with it.
+- Defect found by this verification and fixed: bake_clock.py truncated an
+  over-55-byte `--theme-name` SILENTLY, twice over and disagreeing — a Python
+  55-CHARACTER slice before the id hash and a 55-BYTE slice in
+  orbtheme._setword's header write, so a multibyte name hashed to one id while
+  the header stored different bytes. Both now refuse with the byte count,
+  matching the studio's nameOk, before any file is written. The device reader
+  stays tolerant of a ≤56-byte name by design: its id is the hash of the stored
+  bytes, so any such file is at least self-consistent.
+- Board orb-A is alive at 192.168.2.32 and serves reads (/api/v1/status,
+  GET /api/v1/sd) without USB. `tools/serflash.sh --rollback` restores
+  `/tmp/orb-previous-$ORB_LABEL.bin`, the D11 safety net; the ladder fills only
+  after a second DISTINCT flash — the first flash of a label seeds
+  `/tmp/orb-last-$ORB_LABEL.bin` alone, and an identical re-flash does not
+  consume either.
+- Tag pre-squash-backup is retained as the history-rewrite safety net. Delete it
   once the owner is satisfied — do not delete it as part of this work.
+- docs/theme-naming-todo.md is DELETED with the hardware ladder green; §7.4
+  records why, and the outcome lives in app-platform-plan.md §13.
 - Four pre-existing LVGL deprecation warnings in
-  `main/app/orb_carousel.c:83,92,125,126` (`lv_obj_add_flag`/`lv_obj_remove_flag`)
+  main/app/orb_carousel.c:83,92,125,126 (lv_obj_add_flag/lv_obj_remove_flag)
   are not this plan's business. Separate commit if touched at all.
 - M3 is blocked on P4 (mechanism B unimplemented, no banked apps, no second
-  partition in `partitions.csv`). Unrelated to this plan.
+  partition in partitions.csv). Unrelated to this plan.
 
 ## Appendix: the 11 host suites
 

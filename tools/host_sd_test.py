@@ -7,9 +7,12 @@
 Why these checks exist on a bench that has no card in the socket and no radio:
 
 1. PATH SAFETY. orb_sd_name_ok()/orb_sd_theme_path() decide whether a string that
-   arrived as a browser query parameter becomes a path on the card. Pure functions,
-   exhaustively testable here, and the only thing between ?name=../../ and the rest
-   of the volume.
+   arrived over the radio becomes a path on the card. Under FORMAT 2 the theme
+   endpoints hand them only a ?id= — 12 chars the device issued itself, matched
+   against sha256() of the container's own header name before any path is built —
+   and the card's directory entries pass through them too. Pure functions,
+   exhaustively testable here, and the last thing between a crafted string and
+   the rest of the volume.
 
 2. THE WIRE FORMAT, AGAINST ITS OWN MIRROR. main/art/orb_theme.c reads byte for byte
    what tools/orbtheme.py writes — two implementations in two languages with no
@@ -40,7 +43,7 @@ back empty would keep reporting green while testing nothing.
 Needs esprima for the page check (pip install esprima); a missing parser is a loud
 SKIP on that family, never a pass.
 """
-import hashlib, os, re, struct, subprocess, sys, zlib
+import hashlib, json, os, re, struct, subprocess, sys, zlib
 
 ROOT = (sys.argv[sys.argv.index("--root") + 1] if "--root" in sys.argv
        else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -82,7 +85,15 @@ f_theme_pt = lift(sd_src, r"bool orb_sd_theme_path\(char \*out[\s\S]*?\n\}", SD_
 # open paths actually call. Tested rather than trusted because it is the last place
 # the ".orbtheme" suffix gets added: a client that could spell it would control both
 # the extension and, through it, what the scanner on the next page considers a theme.
-f_theme_file = lift(th_src, r"static bool theme_file\(const char \*slug[\s\S]*?\n\}", TH_C)
+f_theme_file = lift(th_src, r"static bool theme_file\(const char \*stem[\s\S]*?\n\}", TH_C)
+# The §6 installed-slot comparison, lifted for the same reason: it decides which row
+# the page calls "on the dial" and which one it offers to re-install, and getting it
+# wrong is a silent no-op Load or a re-install offer on the theme you are wearing.
+# theme_id()/theme_id_ok() need no separate lift — they sit between the word map and
+# the geometry parser, so @PURE@ already carries the shipped copies, and the harness
+# calls them directly.
+f_theme_state = lift(th_src, r"static void theme_state\(const orb_thdr_t \*h,[\s\S]*?\n\}", TH_C)
+f_theme_state = f_theme_state.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 ext_define = lift(th_hdr, r"#define ORB_THEME_EXT\b[^\n]*", TH_H)
 
 # clk_theme_t / clk_sprite_t / clk_bg_rect_t and CLK_SCR_W/H, from the committed
@@ -170,6 +181,36 @@ static uint32_t host_crc32(uint32_t crc, const uint8_t *b, uint32_t n)
 #define TAG "host"
 typedef int esp_err_t;
 #define ESP_OK 0
+
+/* theme_id() asks mbedtls for the SHA-256 of the name. The device uses the ROM
+ * implementation; this host build substitutes a HOOK instead of a second SHA-256,
+ * and the hook is the whole point of the arrangement:
+ *
+ *   - it RECORDS the exact bytes and length the shipped theme_id() handed to the
+ *     hash, so the vectors assert the identity is sha256(name up to its NUL). A
+ *     change of hash input — the padded 56-byte array, the serialized fields, a
+ *     lowercased name — changes the recorded bytes or length and goes red, which is
+ *     the mutation that silently renames every theme on the card.
+ *   - it returns the digest Python computed for those same bytes, so the hex loop
+ *     that turns a digest into the 12-char stem is the shipped code under test and
+ *     is pinned to hashlib's answer rather than to a host copy of SHA-256 that could
+ *     be wrong in exactly the way a real one is not.
+ *
+ * The digest is supplied per row by icase() below, never computed here. */
+static const unsigned char *s_hash_in;      /* what theme_id() asked to hash */
+static size_t               s_hash_len;
+static const unsigned char *s_hash_want;    /* the digest the row installed */
+static int                  s_hash_is224;   /* must stay 0: 224 would truncate */
+static int host_sha256_hook(const unsigned char *in, size_t ilen,
+                            unsigned char out[32], int is224)
+{
+    s_hash_in = in; s_hash_len = ilen;
+    s_hash_is224 = is224;
+    if (!s_hash_want) return -1;            /* a row that forgot to supply one */
+    memcpy(out, s_hash_want, 32);
+    return 0;
+}
+#define mbedtls_sha256 host_sha256_hook
 """
 
 # ---------------------------------------------------------------------------
@@ -253,7 +294,12 @@ BGF    = [0, PLATE // 2]
 GEOM = orbtheme.pack_geom(SCALARS, HANDS, SHADOWS, OVERLAY, TOURB,
                           RECTS, FIRSTS, DELAYS, BGF)
 WORDS = list(struct.unpack("<" + "I" * (len(GEOM) // 4), GEOM))
-HDR = orbtheme.pack_header("kit3-test-theme", "Kit Three (test)", len(GEOM),
+# FORMAT 2 carries ONE name field, and it is the theme's whole identity: the card
+# filename is theme_id(NAME)[:12], never this string. The sentinel header puts a
+# distinct value in every field, so a reader off by one field cannot accidentally
+# produce the number the test expected.
+NAME = "Kit Three (test)"
+HDR = orbtheme.pack_header(NAME, len(GEOM),
                           ART_BYTES, zlib.crc32(GEOM) & 0xFFFFFFFF,
                           0, 466, 466, serial=7, baked_ms=99)
 ART_OFF = orbtheme.art_offset(len(GEOM))
@@ -607,8 +653,9 @@ for j, (label, widx, val, why) in enumerate(HDR_BAD):
     HDR_REFUSALS.append(arr("hbad%d" % j, _recrc(hw)))
     HDR_REFUSALS.append(('    rhdr("%s", "%s", hbadJ);' % (label, why))
                         .replace("hbadJ", "hbad%d" % j))
-# A torn header: one byte flipped in the title, which the self-checksum must catch.
-_t = list(HDR_WORDS); _t[orbtheme.W_TITLE + 1] ^= 0x20
+# A torn header: one byte flipped inside the name field, which the self-checksum must
+# catch before hdr_parse() ever looks at the string.
+_t = list(HDR_WORDS); _t[orbtheme.W_NAME + 1] ^= 0x20
 HDR_REFUSALS.append(arr("hbad_torn", _t))
 HDR_REFUSALS.append('    rhdr("torn header, stale checksum", '
                     '"container header is damaged — re-copy the file onto the card", hbad_torn);')
@@ -687,7 +734,13 @@ static clk_comp_t     *s_comps;
 static clk_aux_t      *s_aux;
 static clk_sprite_t   *s_bank;
 static orb_theme_geo_t s_geo;
-static char            s_active_slug[ORB_THEME_SLUG_MAX + 1];
+static char            s_active_name[ORB_THEME_NAME_MAX + 1];
+/* The identity the installed slot captured at adopt, and that scan_entry()/theme_state()
+ * compare a card file against. Both are module statics in orb_theme.c, so the harness
+ * has to stand them up for the lifted code to compile — and the two adopt rows below
+ * only mean anything because these start empty at every arena_reset(). */
+static uint32_t        s_active_geom_crc, s_active_art_crc;
+static bool            s_active_valid;
 static unsigned long ar_allocs, ar_frees;
 static int ar_oom;                     /* the no-room row arms this */
 #define MALLOC_CAP_SPIRAM 0x1000
@@ -699,7 +752,9 @@ __ARENA_FN__
 static void arena_reset(void)
 {
     memset(&s_geo, 0, sizeof s_geo);
-    s_active_slug[0] = '\0';
+    s_active_name[0] = '\0';
+    s_active_geom_crc = s_active_art_crc = 0;
+    s_active_valid = false;
     s_rects = NULL; s_first = NULL; s_delays = NULL; s_bgframes = NULL;
     s_comps = NULL; s_aux = NULL; s_bank = NULL;
     ar_allocs = 0; ar_frees = 0; ar_oom = 0;
@@ -721,6 +776,12 @@ static void arena_hdr(orb_thdr_t *h, int two)
     memset(h, 0, sizeof *h);
     h->geom_size = (uint32_t)(two ? sizeof good2 : sizeof good);
     h->art_size  = __ART__u;
+    /* Distinct non-zero checksums, because the adopt path is expected to CAPTURE
+     * them alongside the name and the page's active/changed verdict is built from
+     * all three. Left at zero, the row "the wall's identity was captured" would
+     * pass against a loader that stored nothing at all. */
+    h->geom_crc  = two ? 0xA1A1A1A1u : 0x1111u;
+    h->art_crc   = two ? 0xB2B2B2B2u : 0x2222u;
     h->n_rects   = (uint32_t)(two ? __N0__ : __M0__);
     h->n_first   = (uint32_t)(two ? __N1__ : __M1__);
     h->n_delays  = (uint32_t)(two ? __N2__ : __M2__);
@@ -728,7 +789,7 @@ static void arena_hdr(orb_thdr_t *h, int two)
     h->n_comp    = two ? (uint32_t)__N4__ : 0u;
     h->n_aux     = two ? (uint32_t)__N5__ : 0u;
     h->n_bank    = two ? (uint32_t)__N6__ : 0u;
-    host_strlcpy(h->slug, "kit3-test-theme", sizeof h->slug);
+    host_strlcpy(h->name, __NAME__, sizeof h->name);
 }
 '''
 
@@ -750,7 +811,7 @@ ARENA_CASES = r'''
         arow("pre-flight gives back every byte it took",
              ar_allocs > 0 && ar_frees == ar_allocs);
         arow("pre-flight publishes nothing: the owner keeps the dial they had",
-             !s_geo.from_container && s_rects == NULL && s_active_slug[0] == '\0');
+             !s_geo.from_container && s_rects == NULL && s_active_name[0] == '\0');
 
         arena_reset();
         why = geom_validate_blob(good2, &h2, true);
@@ -762,8 +823,15 @@ ARENA_CASES = r'''
              && s_geo.theme == &s_theme
              && s_geo.n_comps == (uint16_t)h2.n_comp
              && s_geo.n_bank == (uint16_t)h2.n_bank
-             && strcmp(s_geo.slug, "kit3-test-theme") == 0
-             && strcmp(s_active_slug, "kit3-test-theme") == 0);
+             && strcmp(s_geo.name, @NAME@) == 0);
+        /* The identity the page later compares against (plan §6). Captured here, at
+         * the one place the slot is adopted — and all three values together. A name
+         * without the checksums says "active" for a card file that was overwritten
+         * after install, and the owner presses Load on something the dial is not
+         * drawing while the page insists it already is. */
+        arow("adopt captures the name and BOTH checksums of what it published",
+             s_active_valid && strcmp(s_active_name, @NAME@) == 0
+             && s_active_geom_crc == h2.geom_crc && s_active_art_crc == h2.art_crc);
 
         arena_reset();
         hb = h2; hb.geom_size -= 4;              /* shorter than its own tables */
@@ -793,6 +861,7 @@ ARENA_CASES = r'''
     }
 '''
 for _k, _v in (("__ARENA_FN__", arena_fn), ("__ART__", str(ART_BYTES)),
+               ("__NAME__", json.dumps(NAME)),
                ("__N0__", _N[0]), ("__N1__", _N[1]), ("__N2__", _N[2]),
                ("__N3__", _N[3]), ("__N4__", _N[4]), ("__N5__", _N[5]),
                ("__N6__", _N[6]), ("__M0__", _M[0]), ("__M1__", _M[1]),
@@ -881,8 +950,8 @@ _sd_base  = _must(r'#define ORB_SD_BASE\s+"([^"]*)"', sd_consts, "ORB_SD_BASE")
 _theme_dir = _sd_base + _must(r'#define ORB_SD_THEME_DIR\s+ORB_SD_BASE\s+"([^"]*)"',
                               sd_consts, "ORB_SD_THEME_DIR")
 _theme_ext  = _must(r'"([^"]*)"', ext_define, "ORB_THEME_EXT")
-_long_slug  = "0" * _NAME_CAP
-_long_path  = _theme_dir + "/" + _long_slug + _theme_ext
+_long_stem  = "0" * _NAME_CAP
+_long_path  = _theme_dir + "/" + _long_stem + _theme_ext
 
 NAME_ROWS = (NAME_ROWS.replace("@CAP31@", "0" * _NAME_CAP)
                        .replace("@CAP32@", "0" * (_NAME_CAP + 1)))
@@ -894,14 +963,15 @@ PATH_ROWS = '''    pcase("kit3", 1, "%s");
     pcase("", 0, 0);
     pcase(NULL, 0, 0);''' % (_theme_dir + "/kit3", _theme_dir + "/a.b-c_1")
 
-# theme_file() is the last thing between ?name= and a path on the card and the only
-# place the extension is added, so its boundary is measured rather than assumed: the
-# size that must fit exactly, and one byte less, which must be refused instead of
-# writing a truncated name that points at a different file.
-# The doubled-extension row is a decision, not an oversight: stripping a trailing
-# ".orbtheme" would make the names "x" and "x.orbtheme" land on one file, so one
-# upload could quietly overwrite another theme. Keeping the doubling means a slug maps
-# to exactly one path, which is what the page's load and delete buttons rely on.
+# theme_file() is the last thing between a card-side stem and a path on the card, and
+# the only place the extension is added, so its boundary is measured rather than
+# assumed: the size that must fit exactly, and one byte less, which must be refused
+# instead of writing a truncated stem that points at a different file.
+# Under FORMAT 2 the stem is always sha256(name)[:12] or a directory entry the page is
+# showing, so the doubled-extension row guards the listing rather than the install: a
+# 31-char entry FATFS hands back must come back as one path, not a cut-off one. Stripping
+# a trailing ".orbtheme" would make "x" and "x.orbtheme" land on one file, and one
+# upload could quietly overwrite another theme.
 FILE_ROWS = '''    fcase("kit3", 1, "%s", %d);
     fcase("a.b-c_1", 1, "%s", %d);
     fcase("%s", 1, "%s", %d);                                /* the cap, exact fit */
@@ -913,9 +983,82 @@ FILE_ROWS = '''    fcase("kit3", 1, "%s", %d);
     fcase(NULL, 0, 0, sizeof fbuf);''' % (
     _theme_dir + "/kit3" + _theme_ext, len(_theme_dir) + 5 + len(_theme_ext) + 1,
     _theme_dir + "/a.b-c_1" + _theme_ext, len(_theme_dir) + 8 + len(_theme_ext) + 1,
-    _long_slug, _long_path, len(_long_path) + 1,
-    _long_slug, len(_long_path),
+    _long_stem, _long_path, len(_long_path) + 1,
+    _long_stem, len(_long_path),
     _theme_dir + "/x" + _theme_ext + _theme_ext)
+
+# ---------------------------------------------------------------------------
+# The card identity: theme_id() and theme_id_ok(), run rather than read.
+#
+# These two functions decide every filename on the card and every ?id= the device
+# will honour, and a mistake in either is invisible until a theme lists, offers a
+# Load button, and then cannot be installed. The harness lifts both — theme_id()
+# reaches mbedtls through the recording hook in CRC_STUB — so the rows below check
+# three things at once: WHICH BYTES were handed to the hash (the name to its NUL,
+# never the padded NAME_MAX array), what the 12 hex chars that came back are
+# (hashlib's answer for exactly those bytes), and that the id this function issues
+# is one theme_id_ok() will later admit.
+# ---------------------------------------------------------------------------
+_ID_NAMES = [
+    NAME,                                   # the sentinel header's own name
+    "Neon",                               # short ASCII: the case that reads innocent
+    "Ünïcödé 日本語 🔆",            # UTF-8: multi-byte, so bytes != chars
+    "a" * (orbtheme.NAME_MAX - 1),          # 55 chars, the longest name allowed
+    "0",                                    # one char: proves the length is the string's
+]
+_ID_ROWS = []
+for _i, _nm in enumerate(_ID_NAMES):
+    _b = _nm.encode("utf-8")
+    _ID_ROWS.append('    static const unsigned char sdig%d[32] = {%s};'
+                    % (_i, ",".join(str(x) for x in hashlib.sha256(_b).digest())))
+    _ID_ROWS.append('    icase("%s", sdig%d, %d, "%s");   /* %d UTF-8 bytes hashed */'
+                    % (_nm.replace("\\", "\\\\").replace('"', '\\"'), _i, len(_b),
+                       orbtheme.theme_id(_nm), len(_b)))
+# The one row that pins the hash INPUT and not just the answer: the name is copied
+# into a NAME_MAX+1 array whose tail is filled with 0xA5, exactly the state a header
+# that came off a card is in. If theme_id() hashed the array instead of the string,
+# the recorded length would be 56 and the id would be a different 12 chars — while a
+# padded tail of zeros would have hidden the bug entirely.
+_PAD = "Padded Tail"
+_pad_bytes = _PAD.encode("utf-8")
+_ID_ROWS.append('    static const unsigned char sdigpad[32] = {%s};'
+                % ",".join(str(x) for x in hashlib.sha256(_pad_bytes).digest()))
+_ID_ROWS.append('    icase_pad("%s", sdigpad, "%s");' % (_PAD, orbtheme.theme_id(_PAD)))
+# Every id the shipped hasher issues must be one the shipped validator admits: the
+# two functions are the whole contract between the list and the install button.
+_ID_ROWS.append('    idcase("a1b2c3d4e5f6", 1);            /* a real issued id */')
+_ID_ROWS.append('    idcase("", 0);                        /* empty */')
+_ID_ROWS.append('    idcase("a1b2c3d4e5f", 0);             /* eleven: one too short */')
+_ID_ROWS.append('    idcase("a1b2c3d4e5f60", 0);           /* thirteen: one too long */')
+_ID_ROWS.append('    idcase("A1B2C3D4E5F6", 0);            /* uppercase is not the id */')
+_ID_ROWS.append('    idcase("a1b2c3d4e5g6", 0);            /* not hex */')
+_ID_ROWS.append('    idcase("../../../../etc/passwd", 0);  /* no traversal reaches the id */')
+_ID_ROWS.append('    idcase("a1b2c3d4e5f ", 0);            /* trailing space */')
+_ID_ROWS.append('    idcase("a1b2c3d4e5f6/../", 0);        /* slash inside */')
+_ID_ROWS.append('    idcase(NULL, 0);')
+ID_ROWS = "\n".join(r for r in _ID_ROWS if r)
+
+# §6 — active vs changed, the pair the page renders as "On the dial" versus
+# "Re-install". Same rule, four inputs: the installed slot's name and two CRCs, and
+# the card file's. Each row is the mistake the other way round: an unchanged file
+# that is not the wall's (Load is a no-op), or the wall's own file marked changed.
+_STATE_ROWS = []
+for _nm, _g, _a, _wn, _wg, _wa, _act, _chg, _why in [
+        ("Wall",    111, 222, "Wall",  111, 222, 1, 0, "the file the dial draws is the one on the card"),
+        ("Wall",    111, 999, "Wall",  111, 222, 0, 1, "same name, pixels changed on the card since install"),
+        ("Wall",    333, 222, "Wall",  111, 222, 0, 1, "same name, geometry changed on the card since install"),
+        ("Wall",    333, 999, "Wall",  111, 222, 0, 1, "both changed since it was installed"),
+        ("Another", 111, 222, "Wall",  111, 222, 0, 0, "a byte-identical file for a DIFFERENT name is neither"),
+        ("Another", 333, 999, "Wall",  111, 222, 0, 0, "another theme's file is neither, whatever its bytes"),
+        ("Wall",    111, 222, "Neon",  111, 222, 0, 0, "nothing is the wall's while the wall holds another name"),
+]:
+    _STATE_ROWS.append('    scase("%s", %du, %du, "%s", %du, %du, %d, %d, "%s");'
+                       % (_nm, _g, _a, _wn, _wg, _wa, _act, _chg, _why))
+# The never-installed device: whatever the card holds, nothing is active and nothing
+# is changed, because there is no captured identity to compare against at all.
+_STATE_ROWS.append('    scase_none("a board that has never installed a theme");')
+STATE_ROWS = "\n".join(_STATE_ROWS)
+
 
 HARNESS = r'''
 #include <stdio.h>
@@ -924,7 +1067,10 @@ HARNESS = r'''
 #include <stdint.h>
 #include <stddef.h>
 
-#define ORB_THEME_SLUG_MAX 31
+/* The name cap comes from the shipped header, not from a copy here: the harness sizes
+ * the same arrays the device does, so a raised cap is a length row that changes on its
+ * own instead of a test still green against a header that overflowed. */
+#define ORB_THEME_NAME_MAX @NAMEMAX@
 @HELPERS@
 @CRC@
 @TYPES@
@@ -939,6 +1085,7 @@ HARNESS = r'''
 @CKV@
 @CK@
 @ARRAYS@
+@NAMEDIG@
 
 static orb_theme_geo_t G;
 static clk_theme_t     T1, T2, T3;
@@ -958,6 +1105,9 @@ static uint16_t        f4[64], d4[64];
 static uint32_t        b4[64];
 static int fails = 0;
 @ARENA@
+/* Lifted after the arena block because it reads the s_active_* module state that the
+ * adopt path above owns: one definition of the §6 rule, compiled here and there. */
+@THEMESTATE@
 
 static void ncase(const char *n, int want)
 {
@@ -977,7 +1127,7 @@ static void pcase(const char *n, int want, const char *wantpath)
 }
 /* The destination the device writes to, exercised with a buffer the caller sized by
  * hand. The canary tail is the point: the fit check inside theme_file() is what
- * stops a long slug coming back as a cut-off filename, and deleting that check has
+ * stops a maximum-length stem coming back as a cut-off filename, and deleting it has
  * to be visible as bytes written past the caller's outsz, not merely as a wrong
  * return code. */
 static char fbuf[128 + 16];
@@ -995,6 +1145,104 @@ static void fcase(const char *n, int want, const char *wantpath, unsigned outsz)
     if (!pass) fails++;
     printf("%-5s theme_file(%-20s, outsz=%2u) -> %s%s\n", pass ? "ok" : "FAIL",
            n ? n : "(null)", outsz, ok ? fbuf : "(refused)", pass ? "" : "   <== BAD DESTINATION");
+}
+
+/* ---- the card identity, run not read ------------------------------------------------
+ * theme_id() is the single function that names every file on the card, and it is pure
+ * except for the hash: this is the only code in the tree that could compare an id the
+ * host has no independent answer for. So the expected hash is handed to the hook below
+ * and the code under test is the part that decides WHICH BYTES reach it and how the
+ * first six of thirty-two become the twelve characters on the card. */
+static void icase(const char *name, const unsigned char *dig, size_t n, const char *want)
+{
+    char got[16];
+    s_hash_want = dig;
+    s_hash_is224 = -1;                         /* the hook records what was asked for */
+    theme_id(name, got);
+    const bool hex_ok = strcmp(got, want) == 0;
+    const bool pass = hex_ok && s_hash_len == n && s_hash_is224 == 0
+                      && memcmp(s_hash_in, name, n) == 0 && s_hash_in[n] == '\0';
+    if (!pass) fails++;
+    printf("%-5s id(\"%s\") -> %s (want %s)%s%s%s\n", pass ? "ok" : "FAIL", name, got, want,
+           s_hash_len != n ? "   <== HASHED THE WRONG BYTE COUNT" : "",
+           (hex_ok || s_hash_len != n) ? "" : "   <== HEX CONVERSION OR THE DIGEST IS WRONG",
+           s_hash_is224 ? "   <== ASKED FOR SHA-224, WHICH TRUNCATES" : "");
+    /* Every id the device issues must be one its own validator admits: the list and
+     * the install button agree, or a row on the page leads to a refusal. */
+    if (theme_id_ok(got) != hex_ok) {
+        fails++;
+        printf("FAIL  id \"%s\" issued but theme_id_ok() disagrees about it\n", got);
+    }
+}
+/* The same row with the name living in a NAME_MAX+1 array whose tail is 0xA5, which is
+ * the exact shape the header's name field has after a read: strlcpy left the pad bytes
+ * from the source untouched there. A theme_id() that hashed the array instead of the
+ * string produces a stable, plausible, WRONG id that lists, matches nothing, and gives
+ * back "That card file is gone." on every press. */
+static void icase_pad(const char *name, const unsigned char *dig, const char *want)
+{
+    char padded[ORB_THEME_NAME_MAX + 1];
+    char got[16];
+    /* The exact shape a header's name field has after a read from a card: the string,
+     * its NUL, and then bytes that are whatever was in the file before it — deliberately
+     * not zeros, because a tail of zeros is the one shape that hides a hasher that ran
+     * past the terminator. The shipped code must ask for strlen(name) bytes and no more,
+     * which is what the recorded length and bytes below assert. */
+    memset(padded, 0xA5, sizeof padded);
+    padded[0] = '\0';
+    host_strlcpy(padded, name, sizeof padded);
+    s_hash_want = dig;
+    s_hash_is224 = -1;
+    theme_id(padded, got);
+    const bool pass = strcmp(got, want) == 0 && s_hash_len == strlen(name)
+                      && s_hash_is224 == 0 && memcmp(s_hash_in, name, strlen(name)) == 0;
+    if (!pass) fails++;
+    printf("%-5s padded id(\"%s\") -> %s (want %s, hashed %u bytes)%s\n", pass ? "ok" : "FAIL",
+           name, got, want, (unsigned)s_hash_len,
+           pass ? "" : "   <== HASHED THE PAD, NOT THE NAME");
+}
+static void idcase(const char *id, int want)
+{
+    const int got = theme_id_ok(id);
+    if (got != want) fails++;
+    printf("%-5s theme_id_ok(%-24s) -> %d (want %d)\n", got == want ? "ok" : "FAIL",
+           id ? (id[0] ? id : "(empty)") : "(null)", got, want);
+}
+/* The §6 pair, straight at the lifted rule. Each row names the mistake on the other
+ * side: active-when-it-is-not shows the page offering to re-install what is already up;
+ * changed-when-it-is-not hides the re-install after an overwrite, so the owner presses
+ * Load on a file that is not what the dial is drawing and nothing happens. */
+static void scase(const char *name, uint32_t g, uint32_t a, const char *act_name,
+                  uint32_t ag, uint32_t aa, int want_active, int want_changed,
+                  const char *why)
+{
+    orb_thdr_t h;
+    bool active = true, changed = true;
+    memset(&h, 0, sizeof h);
+    host_strlcpy(h.name, name, sizeof h.name);
+    h.geom_crc = g; h.art_crc = a;
+    host_strlcpy(s_active_name, act_name, sizeof s_active_name);
+    s_active_geom_crc = ag; s_active_art_crc = aa; s_active_valid = true;
+    theme_state(&h, &active, &changed);
+    const bool pass = (active == (bool)want_active) && (changed == (bool)want_changed);
+    if (!pass) fails++;
+    printf("%-5s state %-8s geom=%-3u art=%-3u vs wall %-8s geom=%-3u art=%-3u -> "
+           "active=%d changed=%d (want %d/%d)  %s\n", pass ? "ok" : "FAIL",
+           name, g, a, act_name, ag, aa, active, changed, want_active, want_changed, why);
+}
+static void scase_none(const char *why)
+{
+    orb_thdr_t h;
+    bool active = true, changed = true;
+    memset(&h, 0, sizeof h);
+    strlcpy(h.name, "anything", sizeof h.name);
+    h.geom_crc = 1; h.art_crc = 2;
+    s_active_valid = false;
+    theme_state(&h, &active, &changed);
+    const bool pass = !active && !changed;
+    if (!pass) fails++;
+    printf("%-5s state with no installed slot: active=%d changed=%d  %s\n",
+           pass ? "ok" : "FAIL", active, changed, why);
 }
 
 /* One refusal under test: build the geo destination fresh each time so a previous
@@ -1064,10 +1312,23 @@ int main(void)
             CK(o, geom_size, @GEOMLEN@);
             CK(o, art_size,  @ART@);
             CK(o, serial,    7);
-            CKV(strcmp(o.slug,  "kit3-test-theme"), 0);
-            CKV(strcmp(o.title, "Kit Three (test)"), 0);
+            CKV(strcmp(o.name, @NAME@), 0);
+            /* The id the card file MUST be called, pinned to Python's own answer for
+             * the same name, produced by the C hex loop from the name as it came out of
+             * the shipped reader — the padded array and all. If the two implementations
+             * ever part ways, every baked file stops matching what the device looks for
+             * and the whole page is a list of buttons that say "gone". */
+            char idwant[16];
+            s_hash_want = name_dig;
+            theme_id(o.name, idwant);
+            CKV(strcmp(idwant, @IDHEX@), 0);
+            CKV((int)s_hash_len, (int)sizeof(@NAME@) - 1);
         }
     }
+    puts("== the name on the card is a hash of the name in the header ==");
+@IDCASES@
+    puts("== which row the page calls the one on the dial (§6) ==");
+@STATECASES@
     puts("== the geometry blob, field by field, through the shipped reader ==");
     {
         G.theme = &T1; G.rects = r1; G.rect_first = f1; G.gif_delays = d1; G.bg_frames = b1;
@@ -1101,11 +1362,21 @@ int main(void)
 }
 '''
 
-for k, v in (("@HELPERS@", HELPERS), ("@CRC@", CRC_STUB), ("@TYPES@", gen_types),
+for k, v in (("@ARENA@", ARENA_DECLS), ("@ARENA_CASES@", ARENA_CASES),
+             ("@HELPERS@", HELPERS), ("@CRC@", CRC_STUB), ("@TYPES@", gen_types),
              ("@GEOT@", geo_t), ("@CONSTS@", sd_consts), ("@NAMEOK@", f_name_ok),
              ("@THEMEPATH@", f_theme_pt), ("@PURE@", pure_theme), ("@CKV@", CKV),
              ("@EXT@", ext_define), ("@THEMEFILE@", f_theme_file),
              ("@FILECASES@", FILE_ROWS),
+             ("@IDCASES@", ID_ROWS), ("@STATECASES@", STATE_ROWS),
+             ("@THEMESTATE@", f_theme_state),
+             ("@NAMEMAX@", _must(r"#define ORB_THEME_NAME_MAX\s+(\d+)", th_hdr,
+                                 "ORB_THEME_NAME_MAX")),
+             ("@NAME@", json.dumps(NAME)), ("@IDHEX@", json.dumps(orbtheme.theme_id(NAME))),
+             ("@NAMEDIG@", "\n/* the digest Python computes for the sentinel header's own name */\n"
+                           "static const unsigned char name_dig[32] = {%s};\n"
+                           % ",".join(str(x) for x in
+                                      hashlib.sha256(NAME.encode("utf-8")).digest())),
              ("@CK@", CK), ("@ARRAYS@", arr("good", WORDS) + arr("good2", WORDS2)
                                              + arr("hdr_ok", HDR_WORDS)),
              ("@ARENA@", ARENA_DECLS), ("@ARENA_CASES@", ARENA_CASES),
@@ -1199,12 +1470,22 @@ def themes_page_js():
     # cancel — a page that still offered an undo would be offering a state the
     # firmware no longer has.
     pins = [("onclick=doUp()", "an upload path exists"),
-            ("function del(n)", "delete is offered"),
+            ("function del(id){var nm=ROWS[id]||id;",
+             "delete is offered, and names what it destroys"),
             ("if(!confirm('Delete ", "delete asks before destroying a file"),
+            ("function load(id){var nm=ROWS[id]||id;", "a pick names the theme it is about to install"),
+            ("ROWS[t.id]=nm;", "the row's name is read back from a map, never pasted into an onclick"),
+            ("var ROWS={};", "and that map exists before the rows are drawn"),
             ("if(!confirm('Install ", "a pick names the reboot it is about to cause"),
             ("if(!confirm('Go back to the factory dial", "the way back asks too"),
             ("x.upload.onprogress", "the upload reports real progress (fetch cannot)"),
-            ("/api/v1/sd/install?name=", "Load posts the install job, not a stage"),
+            # FORMAT 2: a row addresses its theme by the 12-hex id the device issued,
+            # never by a name the browser could spell however it liked. Pinned as the
+            # whole call expression: the bare endpoint text survives a handler that
+            # posts anything after `?id=`, and `encodeURIComponent(id)` appears twice
+            # in the page, so a generic pin hides whichever one went missing.
+            ("/api/v1/sd/install?id='+encodeURIComponent(id)", "Load posts the install job by the url-encoded id, not by name"),
+            ("/api/v1/sd/delete?id='+encodeURIComponent(id)", "delete addresses the row by the url-encoded id, the only handle that resolves"),
             ("/api/v1/sd/default", "the factory dial is one press away without the card"),
             ("data.live", "the banner states the choice, not a pending operation"),
             ("LAST TRY FAILED", "the install the worker refused explains itself on its row"),
@@ -1216,6 +1497,17 @@ def themes_page_js():
         # searching only the JS would report a present feature as missing
         if want not in page:
             print("FAIL /themes: missing %r — %s" % (want, why)); rc = 1
+    # No row label may reach a handler as markup. Names cover the full printable
+    # ASCII range including apostrophes, so a name interpolated into
+    # onclick="del('...')" is a broken button at best and an attribute injection at
+    # worst; the id is the only value the row is allowed to hand to a function. `page`
+    # is the unescaped text the browser receives, so the quotes here are plain.
+    for fn, args in re.findall(r'onclick="(load|del)\((.*?)\)"', page):
+        if "nm" in args or "name" in args:
+            print("FAIL /themes: the %s handler interpolates a name into markup (%s) — "
+                  "pass the id alone and look the name up in ROWS inside the function"
+                  % (fn, args[:60]))
+            rc = 1
     # And the refusals: the pending concept is gone (ruling D13), so a page that still
     # names it is a page that will offer a button for a state nothing can be in.
     for gone, why in (("/api/v1/sd/unstage", "the staged load has no undo any more"),
@@ -1243,7 +1535,8 @@ MUTATIONS = [
     # (name, which file, old text, new text). Each must make SOME check go red; a
     # pin you can delete without a failure is not a pin.
     # The guard is an allow-list, not a block-list, so the regression that matters is
-    # the list growing a '/' -- which is what hands ?name=../x back a real path.
+    # the list growing a '/' -- which is what hands an id or a listed entry back as a
+    # path to somewhere the theme directory never was.
     ("traversal: '/' allowed in a name",            "sd",  "(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'",
                                                      "(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '/'"),
     ("name length cap raised away",                  "sd",  "if (n >= ORB_SD_NAME_MAX) return false;", "/* no cap */"),
@@ -1298,20 +1591,41 @@ MUTATIONS = [
     ("reader stops checking the GIF frame count",    "th",  "if (t->gif_frames > GIFS_MAX)      return \"more GIF frames than the dial holds\";", ""),
     ("theme file stops checking the extension fits", "th",  "if (blen + sizeof(ORB_THEME_EXT) > outsz) { out[0] = '\\0'; return false; }",
                                                      "if (0 && blen + sizeof(ORB_THEME_EXT) > outsz) { out[0] = '\\0'; return false; }"),
-    ("theme file trusts the caller over the validator", "th", "if (!orb_sd_theme_path(base, sizeof base, slug)) { out[0] = '\\0'; return false; }",
-                                                     "if (!orb_sd_theme_path(base, sizeof base, slug)) { return false; }"),
+    ("theme file trusts the caller over the validator", "th", "if (!orb_sd_theme_path(base, sizeof base, stem)) { out[0] = '\\0'; return false; }",
+                                                     "if (!orb_sd_theme_path(base, sizeof base, stem)) { return false; }"),
     ("reader stops checking tourbillon count",       "th",  "if (t->tourbillon_n > TOURB_MAX)   return \"more tourbillon frames than the dial holds\";", ""),
     ("header stops checking its own checksum",       "th",  "return \"container header is damaged — re-copy the file onto the card\";", "return NULL;"),
-    ("/themes loses the delete confirmation",        "net", "function del(n){if(!confirm(",
-     "function del(n){if(true && ("),
+    # FORMAT 2's identity chain in the page: the id the device issued is the only thing
+    # a row may send. Hand-written here rather than generated from the C theme-side
+    # table, because this half of the chain lives in the JS and has no C twin. The pins
+    # are checked as complete call expressions, not as the bare endpoint: a pin on
+    # "/api/v1/sd/install?id=" alone survives a handler that posts anything after the
+    # equals sign, which is exactly the regression these two rows exist to catch.
+    ("/themes' install posts a name instead of the id", "net",
+     "j('/api/v1/sd/install?id='+encodeURIComponent(id)",
+     "j('/api/v1/sd/install?id='+nm"),
+    ("/themes' install stops url-encoding the id",       "net",
+     "j('/api/v1/sd/install?id='+encodeURIComponent(id)",
+     "j('/api/v1/sd/install?id='+id"),
+    ("/themes loses the delete confirmation",        "net", "function del(id){var nm=ROWS[id]||id;if(!confirm(",
+     "function del(id){var nm=ROWS[id]||id;if(true && ("),
+    # The row's name must never re-enter markup. Names may legally hold an apostrophe,
+    # so a handler that interpolates one produces a button that silently does nothing —
+    # exactly the failure a browser never reports.
+    ("/themes' delete handler takes the name back into onclick", "net",
+     r'''onclick=\"del(\\''+t.id+'\\')\"''',
+     r'''onclick=\"del(\\''+t.id+'\\',\\''+esc(nm)+'\\')\"'''),
+    ("/themes' install handler takes the name back into onclick", "net",
+     r'''onclick=\"load(\\''+t.id+'\\')\"''',
+     r'''onclick=\"load(\\''+t.id+'\\',\\''+esc(nm)+'\\')\"'''),
     # Ruling D13's install promise: the geometry pre-flight is the same validator
     # boot runs, so deleting it must red a check. The mutation keeps the file
     # compiling — only the lint can see the call is gone.
     ("install drops the geometry pre-flight",        "th",
      "const char *gw = (ve == ESP_OK) ? slot_parse_geom(&probe, p, /*adopt=*/false) : NULL;",
      "const char *gw = NULL; (void)ve;"),
-    ("/themes loses the install confirmation",       "net", "function load(n){if(!confirm(",
-     "function load(n){if(true && ("),
+    ("/themes loses the install confirmation",       "net", "function load(id){var nm=ROWS[id]||id;if(!confirm(",
+     "function load(id){var nm=ROWS[id]||id;if(true && ("),
     ("/themes' factory switch stops asking",         "net",
      "function tofactory(){if(!confirm(", "function tofactory(){if(true && ("),
     ("/themes loses the upload progress handler",    "net", "x.upload.onprogress", "x.noupload_onprogress"),
@@ -1347,24 +1661,63 @@ MUTATIONS = [
     ("card_open stops mounting before it locks", "th",
      "    if (orb_sd_ensure_mounted() != ESP_OK) { *why = \"no card in the socket\"; return -1; }\n",
      ""),
-    # The bug the owner found for real, from the page and with no serial cable: the
-    # card-name == header-slug rule lived only in orb_theme_stage_load(), so a theme
-    # uploaded as "Skeleton" while calling itself "skeleton" was listed as loadable,
-    # offered a Load button, and then answered the tap with a 422 that named nothing.
-    # Each mutation below deletes one consumer's reach for the rule; a battery where the
-    # rule can go missing again from any of the four is a battery that did not learn.
-    ("list stops applying the theme-name rule", "th",
-     "const bool named = filed_as_its_own_slug(&h, rec->name, name_why, sizeof name_why);",
-     "const bool named = true;"),
-    ("uploader stops applying the theme-name rule", "th",
-     "if (!r && !filed_as_its_own_slug(&h, up->slug, s_up_why, sizeof s_up_why)) {",
-     "if (!r && false) {"),
-    ("theme-name rule compares the title instead of the slug", "th",
-     "if (strcmp(o->slug, card_name) == 0) return true;",
-     "if (strcmp(o->title, card_name) == 0) return true;"),
-    ("theme-name rule removed entirely", "th",
-     "static bool filed_as_its_own_slug(const orb_thdr_t *o, const char *card_name,",
-     "static bool filed_as_its_own_slug_REMOVED(const orb_thdr_t *o, const char *card_name,"),
+    # FORMAT 2's identity. The theme's one true name is the string inside its
+    # container; the card filename is theme_id(name) — hex(sha256(name))[:12]. Every
+    # mutation below breaks one link in that chain, and every link has to stay joined
+    # or the page lists a theme whose buttons all answer "That card file is gone":
+    # the bytes hashed, the hex loop, the charset the id is validated against, and the
+    # two places a browser-supplied id is checked against the file's own header.
+    ("identity: hashes the padded name array, not the name to its NUL", "th",
+     "    mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/0);",
+     "    mbedtls_sha256((const unsigned char *)name, THEME_NAME_MAX, digest, /*is224=*/0);"),
+    ("identity: asks for SHA-224, whose digest is shorter", "th",
+     "    mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/0);",
+     "    mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/1);"),
+    ("identity: the high nibble comes out uppercase", "th",
+     '        out[2 * i]     = "0123456789abcdef"[digest[i] >> 4];',
+     '        out[2 * i]     = "0123456789ABCDEF"[digest[i] >> 4];'),
+    ("identity: the low nibble takes the high one", "th",
+     '        out[2 * i + 1] = "0123456789abcdef"[digest[i] & 0x0F];',
+     '        out[2 * i + 1] = "0123456789abcdef"[digest[i] >> 4];'),
+    ("identity: emits half the id it should", "th",
+     "    for (int i = 0; i < THEME_ID_HEX / 2; i++) {",
+     "    for (int i = 0; i < THEME_ID_HEX / 4; i++) {"),
+    ("identity validator admits uppercase", "th",
+     "        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;",
+     "        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;"),
+    ("identity validator has no upper length bound", "th",
+     "        if (n >= THEME_ID_HEX) return false;          /* too long */",
+     "        if (n > THEME_ID_HEX) return false;           /* too long */"),
+    ("identity validator stops checking the lower bound", "th",
+     "    return n == THEME_ID_HEX;                          /* and no shorter */",
+     "    return n > 0;                                      /* and no shorter */"),
+    # The resolve path's second look: pass one walked the directory and hashed the
+    # header, pass two opens the file it chose and must hash AGAIN, because the card
+    # can be edited on a laptop in between. Deleting the re-check leaves a path that
+    # reads bytes no one re-verified, and only the lint below sees it — no host process
+    # can mount a card.
+    ("resolve stops re-verifying the header after opening it", "th",
+     '    if (strcmp(id2, id) != 0) { card_close(fd); *why = "that file\'s name does not match its id — refused"; return -1; }',
+     "    if (false) { card_close(fd); *why = \"refused\"; return -1; }"),
+    ("resolve accepts a file whose header hashes to another id", "th",
+     '    r->verified = (strcmp(id, r->want) == 0);             /* the walk\'s identity check */',
+     "    r->verified = true;"),
+    ("upload's duplicate check stops comparing the name it re-baked", "th",
+     "                oh.serial == h.serial && strcmp(oh.name, h.name) == 0) {",
+     "                oh.serial == h.serial) {"),
+    ("the list stops refusing a file not named for its own name", "th",
+     '    if (strcmp(id, rec->name) != 0) {',
+     "    if (false) {"),
+    # The §6 pair. Each mutation is one of the two ways the page lies about the dial.
+    ("§6 calls any same-named file active, changed bytes included", "th",
+     "    *active  = same_name && !geom_diff && !art_diff;",
+     "    *active  = same_name;"),
+    ("§6 marks another theme's file changed just because bytes differ", "th",
+     "    *changed = same_name && (geom_diff || art_diff);",
+     "    *changed = (geom_diff || art_diff);"),
+    ("§6 never captures the geometry checksum at adopt", "th",
+     "    s_active_geom_crc = h->geom_crc;",
+     "    s_active_geom_crc = 0;"),
     # The geometry arena. Every one of these changed only bytes no host binary
     # ever compiled until geom_validate_blob was lifted above: green batteries,
     # and a dial drawing from reclaimed heap. Together they pin the contract
@@ -1377,11 +1730,11 @@ MUTATIONS = [
      "    if (!adopt) {\n        free(arena);",
      "    if (adopt) {\n        free(arena);"),
     ("a refused theme leaks its arena", "th",
-     "        free(arena);\n        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);",
-     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);"),
+     "        free(arena);\n        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->name, why);",
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->name, why);"),
     ("the refusal falls through and publishes anyway", "th",
-     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);\n        return why;",
-     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);"),
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->name, why);\n        return why;",
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->name, why);"),
     ("the arena is freed out from under the published tables", "th",
      "    s_geo.from_container = true;",
      "    s_geo.from_container = true;\n    free(arena);"),
@@ -1684,44 +2037,90 @@ def lock_lint():
 
 
 def naming_lint():
-    """Every consumer of a card theme must apply the card-name == header-slug rule.
+    """FORMAT 2's identity rule, checked over the shipped source.
 
-    The rule keeps the name on the card and the slug baked into the file as one identity:
-    two entries claiming to be the same theme means the page lists one theme while flash
-    holds another. It shipped in orb_theme_stage_load() alone, and that single-placement
-    is what made the mismatch undiagnosable from the page — orb_theme_scan() validated the
-    container, found nothing wrong with it, and rendered a Load button for a file staging
-    would always refuse, so the owner saw "that theme cannot be loaded" while the only
-    sentence explaining it went to USB serial with no cable attached.
+    A theme's one true name is the string inside its container, and the card filename
+    is theme_id(name) — hex(sha256(name))[:12]. Nothing else is allowed to name a card
+    file: not the upload's original filename, not the string in ?id=, not the string a
+    row on the page displayed. The failure this pins is the one FORMAT 1 had and the
+    one the owner found from the wall with no serial cable: an entry listed as loadable
+    because one consumer applied the naming rule while the consumer that acted did not,
+    so the button answered with a refusal that named nothing.
 
-    Executing the helper cannot catch that, so this is a check over the shipped source like
-    the two above it: the helper must exist, must compare the pair it is named for, and
-    must be reached by every function that lists, accepts, stages or installs a card file.
+    Executing that is impossible off-target — the paths need FatFs — so this is a check
+    on the text: the two identity functions must be the single definition of the rule,
+    and every function that lists, resolves or files a card theme must reach for them.
     """
     lines = _code_only(th_src).split("\n")
+    raw = th_src.split("\n")          # same line count: spans index both
     spans = {}
     for n, a, b in _defs(lines):
         spans.setdefault(n, (a, b))
-    HELPER = "filed_as_its_own_slug"
-    if HELPER not in spans:
-        sys.exit("no %s() in main/art/orb_theme.c — this lint has nothing to check, "
-                 "which means it silently stopped working" % HELPER)
     rc = 0
-    ha, hb = spans[HELPER]
-    if not re.search(r"strcmp\s*\(\s*\w+->slug\s*,\s*card_name\s*\)",
-                     "\n".join(lines[ha:hb + 1])):
-        print("FAIL main/art/orb_theme.c:%d: %s() no longer compares the header slug with the "
-              "card name — the one rule this lint exists to keep" % (ha + 1, HELPER))
-        rc = 1
-    # boot is NOT in the list since ruling D13: the boot path resolves and verifies a
-    # slot, and never opens the card, so there is no card file there to compare a name
-    # against. Naming a function that no longer reads a file would be a check on code
-    # that does not exist. What installs is orb_theme_install(), and it does read one.
-    # scan_entry rather than orb_theme_scan because the walk moved to orb_files: the
-    # OS enumerates the directory now and hands this layer one open file at a time, so
-    # the function that lists a card theme is the callback, not the caller. The
-    # invariant is unchanged — whoever touches a card theme applies the rule.
-    CONSUMERS = ("scan_entry", "orb_theme_upload_end", "orb_theme_install")
+
+    def body(name):
+        """The definition as it was WRITTEN. These checks read string and char literals
+        — the hex table, the [0-9a-f] bounds — and _code_only() blanks exactly those, so
+        the comment-stripped copy is used for call sites and this for content."""
+        a, b = spans.get(name, (0, -1))
+        return "\n".join(raw[a:b + 1])
+
+    def calls(name):
+        a, b = spans.get(name, (0, -1))
+        return "\n".join(lines[a:b + 1])
+
+    # The hasher: one definition, hashing the NAME TO ITS NUL through the lower-case
+    # table. The strlen() argument is the whole rule — the header's name field is a
+    # padded array, so hashing the array instead is a stable, plausible id that matches
+    # no file on the card and no byte the bake wrote.
+    for need, why, sym in (
+            (r"mbedtls_sha256\s*\(\s*\(const unsigned char \*\)\s*name\s*,\s*strlen\s*\(\s*name\s*\)",
+             "hashes the name to its NUL — not the padded header array, which would "
+             "issue a different id for the same theme depending on what was in the file "
+             "before it", "theme_id"),
+            (r'"0123456789abcdef"\s*\[\s*digest\[i\]\s*>>\s*4\s*\]',
+             "builds the id's hex from the digest's high nibble first, lower-case", "theme_id"),
+            (r"out\[THEME_ID_HEX\]\s*=\s*'",
+             "NUL-terminates the id it hands back", "theme_id"),
+            # The §6 pair: the rule the page's two badges come from. Its own vectors
+            # run it, and these two lines keep the vectors aimed at the same rule.
+            (r"\*active\s*=\s*same_name\s*&&\s*!geom_diff\s*&&\s*!art_diff\s*;",
+             "calls a card file the dial's own only when the name and BOTH checksums agree",
+             "theme_state"),
+            (r"\*changed\s*=\s*same_name\s*&&\s*\(geom_diff\s*\|\|\s*art_diff\)\s*;",
+             "offers a re-install only for the theme the dial is already wearing",
+             "theme_state")):
+        if sym not in spans:
+            print("FAIL main/art/orb_theme.c: %s() is not a column-0 definition any more; this "
+                  "lint can no longer prove it holds the identity rule" % sym)
+            rc = 1
+        elif not re.search(need, body(sym)):
+            print("FAIL main/art/orb_theme.c: %s() no longer %s — the one rule this lint "
+                  "exists to keep" % (sym, why))
+            rc = 1
+
+    # The validator: bounds the length BOTH ways and admits only [0-9a-f]. An id
+    # arrives from a browser; this is the only thing between that string and a
+    # directory walk that has to match it.
+    for need, why in (
+            (r"if\s*\(\s*id\s*==\s*NULL\s*\)\s*return false;", "refuses a missing id"),
+            (r"if\s*\(\s*n\s*>=\s*THEME_ID_HEX\s*\)\s*return false;", "refuses an id that is too long"),
+            (r"return\s+n\s*==\s*THEME_ID_HEX\s*;", "refuses an id that is too short"),
+            (r"\(c\s*>=\s*'0'\s*&&\s*c\s*<=\s*'9'\)\s*\|\|\s*\(c\s*>=\s*'a'\s*&&\s*c\s*<=\s*'f'\)",
+             "admits nothing outside [0-9a-f] — no '/', no uppercase, no traversal")):
+        if not re.search(need, body("theme_id_ok")):
+            print("FAIL main/art/orb_theme.c: theme_id_ok() no longer %s — a browser-supplied "
+                  "id reaches the card walk unchecked" % why)
+            rc = 1
+
+    # Every consumer of a card theme applies the rule itself, through the one
+    # definition. scan_entry lists, resolve_entry turns an id back into a file,
+    # card_open_verified_id guards the bytes an install reads, orb_theme_upload_end
+    # decides the filename an upload lands at, and orb_theme_boot names the slot it
+    # found damaged. Drop the call in any one of them and the page offers a button
+    # on a theme that cannot be used — the exact bug, one consumer at a time.
+    CONSUMERS = ("scan_entry", "resolve_entry", "card_open_verified_id",
+                 "orb_theme_upload_end", "orb_theme_boot")
     for n in CONSUMERS:
         if n not in spans:
             print("FAIL main/art/orb_theme.c: %s() is not a column-0 definition any more; the "
@@ -1729,14 +2128,90 @@ def naming_lint():
             rc = 1
             continue
         a, b = spans[n]
-        if not any(HELPER in lines[k] for k in range(a, b + 1)):
-            print("FAIL main/art/orb_theme.c:%d: %s() touches a card theme without calling %s() "
-                  "— a file filed under a name it does not call itself gets through, and the "
-                  "page can only offer a Load button that fails" % (a + 1, n, HELPER))
+        seg = "\n".join(lines[a:b + 1])                     # comment-free: no prose counts
+        if "theme_id(" not in seg and "theme_id_ok(" not in seg:
+            print("FAIL main/art/orb_theme.c:%d: %s() touches a card theme without asking "
+                  "theme_id()/theme_id_ok() what its name is — a file filed under a name it "
+                  "does not call itself gets through, and the page can only offer a Load "
+                  "button that fails" % (a + 1, n))
             rc = 1
+    # The resolve path is TWO checks in TWO functions, and both are load-bearing:
+    # resolve_entry hashes the header of the directory entry it matched (so a file
+    # swapped into an id's place is refused), and card_open_verified_id then opens the
+    # file it chose and hashes THAT header again, because the card can be edited on a
+    # laptop in between. Delete either and a path opens whose bytes nobody re-checked.
+    if "resolve_entry" not in spans:
+        print("FAIL main/art/orb_theme.c: resolve_entry() is gone — nothing checks the card "
+              "file's own header against the id it is filed under")
+        rc = 1
+    elif "theme_id(" not in calls("resolve_entry"):
+        print("FAIL main/art/orb_theme.c:%d: resolve_entry() matches a directory entry without "
+              "hashing its header name — any file renamed to an id's stem installs"
+              % (spans["resolve_entry"][0] + 1))
+        rc = 1
+    if ("card_open_verified_id" in spans):
+        seg = calls("card_open_verified_id")
+        opened = seg.find("card_open(")
+        if "theme_id_ok(" not in seg:
+            print("FAIL main/art/orb_theme.c:%d: card_open_verified_id() stops validating the "
+                  "id before it walks for it" % (spans["card_open_verified_id"][0] + 1))
+            rc = 1
+        if opened < 0 or seg.find("theme_id(", opened) < 0:
+            print("FAIL main/art/orb_theme.c:%d: card_open_verified_id() no longer re-hashes the "
+                  "header AFTER opening the file — the walk's check is a different card read, "
+                  "and the bytes the install goes on to copy are the ones nobody re-verified"
+                  % (spans["card_open_verified_id"][0] + 1))
+            rc = 1
+        # The re-hash has to be COMPARED. The mutation that survives a call-presence check
+        # is the one that keeps the hash and drops the test: `if (false)` around the refusal
+        # reads as verified code, compiles, and installs a file whose bytes do not belong to
+        # the id that was asked for.
+        if not re.search(r"strcmp\s*\(\s*id2\s*,\s*id\s*\)\s*!=\s*0", seg):
+            print("FAIL main/art/orb_theme.c:%d: card_open_verified_id() re-hashes the opened "
+                  "header without comparing the result to the id it was asked for — the "
+                  "post-open check is a call that decides nothing"
+                  % (spans["card_open_verified_id"][0] + 1))
+            rc = 1
+    # Pass one, the walk: an entry whose stem matched is accepted only when its own
+    # header name hashes to that stem. Same shape as above — the assignment must be the
+    # comparison, not a constant, or any file renamed to an id's stem installs under it.
+    if "resolve_entry" in spans:
+        if not re.search(r"verified\s*=\s*\(\s*strcmp\s*\(\s*id\s*,\s*r->want\s*\)\s*==\s*0\s*\)",
+                         calls("resolve_entry")):
+            print("FAIL main/art/orb_theme.c:%d: resolve_entry() no longer derives r->verified "
+                  "from the header's hash matching the id asked for — a card file copied to an "
+                  "id's filename installs as that theme"
+                  % (spans["resolve_entry"][0] + 1))
+            rc = 1
+    # The list applies the same rule to what it renders, so a row can only ever exist for
+    # a file that is named for its own name. (It is the row's `ok` flag the page's Load
+    # button tests, which is why the comparison may not be short-circuited here either.)
+    if "scan_entry" in spans:
+        if not re.search(r"strcmp\s*\(\s*id\s*,\s*rec->name\s*\)", calls("scan_entry")):
+            print("FAIL main/art/orb_theme.c:%d: scan_entry() lists a theme without checking the "
+                  "filename against the hash of its header name — the row's button leads to a "
+                  "file the resolve path will refuse"
+                  % (spans["scan_entry"][0] + 1))
+            rc = 1
+    # The upload's duplicate policy: byte-identical re-send is idempotent, and "identical"
+    # is the whole §6 tuple — name, both checksums, serial. Drop the name and a re-send
+    # that collides on crc (two themes whose payloads happen to match) is quietly discarded
+    # as "already on the card" for a theme the owner never uploaded.
+    if "orb_theme_upload_end" in spans:
+        seg = calls("orb_theme_upload_end")
+        for pat, what in ((r"strcmp\s*\(\s*oh\.name\s*,\s*h\.name\s*\)", "the owner name"),
+                          (r"oh\.geom_crc\s*==\s*h\.geom_crc", "the geometry checksum"),
+                          (r"oh\.art_crc\s*==\s*h\.art_crc", "the pixel checksum"),
+                          (r"oh\.serial\s*==\s*h\.serial", "the install serial")):
+            if not re.search(pat, seg):
+                print("FAIL main/art/orb_theme.c:%d: the upload's duplicate check no longer "
+                      "compares %s — two different themes can be called the same file, and the "
+                      "second one is discarded as a re-send"
+                      % (spans["orb_theme_upload_end"][0] + 1, what))
+                rc = 1
     if not rc:
-        print("ok    card-name rule applied by all %d theme consumers, compared against the "
-              "header slug" % 3)
+        print("ok    card identity is one rule in two functions, applied by all %d consumers, "
+              "verified on the walk and again on the open" % len(CONSUMERS))
     return rc
 
 

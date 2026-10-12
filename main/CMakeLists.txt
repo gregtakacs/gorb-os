@@ -56,6 +56,7 @@ idf_component_register(
         app_update             # OTA: esp_ota_begin/write/end + set_boot_partition + rollback confirm
         bootloader_support     # esp_ota_img_states_t / esp_flash_partitions.h (status "img" field)
         nvs_flash
+        mbedtls                  # theme_id(): mbedtls_sha256 over the header name -> the card filename
         fatfs                    # microSD: esp_vfs_fat_sdspi_mount + FATFS volume
         sdmmc                    # "            (sdmmc_card_t, card info)
         esp_driver_sdspi         # "            (SDSPI host on SPI3_HOST)

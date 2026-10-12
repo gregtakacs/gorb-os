@@ -993,8 +993,9 @@
    * walks: canvas -> toBlob -> DecompressionStream -> the baker. A premultiplied canvas
    * would bake a washed-out plate through that chain without throwing anything, which is
    * what the alpha probe below is for. The rest checks the card's own acceptance rules:
-   * orb_theme.c re-CRCs the geometry and the payload before it loads a theme, and files
-   * it by the slug baked inside rather than by its filename.
+   * orb_theme.c re-CRCs the geometry and the payload before it loads a theme, and under
+   * FORMAT 2 files it under sha256(name)[:12] — so the download name and the header's name
+   * field are two ends of one identity, and both are checked here.
    *
    * It bakes the files the suite already collected rather than exporting again: a second
    * exportKit is 16 more whole-canvas renders, and --virtual-time-budget is a timer
@@ -1010,8 +1011,18 @@
     it.finishTheme(files, man, slug).then(async () => {
       try {
         if (!cap) throw new Error('the bake produced no download; status was "' + it.state.status + '"');
-        if (cap.nm !== slug + '.orbtheme') throw new Error('the file is named "' + cap.nm + '" but the card files a theme by the slug baked inside it');
-        if (!/^Downloaded themechk\.orbtheme/.test(it.state.status)) throw new Error('the status does not read as a completed bake: ' + it.state.status);
+        // FORMAT 2 files a theme by sha256(name)[:12], so the download stem is the id the
+        // card will hold it under — never the typed name, which is free text now and may
+        // be "../Bad Name!". What the file is called cannot carry a path any more; that is
+        // the property checked below, in either context, because crypto.subtle is missing
+        // outside a secure page and the fallback stem has to hold the line the same way.
+        const stem = cap.nm.replace(/\.orbtheme$/, '');
+        if (!/[.]orbtheme$/.test(cap.nm)) throw new Error('the theme downloaded as "' + cap.nm + '", not as <name>.orbtheme');
+        if (/[\/\\]/.test(stem) || stem.indexOf('..') >= 0) throw new Error('the download name "' + cap.nm + '" is a path, and the card is a filesystem');
+        const sha = async (s) => G.themeIdFromDigest(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))));
+        const wantStem = (crypto && crypto.subtle) ? await sha(slug) : null;
+        if (wantStem && stem !== wantStem) throw new Error('the file is named "' + stem + '.orbtheme" but the name inside hashes to "' + wantStem + '" — the card would file it somewhere else');
+        if (!/^Downloaded [0-9a-z._-]+\.orbtheme — "themechk"/.test(it.state.status)) throw new Error('the status does not read as a completed bake: ' + it.state.status);
         const b = new Uint8Array(await cap.bl.arrayBuffer());
         const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), HW = G.HDR_WORDS;
         const w = (i) => dv.getUint32(i * 4, true);
@@ -1029,7 +1040,7 @@
         if (G.crc32(b.subarray(artOff, artOff + artSize)) !== artCrc) throw new Error('pixel payload CRC does not match its bytes, so a torn upload would load');
         if (artOff !== G.artOffset(geomSize)) throw new Error('art offset ' + artOff + ' is not where the geometry size puts it');
         if (b.length !== artOff + artSize) throw new Error('container is ' + b.length + ' B but its last payload byte is at ' + (artOff + artSize));
-        if (at(G.W_SLUG * 4, G.NAME_MAX) !== slug) throw new Error('the header slug is "' + at(G.W_SLUG * 4, G.NAME_MAX) + '", not the name the file downloaded as');
+        if (at(G.W_NAME * 4, G.NAME_MAX) !== slug) throw new Error('the header name is "' + at(G.W_NAME * 4, G.NAME_MAX) + '", not the name the owner typed');
         const z = b.slice(0, HW * 4); for (let i = 0; i < 4; i++) z[G.W_HDR_CRC * 4 + i] = 0;
         if (G.crc32(z) !== w(G.W_HDR_CRC)) throw new Error('header CRC does not verify with its own checksum word zeroed');
         const gdw = new DataView(geom.buffer, geom.byteOffset, geom.byteLength);
@@ -1059,28 +1070,28 @@
         // two containers part company.
         const planes = {};
         for (const f of files) if (/[.]png$/i.test(f.name) && f.name.indexOf('sources/') !== 0) planes[f.name] = await G.decodePngAsync(f.data);
-        const again = G.bakeKit({ manifest: man, planes, slug: slug, title: slug, serial: w(11), bakedMs: w(12) });
+        const again = G.bakeKit({ manifest: man, planes, name: slug, serial: w(11), bakedMs: w(12) });
         if (again.bytes.length !== b.length) throw new Error('the pure baker came out ' + again.bytes.length + ' B against the button\'s ' + b.length + ' B');
         for (let i = 0; i < b.length; i++) if (b[i] !== again.bytes[i]) throw new Error('the button\'s container differs from the pure baker at byte ' + i + ': 0x' + b[i].toString(16) + ' against 0x' + again.bytes[i].toString(16));
-        // Two refusals the card would make for us, made here instead: a name it would not
-        // file, and a page that loaded without the baker at all.
-        // Two slug cases the card would make for us. A dirty but rescuable name must come
-        // back filed under what the header says, not what was typed; a name nothing can
-        // rescue must be refused here rather than on the card.
+        // Two name cases the card would make for us, made here instead. FORMAT 2 made the
+        // name free text: "../Bad Name!" is a LEGAL name, precisely because nothing builds
+        // a path out of it any more — the card filename is sha256(name)[:12]. So the name
+        // travels verbatim, the download stays path-free, and the case that must still be
+        // refused is the one the header's field cannot hold.
         let cap2 = null; it.download = (bl, nm) => { cap2 = { bl, nm }; };
         await it.finishTheme(files, man, '../Bad Name!');
-        if (!cap2) throw new Error('a rescuable card slug refused to bake: ' + it.state.status);
-        if (cap2.nm !== 'bad-name.orbtheme') throw new Error('a rescuable slug downloaded as "' + cap2.nm + '" instead of the normalized name the header carries');
+        if (!cap2) throw new Error('a legal if ugly theme name refused to bake: ' + it.state.status);
         const b2 = new Uint8Array(await cap2.bl.arrayBuffer());
-        if (at2(b2, G.W_SLUG * 4, G.NAME_MAX) !== 'bad-name') throw new Error('the file is named bad-name.orbtheme but baked the slug "' + at2(b2, G.W_SLUG * 4, G.NAME_MAX) + '" — the card files it by the header, not the name');
+        if (at2(b2, G.W_NAME * 4, G.NAME_MAX) !== '../Bad Name!') throw new Error('the header holds "' + at2(b2, G.W_NAME * 4, G.NAME_MAX) + '" — the baker sanitised a name FORMAT 2 says to keep verbatim');
+        if (/[\/\\]/.test(cap2.nm) || cap2.nm.indexOf('..') >= 0) throw new Error('"../Bad Name!" came out as the download "' + cap2.nm + '" — a path reached the filename, which is the whole reason the name is hashed');
         cap2 = null;
-        await it.finishTheme(files, man, '***');
-        if (cap2 || !/Not baked/.test(it.state.status)) throw new Error('an unsalvageable card slug still shipped a container: ' + it.state.status);
+        await it.finishTheme(files, man, 'x'.repeat(G.NAME_MAX));
+        if (cap2 || !/Not baked/.test(it.state.status) || !/measures 56/.test(it.state.status)) throw new Error('a name one byte past the ' + (G.NAME_MAX - 1) + '-byte field still shipped, or refused without saying the number: ' + it.state.status);
         const keepG = window.GorbBake; window.GorbBake = undefined;
         await it.finishTheme(files, man, 'nope');
         window.GorbBake = keepG;
         if (cap2 || !/did not load/.test(it.state.status)) throw new Error('a bake with no baker loaded still reported: ' + it.state.status);
-        say('  theme: ' + (b.length / 1048576).toFixed(2) + ' MB baked from Chrome PNGs · header, geometry and payload CRCs all verify · ' + counts.rects + ' bank rects in a ' + nCounts + '-count blob · ' + counts.comps + ' complications · ' + counts.aux + ' pointers · an alpha-128 texel kept its colour through toBlob and inflate · bad slug and missing baker both refused');
+        say('  theme: ' + (b.length / 1048576).toFixed(2) + ' MB baked from Chrome PNGs · header, geometry and payload CRCs all verify · ' + counts.rects + ' bank rects in a ' + nCounts + '-count blob · ' + counts.comps + ' complications · ' + counts.aux + ' pointers · an alpha-128 texel kept its colour through toBlob and inflate · named ' + stem + '.orbtheme = sha256("' + slug + '")[:12] · an over-long name and a missing baker both refused');
         done();
       } catch (e) { done(e); }
     }, (e) => done(e));

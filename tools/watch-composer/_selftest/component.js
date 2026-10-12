@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
@@ -1456,37 +1456,71 @@ class Component extends DCLogic {
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
     };
     files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
-    if (asTheme) return this.finishTheme(files, manifest, slug);
+    if (asTheme) return this.finishTheme(files, manifest, this.themeName());
     files.push({ name: 'preview.png', data: await this.png(this.previewCanvas()) });
     this.download(this.zip(files), 'watch-' + slug + '-kit.zip');
     const artN = manifest.assets ? manifest.assets.length : 0;
     this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files' + (textKits.length ? ', ' + textKits.length + ' date-sprite kit' + (textKits.length > 1 ? 's' : '') : '') + (artN ? ', ' + artN + ' art source' + (artN > 1 ? 's' : '') + ' in sources/' : '') + (Object.keys(ghostSubs).length ? ', ' + Object.keys(ghostSubs).length + ' transparent sub-dial shipped as no layer' : '') + ', preview at 10:09)' });
   }
+  /* FORMAT 2 made the name the whole identity the owner sees: the card prints it in the
+   * theme picker and files the upload under sha256(name)[:12]. Until someone types over
+   * the field, the dial's own preset title stands in, so a first bake is never blank and
+   * never a path the card would have to rescue -- there is nothing left to rescue. */
+  themeName() {
+    const typed = this.state.themeName;
+    if (typeof typed === 'string' && typed.trim()) return typed.trim();
+    // render() calls this on every export-pane paint, and preset() dereferences the
+    // engine's table: a missing preset must fall back to the dial key, not blank the pane.
+    let P = null;
+    try { P = this.preset(); } catch (e) { P = null; }
+    return (P && P.name) || this.state.dial || 'watch';
+  }
   /* The device theme, baked here rather than on the bench. It starts from the exact PNG
    * bytes the layer kit would have shipped (white balance included, shadows raw), so the
    * only difference from what tools/bake_clock.py produces is what that script folds:
    * the browser path runs no static fold and no occlusion cull, and says so in its note.
-   * A container is refused, not written, when the dial exceeds a device table or the slug
-   * is one orb_sd.c could never match -- both are the baker's own checks. */
-  async finishTheme(files, manifest, slug) {
+   * A container is refused, not written, when the dial exceeds a device table or the
+   * name will not fit the header's one name field -- both are the baker's own checks,
+   * and the field above measures that limit in the same bytes the baker counts. */
+  async finishTheme(files, manifest, themeName) {
     const G = window.GorbBake;
     if (!G) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
-    const s = String(slug || 'watch').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '').replace(/[.-]+$/, '').slice(0, G.NAME_MAX - 1);
-    if (!G.slugOk(s)) { this.setState({ status: 'Not baked: "' + s + '" is not a card name (a-z 0-9 . _ -, cannot start with a dot, max ' + (G.NAME_MAX - 1) + ' characters)' }); return; }
-    this.setState({ status: 'Baking ' + s + '.orbtheme…' });
+    // FORMAT 2 made the name the whole identity: it travels inside the container, the
+    // device files the theme under sha256(name)[:12], and the upload filename carries
+    // nothing. So this is free text now — spaces, capitals, an em dash — and the one
+    // rule left is the field's own size, which the baker measures in UTF-8 bytes.
+    const nm = String(themeName || 'watch').replace(/\u0000/g, '').trim();
+    if (!G.nameOk(nm)) {
+      this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' +
+        (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) +
+        (G.nameBytes(nm) === 0 ? ' (a theme needs a name the owner can read)' : ' (shorten it)') });
+      return;
+    }
+    this.setState({ status: 'Baking "' + nm + '"…' });
     try {
       const t0 = performance.now();
       const planes = {};
       // sources/ holds the art as data-URL text, not PNG bytes, and the kit's non-images are
       // text: bakeKit only ever looks a plane up by the name the manifest uses.
       for (const f of files) if (/[.]png$/i.test(f.name) && f.name.indexOf('sources/') !== 0) planes[f.name] = await G.decodePngAsync(f.data);
-      const r = G.bakeKit({ manifest, planes, slug: s, title: s, serial: G.crc32(new TextEncoder().encode(JSON.stringify(manifest))), bakedMs: Math.round(performance.now() - t0) });
-      // The card files a theme by the slug baked INSIDE it, not by its filename, so the
-      // download is named to match: a file the author renames still loads under `s`, and
-      // one they drop on the card unrenamed reads as the same name the bench bakes would print.
-      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), s + '.orbtheme');
+      const r = G.bakeKit({ manifest, planes, name: nm, serial: G.crc32(new TextEncoder().encode(JSON.stringify(manifest))), bakedMs: Math.round(performance.now() - t0) });
+      // Name the download for the id the card will hold it under, so the file in the
+      // owner's Downloads folder and the file on the card are the same thing to look at.
+      // sha256 comes from the browser's own crypto (subtle is async, and the baker stays
+      // DOM-free and sync); a context without it — an old file:// open — keeps the old
+      // name and says so, because a wrong-looking filename beats a wrong filename.
+      let id = null;
+      try {
+        if (window.crypto && window.crypto.subtle) {
+          id = G.themeIdFromDigest(new Uint8Array(
+            await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(nm))));
+        }
+      } catch (e) { id = null; }
+      const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
+      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       const c = r.report.counts;
-      this.setState({ status: 'Downloaded ' + s + '.orbtheme (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
+      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (id ? '' : ' (id unavailable here: upload it and the page will name it)') +
+        ' (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
     } catch (e) {
       // The caps and the fold proof throw here: the device would silently drop or misdraw
       // anything past them, so the bake stops instead of shipping a theme that lies.
@@ -2120,11 +2154,21 @@ class Component extends DCLogic {
       // the theme bakes from the kit's own PNG bytes, so it rides the same render pass:
       // exportKit(true) collects the files and hands them to finishTheme instead of zipping
       exportTheme: () => this.exportKit(true),
+      // FORMAT 2: the name is typed, so the field that types it sits beside the button,
+      // and the byte counter beside it is the same count the baker applies, not JS chars.
+      themeNameVal: this.state.themeName == null ? '' : this.state.themeName,
+      themeNameIn: (e) => this.setState({ themeName: e.target.value }),
+      themeNamePh: this.themeName(),
+      themeNameLen: (() => { const G = window.GorbBake; const n = G ? G.nameBytes(this.themeName()) : String(this.themeName()).length; return n + '/' + (G ? G.NAME_MAX - 1 : 55) + ' B'; })(),
       themeNote: (() => {
         const G = window.GorbBake;
         if (!G) return 'baker not loaded';
         const nw = (D.comps || []).filter((c) => c.type === 'window').length, nf = (D.comps || []).filter((c) => c.type === 'flare').length;
         if (D.comps && D.comps.length > G.caps.comp) return 'too many complications for the device table (max ' + G.caps.comp + ')';
+        // FORMAT 2 left one rule on the name -- the header's field size -- and it is the
+        // only refusal here the owner could not predict from the dial itself.
+        const tn = this.themeName();
+        if (!G.nameOk(tn)) return 'theme name is ' + G.nameBytes(tn) + ' B; the header holds ' + (G.NAME_MAX - 1);
         return F + '-frame bank' + (nw ? ' · ' + nw + ' window' + (nw > 1 ? 's' : '') : '') + (nf ? ' · ' + nf + ' flare' + (nf > 1 ? 's' : '') : '');
       })(),
       exportBundle: () => this.exportBundle(),

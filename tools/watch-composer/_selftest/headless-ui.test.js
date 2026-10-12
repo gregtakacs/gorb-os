@@ -438,11 +438,26 @@ setTimeout(async () => {
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
   for (const k of ['exportKit', 'exportTheme', 'themeNote', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
+    // FORMAT 2's theme-name field: the input, its live byte count and its placeholder
+    'themeNameVal', 'themeNameIn', 'themeNamePh', 'themeNameLen',
     // the three bindings the deselect/scroll row reads: a missing one renders a dead button
     'clearSel', 'clearLabel', 'clearOp', 'pickGuide', 'g', 'paneRef'])
     ok(rv[k] !== undefined, 'the template binding ' + k + ' has a backing property');
   ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
   for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
+  // FORMAT 2's identity field: an untouched box must still name the theme after the dial,
+  // and what the owner types must win verbatim -- no sanitising stands between them now.
+  it.state.themeName = '';
+  const tDef = it.themeName();
+  ok(typeof tDef === 'string' && tDef.length > 0 && /[\s\S]/.test(tDef.trim()),
+     'an untouched name field still yields a name', JSON.stringify(tDef));
+  const tPreset = (function () { try { const P = it.preset(); return (P && P.name) || null; } catch (e) { return null; } })();
+  ok(tDef === (tPreset || it.state.dial),
+     'the default name is the dial title the owner reads, never a sanitized token', JSON.stringify([tDef, tPreset, it.state.dial]));
+  it.state.themeName = '  Grand Complication — Noir  ';
+  ok(it.themeName() === 'Grand Complication — Noir',
+     'the typed name travels trimmed and otherwise untouched', JSON.stringify(it.themeName()));
+  it.state.themeName = '';
   // ---- the theme export: it must report, never throw -------------------------------
   // A button that dies silently is worse than no button: the author cannot tell a refused
   // bake from a broken page, and every refusal here is something they can act on.
@@ -452,7 +467,6 @@ setTimeout(async () => {
   await (async () => {
     const name = { got: null }, threw = { err: null };
     it.download = (b, n) => { name.got = n; };
-    const origOk = global.window.GorbBake.slugOk;
     try {
       // a dial whose layers cannot be found must land as a sentence, not an exception
       try { await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'cal'); }
@@ -460,20 +474,22 @@ setTimeout(async () => {
       ok(!threw.err, 'an unusable kit throws nothing at the button', threw.err && threw.err.message);
       ok(/^Not baked: /.test(it.state.status) && name.got === null,
          'and it is refused with the reason, without a download', it.state.status.slice(0, 72));
-      // the card can only ever match a sanitized name, so the button sanitizes rather
-      // than refusing: a dial called ".hidden" or 30 chars still bakes, under a name
-      // orb_sd_name_ok would accept.
+      // FORMAT 2 took the card charset out of the name entirely: the file on the card is
+      // sha256(name)[:12], so an awkward name bakes verbatim instead of being sanitised.
       await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, '.Hidden Name!');
-      ok(!/not a card name/.test(it.state.status), 'an awkward slug is normalized, not refused', it.state.status.slice(0, 40));
+      ok(!/not a theme name/.test(it.state.status), 'an awkward name is a name now, not a refusal', it.state.status.slice(0, 40));
+      ok(!/[\/\\]/.test(String(name.got)), 'and however odd the name, the download it produced carries no path', String(name.got));
       let checked31 = null;
-      global.window.GorbBake.slugOk = (s) => { checked31 = s; return origOk(s); };
+      const origOk = global.window.GorbBake.nameOk;
+      global.window.GorbBake.nameOk = (s) => { checked31 = s; return origOk(s); };
       await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'a'.repeat(30));
-      ok(typeof checked31 === 'string' && checked31.length <= global.window.GorbBake.NAME_MAX - 1 && /^[a-z0-9._-]+$/.test(checked31),
-         'the slug handed to the baker is inside the header field and the card charset', JSON.stringify(checked31));
-      global.window.GorbBake.slugOk = origOk;
-      // a genuinely impossible name (nothing left after sanitizing) is the one refusal
-      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, '***');
-      ok(/Not baked/.test(it.state.status), 'a name with no usable character is refused', it.state.status.slice(0, 46));
+      ok(checked31 === 'a'.repeat(30) && global.window.GorbBake.nameBytes(checked31) <= global.window.GorbBake.NAME_MAX - 1,
+         'the name handed to the baker is what was typed, and inside the header field', JSON.stringify(checked31));
+      global.window.GorbBake.nameOk = origOk;
+      // the one name rule the header still enforces, checked as a refusal this time
+      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'x'.repeat(global.window.GorbBake.NAME_MAX));
+      ok(/Not baked/.test(it.state.status) && /measures 56/.test(it.state.status),
+         'a name one byte past the field is refused, and says which byte it measured', it.state.status.slice(0, 72));
       global.window.GorbBake = null;
       await it.finishTheme([], { size: 466 }, 'ok');
       ok(/did not load/.test(it.state.status), 'a missing baker names the file that is gone', it.state.status.slice(0, 56));

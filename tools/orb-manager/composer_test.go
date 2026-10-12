@@ -64,6 +64,47 @@ func repoComposerDir(t *testing.T) string {
 	return filepath.Join("..", "..")
 }
 
+// The hub has to find its clone without git: a Windows box that only ever
+// flashed through WSL has no git on PATH, and guessing the working directory
+// handed back tools/orb-manager, which 404'd /composer/ and lost the build plan.
+func TestRepoFromWalksUpToTheClone(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, repoMarkerRel())
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(root, "tools", "orb-manager", "internal", "esprom")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := repoFrom(deep); got != root {
+		t.Errorf("repoFrom from a deep dir = %q, want the clone root %q", got, root)
+	}
+}
+
+func TestRepoFromSaysNoWhenTheCloneIsAbsent(t *testing.T) {
+	if got := repoFrom(t.TempDir()); got != "" {
+		t.Errorf("repoFrom outside a clone = %q, want empty so the hub says so rather than guessing", got)
+	}
+}
+
+// Whichever route detection takes — git, the cwd walk-up, or the binary's own
+// directory — inside this clone it must land on the root that holds the editor.
+func TestDetectRepoDirFindsThisClone(t *testing.T) {
+	got := detectRepoDir()
+	if got == "" {
+		t.Skip("not running inside a clone: nothing to detect")
+	}
+	if !fileExists(filepath.Join(got, repoMarkerRel())) {
+		t.Errorf("detectRepoDir = %q, which does not hold the Theme Editor the hub serves from %q",
+			got, repoComposerDir(t))
+	}
+}
+
 func TestComposerServesEditorWithAWayHome(t *testing.T) {
 	s := &Server{repoDir: repoComposerDir(t)}
 	rr := httptest.NewRecorder()
@@ -147,6 +188,28 @@ func TestComposerNeedsAClone(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "clone") {
 		t.Errorf("body = %q, want it to say the editor needs a clone", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "-repo") {
+		t.Errorf("body = %q, want it to name the -repo flag that fixes this", rr.Body.String())
+	}
+}
+
+// A -repo value that points somewhere without the editor is the state a Windows
+// operator lands in when a shell mangles the path. The answer must say where it
+// looked, not just that nothing was found.
+func TestComposerNamesTheDirectoryItSearched(t *testing.T) {
+	s := &Server{repoDir: filepath.Join(t.TempDir(), "not-a-clone")}
+	rr := httptest.NewRecorder()
+	s.serveComposer(rr, httptest.NewRequest(http.MethodGet, "/composer/", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "not-a-clone") {
+		t.Errorf("body = %q, want it to name the directory it searched", body)
+	}
+	if !strings.Contains(body, "Watch Composer.dc.html") {
+		t.Errorf("body = %q, want it to name the entry file it expected", body)
 	}
 }
 

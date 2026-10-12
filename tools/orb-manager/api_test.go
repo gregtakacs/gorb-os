@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -35,6 +37,60 @@ func TestAPIPortsPayloadHasNoNullList(t *testing.T) {
 		}
 		if got := string(raw); got != `{"ports":[]}` {
 			t.Errorf("payload for %v = %s, want {\"ports\":[]}", ports, got)
+		}
+	}
+}
+
+// The flash manifest lists images by name for the UI. Names, not paths: a
+// Windows build dir is a UNC path full of backslashes, and path.Base (slash
+// only) hands the whole thing back as the display name.
+func TestAPIBuildNamesAreBasenamesNotPaths(t *testing.T) {
+	dir := t.TempDir()
+	boot := filepath.Join(dir, "bootloader")
+	if err := os.MkdirAll(boot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{filepath.Join(boot, "bootloader.bin"), filepath.Join(dir, "orb.bin")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"flash_settings":{"flash_mode":"dio","flash_size":"16MB"},` +
+		`"flash_files":{"0x0":"bootloader/bootloader.bin","0x10000":"orb.bin"}}`
+	if err := os.WriteFile(filepath.Join(dir, "flasher_args.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{buildDir: dir}
+	payload, err := s.describeBuild(nil)
+	if err != nil {
+		t.Fatalf("describeBuild: %v", err)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Present bool `json:"present"`
+		Images  []struct {
+			Name string `json:"name"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("payload shape: %v (%s)", err, raw)
+	}
+	if !got.Present {
+		t.Fatalf("present = false, want the manifest found at %s", dir)
+	}
+	if len(got.Images) != 2 {
+		t.Fatalf("images = %d, want the two in the manifest", len(got.Images))
+	}
+	for i, want := range []string{"bootloader.bin", "orb.bin"} {
+		if got.Images[i].Name != want {
+			t.Errorf("image %d name = %q, want the bare %q", i, got.Images[i].Name, want)
+		}
+		if strings.ContainsAny(got.Images[i].Name, `/\`) {
+			t.Errorf("image %d name %q is a path, not a name", i, got.Images[i].Name)
 		}
 	}
 }

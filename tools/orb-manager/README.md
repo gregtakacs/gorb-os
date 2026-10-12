@@ -90,6 +90,7 @@ Three switches cover the exceptions:
 | `--no-window` | serve only and print the URL — the bench, SSH, and CI path |
 | `--browser=browser` | old behaviour: a normal tab in the default browser |
 | `--browser=/path/to/chrome` | name the binary instead of autodetecting |
+| `--repo=<clone root>` | name the gorb-os clone when auto-detection cannot (see "Testing on Windows") |
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
 dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
@@ -221,7 +222,8 @@ composer.go          serves the repo's watch-composer at /composer/
 cmd/orbflash/        headless face of the same flasher
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
-internal/orbbind/    per-port flock (LockPort) only — no orb identity, no bench state
+internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
+                     unshared CreateFile handle on Windows
 internal/orbnet/     single-orb status client (no sweep, no ARP)
 web/                 the embedded hub UI (index.html, app.css, app.js)
 ```
@@ -229,19 +231,112 @@ web/                 the embedded hub UI (index.html, app.css, app.js)
 ## Development
 
 ```
-make test      # go test ./... — SLIP framing, block checksum, SHA256 recalc,
-               # MAC decode, FLASH_BEGIN 5-word framing
-make vet       # go vet ./...
-make fmt       # go fmt ./...
-make run       # rebuild + open the app window against 127.0.0.1:3779
-               # add --no-window to serve without a window (SSH, CI, bench)
+make test       # go test ./... — SLIP framing, block checksum, SHA256 recalc,
+                # MAC decode, FLASH_BEGIN 5-word framing
+make vet        # go vet ./...
+make fmt        # go fmt ./...
+make run        # rebuild + open the app window against 127.0.0.1:3779
+                # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
+make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe
+make crosscheck # go vet every supported GOOS/GOARCH, tests included
 ```
+
+`make crosscheck` is not decoration. The port lock was written against
+`syscall.Flock`, which has no Windows counterpart, and the hub simply had never
+been compiled for Windows — so a binary that could not exist looked exactly like
+a platform that was fine. Vet type-checks `_test.go` files too, so this covers
+the suite as well as the shipped code.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window
 mode adds none: it drives a Chromium the host already has, so the binary stays
 `CGO_ENABLED=0` and cross-compilable.
+
+## Testing on Windows
+
+The hub is one static, `CGO_ENABLED=0` binary, so the Windows build comes from
+this same WSL shell — no Windows SDK, no second machine to compile. Run it there
+to test the paths WSL cannot reach: native COM enumeration, the Windows profile
+dir, and a Chrome started without the interop launcher in between.
+
+```
+make windows                          # -> bin/windows-amd64/orb-manager.exe
+cp bin/windows-amd64/orb-manager.exe /mnt/c/Users/<you>/Downloads/
+```
+
+Copy it to `C:` rather than running it from `\\wsl.localhost`: Windows marks
+files fetched from another host, and SmartScreen questions an unsigned `.exe`
+once. `Unblock-File .\orb-manager.exe` in PowerShell clears that.
+
+Give Windows the cable first. A port attached to WSL through `usbipd` is invisible
+to Windows, and the picker has nothing to list — it says `(no serial ports
+found)`, correctly. Release it, and check Device Manager shows the
+`USB JTAG/serial debug unit` as a COM port:
+
+```
+usbipd detach --busid <busid>
+```
+
+Start headless and check the three things the browser cannot tell you:
+
+```powershell
+cd C:\Users\<you>\Downloads
+.\orb-manager.exe -no-window -build C:\gorb-os\build
+Invoke-RestMethod http://127.0.0.1:3779/api/status   # platform : windows
+Invoke-RestMethod http://127.0.0.1:3779/api/ports    # ports    : COM5 ...
+```
+
+`/api/ports` answers `{"ports":[]}` on a machine with no COM ports at all; an
+empty list is a real answer, not a failure. `/api/status` reporting something
+other than `windows` means you are looking at a WSL hub still holding the port.
+
+Then the window:
+
+```powershell
+.\orb-manager.exe -build C:\gorb-os\build
+```
+
+Chrome is not on `PATH`, so discovery reads the standard install roots
+(`%ProgramFiles%`, `%ProgramFiles(x86)%`, `%LocalAppData%`) after the image-name
+lookup. If the hub says `app window unavailable` and opens a tab instead, name
+the binary: `-browser "C:\Program Files\Google\Chrome\Application\chrome.exe"`.
+The startup line names the browser log — `orb-manager-chrome.log` in `%TEMP%` —
+where Chrome's own named-pipe and GCM complaints go instead of your terminal.
+Closing the window must end the process: `Get-Process orb-manager` should find
+nothing.
+
+The clone usually lives in the WSL filesystem. A `.exe` on `C:` run from a
+directory outside the clone, with no git installed on Windows, cannot find it,
+and says so: `build dir: not detected`, and `/composer/` answers 503 naming the
+directory it searched. Point it at the clone explicitly:
+
+```powershell
+.\orb-manager.exe -repo '\\wsl.localhost\Ubuntu\home\<you>\Projects\gorb-os'
+```
+
+Quote the UNC path: the shell collapses an unquoted `\\` to `\`, and the hub
+then reports the mangled path it tried. Go reads the WSL filesystem over UNC
+fine — `/api/build` enumerates the images and `/composer/` serves 236 KB of
+editor from it.
+
+To run the unit tests on Windows, install Go there and use PowerShell inside
+`tools\orb-manager`: `go test ./...`. Eight tests skip: they drive a `#!/bin/sh`
+stub browser, which `CreateProcess` cannot exec. The Windows-only halves have
+their own coverage that does run — the exclusive port lock, `COM5` versus
+`\\.\COM5` collapsing to one lock, lock filenames free of characters Windows
+rejects, `%LOCALAPPDATA%` through the real shell, and the install-root browser
+discovery above.
+
+From WSL you can also exercise the Windows binary without leaving the keyboard,
+because WSL runs `.exe` files natively:
+
+```
+cd tools/orb-manager
+GOOS=windows go test -c -o /tmp/win.test.exe .
+/tmp/win.test.exe        # run from the package dir: the Theme Editor tests
+                         # resolve the clone relative to the working dir
+```
 
 ## Caveats
 

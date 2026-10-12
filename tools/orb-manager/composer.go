@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -49,7 +50,7 @@ func (s *Server) routesComposer(mux *http.ServeMux) {
 
 func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 	if s.repoDir == "" {
-		http.Error(w, "theme editor unavailable: not running inside a gorb-os clone", http.StatusServiceUnavailable)
+		http.Error(w, "theme editor unavailable: the hub could not find the gorb-os clone; start it with -repo <clone root>", http.StatusServiceUnavailable)
 		return
 	}
 	dir := filepath.Join(s.repoDir, composerDirRel)
@@ -65,7 +66,10 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 	full := filepath.Join(dir, name)
 	st, err := os.Stat(full)
 	if err != nil || st.IsDir() {
-		http.NotFound(w, r)
+		// Name the directory that was searched. A -repo value mangled by a shell
+		// (cmd.exe eats one leading backslash from a UNC path) otherwise reads as
+		// "the editor does not exist" rather than "I looked in the wrong place".
+		http.Error(w, fmt.Sprintf("theme editor unavailable: no %s under %s", name, dir), http.StatusServiceUnavailable)
 		return
 	}
 	if name != composerEntry {

@@ -24,7 +24,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt run desktop flash clean
+.PHONY: all build manager orbflash test vet fmt run desktop flash windows crosscheck clean
 
 all: test build
 
@@ -66,6 +66,35 @@ desktop: run
 flash: orbflash
 	@test -n "$(PORT)" || { echo "usage: make flash PORT=/dev/ttyACM0"; exit 2; }
 	$(BIN_DIR)/orbflash -port $(PORT) -mode full -build $(BUILD_DIR)
+
+## windows: cross-compile the Windows binaries from this Linux/WSL host.
+## Nothing here needs a Windows machine or a Windows toolchain: the hub is
+## CGO_ENABLED=0, so the Go compiler just emits PE files. Copy the result to the
+## Windows side to run it there (see README, "Testing on Windows").
+WIN_DIR   ?= $(BIN_DIR)/windows-amd64
+windows:
+	@mkdir -p $(WIN_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orb-manager.exe .
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orbflash.exe ./cmd/orbflash
+	@echo "built $(WIN_DIR)/orb-manager.exe and orbflash.exe $(VERSION)"
+
+## crosscheck: prove every supported platform still compiles, sources AND tests.
+## This exists because the port lock reached syscall.Flock, which has no Windows
+## equivalent, and nothing but a native run ever noticed: a GOOS=windows build
+## had simply never been attempted. vet type-checks _test.go files too, so the
+## test suite is covered as well. Override the set with PLATFORMS="linux/amd64".
+PLATFORMS ?= linux/amd64 windows/amd64 darwin/arm64
+crosscheck:
+	@for p in $(PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; \
+	  printf 'GOOS=%-8s GOARCH=%-7s' $$os $$arch; \
+	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) vet ./... >/tmp/crosscheck.log 2>&1; then \
+	    echo ' ok'; \
+	  else \
+	    echo ' FAIL'; cat /tmp/crosscheck.log; exit 1; \
+	  fi; \
+	done
+	@echo 'all platforms compile'
 
 clean:
 	rm -rf $(BIN_DIR)

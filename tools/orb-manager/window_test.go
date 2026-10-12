@@ -146,6 +146,7 @@ func TestLaunchAppWindowKeepsServingWhenLauncherDetaches(t *testing.T) {
 }
 
 func TestLaunchAppWindowPassesTheURLToTheBrowser(t *testing.T) {
+	requireShStub(t)
 	isolateBrowserEnv(t)
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
@@ -170,6 +171,42 @@ func TestLaunchAppWindowPassesTheURLToTheBrowser(t *testing.T) {
 	}
 }
 
+// A stock Windows machine has Chrome in Program Files and nothing on PATH
+// pointing at it, which is exactly the case the image-name LookPath misses.
+// This runs on every OS: winBrowserCandidates is a pure function over the env
+// table, so its Windows answer is checkable from Linux.
+func TestWinBrowserCandidatesCoverTheStandardInstallRoots(t *testing.T) {
+	env := map[string]string{
+		"ProgramFiles": `C:\Program Files`,
+		"LocalAppData": `C:\Users\greg\AppData\Local`,
+	}
+	got := winBrowserCandidates(func(k string) string { return env[k] })
+
+	if len(got) != 4 {
+		t.Fatalf("candidates = %v, want one Chrome and one Edge under each of the two roots", got)
+	}
+	// Each root contributes chrome.exe then msedge.exe, in the order the tables
+	// are walked. The roots are matched as substrings because the separator the
+	// joiner uses is the host's, and this check runs on Linux too.
+	checks := []struct{ path, exe, root string }{
+		{got[0], "chrome.exe", `C:\Program Files`},
+		{got[1], "msedge.exe", `C:\Program Files`},
+		{got[2], "chrome.exe", `AppData\Local`},
+		{got[3], "msedge.exe", `AppData\Local`},
+	}
+	for _, c := range checks {
+		if b := filepath.Base(c.path); b != c.exe {
+			t.Errorf("candidate %q, want an executable named %s", c.path, c.exe)
+		}
+		if !strings.Contains(c.path, c.root) {
+			t.Errorf("candidate %q does not sit under the %s install root", c.path, c.root)
+		}
+	}
+	if c := winBrowserCandidates(func(string) string { return "" }); len(c) != 0 {
+		t.Errorf("no install roots must yield no candidates, got %v", c)
+	}
+}
+
 func TestIsWSLReadsItsEnv(t *testing.T) {
 	t.Setenv("WSL_DISTRO_NAME", "Ubuntu")
 	if !isWSL() {
@@ -179,8 +216,33 @@ func TestIsWSLReadsItsEnv(t *testing.T) {
 
 // --- helpers ----------------------------------------------------------------
 
+// requireShStub skips a test whose stand-in browser is a POSIX shell script.
+// CreateProcess cannot exec a #!/bin/sh file, so on Windows the launch and
+// lifetime behaviour these tests pin has no stub to drive. It is verified on the
+// Linux/WSL side, which is where the hub launches Chrome from in practice; the
+// Windows-only halves (install-dir discovery, the profile path, port locking)
+// have their own tests that do run there.
+func requireShStub(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("stub browser is a /bin/sh script; Windows cannot exec it")
+	}
+}
+
+// setTempDir points os.TempDir at a fresh dir so a test can inspect a file the
+// hub writes there. Unix consults TMPDIR; Windows consults TMP then TEMP.
+func setTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+	return dir
+}
+
 func writeStubBrowser(t *testing.T, scriptlet string) string {
 	t.Helper()
+	requireShStub(t)
 	isolateBrowserEnv(t)
 	p := filepath.Join(t.TempDir(), "stub-browser")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+scriptlet+"\n"), 0o755); err != nil {
@@ -448,8 +510,7 @@ func TestLaunchAppWindowDetachedAndUnwatchableKeepsServing(t *testing.T) {
 // hub. Inheriting the hub's stderr buried the hub's own one-line story under
 // them, so a healthy run looked broken. The narration belongs in a file.
 func TestAppWindowKeepsBrowserNoiseOutOfTheHubLog(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
+	dir := setTempDir(t)
 
 	var hubLog bytes.Buffer
 	old := log.Writer()
@@ -487,6 +548,7 @@ func TestAppWindowKeepsBrowserNoiseOutOfTheHubLog(t *testing.T) {
 
 func writeStubBrowserNoIsolate(t *testing.T, scriptlet string) string {
 	t.Helper()
+	requireShStub(t)
 	p := filepath.Join(t.TempDir(), "stub-browser")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+scriptlet+"\n"), 0o755); err != nil {
 		t.Fatal(err)

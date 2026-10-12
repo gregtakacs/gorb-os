@@ -84,6 +84,40 @@ var macBrowsers = []string{
 // resolves from the Windows PATH.
 var winImageNames = []string{"chrome.exe", "msedge.exe"}
 
+// winBrowserSubpaths are the install layouts under a Windows program root:
+// where the setups put the executable, and the layout Windows itself exposes.
+var winBrowserSubpaths = []struct{ dir, exe string }{
+	{`Google\Chrome\Application`, "chrome.exe"},
+	{`Microsoft\Edge\Application`, "msedge.exe"},
+}
+
+// winInstallEnvVars are the shell variables that name the roots a browser
+// installer writes into: the per-machine Program Files pair, plus LocalAppData
+// for the per-user installs Chrome offers.
+var winInstallEnvVars = []string{"ProgramFiles", "ProgramFiles (x86)", "ProgramFiles(x86)", "LocalAppData"}
+
+// winBrowserCandidates lists the absolute paths a stock Windows install leaves
+// behind. It exists because neither Chrome nor Edge adds its own directory to
+// PATH: exec.LookPath("chrome.exe") misses both on a machine where the user
+// plainly has Chrome, and the hub would fall back to a plain browser tab and
+// lose app-window mode over a PATH technicality. A registry read of
+// App Paths\chrome.exe would be more exact, and is not worth the extra
+// machinery to answer a question these four roots already answer for
+// effectively every install.
+func winBrowserCandidates(env func(string) string) []string {
+	var out []string
+	for _, v := range winInstallEnvVars {
+		root := env(v)
+		if root == "" {
+			continue
+		}
+		for _, b := range winBrowserSubpaths {
+			out = append(out, filepath.Join(root, b.dir, b.exe))
+		}
+	}
+	return out
+}
+
 // isWSL reports whether the process runs inside Windows Subsystem for Linux.
 // /proc/version carries the microsoft kernel tag on WSL1 and WSL2 alike, and
 // WSL_DISTRO_NAME covers a kernel that misreports it.
@@ -105,6 +139,13 @@ func findBrowser() string {
 	case "windows":
 		for _, n := range winImageNames {
 			if p, err := exec.LookPath(n); err == nil {
+				return p
+			}
+		}
+		// Neither browser installs onto PATH, so the image-name lookup above
+		// misses the common case; the standard install roots catch it.
+		for _, p := range winBrowserCandidates(os.Getenv) {
+			if fileExists(p) {
 				return p
 			}
 		}

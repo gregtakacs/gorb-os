@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // PortLock is an exclusive advisory lock on a PHYSICAL serial port, keyed to
@@ -18,31 +17,66 @@ import (
 // the orb plugged into the port they picked and must never be refused for it;
 // this lock's only job is to stop two operations (a flash and a provision, or
 // two tools) driving the same cable at once, which corrupts the write.
+//
+// The lock itself is per-OS (lockPort_unix.go, lockPort_windows.go) because
+// nothing is portable about advisory locking. Both implementations release when
+// the process dies, so a hub killed mid-flash never leaves a cable locked.
 type PortLock struct {
 	f    *os.File
 	name string
 }
 
-// LockPort locks the port at path — a /dev/ttyACMx or a /dev/serial/by-id/...
-// link. Both are resolved to the same canonical device first, so the two
-// spellings lock together rather than letting each sneak past the other. It
-// returns an error only when another operation already holds that exact port.
+// LockPort locks the port at path — a /dev/ttyACMx, a /dev/serial/by-id/...
+// link, or a Windows COM port (COM5, \\.\COM5). Spellings of one device are
+// resolved to the same canonical path first, so they lock together rather than
+// each sneaking past the other. It returns an error only when another operation
+// already holds that exact port.
 func LockPort(path string) (*PortLock, error) {
-	canon := path
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		canon = r
-	}
-	safe := strings.ReplaceAll(strings.TrimPrefix(canon, "/dev/"), "/", "-")
-	lockPath := filepath.Join(os.TempDir(), "orb-port-"+safe+".lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	canon := canonicalPortPath(path)
+	f, held, err := lockPort(portLockPath(canon))
 	if err != nil {
-		return nil, fmt.Errorf("orbbind: open port lock %s: %w", lockPath, err)
+		return nil, fmt.Errorf("orbbind: lock port %s: %w", canon, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+	if !held {
 		return nil, fmt.Errorf("port %s is busy — another flash or provision holds its lock", canon)
 	}
 	return &PortLock{f: f, name: canon}, nil
+}
+
+// canonicalPortPath collapses the spellings of one device — most importantly a
+// /dev/serial/by-id/... link and the /dev/ttyACMx it points at — onto a single
+// string, so both claim the same lock.
+func canonicalPortPath(path string) string {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		path = r
+	}
+	// Windows names the same port COM5 and \\.\COM5; they must collide too.
+	if len(path) > 4 && strings.EqualFold(path[:4], `\\.\`) {
+		path = path[4:]
+	}
+	return path
+}
+
+// portLockPath names the lock file backing a port. It canonicalizes first, so it
+// can never hand one device two lock files, which is the failure this whole
+// package exists to prevent. Every character that is not safe in a filename on
+// BOTH platforms becomes a dash: a COM port arrives as \\.\COM5, and backslashes
+// and colons would otherwise be read as path separators or rejected outright by
+// CreateFile.
+func portLockPath(path string) string {
+	canon := canonicalPortPath(path)
+	safe := strings.TrimPrefix(canon, "/dev/")
+	var b strings.Builder
+	for _, r := range safe {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return filepath.Join(os.TempDir(), "orb-port-"+b.String()+".lock")
 }
 
 // Release drops the port lock. Safe to call on a nil receiver.
@@ -50,7 +84,7 @@ func (l *PortLock) Release() {
 	if l == nil || l.f == nil {
 		return
 	}
-	syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	unlockPort(l.f)
 	l.f.Close()
 }
 

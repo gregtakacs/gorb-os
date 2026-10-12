@@ -103,15 +103,19 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
-	var addr, buildDir, browser string
+	var addr, buildDir, browser, repo string
 	var noWindow bool
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
+	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root; empty detects it")
 	flag.StringVar(&buildDir, "build", "", "path to a gorb-os build dir (defaults to <repo>/build)")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.Parse()
 
-	repoDir := detectRepoDir()
+	repoDir := strings.TrimSpace(repo)
+	if repoDir == "" {
+		repoDir = detectRepoDir()
+	}
 	if buildDir == "" && repoDir != "" {
 		buildDir = filepath.Join(repoDir, "build")
 	}
@@ -178,18 +182,58 @@ func bindHub(addr string) (net.Listener, string) {
 	return ln2, "http://" + ln2.Addr().String()
 }
 
-// detectRepoDir asks git for the toplevel of the working directory so the
-// manager finds build/ (and the embedded Theme Editor's source in the repo)
-// without the user pointing at them.
+// detectRepoDir locates the gorb-os clone root so the manager finds build/ and
+// the embedded Theme Editor's source without the user pointing at them.
+//
+// git answers this exactly, and cheaply, wherever git exists. It is not
+// installed on every machine that will run this: a Windows box that only ever
+// flashed through WSL has no git on PATH, and the old fallback of "just use the
+// working directory" then handed the hub tools/orb-manager as the clone root, so
+// /composer/ 404'd and the build plan came back missing. Falling back to a walk
+// up from a real marker is what makes the same binary work there.
 func detectRepoDir() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
 	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		return strings.TrimSpace(string(out))
+		if top := strings.TrimSpace(string(out)); top != "" {
+			return top
+		}
 	}
-	return cwd
+	var starts []string
+	if cwd, err := os.Getwd(); err == nil {
+		starts = append(starts, cwd)
+	}
+	// The binary itself is a second vantage: double-clicking orb-manager.exe out
+	// of the clone is a normal way to start it, and then cwd is wherever Windows
+	// decided to launch it from.
+	if exe, err := os.Executable(); err == nil {
+		starts = append(starts, filepath.Dir(exe))
+	}
+	for _, s := range starts {
+		if dir := repoFrom(s); dir != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+// repoMarkerRel is the file that says "this directory is the gorb-os clone": the
+// Theme Editor's entry point, which the hub serves straight out of the tree and
+// so cannot do without.
+func repoMarkerRel() string { return filepath.Join(composerDirRel, composerEntry) }
+
+// repoFrom walks up from start until it finds the clone marker, returning "" if
+// the whole chain has none.
+func repoFrom(start string) string {
+	marker := repoMarkerRel()
+	for dir := filepath.Clean(start); ; {
+		if fileExists(filepath.Join(dir, marker)) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func orElse(s, alt string) string {

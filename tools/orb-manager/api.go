@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"runtime"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
@@ -56,7 +56,7 @@ func (s *Server) describeBuild(*http.Request) (any, error) {
 	if s.buildDir == "" {
 		return map[string]any{"present": false}, nil
 	}
-	if _, err := os.Stat(path.Join(s.buildDir, "flasher_args.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(s.buildDir, "flasher_args.json")); err != nil {
 		return map[string]any{"present": false, "buildDir": s.buildDir}, nil
 	}
 	plan, err := esprom.PlanFromBuildDir(s.buildDir)
@@ -69,7 +69,10 @@ func (s *Server) describeBuild(*http.Request) (any, error) {
 		if st, err := os.Stat(im.Path); err == nil {
 			size = st.Size()
 		}
-		imgs = append(imgs, map[string]any{"name": path.Base(im.Path), "offset": fmt.Sprintf("0x%X", im.Offset), "bytes": size})
+		// filepath, not path: im.Path is an OS filesystem path, and a Windows build
+		// dir (a UNC path under \\wsl.localhost) is one long backslash string that
+		// path.Base would hand back whole as the image's display name.
+		imgs = append(imgs, map[string]any{"name": filepath.Base(im.Path), "offset": fmt.Sprintf("0x%X", im.Offset), "bytes": size})
 	}
 	return map[string]any{"present": true, "buildDir": s.buildDir, "images": imgs}, nil
 }

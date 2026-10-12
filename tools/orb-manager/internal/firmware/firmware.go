@@ -24,6 +24,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 )
@@ -183,10 +184,8 @@ const (
 // it comes out of the bytes themselves, the version the UI shows is honest even
 // when the user picked the file by hand and the filename says nothing.
 func appDescriptor(app []byte) (project, version, idf, built string) {
-	want := make([]byte, 4)
-	binary.LittleEndian.PutUint32(want, appDescMagic)
-	i := bytes.Index(app, want)
-	if i < 0 || i+appDescFieldEnd+32 > len(app) {
+	i, ok := findAppDesc(app)
+	if !ok {
 		return "", "", "", ""
 	}
 	d := app[i:]
@@ -265,6 +264,126 @@ const DefaultName = "orb-firmware.zip"
 
 //go:embed bundle/orb-firmware.zip
 var embedded []byte
+
+// Release is the two facts about a firmware build that can be honestly compared:
+// when it was compiled and the digest of the ELF it came from. A git describe
+// like "8eb4bf0-dirty" carries no ordering, so it is never the basis for "newer".
+type Release struct {
+	Version    string
+	CompiledAt time.Time // zero when the build stamp was unparsable
+	ElfSHA256  string    // truncated prefix is fine; comparison is by prefix
+}
+
+// Release reads the running-orb descriptor out of an app image's
+// esp_app_desc_t, so a bundle and an orb are described in the same terms.
+func (b *Bundle) Release() Release {
+	app := b.imageNamed("gorb-os.bin")
+	if app == nil {
+		return Release{}
+	}
+	return releaseFromApp(app.Data)
+}
+
+func releaseFromApp(app []byte) Release {
+	_, version, _, built := appDescriptor(app)
+	r := Release{Version: version}
+	// The digest is binary, not text: hex-encode the bytes rather than treating
+	// them as a string, which would mangle anything above 0x7F.
+	if i, ok := findAppDesc(app); ok {
+		r.ElfSHA256 = hex.EncodeToString(app[i+appDescShaOff : i+appDescShaOff+32])
+	}
+	if t, err := time.Parse("Jan 2 2006 15:04:05", strings.TrimSpace(built)); err == nil {
+		r.CompiledAt = t.UTC()
+	}
+	return r
+}
+
+// appDescShaOff is esp_app_desc_t's app_sha256 field, 32 bytes, right after
+// idf_ver — the digest of the ELF, which is the same string the bootloader
+// prints as "ELF file SHA256". It is measured from the descriptor, not from the
+// start of the image: the descriptor is the first thing in the app's first
+// segment, 32 bytes past the image header, and indexing from 0 reads the header
+// and returns four bytes of nonsense.
+const appDescShaOff = 144
+
+// findAppDesc locates the esp_app_desc_t inside an app image by its magic word.
+func findAppDesc(app []byte) (int, bool) {
+	want := make([]byte, 4)
+	binary.LittleEndian.PutUint32(want, appDescMagic)
+	i := bytes.Index(app, want)
+	if i < 0 || i+appDescShaOff+32 > len(app) {
+		return 0, false
+	}
+	return i, true
+}
+
+// Verdict is how the firmware about to be flashed relates to the one running.
+type Verdict string
+
+const (
+	VerdictUnknown     Verdict = "unknown"      // cannot tell: no comparable stamp
+	VerdictSame        Verdict = "same"         // same build; flashing changes nothing
+	VerdictUpgrade     Verdict = "upgrade"      // the selected firmware is newer
+	VerdictDowngrade   Verdict = "downgrade"    // the selected firmware is older
+	VerdictSameVersion Verdict = "same-version" // built at a different time, same describe
+)
+
+// Compare decides what flashing target at the orb that is running. The caller
+// must have established the two are the same kind of device; comparing an orb
+// against a foreign build is a question with no sensible answer.
+//
+// The rules, in order, and why each is where it is:
+//   - Same ELF digest means the same bytes: nothing to do.
+//   - Both build stamps present: the later one wins. This is the only honest
+//     ordering a git describe can offer.
+//   - Equal describes but different stamps: report same-version rather than
+//     upgrade/downgrade, because a rebuild of one commit is not a new release.
+//   - Anything missing: unknown. Guessing "newer" here would push a user into
+//     replacing a working orb on no evidence.
+func Compare(orb, target Release) Verdict {
+	if orb.ElfSHA256 != "" && target.ElfSHA256 != "" {
+		a, b := normSha(orb.ElfSHA256), normSha(target.ElfSHA256)
+		n := min(len(a), len(b))
+		if n >= 8 && a[:n] == b[:n] {
+			return VerdictSame
+		}
+	}
+	if orb.CompiledAt.IsZero() || target.CompiledAt.IsZero() {
+		return VerdictUnknown
+	}
+	switch {
+	case target.CompiledAt.After(orb.CompiledAt):
+		if sameVersion(orb.Version, target.Version) {
+			return VerdictSameVersion
+		}
+		return VerdictUpgrade
+	case orb.CompiledAt.After(target.CompiledAt):
+		if sameVersion(orb.Version, target.Version) {
+			return VerdictSameVersion
+		}
+		return VerdictDowngrade
+	default:
+		return VerdictSame
+	}
+}
+
+func normSha(s string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), "."))
+}
+
+// sameVersion ignores a -dirty suffix: a tree rebuilt with local edits is the
+// same release for the purpose of telling a user what they are about to flash.
+func sameVersion(a, b string) bool {
+	t := func(s string) string { return strings.TrimSuffix(strings.TrimSpace(s), "-dirty") }
+	return t(a) != "" && t(a) == t(b)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // BuiltIn returns the firmware the binary shipped with — what an end user flashes
 // without touching a file dialog, and what "use the built-in firmware" returns to.

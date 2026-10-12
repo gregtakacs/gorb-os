@@ -76,13 +76,55 @@ async function refreshPorts() {
     // here once and the picker blamed the browser instead of saying "no ports".
     const list = Array.isArray(ports) ? ports : [];
     if (!list.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
-    for (const p of list) {
+    for (const entry of list) {
       const o = document.createElement("option");
+      const p = typeof entry === "string" ? entry : entry.port;
       o.value = p;
-      o.textContent = p;
+      // The MAC beside the name is what makes two cables distinguishable; it is
+      // shown only once something has actually identified the port, never
+      // guessed at.
+      o.textContent = typeof entry === "string" || !entry.known ? p
+        : `${p}  —  ${entry.isOrb ? (entry.mac || "orb") + "  ·  " + (entry.version || "version unknown") : entry.reason}`;
       sel.appendChild(o);
     }
+    renderIdentity(list);
   } catch (e) { sel.innerHTML = `<option>(${e.message})</option>`; }
+}
+
+// renderIdentity shows the cached verdict for the selected port. It never probes:
+// the whole point of the cache is that identifying an orb costs a reboot and the
+// user decides when to pay it.
+function renderIdentity(list) {
+  const card = $("#ob-idcard"), state = $("#ob-idstate");
+  const sel = $("#ob-port");
+  const chosen = list.find((e) => e && e.port === sel.value);
+  if (!chosen || !chosen.known) { card.hidden = true; return; }
+  card.hidden = false;
+  const rows = [];
+  if (chosen.isOrb) {
+    rows.push(`<b>Orb ${esc(chosen.mac || "MAC unknown")}</b>`);
+    rows.push(`running ${esc(chosen.project || "gorb-os")} ${esc(chosen.version || "?")}` +
+      (chosen.compileTime ? ` <span class="hint">built ${esc(chosen.compileTime)}</span>` : ""));
+    if (chosen.ip) rows.push(`on the LAN at <code>${esc(chosen.ip)}</code>`);
+    rows.push(`<span class="verdict v-${esc(chosen.verdict || "unknown")}">${verdictText(chosen.verdict)}</span>`);
+  } else {
+    rows.push(`<b>Not an orb</b> — ${esc(chosen.reason || "could not identify")}`);
+  }
+  card.innerHTML = rows.join("<br>");
+  state.textContent = chosen.probedAt ? `identified ${esc(chosen.probedAt)}` : "";
+}
+
+// verdictText words the comparison for someone who did not build either image.
+// An unknown verdict is said plainly: guessing "newer" here would push a user to
+// replace a working orb on no evidence.
+function verdictText(v) {
+  switch (v) {
+    case "upgrade": return "The firmware ready to flash is NEWER than this orb's — safe to load.";
+    case "downgrade": return "The firmware ready to flash is OLDER than this orb's — loading it is a downgrade.";
+    case "same": return "This orb already runs the firmware ready to flash.";
+    case "same-version": return "Same version, different build — loading it replaces nothing meaningful.";
+    default: return "Cannot tell which is newer: one of the builds has no usable timestamp.";
+  }
 }
 
 async function refreshBuild() {
@@ -221,10 +263,52 @@ async function streamFlash(url, payload, log, bar) {
 }
 
 $("#ob-refresh").onclick = refreshPorts;
+$("#ob-port").onchange = () => refreshIdentityFromCache();
+
+// probePort asks the hub to identify the selected port. It reboots the orb, so it
+// only ever happens on this click, and the button is disabled while one runs so a
+// double-click cannot queue a second reset of the same chip.
+async function probePort() {
+  const port = $("#ob-port").value;
+  const state = $("#ob-idstate"), btn = $("#ob-probe"), card = $("#ob-idcard");
+  if (!port || port.startsWith("(")) { state.textContent = "no port selected"; return; }
+  btn.disabled = true;
+  card.hidden = true;
+  state.textContent = "restarting the orb to read its identity — about 10 seconds";
+  try {
+    const res = await fetch("/api/ports/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) {
+      state.textContent = (j.error || ("HTTP " + res.status)) + " — nothing was changed on the orb";
+    } else {
+      state.textContent = j.data.isOrb ? "identified" : (j.data.reason || "not an orb");
+      await refreshPorts();
+    }
+  } catch (e) {
+    state.textContent = e.message + " — nothing was changed on the orb";
+  } finally { btn.disabled = false; }
+}
+
+$("#ob-probe").onclick = probePort;
+
+// refreshIdentityFromCache repaints from the last /api/ports answer without
+// asking the hub for anything, so switching ports in the dropdown is free.
+async function refreshIdentityFromCache() {
+  try {
+    const { ports } = await getJSON("/api/ports");
+    renderIdentity(Array.isArray(ports) ? ports : []);
+  } catch (e) { $("#ob-idstate").textContent = e.message; }
+}
 
 $("#ob-go").onclick = async () => {
   const port = $("#ob-port").value;
-  const mode = $("#ob-mode").value;
+  // Always the full manifest: this is an end-user tool, and which halves to
+  // write is bench knowledge. The server fixes it regardless of what is sent.
+  const mode = "full";
   const wipe = $("#ob-wipe").checked;
   const log = $("#ob-log");
   const bar = $("#ob-bar > div");

@@ -353,6 +353,23 @@ func boolInt(v bool) uint32 {
 	return 0
 }
 
+// CaptureBoot asserts DTR, then forwards every line the boot console emits for
+// secs. Exported for the identity probe, which is the only way to learn what an
+// orb is running: an experiment against live hardware (2026-10-12, two orbs)
+// confirmed the ESP32-S3 ROM answers both MEM_READ and SPI_READ(0x10) with the
+// [1,5] no-stub failure, so flash bytes — and therefore the running app's
+// esp_app_desc_t — cannot be read over the ROM at all. The bootloader prints
+// that same descriptor on the console about 0.7 s after a cold boot, which is
+// what this captures.
+func CaptureBoot(pt *Port, secs int) []string {
+	var out []string
+	observeBootOn(pt, secs, func(line string) bool {
+		out = append(out, line)
+		return false
+	})
+	return out
+}
+
 // EraseRegion ROM-erases a sector-aligned flash range (FLASH_ERASE_REGION,
 // esptool loader <IIH: offset, size, timeout — the trailing word is read as
 // the u16 timeout and 0 lets the ROM use its default). It is how the hub

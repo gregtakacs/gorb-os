@@ -35,12 +35,11 @@
       <select id="ob-port"></select>
       <button id="ob-refresh" class="ghost">Refresh</button>
     </label>
-    <label>Flash contents
-      <select id="ob-mode">
-        <option value="full">Full device (bootloader + partitions + otadata + app + assets)</option>
-        <option value="app">App + otadata only (fast bench reflash)</option>
-      </select>
-    </label>
+    <div class="row" id="ob-identify">
+      <button id="ob-probe" class="ghost" title="Restart this orb and read what it is running">Identify this orb</button>
+      <span id="ob-idstate" class="hint">select a port, then identify it — the orb restarts and its screen blanks for a moment</span>
+    </div>
+    <div id="ob-idcard" class="idcard" hidden></div>
     <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them — check this to send the orb to its provisioning AP.</label>
   </div>
   <div id="ob-build" class="buildlist"></div>

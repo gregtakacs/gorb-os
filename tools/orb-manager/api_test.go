@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
@@ -89,9 +90,9 @@ func TestAPIBuildNamesAreBasenamesNotPaths(t *testing.T) {
 }
 
 func TestAPIPortsEndpointWrapsThePortsArray(t *testing.T) {
-	s := &Server{}
+	s := newHub()
 	rr := httptest.NewRecorder()
-	s.json(s.listPorts)(rr, httptest.NewRequest(http.MethodGet, "/api/ports", nil))
+	s.handlePorts(rr, httptest.NewRequest(http.MethodGet, "/api/ports", nil))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -100,7 +101,12 @@ func TestAPIPortsEndpointWrapsThePortsArray(t *testing.T) {
 	var env struct {
 		OK   bool `json:"ok"`
 		Data struct {
-			Ports []string `json:"ports"`
+			// Entries are objects, not bare strings: each carries the cached
+			// identity so the card can show a MAC without rebooting anything.
+			Ports []struct {
+				Port  string `json:"port"`
+				Known bool   `json:"known"`
+			} `json:"ports"`
 		} `json:"data"`
 		Error string `json:"error"`
 	}
@@ -112,6 +118,11 @@ func TestAPIPortsEndpointWrapsThePortsArray(t *testing.T) {
 	}
 	if env.Data.Ports == nil {
 		t.Error("data.ports is null; the picker needs an array it can index")
+	}
+	for i, e := range env.Data.Ports {
+		if e.Port == "" {
+			t.Errorf("entry %d has no port name; the picker would render an empty option", i)
+		}
 	}
 }
 
@@ -309,7 +320,7 @@ func fakeBundle(t *testing.T) *firmware.Bundle {
 // real hub is ever in: firmware is settled before it binds.
 func bundleServer(t *testing.T) *Server {
 	t.Helper()
-	s := &Server{}
+	s := newHub()
 	s.adoptFirmware(fakeBundle(t))
 	return s
 }
@@ -336,7 +347,7 @@ func uploadBundle(t *testing.T, s *Server, filename string, blob []byte) (int, m
 
 func bundledServer(t *testing.T) *Server {
 	t.Helper()
-	s := &Server{}
+	s := newHub()
 	b, err := firmware.BuiltIn()
 	if err != nil {
 		t.Fatalf("BuiltIn: %v", err)
@@ -466,7 +477,7 @@ func TestFirmwareUploadEmptyFileRefused(t *testing.T) {
 // The firmware the hub boots with is the one the card must show: a hub that came
 // up with nothing compiled in must say so instead of offering a dead button.
 func TestHubWithoutFirmwareSaysSo(t *testing.T) {
-	s := &Server{}
+	s := newHub()
 	if _, _, err := s.planFor("full"); err == nil {
 		t.Error("planFor with no firmware loaded: want error, got nil")
 	}
@@ -600,5 +611,234 @@ func TestHubHasNoBuildDirDependency(t *testing.T) {
 				t.Errorf("%s touches the filesystem via %q — image bytes must come from the bundle", f, banned)
 			}
 		}
+	}
+}
+
+// The identity card reads six new fields off the port entries, and the probe
+// payload. Same failure mode as the port picker's blank dropdown: a handler that
+// renames one of them makes the card silently print "undefined" next to somebody's
+// orb. These are pinned to each other on both sides.
+func TestIdentityFieldsMatchBetweenClientAndHandler(t *testing.T) {
+	src := readAppJS(t)
+
+	// Fields app.js reads from a port entry inside renderIdentity.
+	body := blockContaining(t, src, "function renderIdentity")
+	for _, f := range []string{"known", "isOrb", "mac", "version", "project", "verdict", "reason", "probedAt", "compileTime", "ip"} {
+		if !strings.Contains(body, "chosen."+f) {
+			t.Errorf("renderIdentity no longer reads chosen.%s — if that is deliberate, drop it from this list too", f)
+		}
+	}
+
+	// The hub must actually send them. A cached entry is built with a real probe
+	// result so the populated branch, not just the empty one, is exercised.
+	s := newHub()
+	// Seed a port the host really enumerates: handlePorts renders one entry per
+	// live port, so a fabricated name would be correctly dropped and the pin would
+	// test nothing. On a hub with no serial ports there is nothing to pin here.
+	live, lerr := esprom.ListPorts()
+	if lerr != nil || len(live) == 0 {
+		t.Skip("no serial ports on this host: nothing to render an identity against")
+	}
+	probePort := live[0]
+	s.identities.done(probePort, esprom.OrbInfo{
+		Port: probePort, IsOrb: true, MAC: "44:bd:8d:60:80:88", Project: "gorb-os",
+		Version: "8eb4bf0-dirty", CompileTime: "Oct 12 2026 01:58:41",
+		CompiledAt: "2026-10-12T01:58:41Z", ElfSHA256: "d5fd8bb9d", IDF: "v5.4",
+		IP: "192.168.2.32", Reason: "identified", ProbedAt: "2026-10-12T10:00:00Z",
+	})
+	rec := httptest.NewRecorder()
+	s.handlePorts(rec, httptest.NewRequest(http.MethodGet, "/api/ports", nil))
+	var env struct {
+		OK   bool             `json:"ok"`
+		Data []map[string]any `json:"-"`
+		Raw  json.RawMessage  `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("envelope: %v (%s)", err, rec.Body)
+	}
+	var payload struct {
+		Ports []map[string]any `json:"ports"`
+	}
+	if err := json.Unmarshal(env.Raw, &payload); err != nil {
+		t.Fatalf("data: %v", err)
+	}
+	// Enumerate whatever this host really has and find the seeded one; the count
+	// is the host's business, not the contract's.
+	var entry map[string]any
+	for _, e := range payload.Ports {
+		if e["port"] == probePort {
+			entry = e
+		}
+	}
+	if entry == nil {
+		t.Fatalf("the cached port is absent from %d entries: the hub dropped a port it knew about", len(payload.Ports))
+	}
+	for _, f := range []string{"port", "known", "isOrb", "mac", "project", "version", "compileTime", "compiledAt", "elfSha256", "idf", "ip", "reason", "probedAt", "verdict"} {
+		if _, ok := entry[f]; !ok {
+			t.Errorf("the hub sends no %q but app.js reads chosen.%s", f, f)
+		}
+	}
+	if entry["known"] != true || entry["isOrb"] != true {
+		t.Errorf("known/isOrb = %v/%v, want true/true for a cached orb", entry["known"], entry["isOrb"])
+	}
+	if entry["verdict"] == nil || entry["verdict"] == "" {
+		t.Error("no verdict sent: the card cannot tell the user what flashing would do")
+	}
+}
+
+// blockContaining lifts one function's text out of app.js, so a pin can assert on
+// what that function actually reads rather than what the file mentions somewhere.
+func blockContaining(t *testing.T, src, marker string) string {
+	t.Helper()
+	i := strings.Index(src, marker)
+	if i < 0 {
+		t.Fatalf("app.js has no %q — the identity card was renamed or removed and its pin is now meaningless", marker)
+	}
+	end := strings.Index(src[i+1:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("unterminated block at %q", marker)
+	}
+	return src[i : i+1+end]
+}
+
+// Every verdict the hub can send needs wording. An unlisted verdict renders the
+// card blank, which is worse than saying "cannot tell".
+func TestEveryVerdictHasClientWording(t *testing.T) {
+	src := readAppJS(t)
+	body := blockContaining(t, src, "function verdictText")
+	for _, v := range []string{"upgrade", "downgrade", "same", "same-version"} {
+		if !strings.Contains(body, `case "`+v+`"`) {
+			t.Errorf("verdictText has no wording for %q; the hub can send it", v)
+		}
+	}
+	if !strings.Contains(body, "default:") {
+		t.Error("verdictText needs a default branch: an unknown verdict must say so, not render blank")
+	}
+	// A downgrade must not be able to look like an upgrade.
+	if !strings.Contains(body, "downgrade") || !strings.Contains(strings.ToLower(body), "older") {
+		t.Error("the downgrade wording must say the loaded firmware is OLDER, in those terms")
+	}
+}
+
+// A probe is a reboot. Two things follow, and both are pinned: nothing may call
+// it implicitly, and the answer must be invalidated by a flash so a re-probe
+// reports the new firmware rather than repeating the old one.
+func TestProbeIsNeverImplicitAndIsInvalidatedByFlash(t *testing.T) {
+	src := readAppJS(t)
+	if n := strings.Count(src, `"/api/ports/probe"`); n != 1 {
+		t.Errorf("app.js posts to /api/ports/probe %d times; it must be reached only from the Identify click", n)
+	}
+	if strings.Contains(src, "probePort()") && !strings.Contains(src, `$("#ob-probe").onclick = probePort`) {
+		t.Error("probePort must be wired only to the Identify button")
+	}
+	if !strings.Contains(src, "btn.disabled = true") {
+		t.Error("the Identify button must disable while a probe runs; a double click would reset the chip twice")
+	}
+	if !strings.Contains(src, "about 10 seconds") {
+		t.Error("the card must warn the user the orb restarts and how long it takes")
+	}
+
+	flash := readFile(t, "flash.go")
+	if !strings.Contains(flash, "s.identities.forget(req.Port)") {
+		t.Error("a flash must invalidate the cached identity, or the card keeps reporting the pre-flash version")
+	}
+}
+
+// The probe must never touch a port the host cannot attribute to the Espressif
+// peripheral: EnterDownloadMode toggles DTR/RTS, and doing that to an Arduino on
+// the same bench resets a device the user never asked about.
+func TestProbeRefusesPortsItCannotAttribute(t *testing.T) {
+	// A path no device backs: classifyPort cannot confirm the vendor, so the
+	// probe must refuse rather than open it and start pulsing control lines.
+	info, err := esprom.ProbeOrb("/dev/serial/by-id/definitely-not-a-real-device")
+	if err != nil {
+		t.Fatalf("ProbeOrb must report a refusal, not fail: %v", err)
+	}
+	if info.IsOrb {
+		t.Error("a nonexistent device reported as an orb")
+	}
+	if info.Reason == "" {
+		t.Error("refusal must say why, or the UI has nothing to show")
+	}
+}
+
+// The comparison itself. A git describe has no order, so only the build timestamp
+// and the ELF digest may decide what a user is about to do to their orb.
+func TestCompareVersions(t *testing.T) {
+	base := time.Date(2026, 10, 12, 1, 58, 41, 0, time.UTC)
+	older := base.Add(-24 * time.Hour)
+	newer := base.Add(24 * time.Hour)
+	orb := firmware.Release{Version: "8eb4bf0", CompiledAt: base, ElfSHA256: "d5fd8bb9dc27eb12"}
+	for _, tc := range []struct {
+		name   string
+		target firmware.Release
+		want   firmware.Verdict
+	}{
+		{"identical bytes", firmware.Release{Version: "8eb4bf0", CompiledAt: base, ElfSHA256: "d5fd8bb9dc27ffff"}, firmware.VerdictSame},
+		{"target newer", firmware.Release{Version: "fc74aa9", CompiledAt: newer}, firmware.VerdictUpgrade},
+		{"target older", firmware.Release{Version: "1111111", CompiledAt: older}, firmware.VerdictDowngrade},
+		{"target undated", firmware.Release{Version: "fc74aa9"}, firmware.VerdictUnknown},
+		{"orb undated", firmware.Release{Version: "fc74aa9", CompiledAt: newer}, firmware.VerdictUnknown},
+		{"same describe, rebuilt", firmware.Release{Version: "8eb4bf0", CompiledAt: newer}, firmware.VerdictSameVersion},
+		{"dirty rebuild of same commit", firmware.Release{Version: "8eb4bf0-dirty", CompiledAt: newer}, firmware.VerdictSameVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probeOrb := orb
+			if tc.name == "orb undated" {
+				probeOrb = firmware.Release{Version: "8eb4bf0", ElfSHA256: ""}
+				probeOrb.CompiledAt = time.Time{}
+			}
+			if got := firmware.Compare(probeOrb, tc.target); got != tc.want {
+				t.Errorf("Compare(orb, %s) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+	// An undated orb against an undated target must be unknown, never "same":
+	// claiming equality with no evidence would tell a user to leave a stale orb.
+	if got := firmware.Compare(firmware.Release{Version: "a"}, firmware.Release{Version: "b"}); got != firmware.VerdictUnknown {
+		t.Errorf("Compare of two undated builds = %q, want unknown", got)
+	}
+}
+
+// The probe resets the chip, so it must refuse while a flash holds the wire. The
+// guard has to read the flag, not the mutex: a flash holds s.mu only long enough
+// to set it, so a TryLock-based check passes straight through a live flash and
+// would reset a chip mid-write.
+func TestProbeRefusesWhileFlashing(t *testing.T) {
+	s := newHub()
+	s.mu.Lock()
+	s.flashing = true
+	s.mu.Unlock() // held for the flag update only, exactly as handleFlash does it
+
+	rec := httptest.NewRecorder()
+	s.handleProbe(rec, httptest.NewRequest(http.MethodPost, "/api/ports/probe",
+		strings.NewReader(`{"port":"/dev/ttyACM0"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 while a flash is running", rec.Code)
+	}
+	var env struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &env)
+	if env.OK || !strings.Contains(env.Error, "flash") {
+		t.Errorf("body = %s, want a refusal naming the running flash", rec.Body)
+	}
+
+	// And it must not have claimed the port while refusing.
+	s.mu.Lock()
+	s.flashing = false
+	s.mu.Unlock()
+}
+
+// A probe takes the same per-port lock a flash does, so two hubs (or a hub and
+// orbprobe) cannot reset and write the same wire at once.
+func TestProbeTakesThePortLock(t *testing.T) {
+	src := readFile(t, "identity.go")
+	if !strings.Contains(src, "orbbind.LockPort") {
+		t.Error("handleProbe must lock the port: without it a concurrent flash and probe share the wire")
+	}
+	if !strings.Contains(src, "s.flashRunning()") {
+		t.Error(`handleProbe must test the flash flag via flashRunning(); probing the mutex is not the same check`)
 	}
 }

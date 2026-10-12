@@ -60,6 +60,10 @@ type Server struct {
 	fmu sync.RWMutex
 	fw  *firmware.Bundle
 
+	// identities caches what each port turned out to be, because a probe reboots
+	// the orb and the answer must not be paid for twice.
+	identities *identityCache
+
 	// lastBoot holds the verdict the flash session read off the boot console
 	// while it held the port across its own HardReset. /api/watch consumes it:
 	// it is the only trustworthy record of whether the orb came up on its
@@ -122,7 +126,7 @@ func main() {
 		repoDir = detectRepoDir()
 	}
 
-	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir}
+	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir, identities: newIdentityCache()}
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -270,7 +274,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
-	mux.HandleFunc("/api/ports", s.json(s.listPorts))
+	mux.HandleFunc("/api/ports", s.handlePorts)       // cached identity rides along, never a probe
+	mux.HandleFunc("/api/ports/probe", s.handleProbe) // explicit, one port, reboots it
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
 	// Firmware the user picks, uploaded rather than named: the hub never walks
 	// the filesystem looking for a build, so there is no traversal to get wrong.

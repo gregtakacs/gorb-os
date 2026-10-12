@@ -125,12 +125,60 @@ browser and the hub still works as a plain web app.
 
 The three hub cards:
 
-- **Onboard** — pick a serial port and a flash mode, watch the streaming log and
-  progress bar. `full` writes the whole `flasher_args.json` manifest; `app`
-  writes only the app plus otadata, leaving bootloader/partitions/assets. After
-  either mode, a successful flash runs the same post-flash onboarding probe; the
-  boot verdict the flash captured picks the branch (AP card vs. connected panel),
-  not the flash mode.
+- **Onboard** — pick a serial port, click **Identify this orb**, then **Flash
+  orb**. The hub always writes the whole `flasher_args.json` manifest: which halves
+  to write is bench knowledge, and the app-only reflash lives on in
+  `orbflash -mode app`. A successful flash runs the post-flash onboarding probe; the
+  boot verdict the flash captured picks the branch (AP card vs. connected panel).
+
+### Identifying an orb
+
+**Identify this orb** answers the two questions that make two cables
+distinguishable: which orb is this, and what is it running.
+
+```
+/dev/ttyACM1: gorb-os 8eb4bf0-dirty
+  mac        44:bd:8d:78:26:18
+  built      Oct 12 2026 01:58:41
+  elf sha256 d5fd8bb9d
+  idf        v5.4
+  lan        192.168.2.34
+```
+
+Two design facts worth knowing, both measured against live hardware rather than
+assumed:
+
+- **The ROM will not give up the version.** `MEM_READ` and `SPI_READ` (op
+  `0x10`) both answer `[1,5]` on an ESP32-S3 without a RAM stub, so flash bytes —
+  and therefore the running app's `esp_app_desc_t` — cannot be read over the
+  ROM. The 2nd-stage bootloader prints that same descriptor on the console
+  roughly 0.7 s after a cold boot, which is where the answer comes from.
+- **So a probe costs a reboot.** The orb restarts, its screen blanks for a second
+  or two, and it re-joins Wi-Fi. Nothing here is automatic: the hub probes only on
+  that click, one port at a time, caches the answer for the session, and takes the
+  same per-port lock a flash does. The identity is invalidated by a flash of that
+  port, so a re-probe reports the new firmware rather than repeating the old.
+
+The MAC beside an *unprobed* port is free, by contrast: it comes from the USB
+serial-number descriptor via sysfs (Linux) or SetupAPI (Windows), which for this
+peripheral is the chip MAC. No port is opened and no control line is touched.
+
+Only devices the host can attribute to the Espressif USB-JTAG peripheral
+(`303a:1001`) may be probed. `EnterDownloadMode` toggles DTR/RTS, which would
+reset an Arduino or an FTDI breakout sharing the bench, so a port whose device the
+OS cannot name is refused with an explanation rather than reset on a guess.
+
+### Newer or older
+
+The card compares the firmware ready to flash against what the orb runs and says
+`upgrade`, `downgrade`, `same`, or `same-version`, colouring a downgrade so it
+cannot be mistaken for an upgrade. A git describe like `8eb4bf0-dirty` carries no
+ordering, so the decision uses the two facts that do: the **build timestamp** for
+order and the **ELF digest** for identity. Equal describes with different
+timestamps report `same-version` — a rebuild is not a release — and anything
+missing a usable stamp reports that it cannot tell, rather than pushing a user to
+replace a working orb on no evidence. Uploading a different bundle re-runs the
+comparison against every cached identity without probing again.
 - **Theme Editor** — the watch-composer at `/composer/`. With a gorb-os clone
   reachable it is served from `tools/watch-composer`, so edits to the composer
   appear on reload with no rebuild; with no clone, as on every end user's machine,
@@ -166,7 +214,8 @@ headless; a mismatch aborts before erasing.
 | Route | Purpose |
 |---|---|
 | `GET  /api/status` | platform, hub stamp, firmware version and source |
-| `GET  /api/ports`  | serial ports enumerated from the host, as `{"ports":[...]}` |
+| `GET  /api/ports`  | ports as `{"ports":[{port,known,hint,...}]}`, with each cached identity inlined |
+| `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit |
 | `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
@@ -254,6 +303,7 @@ window.go            app-window mode: Chromium discovery, --app launch, window-l
 window_devtools.go   DevTools page-target watch: shutdown follows the window through Chrome's single-instance hand-off
 api.go               the /api/* JSON handlers (status, ports)
 firmware.go          the active firmware bundle, its upload/reset handlers, and the Onboard panel payload
+identity.go          port identity: the probe cache, /api/ports and /api/ports/probe, the newer/older verdict
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
@@ -262,8 +312,10 @@ composer.go          serves the repo's watch-composer at /composer/
 cmd/orbflash/        headless face of the same flasher
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
+                     identity.go: ProbeOrb and the boot-log parser; usbclass_*.go: per-OS device attribution
 internal/firmware/   the bundle: pack, load, verify, and the embedded orb-firmware.zip it ships with
 cmd/orbpack/         release-time packer: build dir + manifest -> the committed bundle
+cmd/orbprobe/        headless "what is on this cable", same probe the Identify button runs
 internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
                      unshared CreateFile handle on Windows
 internal/orbnet/     single-orb status client (no sweep, no ARP)

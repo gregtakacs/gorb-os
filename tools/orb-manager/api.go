@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
-
-	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 )
 
 // jsonHandler returns (payload, error); s.json wraps it into a uniform
@@ -35,19 +33,15 @@ func (s *Server) hello(*http.Request) (any, error) {
 		"firmware": fwVersion, "firmwareSource": fwSource}, nil
 }
 
-// listPorts feeds the Onboard port picker. The payload is an object, not the
-// bare slice esprom returns: app.js reads `const { ports } = ...`, so a bare
-// array left ports undefined and the picker showed an error instead of the
-// cable the operator plugged in. The slice is never nil for the same reason —
-// the UI takes .length on it directly, and null has no length either.
-func (s *Server) listPorts(*http.Request) (any, error) {
-	ports, err := esprom.ListPorts()
-	if err != nil {
-		return nil, err
-	}
-	return portsPayload(ports), nil
-}
-
+// portsPayload is the Onboard port list's envelope. It stays an object with a
+// named ports field rather than a bare array because app.js destructures
+// { ports }: when list discovery shed the wrapper the picker read undefined,
+// took .length on it, and blamed the browser for a payload-shape bug. The slice
+// is never nil for the same reason — null has no length.
+//
+// TestPortPickerContractMatchesTheHandler pins it against app.js. handlePorts
+// sends richer entries through the same wrapper, so that invariant is one rule
+// with one place of truth, not two that can disagree.
 func portsPayload(ports []string) map[string]any {
 	if ports == nil {
 		ports = []string{}

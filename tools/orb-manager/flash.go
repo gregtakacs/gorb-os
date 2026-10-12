@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -17,7 +18,9 @@ import (
 // per-port lock, so a concurrent operation can't share the wire mid-flash.
 type flashRequest struct {
 	Port string `json:"port"`
-	Mode string `json:"mode"` // "full" (build manifest) | "app" (app-only)
+	// Mode is accepted but fixed: an end user always writes the whole manifest.
+	// The app-only reflash is bench behaviour and lives on in orbflash -mode app.
+	Mode string `json:"mode"`
 	Wipe bool   `json:"wipe"` // also ROM-erase the NVS partitions (factory reset)
 }
 
@@ -153,9 +156,22 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if flashedMAC != "" {
+		// A flash changes what the orb runs, so the identity cached for this
+		// port is now stale: a re-probe must re-read it rather than repeat the
+		// version from before the flash.
+		s.identities.forget(req.Port)
 		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootIP, bootNetworks)
 	}
 	send("done", "flash complete — orb rebooting into the new firmware")
+}
+
+// flashRunning reports whether a flash holds the wire right now. Callers that must
+// not collide with one — an identity probe resets the chip — ask this rather than
+// touching the mutex, which is held only for the flag update.
+func (s *Server) flashRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flashing
 }
 
 // planFor resolves the flash manifest for a mode out of the selected firmware
@@ -172,13 +188,11 @@ func (s *Server) planFor(mode string) (*firmware.Bundle, esprom.FlashPlan, error
 	if b == nil {
 		return nil, esprom.FlashPlan{}, fmt.Errorf("no firmware loaded — restart the hub, or pick a firmware file on the Onboard card")
 	}
-	switch mode {
-	case "app":
-		plan, err := b.AppPlan()
-		return b, plan, err
-	case "full", "":
-		return b, b.Plan(), nil
-	default:
-		return nil, esprom.FlashPlan{}, fmt.Errorf("unknown flash mode %q", mode)
+	// Always the full manifest. A partial write is the thing that leaves an orb
+	// bricked-looking, and an end user has no way to know which half they asked
+	// for; the bench keeps that rope on purpose, in orbflash -mode app.
+	if mode != "" && mode != "full" {
+		log.Printf("orb-manager: ignoring flash mode %q — the hub always writes the full manifest", mode)
 	}
+	return b, b.Plan(), nil
 }

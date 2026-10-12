@@ -36,3 +36,14 @@ button.ghost{background:none}
 .kv dd{margin:0;font-family:ui-monospace,monospace}
 .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .err{color:var(--danger)} .ok{color:var(--acc)}
+
+/* Identity card: the answer to "which orb is this, and what is it running".
+   The verdict colouring matters — a downgrade must not look like an upgrade. */
+.idcard{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0;
+  font-size:13px;line-height:1.6;background:#151311}
+.idcard code{font-family:ui-monospace,monospace;color:var(--fg)}
+.verdict{display:inline-block;margin-top:4px;padding:3px 8px;border-radius:5px;font-size:12px}
+.v-upgrade{border:1px solid #6fbf73;color:#9adc9e}
+.v-downgrade{border:1px solid #c9525a;color:#f2a0a6}
+.v-same,.v-same-version{border:1px solid #7b8ba3;color:#a9bcd4}
+.v-unknown{border:1px solid var(--line);color:var(--mut)}

@@ -24,7 +24,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt run flash clean
+.PHONY: all build manager orbflash test vet fmt run desktop flash clean
 
 all: test build
 
@@ -51,9 +51,15 @@ vet:
 fmt:
 	$(GO) fmt ./...
 
-## run: start the hub on 127.0.0.1:3779 pointing at this clone's build dir
+## run: start the hub on 127.0.0.1:3779 pointing at this clone's build dir.
+## Opens the app window by default; pass extra flags with ARGS, e.g.
+##   make run ARGS=--no-window        (headless: print the URL, launch nothing)
+##   make run ARGS="--browser=/usr/bin/firefox"   (an explicit Chromium-family path)
 run: manager
-	$(BIN_DIR)/orb-manager -addr 127.0.0.1:3779 -build $(BUILD_DIR)
+	$(BIN_DIR)/orb-manager -addr 127.0.0.1:3779 -build $(BUILD_DIR) $(ARGS)
+
+## desktop: alias for run, spelled for the app-window use case.
+desktop: run
 
 ## flash: headless full flash of an explicit port from this clone's build
 ##   make flash PORT=/dev/ttyACM0   (or PORT=/dev/serial/by-id/...)

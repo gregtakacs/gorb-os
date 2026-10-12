@@ -2,7 +2,8 @@
 
 A single static Go binary that onboards, themes, and manages gorb-os orbs on
 the LAN. It drives the flasher itself — no esptool, no Python, no stub loader.
-The serial library is compiled in. The UI is embedded. Users install nothing.
+The serial library is compiled in. The UI is embedded. Users install nothing,
+and the hub opens in its own window rather than a browser tab.
 
 It lives at `tools/orb-manager/` inside the gorb-os clone and drives the same
 native flasher as the bash/Python bench tools (`tools/serflash.sh`), but it
@@ -55,12 +56,41 @@ The web tool does not impose it; you act on the port you picked.
 
 ```
 make build                       # -> bin/orb-manager, bin/orbflash
-./bin/orb-manager                # opens http://127.0.0.1:3779 in the browser
+./bin/orb-manager                # opens the hub in its own app window
 ```
 
 `orb-manager` auto-detects the clone root (`git rev-parse --show-toplevel`) so it
 finds `build/` and the embedded Theme Editor's source on its own. Point it
 elsewhere with `--build <dir>` or bind another address with `--addr host:port`.
+
+By default the hub opens in a **chromeless Chromium window** (`window.go`) — no
+tabs, no address bar, taskbar entry named "Orb Manager" — instead of a browser
+tab. It finds an installed Chrome, Chromium, Edge, or Brave and launches it with
+`--app`; under WSL it also accepts the Windows-side `chrome.exe` and converts the
+profile path through the Windows shell, so the window lands on your desktop. The
+browser is never bundled: gorb-os ships a static binary you install nothing to
+run, and it stays `CGO_ENABLED=0` because Chromium does the rendering. Closing
+the window shuts the hub down, so no listener is left behind. That shutdown
+follows the real window, not the process we launched: Chrome is single-instance
+per profile and hands the URL to an already-running browser — the usual outcome
+for `chrome.exe` under WSL — so the hub watches its own page in that browser's
+DevTools target list and exits when the page goes. When no window can be
+watched at all, the hub keeps serving rather than shutting down on a guess, and
+says how to stop it.
+
+Three switches cover the exceptions:
+
+| Flag | Effect |
+|---|---|
+| `--no-window` | serve only and print the URL — the bench, SSH, and CI path |
+| `--browser=browser` | old behaviour: a normal tab in the default browser |
+| `--browser=/path/to/chrome` | name the binary instead of autodetecting |
+
+Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
+dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
+hosted in the same engine and `/composer/` opens inside that window. No Chromium
+on the host, or an unreadable profile directory, falls back to the default
+browser and the hub still works as a plain web app.
 
 The three hub cards:
 
@@ -168,7 +198,9 @@ cannot become an open proxy or a path-traversal foothold.
 ## Layout
 
 ```
-main.go              flag parsing, embeds web/, routes, run log
+main.go              flag parsing, embeds web/, routes, app-window wiring, run log
+window.go            app-window mode: Chromium discovery, --app launch, window-lifetime shutdown
+window_devtools.go   DevTools page-target watch: shutdown follows the window through Chrome's single-instance hand-off
 api.go               the /api/* JSON handlers (status, ports, build)
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
@@ -190,12 +222,15 @@ make test      # go test ./... — SLIP framing, block checksum, SHA256 recalc,
                # MAC decode, FLASH_BEGIN 5-word framing
 make vet       # go vet ./...
 make fmt       # go fmt ./...
-make run       # rebuild + serve on 127.0.0.1:3779 from this clone's build
+make run       # rebuild + open the app window against 127.0.0.1:3779
+               # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
 ```
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
-`go.bug.st/serial`, a pure-Go serial library vendored into the binary.
+`go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window
+mode adds none: it drives a Chromium the host already has, so the binary stays
+`CGO_ENABLED=0` and cross-compilable.
 
 ## Caveats
 

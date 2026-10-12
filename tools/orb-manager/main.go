@@ -4,15 +4,18 @@
 // over USB (the provisioning lease, or the boot banner the flash captures) or
 // typed in by the operator — the hub never sweeps a subnet or sniffs ARP. End
 // users install nothing: the UI is embedded and the serial library is compiled
-// in.
+// in. By default it opens in a chromeless Chromium app window (see window.go);
+// --no-window serves the same UI as a plain web app instead.
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -100,9 +103,12 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
-	var addr, buildDir string
+	var addr, buildDir, browser string
+	var noWindow bool
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&buildDir, "build", "", "path to a gorb-os build dir (defaults to <repo>/build)")
+	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
+	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.Parse()
 
 	repoDir := detectRepoDir()
@@ -115,12 +121,61 @@ func main() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 
-	url := "http://" + addr
+	// Bind before opening anything, so the window is handed the address that is
+	// really listening — the default port can be taken by a stale hub, and a
+	// window pointed at a port nobody holds is just an error page.
+	ln, url := bindHub(addr)
 	log.Printf("orb-manager %s on %s (build dir: %s)", version, url, orElse(buildDir, "not detected"))
-	go openBrowser(url)
-	if err := http.ListenAndServe(addr, s.log(mux)); err != nil {
+
+	srv := &http.Server{Handler: s.log(mux)}
+	browser = strings.TrimSpace(browser)
+	switch {
+	case noWindow:
+		log.Printf("orb-manager: headless — open %s in a browser", url)
+	case strings.EqualFold(browser, browserSentinel):
+		// --browser=browser: the pre-app-window behaviour, a plain tab in the
+		// default browser, kept for the devtools and profile it brings along.
+		go openBrowser(url)
+	default:
+		done, err := launchAppWindow(url, browser)
+		if err != nil {
+			// No Chromium, an unreadable profile dir, or an exec failure: the
+			// hub is still a web app, so degrade to the old default-browser
+			// path rather than refusing to serve.
+			log.Printf("orb-manager: app window unavailable (%v); falling back to the default browser", err)
+			go openBrowser(url)
+		} else {
+			go func() {
+				// launchAppWindow already said why the window is gone; all
+				// that is left is releasing the listener it was guarding.
+				<-done
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(ctx)
+			}()
+		}
+	}
+
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen: %v", err)
 	}
+}
+
+// bindHub listens on addr, falling back to an ephemeral port when it is taken so
+// a second hub instance opens its own window instead of dying on listen. It
+// returns the listener and the URL to hand a browser.
+func bindHub(addr string) (net.Listener, string) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln, "http://" + ln.Addr().String()
+	}
+	host, _, _ := strings.Cut(addr, ":")
+	ln2, err2 := net.Listen("tcp", host+":0")
+	if err2 != nil {
+		log.Fatalf("listen %s: %v", addr, err)
+	}
+	log.Printf("orb-manager: %s is busy (%v); using %s instead", addr, err, ln2.Addr())
+	return ln2, "http://" + ln2.Addr().String()
 }
 
 // detectRepoDir asks git for the toplevel of the working directory so the

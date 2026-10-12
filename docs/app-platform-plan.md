@@ -1259,3 +1259,84 @@ proven on hardware, not asserted). Record the run here as §13.6 and the
 PWA for a confirm, that is a new owner question, not an implementation
 choice.
 
+### 13.6 The sign-off run, 2026-10-12, orb-A
+
+Image: the tree these three commits record, stamped `c0a224b-dirty`, audited by
+`tools/serflash.sh` (`AUDIT OK: the image's own stamp matches the working tree`)
+before the write at `0x20000`. Card: `SD16G SDHC 29.4GB @20000kHz`, four containers:
+`skeleton`, `diver`, `perpetual-calendar`, `neon`.
+
+**The owner's walk, MENU → Clock → the card sub-menu → a theme.**
+`menu: cursor MENU row 3/4: Clock`, press, then
+`menu: cursor Clock row 1/2: From the card  (1 of 4: diver)`. The items are absent from
+that page while the group is shut, and the header answers with what is on the wall. Press:
+`menu: group row 1 open: From the card`, and the page becomes rows `2/6` to `5/6`, each
+label indented, the live one carrying `(on the dial)`. Press again:
+`menu: group row 1 closed: From the card`. Both toggles are the shell's, and the app never
+heard about either.
+
+**The cursor clamps inside the group.** Five downward detents from the header stop at
+`5/6:   neon`, never at the back row. Eight upward detents stop at `2/6:   Skeleton`, never
+onto the header. A hold gives `menu: hold closes group row 1: From the card`, and the hold
+after it gives `menu: menu idle` plus `input: switch clock`: C8's escape hatch intact for
+every screen with nothing to collapse.
+
+**D11, the pick is the confirmation.** A press on `  Skeleton` and nothing else:
+`orb_theme: installed "skeleton" into slot-B in 8850 ms — the dial reboots to draw it`,
+`jobs: rebooting in 750 ms: theme install`. The board returned on the new dial:
+`orb_theme: theme "skeleton" from slot-B (chosen), 1978973 B of pixels`,
+`art_bank: bank "assets" @0x830000, 1978973 B mapped`,
+`clock: art bank mapped: 1978973 B (theme needs 1978973 B) from slot-B`. No row asked
+"reboot now" or "keep this dial" at any point, before or after.
+
+**D13, the default is a choice rather than a file.** `POST /api/v1/sd/default` gives
+`jobs: rebooting in 750 ms: theme: the factory default`, and the boot after it says
+`orb_theme: slot-B holds "skeleton" but the dial is on the factory default` beside
+`art_bank: bank "assets" @0x420000, 1173563 B mapped … from baked-in`. `/api/v1/sd` answers
+`live:"default"`, `source:"baked-in"`. The card stayed shut for that trip.
+
+**A refused install says why and changes nothing.** `POST /api/v1/sd/install?name=neon`
+carries intact checksums and one complication record with no size. That install left the dial
+where it was and answered on its own row: `/api/v1/sd` returned `try_slug:"neon"` with
+`try_why:"comp is shown but has no size"`, while `live`, `source` and `active` kept their
+previous values and no reboot was asked for. An unknown name logs
+`orb_theme: install: no such theme on the card`. A missing or traversal `name` is a 400
+before the worker hears about it: `name is missing or not a theme name`. The page confirms
+first, on both paths: `if(!confirm('Install '+n+' and …` and
+`if(!confirm('Go back to the facto…`.
+
+**The interrupted-install invariant, forced by hand.** `erase_region 0x820000 0x1000` with
+`live:"card"` (B's header gone): boot answers
+`orb_theme: no installed theme — drawing the baked-in bank` and
+`art_bank … @0x420000 … from baked-in`, and the watch still tells the time. No damage record
+is set, because an absent slot is not a damaged one. Erasing the pixels beneath a live header
+(`erase_region 0x830000 0x40000`) does set one: `source:"baked-in"`, `damage_slug:"diver"`,
+`damage_why:"the installed copy did not verify — re-install it"`, `live` still `"card"`. One
+press of Install repaired it: `source:"slot-B"`, `active:"skeleton"`, both reason fields empty.
+
+**Slot A, measured rather than asserted.** After two installs, one headerless boot, one
+corrupt-pixel boot and five reboots, the 1,173,563 B read from `0x420000` hashes to
+`f6e21a315489851461d04930752b50151a826d0a0f20e13f82dc80d389f7d0d6`, byte-identical to
+`assets/clock_assets.bin`.
+
+**Endpoints.** `POST /api/v1/sd/load` and `POST /api/v1/sd/unstage` → 404 `Nothing matches
+the given URI`. `POST /api/v1/sd/install?name=X` → 200 `{"state":"installing",…,"reboot":"automatic"}`.
+`POST /api/v1/sd/default` → 200 `{"state":"default","live":"default","reboot":"automatic"}`.
+
+**Host side.** `idf.py build` clean. `host_sd_test`, `host_tz_test`, `host_menu_test` and
+`host_app_registry_test` green, each with its `--mutations` battery reporting zero survivors,
+and `carousel_bench.py` reporting all assertions held.
+
+**Two notes for the next person at the bench.** `/api/v1/screen?turn=N` moves exactly one row
+per request, and its sign comes from `knob_row_step`, so a scripted walk sends one request per
+detent and turns negative to go down the list. The first attempt here pressed `IT_AP` three
+times believing it had reached the clock page, and the `menu: cursor …` line is what named the
+mistake. The three commits land as menu, theme, net: checked out alone, the theme commit does
+not link, because it deletes `orb_theme_stage_load()`, `orb_theme_unstage()` and
+`orb_theme_pending_slug()` while the previous commit's page and picker still call them. The API
+deletion and its consumers are one atomic change. Squash the three if a buildable `git bisect`
+matters more than the three rulings read separately.
+
+§0.3: D11, D12 and D13 signed off against this run.
+
+

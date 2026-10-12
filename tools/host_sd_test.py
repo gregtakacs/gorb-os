@@ -24,6 +24,16 @@ Why these checks exist on a bench that has no card in the socket and no radio:
    "loading" — invisible here, glaring there. (Same disease tools/host_tz_test.py
    already guards on the other two pages.)
 
+4. THE GEOMETRY ARENA. geom_validate_blob() mallocs the one arena every table of
+   a theme lives in, and on the adopt path must NEVER free it: clock_view.c caches
+   raw pointers into those tables, so a free after the publish is a use-after-free
+   the owner reads as a scrambled dial, not an error. The other two exits (parse
+   refusal, adopt=false pre-flight) must give their bytes back. Nothing else
+   off-target compiles that function, so the harness lifts it with an accounting
+   allocator and runs both paths; a lint over its own text pins where the two
+   frees are allowed to sit. The vectors and the lint each see what the other is
+   blind to — see THE GEOMETRY ARENA block below.
+
 The lifts fail LOUDLY if the code they extract has moved: a lift that silently came
 back empty would keep reporting green while testing nothing.
 
@@ -631,6 +641,210 @@ f_name_ok  = f_name_ok.replace("strlcpy", "host_strlcpy").replace("strlcat", "ho
 f_theme_pt = f_theme_pt.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 pure_theme = pure_theme.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 
+# ---------------------------------------------------------------------------
+# THE GEOMETRY ARENA — the one function in the theme layer whose mistake draws
+# garbage on the glass instead of refusing a file. geom_validate_blob() mallocs
+# the single arena every table of a theme lives in; on the adopt path that arena
+# must NEVER be freed, because clock_view.c caches raw pointers into those
+# tables — a free after the publish is a use-after-free the owner reads as a
+# scrambled dial, and nothing logs it. The other two exits (parse refusal, the
+# adopt=false pre-flight) must give their bytes back. Nothing else off-target
+# compiles this function: host_tz_test lifts only the pure D13 predicates, so
+# before this lift a text mutation of this body changed bytes NO host binary
+# ever compiled — every battery green, the dial drawing from freed heap. The
+# counters below are what turn "freed / not freed" into a verdict.
+_arena_m = re.search(r"static const char \*geom_validate_blob\(const uint32_t \*blob"
+                     r".*?\n\}", th_src, re.S)
+if not _arena_m:
+    sys.exit("could not find geom_validate_blob in orb_theme.c — the arena rows "
+             "no longer know what to copy (renamed? reshaped?)")
+arena_fn = (_arena_m.group(0)
+            .replace("free(arena)", "host_arena_free(arena)")
+            .replace("strlcpy(", "host_strlcpy("))
+# The arena is sized from the HEADER's counts while the parser reads the BLOB's,
+# so the vectors aim them at each other by lifting the blob's own leading count
+# words — the same words geom_counts() reads — rather than transcribing numbers
+# by eye: a count guessed here would size the arena against a layout nobody
+# checks, and every row below would still print ok.
+_N = [str(int(v)) for v in WORDS2[:7]]
+_M = [str(int(v)) for v in WORDS[:4]]
+if any(not v.isdigit() for v in _N + _M):
+    sys.exit("non-numeric count words lifted off the writer's own blobs — the "
+             "leading-counts layout moved and the arena vectors aim at nothing")
+
+ARENA_DECLS = r'''
+/* ---- the arena: orb_theme.c's own module state and allocator, stood up here
+ * because the function under test is file-static and nothing else off-target
+ * compiles it. The counters ARE the test. On the device the adopt arena is
+ * deliberately never freed; "adopt: freed nothing" is the green line, and a
+ * red one there means the dial draws from reclaimed heap. */
+#include <stdlib.h>
+static clk_theme_t     s_theme;
+static clk_bg_rect_t  *s_rects;
+static uint16_t       *s_first, *s_delays;
+static uint32_t       *s_bgframes;
+static clk_comp_t     *s_comps;
+static clk_aux_t      *s_aux;
+static clk_sprite_t   *s_bank;
+static orb_theme_geo_t s_geo;
+static char            s_active_slug[ORB_THEME_SLUG_MAX + 1];
+static unsigned long ar_allocs, ar_frees;
+static int ar_oom;                     /* the no-room row arms this */
+#define MALLOC_CAP_SPIRAM 0x1000
+#define MALLOC_CAP_8BIT   0x0008
+static void *heap_caps_malloc(size_t n, int caps)
+{ (void)caps; if (ar_oom) return NULL; ar_allocs++; return malloc(n); }
+static void host_arena_free(void *p) { if (p) { ar_frees++; free(p); } }
+__ARENA_FN__
+static void arena_reset(void)
+{
+    memset(&s_geo, 0, sizeof s_geo);
+    s_active_slug[0] = '\0';
+    s_rects = NULL; s_first = NULL; s_delays = NULL; s_bgframes = NULL;
+    s_comps = NULL; s_aux = NULL; s_bank = NULL;
+    ar_allocs = 0; ar_frees = 0; ar_oom = 0;
+}
+static void arow(const char *what, int cond)
+{
+    if (!cond) fails++;
+    printf("%-5s arena: %s\n", cond ? "ok" : "FAIL", what);
+    fflush(stdout);                /* a mutant that aborts the harness must not
+                                    * also erase the FAIL line that killed it */
+}
+/* A header aimed at one of the two blobs, sized from that blob's OWN leading
+ * count words. hdr_parse() zeroes these fields by design — the real loaders
+ * derive them from the blob — so the vectors supply the consistent pair the
+ * arena is sized from, and the truncation row breaks it exactly the way
+ * geom_counts() exists to catch. */
+static void arena_hdr(orb_thdr_t *h, int two)
+{
+    memset(h, 0, sizeof *h);
+    h->geom_size = (uint32_t)(two ? sizeof good2 : sizeof good);
+    h->art_size  = __ART__u;
+    h->n_rects   = (uint32_t)(two ? __N0__ : __M0__);
+    h->n_first   = (uint32_t)(two ? __N1__ : __M1__);
+    h->n_delays  = (uint32_t)(two ? __N2__ : __M2__);
+    h->n_bgf     = (uint32_t)(two ? __N3__ : __M3__);
+    h->n_comp    = two ? (uint32_t)__N4__ : 0u;
+    h->n_aux     = two ? (uint32_t)__N5__ : 0u;
+    h->n_bank    = two ? (uint32_t)__N6__ : 0u;
+    host_strlcpy(h->slug, "kit3-test-theme", sizeof h->slug);
+}
+'''
+
+ARENA_CASES = r'''
+    puts("== the geometry arena: who owns the tables, per adopt ==");
+    {
+        orb_thdr_t h1, h2, hb;
+        const char *why;
+        arena_hdr(&h1, 0);
+        arena_hdr(&h2, 1);
+        arow("the four-count blob leads with its own counts",
+             h1.n_rects > 0 && h1.n_delays > 0);
+        arow("the complication blob declares its tables",
+             h2.n_comp > 0 && h2.n_aux > 0 && h2.n_bank > 0);
+
+        arena_reset();
+        why = geom_validate_blob(good, &h1, false);
+        arow("pre-flight accepts the shipped four-count blob", why == NULL);
+        arow("pre-flight gives back every byte it took",
+             ar_allocs > 0 && ar_frees == ar_allocs);
+        arow("pre-flight publishes nothing: the owner keeps the dial they had",
+             !s_geo.from_container && s_rects == NULL && s_active_slug[0] == '\0');
+
+        arena_reset();
+        why = geom_validate_blob(good2, &h2, true);
+        arow("adopt accepts the complication blob", why == NULL);
+        arow("adopt leaves its arena alive on purpose (clock_view caches into it)",
+             ar_allocs > 0 && ar_frees == 0);
+        arow("adopt publishes exactly the tables it verified",
+             s_geo.from_container && s_rects != NULL && s_geo.rects == s_rects
+             && s_geo.theme == &s_theme
+             && s_geo.n_comps == (uint16_t)h2.n_comp
+             && s_geo.n_bank == (uint16_t)h2.n_bank
+             && strcmp(s_geo.slug, "kit3-test-theme") == 0
+             && strcmp(s_active_slug, "kit3-test-theme") == 0);
+
+        arena_reset();
+        hb = h2; hb.geom_size -= 4;              /* shorter than its own tables */
+        why = geom_validate_blob(good2, &hb, true);
+        arow("a refusal publishes nothing even on the adopt path",
+             why != NULL && !s_geo.from_container && s_comps == NULL
+             && ar_allocs > 0 && ar_frees == ar_allocs);
+
+        arena_reset();
+        why = geom_validate_blob(good2, &hb, false);
+        arow("a blob shorter than its tables is refused, and frees its arena",
+             why != NULL && ar_allocs > 0 && ar_frees == ar_allocs
+             && !s_geo.from_container && s_rects == NULL);
+
+        arena_reset();
+        ar_oom = 1;
+        why = geom_validate_blob(good2, &h2, true);
+        arow("no room answers with the reason, not a crash or a fake success",
+             why != NULL && ar_allocs == 0 && ar_frees == 0
+             && !s_geo.from_container);
+
+        arena_reset();
+        (void)geom_validate_blob(good2, &hb, false);   /* refused first */
+        why = geom_validate_blob(good2, &h2, true);    /* then the retry lands */
+        arow("a refused check leaves no state the retry inherits",
+             why == NULL && s_geo.from_container && ar_allocs > ar_frees);
+    }
+'''
+for _k, _v in (("__ARENA_FN__", arena_fn), ("__ART__", str(ART_BYTES)),
+               ("__N0__", _N[0]), ("__N1__", _N[1]), ("__N2__", _N[2]),
+               ("__N3__", _N[3]), ("__N4__", _N[4]), ("__N5__", _N[5]),
+               ("__N6__", _N[6]), ("__M0__", _M[0]), ("__M1__", _M[1]),
+               ("__M2__", _M[2]), ("__M3__", _M[3])):
+    ARENA_DECLS = ARENA_DECLS.replace(_k, _v)
+if re.search(r"__[A-Z0-9]+__", ARENA_DECLS):
+    sys.exit("unfilled token in the arena declarations block")
+
+def geom_arena_lint():
+    """The free/publish contract of geom_validate_blob, from its own text.
+
+    The vectors catch the arena bugs that run; this pins the SHAPE that lets
+    them back in. Only two frees are legal — the parse-refusal one and the
+    (!adopt)-guarded pre-flight exit — and both must sit BEFORE the publish
+    block, because clock_view.c caches raw pointers into the adopt arena and
+    an adopt-path free hands the dial a use-after-free. Neither half is
+    redundant: a mutant that moves a free while still balancing the counters
+    is visible only in the rows, and a reshaped guard that happens to pass the
+    run is visible only here. The pair together is the pin.
+    """
+    m = re.search(r"static const char \*geom_validate_blob\(const uint32_t \*blob"
+                  r".*?\n\}", th_src, re.S)
+    if not m:
+        print("FAIL geom arena lint: geom_validate_blob is not in orb_theme.c "
+              "anymore — this lint no longer sees what it was written for")
+        return 1
+    body = m.group(0)
+    rc = 0
+    frees = [mm.start() for mm in re.finditer(r"free\(arena\);", body)]
+    pub = body.find("s_rects = rects;")
+    if len(frees) != 2:
+        print("FAIL geom arena lint: %d free(arena) site(s), want exactly 2 "
+              "(refusal + pre-flight) — a free on the adopt path is a "
+              "use-after-free on the dial" % len(frees)); rc = 1
+    if pub == -1:
+        print("FAIL geom arena lint: the publish block (s_rects = rects;) moved "
+              "— the ordering checks below can no longer mean anything"); rc = 1
+    elif frees and max(frees) > pub:
+        print("FAIL geom arena lint: a free(arena) sits AFTER the publish block "
+              "— clock_view.c caches pointers into that arena"); rc = 1
+    if not re.search(r"if \(why\) \{[^}]*free\(arena\);", body):
+        print("FAIL geom arena lint: the parse-refusal path no longer frees its "
+              "arena before returning the reason"); rc = 1
+    if not re.search(r"if \(!adopt\) \{\s*free\(arena\);[^}]*return NULL;", body):
+        print("FAIL geom arena lint: the pre-flight free is not the (!adopt)-"
+              "guarded exit — the adopt path is freeing, or falling into "
+              "publishing, what it only came to check"); rc = 1
+    if rc == 0:
+        print("ok    geom arena lint: two frees, both before the publish block; "
+              "the adopt path owns an arena it never frees")
+    return rc
+
 NAME_ROWS = r'''    ncase("orbital-arrow-3", 1);
     ncase("theme_2.orbtheme", 1);
     ncase("A9.-_z", 1);
@@ -743,6 +957,7 @@ static clk_bg_rect_t   r4[64];
 static uint16_t        f4[64], d4[64];
 static uint32_t        b4[64];
 static int fails = 0;
+@ARENA@
 
 static void ncase(const char *n, int want)
 {
@@ -881,6 +1096,7 @@ int main(void)
 @REFUSES@
     puts("== the header's refusals ==");
 @HDRREFUSES@
+@ARENA_CASES@
     return fails != 0;
 }
 '''
@@ -892,6 +1108,7 @@ for k, v in (("@HELPERS@", HELPERS), ("@CRC@", CRC_STUB), ("@TYPES@", gen_types)
              ("@FILECASES@", FILE_ROWS),
              ("@CK@", CK), ("@ARRAYS@", arr("good", WORDS) + arr("good2", WORDS2)
                                              + arr("hdr_ok", HDR_WORDS)),
+             ("@ARENA@", ARENA_DECLS), ("@ARENA_CASES@", ARENA_CASES),
              ("@NAMES@", NAME_ROWS), ("@PATHS@", PATH_ROWS), ("@CHECKS@", CHECKS),
              ("@RECTYPES@", rec_types), ("@COMPS_MAX@", str(ts.CLK_COMP_MAX)),
              ("@AUX_MAX@", str(ts.CLK_AUX_MAX)), ("@BANK_MAX@", str(ts.CLK_BANK_MAX)),
@@ -1148,6 +1365,26 @@ MUTATIONS = [
     ("theme-name rule removed entirely", "th",
      "static bool filed_as_its_own_slug(const orb_thdr_t *o, const char *card_name,",
      "static bool filed_as_its_own_slug_REMOVED(const orb_thdr_t *o, const char *card_name,"),
+    # The geometry arena. Every one of these changed only bytes no host binary
+    # ever compiled until geom_validate_blob was lifted above: green batteries,
+    # and a dial drawing from reclaimed heap. Together they pin the contract
+    # from both sides — the vectors see a free that moves while the counters
+    # stay honest, the lint sees a guard reshaped while the run stays green.
+    ("the adopt path frees the arena the dial is drawing", "th",
+     "    if (!adopt) {\n        free(arena);          /* pre-flight: it proved the numbers, that is all it was for */\n        return NULL;\n    }",
+     "    free(arena);\n    if (!adopt) {\n        return NULL;\n    }"),
+    ("the (!adopt) guard is inverted: the pre-flight publishes", "th",
+     "    if (!adopt) {\n        free(arena);",
+     "    if (adopt) {\n        free(arena);"),
+    ("a refused theme leaks its arena", "th",
+     "        free(arena);\n        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);",
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);"),
+    ("the refusal falls through and publishes anyway", "th",
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);\n        return why;",
+     "        ESP_LOGE(TAG, \"%s: %s — refusing to draw it\", h->slug, why);"),
+    ("the arena is freed out from under the published tables", "th",
+     "    s_geo.from_container = true;",
+     "    s_geo.from_container = true;\n    free(arena);"),
 ]
 
 def run_mutations():
@@ -1630,5 +1867,7 @@ if rc == 0:
     rc = naming_lint()
 if rc == 0:
     rc = install_lint()
+if rc == 0:
+    rc = geom_arena_lint()
 sys.exit(rc)
 

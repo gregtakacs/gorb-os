@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -205,6 +206,29 @@ func winProfileDir() (string, error) {
 	return base + "\\orb-manager\\browser-profile", nil
 }
 
+// browserLogName is where the launched browser's own chatter is kept.
+const browserLogName = "orb-manager-chrome.log"
+
+// chromeLog captures the browser's stderr, returning the writer to attach and
+// the path to name in the startup line ("" when nothing could be opened).
+//
+// Chromium talks constantly about itself: a chrome.exe started from WSL prints
+// dozens of "Failed to open named pipe server ... Access is denied" and GCM
+// registration lines that have nothing to do with the hub. Inheriting the hub's
+// stderr dumped all of that into the terminal one second after "orb-manager
+// serving", so a healthy run read like a failing one and the real problem, a
+// port picker gone blank, was invisible under it. The browser keeps talking, now
+// into a file that says where a window went missing.
+func chromeLog() (io.Writer, string) {
+	path := filepath.Join(os.TempDir(), browserLogName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("orb-manager: browser log %s unavailable (%v); discarding browser output", path, err)
+		return nil, ""
+	}
+	return f, path
+}
+
 // launchAppWindow starts the hub in a chromeless browser window and returns a
 // channel closed when that window goes away, so main can shut the server down
 // rather than orphan a listener that still holds the serial port lock. A browser
@@ -222,11 +246,16 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 		log.Printf("orb-manager: browser profile dir unavailable (%v); using the browser default", perr)
 	}
 	cmd := exec.Command(browser, appArgs(url, profile)...)
-	cmd.Stderr = os.Stderr
+	browserLog, logPath := chromeLog()
+	cmd.Stderr = browserLog
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	log.Printf("orb-manager: app window %s via %s", url, browser)
+	if logPath == "" {
+		log.Printf("orb-manager: app window %s via %s", url, browser)
+	} else {
+		log.Printf("orb-manager: app window %s via %s (browser log: %s)", url, browser, logPath)
+	}
 
 	// Two watchers race, whichever learns "gone" first wins. The child process
 	// covers the ordinary case where chrome.exe we spawned IS the browser. The

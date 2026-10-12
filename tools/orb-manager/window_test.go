@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -438,6 +440,48 @@ func TestLaunchAppWindowDetachedAndUnwatchableKeepsServing(t *testing.T) {
 	case <-done:
 		t.Fatal("an unwatchable detach must not close the hub")
 	case <-time.After(2 * time.Second):
+	}
+}
+
+// A Chromium-family browser narrates its own startup: under WSL a chrome.exe
+// prints dozens of named-pipe "Access is denied" and GCM lines unrelated to the
+// hub. Inheriting the hub's stderr buried the hub's own one-line story under
+// them, so a healthy run looked broken. The narration belongs in a file.
+func TestAppWindowKeepsBrowserNoiseOutOfTheHubLog(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+
+	var hubLog bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&hubLog)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	const noise = "Failed to open named pipe server process 20688: Access is denied. (0x5)"
+	// sleep 4 so the child outlives detachGrace: an early exit would read as a
+	// hand-off to a running browser and the hub would keep serving forever.
+	stub := writeStubBrowser(t, "echo '"+noise+"' >&2; sleep 4")
+	done, err := launchAppWindow("http://127.0.0.1:3779", stub)
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(9 * time.Second):
+		t.Fatal("window close was never signalled")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, browserLogName))
+	if err != nil {
+		t.Fatalf("browser log: %v", err)
+	}
+	if !strings.Contains(string(raw), noise) {
+		t.Errorf("browser stderr missing from %s: %q", browserLogName, raw)
+	}
+	if strings.Contains(hubLog.String(), noise) {
+		t.Errorf("browser chatter leaked into the hub log:\n%s", hubLog.String())
+	}
+	if !strings.Contains(hubLog.String(), browserLogName) {
+		t.Errorf("startup line does not tell the operator where the browser log is:\n%s", hubLog.String())
 	}
 }
 

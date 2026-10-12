@@ -72,8 +72,11 @@ async function refreshPorts() {
   sel.innerHTML = "";
   try {
     const { ports } = await getJSON("/api/ports");
-    if (!ports.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
-    for (const p of ports) {
+    // Never trust the payload to be an array: taking .length on undefined threw
+    // here once and the picker blamed the browser instead of saying "no ports".
+    const list = Array.isArray(ports) ? ports : [];
+    if (!list.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
+    for (const p of list) {
       const o = document.createElement("option");
       o.value = p;
       o.textContent = p;

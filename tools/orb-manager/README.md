@@ -78,6 +78,11 @@ DevTools target list and exits when the page goes. When no window can be
 watched at all, the hub keeps serving rather than shutting down on a guess, and
 says how to stop it.
 
+The browser's own chatter stays out of your terminal. A `chrome.exe` started from
+WSL prints dozens of unrelated named-pipe and GCM errors at startup. They go to
+`orb-manager-chrome.log` in the temp dir, and the hub's startup line names that
+path.
+
 Three switches cover the exceptions:
 
 | Flag | Effect |
@@ -130,12 +135,15 @@ headless; a mismatch aborts before erasing.
 | Route | Purpose |
 |---|---|
 | `GET  /api/status` | platform, build stamp, repo/build dirs |
-| `GET  /api/ports`  | serial ports enumerated from the host |
+| `GET  /api/ports`  | serial ports enumerated from the host, as `{"ports":[...]}` |
 | `GET  /api/build`  | the flash manifest resolved from `flasher_args.json` |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API |
+
+Every route wraps its payload in `{ok,data}`. The port list sits under
+`data.ports`, not as a bare array, because `app.js` destructures that field.
 
 `/api/flash` streams `{"log":...}`, `{"progress":{...}}`, `{"mac":"..."}`
 (eFuse MAC, emitted as soon as the ROM answers), `{"done":...}`, and

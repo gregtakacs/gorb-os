@@ -427,7 +427,7 @@
     say('  dial surface art: ' + redPlain + ' art px on the face, print still reads on top of it at ' + Math.round(visible / inkN * 100) + '% of ' + inkN + ' ink px (' + buried + ' taken by the art), openwork cut it to ' + redOw);
     // rotation + finish-blend ride the same fixture on its way out: the manifest and
     // the bundle are the device's only copy of these choices, so they must carry them.
-    it.state.designs = { calendar: E.canonDesign(Object.assign(d, { bgRot: 30, sfRot: 45, surface: 'guilloche', bgFinishBlend: 'multiply', bgFinishColor: '#223344', sfFinishBlend: 'screen', sfFinishColor: '#fffaf0' })) }; it.faces = {};
+    it.state.designs = { calendar: E.canonDesign(Object.assign(d, { bgRot: 30, sfRot: 45, surface: 'guilloche', bgFinishBlend: 'multiply', bgFinishColor: '#223344', bgFinishKey: '#ff0044', bgFinishKeyTol: 22, sfFinishBlend: 'screen', sfFinishColor: '#fffaf0', sfFinishKey: '#0a2233' })) }; it.faces = {};
     it.exportKit().then(() => {
       try {
         const man = JSON.parse(new TextDecoder().decode(files.filter((f) => f.name === 'manifest.json')[0].data));
@@ -453,6 +453,11 @@
         if (man.backgroundArt.rotDeg !== 30 || man.surfaceArt.rotDeg !== 45) return fail('a loaded backdrop rotation did not reach the manifest: bg=' + man.backgroundArt.rotDeg + ' sf=' + man.surfaceArt.rotDeg);
         if (man.backgroundArt.finishBlend !== 'multiply' || man.backgroundArt.finishBlendColor !== '#223344') return fail('the plate-slot finish blend or its target colour is missing from the manifest: ' + JSON.stringify([man.backgroundArt.finishBlend, man.backgroundArt.finishBlendColor]));
         if (man.surfaceArt.finishBlend !== 'screen' || man.surfaceArt.finishBlendColor !== '#fffaf0') return fail('the dial-slot finish blend is missing from the manifest: ' + JSON.stringify([man.surfaceArt.finishBlend, man.surfaceArt.finishBlendColor]));
+        // the colour key is part of the blend decision: a device that re-rendered this kit
+        // without it would paint the texture over the whole image, which is not what the
+        // author asked for. The tolerance is stated even where it was never touched.
+        if (man.backgroundArt.finishBlendKey !== '#ff0044' || man.backgroundArt.finishBlendKeyTolerance !== 22) return fail('the plate-slot colour key or its tolerance is missing from the manifest: ' + JSON.stringify([man.backgroundArt.finishBlendKey, man.backgroundArt.finishBlendKeyTolerance]));
+        if (man.surfaceArt.finishBlendKey !== '#0a2233' || man.surfaceArt.finishBlendKeyTolerance !== 40) return fail('the dial-slot key is missing, or an untouched tolerance did not ship as the default: ' + JSON.stringify([man.surfaceArt.finishBlendKey, man.surfaceArt.finishBlendKeyTolerance]));
         const hh = man.hands.filter((h) => h.mount === 'ct1')[0];
         if (!hh) return fail('the transparent subdial lost its hand from the manifest');
         if (!Array.isArray(hh.pivot) || !isFinite(hh.pivot[0]) || !isFinite(hh.pivot[1])) return fail('the art hand has no usable pivot: ' + JSON.stringify(hh.pivot));
@@ -470,11 +475,12 @@
               if (o.design.bgArt !== a.id) return fail('the bundle lost the plate-backdrop reference');
               if (o.design.sfArt !== a.id) return fail('the bundle lost the dial-surface reference');
               if (o.design.bgRot !== 30 || o.design.sfRot !== 45 || o.design.bgFinishBlend !== 'multiply' || o.design.sfFinishBlend !== 'screen') return fail('the bundle lost the rotation or the finish blend: ' + JSON.stringify([o.design.bgRot, o.design.sfRot, o.design.bgFinishBlend, o.design.sfFinishBlend]));
+              if (o.design.bgFinishKey !== '#ff0044' || o.design.bgFinishKeyTol !== 22 || o.design.sfFinishKey !== '#0a2233') return fail('the .wckit lost a colour key, so reopening it would blend the texture over the whole image: ' + JSON.stringify([o.design.bgFinishKey, o.design.bgFinishKeyTol, o.design.sfFinishKey]));
               if (new Set(o.assets.map((x) => x.id)).size !== o.assets.length) return fail('the bundle lists an asset twice, or double-counted the one image filling both slots');
               if (!o.assets.every((x) => (x.usedBy || []).length >= 1)) return fail('a bundled asset names no slot that uses it');
               say('  custom art: backdrop in the plate pixels, ' + src.length + ' sources, assets[]=' + man.assets.length +
                 ', svg stamped ' + c.w + 'x' + c.h + ', faint px killed, hand ' + hh.mount + ' pivot ' + hh.pivot.join(',') +
-                ', rot ' + o.design.bgRot + '/' + o.design.sfRot + '° blend ' + o.design.bgFinishBlend + '/' + o.design.bgFinishColor + ' + ' + o.design.sfFinishBlend + '/' + o.design.sfFinishColor);
+                ', rot ' + o.design.bgRot + '/' + o.design.sfRot + '° blend ' + o.design.bgFinishBlend + '/' + o.design.bgFinishColor + ' keyed ' + o.design.bgFinishKey + '@' + o.design.bgFinishKeyTol + ' + ' + o.design.sfFinishBlend + '/' + o.design.sfFinishColor + ' keyed ' + o.design.sfFinishKey + '@' + (o.design.sfFinishKeyTol == null ? 'default' : o.design.sfFinishKeyTol));
               pass();
             } catch (e) { fail('bundle JSON: ' + e.message); }
           }, (e) => fail('bundle unreadable: ' + e.message));
@@ -497,10 +503,18 @@
     const sx = src.getContext('2d');
     sx.fillStyle = '#ff0044'; sx.fillRect(0, 0, 60, 60);          // a colour no dial colour uses
     const urlA = src.toDataURL('image/png');
+    // two-tone fixture for the colour-key probe: the key colour on one half, a colour
+    // 60+ levels away on the other, so a leak across the seam cannot hide as noise
+    const src2 = document.createElement('canvas'); src2.width = 60; src2.height = 60;
+    const sx2 = src2.getContext('2d');
+    sx2.fillStyle = '#ff0044'; sx2.fillRect(0, 0, 30, 60);
+    sx2.fillStyle = '#2fa84f'; sx2.fillRect(30, 0, 30, 60);
+    const url2 = src2.toDataURL('image/png');
     // one bar drawn three ways for the length probe: the tight crop, the same bar
     // buried in transparent padding at a different scale, in a colour no hand wears
     const spriteBar = (w, h, x, y, bw, bh) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.fillStyle = '#3fbf6f'; g.fillRect(x, y, bw, bh); return c.toDataURL('image/png'); };
     E.assetRestore([{ id: 'feat-a', name: 'feat.png', kind: 'png', dataUrl: urlA },
+      { id: 'feat-2tone', name: 'two.png', kind: 'png', dataUrl: url2 },
       { id: 'len-tight', name: 'tight.png', kind: 'png', dataUrl: spriteBar(12, 194, 3, 0, 6, 194) },
       { id: 'len-padded', name: 'padded.png', kind: 'png', dataUrl: spriteBar(400, 414, 195, 10, 10, 394) }]);
     setTimeout(() => {
@@ -748,6 +762,44 @@
     if (!(scN > 3000)) return fail('screen left no trace on the art: ' + scN + ' px changed');
     const enN = diff(pxData({ surface: 'enamel' }), pxData({ surface: 'enamel', sfFinishBlend: 'multiply', sfFinishColor: '#223344' }));
     if (enN !== 0) return fail('enamel blended a texture it does not have, moving ' + enN + ' px');
+    /* The colour key, measured where it can actually be measured: on pixels. The plain
+     * whole-image blend has to keep working with the key absent -- that behaviour is a
+     * feature the author can still choose, not something the key replaced. */
+    const kAll = pxData({ sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#ff0044', sfFinishKeyTol: 24 });
+    const kAllN = diff(dOff, kAll), kAllRed = reds(kAll);
+    if (!(kAllN > 3000)) return fail('keyed to the art\u2019s own red, the blend moved only ' + kAllN + ' px, so the key erased the region it was supposed to keep');
+    if (!(kAllRed > cover * 0.5)) return fail('the keyed blend buried the art: red px ' + cover + ' -> ' + kAllRed);
+    const kNone = pxData({ sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#123456', sfFinishKeyTol: 8 });
+    const kNoneN = diff(dOff, kNone);
+    if (kNoneN !== 0) return fail('keyed to a colour the picture does not wear, the blend still moved ' + kNoneN + ' px of the art');
+    // a colour 30 levels off the art's red: outside a tol 8 window (8 + 4 of feather),
+    // inside a tol 60 one. That pair is what proves tolerance is the window and not a label.
+    const nearA = diff(dOff, pxData({ sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#e10044', sfFinishKeyTol: 8 }));
+    const nearB = diff(dOff, pxData({ sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#e10044', sfFinishKeyTol: 60 }));
+    if (nearA !== 0) return fail('a key 30 levels off the art\u2019s red at tolerance 8 still moved ' + nearA + ' px, so the window is wider than the number says');
+    if (!(nearB > 3000)) return fail('the same key inside a tolerance 60 window moved only ' + nearB + ' px, so widening the slider admits nothing new');
+    /* The two-tone case the control exists for: half the picture wears the key colour and
+     * half does not, so the texture has to stop at the seam. A stub can only report that
+     * the geometry was issued; only pixels can say WHERE it landed, and a keyed blend that
+     * leaked onto the unkeyed half -- or never reached the keyed one -- looks identical to
+     * a correct one in a call log. */
+    const TWO = { sfArt: 'feat-2tone', sfSize: 442, sfFit: 'cover', surface: 'forged', texture: 2.5 };
+    const px2 = (patch) => it.faceOf(Object.assign({}, TWO, patch)).dial.getContext('2d').getImageData(0, 0, S4, S4).data;
+    const HALF = { l: [], r: [] };
+    for (const i of IN) { const x = (i / 4) % S4; if (Math.abs(x - C4) < 6) continue; HALF[x < C4 ? 'l' : 'r'].push(i); }
+    const hdiff = (A, B, side) => { let n = 0; for (const i of HALF[side]) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 24) n++; return n; };
+    const twoOff = px2({}), twoAll = px2({ sfFinishBlend: 'multiply', sfFinishColor: '#223344' });
+    const plainL = hdiff(twoOff, twoAll, 'l'), plainR = hdiff(twoOff, twoAll, 'r');
+    if (!(plainL > 1500 && plainR > 1500)) return fail('the plain whole-image blend does not cover both halves (' + plainL + '/' + plainR + '), so the two-tone probe is blind');
+    const twoKey = px2({ sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#ff0044', sfFinishKeyTol: 24 });
+    const keyL = hdiff(twoOff, twoKey, 'l'), keyR = hdiff(twoOff, twoKey, 'r');
+    if (!(keyL > 1500)) return fail('keyed to the red half, the blend pressed nothing into it: ' + keyL + ' px moved');
+    if (keyR !== 0) return fail('keyed to the red half, the texture still leaked onto the other half: ' + keyR + ' px moved');
+    const kScr = pxData({ surface: 'carbon', weaveAngle: 30, sfFinishBlend: 'multiply', sfFinishColor: '#223344', sfFinishKey: '#ff0044', sfFinishKeyTol: 40 });
+    const kScrN = diff(pxData({ surface: 'carbon', weaveAngle: 30 }), kScr);
+    if (!(kScrN > 3000)) return fail('the keyed weave moved only ' + kScrN + ' px of the red art');
+    if (reds(kScr) < cover * 0.5) return fail('the keyed weave painted over the art instead of onto it');
+    say('  colour key: the plain blend covered both halves (' + plainL + '/' + plainR + ' px); keyed to the red it moved ' + keyL + ' px of the red half and ' + keyR + ' of the other; a key absent from the art moved ' + kNoneN + '; a key 30 off, tol 8 vs tol 60: ' + nearA + '/' + nearB + '; keyed weave ' + kScrN + ' of ' + cwN + ' unkeyed');
     say('  finish over art: forged multiply moved ' + muN + ' px and kept ' + muRed + ' of ' + cover + ' still the art\u2019s own red; the weave at 30\u00b0 moved ' + cwN + ' px, screen ' + scN + ', and enamel under the same blend moved 0');
     // facing: the ink's own centroid angle about the arbour, which is what "where it
     // points" means. Probed on the drawn hands layer, not on a reported number.

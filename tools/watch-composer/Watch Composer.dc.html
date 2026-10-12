@@ -533,7 +533,7 @@ class Component extends DCLogic {
     // the backdrop travels with the dial, but it is drawn at the plate slot, so it has to
     // reach movement() through the movement options -- and mvKey() must see it, because
     // swapping the art swaps the base frames the whole budget is priced against
-    const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity', 'bgRot', 'bgFinishBlend', 'bgFinishColor'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
+    const bg = {}; ['bgArt', 'bgFit', 'bgZoom', 'bgX', 'bgY', 'bgSize', 'bgOpacity', 'bgRot', 'bgFinishBlend', 'bgFinishColor', 'bgFinishKey', 'bgFinishKeyTol'].forEach((k) => { if (dsg[k] != null && dsg[k] !== '') bg[k] = dsg[k]; });
     // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
     // the texture has to travel with it: changing Surface re-bakes these base frames
     if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; if (dsg.weaveAngle != null) bg.bgWeaveAngle = dsg.weaveAngle; if (dsg.weaveScale != null) bg.bgWeaveScale = dsg.weaveScale; }
@@ -1829,10 +1829,10 @@ class Component extends DCLogic {
       textKits,
       handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
       assets: await this.kitAssets(files, D0),
-      backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
+      backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? D0.bgFinishKey : undefined, finishBlendKeyTolerance: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? (D0.bgFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.bgFinishKeyTol) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
       // on the dial face, so it ships inside dial.png rather than as its own layer:
       // print, numerals and markers were drawn over it, apertures cut through it
-      surfaceArt: D0.sfArt ? { asset: D0.sfArt, fit: D0.sfFit || 'cover', offsetPx: [+D0.sfX || 0, +D0.sfY || 0], sizePx: D0.sfSize == null ? 442 : +D0.sfSize, rotDeg: Math.round(+D0.sfRot || 0), opacity: D0.sfOpacity == null ? 1 : +D0.sfOpacity, finishBlend: D0.sfFinishBlend || undefined, finishBlendColor: D0.sfFinishBlend ? (D0.sfFinishColor || (D0.sfFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, bakedInto: 'layers/dial.png (the dial face, under the chapter print)', note: 'the dial is already one blended layer per tick, so art inside it costs nothing; there is no separate art plane to composite' } : undefined,
+      surfaceArt: D0.sfArt ? { asset: D0.sfArt, fit: D0.sfFit || 'cover', offsetPx: [+D0.sfX || 0, +D0.sfY || 0], sizePx: D0.sfSize == null ? 442 : +D0.sfSize, rotDeg: Math.round(+D0.sfRot || 0), opacity: D0.sfOpacity == null ? 1 : +D0.sfOpacity, finishBlend: D0.sfFinishBlend || undefined, finishBlendColor: D0.sfFinishBlend ? (D0.sfFinishColor || (D0.sfFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.sfFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.sfFinishKey || '') ? D0.sfFinishKey : undefined, finishBlendKeyTolerance: D0.sfFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.sfFinishKey || '') ? (D0.sfFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.sfFinishKeyTol) : undefined, bakedInto: 'layers/dial.png (the dial face, under the chapter print)', note: 'the dial is already one blended layer per tick, so art inside it costs nothing; there is no separate art plane to composite' } : undefined,
       transparentSubdials: Object.keys(ghostSubs),
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
     };
@@ -1918,6 +1918,7 @@ class Component extends DCLogic {
       return null;
     };
     this._drafts = this._drafts || {};
+    const isHexColor = (v) => /^#[0-9a-f]{6}$/i.test(String(v || ''));
     const hexRGB = (v) => { const n = parseInt(v.slice(1), 16); return (n >> 16) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255); };
     const Co = (label, value, onv, autoText, scope, X) => {
       X = X || {};
@@ -2138,7 +2139,7 @@ class Component extends DCLogic {
         const rot = Math.round(+D[p + 'Rot'] || 0);
         const bm = D[p + 'FinishBlend'] || 'off';
         const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
-        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor'].forEach((k) => delete d[k]); });
+        const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'].forEach((k) => delete d[k]); });
         const out = [H(title, 'art-' + p),
           Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
@@ -2170,8 +2171,22 @@ class Component extends DCLogic {
          * sheen are replayed as the mask instead of their own greyscale. */
         if (['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
           out.push(Ch('Finish blend', bm, [{ v: 'off', label: 'Off \u00b7 art lies flat' }, { v: 'multiply', label: 'Multiply \u00b7 texture pressed in' }, { v: 'screen', label: 'Screen \u00b7 texture brushed on' }, { v: 'overlay', label: 'Overlay \u00b7 both' }], ud(p + 'FinishBlend')));
+          // the number the engine itself falls back to, read off the engine, so the
+          // slider label and the render cannot drift apart
+          const tv = D[p + 'FinishKeyTol'] == null ? E.KEY_TOL_DEF : +D[p + 'FinishKeyTol'];
           if (bm !== 'off') out.push(Co('Blend colour', D[p + 'FinishColor'], (v) => this.upd((d) => { d[p + 'FinishColor'] = v; }), bm === 'screen' ? 'Warm white' : 'Umber', p),
-            Nt('', 'The dial\u2019s ' + (E.SURFACES[surf] || surf) + ' texture lands on the image in this colour under the ' + bm + ' blend. The texture\u2019s own alpha is the mask, so only the raised and shadowed strokes tint \u2014 the flat picture stays untouched.'));
+            Nt('', 'The dial\u2019s ' + (E.SURFACES[surf] || surf) + ' texture lands on the whole image in this colour under the ' + bm + ' blend. The texture\u2019s own alpha is the mask, so only the raised and shadowed strokes tint \u2014 the flat picture stays untouched.'),
+            /* A colour key narrows that pass to the part of the picture already wearing the
+             * colour you point at: key a two-tone art to its red and only the red takes the
+             * weave, while the other tone keeps the flat print. It is a gate ON TOP of the
+             * blend -- leaving it on None keeps the whole-image blend exactly as it was.
+             * Tolerance is the per-channel window the key matches inside; 0 asks for the
+             * colour itself and nothing else, 128 lets most of the picture in. */
+            Co('Key colour', D[p + 'FinishKey'], (v) => this.upd((d) => { d[p + 'FinishKey'] = /^#[0-9a-f]{6}$/i.test(v) ? v : 'none'; }), null, p, { none: true, noAuto: true }),
+            Nt('', isHexColor(D[p + 'FinishKey'])
+              ? 'Only the pixels already within ' + tv + ' of ' + D[p + 'FinishKey'] + ' receive the ' + (E.SURFACES[surf] || surf) + ' texture; the rest of the image keeps the flat print. Nothing in range and the blend paints nothing \u2014 widen the tolerance or pick the colour off the art.'
+              : 'Optional. Pick a colour off the art to confine the texture to that region; leave it on None to blend the whole image.'));
+          if (isHexColor(D[p + 'FinishKey'])) out.push(Rg('Key tolerance', tv, 0, 128, 1, ud(p + 'FinishKeyTol'), tv + ' / 128'));
         }
         const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
           : fits && fits.ok ? price : fits.why;

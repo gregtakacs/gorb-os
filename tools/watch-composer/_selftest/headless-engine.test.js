@@ -389,6 +389,16 @@ setTimeout(() => {
       ok(!('bgFinishBlend' in CAN({ bgArt: 'x-1', bgFinishBlend: 'xor' })), 'a mode the canvas cannot run is dropped, and the colour goes with it');
       ok(!('bgFinishColor' in CAN({ bgArt: 'x-1', bgFinishColor: '#223344' })), 'a target colour with no blend mode paints nothing and is deleted');
       ok(!('bgFinishBlend' in CAN({ bgFinishBlend: 'multiply', bgFinishColor: '#223344' })), 'a blend with no art reference vanishes with the art group');
+      // the colour key rides with its blend, and its tolerance rides with the key
+      const ky = CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 18 });
+      ok(ky.bgFinishKey === '#ff0044' && ky.bgFinishKeyTol === 18, 'the key colour and its tolerance ride with the art');
+      ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKeyTol: 18 }).bgFinishKeyTol === undefined, 'a tolerance with no key colour is deleted, being a decision about a key that does not exist');
+      ok(!('bgFinishKey' in CAN({ bgArt: 'x-1', bgFinishKey: '#ff0044', bgFinishKeyTol: 18 })), 'a key with no blend mode gates nothing and goes');
+      ok(!('bgFinishKey' in CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: 'none' })), 'None is the identity: no key reaches the Design ID');
+      ok(!('bgFinishKey' in CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: 'red' })), 'a colour the engine cannot read is dropped rather than shipped');
+      ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 0 }).bgFinishKeyTol === 0, 'tolerance 0 is an authored choice and survives');
+      ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 300 }).bgFinishKeyTol === undefined, 'a tolerance outside the slider is not shipped');
+      ok(!('bgFinishKey' in CAN({ bgFinishBlend: 'multiply', bgFinishKey: '#ff0044' })), 'a key with no art reference vanishes with the art group');
       const OW = (o) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const oRound = OW({ wshape: 'circle' }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
       ok(oRound.ry == null && oRound.r === 15, 'an untouched round window is the long-side circle it always was', oRound.r);
@@ -420,6 +430,37 @@ setTimeout(() => {
       ok(fFo.fills.length > fFb.fills.length, 'overlay runs both the lit and the shadowed flakes, where multiply takes only the shadowed half', fFo.fills.length + ' vs ' + fFb.fills.length);
       ok(fo({ style: 'carbon', blend: 'off' }).drew === false && fo({ style: 'forged', blend: 'off' }).drew === false, 'off paints nothing on either carbon');
       ok(fo({ style: 'guilloche', blend: 'off' }).drew === false, 'off paints nothing at all');
+      /* The colour key. A stub cannot composite, so what it CAN prove is the decision:
+       * the mask is built as data (the alpha the texels get), the texture is laid on a
+       * throwaway layer instead of the art, and the layer reaches the destination as one
+       * blended composite. Art fixture: half the flake is the key red, half a green no
+       * key colour comes near, over a clip of 100. */
+      const NK = 200, art = new Uint8ClampedArray(NK * NK * 4);
+      for (let y = 0; y < NK; y++) for (let q = 0; q < NK; q++) {
+        const i = (y * NK + q) * 4; art[i + 3] = 255;
+        if (q < NK / 2) { art[i] = 255; art[i + 1] = 0; art[i + 2] = 68; } else { art[i] = 0; art[i + 1] = 180; art[i + 2] = 68; }
+      }
+      const y0 = 100;
+      const fkey = (f, data) => {
+        const c0 = new FakeCanvas(), x = c0.getContext('2d'); c0._alpha = data || art;
+        const b4 = CANVASES.length, drew = E.finishOver(x, f, 100), made = CANVASES.slice(b4);
+        const lay = made[made.length - 1], msk = made[made.length - 2];
+        return { drew, mode: x.globalCompositeOperation, dstDraws: x.draws.length, dstGeom: x.geom.length,
+          layer: (lay && lay._ctx && lay._ctx.geom) || [], mask: (msk && msk._ctx && msk._ctx.canvas._alpha) || null };
+      };
+      const kOn = { style: 'forged', blend: 'multiply', color: '#223344', keyColor: '#ff0044', keyTol: 24 };
+      const fk = fkey(kOn);
+      ok(fk.drew === true && fk.dstDraws === 1, 'a keyed pass lays its texture on a layer and composites it onto the art in one blend', fk.dstDraws);
+      ok(fk.dstGeom <= 2, 'and the destination receives no loose geometry of its own', fk.dstGeom);
+      ok(fk.mode === 'multiply' && fk.layer.filter((g) => g.op === 'fill').length > 200, 'the flake field is still all there, on the layer', fk.layer.length);
+      ok(fk.mask && fk.mask[(y0 * NK + 40) * 4 + 3] === 255 && fk.mask[(y0 * NK + 160) * 4 + 3] === 0, 'the mask keeps the keyed half and erases the other half', fk.mask && [fk.mask[(y0 * NK + 40) * 4 + 3], fk.mask[(y0 * NK + 160) * 4 + 3]]);
+      ok(fkey(Object.assign({}, kOn, { keyTol: 255 })).layer.filter((g) => g.op === 'fill').length === fo({ style: 'forged', blend: 'multiply', color: '#223344' }).fills.length, 'a tolerance wide enough to take the whole picture lays exactly the field the unkeyed blend lays');
+      const kZero = fkey(Object.assign({}, kOn, { keyTol: 0 }), (() => { const z = new Uint8ClampedArray(NK * NK * 4); for (let i = 3; i < z.length; i += 4) z[i] = 255; for (let y = 0; y < NK; y++) for (let q = 0; q < NK; q++) { const i = (y * NK + q) * 4; z[i] = 254; z[i + 1] = 0; z[i + 2] = 68; } return z; })());
+      ok(kZero.mask && kZero.mask.every((v, i) => i % 4 !== 3 || v === 0), 'tolerance 0 refuses a picture one level off the key, which is the whole point of the slider');
+      const kClear = fkey({ style: 'forged', blend: 'multiply', color: '#223344', keyColor: '#000000', keyTol: 255 }, (() => { const z = new Uint8ClampedArray(NK * NK * 4); return z; })());
+      ok(kClear.mask && kClear.mask.every((v, i) => i % 4 !== 3 || v === 0), 'clear art matches no key, so nothing is blended onto a hole in the picture');
+      ok(fkey(Object.assign({}, kOn, { style: 'enamel' })).drew === false, 'enamel still declines, keyed or not');
+      ok(fkey(Object.assign({}, kOn, { style: 'carbon', keyColor: 'nope' })).mask === null, 'a key that is not a colour leaves the plain whole-image blend in charge');
       // the rotation reaches the pixels: drawAsset turns the picture about its centre
       const Rf = (rot) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });
       ok(Rf(45).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 45 * Math.PI / 180) < 1e-9), 'a 45° dial-surface art really turns on the glass');

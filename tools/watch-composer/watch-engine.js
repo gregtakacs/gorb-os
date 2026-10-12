@@ -364,6 +364,65 @@
     return drew;
   }
   const FINISH_BLENDS = ['multiply', 'screen', 'overlay'];
+  /* Per-channel window, in 8-bit units, that a colour-key default opens: wide enough to
+   * take the antialiased rim of the keyed region, narrow enough to leave a neighbouring
+   * tone of the art alone. The composer's slider covers 0-128. */
+  const KEY_TOL_DEF = 40;
+  /* The key window as data: destination px -> mask alpha. Distance is the widest single
+   * channel gap, so a red key stays a red key when the art's green channel drifts. Inside
+   * the window the texel is kept whole; across a one-window feather outside it the texel
+   * fades, which is what stops the keyed edge reading as a hard cut on antialiased art.
+   * Past tol+feather, nothing. Kept out of finishOver so the suite can assert the mask
+   * itself, not just what a canvas did with it. */
+  function keyMask(src, n, kr, kg, kb, tol, out) {
+    const feather = tol * 0.5;
+    for (let p = 0, i = 0; p < n; p++, i += 4) {
+      const d = i + 3 < src.length ? Math.max(Math.abs(src[i] - kr), Math.abs(src[i + 1] - kg), Math.abs(src[i + 2] - kb)) : 255;
+      out[i + 3] = (i + 3 < src.length && src[i + 3] < 8) ? 0
+        : d <= tol ? 255 : (feather > 0 && d <= tol + feather) ? Math.round(255 * (1 - (d - tol) / feather)) : 0;
+      out[i] = out[i + 1] = out[i + 2] = 0;
+    }
+    return out;
+  }
+  /* The colour key. A hex in f.keyColor gates the blend to the art pixels that are that
+   * colour, so a two-tone picture can take the carbon weave on its dark half only. The
+   * whole-dial blend is untouched: with no key this runs the pass exactly as it shipped
+   * before the option existed. With one, the same geometry is laid on a throwaway layer,
+   * the texels outside the window are erased from it, and what survives is blended --
+   * so a keyed result differs from a plain one only in which pixels made it there.
+   * The read is of the COMPOSITED canvas, so the key matches what the author sees: an
+   * opacity, a rotation or a zoom applied to the art is already in the pixels tested.
+   * A canvas that will not answer getImageData yields no blend, not a silent whole-dial
+   * one: an author who asked for a key and did not get one must see that. */
+  function finishOver(ctx, f, clipR) {
+    if (!f || !f.blend || f.blend === 'off' || FINISH_BLENDS.indexOf(f.blend) < 0) return false;
+    if ((f.style || 'enamel') === 'enamel') return false;
+    if (!((f.tex == null ? 1 : +f.tex) > 0)) return false;
+    if (!isHex(f.keyColor)) return finishTex(ctx, f, clipR);
+    const r0 = clipR == null ? DR : +clipR;
+    if (!(r0 > 0)) return false;
+    const ri = Math.ceil(r0), n2 = Math.max(2, ri * 2);
+    let src = null;
+    try { src = ctx.getImageData(C - ri, C - ri, n2, n2); } catch (e) { return false; }
+    if (!src || !src.data || !src.data.length) return false;
+    const kn = parseInt(String(f.keyColor).slice(1), 16);
+    const tol = f.keyTol == null ? KEY_TOL_DEF : Math.max(0, Math.min(255, +f.keyTol || 0));
+    const msk = cv(n2, n2), mc = msk.getContext('2d');
+    const md = mc.createImageData(n2, n2);
+    keyMask(src.data, n2 * n2, kn >> 16, (kn >> 8) & 255, kn & 255, tol, md.data);
+    mc.putImageData(md, 0, 0);
+    const lay = cv(n2, n2), lc = lay.getContext('2d');
+    lc.translate(ri - C, ri - C);                       // the dial centre is the layer centre
+    if (!finishTex(lc, f, ri)) return false;
+    lc.globalCompositeOperation = 'destination-in';
+    lc.drawImage(msk, C - ri, C - ri);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(C, C, r0, 0, TAU); ctx.clip();
+    ctx.globalCompositeOperation = f.blend;
+    ctx.drawImage(lay, C - ri, C - ri);
+    ctx.restore();
+    return true;
+  }
   /* The finish's texture alone, one composite pass over loaded art. Same geometry the
    * surface() texture block draws -- sunburst rays, azurage rings, grained specks and the
    * travelling conic sheen -- but every stroke lands in the author's target colour under
@@ -371,8 +430,9 @@
    * texture to lay, so it declines. carbon and forged build their look from their own
    * greyscale palette (the weave's lit cells, the forged flakes, the diagonal sheen);
    * those are real geometry, replayed here as the mask and painted in the author's
-   * colour, so the two finishes blend like the rest. */
-  function finishOver(ctx, f, clipR) {
+   * colour, so the two finishes blend like the rest. The colour key lives in the caller
+   * above, which decides whether this lands on the art directly or on a masked layer. */
+  function finishTex(ctx, f, clipR) {
     if (!f || !f.blend || f.blend === 'off' || FINISH_BLENDS.indexOf(f.blend) < 0) return false;
     const style = f.style || 'enamel';
     if (style === 'enamel') return false;
@@ -1505,7 +1565,7 @@
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -1550,7 +1610,7 @@
     const unlens = () => { ctx.restore(); };
     lens(); surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false); unlens();
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // chapter print and its holes go through the lens together -- the same pair perimK scales
     const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
@@ -2708,7 +2768,7 @@
      * "no case" the backdrop is NOT baked here at all — the face carries it as F.bgL and
      * compose() blends it untransformed, so the opening can move without resampling it. */
     if (o.caseStyle !== 'none') artInDial(plate.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
-      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } });
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, keyColor: o.bgFinishKey, keyTol: o.bgFinishKeyTol, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } });
     const hz = cv(S); hz.getContext('2d').globalCompositeOperation = 'lighter';
     _.sideWash(hz.getContext('2d'), 0.5, 200, '255,150,60', 0.55 * G, DR);
     const haze = spun(hz, lr), rear = cv(S);
@@ -2811,7 +2871,7 @@
      * face carries it as its own layer and compose() blends it untransformed. */
     F.bgL = null;
     if (o.caseStyle === 'none') { const g = cv(S); if (artInDial(g.getContext('2d'), o.bgArt, { x: o.bgX, y: o.bgY, size: o.bgSize, fit: o.bgFit, zoom: o.bgZoom, opacity: o.bgOpacity, clipR: artClipR(o),
-      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } })) F.bgL = g; }
+      rot: +o.bgRot ? +o.bgRot * Math.PI / 180 : 0, finish: { style: o.bgSurface, tex: o.bgTexture, blend: o.bgFinishBlend, color: o.bgFinishColor, keyColor: o.bgFinishKey, keyTol: o.bgFinishKeyTol, seed: 11, weave: { ang: o.bgWeaveAngle, sc: o.bgWeaveScale } } })) F.bgL = g; }
     const pf = lay.flares.filter((f) => f.host === 'plate' && f.icon !== 'datetext');
     const DF = lay.flares.filter((f) => f.icon === 'datetext' && f.host !== 'plate');
     // a transparent subdial contributes geometry only: its centre and radius still place
@@ -3150,7 +3210,7 @@
      * feature existed, or every design id already in the field would change. */
     const blank = (v) => v == null || v === '';
     const stripArt = (p, defSize) => {
-      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor'];
+      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'];
       if (blank(d[p + 'Art'])) { keys.forEach((k) => delete d[k]); return; }
       if (!d[p + 'Fit'] || d[p + 'Fit'] === 'cover') delete d[p + 'Fit'];
       [p + 'X', p + 'Y'].forEach((k) => { if (+d[k] === 0 || blank(d[k])) delete d[k]; });
@@ -3160,6 +3220,14 @@
       if (blank(d[p + 'Rot']) || +d[p + 'Rot'] === 0) delete d[p + 'Rot'];       // 0° is the identity, same rule as the zoom
       if (FINISH_BLENDS.indexOf(d[p + 'FinishBlend']) < 0) delete d[p + 'FinishBlend'];
       if (!d[p + 'FinishBlend'] || !isHex(d[p + 'FinishColor'])) delete d[p + 'FinishColor'];
+      // the colour key gates the blend, so it is meaningless without the blend above it,
+      // and its tolerance is meaningless without the key -- each goes with its parent.
+      // A tolerance of 0 is a real authored choice (match the colour exactly) and stays;
+      // an absent one is not a choice, and means the engine default.
+      if (!d[p + 'FinishBlend'] || !isHex(d[p + 'FinishKey'])) delete d[p + 'FinishKey'];
+      const tol = d[p + 'FinishKeyTol'];
+      if (!d[p + 'FinishKey'] || tol === '' || tol == null || !(+tol >= 0) || +tol > 128) delete d[p + 'FinishKeyTol'];
+      else d[p + 'FinishKeyTol'] = Math.round(+tol);
     };
     stripArt('bg', 442);
     stripArt('sf', 442);
@@ -3228,5 +3296,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, finishOver, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

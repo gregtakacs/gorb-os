@@ -390,6 +390,14 @@ evidence for the authoring controls the stub suites can only describe:
   their red-minus-blue mean falls from ~+80 to ~0 — the frame ring is the author's
   metal now, and the comparison is a two-face difference so the dial underneath cannot
   fake the pass;
+* a finish **blended over art** is measured on both sides of the seam. One fixture is red
+  on one half and a green 148 levels away on the other; with `Multiply` and no key both
+  halves move, and keyed to the red the keyed half still moves (14121 px) while the other
+  moves **0**. Only pixels can tell those two apart: in a call log a texture that leaked
+  across the seam and one that never reached the keyed half both look like a pass that
+  drew its geometry. The same block pins the tolerance window from both ends (a key 30
+  levels off the art's colour moves 0 px at tolerance 8 and 53816 px at 60), confirms a key
+  absent from the picture moves nothing, and confirms `enamel` under a blend still moves 0;
 * the alignment reference — hub cross and the 24 spokes out of it — is painted at the
   same pixels with the dial art at offset 0 and at offset 120. The stub suites can say
   the strokes were asked for; only the pixels say the author has something stationary to

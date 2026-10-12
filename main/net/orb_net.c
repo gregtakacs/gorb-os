@@ -2420,19 +2420,38 @@ static esp_err_t h_sd(httpd_req_t *req)
     uint64_t total = 0, freeb = 0;
     orb_sd_space(&total, &freeb);
 
-    /* 2300 = 12 rows at the ~150 B each can cost plus a ~300 B base. The overflow
+    /* 2400 = 12 rows at the ~150 B each can cost plus the base and the one refused
+     * install's two strings. The overflow
      * check is the point: a truncated body is worse than an error because the page
      * fails to parse it and shows an empty list, which is also what "no card" looks
      * like. Same reason h_status carries its own bound. */
-    static char json[2300];
+    static char json[2400];
+    /* The last install refused, if any, travels with the list: the dial's row and
+     * this page read the same two strings out of orb_theme, so a pick the firmware
+     * said no to cannot come back as a silent no-op on the glass that pressed it
+     * (ruling D11's "failure stays honest", and the C8 lesson that a swallowed press
+     * is a press the owner has to be told about). */
+    char t_slug[ORB_SD_NAME_MAX * 2 + 3], t_why[128];
+    json_put(t_slug, sizeof t_slug, orb_theme_try_slug());
+    json_put(t_why, sizeof t_why, orb_theme_try_why());
+    /* And what BOOT could not load, which is a different event with a different
+     * sentence: the bytes were verified when they were written, so a slot that fails
+     * now is corruption, and the only place the owner can learn that is the row of
+     * the theme they picked. */
+    char d_slug[ORB_SD_NAME_MAX * 2 + 3], d_why[128];
+    json_put(d_slug, sizeof d_slug, orb_theme_damage_slug());
+    json_put(d_why, sizeof d_why, orb_theme_damage_why());
     int off = snprintf(json, sizeof json,
         "{\"mounted\":%s,\"card\":\"%.40s\",\"uploading\":%s,\"total_mb\":%u,\"free_mb\":%u,"
-        "\"source\":\"%s\",\"active\":\"%.32s\",\"pending\":\"%.32s\",\"themes\":[",
+        "\"source\":\"%s\",\"active\":\"%.32s\",\"live\":\"%s\",\"card_count\":%d,"
+        "\"try_slug\":\"%s\",\"try_why\":\"%s\",\"damage_slug\":\"%s\",\"damage_why\":\"%s\","
+        "\"themes\":[",
         orb_sd_mounted() ? "true" : "false",
         orb_sd_mounted() ? orb_sd_card_id() : "",
         orb_theme_upload_busy() ? "true" : "false",
         (unsigned)(total / (1024 * 1024)), (unsigned)(freeb / (1024 * 1024)),
-        orb_theme_source(), orb_theme_active_slug(), orb_theme_pending_slug());
+        orb_theme_source(), orb_theme_active_slug(), orb_theme_live(), n > 0 ? n : 0,
+        t_slug, t_why, d_slug, d_why);
 
     for (int i = 0; n > 0 && i < n; i++) {
         char e_slug[ORB_SD_NAME_MAX * 2 + 3], e_title[84], e_why[116];
@@ -2441,11 +2460,11 @@ static esp_err_t h_sd(httpd_req_t *req)
         json_put(e_why,  sizeof e_why,  ent[i].why);
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"title\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"ok\":%s,\"active\":%s,\"pending\":%s}",
+            "\"ok\":%s,\"active\":%s}",
             i ? "," : "", e_slug, e_title, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
             ent[i].err == ESP_OK ? "true" : "false",
-            ent[i].active ? "true" : "false", ent[i].pending ? "true" : "false");
+            ent[i].active ? "true" : "false");
     }
     off += snprintf(json + off, sizeof json - (size_t)off, "]}");
     if (off < 0 || (size_t)off >= sizeof json) {
@@ -2455,13 +2474,20 @@ static esp_err_t h_sd(httpd_req_t *req)
     return httpd_resp_sendstr(req, json);
 }
 
-/* POST /api/v1/sd/load?name=X — stage a card theme; the caller then reboots.
+/* POST /api/v1/sd/install?name=X — the browser's half of ruling D11: a theme pick
+ * installs and the device reboots to draw it, with no staged state in between.
  *
- * Two requests on purpose, exactly like /api/v1/ota: a device showing the time to a
- * household must not restart because a fetch completed, and staging first means a
- * load whose install fails costs nothing — the other A/B slot, or the baked-in bank,
- * is what boots. */
-static esp_err_t h_theme_load(httpd_req_t *req)
+ * It calls orb_theme_post_install(), the same entry the dial's picker posts, so the
+ * page and the knob cannot disagree about what loading a theme means. The response
+ * only says the job was queued: the work is a multi-second SD-to-flash copy and the
+ * httpd worker has no business waiting on the card lock, which is the reason the
+ * shell has one worker task at all.
+ *
+ * Two-stage on purpose, exactly like /api/v1/ota: a device showing the time to a
+ * household must not restart because a fetch completed. Here the second stage is the
+ * firmware's own — the job asks for the reboot once the copy has verified — and the
+ * page never has to trigger it. */
+static esp_err_t h_theme_install(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -2470,32 +2496,49 @@ static esp_err_t h_theme_load(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"name is missing or not a theme name\"}");
     }
-    if (orb_theme_stage_load(name) != ESP_OK) {
-        /* 422, not 400: the request is well formed and the theme on the card is not.
-         * The specific reason is already in the list's why field and in the log — the
-         * file cannot change between the list and this call without becoming a new
-         * file, so the page has the string to show. */
-        httpd_resp_set_status(req, "422 Unprocessable Entity");
-        char b[128];
-        snprintf(b, sizeof b, "{\"error\":\"that theme cannot be loaded\",\"name\":\"%s\"}", name);
+    const esp_err_t e = orb_theme_post_install(name);
+    if (e == ESP_ERR_INVALID_STATE) {
+        /* Another job is on the worker. 409, not 422: the theme may be perfectly
+         * loadable and the page just pressed twice, and the answer is to wait. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
         return httpd_resp_sendstr(req, b);
     }
     char b[192];
     const int n = snprintf(b, sizeof b,
-        "{\"state\":\"staged\",\"name\":\"%s\",\"reboot\":\"POST /api/v1/reboot\"}", name);
+        "{\"state\":\"installing\",\"name\":\"%s\",\"reboot\":\"automatic\"}", name);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"name too long\"}");
     return httpd_resp_sendstr(req, b);
 }
 
-/* POST /api/v1/sd/unstage — the undo. The staged theme is what installs at the next
- * boot, so "actually, no" has to exist or a mistaken tap is a reboot away from being
- * the theme on the wall. */
-static esp_err_t h_theme_unstage(httpd_req_t *req)
+/* POST /api/v1/sd/default — back to the dial the box shipped with (ruling D13's
+ * other half). No card, no container, no copy: the default is the bank `idf.py
+ * flash` wrote at partition offset 0, and the only work is the NVS write that says
+ * to draw it and the reboot that follows. It lives or dies on that choice, not on
+ * whether a card is in the socket — which is exactly why it is its own endpoint
+ * and not another value on the install one. */
+static esp_err_t h_theme_default(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(req, orb_theme_unstage() == ESP_OK
-        ? "{\"state\":\"unstaged\"}" : "{\"error\":\"could not clear the staged load\"}");
+    const esp_err_t e = orb_theme_post_default();
+    if (e == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
+    return httpd_resp_sendstr(req, "{\"state\":\"default\",\"live\":\"default\","
+                                   "\"reboot\":\"automatic\"}");
 }
 
 /* POST /api/v1/sd/delete?name=X */
@@ -2981,30 +3024,37 @@ static const char HTML_THEMES[] =
 "if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
 "C.textContent=data.card+' \\u2014 '+data.free_mb+' MB free of '+data.total_mb+' MB; dial is on '+data.source+' ('+(data.active||'baked-in')+')';"
 "var h='';"
-"if(data.pending){h=h+'<div class=row><b>staged: '+esc(data.pending)+'</b> installs at the next reboot. '"
-"  +'<button class=cur onclick=go()>Reboot and install now</button>'"
-"  +'<button class=warn onclick=unstage()>Cancel</button></div>';}"
+"h=h+'<div class=row><b>dial: '+(data.live=='default'?'the factory default'"
+":'the card theme')+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
+"if(data.live!='default'){h=h+' <button onclick=tofactory()>Use the factory dial</button>';}"
+"h=h+'</div>';"
 "if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];"
 "h=h+'<div class=row><div class=nm>'+esc(t.title||t.name)"
-"  +(t.active?' <span class=sub>on the dial</span>':'')+(t.pending?' <span class=sub>staged</span>':'')+'</div>';"
+"  +(t.active?' <span class=sub>on the dial</span>':'')+'</div>';"
 "h=h+'<div class=sub>'+esc(t.name)+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
-"if(t.ok){h=h+'<button'+(t.active?' class=cur':'')+' onclick=\"load(\\''+esc(t.name)+'\\')\">Load</button>';}"
+"if(data.try_slug==t.name&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
+"if(data.damage_slug==t.name&&data.damage_why){h=h+'<div class=sub>THE DIAL WOULD NOT LOAD IT: '+esc(data.damage_why)+'</div>';}"
+"if(t.ok){h=h+'<button'+(t.active?' class=cur':'')+' onclick=\"load(\\''+esc(t.name)+'\\')\">'+(t.active?'On the dial':'Load and reboot')+'</button>';}"
 "else{h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why)+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+esc(t.name)+'\\')\">Delete file</button></div>';}"
 "L.innerHTML=h;}"
 "function loadn(){var f=document.getElementById('file').files[0];var s=document.getElementById('slug').value.trim();"
 "if(s){return s;}if(f){return f.name.replace(/\\.orbtheme$/i,'');}return '';}"
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
-"function load(n){say('staging '+n+'\\u2026','');"
-"j('/api/v1/sd/load?name='+encodeURIComponent(n),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('could not stage '+n+': '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}refresh();});}"
+"function load(n){if(!confirm('Install '+n+' and reboot the orb?')){return;}"
+"say('installing '+n+'...','');"
+"j('/api/v1/sd/install?name='+encodeURIComponent(n),{method:'POST'}).then(function(r){"
+"if(!r.ok){say('could not install '+n+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
+"say('installed '+n+' - the orb is rebooting to draw it','ok');refresh();});}"
+"function tofactory(){if(!confirm('Go back to the factory dial? The orb reboots.')){return;}"
+"say('choosing the factory dial...','');"
+"j('/api/v1/sd/default',{method:'POST'}).then(function(r){"
+"if(!r.ok){say('could not choose it: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
+"say('factory dial chosen - the orb is rebooting','ok');refresh();});}"
 "function del(n){if(!confirm('Delete '+n+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
 "j('/api/v1/sd/delete?name='+encodeURIComponent(n),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('delete failed: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}refresh();});}"
-"function unstage(){j('/api/v1/sd/unstage',{method:'POST'}).then(function(){refresh();});}"
-"function go(){say('rebooting \\u2014 the theme installs while the screen is dark','ok');"
-"j('/api/v1/reboot',{method:'POST'}).catch(function(){say('the orb is rebooting','ok');});}"
+"if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();});}"
 "function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'}).then(function(){refresh();});}"
 "function doUp(){var f=document.getElementById('file').files[0];"
 "if(!f){say('choose a .orbtheme file first','bad');return;}"
@@ -3013,7 +3063,7 @@ static const char HTML_THEMES[] =
 "x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};"
 "x.onload=function(){var d={};"
 "try{d=JSON.parse(x.responseText);}catch(e){}"
-"if(x.status==200){say('uploaded as '+n,'ok');refresh();}"
+"if(x.status==200){say('uploaded as '+n,'ok');refresh();load(n);}"
 "else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};"
 "x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};"
 "x.ontimeout=function(){say('upload timed out','bad');};"
@@ -3168,8 +3218,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/themes",            .method = HTTP_GET,  .handler = h_themes },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
-        { .uri = "/api/v1/sd/load",     .method = HTTP_POST, .handler = h_theme_load },
-        { .uri = "/api/v1/sd/unstage",  .method = HTTP_POST, .handler = h_theme_unstage },
+        { .uri = "/api/v1/sd/install",  .method = HTTP_POST, .handler = h_theme_install },
+        { .uri = "/api/v1/sd/default",   .method = HTTP_POST, .handler = h_theme_default },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
         { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },
         /* Android + iOS/macOS captive-portal probes (see h_captive). The last two

@@ -56,10 +56,10 @@ esp_err_t orb_jobs_start(void);
  *
  *  This is the only way anything below main/ gets to restart the device. An app
  *  that called esp_restart() would own the power state and would do it from
- *  whichever task noticed, which for a staged theme means from inside the
+ *  whichever task noticed, which for a theme install means from inside the
  *  repaint — and then the last frame never reaches the panel and the owner's
  *  final sight is the screen before the one that said it worked. Same 750 ms
- *  one-shot h_reboot() and the menu's staged-theme path already use, in the one
+ *  one-shot h_reboot() and the theme install job already use, in the one
  *  place that now owns it.
  *
  *  Safe to call repeatedly: the timer is one-shot and re-arming just moves the

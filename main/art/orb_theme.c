@@ -34,6 +34,7 @@
 
 #include "orb_theme.h"
 #include "orb_sd.h"
+#include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
 #include "art_bank.h"
 
@@ -46,7 +47,11 @@ static const char *TAG = "orb_theme";
  * nvs_flash_erase() of the default partition. */
 #define THEME_NVS_PARTITION "storage"
 #define THEME_NVS_NAMESPACE "orb.settings"
-#define THEME_NVS_PENDING   "theme_load"   /* slug staged by the page */
+/* Which slot the dial draws — THEME_LIVE_DEFAULT or THEME_LIVE_CARD. A CHOICE the
+ * owner made, not an operation waiting for a reboot: D13 deleted the pending key,
+ * because a staged install that survives into a boot is a theme change the owner
+ * can no longer cancel and a failure the owner cannot see coming. */
+#define THEME_NVS_LIVE      "theme_live"
 
 /* Container header words. Mirrors tools/orbtheme.py's W_* map; the sentinel test
  * is what keeps the two lists in step. */
@@ -314,12 +319,12 @@ static int geom_counts(const uint32_t *w, size_t nwords, uint32_t c[7])
     return -1;
 }
 
-/* One rule, applied by the list, the uploader and the staging call alike: the name a
- * theme is filed under on the card must be the slug baked INTO it. Two entries claiming
- * to be the same theme is a card somebody has copied by hand, and the page lists one
- * while flash holds the other.
+/* One rule, applied by the list, the uploader and the install alike: the name a
+ * theme is filed under on the card must be the slug baked INTO it. Two entries
+ * claiming to be the same theme is a card somebody has copied by hand, and the page
+ * lists one while flash holds the other.
  *
- * This used to live only in orb_theme_stage_load(), which is what made a mismatch
+ * This used to live only in the staging call, which is what made a mismatch
  * undiagnosable from the page: the row validated clean, so it got a Load button, and
  * tapping the button answered "that theme cannot be loaded" while the only sentence
  * explaining it went to USB serial. Checked here, in the function all three callers
@@ -613,7 +618,12 @@ static clk_aux_t    *s_aux;
 static clk_sprite_t *s_bank;
 static orb_theme_geo_t s_geo;
 static char          s_active_slug[ORB_THEME_SLUG_MAX + 1];
-static char          s_pending_slug[ORB_THEME_SLUG_MAX + 1];
+static char          s_live[16] = THEME_LIVE_DEFAULT;
+/* The slot boot was asked to draw and could not. Slug "" means nothing is
+ * damaged; the picker puts the sentence on that theme's row rather than in a
+ * status line nobody can reach from the dial. */
+static char          s_damage_slug[ORB_THEME_SLUG_MAX + 1];
+static char          s_damage_why[56];
 static const char   *s_source = "baked-in";
 
 /* The fallback pair, straight out of the generated header. Naming those objects
@@ -648,7 +658,36 @@ static void use_baked_in(void)
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
 const char *orb_theme_source(void)         { return s_source; }
 const char *orb_theme_active_slug(void)    { return s_active_slug; }
-const char *orb_theme_pending_slug(void)   { return s_pending_slug; }
+const char *orb_theme_live(void)           { return s_live; }
+const char *orb_theme_damage_slug(void)    { return s_damage_slug; }
+const char *orb_theme_damage_why(void)     { return s_damage_why; }
+
+/* ---- the two decisions D13 pinned, kept free of every syscall ---------------
+ *
+ * Which slot an install may write, and which slot a boot draws, are the two
+ * numbers a wrong answer about costs a device its dial. Both are lifted verbatim
+ * into tools/host_tz_test.py and truth-tabled there, because on the bench there is
+ * no second slot to corrupt and no way to watch a boot draw the wrong bank. */
+
+typedef enum { BOOT_ART_DEFAULT = 0, BOOT_ART_CARD = 1 } boot_art_t;
+
+/* Which slot the dial draws. Anything that is not the card choice — "default",
+ * junk, a key NVS cannot read — is the default, which is the answer that is
+ * correct when the owner never chose and the answer that keeps the dial working
+ * when the choice itself is damaged. B being valid is boot's evidence, and boot
+ * verifies the pixels separately: this predicate decides where to look, not
+ * whether it loaded. */
+static boot_art_t boot_resolve(const char *live, const bool b_valid)
+{
+    if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;
+    return b_valid ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
+}
+
+/* Slot B, always. Slot A is what `idf.py flash` wrote and what the factory dial
+ * reads its pixels from, and the bug this replaces (install into whichever slot
+ * is not live) aimed the second install at A and erased the default with it. The
+ * serial that goes in the new header still comes from whatever B last held. */
+static uint32_t install_target(void) { return SLOT_B_HDR; }
 
 
 /* ------------------------------------------------------------------------- *
@@ -710,20 +749,28 @@ static ssize_t rd_at(int fd, size_t *io_pos, uint8_t *dst, size_t n)
     return (ssize_t)done;
 }
 
-/* NULL if the container is intact, otherwise the reason it is not. Called before
- * anything is staged and before the partition is touched, so a kit copied onto the
- * card with a flaky reader is caught on a page that still says "Load", not as a
- * boot that quietly fell back to the previous slot with nothing to blame.
+/* NULL if the container is sound and the dial could draw it, otherwise the reason it
+ * is not. Reached before anything is installed and before the partition is touched —
+ * by the list, by the uploader, and by the installer alike — so a kit copied onto the
+ * card with a flaky reader, or baked with a table the painter refuses, is caught on a
+ * page that still says what is on the card, not as a boot that quietly fell back to
+ * the default with nothing to blame.
  *
  * Each checksum covers exactly its own bytes, the way tools/orbtheme.py computes
  * them (zlib.crc32 over the blob, then over the payload). Hashing the alignment gap
  * between the two because it is simpler would make the device disagree with every
  * file the baker has ever written. */
+/* Defined below with the other geometry readers; declared here because
+ * verify_container() is the one place every consumer of a card theme reaches the
+ * numbers through, and the readers need the blob's own counts, which only the
+ * header path above has established by this point. */
+static const char *card_check_geom(int fd, const orb_thdr_t *o);
+
 static const char *verify_container(int fd, const orb_thdr_t *h)
 {
     /* The function that touches s_chunk reserves it, the way slot_verify_pixels()
      * already does — idempotent, one branch once the buffer exists. Reserve it HERE
-     * and not in each caller: orb_theme_boot() and orb_theme_stage_load() reach this
+     * and not in each caller: orb_theme_boot() and orb_theme_install() reach this
      * through card_open(), which reserves, but orb_theme_upload_end() opens its .part
      * with a bare open() and never passes through that door. Measured on the bench:
      * the whole 3.87 MB arrived, this function pread() into a NULL s_chunk on a boot
@@ -754,7 +801,14 @@ static const char *verify_container(int fd, const orb_thdr_t *h)
     }
     if (crc != h->art_crc)
         return "pixels do not match their checksum — re-copy the file onto the card";
-    return NULL;
+
+    /* And the numbers inside the geometry, not only their checksums. Three intact
+     * CRCs and a theme the painter still refuses to draw is a real state — the card's
+     * own "neon" is one — and the owner has to hear it from the row that listed the
+     * file, not after a press installed it and rebooted into the factory dial. The
+     * strings are orb_theme_geom_parse()'s, the same ones the boot path answers with.
+     */
+    return card_check_geom(fd, h);
 }
 
 
@@ -845,16 +899,15 @@ static int card_open_locked(const char *slug, orb_thdr_t *o, const char **why)
  * card_close(), which is why the pair is documented as owning both. A failure inside
  * the core never leaves the mutex held.
  *
- * The mount check belongs HERE, before the take, and not in the core. orb_theme_boot()
- * runs from main.c:72, while orb_sd_init() only runs at main.c:138 — deliberately,
- * because an install rewrites the region the dial reads its pixels from and must
- * finish before the first paint, and because the SD init ladder can burn a second per
- * failed rung with no card-detect line. So the ONLY thing that mounts the card in time
- * for a staged install is this call. Measured on hardware: with the check moved into
- * the core (which cannot mount without taking the mutex its caller already holds), the
- * staged install at t=712 ms found no card — the mount happened at t=2136 ms — and the
- * dial burned attempt 1 of 3 and drew the baked-in bank for a file that was on the
- * card the whole time. */
+ * The mount check belongs HERE, before the take, and not in the core. What reaches
+ * this path is a worker job — an install, a delete, an upload end — and the SD init
+ * ladder can burn a second per failed rung with no card-detect line, so a card job
+ * that asked for the mount *after* taking the mutex would either deadlock or find no
+ * card at all. Measured on hardware when the boot ladder still installed themes: with
+ * the check moved into the core (which cannot mount without taking the mutex its
+ * caller already holds), the install at t=712 ms found no card — the mount happened
+ * at t=2136 ms — and the dial burned a retry attempt and drew the baked-in bank for a
+ * file that was on the card the whole time. */
 static int card_open(const char *slug, orb_thdr_t *o, const char **why)
 {
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
@@ -933,67 +986,71 @@ static esp_err_t slot_verify_pixels(const slot_t *s, const esp_partition_t *p)
     return crc == s->h.art_crc ? ESP_OK : ESP_ERR_INVALID_CRC;
 }
 
-/* Unpack a slot's geometry blob into the statics. RAM is PSRAM first: the blob is a
- * few KB read once at boot, and internal RAM is the resource this board is out of.
- * Returns ESP_OK only if orb_theme_geom_parse() accepted every number in it. */
-static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
+/* Parse a geometry blob. adopt=true publishes the tables into this module's
+ * geometry, which is what the dial then draws; adopt=false parses the same numbers
+ * and throws the tables away, which is what a check of a file or of a copy wants.
+ * The refusal strings are the same either way, and that is the point of the
+ * parameter: a path that checked less than the boot does commits a theme the owner
+ * pressed and the dial refuses to draw, which is the gap the bench found with the
+ * card's own "neon" — every checksum intact, one complication record shown with
+ * no size. RAM is PSRAM first: the blob is a few KB, and internal RAM is the
+ * resource this board is out of. Returns the reason, or NULL. */
+static const char *geom_validate_blob(const uint32_t *blob, const orb_thdr_t *h, bool adopt)
 {
-    uint32_t *blob = heap_caps_malloc(s->h.geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!blob) blob = heap_caps_malloc(s->h.geom_size, MALLOC_CAP_8BIT);
-    if (!blob) return ESP_ERR_NO_MEM;
-    for (uint32_t off = 0; off < s->h.geom_size; off += CHUNK_BYTES) {
-        const uint32_t want = (s->h.geom_size - off > CHUNK_BYTES) ? CHUNK_BYTES
-                                                                    : (s->h.geom_size - off);
-        const esp_err_t e = esp_partition_read(p, s->hdr_base + SLOT_GEOM_OFF + off,
-                                               (uint8_t *)blob + off, want);
-        if (e != ESP_OK) { free(blob); return e; }
-    }
-
     /* One arena for every table, sized from the counts the slot declared —
      * geom_counts() already proved those counts and this length agree, and proved
      * the complication counts sit inside the dial's caps. */
-    const size_t bytes = sizeof(clk_bg_rect_t) * (size_t)s->h.n_rects
-                       + sizeof(uint16_t) * (size_t)(s->h.n_first + s->h.n_delays)
-                       + sizeof(uint32_t) * (size_t)s->h.n_bgf
-                       + sizeof(clk_comp_t)   * (size_t)s->h.n_comp
-                       + sizeof(clk_aux_t)    * (size_t)s->h.n_aux
-                       + sizeof(clk_sprite_t) * (size_t)s->h.n_bank
+    const size_t bytes = sizeof(clk_bg_rect_t) * (size_t)h->n_rects
+                       + sizeof(uint16_t) * (size_t)(h->n_first + h->n_delays)
+                       + sizeof(uint32_t) * (size_t)h->n_bgf
+                       + sizeof(clk_comp_t)   * (size_t)h->n_comp
+                       + sizeof(clk_aux_t)    * (size_t)h->n_aux
+                       + sizeof(clk_sprite_t) * (size_t)h->n_bank
                        + 16;
     uint8_t *arena = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!arena) arena = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
-    if (!arena) { free(blob); return ESP_ERR_NO_MEM; }
+    if (!arena) return "out of memory for the theme's tables";
     /* Zeroed before the parse fills it: clock_view.c bounds some loops by clk_theme
      * numbers rather than by these lengths (it reads clk_bg_rect_first[tgt+1]), so a
      * byte the validator never saw must never be an uninitialised one. */
     memset(arena, 0, bytes);
     uint8_t *q = arena;
-    s_rects    = (clk_bg_rect_t *)q; q += sizeof(clk_bg_rect_t) * (size_t)s->h.n_rects;
-    s_first    = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)s->h.n_first;
-    s_delays   = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)s->h.n_delays;
-    s_bgframes = (uint32_t *)q;      q += sizeof(uint32_t) * (size_t)s->h.n_bgf;
-    s_comps    = (clk_comp_t *)q;    q += sizeof(clk_comp_t) * (size_t)s->h.n_comp;
-    s_aux      = (clk_aux_t *)q;     q += sizeof(clk_aux_t) * (size_t)s->h.n_aux;
-    s_bank     = (clk_sprite_t *)q;
+    clk_bg_rect_t *rects  = (clk_bg_rect_t *)q; q += sizeof(clk_bg_rect_t) * (size_t)h->n_rects;
+    uint16_t *first       = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)h->n_first;
+    uint16_t *delays      = (uint16_t *)q;      q += sizeof(uint16_t) * (size_t)h->n_delays;
+    uint32_t *bgframes    = (uint32_t *)q;      q += sizeof(uint32_t) * (size_t)h->n_bgf;
+    clk_comp_t *comps     = (clk_comp_t *)q;    q += sizeof(clk_comp_t) * (size_t)h->n_comp;
+    clk_aux_t *aux        = (clk_aux_t *)q;     q += sizeof(clk_aux_t) * (size_t)h->n_aux;
+    clk_sprite_t *bank    = (clk_sprite_t *)q;
 
-    orb_theme_geo_t tmp = { .theme = &s_theme, .rects = s_rects, .rect_first = s_first,
-                            .gif_delays = s_delays, .bg_frames = s_bgframes,
-                            .comps = s_comps, .aux = s_aux, .bank = s_bank };
-    const char *why = orb_theme_geom_parse(blob, s->h.geom_size / 4u, s->h.art_size, &tmp);
-    free(blob);
+    /* The pre-flight's own theme struct: the parse writes every field of it, and
+     * the live one the dial is drawing must not be touched by a check of a file the
+     * owner has only asked about. Static rather than stack because this is a
+     * kilobyte-scale struct and the worker that installs through it has a fixed
+     * stack sized for the flash copy, not for this; one install runs at a time,
+     * which is what orb_jobs' single outstanding job is for. */
+    static clk_theme_t preflight;
+    orb_theme_geo_t tmp = { .theme = adopt ? &s_theme : &preflight,
+                            .rects = rects, .rect_first = first,
+                            .gif_delays = delays, .bg_frames = bgframes,
+                            .comps = comps, .aux = aux, .bank = bank };
+    const char *why = orb_theme_geom_parse(blob, h->geom_size / 4u, h->art_size, &tmp);
     if (why) {
+        /* Nothing published either way: on the adopt path the tables are assigned
+         * below only once the parse has accepted them, so no static can be left
+         * pointing into the arena that is about to go away. */
         free(arena);
-        /* Every table, not just rects: the arena is gone, and a static still
-         * pointing into it is a trap for whoever reads these tables next. Nothing
-         * reads them on this path — orb_theme_boot() falls back to
-         * use_baked_in(), which repopulates every field of s_geo — but the dangling
-         * ones were the only ones that could have been. */
-        s_rects = NULL; s_first = NULL; s_delays = NULL; s_bgframes = NULL;
-        s_comps = NULL; s_aux = NULL; s_bank = NULL;
-        ESP_LOGE(TAG, "%s: %s — refusing to draw it", s->h.slug, why);
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "%s: %s — refusing to draw it", h->slug, why);
+        return why;
+    }
+    if (!adopt) {
+        free(arena);          /* pre-flight: it proved the numbers, that is all it was for */
+        return NULL;
     }
     /* The arena is never freed: clock_view.c caches pointers into these tables in
      * its LVGL descriptors, the same lifetime rule art_bank.c applies to the map. */
+    s_rects = rects; s_first = first; s_delays = delays; s_bgframes = bgframes;
+    s_comps = comps; s_aux = aux; s_bank = bank;
     s_geo.theme      = &s_theme;
     s_geo.rects      = s_rects;
     s_geo.rect_first = s_first;
@@ -1002,19 +1059,68 @@ static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
     s_geo.comps      = s_comps;
     s_geo.aux        = s_aux;
     s_geo.bank       = s_bank;
-    s_geo.n_comps    = (uint16_t)s->h.n_comp;
-    s_geo.n_aux      = (uint16_t)s->h.n_aux;
-    s_geo.n_bank     = (uint16_t)s->h.n_bank;
-    s_geo.art_size   = s->h.art_size;
+    s_geo.n_comps    = (uint16_t)h->n_comp;
+    s_geo.n_aux      = (uint16_t)h->n_aux;
+    s_geo.n_bank     = (uint16_t)h->n_bank;
+    s_geo.art_size   = h->art_size;
     s_geo.from_container = true;
-    strlcpy(s_geo.slug, s->h.slug, sizeof(s_geo.slug));
-    strlcpy(s_active_slug, s->h.slug, sizeof(s_active_slug));
-    return ESP_OK;
+    strlcpy(s_geo.slug, h->slug, sizeof(s_geo.slug));
+    strlcpy(s_active_slug, h->slug, sizeof(s_active_slug));
+    return NULL;
+}
+
+/* Read a slot's geometry blob off the partition and validate it. */
+static const char *slot_parse_geom(const slot_t *s, const esp_partition_t *p, bool adopt)
+{
+    uint32_t *blob = heap_caps_malloc(s->h.geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!blob) blob = heap_caps_malloc(s->h.geom_size, MALLOC_CAP_8BIT);
+    if (!blob) return "out of memory reading the theme's tables";
+    for (uint32_t off = 0; off < s->h.geom_size; off += CHUNK_BYTES) {
+        const uint32_t want = (s->h.geom_size - off > CHUNK_BYTES) ? CHUNK_BYTES
+                                                                    : (s->h.geom_size - off);
+        const esp_err_t e = esp_partition_read(p, s->hdr_base + SLOT_GEOM_OFF + off,
+                                               (uint8_t *)blob + off, want);
+        if (e != ESP_OK) { free(blob); return "the theme's tables would not read off the flash"; }
+    }
+    const char *why = geom_validate_blob(blob, &s->h, adopt);
+    free(blob);
+    return why;
+}
+
+/* The same numbers over a container's own blob, off the card. Reached only from
+ * verify_container(), so it is the list, the uploader and the install alike that
+ * refuse a theme the painter cannot draw — the row says it, at the file, before
+ * anybody pays for a copy or a reboot. */
+static const char *card_check_geom(int fd, const orb_thdr_t *o)
+{
+    uint32_t *blob = heap_caps_malloc(o->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!blob) blob = heap_caps_malloc(o->geom_size, MALLOC_CAP_8BIT);
+    if (!blob) return "out of memory reading the theme's tables";
+    size_t pos = o->geom_off, left = o->geom_size;
+    while (left) {
+        const size_t want = left > CHUNK_BYTES ? CHUNK_BYTES : left;
+        uint8_t *at = (uint8_t *)blob + (o->geom_size - left);
+        if (rd_at(fd, &pos, at, want) != (ssize_t)want) {
+            free(blob);
+            return "file is shorter than its header claims — re-copy it";
+        }
+        left -= want;
+    }
+    const char *why = geom_validate_blob(blob, o, /*adopt=*/false);
+    free(blob);
+    return why;
+}
+
+
+
+static esp_err_t slot_load_geom(const slot_t *s, const esp_partition_t *p)
+{
+    return slot_parse_geom(s, p, /*adopt=*/true) ? ESP_FAIL : ESP_OK;
 }
 
 
 /* ------------------------------------------------------------------------- *
- * The staged load, and the install that carries it out.
+ * NVS: the one key this module owns, and the handle it is read and written with.
  * ------------------------------------------------------------------------- */
 
 static nvs_handle_t s_h;              /* one open handle, for the boot's life */
@@ -1042,14 +1148,14 @@ static esp_err_t nvs_put(const char *key, const char *val)
     const nvs_handle_t h = theme_nvs();
     if (!h) return ESP_ERR_INVALID_STATE;
     esp_err_t e = val ? nvs_set_str(h, key, val) : nvs_erase_key(h, key);
-    /* Erasing a key that was never written is the normal case for "nothing staged",
-     * not a failure to report. */
+    /* Erasing a key that was never written is the normal case for "back to the
+     * factory default", not a failure to report. */
     if (e == ESP_ERR_NVS_NOT_FOUND && !val) e = ESP_OK;
     if (e != ESP_OK) return e;
-    /* The commit is what makes a staged load survive the reboot that follows. Skip
-     * it and the page says "rebooting into <theme>" and comes back with the theme it
-     * already had — the worst failure this feature can have: quiet, and
-     * indistinguishable from a theme that simply looked wrong. */
+    /* The commit is what makes the choice survive the reboot that follows. Skip it
+     * and the dial says "using <theme>" and comes back with the theme it already
+     * had — the worst failure this feature can have: quiet, and indistinguishable
+     * from a theme that simply looked wrong. */
     return nvs_commit(h);
 }
 
@@ -1146,44 +1252,7 @@ static esp_err_t copy_into(int fd, const orb_thdr_t *h, const esp_partition_t *p
     return ESP_OK;
 }
 
-/* The retry bound for a staged install. Without it a card that has gone missing — or
- * a theme corrupted on the card after the page staged it — is rebooted back into the
- * same failing install forever, and a device that cannot finish booting is exactly
- * the brick this feature must not become. Three attempts, then the pending key is
- * dropped and the dial boots the theme it had. */
-#define THEME_MAX_FAILS 3
-#define THEME_NVS_FAILS "theme_fails"
 
-/* Pick the slot to install INTO: the one that is NOT the live theme, so the theme the
- * dial is about to fall back to is never the one being erased. With no valid slot at
- * all, B is chosen so the raw bank at partition offset 0 — what `idf.py flash` wrote
- * — survives as the fallback until something better exists. */
-static void target_slot(const slot_t *a, const slot_t *b, uint32_t *hdr_base,
-                        uint32_t *serial_out)
-{
-    uint32_t max_serial = 0;
-    if (a->valid && a->h.serial > max_serial) max_serial = a->h.serial;
-    if (b->valid && b->h.serial > max_serial) max_serial = b->h.serial;
-    *serial_out = max_serial + 1;
-
-    if (!a->valid && !b->valid) { *hdr_base = SLOT_B_HDR; return; }
-    if (a->valid && b->valid) {
-        /* Both live: replace the older one, keep the current theme installable-to. */
-        *hdr_base = (a->h.serial >= b->h.serial) ? SLOT_B_HDR : SLOT_A_HDR;
-        return;
-    }
-    *hdr_base = a->valid ? SLOT_B_HDR : SLOT_A_HDR;
-}
-
-
-/* Read both slot headers. */
-static void slots_read(const esp_partition_t *p, slot_t *a, slot_t *b)
-{
-    slot_init(a, SLOT_A_HDR, SLOT_A_ART);
-    slot_init(b, SLOT_B_HDR, SLOT_B_ART);
-    slot_read(a, p);
-    slot_read(b, p);
-}
 
 /* Make the resolved theme the one the dial draws: geometry into s_geo, pixels
  * mapped by art_bank. On any failure the caller gets the baked-in pair, which is
@@ -1196,10 +1265,16 @@ static esp_err_t adopt(const esp_partition_t *p, slot_t *s, const char *src_name
     return art_bank_init(s->art_base, s->h.art_size);
 }
 
-/* Carries out a staged install, then resolves the theme to draw. Called from
- * app_main BEFORE display_init(), so nothing has read the bank yet — a theme swap
- * therefore happens when the dial is not looking, which is what keeps the LVGL
- * task's cached sprite pointers honest. */
+/* Resolve the owner's choice and verify the slot it names. Called from app_main
+ * BEFORE display_init(), so nothing has mapped the bank yet — the pixels boot
+ * verifies are the ones the paint path is about to read.
+ *
+ * This function no longer installs anything (D13). It used to open the card, copy
+ * a container and keep a retry counter, which made every boot depend on a card
+ * that may have been pulled and made a half-finished copy a state a device could
+ * be left in overnight. An install now happens in orb_theme_install(), on the
+ * worker, at the moment the owner picks. Boot draws what is already verified or
+ * draws the default; those are the only two outcomes. */
 esp_err_t orb_theme_boot(void)
 {
     const esp_partition_t *p = art_bank_partition();
@@ -1209,180 +1284,271 @@ esp_err_t orb_theme_boot(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    s_pending_slug[0] = '\0';
-    nvs_get(THEME_NVS_PENDING, s_pending_slug, sizeof(s_pending_slug));
+    s_live[0] = '\0';
+    if (!nvs_get(THEME_NVS_LIVE, s_live, sizeof s_live) || !s_live[0])
+        strlcpy(s_live, THEME_LIVE_DEFAULT, sizeof s_live);
+    s_damage_slug[0] = '\0';
+    s_damage_why[0] = '\0';
 
-    if (s_pending_slug[0]) {
-        const nvs_handle_t h = theme_nvs();
-        uint8_t fails = 0;
-        if (h) nvs_get_u8(h, THEME_NVS_FAILS, &fails);
+    /* Slot B is the only thing worth reading: A is the flashed bank, carries no
+     * header at all, and is what the fallback path below draws anyway. */
+    slot_t b;
+    slot_init(&b, SLOT_B_HDR, SLOT_B_ART);
+    slot_read(&b, p);
 
-        const char *why = NULL;
-        char name_why[64];
-        orb_thdr_t h2;
-        int fd = card_open(s_pending_slug, &h2, &why);
-        esp_err_t e = ESP_FAIL;
-        if (fd >= 0) {
-            /* The identity check the page applied before it staged this slug, applied
-             * again here: NVS holds a name and the card holds bytes, and those are only
-             * the same theme if the bytes still say so. An installed slot takes its slug
-             * from the file, so a file swapped under a still-staged name would leave
-             * flash claiming a name the list does not carry — and the fail ladder below
-             * is what turns that into a fallen-back dial rather than a permanent state. */
-            const bool named = filed_as_its_own_slug(&h2, s_pending_slug,
-                                                     name_why, sizeof name_why);
-            /* Checksum the copy on the card BEFORE it is written anywhere, so a
-             * damaged file costs a message instead of a slot. */
-            const char *vv = named ? verify_container(fd, &h2) : name_why;
-            if (vv) {
-                why = vv;
-            } else {
-                slot_t a, b; slots_read(p, &a, &b);
-                uint32_t hb, serial;
-                target_slot(&a, &b, &hb, &serial);
-                e = copy_into(fd, &h2, p, hb, &why);
-                if (e == ESP_OK) {
-                    /* Verify from the PARTITION, then make the slot live. Reversing
-                     * those two would let a slot go live on bytes nobody read back. */
-                    slot_t probe;
-                    slot_init(&probe, hb, hb + SLOT_ART_OFF);
-                    memcpy(&probe.h, &h2, sizeof(h2));
-                    probe.h.geom_off = SLOT_GEOM_OFF;
-                    probe.h.art_off  = SLOT_ART_OFF;
-                    if (slot_verify_pixels(&probe, p) != ESP_OK) {
-                        why = "pixels did not read back intact — try another card";
-                        e = ESP_FAIL;
-                    } else {
-                        /* The header block is erased HERE, not in copy_into(): erasing
-                         * it earlier would invalidate the target slot for the whole
-                         * multi-second copy, and erasing it later is impossible — a NOR
-                         * write over already-programmed bytes ANDs the bits and yields
-                         * a header whose checksum can never match. Between these two
-                         * facts sits the safety property: the target slot's old header
-                         * is valid right up until the new one is ready to replace it. */
-                        const esp_err_t ee = esp_partition_erase_range(p, hb, THEME_SECTOR);
-                        if (ee != ESP_OK) {
-                            why = "could not clear the old slot header";
-                            e = ee;
-                        } else {
-                            uint32_t hdr[W_WORDS];
-                            build_slot_hdr(hdr, &h2, serial);
-                            e = esp_partition_write(p, hb, hdr, sizeof(hdr));
-                            if (e != ESP_OK) why = "could not make the new slot live";
-                        }
-                    }
-                }
-                ESP_LOGI(TAG, "install of \"%s\" from the card: %s",
-                         s_pending_slug, e == ESP_OK ? "ok" : (why ? why : "failed"));
-            }
-            card_close(fd);
+    if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD) {
+        if (adopt(p, &b, "slot-B") == ESP_OK) {
+            ESP_LOGI(TAG, "theme \"%s\" from slot-B (chosen), %u B of pixels",
+                     s_active_slug, (unsigned)b.h.art_size);
+            return ESP_OK;
         }
-
-        if (e == ESP_OK) {
-            nvs_put(THEME_NVS_PENDING, NULL);
-            if (h) { nvs_set_u8(h, THEME_NVS_FAILS, 0); nvs_commit(h); }
-            s_pending_slug[0] = '\0';
-        } else {
-            if (h) { nvs_set_u8(h, THEME_NVS_FAILS, (uint8_t)(fails + 1)); nvs_commit(h); }
-            ESP_LOGE(TAG, "theme install attempt %u of %d failed", (unsigned)fails + 1,
-                     THEME_MAX_FAILS);
-            if (fails + 1 >= THEME_MAX_FAILS) {
-                nvs_put(THEME_NVS_PENDING, NULL);
-                if (h) { nvs_set_u8(h, THEME_NVS_FAILS, 0); nvs_commit(h); }
-                s_pending_slug[0] = '\0';
-                ESP_LOGE(TAG, "giving up on that install — the dial keeps its theme");
-            }
-        }
-    }
-
-    slot_t a, b;
-    slots_read(p, &a, &b);
-    slot_t *live = NULL;
-    if (a.valid && b.valid) live = (a.h.serial >= b.h.serial) ? &a : &b;
-    else if (a.valid)       live = &a;
-    else if (b.valid)       live = &b;
-
-    if (!live) {
-        /* Logged at INFO, not silently: after a failed install this is the line that
-         * says which theme is actually on the wall. */
+        /* The choice named a slot that will not load. Its bytes were read back and
+         * checksummed when the install wrote them, so anything that fails now is
+         * corruption and not a job still running: say so on that theme's row, draw
+         * the default, and leave the choice WRITTEN. Clearing it here would erase
+         * what the owner asked for, would be an NVS write during boot, and would
+         * make the dial quietly forget a theme they can still re-install. */
+        strlcpy(s_damage_slug, b.h.slug[0] ? b.h.slug : "that theme",
+                sizeof s_damage_slug);
+        strlcpy(s_damage_why, "the installed copy did not verify — re-install it",
+                sizeof s_damage_why);
+        ESP_LOGE(TAG, "\"%s\" was the chosen theme and would not load — drawing the default",
+                 s_damage_slug);
+    } else if (b.valid) {
+        /* B holds an install the owner walked away from. It is not drawn and not
+         * erased: it is theirs, and the default costs nothing to keep. */
+        ESP_LOGI(TAG, "slot-B holds \"%s\" but the dial is on the factory default",
+                 b.h.slug);
+    } else {
         ESP_LOGI(TAG, "no installed theme — drawing the baked-in bank");
-        use_baked_in();
-        return art_bank_init(0, s_geo.art_size);
     }
-    if (adopt(p, live, live == &a ? "slot-A" : "slot-B") == ESP_OK) {
-        ESP_LOGI(TAG, "theme \"%s\" from %s, %u B of pixels",
-                 s_active_slug, s_source, (unsigned)live->h.art_size);
-        return ESP_OK;
-    }
-    ESP_LOGE(TAG, "\"%s\" would not load — falling back", live->h.slug);
     use_baked_in();
+    /* The same init the slot path runs, on partition offset 0: the baked-in bank is
+     * the pixels `idf.py flash` wrote, and they were checksummed by tools at build
+     * time, so there is nothing left to verify here. */
     return art_bank_init(0, s_geo.art_size);
 }
 
-
-/* ------------------------------------------------------------------------- *
- * The page-facing API.
- * ------------------------------------------------------------------------- */
-
-esp_err_t orb_theme_stage_load(const char *slug)
+/** One place to fail: the row shows `why`, the log shows the same sentence, the
+ *  caller gets the esp_err_t that decides whether it asks for a reboot. */
+static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t whysz)
 {
-    if (!orb_sd_name_ok(slug)) return ESP_ERR_INVALID_ARG;
+    if (why && whysz) strlcpy(why, w ? w : "install failed", whysz);
+    ESP_LOGW(TAG, "install: %s", w ? w : "install failed");
+    return e;
+}
 
-    /* Validated in full — both checksums, over the whole file — before anything is
-     * written down. The alternative is a page that says "rebooting" and comes back
-     * on the theme it had, because the file was damaged and the install refused it
-     * three boots later. */
-    const char *why = NULL;
+/* The one implementation of "put this container on the wall", reached the same way
+ * from the dial's picker and the page's Load button — worker task both times, so the
+ * two entry points cannot disagree about whether the copy may take the card lock.
+ * Everything before the first flash write can fail as often as it likes; the copy
+ * starts only once the whole container has checksummed off the card, which is why a
+ * damaged file costs a sentence on the row and not a slot. */
+esp_err_t orb_theme_install(const char *slug, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    if (!orb_sd_name_ok(slug))
+        return install_failed(ESP_ERR_INVALID_ARG, "that name is not one the card can hold",
+                              why, whysz);
+    const esp_partition_t *p = art_bank_partition();
+    if (!p)
+        return install_failed(ESP_ERR_NOT_FOUND, "this board has no theme storage",
+                              why, whysz);
+
+    const char *w = NULL;
     orb_thdr_t h;
     const int64_t t0 = esp_timer_get_time();
-    const int fd = card_open(slug, &h, &why);
-    if (fd < 0) {
-        ESP_LOGW(TAG, "stage \"%s\": %s", slug, why ? why : "unreadable");
-        return ESP_FAIL;
-    }
-    const char *vv = verify_container(fd, &h);
-    card_close(fd);
-    /* After the close, and timed. Both ends of the wait matter on the serial line: this
-     * is the request that holds the one httpd worker for seconds (a 3.87 MB container
-     * reads off the card at ~1.34 MB/s at SPI 20 MHz), so the number says how long
-     * /api/v1/sd can take to answer behind it, and the line only appearing after the
-     * give is what proves the mutex came back. */
-    ESP_LOGI(TAG, "stage \"%s\": container verified in %lld ms", slug,
-             (long long)((esp_timer_get_time() - t0) / 1000));
-    if (vv) {
-        ESP_LOGW(TAG, "stage \"%s\": %s", slug, vv);
-        return ESP_ERR_INVALID_CRC;
-    }
+    const int fd = card_open(slug, &h, &w);
+    if (fd < 0) return install_failed(ESP_FAIL, w, why, whysz);
 
-    /* The same rule the list applied above the row and the uploader applied before it
-     * renamed the .part, reached from the one implementation of it. Normally
-     * unreachable — the Load button only exists when the scan said ok — and kept
-     * because the page is not the only way a slug gets here, and staging is the last
-     * moment where a refusal is cheaper than a reboot into a slot that will not
-     * validate. */
+    /* The identity rule, applied here and nowhere else on this path: the header an
+     * installed slot carries takes its slug from the FILE, so a file swapped under a
+     * name the picker is holding would install flash that claims a name the list does
+     * not carry. Checked before the checksums, because it is one header read against
+     * four megabytes of pixels. */
     char name_why[64];
-    if (!filed_as_its_own_slug(&h, slug, name_why, sizeof name_why)) {
-        ESP_LOGW(TAG, "stage \"%s\": the file calls itself \"%s\" — rename one of them",
-                 slug, h.slug);
-        return ESP_ERR_INVALID_ARG;
+    const bool named = filed_as_its_own_slug(&h, slug, name_why, sizeof name_why);
+    /* Geometry bytes and pixel bytes, both checksummed, over the whole file, off the
+     * card — the same ladder the old boot path climbed, in the same order, one call
+     * earlier in the owner's attention. */
+    const char *vv = named ? verify_container(fd, &h) : name_why;
+    if (vv) {
+        card_close(fd);
+        return install_failed(ESP_ERR_INVALID_CRC, vv, why, whysz);
     }
 
-    const esp_err_t e = nvs_put(THEME_NVS_PENDING, slug);
-    if (e != ESP_OK) return e;
-    const nvs_handle_t hnd = theme_nvs();
-    if (hnd) { nvs_set_u8(hnd, THEME_NVS_FAILS, 0); nvs_commit(hnd); }   /* fresh attempt count */
-    strlcpy(s_pending_slug, slug, sizeof(s_pending_slug));
-    ESP_LOGI(TAG, "staged \"%s\" — reboot to install it", slug);
+    /* The serial keeps counting up across re-installs: whatever B last held says what
+     * number comes next, and a header that cannot be read restarts the count at 1 —
+     * safe now that B is the only slot in play and nothing compares two slots. */
+    slot_t old;
+    slot_init(&old, SLOT_B_HDR, SLOT_B_ART);
+    slot_read(&old, p);
+    const uint32_t serial = old.valid ? old.h.serial + 1 : 1;
+
+    esp_err_t e = copy_into(fd, &h, p, install_target(), &w);
+    if (e == ESP_OK) {
+        /* Verify from the PARTITION, then make the slot live. Reversing those two
+         * would let a slot go live on bytes nobody read back. */
+        slot_t probe;
+        slot_init(&probe, install_target(), install_target() + SLOT_ART_OFF);
+        memcpy(&probe.h, &h, sizeof(h));
+        probe.h.geom_off = SLOT_GEOM_OFF;
+        probe.h.art_off  = SLOT_ART_OFF;
+        const esp_err_t ve = slot_verify_pixels(&probe, p);
+        const char *gw = (ve == ESP_OK) ? slot_parse_geom(&probe, p, /*adopt=*/false) : NULL;
+        if (ve != ESP_OK) {
+            w = "pixels did not read back intact — try another card";
+            e = ve;
+        } else if (gw) {
+            /* The parse boot is about to run, run here instead, on the bytes as
+             * they now sit in the slot. Without it the install checks less than the
+             * boot does: every checksum can match and the theme still be one the
+             * painter refuses to draw — a complication shown with no size, a hand
+             * whose pixels lie outside the payload — and the owner's press would buy
+             * a reboot into the factory dial with the reason only in a log line.
+             * Bench-found with the card's own "neon". The slot keeps its old header
+             * either way, because the commit below has not happened yet. */
+            w = gw;
+            e = ESP_ERR_INVALID_CRC;
+        } else {
+            /* The header block is erased HERE, not in copy_into(): erasing it
+             * earlier would invalidate B for the whole multi-second copy, and erasing
+             * it later is impossible — a NOR write over already-programmed bytes ANDs
+             * the bits and yields a header whose checksum can never match. Between
+             * these two facts sits the safety property, and after D13 it has a second
+             * half: B's old header stays valid until the new one is ready to replace
+             * it, AND the slot the factory default draws from is never an install
+             * target at all. So an install that dies anywhere from here to the header
+             * write — in the erase, in the write, at a power cut — leaves B headerless
+             * and the next boot draws the default. */
+            const esp_err_t ee = esp_partition_erase_range(p, install_target(),
+                                                           THEME_SECTOR);
+            if (ee != ESP_OK) {
+                w = "could not clear the old slot header";
+                e = ee;
+            } else {
+                uint32_t hdr[W_WORDS];
+                build_slot_hdr(hdr, &h, serial);
+                e = esp_partition_write(p, install_target(), hdr, sizeof(hdr));
+                if (e != ESP_OK) w = "could not make the new slot live";
+            }
+        }
+    }
+    card_close(fd);
+    if (e != ESP_OK) return install_failed(e, w, why, whysz);
+
+    /* The commit is last and is the ONLY thing that makes the new bytes the dial's:
+     * B is verified by here, so a set that fails leaves a correct-but-unused install
+     * behind rather than a dial drawing bytes the owner never saw work. */
+    e = orb_theme_set_live(THEME_LIVE_CARD);
+    if (e != ESP_OK)
+        return install_failed(e, "it installed, but the dial could not be told to use it",
+                              why, whysz);
+    s_damage_slug[0] = '\0';
+    s_damage_why[0] = '\0';
+    /* Timed, and logged after the card lock came back: a 3.87 MB container takes
+     * seconds to read at SPI 20 MHz, so this is the line that says how long the
+     * worker held the card away from the photo viewer, and the line only appearing
+     * after the give is what proves the mutex came back. */
+    ESP_LOGI(TAG, "installed \"%s\" into slot-B in %lld ms — the dial reboots to draw it",
+             slug, (long long)((esp_timer_get_time() - t0) / 1000));
     return ESP_OK;
 }
 
-esp_err_t orb_theme_unstage(void)
+
+
+
+/* ------------------------------------------------------------------------- *
+ * The install, and the choice. Worker-task calls: the page reaches them through
+ * the same job queue the dial does, so the two entry points cannot disagree about
+ * whether the copy happens on a task that is allowed to take the card lock.
+ * ------------------------------------------------------------------------- */
+
+/** What the last pick could not do, and which theme it was on. Kept here rather
+ *  than in the picker or the page so both show one sentence about one failure: an
+ *  install attempted from the browser must put the same words on the dial's row,
+ *  or the two entry points are two opinions about the same event. */
+static char s_try_slug[ORB_THEME_SLUG_MAX + 1];
+static char s_try_why[56];
+
+const char *orb_theme_try_slug(void) { return s_try_slug; }
+const char *orb_theme_try_why(void)  { return s_try_why; }
+
+/** Record an attempt, and the sentence a failure earns. Called by the two post
+ *  functions below, which are the only ways anything reaches install(). */
+static void try_note(const char *slug, const char *why)
 {
-    const esp_err_t e = nvs_put(THEME_NVS_PENDING, NULL);
-    const nvs_handle_t h = theme_nvs();
-    if (h) { nvs_set_u8(h, THEME_NVS_FAILS, 0); nvs_commit(h); }
-    s_pending_slug[0] = '\0';
-    return e;
+    strlcpy(s_try_slug, slug ? slug : "", sizeof s_try_slug);
+    strlcpy(s_try_why, why ? why : "", sizeof s_try_why);
+}
+
+/** The worker's copy of a request: the slug, nothing else. Small enough that the
+ *  queue owns it outright and the caller's stack may vanish on return. */
+typedef struct { char slug[ORB_THEME_SLUG_MAX + 1]; } install_req_t;
+
+static void install_job(void *arg)
+{
+    const install_req_t *r = arg;
+    char why[56] = "";
+    if (orb_theme_install(r->slug, why, sizeof why) != ESP_OK) {
+        try_note(r->slug, why[0] ? why : "the install failed");
+        return;
+    }
+    /* The install committed the choice, so the last complaint about this theme is
+     * retired with it: leaving it set would keep the row warning about a file that
+     * is now the dial. */
+    try_note(NULL, NULL);
+    /* Asked, never called: the reboot belongs to the OS, and the delay it owns is
+     * what lets the last frame of the page that said it worked reach the panel. */
+    if (orb_jobs_reboot_soon("theme install") != ESP_OK)
+        ESP_LOGE(TAG, "\"%s\" installed but the reboot could not be armed", r->slug);
+}
+
+static void default_job(void *arg)
+{
+    (void)arg;
+    /* No card, no container, no copy: the factory dial is the bank `idf.py flash`
+     * wrote at partition offset 0, which is the one set of bytes on this device
+     * that has never needed verifying at runtime. */
+    if (orb_theme_set_live(THEME_LIVE_DEFAULT) != ESP_OK) {
+        try_note("", "the dial could not be told to use the default");
+        return;
+    }
+    try_note(NULL, NULL);
+    if (orb_jobs_reboot_soon("theme: the factory default") != ESP_OK)
+        ESP_LOGE(TAG, "default chosen but the reboot could not be armed");
+}
+
+esp_err_t orb_theme_post_install(const char *slug)
+{
+    if (!orb_sd_name_ok(slug)) return ESP_ERR_INVALID_ARG;
+    /* Named before the queue is asked, so the row the failure lands on is the row
+     * that was pressed even when the reason is that the card never answered. */
+    try_note(slug, "");
+    install_req_t r;
+    strlcpy(r.slug, slug, sizeof r.slug);
+    return orb_jobs_post(install_job, &r, sizeof r);
+}
+
+esp_err_t orb_theme_post_default(void)
+{
+    try_note("", "");
+    const install_req_t r = { { 0 } };
+    return orb_jobs_post(default_job, (void *)&r, sizeof r);
+}
+
+esp_err_t orb_theme_set_live(const char *which)
+{
+    if (!which) return ESP_ERR_INVALID_ARG;
+    /* Only the two real choices reach NVS: a typo written down is a boot that
+     * silently draws the default, and a silent default is the failure mode this
+     * whole rewrite exists to remove. */
+    if (strcmp(which, THEME_LIVE_DEFAULT) != 0 && strcmp(which, THEME_LIVE_CARD) != 0)
+        return ESP_ERR_INVALID_ARG;
+    const esp_err_t e = nvs_put(THEME_NVS_LIVE, which);
+    if (e != ESP_OK) return e;
+    strlcpy(s_live, which, sizeof(s_live));
+    return ESP_OK;
 }
 
 esp_err_t orb_theme_delete(const char *slug)
@@ -1443,16 +1609,19 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
          * reason goes in .why, NOT in .title: the page shows the title as a label
          * and the reason as a warning, and overloading one field with the other
          * means a damaged theme is listed under the name "geometry checksum".
-         * active/pending stay false: an unreadable file is not the dial's theme,
-         * whatever it is called. */
+         * .active stays false: an unreadable file is not the dial's theme, whatever
+         * it is called. */
         strlcpy(e->why, why, sizeof(e->why));
         e->err = ESP_ERR_INVALID_ARG;
         c->n++;
         return true;
     }
 
-    e->active  = strcmp(rec->name, s_active_slug) == 0;
-    e->pending = strcmp(rec->name, s_pending_slug) == 0;
+    /* What the list marks active is the theme that is ON THE WALL, which after D13
+     * is the installed slot's own slug and nothing to do with the card's file name:
+     * the file may have been replaced since it was copied into flash, and the dial
+     * still draws the copy it verified. */
+    e->active = s_active_slug[0] && strcmp(h.slug, s_active_slug) == 0;
     /* Validated is not the same as loadable: a well-formed container filed under a
      * name it does not call itself installs nothing, and the owner deserves that
      * sentence from the list rather than from the log line a Load tap leaves behind.

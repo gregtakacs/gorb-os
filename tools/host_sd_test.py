@@ -976,13 +976,22 @@ def themes_page_js():
             js_ok = False
     # Pins: the decisions the page must keep making, each a substring that a lazy
     # edit would drop. The confirm() on delete is the one that matters most — this
-    # button deletes a file from somebody's card.
+    # button deletes a file from somebody's card. The install confirm and the two
+    # endpoints beside it are ruling D11's and D13's side of the bargain: the page
+    # posts an install, the firmware reboots, and there is no staged state left to
+    # cancel — a page that still offered an undo would be offering a state the
+    # firmware no longer has.
     pins = [("onclick=doUp()", "an upload path exists"),
             ("function del(n)", "delete is offered"),
-            ("if(!confirm(", "delete asks before destroying a file"),
+            ("if(!confirm('Delete ", "delete asks before destroying a file"),
+            ("if(!confirm('Install ", "a pick names the reboot it is about to cause"),
+            ("if(!confirm('Go back to the factory dial", "the way back asks too"),
             ("x.upload.onprogress", "the upload reports real progress (fetch cannot)"),
-            ("/api/v1/sd/load?name=", "load goes through the staging endpoint"),
-            ("/api/v1/reboot", "the page asks before rebooting the orb"),
+            ("/api/v1/sd/install?name=", "Load posts the install job, not a stage"),
+            ("/api/v1/sd/default", "the factory dial is one press away without the card"),
+            ("data.live", "the banner states the choice, not a pending operation"),
+            ("LAST TRY FAILED", "the install the worker refused explains itself on its row"),
+            ("THE DIAL WOULD NOT LOAD IT", "what boot found damaged in the slot goes on its row"),
             ("CANNOT LOAD", "an unloadable theme says why instead of vanishing")]
     rc = 0 if js_ok else 1
     for want, why in pins:
@@ -990,6 +999,12 @@ def themes_page_js():
         # searching only the JS would report a present feature as missing
         if want not in page:
             print("FAIL /themes: missing %r — %s" % (want, why)); rc = 1
+    # And the refusals: the pending concept is gone (ruling D13), so a page that still
+    # names it is a page that will offer a button for a state nothing can be in.
+    for gone, why in (("/api/v1/sd/unstage", "the staged load has no undo any more"),
+                      ("staged", "no row may promise an install that waits for a reboot")):
+        if gone in page:
+            print("FAIL /themes: still carries %r — %s" % (gone, why)); rc = 1
     # The call lint: a call to a function that is not defined parses fine and simply
     # does nothing on the phone (this exact bug already happened once on these pages).
     defined = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)", js))
@@ -1070,7 +1085,18 @@ MUTATIONS = [
                                                      "if (!orb_sd_theme_path(base, sizeof base, slug)) { return false; }"),
     ("reader stops checking tourbillon count",       "th",  "if (t->tourbillon_n > TOURB_MAX)   return \"more tourbillon frames than the dial holds\";", ""),
     ("header stops checking its own checksum",       "th",  "return \"container header is damaged — re-copy the file onto the card\";", "return NULL;"),
-    ("/themes loses the delete confirmation",        "net", "if(!confirm(", "if(true && ("),
+    ("/themes loses the delete confirmation",        "net", "function del(n){if(!confirm(",
+     "function del(n){if(true && ("),
+    # Ruling D13's install promise: the geometry pre-flight is the same validator
+    # boot runs, so deleting it must red a check. The mutation keeps the file
+    # compiling — only the lint can see the call is gone.
+    ("install drops the geometry pre-flight",        "th",
+     "const char *gw = (ve == ESP_OK) ? slot_parse_geom(&probe, p, /*adopt=*/false) : NULL;",
+     "const char *gw = NULL; (void)ve;"),
+    ("/themes loses the install confirmation",       "net", "function load(n){if(!confirm(",
+     "function load(n){if(true && ("),
+    ("/themes' factory switch stops asking",         "net",
+     "function tofactory(){if(!confirm(", "function tofactory(){if(true && ("),
     ("/themes loses the upload progress handler",    "net", "x.upload.onprogress", "x.noupload_onprogress"),
     ("/themes calls a function that does not exist", "net", "function refresh()", "function refreshX()"),
     # The bug this file found for real: an esp_err_t read as a truth value. ESP_OK is
@@ -1450,15 +1476,16 @@ def naming_lint():
         print("FAIL main/art/orb_theme.c:%d: %s() no longer compares the header slug with the "
               "card name — the one rule this lint exists to keep" % (ha + 1, HELPER))
         rc = 1
-    # boot is in the list because it installs: it reads the pixels under a name NVS
-    # remembered, and a card edited after staging is exactly when the two diverge.
+    # boot is NOT in the list since ruling D13: the boot path resolves and verifies a
+    # slot, and never opens the card, so there is no card file there to compare a name
+    # against. Naming a function that no longer reads a file would be a check on code
+    # that does not exist. What installs is orb_theme_install(), and it does read one.
     # scan_entry rather than orb_theme_scan because the walk moved to orb_files: the
     # OS enumerates the directory now and hands this layer one open file at a time, so
     # the function that lists a card theme is the callback, not the caller. The
-    # invariant is unchanged — whoever touches a card theme applies the rule — and
-    # re-aiming the anchor at the callback keeps that bite. orb_theme_scan staying in
-    # the list would be a check on a function that no longer reads a file at all.
-    for n in ("scan_entry", "orb_theme_upload_end", "orb_theme_stage_load", "orb_theme_boot"):
+    # invariant is unchanged — whoever touches a card theme applies the rule.
+    CONSUMERS = ("scan_entry", "orb_theme_upload_end", "orb_theme_install")
+    for n in CONSUMERS:
         if n not in spans:
             print("FAIL main/art/orb_theme.c: %s() is not a column-0 definition any more; the "
                   "lint can no longer prove it applies the naming rule" % n)
@@ -1471,8 +1498,62 @@ def naming_lint():
                   "page can only offer a Load button that fails" % (a + 1, n, HELPER))
             rc = 1
     if not rc:
-        print("ok    card-name rule applied by all 4 theme consumers, compared against the "
-              "header slug")
+        print("ok    card-name rule applied by all %d theme consumers, compared against the "
+              "header slug" % 3)
+    return rc
+
+
+def install_lint():
+    """An install may not make a slot live that it did not verify the way boot reads it.
+
+    Four things, in the order they have to happen inside orb_theme_install(): the
+    container is checksummed off the card (verify_container) before the copy, and the
+    copy is read back out of the partition (slot_verify_pixels) and run through the
+    same geometry validator boot runs (slot_parse_geom, adopt=false) before
+    esp_partition_erase_range() — the one call that makes the previous slot gone. The
+    bench found the hole this pins: the card's own "neon" carries intact checksums and
+    a complication record the painter refuses to draw, so an install that verified
+    only the pixels made it live and left the dial on the factory default with the
+    reason in a log line nobody could read from the wall.
+
+    It is a source check rather than a call of the function because the paths it
+    orders touch FatFs and the flash driver: on the host there is no card to copy
+    from and no slot to erase.
+    """
+    lines = _code_only(th_src).split("\n")
+    spans = {}
+    for n, a, b in _defs(lines):
+        spans.setdefault(n, (a, b))
+    if "orb_theme_install" not in spans:
+        sys.exit("no orb_theme_install() in main/art/orb_theme.c — this lint has nothing "
+                 "to check, which means it silently stopped working")
+    a, b = spans["orb_theme_install"]
+    body = "\n".join(lines[a:b + 1])
+    rc = 0
+    erase = body.find("esp_partition_erase_range")
+    if erase < 0:
+        print("FAIL orb_theme_install(): no header erase — the commit that makes a slot "
+              "live has gone missing along with the discipline around it"); rc = 1
+    for need in ("verify_container(", "slot_verify_pixels(", "slot_parse_geom("):
+        at = body.find(need)
+        if at < 0:
+            print("FAIL orb_theme_install(): never calls %s — it can commit a slot that "
+                  "boot will refuse to draw, which costs the owner a reboot and a dial "
+                  "they did not choose" % need)
+            rc = 1
+        elif erase >= 0 and at > erase:
+            print("FAIL orb_theme_install(): %s runs AFTER the header erase — a failure "
+                  "after that point has already destroyed the slot that worked" % need)
+            rc = 1
+    # Ruling D13's own half: slot A is never an install target. The predicate is
+    # pinned in tools/host_tz_test.py's table; this pins the callers from naming it.
+    if "SLOT_A_HDR" in body or "SLOT_A_ART" in body:
+        print("FAIL orb_theme_install(): names slot A — the factory default's pixels "
+              "live there, and an install aimed at it erases the fallback with it")
+        rc = 1
+    if not rc:
+        print("ok    install verifies off-card, on-partition and geometrically before "
+              "the header erase, and never names slot A")
     return rc
 
 
@@ -1547,5 +1628,7 @@ if rc == 0:
     rc = lock_lint()
 if rc == 0:
     rc = naming_lint()
+if rc == 0:
+    rc = install_lint()
 sys.exit(rc)
 

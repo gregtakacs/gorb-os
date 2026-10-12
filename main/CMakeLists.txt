@@ -17,6 +17,7 @@ idf_component_register(
         "art/orb_theme.c"
         "net/orb_net.c"
         "sd/orb_sd.c"
+        "sd/orb_files.c"
     INCLUDE_DIRS
         "."
         "app"

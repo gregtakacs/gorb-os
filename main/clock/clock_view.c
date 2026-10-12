@@ -89,6 +89,9 @@
  * an SD card instead of in the build. */
 #include "orb_theme_geo.h"
 #include "art_bank.h"       /* the bank the above offsets index into */
+#include "orb_files.h"      /* the clock's declared file source — see clock_view_init() */
+#include "orb_sd.h"         /* ORB_SD_THEME_DIR, the directory that source names */
+#include "orb_theme.h"      /* ORB_THEME_EXT, the extension that source carries */
 
 static const char *TAG = "clock";
 
@@ -1712,6 +1715,28 @@ static void compose_now(void)
 
 esp_err_t clock_view_init(void)
 {
+    /* B1/B2, and the owner's rule that file management is the OS's: the clock does
+     * not walk /sd itself and never will. It declares the one directory it reads
+     * and the one extension a file must carry to be one of its themes, and the OS
+     * (orb_files) owns the mount, the card lock, the name validation and the
+     * enumeration. That declaration is also how the shell's options page and the
+     * browser's copy of it can list this app's files without either one knowing
+     * what an .orbtheme is — see main/sd/orb_files.h.
+     *
+     * Registered here, on the boot ladder, because orb_theme_scan() can run from
+     * the menu's worker or the httpd worker as soon as either exists, and a
+     * question about a source that was never declared has no good answer. */
+    static const orb_file_src_t themes = {
+        .id          = "themes",
+        .dir         = ORB_SD_THEME_DIR,
+        .ext         = ORB_THEME_EXT,
+        .max_entries = 8,
+    };
+    const esp_err_t fe = orb_files_register("clock", &themes);
+    if (fe != ESP_OK)
+        ESP_LOGE(TAG, "themes file source refused (%s) — the theme list will be empty",
+                 esp_err_to_name(fe));
+
     /* The bank was already found and mapped by orb_theme_boot(), which ran BEFORE
      * display_init() — a theme install must complete before anything reads pixels,
      * and only orb_theme knows which A/B slot the bank is in. What is checked here

@@ -264,7 +264,15 @@ static void poll_timer_cb(lv_timer_t *timer)
             const orb_app_t *named = orb_carousel_pending();
             if (named) {
                 orb_carousel_commit();
-                set_screen(named, true);
+                /* The same press also ENTERS (owner ruling, 2026-10-12): rotate
+                 * to name, press once, and you are inside the app — the armed
+                 * state a press on an already-showing screen produces, so the
+                 * HSB editor or the menu list is open the moment the switch
+                 * lands. Armed only on a switch that landed: on a refused one
+                 * set_screen leaves the old view on the glass, and arming that
+                 * would arm a screen the user never named. Arming the dial is
+                 * inert by design — no armed view exists beneath the clock. */
+                if (set_screen(named, true) == ESP_OK) arm_current();
                 return;
             }
             arm_current();

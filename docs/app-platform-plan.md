@@ -1051,7 +1051,18 @@ still committed early on the 1266-1936 ms tail.
 precedes it; (B) press-to-commit, so nobody waits on a timer they have already
 beaten. B turned out to be already shipped — `input_router.c`'s "that one, now"
 branch has committed a named peek on press since P2 — but no bench had ever
-exercised it; it is now (press-1 below).
+exercised it; it is now (press-1 below). The owner's same-day follow-up turned
+the press from commit into **enter**: rotate to name, press once, and you are
+inside the named app — the commit path calls `arm_current()` on the switched
+entry, so the HSB editor or menu list opens with the same press (the state a
+press on an already-showing screen produces; the dial stays inert because it
+has no armed view). The auto-commit at window expiry deliberately does NOT
+arm — an expiry that entered would make every settled switch a room the user
+cannot turn the knob out of, so the bench asserts the absence of `armed` on
+the coalesce/control cases and its presence, name-matched to the activation,
+on press-1. Arming happens only when the switch landed: a refused
+`set_screen` leaves the old view unarmed, because arming it would arm a
+screen the user never named.
 
 **The shipped rule** (`main/app/orb_carousel.c`):
 
@@ -1085,7 +1096,13 @@ for jitter that failed to clear READ, and `press-1` landed: one detent, a press
 (a count alone cannot tell them apart). 2026-10-12, `6188cd1-dirty`, orb-A,
 rssi -58: coalesce-2 `seen 215, 1 act, hops 2, glass 87 ms`; coalesce-w+1
 `seen 165, 1 act`; wrap-w `0 acts, 1 cancel`; control-2 `seen 2494, 2 acts,
-71/83 ms`; hold-c8 lands clock; press-1 ok. All assertions held.
+71/83 ms`; hold-c8 lands clock; press-1 ok. All assertions held. With
+rotate-press-enter the same seven pass on `e2926c2-dirty` (rssi -61): press-1
+`1 act, armed color_picker`, control-2 `2 acts, no armed line` (the negative
+arm pin), coalesce-w+1 `peeks+canc == 4 steps`. The tight-burst VOID earned
+its keep in between: one run delivered only 3 of coalesce-w+1's 4 requests —
+two HTTP arrivals clustered into one poll lose the extra step to the
+one-step-per-poll rule — and was reported VOID, not passed and not failed.
 
 **Precondition fixed on the way: the association wedge.** Three bench boots in
 a row went network-dead for minutes at ~7.4 s, recovered only by pulsing EN.

@@ -28,8 +28,10 @@ interesting ones:
   hold       long-press from a non-home screen returns to the clock (C8).
   press      a lone detent deep inside the read window, then push=1: the press
              must switch NOW ("that one, now", input_router.c), not wait out
-             the read window. Timed: the activation must land well before the
-             auto-commit could, or the press path silently fell back to it.
+             the read window — and must land INSIDE the app (armed HSB editor /
+             menu list, owner ruling 2026-10-12). Timed: the activation must
+             land well before the auto-commit could, and the same press is the
+             only thing allowed to arm (the auto-commit cases assert no arm).
 
 Where it is honest about its own limits
 ---------------------------------------
@@ -171,6 +173,8 @@ def measure(rs, t0, t1):
     peeks = len([1 for x in w if "carousel: peek" in x])
     hops = [int(m.group(1)) for x in w if (m := re.search(r"settle .+? after (\d+) hop", x))]
     canc = len([1 for x in w if "carousel: cancelled on" in x])
+    arms = [re.search(r"input: armed (\S+)", x).group(1)
+            for x in w if re.search(r"input: armed (\S+)", x)]
     coms = [int(m.group(1)) for x in w if (m := re.search(r"-> glass \+(\d+) ms: (\d+) commit", x))]
     glms = [int(m.group(1)) for x in w if (m := re.search(r"-> glass \+(\d+) ms: (\d+) commit", x))]
     turns = [t for t, x in rs if t0 <= t <= t1 and "synthetic turn" in x]
@@ -178,6 +182,7 @@ def measure(rs, t0, t1):
     act_ts = [t for t, x in rs if t0 <= t <= t1
               and re.search(r"input: screen -> (\S+)", x)]
     return dict(acts=acts, peeks=peeks, hops=hops[-1] if hops else 0, canc=canc,
+                arms=arms,
                 commits=coms, glass=glms, gaps=gaps, turns=turns, act_ts=act_ts)
 
 
@@ -214,14 +219,19 @@ def main():
             rs = rows()
             m = measure(rs, t_pre, t_post)
             seen_gap = max(m["gaps"]) if m["gaps"] else 0
-            tight = gap < burst / 2000.0
+            tight = bool(m["gaps"]) and max(m["gaps"]) < burst / 2000.0
             verdict = "ok"
             if name.startswith("coalesce") or name == "wrap-w":
-                # a tight burst whose DEVICE-side gap drifted to/beyond the
-                # burst gap was never classified in-burst: it did not test
-                # coalescing at all. Say VOID, never pass on luck.
-                if tight and seen_gap > burst * 0.9:
-                    verdict = "VOID (HTTP jitter pushed detents to %d ms)" % seen_gap
+                # a tight burst must stay tight AND land whole: the requests
+                # log one line each, but the router walks one step per poll, so
+                # HTTP arrival jitter that clusters requests into one poll
+                # window silently drops the extra step — a step shows up as a
+                # peek or (on the wrap-around step) a cancel; fewer than n
+                # means the board never received the burst the case claims
+                # to test. Never pass or FAIL on a burst that did not land.
+                if tight and (seen_gap > burst * 0.9 or m["peeks"] + m["canc"] != n):
+                    verdict = "VOID (HTTP jitter: gaps %s, peeks=%d canc=%d want %d steps)" % (
+                        m["gaps"], m["peeks"], m["canc"], n)
                     voids.append(name)
                 elif name == "wrap-w":
                     ok = len(m["acts"]) == 0 and m["canc"] >= 1
@@ -244,6 +254,11 @@ def main():
                 else:
                     verdict = "ok" if len(m["acts"]) == n else "FAIL acts=%d want %d" % (
                         len(m["acts"]), n)
+                # the press is what arms (owner ruling 2026-10-12); a window
+                # expiry that also armed would make every auto-switch a trap
+                # the user cannot turn the knob out of
+                if verdict == "ok" and m["arms"]:
+                    verdict = "FAIL auto-commit armed %s (press must be the only arm)" % m["arms"]
             bad = verdict.startswith("FAIL")
             if bad:
                 fails.append("%s: %s (want %s)" % (name, verdict, want))
@@ -290,11 +305,16 @@ def main():
             p_verdict = "FAIL acts=%d (want 1, with turn+act timestamps)" % len(m["acts"])
         else:
             delay = int(round((min(m["act_ts"]) - min(m["turns"])) * 1000))
-            p_verdict = ("ok" if 0 <= delay < read - 400 else
-                         "FAIL press did not pre-empt: act +%d ms (auto-commit ~%d)"
-                         % (delay, read))
-        print("%-14s 1 detent + press | acts=%d | %s" %
-              ("press-1", len(m["acts"]), p_verdict), flush=True)
+            if not (0 <= delay < read - 400):
+                p_verdict = ("FAIL press did not pre-empt: act +%d ms (auto-commit ~%d)"
+                             % (delay, read))
+            elif m["arms"] != [m["acts"][0]]:
+                # rotate-press-enters (owner ruling 2026-10-12): the same press
+                # that committed the peek must find the user INSIDE the named
+                # app — the armed view (HSB editor / menu list), not its face.
+                p_verdict = "FAIL press committed but did not enter: armed=%s" % m["arms"]
+        print("%-14s 1 detent + press | acts=%d arms=%s | %s" %
+              ("press-1", len(m["acts"]), m["arms"] or ["-"], p_verdict), flush=True)
         if p_verdict.startswith("FAIL"):
             fails.append("press-1: %s" % p_verdict)
 

@@ -30,6 +30,7 @@ TOOLS="$(cd "$(dirname "$0")" && pwd)"
 . "$TOOLS/orb_bind.sh"
 orb_require
 
+LOGFILE="/tmp/serflash-$ORB_LABEL.log"
 PY="$ORB_ESPTOOL_PY"
 B="$ORB_ROOT/build"
 
@@ -38,19 +39,20 @@ orb_gate_mac "$ORB_PORT"
 [ -f "$B/gorb-os.bin" ] || orb_die "no $B/gorb-os.bin -- build first:
 (cd $ORB_ROOT && idf.py reconfigure && idf.py build)"
 
-: > /tmp/serflash_audit.log
+: > "/tmp/serflash-audit-$ORB_LABEL.log"
+AUDLOG="/tmp/serflash-audit-$ORB_LABEL.log"
 WANT=$(git -C "$ORB_ROOT" describe --always --dirty 2>/dev/null)
 HAVE=$(dd if="$B/gorb-os.bin" bs=1 skip=48 count=32 status=none | tr -d '\0')
 {
-  echo "AUDIT orb=$ORB_LABEL port=$ORB_PORT mac=$ORB_BASE_MAC want=$WANT have=$HAVE" | tee -a /tmp/serflash_audit.log
+  echo "AUDIT orb=$ORB_LABEL port=$ORB_PORT mac=$ORB_BASE_MAC want=$WANT have=$HAVE" | tee -a "$AUDLOG"
   if [ "$HAVE" != "$WANT" ]; then
-    echo "AUDIT FAIL: $B/gorb-os.bin is stamped [$HAVE]; the tree is [$WANT]." | tee -a /tmp/serflash_audit.log
+    echo "AUDIT FAIL: $B/gorb-os.bin is stamped [$HAVE]; the tree is [$WANT]." | tee -a "$AUDLOG"
     echo "        The image does not correspond to the code you are about to sign off."
     echo "        Fix: (cd $ORB_ROOT && idf.py reconfigure && idf.py build), re-run."
     echo "SERFLASH_DONE $(date +%T)"
     exit 1
   fi
-  echo "AUDIT OK: the image's own stamp matches the working tree." | tee -a /tmp/serflash_audit.log
+  echo "AUDIT OK: the image's own stamp matches the working tree." | tee -a "$AUDLOG"
 }
 
 if [ "${1:-}" = "--check" ]; then
@@ -61,6 +63,6 @@ fi
 sudo "$PY" -m esptool --chip esp32s3 -p "$ORB_PORT" -b 460800 \
   --before default_reset --after hard_reset \
   write_flash 0x20000 "$B/gorb-os.bin" 0x11000 "$B/ota_data_initial.bin" \
-  > /tmp/serflash.log 2>&1
-echo "EXIT=$?" >> /tmp/serflash.log
-echo "SERFLASH_DONE $(date +%T)" >> /tmp/serflash.log
+  > "$LOGFILE" 2>&1
+echo "EXIT=$?" >> "$LOGFILE"
+echo "SERFLASH_DONE $(date +%T)" >> "$LOGFILE"

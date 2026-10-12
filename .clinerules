@@ -41,7 +41,7 @@ Two launch gotchas that burned time this session, both avoided by using a
 - **Serial flash of a bulk image**: any `esptool write_flash` / `idf.py flash`
   that sends the app (1.3 MB) — and especially anything that re-sends
   `assets/clock_assets.bin` (~1.85 MB) — runs 25–40 s+. Detach and poll
-  `/tmp/serflash.log` for `Hash of data verified` + `EXIT=0`.
+  `/tmp/serflash-<ORB_LABEL>.log` (per orb) for `Hash of data verified` + `EXIT=0`.
 - **`idf.py build` that recompiles many objects**: the steady-state rebuild of
   one file (`orb_net.c`) is ~10 s and is fine inline, but the **first build into
   a fresh `-B` dir**, or any build after an `sdkconfig`/Kconfig change that
@@ -196,7 +196,8 @@ by by-id path, not number.
   `tools/serflash.sh`, which now reads the version out of the `.bin` itself
   (`esp_app_desc_t.version`, byte 48), compares it to `git describe --always --dirty`,
   and exits 1 without flashing on a mismatch. The verdict goes to
-  `/tmp/serflash_audit.log`; `/tmp/serflash.sh` is a wrapper for it.
+  `/tmp/serflash-audit-<ORB_LABEL>.log` (per orb, so the two clones' audits
+  never overwrite each other); `/tmp/serflash.sh` is a wrapper for it.
 
 Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how

@@ -239,6 +239,7 @@ make run        # rebuild + open the app window against 127.0.0.1:3779
                 # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
 make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe
+make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
 ```
 
@@ -332,11 +333,14 @@ From WSL you can also exercise the Windows binary without leaving the keyboard,
 because WSL runs `.exe` files natively:
 
 ```
-cd tools/orb-manager
-GOOS=windows go test -c -o /tmp/win.test.exe .
-/tmp/win.test.exe        # run from the package dir: the Theme Editor tests
-                         # resolve the clone relative to the working dir
+make win-test                     # build and run both Windows test binaries
+make win-test TEST_ARGS=-test.v   # name-by-name
 ```
+
+Run it from this package directory, not the repo root and not `/tmp`: the Theme
+Editor tests resolve the clone relative to the working directory and skip when it
+is not the package dir. `make` locates the Go toolchain itself, so the command
+works in a shell where bare `go` is not on `PATH`.
 
 ## Caveats
 

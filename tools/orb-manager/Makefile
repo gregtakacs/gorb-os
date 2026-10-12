@@ -24,7 +24,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt run desktop flash windows crosscheck clean
+.PHONY: all build manager orbflash test vet fmt run desktop flash windows win-test crosscheck clean
 
 all: test build
 
@@ -95,6 +95,24 @@ crosscheck:
 	  fi; \
 	done
 	@echo 'all platforms compile'
+
+## win-test: run the Windows test suite from this Linux/WSL host.
+## WSL executes .exe files natively, so the Windows-only code — the exclusive
+## port lock, the %LOCALAPPDATA% profile path, install-root browser discovery —
+## is exercised for real instead of being cross-compiled and hoped for. The
+## binaries run from this package dir on purpose: the Theme Editor tests locate
+## the clone relative to the working directory and skip when it is not the one
+## they were built from. Requires WSL interop; on a plain Linux host use
+## make crosscheck, which proves the same code compiles without running it.
+WIN_TEST_DIR ?= $(BIN_DIR)/windows-tests
+win-test:
+	@mkdir -p $(WIN_TEST_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) test -c -o $(WIN_TEST_DIR)/orbbind.test.exe ./internal/orbbind/
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) test -c -o $(WIN_TEST_DIR)/main.test.exe .
+	@echo '--- orbbind (Windows port lock) ---'
+	$(WIN_TEST_DIR)/orbbind.test.exe $(TEST_ARGS)
+	@echo '--- orb-manager (Windows window, profile, API) ---'
+	$(WIN_TEST_DIR)/main.test.exe $(TEST_ARGS)
 
 clean:
 	rm -rf $(BIN_DIR)

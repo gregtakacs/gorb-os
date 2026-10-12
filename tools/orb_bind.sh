@@ -52,11 +52,26 @@ orb_resolve_port() {
 $ORB_PORT (unplugged? usbipd not attached?). No other port was touched."
 }
 
+# Advisory lock, held for the life of the script: a per-orb sidecar file, NOT
+# the tty itself -- pyserial takes its own flock on the port when esptool or a
+# capture opens it, and a lock on the device would fight the very tool the
+# gate must let in. One lock file per bound MAC means two writers on ONE orb
+# collide loudly (the second refuses) while the two bench lines work in
+# parallel. Called by orb_gate_mac, so every serial entry passes through it.
+orb_lock_port() {
+  # Normalized like orb_bind.py's load(): lowercase, no separators, so the two
+  # twins take THE SAME lock file whatever case the binding was written in.
+  local lf="/tmp/orb-${ORB_LABEL}-$(orb_mac_norm "$ORB_BASE_MAC" | tr -d ':').lock"
+  exec 9>"$lf" || orb_die "cannot open the lock file $lf"
+  flock -n 9 || orb_die "another orb tool holds $ORB_LABEL ($ORB_BASE_MAC) -- refusing to double-write"
+}
+
 # The chip's own MAC must equal the binding. Catches the crossed cable and the
 # stale symlink that orb_resolve_port cannot: the by-id name is host furniture,
 # the silicon is the device.
 orb_gate_mac() {
   local port="$1" out have want
+  orb_lock_port
   out=$("$ORB_ESPTOOL_PY" -m esptool --chip esp32s3 -p "$port" read_mac 2>&1) \
     || orb_die "read_mac failed on $port:
 $out"

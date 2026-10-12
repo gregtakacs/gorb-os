@@ -13,11 +13,14 @@ against a hostile network.
 """
 import os
 import re
+import fcntl
 import subprocess
 import sys
 
 ESPTOOL_PY = os.environ.get(
     "ORB_ESPTOOL_PY", "/home/greg/.espressif/python_env/idf5.4_py3.14_env/bin/python")
+
+_HELD_LOCKS = []  # keep the fds alive for the life of the process
 
 
 def _die(msg):
@@ -65,10 +68,28 @@ def resolve_port(cfg):
     return port
 
 
+def lock_orb(cfg):
+    """Advisory per-orb lock: a /tmp sidecar keyed to the bound MAC, NOT the
+    tty -- pyserial flocks the port itself on open, and a lock on the device
+    would fight esptool and every capture. Two tools on one orb collide here
+    and the second refuses; the two bench lines stay parallel."""
+    path = "/tmp/orb-%s-%s.lock" % (cfg["ORB_LABEL"], cfg["ORB_BASE_MAC"].replace(":", ""))
+    fh = open(path, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        _die("another orb tool holds %s (%s) -- refusing to double-write"
+             % (cfg["ORB_LABEL"], cfg["ORB_BASE_MAC"]))
+    _HELD_LOCKS.append(fh)  # the lock is held while the fd is open
+
+
 def gate_mac(cfg, port):
     """The chip itself must report the bound MAC. esptool performs the same
     reset cycle a flash does, so this costs the board a reboot it would take
-    anyway -- and it is the only gate that survives a crossed cable."""
+    anyway -- and it is the only gate that survives a crossed cable. Takes the
+    per-orb lock first, so the probe and everything after it is single-writer.
+    """
+    lock_orb(cfg)
     r = subprocess.run([ESPTOOL_PY, "-m", "esptool", "--chip", "esp32s3",
                         "-p", port, "read_mac"], capture_output=True, text=True)
     m = re.search(r"^MAC: *([0-9a-fA-F:]{17})", r.stdout, re.M)

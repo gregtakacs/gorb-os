@@ -3,8 +3,8 @@
 #
 # Device selection is never positional. The port comes from the untracked
 # .orb-target at the clone root (tools/orb_bind.sh), esptool read_mac confirms
-# the chip's own MAC before anything is written, and flock holds the port so a
-# second writer fails loudly instead of rebooting the board mid-stream. The old
+# the chip's own MAC before anything is written, and a per-orb sidecar flock
+# fails a second writer loudly instead of rebooting the board mid-stream. The old
 # version hardcoded /dev/ttyACM0 and gorb-os-2/build -- either clone could flash
 # whichever orb enumerated first, which is the accident this now refuses.
 #
@@ -34,7 +34,6 @@ PY="$ORB_ESPTOOL_PY"
 B="$ORB_ROOT/build"
 
 orb_resolve_port
-orb_lock_port "$ORB_PORT"
 orb_gate_mac "$ORB_PORT"
 [ -f "$B/gorb-os.bin" ] || orb_die "no $B/gorb-os.bin -- build first:
 (cd $ORB_ROOT && idf.py reconfigure && idf.py build)"

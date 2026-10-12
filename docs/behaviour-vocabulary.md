@@ -20,6 +20,7 @@ source name among them:
 | `power_request(app, timeout_s, hold)` | `power` (owner-granted) | request, never a write; `idle_dim` owns the decision |
 | `bank` / `layer_add` / `layer_set` / `layer_touch` / `layer_del` | `ui` (free) | the compositor primitives, §1.1's compiled C |
 | `job_post` | free | the worker-task rule |
+| `set_beat(app, period_ms)` | free | D16 (§0.6): runtime rate for the iface's `tick()` — the only callback; may only slow from (or stop) the manifest's `period_ms`, never run faster than it |
 | `status` | free | |
 
 The manifest's capability bitmask (§4.1) is the only behaviour declaration
@@ -60,7 +61,8 @@ OS code:
   `compose_now` extraction, `clock_view.c:1711-1769`);
 - the scheduler's sub-second phase — `frac` comes from the one shared
   beat, so hands across apps sweep against the same clock or the dial
-  shows two beats (G5 is a registered contract, not a value);
+  shows two beats; the sweep is a registered contract, not a value (and
+  the beat itself is the app's to set, per D16's `set_beat`);
 - the synced flag.
 
 Conversion is app-side. The clock's `compose_now` keeps filling its own

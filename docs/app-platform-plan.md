@@ -97,7 +97,6 @@ refusal-hunt finding stand there unchanged.
 | D14 | Which mechanism serves the overflow bank | **A (flash re-map) is the mechanism — for the overflow bank as for the primary.** The measured 3.6 ms of switch and 5% of read cost an arena saves do not pay its 471 ms boot fill and 3.86 MB of PSRAM (of 7.95 free), and steady rotation is identical at the reporting resolution. **B (PSRAM arena) ships dark** (`ORB_ART_MECH_B 0`) as P4's escape hatch — the only way a third flagship can boot when the page budget says no — with its gate measured and its ABI promise host-pinned. Flipping B on is one byte (`art_bank.h:98`); if it ever ships lit, its carried-bank rule applies (§14.1: the release-for-free variant re-fills at 471 ms, so an arena app carries its parked bank — the §6/M-carrier decision is mandatory for B, not optional). |
 
 ### 0.5 Owner's ruling, 2026-10-12 (fourth round) — the behaviour vocabulary, closing P0
-
 The owner answered §9.2's question — which `CLK_KIND_*`/`CLK_SRC_*` become
 OS-registered behaviours — with **"I didn't think we were going to expose
 any of it, only time"**, and answered the paper's one open question (does
@@ -108,6 +107,20 @@ paper is `docs/behaviour-vocabulary.md`.
 | Ref | Decision | Ruling |
 |---|---|---|
 | D15 | The behaviour vocabulary the OS registers | **None — the OS exposes only time.** `orb_svc_t` (§4.3) is the entire registered surface and its time entry freezes exactly as the plan already spelled it: `now(app, sec, frac, synced)` + `tz_label`, handing the **raw `time_t`** — no `struct tm` and no source name crosses the broker. The OS guarantees the wall second (the `compose_now` extraction: two time sources, `CLOCK_EPOCH`, the trust rule, the drift re-anchor), the scheduler's sub-second fraction (the sweep contract), and the synced flag. Conversion and every calendar derivation (`SOURCES` incl. `week`/`moon_age`/`quarter`) are app-side code — the clock's `comp_value` moves with the app per §1.2, and an app that disagrees about what Saturday is owns that bug. `SOURCES`/`KINDS`/`FLAGS`/`HOSTS`/aux-drive enums freeze as the **bake-to-app wire interface** under the append-only rule (`theme_schema.py:52-53`, static-pinned `orb_theme.h:122`); the OS never inspects them (§4.1 geometry is opaque). §4.1's `behaviour_kind` ships reserved 0, the `sig` discipline. **P0 is closed; P3's broker implements §4.3 verbatim.** |
+
+### 0.6 Owner's ruling, 2026-10-12 (fifth round) — the app beat is set at runtime (D16)
+
+Surfaced while presenting D15's full exposed surface: §4.3's prose promised
+"a scheduler an app registers with (`period_ms`, `cb`, `budget_us`)", but
+the frozen `orb_svc_t` carries no scheduler entry, and today's beat is
+decided at activation inside the app (`clock_view.c:1935-1939` picks
+`start_period` from GIF mode and `orb_bg_every_p()`; the shipped dial
+disables the whole beat at zero — §13.7). The owner's ruling: the clock app
+runs at 15/12/8/4 fps, so **the beat must be settable at runtime**.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D16 | How an app gets its frame beat | **The `tick()` hook stays the only callback; the beat is a runtime `set_beat` entry on `orb_svc_t`, bounded by the manifest.** The app never hands the OS a function pointer: delivery runs through the registry's `tick(app, now_ms)`, visible apps only (§1.4). The manifest's `period_ms` (§4.1) is the **fastest** beat the app may ever run; `set_beat(period_ms)` may only slow from there (and off: `0` = no ticks until the next `resume`), never below it, so the owner sees the real cadence cost at install and an app cannot grab the shared beat the §6 cadence findings price. Budget policing stays as written: the OS measures each app's tick time against its declared budget and refuses/parks an overrun (§4.3, C2 discipline). One consequence recorded for P3: the shared beat runs at the fastest active `set_beat` — a 4 fps theme and a 15 fps theme on the glass at once (carousel transition) cost 15 fps until the swap settles; the §6 cadence-collapse guard is what measures that, before it ships. |
 
 ---
 
@@ -305,7 +318,8 @@ One file per app, mirroring the `.orbtheme` discipline in `tools/orbtheme.py`: a
               slug[24], title[32], hdr_crc            <- whole words, disjoint ranges
     manifest  app_id, behaviour_kind,
               required art bytes, layer/comp/aux/bank counts,
-              requested period_ms, capability bitmask,
+              period_ms (the app's FASTEST beat; set_beat may only slow — D16),
+              capability bitmask,
               n_settings, setting_off,
               geom_off/geom_size/geom_crc, art_off/art_size/art_crc
     settings  per descriptor: id[16], type, min, max, default, def_str[32]
@@ -368,13 +382,18 @@ Enforcement is a single check per entry in `orb_svc_t`, taken from a grant table
       void (*layer_del)(orb_app_t *, int h);
       /* worker: never block the LVGL task, same rule as the menu's orb_menu */
       esp_err_t (*job_post)(orb_app_t *, orb_job_fn, void *arg, size_t arglen);
+      /* beat: the only callback stays the iface's tick(); this SETS its rate
+       * (D16, §0.6). period_ms >= the manifest's (the app's fastest), or 0 =
+       * stop ticking until the next resume. Faster-than-manifest is refused
+       * with the number in the reason — the install is the cadence budget. */
+      esp_err_t (*set_beat)(orb_app_t *, uint32_t period_ms);
       /* ui: the shell's list primitives for the app's settings page */
       void (*status)(orb_app_t *, const char *fmt, ...);
     } orb_svc_t;
 
 `orb_time_now()` is an extraction, not new logic: `compose_now()` (`clock_view.c:1711-1769`) already resolves the two time sources, the `CLOCK_EPOCH` baseline, the `orb_net_time_synced()` trust rule and the drift re-anchor. That belongs to the OS, every app needs it, and the clock should read it like any other app.
 
-The OS must also hand out the tick instead of letting each app own one. `tick_timer_cb`, `tick_base_ms`, `bg_rate` and the deadline ladder become a scheduler an app registers with (`period_ms`, `cb`, `budget_us`); the OS arbitrates, keeps the fastest shared beat, and refuses an app whose callback overruns its budget, logging the overrun. Without that single owner, two apps asking for 25 fps each reproduces the exact cadence collapse `docs/fps-budget-findings-2026-10-10.md` measured.
+The OS must also hand out the tick instead of letting each app own one. `tick_timer_cb`, `tick_base_ms`, `bg_rate` and the deadline ladder become one OS scheduler whose rate each app sets at runtime — **ruling D16 (§0.6): the iface's `tick()` stays the only callback (no app function pointer enters the scheduler), the manifest's `period_ms` is the app's fastest beat, and `orb_svc_t.set_beat()` may only slow from it or stop; the OS keeps the fastest active beat, measures each tick against the app's declared budget, and parks an app that overruns, logging it.** The shared beat is the fastest active `set_beat`, so two apps on the glass at once during a swap cost the faster one's cadence until the settle — measured under §6's cadence-collapse guard (`docs/fps-budget-findings-2026-10-10.md`) before it ships, because the alternative is two apps asking for 25 fps each reproducing that finding exactly.
 
 ---
 

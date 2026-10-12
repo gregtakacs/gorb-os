@@ -440,7 +440,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11, hardware-verified 2026-10-12 (§12.8), and its settle window replaced by the hand-measured two-window rule 2026-10-12 (§12.9); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering landed and was accepted 2026-10-12 under rulings D11-D13 (§0.3), executed as §13; M3 is still open** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11, hardware-verified 2026-10-12 (§12.8), and its settle window replaced by the hand-measured two-window rule 2026-10-12 (§12.9); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering landed and was accepted 2026-10-12 under rulings D11-D13 (§0.3), executed as §13; M3 measured on hardware 2026-10-12 (§14) — **P2 complete** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -456,7 +456,10 @@ Rulings B1–B5 and C1–C12 are in section 0.1 and are not open questions. What
    with CRCs verified through the mapping while the dial held its 15 fps baseline, and
    free PSRAM at the refusal was 7.9 MB. The plan's pass line held; what stays open is
    the MMU's true refusal point (the probe never reached it — §11's third finding),
-   which M3 measures with a second partition.
+   which M3 measures with a second partition. **— answered 2026-10-12, §14.2: the hunt
+   mapped all 212 distinct pages the table can offer (assets, www, both app slots) with
+   ~99 pages already resident and refused zero times; below flash capacity the allocator
+   does not refuse at all, so budget 234 stands as contract, not ceiling.**
 2. **The behaviour vocabulary's first cut.** Which `CLK_KIND_*`/`CLK_SRC_*` become the OS's registered kinds, and which stay clock-app-private. `theme_schema.py`'s SOURCES/KINDS/FLAGS is the inventory; naming the subset is a P0 paper task, not a code one, and it is the last thing that must be agreed before the ABI is frozen.
 3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). Ruling D10 (§0.2) settles the clock's own default art: the OS ships none, and the clock app's bundled default is the Design-ID-sourced container at `assets/sources/clock-app-default/`, recorded now and wired by P6. If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
 4. **NVS quota per app** against the 24 KB `storage` partition with `string` settings enabled (C9) and 8 apps allowed (B5): the byte budget is a number to be chosen at P3 with the real key shapes in hand, then enforced at install.
@@ -1420,5 +1423,97 @@ owner's layer kits to re-bake. The archived `clock_app_default.orbtheme` is not 
 kit bake renders `show=[1,1,0,0,0]` against the archived `[1,1,0,1,0]`, so the original bake flags
 are unknown and the archive stays byte-faithful to `skeleton_theme.zip` until they are.
 
+
+
+---
+
+## 14. M3 — the overflow bank: re-map (A) vs PSRAM arena (B) — captured 2026-10-12, orb-A
+
+The last open item of P2 (§8's M3, §6's M3 text, §11's handed-over refusal
+question). Same art, two builds, one variable: `ORB_ART_MECH_B` at 0 and at 1.
+Everything else was held identical — same tree (`d7de71f` + this session's
+bench code, stamp `d7de71f-dirty`, audited by `tools/serflash.sh` on every
+push), same board (orb-A, `44:bd:8d:60:80:88`, wall-powered, ota_0, rssi −55),
+same bench bank, same 31 iterations, same capture (`tools/capf.py`).
+
+**The bank is real kit3, not a size.** The M2/LAT probes bill address ranges;
+M3 reads pixels, so it measures on flashed bytes: `/tmp/m3-kit3.bin`,
+3,858,874 B, md5 `aba381f34903574babf25320fd83ae22`, baked from the committed
+`assets/sources/watch-orbital-kit3.zip` (prep_watch_kit → bake_clock, kit_check
+gate green) and written to the slot-free offset `assets+0x100000` (flash
+`0x520000`) behind the clone's MAC gate. The probe refuses erased flash and
+CRC-verified the bank through the mapping on both arms before printing a
+number; `/tmp/m3_bankwrite.sh` keeps the write reproducible.
+
+**The probe** (`ORB_ART_M3_PROBE`, ships 0, same family as M2/LAT) prices one
+app switch per arm: release → reclaim → first full-page commit (60 blocks of
+60×60 through the shipping `gfx_blend_px` at alpha 128, sources striped one
+per page band so every one of the bank's 59 pages is touched each pass). The
+bench ladder (`DISPLAY_BENCH 1`, `PX 72`, `ALPHA 128` — 255 prices the wrong
+op) then runs the dial at tempo reading the same bank through the arm's own
+plane, and the per-second `clock N fps | ink px/s` lines are the rotation
+steady state. `ORB_ART_MECH_B` is compile-time on purpose: a runtime switch
+would be a second residency table the host mirror cannot pin.
+
+### 14.1 The numbers (medians of 31, µs; the two arms' distributions do not overlap)
+
+| | A (re-map) | B (PSRAM arena) |
+|---|---|---|
+| release (suspend) | 280 | 0 (carrying host) |
+| reclaim (resume) | 318 | 1 (covered-entry lookup) |
+| first full-page commit | 63,019 | 59,986 |
+| **switch total (matched samples)** | **63,067** | **59,473** |
+| boot cost (once) | — | **471,117** (arena fill, ≈ 8.2 MB/s) |
+| holds | 59 MMU pages | 3,858,874 B PSRAM (free 7,947,908 → 4,081,280) |
+| steady rotation | 6 fps med (83 lines), ink 1,555,200 px/s, hook 924 ms/s | 6 fps med (79 lines), ink 1,555,200 px/s, hook 921 ms/s |
+| status LAN corroboration | `art_pages 77, art_banks 2` | `art_pages 18, art_banks 2` — the arena bills the window NOTHING |
+
+A's switch reproduced within 0.15% across four boots (63,018/63,021/63,067/63,085).
+Read against §12.7: an app switch through a cold re-map costs what an app
+switch already cost (M1's 63–87 ms) — the µs-scale MMU op is noise under the
+first composite, and the 5% the arena saves on reads (3.0 ms) is inside that
+figure's spread. The release-for-free variant of B — an arena app whose
+parked bank is NOT carried — costs a 251 µs free plus a **471 ms re-fill**:
+for the arena, the carry decision of §6/M-carrier is not optional, it is the
+mechanism's survival condition.
+
+**Ruling proposed to the owner.** A stays the mechanism for the overflow bank
+too: 3.6 ms of switch and 5% of read cost do not pay 471 ms of boot and half
+the PSRAM (3.86 of 7.95 MB free), and steady rotation is identical at the
+reporting resolution. B ships dark (`ORB_ART_MECH_B 0`) as P4's escape hatch —
+it is the only way a third flagship can ever boot, its gate (free minus bank
+minus 2 MB margin, refusal counted with the byte figure in the log) is
+measured, and the ABI promise of §3.3 is now code, host-pinned
+(`host_art_residency_test.py`: 16 checks, 11 mutations). If the owner wants
+B's 3.6 ms badly enough to pay the PSRAM, the define is one byte.
+
+### 14.2 The refusal hunt — §11's third finding, answered
+
+The hunt maps every distinct 64 KB-aligned page of every partition the table
+exposes — assets (128), www (20), ota_0 (32), ota_1 (32) — counts distinct
+virtual bases against fold-backs (M2's dedup lesson: an overlapping-stride
+version of this loop "ran" 1,165 folded requests and measured nothing),
+and unmaps everything before the dial starts. **Result: 212 attempts, 211
+fresh, 1 folded, zero refusals, 170 KB internal free at the end** — with the
+image's 22 pages, the primary's 18 and the bank's 59 already resident, the
+allocator accepted ≥ 310 region-pages. The §3.1 "256-page window" is
+confirmed a `soc/mmu.h` region-count reading, not the capacity anyone refuses
+at; below the size of the flash itself the allocator does not refuse at all.
+`ORB_ART_PAGE_BUDGET` 234 therefore stays exactly what §11 called it — an
+enforced contract, deliberately conservative, refusing early with a named
+reason — and there is no measured ceiling to raise it toward. Two flagships
+plus the image cost 142 of it; that is the real constraint's whole shape.
+
+### 14.3 One incident worth a standing rule
+
+The first M3 builds died their network boot: `httpd_start:
+ESP_ERR_HTTPD_TASK` at the same millisecond every time — the probe's two 4 KB
+flash-staging statics and its hunt arrays had eaten the last contiguous
+internal block the httpd task's 8 KB stack needed (this heap's largest block
+measures 7,168 B with a healthy boot). Fixed by moving every probe buffer to
+PSRAM (`m2_stage_buf`, heap-allocated handle arrays). Standing rule for this
+probe family: **boot-probe scratch earns no internal `.bss`** — a bench
+instrument must not change what the board does after the instrument finishes,
+which is the same reason the probes ship 0 in the first place.
 
 

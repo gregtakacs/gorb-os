@@ -9,7 +9,9 @@ Self-contained implementation plan; pick it up cold. This document supersedes
 `docs/theme-naming-todo.md`, which is deleted at the end of this work (its §1–§3
 describe a defect class this design removes outright).
 
-Repo: `/home/greg/docker/Projects/gorb-os-2`. Build env: ESP-IDF **v5.4** at
+Repo: `/home/greg/docker/Projects/gorb-os` (identical to the `gorb-os-2` clone since the
+merge in `448a703`, 2026-10-12 — use whichever directory you are already in). Build env:
+ESP-IDF **v5.4** at
 `~/esp/esp-idf` — `. $HOME/esp/esp-idf/export.sh && idf.py build`. Flash with
 `tools/serflash.sh` (it verifies the `esp_app_desc_t` stamp itself; see
 `.clinerules`). Anything past 30 s runs detached and polled — `.clinerules`
@@ -394,23 +396,28 @@ Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits
   archived `clock_app_default.orbtheme` stays until they are.
 - NOT COVERED BY THIS PLAN: the orb-manager hub. The §8 work order names the firmware,
   `tools/orbtheme.py`, `tools/bake_clock.py` and the device's own page JS. It never
-  names `tools/orb-manager/`, and the tool has since diverged across the two clones:
-  - this clone refreshed its embedded editor to FORMAT 2
-    (`tools/orb-manager/web/composer/orbtheme-baker.js` reports `FORMAT = 2`), but its
-    `internal/orbnet/` has no theme client at all — only `client.go`, `scan.go` and the
-    test file;
-  - the sibling clone `/home/greg/docker/Projects/gorb-os`, where hub iterations 0-6
-    landed, holds the theme card and `internal/orbnet/themes.go`. That client still
-    speaks the FORMAT 1 contract: `?name=` on install, delete and upload, no `id` field
-    on `ThemeEntry`, and `CheckThemeName` caps a name at 31 ASCII characters against
-    the 55-byte UTF-8 this scheme allows. Its embedded editor is still `FORMAT = 1`.
-  No checkout on this machine therefore has the FORMAT 2 firmware and a working hub
-  theme card together. What the merge breaks, and the `?name=` to `?id=` trap where
-  `themes.go:14-17` reads the theme `id` as an orb `id`, are recorded in that clone's
-  `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor are
-  FORMAT 1". It is open and unassigned. `support.js`, `dial-renderer.js` and
-  `watch-engine.js` are byte-identical across the two clones, so only
-  `orbtheme-baker.js` and `Watch Composer.dc.html` move with it.
+  names `tools/orb-manager/`, and that consumer is still speaking the old contract after
+  the two clones merged in `448a703` on 2026-10-12:
+  - the tree now carries both halves together, so the mismatch is live rather than
+    prospective — `internal/orbnet/themes.go:94,108,131` send `?name=` on install, delete
+    and upload, while `h_theme_install` and `h_theme_del` (`main/net/orb_net.c:2719,2774`)
+    answer 400 unless `?id=` is exactly 12 chars of `[0-9a-f]`;
+  - `ThemeEntry` (`themes.go:28-36`) has no `id` field and still carries a `Title` the
+    device stopped emitting; `try_slug`/`damage_slug` became `try_id`/`damage_id`
+    (`main/net/orb_net.c:2662,2681`);
+  - `CheckThemeName` (`themes.go:61`) caps a name at 31 ASCII characters against the
+    55-byte UTF-8 this scheme allows.
+  The hub's embedded editor DID land with the merge: both `tools/watch-composer/
+  orbtheme-baker.js` and `tools/orb-manager/web/composer/orbtheme-baker.js` report
+  `FORMAT = 2`, so the fourth break originally recorded here is closed.
+  The suite cannot see the remaining three: `themes_test.go:105,107,109` and
+  `cmd/orbfake/main.go:77,102` encode the same `?name=` assumption as the client, so
+  client, test and mock agree with each other and disagree with `orb_net.c`. Fixing the
+  fake is part of the work, not a check after it. Full detail and the suggested single
+  commit are in `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor
+  are FORMAT 1". It is open and unassigned. `support.js`, `dial-renderer.js` and
+  `watch-engine.js` were byte-identical across the two clones, so iteration 6's offline
+  vendor work and its SRI/manifest pins came through the merge untouched.
 - Defect found by this verification and fixed: bake_clock.py truncated an
   over-55-byte `--theme-name` SILENTLY, twice over and disagreeing — a Python
   55-CHARACTER slice before the id hash and a 55-BYTE slice in

@@ -86,13 +86,15 @@ type Server struct {
 	// test against a local fake orb overrides it.
 	devicePort string
 
-	// lastBoot holds the verdict the flash session read off the boot console
-	// while it held the port across its own HardReset. /api/watch consumes it:
-	// it is the only trustworthy record of whether the orb came up on its
-	// provisioning AP or joined the LAN, since a later probe cannot reset a chip
-	// whose app already owns the (wire-less) USB-Serial-JTAG port.
-	bmu      sync.Mutex
-	lastBoot *bootVerdict
+	// boots holds the verdicts the flash session read off the boot console while
+	// it held the port across its own HardReset, keyed by the chip MAC. /api/watch
+	// consumes them: they are the only trustworthy record of whether the orb came
+	// up on its provisioning AP or joined the LAN, since a later probe cannot reset
+	// a chip whose app already owns the (wire-less) USB-Serial-JTAG port. Keyed by
+	// MAC and not one slot, because flashing two orbs in a row is a normal bench
+	// afternoon and the first verdict must survive the second.
+	bmu   sync.Mutex
+	boots map[string]*bootVerdict
 }
 
 // bootVerdict is the one-shot console conclusion a flash captured for a MAC.
@@ -111,26 +113,50 @@ type bootVerdict struct {
 	at         time.Time
 }
 
-// setBoot records the newest boot verdict, overwriting any prior one.
-func (s *Server) setBoot(mac, apSSID string, associated bool, ip string, networks []esprom.ScanNet) {
-	s.bmu.Lock()
-	s.lastBoot = &bootVerdict{mac: mac, apSSID: apSSID, associated: associated, ip: ip, networks: networks, at: time.Now()}
-	s.bmu.Unlock()
-}
+// bootFreshWindow bounds how long a recorded verdict still describes the boot
+// /api/watch is following. Past it the orb has had time to do anything, and a
+// stale verdict presented as a current one would send the UI down the wrong
+// branch of the onboarding flow.
+const bootFreshWindow = 90 * time.Second
 
-// bootFor returns the recorded verdict if it names mac and is recent enough to
-// still describe the boot this watch call is following.
-func (s *Server) bootFor(mac string) *bootVerdict {
+// setBoot records this orb's boot verdict, leaving every other orb's verdict
+// alone. The key is the chip MAC the flash read from eFuse, so a second flash on a
+// second cable cannot overwrite the first one's answer — which is what the old
+// single slot did.
+func (s *Server) setBoot(mac, apSSID string, associated bool, ip string, networks []esprom.ScanNet) {
+	mac = macNorm(mac)
+	if mac == "" {
+		return // a verdict with no MAC to answer for is not addressable later
+	}
 	s.bmu.Lock()
 	defer s.bmu.Unlock()
-	if s.lastBoot == nil || s.lastBoot.mac != mac {
+	if s.boots == nil {
+		s.boots = map[string]*bootVerdict{}
+	}
+	s.boots[mac] = &bootVerdict{mac: mac, apSSID: apSSID, associated: associated, ip: ip, networks: networks, at: time.Now()}
+	for k, v := range s.boots {
+		if time.Since(v.at) > bootFreshWindow {
+			delete(s.boots, k) // the map is written on every flash; it must not grow forever
+		}
+	}
+}
+
+// bootFor returns the recorded verdict for mac if it is recent enough to still
+// describe the boot this watch call is following.
+func (s *Server) bootFor(mac string) *bootVerdict {
+	mac = macNorm(mac)
+	s.bmu.Lock()
+	defer s.bmu.Unlock()
+	v, ok := s.boots[mac]
+	if !ok {
 		return nil
 	}
-	if time.Since(s.lastBoot.at) > 90*time.Second {
+	if time.Since(v.at) > bootFreshWindow {
+		delete(s.boots, mac)
 		return nil
 	}
-	v := *s.lastBoot
-	return &v
+	copied := *v
+	return &copied
 }
 
 func main() {

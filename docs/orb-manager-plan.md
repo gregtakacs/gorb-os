@@ -243,7 +243,14 @@ Updated at each commit.
   disabled the cross-site cases go 200. The token injection bug (identifier eaten
   by `ReplaceAll`) was caught here and its test hardened to pin the property name
   `app.js` reads.
-- Hardware: nothing in iterations 0-2 was run against a cable. The cancel path
+- Iteration 3: the identity cache is keyed on the cable, not the tty name — an
+  answer records the USB serial behind the port and is refused once a different
+  serial is in the socket, expires after `identityTTL`, and is dropped when its port
+  leaves the enumeration. `lastBoot` became `boots`, a MAC-keyed map with the same
+  90 s rule, pruned on write. Re-plug and two-orb cases covered; both verified by
+  mutation (ignoring the serial comparison, and making `bootFor` answer any MAC, each
+  fail their test).
+- Hardware: nothing in iterations 0-3 was run against a cable. The cancel path
   drives real ROM timing and needs one live cancel on orb-B before it is called
   verified.
 

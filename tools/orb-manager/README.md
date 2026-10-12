@@ -199,9 +199,19 @@ assumed:
   roughly 0.7 s after a cold boot, which is where the answer comes from.
 - **So a probe costs a reboot.** The orb restarts, its screen blanks for a second
   or two, and it re-joins Wi-Fi. Nothing here is automatic: the hub probes only on
-  that click, one port at a time, caches the answer for the session, and takes the
-  same per-port lock a flash does. The identity is invalidated by a flash of that
-  port, so a re-probe reports the new firmware rather than repeating the old.
+  that click, one port at a time, caches the answer, and takes the same per-port
+  lock a flash does. The identity is invalidated by a flash of that port, so a
+  re-probe reports the new firmware rather than repeating the old.
+  The cache is keyed on the **cable**, not the tty name: an answer records the USB
+  serial the host could see behind the port when the probe ran, and it is only
+  handed back while that serial is still what is in the socket. Unplug orb A from
+  `/dev/ttyACM0`, plug in orb B, and the picker says "not identified" instead of
+  going on asserting A's version — which matters because that label is a claim
+  about the firmware an operator is about to overwrite. An answer also expires
+  (`identityTTL`) and is dropped when its port disappears from the enumeration, so
+  an orb that OTA'd or was reflashed elsewhere is not described forever by a reboot
+  this hub paid hours ago. Boot verdicts are keyed by MAC for the same reason: two
+  orbs flashed in a row each keep their own, where a single slot lost the first.
 
 The MAC beside an *unprobed* port is free, by contrast: it comes from the USB
 serial-number descriptor via sysfs (Linux) or SetupAPI (Windows), which for this

@@ -14,32 +14,97 @@ import (
 
 // Identity is opt-in and expensive: a probe reboots the orb to catch the
 // bootloader printing its own descriptor. So the hub never probes on its own —
-// the Onboard card offers one button per port, and the answer is cached here
-// against the port path so a reload of the page does not cost another reboot.
-type identityCache struct {
-	mu     sync.Mutex
-	byPort map[string]esprom.OrbInfo
-	// inFlight guards one probe per port, so a double click cannot queue two
-	// resets of the same chip.
-	inFlight map[string]bool
+// the Onboard card offers one button per port, and the answer is cached here so a
+// reload of the page does not cost another reboot.
+//
+// The cache key is the CABLE, not the tty name: the entry remembers the USB serial
+// the host could see when the probe ran, and an answer is only handed back while
+// that serial is still what is behind the port. Keying on the path alone was wrong
+// in the way that matters most on a bench — orb A is identified on /dev/ttyACM0,
+// orb A is unplugged, orb B is plugged into the same socket, and the picker keeps
+// asserting B is running the version that belongs to A. A tty name is a lease from
+// the OS, not an identity.
+type identityEntry struct {
+	info esprom.OrbInfo
+	who  string    // the USB serial seen when this was recorded, "" if the host could not attribute the cable
+	at   time.Time // when it was recorded, for the TTL
 }
+
+type identityCache struct {
+	mu       sync.Mutex
+	byPort   map[string]identityEntry
+	ttl      time.Duration
+	inFlight map[string]bool
+	// usbMAC is the host's free view of what cable is in a port. It is a field so
+	// a test can replay a re-plug without a cable; production uses ClassifyPort.
+	usbMAC func(port string) string
+}
+
+// identityTTL bounds how long an answer may be trusted without being paid for
+// again. It is a reboot behind the user, so an answer from last hour is not a
+// description of the orb now: an orb that has since OTA'd or been reflashed from
+// another tool would still be reported with the old version.
+const identityTTL = 30 * time.Minute
 
 // newHub builds a Server in the state main() leaves it in, so a test cannot
 // accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
-		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL)}
+		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {
-	return &identityCache{byPort: map[string]esprom.OrbInfo{}, inFlight: map[string]bool{}}
+	return &identityCache{
+		byPort:   map[string]identityEntry{},
+		ttl:      identityTTL,
+		inFlight: map[string]bool{},
+		usbMAC:   hostUSBSerial,
+	}
 }
 
+// hostUSBSerial is the serial number the OS reports for the USB device behind a
+// port, which for the ESP32-S3 native USB peripheral is the chip's base MAC. An
+// empty string means the host cannot attribute the cable at all — the case on
+// Windows without a friendly-name read, and on macOS until usbclass_darwin lands.
+func hostUSBSerial(port string) string {
+	u := esprom.ClassifyPort(port)
+	if !u.IsOrbDevice() {
+		return ""
+	}
+	return u.Serial
+}
+
+// get returns the cached answer for port, and nothing when the cable behind it has
+// turned out to be a different orb, when the answer has aged out, or when the port
+// has disappeared. Reporting "no answer" is always the right answer to a question
+// about a device the hub can no longer prove is the one it measured.
 func (c *identityCache) get(port string) (esprom.OrbInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v, ok := c.byPort[port]
-	return v, ok
+	e, ok := c.byPort[port]
+	if !ok {
+		return esprom.OrbInfo{}, false
+	}
+	if !c.freshLocked(port, e) {
+		delete(c.byPort, port)
+		return esprom.OrbInfo{}, false
+	}
+	return e.info, true
+}
+
+// freshLocked is the staleness rule, stated once for get and for the listing path.
+func (c *identityCache) freshLocked(port string, e identityEntry) bool {
+	if c.ttl > 0 && time.Since(e.at) > c.ttl {
+		return false
+	}
+	return e.who == c.serialOf(port)
+}
+
+func (c *identityCache) serialOf(port string) string {
+	if c.usbMAC == nil {
+		return ""
+	}
+	return c.usbMAC(port)
 }
 
 // begin claims the port for probing, reporting false if one is already running.
@@ -53,19 +118,37 @@ func (c *identityCache) begin(port string) bool {
 	return true
 }
 
+// done records an answer, tagged with who the host believes is behind the port at
+// the moment the probe finished — the same instant that produced the answer, so a
+// cable swapped between those two events is caught rather than inherited.
 func (c *identityCache) done(port string, info esprom.OrbInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.inFlight, port)
-	c.byPort[port] = info
+	c.byPort[port] = identityEntry{info: info, who: c.serialOf(port), at: time.Now()}
 }
 
-func (c *identityCache) all() map[string]esprom.OrbInfo {
+// all returns the still-true answers, keyed by port, and drops what is no longer
+// true: entries whose port vanished from the enumeration (unplugged, so the next
+// device to take that name starts clean) and entries whose cable is a different orb.
+func (c *identityCache) all(present ...string) map[string]esprom.OrbInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seen := make(map[string]bool, len(present))
+	for _, p := range present {
+		seen[p] = true
+	}
 	out := make(map[string]esprom.OrbInfo, len(c.byPort))
-	for k, v := range c.byPort {
-		out[k] = v
+	for port, e := range c.byPort {
+		if len(present) > 0 && !seen[port] {
+			delete(c.byPort, port)
+			continue
+		}
+		if !c.freshLocked(port, e) {
+			delete(c.byPort, port)
+			continue
+		}
+		out[port] = e.info
 	}
 	return out
 }
@@ -90,7 +173,7 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 	if ports == nil {
 		ports = []string{}
 	}
-	cached := s.identities.all()
+	cached := s.identities.all(ports...)
 	entries := make([]map[string]any, 0, len(ports))
 	for _, p := range ports {
 		// Two separate facts, because the client needs them for different things:

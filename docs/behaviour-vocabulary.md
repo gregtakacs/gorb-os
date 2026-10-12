@@ -1,11 +1,11 @@
 # Behaviour vocabulary — what the OS registers, and what it refuses to
 
-Draft 2026-10-12 for the owner's signature as D15. The owner's steer of
-this session set its shape: **"I didn't think we were going to expose any
-of it, only time."** This paper works that out to the ABI line. §8's P0 row
-and §9.2 point here; when the owner signs, the ABI freezes and P3 may
-start. A rejected reading — v1 of this document proposed the broker derive
-calendar values for apps; that idea is dead as proposed.
+Signed by the owner 2026-10-12 as **D15** (`docs/app-platform-plan.md` §0.5);
+P0 closed. The owner's steer of this session set its shape: **"I didn't
+think we were going to expose any of it, only time,"** answered to Q1 with
+**raw `time_t` only** (§3). §8's P0 row and §9.2 point here. A rejected
+reading — v1 of this document proposed the broker derive calendar values
+for apps; that idea is dead as proposed.
 
 ## 1. The registered surface, complete
 
@@ -48,18 +48,31 @@ interprets in its own code. Three consequences:
   discipline as `sig` (C3: reserved, signing later moves nothing). Nothing
   registers into it until something demands it.
 
-## 3. The one contract that makes "only time" safe
+## 3. The conversion ruling — D15's Q1, answered
 
-If apps derive weekday/month/week themselves from a bare `time_t`, §1.1's
-"one clock authority" quietly becomes twelve: two apps on one carousel may
-disagree about what Saturday is, about ISO week boundaries, about the
-moon's age at midnight. The fix is one entry:
+Owner, 2026-10-12: **raw `time_t` only**. `now()` hands out exactly what
+§4.3's signature already spells — `sec`, `frac`, `synced` — and no
+`struct tm` crosses the broker. Three promises are the OS's, all already
+OS code:
 
-**`now()` hands out the OS's converted local `struct tm`** — alongside
-`sec`/`frac`/`synced` — exactly the pair `comp_value` consumes today
-(`clock_view.c:1196`). The OS keeps the tz table, the DST rule and the
-sync trust; an app that wants a frame index derives it from the OS's own
-broken-down time. Derivation stays the app's; conversion stays the OS's.
+- the wall second — the two time sources, the `CLOCK_EPOCH` baseline, the
+  `orb_net_time_synced()` trust rule, the drift re-anchor (the
+  `compose_now` extraction, `clock_view.c:1711-1769`);
+- the scheduler's sub-second phase — `frac` comes from the one shared
+  beat, so hands across apps sweep against the same clock or the dial
+  shows two beats (G5 is a registered contract, not a value);
+- the synced flag.
+
+Conversion is app-side. The clock's `compose_now` keeps filling its own
+`struct tm` exactly as today; a second face app brings its own, from
+newlib `localtime_r` or anything it prefers. `tz_label` is a display
+string, not a conversion input. The accepted consequence, recorded without
+editorial: two apps may disagree about what Saturday is, and the
+disagreement is those apps' bugs — the reference derivations (§4) exist so
+a face app that wants to match the shipped art has something to match. The
+wire names stay `CLK_SRC_*`; `orb_svc.h` carries no `ORB_SRC_*` re-export,
+because there is nothing left to re-export — the broker's time surface is
+the §4.3 signature, and the ABI freeze is of that, alone.
 ## 4. Findings the inventory sweep surfaced — kept as bake/app notes
 
 Reference table first: the shipped clock's derivations
@@ -111,19 +124,19 @@ re-litigating it.
   wording named only SOURCES/KINDS/FLAGS. They freeze with the same
   append-only rule, at the same bake/app layer.
 
-## 5. Sign-off block — D15
+## 5. Sign-off — SIGNED
 
-The owner signs this paper by answering **Q1**. Q2 is decided by precedent
-(`sig`, `COMP_FIELDS.reserve`) and listed for confirmation, not debate.
+Owner, 2026-10-12:
 
-| Q | Question | Recommendation |
+| Q | Question | Answer |
 |---|---|---|
-| **Q1** | Does `orb_svc_t.now()` hand out the OS's converted local `struct tm` (plus `sec`, `frac`, `synced`), keeping conversion OS-owned while every source derivation stays app-side? Or only the raw `time_t`, leaving each app its own tz maths? | hand out the tm — §1.1's "one clock authority" otherwise dies politely, two dials can disagree about Saturday, and the tz table is already OS code |
-| Q2 | §4.1's `behaviour_kind` ships reserved 0? | yes — same discipline as `sig` and `COMP_FIELDS.reserve` |
+| **Q1** | Does `orb_svc_t.now()` hand out the OS's converted local `struct tm`, or only the raw `time_t`? | **Raw `time_t` only — apps convert themselves; the OS just guarantees the seconds.** Recorded in full in §3 |
+| Q2 | §4.1's `behaviour_kind` ships reserved 0? | Stands as decided by precedent (`sig`, `COMP_FIELDS.reserve`); no owner input required, first real use reopens it |
 
-What signing closes: §8's P0 row (the last gate), §9's item 2, and the ABI
-freeze of `orb_svc.h`'s time entry. P3 then implements §4.3's table
-verbatim — broker, grants, prompts, fault counter — with no vocabulary
-question left open. What stays open by design: per-app NVS quota (§9.4, a
-P3 number) and the wasm3 tier (P7).
+This paper is signed as **D15** (`docs/app-platform-plan.md` §0.5). It
+closes §8's P0 row — the last open gate — and §9's item 2, and freezes the
+ABI of `orb_svc.h`'s time entry to §4.3's signature alone. P3 implements
+§4.3's table verbatim: broker, grants, prompts, fault counter. What stays
+open by design: the per-app NVS quota (§9.4, a number chosen at P3) and
+the wasm3 tier (P7).
 

@@ -4,6 +4,7 @@ idf_component_register(
         "app/orb_app.c"
         "app/orb_carousel.c"
         "app/orb_jobs.c"
+        "app/orb_svc.c"
         "display/display.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"

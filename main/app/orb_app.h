@@ -27,6 +27,9 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "orb_svc.h"        /* orb_setting_desc_t, orb_cap_t — the broker's
+                             * words, so the registry can carry the manifest
+                             * policy the gate reads */
 
 #ifdef __cplusplus
 extern "C" {
@@ -148,6 +151,17 @@ struct orb_app {
     uint32_t            art_offset;
     uint32_t            art_bytes;
     int                 art_slot;  /* the secondary slot claimed; -1 = none */
+
+    /* Frozen manifest policy (plan §4.1), read by the broker's gate. P4's
+     * manifest reader fills these for card apps; the boot ladder fills the
+     * compiled-in pair. period_ms is the app's FASTEST beat — svc's set_beat
+     * may only slow from it or stop (D16), and 0 means the app declared no
+     * tick at all and gets none at runtime. settings/n_settings are the only
+     * NVS keys the app may touch: an undeclared key is below-grant, so the
+     * config entries resolve every id here before any handle opens (§4.2). */
+    uint32_t                  period_ms;
+    const orb_setting_desc_t *settings;
+    int                       n_settings;
 
     const orb_app_iface_t *iface;
 

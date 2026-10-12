@@ -18,6 +18,7 @@
 #include "display.h"
 #include "orb_app.h"
 #include "orb_jobs.h"
+#include "orb_svc.h"
 #include "orb_carousel.h"
 #include "knob.h"
 #include "input_router.h"
@@ -128,6 +129,12 @@ void app_main(void)
      * keeps a second 4 KB stack out of the internal heap the framebuffer also
      * spends. */
     ESP_ERROR_CHECK(orb_jobs_start());
+    /* The broker's grant words load before the first app builds, so the first
+     * gated call of the boot never pays an NVS read on the frame path — and
+     * so /api/v1/status answers with real grant/call numbers from second one
+     * (plan §8, the P3 pass line). Inert until an app calls through it; the
+     * compiled-in pair reaches the OS directly until P6, as §14 records. */
+    ESP_ERROR_CHECK(orb_svc_init());
     ESP_ERROR_CHECK(orb_app_init_all());
 
     /* The carousel's name chip, on the top layer, built once here so no flick

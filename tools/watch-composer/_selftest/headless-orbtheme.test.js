@@ -192,6 +192,42 @@ ok(B.wordsOf('comp') === 26 && B.wordsOf('aux') === 24 && B.wordsOf('bank') === 
    B.wordsOf('comp') + '/' + B.wordsOf('aux') + '/' + B.wordsOf('bank'));
 console.log('   geom ' + jsGeom.length + ' B, art ' + M.artSize + ' B, ' + nq + ' delta rects');
 
+// ---- 6b. bakeComplications: the box is the tile's plane, not the tile ------
+// Every .orbtheme the browser baker shipped with a complication carried w=0, h=0 and
+// frame_bytes=0 in its window record, and the dial drew static over the whole face.
+// A tile from the kit reader is {value, plane}, and the box was read off tile.w, a
+// property nothing ever sets, so undefined reached rec.w and Math.round(px - w/2)
+// reached NaN, both of which pack as zero. The pixels were written correctly, so all
+// three CRCs still checked and the loader's bounds tests passed: geometry that merely
+// disagrees with its own payload is not damage a checksum can see. The dials then
+// strode count frames of 0 bytes and painted whatever they landed on.
+// bake_clock.py takes the box from im.size, so plane.w/plane.h is its equal here.
+const compTiles = (n, w, h) => Array.from({ length: n }, (_, v) => ({
+  value: String(v), plane: { w: w, h: h, rgba: new Uint8Array(w * h * 4) } }));
+const moonComp = [{ id: 'c1', type: 'moon', shows: 'moon', host: 'dial',
+                    angle: 0, dist: 120, rot: 0, style: 'fan', underLayer: 3 }];
+const compBlob = B.blob();
+const compRecs = B.bakeComplications(compBlob, { comps: moonComp }, () => compTiles(30, 88, 88));
+const w0 = compRecs[0];
+ok(compRecs.length === 1 && w0.w === 88 && w0.h === 88,
+   'a window records the box its tiles were actually packed at', w0.w + 'x' + w0.h);
+ok(w0.frame_bytes === 88 * 88 * 3,
+   'and the stride the dials use to reach frame two', w0.frame_bytes + ' vs ' + (88 * 88 * 3));
+ok(Number.isInteger(w0.x) && Number.isInteger(w0.y) && !(w0.x === 0 && w0.y === 0),
+   'the anchor is a position on the panel, not two zeroed words', w0.x + ',' + w0.y);
+ok(w0.count === 30 && w0.kind === 0 && w0.src === B.SOURCES.indexOf('moon_age'),
+   'kind, count and the driving value survive too', w0.kind + '/' + w0.count + '/' + w0.src);
+// The invariant that broke: every byte the packer appended is reachable by the record.
+// A tail the geometry does not name is art no reader will ever draw, and it is what a
+// zeroed frame_bytes costs.
+ok(w0.off + w0.count * w0.frame_bytes === compBlob.len,
+   'the window covers its payload exactly, leaving no orphan tail',
+   w0.off + ' + ' + (w0.count * w0.frame_bytes) + ' vs ' + compBlob.len);
+throws(() => B.bakeComplications(B.blob(), { comps: moonComp }, () => compTiles(4, 88, 88).concat([{ value: 'x', plane: { w: 40, h: 88, rgba: new Uint8Array(40 * 88 * 4) } }])),
+       /one fixed box/, 'a second tile of another size is refused, not silently mis-strided');
+throws(() => B.bakeComplications(B.blob(), { comps: moonComp }, () => [{ value: '0', plane: { w: 0, h: 0, rgba: new Uint8Array(0) } }]),
+       /empty tile/, 'a tile with no pixels is refused, not packed as a zero-byte window');
+
 // ---- 7. the kit reader: PNG bytes, not a canvas round-trip -----------------
 // The browser bake decodes the kit's PNGs itself rather than painting them to a canvas and
 // reading them back, because Chrome stores its canvas premultiplied: a round trip can move

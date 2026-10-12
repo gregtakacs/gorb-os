@@ -79,7 +79,16 @@
     u16: [0, 65535], i32: [-2147483648, 2147483647], u32: [0, 4294967295]
   };
   function val(what, t, v) {
-    v = Math.trunc(v);
+    // NaN must not reach the wire. Every range test below is a comparison, and every
+    // comparison with NaN is false, so a NaN slips past them all and >>> 0 below turns it
+    // into a plain 0: a word that reads as a legitimate zero, in a container whose three
+    // CRCs still check. That is how a misnamed property shipped a dial full of noise.
+    var n = typeof v === 'number' ? v : Number(v);
+    if (!Number.isFinite(n) || v === null || typeof v === 'boolean') {
+      throw new Error(what + ': ' + JSON.stringify(v) + ' is not a number the wire can carry' +
+        ' — the bake computed undefined or NaN, which would pack as a silent zero');
+    }
+    v = Math.trunc(n);
     var r = RANGES[t];
     if (!r) throw new Error('unknown wire type ' + t + ' for ' + what);
     if (v < r[0] || v > r[1]) {
@@ -930,10 +939,16 @@
       var word = comp.shows || comp.scale || comp.show || ctype;
       var srcIdx = sourceOf(word), srcWord = SOURCES[srcIdx];
       var order = tileOrder(srcWord, tiles);
-      var w = order[0].w, h = order[0].h, off0 = 0, k;
+      // The box is the tile's own plane, which is bake_clock.py's im.size: a tile carries
+      // only {value, plane}, so reading tile.w here packed NaN to 0 and shipped a window
+      // the dials strides by zero bytes, past every CRC check, into noise.
+      var w = order[0].plane.w, h = order[0].plane.h, off0 = 0, k;
+      if (!(w > 0 && h > 0))
+        throw new Error('comp ' + cid + ': tile ' + order[0].value + ' is ' + w + 'x' + h +
+          ' — an empty tile cannot be a window');
       for (k = 1; k < order.length; k++)
-        if (order[k].w !== w || order[k].h !== h)
-          throw new Error('comp ' + cid + ': tile ' + order[k].value + ' is ' + order[k].w + 'x' + order[k].h +
+        if (order[k].plane.w !== w || order[k].plane.h !== h)
+          throw new Error('comp ' + cid + ': tile ' + order[k].value + ' is ' + order[k].plane.w + 'x' + order[k].plane.h +
             ' but the box is ' + w + 'x' + h + ' — a window strides by one fixed box');
       for (k = 0; k < order.length; k++) {
         var off = packWindowTile(blob, order[k].plane);
@@ -1568,6 +1583,11 @@
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
     HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, TITLE_MAX: TITLE_MAX, SLOT_CAP: SLOT_CAP,
+    // The header layout is exported so a reader can check a finished container instead of
+    // trusting the writer: the selftest re-CRCs the geometry and the pixel payload it read
+    // back off a real Chrome canvas, exactly as orb_theme.c does before it accepts a theme.
+    MAGIC: MAGIC, FORMAT: FORMAT, GEOM_ABI: GEOM_ABI, SECTOR: SECTOR,
+    W_SLUG: W_SLUG, W_TITLE: W_TITLE, W_HDR_CRC: W_HDR_CRC,
     caps: { comp: CLK_COMP_MAX, aux: CLK_AUX_MAX, bank: CLK_BANK_MAX, rects: RECTS_MAX, gifs: GIFS_MAX, tourb: TOURB_MAX },
     crc32: crc32, blankSpr: blankSpr, packSpr: packSpr, packGeom: packGeom, geomNeed: geomNeed,
     packHeader: packHeader, writeContainer: writeContainer, artOffset: artOffset,

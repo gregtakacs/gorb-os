@@ -52,9 +52,13 @@ func portsPayload(ports []string) map[string]any {
 	return map[string]any{"ports": ports}
 }
 
+// describeBuild feeds the Onboard "what will I be flashing" panel. Its keys are
+// a UI contract, pinned by TestBuildPanelFieldsMatchBetweenClientAndHandler:
+// app.js reads present, images, and buildDir here, and takes .length/.map on
+// images, so that list must be a (possibly empty) array and never null.
 func (s *Server) describeBuild(*http.Request) (any, error) {
 	if s.buildDir == "" {
-		return map[string]any{"present": false}, nil
+		return map[string]any{"present": false, "buildDir": ""}, nil
 	}
 	if _, err := os.Stat(filepath.Join(s.buildDir, "flasher_args.json")); err != nil {
 		return map[string]any{"present": false, "buildDir": s.buildDir}, nil

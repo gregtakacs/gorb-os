@@ -144,7 +144,12 @@ headless; a mismatch aborts before erasing.
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API |
 
 Every route wraps its payload in `{ok,data}`. The port list sits under
-`data.ports`, not as a bare array, because `app.js` destructures that field.
+`data.ports`, not as a bare array, because `app.js` destructures that field. The
+build panel reads `data.present`, `data.buildDir`, and `data.images` — the last
+as `[{offset,name,bytes}]`, empty rather than null when the manifest lists
+nothing, because the UI takes `.length` on it. Two tests in `api_test.go` read
+those field names off `app.js` and fail if a handler stops sending them, which is
+how the port picker's blank dropdown got through once.
 
 `/api/flash` streams `{"log":...}`, `{"progress":{...}}`, `{"mac":"..."}`
 (eFuse MAC, emitted as soon as the ROM answers), `{"done":...}`, and

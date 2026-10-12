@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -45,23 +46,7 @@ func TestAPIPortsPayloadHasNoNullList(t *testing.T) {
 // Windows build dir is a UNC path full of backslashes, and path.Base (slash
 // only) hands the whole thing back as the display name.
 func TestAPIBuildNamesAreBasenamesNotPaths(t *testing.T) {
-	dir := t.TempDir()
-	boot := filepath.Join(dir, "bootloader")
-	if err := os.MkdirAll(boot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []string{filepath.Join(boot, "bootloader.bin"), filepath.Join(dir, "orb.bin")} {
-		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manifest := `{"flash_settings":{"flash_mode":"dio","flash_size":"16MB"},` +
-		`"flash_files":{"0x0":"bootloader/bootloader.bin","0x10000":"orb.bin"}}`
-	if err := os.WriteFile(filepath.Join(dir, "flasher_args.json"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := &Server{buildDir: dir}
+	s := &Server{buildDir: writeFakeBuild(t)}
 	payload, err := s.describeBuild(nil)
 	if err != nil {
 		t.Fatalf("describeBuild: %v", err)
@@ -80,7 +65,7 @@ func TestAPIBuildNamesAreBasenamesNotPaths(t *testing.T) {
 		t.Fatalf("payload shape: %v (%s)", err, raw)
 	}
 	if !got.Present {
-		t.Fatalf("present = false, want the manifest found at %s", dir)
+		t.Fatal("present = false, want the manifest found in the fixture build dir")
 	}
 	if len(got.Images) != 2 {
 		t.Fatalf("images = %d, want the two in the manifest", len(got.Images))
@@ -144,4 +129,164 @@ func TestPortPickerContractMatchesTheHandler(t *testing.T) {
 	if !strings.Contains(src, "Array.isArray(ports)") {
 		t.Error("the picker must not take .length on a payload it has not checked: keep the Array.isArray guard")
 	}
+}
+
+// --- the two-sided contract pins --------------------------------------------
+
+// readAppJS loads the client so a test can read the field names off it.
+func readAppJS(t *testing.T) string {
+	t.Helper()
+	raw, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// clientFields returns the payload fields app.js reads for one endpoint: the
+// text from the `const <v> = await getJSON("<path>")` assignment through the end
+// of its try block, filtered for <v>.<field> accesses. The name list is what
+// makes drift visible on either side — the handler renaming a key the UI still
+// reads, or the UI starting to read a key the handler never sends.
+func clientFields(t *testing.T, src, path string) (fields []string, block string) {
+	t.Helper()
+	caller := `getJSON("` + path + `")`
+	i := strings.Index(src, caller)
+	if i < 0 {
+		t.Fatalf("app.js no longer calls %s", path)
+	}
+	end := strings.Index(src[i:], "} catch")
+	if end < 0 {
+		t.Fatalf("no try/catch around the %s call: the panel would show a raw exception", path)
+	}
+	block = src[i : i+end]
+
+	// The consuming variable is the last word on the left of the assignment.
+	assign := src[strings.LastIndex(src[:i], "\n")+1 : i]
+	eq := strings.Index(assign, "=")
+	if eq < 0 {
+		t.Fatalf("cannot read the consuming variable from %q", assign)
+	}
+	words := strings.Fields(strings.ReplaceAll(assign[:eq], "await", " "))
+	if len(words) == 0 {
+		t.Fatalf("unexpected assignment form: %q", assign)
+	}
+	v := words[len(words)-1]
+
+	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(v) + `\.([A-Za-z_][A-Za-z0-9_]*)`)
+	seen := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(block, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			fields = append(fields, m[1])
+		}
+	}
+	return fields, block
+}
+
+// jsonKeys unmarshals a payload object into its key set.
+func jsonKeys(t *testing.T, payload any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("payload is not a JSON object: %v (%s)", err, raw)
+	}
+	return m
+}
+
+// The build panel is the second panel the port picker's bug class would have
+// hit: it took .length and .map on images with no guard, and nothing linked the
+// key names the client reads to the keys the handler emits.
+func TestBuildPanelFieldsMatchBetweenClientAndHandler(t *testing.T) {
+	src := readAppJS(t)
+	fields, block := clientFields(t, src, "/api/build")
+
+	want := []string{"present", "images", "buildDir"}
+	if strings.Join(fields, ",") != strings.Join(want, ",") {
+		t.Errorf("the panel reads %v, want exactly %v — update this list and the handler together", fields, want)
+	}
+	// The guard is the part that turns a shape bug into a message instead of a
+	// crash, so it must survive edits to this function.
+	if !strings.Contains(block, "Array.isArray(b.images)") {
+		t.Error("the panel must not take .length/.map on images unchecked: keep the Array.isArray guard")
+	}
+
+	dir := writeFakeBuild(t)
+	s := &Server{buildDir: dir}
+	payload, err := s.describeBuild(nil)
+	if err != nil {
+		t.Fatalf("describeBuild: %v", err)
+	}
+	keys := jsonKeys(t, payload)
+	for _, f := range fields {
+		if _, ok := keys[f]; !ok {
+			t.Errorf("the panel reads b.%s but the handler sends no such key: %v", f, keys)
+		}
+	}
+
+	// The image rows are the other half of the contract.
+	imgs, ok := keys["images"].([]any)
+	if !ok || len(imgs) == 0 {
+		t.Fatalf("images = %#v, want a non-empty array", keys["images"])
+	}
+	first := jsonKeys(t, imgs[0])
+	for _, f := range []string{"offset", "name", "bytes"} {
+		if _, ok := first[f]; !ok {
+			t.Errorf("the panel renders i.%s but no image carries it: %v", f, first)
+		}
+	}
+	for _, f := range []string{"offset", "name", "bytes"} {
+		if !strings.Contains(block, "i."+f) {
+			t.Errorf("the handler sends image field %q that the panel no longer renders", f)
+		}
+	}
+}
+
+// /api/status writes the hub's own identity line. A rename there cannot crash
+// the page, so it is exactly the kind of drift that would sit unnoticed while
+// the header quietly read "undefined".
+func TestMetaLineFieldsMatchBetweenClientAndHandler(t *testing.T) {
+	src := readAppJS(t)
+	fields, _ := clientFields(t, src, "/api/status")
+
+	if strings.Join(fields, ",") != "platform,buildDir" {
+		t.Errorf("the meta line reads %v, want [platform buildDir] — update this list and hello() together", fields)
+	}
+	s := &Server{repoDir: "/repo", buildDir: "/repo/build"}
+	payload, err := s.hello(nil)
+	if err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	keys := jsonKeys(t, payload)
+	for _, f := range fields {
+		if _, ok := keys[f]; !ok {
+			t.Errorf("the meta line reads m.%s but hello() sends no such key: %v", f, keys)
+		}
+	}
+}
+
+// writeFakeBuild lays down the smallest tree describeBuild accepts: a manifest
+// naming two images that exist on disk.
+func writeFakeBuild(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	boot := filepath.Join(dir, "bootloader")
+	if err := os.MkdirAll(boot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{filepath.Join(boot, "bootloader.bin"), filepath.Join(dir, "orb.bin")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"flash_settings":{"flash_mode":"dio","flash_size":"16MB"},` +
+		`"flash_files":{"0x0":"bootloader/bootloader.bin","0x10000":"orb.bin"}}`
+	if err := os.WriteFile(filepath.Join(dir, "flasher_args.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

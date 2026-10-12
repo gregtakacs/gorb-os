@@ -107,6 +107,7 @@ crosscheck:
 WIN_TEST_DIR ?= $(BIN_DIR)/windows-tests
 win-test:
 	@mkdir -p $(WIN_TEST_DIR)
+	@rm -f $(WIN_TEST_DIR)/*.test.exe
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) test -c -o $(WIN_TEST_DIR)/orbbind.test.exe ./internal/orbbind/
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) test -c -o $(WIN_TEST_DIR)/main.test.exe .
 	@echo '--- orbbind (Windows port lock) ---'

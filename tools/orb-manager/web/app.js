@@ -90,8 +90,14 @@ async function refreshBuild() {
   try {
     const b = await getJSON("/api/build");
     if (!b.present) { el.textContent = "no build detected — run idf.py build, or start with --build <dir>"; return; }
-    el.innerHTML = "<b>" + b.images.length + " image(s) from " + b.buildDir + ":</b><br>" +
-      b.images.map((i) => `${i.offset}  ${i.name}  (${i.bytes} B)`).join("<br>");
+    // Same discipline as the port picker: .length and .map on a value the server
+    // could hand back as null or undefined throws, and the catch below then
+    // blames the browser for what is a payload-shape bug.
+    const imgs = Array.isArray(b.images) ? b.images : [];
+    const dir = b.buildDir || "(unknown build dir)";
+    if (!imgs.length) { el.textContent = "build detected but no images listed under " + dir; return; }
+    el.innerHTML = "<b>" + imgs.length + " image(s) from " + dir + ":</b><br>" +
+      imgs.map((i) => `${i.offset}  ${i.name}  (${i.bytes} B)`).join("<br>");
   } catch (e) { el.textContent = e.message; }
 }
 

@@ -120,11 +120,3 @@ ORB_IP in $ORB_ROOT/.orb-target; do not route around this gate."
   printf 'orb_bind: %s confirmed as %s (ARP %s)\n' "$ip" "$ORB_LABEL" "$have" >&2
   ORB_RESOLVED_IP="$ip"
 }
-
-# Advisory lock ON the port: the writer holds fd 9 for the life of the script,
-# so a second run on the same orb fails at once instead of rebooting the board
-# under the first one's flash.
-orb_lock_port() {
-  exec 9>"$1" || orb_die "cannot open $1 for locking"
-  flock -n 9 || orb_die "another orb tool holds $1 -- refusing to double-write"
-}

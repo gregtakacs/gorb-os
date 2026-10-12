@@ -75,6 +75,15 @@ retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
 # nobody summoned. The codes are 802.11's, pinned to the values in
 # esp_wifi_types_generic.h so a rename on our side cannot silently flip one.
 si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}")
+# The two association-window decisions added after the bench wedge of
+# 2026-10-12, lifted for the same reason as the ladder above them: both are
+# one-line predicates, both are invisible from the LAN, and getting either
+# the wrong way round reproduces the failure — a retry fired into a live
+# association killed it with an ESP_OK and no further event, and the device
+# sat network-dead until someone pulsed EN. The truth tables below pin both
+# from every direction so a future edit cannot drift them shut or open.
+moot_fn = lift(r"static bool connect_attempt_is_moot\(bool[^;]*?return[^;]*;\n\}")
+drop_fn = lift(r"static bool lease_watch_should_drop\(bool[^;]*?return[^;]*;\n\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -209,6 +218,8 @@ harness = f"""
 {retry_fn}
 {wifi_reasons}
 {si_fn}
+{moot_fn}
+{drop_fn}
 {dns_fn}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
@@ -275,6 +286,22 @@ static void guard_counter(void){{
     if (counted != 0 || refused != 40) fails++;
     printf("%-5s 40 leaves -> counter %u (want 0); 40 refusals -> %u (want 40)\\n",
            (counted == 0 && refused == 40) ? "ok" : "FAIL", counted, refused);
+}}
+static void moot_case(int assoc, int up, int prov, int want){{
+    const bool got = connect_attempt_is_moot(assoc, up, prov);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s connect(assoc=%d up=%d prov=%d) -> %-4s (want %s)\\n",
+           pass ? "ok" : "FAIL", assoc, up, prov,
+           got ? "moot" : "try", want ? "moot" : "try");
+}}
+static void drop_case(int assoc, int up, int prov, int want){{
+    const bool got = lease_watch_should_drop(assoc, up, prov);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s lease_watch(assoc=%d up=%d prov=%d) -> %-5s (want %s)\\n",
+           pass ? "ok" : "FAIL", assoc, up, prov,
+           got ? "drop" : "hold", want ? "drop" : "hold");
 }}
 static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
@@ -409,6 +436,24 @@ int main(void)
     leave_case(WIFI_REASON_AUTH_EXPIRE, 0);                  /* 2: router let it lapse */
     leave_case(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, 0);       /* 15: wrong passphrase */
     leave_case(WIFI_REASON_NO_AP_FOUND, 0);                  /* 201: SSID gone */
+    /* The association-window guards added after the bench wedge of
+     * 2026-10-12: the retry timer firing while the station was associated but
+     * still unleased destroyed that association (esp_wifi_connect() returned
+     * ESP_OK, no event followed, dead device until EN was pulsed).
+     * connect_attempt_is_moot must close that door for every live state, and
+     * lease_watch_should_drop must guard exactly the associated-unleased one —
+     * wider drops healthy leases or meddles in provisioning, narrower
+     * reproduces the wedge. Both are pure, so all eight rows cost nothing. */
+    moot_case(0, 0, 0, 0);   /* genuinely quiet: the attempt must proceed */
+    moot_case(1, 0, 0, 1);   /* the wedge window: connect must NOT fire */
+    moot_case(0, 1, 0, 1);   /* lease held: moot */
+    moot_case(0, 0, 1, 1);   /* provisioning: moot */
+    moot_case(1, 1, 0, 1); moot_case(1, 0, 1, 1);
+    moot_case(0, 1, 1, 1); moot_case(1, 1, 1, 1);
+    drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
+    drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
+    drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);
+    drop_case(1, 1, 1, 0); drop_case(0, 1, 1, 0);
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();

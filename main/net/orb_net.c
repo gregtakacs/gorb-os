@@ -69,6 +69,9 @@ static const char *TAG = "orb_net";
 #define NET_NVS_NAMESPACE "orb.net"
 
 #define NET_STA_RETRY_S  5      /* first association back-off; doubles from here */
+#define NET_LEASE_WATCHDOG_S 15 /* an association must produce a lease within this,
+                                 * or the association is dropped and the ladder
+                                 * retries it from a real DISCONNECTED event */
 #define NET_STA_RETRY_MAX_S 120 /* ceiling — see retry_delay_s() */
 #define NET_SSID_MAX     32
 #define NET_PASS_MAX     64
@@ -94,11 +97,13 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
        NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
-       NET_CMD_SCAN_DONE };   /* drain the results once the driver says done     */
+       NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
+       NET_CMD_LEASE_WATCH }; /* associated but no lease: rearm the watch or drop it */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
 static esp_timer_handle_t s_ap_timer;      /* one-shot, AP expiry            */
+static esp_timer_handle_t s_watch_timer;   /* one-shot, lease watchdog       */
 
 static esp_netif_t   *s_sta_netif;
 static esp_netif_t   *s_ap_netif;
@@ -106,6 +111,7 @@ static httpd_handle_t s_server;
 static nvs_handle_t   s_nvs;
 
 static volatile bool s_sta_up;         /* has an IP */
+static volatile bool s_associated;     /* the association is real; the lease may not be */
 static volatile bool s_joining;        /* a user-initiated join is in flight */
 static volatile bool s_provisioning;   /* booted with no credentials at all */
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
@@ -632,6 +638,7 @@ static bool net_post_join(const char *ssid, const char *pass)
 /* Timer callbacks may only post: the esp_timer task is shared and must not
  * block, and the esp_wifi_* calls do block on the driver's own task. */
 static void retry_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_CONNECT, 0); }
+static void lease_watch_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_LEASE_WATCH, 0); }
 static void ap_timer_cb(void *arg)    { (void)arg; net_post(NET_CMD_AP_EXPIRED, 0); }
 static void arm_oneshot(esp_timer_handle_t t, uint32_t secs, const char *what)
 {
@@ -903,6 +910,8 @@ static void dns_stop(void)
  * handler — see the h_wifi_scan comment for what that costs a phone. */
 static void scan_begin(void);
 static void scan_collect(void);
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning);
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning);
 
 static void net_task_loop(void *arg)
 {
@@ -913,9 +922,20 @@ static void net_task_loop(void *arg)
         switch (m.cmd) {
         case NET_CMD_CONNECT:
             /* Re-check what the event loop owns: a lease may have landed
-             * between the timer firing and this task getting to run. */
-            if (s_sta_up || s_provisioning) break;
-            s_retry_pending = false;          /* this attempt is now live */
+             * between the timer firing and this task getting to run. The
+             * s_associated arm is the wedge fix: a retry that arrives while the
+             * station is associated but still unleased must not connect over
+             * the live attempt — it must hand the stall to the lease watchdog
+             * instead. retry_pending is cleared BEFORE any break: a consumed
+             * retry that left it set would have the next DISCONNECTED swallowed
+             * by the second-event guard, which is the same dead device by
+             * another door. */
+            s_retry_pending = false;
+            if (connect_attempt_is_moot(s_associated, s_sta_up, s_provisioning)) {
+                if (lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+                    arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
+                break;
+            }
             ESP_LOGI(TAG, "association attempt %u", s_assoc_fails + 1);
             const esp_err_t ce = esp_wifi_connect();
             if (ce == ESP_ERR_WIFI_CONN) break;   /* an attempt is already live */
@@ -959,7 +979,8 @@ static void net_task_loop(void *arg)
              * If it answers with nothing at all — the wedge on the bench — this
              * is the only thing that brings the station back without a reboot.
              * Harmless when the association is merely slow: NET_CMD_CONNECT
-             * breaks out on s_sta_up, and a connect() during a live attempt
+             * breaks out on s_sta_up or a live association and hands the stall
+             * to the lease watchdog, and a connect() during a live attempt
              * returns ESP_ERR_WIFI_CONN and is ignored. */
             arm_oneshot(s_retry_timer, NET_STA_RETRY_S, "retry");
             break;
@@ -995,6 +1016,22 @@ static void net_task_loop(void *arg)
 
         case NET_CMD_SCAN_DONE:
             scan_collect();
+            break;
+
+        case NET_CMD_LEASE_WATCH:
+            /* The association promised a lease and NET_LEASE_WATCHDOG_S passed
+             * with none arriving — the state the bench orb sat in for four
+             * minutes. Drop it the honest way: a forced disconnect produces a
+             * real DISCONNECTED event, self-inflicted by reason, which the
+             * already-tested ladder path re-arms without counting a refusal.
+             * A disconnect() that itself fails leaves nothing pending, so the
+             * watch re-arms rather than handing the device to the silence. */
+            if (!lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+                break;
+            ESP_LOGW(TAG, "no lease %u s after associating; dropping the association",
+                     (unsigned)NET_LEASE_WATCHDOG_S);
+            if (esp_wifi_disconnect() != ESP_OK)
+                arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
             break;
 
         default:
@@ -1049,6 +1086,26 @@ static bool sta_leave_is_self_inflicted(uint8_t reason)
     return reason == WIFI_REASON_AUTH_LEAVE || reason == WIFI_REASON_ASSOC_LEAVE;
 }
 
+/* The two decisions the association ladder was missing, both born of the
+ * bench wedge of 2026-10-12: a retry armed by a self-inflicted leave at boot
+ * fired five seconds later INTO a run-but-unleased association — both old
+ * guards (s_sta_up, s_provisioning) were still false there, esp_wifi_connect()
+ * returned ESP_OK and destroyed the association in flight, and no further
+ * event ever arrived to re-arm the ladder. The device sat network-dead until
+ * EN was pulsed. Pure, and shaped as predicates like
+ * sta_leave_is_self_inflicted() above, so tools/host_tz_test.py can pin the
+ * truth tables without a radio: from the LAN a wrong answer here looks
+ * exactly like a router that hates the orb. */
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning)
+{
+    return sta_up || associated || provisioning;
+}
+
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning)
+{
+    return associated && !sta_up && !provisioning;
+}
+
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base; (void)data;
@@ -1060,10 +1117,26 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (!s_provisioning) esp_wifi_connect();
         break;
 
+    case WIFI_EVENT_STA_CONNECTED:
+        /* The driver's word that the association is real; the lease is still on
+         * its way. Two obligations, both from the bench wedge: a retry timer
+         * armed by an EARLIER failure must not survive into this association —
+         * cancel on CONNECTED, not on the lease, because the unleased window
+         * between the two is exactly where the wedge lived — and a lease that
+         * never arrives needs an owner, which is the watchdog. */
+        s_associated = true;
+        if (s_retry_pending) {
+            s_retry_pending = false;
+            esp_timer_stop(s_retry_timer);
+        }
+        arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
+        break;
+
     case WIFI_EVENT_STA_DISCONNECTED: {
         const wifi_event_sta_disconnected_t *ed = data;
         const uint8_t reason = ed ? ed->reason : 0;
         s_sta_up = false;
+        s_associated = false;
         s_rssi   = -999;
         if (reason) s_last_reason = reason;
         if (s_provisioning) break;         /* AP-only mode: nothing to retry */
@@ -1198,6 +1271,9 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     const ip_event_got_ip_t *ev = (const ip_event_got_ip_t *)data;
     snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&ev->ip_info.ip));
     s_sta_up       = true;
+    /* The association delivered the lease: the watchdog that guards exactly
+     * this hand-off has nothing left to guard. */
+    esp_timer_stop(s_watch_timer);
     s_provisioning = false;
     /* The lease is the word that the join the user pressed Connect for actually
      * landed; until then /api/v1/status keeps saying "joining" rather than falling
@@ -3238,6 +3314,10 @@ esp_err_t orb_net_start(void)
                                             .name = "apexpire" };
     if (esp_timer_create(&ap_ta, &s_ap_timer) != ESP_OK)
         ESP_LOGE(TAG, "ap expiry timer: creation failed — the SoftAP will stay up");
+    const esp_timer_create_args_t watch_ta = { .callback = lease_watch_timer_cb,
+                                               .name = "netlease" };
+    if (esp_timer_create(&watch_ta, &s_watch_timer) != ESP_OK)
+        ESP_LOGE(TAG, "lease watchdog timer: creation failed — a stalled association will not recover");
     s_net_q = xQueueCreate(8, sizeof(net_msg_t));
     if (!s_net_q || xTaskCreate(net_task_loop, "orb_net", 3072, NULL, 4,
                                 &s_net_task) != pdPASS) {

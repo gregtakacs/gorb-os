@@ -204,8 +204,8 @@ function startJoin(port, mac) {
   streamWatch(port, mac);
 }
 
-async function streamWatch(port, mac, skipAp) {
-  await streamPost("/api/watch", { port, mac, skip_ap: !!skipAp }, (ev) => {
+async function streamWatch(port, mac, skipAp, ip) {
+  await streamPost("/api/watch", { port, mac, skip_ap: !!skipAp, ip: ip || "" }, (ev) => {
     if (ev.log) {
       const el = $("#ob-console");
       el.textContent += ev.log + "\n";
@@ -308,10 +308,14 @@ $("#sp-go").onclick = async () => {
       else if (ev.error) { jlog.textContent += "error: " + ev.error + "\n"; }
       else if (ev.result) {
         const n = ev.result;
-        jlog.textContent += (n.ack
-          ? `accepted "${ssid}" — the orb is joining; watch for it on the LAN.`
-          : `no PROV-ACK for "${ssid}" — check the passphrase, or the orb may already be configured (use its AP page).`) + "\n";
-        if (n.ack) streamWatch(provPort, provMac, true); // re-probe the LAN, past the AP verdict
+        if (n.ack && n.ip) {
+          jlog.textContent += `accepted "${ssid}" — orb joined and took lease ${n.ip} over USB.\n`;
+        } else {
+          jlog.textContent += (n.ack
+            ? `accepted "${ssid}" — the orb is joining; watch for it on the LAN.`
+            : `no PROV-ACK for "${ssid}" — check the passphrase, or the orb may already be configured (use its AP page).`) + "\n";
+        }
+        if (n.ack) streamWatch(provPort, provMac, true, n.ip || ""); // confirm the USB lease, else re-probe the LAN
       }
     });
   } finally {

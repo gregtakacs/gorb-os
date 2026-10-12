@@ -24,6 +24,7 @@ func main() {
 	verbose := flag.Bool("v", true, "echo every console line as it arrives")
 	scan := flag.Duration("scan", 22*time.Second, "budget to catch PROVSCAN-END")
 	ack := flag.Duration("ack", 20*time.Second, "budget to catch PROV-ACK")
+	ipw := flag.Duration("ip", 25*time.Second, "after the ack, budget to catch the DHCP lease banner")
 	flag.Parse()
 	if *ssid == "" {
 		fmt.Fprintln(os.Stderr, "serprov: --ssid is required")
@@ -73,7 +74,7 @@ func main() {
 			fmt.Printf("    . %s\n", l)
 		}
 	}
-	res, err := esprom.ProvisionOn(pt, *ssid, *pass, *tz, *scan, *ack, onLine)
+	res, err := esprom.ProvisionOn(pt, *ssid, *pass, *tz, *scan, *ack, *ipw, onLine)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serprov:", err)
 		os.Exit(1)
@@ -88,5 +89,9 @@ func main() {
 		fmt.Println("\nserprov: NOT PROVEN — no PROV-ACK after writing the PROV line.")
 		os.Exit(1)
 	}
-	fmt.Println("\nserprov: PROVEN — orb scanned over serial, accepted the PROV line, and is joining.")
+	if res.IP != "" {
+		fmt.Printf("\nserprov: PROVEN — orb joined and took DHCP lease %s (read off the USB console).\n", res.IP)
+	} else {
+		fmt.Println("\nserprov: PROVEN — orb accepted the PROV line and is joining (no lease banner seen yet; find it on the LAN).")
+	}
 }

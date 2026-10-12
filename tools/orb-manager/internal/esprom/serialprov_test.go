@@ -95,3 +95,33 @@ func containsSpace(s string) bool {
 	}
 	return false
 }
+
+func TestParseOrbIP(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"real banner", "I (12345) orb_net: associated: config page at http://192.168.2.32/", "192.168.2.32"},
+		{"subnet 10", "I (999) orb_net: associated: config page at http://10.0.0.7/", "10.0.0.7"},
+		{"https form", "associated: config page at https://192.168.1.5/", "192.168.1.5"},
+		// The AP DHCP banner is the fixed 192.168.4.1 and must NOT be taken as
+		// the orb's lease — it lacks the "associated: config page at" marker.
+		{"ap dhcp line rejected", "I (1673) esp_netif_lwip: DHCP server started on interface WIFI_AP_DEF with IP: 192.168.4.1", ""},
+		{"ap boot url line rejected", "I (1981) orb_net: no stored network — provisioning AP orb-8089 (open), then open http://192.168.4.1/", ""},
+		{"disassociated rejected", "W (500) orb_net: disassociated: reason 15", ""},
+		{"unrelated line rejected", "I (2591) carousel: chip ready (settle 400 ms)", ""},
+	}
+	for _, c := range cases {
+		got, ok := parseOrbIP(c.line)
+		if c.want == "" {
+			if ok || got != "" {
+				t.Errorf("%s: parseOrbIP(%q) = (%q,%v), want (\"\",false)", c.name, c.line, got, ok)
+			}
+			continue
+		}
+		if !ok || got != c.want {
+			t.Errorf("%s: parseOrbIP(%q) = (%q,%v), want (%q,true)", c.name, c.line, got, ok, c.want)
+		}
+	}
+}

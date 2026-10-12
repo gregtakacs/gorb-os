@@ -93,7 +93,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	defer pt.Close()
 
 	send(map[string]any{"log": "opening the console (this reboots the orb into its app)..."})
-	res, err := esprom.ProvisionOn(pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, func(l string) {
+	res, err := esprom.ProvisionOn(pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, 25*time.Second, func(l string) {
 		send(map[string]any{"log": "console: " + l})
 	})
 	if err != nil {
@@ -104,6 +104,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		"ap_seen":  res.APSeen,
 		"sent":     res.Sent,
 		"ack":      res.Ack,
+		"ip":       res.IP,
 		"networks": res.Networks,
 	}})
 }

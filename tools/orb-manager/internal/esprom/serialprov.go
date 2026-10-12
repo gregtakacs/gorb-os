@@ -3,6 +3,7 @@ package esprom
 import (
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,25 @@ type ProvResult struct {
 	Networks []ScanNet `json:"networks"`
 	Sent     bool      `json:"sent"`
 	Ack      bool      `json:"ack"`
+	IP       string    `json:"ip,omitempty"` // DHCP lease read off the console after the join
+}
+
+// orbIPRe matches the firmware's post-lease console banner (orb_net.c on_ip):
+//
+//	I (NNNNN) orb_net: associated: config page at http://192.168.2.32/
+//
+// It is the only host-readable line that carries the orb's LAN address, so the
+// IP comes back over the same USB lead the PROV line went down — no LAN sweep.
+var orbIPRe = regexp.MustCompile(`associated: config page at https?://([0-9]{1,3}(\.[0-9]{1,3}){3})/`)
+
+// parseOrbIP returns the dotted IPv4 the orb announced in its "associated:
+// config page at" banner, or ("", false) for any other line.
+func parseOrbIP(line string) (string, bool) {
+	m := orbIPRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // ProvisionOn drives one wired-provisioning exchange on an ALREADY-OPEN port.
@@ -98,14 +118,18 @@ type ProvResult struct {
 // once, at app startup while the device is unprovisioned; a board that booted
 // long ago prints no PROVSCAN and never starts the reader. It then reads the
 // boot console until the scan completes (PROVSCAN-END) or scanBudget elapses,
-// writes the PROV line, and reads until PROV-ACK or ackBudget. onLine, if set,
+// writes the PROV line, and reads until PROV-ACK or ackBudget. After the ack it
+// keeps reading up to ipBudget for the firmware's "associated: config page at
+// http://<IP>/" banner, so the DHCP lease comes back over the same USB lead (no
+// LAN sweep); res.IP is empty if the lease did not arrive in that window — a
+// join still succeeds, the IP is simply not yet known. onLine, if set,
 // sees every console line.
 //
 // The caller owns opening/closing pt. It must be for the UNPROVISIONED orb; a
 // device that already has credentials boots as a station and never starts the
 // reader, so the write would be ignored — use the orb's HTTP door to re-configure
 // an already-joined orb.
-func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget time.Duration, onLine func(string)) (*ProvResult, error) {
+func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudget time.Duration, onLine func(string)) (*ProvResult, error) {
 	res := &ProvResult{Networks: []ScanNet{}}
 
 	// Force a genuine fresh boot. The boot scan (PROVSCAN) and the stdin reader
@@ -240,6 +264,31 @@ func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget time.Dur
 				return res, fmt.Errorf("esprom: prov write: %w", err)
 			}
 			nextPush = time.Now().Add(2 * time.Second)
+		}
+	}
+
+	// The join the ack kicked off is not instant: after PROV-ACK the reader posts
+	// the join, the radio associates, and DHCP lands a lease a few seconds later,
+	// at which point the firmware prints its "associated: config page at
+	// http://<IP>/" banner (orb_net.c on_ip). Keep the console open for that
+	// banner so the hub learns the orb's LAN address over the same USB lead — no
+	// ARP sweep needed. A missing IP within the budget is NOT a failure: the ack
+	// already proved the credentials were accepted and the join posted; the
+	// caller can still find the orb on the LAN the usual way.
+	if res.Ack && ipBudget > 0 {
+		ipDeadline := time.Now().Add(ipBudget)
+		for res.IP == "" && time.Now().Before(ipDeadline) {
+			wait := time.Until(ipDeadline)
+			if wait < 100*time.Millisecond {
+				wait = 100 * time.Millisecond
+			}
+			if err := watch(wait, false, func(ln string) {
+				if ip, ok := parseOrbIP(ln); ok {
+					res.IP = ip
+				}
+			}); err != nil {
+				return res, err
+			}
 		}
 	}
 	return res, nil

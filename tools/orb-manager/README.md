@@ -147,7 +147,11 @@ persist-then-join path, and neither erases the shared `storage` partition, so th
    flasher and the ROM are never involved in the credential write. The UI's
    "Provision over USB" button calls `POST /api/provision {"port","ssid","pass","tz"}`,
    which reboots the orb into its app on the held port, reads the scan, writes the
-   PROV line, and confirms the firmware's `PROV-ACK`.
+   PROV line, and confirms the firmware's `PROV-ACK`. It then keeps the console
+   open for a few more seconds to catch the firmware's post-DHCP banner
+   (`associated: config page at http://<IP>/`), so the orb's LAN address comes
+   back over the same USB lead — `/api/provision` returns it as `result.ip` and
+   `/api/watch` probes it directly, skipping the ARP sweep when it is present.
 
 Caveat, stated plainly: the serial door sends the passphrase over the wire in hex
 — obfuscated, not encrypted. That is acceptable only because it runs over the

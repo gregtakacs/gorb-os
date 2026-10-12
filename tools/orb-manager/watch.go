@@ -22,6 +22,7 @@ type watchRequest struct {
 	Port   string `json:"port"`
 	MAC    string `json:"mac"`
 	SkipAp bool   `json:"skip_ap"` // after a serial provision, go straight to LAN Phase B
+	IP     string `json:"ip"`      // lease the serial door read off the console: probe it first, before the ARP sweep
 }
 
 const (
@@ -88,6 +89,17 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Phase B: find it on the LAN by MAC.
+	// If the serial door already read the orb's DHCP lease off the console, that
+	// address is authoritative — we just booted this very board — so probe it
+	// first and skip the ARP sweep entirely. Still confirm it answers as an orb
+	// on /api/v1/status before trusting it; a miss (lease not live yet, or DHCP
+	// had not landed inside the budget) falls through to the MAC-based sweep.
+	if ip := strings.TrimSpace(req.IP); ip != "" {
+		if st, err := s.orb.Status(ip); err == nil {
+			send(map[string]any{"result": map[string]any{"mode": "lan", "ip": ip, "status": st}})
+			return
+		}
+	}
 	req.MAC = macNorm(req.MAC)
 	if req.MAC == "" {
 		send(map[string]any{"result": map[string]any{"mode": "unknown"}})

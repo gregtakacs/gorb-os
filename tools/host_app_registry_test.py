@@ -34,7 +34,10 @@ What is under test
   art residency         a banked app maps on activate and unmaps on suspend; a
                         refused map keeps the dial on the app it was on and puts
                         the outgoing app's visibility back; a double activate
-                        does not bill the same bank twice
+                        does not bill the same bank twice; and the NULL-reclaim
+                        branch (suspend released the bank, the rollback's re-claim
+                        also refused — the release-on-suspend ruling) is pinned by
+                        asserting the on-glass app is left with art_slot == -1
   C7 / inertness        service() runs for a parked app, and the dial has no armed
                         view for a press to disappear into
 
@@ -352,15 +355,35 @@ int main(void)
 
     /* The harder branch: the budget is so tight that even putting the outgoing
      * bank back fails. The switch is still refused and the dial still points at
-     * the app it did — that case logs an emergency rather than pretending. */
+     * the app it did — that case logs an emergency rather than pretending.
+     * This is the NULL-reclaim branch (orb_app.c app_restore): the release-vs-
+     * carry ruling (release-on-suspend, owner ruling 2026-10-12) makes it
+     * reachable, because a suspend released the on-glass app's bank and the
+     * rollback cannot re-claim it. The invariant that distinguishes it is pinned
+     * here, not just the return code: the app left ON the glass ends with
+     * art_slot == -1 — the compositor would read art_bank_extra_ptr(-1) and paint
+     * the garbage art_bank.h fences off — and s_current was never reassigned. */
     restore_table(); orb_app_init_all();
     s_apps[0].art_offset = 0x100000; s_apps[0].art_bytes = 0x40000;
     s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
     orb_app_activate(A("clock"));
+    ck("the on-glass app holds its bank before the doomed switch",
+       s_apps[0].art_slot >= 0 && g_map_calls == 1);
+    TR(); g_map_calls = 0; g_unmap_calls = 0;
     g_map_rc = ESP_ERR_NO_MEM;                          /* nothing fits at all */
+    const orb_app_t *cur_before = orb_app_current();
     ck("a refusal the rollback cannot undo still keeps the dial on the old app",
        orb_app_activate(A("color_picker")) == ESP_ERR_NO_MEM
        && orb_app_current() == A("clock") && s_apps[1].art_slot == -1);
+    ck("the switch never repointed current — the failed rollback returned before the commit",
+       orb_app_current() == cur_before);
+    ck("NULL-reclaim: the app left ON the glass has NO bank — its suspend released it and the rollback could not re-claim",
+       s_apps[0].art_slot == -1);
+    /* Two map attempts past the reset: the refused incoming claim, and the
+     * failed rollback re-claim of the outgoing bank. One unmap: releasing the
+     * outgoing bank before the incoming claim. */
+    ck("NULL-reclaim touched the window once released, twice refused to map",
+       g_unmap_calls == 1 && g_map_calls == 2);
     g_map_rc = ESP_OK;
 
     /* -- no double-billing: re-activating a resident app maps it once -- */

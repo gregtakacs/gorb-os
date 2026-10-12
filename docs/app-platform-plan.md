@@ -807,17 +807,20 @@ been fencing off since it was written. `activate` returning non-NULL is not
 enough; an unimplemented `resume` had to be caught by something other than the
 glass.
 
-**The release-vs-carry question (the residual on this step), now with a measured
-number.** The suspend path releases a banked app's secondary (`app_art_release`,
-`orb_app.c`); the alternative is to carry it while parked, which sidesteps the
-re-claim that can fail above. Measured on the bench (§6, `ORB_ART_LAT_PROBE`),
-re-claiming a flagship is ~320 µs and a full suspend+resume pair ~580-750 µs —
-sub-millisecond, ~0.4% of an app switch's 63-87 ms, so **latency is not a reason
-to carry.** The decision therefore rests entirely on the trade above (a carry holds
-headroom another app is refused for; a release risks the NULL-reclaim paint under
-budget pressure), not on µs. Still open for P4, when a real banked app first
-exercises it: a host suite for the NULL-reclaim branch in `app_restore` (this path
-is dead code until then — §12.5).
+**The release-vs-carry question (the residual on this step), now closed with a
+measured number and a test.** The suspend path releases a banked app's secondary
+(`app_art_release`, `orb_app.c`); the alternative was to carry it while parked,
+sidestepping the re-claim that can fail above. Measured on the bench (§6,
+`ORB_ART_LAT_PROBE`), re-claiming a flagship is ~320 µs and a full suspend+resume
+pair ~580-750 µs — sub-millisecond, ~0.4% of an app switch's 63-87 ms, so latency
+is not a reason to carry. **Owner ruling 2026-10-12: keep release-on-suspend.** The
+parked app holds no MMU pages (so a banked app is never refused because a parked
+one is squatting the window), and the cost is the NULL-reclaim branch below, which
+is now pinned on the host by `tools/host_app_registry_test.py` — the app left ON the
+glass ends with `art_slot == -1` after a switch whose rollback also fails, the
+`art_bank_extra_ptr(-1)` garbage paint `art_bank.h` fences off, asserted rather than
+only logged. It stays dead code for the shipping path until P4's first banked app
+(§12.5), but the registry's handling of it is now covered.
 
 ### 12.5 Two findings this step settled
 

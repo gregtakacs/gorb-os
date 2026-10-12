@@ -29,14 +29,26 @@ async function readDeviceJSON(r) {
 }
 
 function show(view) {
+  // A card can name a view that is not in this document: the Theme Editor is a
+  // separate page. With nothing to reveal, switching only hides the hub and
+  // re-shows it a hash-change later, so the click looks dead. Refuse instead and
+  // let the caller follow the card's href.
+  if (view && !document.getElementById(view)) return false;
   $$(".view").forEach((v) => (v.hidden = v.id !== view));
   $("#hub").hidden = view !== null;
   if (view) location.hash = view;
+  return true;
 }
 
 document.addEventListener("click", (e) => {
   const card = e.target.closest("[data-view]");
-  if (card) { e.preventDefault(); show(card.dataset.view); return; }
+  if (card) {
+    // Intercept only a card naming a real in-page view. The Theme Editor card
+    // has an href to /composer/, a separate page: preventDefault there used to
+    // cancel that navigation, and the click did nothing at all.
+    if (show(card.dataset.view)) e.preventDefault();
+    return;
+  }
   if (e.target.closest("[data-back]")) { show(null); location.hash = ""; }
 });
 window.addEventListener("hashchange", route);

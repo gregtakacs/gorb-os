@@ -101,7 +101,10 @@ The three hub cards:
   boot verdict the flash captured picks the branch (AP card vs. connected panel),
   not the flash mode.
 - **Theme Editor** — serves the repo's watch-composer at `/composer/`, so edits
-  to the composer appear on reload with no rebuild.
+  to the composer appear on reload with no rebuild. The card is a plain link into
+  it; the hub adds a "← Orb Manager" link to get back (an app window has no back
+  button) and, when React never arrives from the CDN, a line saying so rather
+  than a blank page. Both are added at serve time; the composer file is untouched.
 - **Manage** — point at one orb by the IP provisioning reported (or one you look
   up on your router) and it dials that single address through the same-origin
   proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
@@ -234,8 +237,10 @@ mode adds none: it drives a Chromium the host already has, so the binary stays
 
 ## Caveats
 
-- The Theme Editor loads React 18, Babel, and Google Fonts from CDNs. The
-  composer needs internet on first paint; the manager itself does not.
+- The Theme Editor loads React 18, Babel, and Google Fonts from CDNs
+  (`unpkg.com`, `fonts.googleapis.com`), so the composer needs internet on first
+  paint; the manager itself does not. With that fetch blocked the page would be
+  blank and silent — the hub now names the failure on screen instead.
 - USB-Serial/JTAG does not tick the RTC/SWD watchdogs, so a long erase trips
   them and resets the chip mid-write. `Session` disables both before flashing
   (esptool's `disable_watchdogs()` equivalent).

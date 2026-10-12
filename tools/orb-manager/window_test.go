@@ -240,6 +240,29 @@ func stubDevTools(t *testing.T, open func() bool) *httptest.Server {
 	return srv
 }
 
+// The Theme Editor card navigates the SAME window to /composer/. That page
+// target must still count as our window being open, or the hub would shut down
+// while the operator is mid-design and the editor's pushes would have nothing
+// to talk to.
+func TestWindowTrackerCountsTheComposerPageAsOurWindow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json/list" {
+			_, _ = w.Write([]byte(`[{"type":"page","url":"http://127.0.0.1:3779/composer/"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"Browser":"Stub"}`))
+	}))
+	t.Cleanup(srv.Close)
+	w := &windowTracker{c: srv.Client(), base: srv.URL, url: "http://127.0.0.1:3779"}
+	open, err := w.windowOpen()
+	if err != nil {
+		t.Fatalf("windowOpen: %v", err)
+	}
+	if !open {
+		t.Error("the editor page on the hub's own origin must keep the window alive")
+	}
+}
+
 func TestWindowTrackerMatchesOnlyOurPageTarget(t *testing.T) {
 	srv := stubDevTools(t, func() bool { return true })
 	w := &windowTracker{c: srv.Client(), base: srv.URL, url: "http://127.0.0.1:3779"}

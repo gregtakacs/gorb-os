@@ -1,12 +1,17 @@
 """Build a custom-art kit fixture from a REAL composer kit, so prep_watch_kit and
 bake_clock run against byte formats the composer actually emits.
 
-    python3 tools/watch-composer/_selftest/make_art_kit.py \
-        assets/sources/watch-orbital-kit3.zip /tmp/artkit
+    python3 tools/watch-composer/_selftest/make_art_kit.py <kit.zip> /tmp/artkit
     python3 tools/prep_watch_kit.py /tmp/artkit/watch-artfixture-kit.zip /tmp/artkit/out
     python3 tools/bake_clock.py /tmp/artkit/out/theme --bg-frames /tmp/artkit/out/frames \
         --bg-fps 8 --tourbillon /tmp/artkit/out/tourbillon --tourbillon-fps 8 \
         --tick-rate 8 --bin /tmp/artkit/clock_theme.bin
+
+The kit must be a composer kit that HAS a sub-dial and a tourbillon: this script
+strips the sub-dial and re-measures the tourbillon. The bank the clock boots with
+(assets/sources/av-kit/watch-aviator-kit.zip) has neither, so it is not a valid
+input here. The repo ships no such kit any more; the orbital kits that did were
+removed on 2026-10-12, so supply one exported from the composer.
 
 Run the bake from OUTSIDE the repo root, or pass --bin there: bake_clock.py also writes
 assets/clock_assets.h relative to its cwd, and that file is tracked in this repo.
@@ -28,7 +33,10 @@ import json, os, shutil, sys, zipfile
 import numpy as np
 from PIL import Image, ImageDraw
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "assets/sources/watch-orbital-kit3.zip"
+SRC = sys.argv[1] if len(sys.argv) > 1 else ''
+if not SRC:
+    raise SystemExit("usage: make_art_kit.py <kit.zip> [out_dir] — the kit needs a "
+                     "subdial and a tourbillon; the shipped av-kit has neither")
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/artkit"
 S = 466
 

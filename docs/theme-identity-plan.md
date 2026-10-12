@@ -280,15 +280,18 @@ than an error, so measure it against the live device, do not estimate.
    still match when recomputed directly, so the archive is intact, merely unreadable
    by current tools. Its name field — 56 bytes at word 14 that FORMAT 1 filled with
    the slug — parses as `skeleton`, which is a leftover reading, not an identity
-   under FORMAT 2. The archive is kept as a byte-faithful record of what the owner
-   shipped, not as an installable theme; `DESIGN_ID` and `skeleton_theme.zip` are
-   the source of truth. Nothing in `tools/` or CI reads the container (verified by
+   under FORMAT 2. The archive was kept as a byte-faithful record of what the owner
+   shipped, not as an installable theme; `DESIGN_ID` and `skeleton_theme.zip` were
+   the source of truth. All three files were deleted on 2026-10-12 when the theme
+   asset cleanup revoked D10's committed-source clause (`docs/app-platform-plan.md`
+   §0.2); restore them from git history and check them against the sha256 recorded
+   there. Nothing in `tools/` or CI reads the container (verified by
    grep; `.github/` does not exist), so no test breaks either way. It cannot be
    pushed to an orb: the firmware rejects it at the same format gate, and the hub
    now refuses it locally and names the format
    (`tools/orb-manager/internal/orbnet/themecontainer.go`).
-   `assets/sources/clock-app-default/README.md` says so beside the file, so nobody
-   discovers it by trying to install it.
+   The folder's `README.md` said so beside the file, so nobody
+   discovered it by trying to install it.
 4. **`docs/theme-naming-todo.md` is deleted**, not updated. §1–§2 (the cap
    disagreement) and §3 (FATFS case ambiguity) describe a class that cannot exist
    once filenames carry no identity. §4 cites `orb_theme_stage_load()`/
@@ -392,7 +395,8 @@ Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits
   POST /api/v1/sd/install both verified); the changed hint lights when the
   card file drifts from the installed mirror; delete by id removes the file,
   and `id=skeleton` or uppercase hex answers 400. The skeleton theme —
-  re-baked from the committed `assets/sources/clock-app-default/` kit under
+  re-baked from the `assets/sources/clock-app-default/` kit that was committed at
+  the time (deleted 2026-10-12; see §0.2 of the app-platform plan) under
   `--theme-name skeleton` — is the first FORMAT 2 theme on the wall: boot
   logs `theme "skeleton" from slot-B (chosen), 1978973 B of pixels`.
 - §8 step 8 headroom measure DONE. With the card at its eight-entry cap and

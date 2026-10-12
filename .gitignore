@@ -9,3 +9,4 @@ dependencies.lock
 __pycache__/
 assets/preview/
 assets/rawframe_*.png
+.orb-target

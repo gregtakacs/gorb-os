@@ -26,9 +26,13 @@ since_s climbs steadily and stamps stays put while dimmed never goes true, the
 policy task is not reaching its decision; if since_s keeps snapping back and
 stamps climbs, something is stamping the clock and the firmware now says who.
 """
-import json, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 
-IP = sys.argv[1] if len(sys.argv) > 1 else "192.168.2.32"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import orb_bind
+
+_CFG = orb_bind.load()          # refuses while this clone is unbound
+IP = orb_bind.gate_ip(_CFG, sys.argv[1] if len(sys.argv) > 1 else None)
 SECS = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
 WAKE_AFTER = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 TRACE = len(sys.argv) > 4 and sys.argv[4] == "trace"

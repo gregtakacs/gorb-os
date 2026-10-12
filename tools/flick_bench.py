@@ -16,10 +16,15 @@ are fired while it is held, because the drive path is the LAN and the evidence p
 is the serial port.
 """
 import json, re, subprocess, sys, time
+import os
 import socket
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import orb_bind
+
 CAP = "/home/greg/.espressif/python_env/idf5.4_py3.14_env/bin/python"
+CAPF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capf.py")
 
 
 def get(base, path, timeout=5, tries=2):
@@ -374,7 +379,7 @@ def drive(ip, gap):
     log = "/tmp/flick_all.txt"
     # Long ceiling: the run ends by terminating the capture, so a slow httpd worker that
     # stretches the trials cannot truncate the log out from under the slicing.
-    p = subprocess.Popen([CAP, "/tmp/capf.py", "600", log, "--no-reset"])
+    p = subprocess.Popen([CAP, CAPF, "600", log, "--no-reset"])
     time.sleep(BOOT_WAIT)                    # out of reset, through wifi, onto the dial
 
     plan = []
@@ -412,12 +417,16 @@ def drive(ip, gap):
 
 
 def main():
-    ip   = sys.argv[1] if len(sys.argv) > 1 else "192.168.2.32"
-    if ip == "--selftest":
+    first = sys.argv[1] if len(sys.argv) > 1 else ""
+    if first == "--selftest":
         return selftest()
-    if ip == "--replay":
+    if first == "--replay":
         with open(PLAN) as f:
             return judge(open(sys.argv[2]).read(), json.load(f))
+    # Unbound clone, wrong orb on the LAN: both refuse before the first request.
+    # An explicit ip still passes the ARP gate -- it cannot point at the other orb.
+    cfg = orb_bind.load()
+    ip = orb_bind.gate_ip(cfg, first or None)
     gap = float(sys.argv[2]) if len(sys.argv) > 2 else 0.06
     return drive(ip, gap)
 

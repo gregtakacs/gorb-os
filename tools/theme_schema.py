@@ -7,9 +7,9 @@ it and none of them may invent a field of their own:
   tools/bake_clock.py      turns a kit (manifest.json + complications/ + hands/)
                            into these records and their pixels
   tools/orbtheme.py        lays them out as words in the .orbtheme geometry blob
-  main/art/orb_theme.c     the mirrored reader; tools/host_theme_test.py packs
-                           here and parses THERE (lifted verbatim into gcc) and
-                           fails if any word disagrees
+  main/art/orb_theme.c     the mirrored reader; tools/host_comp_math_test.py
+                           packs here and parses THERE (lifted verbatim into
+                           gcc) and fails if any word disagrees
 
 Why a table and not a field per feature: every previous dial feature arrived as
 named scalars in clk_theme_t (tourbillon_n, bg_mode, matte_mask, ...), so each
@@ -71,7 +71,9 @@ SOURCES = (
     "ampm",          # 0 = am, 1 = pm
     "week",          # ISO week number, 1..53
     "day_of_year",   # 1..366
-    "quarter",       # 0..3
+    "quarter",       # 1..4 — tm_mon/3+1; the firmware's comp_value is the
+                     # authority (docs/behaviour-vocabulary.md G2; the
+                     # earlier "0..3" comment was wrong, no bake reached it)
     "value",         # raw: index == the comp's own value, for bake-decided art
 )
 
@@ -109,7 +111,7 @@ FLAG_AUX_SHADOW = 1 << 8   # aux record: the blur/offset twin of the hand before
 
 # ---------------------------------------------------------------------------
 # Record layouts. (name, c-type) per word, in wire order. The C mirror reads the
-# same widths, and tools/host_theme_test.py is what proves the two agree.
+# same widths, and tools/host_comp_math_test.py is what proves the two agree.
 # ---------------------------------------------------------------------------
 
 # Shared sprite bank: one clk_sprite_t-shaped row each. Ring slots, strip glyphs

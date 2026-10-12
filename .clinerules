@@ -170,11 +170,13 @@ the bound MAC, `ip neigh` must confirm the LAN address — and the per-orb
 sidecar flock in `/tmp/orb-<label>-<mac>.lock` makes a second writer fail
 loudly. Binding follows the working copy, not the branch: switching branches
 never moves a tool onto the other orb. Current bindings: clone `gorb-os-2` →
-orb-A (`44:bd:8d:60:80:88`, ttyACM0, `192.168.2.32`, the provisioned bench
-orb); clone `gorb-os` → orb-B (`44:bd:8d:78:26:18`, ttyACM1, not yet on the
-LAN — `ORB_IP` empty until the owner provisions it via the phone captive
-portal). If usbipd re-attach renames ACM numbers, nothing breaks: tools ask by
-by-id path, not number.
+orb-A (`44:bd:8d:60:80:88`, ttyACM0, `192.168.2.32`); clone `gorb-os` → orb-B
+(`44:bd:8d:78:26:18`, ttyACM1, `192.168.2.34`). Both orbs are provisioned and
+self-join GTROUTER2 at boot (~2.5 s observed 2026-10-11); neither runs an AP
+unless opened via `/api/v1/wifi/ap`. If a DHCP lease moves, boot-capture to
+read the new address and fix `ORB_IP` there — the ip-neigh gate re-proves it
+every run. If usbipd re-attach renames ACM numbers, nothing breaks: tools ask
+by by-id path, not number.
 
 - Serial console: plain opens work (user is in `dialout`; re-attach via usbipd
   can drop it — `sudo` then). Flash/boot capture: `tools/capf.py <secs> <log>

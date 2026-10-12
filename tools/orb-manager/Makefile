@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check
+.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release
 
 all: test build
 
@@ -140,6 +140,40 @@ flash: orbflash
 	@test -n "$(PORT)" || { echo "usage: make flash PORT=/dev/ttyACM0"; exit 2; }
 	$(BIN_DIR)/orbflash -port $(PORT) -mode full $(if $(FW),-firmware $(FW),)
 
+## release: cross-compile the full artifact set for distribution, into
+## bin/release/<name>-<os>-<arch>/, plus a sha256sums.txt covering every file.
+## CGO_ENABLED=0 throughout, so this needs no Mac and no Windows machine — the Go
+## compiler just emits the right binary format. Run it from the package dir like the
+## other targets, and never ship a build that did not come from a clean tree: VERSION
+## carries `git describe --dirty`, so an uncommitted change is visible in the artifact
+## name the hub itself reports at /api/status.
+## Consumes nothing from the network: the firmware bundle, the Theme Editor and the
+## vendored composer assets are all committed and compiled in.
+RELEASE_DIR       ?= $(BIN_DIR)/release
+RELEASE_NAME      ?= orb-manager
+RELEASE_PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 windows/amd64
+release:
+	@command -v sha256sum >/dev/null || { echo 'sha256sum is required to sign the release set'; exit 1; }
+	@rm -rf $(RELEASE_DIR)
+	@for p in $(RELEASE_PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; \
+	  sfx=; [ $$os = windows ] && sfx=.exe; \
+	  d=$(RELEASE_DIR)/$(RELEASE_NAME)-$$os-$$arch; \
+	  mkdir -p $$d; \
+	  printf 'GOOS=%-8s GOARCH=%-7s' $$os $$arch; \
+	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/$(RELEASE_NAME)$$sfx . \
+	     && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/orbflash$$sfx ./cmd/orbflash; then \
+	    echo ' ok'; \
+	  else \
+	    echo ' FAIL'; rm -rf $(RELEASE_DIR); exit 1; \
+	  fi; \
+	done
+	@# Paths are recorded relative to the release dir and sorted, so `sha256sum -c
+	@# sha256sums.txt` passes from inside it and a re-run diffs cleanly.
+	@cd $(RELEASE_DIR) && find . -type f ! -name sha256sums.txt | sed 's|^\./||' | sort | xargs sha256sum > sha256sums.txt
+	@echo "release $(VERSION):"
+	@cat $(RELEASE_DIR)/sha256sums.txt
+
 ## windows: cross-compile the Windows binaries from this Linux/WSL host.
 ## Nothing here needs a Windows machine or a Windows toolchain: the hub is
 ## CGO_ENABLED=0, so the Go compiler just emits PE files. Copy the result to the
@@ -155,8 +189,10 @@ windows:
 ## This exists because the port lock reached syscall.Flock, which has no Windows
 ## equivalent, and nothing but a native run ever noticed: a GOOS=windows build
 ## had simply never been attempted. vet type-checks _test.go files too, so the
-## test suite is covered as well. Override the set with PLATFORMS="linux/amd64".
-PLATFORMS ?= linux/amd64 windows/amd64 darwin/arm64
+## test suite is covered as well. The set is the release set on purpose: an
+## artifact nobody ever type-checked is an artifact nobody should ship, and
+## darwin/amd64 was exactly that gap once. Override with PLATFORMS="linux/amd64".
+PLATFORMS ?= $(RELEASE_PLATFORMS)
 crosscheck:
 	@for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; \

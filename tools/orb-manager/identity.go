@@ -65,7 +65,9 @@ func newIdentityCache() *identityCache {
 // hostUSBSerial is the serial number the OS reports for the USB device behind a
 // port, which for the ESP32-S3 native USB peripheral is the chip's base MAC. An
 // empty string means the host cannot attribute the cable at all — the case on
-// Windows without a friendly-name read, and on macOS until usbclass_darwin lands.
+// Windows without a friendly-name read, and on macOS whenever ioreg has nothing to
+// say about the port. Refusing to name a MAC is always safe here; guessing one is
+// what the gate in esprom/identity.go exists to prevent.
 func hostUSBSerial(port string) string {
 	u := esprom.ClassifyPort(port)
 	if !u.IsOrbDevice() {

@@ -1,7 +1,12 @@
 package esprom
 
 import (
+	"bytes"
+	"encoding/xml"
+	"fmt"
+	"io"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -106,4 +111,246 @@ func colonize(s string) string {
 		b.WriteString(strings.ToLower(s[i : i+2]))
 	}
 	return b.String()
+}
+
+// IOKit property names the macOS classifier reads, taken from shipped code rather than
+// guessed at: Apple's serial-driver documentation names IOCalloutDevice as the
+// /dev/cu.* node, and pyserial's list_ports_osx.py — what `python -m serial.tools.
+// miniterm` runs on every Mac — walks IOSerialBSDClient up to its IOUSBHostDevice
+// parent and reads idVendor/idProduct as numbers and "USB Serial Number" as a string.
+//
+// This parser lives in the portable file, exactly as the Windows instance-path
+// parsing above does, so `go test` exercises it on Linux. Only the ioreg invocation is
+// darwin-only, and that has nothing to test beyond "returned bytes".
+const (
+	plistCalloutKey     = "IOCalloutDevice"
+	plistConsoleKey     = "IOConsoleDevice"
+	plistVendorKey      = "idVendor"
+	plistProductKey     = "idProduct"
+	plistSerialNumKey   = "USB Serial Number"
+	plistVendorNameKey  = "USB Vendor Name"
+	plistProductNameKey = "USB Product Name"
+	// "_NAME" is the registry entry's own name. It only ever feeds a display string,
+	// so the fallbacks in usbInstanceLabel are enough and no decision reads it.
+	plistNameKey = "_NAME"
+	// A registry tree is deep but not unboundedly so. A malformed document must not be
+	// able to grow the stack until the hub dies while serving /api/ports.
+	plistMaxDepth = 128
+)
+
+// plistNode is one element of an XML property list — the shape Apple's
+// PropertyList-1.0 DTD defines, where <dict> holds a <key> immediately followed by the
+// value element it names and <array> holds bare value elements.
+//
+// The raw tree with parent links, rather than a decoded struct, is deliberate: devices
+// nest under a container key this code never needs to know the name of, and hard-coding
+// it would be one more thing to get wrong about a document nobody here has read.
+type plistNode struct {
+	name   string
+	text   string
+	kids   []*plistNode
+	parent *plistNode
+}
+
+func parsePlist(raw []byte) (*plistNode, error) {
+	dec := xml.NewDecoder(bytes.NewReader(raw))
+	var root, cur *plistNode
+	for {
+		tk, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch t := tk.(type) {
+		case xml.StartElement:
+			n := &plistNode{name: t.Name.Local, parent: cur}
+			if cur == nil {
+				root = n
+			} else {
+				cur.kids = append(cur.kids, n)
+			}
+			cur = n
+		case xml.CharData:
+			// Whitespace between a dict's children lands here too. It is ignored on
+			// read, because only value elements are ever asked for their text.
+			if cur != nil {
+				cur.text += string(t)
+			}
+		case xml.EndElement:
+			if cur != nil {
+				cur = cur.parent
+			}
+		}
+	}
+	if root == nil {
+		return nil, fmt.Errorf("empty property list")
+	}
+	return root, nil
+}
+
+// dictValue returns the value a <key> names, which the DTD guarantees is the element
+// immediately after it. A key with nothing after it is a truncated document and reads
+// as absent, not as the zero value of whatever type was expected.
+func (n *plistNode) dictValue(key string) *plistNode {
+	if n == nil {
+		return nil
+	}
+	for i, k := range n.kids {
+		if k.name == "key" && strings.TrimSpace(k.text) == key && i+1 < len(n.kids) {
+			return n.kids[i+1]
+		}
+	}
+	return nil
+}
+
+func (n *plistNode) dictString(key string) string {
+	v := n.dictValue(key)
+	if v == nil || (v.name != "string" && v.name != "data") {
+		return ""
+	}
+	return strings.TrimSpace(v.text)
+}
+
+// dictUint reads an integer property, and only an <integer>: idVendor and idProduct
+// are CFNumbers in the registry. A document holding them as strings is not the thing
+// this gate was written to trust, and parsing "12346" out of a string would launder an
+// unverified value into permission to toggle DTR/RTS on a bench device.
+func (n *plistNode) dictUint(key string) (uint64, bool) {
+	v := n.dictValue(key)
+	if v == nil || v.name != "integer" {
+		return 0, false
+	}
+	u, err := strconv.ParseUint(strings.TrimSpace(v.text), 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return u, true
+}
+
+// usbClassFromPlist resolves one serial device path — /dev/cu.usbmodem1101,
+// cu.usbmodem1101, or the bare usbmodem1101 — against an ioreg dump, and reports what
+// the host says about the USB device behind it.
+//
+// The answer is deliberately binary. Either the callout node is found AND an ancestor
+// states both ids as integers, or the caller gets the zero USBClass and the probe
+// refuses the port. Known is never set on a partial read, because identity.go renders
+// Known=false as "this host cannot identify the device behind the port, so the hub
+// will not reset it" — the true sentence in every one of these cases.
+func usbClassFromPlist(raw []byte, dev string) (USBClass, error) {
+	base := portBase(dev)
+	if base == "" {
+		return USBClass{}, nil
+	}
+	root, err := parsePlist(raw)
+	if err != nil {
+		return USBClass{}, err
+	}
+	serial := findCalloutDict(root, base, 0)
+	if serial == nil {
+		return USBClass{}, nil
+	}
+	// The ids live on the device, not on the serial client or the interface between
+	// them, so walk up to the first ancestor that states both.
+	for n := serial.parent; n != nil; n = n.parent {
+		v, okV := n.dictUint(plistVendorKey)
+		p, okP := n.dictUint(plistProductKey)
+		if !okV || !okP {
+			continue
+		}
+		return USBClass{
+			Known:    true,
+			Vendor:   uint16(v),
+			Product:  uint16(p),
+			Serial:   normalizeSerialNumber(n.dictString(plistSerialNumKey)),
+			Instance: usbInstanceLabel(n),
+		}, nil
+	}
+	// The port was found and nothing above it states its ids. That is not an orb, and
+	// it is not something to reset on a guess.
+	return USBClass{}, nil
+}
+
+// findCalloutDict returns the dict naming this port as its callout, or console, device.
+// IOCalloutDevice is the /dev/cu.* node the hub opens; IOConsoleDevice is its
+// /dev/tty.* twin with the same basename. Accepting both means a caller that passes
+// whichever form it happened to enumerate still gets an answer.
+func findCalloutDict(n *plistNode, base string, depth int) *plistNode {
+	if n == nil || depth > plistMaxDepth {
+		return nil
+	}
+	if n.name == "dict" {
+		for _, key := range []string{plistCalloutKey, plistConsoleKey} {
+			if v := n.dictString(key); v != "" && portBase(v) == base {
+				return n
+			}
+		}
+	}
+	for _, k := range n.kids {
+		if hit := findCalloutDict(k, base, depth+1); hit != nil {
+			return hit
+		}
+	}
+	return nil
+}
+
+// portBase reduces any caller's idea of a port name to the single string ioreg agrees
+// on: /dev/cu.usbmodem1101, cu.usbmodem1101 and usbmodem1101 all name one cable. The
+// cu./tty. prefix is dropped because IOCalloutDevice and IOConsoleDevice are the same
+// hardware under it, so stripping on both sides of the comparison cannot merge two
+// different devices — and a caller that only knows the short name still gets an answer.
+func portBase(dev string) string {
+	dev = strings.TrimSpace(dev)
+	if dev == "" {
+		return ""
+	}
+	// A backslash forms no path on darwin, but a stray one must not be able to smuggle
+	// a ".." past this comparison either.
+	if i := strings.LastIndexAny(dev, `/\`); i >= 0 {
+		dev = dev[i+1:]
+	}
+	for _, prefix := range []string{"cu.", "tty."} {
+		if strings.HasPrefix(dev, prefix) {
+			return dev[len(prefix):]
+		}
+	}
+	return dev
+}
+
+// normalizeSerialNumber lowercases the MAC the S3's USB-JTAG peripheral publishes in
+// its serial-number descriptor. The chip holds it bare and the descriptor reads back
+// coloned, so both spellings must land on one form — the same rule macFromInstance
+// applies for Windows.
+func normalizeSerialNumber(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return ""
+	}
+	if macBareRe.MatchString(strings.ToUpper(s)) {
+		return colonize(s)
+	}
+	return s
+}
+
+// usbInstanceLabel builds the string shown when a port belongs to something that is
+// not an orb, so the user reads "Espressif USB JTAG/serial debug unit" rather than a
+// bare pair of hex numbers. Display only: the decision lives in the ids.
+func usbInstanceLabel(n *plistNode) string {
+	name := n.dictString(plistNameKey)
+	product := n.dictString(plistProductNameKey)
+	if product == "" {
+		product = name
+	}
+	if label := strings.TrimSpace(n.dictString(plistVendorNameKey) + " " + product); label != "" {
+		return label
+	}
+	return fmt.Sprintf("usb-%04x:%04x", mustUint(n, plistVendorKey), mustUint(n, plistProductKey))
+}
+
+// mustUint reads an id for a display string, where a missing or malformed value is
+// allowed to print as zero. Decisions never use this — they use dictUint and refuse.
+func mustUint(n *plistNode, key string) uint16 {
+	v, _ := n.dictUint(key)
+	return uint16(v)
 }

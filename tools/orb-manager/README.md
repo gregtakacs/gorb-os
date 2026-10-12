@@ -499,6 +499,8 @@ make flash PORT=/dev/ttyACM0   # headless full flash of that port
 make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe
 make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
+make release    # cross-compile the darwin/linux/windows artifact set into
+                # bin/release/<name>-<os>-<arch>/ + sha256sums.txt, no network needed
 
 ### What the client cannot be checked with here
 
@@ -656,3 +658,20 @@ works in a shell where bare `go` is not on `PATH`.
 - Serial flashing needs permission on `/dev/ttyACM*` (add the user to `dialout`).
   Port enumeration is tested on Linux; the Windows/macOS enumeration code paths
   are present but untested on hardware.
+- The macOS port classifier (`internal/esprom/usbclass_darwin.go`) asks `ioreg -p
+  IOUSB -l -x` and reads `IOCalloutDevice` off the serial client, then the
+  `idVendor`/`idProduct`/`USB Serial Number` of the device above it. It is
+  compile-checked for both darwin arches and its parser is unit-tested on Linux
+  (`usbclass_ioreg_test.go`), but no Mac was available to capture a real `ioreg`
+  dump from: the property names come from IOKit as pyserial reads them, and the
+  fixtures are hand-authored to Apple's plist DTD. So the negative cases are the
+  trusted ones. Until someone runs the hub beside an orb, treat the positive branch
+  as unconfirmed — the cost of it being wrong is a refused probe with the message
+  "this host cannot identify the device behind the port", never a reset of the wrong
+  device. Confirming it takes one `ioreg -p IOUSB -l -x > dump.xml` beside an orb and
+  one read of `GET /api/ports`, which must show `"attributed": true` and a `usbMac`.
+- Maintainers: `support.js` pulls its scripts from a fixed list of CDN URLs, and
+  `TestComposerHasNoUnknownExternalDependencies` fails if that list ever grows to a
+  fourth script. That failure is the alarm, not a bug — add the new URL to
+  `cmd/orbvendor` and re-run `make vendor-composer`, or the editor silently goes
+  back to needing internet for it.

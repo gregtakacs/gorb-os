@@ -204,10 +204,24 @@ absence of any release artifact.
    three unpkg URLs plus Google Fonts — so a re-vendored `support.js` that adds a
    fourth fails the build instead of half-loading at a bench.
 2. Add `make release`: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64,
-   plus `sha256sums.txt`. OUTSTANDING.
+   plus `sha256sums.txt`. DONE. `bin/release/<name>-<os>-<arch>/` holds both
+   binaries per platform, and the sums are recorded relative to that dir so
+   `sha256sum -c` passes from inside it. Verified here: `file` confirms Mach-O
+   x86_64, Mach-O arm64, static ELF and PE32+; appending a byte to one `orbflash`
+   turned exactly one line to FAILED and restoring it returned all eight to OK.
+   `crosscheck` now defaults to the same platform list, so nothing ships that has
+   not been type-checked — darwin/amd64 had been slipping through.
 3. Implement `usbclass_darwin.go` via `ioreg` so macOS can attribute `303a:1001`
-   and Identify stops refusing. OUTSTANDING. Untested on hardware until a Mac is in
-   front of it; `crosscheck` proves only that it compiles.
+   and Identify stops refusing. DONE, with the limitation stated rather than hidden:
+   `CGO_ENABLED=0` rules out calling IOKit the way pyserial does, so it asks
+   `ioreg -p IOUSB -l -x` for XML and hands the bytes to `usbClassFromPlist`, which
+   lives in the portable file and is unit-tested on Linux — three deliberate
+   breakages of that parser each turned a test red. No Mac was available to capture a
+   real dump, so the fixtures are hand-authored to Apple's plist DTD using the
+   property names IOKit is documented to expose. Every failure path returns the zero
+   `USBClass`, so the worst a wrong guess can cost is the refusal message the hub
+   already showed, never a DTR/RTS edge on a bench device. Still owed: one `ioreg`
+   capture beside a real orb, confirming `"attributed": true` in `GET /api/ports`.
 
 The browser-side confirmation is still owed: open `/composer/` with DevTools' network
 panel and an airgapped interface, and confirm zero requests leave the origin. No
@@ -305,8 +319,11 @@ Updated at each commit.
   behaves exactly as it did before. Verified by serving both builds from the real hub
   binary and diffing the entry document, and by mutation: flipping the inject order
   or tampering with `babel.min.js` each turn a test red.
-- Iteration 6 (outstanding): `make release` (four platforms + `sha256sums.txt`) and
-  `usbclass_darwin.go`. Neither was started.
+- Iteration 6 (release + darwin): `make release` cross-compiles both binaries for
+  four platforms into `bin/release/` with a `sha256sums.txt` that was checked by
+  tampering, not just by reading it back. `usbclass_darwin.go` attributes a macOS
+  port by parsing `ioreg -x` output; the parser is portable and mutation-tested on
+  Linux, the positive branch still needs one capture from a real Mac.
 - Hardware: nothing in iterations 0-5 was run against a cable. The cancel path and
   the console read both drive real ROM/CDC timing and need one live run on orb-B
   before either is called verified. The theme card was verified against

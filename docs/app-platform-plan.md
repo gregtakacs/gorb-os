@@ -790,9 +790,8 @@ makes it observable.
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
 | **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
 
-Re-running M1 against registry switches is the gate that says this step worked.
-Until it is captured on the wall-powered bench, the registry is host-proven and
-hardware-unproven, and the honest reading of P2 is "half landed".
+M1 is captured (§12.7), so the registry is host-proven and hardware-proven. What
+keeps P2 open is the carousel, the `opt_*` shell rendering, and M3.
 
 ### 12.7 M1 re-run against the registry — captured 2026-10-11, `8535154`
 

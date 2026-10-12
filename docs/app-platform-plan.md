@@ -686,6 +686,47 @@ book+map); shipping-image boot re-captured after the flip-back — no `m2:` line
 same primary map line, same dial ramp. The aviator swap in `assets/` remains
 uncommitted and unrelated, as filed under P1.
 
+**Reclaim latency: measured on the bench, probe compiled out afterwards (2026-10-12, `0623239-dirty`).**
+The Step-5 owner question — release an app's `art_bank_map_extra` reservation on
+suspend (release) or carry it while parked (carry) — turned on an unmeasured number:
+what does the re-claim actually cost? `ORB_ART_LAT_PROBE` (art_bank.h, the same
+one-line switch as `ORB_ART_M2_PROBE`) times `art_bank_map_extra()` (the reclaim a
+resume runs) and `art_bank_unmap_extra()` (the release a suspend runs) over 31
+map/unmap pairs per bank, at page-aligned offsets clear of the primary, fully
+unmapped between samples so every timing is a cold re-claim. Boot log, verbatim:
+
+    I (955)  art_bank: lat: start — primary 1855055 B (29 pages, resident); budget 234 of 256 pages; 31 iters/bank
+    I (974)  art_bank: lat: kit3    59 pages  3768 KB | RECLAIM map_extra   min    305 median    316 max    403 us  (~5 us/page median)
+    I (975)  art_bank: lat: kit3    59 pages  3768 KB | RELEASE unmap_extra min    250 median    265 max    326 us  (mean 266 us)
+    I (975)  art_bank: lat: kit3   one switch (reclaim+release pair): ~581 us median
+    I (994)  art_bank: lat: d10     41 pages  2588 KB | RECLAIM map_extra   min    302 median    318 max    409 us  (~7 us/page median)
+    I (995)  art_bank: lat: d10     41 pages  2588 KB | RELEASE unmap_extra min    249 median    269 max    335 us  (mean 270 us)
+    I (995)  art_bank: lat: d10    one switch (reclaim+release pair): ~587 us median
+    I (1019) art_bank: lat: avkit   18 pages  1146 KB | RECLAIM map_extra   min    458 median    508 max    555 us  (~28 us/page median)
+    I (1019) art_bank: lat: avkit   18 pages  1146 KB | RELEASE unmap_extra min    213 median    241 max    268 us  (mean 237 us)
+    I (1020) art_bank: lat: avkit  one switch (reclaim+release pair): ~749 us median
+    I (1020) art_bank: lat: done — 1 banks accounted (29 art pages; every lat bank unmapped, primary intact)
+
+The answer to the owner question is unambiguous on the latency axis: **every op is
+sub-millisecond** — worst observed single op 555 µs, worst reclaim+release *pair*
+(one suspend, one resume) ~749 µs. The cost is dominated by the fixed
+cache-invalidate/MMU-walk, not the page count: `esp_partition_mmap` installs the
+bank's page-table entries and copies nothing (no CRC in this path), so a 59-page
+reclaim (316 µs) is *faster* than an 18-page one (508 µs) — the small bank mapped
+last, into a more-churned MMU free-list, and absolute µs tracks allocator state, not
+size. Read against §12.7's M1 figures this is noise: an app already activates in
+63-87 ms and the dial's own return is 411-476 ms, so the ~0.3 ms the release choice
+adds on suspend and ~0.3 ms on resume are ~0.4% of an app-switch and ~0.07% of a
+dial-return. **Reclaim latency is not a reason to carry.** The real cost of release
+is therefore not µs-on-the-glass; it is the budget-pressure failure mode (§12.4: a
+re-claim that returns NULL under pressure paints garbage) and the headroom carry
+would consume (§12, the 234-page budget that M2 watched refuse at 206). The
+`lat: done` line proves the probe is self-cleaning — every bank it mapped it
+unmapped, MMU back to primary-only (29 pages) — and the same boot's `clock 12 fps`
+lines after it confirm the dial runs at tempo untouched. `idf.py build` clean under
+`-Werror` at the probe both 0 and 1; shipping-image boot re-captured after the
+flip-back — no `lat:` lines, same primary map, same dial ramp.
+
 ---
 
 ## 12. P2's first half — the app registry lands (2026-10-11)
@@ -765,6 +806,18 @@ emergency it is: an app on the glass with no bank reads `NULL` from
 been fencing off since it was written. `activate` returning non-NULL is not
 enough; an unimplemented `resume` had to be caught by something other than the
 glass.
+
+**The release-vs-carry question (the residual on this step), now with a measured
+number.** The suspend path releases a banked app's secondary (`app_art_release`,
+`orb_app.c`); the alternative is to carry it while parked, which sidesteps the
+re-claim that can fail above. Measured on the bench (§6, `ORB_ART_LAT_PROBE`),
+re-claiming a flagship is ~320 µs and a full suspend+resume pair ~580-750 µs —
+sub-millisecond, ~0.4% of an app switch's 63-87 ms, so **latency is not a reason
+to carry.** The decision therefore rests entirely on the trade above (a carry holds
+headroom another app is refused for; a release risks the NULL-reclaim paint under
+budget pressure), not on µs. Still open for P4, when a real banked app first
+exercises it: a host suite for the NULL-reclaim branch in `app_restore` (this path
+is dead code until then — §12.5).
 
 ### 12.5 Two findings this step settled
 

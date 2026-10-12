@@ -48,6 +48,27 @@
  *  saying it mapped. No-op unless ORB_ART_M2_PROBE is 1. */
 void art_bank_m2_probe(void);
 
+/* Suspend/resume reclaim-latency probe — the release-vs-carry question of
+ * docs/app-platform-plan.md §6 (M-carrier). Set to 1, rebuild, serial-flash, and
+ * read the boot log. It prices the two operations the app-suspension choice
+ * turns on and off: art_bank_unmap_extra() is what a suspend RELEASES (an
+ * esp_partition_munmap), and art_bank_map_extra() is what a resume RECLAIMS (an
+ * esp_partition_mmap). If the dial instead CARRIES a parked bank, neither runs on
+ * that switch and the reclaim cost is zero — at the price of holding its pages
+ * against the page budget, which is the other half of the decision. mmap bills
+ * address ranges, not contents, so a size is all the probe needs of a bank; each
+ * bank is mapped at a page-aligned offset clear of the primary and fully unmapped
+ * between iterations, so every sample is a genuine cold re-claim, and the repeated
+ * steady-state samples model the carousel being switched back to over and over.
+ * Read these against §12.7's M1 app-activate figure (63-87 ms): the MMU op below is
+ * the ONLY thing the release choice adds on top of that. Same one-line switch as
+ * ORB_ART_M2_PROBE and DISPLAY_BENCH; ships 0. */
+#define ORB_ART_LAT_PROBE 0
+
+/** Run the reclaim-latency protocol once, at boot, after the theme has mapped
+ *  the primary bank and before display_init(). No-op unless ORB_ART_LAT_PROBE 1. */
+void art_bank_lat_probe(void);
+
 /**
  * Find the `assets` partition and map `need_bytes` of it starting at `offset`.
  *

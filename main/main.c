@@ -86,6 +86,16 @@ void app_main(void)
     art_bank_m2_probe();
 #endif
 
+#if ORB_ART_LAT_PROBE
+    /* Reclaim-latency protocol (docs/app-platform-plan.md §6): prices the
+     * map_extra/unmap_extra pair a suspend/release and a resume/reclaim run, so
+     * the release-vs-carry decision has a measured µs number. Same placement as
+     * M2 — after the theme's art_bank_init() so the primary counts, before
+     * display_init() so the dial's own fps lines later in the log are made with
+     * the MMU table back at its shipping state (every lat bank is unmapped). */
+    art_bank_lat_probe();
+#endif
+
     /* Bring up the display (SPI + panel + LVGL) */
     ESP_ERROR_CHECK(display_init());
 

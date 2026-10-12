@@ -1,0 +1,92 @@
+// Command serprov is the wired-provisioning round-trip tester for Path 2. It
+// opens an orb's console, reboots it into its app (which re-arms the boot scan +
+// stdin reader), collects the PROVSCAN network list, writes one PROV line, and
+// confirms the firmware's PROV-ACK. Pass --port to provision any orb you choose;
+// with no --port it falls back to the .orb-target bound orb as a convenience. It
+// drives the same esprom.ProvisionOn the manager's /api/provision handler uses.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
+)
+
+func main() {
+	ssid := flag.String("ssid", "", "network to provision (required)")
+	pass := flag.String("pass", "", "passphrase (empty = open network)")
+	tz := flag.String("tz", "", "optional POSIX TZ rule")
+	portFlag := flag.String("port", "", "serial port to provision (/dev/ttyACMx or a /dev/serial/by-id path); defaults to the .orb-target bound orb")
+	verbose := flag.Bool("v", true, "echo every console line as it arrives")
+	scan := flag.Duration("scan", 22*time.Second, "budget to catch PROVSCAN-END")
+	ack := flag.Duration("ack", 20*time.Second, "budget to catch PROV-ACK")
+	flag.Parse()
+	if *ssid == "" {
+		fmt.Fprintln(os.Stderr, "serprov: --ssid is required")
+		os.Exit(2)
+	}
+
+	// The port is the user's choice; .orb-target is only a fallback for the
+	// bench, never a requirement.
+	port := *portFlag
+	desc := *portFlag
+	if port == "" {
+		wd, _ := os.Getwd()
+		t, terr := orbbind.Load(wd)
+		if terr != nil {
+			fmt.Fprintln(os.Stderr, "serprov: no --port given and", terr)
+			os.Exit(1)
+		}
+		var perr error
+		port, perr = t.Port()
+		if perr != nil {
+			fmt.Fprintln(os.Stderr, "serprov:", perr)
+			os.Exit(1)
+		}
+		desc = fmt.Sprintf("%s (MAC %s) on %s", t.Label, t.BaseMAC, port)
+	}
+	fmt.Printf("serprov: %s\n", desc)
+
+	// One operation per port at a time, so a serprov run can't collide with the
+	// manager's flash/provision on the same cable.
+	portLock, lockErr := orbbind.LockPort(port)
+	if lockErr != nil {
+		fmt.Fprintln(os.Stderr, "serprov:", lockErr)
+		os.Exit(1)
+	}
+	defer portLock.Release()
+
+	pt, err := esprom.OpenPort(port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "serprov:", err)
+		os.Exit(1)
+	}
+	defer pt.Close()
+
+	fmt.Println("serprov: opening console (this resets the board into its app)...")
+	onLine := func(l string) {
+		if *verbose {
+			fmt.Printf("    . %s\n", l)
+		}
+	}
+	res, err := esprom.ProvisionOn(pt, *ssid, *pass, *tz, *scan, *ack, onLine)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "serprov:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\nserprov: AP observed: %v | scanned %d network(s) | sent=%v ack=%v\n",
+		res.APSeen, len(res.Networks), res.Sent, res.Ack)
+	for _, n := range res.Networks {
+		fmt.Printf("    ch%-2d rssi%-4d %s %q\n", n.Ch, n.RSSI, map[bool]string{true: "open", false: "   "}[n.Open], n.SSID)
+	}
+	if !res.Ack {
+		fmt.Println("\nserprov: NOT PROVEN — no PROV-ACK after writing the PROV line.")
+		os.Exit(1)
+	}
+	fmt.Println("\nserprov: PROVEN — orb scanned over serial, accepted the PROV line, and is joining.")
+}

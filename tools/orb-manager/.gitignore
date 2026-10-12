@@ -1,0 +1,3 @@
+# Build output from `make build` / `make all`. The source is the Go files; these
+# are the compiled hub binary and headless flasher, regenerated on demand.
+bin/

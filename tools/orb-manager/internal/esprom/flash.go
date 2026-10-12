@@ -1,0 +1,271 @@
+package esprom
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"time"
+)
+
+// Image is one blob to place at a flash offset, mirroring an entry in
+// build/flasher_args.json's flash_files map. Offset must be sector-aligned
+// for the ROM (no-stub) path.
+type Image struct {
+	Offset uint32
+	Path   string
+}
+
+// FlashPlan is the ordered set of images to write plus the flash geometry the
+// ROM needs to be told about. A Plan comes from flasher_args.json so the
+// offsets/mode come from the build, never hardcoded (the serflash.sh lesson).
+type FlashPlan struct {
+	Images    []Image
+	FlashSize uint32 // bytes, e.g. 16MB
+	FlashMode byte   // 0=qio 1=qout 2=dio 3=dout
+	FlashFreq byte   // low nibble of the header size_freq byte; 0xFF = keep
+}
+
+func parseImageHeader(b []byte) (magic byte, numSeg byte, flashMode byte, sizeFreq byte, entry uint32, err error) {
+	if len(b) < 8 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("esprom: image too short to have a header (%d B)", len(b))
+	}
+	return b[0], b[1], b[2], b[3], binary.LittleEndian.Uint32(b[4:8]), nil
+}
+
+// pad4 appends 0xFF so len(b) is a multiple of 4 (esptool pad_to(image,4)).
+func pad4(b []byte) []byte {
+	if r := len(b) % 4; r != 0 {
+		b = append(b, make([]byte, 4-r)...)
+	}
+	return b
+}
+
+// patchBootloaderFlashParams replicates esptool _update_image_flash_params for
+// the image written at 0x0: rewrite bytes 2-3 with the chosen mode/size/freq
+// and, when the image carries an appended SHA256 (extended-header byte 15 ==
+// 1), recompute that digest over the pre-digest image. Non-bootloader images
+// pass through untouched.
+func patchBootloaderFlashParams(raw []byte, offset uint32, p FlashPlan) ([]byte, error) {
+	if offset != 0 || len(raw) < 8 {
+		return raw, nil
+	}
+	if raw[0] != espImageMagic {
+		return raw, nil // not an image; esptool leaves it and only warns
+	}
+	flashMode := p.FlashMode
+	sizeNibble := raw[3] & 0xF0
+	freqNibble := raw[3] & 0x0F
+	if p.FlashFreq != 0xFF {
+		freqNibble = p.FlashFreq & 0x0F
+	}
+	if p.FlashSize != 0 {
+		sizeNibble = sizeForFlashSize(p.FlashSize)
+	}
+	newMode, newSF := flashMode, sizeNibble|freqNibble
+	shaAppended := len(raw) >= 24 && raw[8+15] == 1
+	if raw[2] == newMode && raw[3] == newSF && !shaAppended {
+		return raw, nil
+	}
+	img := make([]byte, len(raw))
+	copy(img, raw)
+	img[2], img[3] = newMode, newSF
+	if !shaAppended || len(img) < 32 {
+		return img, nil
+	}
+	dataLen := len(img) - 32
+	sum := sha256.Sum256(img[:dataLen])
+	copy(img[dataLen:], sum[:])
+	return img, nil
+}
+
+// sizeForFlashSize maps a byte count to the header's high-nibble code (esptool
+// ESP32_FLASH_SIZES). 16MB == 0x40 is the orb's only case today.
+func sizeForFlashSize(bytes uint32) byte {
+	switch bytes {
+	case 1 << 20:
+		return 0x00
+	case 2 << 20:
+		return 0x10
+	case 4 << 20:
+		return 0x20
+	case 8 << 20:
+		return 0x30
+	case 16 << 20:
+		return 0x40
+	case 32 << 20:
+		return 0x50
+	default:
+		return 0x40
+	}
+}
+
+// Options drive one end-to-end flash session against an already-open port.
+type Options struct {
+	Plan       FlashPlan
+	WantMAC    [6]byte // when HasMAC, the chip's eFuse MAC must equal this
+	HasMAC     bool
+	OnProgress func(imgIndex, totalImgs int, off uint32, written, total int)
+	OnEvent    func(string)
+	// OnMAC receives the eFuse base MAC after it is read. The MAC is read even
+	// without the gate when this is set: the hub's onboarding flow matches the
+	// flashed orb to its LAN address by MAC, so identity is wanted regardless
+	// of whether this clone owns the device.
+	OnMAC func([6]byte)
+	// Wipe lists NVS regions to ROM-erase after every image write, for the
+	// explicit factory-reset path. Empty on the ordinary flash: the manifest
+	// never touches NVS and credentials are meant to survive a reflash.
+	Wipe []EraseTarget
+	// ObserveBoot, when set, reads the boot console on the held port right
+	// after the session's HardReset. That is the only moment the ROM still owns
+	// the USB-Serial-JTAG peripheral, so the reset is honoured and the chip's
+	// one-shot provisioning/association banner is not dropped (IDF suppresses
+	// console output whenever no host holds the port). The callback sees each
+	// line and returns true to stop early once it has its verdict. BootSeconds
+	// bounds the read window (default 12 s).
+	ObserveBoot func(line string) bool
+	BootSeconds int
+}
+
+// Session flashes a whole plan on an open port: enter download mode, sync,
+// attach the flash, write every image, then hard-reset into the new app. The
+// caller owns the Port lifecycle (so it can also hold the device lock).
+func Session(pt *Port, o Options) error {
+	logf := func(s string) {
+		if o.OnEvent != nil {
+			o.OnEvent(s)
+		}
+	}
+	d := New(pt, nil)
+
+	if err := EnterDownloadMode(pt); err != nil {
+		return fmt.Errorf("enter download mode: %w", err)
+	}
+	// The CDC endpoint re-enumerates after the reset, so sync may need retries.
+	var syncErr error
+	for attempt := 0; attempt < 12; attempt++ {
+		if err := d.Sync(); err == nil {
+			syncErr = nil
+			break
+		} else {
+			syncErr = err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if syncErr != nil {
+		return fmt.Errorf("sync: %w (chip may not have entered download mode)", syncErr)
+	}
+	logf("synced with ROM bootloader")
+
+	if err := d.VerifyS3(); err != nil {
+		return err
+	}
+
+	// USB-JTAG/Serial does not feed the RTC/SWD watchdogs, so they reset the
+	// chip mid-erase (FLASH_BEGIN status [1,5]). Disable them before the flash
+	// exactly as esptool's _post_connect does for this transport.
+	if d.UsesUSBJTAGSerial() {
+		if err := d.DisableWatchdogs(); err != nil {
+			return fmt.Errorf("disable watchdogs: %w", err)
+		}
+		logf("watchdogs disabled (USB-Serial/JTAG)")
+	}
+
+	// MAC gate: prove the chip on this port is the bound orb before erasing.
+	// The MAC is also read (ungated) when the caller only wants the identity,
+	// so the hub can find the flashed orb on the LAN afterwards.
+	if o.HasMAC || o.OnMAC != nil {
+		mac, err := d.ReadMAC()
+		if err != nil {
+			return fmt.Errorf("read MAC from eFuse: %w", err)
+		}
+		if o.HasMAC && mac != o.WantMAC {
+			return fmt.Errorf("wrong orb: chip MAC %02x:%02x:%02x:%02x:%02x:%02x is not the bound device",
+				mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+		}
+		if o.HasMAC {
+			logf("MAC gate passed")
+		}
+		if o.OnMAC != nil {
+			o.OnMAC(mac)
+		}
+	}
+
+	if err := d.SpiAttach(); err != nil {
+		return err
+	}
+	if err := d.SpiSetParams(o.Plan.FlashSize); err != nil {
+		return err
+	}
+
+	n := len(o.Plan.Images)
+	for i, img := range o.Plan.Images {
+		raw, err := os.ReadFile(img.Path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", img.Path, err)
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		if img.Offset == 0 {
+			if _, _, _, _, _, err := parseImageHeader(raw); err != nil {
+				return fmt.Errorf("%s: %w", img.Path, err)
+			}
+		}
+		data, err := patchBootloaderFlashParams(raw, img.Offset, o.Plan)
+		if err != nil {
+			return err
+		}
+		data = pad4(data)
+		logf(fmt.Sprintf("writing %s (%d B) @0x%X", baseName(img.Path), len(data), img.Offset))
+		iprog := func(written, total int) {
+			if o.OnProgress != nil {
+				o.OnProgress(i, n, img.Offset, written, total)
+			}
+		}
+		if err := d.WriteImage(img.Offset, data, iprog); err != nil {
+			return fmt.Errorf("flash %s @0x%X: %w", baseName(img.Path), img.Offset, err)
+		}
+	}
+
+	// Deliberate factory reset: erase the NVS partitions the manifest
+	// preserves, after the images are safely down. Done inside the same
+	// flash-attached session (watchdogs already disabled, SPI already
+	// attached) and before the reset into the new app, which then finds an
+	// empty config and opens the provisioning AP.
+	for _, er := range o.Wipe {
+		if er.Offset%4096 != 0 || er.Size%4096 != 0 {
+			return fmt.Errorf("erase %s @0x%X+0x%X: not sector aligned", er.Label, er.Offset, er.Size)
+		}
+		logf(fmt.Sprintf("erasing %s @0x%X (%d B) — config wipe", er.Label, er.Offset, er.Size))
+		if err := d.EraseRegion(er.Offset, er.Size); err != nil {
+			return fmt.Errorf("erase %s @0x%X: %w", er.Label, er.Offset, err)
+		}
+	}
+
+	logf("hard reset into new firmware")
+	if err := HardReset(pt); err != nil {
+		logf(fmt.Sprintf("hard reset note: %v", err))
+	}
+	// Read the boot console on the port still held across the reset. This is the
+	// only reliable capture point for the provisioning banner: the ROM owns the
+	// peripheral right here, so the reset landed and IDF has not yet dropped the
+	// one-shot lines it suppresses whenever no host is attached.
+	if o.ObserveBoot != nil {
+		secs := o.BootSeconds
+		if secs <= 0 {
+			secs = 12
+		}
+		observeBootOn(pt, secs, o.ObserveBoot)
+	}
+	return nil
+}
+
+func baseName(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' || p[i] == '\\' {
+			return p[i+1:]
+		}
+	}
+	return p
+}

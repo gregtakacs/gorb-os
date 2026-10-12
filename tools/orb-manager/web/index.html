@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orb Manager</title>
+<link rel="stylesheet" href="/web/app.css">
+</head>
+<body>
+<header>
+  <h1>Orb Manager</h1>
+  <div id="meta" class="meta">loading…</div>
+</header>
+
+<main id="hub" class="hub">
+  <a class="card" href="#onboard" data-view="onboard">
+    <h2>Onboard</h2>
+    <p>Flash firmware onto an orb over its USB cable, then bring it onto the Wi-Fi.</p>
+  </a>
+  <a class="card" href="/composer/index.html" data-view="composer">
+    <h2>Theme Editor</h2>
+    <p>Design a watchface theme and push it to a connected orb.</p>
+  </a>
+  <a class="card" href="#manage" data-view="manage">
+    <h2>Manage</h2>
+    <p>Find orbs on the network, set time zone, toggle the rescue AP, reboot.</p>
+  </a>
+</main>
+
+<section id="onboard" class="view" hidden>
+  <button class="back" data-back>← Home</button>
+  <h2>Onboard an orb</h2>
+  <div class="grid">
+    <label>Serial port
+      <select id="ob-port"></select>
+      <button id="ob-refresh" class="ghost">Refresh</button>
+    </label>
+    <label>Flash contents
+      <select id="ob-mode">
+        <option value="full">Full device (bootloader + partitions + otadata + app + assets)</option>
+        <option value="app">App + otadata only (fast bench reflash)</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="ob-force"> Skip stamp audit (override)</label>
+    <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them — check this to send the orb to its provisioning AP.</label>
+  </div>
+  <div id="ob-build" class="buildlist"></div>
+  <div class="row">
+    <button id="ob-go" class="primary">Flash orb</button>
+  </div>
+  <pre id="ob-log" class="log" aria-live="polite"></pre>
+  <div id="ob-bar" class="bar"><div></div></div>
+
+  <div id="ob-join" class="join" hidden>
+    <h3>Bring it onto Wi-Fi</h3>
+    <div id="ob-watch" class="hint">waiting for the orb to boot…</div>
+    <pre id="ob-console" class="log" aria-live="polite"></pre>
+
+    <div id="ob-done" hidden>
+      <p class="hint" id="ob-done-msg"></p>
+      <div class="row">
+        <button id="ob-manage" class="primary">Open in Manage</button>
+        <button id="ob-rejoin" class="ghost">Change network</button>
+      </div>
+    </div>
+
+    <div id="ob-ap" hidden>
+      <p class="hint">This orb has no stored network, so it opened its own open
+        provisioning network <b id="ob-ap-ssid">orb-????</b>. Two doors lead in:
+        join that AP from a phone (or this laptop) and use the orb's built-in
+        config page, or — since this hub is already cabled to the orb — provision
+        it over the USB-Serial-JTAG link below without any network at all.</p>
+      <div class="row"><button id="ob-ap-here" class="primary">Continue via the orb's AP page</button></div>
+
+      <div id="ob-serial" class="grid" style="margin-top:0.6em">
+        <fieldset>
+          <legend>Provision over USB (wired)</legend>
+          <div class="grid">
+            <label>Network (SSID)
+              <select id="sp-ssid">
+                <option value="">— scan saw nothing; type it —</option>
+              </select>
+            </label>
+            <label>…or type SSID <input id="sp-manual" size="18" placeholder="hidden / not in list"></label>
+            <label>Passphrase <input id="sp-pass" type="password" autocomplete="off"></label>
+            <label>Time zone <input id="sp-tz" size="14" placeholder="America/New_York"></label>
+          </div>
+          <p class="hint" id="sp-hint">Networks come from the orb's boot scan,
+            read off the console during the flash. The passphrase travels in the
+            clear (hex, not encrypted) over your own USB cable — fine for a wired
+            bench, not a public link.</p>
+          <div class="row"><button id="sp-go" class="primary">Provision over USB</button></div>
+          <pre id="sp-log" class="log" aria-live="polite"></pre>
+        </fieldset>
+      </div>
+    </div>
+
+
+    <div id="ob-pick" hidden>
+      <div class="grid">
+        <label>Orb IP <input id="j-ip" size="14" placeholder="192.168.2.x"></label>
+        <label>Network (SSID)
+          <select id="j-ssid"></select>
+          <button id="j-rescan" class="ghost">Rescan</button>
+        </label>
+        <label>Password <input id="j-pass" type="password"></label>
+        <label>Time zone <input id="j-tz" placeholder="America/New_York"></label>
+      </div>
+      <div class="row"><button id="j-go" class="primary">Join network</button></div>
+    </div>
+    <pre id="j-log" class="log" aria-live="polite"></pre>
+  </div>
+</section>
+
+<section id="manage" class="view" hidden>
+  <button class="back" data-back>← Home</button>
+  <h2>Manage orbs on the network</h2>
+  <div class="row">
+    <label class="inline">Scan range <input id="mn-cidr" size="18"></label>
+    <button id="mn-scan" class="primary">Scan</button>
+  </div>
+  <div id="mn-list" class="orbs"></div>
+</section>
+
+<template id="orb-tpl">
+  <article class="orb">
+    <header><b class="ip"></b> <span class="state"></span></header>
+    <dl class="kv"></dl>
+    <div class="controls">
+      <label>Time zone <input class="tz" size="18"></label>
+      <button class="set-tz">Set</button>
+      <button class="ap">Toggle rescue AP</button>
+      <button class="reboot">Reboot</button>
+      <button class="refresh">Refresh</button>
+    </div>
+    <pre class="out log" hidden></pre>
+  </article>
+</template>
+
+<script src="/web/app.js"></script>
+</body>
+</html>

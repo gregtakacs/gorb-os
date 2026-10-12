@@ -183,17 +183,38 @@ Commit: `feat(orb-manager): manage themes and read the orb console from the hub`
 Owner-visible failures: the CDN dependency in README `Caveats`, D9, and the
 absence of any release artifact.
 
-1. Serve the Theme Editor with no internet. Rewrite the `unpkg.com` and
-   `fonts.googleapis.com` references at SERVE time inside `composer.go`, the same
-   way `hubBackLink` is already injected, and vendor the files under
-   `web/composer/vendor/`. Do not edit `tools/watch-composer/support.js`: those
-   are vendor bytes kept byte-identical, and
-   `TestEmbeddedComposerMatchesSource` pins the embedded copy against them.
+1. ✅ Serve the Theme Editor with no internet. `cmd/orbvendor` downloads the three
+   `unpkg.com` scripts and the `latin`/`latin-ext` woff2 subsets the eleven
+   `fonts.googleapis.com` links resolve to (160 files reduced to 93, ~4.5 MB), and
+   records every URL with its sha256, size and the SRI into
+   `web/composer/vendor/MANIFEST.json`. `composer.go` then rewrites the entry page at
+   serve time: CDN URLs → `/composer/vendor/…`, eleven font links → one
+   `fonts.css`, and a `window.__resources` map injected immediately before the
+   `support.js` tag. `support.js` itself is never edited — that map is the override
+   hook it was written with, and `TestEmbeddedComposerMatchesSource` plus
+   `TestComposerServesSiblingsUntouched` still pin it byte-exact (the first attempt
+   rewrote it and both tests failed, which is the proof they work). The rewrite is
+   gated on `vendorReady()`: a partial tree stays on the CDN rather than mapping to
+   404s. `make vendor-check` re-verifies the committed tree and runs in `make check`.
+   Two ordering bugs were found and pinned by test: the URL substitution must run
+   BEFORE the map is inserted (after, it rewrote the map's own keys and the editor
+   silently stayed online-only), and `serveVendor` needs a separator between the
+   embed dir and the vendor subtree (`…/vendor` + `react…` 404'd every asset).
+   `TestComposerHasNoUnknownExternalDependencies` pins the whole external surface —
+   three unpkg URLs plus Google Fonts — so a re-vendored `support.js` that adds a
+   fourth fails the build instead of half-loading at a bench.
 2. Add `make release`: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64,
-   plus `sha256sums.txt`.
+   plus `sha256sums.txt`. OUTSTANDING.
 3. Implement `usbclass_darwin.go` via `ioreg` so macOS can attribute `303a:1001`
-   and Identify stops refusing. Untested on hardware until a Mac is in front of
-   it; `crosscheck` proves only that it compiles.
+   and Identify stops refusing. OUTSTANDING. Untested on hardware until a Mac is in
+   front of it; `crosscheck` proves only that it compiles.
+
+The browser-side confirmation is still owed: open `/composer/` with DevTools' network
+panel and an airgapped interface, and confirm zero requests leave the origin. No
+Chromium or Firefox exists on this dev box, so the served bytes were checked
+statically instead — the entry document contains no `http(s)://` reference outside the
+override map's own keys, and every vended asset, font included, returns 200 with the
+right content type.
 
 Commit: `feat(orb-manager): serve the composer offline and ship a release set`
 
@@ -274,6 +295,18 @@ Updated at each commit.
   the proxy, and a fresh process dialling the remembered address with no typing.
   The client has no JS engine here: the balance/selector checks are documented as a
   smoke check in the README, not a parser.
+- Iteration 6 (offline composer): `cmd/orbvendor` vendors the three `unpkg.com`
+  scripts and 93 `latin`/`latin-ext` woff2 files into `web/composer/vendor/` with a
+  sha256/SRI `MANIFEST.json`; `composer.go` serves that tree at
+  `/composer/vendor/` and rewrites the entry document to it at serve time, using
+  `support.js`'s own `window.__resources` hook rather than editing vendor bytes.
+  `make vendor-composer` produces the tree, `make vendor-check` verifies it and is
+  now part of `make check`. Gated on `vendorReady()`, so a build without the tree
+  behaves exactly as it did before. Verified by serving both builds from the real hub
+  binary and diffing the entry document, and by mutation: flipping the inject order
+  or tampering with `babel.min.js` each turn a test red.
+- Iteration 6 (outstanding): `make release` (four platforms + `sha256sums.txt`) and
+  `usbclass_darwin.go`. Neither was started.
 - Hardware: nothing in iterations 0-5 was run against a cable. The cancel path and
   the console read both drive real ROM/CDC timing and need one live run on orb-B
   before either is called verified. The theme card was verified against

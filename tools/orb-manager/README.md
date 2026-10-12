@@ -266,6 +266,15 @@ comparison against every cached identity without probing again.
   window has no back button) and, when React never arrives from the CDN, a line
   saying so rather than a blank page. Both are added at serve time; neither copy
   of the composer file is ever modified.
+  The editor needs React, ReactDOM and Babel and 36 font families, and it normally
+  reaches for them at `unpkg.com` and `fonts.googleapis.com`. `make vendor-composer`
+  commits local copies under `web/composer/vendor/` — with them compiled in, the hub
+  rewrites those references at serve time and the editor opens with no network at
+  all. The vendored `support.js` is never edited: it reads a `window.__resources`
+  URL→local map the hub injects ahead of it, which is the hook it was built with.
+  Each vendored file carries a sha256 and the SRI the composer demands, recorded in
+  `MANIFEST.json`; `make vendor-check` re-verifies both and runs as part of
+  `make check`, so a hand-edited React fails the build instead of blanking the page.
 - **Manage** — point at one orb by the IP provisioning reported (or one you look
   up on your router) and it dials that single address through the same-origin
   proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
@@ -451,8 +460,11 @@ state.go             remembered orb addresses (state.json under the OS config di
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
-composer.go          serves the repo's watch-composer at /composer/
+composer.go          serves the repo's watch-composer at /composer/, and the vendored
+                     React/Babel/fonts offline copies at /composer/vendor/
 cmd/orbflash/        headless face of the same flasher
+cmd/orbvendor/       one-time fetcher: CDN scripts + font subsets -> web/composer/vendor/
+                     with a sha256/SRI MANIFEST; -verify checks the committed tree
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
                      identity.go: ProbeOrb and the boot-log parser; usbclass_*.go: per-OS device attribution
@@ -473,11 +485,14 @@ make test       # go test ./... — SLIP framing, block checksum, SHA256 recalc,
                 # staleness guard automatically when build/flasher_args.json
                 # exists, so a committed bundle that has drifted from the tree
                 # fails here instead of skipping.
-make check      # the whole ladder: test (guard armed) + vet + crosscheck
+make check      # the whole ladder: test (guard armed) + vet + crosscheck + vendor-check
 make vet        # go vet ./...
 make fmt        # go fmt ./...
 make firmware   # re-pack the embedded firmware bundle from this clone's build dir
 make composer   # re-copy the Theme Editor into web/composer/ for the shipped binary
+make vendor-composer  # fetch React/Babel + font subsets into web/composer/vendor/
+                # (needs internet; idempotent, so a re-run produces no diff)
+make vendor-check     # verify that committed tree against its manifest and SRI pins
 make run        # rebuild + open the app window against 127.0.0.1:3779
                 # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
@@ -624,10 +639,15 @@ works in a shell where bare `go` is not on `PATH`.
 
 ## Caveats
 
-- The Theme Editor loads React 18, Babel, and Google Fonts from CDNs
-  (`unpkg.com`, `fonts.googleapis.com`), so the composer needs internet on first
-  paint; the manager itself does not. With that fetch blocked the page would be
-  blank and silent — the hub now names the failure on screen instead.
+- The Theme Editor's only external dependencies are React 18, ReactDOM, and Babel
+  from `unpkg.com` (pulled by `support.js`) and the Google Fonts stylesheets the entry
+  page links to. With the vendor tree compiled in — the committed default — the hub
+  rewrites all of them to `/composer/vendor/` and the editor needs no network at all.
+  A build made without it — a tree where `web/composer/vendor/` was deleted, or one
+  where `make vendor-composer` was never run — still needs internet on first paint,
+  and the hub then names that failure on screen instead of leaving a blank page.
+  `make vendor-composer` produces the tree; `make vendor-check` proves it still
+  matches its manifest and the composer's SRI pins.
 - USB-Serial/JTAG does not tick the RTC/SWD watchdogs, so a long erase trips
   them and resets the chip mid-write. `Session` disables both before flashing
   (esptool's `disable_watchdogs()` equivalent).

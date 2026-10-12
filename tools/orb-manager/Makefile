@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer
+.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check
 
 all: test build
 
@@ -69,6 +69,26 @@ composer:
 	@for f in $(COMPOSER_JS); do cp "$(COMPOSER_SRC)/$$f" web/composer/$$f || exit 1; done
 	@echo "copied the Theme Editor (entry + $(words $(COMPOSER_JS)) scripts) into web/composer/"
 
+## vendor-composer: download the composer's external dependencies into web/composer/
+## vendor/ so the Theme Editor works with no internet at all. The editor pulls React,
+## ReactDOM and Babel from unpkg.com through support.js, and 36 font families from
+## Google; blocked or absent DNS gives a blank editor whose only complaint is a console
+## a chromeless window cannot show. Committed for the same reason as the firmware
+## bundle: a plain build must produce an offline-capable hub. Idempotent — a re-run
+## whose bytes already match produces no diff. Requires network access.
+VENDOR_DIR := web/composer/vendor
+vendor-composer:
+	@test -f "$(COMPOSER_SRC)/support.js" || { echo "no $(COMPOSER_SRC)/support.js — run this from the gorb-os clone"; exit 1; }
+	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -composer "$(COMPOSER_SRC)"
+
+## vendor-check: verify the committed vendor tree, fetching nothing. It re-checks every
+## file against the sha256 in its own MANIFEST.json and against the SRI the composer
+## demands at load time, and re-reads those pins out of support.js rather than trusting
+## the tool's copy — so a hand-edited vendored React fails here, not as a blank editor.
+vendor-check:
+	@test -f "$(VENDOR_DIR)/MANIFEST.json" || { echo "no $(VENDOR_DIR)/MANIFEST.json — run make vendor-composer"; exit 1; }
+	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -composer "$(COMPOSER_SRC)" -verify
+
 orbflash:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/orbflash ./cmd/orbflash
@@ -93,10 +113,11 @@ vet:
 	$(GO) vet ./...
 
 ## check: the verification ladder in one command — the suite with the bundle guard
-## armed, vet, and every supported GOOS/GOARCH type-checked including tests. Run this
+## armed, vet, every supported GOOS/GOARCH type-checked including tests, and the
+## vendored composer assets verified against their manifest and SRI pins. Run this
 ## before every commit that touches the hub.
-check: test vet crosscheck
-	@echo 'check: tests, vet, and crosscheck all green'
+check: test vet crosscheck vendor-check
+	@echo 'check: tests, vet, crosscheck and vendor-check all green'
 
 fmt:
 	$(GO) fmt ./...

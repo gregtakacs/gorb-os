@@ -40,6 +40,7 @@ idf_component_register(
         esp_driver_spi
         esp_driver_gpio
         esp_driver_i2c         # imu: the QMI8658 on the shared I2C bus (GPIO 15/14)
+        esp_driver_usb_serial_jtag   # prov_reader_task: install the USJ interrupt driver so select() on stdin fires
         esp_lcd
         esp_timer
         esp_hw_support

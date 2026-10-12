@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
@@ -39,6 +40,8 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -94,7 +97,8 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
        NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
-       NET_CMD_SCAN_DONE };   /* drain the results once the driver says done     */
+       NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
+       NET_CMD_SCAN_BOOT };   /* first-boot scan armed by AP_START, logged as PROVSCAN */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
@@ -903,6 +907,7 @@ static void dns_stop(void)
  * handler — see the h_wifi_scan comment for what that costs a phone. */
 static void scan_begin(void);
 static void scan_collect(void);
+static void scan_boot_begin(void);   /* arms SCAN_SCANNING then starts, radio task */
 
 static void net_task_loop(void *arg)
 {
@@ -995,6 +1000,13 @@ static void net_task_loop(void *arg)
 
         case NET_CMD_SCAN_DONE:
             scan_collect();
+            break;
+
+        case NET_CMD_SCAN_BOOT:
+            /* First-boot scan for the wired-provisioning door. Posted only from
+             * WIFI_EVENT_AP_START while s_provisioning, so the driver is up;
+             * scan_boot_begin() is the radio-task owner of the scan state. */
+            scan_boot_begin();
             break;
 
         default:
@@ -1108,6 +1120,12 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_start();                 /* advertise + answer, so phones show "Sign in" */
 #endif
+        /* First-boot scan for the wired-provisioning door: a wired-only hub has
+         * no route to 192.168.4.1, so it reads the network list off the serial
+         * log instead of the page. scan_collect() logs each result as a
+         * PROVSCAN line while s_provisioning. Posted, not called: the event task
+         * must not touch the driver. */
+        if (s_provisioning) net_post(NET_CMD_SCAN_BOOT, 0);
         break;
 
     case WIFI_EVENT_AP_STOP:
@@ -1589,6 +1607,151 @@ static void ssid_sanitize(char *ssid, size_t cap)
 
 typedef struct { char ssid[NET_SSID_MAX + 1]; int rssi; uint8_t ch; bool open; } scan_e_t;
 
+/* --------------------------------------------------------------------------
+ * Wired provisioning door (Path 2): read one credential line off the USB
+ * Serial/JTAG stdin and apply it, for a hub that is wired-only and so has no
+ * route to the AP's 192.168.4.1. The console's write side was always used; the
+ * read side (host byte -> fgets(stdin) in the running app) was proven on the
+ * bench 2026-10-12 before this landed. Runs ONLY while s_provisioning at boot.
+ *
+ * One line, \n-terminated:   PROV <hex-ssid> <hex-pass> <hex-tz>
+ * Each field is hex of the raw bytes; "-" means empty/skip. Hex carries any
+ * byte without a delimiter collision, so a credential is never truncated by an
+ * unexpected character. Apply is h_wifi_join()'s own sequence (persist, then
+ * net_tz_set, then reset back-off, then post the join) so the doors cannot
+ * drift; it touches only ssid/pass/tz, never the rest of the shared partition.
+ * ------------------------------------------------------------------------ */
+static int hexnib(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Decode hex src[0..n) into out, NUL-terminated; "-" decodes to empty. Returns
+ * the byte count, or -1 on a bad nibble or if it will not fit (caller rejects
+ * the whole line — never truncates). */
+static int prov_hex(const char *src, size_t n, char *out, size_t cap)
+{
+    if (n == 1 && src[0] == '-') { out[0] = '\0'; return 0; }
+    if (n % 2 != 0) return -1;
+    const size_t len = n / 2;
+    if (len + 1 > cap) return -1;
+    for (size_t i = 0; i < len; i++) {
+        const int hi = hexnib((unsigned char)src[2 * i]);
+        const int lo = hexnib((unsigned char)src[2 * i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (char)((hi << 4) | lo);
+    }
+    out[len] = '\0';
+    return (int)len;
+}
+
+static void prov_reader_task(void *arg)
+{
+    (void)arg;
+    char line[4 * (2 * NET_PASS_MAX + 4)];   /* "PROV " + three hex fields, slack */
+    bool use_select = true;                   /* console fd may not support select */
+
+    /* The default USB-Serial-JTAG console reads by polling: the VFS only wires
+     * select() once the interrupt driver is installed (usb_serial_jtag_start_
+     * select() bails with ESP_ERR_INVALID_STATE otherwise), so a select() on
+     * stdin here would return only its 1s timeout forever and fgets() would
+     * never run — host->chip bytes sit unread. esp_console installs that driver
+     * only when a REPL runs; there is none on this path, so arm it here exactly
+     * as esp_console_new_repl_usb_serial_jtag() does. If install fails, drop to
+     * the plain blocking fgets() the bench proved. */
+    usb_serial_jtag_driver_config_t usj_cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    if (usb_serial_jtag_driver_install(&usj_cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "prov reader: USJ driver install failed; blocking fgets only");
+        use_select = false;
+    } else {
+        /* A terminal's Enter sends CR; map it to LF so a human can type a line,
+         * and the hub's CRLF collapses to the same line boundary in the VFS. */
+        usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
+        usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+        fcntl(fileno(stdin), F_SETFL, 0);   /* blocking stdin */
+        usb_serial_jtag_vfs_use_driver();
+    }
+
+    for (;;) {
+        if (use_select) {
+            fd_set r;
+            FD_ZERO(&r);
+            FD_SET(STDIN_FILENO, &r);
+            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+            const int sel = select(STDIN_FILENO + 1, &r, NULL, NULL, &tv);
+            if (sel < 0) {
+                if (errno == EINTR) continue;
+                /* select unsupported on the console fd: fall back to the plain
+                 * blocking fgets() the bench proved, permanently. */
+                ESP_LOGI(TAG, "prov reader: select on stdin unsupported (%s); blocking",
+                         strerror(errno));
+                use_select = false;
+                continue;
+            }
+            if (sel == 0) {                       /* timeout tick */
+                if (!s_provisioning) break;       /* joined / AP gone: leave */
+                continue;
+            }
+        }
+        errno = 0;
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            if (!s_provisioning) break;
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
+        if (n < 5 || memcmp(line, "PROV ", 5) != 0) continue;   /* not our token */
+
+        char *save = NULL;
+        char *f_ssid = strtok_r(line + 5, " ", &save);
+        char *f_pass = strtok_r(NULL, " ", &save);
+        char *f_tz   = strtok_r(NULL, " ", &save);
+        if (!f_ssid) continue;
+
+        char ssid[NET_SSID_MAX + 1];
+        char pass[NET_PASS_MAX + 1];
+        char tz[NET_TZ_MAX + 1];
+        if (prov_hex(f_ssid, strlen(f_ssid), ssid, sizeof(ssid)) <= 0) {
+            ESP_LOGW(TAG, "prov: rejected (bad/empty ssid)"); continue;
+        }
+        const char *p_raw = f_pass ? f_pass : "-";
+        const char *z_raw = f_tz   ? f_tz   : "-";
+        if (prov_hex(p_raw, strlen(p_raw), pass, sizeof(pass)) < 0 ||
+            prov_hex(z_raw, strlen(z_raw), tz,   sizeof(tz))   < 0) {
+            ESP_LOGW(TAG, "prov: rejected (bad pass/tz)"); continue;
+        }
+
+        ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
+                 pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
+
+        /* h_wifi_join()'s order: persist first, so a failed association still
+         * retries on next boot rather than dropping the user to square one. */
+        nvs_set_str(s_nvs, "ssid", ssid);
+        if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
+        nvs_commit(s_nvs);
+        if (tz[0]) {
+            const char *why = net_tz_set(tz);
+            if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
+        }
+        s_assoc_fails = 0;   /* a human just chose this network: reset the ladder */
+
+        ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
+        if (!net_post_join(ssid, pass)) {
+            ESP_LOGW(TAG, "prov: no radio queue — applying from this task");
+            const esp_err_t e = net_apply_sta_config(ssid, pass);
+            if (e != ESP_OK) ESP_LOGE(TAG, "prov: join(%s) failed: %s", ssid, esp_err_to_name(e));
+        }
+        /* Stay for a second PROV (a passphrase typo); leave at the next tick once
+         * provisioning has ended. */
+    }
+    ESP_LOGI(TAG, "prov reader: exiting (provisioning over)");
+    vTaskDelete(NULL);
+}
+
 /* static, not stack: the httpd task stack is only CONFIG_HTTPD_TASK_STACK_SIZE
  * (4 KB default), and 1.2 KB of buffer on top of the handler frame is a real
  * overflow risk. Handlers run serially on the single httpd task, so one
@@ -1645,6 +1808,19 @@ static void scan_begin(void)
         ESP_LOGE(TAG, "scan_start: %s", esp_err_to_name(se));
         s_scan_state = SCAN_FAILED;
     }
+}
+
+/* RADIO TASK ONLY. Arm and start the first-boot scan the wired-provisioning
+ * door reads off the console. scan_begin() expects SCAN_SCANNING already set
+ * (the httpd handler does that for a page scan), so this owns that step for the
+ * boot case. A scan already in flight is left alone — the page's own scan still
+ * covers the phone door. */
+static void scan_boot_begin(void)
+{
+    if (s_scan_state == SCAN_SCANNING || s_scan_state == SCAN_BUSY) return;
+    s_scan_t0_us = esp_timer_get_time();
+    s_scan_state = SCAN_SCANNING;
+    scan_begin();
 }
 
 /* RADIO TASK ONLY, posted from WIFI_EVENT_SCAN_DONE. Draining happens here,
@@ -1715,6 +1891,24 @@ static void scan_collect(void)
     s_scan_state = SCAN_READY;
     ESP_LOGI(TAG, "scan done: %d distinct network%s", s_scan_n,
              s_scan_n == 1 ? "" : "s");
+
+    /* Wired-provisioning door: while the device is in first-boot provisioning it
+     * has no route from a wire-only hub to the AP's 192.168.4.1, so it reads the
+     * network list off the serial log. Each line is
+     *   PROVSCAN <i> <rssi> <ch> <open0|1> <ssid-to-end-of-line>
+     * The SSID is deliberately the rest of the line (it may contain spaces);
+     * ssid_sanitize() already removed control chars, so no line can break the
+     * framing. PROVSCAN-END closes the list so the hub knows a zero-result scan
+     * is complete, not still arriving. Emitted only while s_provisioning — an
+     * ordinary page scan stays quiet on the console. */
+    if (s_provisioning) {
+        ESP_LOGI(TAG, "PROVSCAN-BEGIN %d", s_scan_n);
+        for (int i = 0; i < s_scan_n; i++)
+            ESP_LOGI(TAG, "PROVSCAN %d %d %u %d %s", i, s_scan_tbl[i].rssi,
+                     (unsigned)s_scan_tbl[i].ch, s_scan_tbl[i].open ? 1 : 0,
+                     s_scan_tbl[i].ssid);
+        ESP_LOGI(TAG, "PROVSCAN-END %d", s_scan_n);
+    }
     return;
 
 fail:
@@ -3274,6 +3468,18 @@ esp_err_t orb_net_start(void)
     stage_probe("post-httpd_start");
 
     ESP_LOGI(TAG, "config server listening on port %d", CONFIG_ORB_NET_HTTPD_PORT);
+
+    /* Wired-provisioning door: on a first boot with no credentials, also open
+     * the serial door. The reader blocks on stdin and only ever starts a join
+     * while s_provisioning; a device that already has credentials never starts
+     * it, so its console is untouched. Low priority, modest stack — it is idle
+     * until a hub writes a PROV line. */
+    if (s_provisioning) {
+        if (xTaskCreate(prov_reader_task, "provserial", 4096, NULL, 3, NULL) != pdPASS)
+            ESP_LOGE(TAG, "prov reader: out of memory — serial provisioning disabled");
+        else
+            ESP_LOGI(TAG, "serial provisioning armed: send 'PROV <hex-ssid> <hex-pass> <hex-tz>' on the console");
+    }
     return ESP_OK;
 }
 

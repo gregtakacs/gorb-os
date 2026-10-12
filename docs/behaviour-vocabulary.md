@@ -15,12 +15,14 @@ source name among them:
 | Entry | Grants | Notes |
 |---|---|---|
 | `now(app, sec, frac, synced)` | capability `time` (free, always on) | the extraction of `compose_now` (`clock_view.c:1711-1769`): SNTP/`CLOCK_EPOCH` resolution, the `orb_net_time_synced()` trust rule, the drift re-anchor — all already OS-owned (§1.1 Time service row) |
-| `tz_label(app)` | `time` | string; the label only |
+| `tz_label(app)` | `time` (free) | the tz name as a display string |
+| `tz_offset(app, when, &offset_min)` | `time` (free) | **the owner's configured zone's DST-aware offset at any instant**, minutes east of UTC — `orb_net.c`'s existing `tz_offset_min()` re-exported (D17, plan §0.7). The app converts; the zone stays owner config |
 | `cfg_get` / `cfg_set` / `cfg_get_str` / `cfg_set_str` | `config` (always on, own namespace, declared keys, quota — the §9.4 number) | |
 | `power_request(app, timeout_s, hold)` | `power` (owner-granted) | request, never a write; `idle_dim` owns the decision |
 | `bank` / `layer_add` / `layer_set` / `layer_touch` / `layer_del` | `ui` (free) | the compositor primitives, §1.1's compiled C |
 | `job_post` | free | the worker-task rule |
 | `set_beat(app, period_ms)` | free | D16 (§0.6): runtime rate for the iface's `tick()` — the only callback; may only slow from (or stop) the manifest's `period_ms`, never run faster than it |
+| `theme_count / theme_id / theme_active / theme_changed / theme_note / theme_install(id)` | `themes` (owner-granted on the dial) | D18 (plan §0.7): enumerate the card's themes and request the D11 install — id-validated, never a path, never bytes; the OS package manager alone opens the assets partition, and the app's own art is banked at install time (P4) |
 | `status` | free | |
 
 The manifest's capability bitmask (§4.1) is the only behaviour declaration
@@ -63,7 +65,11 @@ OS code:
   beat, so hands across apps sweep against the same clock or the dial
   shows two beats; the sweep is a registered contract, not a value (and
   the beat itself is the app's to set, per D16's `set_beat`);
-- the synced flag.
+- the synced flag;
+- the owner's zone: D17 added `tz_offset(when, &offset_min)` to the same
+  free surface, so the app's own `gmtime_r` + offset reproduces the dial's
+  local time without the OS owning the conversion, and the process-global
+  `TZ` stays owned by `net_tz_set()`'s single door.
 
 Conversion is app-side. The clock's `compose_now` keeps filling its own
 `struct tm` exactly as today; a second face app brings its own, from

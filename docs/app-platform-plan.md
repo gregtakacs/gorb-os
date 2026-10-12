@@ -122,6 +122,24 @@ runs at 15/12/8/4 fps, so **the beat must be settable at runtime**.
 |---|---|---|
 | D16 | How an app gets its frame beat | **The `tick()` hook stays the only callback; the beat is a runtime `set_beat` entry on `orb_svc_t`, bounded by the manifest.** The app never hands the OS a function pointer: delivery runs through the registry's `tick(app, now_ms)`, visible apps only (§1.4). The manifest's `period_ms` (§4.1) is the **fastest** beat the app may ever run; `set_beat(period_ms)` may only slow from there (and off: `0` = no ticks until the next `resume`), never below it, so the owner sees the real cadence cost at install and an app cannot grab the shared beat the §6 cadence findings price. Budget policing stays as written: the OS measures each app's tick time against its declared budget and refuses/parks an overrun (§4.3, C2 discipline). One consequence recorded for P3: the shared beat runs at the fastest active `set_beat` — a 4 fps theme and a 15 fps theme on the glass at once (carousel transition) cost 15 fps until the swap settles; the §6 cadence-collapse guard is what measures that, before it ships. |
 
+### 0.7 Owner's rulings, 2026-10-12 (sixth round) — the tz offset and theme install join the surface (D17, D18)
+
+Surfaced when the owner reviewed D15's full exposed surface: "I think I need
+the TZ offset too. And I need to be able to copy my theme files into flash,
+no?" Both are true gaps in the frozen paper. D15's raw-`time_t` ruling does
+not work for the P6 clock app without the offset — the app converts by
+itself, but the zone is owner config, not app config. And the theme picker
+is app UI (B2) while install is the OS package manager (§1.1): today the
+compiled-in clock calls `orb_theme_scan()`/`orb_theme_post_install()`
+directly (`clock_themes.c:87,159`); on the card those calls must go through
+the broker, and the invariant the incidents enforce is that **no app ever
+opens the assets partition** — the OS copies, verifies, commits, reboots.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D17 | The tz offset on the broker | **Yes — `tz_offset(app, when, &offset_min)` joins the free `time` surface.** It returns the offset in minutes of the OWNER's configured zone (`orb_net`'s `s_tz` table, the `net_tz_set()` single door, `orb_net.h:77-97`) at any instant, DST included — the existing `tz_offset_min()` computation (`orb_net.c:369`, localtime-minus-gmtime) re-exported as the broker's fourth door. D15 stands untouched: still no `struct tm`, still no source name — the OS guarantees seconds AND the owner's zone, because a process-global `TZ` silently shared by twelve apps is exactly the split clock-authority D15 was drawn to avoid. `localtime_r` with `gmtime_r` plus this offset reproduces the dial's local time exactly. |
+| D18 | An app installing a theme | **Yes — as requests, never as bytes: the `themes` capability (owner-granted).** `orb_svc_t` gains `theme_count` / `theme_id` / `theme_active` / `theme_changed` / `theme_note` / `theme_install(id)`. `theme_install` is D11 verbatim through the OS package manager — copy into the target slot, verify from flash, mark live, ask the reboot — gated by `orb_theme_id_ok()`, taking a scan-validated id and never a path. An app's own art arrives in its `.orbapp` payload and is banked by the installer at install time (P4): runtime flash writes do not exist for apps, because §14.4 is the cheapest teacher of why. The browser-upload trio (`/upload`) stays the owner's direct door, unchanged. |
+
 ---
 
 ## 1. The line, drawn at today's files
@@ -343,12 +361,13 @@ The manifest declares what it needs; the owner grants it on the dial; nothing is
 
 | Capability | Grants | Gate |
 |---|---|---|
-| `time` | `orb_time_now()`, tz label | free, always on: no app is useful without the clock |
+| `time` | `orb_time_now()`, tz label, tz offset (D17) | free, always on: no app is useful without the clock |
 | `config` | its own NVS keys under `orb.apps`, within the manifest's declared settings | always on, bounded to its own namespace, its declared types and the per-app byte quota |
 | `power` | a request to change the dim timeout or hold the dial awake | owner-granted on the dial, clamped by `idle_dim`, auto-revoked when the app is not visible |
 | `net` | a bounded HTTP client through the OS, allowlisted hosts, rate-limited | owner-granted on the dial per app, default off |
 | `sd_read` | read inside its own `/sd/apps/<id>/` only | owner-granted on the dial, path built by `orb_sd` validators |
 | `ui` | the compositor primitives and an OS-rendered options page | free |
+| `themes` | enumerate the card's theme entries and request an install by validated id (D18) — never a path, never bytes; the OS package manager owns the assets partition | owner-granted on the dial; the install itself ends in the D11 reboot |
 | `art` | its own bank, plus reserve from the arena | free for its own bank |
 
 There is no `sd_write` (C10): an app that needs to persist uses `config` inside its quota, and a card it cannot write to is the same boundary the theme path already enforces from the other side.
@@ -365,6 +384,9 @@ Enforcement is a single check per entry in `orb_svc_t`, taken from a grant table
       /* time */
       void      (*now)(orb_app_t *, time_t *sec, double *frac, bool *synced);
       const char *(*tz_label)(orb_app_t *);
+      /* the OWNER's zone, DST-aware, at any instant (D17, §0.7) — minutes
+       * east of UTC. The app converts; the zone stays owner config. */
+      esp_err_t (*tz_offset)(orb_app_t *, time_t when, int32_t *offset_min);
       /* power: a request only, idle_dim owns the decision */
       esp_err_t (*power_request)(orb_app_t *, uint32_t timeout_s, bool hold);
       /* config: bounded to this app's declared settings, int32 and string (C9) */
@@ -387,6 +409,15 @@ Enforcement is a single check per entry in `orb_svc_t`, taken from a grant table
        * stop ticking until the next resume. Faster-than-manifest is refused
        * with the number in the reason — the install is the cadence budget. */
       esp_err_t (*set_beat)(orb_app_t *, uint32_t period_ms);
+      /* themes: enumerate and request (D18, §0.7). id-keyed through
+       * orb_theme_id_ok(), never a path; install = D11 through the OS
+       * package manager, ending in the reboot ask. cap: themes. */
+      int       (*theme_count)(orb_app_t *);
+      esp_err_t (*theme_id)(orb_app_t *, int idx, char *buf, size_t cap);
+      bool      (*theme_active)(orb_app_t *, int idx);
+      bool      (*theme_changed)(orb_app_t *, int idx);
+      const char *(*theme_note)(orb_app_t *, int idx); /* damage/trial reason, or NULL */
+      esp_err_t (*theme_install)(orb_app_t *, const char *id);
       /* ui: the shell's list primitives for the app's settings page */
       void (*status)(orb_app_t *, const char *fmt, ...);
     } orb_svc_t;

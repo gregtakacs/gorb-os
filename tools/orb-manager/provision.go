@@ -10,6 +10,11 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 )
 
+// provisionBudget bounds one wired-provisioning round-trip. The three console
+// windows inside ProvisionOn (scan 22 s, ack 20 s, lease 25 s) are the work; this is
+// the outer ceiling that stops a wedged console from holding a cable forever.
+const provisionBudget = 90 * time.Second
+
 // provisionRequest is the wired-provisioning job: the orb's serial port
 // plus the network to join. It carries a plaintext passphrase (hex-encoded on
 // the wire to the firmware, but plaintext over this local hub request and the
@@ -62,17 +67,15 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Same one-flash-at-a-time guard as the flash handler, so a provision and a
-	// flash can never both hold the port.
-	s.mu.Lock()
-	if s.flashing {
-		s.mu.Unlock()
-		send(map[string]any{"error": "a flash is already running in this manager"})
+	// Same per-cable claim a flash takes, so a provision and a flash can never
+	// both hold the port, and so this operation is cancellable and visible too.
+	// A different cable stays free: one operator, two orbs.
+	job, ctx, oerr := s.ops.start(r.Context(), req.Port, opProvision, provisionBudget)
+	if oerr != nil {
+		send(map[string]any{"error": oerr.Error()})
 		return
 	}
-	s.flashing = true
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.flashing = false; s.mu.Unlock() }()
+	defer s.ops.finish(job)
 
 	// Provision whatever orb is on the port the user picked. A single-orb owner
 	// must never be told their own device isn't the "bound" one. The only
@@ -93,10 +96,14 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	defer pt.Close()
 
 	send(map[string]any{"log": "opening the console (this reboots the orb into its app)..."})
-	res, err := esprom.ProvisionOn(pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, 25*time.Second, func(l string) {
+	res, err := esprom.ProvisionOn(ctx, pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, 25*time.Second, func(l string) {
 		send(map[string]any{"log": "console: " + l})
 	})
 	if err != nil {
+		if esprom.IsCancelled(err) {
+			send(map[string]any{"error": "provisioning cancelled. If the PROV line already reached the orb, its credentials may be saved - check the orb's own screen before re-provisioning."})
+			return
+		}
 		send(map[string]any{"error": err.Error()})
 		return
 	}

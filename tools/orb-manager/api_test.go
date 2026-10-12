@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -750,7 +751,7 @@ func TestProbeIsNeverImplicitAndIsInvalidatedByFlash(t *testing.T) {
 func TestProbeRefusesPortsItCannotAttribute(t *testing.T) {
 	// A path no device backs: classifyPort cannot confirm the vendor, so the
 	// probe must refuse rather than open it and start pulsing control lines.
-	info, err := esprom.ProbeOrb("/dev/serial/by-id/definitely-not-a-real-device")
+	info, err := esprom.ProbeOrb(context.Background(), "/dev/serial/by-id/definitely-not-a-real-device")
 	if err != nil {
 		t.Fatalf("ProbeOrb must report a refusal, not fail: %v", err)
 	}
@@ -800,21 +801,22 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-// The probe resets the chip, so it must refuse while a flash holds the wire. The
-// guard has to read the flag, not the mutex: a flash holds s.mu only long enough
-// to set it, so a TryLock-based check passes straight through a live flash and
-// would reset a chip mid-write.
-func TestProbeRefusesWhileFlashing(t *testing.T) {
+// A probe resets the chip, so it must refuse while an operation holds THAT cable.
+// The refusal is per port, which is the point of the operation registry: a flash on
+// one cable used to block Identify on every cable, and a mutex peek would only ever
+// race with the flag it was meant to read.
+func TestProbeRefusesWhileAnOperationHoldsThatPort(t *testing.T) {
 	s := newHub()
-	s.mu.Lock()
-	s.flashing = true
-	s.mu.Unlock() // held for the flag update only, exactly as handleFlash does it
+	job, _, err := s.ops.start(context.Background(), "/dev/ttyACM0", opFlash, 0)
+	if err != nil {
+		t.Fatalf("claiming the port: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	s.handleProbe(rec, httptest.NewRequest(http.MethodPost, "/api/ports/probe",
 		strings.NewReader(`{"port":"/dev/ttyACM0"}`)))
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 while a flash is running", rec.Code)
+		t.Fatalf("status = %d, want 400 while a flash holds that port", rec.Code)
 	}
 	var env struct {
 		OK    bool   `json:"ok"`
@@ -825,21 +827,35 @@ func TestProbeRefusesWhileFlashing(t *testing.T) {
 		t.Errorf("body = %s, want a refusal naming the running flash", rec.Body)
 	}
 
-	// And it must not have claimed the port while refusing.
-	s.mu.Lock()
-	s.flashing = false
-	s.mu.Unlock()
+	// A different cable is not refused by this guard: it reaches the probe, which
+	// fails for the ordinary reason (no such device) rather than being told the
+	// hub is busy.
+	rec2 := httptest.NewRecorder()
+	s.handleProbe(rec2, httptest.NewRequest(http.MethodPost, "/api/ports/probe",
+		strings.NewReader(`{"port":"/dev/serial/by-id/definitely-not-a-real-device"}`)))
+	if strings.Contains(rec2.Body.String(), "is running on that port") {
+		t.Errorf("a flash on ttyACM0 blocked Identify on a different cable: %s", rec2.Body)
+	}
+
+	s.ops.finish(job)
+	if live := s.ops.running(); len(live) != 0 {
+		t.Errorf("finish left %d operation(s) registered", len(live))
+	}
 }
 
 // A probe takes the same per-port lock a flash does, so two hubs (or a hub and
-// orbprobe) cannot reset and write the same wire at once.
+// orbprobe) cannot reset and write the same wire at once. The claim goes through
+// the registry, which is also what makes it cancellable.
 func TestProbeTakesThePortLock(t *testing.T) {
 	src := readFile(t, "identity.go")
 	if !strings.Contains(src, "orbbind.LockPort") {
 		t.Error("handleProbe must lock the port: without it a concurrent flash and probe share the wire")
 	}
-	if !strings.Contains(src, "s.flashRunning()") {
-		t.Error(`handleProbe must test the flash flag via flashRunning(); probing the mutex is not the same check`)
+	if !strings.Contains(src, "s.ops.busy(req.Port)") {
+		t.Error("handleProbe must check the per-port operation registry, not a process-wide flag")
+	}
+	if !strings.Contains(src, "s.ops.start(r.Context(), req.Port, opProbe") {
+		t.Error("handleProbe must claim its port under the request context, so it is cancellable")
 	}
 }
 

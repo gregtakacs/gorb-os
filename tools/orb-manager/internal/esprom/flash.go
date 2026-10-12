@@ -1,6 +1,7 @@
 package esprom
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -138,6 +139,13 @@ type Options struct {
 	// bounds the read window (default 12 s).
 	ObserveBoot func(line string) bool
 	BootSeconds int
+	// Ctx cancels the session between wire operations: the operator closed the
+	// panel, hit Cancel, or the hub is shutting down. Leave it nil for the bench
+	// tools, which have no one to cancel them. A cancelled session stops at the
+	// next block boundary and returns ErrCancelled without resetting the chip, so
+	// the orb stays in the bootloader — a reflash is always safe from there, and a
+	// half-written app slot never boots to a partial image.
+	Ctx context.Context
 }
 
 // Session flashes a whole plan on an open port: enter download mode, sync,
@@ -149,7 +157,10 @@ func Session(pt *Port, o Options) error {
 			o.OnEvent(s)
 		}
 	}
-	d := New(pt, nil)
+	d := New(pt, nil).WithContext(o.Ctx)
+	if err := ctxErr(o.Ctx); err != nil {
+		return err
+	}
 
 	if err := EnterDownloadMode(pt); err != nil {
 		return fmt.Errorf("enter download mode: %w", err)
@@ -162,8 +173,13 @@ func Session(pt *Port, o Options) error {
 			break
 		} else {
 			syncErr = err
+			if IsCancelled(syncErr) {
+				return syncErr
+			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		if err := sleepCtx(o.Ctx, 200*time.Millisecond); err != nil {
+			return err
+		}
 	}
 	if syncErr != nil {
 		return fmt.Errorf("sync: %w (chip may not have entered download mode)", syncErr)
@@ -213,6 +229,11 @@ func Session(pt *Port, o Options) error {
 
 	n := len(o.Plan.Images)
 	for i, img := range o.Plan.Images {
+		// One check per image, so walking away between two images stops the
+		// session rather than dutifully writing the rest of the manifest.
+		if err := ctxErr(o.Ctx); err != nil {
+			return err
+		}
 		raw := img.Data
 		if len(raw) == 0 {
 			continue
@@ -244,6 +265,9 @@ func Session(pt *Port, o Options) error {
 	// attached) and before the reset into the new app, which then finds an
 	// empty config and opens the provisioning AP.
 	for _, er := range o.Wipe {
+		if err := ctxErr(o.Ctx); err != nil {
+			return err
+		}
 		if er.Offset%4096 != 0 || er.Size%4096 != 0 {
 			return fmt.Errorf("erase %s @0x%X+0x%X: not sector aligned", er.Label, er.Offset, er.Size)
 		}
@@ -266,7 +290,7 @@ func Session(pt *Port, o Options) error {
 		if secs <= 0 {
 			secs = 12
 		}
-		observeBootOn(pt, secs, o.ObserveBoot)
+		observeBootOn(o.Ctx, pt, secs, o.ObserveBoot)
 	}
 	return nil
 }

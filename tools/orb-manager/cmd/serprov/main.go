@@ -7,9 +7,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
@@ -61,7 +63,11 @@ func main() {
 			fmt.Printf("    . %s\n", l)
 		}
 	}
-	res, err := esprom.ProvisionOn(pt, *ssid, *pass, *tz, *scan, *ack, *ipw, onLine)
+	// Ctrl-C cancels the exchange between console reads, the same way the hub's
+	// Cancel button does: the port is released rather than held to the deadline.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	res, err := esprom.ProvisionOn(ctx, pt, *ssid, *pass, *tz, *scan, *ack, *ipw, onLine)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serprov:", err)
 		os.Exit(1)

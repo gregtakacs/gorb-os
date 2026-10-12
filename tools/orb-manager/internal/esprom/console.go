@@ -1,6 +1,7 @@
 package esprom
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -15,23 +16,33 @@ import (
 // ROM still owns the peripheral, which is exactly here. It adds a settle delay
 // for app_main to start printing and, if the ROM-to-app transition drops the
 // fd across CDC re-enumeration, reopens once and continues.
-func observeBootOn(pt *Port, secs int, onLine func(string) bool) {
+//
+// ctx stops the read early: an operator who cancelled should not wait out the
+// boot window. A nil ctx means "read the whole window", which is what the
+// identity probe wants.
+func observeBootOn(ctx context.Context, pt *Port, secs int, onLine func(string) bool) {
 	_ = pt.SetDTR(true) // IDF: terminal ready — otherwise console bytes are dropped
-	time.Sleep(150 * time.Millisecond)
-	if err := readConsole(pt, secs, onLine); err == nil {
+	if err := sleepCtx(ctx, 150*time.Millisecond); err != nil {
+		return
+	}
+	if err := readConsole(ctx, pt, secs, onLine); err == nil {
 		return
 	}
 	// The fd went stale across re-enumeration; reopen once and keep reading.
-	if pt2, err := openForConsole(pt.name); err == nil {
+	if ctxErr(ctx) != nil {
+		return
+	}
+	if pt2, err := openForConsole(ctx, pt.name); err == nil {
 		_ = pt2.SetDTR(true)
-		_ = readConsole(pt2, secs, onLine)
+		_ = readConsole(ctx, pt2, secs, onLine)
 		_ = pt2.Close()
 	}
 }
 
 // openForConsole opens name, retrying for openBudget to survive the CDC
-// re-enumeration a reset causes, and arms the short read timeout.
-func openForConsole(name string) (*Port, error) {
+// re-enumeration a reset causes, and arms the short read timeout. A cancelled
+// ctx abandons the retry at once rather than after the whole budget.
+func openForConsole(ctx context.Context, name string) (*Port, error) {
 	const openBudget = 8 * time.Second
 	deadline := time.Now().Add(openBudget)
 	for {
@@ -39,10 +50,15 @@ func openForConsole(name string) (*Port, error) {
 		if err == nil {
 			return pt, nil
 		}
+		if err := ctxErr(ctx); err != nil {
+			return nil, err
+		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("esprom: console open %s: %w", name, err)
 		}
-		time.Sleep(250 * time.Millisecond)
+		if err := sleepCtx(ctx, 250*time.Millisecond); err != nil {
+			return nil, err
+		}
 	}
 }
 
@@ -53,8 +69,9 @@ type lineReader interface {
 }
 
 // readConsole forwards each complete line from an already-open port for up to
-// secs, stopping early when onLine returns true.
-func readConsole(pt lineReader, secs int, onLine func(string) bool) error {
+// secs, stopping early when onLine returns true, or immediately when ctx is
+// cancelled. A nil ctx reads the full window.
+func readConsole(ctx context.Context, pt lineReader, secs int, onLine func(string) bool) error {
 	stop := time.Now().Add(time.Duration(secs) * time.Second)
 	buf := make([]byte, 1024)
 	var partial []byte
@@ -66,6 +83,9 @@ func readConsole(pt lineReader, secs int, onLine func(string) bool) error {
 		return onLine(line)
 	}
 	for time.Now().Before(stop) {
+		if err := ctxErr(ctx); err != nil {
+			return err
+		}
 		n, rerr := pt.Read(buf)
 		if rerr != nil {
 			return fmt.Errorf("esprom: console read: %w", rerr)

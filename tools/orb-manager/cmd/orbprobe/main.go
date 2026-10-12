@@ -5,9 +5,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
@@ -28,7 +30,11 @@ func main() {
 	}
 	defer lock.Release()
 
-	info, err := esprom.ProbeOrb(*port)
+	// Ctrl-C abandons the probe between its steps. It cannot interrupt the chip
+	// reset itself: those control-line timings are the whole trick.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	info, err := esprom.ProbeOrb(ctx, *port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orbprobe:", err)
 		os.Exit(1)

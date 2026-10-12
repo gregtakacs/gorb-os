@@ -258,20 +258,58 @@ async function streamFlash(url, payload, log, bar) {
   log.textContent = ""; bar.style.width = "0%";
   let mac = null;
   let ok = false;
-  await streamPost(url, payload, (ev) => {
-    if (ev.log) log.textContent += ev.log + "\n";
-    else if (ev.error) log.textContent += "\n\u2717 " + ev.error + "\n";
-    else if (ev.done) { log.textContent += "\n\u2713 " + ev.done + "\n"; ok = true; }
-    else if (ev.mac) mac = ev.mac;
-    else if (ev.progress) {
-      const p = JSON.parse(ev.progress);
-      const pct = p.total ? Math.round((p.written / p.total) * 100) : 0;
-      bar.style.width = pct + "%";
-      log.textContent += `\r[${p.image + 1}/${p.of}] ${p.offset} ${p.written}/${p.total} (${pct}%)`;
-    }
-    log.scrollTop = log.scrollHeight;
-  });
+
+  // Offer the way out, and take it through the hub rather than by dropping this
+  // fetch. Abandoning the connection leaves the ROM mid-write with no one to
+  // notice; /api/flash/cancel asks the flasher to stop at its next block boundary,
+  // which is the only place a stop leaves the flash in a state the next flash
+  // overwrites cleanly.
+  const opEl = $("#ob-op"), cancelBtn = $("#ob-cancel");
+  const port = payload.port || "";
+  cancelBtn.hidden = false;
+  cancelBtn.disabled = false;
+  cancelBtn.onclick = async () => {
+    cancelBtn.disabled = true;
+    opEl.textContent = "cancelling the flash on " + port +
+      " — it stops at the next block boundary, and the orb stays in its bootloader";
+    try { await fetch("/api/flash/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port }) }); }
+    catch (e) { /* the stream's own log line says what happened */ }
+  };
+  const tick = setInterval(() => showLiveOp(port, opEl), 2000);
+  showLiveOp(port, opEl);
+  try {
+    await streamPost(url, payload, (ev) => {
+      if (ev.log) log.textContent += ev.log + "\n";
+      else if (ev.error) log.textContent += "\n\u2717 " + ev.error + "\n";
+      else if (ev.done) { log.textContent += "\n\u2713 " + ev.done + "\n"; ok = true; }
+      else if (ev.mac) mac = ev.mac;
+      else if (ev.progress) {
+        const p = JSON.parse(ev.progress);
+        const pct = p.total ? Math.round((p.written / p.total) * 100) : 0;
+        bar.style.width = pct + "%";
+        log.textContent += `\r[${p.image + 1}/${p.of}] ${p.offset} ${p.written}/${p.total} (${pct}%)`;
+      }
+      log.scrollTop = log.scrollHeight;
+    });
+  } finally {
+    clearInterval(tick);
+    cancelBtn.hidden = true;
+    opEl.textContent = "";
+  }
   return { mac, ok };
+}
+
+// showLiveOp reports what the hub says is running on this port, so the row states
+// the truth about the cable rather than the client's guess about its own request —
+// and a flash started in a second tab or by orbflash on the bench shows up too.
+async function showLiveOp(port, el) {
+  try {
+    const { ops } = await getJSON("/api/ops");
+    const mine = (ops || []).filter((o) => !port || o.port === port || o.asked === port);
+    el.textContent = mine.length
+      ? mine.map((o) => o.kind + " running on " + o.port + " (" + o.seconds + "s)").join("; ")
+      : "";
+  } catch (e) { /* the flash log is the primary voice here */ }
 }
 
 $("#ob-refresh").onclick = refreshPorts;

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,13 +48,15 @@ const (
 // from. It stays "dev" for an untagged `go build`.
 var version = "dev"
 
-// Server holds the shared clients and the in-flight flash guard.
+// Server holds the shared clients and the in-flight operation registry.
 type Server struct {
-	mu       sync.Mutex
-	flashing bool           // one flash at a time, process-wide (belt to the flock)
-	orb      *orbnet.Client // status-probe tuned: short timeout for a single known IP
-	device   *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
-	repoDir  string         // the gorb-os clone root, for the Theme Editor only
+	device  *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
+	orb     *orbnet.Client // status-probe tuned: short timeout for a single known IP
+	repoDir string         // the gorb-os clone root, for the Theme Editor only
+	// ops is the per-port operation registry: who holds which cable, doing what,
+	// and how to ask that work to stop. It replaces the process-wide flashing
+	// flag, which could not tell two cables apart or cancel anything.
+	ops *opRegistry
 	// fw is the firmware to flash: the bundle compiled in, replaced only by a
 	// file the user picks on the Onboard card. There is no build-dir fallback —
 	// an end user has no ESP-IDF and never will.
@@ -126,7 +129,8 @@ func main() {
 		repoDir = detectRepoDir()
 	}
 
-	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir, identities: newIdentityCache()}
+	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir,
+		identities: newIdentityCache(), ops: newOpRegistry()}
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -162,19 +166,71 @@ func main() {
 			go openBrowser(url)
 		} else {
 			go func() {
-				// launchAppWindow already said why the window is gone; all
-				// that is left is releasing the listener it was guarding.
+				// launchAppWindow already said why the window is gone. Closing
+				// it must not pull the wire out from under a live flash, so this
+				// goes through the same guarded quit the interrupt path uses.
 				<-done
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				_ = srv.Shutdown(ctx)
+				s.quit(srv)
 			}()
 		}
 	}
+	s.watchSignals(srv)
 
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen: %v", err)
 	}
+}
+
+// opQuitBudget bounds how long a quit waits for a live port operation to land on
+// its feet. A full-manifest flash writes the 1.85 MB art partition too, so minutes
+// is the right order; past it a wedged operation must not make the hub unquittable.
+const opQuitBudget = 5 * time.Minute
+
+// quit releases the listener, giving any live port operation the chance to stop at
+// a block boundary first. Window-close and Ctrl-C both land here. The order is the
+// point: srv.Shutdown waits a bounded 3 s and then returns, and main returning ends
+// the process — which mid-write is exactly how an orb is left half-flashed.
+func (s *Server) quit(srv *http.Server) {
+	if live := s.ops.running(); len(live) > 0 {
+		log.Printf("orb-manager: %d port operation(s) live (%s); waiting up to %s for them to finish - interrupt again to cancel and quit",
+			len(live), opSummary(live), opQuitBudget)
+		ctx, cancel := context.WithTimeout(context.Background(), opQuitBudget)
+		defer cancel()
+		if err := s.ops.waitIdle(ctx); err != nil {
+			log.Printf("orb-manager: %d operation(s) still live after %s; quitting anyway",
+				len(s.ops.running()), opQuitBudget)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
+// watchSignals makes Ctrl-C mean "quit when nothing is writing", and a second
+// interrupt mean "cancel what is writing and quit now". The first interrupt does
+// not kill a flash; the second one cancels it between blocks and lets the process
+// end with the flasher's own cleanup run, not with the process yanked mid-write.
+func (s *Server) watchSignals(srv *http.Server) {
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, os.Interrupt)
+	go func() {
+		<-ch
+		s.quit(srv)
+		<-ch
+		if live := s.ops.cancelAll(); len(live) > 0 {
+			log.Printf("orb-manager: forced quit - cancelled %d operation(s): %s", len(live), opSummary(live))
+		}
+		os.Exit(1)
+	}()
+}
+
+// opSummary names the live operations for a log line.
+func opSummary(ops []*op) string {
+	parts := make([]string, 0, len(ops))
+	for _, o := range ops {
+		parts = append(parts, fmt.Sprintf("%s:%s", o.Kind, o.Port))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // bindHub listens on addr, falling back to an ephemeral port when it is taken so
@@ -281,7 +337,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// the filesystem looking for a build, so there is no traversal to get wrong.
 	mux.HandleFunc("/api/firmware", s.handleFirmwareUpload)
 	mux.HandleFunc("/api/firmware/reset", s.handleFirmwareReset)
-	mux.HandleFunc("/api/flash", s.handleFlash)         // streaming, not s.json
+	mux.HandleFunc("/api/flash", s.handleFlash) // streaming, not s.json
+	// Cancellation and live-operation state. Cancel stops the flash at its next
+	// block boundary; /api/ops says which cable is busy with what, which a
+	// process-wide flag could never answer once two orbs shared a bench.
+	mux.HandleFunc("/api/flash/cancel", s.handleCancel)
+	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.HandleFunc("/api/watch", s.handleWatch)         // streaming post-flash probe
 	mux.HandleFunc("/api/provision", s.handleProvision) // streaming wired-provisioning round-trip
 

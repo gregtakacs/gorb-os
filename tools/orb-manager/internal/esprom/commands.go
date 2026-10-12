@@ -1,6 +1,7 @@
 package esprom
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"time"
@@ -68,6 +69,9 @@ type Device struct {
 	dec    slipDecoder
 	chipID uint32
 	logf   func(string, ...any)
+	// ctx carries the operator's cancellation, if any. nil means "run to
+	// completion", which is what the headless bench tools ask for.
+	ctx context.Context
 }
 
 // New wraps an open serial port. Nothing is sent until Sync is called.
@@ -78,10 +82,23 @@ func New(rw ReadWriter, logf func(string, ...any)) *Device {
 	return &Device{rw: rw, logf: logf}
 }
 
-// readPacket reads one SLIP packet, honouring an absolute deadline.
+// WithContext attaches the cancellation that readPacket and command honour on the
+// next loop turn. It returns the Device so a caller can chain it onto New.
+func (d *Device) WithContext(ctx context.Context) *Device {
+	d.ctx = ctx
+	return d
+}
+
+// readPacket reads one SLIP packet, honouring an absolute deadline and the
+// operator's cancellation. The serial read itself carries a 500 ms timeout
+// (OpenPort), so one loop turn is bounded and a cancel lands within about that
+// long without this loop ever blocking on a dead chip.
 func (d *Device) readPacket(deadline time.Time) ([]byte, error) {
 	tmp := make([]byte, 512)
 	for {
+		if err := ctxErr(d.ctx); err != nil {
+			return nil, err
+		}
 		if time.Now().After(deadline) {
 			return nil, ErrTimeout
 		}
@@ -103,6 +120,9 @@ func (d *Device) readPacket(deadline time.Time) ([]byte, error) {
 // command sends one ESPROM request and returns (value, body).
 // Frame: dir(1) cmd(1) size(2) chk(4) then the 16-byte ESPROM body (esptool command()).
 func (d *Device) command(op uint8, body []byte, chk uint32, wait bool, timeout time.Duration) (uint32, []byte, error) {
+	if err := ctxErr(d.ctx); err != nil {
+		return 0, nil, err
+	}
 	hdr := make([]byte, 8)
 	hdr[0] = 0x00
 	hdr[1] = op
@@ -157,10 +177,16 @@ func (d *Device) Sync() error {
 		body = append(body, 0x55)
 	}
 	if _, _, err := d.command(opSync, body, 0, true, 3*time.Second); err != nil {
+		if IsCancelled(err) {
+			return err
+		}
 		return ErrNoSync
 	}
 	for i := 0; i < 7; i++ {
 		if _, _, err := d.command(opSync, nil, 0, true, 3*time.Second); err != nil {
+			if IsCancelled(err) {
+				return err
+			}
 			return ErrNoSync
 		}
 	}
@@ -354,16 +380,18 @@ func boolInt(v bool) uint32 {
 }
 
 // CaptureBoot asserts DTR, then forwards every line the boot console emits for
-// secs. Exported for the identity probe, which is the only way to learn what an
-// orb is running: an experiment against live hardware (2026-10-12, two orbs)
-// confirmed the ESP32-S3 ROM answers both MEM_READ and SPI_READ(0x10) with the
-// [1,5] no-stub failure, so flash bytes — and therefore the running app's
-// esp_app_desc_t — cannot be read over the ROM at all. The bootloader prints
-// that same descriptor on the console about 0.7 s after a cold boot, which is
-// what this captures.
-func CaptureBoot(pt *Port, secs int) []string {
+// secs. It opens no port: the caller holds one already. ctx aborts the read early
+// for a caller that has been cancelled; a nil ctx reads the whole window, which is
+// what the identity probe wants. Exported for that probe, which is the only way to
+// learn what an orb is running: an experiment against live hardware (2026-10-12,
+// two orbs) confirmed the ESP32-S3 ROM answers both MEM_READ and SPI_READ(0x10)
+// with the [1,5] no-stub failure, so flash bytes — and therefore the running app's
+// esp_app_desc_t — cannot be read over the ROM at all. The bootloader prints that
+// same descriptor on the console about 0.7 s after a cold boot, which is what this
+// captures.
+func CaptureBoot(ctx context.Context, pt *Port, secs int) []string {
 	var out []string
-	observeBootOn(pt, secs, func(line string) bool {
+	observeBootOn(ctx, pt, secs, func(line string) bool {
 		out = append(out, line)
 		return false
 	})
@@ -408,11 +436,20 @@ type Progress func(written, total int)
 // the ESP32-S3 ROM does not implement it (see flashEnd). The caller ends the
 // whole plan with a hard reset.
 func (d *Device) WriteImage(offset uint32, data []byte, p Progress) error {
+	if err := ctxErr(d.ctx); err != nil {
+		return err
+	}
 	if err := d.flashBegin(len(data), offset); err != nil {
 		return err
 	}
 	total := len(data)
 	for seq := 0; seq*flashWriteSize < total; seq++ {
+		// Checked between blocks only. The ROM takes a whole 1 KB block or
+		// rejects it, so stopping here leaves the flash consistent and the next
+		// full flash rewrites it from FLASH_BEGIN.
+		if err := ctxErr(d.ctx); err != nil {
+			return err
+		}
 		blk := data[seq*flashWriteSize:]
 		if len(blk) > flashWriteSize {
 			blk = blk[:flashWriteSize]

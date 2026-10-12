@@ -1,6 +1,7 @@
 package esprom
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -106,8 +107,16 @@ const probeWindowSecs = 9
 //
 // The caller must hold the per-port lock — an identity probe resets the chip, so
 // a flash sharing the wire would have its write corrupted by it.
-func ProbeOrb(port string) (OrbInfo, error) {
+//
+// ctx abandons the probe between steps and returns ErrCancelled. It is honoured
+// between the reset sequences, never inside one: EnterDownloadMode's control-line
+// timings are the whole trick, and stopping half through one leaves the chip in an
+// unknown state.
+func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 	info := OrbInfo{Port: port}
+	if err := ctxErr(ctx); err != nil {
+		return info, err
+	}
 
 	// Gate first, before any control-line edge: EnterDownloadMode toggles DTR/RTS,
 	// which resets Arduinos, FTDI breakouts and meters sitting on the same bench.
@@ -135,6 +144,9 @@ func ProbeOrb(port string) (OrbInfo, error) {
 	}
 	defer pt.Close()
 
+	if err := ctxErr(ctx); err != nil {
+		return info, err
+	}
 	if err := EnterDownloadMode(pt); err != nil {
 		info.Reason = "could not enter download mode: " + err.Error()
 		return info, nil
@@ -164,7 +176,13 @@ func ProbeOrb(port string) (OrbInfo, error) {
 		info.Reason = "reset failed: " + err.Error()
 		return info, nil
 	}
-	parsed, found := ParseAppInfo(CaptureBoot(pt, probeWindowSecs))
+	lines := CaptureBoot(ctx, pt, probeWindowSecs)
+	if err := ctxErr(ctx); err != nil {
+		// The operator walked away; do not report their cancelled probe as an
+		// orb that failed to boot gorb-os.
+		return info, err
+	}
+	parsed, found := ParseAppInfo(lines)
 	if !found {
 		info.Reason = "an ESP32-S3 at " + info.MAC + ", but no gorb-os firmware booted"
 		return info, nil

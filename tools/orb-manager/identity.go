@@ -25,9 +25,9 @@ type identityCache struct {
 }
 
 // newHub builds a Server in the state main() leaves it in, so a test cannot
-// accidentally exercise a half-wired hub with a nil cache.
+// accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
-	return &Server{identities: newIdentityCache()}
+	return &Server{identities: newIdentityCache(), ops: newOpRegistry()}
 }
 
 func newIdentityCache() *identityCache {
@@ -165,25 +165,36 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, "no serial port named")
 		return
 	}
-	// Read the flag under the mutex, do not probe the mutex: a flash holds s.mu
-	// only long enough to set s.flashing, so a TryLock here would succeed in the
-	// middle of a flash and the probe would reset a chip mid-write.
-	if s.flashRunning() {
-		s.jsonErr(w, "a flash is running; try again when it finishes")
-		return
-	}
-
 	if !s.identities.begin(req.Port) {
 		s.jsonErr(w, "already identifying that port")
 		return
 	}
+	// A probe resets the chip, so it may not share one cable with an operation
+	// that is writing it. The claim is PER PORT, which is the whole change from
+	// the old process-wide flag: a flash on /dev/ttyACM0 no longer blocks
+	// Identify on /dev/ttyACM1, and the registry entry is held for the probe's
+	// whole run rather than being a mutex that is only borrowed to set a bool.
+	if kind, busy := s.ops.busy(req.Port); busy {
+		reason := fmt.Sprintf("a %s is running on that port - an identity probe resets the chip, so it will not share the wire with it", kind)
+		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: reason})
+		s.jsonErr(w, reason)
+		return
+	}
+	job, ctx, oerr := s.ops.start(r.Context(), req.Port, opProbe, probeBudget)
+	if oerr != nil {
+		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: oerr.Error()})
+		s.jsonErr(w, oerr.Error())
+		return
+	}
+	defer s.ops.finish(job)
+
 	lock, lerr := orbbind.LockPort(req.Port)
 	if lerr != nil {
 		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: "port busy: " + lerr.Error()})
 		s.jsonErr(w, "port busy: "+lerr.Error())
 		return
 	}
-	info, err := esprom.ProbeOrb(req.Port)
+	info, err := esprom.ProbeOrb(ctx, req.Port)
 	lock.Release()
 	if err != nil {
 		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: err.Error()})
@@ -194,6 +205,11 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	info.Verdict = string(s.verdictFor(info))
 	s.jsonOK(w, info)
 }
+
+// probeBudget bounds one identity probe. The probe itself reads a 9 s boot window
+// plus the ROM handshake; this is the outer ceiling a Cancel or a forced quit stops
+// against, so a wedged console cannot hold a cable indefinitely.
+const probeBudget = 40 * time.Second
 
 // verdictFor compares the running firmware a probe found against the firmware the
 // hub would flash right now — the built-in bundle, or whatever the user picked.

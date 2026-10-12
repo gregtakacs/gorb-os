@@ -124,7 +124,15 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		if !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(watchPollInterval)
+		// Abandon the poll the moment the panel goes away. This loop holds no port
+		// lock — it dials one known IP over the LAN — so it is not dangerous, just
+		// wasteful: a closed panel used to keep it dialing for the rest of the
+		// budget with nobody left to read the answer.
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(watchPollInterval):
+		}
 	}
 	send(map[string]any{"result": map[string]any{
 		"mode":   "unknown",

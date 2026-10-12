@@ -39,8 +39,12 @@ that protect the *operation*, not the operator's identity:
    (`LockPort` in `internal/orbbind/`, keyed to the canonical device path so a
    `/dev/ttyACMx` and its `/dev/serial/by-id/...` link can't each sneak past the
    other). A second flash or provision on the same cable is refused instead of
-   corrupting the write mid-stream. A process-wide flag makes it a belt to that
-   brace.
+   corrupting the write mid-stream. In-process, the operation registry
+   (`GET /api/ops`, `POST /api/flash/cancel`) makes the same claim per port and
+   carries the cancel handle; it replaced a process-wide `flashing` flag that
+   could not tell two cables apart, so an idle orb used to queue behind an
+   unrelated one. The registry holds its entry for the whole operation, not for a
+   flag update, and releases it even when the handler returns early.
 
 The hub does no LAN discovery. It never reads the ARP/neighbour table, never
 shells out to `arp`/`arping`, and never sweeps a subnet. An orb's address is
@@ -222,6 +226,8 @@ headless; a mismatch aborts before erasing.
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
+| `POST /api/flash/cancel` | `{"port"}` — ask the flash on that port to stop. It ends at the next 1 KB block boundary, never mid-block, and leaves the orb in its bootloader rather than running a partial image |
+| `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API |
@@ -239,6 +245,25 @@ how the port picker's blank dropdown got through once.
 `/api/flash` streams `{"log":...}`, `{"progress":{...}}`, `{"mac":"..."}`
 (eFuse MAC, emitted as soon as the ROM answers), `{"done":...}`, and
 `{"error":...}` lines; the UI's `streamFlash` parses them into the log and bar.
+While a flash runs, the card shows what `/api/ops` says is live on that cable and
+reveals a Cancel button that posts `/api/flash/cancel`.
+
+**Nothing here is uncancellable, and no cancellation corrupts a flash.** Every
+flash, provision and identify runs under a context seeded from its own HTTP
+request, so closing the panel is a cancellation, and `esprom` checks that context
+in the packet-read loop and between flash blocks. It never checks *inside* a
+block: the ROM takes a whole 1 KB block or rejects it, so stopping at a boundary
+leaves a flash the next full flash overwrites cleanly, while stopping mid-block
+would leave the ROM waiting for data that never arrives. A cancelled session does
+not reset the chip — it stays in the bootloader, and the stream says so instead of
+reporting a timeout. Quitting is the same story: closing the app window or pressing
+Ctrl-C waits (up to `opQuitBudget`) for live operations to land before releasing
+the listener, because `http.Server.Shutdown` waits only 3 s and main returning then
+ends the process mid-write, which is exactly how an orb is left half-flashed. A
+second Ctrl-C cancels the live operations and quits. Two cables may be busy at
+once: the operation registry is keyed by canonical port path, replacing the
+process-wide `flashing` flag that used to make an idle orb wait for an unrelated
+one. `POST /api/flash/cancel` and `GET /api/ops` are that registry's face.
 When the flash holds the port across its own reset it also streams the boot
 console as `{"log":"console: ..."}` lines and records a boot verdict keyed by
 that MAC: the firmware's one-shot `no stored network — provisioning AP

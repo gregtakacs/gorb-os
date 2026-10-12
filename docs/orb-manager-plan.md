@@ -217,6 +217,22 @@ and `make crosscheck` on push is the intended content.
 
 ## 4. State at hand-off
 
-Updated at each commit. Recorded at the start: HEAD `476b13c`, clean tree,
-`go test ./...` green, bundle one rebuild stale (D1), no cable run yet.
+Updated at each commit.
+
+- `476b13c` baseline: clean tree, `go test ./...` green, bundle one rebuild stale
+  (D1), no cable run.
+- Iteration 0 `344afd8`: bundle re-packed from `build/` and stamped `476b13c`;
+  guard armed in `make test`; `make check` added; dead stamp-audit comment and the
+  stale `bin/flashlore` gone. Guard proven: one changed byte in the build dir fails
+  the suite.
+- Iteration 1: `context.Context` through `esprom` (read loop, command, block loop,
+  session, boot read, `ProbeOrb`, `ProvisionOn`); per-port `opRegistry` replaces the
+  process-wide `flashing` bool and `Server.mu`; `/api/ops` + `/api/flash/cancel`;
+  guarded quit and two-stage Ctrl-C; Cancel button and live-op line in the card.
+  `make check` and `make win-test` green. Both new guards proven by mutation: with
+  the block-boundary and `command()` checks removed the wire takes 3 blocks instead
+  of 2, and with `quit`'s wait removed the listener is released during a flash.
+- Hardware: nothing in iterations 0-1 was run against a cable. The cancel path
+  drives real ROM timing and needs one live cancel on orb-B before it is called
+  verified.
 

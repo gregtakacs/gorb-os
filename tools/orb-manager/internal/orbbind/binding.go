@@ -43,6 +43,13 @@ func LockPort(path string) (*PortLock, error) {
 	return &PortLock{f: f, name: canon}, nil
 }
 
+// CanonicalPortPath exposes the port-spelling collapse to callers that must key
+// something on the physical device rather than on the name the OS happened to hand
+// out — the hub's operation registry keys on it for exactly the reason LockPort
+// canonicalizes: /dev/ttyACM0 and its /dev/serial/by-id/... link are one cable, and
+// they must collide rather than each sneak past the other.
+func CanonicalPortPath(path string) string { return canonicalPortPath(path) }
+
 // canonicalPortPath collapses the spellings of one device — most importantly a
 // /dev/serial/by-id/... link and the /dev/ttyACMx it points at — onto a single
 // string, so both claim the same lock.

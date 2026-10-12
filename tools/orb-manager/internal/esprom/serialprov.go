@@ -1,6 +1,7 @@
 package esprom
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"regexp"
@@ -134,8 +135,15 @@ func ParseOrbIP(line string) (string, bool) { return parseOrbIP(line) }
 // device that already has credentials boots as a station and never starts the
 // reader, so the write would be ignored — use the orb's HTTP door to re-configure
 // an already-joined orb.
-func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudget time.Duration, onLine func(string)) (*ProvResult, error) {
+//
+// ctx aborts the exchange between console reads. Cancelling after the PROV line
+// went down is safe: the firmware's reader is idempotent on the line, and an
+// accepted join completes on the orb whether or not the hub is still watching.
+func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudget time.Duration, onLine func(string)) (*ProvResult, error) {
 	res := &ProvResult{Networks: []ScanNet{}}
+	if err := ctxErr(ctx); err != nil {
+		return res, err
+	}
 
 	// Force a genuine fresh boot. The boot scan (PROVSCAN) and the stdin reader
 	// are armed exactly once, at app startup, and only while the device came up
@@ -157,7 +165,9 @@ func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudge
 		return res, fmt.Errorf("esprom: prov reset (boot): %w", err)
 	}
 	_ = pt.SetDTR(true) // terminal ready: IDF drops console bytes otherwise
-	time.Sleep(150 * time.Millisecond)
+	if err := sleepCtx(ctx, 150*time.Millisecond); err != nil {
+		return res, err
+	}
 
 	// p is the handle both phases read and write. The reset re-enumerates the CDC
 	// endpoint and can leave the caller's fd stale, so on the first read error we
@@ -179,10 +189,13 @@ func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudge
 		buf := make([]byte, 1024)
 		var partial []byte
 		for time.Now().Before(stop) {
+			if err := ctxErr(ctx); err != nil {
+				return err
+			}
 			n, err := p.Read(buf)
 			if err != nil {
 				if !reopened {
-					if p2, oerr := openForConsole(pt.name); oerr == nil {
+					if p2, oerr := openForConsole(ctx, pt.name); oerr == nil {
 						_ = p2.SetDTR(true)
 						p = p2
 						reopened = true
@@ -245,6 +258,9 @@ func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudge
 	ackDeadline := time.Now().Add(ackBudget)
 	nextPush := time.Now().Add(2 * time.Second)
 	for !res.Ack && time.Now().Before(ackDeadline) {
+		if err := ctxErr(ctx); err != nil {
+			return res, err
+		}
 		// Poll for up to the shorter of "until the next push" and "until the
 		// ack deadline", with a floor so watch always reads rather than spins.
 		wait := time.Until(ackDeadline)
@@ -283,6 +299,9 @@ func ProvisionOn(pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudge
 	if res.Ack && ipBudget > 0 {
 		ipDeadline := time.Now().Add(ipBudget)
 		for res.IP == "" && time.Now().Before(ipDeadline) {
+			if err := ctxErr(ctx); err != nil {
+				return res, err
+			}
 			wait := time.Until(ipDeadline)
 			if wait < 100*time.Millisecond {
 				wait = 100 * time.Millisecond

@@ -36,7 +36,7 @@ func TestReadConsoleFraming(t *testing.T) {
 	r := &byteReader{buf: []byte(stream)}
 	got := []string{}
 	stop := false
-	err := readConsole(r, 5, func(line string) bool {
+	err := readConsole(nil, r, 5, func(line string) bool {
 		got = append(got, line)
 		if strings.Contains(line, "provisioning AP") {
 			stop = true
@@ -68,7 +68,7 @@ func TestReadConsoleFraming(t *testing.T) {
 func TestReadConsoleFlushesOversizedNoise(t *testing.T) {
 	r := &byteReader{buf: []byte(strings.Repeat("A", 5000))} // > 4*1024 cap, no newline
 	flushed := ""
-	_ = readConsole(r, 5, func(line string) bool {
+	_ = readConsole(nil, r, 5, func(line string) bool {
 		flushed = line
 		return true
 	})

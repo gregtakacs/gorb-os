@@ -51,20 +51,21 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	s.mu.Lock()
-	if s.flashing {
-		s.mu.Unlock()
-		send("error", "another flash is already running in this manager")
-		return
-	}
-	s.flashing = true
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.flashing = false; s.mu.Unlock() }()
-
 	if req.Port == "" {
 		send("error", "no serial port selected")
 		return
 	}
+
+	// Claim the cable. This is the in-process belt to orbbind's cross-process
+	// flock: it gives the operation a cancel handle and a state the UI can show,
+	// and it lets a second cable be flashed while this one is busy. The request
+	// context is the parent, so closing the panel is itself a cancellation.
+	job, ctx, oerr := s.ops.start(r.Context(), req.Port, opFlash, 0)
+	if oerr != nil {
+		send("error", oerr.Error())
+		return
+	}
+	defer s.ops.finish(job)
 
 	b, plan, err := s.planFor(req.Mode)
 	if err != nil {
@@ -93,6 +94,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	defer pt.Close()
 
 	opts.Plan = plan
+	opts.Ctx = ctx
 	// The factory reset resolves its targets from the partition table inside the
 	// very bundle being flashed, never from constants and never from a build dir.
 	// A stale table could otherwise point the erase at a region the new layout
@@ -153,6 +155,13 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 
 	send("log", fmt.Sprintf("flashing %d image(s) to %s", len(plan.Images), req.Port))
 	if err := esprom.Session(pt, opts); err != nil {
+		if esprom.IsCancelled(err) {
+			// Say what happened, and say what state the orb is in: the chip is
+			// still in the ROM, so a reflash is always safe and nothing half-
+			// written will boot.
+			send("error", "flash cancelled - the orb is still in its bootloader, not running a partial image. Flash it again to finish.")
+			return
+		}
 		send("error", err.Error())
 		return
 	}
@@ -164,15 +173,6 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootIP, bootNetworks)
 	}
 	send("done", "flash complete - orb rebooting into the new firmware")
-}
-
-// flashRunning reports whether a flash holds the wire right now. Callers that must
-// not collide with one — an identity probe resets the chip — ask this rather than
-// touching the mutex, which is held only for the flag update.
-func (s *Server) flashRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.flashing
 }
 
 // planFor resolves the flash manifest for a mode out of the selected firmware

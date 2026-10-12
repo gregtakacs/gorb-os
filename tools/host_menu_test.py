@@ -125,14 +125,32 @@ for _p in (APP_C, APP_H):
 app_src = open(APP_C).read()
 
 APP_TABLE = lift(app_src, r"static orb_app_t s_apps\[\] = \{[\s\S]*?\n\};", APP_C)
+# Lifted from the roaming branch of the router's poll. It changed shape when the
+# carousel landed (docs/app-platform-plan.md ruling C5): a turn now NAMES the
+# next stop through orb_carousel_step() and the activate happens on the settle,
+# so the block that must survive is "direction comes from the knob layer" and
+# "the only switch is still set_screen(), which is where the M1 probe lives".
 ARM_STEP = lift(router_src,
-                r"const orb_app_t \*next = orb_app_neighbour\(s_current,[\s\S]*?"
+                r"const int step = knob_col_step\(delta\)[\s\S]*?"
                 r"if \(next\) set_screen\(next, true\);", ROUTER_C)
 # The carousel must keep asking the knob layer what "right" means. A screen that
 # negates the delta itself is the bug host_knob_test.py exists for, and this lift
 # dies loudly if the router ever goes back to reading a raw sign.
 check("the screen carousel routes direction through the knob layer",
       "knob_col_step" in ARM_STEP, ARM_STEP.strip())
+# The turn must be deferred, not immediate: a roaming detent that called
+# set_screen() itself would put the flick's cost back to one full-page commit per
+# detent, which is the only reason the carousel exists. The fallback branch is
+# allowed exactly one set_screen, behind orb_carousel_ready().
+check("a turn peeks instead of switching, and only the settle switches",
+      "orb_carousel_step(" in ARM_STEP
+      and ARM_STEP.count("set_screen(") == 1
+      and "orb_carousel_ready()" in ARM_STEP, ARM_STEP.strip())
+# And the settle must commit through the registry's own switch path, so the M1
+# frame window still wraps every screen change the knob causes.
+check("the settle commits through set_screen, not around it",
+      re.search(r"orb_carousel_due\(now\)[\s\S]{0,160}orb_carousel_commit\(\);[\s\S]{0,60}"
+                r"set_screen\(named, true\);", router_src) is not None)
 # The menu must still be a walkable carousel entry, tagged as shell chrome
 # rather than pretending to be an app it is not.
 check("the menu is a registered walkable entry",
@@ -638,8 +656,8 @@ def main():
     check("rotate still owns the screen swap (router)",
           "if (!screen_armed(s_current))" in _code_only(router_src))
     check("long-press goes home to the clock (router)",
-          re.search(r"if \(lpress\) \{\s*disarm_all\(\);\s*set_screen\(orb_app_home\(\), true\);",
-                    router_src) is not None)
+          re.search(r"if \(lpress\) \{\s*orb_carousel_cancel\(\);\s*disarm_all\(\);"
+                    r"\s*set_screen\(orb_app_home\(\), true\);", router_src) is not None)
     # Inverted since the registry landed: the router must NOT name a single view
     # any more, and the registry must name all three. The old form of this check
     # required menu_view_screen() to appear in input_router.c, which is precisely

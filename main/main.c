@@ -17,6 +17,7 @@
 #include "board_config.h"
 #include "display.h"
 #include "orb_app.h"
+#include "orb_carousel.h"
 #include "knob.h"
 #include "input_router.h"
 #include "imu.h"
@@ -104,6 +105,16 @@ void app_main(void)
      * and copies results into its own buffer, never a widget, which is the one
      * thing that needs the LVGL task to exist first. */
     ESP_ERROR_CHECK(orb_app_init_all());
+
+    /* The carousel's name chip, on the top layer, built once here so no flick
+     * ever allocates. Deliberately NOT an ESP_ERROR_CHECK: the chip is chrome,
+     * and a dial that cannot paint a destination falls back to switching
+     * immediately on each turn (orb_carousel_ready()) rather than refusing to
+     * boot into a sealed case. */
+    const esp_err_t carousel_err = orb_carousel_init();
+    if (carousel_err != ESP_OK)
+        ESP_LOGE("carousel", "chip refused (%s) — the knob walks without a peek",
+                 esp_err_to_name(carousel_err));
 
     /* Rotary knob: GPIO edge ISRs feed the detent + press streams. */
     ESP_ERROR_CHECK(knob_init());

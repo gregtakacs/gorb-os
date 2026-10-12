@@ -12,6 +12,7 @@
 #include "knob.h"
 #include "idle_dim.h"
 #include "orb_app.h"
+#include "orb_carousel.h"   /* the peek: a turn names the next stop, it does not switch */
 
 #include <stdint.h>
 #include "esp_log.h"
@@ -176,9 +177,14 @@ static void arm_current(void)
 static void poll_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
+    /* One timestamp for the whole poll, read before any knob work: the M1 frame
+     * window below, the carousel's settle window, and the injection fold all
+     * compare against the same instant, so a poll that spent time in knob_poll()
+     * cannot make a peek look older or newer than the turn that opened it. */
+    const int64_t now = esp_timer_get_time();
     /* First, and before the knob work can skew the timestamp: has the view this
      * task last switched to actually reached the glass yet? */
-    if (s_sw_open_us) switch_window_close(esp_timer_get_time());
+    if (s_sw_open_us) switch_window_close(now);
     knob_poll();
 
     int32_t delta   = knob_take_delta();
@@ -219,6 +225,10 @@ static void poll_timer_cb(lv_timer_t *timer)
     const orb_app_t *req = (const orb_app_t *)s_requested;
     if (req) {
         s_requested = NULL;
+        /* A requested screen beats a peek in flight: the user (or the bench)
+         * named a destination, so a name still up from the last flick is wrong
+         * and would otherwise commit itself over the top of what was asked for. */
+        orb_carousel_cancel();
         disarm_all();
         set_screen(req, true);
         return;                          /* this poll is spent on the switch */
@@ -232,8 +242,13 @@ static void poll_timer_cb(lv_timer_t *timer)
     /* Long-press is the escape hatch out of every armed state, and it swallows
      * everything that made it so a hold never also lands as a turn/press on the
      * screen underneath. It deliberately no longer cycles screens: rotate owns
-     * that gesture now. */
+     * that gesture now.
+     *
+     * It also cancels any peek in flight: a name still on the glass after the
+     * user has chosen to go home would commit itself over the top of the dial a
+     * settle later. */
     if (lpress) {
+        orb_carousel_cancel();
         disarm_all();
         set_screen(orb_app_home(), true);   /* C8: the dial, by table flag not by name */
         return;
@@ -241,7 +256,20 @@ static void poll_timer_cb(lv_timer_t *timer)
 
     /* Roaming: the turn belongs to the router, not the screen. */
     if (!screen_armed(s_current)) {
-        if (pressed) { arm_current(); return; }
+        if (pressed) {
+            /* A press while a name is on the glass means "that one, now": it
+             * commits the peek rather than arming the view that is still
+             * physically showing underneath it. Arming the showing view would be
+             * arming a screen the user just said they are leaving. */
+            const orb_app_t *named = orb_carousel_pending();
+            if (named) {
+                orb_carousel_commit();
+                set_screen(named, true);
+                return;
+            }
+            arm_current();
+            return;
+        }
         if (delta) {
             disarm_all();
             /* One step per poll in the direction turned. A fast burst reports
@@ -250,10 +278,31 @@ static void poll_timer_cb(lv_timer_t *timer)
             /* Screens sit side by side, so the carousel is the horizontal axis and
              * asks the knob layer what "right" means, like any other screen would.
              * Which screens exist, and in what order, is the registry's answer —
-             * (INPUT_SCREEN_COUNT - 1) as a fake minus-one is gone with the enum. */
-            const orb_app_t *next = orb_app_neighbour(s_current,
-                                                      knob_col_step(delta) > 0 ? 1 : -1);
-            if (next) set_screen(next, true);
+             * (INPUT_SCREEN_COUNT - 1) as a fake minus-one is gone with the enum.
+             *
+             * A turn now NAMES the next stop instead of loading it (ruling C5's
+             * carousel): the chip goes up over the view still on the glass, the
+             * beat parks so the compositor cannot erase it, and the activate
+             * happens on the poll after the detents stop. That is what makes a
+             * three-detent flick cost one full-page commit instead of three, which
+             * matters because the dial's own reveal measured 411-476 ms (§12.7). */
+            const int step = knob_col_step(delta) > 0 ? 1 : -1;
+            if (!orb_carousel_step(step, s_current, now) && !orb_carousel_ready()) {
+                /* No chip was ever built (the heap said no at boot), so the peek
+                 * has nothing to show — and a destination the user cannot see
+                 * being chosen is worse than the immediate switch that was here
+                 * before. Walk exactly as far as one poll used to walk. */
+                const orb_app_t *next = orb_app_neighbour(s_current, step);
+                if (next) set_screen(next, true);
+            }
+            return;
+        }
+        /* Quiet, with a name still up: it has held still long enough to be worth
+         * the commit, and this is the poll that pays for it. */
+        const orb_app_t *named = orb_carousel_pending();
+        if (named && orb_carousel_due(now)) {
+            orb_carousel_commit();
+            set_screen(named, true);
         }
         return;
     }
@@ -297,12 +346,17 @@ esp_err_t input_router_init(void)
 
 esp_err_t input_router_show(const orb_app_t *app)
 {
+    orb_carousel_cancel();
     disarm_all();
     return set_screen(app, true);
 }
 
 void input_router_home(void)
 {
+    /* Reached from a screen's own exit row, on the LVGL task inside this file's
+     * poll. Cancel first: an exit pressed while a name was up means the user
+     * chose the dial over the flick, and the chip must not outlive that. */
+    orb_carousel_cancel();
     disarm_all();
     set_screen(orb_app_home(), true);
 }

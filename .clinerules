@@ -227,12 +227,26 @@ System python has no PIL; use a venv with `pillow numpy` for both tools.
         --tourbillon <unzipped kit>/tourbillon --tourbillon-fps 15 \
         --force-sweep --tick-rate 15 --dump-dir assets/preview-orbital
 
-The SHIPPED theme is orbital-arrow-3 (kit3). The committed blob rebuilds
-byte-identically from the committed zip — verify that before believing any bake
-(the emitted `.h` differs only in its provenance comment, which records the input
-dir path, so compare the `.bin` by md5 and the `.h` by ignoring line 4):
+The SHIPPED compiled-in bank is **av-kit** (composer preset `Aviator`, 15 base
+frames at 15 fps, no tourbillon), not kit3. Its source kit is committed at
+`assets/sources/av-kit/` with its `DESIGN_ID`; read that folder's README before
+re-baking. It reproduces exactly on the geometry half and to within 59 bytes
+(0.005%, one 1-px antialiasing fringe at 932 B stride) on pixels — measured
+2026-10-12 by running the recipe below against the committed zip. Verify rather
+than believe: the emitted `.h` differs only in its provenance comment, which
+records the input dir path, so compare the `.bin` by md5 and the `.h` by ignoring
+line 4. `assets/clock_assets.h:3` names the source theme; if it disagrees with the
+kit you just baked, you baked the wrong kit.
 
-    unzip -q assets/sources/watch-orbital-kit3.zip -d /tmp/k3
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/av-kit/watch-aviator-kit.zip /tmp/p1/av-kit
+    /tmp/bakevenv/bin/python tools/bake_clock.py /tmp/p1/av-kit/theme \
+        --bg-frames /tmp/p1/av-kit/frames --bg-fps 15 --tick-rate 15 --force-sweep
+
+The kit3 bake below is the 59-page **flagship** bench bank (`LAT_BYTES_KIT3` in
+`main/art/art_bank.c:642`) and the `headless-orbtheme.test.js` fixture — it is not
+the shipped bank, and baking it will not reproduce `assets/clock_assets.bin`. Its
+zip is committed, so it does rebuild byte-identically from that zip:
+
     /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit3.zip /tmp/kit3
     /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-arrow-3 \
         --bg-frames /tmp/kit3/frames --bg-fps 8 \

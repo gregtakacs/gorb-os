@@ -219,13 +219,14 @@ So the accepted failure is bounded: a bad install costs the owner that one app a
 | App `.flash.rodata` (the shared claim on that window) | 298 KB = 4a7c8 | `build/gorb-os.map` |
 | App `.flash.text` | 1.00 MB = 10054c | `build/gorb-os.map` |
 | App image in a 2 MB slot | 1,476,128 B | `build/gorb-os.bin` |
-| One flagship theme | 3,858,874 B = 59 pages of 64 KB | `assets/clock_assets.bin`, `stat` |
+| Shipped compiled-in bank (av-kit) | 1,173,563 B = **18 pages** of 64 KB | `assets/clock_assets.bin`, `stat`; `CLK_BLOB_BYTES`, `LAT_BYTES_PRIMARY` in `main/art/art_bank.c:640`; source kit at `assets/sources/av-kit/` |
+| Flagship bench theme (kit3) | 3,858,874 B = 59 pages of 64 KB | baked from `assets/sources/watch-orbital-kit3.zip`, re-measured 2026-10-12. **Not** `assets/clock_assets.bin`, which holds av-kit — an earlier revision of this row cited that file and so read as if the shipped bank were kit3 |
 | `assets` partition | 8 MB at 0x420000, two A/B slots at 0x0/0x400000, cap 4,128,764 B (0x3F0000) each | `partitions.csv`, `orb_theme.h:48-55,296` |
 | `www` partition | 1.25 MB at 0xC20000 | `partitions.csv` |
 | `storage` (NVS) | 24 KB at 0xD60000, shared with the WiFi credentials | `partitions.csv` |
 | Unallocated flash tail | 2.60 MB (0x29a000, ends 0xD66000 of 16 MB) | `partitions.csv` comment, verified by arithmetic |
 
-| Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the two rows above |
+| Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the flagship row above |
 | Two flagships mapped together | 120 pages + the image's own **22** (`.text` 17 + `.rodata`/`.appdesc` 5, per `idf.py size` 2026-10-11) = **142 of 256** | arithmetic; 114 pages of headroom. An earlier revision of this row counted only `.rodata`'s 5 and said 125 |
 | Measured flagship, for calibration | `perpetual-calendar` = 2,503,747 B = **39 pages** on the board (§10); two of *these* plus `.rodata` = 83 of 256 | boot line `39 MMU pages`, `art_pages` in `/api/v1/status` |
 | Two flagships in `assets` | 7,848,820 B of 8,388,608, **539,788 B spare** | arithmetic; the partition is the binding limit, not the MMU |
@@ -388,7 +389,13 @@ Recommendation: build the declarative interpreter and the broker now (no VM cost
 
 ## 6. Measurement protocol (the answers this plan refuses to guess)
 
-All three run on the board with the shipped kit3 art, before any app code exists, because a change that regresses the shipped dial invalidates everything above it.
+All three ran on the board with the kit3 art that was compiled in when they were
+recorded (§10's `lat: kit3 59 pages` boot lines), before any app code existed,
+because a change that regresses the shipped dial invalidates everything above it.
+The shipped bank is av-kit (18 pages) since `fb15a96`, so re-run all three against
+it before citing these numbers as the shipped dial's — the `ORB_ART_LAT_PROBE` bench
+in `main/art/art_bank.c:739-741` measures avkit, d10 and kit3 side by side, which is
+what keeps the two sets comparable.
 
 ### M1 — switch latency and carousel liveness
 
@@ -444,7 +451,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
-| P6 | split `apps/clock/` for real: bake emits `.orbapp`, the compiled-in pair stays as the fallback, and the theme install path reconciles with the app install path rather than running both | the shipped kit3 bank still rebuilds byte-identically (`.clinerules:172-200` proof) and a card-less board still boots the dial |
+| P6 | split `apps/clock/` for real: bake emits `.orbapp`, the compiled-in pair stays as the fallback, and the theme install path reconciles with the app install path rather than running both | the shipped av-kit bank still rebuilds from its committed source kit (`assets/sources/av-kit/`, and the `Clock themes from watch-designer kits` section of `.clinerules`) and a card-less board still boots the dial |
 | P7 | optional wasm3 tier over the same `orb_svc_t` | only after an app provably needs logic the vocabulary cannot carry |
 
 ## 9. Resolved, and what is still genuinely open

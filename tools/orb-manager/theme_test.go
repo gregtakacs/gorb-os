@@ -1,53 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // The theme endpoints are the Manage card's theme surface. What is under test is not
-// the JSON shape but the two gates in front of a dial that WRITES to an SD card: the
-// address must be one this hub learned, and the theme name must be one the firmware
-// would accept. A regression on either is a hub touching a device the operator never
-// named.
-
-const hubSDReply = `{"mounted":true,"card":"SDSC","total_mb":7581,"free_mb":7100,` +
-	`"source":"sd","active":"aurora","live":"aurora","card_count":1,` +
-	`"themes":[{"name":"aurora","title":"Aurora","why":"","bytes":99,"serial":1,"ok":true,"active":true}]}`
+// the JSON shape but the gates in front of a dial that WRITES to an SD card: the address
+// must be one this hub learned, and the theme must be named by the id the device issued.
+//
+// These tests dial internal/orbfake, the double written from main/net/orb_net.c. They
+// used to dial a stub in this file that answered whatever themes.go asked it to, which
+// is how the hub kept sending ?name= through a green suite: the orb end of the test was
+// generated from the client, so the client could not be wrong. The double now refuses a
+// name-addressed call the way an orb does, and a regression here fails here.
 
 // orbCall records what the fake orb was actually asked, so a claim about a route is
 // checked on the wire rather than in a comment.
 type orbCall struct{ method, path, query, body string }
 
-// fakeOrbHub returns a hub whose device client dials a local fake orb, the address
-// that orb answers at (already LEARNED, as onboarding would leave it), and a getter
-// for the last request the orb saw. Nothing here reaches a real network.
-func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall) {
+// fakeOrbHub returns a hub whose device client dials a live fake orb, the address that
+// orb answers at (already LEARNED, as onboarding would leave it), a getter for the last
+// request the orb saw, and the orb itself so a test can read its card afterwards.
+// Nothing here reaches a real network.
+func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 	t.Helper()
 	var last orbCall
-	orb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f := orbfake.New(
+		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
+	)
+	recording := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		last = orbCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.RawQuery, "busy") {
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(`{"error":"a theme job is already running"}`))
-			return
-		}
-		if r.URL.Path == "/api/v1/sd" {
-			_, _ = w.Write([]byte(hubSDReply))
-			return
-		}
-		_, _ = w.Write([]byte(`{"state":"installing","received":` + strconv.Itoa(len(b)) + `}`))
-	}))
+		// Hand the bytes back: reading the body here to record it would otherwise leave
+		// the double looking at an empty upload and refusing a valid file.
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		r.ContentLength = int64(len(b))
+		f.ServeHTTP(w, r)
+	})
+	orb := httptest.NewServer(recording)
 	t.Cleanup(orb.Close)
 
 	hp := strings.TrimPrefix(orb.URL, "http://")
@@ -60,15 +60,19 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall) {
 	s.device = orbnet.NewClient(2 * time.Second)
 	s.device.DevicePort = port
 	s.grants.learn(host)
-	return s, host, func() orbCall { return last }
+	return s, host, func() orbCall { return last }, f
 }
 
+// The id the seeded aurora carries: theme_id("aurora"). Written out so a test that
+// drifts from the firmware's hash fails rather than following the client.
+const auroraID = "9b89025ce7a6"
+
 // themeBody builds a call's JSON so tests do not hand-write strings with quotes in
-// them, which is how a name like ../etc would have been mistyped rather than tested.
-func themeBody(ip, name string) string {
+// them, which is how an id like ../etc would have been mistyped rather than tested.
+func themeBody(ip, id string) string {
 	m := map[string]string{"ip": ip}
-	if name != "" {
-		m["name"] = name
+	if id != "" {
+		m["id"] = id
 	}
 	b, _ := json.Marshal(m)
 	return string(b)
@@ -103,7 +107,7 @@ func asString(v any) string {
 }
 
 func TestThemeListThroughTheHub(t *testing.T) {
-	s, ip, called := fakeOrbHub(t)
+	s, ip, called, _ := fakeOrbHub(t)
 	rec := postTheme(t, s, "/api/theme/list", themeBody(ip, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body)
@@ -116,8 +120,18 @@ func TestThemeListThroughTheHub(t *testing.T) {
 	if data["mounted"] != true || data["active"] != "aurora" {
 		t.Errorf("card state lost in translation: %v", data)
 	}
-	if rows, _ := data["themes"].([]any); len(rows) != 1 {
+	rows, _ := data["themes"].([]any)
+	if len(rows) != 1 {
 		t.Fatalf("themes = %v, want the orb's one row", data["themes"])
+	}
+	// The card builds its buttons off this row, so the id has to survive the hub on its
+	// way to the page: without it the UI can display a theme it cannot install.
+	row, _ := rows[0].(map[string]any)
+	if row["id"] != auroraID || row["name"] != "aurora" {
+		t.Errorf("row = %v, want the name beside the id the orb issued", row)
+	}
+	if _, hasTitle := row["title"]; hasTitle {
+		t.Error("the row carries a title field; FORMAT 2 has one name")
 	}
 	if c := called(); c.method != http.MethodGet || c.path != "/api/v1/sd" {
 		t.Errorf("orb saw %s %s, want GET /api/v1/sd", c.method, c.path)
@@ -132,8 +146,8 @@ func TestThemeCallsRefuseAnUnlearnedAddress(t *testing.T) {
 		"/api/theme/list", "/api/theme/install", "/api/theme/default",
 		"/api/theme/delete", "/api/theme/rescan",
 	} {
-		s, _, called := fakeOrbHub(t)
-		env := decodeEnv(t, postTheme(t, s, path, themeBody("192.168.9.99", "aurora")))
+		s, _, called, _ := fakeOrbHub(t)
+		env := decodeEnv(t, postTheme(t, s, path, themeBody("192.168.9.99", auroraID)))
 		if env["ok"] == true {
 			t.Errorf("%s succeeded against an unlearned address", path)
 		}
@@ -149,7 +163,7 @@ func TestThemeCallsRefuseAnUnlearnedAddress(t *testing.T) {
 // Hostnames are refused rather than resolved, so the theme surface cannot be aimed at
 // a name a page invented, nor made to dial a port the hub did not choose.
 func TestThemeCallsRefuseHostnamesAndPorts(t *testing.T) {
-	s, _, called := fakeOrbHub(t)
+	s, _, called, _ := fakeOrbHub(t)
 	for _, ip := range []string{"orb.local", "router", "http://10.0.0.1", "10.0.0.1:80", "[::1]", ""} {
 		env := decodeEnv(t, postTheme(t, s, "/api/theme/list", themeBody(ip, "")))
 		if env["ok"] == true {
@@ -161,39 +175,39 @@ func TestThemeCallsRefuseHostnamesAndPorts(t *testing.T) {
 	}
 }
 
-// The name gate at the hub as well as in the client: a traversal spelling never
-// becomes a path on the orb's card, and the check runs before the dial.
-func TestThemeCallsRefuseBadNames(t *testing.T) {
-	s, ip, called := fakeOrbHub(t)
-	for _, tc := range []struct{ path, name string }{
-		{"/api/theme/install", ""}, {"/api/theme/install", ".."}, {"/api/theme/install", "../etc"},
-		{"/api/theme/install", "a/b"}, {"/api/theme/install", ".hidden"}, {"/api/theme/install", "has space"},
-		{"/api/theme/delete", ""}, {"/api/theme/delete", "../secret"},
-	} {
-		env := decodeEnv(t, postTheme(t, s, tc.path, themeBody(ip, tc.name)))
-		if env["ok"] == true {
-			t.Errorf("%s name=%q was accepted by the hub", tc.path, tc.name)
+// The id gate at the hub as well as in the client. The card file is selected by an
+// opaque 12-hex stem, so a spelling that could have been a path, a title or a FORMAT-1
+// slug is refused before the dial — and the refusal must not reach the orb.
+func TestThemeCallsRefuseBadIDs(t *testing.T) {
+	s, ip, called, _ := fakeOrbHub(t)
+	for _, path := range []string{"/api/theme/install", "/api/theme/delete"} {
+		for _, id := range []string{"", "aurora", "Aurora", "..", "../etc", "a/b", ".hidden",
+			"9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f", "has space"} {
+			env := decodeEnv(t, postTheme(t, s, path, themeBody(ip, id)))
+			if env["ok"] == true {
+				t.Errorf("%s id=%q was accepted by the hub", path, id)
+			}
 		}
 		if c := called(); c.path != "" {
-			t.Errorf("%s name=%q reached the orb: %+v", tc.path, tc.name, c)
+			t.Errorf("a bad id reached the orb: %+v", c)
 		}
 	}
 }
 
 // The verbs and query spelling the card depends on, checked on the wire the orb sees.
-// This is what catches a hub that starts calling a route the firmware never registers
-// — a 404 that only ever shows up on glass.
+// This is what catches a hub that starts calling a route the firmware never registers,
+// or addressing a theme by anything but the id: a 400 that only shows up on glass.
 func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
-	cases := []struct{ path, name, wantMethod, wantPath, wantQuery string }{
+	cases := []struct{ path, id, wantMethod, wantPath, wantQuery string }{
 		{"/api/theme/list", "", http.MethodGet, "/api/v1/sd", ""},
-		{"/api/theme/install", "aurora", http.MethodPost, "/api/v1/sd/install", "name=aurora"},
+		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/install", "id=" + auroraID},
 		{"/api/theme/default", "", http.MethodPost, "/api/v1/sd/default", ""},
-		{"/api/theme/delete", "old", http.MethodPost, "/api/v1/sd/delete", "name=old"},
+		{"/api/theme/delete", "7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=7565e4480e56"},
 		{"/api/theme/rescan", "", http.MethodPost, "/api/v1/sd/rescan", ""},
 	}
 	for _, tc := range cases {
-		s, ip, called := fakeOrbHub(t)
-		postTheme(t, s, tc.path, themeBody(ip, tc.name))
+		s, ip, called, _ := fakeOrbHub(t)
+		postTheme(t, s, tc.path, themeBody(ip, tc.id))
 		c := called()
 		if c.method != tc.wantMethod || c.path != tc.wantPath || c.query != tc.wantQuery {
 			t.Errorf("%s: orb saw %s %s?%s, want %s %s?%s",
@@ -206,41 +220,132 @@ func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
 // running" into "request failed" is the difference between an operator who waits and
 // one who presses the button again.
 func TestThemeFailureKeepsTheFirmwaresReason(t *testing.T) {
-	s, ip, _ := fakeOrbHub(t)
-	env := decodeEnv(t, postTheme(t, s, "/api/theme/install", themeBody(ip, "busy")))
+	s, ip, _, f := fakeOrbHub(t)
+	f.Busy = true
+	env := decodeEnv(t, postTheme(t, s, "/api/theme/install", themeBody(ip, auroraID)))
 	if env["ok"] == true || !strings.Contains(asString(env["error"]), "a theme job is already running") {
 		t.Errorf("env = %v, want the firmware's own sentence", env)
 	}
 }
 
-// The upload carries the file as its body and the target as query parameters.
+// The upload carries the file as its body and the orb as its only target: the theme's
+// name arrives inside the container, and ?overwrite is the sole other argument the
+// firmware reads.
 func TestThemeUploadForwardsTheFileBytes(t *testing.T) {
-	s, ip, called := fakeOrbHub(t)
+	s, ip, called, f := fakeOrbHub(t)
+	file := orbfake.Container("Perpetual Calendar")
 	mux := http.NewServeMux()
 	s.routes(mux)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip+"&name=aurora",
-		strings.NewReader(strings.Repeat("A", 512)))
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip, strings.NewReader(string(file)))
 	req.Header.Set(tokenHeader, s.token)
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body)
 	}
 	c := called()
-	if c.method != http.MethodPost || c.path != "/api/v1/sd/theme" || c.query != "name=aurora" {
-		t.Errorf("orb saw %s %s?%s", c.method, c.path, c.query)
+	if c.method != http.MethodPost || c.path != "/api/v1/sd/theme" || c.query != "" {
+		t.Errorf("orb saw %s %s?%s, want a bare POST /api/v1/sd/theme", c.method, c.path, c.query)
 	}
-	if c.body != strings.Repeat("A", 512) {
-		t.Errorf("forwarded body = %d B, want the 512 B verbatim", len(c.body))
+	if c.body != string(file) {
+		t.Errorf("forwarded body = %d B, want the %d B verbatim", len(c.body), len(file))
+	}
+	// The hub read the identity off the bytes rather than being handed it, and reported
+	// it, so the card can name what it just pushed.
+	env := decodeEnv(t, rec)
+	data, _ := env["data"].(map[string]any)
+	want, _ := orbnet.ThemeIDOf("Perpetual Calendar")
+	if data["name"] != "Perpetual Calendar" || data["id"] != want {
+		t.Errorf("upload reply = %v, want the embedded name and its id %s", env["data"], want)
+	}
+	found := false
+	for _, th := range f.Themes() {
+		if th.Name == "Perpetual Calendar" && th.ID == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the orb did not file the upload under its embedded name: %+v", f.Themes())
+	}
+}
+
+// A duplicate upload is the firmware's one client decision. The hub must pass the
+// operator's answer through as ?overwrite=1 rather than either failing or replacing
+// silently.
+func TestThemeUploadOverwriteIsTheOperatorsCall(t *testing.T) {
+	s, ip, called, f := fakeOrbHub(t)
+	first := orbfake.Container("Tourbillon")
+	second := orbfake.Container("Tourbillon")
+	second[200] ^= 0xFF // past the header: same name, different bytes — the duplicate case
+
+	if _, err := s.device.ThemeUpload(ip, first, false); err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip, strings.NewReader(string(second)))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	env := decodeEnv(t, rec)
+	if env["ok"] == true {
+		t.Error("a duplicate upload replaced a theme with nobody asking")
+	}
+	if !strings.Contains(asString(env["error"]), "already on the card") {
+		t.Errorf("env = %v, want the firmware's duplicate sentence", env)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip+"&overwrite=1", strings.NewReader(string(second)))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	if env = decodeEnv(t, rec); env["ok"] != true {
+		t.Errorf("overwrite=1 refused: %v", env)
+	}
+	if c := called(); c.query != "overwrite=1" {
+		t.Errorf("orb saw ?%s, want overwrite=1", c.query)
+	}
+	n := 0
+	for _, th := range f.Themes() {
+		if th.Name == "Tourbillon" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d themes named Tourbillon after an overwrite, want one", n)
+	}
+}
+
+// A FORMAT-1 container is the fragmented-identity artifact: its name lived in the
+// filename, which no orb reads any more. The hub refuses it before the bytes cross the
+// room, so the operator learns the file is old instead of watching a 422 arrive late.
+func TestThemeUploadRefusesAFormat1Container(t *testing.T) {
+	s, ip, called, _ := fakeOrbHub(t)
+	file := orbfake.Container("skeleton")
+	file[4] = 1 // FORMAT 1
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip, strings.NewReader(string(file)))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	env := decodeEnv(t, rec)
+	if env["ok"] == true || !strings.Contains(asString(env["error"]), "FORMAT") {
+		t.Errorf("env = %v, want the FORMAT-1 refusal", env)
+	}
+	if c := called(); c.path != "" {
+		t.Errorf("a FORMAT-1 file reached the orb: %+v", c)
 	}
 }
 
 func TestThemeUploadRefusesAnUnlearnedAddress(t *testing.T) {
-	s, _, called := fakeOrbHub(t)
+	s, _, called, _ := fakeOrbHub(t)
 	mux := http.NewServeMux()
 	s.routes(mux)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip=203.0.113.7&name=aurora", strings.NewReader("junk"))
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip=203.0.113.7", strings.NewReader(string(orbfake.Container("x"))))
 	req.Header.Set(tokenHeader, s.token)
 	mux.ServeHTTP(rec, req)
 	env := decodeEnv(t, rec)
@@ -255,14 +360,14 @@ func TestThemeUploadRefusesAnUnlearnedAddress(t *testing.T) {
 // Every theme route reaches an orb, so every one sits behind the launch token: an
 // uncredentialed cross-site POST must not be able to delete a theme off a card.
 func TestThemeRoutesAreTokenGuarded(t *testing.T) {
-	s, ip, _ := fakeOrbHub(t)
+	s, ip, _, _ := fakeOrbHub(t)
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	for _, p := range []string{"/api/theme/list", "/api/theme/install", "/api/theme/default",
 		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload"} {
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+p, strings.NewReader(themeBody(ip, "aurora")))
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+p, strings.NewReader(themeBody(ip, auroraID)))
 		req.Header.Set("Origin", "http://attack.example")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -276,18 +381,24 @@ func TestThemeRoutesAreTokenGuarded(t *testing.T) {
 	}
 }
 
-// The device theme calls must live in one module. That is the reason iteration 5 is
-// shaped this way: docs/theme-identity-plan.md will put an orb id on every one of
-// them, and that change needs exactly one home rather than six handlers.
+// The device theme calls must live in one module, and the FORMAT-2 contract with them:
+// the id rule, the name rule and the container read all sit in internal/orbnet, so a
+// second copy cannot drift from the firmware the way the client's did.
 func TestThemeDeviceCallsLiveInOneModule(t *testing.T) {
 	hub := readFile(t, "theme.go")
 	if strings.Contains(hub, `"/api/v1/sd`) {
 		t.Error("theme.go builds device URLs itself; every device theme route belongs in internal/orbnet/themes.go")
 	}
+	if strings.Contains(hub, "CheckThemeName(") || strings.Contains(hub, "QueryEscape") {
+		t.Error("theme.go re-implements a device-side rule; the gates belong in internal/orbnet")
+	}
 	mod := readFile(t, "internal/orbnet/themes.go")
-	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/install`, `"/api/v1/sd/default`, `"/api/v1/sd/delete`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
+	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/install?id=`, `"/api/v1/sd/default`, `"/api/v1/sd/delete?id=`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
 		if !strings.Contains(mod, route) {
-			t.Errorf("internal/orbnet/themes.go never dials %s, so the future ?id= switch will miss it", route)
+			t.Errorf("internal/orbnet/themes.go never dials %s, so the device sees a route it does not register", route)
 		}
+	}
+	if strings.Contains(mod, "sd/install?name=") || strings.Contains(mod, "sd/delete?name=") {
+		t.Error("the theme client addresses install and delete by name; the firmware takes ?id= only")
 	}
 }

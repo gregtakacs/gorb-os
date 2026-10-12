@@ -1,44 +1,61 @@
 package orbnet
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
 )
 
-// The device-side THEME API, in one place.
+// The device-side THEME API, in one place: what main/net/orb_net.c registers, and
+// nothing invented. FORMAT 2 (docs/theme-identity-plan.md) settled what identifies a
+// theme, and it has two halves that must never be confused again:
 //
-// Everything the hub does to an orb's themes goes through this file, against the
-// routes main/net/orb_net.c registers today: GET /api/v1/sd, POST /api/v1/sd/install,
-// /sd/default, /sd/delete, /sd/theme, /sd/rescan. It is a module rather than calls
-// sprinkled through the handlers because docs/theme-identity-plan.md plans to give
-// every one of those routes an orb `id` (`?id=` on each call, so one hub can address
-// more than the orb it last happened to learn). When that lands this is the only
-// file that changes, and the hub's handlers and the card's buttons stay put.
+//   - the NAME is the theme's one identifier. It lives inside the container's
+//     header, the owner set it when they baked the file, and it is what a human
+//     reads, labels and searches by.
+//   - the ID is theme_id(name): hex(sha256(name))[:12], the stem main/art/orb_theme.c
+//     files the card under. It is derived, never typed, and it is the ONLY way a
+//     caller may address a card file. orb_theme_resolve_id() finds the file by
+//     walking the directory and re-verifying the header name, so a crafted id can
+//     select nothing that is not a real, loadable file.
 //
-// Names are NOT invented here. The firmware owns the slug rule (orb_sd_name_ok in
-// main/sd/orb_sd.c) and this mirrors it exactly — ASCII letters, digits, '.', '_',
-// '-', at most 31 characters, never starting with '.' — because a theme name is a
-// path component under /sd/themes/ on the device, and the hub should be where a bad
-// one is refused rather than somewhere the device has to be trusted to catch it.
+// So install and delete carry ?id=, exactly as h_theme_install and h_theme_del read
+// them, and an upload carries no name at all: the bytes carry it and
+// orb_theme_upload_end() decides where they land. The only client-controlled upload
+// decision is ?overwrite=1, which governs whether a verified file may replace a
+// DIFFERENT theme already filed under the same name.
+//
+// NAMING TRAP, which is why this comment is here: this `id` is a THEME id. The orb's
+// own device identity is a different `id` and must arrive as its own parameter. A
+// reader who assumes the two are the same will build a client that addresses an orb
+// by a theme.
 
 // ThemeEntry is one row of GET /api/v1/sd's "themes" array, as h_sd formats it from
-// orb_theme_scan.
+// orb_theme_scan. Name and ID are the same theme seen two ways — the label, and the
+// handle every later request must come back with. Why is the reason a row is not
+// loadable when OK is false. Changed is the card holding bytes newer than the
+// installed slot's, which is the one thing the active tag cannot say on its own: an
+// overwrite leaves the name, and therefore the id, alone, so a row can read active
+// while the card underneath it has moved.
 type ThemeEntry struct {
-	Name   string `json:"name"`
-	Title  string `json:"title"`
-	Why    string `json:"why"` // why it is not loadable, when ok is false
-	Bytes  uint32 `json:"bytes"`
-	Serial uint32 `json:"serial"`
-	OK     bool   `json:"ok"`
-	Active bool   `json:"active"`
+	Name    string `json:"name"`
+	ID      string `json:"id"`
+	Why     string `json:"why"`
+	Bytes   uint32 `json:"bytes"`
+	Serial  uint32 `json:"serial"`
+	OK      bool   `json:"ok"`
+	Active  bool   `json:"active"`
+	Changed bool   `json:"changed"`
 }
 
-// ThemeList is the part of h_sd's reply the card needs: the rows, which one is drawn,
-// what the last refused install and the boot-time load failure said, and whether the
-// card is mounted at all. Themes is an empty list rather than nil, because the client
-// takes .length on it and null has none.
+// ThemeList is the part of h_sd's reply the card needs. Active is the installed
+// theme's NAME, not its id, because it is the sentence the operator reads; TryID and
+// DamageID name by id, because they are 12 hex and the row they belong to carries the
+// same 12 hex. Themes is an empty list rather than nil: the client takes .length on
+// it, and null has none.
 type ThemeList struct {
 	Mounted   bool         `json:"mounted"`
 	Card      string       `json:"card"`
@@ -49,21 +66,70 @@ type ThemeList struct {
 	Active    string       `json:"active"`
 	Live      string       `json:"live"`
 	CardCount int          `json:"card_count"`
-	TrySlug   string       `json:"try_slug"`
+	TryID     string       `json:"try_id"`
 	TryWhy    string       `json:"try_why"`
-	Damage    string       `json:"damage_slug"`
+	DamageID  string       `json:"damage_id"`
 	DamageWhy string       `json:"damage_why"`
 	Themes    []ThemeEntry `json:"themes"`
 }
 
-// themeNameRe mirrors orb_sd_name_ok. A leading dot is excluded by the first
-// character class, which is what keeps ".." and the hidden entries out of the path.
-var themeNameRe = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,30}$`)
+// ThemeIDHex is ORB_THEME_ID_HEX: the length of a card filename stem.
+const ThemeIDHex = 12
 
-// CheckThemeName reports whether name is a theme name the device will accept.
+// themeIDRe is orb_theme_id_ok in main/art/orb_theme.c, which admits exactly 12
+// chars of [0-9a-f] and nothing else — uppercase, 11 or 13 chars, '/' and "../" all
+// refused before the card is touched. The device checks it again on the resolve path;
+// this is the edge, so a malformed id is refused here rather than dialled.
+var themeIDRe = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// CheckThemeID reports whether id is a theme id this device could have issued.
+func CheckThemeID(id string) error {
+	if !themeIDRe.MatchString(id) {
+		return fmt.Errorf("orbnet: %q is not a theme id: it must be the 12 lowercase hex chars the device issued for a theme it is holding", id)
+	}
+	return nil
+}
+
+// ThemeIDOf is the firmware's theme_id() and tools/orbtheme.py's theme_id(): the card
+// stem a name yields, hex(sha256(name))[:12] over the UTF-8 bytes up to the NUL, never
+// over the padded NAME_MAX array. Use it to show an operator where a file will land,
+// and to check a row's id against the name beside it — never to build a card path, and
+// never to address a theme the device has not listed. An empty name is refused for the
+// firmware's own reason: otherwise every nameless theme hashes to one constant.
+func ThemeIDOf(name string) (string, error) {
+	if err := CheckThemeName(name); err != nil {
+		return "", err
+	}
+	d := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(d[:])[:ThemeIDHex], nil
+}
+
+// ThemeNameMax is ORB_THEME_NAME_MAX - 1 from main/art/orb_theme.h: the name field is
+// 56 bytes and the last is the NUL the C reader stops at, so 55 bytes is the longest
+// name that survives the trip. The unit is BYTES, not characters — "Mirage — Gold" is
+// 15 characters and 17 bytes, and cutting by characters is the bug that once made the
+// printed card id hash a different string than the header stored.
+const ThemeNameMax = 55
+
+// CheckThemeName reports whether name is a theme name the device can hold. It mirrors
+// the two canonical rules and invents nothing: tools/orbtheme.py's _setword refuses
+// over 55 UTF-8 bytes rather than truncate, because the stored name IS the identity
+// and half of it would hash to a card its owner never named; the studio's nameOk adds
+// the embedded-NUL refusal, because the reader would stop early and the tail of the
+// name would silently not be the name. FORMAT 1's ASCII slug charset is gone on
+// purpose: a name is now free text, and "Ünit ☃" is a legal name that the old rule
+// would have refused.
 func CheckThemeName(name string) error {
-	if !themeNameRe.MatchString(name) {
-		return fmt.Errorf("orbnet: %q is not a theme name: letters, digits, '.', '_', '-', up to 31 characters, and not starting with '.'", name)
+	if name == "" {
+		return fmt.Errorf("orbnet: a theme must be named: the card files a theme by sha256(name)[:12] and refuses a container with no name in it")
+	}
+	if len(name) > ThemeNameMax {
+		return fmt.Errorf("orbnet: theme name %q is %d UTF-8 bytes; the header holds at most %d", name, len(name), ThemeNameMax)
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] == 0 {
+			return fmt.Errorf("orbnet: theme name %q holds a NUL at byte %d; the device would read the name as ending there", name, i)
+		}
 	}
 	return nil
 }
@@ -84,28 +150,33 @@ func (c *Client) ThemeList(ip string) (*ThemeList, error) {
 	return &l, nil
 }
 
-// ThemeInstall queues POST /api/v1/sd/install?name=. The device replies as soon as
-// the job is queued and reboots itself once the copy verifies, so a nil error means
+// ThemeInstall queues POST /api/v1/sd/install?id=. The id is the one that row came
+// back with: a caller cannot name a card file, and h_theme_install answers 400 before
+// the card is touched if it is not 12 lowercase hex. The device replies as soon as the
+// job is queued and reboots itself once the copy verifies, so a nil error means
 // "accepted", never "the glass changed".
-func (c *Client) ThemeInstall(ip, name string) (json.RawMessage, error) {
-	if err := CheckThemeName(name); err != nil {
+func (c *Client) ThemeInstall(ip, id string) (json.RawMessage, error) {
+	if err := CheckThemeID(id); err != nil {
 		return nil, err
 	}
-	return c.devicePost(ip, "/api/v1/sd/install?name="+url.QueryEscape(name), nil, "")
+	return c.devicePost(ip, "/api/v1/sd/install?id="+url.QueryEscape(id), nil, "")
 }
 
-// ThemeDefault queues the same job for the built-in fallback face.
+// ThemeDefault queues the same job for the built-in fallback face. It takes no
+// target: the default is the bank idf.py flash wrote, not a card file, which is why it
+// is its own route and not another value on install.
 func (c *Client) ThemeDefault(ip string) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/sd/default", nil, "")
 }
 
-// ThemeDelete removes a theme from the card. It is the only theme call that is not a
-// queued job, so its reply is the outcome.
-func (c *Client) ThemeDelete(ip, name string) (json.RawMessage, error) {
-	if err := CheckThemeName(name); err != nil {
+// ThemeDelete removes a theme from the card by id. It is the only theme call that is
+// not a queued job, so its reply is the outcome. Deleting by name is not available:
+// the name is free text, and only an id selects one file for certain.
+func (c *Client) ThemeDelete(ip, id string) (json.RawMessage, error) {
+	if err := CheckThemeID(id); err != nil {
 		return nil, err
 	}
-	return c.devicePost(ip, "/api/v1/sd/delete?name="+url.QueryEscape(name), nil, "")
+	return c.devicePost(ip, "/api/v1/sd/delete?id="+url.QueryEscape(id), nil, "")
 }
 
 // ThemeRescan asks the device to re-read the card, which is how a theme that arrived
@@ -114,21 +185,39 @@ func (c *Client) ThemeRescan(ip string) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/sd/rescan", nil, "")
 }
 
-// ThemeUpload pushes theme.bin bytes to POST /api/v1/sd/theme?name=. The firmware
-// demands a Content-Length and refuses an over-large one before it writes a byte
-// (ORB_THEME_UPLOAD_MAX, 4 MB + 128 KB), so the body is measured here rather than
-// streamed and truncated somewhere in flight.
-func (c *Client) ThemeUpload(ip, name string, body []byte) (json.RawMessage, error) {
-	if err := CheckThemeName(name); err != nil {
-		return nil, err
-	}
+// ThemeUpload pushes .orbtheme bytes to POST /api/v1/sd/theme[?overwrite=1].
+//
+// There is no name argument, because there is no name to give: h_theme_upload takes
+// none, and orb_theme_upload_end() files the bytes under the id their OWN header name
+// hashes to. A hub that sent ?name= would be saying something about the theme that the
+// device ignores — which is precisely how a name typed into a box could drift from the
+// name the card ended up filing. Read the name out of the container instead
+// (ContainerName) and show the operator where their file will land.
+//
+// overwrite is the one client-controlled decision: without it a verified file that
+// would replace a DIFFERENT theme under the same name comes back 409 with
+// {"overwrite":false}, and the caller asks before re-sending with overwrite=true.
+//
+// The firmware demands a Content-Length and refuses an over-large one before it writes
+// a byte, so the body is measured here rather than streamed and truncated in flight.
+func (c *Client) ThemeUpload(ip string, body []byte, overwrite bool) (json.RawMessage, error) {
 	if len(body) == 0 {
-		return nil, fmt.Errorf("orbnet: refusing to upload an empty theme.bin for %q", name)
+		return nil, fmt.Errorf("orbnet: refusing to upload an empty theme file")
 	}
 	if len(body) > MaxThemeUpload {
-		return nil, fmt.Errorf("orbnet: theme.bin is %d B, over the device's %d B ceiling", len(body), MaxThemeUpload)
+		return nil, fmt.Errorf("orbnet: theme file is %d B, over the device's %d B ceiling", len(body), MaxThemeUpload)
 	}
-	return c.devicePost(ip, "/api/v1/sd/theme?name="+url.QueryEscape(name), body, "application/octet-stream")
+	// The identity gate lives here rather than in the caller, for the reason the whole
+	// module states: the hub is where a theme the device cannot file is refused, not
+	// somewhere the device has to be trusted to catch it after 2 MB crossed the room.
+	if _, err := ContainerName(body); err != nil {
+		return nil, err
+	}
+	route := "/api/v1/sd/theme"
+	if overwrite {
+		route += "?overwrite=1"
+	}
+	return c.devicePost(ip, route, body, "application/octet-stream")
 }
 
 // MaxThemeUpload is ORB_THEME_UPLOAD_MAX from main/art/orb_theme.h, restated so the

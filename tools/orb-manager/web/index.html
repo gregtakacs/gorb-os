@@ -136,11 +136,11 @@
       <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
     </div>
     <div class="row">
-      <input type="file" id="mn-fw-file" accept=".bin,application/octet-stream" hidden>
-      <button id="mn-up-btn" class="ghost" title="Send a theme.bin to the orb">Add a theme…</button>
-      <input id="mn-up-name" size="14" maxlength="31" placeholder="theme name" aria-label="theme name">
+      <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>
+      <button id="mn-up-btn" class="ghost" title="Send a .orbtheme to the orb. Its name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Add a theme…</button>
       <span id="mn-up-state" class="hint"></span>
     </div>
+    <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
   </article>
 
   <article class="card" id="mn-consolecard">

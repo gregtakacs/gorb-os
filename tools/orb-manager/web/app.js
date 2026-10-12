@@ -715,9 +715,9 @@ $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); 
 
 // ---- themes -----------------------------------------------------------------
 // Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.
-// That indirection is deliberate: docs/theme-identity-plan.md is going to put an orb
-// id on every device theme call, and the one place that must change is
-// internal/orbnet/themes.go on the server. The card keeps calling hub endpoints.
+// The one place the device theme API is spoken is internal/orbnet/themes.go on the
+// server, which is what keeps the FORMAT-2 contract — address a theme by the id the orb
+// issued for it — in one file instead of in six buttons.
 let themeIP = "";
 
 async function themePost(path, payload) {
@@ -750,7 +750,7 @@ async function loadThemes(ip) {
   const rows = Array.isArray(d.themes) ? d.themes : [];
   state.textContent = rows.length + " theme(s) on " + (d.card || "the card") +
     ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "");
-  for (const t of rows) list.appendChild(themeRow(t, state));
+  for (const t of rows) list.appendChild(themeRow(t, state, d));
   if (!rows.length) {
     const empty = document.createElement("li");
     empty.className = "hint";
@@ -760,17 +760,41 @@ async function loadThemes(ip) {
 }
 
 // themeRow builds one row with DOM APIs rather than a template string: theme names
-// and titles are bytes off the orb's card and must never be parsed as markup.
-function themeRow(t, state) {
+// are bytes off the orb's card and must never be parsed as markup.
+//
+// FORMAT 2 gives the row two halves of one identity, and the card shows both because
+// they answer different questions. The name is what the owner calls the theme — the
+// string inside the container, the only thing a human types or reads. The id is
+// theme_id(name), the 12 hex the orb filed it under, and it is the ONLY handle install
+// and delete accept: the device has no route that takes a name, so a button that sent
+// one would be refused by every orb on the market. The id goes on the row for the same
+// reason try_id and damage_id match on it — when a theme fails to load, that is the
+// string the orb and the operator can both point at.
+function themeRow(t, state, list) {
   const li = document.createElement("li");
   const label = document.createElement("b");
-  label.textContent = t.title || t.name;
+  label.textContent = t.name;
   li.appendChild(label);
+  const id = document.createElement("span");
+  id.className = "tag";
+  id.textContent = t.id;
+  id.title = "the orb files this theme under sha256(name)[:12]; install and delete name it this way";
+  li.appendChild(id);
   if (t.active) {
     const tag = document.createElement("span");
     tag.className = "tag";
     tag.textContent = "active";
     li.appendChild(tag);
+  }
+  // An overwrite leaves the name, and so the id, alone: the row can read active while
+  // the card holds newer bytes than the glass is drawing. Saying so is the difference
+  // between an operator who re-installs and one who waits for a face that never comes.
+  if (t.changed) {
+    const stale = document.createElement("span");
+    stale.className = "tag warn";
+    stale.textContent = "card is newer than what it is drawing";
+    stale.title = "the installed slot holds an older copy of this theme; use it again to draw this one";
+    li.appendChild(stale);
   }
   if (!t.ok) {
     const bad = document.createElement("span");
@@ -778,28 +802,45 @@ function themeRow(t, state) {
     bad.textContent = "not loadable: " + (t.why || "unknown");
     li.appendChild(bad);
   }
+  // The orb remembers the last install it refused and the copy boot could not load,
+  // keyed by id. Without them on the row a press that did nothing looks like a press
+  // that worked.
+  if (list && list.try_id === t.id && list.try_why) {
+    const why = document.createElement("span");
+    why.className = "tag err";
+    why.textContent = "last try failed: " + list.try_why;
+    li.appendChild(why);
+  }
+  if (list && list.damage_id === t.id && list.damage_why) {
+    const why = document.createElement("span");
+    why.className = "tag err";
+    why.textContent = "the dial would not load it: " + list.damage_why;
+    li.appendChild(why);
+  }
   const use = document.createElement("button");
   use.className = "ghost";
   use.textContent = "Use";
   use.disabled = !t.ok || t.active;
   use.onclick = async () => {
     use.disabled = true;
-    state.textContent = "installing " + (t.title || t.name) + " — the orb copies it and restarts itself";
-    try { await themePost("/api/theme/install", { ip: themeIP, name: t.name }); }
+    state.textContent = "installing " + t.name + " — the orb copies it and restarts itself";
+    try { await themePost("/api/theme/install", { ip: themeIP, id: t.id }); }
     catch (e) { state.textContent = "install refused: " + e.message; }
     use.disabled = false;
   };
   li.appendChild(use);
   // Delete is the one theme action that cannot be undone from here, so it asks
-  // first: the firmware's own delete is a plain unlink on the card.
+  // first: the firmware's own delete is a plain unlink on the card. The confirm names
+  // the theme the way the operator knows it and quotes the id being removed, because
+  // two rows can share a name across a re-bake and never share an id.
   const del = document.createElement("button");
   del.className = "ghost";
   del.textContent = "Delete";
   del.onclick = async () => {
-    if (!confirm('Delete theme "' + t.name + '" from the orb SD card? This cannot be undone from here.')) return;
+    if (!confirm('Delete theme "' + t.name + '" (' + t.id + ") from the orb SD card? This cannot be undone from here.")) return;
     del.disabled = true;
     state.textContent = "deleting " + t.name + "\u2026";
-    try { await themePost("/api/theme/delete", { ip: themeIP, name: t.name }); await loadThemes(themeIP); }
+    try { await themePost("/api/theme/delete", { ip: themeIP, id: t.id }); await loadThemes(themeIP); }
     catch (e) { state.textContent = "delete refused: " + e.message; del.disabled = false; }
   };
   li.appendChild(del);
@@ -821,8 +862,15 @@ $("#mn-rescan").onclick = async () => {
   catch (e) { state.textContent = "refused: " + e.message; }
 };
 
-// A theme.bin exported from the Theme Editor goes straight to the orb. The hub never
+// A .orbtheme exported from the Theme Editor goes straight to the orb. The hub never
 // writes it to disk, so there is no dropped-file state to reason about afterwards.
+//
+// There is no name to type. FORMAT 2 files an upload under the name baked INSIDE the
+// container — the orb reads it out of the header and names the card file sha256(name)
+// [:12] — so a name entered here would either be ignored by the device or, worse, be
+// shown to the operator as the theme's name while the card filed it as something else.
+// The hub reads the real name back out of the file and reports it in the reply, which is
+// what this says after a send.
 $("#mn-up-btn").onclick = () => $("#mn-fw-file").click();
 $("#mn-fw-file").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];
@@ -830,18 +878,45 @@ $("#mn-fw-file").onchange = async (e) => {
   e.target.value = "";
   if (!f) return;
   if (!themeIP) { st.textContent = "load an orb first"; return; }
-  const name = $("#mn-up-name").value.trim();
-  if (!name) { st.textContent = "give the theme a name: letters, digits, . _ -, up to 31, no leading dot"; return; }
   st.textContent = "sending " + f.size + " B\u2026";
   try {
-    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&name=" + encodeURIComponent(name),
+    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP),
       { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
-    st.textContent = "sent; the orb verifies it before it will draw it";
+    if (!r.ok || j.ok === false) {
+      // The orb holds a DIFFERENT theme under this name. It is the one decision on an
+      // upload the device hands back to the operator, so ask rather than report an
+      // error, and re-send with the flag the firmware asks for. The prompt quotes the
+      // orb's own sentence: it knows the name, and this page only ever read it off the
+      // file, so guessing at it here would put a name on screen the card may not hold.
+      const why = j.error || ("HTTP " + r.status);
+      if (why.indexOf("already on the card") >= 0 &&
+          confirm("The orb refused this upload: " + why + "\n\nReplace it with this file?")) {
+        return uploadTheme(f, true, st);
+      }
+      throw new Error(why);
+    }
+    const d = j.data || {};
+    st.textContent = "stored as \"" + (d.name || "?") + "\" (" + (d.id || "?") +
+      ") \u2014 the orb verifies it before it will draw it";
     await loadThemes(themeIP);
   } catch (err) { st.textContent = "upload failed: " + err.message; }
 };
+
+// uploadTheme pushes the file, with the firmware's ?overwrite=1 set only when the
+// operator has answered the replace prompt above.
+async function uploadTheme(f, overwrite, st) {
+  st.textContent = "replacing " + f.size + " B\u2026";
+  try {
+    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + (overwrite ? "&overwrite=1" : ""),
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    const d = j.data || {};
+    st.textContent = "replaced \"" + (d.name || "?") + "\" (" + (d.id || "?") + ")";
+    await loadThemes(themeIP);
+  } catch (err) { st.textContent = "upload failed: " + err.message; }
+}
 
 // ---- remembered orb ---------------------------------------------------------
 // The hub remembers the address it last had an orb at — learned over USB or typed in

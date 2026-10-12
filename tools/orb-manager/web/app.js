@@ -59,12 +59,12 @@ async function refreshPorts() {
   const sel = $("#ob-port");
   sel.innerHTML = "";
   try {
-    const { ports, bound } = await getJSON("/api/ports");
+    const { ports } = await getJSON("/api/ports");
     if (!ports.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
     for (const p of ports) {
       const o = document.createElement("option");
       o.value = p;
-      o.textContent = p + (p === bound ? "  (bound orb)" : "");
+      o.textContent = p;
       sel.appendChild(o);
     }
   } catch (e) { sel.innerHTML = `<option>(${e.message})</option>`; }
@@ -154,7 +154,6 @@ $("#ob-refresh").onclick = refreshPorts;
 $("#ob-go").onclick = async () => {
   const port = $("#ob-port").value;
   const mode = $("#ob-mode").value;
-  const force = $("#ob-force").checked;
   const wipe = $("#ob-wipe").checked;
   const log = $("#ob-log");
   const bar = $("#ob-bar > div");
@@ -166,7 +165,7 @@ $("#ob-go").onclick = async () => {
     // the boot console the flash already captured decides AP vs connected — the
     // firmware, not the flash mode, picks the branch. A flash that errored
     // (ok=false) never opens the Wi-Fi form for an orb that wasn't rewritten.
-    const { mac, ok } = await streamFlash("/api/flash", { port, mode, force, wipe }, log, bar);
+    const { mac, ok } = await streamFlash("/api/flash", { port, mode, wipe }, log, bar);
     if (ok) startJoin(port, mac);
     else $("#ob-join").hidden = true;
   } finally {
@@ -180,13 +179,14 @@ $("#ob-go").onclick = async () => {
 // wiped orb opens its own open provisioning AP the moment boot finds NVS empty
 // — regardless of whether the flash was full or app-only. The flash session
 // reads the boot console while it still owns the port and records that verdict;
-// /api/watch consumes it (and, for a connected orb, confirms the LAN entry by
-// ARP keyed on the ROM-read MAC). Credentials always travel over HTTP — scan +
-// join through the same-origin proxy, the same pair the orb's own config page
-// uses.
+// /api/watch consumes it. A connected orb's address is known only from what the
+// hub read over USB — the boot banner the flash logged, or the lease the serial
+// door read after PROV-ACK — never from an ARP table or a subnet sweep.
+// Credentials always travel over HTTP — scan + join through the same-origin
+// proxy, the same pair the orb's own config page uses.
 let orbIP = "";
-let provPort = ""; // the bound serial port the wired-provision door writes to
-let provMac = "";  // the flashed orb's MAC, so the ack re-probe finds it by ARP
+let provPort = ""; // the serial port the wired-provision door writes to
+let provMac = "";  // the flashed orb's MAC, the key back to its boot verdict
 
 function startJoin(port, mac) {
   const join = $("#ob-join");
@@ -264,7 +264,7 @@ function doneWithOrb(ip, st) {
 }
 
 $("#ob-rejoin").onclick = () => { $("#ob-done").hidden = true; showPicker(orbIP); };
-$("#ob-manage").onclick = () => { show("manage"); scan(); };
+$("#ob-manage").onclick = () => { show("manage"); $("#mn-ip").value = orbIP; scan(); };
 
 $("#ob-ap-here").onclick = () => showPicker($("#j-ip").value.trim() || "192.168.4.1");
 $("#j-rescan").onclick = () => loadNetworks(true);
@@ -409,17 +409,21 @@ $("#j-go").onclick = async () => {
 };
 
 // ---- manage ----------------------------------------------------------------
+// The hub discovers nothing. The operator points it at one orb by the IP that
+// USB provisioning reported (or one they look up on their router), and we dial
+// that single address through the same-origin proxy — no ARP table, no sweep.
 async function scan() {
   const list = $("#mn-list");
-  const cidr = $("#mn-cidr").value.trim();
-  list.innerHTML = "<div class='hint'>scanning\u2026</div>";
-  const q = cidr ? ("?cidr=" + encodeURIComponent(cidr)) : "";
+  const ip = $("#mn-ip").value.trim();
+  if (!ip) { list.innerHTML = "<div class='hint'>enter an orb IP, then Load</div>"; return; }
+  list.innerHTML = "<div class='hint'>loading " + ip + "\u2026</div>";
   try {
-    const orbs = await getJSON("/api/scan" + q);
-    if (!orbs.length) { list.innerHTML = "<div class='hint'>No orbs found in that range.</div>"; return; }
+    const st = await readDeviceJSON(await fetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
     list.innerHTML = "";
-    for (const o of orbs) list.appendChild(renderOrb(o));
-  } catch (e) { list.innerHTML = "<div class='hint err'>" + e.message + "</div>"; }
+    list.appendChild(renderOrb({ ip: ip, status: st }));
+  } catch (e) {
+    list.innerHTML = "<div class='hint err'>no orb answering at " + ip + " \u2014 " + e.message + "</div>";
+  }
 }
 
 function renderOrb(o) {
@@ -469,6 +473,7 @@ async function postOrb(ip, path, body, out) {
 }
 
 $("#mn-scan").onclick = scan;
+$("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
 
 // ---- boot ------------------------------------------------------------------
 route();

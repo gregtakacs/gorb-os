@@ -4,9 +4,12 @@ A single static Go binary that onboards, themes, and manages gorb-os orbs on
 the LAN. It drives the flasher itself — no esptool, no Python, no stub loader.
 The serial library is compiled in. The UI is embedded. Users install nothing.
 
-It lives at `tools/orb-manager/` inside the gorb-os clone and is the Go twin of
-the bash/Python bench tools (`tools/serflash.sh`, `tools/orb_bind.py`), with the
-same safety model enforced by code instead of shell discipline.
+It lives at `tools/orb-manager/` inside the gorb-os clone and drives the same
+native flasher as the bash/Python bench tools (`tools/serflash.sh`), but it
+deliberately drops their shared-bench discipline: no `.orb-target` device
+binding, no `orb_bind` MAC/IP gate, no ARP or subnet discovery. A user owns the
+orb on the cable they picked; the hub reaches it over USB or an address they
+give it.
 
 ## Why no esptool
 
@@ -35,21 +38,17 @@ that protect the *operation*, not the operator's identity:
    other). A second flash or provision on the same cable is refused instead of
    corrupting the write mid-stream. A process-wide flag makes it a belt to that
    brace.
-2. **Stamp audit (app-only flash).** The `esp_app_desc_t` version at app-image
-   byte 48 is compared against `git describe --always --dirty`, so a stale build
-   is refused before it overwrites a good one (check **Force** to override).
-   `GET /api/v1/status`'s `fw` is cached by CMake at configure time, so the
-   image's own bytes are the only truth worth checking.
 
-Scan is bounded too: it never leaves the host's own /24.
+The hub does no LAN discovery. It never reads the ARP/neighbour table, never
+shells out to `arp`/`arping`, and never sweeps a subnet. An orb's address is
+known only from what the hub already read over its USB console — the lease the
+provisioning door captured, or the association banner the flash logged — or from
+an IP the operator types. Every network call the hub makes is a dial to one
+address it was handed, through the same-origin proxy.
 
-**Optional, for a shared bench, not required.** A clone may carry an untracked
-`.orb-target` (label, base MAC, by-id serial path, LAN IP). It is used only to
-preselect and label the recommended port in the picker and to seed the LAN
-features — never to gate an operation. For an operator juggling several orbs,
-`orbflash --mac aa:bb:...` and the bound-MAC lock add an explicit, opt-in
-identity check (read the chip's eFuse MAC and refuse on mismatch); the web tool
-does not impose it on you.
+For an operator who wants an extra identity check before a headless flash,
+`orbflash -mac aa:bb:...` reads the chip's eFuse MAC and refuses on mismatch.
+The web tool does not impose it; you act on the port you picked.
 
 
 ## Run it
@@ -59,9 +58,9 @@ make build                       # -> bin/orb-manager, bin/orbflash
 ./bin/orb-manager                # opens http://127.0.0.1:3779 in the browser
 ```
 
-`orb-manager` auto-detects the clone root (`git rev-parse --show-toplevel`), so
-it finds `.orb-target` and `build/` on its own. Point it elsewhere with
-`--build <dir>` or bind another address with `--addr host:port`.
+`orb-manager` auto-detects the clone root (`git rev-parse --show-toplevel`) so it
+finds `build/` and the embedded Theme Editor's source on its own. Point it
+elsewhere with `--build <dir>` or bind another address with `--addr host:port`.
 
 The three hub cards:
 
@@ -73,8 +72,10 @@ The three hub cards:
   not the flash mode.
 - **Theme Editor** — serves the repo's watch-composer at `/composer/`, so edits
   to the composer appear on reload with no rebuild.
-- **Manage** — sweeps the /24 for orbs, then shows a live status panel per orb.
-  Reboot, timezone, and Wi-Fi actions go through the same-origin orb proxy.
+- **Manage** — point at one orb by the IP provisioning reported (or one you look
+  up on your router) and it dials that single address through the same-origin
+  proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
+  through that same proxy. No subnet scan, no ARP table.
 
 ## Headless flasher
 
@@ -96,11 +97,10 @@ headless; a mismatch aborts before erasing.
 | Route | Purpose |
 |---|---|
 | `GET  /api/status` | platform, build stamp, repo/build dirs |
-| `GET  /api/ports`  | serial ports enumerated, plus the bound one |
+| `GET  /api/ports`  | serial ports enumerated from the host |
 | `GET  /api/build`  | the flash manifest resolved from `flasher_args.json` |
-| `GET  /api/scan`   | sweep the /24 (`?cidr=192.168.1.0/24` to override) |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
-| `POST /api/watch`  | post-flash onboarding probe: boot verdict + MAC-verified LAN discovery, NDJSON |
+| `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API |
 
@@ -116,11 +116,13 @@ pulse, and IDF drops console output whenever no host holds the port.
 `/api/watch` takes the same `{"port","mac"}` pair back and consumes that verdict:
 it ends with one `{"result":...}` line — `mode:"ap"` naming the open provisioning
 AP a never-provisioned orb raised (and, as `networks`, the boot-scan list the
-flash read off the console), or `mode:"lan"` with the IP once the neighbour
-table resolves the MAC (a candidate IP is re-confirmed to answer *for that MAC* by
-ARP before its status is trusted, so a stale row for a different orb is rejected).
-Pass `"skip_ap":true` to jump straight to LAN discovery — used after a serial
-provision, where the AP verdict is already spent and the orb is joining.
+flash read off the console), `mode:"lan"` with the IP the orb announced on its own
+console, or `mode:"no_ip"` when the orb joined but never printed an address the
+hub could read. The LAN case dials exactly the one address it learned over USB (or
+was handed as `{"ip":...}` after a serial provision) and confirms it answers on
+`/api/v1/status`; it never consults the neighbour table or sweeps a range. Pass
+`"skip_ap":true` to jump straight to that confirm — used after a serial provision,
+where the AP verdict is already spent and the orb is joining.
 
 ## Provisioning: two doors
 
@@ -151,7 +153,7 @@ persist-then-join path, and neither erases the shared `storage` partition, so th
    open for a few more seconds to catch the firmware's post-DHCP banner
    (`associated: config page at http://<IP>/`), so the orb's LAN address comes
    back over the same USB lead — `/api/provision` returns it as `result.ip` and
-   `/api/watch` probes it directly, skipping the ARP sweep when it is present.
+   `/api/watch` dials that one address to confirm it, with no ARP or sweep.
 
 Caveat, stated plainly: the serial door sends the passphrase over the wire in hex
 — obfuscated, not encrypted. That is acceptable only because it runs over the
@@ -167,17 +169,17 @@ cannot become an open proxy or a path-traversal foothold.
 
 ```
 main.go              flag parsing, embeds web/, routes, run log
-api.go               the /api/* JSON handlers, /24 inference
-flash.go             POST /api/flash: port lock + stamp audit + NDJSON stream + boot verdict
-watch.go             POST /api/watch: boot verdict + MAC-verified LAN discovery
+api.go               the /api/* JSON handlers (status, ports, build)
+flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
+watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
 composer.go          serves the repo's watch-composer at /composer/
 cmd/orbflash/        headless face of the same flasher
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
-internal/orbbind/    .orb-target parse, per-MAC flock, ARP/IP gate, stamp audit
-internal/orbnet/     LAN scan + orb-shaped status client
+internal/orbbind/    per-port flock (LockPort) only — no orb identity, no bench state
+internal/orbnet/     single-orb status client (no sweep, no ARP)
 web/                 the embedded hub UI (index.html, app.css, app.js)
 ```
 

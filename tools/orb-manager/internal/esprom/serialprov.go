@@ -112,6 +112,11 @@ func parseOrbIP(line string) (string, bool) {
 	return m[1], true
 }
 
+// ParseOrbIP is the exported form of parseOrbIP, so the manager's flash-time
+// boot-console reader can capture the same post-lease banner the provision door
+// reads and record the orb's LAN address from USB alone.
+func ParseOrbIP(line string) (string, bool) { return parseOrbIP(line) }
+
 // ProvisionOn drives one wired-provisioning exchange on an ALREADY-OPEN port.
 // It first forces a genuine fresh boot (EnterDownloadMode + HardReset) so the
 // firmware re-arms both the boot scan and the stdin reader — those arm exactly

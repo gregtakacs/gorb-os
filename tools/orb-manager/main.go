@@ -1,7 +1,10 @@
 // Package main is the orb-manager server: a single static binary that serves
-// the hub UI, reverse-proxies the orb's on-device API to kill CORS, sweeps the
-// household /24 for orbs, and drives the native Go flasher. End users install
-// nothing — the UI is embedded and the serial library is compiled in.
+// the hub UI, reverse-proxies the orb's on-device API to kill CORS, and drives
+// the native Go flasher. The orb's LAN address is learned from its own console
+// over USB (the provisioning lease, or the boot banner the flash captures) or
+// typed in by the operator — the hub never sweeps a subnet or sniffs ARP. End
+// users install nothing: the UI is embedded and the serial library is compiled
+// in.
 package main
 
 import (
@@ -44,9 +47,9 @@ var version = "dev"
 type Server struct {
 	mu       sync.Mutex
 	flashing bool           // one flash at a time, process-wide (belt to the flock)
-	orb      *orbnet.Client // scan-tuned: short timeout so a /24 sweep stays fast
+	orb      *orbnet.Client // status-probe tuned: short timeout for a single known IP
 	device   *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
-	repoDir  string         // the gorb-os clone root, for the stamp audit
+	repoDir  string         // the gorb-os clone root, for the embedded Theme Editor
 	buildDir string         // <repoDir>/build, where flasher_args.json lives
 
 	// lastBoot holds the verdict the flash session read off the boot console
@@ -61,19 +64,23 @@ type Server struct {
 // bootVerdict is the one-shot console conclusion a flash captured for a MAC.
 // networks carries the PROVSCAN rows seen on the boot console while the orb sat
 // in its first-boot provisioning AP, so the wired door can show a picker without
-// the hub ever reaching the AP's 192.168.4.1.
+// the hub ever reaching the AP's 192.168.4.1. ip carries the DHCP lease the orb
+// announced on that same console ("associated: config page at http://<ip>/"),
+// so a station that self-joined at boot is known by address without any LAN
+// discovery.
 type bootVerdict struct {
 	mac        string
 	apSSID     string
 	associated bool
+	ip         string
 	networks   []esprom.ScanNet
 	at         time.Time
 }
 
 // setBoot records the newest boot verdict, overwriting any prior one.
-func (s *Server) setBoot(mac, apSSID string, associated bool, networks []esprom.ScanNet) {
+func (s *Server) setBoot(mac, apSSID string, associated bool, ip string, networks []esprom.ScanNet) {
 	s.bmu.Lock()
-	s.lastBoot = &bootVerdict{mac: mac, apSSID: apSSID, associated: associated, networks: networks, at: time.Now()}
+	s.lastBoot = &bootVerdict{mac: mac, apSSID: apSSID, associated: associated, ip: ip, networks: networks, at: time.Now()}
 	s.bmu.Unlock()
 }
 
@@ -117,7 +124,8 @@ func main() {
 }
 
 // detectRepoDir asks git for the toplevel of the working directory so the
-// manager finds .orb-target and build/ without the user pointing at them.
+// manager finds build/ (and the embedded Theme Editor's source in the repo)
+// without the user pointing at them.
 func detectRepoDir() string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -157,7 +165,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", s.json(s.hello))
 	mux.HandleFunc("/api/ports", s.json(s.listPorts))
 	mux.HandleFunc("/api/build", s.json(s.describeBuild))
-	mux.HandleFunc("/api/scan", s.json(s.scan))
 	mux.HandleFunc("/api/flash", s.handleFlash)         // streaming, not s.json
 	mux.HandleFunc("/api/watch", s.handleWatch)         // streaming post-flash probe
 	mux.HandleFunc("/api/provision", s.handleProvision) // streaming wired-provisioning round-trip

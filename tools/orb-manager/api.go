@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,7 +10,6 @@ import (
 	"runtime"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
-	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 )
 
 // jsonHandler returns (payload, error); s.json wraps it into a uniform
@@ -35,29 +33,7 @@ func (s *Server) hello(*http.Request) (any, error) {
 }
 
 func (s *Server) listPorts(*http.Request) (any, error) {
-	ports, err := esprom.ListPorts()
-	if err != nil {
-		return nil, err
-	}
-	bound := ""
-	if t, err := orbbind.Load(mustGetwd()); err == nil {
-		// .orb-target stores a by-id path but ListPorts returns /dev/ttyACMx,
-		// so t.Serial is not itself a dropdown value. Report whichever listed
-		// port canonicalizes to the bound orb, so the UI's "(bound orb)" tag
-		// and its bound-port check both match what the user can actually pick.
-		for _, p := range ports {
-			if t.MatchesSerial(p) {
-				bound = p
-				break
-			}
-		}
-	}
-	return map[string]any{"ports": ports, "bound": bound}, nil
-}
-
-func mustGetwd() string {
-	d, _ := os.Getwd()
-	return d
+	return esprom.ListPorts()
 }
 
 func (s *Server) describeBuild(*http.Request) (any, error) {
@@ -80,42 +56,6 @@ func (s *Server) describeBuild(*http.Request) (any, error) {
 		imgs = append(imgs, map[string]any{"name": path.Base(im.Path), "offset": fmt.Sprintf("0x%X", im.Offset), "bytes": size})
 	}
 	return map[string]any{"present": true, "buildDir": s.buildDir, "images": imgs}, nil
-}
-
-func (s *Server) scan(r *http.Request) (any, error) {
-	cidr := r.URL.Query().Get("cidr")
-	if cidr == "" {
-		cidr = guessHouseholdCIDR()
-	}
-	if cidr == "" {
-		return nil, fmt.Errorf("could not infer a household /24; pass ?cidr=192.168.1.0/24")
-	}
-	return s.orb.Sweep(cidr)
-}
-
-// guessHouseholdCIDR derives the local /24 from the first non-loopback
-// interface address, so the default scan stays inside the house by being
-// derived from the host's own subnet.
-func guessHouseholdCIDR() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, a := range addrs {
-		ipn, ok := a.(*net.IPNet)
-		if !ok {
-			continue
-		}
-		v4 := ipn.IP.To4()
-		if v4 == nil || v4.IsLoopback() {
-			continue
-		}
-		ones, bits := ipn.Mask.Size()
-		if bits == 32 && ones >= 24 {
-			return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
-		}
-	}
-	return ""
 }
 
 // openBrowser launches the default browser once, best-effort, after bind.

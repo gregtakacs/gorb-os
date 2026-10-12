@@ -15,10 +15,9 @@ import (
 // a user owns the orb on their own cable. The only automatic guard is a
 // per-port lock, so a concurrent operation can't share the wire mid-flash.
 type flashRequest struct {
-	Port  string `json:"port"`
-	Mode  string `json:"mode"`  // "full" (build manifest) | "app" (app-only)
-	Force bool   `json:"force"` // skip the stamp audit (explicit user override)
-	Wipe  bool   `json:"wipe"`  // also ROM-erase the NVS partitions (factory reset)
+	Port string `json:"port"`
+	Mode string `json:"mode"` // "full" (build manifest) | "app" (app-only)
+	Wipe bool   `json:"wipe"` // also ROM-erase the NVS partitions (factory reset)
 }
 
 // handleFlash runs one flash, streaming newline-delimited JSON events so the UI
@@ -66,15 +65,6 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		send("error", err.Error())
 		return
-	}
-	if req.Mode == "app" && !req.Force && s.buildDir != "" {
-		app := s.buildDir + "/gorb-os.bin"
-		if stamp, want, serr := orbbind.StampAudit(app, s.repoDir); serr != nil {
-			send("error", fmt.Sprintf("stamp audit refused: %v (image [%s] vs tree [%s]). Rebuild, or check Force to override.", serr, stamp, want))
-			return
-		} else {
-			send("log", fmt.Sprintf("stamp audit ok: image stamped [%s]", stamp))
-		}
 	}
 
 	// One exclusive lock per physical port, keyed to the port itself — not to
@@ -128,6 +118,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	// — and is also the console pane the onboarding flow shows.
 	var bootAP string
 	var bootAssocSeen bool
+	var bootIP string
 	var bootNetworks []esprom.ScanNet
 	var provscanEnd bool
 	opts.ObserveBoot = func(line string) bool {
@@ -137,6 +128,9 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		}
 		if !bootAssocSeen && stationJoinedLine(line) {
 			bootAssocSeen = true
+			if ip, ok := esprom.ParseOrbIP(line); ok {
+				bootIP = ip // the orb's lease, read off its own console over USB
+			}
 		}
 		if sn, ok := esprom.ParsePROVSCAN(line); ok {
 			bootNetworks = append(bootNetworks, sn)
@@ -157,7 +151,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if flashedMAC != "" {
-		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootNetworks)
+		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootIP, bootNetworks)
 	}
 	send("done", "flash complete — orb rebooting into the new firmware")
 }

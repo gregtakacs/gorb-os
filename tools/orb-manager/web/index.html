@@ -23,7 +23,7 @@
   </a>
   <a class="card" href="#manage" data-view="manage">
     <h2>Manage</h2>
-    <p>Find orbs on the network, set time zone, toggle the rescue AP, reboot.</p>
+    <p>Point at an orb by its IP to set time zone, toggle the rescue AP, reboot.</p>
   </a>
 </main>
 
@@ -41,7 +41,6 @@
         <option value="app">App + otadata only (fast bench reflash)</option>
       </select>
     </label>
-    <label class="check"><input type="checkbox" id="ob-force"> Skip stamp audit (override)</label>
     <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them — check this to send the orb to its provisioning AP.</label>
   </div>
   <div id="ob-build" class="buildlist"></div>
@@ -114,10 +113,10 @@
 
 <section id="manage" class="view" hidden>
   <button class="back" data-back>← Home</button>
-  <h2>Manage orbs on the network</h2>
+  <h2>Manage an orb</h2>
   <div class="row">
-    <label class="inline">Scan range <input id="mn-cidr" size="18"></label>
-    <button id="mn-scan" class="primary">Scan</button>
+    <label class="inline">Orb IP <input id="mn-ip" size="18" placeholder="192.168.2.x"></label>
+    <button id="mn-scan" class="primary">Load</button>
   </div>
   <div id="mn-list" class="orbs"></div>
 </section>

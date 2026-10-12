@@ -1,9 +1,9 @@
 // Command serprov is the wired-provisioning round-trip tester for Path 2. It
 // opens an orb's console, reboots it into its app (which re-arms the boot scan +
 // stdin reader), collects the PROVSCAN network list, writes one PROV line, and
-// confirms the firmware's PROV-ACK. Pass --port to provision any orb you choose;
-// with no --port it falls back to the .orb-target bound orb as a convenience. It
-// drives the same esprom.ProvisionOn the manager's /api/provision handler uses.
+// confirms the firmware's PROV-ACK. Pass --port to choose which orb to
+// provision; there is no default and no bench-state file consulted. It drives
+// the same esprom.ProvisionOn the manager's /api/provision handler uses.
 package main
 
 import (
@@ -20,7 +20,7 @@ func main() {
 	ssid := flag.String("ssid", "", "network to provision (required)")
 	pass := flag.String("pass", "", "passphrase (empty = open network)")
 	tz := flag.String("tz", "", "optional POSIX TZ rule")
-	portFlag := flag.String("port", "", "serial port to provision (/dev/ttyACMx or a /dev/serial/by-id path); defaults to the .orb-target bound orb")
+	portFlag := flag.String("port", "", "serial port to provision (/dev/ttyACMx or a /dev/serial/by-id path; required)")
 	verbose := flag.Bool("v", true, "echo every console line as it arrives")
 	scan := flag.Duration("scan", 22*time.Second, "budget to catch PROVSCAN-END")
 	ack := flag.Duration("ack", 20*time.Second, "budget to catch PROV-ACK")
@@ -31,26 +31,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	// The port is the user's choice; .orb-target is only a fallback for the
-	// bench, never a requirement.
+	// The port is always the user's explicit choice.
 	port := *portFlag
-	desc := *portFlag
 	if port == "" {
-		wd, _ := os.Getwd()
-		t, terr := orbbind.Load(wd)
-		if terr != nil {
-			fmt.Fprintln(os.Stderr, "serprov: no --port given and", terr)
-			os.Exit(1)
-		}
-		var perr error
-		port, perr = t.Port()
-		if perr != nil {
-			fmt.Fprintln(os.Stderr, "serprov:", perr)
-			os.Exit(1)
-		}
-		desc = fmt.Sprintf("%s (MAC %s) on %s", t.Label, t.BaseMAC, port)
+		fmt.Fprintln(os.Stderr, "serprov: --port is required (a /dev/ttyACMx or /dev/serial/by-id path)")
+		os.Exit(2)
 	}
-	fmt.Printf("serprov: %s\n", desc)
+	fmt.Printf("serprov: %s\n", port)
 
 	// One operation per port at a time, so a serprov run can't collide with the
 	// manager's flash/provision on the same cable.

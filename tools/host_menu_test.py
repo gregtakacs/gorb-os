@@ -215,7 +215,16 @@ int  orb_net_tz_current_index(void) { return g_tz_current; }
 const char *orb_net_tz_key(int i) { static char b[8]; snprintf(b,sizeof b,"k%d",i); return b; }
 const char *orb_net_tz_label(int i) { return g_tz_labels[i < 8 ? i : 7]; }
 
-static void repaint(void) { }
+/* The lifted repaint is a no-op in the pure-state harness; the real one's only
+ * observable effect is that it stamps s_painted_rows, so the stub mirrors that
+ * alone. Without it the app-grew reap check would never fire (s_painted_rows
+ * would sit at 0 forever), and deleting that check from the shipped
+ * menu_view_service() would leave the whole suite green — the exact
+ * unfalsifiable-fix repaint_lint was later added to catch. */
+static int  s_painted_rows;      /* stamped by the stub below, read by the lifted service() */
+static int  page_rows(void);     /* the lifted definition follows */
+static int  g_repaints;
+static void repaint(void) { g_repaints++; s_painted_rows = page_rows(); }
 static void input_router_home(void) { }
 
 /* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
@@ -433,6 +442,27 @@ int main(void)
     ck("the header is the app's own title", (s_app->title && !strcmp(s_app->title, "Clock")));
     ck("back from an app page returns to that app's row",
        (s_page = PG_APP, go_back(), s_page == PG_TOP && s_cur == IT_OS_N));
+
+    /* ---- the app's own scan landing must repaint the shell (B2 reachability) --
+     * Entering the theme page posts the clock's card walk; that walk reaps in
+     * orb_app_service_all() before menu_service runs, so the app already has its
+     * rows and the menu's OWN s_dirty is still false. If menu_view_service()
+     * repainted only on s_dirty, the page would open empty and only fill once
+     * the owner turned the knob. g_repaints is the witness: the count going up
+     * with s_dirty clear is exactly the fixed behaviour, and deleting the
+     * app_grew re-check from the shipped file drops it back to no repaint. */
+    g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    s_dirty = false;
+    repaint();                                 /* stamp the settled baseline */
+    const int base_paints = g_repaints;
+    g_opt_n = 4;                               /* the walk landed: rows appeared */
+    s_dirty = false;                           /* ... and the menu's worker is idle */
+    menu_view_service();
+    ck("the app's scan landing repaints with the menu's own flag clear",
+       g_repaints > base_paints && page_rows() == 5);
+    menu_view_service();
+    ck("and settles once it has caught up", g_repaints == base_paints + 1);
+    g_opt_n = 2;
     /* Entered properly: the go_back() above left PG_TOP with s_app cleared, and
      * an app page that was never entered proves nothing about leaving one. */
     g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0;
@@ -719,6 +749,12 @@ MUTATIONS = [
      "if (!s_armed) return;                    /* the router owns the knob here */", ""),
     ("a running job no longer freezes the cursor",
      "    if (orb_jobs_busy()) return;\n\n    if (pressed)", "    if (0) return;\n\n    if (pressed)"),
+    # The bug that made a theme page unreachable-but-not-obvious: the app's scan
+    # lands with the menu's own worker idle, so a service() that repaints only on
+    # s_dirty opens the page empty. Forcing that back must red the new check.
+    ("the app's scan landing no longer repaints the shell",
+     "    const bool own_result = s_dirty;\n    if (!own_result && !app_grew) return;",
+     "    const bool own_result = s_dirty;\n    (void)app_grew;\n    if (!own_result) return;"),
     ("page_rows forgets that unarmed means no list",
      "if (!s_armed) return 0;", "if (0) return 0;"),
     ("the back row is dropped from the zone list",

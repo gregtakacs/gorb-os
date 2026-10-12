@@ -620,5 +620,16 @@ void orb_app_opt_arm(const orb_app_t *app, bool armed)
 
 bool orb_app_has_options(const orb_app_t *app)
 {
-    return orb_app_opt_count(app) > 0;
+    /* Whether an app OFFERS a page is decided by what it declares, not by the
+     * rows the page currently answers. Asking opt_count() here is a closed loop
+     * the dial can never leave the first time: the clock's count is 0 until a
+     * card walk lands, the walk is posted by clock_opt_arm(), and that runs only
+     * when the owner presses the row that this very decision hides. So the row
+     * never appears, and the owner who has four themes on the card sees a menu
+     * with no Clock entry at all — the exact reachability this whole layer is
+     * for. Declaring the hooks is the honest signal that there is something to
+     * show; the rows fill in once the first walk lands. */
+    if (!app || !app->enabled || app->failed) return false;
+    return app->iface && app->iface->opt_count && app->iface->opt_label
+           && app->iface->opt_arm;
 }

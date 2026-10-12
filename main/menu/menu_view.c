@@ -135,6 +135,7 @@ static page_t s_page = PG_LANDING;
 static const orb_app_t *s_app;
 static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
+static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
 
 /* What the worker last brought back, copied out for the UI. */
 typedef struct {
@@ -388,6 +389,7 @@ static void repaint(void)
     if (!s_scr) return;
 
     const int rows = page_rows();
+    s_painted_rows = rows;
 
     /* Window the list around the cursor so a 62-row zone table scrolls inside
      * five physical rows; clamped at both ends so the last row stays reachable
@@ -684,12 +686,26 @@ void menu_view_apply_input(int32_t delta, bool pressed)
 
 void menu_view_service(void)
 {
-    if (!s_dirty) return;
+    /* Two independent reasons to repaint, either of which can fire without the
+     * other: this screen's own worker landing a result (s_dirty), and the app
+     * PG_APP is showing gaining or losing rows out from under a paint. The
+     * second is the one that makes a theme page reachable at all — entering it
+     * posts the clock's card walk, that walk reaps in orb_app_service_all()
+     * BEFORE menu_service is ever reached, so by the time this runs the app
+     * already has four rows the glass has never drawn. Without the count
+     * re-check the page opens on an empty list and only fills in once the owner
+     * turns the knob, which reads as the card being ignored. */
+    const bool app_grew = (s_page == PG_APP && s_app &&
+                           page_rows() != s_painted_rows);
+    const bool own_result = s_dirty;
+    if (!own_result && !app_grew) return;
     s_dirty = false;
 
-    xSemaphoreTake(s_res_mx, portMAX_DELAY);
-    s_ui = s_shared;
-    xSemaphoreGive(s_res_mx);
+    if (own_result) {
+        xSemaphoreTake(s_res_mx, portMAX_DELAY);
+        s_ui = s_shared;
+        xSemaphoreGive(s_res_mx);
+    }
 
     /* The theme page's own results are the clock's to reap, through its
      * service() hook: a card walk that finishes while the owner has rotated to

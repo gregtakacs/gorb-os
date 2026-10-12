@@ -379,6 +379,16 @@ int main(void)
        orb_app_has_options(clk) && !orb_app_has_options(pick));
     ck("the count reaches the shell through the registry",
        orb_app_opt_count(clk) == 2 && orb_app_opt_count(pick) == 0);
+    /* The reachability bug (B2): has_options() once asked opt_count() > 0, so a
+     * page whose rows come from a card walk that only the row press starts was
+     * invisible until it had been shown — a closed loop the dial can never
+     * enter. Offering the page is what the entry DECLARES (the opt_* hooks are
+     * present), not what it currently answers. g_clock_opts = 0 is the state
+     * before the first walk lands; the row must still be there to press. */
+    g_clock_opts = 0;
+    ck("an app that declares hooks offers its row before its first scan lands",
+       orb_app_has_options(clk) && orb_app_opt_count(clk) == 0);
+    g_clock_opts = 2;
     ck("label and value answer in the app's words",
        strcmp(orb_app_opt_label(clk, 0), "diver") == 0 &&
        strcmp(orb_app_opt_value(clk, 0), "on the dial") == 0);

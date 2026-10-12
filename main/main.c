@@ -17,6 +17,7 @@
 #include "board_config.h"
 #include "display.h"
 #include "orb_app.h"
+#include "orb_jobs.h"
 #include "orb_carousel.h"
 #include "knob.h"
 #include "input_router.h"
@@ -98,12 +99,13 @@ void app_main(void)
      * logged instead of taking the dial down with it.
      *
      * The order the table encodes is the order these three were called in
-     * before, and it is not arbitrary: the clock creates the worker task the
-     * theme path needs, and the menu creates the worker task the blocking card
-     * calls run on. Creating that second worker before the LVGL task exists is
-     * deliberate and safe — it only ever calls the orb_theme and orb_net APIs
-     * and copies results into its own buffer, never a widget, which is the one
-     * thing that needs the LVGL task to exist first. */
+     * before, and it is not arbitrary: the dial must exist before the router can
+     * home to it, and the menu's pages are built after the display exists.
+     * Blocking work belongs to nobody's private task — the shell's one orb_jobs
+     * worker, started below, runs every app's card and NVS work, which is what
+     * keeps a second 4 KB stack out of the internal heap the framebuffer also
+     * spends. */
+    ESP_ERROR_CHECK(orb_jobs_start());
     ESP_ERROR_CHECK(orb_app_init_all());
 
     /* The carousel's name chip, on the top layer, built once here so no flick

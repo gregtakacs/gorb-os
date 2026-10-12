@@ -116,6 +116,8 @@ static void TR(void) { g_trace[0] = '\0'; g_tn = 0; }
 /* Distinct opaque tokens, so "which screen got loaded" is observable. */
 static int tok_clock, tok_picker, tok_menu;
 static int g_bounce, g_picker_armed, g_menu_armed;
+/* Rows the clock's opt_count() reports; 0 makes the clock offer no options page. */
+static int g_clock_opts = 2;
 static int g_map_calls, g_unmap_calls, g_next_slot = 3, g_service_calls;
 static esp_err_t g_map_rc = ESP_OK, g_unmap_rc = ESP_OK;
 static size_t g_refuse_bytes;        /* refuse exactly this bank size, so the
@@ -136,6 +138,20 @@ const char *esp_err_to_name(esp_err_t c)
 }
 
 esp_err_t clock_view_init(void)  { T("clock_init");  return g_rc_clock; }
+/* The clock's options surface (B1/B2). Stubbed rather than lifted: what this
+ * suite proves is that the registry DISPATCHES them, and the answers themselves
+ * are host_menu_test.py's and the device's to check. */
+esp_err_t clock_themes_init(void)     { return ESP_OK; }
+void      clock_themes_service(void)  { T("clock_service"); }
+void      clock_themes_request_scan(void) { T("clock_scan"); }
+void      clock_themes_reset(void)    { }
+void      clock_themes_pick(int i)    { T("clock_pick(%d)", i); }
+int       clock_opt_count(orb_app_t *a)     { (void)a; return g_clock_opts; }
+const char *clock_opt_label(orb_app_t *a, int i) { (void)a; return (i == 0) ? "diver" : "neon"; }
+const char *clock_opt_value(orb_app_t *a, int i) { (void)a; return (i == 0) ? "on the dial" : ""; }
+void      clock_opt_inc(orb_app_t *a, int i, int32_t d) { (void)a; T("clock_inc(%d,%d)", i, (int)d); }
+void      clock_opt_sel(orb_app_t *a, int i) { (void)a; T("clock_sel(%d)", i); }
+void      clock_opt_arm(orb_app_t *a, bool on) { (void)a; T(on ? "clock_arm(1)" : "clock_arm(0)"); }
 esp_err_t color_picker_init(void){ T("picker_init"); return g_rc_picker; }
 esp_err_t menu_view_init(void)   { T("menu_init");   return g_rc_menu; }
 
@@ -194,7 +210,7 @@ static void restore_table(void)
         s_apps[i].art_bytes = 0; s_apps[i].art_offset = 0;
     }
     s_apps[0].is_home = true;
-    s_current = NULL; g_bounce = g_picker_armed = g_menu_armed = 0;
+    s_current = NULL; g_bounce = g_picker_armed = g_menu_armed = 0; g_clock_opts = 2;
     g_map_calls = g_unmap_calls = g_service_calls = 0;
     g_map_rc = g_unmap_rc = ESP_OK; g_next_slot = 3; g_refuse_bytes = 0;
     g_rc_clock = g_rc_picker = g_rc_menu = ESP_OK;
@@ -355,6 +371,44 @@ int main(void)
     orb_app_activate(A("color_picker"));
     ck("a bank is never mapped twice while it is still resident",
        g_map_calls == 2);   /* out->clock in, clock->out ... exactly two claims */
+
+    /* -- the options surface (B1/B2): the registry is the only door -- */
+    restore_table();
+    const orb_app_t *clk = A("clock"), *pick = A("color_picker");
+    ck("the clock declares options and the picker declares none",
+       orb_app_has_options(clk) && !orb_app_has_options(pick));
+    ck("the count reaches the shell through the registry",
+       orb_app_opt_count(clk) == 2 && orb_app_opt_count(pick) == 0);
+    ck("label and value answer in the app's words",
+       strcmp(orb_app_opt_label(clk, 0), "diver") == 0 &&
+       strcmp(orb_app_opt_value(clk, 0), "on the dial") == 0);
+    /* Out of range is refused by the registry rather than handed to the app: a
+     * shell that forwarded the index would let a cursor past the end press a
+     * row the app never counted, which is how a theme gets staged that nobody
+     * is looking at. */
+    ck("a row outside the count is refused before the app sees it",
+       orb_app_opt_label(clk, 9)[0] == '\0' && orb_app_opt_value(clk, -1)[0] == '\0');
+    TR(); orb_app_opt_sel(clk, 0);
+    ck("the press dispatches once, with the row index",
+       strcmp(g_trace, "clock_sel(0)|") == 0);
+    TR(); orb_app_opt_inc(clk, 1, 3);
+    ck("a rotate dispatches with the row and the detents",
+       strcmp(g_trace, "clock_inc(1,3)|") == 0);
+    TR(); orb_app_opt_arm(clk, true);
+    ck("arming the options page reaches the app", strcmp(g_trace, "clock_arm(1)|") == 0);
+    TR(); orb_app_opt_arm(clk, false);
+    ck("leaving it disarms, so nothing is armed off-glass",
+       strcmp(g_trace, "clock_arm(0)|") == 0);
+    /* A NULL hook is a skip, not a crash: the picker answers none of these and
+     * the shell must be able to render its (empty) page regardless. */
+    TR(); orb_app_opt_sel(pick, 0); orb_app_opt_arm(pick, true);
+    ck("an app with no option hooks is skipped, not called", g_trace[0] == '\0');
+    /* A disabled app cannot have its rows reached either: the count gates on
+     * enabled/failed, which is what keeps P4's disable path from leaving a live
+     * page on the glass. */
+    s_apps[0].enabled = false;   /* the clock is the table's first entry */
+    ck("a disabled app offers no rows", orb_app_opt_count(clk) == 0 && !orb_app_has_options(clk));
+    restore_table();
 
     /* -- the shell page is chrome, not an app -- */
     restore_table();

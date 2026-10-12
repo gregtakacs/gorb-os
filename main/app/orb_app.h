@@ -183,6 +183,42 @@ void orb_app_input(int32_t delta, bool pressed);
 /** Reap every app's worker jobs, active or not (C7). Call every poll. */
 void orb_app_service_all(void);
 
+/* ---- options, one face per app (B1/B2) ------------------------------------
+ *
+ * The shell renders the page and owns the list; the app answers the rows. This
+ * is the only way any of those hooks may be called: the shell goes through
+ * these, so a NULL hook is a skipped row rather than a crash, and no caller
+ * outside the registry ever reads iface->opt_* itself.
+ *
+ * The row model is deliberately small. The cursor, the clamp, the window of
+ * visible rows, the highlight and the hint all belong to the shell — they are
+ * the same on every page, and an app that decided them would drift from the
+ * one place the knob's feel is set. What belongs to the app is only what each
+ * row says and what acting on it does.
+ *
+ * Every call runs on the LVGL task, from the router's poll. An answer must
+ * therefore be a read of state the app already has: opt_label() and opt_value()
+ * may not touch the card, the network or NVS, because the same callback is the
+ * dial's animation. Anything that has to block goes through orb_jobs_post() and
+ * lands in the app's own copy, which its service() hook reaps. */
+
+/** How many rows this entry offers. 0 when it declares none, which is what
+ *  keeps an app out of the shell's top level without a second flag. */
+int orb_app_opt_count(const orb_app_t *app);
+/** The row's name, and its value rendered after it. Both must outlive the
+ *  call: they are handed to a label, not copied. */
+const char *orb_app_opt_label(const orb_app_t *app, int idx);
+const char *orb_app_opt_value(const orb_app_t *app, int idx);
+/** Rotate `steps` detents on row idx, and press it. */
+void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps);
+void orb_app_opt_sel(const orb_app_t *app, int idx);
+/** Gate the knob like a screen: armed means the app is being edited, not just
+ *  displayed. The shell calls it on entry and on leave, including on the long
+ *  press that goes home, so nothing can be left armed off-screen. */
+void orb_app_opt_arm(const orb_app_t *app, bool armed);
+/** True while this entry has anything to show on the options page. */
+bool orb_app_has_options(const orb_app_t *app);
+
 #ifdef __cplusplus
 }
 #endif

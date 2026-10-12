@@ -8,11 +8,13 @@
  * faked into apphood.
  *
  * The build order is the order main.c used to hardcode: clock first, then the
- * picker, then the menu. That order is load-bearing, not incidental —
- * clock_view_init() creates the worker task the theme path needs, and the menu's
- * own worker is created after the display exists. orb_app_init_all() walks the
- * table in order, so the table's order IS the boot order and nobody has to
- * remember it in two places.
+ * picker, then the menu. That order is load-bearing, not incidental — the clock
+ * builds the dial that must exist before the router can home to it, and the
+ * menu's pages are built after the display exists. The one blocking-work task
+ * is the shell's orb_jobs, started from main.c rather than by any app, so no
+ * entry can quietly grow a second stack out of the internal heap that the
+ * framebuffer also spends. orb_app_init_all() walks the table in order, so the
+ * table's order IS the boot order and nobody has to remember it in two places.
  *
  * Hook calling order on a switch is the order input_router.c used to run
  * inline, and it is deliberately kept: pre-load visibility, then
@@ -27,6 +29,7 @@
 #include <string.h>
 
 #include "clock_view.h"
+#include "clock_themes.h"
 #include "color_picker.h"
 #include "menu_view.h"
 #include "art_bank.h"
@@ -71,15 +74,30 @@ static void clock_resume(orb_app_t *app)
     clock_view_set_bounce(true);
 }
 
-static esp_err_t clock_init(orb_app_t *app)
-{
-    (void)app;
-    return clock_view_init();
-}
 static struct _lv_obj_t *clock_screen(orb_app_t *app)
 {
     (void)app;
     return clock_view_screen();
+}
+
+/* The clock's option answers live in clock_themes.c, not here: B2 rules that the
+ * clock app owns the theme picker and the OS only renders the rows it is handed,
+ * so the registry's job is to point at them and nothing more. */
+static esp_err_t clock_init(orb_app_t *app)
+{
+    (void)app;
+    if (clock_themes_init() != ESP_OK) return ESP_ERR_NO_MEM;
+    return clock_view_init();
+}
+
+static void clock_service(orb_app_t *app)
+{
+    (void)app;
+    /* Reaps the card walk and the staging verify whether or not the dial is on
+     * the glass: a scan that finishes while the owner has rotated away must still
+     * land, or the page shows a stale answer until they come back. Repainting is
+     * the shell's, on the LVGL task, from these results. */
+    clock_themes_service();
 }
 
 static const orb_app_iface_t s_clock_iface = {
@@ -87,11 +105,18 @@ static const orb_app_iface_t s_clock_iface = {
     .activate    = clock_activate,
     .suspend     = clock_suspend,
     .resume      = clock_resume,
+    .service     = clock_service,
     .screen      = clock_screen,
-    /* No armed view, no input, no service: the clock is inert by design, so a
-     * press on the dial means nothing rather than arming a list that is not
-     * there. The plan's opt_* hooks stay NULL until B1/B2 move the clock's
-     * settings tiles behind the shell. */
+    /* No armed view and no input: the dial itself stays inert by design, so a
+     * press on the clock means nothing rather than arming a list that is not
+     * there. The options are the exception and the whole of B1/B2 — the shell
+     * renders this page, the clock answers it. */
+    .opt_count   = clock_opt_count,
+    .opt_label   = clock_opt_label,
+    .opt_value   = clock_opt_value,
+    .opt_inc     = clock_opt_inc,
+    .opt_sel     = clock_opt_sel,
+    .opt_arm     = clock_opt_arm,
 };
 
 static esp_err_t picker_init(orb_app_t *app)   { (void)app; return color_picker_init(); }
@@ -535,4 +560,65 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step)
         if (s_apps[i].enabled && !s_apps[i].failed) return &s_apps[i];
     }
     return NULL;
+}
+
+/* ---- options, one face per app (B1/B2) ------------------------------------
+ *
+ * The one place the opt_* hooks are read. Each dispatches only if the entry
+ * supplies the hook, which is what lets an app declare two rows and another
+ * declare none without the shell carrying a case for each.
+ *
+ * Bounds and NULL are decided here rather than in the shell: a hook that
+ * returns a row index outside what it counted is the app's bug, and the shell
+ * must still show something coherent. So the count is re-read on every call
+ * rather than cached — the clock's number changes when a card walk finishes and
+ * an options page that had five rows cannot be allowed to press the sixth. */
+
+int orb_app_opt_count(const orb_app_t *app)
+{
+    if (!app || !app->enabled || app->failed) return 0;
+    if (!app->iface || !app->iface->opt_count) return 0;
+    const int n = app->iface->opt_count((orb_app_t *)app);
+    return n < 0 ? 0 : n;
+}
+
+const char *orb_app_opt_label(const orb_app_t *app, int idx)
+{
+    if (!app || !app->iface || !app->iface->opt_label) return "";
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
+    const char *s = app->iface->opt_label((orb_app_t *)app, idx);
+    return s ? s : "";
+}
+
+const char *orb_app_opt_value(const orb_app_t *app, int idx)
+{
+    if (!app || !app->iface || !app->iface->opt_value) return "";
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
+    const char *s = app->iface->opt_value((orb_app_t *)app, idx);
+    return s ? s : "";
+}
+
+void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps)
+{
+    if (!app || !app->iface || !app->iface->opt_inc) return;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
+    app->iface->opt_inc((orb_app_t *)app, idx, steps);
+}
+
+void orb_app_opt_sel(const orb_app_t *app, int idx)
+{
+    if (!app || !app->iface || !app->iface->opt_sel) return;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
+    app->iface->opt_sel((orb_app_t *)app, idx);
+}
+
+void orb_app_opt_arm(const orb_app_t *app, bool armed)
+{
+    if (!app || !app->iface || !app->iface->opt_arm) return;
+    app->iface->opt_arm((orb_app_t *)app, armed);
+}
+
+bool orb_app_has_options(const orb_app_t *app)
+{
+    return orb_app_opt_count(app) > 0;
 }

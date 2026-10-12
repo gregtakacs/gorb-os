@@ -112,7 +112,31 @@ click **Use my own firmware…** on the Onboard card and pick a `*.zip` bundle.
 starts on one from the command line.
 
 A bundle is a zip of `flasher_args.json` plus the images it names, under
-`images/`. `make firmware` produces one from a build dir on the machine that has
+`images/`. A picked bundle is a file from wherever the operator's browser was
+last pointing, so `firmware.Load` treats it as untrusted input and refuses it
+before anything reaches a port:
+
+- **Size, in two places.** The compressed archive is capped at 32 MB, and the
+  DECOMPRESSED total at 48 MB. The second number is the one a zip bomb is built
+  out of: capping each entry at the archive limit was not equivalent, because the
+  entries are summed into a map, so an archive of many high-ratio members expanded
+  to entries x limit and the hub held all of it.
+- **Member count**, capped at 32. A release is the manifest plus five images.
+- **Project identity.** The `esp_app_desc_t` inside the app image announces its
+  project, and a bundle announcing anything but `gorb-os` is refused — the usual
+  cause being a stray ESP-IDF build picked out of a Downloads folder. An image with
+  no descriptor at all is still accepted, and the card says "unknown firmware"
+  rather than inventing a version.
+- **Descriptor hygiene.** `project`, `version`, `idf` and the build stamp are bytes
+  the file controls and they are rendered in the browser, so non-printable
+  characters are dropped where they are parsed. The client escapes them again:
+  `refreshBuild` renders every server string through `esc()`, and
+  `TestFirmwarePanelEscapesEveryServerString` walks the template and fails on any
+  interpolation of a server-supplied field that skips it — because the original bug
+  was exactly one field (`who`, built from project and version) interpolated raw
+  while its neighbours were escaped.
+
+`make firmware` produces one from a build dir on the machine that has
 the toolchain:
 
 ```

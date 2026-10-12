@@ -102,7 +102,7 @@ async function refreshPorts() {
       sel.appendChild(o);
     }
     renderIdentity(list);
-  } catch (e) { sel.innerHTML = `<option>(${e.message})</option>`; }
+  } catch (e) { sel.innerHTML = `<option>(${esc(e.message)})</option>`; }
 }
 
 // portLabel spells a port out. The MAC is free — the host reads it off the USB
@@ -166,11 +166,15 @@ async function refreshBuild() {
     // could hand back as null or undefined throws, and the catch below then
     // blames the browser for what is a payload-shape bug.
     const imgs = Array.isArray(b.images) ? b.images : [];
-    const who = b.version ? `${b.project || "gorb-os"} ${b.version}` : (b.source || "unknown firmware");
+    // project and version are bytes out of the image, read from an esp_app_desc_t
+    // in a file the operator picked off disk. They are not trusted text: esc them
+    // like every other server string, and say so at the source of the value so the
+    // next field added here is not added raw.
+    const who = b.version ? esc((b.project || "gorb-os") + " " + b.version) : esc(b.source || "unknown firmware");
     if (!imgs.length) { el.textContent = "firmware " + who + " lists no images"; return; }
     el.innerHTML = `<b>Firmware ${who}</b> — ${b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)}<br>` +
-      imgs.map((i) => `${i.offset}  ${esc(i.name)}  (${i.bytes} B)`).join("<br>") +
-      (b.sha256 ? `<br><span class="hint">sha256 ${esc(b.sha256.slice(0, 16))}… · ${imgs.length} image(s)</span>` : "");
+      imgs.map((i) => `${esc(i.offset)}  ${esc(i.name)}  (${Number(i.bytes) || 0} B)`).join("<br>") +
+      (b.sha256 ? `<br><span class="hint">sha256 ${esc(String(b.sha256).slice(0, 16))}… · ${imgs.length} image(s)</span>` : "");
     const reset = $("#ob-fwreset"), pick = $("#ob-fwpick");
     const custom = b.source && b.source !== "built-in";
     reset.hidden = !custom;

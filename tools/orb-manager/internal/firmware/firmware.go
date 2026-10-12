@@ -42,6 +42,17 @@ const ImageDir = "images"
 // hub's memory. A real one is ~1.2 MB deflated.
 const maxBundle = 32 << 20
 
+// maxZipEntries bounds how many members a bundle may carry. A real release is the
+// manifest plus five images; the ceiling leaves room for a future partition and
+// still refuses an archive whose bulk is thousands of files rather than firmware.
+const maxZipEntries = 32
+
+// maxExpanded caps the DECOMPRESSED total, which is the number a zip bomb is built
+// out of. Capping each entry was not the same thing: the entries are summed into a
+// map, so an archive of many high-ratio members expanded to entries x maxBundle and
+// the hub held all of it. 48 MB is ~18x the largest bundle anyone ships.
+const maxExpanded = 48 << 20
+
 // MaxBytes is that cap, exported so the HTTP handler bounds the upload the same
 // way the parser does — one number, checked in one place, no way for them to
 // disagree.
@@ -102,15 +113,32 @@ func Load(raw []byte, source string) (*Bundle, error) {
 	}
 
 	files := map[string][]byte{}
+	// The aggregate is counted while reading, not after: the point of the cap is
+	// to stop before the expansion is resident. Entry count is capped too, so the
+	// work of a hostile archive is bounded by both its fan-out and its volume.
+	var expanded int64
+	members := 0
 	for _, f := range blob.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		members++
+		if members > maxZipEntries {
+			return nil, fmt.Errorf("firmware bundle %s has %d files; a gorb-os release has the manifest and its images, not %d",
+				source, members, maxZipEntries)
+		}
 		name := path.Clean("/" + f.Name)
 		name = strings.TrimPrefix(name, "/")
-		data, err := readZipFile(f)
+		if uint64(f.UncompressedSize64) > uint64(maxExpanded-expanded) {
+			return nil, fmt.Errorf("firmware bundle %s expands beyond the %d MB a bundle is allowed to be", source, maxExpanded>>20)
+		}
+		data, err := readZipFile(f, maxExpanded-expanded)
 		if err != nil {
 			return nil, fmt.Errorf("read %s from bundle: %w", name, err)
+		}
+		expanded += int64(len(data))
+		if expanded > maxExpanded {
+			return nil, fmt.Errorf("firmware bundle %s expands beyond the %d MB a bundle is allowed to be", source, maxExpanded>>20)
 		}
 		files[name] = data
 	}
@@ -136,6 +164,16 @@ func Load(raw []byte, source string) (*Bundle, error) {
 	if app := b.imageNamed("gorb-os.bin"); app != nil {
 		b.Project, b.Version, b.IDFVersion, b.Built = appDescriptor(app.Data)
 	}
+	// A bundle whose app image announces a different project is not this product's
+	// firmware, however well it is zipped — the ordinary cause is picking an
+	// unrelated ESP-IDF build out of a Downloads folder. Refusing it here is the
+	// difference between a wrong file disabling the Flash button and a wrong file
+	// sitting at 0x20000 when the orb next boots. An ABSENT descriptor is not
+	// refused: synthetic and third-party-packaged images legitimately have none, and
+	// the UI says "unknown firmware" rather than inventing a project.
+	if b.Project != "" && !strings.EqualFold(b.Project, "gorb-os") {
+		return nil, fmt.Errorf("firmware bundle %s is the project %q, not gorb-os; the hub only flashes gorb-os releases", source, b.Project)
+	}
 	if pt := b.imageNamed("partition-table.bin"); pt != nil {
 		b.partTable = pt.Data
 	}
@@ -159,13 +197,26 @@ func bundleKey(rel string) string {
 	return ImageDir + "/" + clean
 }
 
-func readZipFile(f *zip.File) ([]byte, error) {
+// readZipFile inflates one member, never past the budget it is handed. Reading
+// without a ceiling is what let a small archive expand to whatever memory the hub had.
+func readZipFile(f *zip.File, budget int64) ([]byte, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, maxBundle))
+	if budget < 0 {
+		budget = 0
+	}
+	const headroom = 1 // one extra byte is how an overflow is DETECTED, not assumed
+	raw, err := io.ReadAll(io.LimitReader(rc, budget+headroom))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > budget {
+		return nil, fmt.Errorf("%s: bundle expands past its allowance", f.Name)
+	}
+	return raw, nil
 }
 
 func digestOf(b []byte) string {
@@ -189,7 +240,19 @@ func appDescriptor(app []byte) (project, version, idf, built string) {
 		return "", "", "", ""
 	}
 	d := app[i:]
-	field := func(off, n int) string { return strings.TrimRight(string(d[off:off+n]), "\x00") }
+	// Every field is bytes a hand-edited or attacker-supplied image controls, and
+	// they end up rendered in the browser. Keep printable ASCII and drop the rest,
+	// NUL and newline included: the client escapes markup, but escaping is one line
+	// a future field can be added without, and no orb's version string needs a
+	// control character to be legible.
+	field := func(off, n int) string {
+		return strings.Map(func(r rune) rune {
+			if r >= 0x20 && r < 0x7f {
+				return r
+			}
+			return -1
+		}, string(d[off:off+n]))
+	}
 	built = strings.TrimSpace(field(96, 16) + " " + field(80, 16))
 	return field(48, 32), field(16, 32), field(112, 32), built
 }

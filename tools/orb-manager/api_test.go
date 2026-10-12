@@ -702,6 +702,78 @@ func blockContaining(t *testing.T, src, marker string) string {
 	return src[i : i+1+end]
 }
 
+// Every server string that reaches innerHTML must be escaped. The bug this guards
+// was not a missing esc on a filename — it was the firmware PANEL's headline, where
+// project and version come out of an esp_app_desc_t inside a file someone picked off
+// disk and were interpolated raw into a template while the neighbouring fields were
+// escaped. Pinning one line at a time would not catch the next field added the same
+// way, so this walks every interpolation in the block and refuses any that carries a
+// server value unescaped.
+func TestFirmwarePanelEscapesEveryServerString(t *testing.T) {
+	body := blockContaining(t, readAppJS(t), "async function refreshBuild")
+	if !strings.Contains(body, "innerHTML") {
+		t.Fatal("refreshBuild no longer writes innerHTML; update this pin rather than deleting it")
+	}
+	// Values the hub sends that could carry attacker-chosen bytes, straight out of
+	// the bundle's descriptor and the operator's own filename.
+	dangerous := []string{"b.project", "b.version", "b.source", "b.sha256", "i.name", "i.offset", "e.message"}
+	for _, field := range dangerous {
+		for _, hit := range interpolations(body, field) {
+			if !strings.Contains(hit, "esc(") && !strings.Contains(hit, "Number(") {
+				t.Errorf("%s is interpolated into innerHTML without esc(): %s", field, strings.TrimSpace(hit))
+			}
+		}
+	}
+	// The specific shape the bug had: the headline built from descriptor fields
+	// interpolated straight into the template. ${who} is fine because who is itself
+	// built through esc() above — the interpolation scan above is what enforces that.
+	if strings.Contains(body, "${b.version}") || strings.Contains(body, "${b.project}") {
+		t.Error("the firmware headline interpolates a descriptor field raw")
+	}
+	if !strings.Contains(body, "const who = b.version ? esc(") {
+		t.Error("who must be built through esc(), which is what the firmware panel's headline renders")
+	}
+}
+
+// interpolations returns each ${...} expression in body that mentions field. Scanning
+// the template text rather than asserting on fixed strings is what lets this test
+// notice a field that is added raw tomorrow.
+func interpolations(body, field string) []string {
+	var out []string
+	for i := 0; i < len(body); {
+		j := strings.Index(body[i:], "${")
+		if j < 0 {
+			break
+		}
+		start := i + j
+		k := strings.Index(body[start:], "}")
+		if k < 0 {
+			break
+		}
+		expr := body[start : start+k+1]
+		if strings.Contains(expr, field) {
+			out = append(out, expr)
+		}
+		i = start + k + 1
+	}
+	return out
+}
+
+// An uploaded bundle that is another project's firmware must be refused by the hub,
+// and the client must say why in the operator's words rather than leaving the Flash
+// button pointing at a file that was never accepted.
+func TestFirmwareUploadReportsARefusedProject(t *testing.T) {
+	src := readAppJS(t)
+	state := blockContaining(t, src, "async function pickFirmware")
+	if !strings.Contains(state, "j.error") && !strings.Contains(state, ".error") {
+		t.Error("pickFirmware must surface the hub's error text, or a refused bundle looks like a stalled upload")
+	}
+	fw := readFile(t, "internal/firmware/firmware.go")
+	if !strings.Contains(fw, "not gorb-os") {
+		t.Error("Load must refuse a bundle whose descriptor announces another project")
+	}
+}
+
 // Every verdict the hub can send needs wording. An unlisted verdict renders the
 // card blank, which is worse than saying "cannot tell".
 func TestEveryVerdictHasClientWording(t *testing.T) {

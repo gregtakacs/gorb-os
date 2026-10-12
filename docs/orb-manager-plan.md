@@ -250,7 +250,16 @@ Updated at each commit.
   90 s rule, pruned on write. Re-plug and two-orb cases covered; both verified by
   mutation (ignoring the serial comparison, and making `bootFor` answer any MAC, each
   fail their test).
-- Hardware: nothing in iterations 0-3 was run against a cable. The cancel path
+- Iteration 4: `firmware.Load` caps the DECOMPRESSED aggregate (48 MB) and the member
+  count (32), not just each entry — per-entry caps summed to entries x limit, which is
+  how a small archive could make the hub hold gigabytes. A bundle whose
+  `esp_app_desc_t` announces another project is refused; an image with no descriptor
+  is still accepted and shown as unknown. Descriptor fields drop non-printables where
+  parsed, and `refreshBuild` now escapes the headline built from project/version
+  (it was interpolated raw while its neighbours were escaped), pinned by a scan that
+  fails on any unescaped server interpolation in that template. Confirmed by
+  mutation: restoring the raw `${b.version}` fails the new test.
+- Hardware: nothing in iterations 0-4 was run against a cable. The cancel path
   drives real ROM timing and needs one live cancel on orb-B before it is called
   verified.
 

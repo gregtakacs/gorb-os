@@ -1438,12 +1438,18 @@ same bench bank, same 31 iterations, same capture (`tools/capf.py`).
 
 **The bank is real kit3, not a size.** The M2/LAT probes bill address ranges;
 M3 reads pixels, so it measures on flashed bytes: `/tmp/m3-kit3.bin`,
-3,858,874 B, md5 `aba381f34903574babf25320fd83ae22`, baked from the committed
-`assets/sources/watch-orbital-kit3.zip` (prep_watch_kit → bake_clock, kit_check
-gate green) and written to the slot-free offset `assets+0x100000` (flash
-`0x520000`) behind the clone's MAC gate. The probe refuses erased flash and
-CRC-verified the bank through the mapping on both arms before printing a
-number; `/tmp/m3_bankwrite.sh` keeps the write reproducible.
+3,858,874 B, md5 `aba381f34903574babf25320fd83ae22`, crc32_le `0x59801b57`,
+baked from the committed `assets/sources/watch-orbital-kit3.zip` (prep_watch_kit
+→ bake_clock, kit_check gate green) and written behind the clone's MAC gate.
+The first campaign placed it at `assets+0x100000` (flash `0x520000`) on the
+strength of an old comment claiming the baked bank ended at `0x11E000`; it
+actually ends at `0x11E83B`, so the bench write ate the live bank's last
+~122 KB and orb-A ran a corrupt dial (§14.4). The bench home is now slot B's
+art, `M3_BANK_OFF = assets+0x410000` (flash `0x830000`) — under an erased,
+never-installed slot header and clear of both slots' live bytes. The probe
+refuses erased flash, verifies map-vs-read consistency, and now also compares
+the whole plane against the flashed file's crc32_le before printing a number;
+`/tmp/m3_bankwrite.sh` keeps the write reproducible.
 
 **The probe** (`ORB_ART_M3_PROBE`, ships 0, same family as M2/LAT) prices one
 app switch per arm: release → reclaim → first full-page commit (60 blocks of
@@ -1515,5 +1521,28 @@ PSRAM (`m2_stage_buf`, heap-allocated handle arrays). Standing rule for this
 probe family: **boot-probe scratch earns no internal `.bss`** — a bench
 instrument must not change what the board does after the instrument finishes,
 which is the same reason the probes ship 0 in the first place.
+
+### 14.4 The corrupt-dial incident — a bench fixture is flash content too
+
+The bench bank's first home (`assets+0x100000`) was chosen from the LAT
+header's claim that the baked bank ends "near 0x11E000". It ends at `0x11E83B`
+— the bake output answers that in one line, and the probe's gate now quotes
+it. The bench write therefore replaced the live bank's last 124,987 bytes with
+kit3's head, orb-A rendered a corrupt dial, and `art_ready` stayed `true` all
+the way through: the ship path verifies header geometry at load and runs no
+whole-bank CRC (§11.2's "no CRC runs in the shipping path"), and the probe's
+erase/CRC gates compare the mapping against the read path over the same bytes
+— both said "consistent" about content nothing had cross-checked against the
+baked file. The A/B numbers are unaffected: esptool verified the kit3 hash
+after the write, and the probe reads only the bench range, which held genuine
+kit3 — every measured byte was a byte of the bank it claims to price.
+Recovery: re-flash the committed `assets/clock_assets.bin` at `assets+0`
+behind the MAC gate, then read back and compare head and full tail —
+byte-exact, `art_refusals 0`, dial restored. Two rules come out of it:
+**a bench fixture earns no flash offset without checking the live bank's
+exact end in the bake output**, and a probe that measures content gates on the
+content's own hash, not just on self-consistency — hence the `crc32_le`
+ground-truth gate, the relocated `M3_BANK_OFF`, and the retired-offset lint
+pin in `host_art_residency_test.py`.
 
 

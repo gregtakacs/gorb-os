@@ -78,7 +78,16 @@ def lint_shipped_source():
         "if (free_p < need_bytes + ORB_ART_ARENA_MARGIN)",          # the PSRAM gate
         "if (s_extra[slot].psram) heap_caps_free(s_extra[slot].plane);",  # arena release
         "art_bank_map_extra(M3_BANK_OFF, M3_BANK_BYTES, &slot)",    # the probe uses the REAL API
+        # 2026-10-12 M3 incident: the first bench offset (0x100000) sat under the
+        # baked bank's end (0x11E83B) and the bench write clobbered its tail.
+        # Pin the offset to slot B's art and the gate that catches a stolen or
+        # stale bench region — the old offset must never come back.
+        "#define M3_BANK_OFF   0x00410000u",
+        "#define M3_BANK_BYTES 3858874u",
+        "!= 0x59801b57u",                                           # plane == the flashed kit3
     ]
+    assert "#define M3_BANK_OFF   0x00100000u" not in src, \
+        "lint: the retired M3 bench offset (inside the live bank) is back — §14's incident"
     for tok in must:
         ok(tok in src, "lint: shipping art_bank.c contains %r" % tok[:52])
     # The refusal-counter placement is subtle: the two budget rejects, the

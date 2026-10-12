@@ -845,11 +845,11 @@ void art_bank_lat_probe(void)
 #endif /* ORB_ART_LAT_PROBE */
 
 /* ---- M3 bench probe: the overflow bank, mechanism A vs mechanism B (§6 M3)
- * The bank is the third flagship — kit3 bytes, flashed by the bench lane at
- * the slot-free M3_BANK_OFF (orb_theme's installs never touch this offset, and
- * a stale half-written region is caught by the CRC gate below before a single
- * number is printed). One build measures one arm: ORB_ART_MECH_B decides at
- * compile time, everything else about the two builds is identical bytes.
+ * The bank is the third flagship — kit3 bytes, flashed at the bench offset
+ * M3_BANK_OFF below, re-flashed before each campaign (a stale or stolen region
+ * is caught by the CRC gate before a single number is printed). One build
+ * measures one arm: ORB_ART_MECH_B decides at compile time, everything else
+ * about the two builds is identical bytes.
  *
  * What is timed, per arm:
  *   A — release (unmap_extra), cold reclaim (map_extra), and the FIRST full-
@@ -878,9 +878,18 @@ void art_bank_lat_probe(void)
 #include "freertos/task.h"      /* vTaskDelay between passes: the boot task yields */
 
 #define M3_ITERS      31u               /* odd, like the lat probe: the median is a sample */
-/* Slot-free offset inside slot A's dead band: the baked-in bank ends near
- * 0x11E000, orb_theme installs land in slot B (0x400000+). 64 KB aligned. */
-#define M3_BANK_OFF   0x00100000u
+/* The bench bank's home: orb_theme's SLOT_B_ART (SLOT_B_HDR 0x400000 +
+ * SLOT_ART_OFF 0x10000 = partition-relative; flash 0x830000), 64 KB aligned,
+ * inside slot B's 4 MB cap and ending 0x41800 B clear of www. Slot B has never
+ * been live on this board (install_target() writes it only on an explicit
+ * install), so its art bytes are free for a bench fixture — re-run
+ * /tmp/m3_bankwrite.sh to restore the bank before a campaign. The FIRST
+ * placement here was 0x100000, BELOW the baked bank's end (0x11E83B): the
+ * bench write clobbered the bank's last ~122 KB and the dial rendered corrupt
+ * while art_ready stayed true — the ship path checks header geometry only,
+ * never a whole-bank CRC (§14's incident). The probe's ground-truth gate below
+ * is what makes a stolen or stale bench region refuse to measure. */
+#define M3_BANK_OFF   0x00410000u
 #define M3_BANK_BYTES 3858874u          /* the kit3 flagship — the flashed bench bank */
 #define M3_BLK        60u               /* the DISPLAY_BENCH block, same 3600-px footprint */
 #define M3_BLK_PX     (M3_BLK * M3_BLK)
@@ -1078,9 +1087,9 @@ void art_bank_m3_probe(void)
     bool ff = true, zero = true;
     for (unsigned i = 0; i < 4096; i++) { if (head[i] != 0xFF) ff = false; if (head[i]) zero = false; }
     if (ff || zero) {
-        ESP_LOGE(TAG, "m3: bench bank at 0x%x is ERASED — flash it first: write_flash "
-                      "0x520000 /tmp/m3-kit3.bin on the bound port. Measuring nothing.",
-                 (unsigned)M3_BANK_OFF);
+        ESP_LOGE(TAG, "m3: bench bank at 0x%x is ERASED — re-run /tmp/m3_bankwrite.sh "
+                      "(write_flash 0x830000 /tmp/m3-kit3.bin, = assets+M3_BANK_OFF). "
+                      "Measuring nothing.", (unsigned)M3_BANK_OFF);
         return;
     }
 
@@ -1121,6 +1130,23 @@ void art_bank_m3_probe(void)
         ESP_LOGE(TAG, "m3: CRC MISMATCH through the %s at 0x%x — the bytes measured "
                       "would not be the bytes painted. Measure nothing.",
                  arm, (unsigned)M3_BANK_OFF);
+        art_bank_unmap_extra(slot);
+        heap_caps_free(s_m3_dst); s_m3_dst = NULL;
+        return;
+    }
+    /* Ground truth, not just self-consistency: m2_crc_verified proves map ==
+     * read-path over WHATEVER bytes sit there, so a region reclaimed by a real
+     * theme install (slot B art is also install_target's destination) between
+     * bench runs would measure as if it were kit3. The 2026-10-12 incident had
+     * the same shape from the other side: self-consistent bytes, wrong bank.
+     * Compare the whole plane against the flashed file's crc32_le — recompute
+     * from /tmp/m3-kit3.bin with:
+     *   python3 -c "import zlib;print(hex(zlib.crc32(open(...,'rb').read())))" */
+    if (esp_rom_crc32_le(0, plane, (uint32_t)M3_BANK_BYTES) != 0x59801b57u) {
+        ESP_LOGE(TAG, "m3: bank at 0x%x is NOT the flashed kit3 (plane crc32_le "
+                      "0x%08x != 0x59801b57) — re-run /tmp/m3_bankwrite.sh. Measure nothing.",
+                 (unsigned)M3_BANK_OFF,
+                 (unsigned)esp_rom_crc32_le(0, plane, (uint32_t)M3_BANK_BYTES));
         art_bank_unmap_extra(slot);
         heap_caps_free(s_m3_dst); s_m3_dst = NULL;
         return;

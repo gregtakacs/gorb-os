@@ -109,6 +109,31 @@ bool idle_dim_elapsed_decide(uint32_t now_ms, uint32_t last_ms,
     return (uint32_t)(now_ms - last_ms) >= timeout_ms;
 }
 
+bool idle_dim_level_apply_decide(bool want, bool dimmed, bool wrote)
+{
+    /* What the task is allowed to believe about the panel after ONE attempt at
+     * it: the new level if the write landed, the old one if it did not.
+     *
+     * Committing `want` before the write is answered is the bug this pins, and
+     * it is a dial that "no longer wakes from the dimmed state". The brightness
+     * level is one QSPI write to the panel's 0x51; like every other write to
+     * that bus it can be refused, and the restore is the one transaction with
+     * nobody waiting for the answer. Believe the intent anyway and the flag says
+     * "lit", the glass says 20%, and no further tick ever differs from the flag
+     * -- so the write is never retried and the dial sits dark with a clock
+     * running behind it until the next timeout, which needs a touch to reach.
+     * The same lost write also strands the second wake source: `per` is chosen
+     * from this flag, so a falsely-lit task drops to the 1 Hz tick and the 20 Hz
+     * dark poll that reads the accelerometer stops with it.
+     *
+     * Keeping the old value makes the next tick ask again, at the rate of the
+     * state the panel is actually in: a lost wake leaves the task dark and
+     * retrying every 50 ms, and a lost dim leaves it lit and retrying every
+     * second. Both need no extra machinery to converge. Pinned by
+     * tools/host_idle_dim_test.py. */
+    return wrote ? want : dimmed;
+}
+
 #if CONFIG_ORB_IDLE_DIM_ENABLE
 
 /* Inside the guard, not above it: every ESP_LOGx that uses it is compiled out
@@ -129,6 +154,12 @@ static volatile uint32_t s_dim_at_ms;         /* when the dim was applied, for t
 static volatile uint32_t s_act_calls;         /* stamps claimed by any source    */
 static volatile uint32_t s_act_folded;        /* stamps hidden by the log limit  */
 static volatile uint32_t s_act_log_ms;        /* last touch line, for the rate cap */
+static volatile uint32_t s_level_writes_failed; /* brightness writes the panel did
+                                                 * not take: every one of them is
+                                                 * a retry the next tick owes the
+                                                 * owner, and the count on
+                                                 * /api/v1/status is what says the
+                                                 * dial went dark for a reason */
 
 /* ---- the DISPLAY menu's two settings, persisted --------------------------
  * The Kconfig constants above seed these on a device that has never been
@@ -185,21 +216,53 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+/* A refused brightness write is now something the task retries instead of
+ * believing, so it is also something the task says out loud once per second at
+ * most -- the same cap the touch line uses. A panel that has stopped answering
+ * is refused at the dark poll's 20 Hz, and a serial line that floods is the
+ * reason the next symptom cannot be seen; the count on /api/v1/status is the
+ * number that matters, and it is not rate limited. */
+static volatile uint32_t s_level_fail_log_ms;
+static volatile uint32_t s_level_fail_folded;
+
+static void level_fail_log(const char *why, uint8_t percent, const char *err)
+{
+    const uint32_t now = now_ms();
+    if ((uint32_t)(now - s_level_fail_log_ms) < 1000u) {
+        s_level_fail_folded++;
+        return;
+    }
+    s_level_fail_log_ms = now;
+    ESP_LOGE(TAG, "%s (%u%%) failed: %s -- retrying; %u refused since boot, %u "
+                  "folded into this line", why, (unsigned)percent, err,
+             (unsigned)s_level_writes_failed, (unsigned)s_level_fail_folded);
+    s_level_fail_folded = 0;
+}
+
 /* The brightness write. Only this task calls it, so the panel driver never sees
- * a brightness transaction racing the clock's flush from another context. */
-static void apply_level(uint8_t percent, const char *why)
+ * a brightness transaction racing the clock's flush from another context.
+ * True means the panel took the write; the caller decides what to believe about
+ * the dimmed state from that answer (idle_dim_level_apply_decide), which is why
+ * this returns anything at all. */
+static bool apply_level(uint8_t percent, const char *why)
 {
     esp_lcd_panel_handle_t panel = display_get_panel();
     if (!panel) {
-        ESP_LOGW(TAG, "no panel yet: %s not applied", why);
-        return;
+        /* Counted as a lost write, not warned about and forgiven: "no panel yet"
+         * and "the panel refused" reach the owner as the same dark dial, and the
+         * retry is the answer to both. */
+        s_level_writes_failed++;
+        level_fail_log(why, percent, "no panel yet");
+        return false;
     }
     const esp_err_t err = esp_lcd_panel_co5300_set_brightness(panel, percent);
-    if (err != ESP_OK)
-        ESP_LOGE(TAG, "%s (%u%%) failed: %s", why, (unsigned)percent,
-                 esp_err_to_name(err));
-    else
-        ESP_LOGI(TAG, "%u%% -- %s", (unsigned)percent, why);
+    if (err != ESP_OK) {
+        s_level_writes_failed++;
+        level_fail_log(why, percent, esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "%u%% -- %s", (unsigned)percent, why);
+    return true;
 }
 
 static void idle_task(void *arg)
@@ -279,11 +342,18 @@ static void idle_task(void *arg)
         const bool want = idle_dim_elapsed_decide(now, s_last_ms,
                                                   s_timeout_ms, s_enabled);
         if (want != s_dimmed) {
-            s_dimmed = want;
-            if (want) {
-                s_dim_at_ms = now;            /* stamp BEFORE the write: the delay
-                                               * the wake log reports is measured
-                                               * from the dim that caused it      */
+            /* Ask the panel first, believe it second. The write is the fact; the
+             * flag is a claim about it, and a claim the next tick cannot retry is
+             * how one refused transaction leaves a dark dial for ten minutes. See
+             * idle_dim_level_apply_decide for the whole argument. */
+            const bool wrote = apply_level(
+                (uint8_t)(want ? CONFIG_ORB_IDLE_DIM_PCT : s_user_pct),
+                want ? "idle dim" : "touch, back to the user's level");
+            if (wrote && want) {
+                s_dim_at_ms = now;            /* stamped only once the glass is
+                                               * actually dark: the delay the wake
+                                               * log reports is measured from the
+                                               * dim that caused it             */
 #if CONFIG_ORB_IDLE_MOTION_ENABLE
                 motion.have_base = false;   /* re-seed: the orb may have moved
                                               * while it was lit and awake        */
@@ -294,10 +364,8 @@ static void idle_task(void *arg)
                 wake.fired = false;
 
 #endif
-                apply_level((uint8_t)CONFIG_ORB_IDLE_DIM_PCT, "idle dim");
-            } else {
-                apply_level((uint8_t)s_user_pct, "touch, back to the user's level");
             }
+            s_dimmed = idle_dim_level_apply_decide(want, s_dimmed, wrote);
         }
         per = pdMS_TO_TICKS(s_dimmed ? TICK_MS_DARK : TICK_MS_LIGHT);
     }
@@ -391,6 +459,15 @@ void idle_dim_activity(const char *why)
 uint32_t idle_dim_activity_count(void)
 {
     return s_act_calls;
+}
+
+uint32_t idle_dim_level_write_fail_count(void)
+{
+    /* The difference between "it is dimmed and the touch did not land here" and
+     * "the panel never took the restore". Without it the retry is invisible from
+     * the bench, and a dial that wakes late reads exactly like a dial that does
+     * not wake at all. */
+    return s_level_writes_failed;
 }
 
 void idle_dim_set_user_level(uint8_t percent)
@@ -492,6 +569,9 @@ int      idle_dim_worst_dark_mg(void){ return 0; }
 esp_err_t idle_dim_init(void)                 { return ESP_OK; }
 void    idle_dim_activity(const char *why)    { (void)why; }
 uint32_t idle_dim_activity_count(void)        { return 0; }
+/* The status block reads it unconditionally, so the disabled build says so
+ * rather than failing to link: no dim, no brightness write, no lost one. */
+uint32_t idle_dim_level_write_fail_count(void) { return 0; }
 void    idle_dim_set_user_level(uint8_t p)    { (void)p; }
 bool    idle_dim_dimmed(void)                 { return false; }
 /* The settings API answers too, rather than failing to link: the DISPLAY menu

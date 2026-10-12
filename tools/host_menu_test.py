@@ -94,12 +94,27 @@ def lifts(src):
         lift(src, r"static int app_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static const orb_app_t \*app_row\(int i\)\n\{[\s\S]*?\n\}", MENU_C),
         f_timeout,
+        # D12's shape predicates, lifted as a block: page_rows(), row_text() and
+        # apply_input()'s clamp all lean on them, and a harness that restated any
+        # one of them would keep passing while the shipped shell hid the wrong
+        # rows. The block is one lift because the functions are written together
+        # and die together.
+        lift(src, r"static int owner_group\(int rows, int idx\)\n\{[\s\S]*?"
+                   r"static void shape_check\(int rows\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static int page_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void go_back\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # D12's press half: what a header does when it is pressed. Lifted on its own
+        # because it sits by activate(), which is not liftable (it paints). cursor_fit
+        # came along with the shape block above, and a second lift of it would be a
+        # redefinition.
+        lift(src, r"static bool group_press\(int rows, int ar\)\n\{[\s\S]*?\n\}", MENU_C),
         f_row,
         lift(src, r"static const char \*page_hint\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_apply_input\(int32_t delta, bool pressed\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_service\(void\)\n\{[\s\S]*?\n    repaint\(\);\n\}", MENU_C),
+        # D12: the long press that closes an open group instead of going home. It
+        # touches no widget directly (repaint() is stubbed above), so it lifts.
+        lift(src, r"bool menu_view_opt_long\(void\)\n\{[\s\S]*?\n\}", MENU_C),
     ]
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
@@ -107,6 +122,8 @@ def lifts(src):
         lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
         lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
         "static const orb_app_t *s_app;   /* the app PG_APP is showing */",
+        # The one piece of D12 state the shell owns: which group is open, -1 = none.
+        "static int s_group_open = -1;",
         "static bool s_busy;",
         "static bool orb_jobs_busy(void) { return s_busy; }",
         lift(src, r"typedef struct \{\n    char\s+status\[72\];[\s\S]*?\} ui_t;", MENU_C),
@@ -323,6 +340,21 @@ const char *orb_app_opt_value(const orb_app_t *a, int i)
 { (void)a; return (i == 0) ? g_opt_val0 : g_opt_val1; }
 void orb_app_opt_sel(const orb_app_t *a, int i) { (void)a; g_activations++; g_last_opt_sel = i; }
 void orb_app_opt_arm(const orb_app_t *a, bool on) { (void)a; g_arms += on ? 1 : -1; }
+/* D12's answer, off a settable table: the shape checks below are the whole point
+ * of lifting the shell's nesting, and they need to hand it a page that nests.
+ * g_kind_hook == 0 is the NULL hook — every row OPT_ROW, the page color_picker
+ * still declares — and that regression is checked with the flag clear. The bounds
+ * here mirror the real dispatcher in main/app/orb_app.c on purpose: the shell must
+ * never be handed an index it did not count. */
+static orb_opt_kind_t g_kind[24];
+static int  g_nkind;
+static bool g_kind_hook = true;
+orb_opt_kind_t orb_app_opt_kind(const orb_app_t *a, int i)
+{
+    (void)a;
+    if (!g_kind_hook || i < 0 || i >= g_nkind) return OPT_ROW;
+    return g_kind[i];
+}
 size_t orb_app_count(void) { return g_opt_app_count; }
 const orb_app_t *orb_app_at(size_t i)
 {
@@ -442,6 +474,80 @@ int main(void)
     ck("the header is the app's own title", (s_app->title && !strcmp(s_app->title, "Clock")));
     ck("back from an app page returns to that app's row",
        (s_page = PG_APP, go_back(), s_page == PG_TOP && s_cur == IT_OS_N));
+
+    /* ---- D12: one level of app-owned nesting, validated by the shell ----
+     * The page is the clock's shape: a plain Factory default row, one GROUP
+     * header, and the card's themes as its ITEMs. What is checked is the shell's
+     * half — what gets drawn, where the cursor may go, and what the two
+     * malformed shapes become — because the app that owns the answer must never
+     * also own the owner's ability to reach a row. */
+    s_armed = true; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0;
+    g_opt_n = 5; g_nkind = 5; g_kind_hook = true;
+    g_kind[0] = OPT_ROW; g_kind[1] = OPT_GROUP;
+    g_kind[2] = g_kind[3] = g_kind[4] = OPT_ITEM;
+    snprintf(g_opt_label1, sizeof g_opt_label1, "meadow");
+    snprintf(g_opt_val1, sizeof g_opt_val1, "1 of 3: meadow");
+    s_group_open = -1;
+    ck("a closed group leaves the plain row, its header and the back row",
+       page_rows() == 3 && vis_to_row(5, 0) == 0 && vis_to_row(5, 1) == 1
+       && vis_to_row(5, 2) == -1);
+    ck("an item of a shut group is hidden, the header is not",
+       row_hidden(5, 2) && row_hidden(5, 4) && !row_hidden(5, 1));
+    ck("the shut header answers with the app's own summary",
+       !strcmp(rowline(1), "meadow  (1 of 3: meadow)"));
+    ck("pressing the header opens it", group_press(5, 1) && s_group_open == 1);
+    ck("open, its items are on the glass and counted",
+       page_rows() == 6 && vis_to_row(5, 4) == 4 && !row_hidden(5, 4));
+    ck("an open header says so instead of the summary",
+       (s_cur = 1, !strcmp(rowline(1), "meadow  (open)")));
+    ck("an item is indented, so nesting is on the glass and not only in the ABI",
+       !strncmp(rowline(2), "  ", 2));
+    g_opt_val1[0] = '\0';                     /* an item with no value: the other branch */
+    ck("a valueless item is indented too", !strncmp(rowline(2), "  ", 2));
+    snprintf(g_opt_val1, sizeof g_opt_val1, "1 of 3: meadow");
+    ck("the hint names the gesture that leaves an open group",
+       (s_page = PG_APP, !strcmp(page_hint(), "rotate: choose   push: change   hold: close")));
+    s_cur = 2;
+    for (int t = 0; t < 6; t++) turn_down(1);      /* one row per event, by design */
+    ck("inside an open group the cursor clamps at its last item", s_cur == 4);
+    for (int t = 0; t < 6; t++) turn_up(1);
+    ck("and at its first, so the header cannot be escaped by turning", s_cur == 2);
+    ck("the group's own position maps back to the app's row number",
+       row_to_vis(5, 2) == 2 && row_to_vis(5, 4) == 4 && row_to_vis(5, 1) == 1);
+    s_cur = 3;
+    ck("hold closes the group, stays on the page, and parks on the header",
+       menu_view_opt_long() && s_group_open == -1 && s_page == PG_APP && s_cur == 1);
+    s_group_open = -1; s_cur = 0;
+    ck("with nothing open the hold is the router's to spend on going home",
+       !menu_view_opt_long());
+    ck("closing the group gives the page its three rows back", page_rows() == 3);
+    /* The two malformed shapes, and the one answer that keeps them reachable. */
+    g_kind[0] = OPT_ITEM;                       /* a leading ITEM, with nothing above it */
+    s_group_open = -1;
+    ck("a leading item with no header is drawn as a row, not swallowed",
+       !row_hidden(5, 0) && vis_to_row(5, 0) == 0 && page_rows() == 3);
+    /* The same row, judged while a group IS open: an orphan item and a hidden item
+     * are only distinguishable here, because hidden means "owner's group is shut"
+     * and an orphan has no owner to shut. Mutating drawn_kind's orphan branch to
+     * OPT_ITEM hides the row in this state and nowhere else. */
+    s_group_open = 1;
+    ck("an orphan item stays drawn while another group is open",
+       !row_hidden(5, 0) && visible_rows(5) == 5);
+    s_group_open = -1;
+    g_kind[0] = OPT_ROW; g_kind[2] = OPT_ROW; g_kind[3] = OPT_ROW;
+    ck("an item with no group above it is a row too",
+       !row_hidden(5, 2) && !row_hidden(5, 3));
+    g_kind[2] = g_kind[3] = g_kind[4] = OPT_ITEM;
+    /* The NULL hook is the whole pre-D12 ABI: color_picker declares no options and
+     * every app written before nesting answered nothing. Nothing may disappear and
+     * nothing may indent when there are no groups to ask about. */
+    g_kind_hook = false; g_opt_n = 4; g_nkind = 4;
+    s_group_open = -1; s_cur = 0;
+    ck("a NULL-hook page is flat: every row counted, none hidden",
+       page_rows() == 5 && !row_hidden(4, 0) && !row_hidden(4, 3));
+    for (int t = 0; t < 3; t++) turn_down(1);
+    ck("and its cursor reaches the last row and the back row", s_cur == 3);
+    g_kind_hook = true; g_nkind = 0; g_opt_n = 2; s_group_open = -1; s_cur = 0;
 
     /* ---- the app's own scan landing must repaint the shell (B2 reachability) --
      * Entering the theme page posts the clock's card walk; that walk reaps in
@@ -633,7 +739,8 @@ def _code_only(src):
     return "".join(out)
 
 
-BLOCKING = ("orb_theme_scan(", "orb_theme_stage_load(")
+BLOCKING = ("orb_theme_scan(", "orb_theme_install(")
+THEME_C = P("main","art","orb_theme.c")
 CT_C = P("main","clock","clock_themes.c")
 JOBS_C = P("main","app","orb_jobs.c")
 WIDGET = r"lv_label_set_text\(|lv_obj_set_style_|lv_obj_invalidate\("
@@ -705,15 +812,16 @@ def repaint_lint(src):
 
 
 def worker_lint(menu_src, ct=None):
-    """The card calls run on the shell's one worker, posted by the clock app.
+    """The card calls run on the shell's one worker, whoever posted them.
 
-    B2 moved the theme picker out of this file, so the pair that used to be
-    checked inside menu_view.c's job_worker() is checked where it now lives:
-    clock_themes.c issues both calls, and it issues them from job functions
-    handed to orb_jobs_post() — never from a function the LVGL task runs. Two
-    worker tasks would also be caught here, because the shell owns the only
-    xTaskCreate below main.c's ladder and an app growing a private one is the
-    duplication the shell worker exists to prevent.
+    B2 moved the theme picker out of this file, and ruling D11 moved the install
+    into orb_theme.c so the dial's picker and the browser's Load button post the
+    identical job. So the pair that used to be checked inside menu_view.c's own
+    job_worker() is now checked where it lives: the clock's job_*() walks the card,
+    orb_theme.c's install job copies a container, and neither runs on the task that
+    paints the dial. Two worker tasks would also be caught here, because the shell
+    owns the only xTaskCreate below main.c's ladder and an app growing a private one
+    is the duplication the shell worker exists to prevent.
     """
     bad = []
     ct = ct if ct is not None else open(CT_C).read()
@@ -722,14 +830,32 @@ def worker_lint(menu_src, ct=None):
     if not jobs:
         return ["clock_themes.c has no job_*() functions — the card work has no worker"]
     body = "".join(b for _, b in jobs)
-    for b in BLOCKING:
-        if b not in body:
-            bad.append("no card job in clock_themes.c calls %s" % b)
+    if "orb_theme_scan(" not in body:
+        bad.append("no card job in clock_themes.c walks the card (orb_theme_scan)")
     if "orb_jobs_post(" not in code:
         bad.append("clock_themes.c never posts to the shell worker")
+    # Ruling D11: the picker answers with a post, never with the install itself. A
+    # direct call here would run a multi-second SD-to-flash copy on the LVGL task.
+    if re.search(r"\borb_theme_install\s*\(", code):
+        bad.append("clock_themes.c calls orb_theme_install() directly instead of "
+                   "posting it — the copy would run on the task that paints the dial")
+    if "orb_theme_post_install(" not in code:
+        bad.append("clock_themes.c does not post the one install entry the page uses either")
     # A widget call inside a job would paint from the worker task.
     if re.search(WIDGET, body):
         bad.append("a card job in clock_themes.c touches a widget")
+    # The install job itself, in the layer that owns the flash. Posted, not called.
+    th = _code_only(open(THEME_C).read())
+    tj = re.findall(r"static void (\w*job\w*)\(void \*arg\)\s*\{([\s\S]*?)\n\}", th)
+    if not tj:
+        bad.append("orb_theme.c has no job function — nothing runs the install off the caller")
+    tjb = "".join(b for _, b in tj)
+    if "orb_theme_install(" not in tjb:
+        bad.append("orb_theme.c's job does not call orb_theme_install() — the copy has no worker")
+    if "orb_jobs_reboot_soon(" not in tjb:
+        bad.append("orb_theme.c's install job never asks for the reboot that draws it (D11)")
+    if "orb_jobs_post(" not in th:
+        bad.append("orb_theme.c never posts to the shell worker")
     # The menu must not have grown a private task back.
     if "xTaskCreate" in _code_only(menu_src):
         bad.append("menu_view.c created its own worker task again")
@@ -764,11 +890,33 @@ MUTATIONS = [
     # back row and the owner is trapped; drop the value and the page stops saying
     # which theme is on the dial. host_clock_opts_test.py pins the answers.
     ("the back row is dropped from the app options page",
-     "case PG_APP:    return s_app ? orb_app_opt_count(s_app) + 1 : 0;  /* +1: back */",
-     "case PG_APP:    return s_app ? orb_app_opt_count(s_app) : 0;"),
+     "case PG_APP:    return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0;",
+     "case PG_APP:    return s_app ? visible_rows(orb_app_opt_count(s_app)) : 0;"),
     ("an app's value stops being rendered",
-     'const char *v = orb_app_opt_value(s_app, row);\n            if (v && v[0]) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);',
-     'const char *v = orb_app_opt_value(s_app, row);\n            if (0) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);'),
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n                      : orb_app_opt_value(s_app, ar);',
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n                      : NULL;'),
+    # D12's own pins. Each is one way the shell can get its one level of nesting
+    # wrong, and each must turn one of the shape checks above red.
+    ("a closed group stops hiding its items",
+     "    if (drawn_kind(rows, idx) != OPT_ITEM) return false;\n"
+     "    return owner_group(rows, idx) != s_group_open;",
+     "    return false;"),
+    ("an item with no header above it disappears instead of being drawn",
+     "    return (owner_group(rows, idx) < 0) ? OPT_ROW : OPT_ITEM;",
+     "    return OPT_ITEM;"),
+    ("the cursor escapes an open group",
+     "            if (lo >= 0 && hi >= lo) {\n                if (next < lo) next = lo;\n"
+     "                if (next > hi) next = hi;\n            }",
+     "            if (0) { }"),
+    ("the long press goes home instead of closing the group",
+     "    if (!s_armed || s_page != PG_APP || !s_app || s_group_open < 0) return false;",
+     "    return false;"),
+    ("an open header loses the fact that it is open",
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"',
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? ""'),
+    ("items lose the indent that says they are inside a header",
+     'snprintf(out, outsz, "%s%s", k == OPT_ITEM ? "  " : "",',
+     'snprintf(out, outsz, "%s%s", "",'),
     ("the current zone stops being marked",
      "const bool cur = (row == orb_net_tz_current_index());", "const bool cur = false;"),
     ("back from the zone list loses its cursor position",
@@ -867,6 +1015,19 @@ def main():
     check("long-press goes home to the clock (router)",
           re.search(r"if \(lpress\) \{\s*orb_carousel_cancel\(\);\s*disarm_all\(\);"
                     r"\s*set_screen\(orb_app_home\(\), true\);", router_src) is not None)
+    # D12's one exception, in both halves: the entry gets first refusal, and the
+    # home path survives underneath it. An entry with nothing open answers false and
+    # the hold homes exactly as C8 rules, so a nesting feature that quietly swallowed
+    # the escape hatch — or a router that never asks — is a red check here rather
+    # than a dial somebody has to unplug.
+    check("the router offers the long press to the entry before it homes",
+          re.search(r"if \(lpress && orb_app_opt_long\(s_current\)\) \{\s*lpress = false;"
+                    r"\s*\}\s*if \(lpress\) \{", router_src) is not None
+          and "(*opt_long)(orb_app_t *app)" in open(APP_H).read())
+    check("the shell entry wires that hook to the menu",
+          re.search(r"\.opt_long\s*=\s*menu_long", app_src) is not None
+          and re.search(r"static bool menu_long\(orb_app_t \*app\)\n\{\n[^}]*"
+                        r"menu_view_opt_long\(\);", app_src) is not None)
     # Inverted since the registry landed: the router must NOT name a single view
     # any more, and the registry must name all three. The old form of this check
     # required menu_view_screen() to appear in input_router.c, which is precisely

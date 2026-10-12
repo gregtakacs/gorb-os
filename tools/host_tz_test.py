@@ -47,7 +47,14 @@ if "--src" in sys.argv:
     SRC = sys.argv[sys.argv.index("--src") + 1]
 src = open(SRC).read()
 import hashlib
-BIN = "/tmp/tzjson_host_" + hashlib.md5(SRC.encode()).hexdigest()[:10]
+# Resolved before BIN, not at the D13 block below: the binary's name has to carry
+# which theme file went in, or a mutation run reuses the previous run's image.
+THEME_SRC = os.path.join(ROOT, "main", "art", "orb_theme.c")
+if "--theme-src" in sys.argv:
+    THEME_SRC = sys.argv[sys.argv.index("--theme-src") + 1]
+# Named for BOTH sources it embeds: a mutation battery that swapped only the theme
+# file would otherwise reuse the previous run's binary and grade the wrong code.
+BIN = "/tmp/tzjson_host_" + hashlib.md5((SRC + THEME_SRC).encode()).hexdigest()[:10]
 
 
 def lift(pattern):
@@ -75,12 +82,52 @@ retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
 # nobody summoned. The codes are 802.11's, pinned to the values in
 # esp_wifi_types_generic.h so a rename on our side cannot silently flip one.
 si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}")
+# The two association-window decisions added after the bench wedge of
+# 2026-10-12, lifted for the same reason as the ladder above them: both are
+# one-line predicates, both are invisible from the LAN, and getting either
+# the wrong way round reproduces the failure — a retry fired into a live
+# association killed it with an ESP_OK and no further event, and the device
+# sat network-dead until someone pulsed EN. The truth tables below pin both
+# from every direction so a future edit cannot drift them shut or open.
+moot_fn = lift(r"static bool connect_attempt_is_moot\(bool[^;]*?return[^;]*;\n\}")
+drop_fn = lift(r"static bool lease_watch_should_drop\(bool[^;]*?return[^;]*;\n\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
 # a wrong offset is a phone that never shows "Sign in to network" and a device
 # that logs nothing wrong. So the encoding is pinned here instead.
 dns_fn = lift(r"static int dns_build_reply\(const uint8_t \*rx.*?return len;\n\}")
+
+# Ruling D13's two pure predicates, lifted out of the theme layer for the same
+# reason everything else in this harness is lifted: they are one-line decisions
+# about which 4 MB of flash the dial reads, and the bench has no second slot to
+# corrupt and no way to watch a boot draw the wrong bank. Truth-tabled below.
+THEME_HDR = os.path.join(ROOT, "main", "art", "orb_theme.h")
+theme_src = open(THEME_SRC).read()
+theme_hdr = open(THEME_HDR).read()
+
+
+def lift_theme(text, where, pattern):
+    m = re.search(pattern, text, re.S)
+    if not m:
+        sys.exit(f"could not lift {pattern!r} from {where} — did the code move? An "
+                 f"empty lift here would keep the D13 table green while testing a "
+                 f"predicate that no longer ships.")
+    return m.group(0)
+
+
+d13_lift = "\n".join([
+    lift_theme(theme_hdr, THEME_HDR, r"#define THEME_LIVE_DEFAULT[^\n]*\n"
+                                     r"#define THEME_LIVE_CARD[^\n]*"),
+    lift_theme(theme_src, THEME_SRC, r"#define SLOT_A_HDR[^\n]*\n#define SLOT_B_HDR[^\n]*"),
+    lift_theme(theme_src, THEME_SRC, r"typedef enum \{ BOOT_ART_DEFAULT = 0,"
+                                     r" BOOT_ART_CARD = 1 \} boot_art_t;"),
+    lift_theme(theme_src, THEME_SRC,
+               r"static boot_art_t boot_resolve\(const char \*live, const bool b_valid\)"
+               r"\n\{[\s\S]*?\n\}"),
+    lift_theme(theme_src, THEME_SRC, r"static uint32_t install_target\(void\)[^\n]*\}"),
+])
+
 wifi_reasons = """
 enum { WIFI_REASON_AUTH_EXPIRE = 2,           /* esp_wifi_types_generic.h */
        WIFI_REASON_AUTH_LEAVE  = 3,
@@ -209,7 +256,10 @@ harness = f"""
 {retry_fn}
 {wifi_reasons}
 {si_fn}
+{moot_fn}
+{drop_fn}
 {dns_fn}
+{d13_lift}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
 #define ESP_LOGW(a, ...) do {{ }} while (0)
@@ -275,6 +325,45 @@ static void guard_counter(void){{
     if (counted != 0 || refused != 40) fails++;
     printf("%-5s 40 leaves -> counter %u (want 0); 40 refusals -> %u (want 40)\\n",
            (counted == 0 && refused == 40) ? "ok" : "FAIL", counted, refused);
+}}
+static void moot_case(int assoc, int up, int prov, int want){{
+    const bool got = connect_attempt_is_moot(assoc, up, prov);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s connect(assoc=%d up=%d prov=%d) -> %-4s (want %s)\\n",
+           pass ? "ok" : "FAIL", assoc, up, prov,
+           got ? "moot" : "try", want ? "moot" : "try");
+}}
+static void drop_case(int assoc, int up, int prov, int want){{
+    const bool got = lease_watch_should_drop(assoc, up, prov);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s lease_watch(assoc=%d up=%d prov=%d) -> %-5s (want %s)\\n",
+           pass ? "ok" : "FAIL", assoc, up, prov,
+           got ? "drop" : "hold", want ? "drop" : "hold");
+}}
+/* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
+ * install may write are the two numbers a wrong answer about costs a device its
+ * dial, and neither is observable on a bench with one card and no second slot to
+ * corrupt: the shipped predicates are lifted and run instead of watched. */
+static void boot_case(const char *what, const char *live, bool b_valid, int want){{
+    const boot_art_t got = boot_resolve(live, b_valid);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s boot_resolve %-34s -> %-7s (want %s)\\n", pass ? "ok" : "FAIL", what,
+           (int)got == BOOT_ART_CARD ? "card" : "default",
+           want == BOOT_ART_CARD ? "card" : "default");
+}}
+static void install_target_case(void){{
+    /* Slot A is partition offset 0, which is where `idf.py flash` wrote the factory
+     * bank and where use_baked_in() reads its pixels from. One install aimed there
+     * erases the default and the fallback together — the defect ruling D13 exists
+     * to kill, so the target is pinned to B and pinned AWAY from 0. */
+    const uint32_t t = install_target();
+    const int pass = (t == SLOT_B_HDR) && (t != SLOT_A_HDR) && (t != 0u);
+    if (!pass) fails++;
+    printf("%-5s install_target() -> 0x%08X (want slot B 0x%08X; A is 0x%08X)\\n",
+           pass ? "ok" : "FAIL", (unsigned)t, (unsigned)SLOT_B_HDR, (unsigned)SLOT_A_HDR);
 }}
 static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
@@ -409,6 +498,40 @@ int main(void)
     leave_case(WIFI_REASON_AUTH_EXPIRE, 0);                  /* 2: router let it lapse */
     leave_case(WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, 0);       /* 15: wrong passphrase */
     leave_case(WIFI_REASON_NO_AP_FOUND, 0);                  /* 201: SSID gone */
+    /* The association-window guards added after the bench wedge of
+     * 2026-10-12: the retry timer firing while the station was associated but
+     * still unleased destroyed that association (esp_wifi_connect() returned
+     * ESP_OK, no event followed, dead device until EN was pulsed).
+     * connect_attempt_is_moot must close that door for every live state, and
+     * lease_watch_should_drop must guard exactly the associated-unleased one —
+     * wider drops healthy leases or meddles in provisioning, narrower
+     * reproduces the wedge. Both are pure, so all eight rows cost nothing. */
+    moot_case(0, 0, 0, 0);   /* genuinely quiet: the attempt must proceed */
+    moot_case(1, 0, 0, 1);   /* the wedge window: connect must NOT fire */
+    moot_case(0, 1, 0, 1);   /* lease held: moot */
+    moot_case(0, 0, 1, 1);   /* provisioning: moot */
+    moot_case(1, 1, 0, 1); moot_case(1, 0, 1, 1);
+    moot_case(0, 1, 1, 1); moot_case(1, 1, 1, 1);
+    drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
+    drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
+    drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);
+    drop_case(1, 1, 1, 0); drop_case(0, 1, 1, 0);
+    puts("== ruling D13: the slot the dial draws, and the one an install may write ==");
+    /* Every row that can be asked of the resolve predicate: the choice, whether B
+     * verified, and what comes out. "card" with a B that will not load is the
+     * corruption case, and the answer must be the default with the choice left
+     * written — a boot that quietly cleared it would forget what the owner asked
+     * for, and a boot that drew the corrupt slot would show half a theme. */
+    boot_case("card chosen, B verifies", THEME_LIVE_CARD, true, BOOT_ART_CARD);
+    boot_case("card chosen, B corrupt", THEME_LIVE_CARD, false, BOOT_ART_DEFAULT);
+    boot_case("default chosen, B verifies", THEME_LIVE_DEFAULT, true, BOOT_ART_DEFAULT);
+    boot_case("default chosen, B corrupt", THEME_LIVE_DEFAULT, false, BOOT_ART_DEFAULT);
+    boot_case("no key at all, B verifies", "", true, BOOT_ART_DEFAULT);
+    boot_case("no key at all, B corrupt", "", false, BOOT_ART_DEFAULT);
+    boot_case("junk in the key, B verifies", " Card ", true, BOOT_ART_DEFAULT);
+    boot_case("NVS unreadable (NULL), B verifies", NULL, true, BOOT_ART_DEFAULT);
+    boot_case("NVS unreadable (NULL), B corrupt", NULL, false, BOOT_ART_DEFAULT);
+    install_target_case();
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();
@@ -769,6 +892,19 @@ MUTATIONS = [
     # past the count is the bug: httpd_register_uri_handler fails and the route 404s
     # forever with nothing in the log.
     ('httpd route cap lowered', 'cfg.max_uri_handlers  = 24;', 'cfg.max_uri_handlers  = 12;'),
+    # Ruling D13's two predicates, mutated in the file that ships them. Each is the
+    # failure the ruling was written to remove, and each must turn a row of the
+    # table above red: an install aimed at the factory bank, a boot that draws a
+    # slot it never verified, and a boot that ignores the choice it was given.
+    ('an install aims at the factory bank',
+     'static uint32_t install_target(void) { return SLOT_B_HDR; }',
+     'static uint32_t install_target(void) { return SLOT_A_HDR; }', 1, 'theme'),
+    ('boot draws a slot it never verified',
+     'return b_valid ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
+     '(void)b_valid;\n    return BOOT_ART_CARD;', 1, 'theme'),
+    ('the owner\'s choice stops mattering',
+     'if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;',
+     'if (!live) return BOOT_ART_DEFAULT;', 1, 'theme'),
 ]
 
 def run_mutations():
@@ -776,13 +912,17 @@ def run_mutations():
     for i, entry in enumerate(MUTATIONS):
         name, old, new = entry[0], entry[1], entry[2]
         want = entry[3] if len(entry) > 3 else 1
-        if src.count(old) != want:
-            print(f'FAIL mutation {name!r}: anchor found {src.count(old)}x in the '
-                  f'source, want {want}x — the mutation is stale, fix the battery'); rc = 1; continue
-        mut = '/tmp/orb_net_mut_%d.c' % i
-        open(mut, 'w').write(src.replace(old, new))
-        r = subprocess.run([sys.executable, __file__, '--src', mut],
-                           capture_output=True, text=True)
+        target = entry[4] if len(entry) > 4 else 'net'
+        base = src if target == 'net' else theme_src
+        if base.count(old) != want:
+            print(f'FAIL mutation {name!r}: anchor found {base.count(old)}x in the '
+                  f'{"orb_net.c" if target == "net" else "orb_theme.c"} source, want {want}x '
+                  f'— the mutation is stale, fix the battery'); rc = 1; continue
+        mut = '/tmp/orb_%s_mut_%d.c' % (target, i)
+        open(mut, 'w').write(base.replace(old, new))
+        argv = [sys.executable, __file__]
+        argv += ['--src', mut] if target == 'net' else ['--theme-src', mut]
+        r = subprocess.run(argv, capture_output=True, text=True)
         if r.returncode == 0:
             print(f'FAIL  mutation {name!r} SURVIVED — a real regression would pass '
                   f'the suite too'); print(r.stdout[-1200:]); rc = 1

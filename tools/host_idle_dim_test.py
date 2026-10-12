@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host bench for the idle-dim motion decision in main/power/idle_dim.c.
+"""Host bench for the idle dim's decisions in main/power/idle_dim.c.
 
 The dim's timing is Kconfig and the brightness write is the vendor driver's, so
 neither needs a bench. What does is the one predicate that decides whether a
@@ -14,6 +14,16 @@ gcc -Werror, and pinned against the two ways a threshold is wrong:
                     dead device.
 
 Both are invisible in the code and obvious on the wall, so they are pinned here.
+Alongside them, three more that fail the same way — silently, on a real desk, with
+nothing in the log to say so: the run-of-N that turns per-sample verdicts into a
+wake, the DISPLAY menu's elapsed test and timeout clamp, and the level-commit
+decision that says what the task may believe about the panel after ONE brightness
+attempt. The last of those is the difference between a dial that wakes a tick late
+and a dial that stays at 20% until the next timeout: a refused write that is
+believed anyway is never retried, and it stops the 20 Hz dark poll that carries the
+motion wake with it. Its vectors pin the predicate; a lint on the task's own text
+pins the call site, because a correct predicate the task does not use is the same
+dark dial.
 
 Run:  python3 tools/host_idle_dim_test.py              (rc 0 = pass)
       python3 tools/host_idle_dim_test.py --mutations  (proves the checks bite)
@@ -411,6 +421,168 @@ CLAMP_MUTATIONS = [
      "if (s > IDLE_DIM_TIMEOUT_MAX_S) return s;"),
 ]
 
+# ---- the level-commit decision: what the task may believe after ONE write ----
+#
+# The dim is a QSPI write to the panel's brightness register, and the wake is the
+# same write in the other direction with nobody waiting for its answer. Commit the
+# intended state before the write has landed and one refused transaction is a dial
+# that stays at 20% forever: the flag says lit, so no later tick ever disagrees
+# with it, the write is never retried, and the 20 Hz dark poll that reads the
+# accelerometer -- the second wake source -- stops with it. The owner sees "the
+# knob does nothing"; the log has one line saying the write failed. Pinned because
+# it is a one-line regression with a ten-minute penalty and no repro that does not
+# involve getting the bus to refuse on purpose.
+#
+# (label, want, dimmed, wrote, expected_dimmed_after)
+LEVEL_VECTORS = [
+    # The bug, both directions: refused, the flag must not move.
+    ("wake_refused_stays_dimmed",  False, True,  False, True),
+    ("dim_refused_stays_lit",       True, False, False, False),
+    # Accepted, it must move: a predicate that never commits is a dial that dims
+    # and un-dims forever without ever changing the glass.
+    ("wake_accepted_lights",       False, True,  True,  False),
+    ("dim_accepted_goes_dark",      True, False, True,  True),
+    # Nothing was asked for: a lit dial staying lit must not be read as dimmed, and
+    # a dimmed one staying dimmed must not be read as lit.
+    ("no_change_while_lit",        False, False, True,  False),
+    ("no_change_while_dimmed",      True, True,  True,  True),
+    # A refused transition followed by an accepted one -- the retry this exists
+    # for. No single call separates a predicate that retries from one that latched
+    # the intent and moved on, so this vector carries no `wrote` and runs the pair.
+    ("refused_then_accepted",      False, True,  None,  False),
+]
+
+LEVEL_MUTATIONS = [
+    # The regression itself: believe the intent whatever the panel answered. The
+    # tautology keeps `wrote` referenced so -Wextra's unused-parameter rule does not
+    # kill the mutant before the vectors can judge it (same trick the clamp and
+    # elapsed batteries use).
+    ("return wrote ? want : dimmed;", "return (wrote || !wrote) ? want : dimmed;"),
+    # A commit that never lets the dial back to the light: the dim lands, the wake
+    # is believed by the flag and refused by the glass, and the owner has a dark
+    # dial with a clock running behind it.
+    ("return wrote ? want : dimmed;", "return (wrote && want) || dimmed;"),
+    # Asks the question backwards: refuses what the panel took and takes what it
+    # refused.
+    ("return wrote ? want : dimmed;", "return wrote ? dimmed : want;"),
+    # Gates the commit on the *request* as well as the answer, so a wake the panel
+    # accepted is not committed unless the dial also wanted to be lit.
+    ("wrote ? want : dimmed",        "wrote && want ? want : dimmed"),
+]
+
+
+def run_level(vectors, mutations=()):
+    """Replay every commit vector through the lifted predicate.
+
+    The refused_then_accepted case carries no `wrote` value (None): it is the only
+    one that runs the two-tick sequence, because a single call cannot tell a
+    predicate that retries from one that latched the intent and moved on.
+    """
+    d = tempfile.mkdtemp(prefix="orb_level_commit_")
+    cf, bf = os.path.join(d, "t.c"), os.path.join(d, "t")
+    calls = []
+    for vec in vectors:
+        label, want, dimmed, wrote, expect = vec
+        b = lambda v: "true" if v else "false"
+        if wrote is None:
+            calls.append(
+                "    {" + NL +
+                '        bool dimmed = %s;' % b(dimmed) + NL +
+                '        dimmed = idle_dim_level_apply_decide(%s, dimmed, false);'
+                    % b(want) + NL +
+                '        fails += dimmed ? 0 : 1;' + NL +
+                '        dimmed = idle_dim_level_apply_decide(%s, dimmed, true);'
+                    % b(want) + NL +
+                '        fails += (dimmed != %s) ? 1 : 0;' % b(expect) + NL +
+                '        if (dimmed != %s && !bad) bad = %d;' % (b(expect),
+                                                                  len(calls) + 1) + NL +
+                '    }')
+            continue
+        calls.append(
+            "    {" + NL +
+            '        bool got = idle_dim_level_apply_decide(%s, %s, %s);'
+                % (b(want), b(dimmed), b(wrote)) + NL +
+            '        fails += (got != %s) ? 1 : 0;' % b(expect) + NL +
+            '        if (got != %s && !bad) bad = %d;' % (b(expect),
+                                                          len(calls) + 1) + NL +
+            '    }')
+    open(cf, "w").write(lifted_c(mutations, funcs=(
+            ("idle_dim_level_apply_decide", "bool", "bool"),
+        )) +
+        '#include <stdio.h>' + NL +
+        'static int bad = 0;' + NL +
+        'static int run_all(void) {' + NL +
+        '    int fails = 0;' + NL +
+        chr(10).join(calls) + NL +
+        '    if (bad) {' + NL +
+        '        puts("the level-commit decision came out wrong: bad vector #");' + NL +
+        '        printf("%d", bad);' + NL +
+        '        puts("");' + NL +
+        '    }' + NL +
+        '    return fails;' + NL +
+        '}' + NL +
+        'int main(void) { return run_all(); }' + NL)
+    cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
+                         "-Werror", "-o", bf, cf], capture_output=True, text=True)
+    if cc.returncode:
+        raise SystemExit("host build failed:" + NL + cc.stderr)
+    out = subprocess.run([bf], capture_output=True, text=True)
+    sys.stdout.write(out.stdout)
+    return out.returncode != 0
+
+
+# ---- the lint the vectors cannot be mutated past --------------------------------
+#
+# A pure function pinned by vectors still does not stop the task from going
+# `s_dimmed = want;` beside it and ignoring the answer -- the exact one-line change
+# that reintroduces a dial that never wakes, and one the vectors above cannot see
+# because they never look at the task. So the task's own text is checked: the only
+# assignment to s_dimmed inside idle_task may be the one that asks the predicate.
+# Reading the shipping file rather than a copy is the point, and the check dies
+# loudly if the function or the task is renamed, exactly as lifted_c does.
+DIM_ASSIGN_RE  = re.compile(r"\bs_dimmed\s*=(?!=)")
+DIM_COMMIT_RE  = re.compile(r"\bs_dimmed\s*=\s*idle_dim_level_apply_decide\s*\("
+                            r"\s*want\s*,\s*s_dimmed\s*,\s*wrote\s*\)\s*;")
+
+
+def lint_task_commits(mutations=()):
+    """True when idle_task still commits the dimmed state only via the predicate."""
+    text = open(SRC).read()
+    m = re.search(r"^static void idle_task\(void \*arg\)", text, re.M)
+    if not m:
+        raise SystemExit("idle_task not found in %s -- the lint has nothing to "
+                         "check, which means it silently stopped working" % SRC)
+    tail = text[m.end():]
+    end = re.search(r"^\}", tail, re.M)
+    if not end:
+        raise SystemExit("idle_task never closes in %s" % SRC)
+    body = tail[:end.end()]
+    for old, new in mutations:
+        body = body.replace(old, new)
+    assigns, commits = DIM_ASSIGN_RE.findall(body), DIM_COMMIT_RE.findall(body)
+    if len(assigns) != 1 or len(commits) != 1:
+        print("FAIL  idle_task assigns s_dimmed %d time(s), %d of them through "
+              "idle_dim_level_apply_decide: a state the panel has not accepted is a "
+              "state that is never retried" % (len(assigns), len(commits)))
+        return False
+    if "apply_level(" not in body:
+        print("FAIL  idle_task no longer calls apply_level -- nothing asks the "
+              "panel, so there is no answer for the commit decision to use")
+        return False
+    return True
+
+
+# The task's own line, spelled the way it ships: the mutation battery proves the
+# lint bites by reintroducing the bug through this file's own text.
+LINT_MUTATIONS = [
+    ("s_dimmed = idle_dim_level_apply_decide(want, s_dimmed, wrote);",
+     "s_dimmed = want;"),
+    ("s_dimmed = idle_dim_level_apply_decide(want, s_dimmed, wrote);",
+     "s_dimmed = wrote;"),
+    ("s_dimmed = idle_dim_level_apply_decide(want, s_dimmed, wrote);",
+     "if (wrote) s_dimmed = want;"),
+]
+
 
 def run_cfg(elapsed_vectors, clamp_vectors, mutations=()):
     """Compile both new decisions in one host binary and replay every case.
@@ -508,8 +680,29 @@ def main():
             else:
                 survivors += 1
                 print("FAIL  config mutant SURVIVED: %s" % mut[0][:50])
+        for mut in LEVEL_MUTATIONS:
+            try:
+                bad = run_level(LEVEL_VECTORS, mutations=[mut])
+            except SystemExit as e:
+                ok(False, "commit mutant does not compile (%s): %s"
+                   % (mut[0][:40], str(e).splitlines()[0] if str(e) else "?"))
+                continue
+            if bad:
+                print("ok    commit mutant caught: %s" % mut[0][:50])
+            else:
+                survivors += 1
+                print("FAIL  commit mutant SURVIVED: %s" % mut[0][:50])
+        for mut in LINT_MUTATIONS:
+            # The lint's mutants are the regressions the vectors cannot reach: a
+            # correct predicate that the task stops asking.
+            if not lint_task_commits(mutations=[mut]):
+                print("ok    lint mutant caught: %s" % mut[0][:50])
+            else:
+                survivors += 1
+                print("FAIL  lint mutant SURVIVED: %s" % mut[0][:50])
         total = (len(MUTATIONS) + len(WAKE_MUTATIONS)
-                 + len(ELAPSED_MUTATIONS) + len(CLAMP_MUTATIONS))
+                 + len(ELAPSED_MUTATIONS) + len(CLAMP_MUTATIONS)
+                 + len(LEVEL_MUTATIONS) + len(LINT_MUTATIONS))
         ok(survivors == 0, "%d mutants, %d survived" % (total, survivors))
     else:
         bad = run(VECTORS)
@@ -522,6 +715,13 @@ def main():
         ok(not bad, "every DISPLAY-menu decision came out as expected "
                     "(%d elapsed + %d clamp cases)"
                     % (len(ELAPSED_VECTORS), len(CLAMP_VECTORS)))
+        bad = run_level(LEVEL_VECTORS)
+        ok(not bad, "every level-commit vector came out as expected "
+                    "(%d cases: a refused write never moves the flag)"
+                    % len(LEVEL_VECTORS))
+        ok(lint_task_commits(),
+           "idle_task commits the dimmed state only through "
+           "idle_dim_level_apply_decide, and only after apply_level answers")
 
     print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED" % len(FAILS)))
     for f in FAILS:

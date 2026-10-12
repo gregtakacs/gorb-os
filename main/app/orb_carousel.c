@@ -36,22 +36,40 @@ static const char *TAG = "carousel";
 
 /* How long the named entry must hold still before it is committed.
  *
- * Derived, not felt. It has to clear the encoder's own recovery window
- * (KNOB_SETTLE_MS 30 ms, knob.c:82) so a detent recovered by the idle pass is
- * still counted as the same burst, and the picker's velocity-idle reset
- * (VEL_IDLE_US 220 ms, color_picker.c:38) so a flick the user still considers
- * one gesture is never committed half-way through. 400 ms is the round number
- * above both and stays well under the ~1 s at which a selection starts to feel
- * dropped. Flagged for owner-ratification against the glass: this is the one
- * number the P2 shell took from arithmetic rather than measured. */
-#define ORB_CAROUSEL_SETTLE_MS  400
+ * Two windows, because the hand turned out to have two regimes and one number
+ * could not serve both. Measured on the bench knob (owner's hand, 16 detents,
+ * device-side peek timestamps, docs/app-platform-plan.md §12.9):
+ *
+ *   in a flick   detent-to-detent gaps of 33-157 ms.
+ *   to read      stopping on a name to decide produced pauses of 510-1936 ms.
+ *
+ * One window above the read-pauses taxes every clean flick by seconds and
+ * breaches the ~1 s at which a selection feels dropped; one below them dumps
+ * the user onto an entry they were still deciding on — the exact complaint
+ * that killed the single 400 ms. So a detent arriving less than BURST_GAP
+ * after the previous one is one gesture and commits SETTLE later; a detent
+ * after a pause, or alone (a pause the shell never witnessed ending), gets
+ * READ, and no switch happens while it is open. Pressing the knob commits
+ * instantly at any point (input_router.c, "that one, now"), so the person
+ * who has finished reading never waits on the timer.
+ *
+ * SETTLE keeps its old floors: it clears the encoder's recovery window
+ * (KNOB_SETTLE_MS 30 ms, knob.c:82) and the picker's velocity-idle reset
+ * (VEL_IDLE_US 220 ms, color_picker.c:38), and is 2.5x the widest flick the
+ * hand produced. BURST_GAP is cut between the two observed regimes; READ
+ * covers the longest pause observed. tools/host_carousel_test.py asserts all
+ * of these bounds so a future edit cannot drift back into the one-timer bug. */
+#define ORB_CAROUSEL_SETTLE_MS      400   /* in-burst: commit this after the last detent */
+#define ORB_CAROUSEL_READ_MS       2000   /* after a pause: hold the preview this long   */
+#define ORB_CAROUSEL_BURST_GAP_MS   300   /* at/beyond this gap, the next detent is a read */
 
 /* The peek, written on the LVGL task only. s_pending is the entry the chip names
  * and the one a due() hands back to activate; NULL means the shell is not on the
  * glass. s_hops counts detents consumed by the current burst, which is the
  * number the bench judges: N hops must still cost ONE activate. */
 static const orb_app_t *s_pending;
-static int64_t          s_since_us;   /* last detent that moved the name       */
+static int64_t          s_last_us;    /* last detent that moved the name        */
+static int64_t          s_due_us;     /* commit instant, chosen per detent      */
 static int              s_hops;
 static bool             s_parked;     /* WE stopped the beat; only we restart it */
 
@@ -115,7 +133,9 @@ esp_err_t orb_carousel_init(void)
     lv_obj_center(s_lbl);
 
     chip_hide();
-    ESP_LOGI(TAG, "chip ready (settle %d ms)", ORB_CAROUSEL_SETTLE_MS);
+    ESP_LOGI(TAG, "chip ready (settle %d ms, read %d ms, burst gap %d ms)",
+             ORB_CAROUSEL_SETTLE_MS, ORB_CAROUSEL_READ_MS,
+             ORB_CAROUSEL_BURST_GAP_MS);
     return ESP_OK;
 }
 
@@ -166,9 +186,23 @@ const orb_app_t *orb_carousel_step(int step, const orb_app_t *on_glass, int64_t 
         return next;
     }
 
+    /* Classify BEFORE anything changes: this detent less than BURST_GAP after
+     * the previous one is the same gesture and commits on the fast window; one
+     * that lands after a pause — or with nothing pending yet, a pause the shell
+     * never saw end — is the user stopping to read, and holds the preview on
+     * the read window. The predicate must read the pending state as it was on
+     * the PREVIOUS detent: s_pending is overwritten two lines below, and a
+     * check placed after that overwrite is always true, silently making every
+     * detent look like a continuing burst — cancel() would then leak its
+     * window into the next flick's classification. */
+    const bool in_burst = s_last_us && s_pending &&
+        (now_us - s_last_us) < (int64_t)ORB_CAROUSEL_BURST_GAP_MS * 1000;
     s_hops++;
     s_pending  = next;
-    s_since_us = now_us;
+    s_last_us  = now_us;
+    s_due_us   = now_us +
+                 (int64_t)(in_burst ? ORB_CAROUSEL_SETTLE_MS
+                                    : ORB_CAROUSEL_READ_MS) * 1000;
     park_beat();
     chip_show(next);
 
@@ -182,8 +216,7 @@ const orb_app_t *orb_carousel_step(int step, const orb_app_t *on_glass, int64_t 
 
 bool orb_carousel_due(int64_t now_us)
 {
-    return s_pending &&
-           (now_us - s_since_us) >= (int64_t)ORB_CAROUSEL_SETTLE_MS * 1000;
+    return s_pending && now_us >= s_due_us;
 }
 
 const orb_app_t *orb_carousel_pending(void)

@@ -3,10 +3,19 @@
  *
  * What moved here from menu_view.c is the theme page's *knowledge*: that the
  * rows are the card's themes, that the one on the dial is marked, that a damaged
- * entry is shown with its reason instead of hidden, and that choosing one
- * stages it and asks about the reboot. What did not move is the list's feel —
- * the cursor, the clamp and the row window stayed in the shell, so the theme
- * page and the menu's own pages cannot drift apart on how a detent behaves.
+ * entry is shown with its reason instead of hidden, and that choosing one means
+ * installing it and rebooting into it (ruling D11 — the stage-then-ask flow this
+ * file replaced left the owner to press a second row on faith). What did not
+ * move is the list's feel — the cursor, the clamp and the row window stayed in
+ * the shell, so the theme page and the menu's own pages cannot drift apart on
+ * how a detent behaves.
+ *
+ * The page nests one level deep (ruling D12): a plain row for the factory
+ * default, one group header for the card, and the card's themes as its items.
+ * Which of those rows the glass draws is the shell's decision and not this
+ * file's — the count here is the whole page either way, so the group can be
+ * closed without a single row of this file knowing, and an app cannot hide a
+ * row from its owner by accident.
  *
  * The two halves of the state are deliberate. s_ui is read by the repaint and
  * touched only on the LVGL task. s_shared is written by the worker and copied
@@ -32,11 +41,16 @@ static const char *TAG = "clock_theme";
 
 #define THEME_MAX 8     /* a card realistically holds a handful of themes */
 
+/* The page's own row numbers, in the order the shell will draw them. The two
+ * fixed rows come first so the card list is always in the same place, and a
+ * closed group leaves a page whose row 0 the owner can still press. */
+#define ROW_DEFAULT 0   /* OPT_ROW:   the factory dial */
+#define ROW_GROUP   1   /* OPT_GROUP: "From the card" */
+#define ROW_ITEMS   2   /* the scanned themes, one OPT_ITEM each */
+
 typedef struct {
     int               n;
     orb_theme_entry_t e[THEME_MAX];
-    bool              staged;
-    char              staged_slug[ORB_THEME_SLUG_MAX + 1];
     char              status[72];
 } cui_t;
 
@@ -45,9 +59,6 @@ static cui_t   s_shared;    /* worker writes this under s_mx */
 static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
 static bool    s_armed;
-
-typedef enum { J_SCAN = 0, J_STAGE } job_t;
-typedef struct { job_t kind; char slug[ORB_THEME_SLUG_MAX + 1]; } req_t;
 
 static void publish(const cui_t *src)
 {
@@ -59,55 +70,42 @@ static void publish(const cui_t *src)
 
 /* Runs on the worker. Nothing in here touches a widget, and nothing in here may
  * start to: this is the task that holds the card while a directory the size of
- * the framebuffer is walked. */
+ * the framebuffer is walked. Installing is NOT here — orb_theme_post_install()
+ * owns that job, so the dial's picker and the browser's Load button queue the
+ * same worker function and cannot disagree about what a pick does. */
 static void job_run(void *arg)
 {
-    const req_t *r = arg;
+    (void)arg;                        /* the scan takes no payload */
     cui_t out;
     memset(&out, 0, sizeof out);
 
-    if (r->kind == J_SCAN) {
-        if (orb_theme_upload_busy()) {
-            snprintf(out.status, sizeof out.status, "an upload is using the card");
-        } else if (!orb_sd_mounted()) {
-            snprintf(out.status, sizeof out.status, "no card in the socket");
-        } else {
-            const int n = orb_theme_scan(out.e, THEME_MAX);
-            if (n < 0) {
-                snprintf(out.status, sizeof out.status, "the card could not be read");
-            } else {
-                out.n = n;
-                if (n == 0) snprintf(out.status, sizeof out.status, "no themes on the card yet");
-            }
-        }
+    if (orb_theme_upload_busy()) {
+        snprintf(out.status, sizeof out.status, "an upload is using the card");
+    } else if (!orb_sd_mounted()) {
+        snprintf(out.status, sizeof out.status, "no card in the socket");
     } else {
-        /* Streams the whole container through CRC before anything is committed,
-         * so a damaged file answers here instead of costing a reboot into a slot
-         * that will not validate. */
-        const esp_err_t er = orb_theme_stage_load(r->slug);
-        if (er != ESP_OK)
-            snprintf(out.status, sizeof out.status, "\"%s\" refused: %s",
-                     r->slug, esp_err_to_name(er));
-        else {
-            out.staged = true;
-            snprintf(out.staged_slug, sizeof out.staged_slug, "%s", r->slug);
+        const int n = orb_theme_scan(out.e, THEME_MAX);
+        if (n < 0) {
+            snprintf(out.status, sizeof out.status, "the card could not be read");
+        } else {
+            out.n = n;
+            if (n == 0) snprintf(out.status, sizeof out.status, "no themes on the card yet");
         }
     }
     publish(&out);
 }
 
-static void post(req_t *r)
-{
-    const esp_err_t e = orb_jobs_post(job_run, r, sizeof *r);
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
-        ESP_LOGW(TAG, "theme job refused (%s)", esp_err_to_name(e));
-}
-
+/* The one job this file owns. A refused post is reported, not swallowed: a page
+ * that sits at its old rows because the queue was busy is the "card ignored me"
+ * report, and the shell's busy gate is the only reason it happens. */
 void clock_themes_request_scan(void)
 {
     if (!s_mx) return;          /* clock_themes_init() did not run */
-    req_t r = { .kind = J_SCAN };
-    post(&r);
+    const esp_err_t e = orb_jobs_post(job_run, NULL, 0);
+    if (e == ESP_ERR_INVALID_STATE)
+        strlcpy(s_ui.status, "the card is already being read", sizeof s_ui.status);
+    else if (e != ESP_OK)
+        ESP_LOGW(TAG, "theme scan refused (%s)", esp_err_to_name(e));
 }
 
 bool clock_themes_busy(void)
@@ -133,17 +131,17 @@ void clock_themes_service(void)
     xSemaphoreTake(s_mx, portMAX_DELAY);
     s_ui = s_shared;
     xSemaphoreGive(s_mx);
-
-    if (s_ui.staged) {
-        /* The reboot question is the clock's to ask because it is the clock's
-         * theme that is waiting; the reboot itself stays the OS's to perform. */
-        ESP_LOGI(TAG, "staged \"%s\" from the card", s_ui.staged_slug);
-    }
 }
 
 /* Chosen by index, never by a cursor of this module's own: the shell owns the
  * highlight, the clamp and the window, and an app that tracked a second cursor
- * would be one missed repaint away from staging the row nobody is on. */
+ * would be one missed repaint away from installing the theme nobody is on.
+ *
+ * A press here IS the confirmation (ruling D11). There is no second row to press
+ * on faith in and no staged key waiting for a boot: the worker either verifies
+ * the container, copies it and reboots the dial, or it puts the reason on the row
+ * and the device stays exactly as it was. The queue answer is reported, not
+ * swallowed — a press the firmware dropped has to say so on the glass (C8). */
 void clock_themes_pick(int idx)
 {
     if (s_ui.n <= 0 || idx < 0 || idx >= s_ui.n) return;
@@ -158,9 +156,34 @@ void clock_themes_pick(int idx)
         snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->slug);
         return;
     }
-    req_t r = { .kind = J_STAGE };
-    snprintf(r.slug, sizeof r.slug, "%s", e->slug);
-    post(&r);
+    const esp_err_t q = orb_theme_post_install(e->slug);
+    if (q == ESP_ERR_INVALID_STATE)
+        strlcpy(s_ui.status, "one theme is already being installed", sizeof s_ui.status);
+    else if (q != ESP_OK)
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" could not start: %s",
+                 e->slug, esp_err_to_name(q));
+    else
+        snprintf(s_ui.status, sizeof s_ui.status, "installing \"%s\" …", e->slug);
+}
+
+/* The "Factory default" row: the other half of ruling D13's promise that there is
+ * always a way back to the dial the box shipped with. Nothing here goes near the
+ * card — the default is the bank `idf.py flash` wrote at partition offset 0, and
+ * choosing it is one NVS write and a reboot. */
+static void pick_default(void)
+{
+    if (strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) == 0) {
+        strlcpy(s_ui.status, "the factory dial is what is on the wall",
+                sizeof s_ui.status);
+        return;
+    }
+    ESP_LOGI(TAG, "pick: the factory default");
+    const esp_err_t e = orb_theme_post_default();
+    if (e == ESP_ERR_INVALID_STATE)
+        strlcpy(s_ui.status, "a theme job is already running", sizeof s_ui.status);
+    else if (e != ESP_OK)
+        snprintf(s_ui.status, sizeof s_ui.status, "the default could not start: %s",
+                 esp_err_to_name(e));
 }
 
 /* ---- the ABI the shell calls (B1/B2, ruling B2) ----------------------------
@@ -184,36 +207,88 @@ esp_err_t clock_themes_init(void)
 int clock_opt_count(orb_app_t *app)
 {
     (void)app;
-    /* The reboot question, when a theme is waiting, is two more rows: install
-     * now, or keep the dial that is up. They live here rather than in the shell
-     * because only the clock knows that its theme is the thing pending. */
-    return s_ui.n + (s_ui.staged ? 2 : 0);
+    /* The two fixed rows plus the card's themes. Nothing here ever counted the
+     * reboot question any more — ruling D11 deleted it, because a pick installs
+     * and reboots by itself and there is no second press to have faith in.
+     * The items stay in the count while their group is CLOSED: the shell hides
+     * them, and an app that dropped them from its own number would be a second
+     * opinion about what is on the page, which is the one thing §13.4 forbids. */
+    return ROW_ITEMS + s_ui.n;
+}
+
+/** Which of the three shapes a row has (ruling D12). One group, its items, and
+ *  the plain row above them — the shape the shell validates and renders, and the
+ *  reason the card's themes are ITEMs rather than five rows the owner has to
+ *  scroll past to reach the factory default. */
+orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx)
+{
+    (void)app;
+    if (idx == ROW_DEFAULT) return OPT_ROW;
+    if (idx == ROW_GROUP)   return OPT_GROUP;
+    if (idx >= ROW_ITEMS && idx < ROW_ITEMS + s_ui.n) return OPT_ITEM;
+    return OPT_ROW;                     /* out of range: the shell's bounds answer */
 }
 
 const char *clock_opt_label(orb_app_t *app, int idx)
 {
     (void)app;
-    if (idx < s_ui.n) {
-        const orb_theme_entry_t *e = &s_ui.e[idx];
-        return e->title[0] ? e->title : e->slug;
-    }
-    if (idx == s_ui.n)     return "reboot now";
-    if (idx == s_ui.n + 1) return "keep this dial";
-    return "";
+    /* The default is a ROW and the card is a GROUP, in that order, always: the
+     * owner who arrives with no card must still find the row that gets them back
+     * to the dial the box came with, which is the promise ruling D13 exists to
+     * keep. Its title is the compiled pair's, because until D10's .orbapp wiring
+     * ships the factory dial's source is the flashed bank, not a file. */
+    if (idx == ROW_DEFAULT) return "Factory default";
+    if (idx == ROW_GROUP)   return "From the card";
+    const int i = idx - ROW_ITEMS;
+    if (i < 0 || i >= s_ui.n) return "";
+    const orb_theme_entry_t *e = &s_ui.e[i];
+    return e->title[0] ? e->title : e->slug;
 }
 
 const char *clock_opt_value(orb_app_t *app, int idx)
 {
     (void)app;
-    if (idx >= s_ui.n) return "";
-    const orb_theme_entry_t *e = &s_ui.e[idx];
-    /* One value per row, chosen by what the owner has to decide. A damaged
-     * theme shows why rather than being dropped: "no themes on the card" and
-     * "three themes, all damaged" are the card's problem and the bake's
-     * problem, and hiding the entries is what makes that undiagnosable. */
-    if (e->err != ESP_OK)      return e->why[0] ? e->why : "not loadable";
-    if (e->active)             return "on the dial";
-    if (e->pending)            return "waiting to install";
+    static char v[48];                  /* one row's answer, repainted per poll */
+    v[0] = '\0';
+    /* Every string below is a read of state the theme layer already holds: the
+     * choice it resolved at boot, what its last install attempt could not do, and
+     * what boot found damaged in the slot. None of them touches the card, NVS or
+     * the network, which is the rule these answers live under — the same callback
+     * is the dial's animation. */
+    if (idx == ROW_DEFAULT)
+        return strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) == 0 ? "on the dial" : "";
+    if (idx == ROW_GROUP) {
+        /* What is on the wall, named, so a closed group still answers the question
+         * a knock on the door asks. The shell overwrites this with "open" while the
+         * group is showing its items, which is why it is a summary and not a row. */
+        if (s_ui.n <= 0) return "the card holds none";
+        for (int i = 0; i < s_ui.n; i++) {
+            if (!s_ui.e[i].active) continue;
+            snprintf(v, sizeof v, "%d of %d: %.20s", i + 1, s_ui.n,
+                     s_ui.e[i].title[0] ? s_ui.e[i].title : s_ui.e[i].slug);
+            return v;
+        }
+        return strcmp(orb_theme_live(), THEME_LIVE_CARD) == 0 ? "the card copy did not load"
+                                                             : "none chosen";
+    }
+    const int i = idx - ROW_ITEMS;
+    if (i < 0 || i >= s_ui.n) return "";
+    const orb_theme_entry_t *e = &s_ui.e[i];
+    /* One value per row, chosen by what the owner has to decide, and one rule: the
+     * reason a theme is not on the wall goes on that theme's row, because the row
+     * is the only thing on this screen the owner was looking at when they asked.
+     *   - a file the card holds but cannot load: the list's own reason
+     *   - the slot boot was asked to draw and could not: boot's sentence
+     *   - the install that was just refused: the install ladder's sentence
+     * The last two are named for one slug each, so the page says which theme. */
+    if (e->err != ESP_OK) return e->why[0] ? e->why : "not loadable";
+    if (s_ui.n > 0 && orb_theme_damage_slug()[0] &&
+        strcmp(e->slug, orb_theme_damage_slug()) == 0)
+        return orb_theme_damage_why();
+    if (orb_theme_try_slug()[0] && strcmp(e->slug, orb_theme_try_slug()) == 0 &&
+        orb_theme_try_why()[0])
+        return orb_theme_try_why();
+    if (e->active) return "on the dial";
     return "";
 }
 
@@ -229,22 +304,13 @@ void clock_opt_inc(orb_app_t *app, int idx, int32_t steps)
 void clock_opt_sel(orb_app_t *app, int idx)
 {
     (void)app;
-    if (idx < s_ui.n) { clock_themes_pick(idx); return; }
-    if (!s_ui.staged) return;
-    if (idx == s_ui.n) {
-        /* Ask; never call. esp_restart() from an app would be an app owning the
-         * device's power state, and the reboot belongs to the OS — which also
-         * owns arming the delay that lets the last frame reach the panel. */
-        orb_jobs_reboot_soon("install the staged theme");
-        return;
-    }
-    /* "keep this dial" must un-stage: a pending slot installs itself at the next
-     * reboot whoever triggers, so leaving it set would apply this theme on some
-     * later boot the owner never asked for. */
-    const esp_err_t us = orb_theme_unstage();
-    snprintf(s_ui.status, sizeof s_ui.status, "%s",
-             (us == ESP_OK) ? "kept current dial" : "left staged (nvs refused)");
-    s_ui.staged = false;
+    /* A press on the GROUP is the shell's to act on (it opens and closes), and it
+     * reaches here only if the shell forwards it: doing nothing is the right answer
+     * either way, because the clock has no opinion about whether its own header is
+     * showing its rows. */
+    if (idx == ROW_DEFAULT) { pick_default(); return; }
+    if (idx == ROW_GROUP)   return;
+    clock_themes_pick(idx - ROW_ITEMS);
 }
 
 void clock_opt_arm(orb_app_t *app, bool armed)

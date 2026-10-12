@@ -13,6 +13,10 @@
 #include "esp_heap_caps.h"  /* free PSRAM at the failing instant: mechanism B's arena cap */
 #endif
 
+#if ORB_ART_LAT_PROBE
+#include "esp_timer.h"      /* esp_timer_get_time(): the µs clock the reclaim is timed against */
+#endif
+
 static const char *TAG = "art_bank";
 
 /* Mapped for the process lifetime on purpose; never unmapped. See header. */
@@ -608,4 +612,135 @@ void art_bank_m2_probe(void)
              (unsigned)orb_art_resident_count(), pages_raw);
 }
 #endif /* ORB_ART_M2_PROBE */
+
+/* ---- suspend/resume reclaim-latency probe (docs/app-platform-plan.md §6) ---
+ * What the release-vs-carry decision actually costs on the glass. A suspend
+ * calls art_bank_unmap_extra() (one esp_partition_munmap) and a resume calls
+ * art_bank_map_extra() (one esp_partition_mmap); carrying a parked bank skips
+ * both and holds its pages against ORB_ART_PAGE_BUDGET instead. The dial never
+ * re-reads 2.6 MB here — mmap installs the bank's page count into the SPI-flash
+ * cache MMU table and does not copy, so the cost scales with pages, not bytes,
+ * and no CRC runs in the shipping path. This measures that op directly.
+ *
+ * It maps WITHOUT a prior orb_art_reserve(), exactly as app_art_claim() does on a
+ * re-claim: art_consume_reservation() is then a documented no-op (no booking
+ * matches), so the timed span is the re-claim itself, nothing extra. Each bank is
+ * fully unmapped between samples so every map is a cold esp_partition_mmap of the
+ * same range — the true steady-state shape of the carousel switched back to.
+ * The banks are the real artifacts on this bench, so the us/page figure the
+ * ruling cites is measured, not an abstraction. */
+#if ORB_ART_LAT_PROBE
+
+#define LAT_ITERS  31u    /* odd, so the median is a real sampled value */
+/* 64 KB-aligned offsets clear of the primary at 0. The assets partition is 8 MB. */
+#define LAT_BANK_OFF_SMALL  0x00410000u
+#define LAT_BANK_OFF_FLAG   0x00100000u
+/* The av-kit primary (18 pages), the D10 clock default (41 pages), the kit3
+ * flagship (59 pages) — the three bank sizes a shipped clock app can actually be. */
+#define LAT_BYTES_PRIMARY   1173563u
+#define LAT_BYTES_D10       2650159u
+#define LAT_BYTES_KIT3      3858874u
+
+static uint64_t s_lat_map[LAT_ITERS];
+static uint64_t s_lat_unm[LAT_ITERS];
+
+/* Full ascending sort of the n samples: only the ordering statistics the log
+ * prints (min, median, max) are wanted, and a 31-element sort is cheap here. */
+static void lat_sort(uint64_t *a, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++)
+        for (unsigned j = i + 1; j < n; j++)
+            if (a[j] < a[i]) { uint64_t t = a[i]; a[i] = a[j]; a[j] = t; }
+}
+
+/* One bank, LAT_ITERS timed map/unmap pairs. The reclaim (map_extra) and the
+ * release (unmap_extra) are timed and reported separately, because they are the
+ * two distinct operations the release-vs-carry ruling turns on and off. */
+static void lat_bench_bank(const esp_partition_t *part, size_t off, size_t bytes,
+                           const char *label)
+{
+    const unsigned pages = (unsigned)art_bank_pages_for(bytes);
+    if (off + bytes > part->size) {
+        ESP_LOGE(TAG, "lat: %s bank %u B at 0x%x exceeds the %u B partition — skipped",
+                 label, (unsigned)bytes, (unsigned)off, (unsigned)part->size);
+        return;
+    }
+
+    /* Warm the slot once outside the samples so the first cold map — which can
+     * miss a freed MMU region — is not mistaken for steady state. */
+    int slot = -1;
+    esp_err_t err = art_bank_map_extra(off, bytes, &slot);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "lat: %s map refused (%s) at off 0x%x %u B — nothing to time",
+                 label, esp_err_to_name(err), (unsigned)off, (unsigned)bytes);
+        return;
+    }
+    art_bank_unmap_extra(slot);
+
+    uint64_t map_min = ~0ULL, map_max = 0, map_sum = 0;
+    uint64_t unm_min = ~0ULL, unm_max = 0, unm_sum = 0;
+    unsigned n = 0;
+    for (unsigned it = 0; it < LAT_ITERS; it++) {
+        slot = -1;
+        const uint64_t t0 = esp_timer_get_time();
+        err = art_bank_map_extra(off, bytes, &slot);
+        const uint64_t t1 = esp_timer_get_time();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "lat: %s map refused mid-sweep (%s) at iter %u",
+                     label, esp_err_to_name(err), it);
+            break;
+        }
+        art_bank_unmap_extra(slot);
+        const uint64_t t2 = esp_timer_get_time();
+        const uint64_t map_us = t1 - t0;
+        const uint64_t unm_us = t2 - t1;
+        s_lat_map[n] = map_us;
+        s_lat_unm[n] = unm_us;
+        n++;
+        if (map_us < map_min) map_min = map_us;
+        if (map_us > map_max) map_max = map_us;
+        map_sum += map_us;
+        if (unm_us < unm_min) unm_min = unm_us;
+        if (unm_us > unm_max) unm_max = unm_us;
+        unm_sum += unm_us;
+    }
+    if (n == 0) {
+        ESP_LOGE(TAG, "lat: %s produced no samples", label);
+        return;
+    }
+    lat_sort(s_lat_map, n);
+    lat_sort(s_lat_unm, n);
+    const uint64_t map_med = s_lat_map[n / 2];
+    const uint64_t unm_med = s_lat_unm[n / 2];
+    ESP_LOGI(TAG, "lat: %-6s %3u pages %5u KB | RECLAIM map_extra   min %6llu median %6llu max %6llu us  (~%llu us/page median)",
+             label, pages, (unsigned)(bytes / 1024),
+             (unsigned long long)map_min, (unsigned long long)map_med, (unsigned long long)map_max,
+             (unsigned long long)(map_med / (pages ? pages : 1)));
+    ESP_LOGI(TAG, "lat: %-6s %3u pages %5u KB | RELEASE unmap_extra min %6llu median %6llu max %6llu us  (mean %llu us)",
+             label, pages, (unsigned)(bytes / 1024),
+             (unsigned long long)unm_min, (unsigned long long)unm_med, (unsigned long long)unm_max,
+             (unsigned long long)(unm_sum / n));
+    ESP_LOGI(TAG, "lat: %-6s one switch (reclaim+release pair): ~%llu us median",
+             label, (unsigned long long)(map_med + unm_med));
+}
+
+void art_bank_lat_probe(void)
+{
+    const esp_partition_t *part = art_bank_partition();
+    if (!part) {
+        ESP_LOGE(TAG, "lat: no \"%s\" partition — flash the partition table first",
+                 ART_BANK_PARTITION_NAME);
+        return;
+    }
+    ESP_LOGI(TAG, "lat: start — primary %u B (%u pages, %s); budget %u of %u pages; %u iters/bank",
+             (unsigned)art_bank_bytes(), (unsigned)art_bank_pages_for(art_bank_bytes()),
+             art_bank_ready() ? "resident" : "MAPPING FAILED, measure degraded",
+             (unsigned)ORB_ART_PAGE_BUDGET, (unsigned)ORB_ART_DROM_PAGES, LAT_ITERS);
+    lat_bench_bank(part, LAT_BANK_OFF_FLAG,  LAT_BYTES_KIT3,    "kit3");
+    lat_bench_bank(part, LAT_BANK_OFF_FLAG,  LAT_BYTES_D10,     "d10");
+    lat_bench_bank(part, LAT_BANK_OFF_SMALL, LAT_BYTES_PRIMARY, "avkit");
+    ESP_LOGI(TAG, "lat: done — %u banks accounted (%u art pages; every lat bank unmapped, primary intact)",
+             (unsigned)orb_art_resident_count(), (unsigned)art_bank_mmu_pages());
+}
+#endif /* ORB_ART_LAT_PROBE */
 

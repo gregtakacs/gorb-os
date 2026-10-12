@@ -64,6 +64,29 @@ These are decided. An implementer who disagrees edits this table, not the code.
 | C12 | Arena exhaustion | Evict least-recently-visible, log it |
 | C13 | Vocabulary freeze | **Ratified 2026-10-11.** The whole vocabulary is OS-frozen, none of it is app-extensible: all 4 `KINDS` (window, strip, ring, flare), all 9 `FLAGS` bits, and the 17 `SOURCES` are OS-owned names resolved through one internal table fed by the `time` and `config` capabilities. An app declares which frozen names it uses; it cannot add one. Only `text` needs a config grant (it reads an app's own NVS keys). `battery` and `power_reserve` stay reserved and unimplemented — no power source is wired, so the bake tool must refuse them. The 12 calendar sources plus `none`/`value` are OS-internal to the clock's own theme schema and need no per-app grant at all |
 
+### 0.2 Owner's ruling, 2026-10-12 — the clock app's bundled default art
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D10 | Whose art boots the clock | **The OS ships no art.** The clock app carries its own bundled default artwork, ingested from the SD card. The authoritative source is committed at `assets/sources/clock-app-default/`: the Design ID `WCD5-W1sic2…` (full string in that folder's `DESIGN_ID`), its compiled container `clock_app_default.orbtheme`, and the Watch Composer layer kit `skeleton_theme.zip` that the ID refers to. Until P4/P6 ship the `.orbapp` container and the `apps`-partition ingest, this art is **recorded, not wired**: it does not touch the boot path, and the compiled-in `assets/clock_assets.{bin,h}` pair stays the sole card-less boot fallback (section 1.1). |
+
+This container is validated, not assumed. `tools/orbtheme.py read_container` passes both CRCs; `unpack_geom` yields the geometry the Design ID describes — hands `show=[1,1,0,1,0]`, 8 GIF frames at `tick_rate 4`, 128 delta rects, 0 tourbillon, and 2 rotating-second `aux` records (the c2 enamel subdial's seconds hand). Art is 2,650,159 B = 41 pages, inside the `SLOT_CAP` (0x400000) and the 234-page budget `tools/host_art_residency_test.py` pins. `skeleton_theme.zip` is byte-identical to the owner's source (sha256 `95aa5d3a4b646d9e80c63e75a118778d548cb7a46d0fab7e90b482a6c5614d38`); its `manifest.json` carries the same `WCD5-…` ID. The Design ID holds a *reference* to the art, never the bytes (composer help, `Watch Composer.dc.html`); the layer kit holds the bytes.
+
+Three facts for whoever wires this at P6. The container's slug and title are `skeleton`, which collides with the theme already installed under that slug on orb-A's card — it cannot go on a card as-is under that name. The committed container has never rendered on hardware: routine `serflash.sh` reflashes push only the app, never the `assets` partition, and the slot headers validate before the fallback is reached. And no tool converts a finished container back into the compiled-in `clock_assets.{bin,h}` pair — `bake_clock.py` regenerates that pair only from an Arduino-style `clock_style.json`/`theme.json` folder, and the composer's `orbtheme-baker.js` emits only the container. Building that reverse path, or the `.orbapp` packaging, is P4/P6 work, not this ruling.
+
+### 0.3 Owner's rulings, 2026-10-12 (second round) — closing P2's item 1
+
+The `opt_*` shell rendering is accepted as designed — the shell really does render
+what the clock answers (`menu_view.c` `PG_TOP`/`PG_APP`, §7 item 2 done, `PG_THEME`
+gone); §12.6's "NULL everywhere" row was stale and is corrected there. Three rulings
+close the item; the work order is §13.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D11 | The theme picker's commit path | **A theme pick installs and reboots, unconditionally.** The stage-then-ask flow is rejected: no pending NVS key, no "reboot now" / "keep this dial" rows, no boot-time card install. Press on a theme copies the container into the alternate slot on the worker task, verifies it from flash, marks that slot live, and asks the OS for the reboot — the pick IS the confirmation. Failure stays honest: the row answers with its reason and the device does not reboot. |
+| D12 | App option pages may nest | **Sub-menus, one level deep** (owner chose this ABI shape from the four offered). An app's option list can carry header rows that open one nested list; items live inside it, never inside each other. One ABI hook added (§1.4): `opt_kind` — `OPT_ROW` / `OPT_GROUP` / `OPT_ITEM`, contiguous-section convention, NULL hook = today's flat page. |
+| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. |
+
 ---
 
 ## 1. The line, drawn at today's files
@@ -92,7 +115,7 @@ Today the OS reaches into the clock by name. `input_router.c` hardcodes `INPUT_S
 
 | Area | Code to move |
 |---|---|
-| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t` |
+| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t`. The clock app's own bundled default (ruling D10) is the Design-ID-sourced container committed at `assets/sources/clock-app-default/` (§0.2) — recorded now, wired by P6 once `.orbapp`/`apps`-partition ingest exists |
 | Scene and geometry schema | `clk_theme_t`, `clk_bg_rect_t`, `clk_comp_t`, `clk_aux_t`; the `THEME_FIELDS`/`COMP_FIELDS`/`AUX_FIELDS` wire lists; `theme_schema.py` SOURCES/KINDS/FLAGS; `GEOM_ABI` |
 | Time to hand math | `hand_angles` (hour/min/sec mapping, sweep phase, railway, `second_sweep`/`tick_rate` policy), `s_bt_ctr`, `s_bt_frac` |
 | Tourbillon | `tourbillon_advance`, `tourb_chords`, `tourb_stamp_pose`, `tourbillon_ink_mark`, `tourb_mark`, frame-bank selection |
@@ -130,8 +153,12 @@ The ABI is a small struct of function pointers, all called on the LVGL task, whi
       void      (*service)(orb_app_t *);   /* reap its own worker jobs, even parked */
       /* Options, one face per app (B1). The OS renders the page; the app answers
        * the rows. This is also how the clock app supplies its theme picker (B2):
-       * the OS owns the list, the app owns what the list means. */
+       * the OS owns the list, the app owns what the list means. Single-level
+       * nesting per D12 (§0.3): a GROUP row opens the run of ITEMs beneath it,
+       * the shell hides those ITEMs until the group is open, and a NULL opt_kind
+       * is the whole pre-D12 flat page. The shell validates the convention. */
       int       (*opt_count)(orb_app_t *);
+      orb_opt_kind_t (*opt_kind)(orb_app_t *, int idx);  /* ROW | GROUP | ITEM (D12) */
       const char *(*opt_label)(orb_app_t *, int idx);
       const char *(*opt_value)(orb_app_t *, int idx);   /* rendered after the label */
       void      (*opt_inc)(orb_app_t *, int idx, int32_t steps);
@@ -413,7 +440,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12) — the carousel, the `opt_*` shell rendering and M3 are still open, and M1 re-run on hardware (§12.7)** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11, hardware-verified 2026-10-12 (§12.8), and its settle window replaced by the hand-measured two-window rule 2026-10-12 (§12.9); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering landed and was accepted 2026-10-12 under rulings D11-D13 (§0.3), executed as §13; M3 is still open** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -431,7 +458,7 @@ Rulings B1–B5 and C1–C12 are in section 0.1 and are not open questions. What
    the MMU's true refusal point (the probe never reached it — §11's third finding),
    which M3 measures with a second partition.
 2. **The behaviour vocabulary's first cut.** Which `CLK_KIND_*`/`CLK_SRC_*` become the OS's registered kinds, and which stay clock-app-private. `theme_schema.py`'s SOURCES/KINDS/FLAGS is the inventory; naming the subset is a P0 paper task, not a code one, and it is the last thing that must be agreed before the ABI is frozen.
-3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
+3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). Ruling D10 (§0.2) settles the clock's own default art: the OS ships none, and the clock app's bundled default is the Design-ID-sourced container at `assets/sources/clock-app-default/`, recorded now and wired by P6. If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
 4. **NVS quota per app** against the 24 KB `storage` partition with `string` settings enabled (C9) and 8 apps allowed (B5): the byte budget is a number to be chosen at P3 with the real key shapes in hand, then enforced at install.
 
 ---
@@ -676,6 +703,47 @@ book+map); shipping-image boot re-captured after the flip-back — no `m2:` line
 same primary map line, same dial ramp. The aviator swap in `assets/` remains
 uncommitted and unrelated, as filed under P1.
 
+**Reclaim latency: measured on the bench, probe compiled out afterwards (2026-10-12, `0623239-dirty`).**
+The Step-5 owner question — release an app's `art_bank_map_extra` reservation on
+suspend (release) or carry it while parked (carry) — turned on an unmeasured number:
+what does the re-claim actually cost? `ORB_ART_LAT_PROBE` (art_bank.h, the same
+one-line switch as `ORB_ART_M2_PROBE`) times `art_bank_map_extra()` (the reclaim a
+resume runs) and `art_bank_unmap_extra()` (the release a suspend runs) over 31
+map/unmap pairs per bank, at page-aligned offsets clear of the primary, fully
+unmapped between samples so every timing is a cold re-claim. Boot log, verbatim:
+
+    I (955)  art_bank: lat: start — primary 1855055 B (29 pages, resident); budget 234 of 256 pages; 31 iters/bank
+    I (974)  art_bank: lat: kit3    59 pages  3768 KB | RECLAIM map_extra   min    305 median    316 max    403 us  (~5 us/page median)
+    I (975)  art_bank: lat: kit3    59 pages  3768 KB | RELEASE unmap_extra min    250 median    265 max    326 us  (mean 266 us)
+    I (975)  art_bank: lat: kit3   one switch (reclaim+release pair): ~581 us median
+    I (994)  art_bank: lat: d10     41 pages  2588 KB | RECLAIM map_extra   min    302 median    318 max    409 us  (~7 us/page median)
+    I (995)  art_bank: lat: d10     41 pages  2588 KB | RELEASE unmap_extra min    249 median    269 max    335 us  (mean 270 us)
+    I (995)  art_bank: lat: d10    one switch (reclaim+release pair): ~587 us median
+    I (1019) art_bank: lat: avkit   18 pages  1146 KB | RECLAIM map_extra   min    458 median    508 max    555 us  (~28 us/page median)
+    I (1019) art_bank: lat: avkit   18 pages  1146 KB | RELEASE unmap_extra min    213 median    241 max    268 us  (mean 237 us)
+    I (1020) art_bank: lat: avkit  one switch (reclaim+release pair): ~749 us median
+    I (1020) art_bank: lat: done — 1 banks accounted (29 art pages; every lat bank unmapped, primary intact)
+
+The answer to the owner question is unambiguous on the latency axis: **every op is
+sub-millisecond** — worst observed single op 555 µs, worst reclaim+release *pair*
+(one suspend, one resume) ~749 µs. The cost is dominated by the fixed
+cache-invalidate/MMU-walk, not the page count: `esp_partition_mmap` installs the
+bank's page-table entries and copies nothing (no CRC in this path), so a 59-page
+reclaim (316 µs) is *faster* than an 18-page one (508 µs) — the small bank mapped
+last, into a more-churned MMU free-list, and absolute µs tracks allocator state, not
+size. Read against §12.7's M1 figures this is noise: an app already activates in
+63-87 ms and the dial's own return is 411-476 ms, so the ~0.3 ms the release choice
+adds on suspend and ~0.3 ms on resume are ~0.4% of an app-switch and ~0.07% of a
+dial-return. **Reclaim latency is not a reason to carry.** The real cost of release
+is therefore not µs-on-the-glass; it is the budget-pressure failure mode (§12.4: a
+re-claim that returns NULL under pressure paints garbage) and the headroom carry
+would consume (§12, the 234-page budget that M2 watched refuse at 206). The
+`lat: done` line proves the probe is self-cleaning — every bank it mapped it
+unmapped, MMU back to primary-only (29 pages) — and the same boot's `clock 12 fps`
+lines after it confirm the dial runs at tempo untouched. `idf.py build` clean under
+`-Werror` at the probe both 0 and 1; shipping-image boot re-captured after the
+flip-back — no `lat:` lines, same primary map, same dial ramp.
+
 ---
 
 ## 12. P2's first half — the app registry lands (2026-10-11)
@@ -756,6 +824,21 @@ been fencing off since it was written. `activate` returning non-NULL is not
 enough; an unimplemented `resume` had to be caught by something other than the
 glass.
 
+**The release-vs-carry question (the residual on this step), now closed with a
+measured number and a test.** The suspend path releases a banked app's secondary
+(`app_art_release`, `orb_app.c`); the alternative was to carry it while parked,
+sidestepping the re-claim that can fail above. Measured on the bench (§6,
+`ORB_ART_LAT_PROBE`), re-claiming a flagship is ~320 µs and a full suspend+resume
+pair ~580-750 µs — sub-millisecond, ~0.4% of an app switch's 63-87 ms, so latency
+is not a reason to carry. **Owner ruling 2026-10-12: keep release-on-suspend.** The
+parked app holds no MMU pages (so a banked app is never refused because a parked
+one is squatting the window), and the cost is the NULL-reclaim branch below, which
+is now pinned on the host by `tools/host_app_registry_test.py` — the app left ON the
+glass ends with `art_slot == -1` after a switch whose rollback also fails, the
+`art_bank_extra_ptr(-1)` garbage paint `art_bank.h` fences off, asserted rather than
+only logged. It stays dead code for the shipping path until P4's first banked app
+(§12.5), but the registry's handling of it is now covered.
+
 ### 12.5 Two findings this step settled
 
 **`art_bank_extra_ptr()` has no shipping consumer yet, and will not get one from
@@ -784,14 +867,22 @@ makes it observable.
 
 | Item | Note |
 |---|---|
-| Text carousel (C5) | The shell's own chrome, between apps, 400 ms settle before it accepts input (C1). First real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
-| `opt_*` through the shell (B1/B2) | The hooks are in the ABI and NULL everywhere; the clock's settings tiles are still painted by its own view code until the shell renders them |
+| Text carousel (C5) | **DONE on hardware 2026-10-12 (§12.8), ratified and re-specified by the owner's hand the same day (§12.9)**: a burst inside the settle window costs ONE activation and ONE full-page commit, detents spaced beyond the READ window cost one each, and a press commits a named peek instantly. The single 400 ms window of §12.8 is gone — measured read-pauses (510-1936 ms) made it commit under the reader. Its first real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
+| `opt_*` through the shell (B1/B2) | **Shell rendering DONE and accepted 2026-10-12 (§0.3 D11-D13).** This row's earlier claim — "NULL everywhere; tiles painted by the clock's own view code" — was stale when written: the clock implements all six hooks (`clock_themes.c:184-263`), the shell renders them (`menu_view.c` `PG_TOP`/`PG_APP`, §7 item 2 done, `PG_THEME` gone from the enum, menu list and knob walk share one table order), and `host_menu_test.py` exercises the path. What closed the item were the owner's three follow-up rulings — unconditional install-and-reboot on pick (D11), one-level sub-menus (D12), default-theme slot protection (D13) — which shipped as §13 |
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
 | **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
+| **Clock app bundled default (P2 clock theme-options E2E)** | **Owner ruling D10 (§0.2), 2026-10-12.** The OS ships no art; the clock app carries its own bundled default, ingested from the SD card. Its source of truth — Design ID `WCD5-W1sic2…`, the compiled `clock_app_default.orbtheme` (both CRCs verified through `tools/orbtheme.py read_container`), and the `skeleton_theme.zip` layer kit the ID refers to — is committed at `assets/sources/clock-app-default/`, byte-identical to the owner's originals. It is **recorded, not wired**: booting it as the clock's art needs the P4/P6 `.orbapp` container, the `apps`-partition ingest, and a container→`clock_assets.{bin,h}` reverse tool that do not exist yet. Its slug `skeleton` also collides with orb-A's installed card theme, so a card install under that name is refused by the duplicate-slug check. The compiled-in `assets/clock_assets.{bin,h}` pair (av-kit) stays the card-less boot fallback and has never itself rendered on hardware — slot headers validate first |
 
-M1 is captured (§12.7), so the registry is host-proven and hardware-proven. What
-keeps P2 open is the carousel, the `opt_*` shell rendering, and M3.
+M1 is captured (§12.7) and the carousel is captured (§12.8), so the registry is
+host-proven and hardware-proven, and C5's deferral is hardware-proven. The `opt_*`
+item is **accepted** (D11-D13, §0.3; work order §13). What keeps
+P2 open is M3. The pass line's third clause, "the
+carousel survives a disable/enable cycle," is **not testable at P2 and is not a
+blocker**: the registry exposes no enable/disable/set-failed entry point at all
+(`orb_app.h`'s surface is init/activate/arm/service/opt), `enabled` is a plain
+field written from the compiled table, and `orb_app.h:129` defers `enabled` and
+`failed` to P4. The clause belongs to the P4 catalog, where the state exists.
 
 ### 12.7 M1 re-run against the registry — captured 2026-10-11, `8535154`
 
@@ -850,3 +941,453 @@ echoing the caller's value. The registry costs **2,256 B** of app image
 fixed sleep. The dial auto-dims at 60 s on this build, so the usable lit window
 is t≈12-58 s; every figure above is from that window, and `frames` in each fps
 line is a one-second count, not the cumulative total.
+
+---
+
+### 12.8 C5's carousel on hardware — captured 2026-10-12, `71947dd`
+
+The ruling-C5 promise is that a flick costs one full-page commit instead of one
+per detent. `host_carousel_test.py` proved it against a synthetic clock and
+stubbed leaves; this proves it on the board, driving the shipping build through
+`tools/bench/carousel_bench.py`. Detents are fired as separate
+`GET /api/v1/screen?turn=+1` requests, which reach the router through
+`input_router_inject()` — the same fold the encoder's own detent uses
+(`input_router.c:202`) — so from the fold down the path is the shipping one: real
+LVGL task, real registry, real display, and the commit count read from the
+router's own M1 probe line (`input: switch X -> glass +N ms: N commit(s)`).
+
+Run: orb-A (`44:bd:8d:60:80:88`, ARP-confirmed by the tool's own gate), `fw
+71947dd`, slot ota_0, `art_banks 1`, `art_refusals 0`, rssi -56 to -69 across
+three passes. The tool reads the two constants under test **from the device's
+boot log** (`chip ready (settle 400 ms)`, `router running (poll 10 ms, 3 walkable
+app(s))`), so if `ORB_CAROUSEL_SETTLE_MS` changes the control case moves with it
+instead of silently testing a window the board does not use. Exit 0, all cases
+held.
+
+| Case | Detents | Device-side gap | Activations | Commits | Glass |
+|---|---|---|---|---|---|
+| coalesce-2 | 2 | 97-206 ms | **1** | **1** | 73-80 ms |
+| coalesce-w+1 | 4 | 148-247 ms | **1** | 1 | 74-80 ms |
+| wrap-w | 3 (= walkable) | 105-209 ms | **0** | — | — |
+| control-2 | 2, spaced beyond window | 635-720 ms | **2** | 1 / 1 | 67-77 ms |
+| control-3x600 | 3, spaced beyond window | 726 ms | **3** | 1 / 1 / 1 | 64 / 70 / 294 ms |
+| hold-c8 | long-press from `color_picker` | — | lands on **`clock`** | 1 | 315 ms |
+
+The differential is the whole result. Two detents inside the window: one
+activation, one commit. The same two detents spaced past the window: two
+activations, two commits. Without the control, an infinite window (never
+switches) and a zero window (switches every detent, i.e. the pre-carousel
+behaviour) would both pass the coalesce row. Five tight detents also cost one
+activation, after one mid-burst wrap-cancel.
+
+**Falsification checked, not assumed.** Forcing the control's spacing inside the
+window (300 ms) must break the suite, and it did: `control-2 ... acts=1 want 2 |
+FAIL`, exit 1. A second guard proved itself unprompted — one pass returned `VOID
+(HTTP jitter pushed detents to 446 ms)` rather than claiming a coalesce it had not
+tested. That matters because HTTP round-trip at bench rssi is the noise floor: a
+requested 25 ms spacing arrives as 92-446 ms apart, so the x-axis is the device's
+own `synthetic turn` timestamps and a drifted burst is voided, never passed.
+
+**Bracketing the window.** Coalesced at gaps up to 326 ms observed; split at 510 ms
+and above. Both straddle the coded 400 ms, so the constant behaves as written. The
+bracket is ~180 ms wide because of the HTTP jitter above, which is why this
+**cannot** ratify the number — see the limit below.
+
+**Two findings the pass produced.**
+
+1. **A full-circle flick does nothing, by design.** With three walkable entries
+   (`clock → color_picker → menu`), a burst of exactly three names its way back
+   onto the entry already on the glass, and `orb_carousel.c:164` cancels rather
+   than commit a phantom switch — `wrap-w` prints 0 activations and one
+   `cancelled on … — no switch`, and the hops counter resets. The host suite already
+   pinned the no-phantom rule; what is new is the ergonomic consequence the table
+   makes visible: on a three-app carousel, a three-detent flick returns the user
+   exactly where they started. Correct, but worth knowing before a fourth app is
+   not in the table.
+2. **Switch cost reproduced, dial return still the outlier.** Picker and menu
+   activate in 63-83 ms against §12.7's 63-87 ms, so the carousel added nothing to
+   the switch. The clock's own return is the expensive one again: 294-315 ms here,
+   411-476 ms in §12.7 — the dial's full-page commit, not the switch.
+
+**What this run cannot say, stated by evidence.** Synthetic turns bypass the
+encoder: `/api/v1/status` reads `raw 0, det 0, spd10 0, vhits 0, shits 0` after the
+31 injected turns of the first pass, while the walk visibly happens. Injection
+enters at `input_router_inject()`, downstream of `knob.c`'s valley/bounce logic, so
+**the gap distribution of a real hand is not measurable this way**, and the 400 ms
+window is therefore still un-ratified against fingers. It is derived from
+`KNOB_SETTLE_MS` (30 ms, `knob.c:82`) and the picker's `VEL_IDLE_US` (220 ms), not
+measured — `orb_carousel.c:40-47`'s own note, flagged "not owner-ratified" when the
+module landed. Ratifying it needs a hand on the knob while the encoder telemetry is
+read, which is a two-minute ask rather than an engineering task.
+
+**That two-minute ask was made the same day, and it killed the single window.**
+The hand measurement, its verdict, and the two-window replacement that stands in
+the shipped code today are §12.9. Nothing in this section's bench record is
+withdrawn — every case it lists still passes — but "still un-ratified" in the
+paragraph above is now history: the number was ratified, found wrong at human
+speed, and replaced.
+
+Health: zero `Guru`/`abort()`/watchdog, zero `no display commit within` (the
+parked beat was never leaked — the commit handover and the cancel-unpark both held
+across 46 fired detents), and the dial resumed its 10-15 fps baseline after the
+run. The device was re-flashed to `71947dd` first: it had come up on
+`8eb4bf0-dirty` (branch `main` plus uncommitted edits), which the `serflash.sh`
+audit caught as a stamp mismatch before anything was written.
+
+### 12.9 The settle window, measured on a hand — 2026-10-12, ruling A+B
+
+§12.8 closed with one debt: 400 ms was arithmetic, not a feeling. The owner turned
+the knob on orb-A while `tools/orb_watch_ser.py` captured the carousel's own
+`peek`/`settle`/`cancelled` lines — the timestamps are the device's, so the
+numbers below carry no host-side clock — across two passes, with encoder
+telemetry confirming a real hand each time (`det -16, spd10 42, shits 0`;
+injection would show zeros, §12.8's proof). Logs: `/tmp/hand_flicks_20261012.log`,
+`/tmp/hand_flicks_20261012b.log`.
+
+**The measurement.** Pass 1 was free-style: 12 detents, every inter-detent gap
+510-1266 ms, every one committed alone — coalescing never once engaged at human
+speed, and the feature was a no-op for exactly the use it exists for. Pass 2
+split the two regimes deliberately: 3 fast flicks of 3 detents each, and a slow
+walk of single detents with a read-and-decide stop at each.
+
+| Regime | Gaps observed (ms) | Against the old single 400 |
+|---|---|---|
+| Fast flick, detent-to-detent | 33-157 (n=9) | coalesces, 2.5x headroom |
+| Slow read-stop, detent-to-detent | 510-1936, median ~1000 (n=24 both passes) | every one committed early, under the reader |
+| peek -> commit latency | 400-408, all 19 commits | the timer itself is faithful |
+
+The medians of the two regimes sit 15x apart, and the closest pair (157 vs 510)
+still bracket 3x. **No single number can serve both**: any window above the
+longest read-pause taxes every clean flick by ~2 s (past the ~1 s
+feels-dropped line, and past the host suite's own `<= 800` ceiling); any window
+below it dumps the reader onto an entry mid-decision — which is what the hand
+experienced at 400. An earlier 800 ms compromise from this thread is withdrawn:
+it coalesced the pass-1 gaps only by treating the reader's pauses as bursts, and
+still committed early on the 1266-1936 ms tail.
+
+**Owner ruling A+B.** (A) two windows, chosen per detent by the gap that
+precedes it; (B) press-to-commit, so nobody waits on a timer they have already
+beaten. B turned out to be already shipped — `input_router.c`'s "that one, now"
+branch has committed a named peek on press since P2 — but no bench had ever
+exercised it; it is now (press-1 below). The owner's same-day follow-up turned
+the press from commit into **enter**: rotate to name, press once, and you are
+inside the named app — the commit path calls `arm_current()` on the switched
+entry, so the HSB editor or menu list opens with the same press (the state a
+press on an already-showing screen produces; the dial stays inert because it
+has no armed view). The auto-commit at window expiry deliberately does NOT
+arm — an expiry that entered would make every settled switch a room the user
+cannot turn the knob out of, so the bench asserts the absence of `armed` on
+the coalesce/control cases and its presence, name-matched to the activation,
+on press-1. Arming happens only when the switch landed: a refused
+`set_screen` leaves the old view unarmed, because arming it would arm a
+screen the user never named.
+
+**The shipped rule** (`main/app/orb_carousel.c`):
+
+| Constant | Value | Protects against |
+|---|---|---|
+| `ORB_CAROUSEL_SETTLE_MS` | 400 | in-burst commit delay; floors: encoder 30 ms recovery, picker 220 ms velocity-idle, 2.5x widest flick |
+| `ORB_CAROUSEL_BURST_GAP_MS` | 300 | the classifier, cut between the two regimes (157 < 300 < 510), strictly-under comparison |
+| `ORB_CAROUSEL_READ_MS` | 2000 | the hold for a detent that landed after a pause — or alone, a pause the shell never saw end; covers the 1936 ms observed max |
+
+A lone first detent is deliberately a read, not a burst: the walk-away case pays
+2 s for a switch nobody is waiting on, and the reader who has finished presses.
+`cancel()`/`commit()` reset the classification, so the first detent of the next
+gesture is a new gesture — pinned by a host case, because a predicate placed
+after the pending assignment silently makes every detent look in-burst.
+
+**Tests.** `host_carousel_test.py` gained the two-regime re-arm (fast window
+counted from the in-burst detent itself), the read-window walk (1000 ms pause:
+not due at 2999, due at 3000, walk continues from the named entry), the exact
+`BURST_GAP` boundary direction, the post-cancel new-gesture rule, and bounds
+tying all three constants to the measured regimes (`157 < GAP < 510`,
+`READ >= 1936`, `READ <= 2500`). All 11 host suites green.
+
+**Bench re-pin and the pass run.** The board now publishes all three windows in
+one boot line (`chip ready (settle 400 ms, read 2000 ms, burst gap 300 ms)`),
+and the bench takes its case spacing from the device, never from this file. The
+control moved beyond the READ window (detents spaced between the two windows
+coalesce legitimately now — a control that coalesces is not a control), the
+tight-burst VOID re-pinned to the burst gap, the control gained its own VOID
+for jitter that failed to clear READ, and `press-1` landed: one detent, a press
+0.6 s later, the activation TIMED to prove the press pre-empted the auto-commit
+(a count alone cannot tell them apart). 2026-10-12, `6188cd1-dirty`, orb-A,
+rssi -58: coalesce-2 `seen 215, 1 act, hops 2, glass 87 ms`; coalesce-w+1
+`seen 165, 1 act`; wrap-w `0 acts, 1 cancel`; control-2 `seen 2494, 2 acts,
+71/83 ms`; hold-c8 lands clock; press-1 ok. All assertions held. With
+rotate-press-enter the same seven pass on `e2926c2-dirty` (rssi -61): press-1
+`1 act, armed color_picker`, control-2 `2 acts, no armed line` (the negative
+arm pin), coalesce-w+1 `peeks+canc == 4 steps`. The tight-burst VOID earned
+its keep in between: one run delivered only 3 of coalesce-w+1's 4 requests —
+two HTTP arrivals clustered into one poll lose the extra step to the
+one-step-per-poll rule — and was reported VOID, not passed and not failed.
+
+**Precondition fixed on the way: the association wedge.** Three bench boots in
+a row went network-dead for minutes at ~7.4 s, recovered only by pulsing EN.
+The capture named the mechanism exactly: the self-inflicted reason-3 leave at
+boot arms a 5 s retry; the association then reaches `run`; the uncancelled
+timer fires `esp_wifi_connect()` into the live-but-unleased station, gets
+`ESP_OK`, and destroys the association with no event left to re-arm the ladder
+— both old guards (`s_sta_up`, `s_provisioning`) are false in that window by
+definition. The fix (`main/net/orb_net.c`): a new `WIFI_EVENT_STA_CONNECTED`
+handler cancels a pending retry at the association (not at the lease — the
+unleased window is where the wedge lived) and arms a 15 s lease watchdog;
+`NET_CMD_CONNECT` grew `s_associated` to its guard via the pure
+`connect_attempt_is_moot()`; a stalled association is dropped the honest way
+(`lease_watch_should_drop()` + `esp_wifi_disconnect()`) so the existing,
+host-tested ladder retries from a real DISCONNECTED. Both predicates are
+truth-tabled in `host_tz_test.py` alongside the ladder they complete. The pass
+run above completed its own port-open boot with no wedge and no EN pulse.
+
+**Caveats before this is called final.** n=1 person, one device, three walkable
+entries — the 510 ms floor of the read regime especially needs a second hand
+before sign-off (a fast reader could classify their own pauses as bursts and
+get the 400; the press path caps the damage either way). The beat parks for up
+to READ_MS after the last detent, so a deliberate slow walk keeps the clock
+frozen ~2 s after the final stop; the idle-dim and every knob event bound it as
+before. §12.8's ergonomic finding stands under the new windows: a three-detent
+flick still wraps and cancels on a three-app table — correct, and now visibly
+named three times before it does.
+
+## 13. Work order — closing P2's item 1 under D11/D12/D13 (2026-10-12)
+
+Owner-ratified scope; the rulings are §0.3, the ABI shape is §1.4. Three
+deliverables, one or more commits, all before P2's `opt_*` item is called done.
+Nothing here opens a question the owner has not already answered; the only
+implementation latitude named below is flagged as such.
+
+### 13.1 The defect being fixed (found by the owner's hand, confirmed in code)
+
+`orb_theme.c` keeps two art slots, A at partition offset 0 and B at 0x400000,
+each 4 MB (`SLOT_CAP`). `idf.py flash` writes the factory default bank at
+offset 0 — inside slot A — and `use_baked_in()` draws the card-less fallback's
+pixels from that same region. `target_slot()` protects the default only in the
+never-installed state (both-invalid picks B): once slot B holds the first card
+install, slot A reads invalid (a raw bank has no slot header), and the
+`a->valid ? B : A` line aims the next install at A. The second pick therefore
+erases the default and the fallback together; the "both live: replace the
+older" branch that would honor the function's own comment never runs. The
+pending NVS key makes it worse than one loss: a staged install survives into
+whichever boot applies it, and the two ask-rows put the recovery decision on
+the glass.
+
+### 13.2 D13 — slots become what the owner said they were
+
+**A is the default's permanent home; B is the only install target; the NVS
+key records a choice, not a pending operation.** Concretely:
+
+- `target_slot()` is deleted. `copy_into()` always receives `SLOT_B_HDR`.
+  The erase-before-header discipline (the old header stays valid until the
+  new one is ready) and the read-back verification stay exactly as they are —
+  they are the reason a failed copy costs a row message and not a brick.
+- Replace `THEME_NVS_PENDING` ("install this at next boot") with
+  `THEME_NVS_LIVE` = `"default" | "card"`: which slot the dial draws. No
+  install is ever deferred to boot — if the NVS says `card` but slot B fails
+  verification at boot, boot falls back to the default with its damage row
+  shown, because B's bytes were verified when written and anything else is
+  corruption, not a pending state. The `THEME_MAX_FAILS` ladder and the
+  boot-time card-open/copy path in `orb_theme_boot()` are deleted with it:
+  the boot path resolves, it never installs from the card again.
+- Picking the default is `live=default` + reboot: no card access, no copy.
+  The picker must list a **Factory default** row (first row, title from the
+  compiled pair, value `on the dial` when live) even when the card holds
+  nothing — until D10's `.orbapp` wiring ships, its source is the flashed
+  bank at offset 0, not the SD container.
+- Pin in `host_tz_test.py` (next to the ladder's existing tables): the
+  boot-resolve predicate, live-key x B-valid/B-corrupt x fallback, and
+  `install_target() == SLOT_B_HDR` unconditionally.
+- The debug HTTP surface must stop offering the old path: `h_theme_stage`
+  (`POST /api/v1/sd/load?name=`) calls the same worker entry the picker
+  posts, and `/api/v1/sd/unstage` disappears with the pending concept; the
+  PWA's "staged … installs at the next reboot / Cancel" banner shows the
+  live choice, not a pending one. Keep one code path; the endpoint and the
+  knob must not be able to disagree about what a theme change is.
+
+### 13.3 D11 — a pick is an install, an install ends in a reboot
+
+`clock_themes_pick()` stops posting `J_STAGE`: it posts the install job (the
+worker task — multi-second SD-to-flash copy, never the LVGL task). The job
+runs the existing verify-first ladder (`card_check` → `verify_container` →
+identity → `copy_into` → partition read-back → header commit); on success it
+sets `live=card` and calls `orb_jobs_reboot_soon("theme <slug>")`. On any
+failure it returns the reason to the row's value (the `not loadable`/`why`
+rule is unchanged) and the device stays up. There is no second press to
+have faith in: the rows "reboot now" and "keep this dial", the `staged`
+field, and the `+2` in `clock_opt_count` are deleted — the count is the row
+list again, plus the Factory default row from 13.2. While the job runs the
+shell's existing busy treatment holds the page (no ghost press; the C8
+lesson: a press the firmware swallows is a press the user must be told
+about). Reboot timing stays the OS's — `orb_jobs_reboot_soon` is already
+the only door, and the delay that lets the last frame reach the panel is
+its whole point.
+
+### 13.4 D12 — one level of app-owned nesting, validated by the shell
+
+ABI: add `orb_opt_kind_t (*opt_kind)(orb_app_t *, int idx)` to the iface
+(`orb_app.h`; §1.4's paper list is its frozen text: `OPT_ROW`, `OPT_GROUP`,
+`OPT_ITEM`). A NULL hook means every row is `OPT_ROW` — the entire pre-D12
+ABI, and every existing answer; the registry wrapper defaults it like
+`orb_app_opt_label` guards. Contiguous-section convention: an `ITEM` belongs
+to the nearest preceding `GROUP`; `GROUP`s are top-level only. The shell
+(menu `PG_APP`) hides `ITEM`s while their group is closed, and validates the
+shape at entry — a leading `ITEM`, or an `ITEM` with no group, renders as
+`ROW` and logs once, because a silently invisible row is the "knob appears
+not to work" failure in list form. Inside an open group the cursor clamps
+over that group's items only; a press on a `GROUP` opens or closes it (its
+value column carries the state: `open`, or `1 of 4` naming the chosen item);
+long-press inside an open group closes it and stays on the page — homing to
+the dial remains C8's, at the router. `color_picker` passes NULL (flat page
+unchanged — the pin that the NULL default is real); the clock's rows become
+`ROW "Factory default"`, then one `GROUP "From the card"` whose `ITEM`s are
+the scanned themes: the dogfood that proves the feature.
+`host_menu_test.py` carries the shape table: group open/close, hidden-row
+renumbering across the whole page, cursor clamps on both sides, the two
+malformed-shape rows, NULL-hook regression — and the suite's mutation rule
+applies: break the validator, at least one test goes red.
+
+### 13.5 What "done" means
+
+Build clean; every host suite green; `carousel_bench.py` green (unrelated to
+themes, but the iface literal changes every registered app's table); then
+on orb-A, the owner's hand: MENU → the clock's options, enter the theme
+sub-menu, pick a card theme — the board installs, reboots itself, and
+returns on the new dial with no row ever asking; pick Factory default and it
+returns without touching the card. After both trips, the flashed bytes at
+slot A's region still hash to `assets/clock_assets.bin` (the D13 invariant
+proven on hardware, not asserted). Record the run here as §13.6 and the
+§0.3 rows are signed off. If the pick-to-reboot sequence should also ask the
+PWA for a confirm, that is a new owner question, not an implementation
+choice.
+
+### 13.6 The sign-off run, 2026-10-12, orb-A
+
+Image: the tree these three commits record, stamped `c0a224b-dirty`, audited by
+`tools/serflash.sh` (`AUDIT OK: the image's own stamp matches the working tree`)
+before the write at `0x20000`. Card: `SD16G SDHC 29.4GB @20000kHz`, four containers:
+`skeleton`, `diver`, `perpetual-calendar`, `neon`.
+
+**The owner's walk, MENU → Clock → the card sub-menu → a theme.**
+`menu: cursor MENU row 3/4: Clock`, press, then
+`menu: cursor Clock row 1/2: From the card  (1 of 4: diver)`. The items are absent from
+that page while the group is shut, and the header answers with what is on the wall. Press:
+`menu: group row 1 open: From the card`, and the page becomes rows `2/6` to `5/6`, each
+label indented, the live one carrying `(on the dial)`. Press again:
+`menu: group row 1 closed: From the card`. Both toggles are the shell's, and the app never
+heard about either.
+
+**The cursor clamps inside the group.** Five downward detents from the header stop at
+`5/6:   neon`, never at the back row. Eight upward detents stop at `2/6:   Skeleton`, never
+onto the header. A hold gives `menu: hold closes group row 1: From the card`, and the hold
+after it gives `menu: menu idle` plus `input: switch clock`: C8's escape hatch intact for
+every screen with nothing to collapse.
+
+**D11, the pick is the confirmation.** A press on `  Skeleton` and nothing else:
+`orb_theme: installed "skeleton" into slot-B in 8850 ms — the dial reboots to draw it`,
+`jobs: rebooting in 750 ms: theme install`. The board returned on the new dial:
+`orb_theme: theme "skeleton" from slot-B (chosen), 1978973 B of pixels`,
+`art_bank: bank "assets" @0x830000, 1978973 B mapped`,
+`clock: art bank mapped: 1978973 B (theme needs 1978973 B) from slot-B`. No row asked
+"reboot now" or "keep this dial" at any point, before or after.
+
+**D13, the default is a choice rather than a file.** `POST /api/v1/sd/default` gives
+`jobs: rebooting in 750 ms: theme: the factory default`, and the boot after it says
+`orb_theme: slot-B holds "skeleton" but the dial is on the factory default` beside
+`art_bank: bank "assets" @0x420000, 1173563 B mapped … from baked-in`. `/api/v1/sd` answers
+`live:"default"`, `source:"baked-in"`. The card stayed shut for that trip.
+
+**A refused install says why and changes nothing.** `POST /api/v1/sd/install?name=neon`
+carries intact checksums and one complication record with no size. That install left the dial
+where it was and answered on its own row: `/api/v1/sd` returned `try_slug:"neon"` with
+`try_why:"comp is shown but has no size"`, while `live`, `source` and `active` kept their
+previous values and no reboot was asked for. An unknown name logs
+`orb_theme: install: no such theme on the card`. A missing or traversal `name` is a 400
+before the worker hears about it: `name is missing or not a theme name`. The page confirms
+first, on both paths: `if(!confirm('Install '+n+' and …` and
+`if(!confirm('Go back to the facto…`.
+
+**The interrupted-install invariant, forced by hand.** `erase_region 0x820000 0x1000` with
+`live:"card"` (B's header gone): boot answers
+`orb_theme: no installed theme — drawing the baked-in bank` and
+`art_bank … @0x420000 … from baked-in`, and the watch still tells the time. No damage record
+is set, because an absent slot is not a damaged one. Erasing the pixels beneath a live header
+(`erase_region 0x830000 0x40000`) does set one: `source:"baked-in"`, `damage_slug:"diver"`,
+`damage_why:"the installed copy did not verify — re-install it"`, `live` still `"card"`. One
+press of Install repaired it: `source:"slot-B"`, `active:"skeleton"`, both reason fields empty.
+
+**Slot A, measured rather than asserted.** After two installs, one headerless boot, one
+corrupt-pixel boot and five reboots, the 1,173,563 B read from `0x420000` hashes to
+`f6e21a315489851461d04930752b50151a826d0a0f20e13f82dc80d389f7d0d6`, byte-identical to
+`assets/clock_assets.bin`.
+
+**Endpoints.** `POST /api/v1/sd/load` and `POST /api/v1/sd/unstage` → 404 `Nothing matches
+the given URI`. `POST /api/v1/sd/install?name=X` → 200 `{"state":"installing",…,"reboot":"automatic"}`.
+`POST /api/v1/sd/default` → 200 `{"state":"default","live":"default","reboot":"automatic"}`.
+
+**Host side.** `idf.py build` clean. `host_sd_test`, `host_tz_test`, `host_menu_test` and
+`host_app_registry_test` green, each with its `--mutations` battery reporting zero survivors,
+and `carousel_bench.py` reporting all assertions held.
+
+**Two notes for the next person at the bench.** `/api/v1/screen?turn=N` moves exactly one row
+per request, and its sign comes from `knob_row_step`, so a scripted walk sends one request per
+detent and turns negative to go down the list. The first attempt here pressed `IT_AP` three
+times believing it had reached the clock page, and the `menu: cursor …` line is what named the
+mistake. The three commits land as menu, theme, net: checked out alone, the theme commit does
+not link, because it deletes `orb_theme_stage_load()`, `orb_theme_unstage()` and
+`orb_theme_pending_slug()` while the previous commit's page and picker still call them. The API
+deletion and its consumers are one atomic change. Squash the three if a buildable `git bisect`
+matters more than the three rulings read separately.
+
+§0.3: D11, D12 and D13 signed off against this run.
+
+### 13.7 The dial that would not wake, 2026-10-12, orb-A
+
+**Report.** The owner: the dial no longer wakes from the dimmed state. Intermittent — both wake
+sources answered when tested at the bench minutes later.
+
+**Ruled out on the bench, with the log as the witness.** The dim lands: `idle_dim: armed: dim to
+20% after 60 s (knob + motion)`, then `co5300_spi: set brightness to 20% (hardware value: 51)` at
+61 s of quiet. A knob event that reaches the router restores the glass in 32 ms:
+`touch (http): 2 stamps since boot` at 300641 ms, `set brightness to 100% (hardware value: 255)`
+at 300680 ms. So the poll timer runs in the dark, the decision is right and the write lands when
+the panel is answering. One bench trap cost an hour: the orb's DHCP lease moved to
+`192.168.2.32`, and every request to the old `192.168.1.177` hung until its timeout and looked
+like a wedged device. Resolve the port and IP through `tools/orb_bind`, never from memory.
+
+**The defect.** `idle_task` committed `s_dimmed = want` *before* asking the panel. The brightness
+level is one QSPI write to the CO5300's `0x51`, `apply_level()` returned `void`, and a refused
+write only logged. One refusal and the flag says lit while the glass says 20%: no later tick
+disagrees with the flag, so the transition is never attempted again, and `per` — chosen from that
+same flag — drops to the 1 Hz lit tick, taking the 20 Hz dark accelerometer poll, and the second
+wake source, with it. `apply_level` is the file's only brightness writer and `s_dimmed` its only
+assignment, which is why this one latch is the whole story inside the module.
+
+**Fix.** `apply_level()` reports whether the panel took the write. The commit goes through
+`idle_dim_level_apply_decide(want, dimmed, wrote)` — `want` if it landed, `dimmed` if not — so the
+next tick asks again at the rate of the state the panel is actually in: a lost wake retries every
+50 ms, a lost dim every second. No new timer, no new task. The dim-only side effects (the `0x51`
+stamp the wake log measures from, the motion re-seed and run reset) now happen on a dim that
+landed. The failure line is rate-capped once per second the way the touch line is, because a dead
+panel is refused at 20 Hz.
+
+**Made measurable.** `/api/v1/status` gains `idle.writes_failed`, the refused writes since boot,
+and `tools/idle_watch.py` prints it as `wfail` and names the diagnosis when `dimmed` is stuck true
+under a climbing `stamps`. Before this, a dial that woke on the third try and a dial that never
+woke produced the same evidence.
+
+**Pins.** `tools/host_idle_dim_test.py` gains 7 commit vectors (both refused directions, both
+accepted, both no-ops, and the refused-then-accepted retry — the pair no single call can
+distinguish), 4 predicate mutants and 3 mutants of the call site, checked by a lint on
+`idle_task`'s own text: the only assignment to `s_dimmed` may be the one that asks the predicate.
+Without the lint, `s_dimmed = want;` beside a correct predicate passes every vector and returns the
+dark dial. 29 mutants, 0 survivors. All 11 host suites green, `idf.py build` clean, and the
+dim-compiled-out variant (`build_vdim`) links.
+
+**On hardware.** Flashed to orb-A (`AUDIT OK`), dim at 61 s, wake to `lit_pct=100%`, a second dim
+after it, `wfail=0` throughout — the panel is answering now, so the retry did not have to.
+
+**Limit, stated plainly.** The owner's episode was not reproduced. The CO5300's `0x51` has no
+readback, so a write the driver *reports* as taken and the panel never applies stays invisible to
+this fix; it covers the refused write, which is the failure the module could turn permanent. The
+next report reads `idle.writes_failed` before it reads the glass.
+
+

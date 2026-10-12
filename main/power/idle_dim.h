@@ -112,6 +112,21 @@ uint32_t idle_dim_clamp_timeout_s(uint32_t s);
 bool idle_dim_elapsed_decide(uint32_t now_ms, uint32_t last_ms,
                              uint32_t timeout_ms, bool enabled);
 
+/** The dimmed flag the task is allowed to hold after ONE brightness attempt:
+ *  `want` if the panel took the write, `dimmed` (unchanged) if it refused. A
+ *  refused write that is believed anyway is a dark dial that believes it is lit
+ *  -- no later tick disagrees with the flag, so the write is never retried, and
+ *  the 20 Hz dark poll that carries the motion wake stops with it. Retry needs
+ *  no timer of its own: the next tick re-asks at the rate of the state the panel
+ *  is actually in. Pinned by tools/host_idle_dim_test.py. */
+bool idle_dim_level_apply_decide(bool want, bool dimmed, bool wrote);
+
+/** Brightness writes the panel has refused since boot, on /api/v1/status as
+ *  idle.writes_failed. A retry that converges is otherwise invisible: "the knob
+ *  woke it on the third try" and "the knob never woke it" are the same story to
+ *  anyone watching the glass. */
+uint32_t idle_dim_level_write_fail_count(void);
+
 /* ---- the pure decision, exposed for tools/host_idle_dim_test.py ----------
  * A motion detector's threshold maths has to be testable without a hand on the
  * device: it is the one part of this file that can silently wake the dial for

@@ -13,24 +13,31 @@
  * pair left in place as the fallback, which is what keeps `idf.py flash` and the
  * shipped dial working exactly as they did.
  *
- * INSTALL IS A/B, INSIDE THE `assets` PARTITION. Two slots, each a 4 KB header
- * followed by a 64 KB-aligned payload:
+ * INSTALL IS ONE SLOT, INSIDE THE `assets` PARTITION (ruling D13, 2026-10-12).
+ * Two slots exist on the partition, each a 4 KB header followed by a
+ * 64 KB-aligned payload:
  *
- *     slot A  header @ 0x000000   payload @ 0x00010000
- *     slot B  header @ 0x00400000 payload @ 0x00410000
+ *     slot A  header @ 0x000000   payload @ 0x00010000   <- the default, always
+ *     slot B  header @ 0x00400000 payload @ 0x00410000   <- the only install target
  *
- * The live slot is the one whose header magic, format, geometry ABI, sizes,
- * header CRC32 and payload CRC32 ALL check, with the higher serial. Payload and
- * geometry are written and read back verified BEFORE the header, so a load that
- * is interrupted — by a power cut, by a card pulled, by a crash — leaves the
- * OTHER slot's header intact and the device boots the theme it had. That is the
- * whole reason it is two slots: one slot plus an erase is a theme feature that
- * can brick the dial of a device in a sealed case, and the dial is the product.
+ * Slot A is the raw bank `idf.py flash` writes and the bank use_baked_in() draws
+ * the factory dial from. It is NOT an install target any more, and that is the
+ * whole of D13: choosing whichever slot is not currently live used to aim the
+ * second install at A, and the second pick on a real device erased the factory
+ * default and its fallback with it. Payload and geometry are still written and
+ * read back verified BEFORE the header, so an install interrupted at any point —
+ * power cut, card pulled, crash — leaves B headerless and invalid, and the boot
+ * that follows draws the default. A is the reason that is survivable at all.
  *
- * A board flashed the traditional way (raw bank at partition offset 0, no header
- * anywhere) reports source "baked-in", reads its geometry from clock_assets.h,
- * and installs its first theme into slot B so that bank is never clobbered while
- * it is still the only thing that works.
+ * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as "default" or
+ * "card". It is not a pending operation: nothing installs at boot. Boot reads
+ * the choice, verifies the slot it names, and falls back to the default with the
+ * damage recorded when B's bytes do not match what the install checked — B was
+ * verified when it was written, so anything else is corruption, not a state a
+ * user is waiting on.
+ *
+ * A board that has never installed anything reports source "baked-in" and reads
+ * its geometry from clock_assets.h.
  */
 #pragma once
 
@@ -215,11 +222,16 @@ typedef struct {
  * clock_view.c includes the generated header first and the macro header second. */
 
 /**
- * Resolve the geometry and locate the bank to boot with; carries out any load
- * the page staged. Call BEFORE clock_view_init(), which maps the bank — a theme
- * swap is an erase-and-rewrite of a multi-megabyte region, and doing it while the
- * LVGL task is reading pixels out of that same region is how a dial ends up
- * showing half of one theme and half of another.
+ * Resolve the choice the owner made and verify the slot it names. Call BEFORE
+ * clock_view_init(), which maps the bank — this reads the same multi-megabyte
+ * region the paint path is about to map, and resolving first is what stops the
+ * dial drawing half of one theme and half of another.
+ *
+ * It resolves and verifies ONLY. Nothing installs from the card here (D13): the
+ * boot path that opened the card, copied a container and kept a retry counter was
+ * a boot that could spend seconds on a card it did not need and could be left
+ * half-installed by a power cut. Installing is orb_theme_install()'s job, and the
+ * only thing that decides when it runs is a pick.
  */
 esp_err_t orb_theme_boot(void);
 
@@ -229,15 +241,58 @@ const orb_theme_geo_t *orb_theme_geo(void);
 /** "slot-A", "slot-B" or "baked-in": what the dial is drawing from. */
 const char *orb_theme_source(void);
 const char *orb_theme_active_slug(void);
-const char *orb_theme_pending_slug(void);
+
+/** The owner's choice, as resolved at boot: "default" or "card". */
+#define THEME_LIVE_DEFAULT "default"
+#define THEME_LIVE_CARD    "card"
+const char *orb_theme_live(void);
 
 /**
- * Stage a card theme for install at the next boot. The whole container is
- * streamed and both checksums verified FIRST, so a damaged file answers with an
- * error here instead of costing a reboot into a slot that will not validate.
+ * Write the choice. Nothing else: no card, no copy, no reboot. Writing NVS can
+ * cost a sector erase, so the caller is a worker task, never the LVGL one, and
+ * the caller owns asking for the reboot (orb_jobs_reboot_soon) — this function
+ * leaves the dial drawing what it was drawing until the boot that follows.
  */
-esp_err_t orb_theme_stage_load(const char *slug);
-esp_err_t orb_theme_unstage(void);
+esp_err_t orb_theme_set_live(const char *which);
+
+/**
+ * Install one card theme into slot B: verify the whole container first, copy it,
+ * verify the copy out of the partition, then commit the header that makes it
+ * live, then set live=card. Runs the same verify-first ladder the old boot path
+ * ran, in the same order, for the same reason — a failed copy costs a row message
+ * and not a brick. Takes the card lock for the copy and writes flash, so it is a
+ * WORKER TASK call: a multi-second SD-to-flash copy on the LVGL task freezes the
+ * dial and swallows the knob. `why` receives the sentence the row shows; it may
+ * be NULL.
+ */
+esp_err_t orb_theme_install(const char *slug, char *why, size_t whysz);
+
+/** Why the choice on the wall is not what the owner picked: both are "" when the
+ *  slot boot wanted verified, and the slug of the install that did not when it
+ *  did not. The picker shows the sentence on that theme's row. */
+const char *orb_theme_damage_slug(void);
+const char *orb_theme_damage_why(void);
+
+/**
+ * Queue an install on the shell's one worker, and ask for the reboot that draws
+ * it if it lands. These are the ONLY way anything below main/ triggers a theme
+ * change: the dial's picker and the browser's Load button both post here, so the
+ * knob and the page cannot hold two opinions about what picking a theme does.
+ *
+ * Returns what the queue said — ESP_ERR_INVALID_STATE when another job is
+ * outstanding, ESP_ERR_NO_MEM when the queue refused — and never blocks, so a
+ * page handler may call it from the httpd task and the shell's poll from the LVGL
+ * one. The reason a refused install costs is in orb_theme_try_why(), which the
+ * row and the page read as one string.
+ */
+esp_err_t orb_theme_post_install(const char *slug);
+esp_err_t orb_theme_post_default(void);
+
+/** What the last pick could not do: the slug it was asked for and the sentence
+ *  the ladder answered with. Both "" after a success, and the picker puts them on
+ *  the row that was pressed rather than in a status line nothing can reach. */
+const char *orb_theme_try_slug(void);
+const char *orb_theme_try_why(void);
 
 typedef struct {
     char      slug[ORB_THEME_SLUG_MAX + 1];
@@ -247,7 +302,6 @@ typedef struct {
     uint32_t  serial;
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;
-    bool      pending;
 } orb_theme_entry_t;
 
 /**

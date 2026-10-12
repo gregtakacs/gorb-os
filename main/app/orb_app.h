@@ -36,6 +36,22 @@ struct _lv_obj_t;
 
 typedef struct orb_app orb_app_t;
 
+/** What an options row IS, for the shell's one level of nesting (ruling D12,
+ *  2026-10-12; §1.4's frozen names). The app owns this answer — the shell owns
+ *  what to do with it: which rows to draw, where the cursor may go, and whether
+ *  a group is open.
+ *
+ *  Contiguous-section convention: an OPT_ITEM belongs to the nearest preceding
+ *  OPT_GROUP, and GROUPs are top-level only — an ITEM may never sit inside an
+ *  ITEM. A page whose shape breaks that renders the offending row as a plain
+ *  OPT_ROW, because a row that is silently invisible is the "knob appears not to
+ *  work" failure in list form. */
+typedef enum {
+    OPT_ROW = 0,    /* an ordinary row: press it, spin it */
+    OPT_GROUP,      /* a header that opens or closes the ITEMS below it */
+    OPT_ITEM        /* a row inside the nearest preceding OPT_GROUP */
+} orb_opt_kind_t;
+
 /** The hooks the shell calls, all on the LVGL task. A hook an app does not
  *  need is NULL and the shell skips it.
  *
@@ -91,6 +107,15 @@ typedef struct {
     void         (*opt_inc)(orb_app_t *app, int idx, int32_t steps);
     void         (*opt_sel)(orb_app_t *app, int idx);
     void         (*opt_arm)(orb_app_t *app, bool armed);
+    /** What KIND of row this is, for the shell's one level of nesting (D12).
+     *  NULL — the entire pre-D12 ABI, and every app that has not adopted
+     *  sub-menus — means every row is OPT_ROW and the page is flat. */
+    orb_opt_kind_t (*opt_kind)(orb_app_t *app, int idx);
+    /** A long press arrived while this entry owned the knob. True means "I took
+     *  it", and the router then does NOT home — ruling D12's one exception to
+     *  C8, for closing an open option group without losing the page. NULL, the
+     *  answer of every entry with nothing nested to collapse, takes nothing. */
+    bool         (*opt_long)(orb_app_t *app);
 } orb_app_iface_t;
 
 /** How a table entry participates in the knob's carousel. */
@@ -209,6 +234,12 @@ int orb_app_opt_count(const orb_app_t *app);
  *  call: they are handed to a label, not copied. */
 const char *orb_app_opt_label(const orb_app_t *app, int idx);
 const char *orb_app_opt_value(const orb_app_t *app, int idx);
+/** What the row at idx IS (D12). A NULL hook answers OPT_ROW for every row, which
+ *  is what keeps every pre-D12 answer — including color_picker's, which declares
+ *  no options at all — the flat page it always was. An answer that is not one of
+ *  the three kinds is OPT_ROW too: an app that returns garbage gets a plain row,
+ *  not a page that hides rows the owner cannot reach. */
+orb_opt_kind_t orb_app_opt_kind(const orb_app_t *app, int idx);
 /** Rotate `steps` detents on row idx, and press it. */
 void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps);
 void orb_app_opt_sel(const orb_app_t *app, int idx);
@@ -216,6 +247,12 @@ void orb_app_opt_sel(const orb_app_t *app, int idx);
  *  displayed. The shell calls it on entry and on leave, including on the long
  *  press that goes home, so nothing can be left armed off-screen. */
 void orb_app_opt_arm(const orb_app_t *app, bool armed);
+/** Offer a long press to the entry that owns the knob, before the router spends
+ *  it on going home (C8). True means the entry took it — D12: an open option
+ *  group closed and the page stayed up — and the router must not home. Called on
+ *  the LVGL task, from the router's poll, so like every other answer here it may
+ *  not block. */
+bool orb_app_opt_long(const orb_app_t *app);
 /** True while this entry has anything to show on the options page. */
 bool orb_app_has_options(const orb_app_t *app);
 

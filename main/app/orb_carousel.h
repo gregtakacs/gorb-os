@@ -62,12 +62,17 @@ bool orb_carousel_ready(void);
  *  `step` (+1/-1, already resolved through knob_col_step — this module never
  *  reads a raw sign) and park the beat. `on_glass` is the entry currently
  *  showing; the walk continues from whatever is already named, so a burst
- *  advances instead of re-naming the same neighbour. Returns the entry now
- *  named, or NULL when there is nowhere to walk. */
+ *  advances instead of re-naming the same neighbour. The commit deadline is
+ *  chosen here, per detent: ORB_CAROUSEL_SETTLE_MS after this one when it
+ *  continues a burst (arrived within ORB_CAROUSEL_BURST_GAP_MS of the last),
+ *  ORB_CAROUSEL_READ_MS after it when the knob had gone quiet — a stop to
+ *  read, which must not switch the glass underneath the reader. Returns the
+ *  entry now named, or NULL when there is nowhere to walk. */
 const struct orb_app *orb_carousel_step(int step, const struct orb_app *on_glass,
                                         int64_t now_us);
 
-/** True once the named entry has held still for ORB_CAROUSEL_SETTLE_MS without
+/** True once the named entry has held still past the deadline step() chose
+ *  for it — the fast one inside a flick, the read one after a pause — without
  *  a further detent, which is the signal to commit it. False with nothing
  *  pending, so the caller can ask every poll. */
 bool orb_carousel_due(int64_t now_us);

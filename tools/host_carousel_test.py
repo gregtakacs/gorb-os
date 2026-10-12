@@ -28,8 +28,12 @@ What is under test
                    the glass. Restarting from the glass every call is the bug
                    this case exists for: the burst would never travel further
                    than one screen and the flick would look broken.
-  the settle       the window re-arms on every detent, so a flick the user still
-                   considers one gesture is never committed half-way
+  two windows      an in-burst detent (arrived within ORB_CAROUSEL_BURST_GAP_MS
+                   of the last) commits ORB_CAROUSEL_SETTLE_MS after itself; a
+                   detent that lands after a pause is a stop to read and holds
+                   the preview for ORB_CAROUSEL_READ_MS instead. The single
+                   400 ms window was killed by the owner's own hand (§12.9):
+                   11 of 11 hand gaps exceeded it and nothing coalesced.
   park handover    commit() clears its claim on the beat WITHOUT resuming it:
                    the activation the caller runs next owns the beat
   park honesty     cancel() resumes only a beat this module parked — on the
@@ -39,8 +43,9 @@ What is under test
                    commit a phantom switch
   no chip          if the chip was never built, step() refuses and the router
                    falls back to the immediate switch
-  the number       the settle window still clears the encoder's own recovery
-                   window (30 ms) and is not a joke
+  the numbers      the fast window clears the encoder's own recovery window
+                   (30 ms); the burst gap sits between the two measured hand
+                   regimes; the read window covers the longest pause taken
 
 Run:  python3 tools/host_carousel_test.py
 """
@@ -75,6 +80,8 @@ def lift(text, pattern, where):
 # anybody remembered a lift for it.
 BODY = lift(car_src, r"#define CHIP_W[\s\S]*$", CAR_C)
 SETTLE = int(lift(car_src, r"#define ORB_CAROUSEL_SETTLE_MS\s+\d+", CAR_C).split()[-1])
+READ_MS = int(lift(car_src, r"#define ORB_CAROUSEL_READ_MS\s+\d+", CAR_C).split()[-1])
+BGAP_MS = int(lift(car_src, r"#define ORB_CAROUSEL_BURST_GAP_MS\s+\d+", CAR_C).split()[-1])
 
 # ---------------------------------------------------------------------------
 # The leaf stubs. Each records the fact the cases below read: the calls, in
@@ -183,7 +190,7 @@ static void reset(void)
     mk(&t_menu, "menu", "Menu");
     g_ring[0] = &t_clock; g_ring[1] = &t_picker; g_ring[2] = &t_menu;
     g_ring_n = 3; g_neighbour_calls = 0;
-    s_pending = NULL; s_hops = 0; s_parked = false; s_since_us = 0;
+    s_pending = NULL; s_hops = 0; s_parked = false; s_last_us = 0; s_due_us = 0;
     g_pause = g_resume = 0; g_running = 1; g_started = 1;
     g_top = (lv_obj_t *)&chip_tok; g_shown = g_hidden = 0;
     /* Left NULL on purpose: only orb_carousel_init() builds the chip, so a case
@@ -215,6 +222,8 @@ static int g_fail;
 #define T0        1000000        /* an arbitrary session origin, in us */
 #define AFTER(ms) ((int64_t)(T0 + (long)(ms) * 1000))
 #define SETTLE    ORB_CAROUSEL_SETTLE_MS
+#define READ      ORB_CAROUSEL_READ_MS
+#define BGAP      ORB_CAROUSEL_BURST_GAP_MS
 
 int main(void)
 {
@@ -242,8 +251,10 @@ int main(void)
        g_pause == 1);
     CK("the named title reaches the label", has("text(HSB)"));
     CK("a peek shows the chip", has("show"));
-    CK("nothing is due inside the settle window", !orb_carousel_due(AFTER(SETTLE - 1)));
-    CK("and it is due the moment the window closes", orb_carousel_due(AFTER(SETTLE)));
+    CK("a lone detent is not due on the fast window — it is a stop to read",
+       !orb_carousel_due(AFTER(SETTLE + 1)));
+    CK("and it is due only when the read window closes",
+       !orb_carousel_due(AFTER(READ - 1)) && orb_carousel_due(AFTER(READ)));
 
     /* The burst: three detents, three DIFFERENT names. The walk has to continue
      * from the entry already named; restarting each call from the glass would
@@ -266,16 +277,44 @@ int main(void)
     CK("one burst asks the registry for one step per detent",
        g_neighbour_calls == 3);
 
-    /* The settle window re-arms on every detent: a flick the user still
-     * considers one gesture must never be committed half-way through. */
+    /* The burst regime: a further detent inside the burst gap is the same
+     * gesture, and its deadline is the fast window counted from ITSELF. */
     reset(); orb_carousel_init();
-    const int64_t last = AFTER(SETTLE - 30);      /* the window runs from THIS one */
+    const int64_t last = AFTER(BGAP - 1);           /* in-burst: one gesture */
     orb_carousel_step(1, &t_clock, AFTER(0));
     orb_carousel_step(1, &t_clock, last);
-    CK("a further detent re-arms the window",
-       !orb_carousel_due(last + (int64_t)SETTLE * 1000 - 1));
-    CK("and it still settles once the knob has gone quiet",
+    CK("a detent inside the burst gap re-arms the fast window from itself",
+       !orb_carousel_due(last + (int64_t)SETTLE * 1000 - 1) &&
        orb_carousel_due(last + (int64_t)SETTLE * 1000 + 1));
+    /* The read regime: a detent landing at/after the burst gap is a pause, and
+     * the entry it names must survive the reader's whole decision. This is
+     * the case the single 400 ms window failed on hardware: 11 of 11 hand gaps
+     * measured 510-1936 ms and every one committed underneath the reader
+     * (§12.9). The walk must continue from the named entry, not restart. */
+    reset(); orb_carousel_init();
+    orb_carousel_step(1, &t_clock, AFTER(0));
+    const orb_app_t *after_pause = orb_carousel_step(1, &t_clock, AFTER(1000));
+    CK("a detent after a pause continues the walk rather than restarting it",
+       after_pause == &t_menu && orb_carousel_pending() == &t_menu);
+    CK("it is not due while the reader is deciding",
+       !orb_carousel_due(AFTER(1000 + READ - 1)));
+    CK("and it settles once the read window closes",
+       orb_carousel_due(AFTER(1000 + READ)));
+    /* Boundary pin: the classifier is strictly-under the burst gap. */
+    reset(); orb_carousel_init();
+    orb_carousel_step(1, &t_clock, AFTER(0));
+    orb_carousel_step(1, &t_clock, AFTER(BGAP));
+    CK("at exactly the burst gap it is already a pause: the fast window cannot apply",
+       !orb_carousel_due(AFTER(BGAP + SETTLE + 1)));
+    /* A detent right after a cancel is a new gesture: the window the cancelled
+     * peek was holding must not leak into the next flick's classification. */
+    reset(); orb_carousel_init();
+    orb_carousel_step(1, &t_clock, AFTER(0));
+    orb_carousel_cancel();
+    orb_carousel_step(1, &t_clock, AFTER(60));
+    CK("the first detent of a new gesture gets the read window, not the burst one",
+       !orb_carousel_due(AFTER(60 + SETTLE + 1)) &&
+       orb_carousel_due(AFTER(60 + READ)));
     /* Park handover. commit() must release its CLAIM without resuming the beat:
      * the activation the caller runs next starts it against the incoming view,
      * and resuming here would put a frame of the outgoing view on the glass
@@ -342,14 +381,22 @@ int main(void)
     CK("an app with no title names itself by slug", has("text(menu)"));
     t_menu.title = "Menu";
 
-    /* The number, which the plan never ratified. It must clear the encoder's own
-     * recovery window or a detent recovered by the idle pass splits one burst in
-     * two, and it must stay short enough that a selection does not feel dropped.
-     * Both bounds are assertions so a future edit cannot drift out of them. */
-    CK("the settle clears the encoder's 30 ms recovery window with room",
+    /* The numbers, ratified by the owner's hand rather than by arithmetic
+     * (§12.9). The bounds are assertions so a future edit cannot drift the
+     * two regimes back onto each other: the fast window must clear the
+     * encoder's own recovery and stay short enough not to feel dropped; the
+     * burst gap must sit strictly between the widest flick the hand produced
+     * (157 ms) and the shortest pause it produced (510 ms); the read window
+     * must cover the longest pause observed (1936 ms) and still end. */
+    CK("the fast window clears the encoder's 30 ms recovery window with room",
        SETTLE >= 4 * 30);
-    CK("the settle is short enough not to feel dropped", SETTLE <= 800);
-    CK("the shipped number is the one the plan records", SETTLE == 400);
+    CK("the fast window is short enough not to feel dropped", SETTLE <= 800);
+    CK("the burst gap separates the two hand regimes",
+       BGAP > 157 && BGAP < 510);
+    CK("the read window covers the longest pause the hand took", READ >= 1936);
+    CK("the read window still ends — nobody reads forever", READ <= 2500);
+    CK("the shipped numbers are the ones §12.9 records",
+       SETTLE == 400 && READ == 2000 && BGAP == 300);
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;
 }

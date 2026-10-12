@@ -114,6 +114,7 @@ static const orb_app_iface_t s_clock_iface = {
     .opt_count   = clock_opt_count,
     .opt_label   = clock_opt_label,
     .opt_value   = clock_opt_value,
+    .opt_kind    = clock_opt_kind,
     .opt_inc     = clock_opt_inc,
     .opt_sel     = clock_opt_sel,
     .opt_arm     = clock_opt_arm,
@@ -181,6 +182,11 @@ static struct _lv_obj_t *menu_screen(orb_app_t *app)
     (void)app;
     return menu_view_screen();
 }
+static bool menu_long(orb_app_t *app)
+{
+    (void)app;
+    return menu_view_opt_long();
+}
 
 static const orb_app_iface_t s_menu_iface = {
     .init       = menu_init,
@@ -190,6 +196,11 @@ static const orb_app_iface_t s_menu_iface = {
     .set_armed  = menu_set_armed,
     .service    = menu_service,
     .screen     = menu_screen,
+    /* D12: the long press is offered to the page that is showing before the
+     * router spends it on going home, and the page that can spend it is this one —
+     * an app's options are drawn here, so the open group is this file's state and
+     * the app never learns it exists. */
+    .opt_long   = menu_long,
 };
 
 /* ---- the table ----------------------------------------------------------- */
@@ -612,10 +623,34 @@ void orb_app_opt_sel(const orb_app_t *app, int idx)
     app->iface->opt_sel((orb_app_t *)app, idx);
 }
 
+orb_opt_kind_t orb_app_opt_kind(const orb_app_t *app, int idx)
+{
+    /* NULL is the whole pre-D12 ABI: an app that never heard of nesting answers
+     * OPT_ROW for every row, and the page renders exactly as it did before this
+     * hook existed. The range check is the wrappers' own, not the shell's — a
+     * question about a row that does not exist must not reach an app that is
+     * counting its rows from a card walk that has not landed yet. */
+    if (!app || !app->iface || !app->iface->opt_kind) return OPT_ROW;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return OPT_ROW;
+    const orb_opt_kind_t k = app->iface->opt_kind((orb_app_t *)app, idx);
+    /* Anything that is not one of the three is a plain row. An app that answers
+     * with an uninitialised int would otherwise buy itself a page whose rows the
+     * owner can hear the knob move past and cannot see. */
+    return (k == OPT_GROUP || k == OPT_ITEM) ? k : OPT_ROW;
+}
+
 void orb_app_opt_arm(const orb_app_t *app, bool armed)
 {
     if (!app || !app->iface || !app->iface->opt_arm) return;
     app->iface->opt_arm((orb_app_t *)app, armed);
+}
+
+bool orb_app_opt_long(const orb_app_t *app)
+{
+    /* No hook means the entry has nothing to collapse, and the long press is the
+     * router's to spend on going home (C8). */
+    if (!app || !app->iface || !app->iface->opt_long) return false;
+    return app->iface->opt_long((orb_app_t *)app);
 }
 
 bool orb_app_has_options(const orb_app_t *app)

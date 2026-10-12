@@ -43,11 +43,12 @@ void clock_themes_request_scan(void);
  *  list would show a stale answer until they came back. */
 void clock_themes_service(void);
 
-/** True while a walk or a stage is outstanding, for the hint line. */
+/** True while a walk, an install or the default switch is outstanding, for the
+ *  hint line. */
 bool clock_themes_busy(void);
 
 /** The status line the last job left — why the card did not answer, or what
- *  was just staged. Empty when there is nothing to report. */
+ *  the last pick did. Empty when there is nothing to report. */
 const char *clock_themes_status(void);
 
 /** Press the row the shell's cursor is on. The shell owns the cursor, the clamp
@@ -85,6 +86,7 @@ esp_err_t clock_themes_init(void);
 int          clock_opt_count(orb_app_t *app);
 const char  *clock_opt_label(orb_app_t *app, int idx);
 const char  *clock_opt_value(orb_app_t *app, int idx);
+orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx);
 void         clock_opt_inc(orb_app_t *app, int idx, int32_t steps);
 void         clock_opt_sel(orb_app_t *app, int idx);
 void         clock_opt_arm(orb_app_t *app, bool armed);

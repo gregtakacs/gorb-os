@@ -15,6 +15,9 @@ It reports and never asserts:
   - wakes and worst_mg, the two numbers ORB_IDLE_MOTION_MG is set from. Read
     them while the face is LIT and still and you have this board's floor; shake
     the orb and you have a pick-up. The threshold belongs between the two.
+  - writes_failed, the brightness writes the panel has refused. A dial that wakes
+    on the second or third try is a dial that looks broken on the first, and this
+    is the only number that says which of the two the glass was doing.
 
 Usage: idle_watch.py [orb-ip] [seconds] [wake-after-secs|0] [trace]
   seconds      how long to watch (default: timeout + 60)
@@ -25,6 +28,10 @@ The trace is what tells the two failures of a never-dimming dial apart. If
 since_s climbs steadily and stamps stays put while dimmed never goes true, the
 policy task is not reaching its decision; if since_s keeps snapping back and
 stamps climbs, something is stamping the clock and the firmware now says who.
+The third failure of this feature is the opposite one — dimmed stuck true while
+stamps climbs — and it is a brightness write the panel refused. That case is
+visible here and nowhere else, because the firmware retries it in the dark and
+the glass simply comes back late, if at all.
 """
 import json, os, sys, time, urllib.request
 
@@ -92,9 +99,10 @@ while time.time() - t0 < SECS:
              "restarts from here" % (last_since, i["since_s"]))
     last_since = i["since_s"]
     if TRACE:
-        print("       since=%-4s dimmed=%-5s wakes=%-3s stamps=%-4s "
+        print("       since=%-4s dimmed=%-5s wakes=%-3s stamps=%-4s wfail=%-4s "
               "worst=%s/%s mg" % (i["since_s"], i["dimmed"], i["wakes"],
-                                  i.get("stamps"), i["worst_mg"],
+                                  i.get("stamps"), i.get("writes_failed"),
+                                  i["worst_mg"],
                                   i.get("worst_dark_mg")), flush=True)
 
     if i["dimmed"] and dimmed_at is None:
@@ -105,8 +113,14 @@ while time.time() - t0 < SECS:
             note("not injecting a wake (wake-after=0); turn the knob to test it")
     elif woke_at is None and dimmed_at and not i["dimmed"]:
         woke_at = time.time()
-        note("WAKE confirmed: back to lit_pct=%u%%, %.1f s after the dim"
-             % (i["lit_pct"], woke_at - dimmed_at))
+        # writes_failed is the reason a wake can be late rather than absent: the
+        # panel refusing the 0x51 write leaves the flag where it was and the next
+        # tick asks again. A wake that needed retries is the same glass as one that
+        # never came, so the count is printed with the lift it cost.
+        wf = i.get("writes_failed", 0)
+        note("WAKE confirmed: back to lit_pct=%u%%, %.1f s after the dim%s"
+             % (i["lit_pct"], woke_at - dimmed_at,
+                "" if not wf else " | %u brightness write(s) refused first" % wf))
 
     if dimmed_at and woke_at is None and WAKE_AFTER \
             and time.time() - dimmed_at >= WAKE_AFTER:
@@ -122,5 +136,10 @@ if dimmed_at is None:
 if woke_at is None and WAKE_AFTER:
     note("dimmed, but the injected detent did not bring it back inside the "
          "window - the wake path is the suspect")
+    if i.get("writes_failed"):
+        # The diagnosis this number exists for. Non-zero while dimmed is stuck
+        # true: the touch was heard, the panel never took the restore.
+        note("%u brightness write(s) refused since boot - the retry is running, "
+             "and the panel is the thing not answering" % i["writes_failed"])
     sys.exit(3)
 note("watch over: wakes=%u worst=%u mg" % (i["wakes"], i["worst_mg"]))

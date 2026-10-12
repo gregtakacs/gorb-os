@@ -10,23 +10,27 @@
  * clock, so there is exactly one way out of every state and it never depends on
  * where the user got stuck.
  *
- * Armed list: AP, TZ, THEME, DISPLAY, exit.
+ * Armed list: AP, TZ, DISPLAY, one row per app that declares options, exit.
  *   AP       prints why it is not on the dial yet (it needs a keyboard).
  *   TZ       browses the zone table in orb_net.c and applies one.
- *   THEME    lists the card, stages one, and reboots to install it.
  *   DISPLAY  the idle dim's two settings: the on/off switch and the timeout
  *            picker. Both apply immediately and persist to NVS on the worker
  *            task; idle_dim.h's settings block says why each half lives where
  *            it does.
+ *   an app   renders that app's own opt_* answers, including its one level of
+ *            groups (ruling D12). The theme picker is not a page in this file:
+ *            ruling B2 gave it to the clock app, which answers the rows and
+ *            posts its own card work; the shell only draws them.
  *   exit     back to the clock.
  *
  * Threading: every widget call in this file runs on the LVGL task, reached only
  * through menu_view_apply_input()/menu_view_service() from the router's poll.
- * The two things that can take seconds — the card walk behind orb_theme_scan()
- * and the verify behind orb_theme_stage_load() — run on a worker task of this
- * module, never on the LVGL task. input_router's poll IS the dial's animation
- * and the only input reader, so blocking it for the 38-48 s an SD upload can
- * hold the card mutex would freeze the screen and swallow the knob.
+ * Nothing in here may block: the two operations that take seconds — the card walk
+ * behind orb_theme_scan() and the SD-to-flash copy behind orb_theme_install() —
+ * are the clock app's and orb_theme's own jobs on the shell's one worker
+ * (main/app/orb_jobs.c). input_router's poll IS the dial's animation and the only
+ * input reader, so blocking it for the 38-48 s an SD upload can hold the card
+ * mutex would freeze the screen and swallow the knob.
  */
 
 #include <stdbool.h>
@@ -68,6 +72,15 @@ void menu_view_apply_input(int32_t delta, bool pressed);
  * must still land, or the list would show a stale answer until they return.
  */
 void menu_view_service(void);
+
+/**
+ * The shell's answer to a long press, offered before the router spends it on
+ * going home (ruling D12's one exception to C8). True means the press is spent:
+ * an app's option page had a group open, and the hold closed it and stayed on
+ * the page. False means this screen had nothing to collapse, and the hold is
+ * the router's to home with. Wire to orb_app_iface_t.opt_long.
+ */
+bool menu_view_opt_long(void);
 
 #ifdef __cplusplus
 }

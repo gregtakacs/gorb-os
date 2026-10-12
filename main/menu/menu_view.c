@@ -137,6 +137,20 @@ static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
 static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
 
+/* ---- the one level of app-owned nesting (ruling D12) -----------------------
+ *
+ * The app says what each row IS; this file decides what to draw and where the
+ * cursor may go. An OPT_ITEM belongs to the nearest preceding OPT_GROUP and is
+ * drawn only while that group is open, so a page of sixty rows can carry the
+ * twelve the owner is actually looking at. One group per page is the whole ABI —
+ * items never live inside items — which is what keeps a state this small: the
+ * open group's app row index, or -1.
+ *
+ * The state lives in the shell and not in the app on purpose: the app that owned
+ * the open/closed bit would own the cursor's range too, and §13.4 spends its
+ * existence on making sure the app never does that. */
+static int  s_group_open = -1;
+
 /* What the worker last brought back, copied out for the UI. */
 typedef struct {
     char              status[72];                           /* line, or ""   */
@@ -220,6 +234,105 @@ static const lv_color_t COL_TXT_LO   = LV_COLOR_MAKE(0x9a, 0x9a, 0x9a);
 /* Rows available on the current page, including the trailing "<- back" row on
  * the sub-pages. Kept in one place so the cursor clamp and the painter can
  * never disagree about how far the knob scrolls. */
+/* ---- the shape of an app's page (ruling D12) -------------------------------
+ *
+ * Four small predicates, and one rule under them all: a row the owner cannot
+ * reach is a bug, so the only rows ever hidden are the ITEMS of a group that is
+ * shut, and an ITEM anywhere the shape does not allow is drawn as a plain row.
+ * The malformed cases are a leading ITEM and an ITEM with no group above it —
+ * both are the app's mistake, and silently swallowing the row would turn it into
+ * "the knob does nothing". It is logged once, at entry, where the row is new. */
+
+/** The group that owns idx, or -1 when nothing above it is a group. */
+static int owner_group(int rows, int idx)
+{
+    for (int g = idx - 1; g >= 0; g--)
+        if (orb_app_opt_kind(s_app, g) == OPT_GROUP) return g;
+    return -1;
+}
+
+/** What to DRAW at idx: the app's own answer, except for an ITEM that belongs to
+ *  no group, which is a row like any other. */
+static orb_opt_kind_t drawn_kind(int rows, int idx)
+{
+    (void)rows;
+    const orb_opt_kind_t k = orb_app_opt_kind(s_app, idx);
+    if (k != OPT_ITEM) return k;
+    return (owner_group(rows, idx) < 0) ? OPT_ROW : OPT_ITEM;
+}
+
+/** True when idx must not be painted: an ITEM whose group is the one that is closed. */
+static bool row_hidden(int rows, int idx)
+{
+    if (drawn_kind(rows, idx) != OPT_ITEM) return false;
+    return owner_group(rows, idx) != s_group_open;
+}
+
+/** How many of an app's rows the glass shows, given which group is open. */
+static int visible_rows(int rows)
+{
+    int n = 0;
+    for (int i = 0; i < rows; i++) if (!row_hidden(rows, i)) n++;
+    return n;
+}
+
+/** The app row behind drawn position v, or -1. */
+static int vis_to_row(int rows, int v)
+{
+    for (int i = 0; i < rows; i++) if (!row_hidden(rows, i)) { if (v-- == 0) return i; }
+    return -1;
+}
+
+/** The drawn position of app row r, or -1 when it is hidden. */
+static int row_to_vis(int rows, int r)
+{
+    if (r < 0 || r >= rows || row_hidden(rows, r)) return -1;
+    int v = 0;
+    for (int i = 0; i < r; i++) if (!row_hidden(rows, i)) v++;
+    return v;
+}
+
+/** The first (or last) ITEM the open group owns, as an app row, or -1 if none. The
+ *  cursor's clamp needs these two, and scanning from the group out is the only way
+ *  to find them that cannot disagree with owner_group(). */
+static int group_edge(int rows, bool last)
+{
+    if (s_group_open < 0) return -1;
+    int found = -1;
+    for (int i = s_group_open + 1; i < rows; i++) {
+        if (orb_app_opt_kind(s_app, i) == OPT_GROUP) break;    /* the next header ends it */
+        if (drawn_kind(rows, i) == OPT_ITEM) {
+            found = i;
+            if (!last) break;
+        }
+    }
+    return found;
+}
+
+/** Keep the cursor inside the list. The rows can shrink under it — the card
+ *  pulled, the app's walk landed, a group closed — and a highlight on a row that
+ *  is not on the glass is the knob appearing not to work: the next detent moves
+ *  from somewhere the owner cannot see. Called by every repaint and by the
+ *  service() reap, which are the two moments the count is allowed to change. */
+static void cursor_fit(int rows)
+{
+    if (s_cur >= rows) s_cur = rows ? rows - 1 : 0;
+    if (s_cur < 0) s_cur = 0;
+}
+
+/** Say it once per visit, not once per repaint: a shape this wrong is the app's
+ *  bug and the log is where the person who owns that app will look for it. */
+static void shape_check(int rows)
+{
+    for (int i = 0; i < rows; i++) {
+        if (orb_app_opt_kind(s_app, i) == OPT_ITEM && owner_group(rows, i) < 0) {
+            ESP_LOGW(TAG, "\"%s\" row %d is a sub-menu item with no header above it — "
+                          "drawn as a plain row", s_app->slug ? s_app->slug : "?", i);
+            return;
+        }
+    }
+}
+
 static int page_rows(void)
 {
     /* Unarmed means no list at all, decided here rather than at each caller so
@@ -229,7 +342,12 @@ static int page_rows(void)
 
     switch (s_page) {
         case PG_TOP:    return IT_OS_N + app_rows() + 1;   /* +1: exit */
-        case PG_APP:    return s_app ? orb_app_opt_count(s_app) + 1 : 0;  /* +1: back */
+        /* The app counts every row it has; the shell decides how many of them
+         * are on the glass, which is the whole of ruling D12 and the reason the
+         * count below is not the app's number handed straight back. The +1 is the
+         * back row, and it is outside the group: leaving a page must never depend
+         * on whether a header happens to be open. */
+        case PG_APP:    return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0;
         case PG_TZ:     return orb_net_tz_count() + 1;      /* last row is back */
         case PG_DISPLAY:return 3;                            /* dim, timeout, back */
         case PG_TO:     return TO_PRESET_N + 1;              /* last row is back */
@@ -250,12 +368,15 @@ static void go_back(void)
     if (from == PG_APP) {
         /* Leave the page the way it was entered: back on the row that opened it,
          * and the app disarmed. An app left armed off-glass would take the next
-         * detent from the view actually showing. */
+         * detent from the view actually showing. The group closes with the page,
+         * so re-entering answers "what is on the card" instead of dropping the
+         * owner inside a header they closed two visits ago. */
         int ai = 0;
         for (int i = 0; app_row(i); i++) { if (app_row(i) == s_app) { ai = i; break; } }
         orb_app_opt_arm(s_app, false);
         s_app  = NULL;
         s_page = PG_TOP;
+        s_group_open = -1;
         s_cur  = IT_OS_N + ai;
         return;
     }
@@ -307,13 +428,29 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
         case PG_APP: {
             if (!s_app) return;
             const int rows = orb_app_opt_count(s_app);
-            if (row >= rows) { snprintf(out, outsz, "<- back"); return; }
+            if (row >= visible_rows(rows)) { snprintf(out, outsz, "<- back"); return; }
+            /* The index the cursor holds is a POSITION ON THE GLASS, and the app
+             * answers by its own row number. vis_to_row() is the only place that
+             * translation happens, which is what keeps a closed group from being
+             * four different functions' idea of a row to skip. */
+            const int ar = vis_to_row(rows, row);
+            if (ar < 0) { snprintf(out, outsz, "?"); return; }  /* unreachable: page_rows sized it */
+            const orb_opt_kind_t k = drawn_kind(rows, ar);
             /* Label then value, in the shell's own words, off the app's answers:
              * this is the one line every options page shares, which is why the
-             * dial's theme page and the browser's copy cannot drift. */
-            const char *v = orb_app_opt_value(s_app, row);
-            if (v && v[0]) snprintf(out, outsz, "%s  (%s)", orb_app_opt_label(s_app, row), v);
-            else           snprintf(out, outsz, "%s", orb_app_opt_label(s_app, row));
+             * dial's theme page and the browser's copy cannot drift. A group's
+             * value is the summary the app gives for what is inside it, and the
+             * shell overwrites that with the one fact the app is not allowed to
+             * know: that it is open (D12). Items are indented, because a list that
+             * nests has to say so on the glass and not only in the ABI. */
+            const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"
+                      : orb_app_opt_value(s_app, ar);
+            if (v && v[0])
+                snprintf(out, outsz, "%s%s  (%s)", k == OPT_ITEM ? "  " : "",
+                         orb_app_opt_label(s_app, ar), v);
+            else
+                snprintf(out, outsz, "%s%s", k == OPT_ITEM ? "  " : "",
+                         orb_app_opt_label(s_app, ar));
             return;
         }
 
@@ -362,7 +499,12 @@ static const char *page_hint(void)
     switch (s_page) {
         case PG_TZ:      return "rotate: choose   push: set";
         case PG_DISPLAY: return "rotate: choose   push: change";
-        case PG_APP:     return "rotate: choose   push: change";
+        /* The hint says what the two gestures do HERE, because a sub-menu that
+         * does not name the gesture that leaves it is a page the owner is stuck on
+         * until they hold the knob by accident (C8's lesson, from the other side). */
+        case PG_APP:     return s_group_open >= 0
+                                  ? "rotate: choose   push: change   hold: close"
+                                  : "rotate: choose   push: change";
         case PG_TO:      return "rotate: choose   push: set";
         default:         return "rotate: choose   push: open";
     }
@@ -390,6 +532,7 @@ static void repaint(void)
 
     const int rows = page_rows();
     s_painted_rows = rows;
+    cursor_fit(rows);
 
     /* Window the list around the cursor so a 62-row zone table scrolls inside
      * five physical rows; clamped at both ends so the last row stays reachable
@@ -523,6 +666,21 @@ void menu_view_set_armed(bool armed)
 }
 
 /* Act on the row under the cursor. */
+/** The press a group header answers for: open it, or close the one already open.
+ *  True means the press belonged to the header and the app must not hear about it
+ *  (D12: the app answers what a row IS, and what a press on a header does belongs
+ *  to the shell). The cursor does not move — an owner who just opened a list is
+ *  looking at its header with its rows under it, and sliding the highlight out
+ *  from under them would be the shell deciding what they meant. */
+static bool group_press(int rows, int ar)
+{
+    if (drawn_kind(rows, ar) != OPT_GROUP) return false;
+    s_group_open = (s_group_open == ar) ? -1 : ar;
+    ESP_LOGI(TAG, "group row %d %s: %s", ar,
+             s_group_open == ar ? "open" : "closed", orb_app_opt_label(s_app, ar));
+    return true;
+}
+
 static void activate(void)
 {
     switch (s_page) {
@@ -538,6 +696,13 @@ static void activate(void)
                 s_app  = a;
                 s_page = PG_APP;
                 s_cur  = 0;
+                /* One visit, one shape: validated on entry rather than per repaint,
+                 * because the log line is the point and a page that logged it fifty
+                 * times a second would bury the cursor moves it is kept beside. The
+                 * group starts closed so the page always opens on the two rows that
+                 * answer "what is on the card" at a glance. */
+                s_group_open = -1;
+                shape_check(orb_app_opt_count(a));
                 orb_app_opt_arm(a, true);
                 repaint();
                 return;
@@ -582,11 +747,16 @@ static void activate(void)
         case PG_APP: {
             if (!s_app) { go_back(); repaint(); return; }
             const int rows = orb_app_opt_count(s_app);
-            if (s_cur >= rows) { go_back(); repaint(); return; }    /* <- back */
-            /* The press belongs to the app; the cursor never leaves this file.
-             * opt_sel() may start a job, and it may not paint: repaint() below
-             * is what puts the app's new answer on the glass. */
-            orb_app_opt_sel(s_app, s_cur);
+            if (s_cur >= visible_rows(rows)) { go_back(); repaint(); return; }   /* <- back */
+            const int ar = vis_to_row(rows, s_cur);
+            if (ar < 0) { go_back(); repaint(); return; }
+            if (group_press(rows, ar)) { repaint(); return; }
+            /* The press belongs to the app, at the app's OWN row number — not the
+             * glass position the cursor holds. Handing an app a visible index would
+             * make a closed group every app's problem to renumber. opt_sel() may
+             * start a job, and it may not paint: repaint() below is what puts the
+             * app's new answer on the glass. */
+            orb_app_opt_sel(s_app, ar);
             repaint();
             return;
         }
@@ -667,6 +837,24 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * anywhere but where the hand was heading, and on a dial with no way to
      * see the whole list at once that reads as the knob being ignored. */
     if (next >= rows) next = rows - 1;
+
+    /* Inside an open group the clamp is the group's, not the page's (D12): a detent
+     * that could carry the cursor out past the header would leave the owner who
+     * just opened a sub-menu somewhere down the page with no way back to the row
+     * that shuts it, which is how a nesting feature becomes a lost knob. The way
+     * out is the long press, and it is stated in the hint. */
+    if (s_page == PG_APP && s_app && s_group_open >= 0) {
+        const int arows = orb_app_opt_count(s_app);
+        const int cur = vis_to_row(arows, s_cur);
+        if (cur >= 0 && drawn_kind(arows, cur) == OPT_ITEM) {
+            const int lo = row_to_vis(arows, group_edge(arows, false));
+            const int hi = row_to_vis(arows, group_edge(arows, true));
+            if (lo >= 0 && hi >= lo) {
+                if (next < lo) next = lo;
+                if (next > hi) next = hi;
+            }
+        }
+    }
     if (next == s_cur) return;
     s_cur = next;
     /* Where the cursor landed, in the log. The menu never said: it repaints the
@@ -682,6 +870,26 @@ void menu_view_apply_input(int32_t delta, bool pressed)
     row_text(s_cur, row, sizeof row, &hi);
     ESP_LOGI(TAG, "cursor %s row %d/%d: %s", page_title(), s_cur, rows - 1, row);
     repaint();
+}
+
+bool menu_view_opt_long(void)
+{
+    /* Only an app's option page with a group actually open spends the press.
+     * Everything else — the landing, the menu's own pages, a page with no
+     * nesting — answers false and lets the hold home as C8 rules it.
+     *
+     * The cursor goes back to the header the items just vanished under: leaving
+     * it on an un-drawn row is the knob appearing not to work, because the next
+     * detent would move from a row the glass is not showing. */
+    if (!s_armed || s_page != PG_APP || !s_app || s_group_open < 0) return false;
+    const int rows = orb_app_opt_count(s_app);
+    const int at = row_to_vis(rows, s_group_open);
+    ESP_LOGI(TAG, "hold closes group row %d: %s", s_group_open,
+             orb_app_opt_label(s_app, s_group_open));
+    s_group_open = -1;
+    s_cur = (at < 0) ? 0 : at;
+    repaint();
+    return true;
 }
 
 void menu_view_service(void)

@@ -34,7 +34,10 @@ What is under test
   art residency         a banked app maps on activate and unmaps on suspend; a
                         refused map keeps the dial on the app it was on and puts
                         the outgoing app's visibility back; a double activate
-                        does not bill the same bank twice
+                        does not bill the same bank twice; and the NULL-reclaim
+                        branch (suspend released the bank, the rollback's re-claim
+                        also refused — the release-on-suspend ruling) is pinned by
+                        asserting the on-glass app is left with art_slot == -1
   C7 / inertness        service() runs for a parked app, and the dial has no armed
                         view for a press to disappear into
 
@@ -152,6 +155,16 @@ const char *clock_opt_value(orb_app_t *a, int i) { (void)a; return (i == 0) ? "o
 void      clock_opt_inc(orb_app_t *a, int i, int32_t d) { (void)a; T("clock_inc(%d,%d)", i, (int)d); }
 void      clock_opt_sel(orb_app_t *a, int i) { (void)a; T("clock_sel(%d)", i); }
 void      clock_opt_arm(orb_app_t *a, bool on) { (void)a; T(on ? "clock_arm(1)" : "clock_arm(0)"); }
+/* D12's two new answers, stubbed the same way: this suite proves the registry
+ * DISPATCHES them and defaults them sanely, and the answers' content is
+ * host_menu_test.py's shape table to check. The clock says GROUP at row 1 and
+ * ITEM at 2, so a dispatcher that lost the value would answer OPT_ROW there. */
+static orb_opt_kind_t g_clock_kind = OPT_ROW;
+orb_opt_kind_t clock_opt_kind(orb_app_t *a, int i)
+{ (void)a; T("clock_kind(%d)", i); return (i == 1) ? OPT_GROUP :
+                                                      (i == 2 ? OPT_ITEM : g_clock_kind); }
+static bool g_menu_long_taken;
+bool menu_view_opt_long(void) { T("menu_long"); return g_menu_long_taken; }
 esp_err_t color_picker_init(void){ T("picker_init"); return g_rc_picker; }
 esp_err_t menu_view_init(void)   { T("menu_init");   return g_rc_menu; }
 
@@ -352,15 +365,35 @@ int main(void)
 
     /* The harder branch: the budget is so tight that even putting the outgoing
      * bank back fails. The switch is still refused and the dial still points at
-     * the app it did — that case logs an emergency rather than pretending. */
+     * the app it did — that case logs an emergency rather than pretending.
+     * This is the NULL-reclaim branch (orb_app.c app_restore): the release-vs-
+     * carry ruling (release-on-suspend, owner ruling 2026-10-12) makes it
+     * reachable, because a suspend released the on-glass app's bank and the
+     * rollback cannot re-claim it. The invariant that distinguishes it is pinned
+     * here, not just the return code: the app left ON the glass ends with
+     * art_slot == -1 — the compositor would read art_bank_extra_ptr(-1) and paint
+     * the garbage art_bank.h fences off — and s_current was never reassigned. */
     restore_table(); orb_app_init_all();
     s_apps[0].art_offset = 0x100000; s_apps[0].art_bytes = 0x40000;
     s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
     orb_app_activate(A("clock"));
+    ck("the on-glass app holds its bank before the doomed switch",
+       s_apps[0].art_slot >= 0 && g_map_calls == 1);
+    TR(); g_map_calls = 0; g_unmap_calls = 0;
     g_map_rc = ESP_ERR_NO_MEM;                          /* nothing fits at all */
+    const orb_app_t *cur_before = orb_app_current();
     ck("a refusal the rollback cannot undo still keeps the dial on the old app",
        orb_app_activate(A("color_picker")) == ESP_ERR_NO_MEM
        && orb_app_current() == A("clock") && s_apps[1].art_slot == -1);
+    ck("the switch never repointed current — the failed rollback returned before the commit",
+       orb_app_current() == cur_before);
+    ck("NULL-reclaim: the app left ON the glass has NO bank — its suspend released it and the rollback could not re-claim",
+       s_apps[0].art_slot == -1);
+    /* Two map attempts past the reset: the refused incoming claim, and the
+     * failed rollback re-claim of the outgoing bank. One unmap: releasing the
+     * outgoing bank before the incoming claim. */
+    ck("NULL-reclaim touched the window once released, twice refused to map",
+       g_unmap_calls == 1 && g_map_calls == 2);
     g_map_rc = ESP_OK;
 
     /* -- no double-billing: re-activating a resident app maps it once -- */
@@ -409,6 +442,35 @@ int main(void)
     TR(); orb_app_opt_arm(clk, false);
     ck("leaving it disarms, so nothing is armed off-glass",
        strcmp(g_trace, "clock_arm(0)|") == 0);
+    /* D12's two new answers. The KIND one dispatches for the app that declares it
+     * and answers OPT_ROW for the one that does not: color_picker's iface names no
+     * opt_* hook at all, and the entire pre-D12 ABI depends on that meaning a flat
+     * page rather than a crash or an invisible row. */
+    g_clock_opts = 3;
+    const int k_group = orb_app_opt_kind(clk, 1);
+    const int k_item  = orb_app_opt_kind(clk, 2);
+    const int k_row   = orb_app_opt_kind(clk, 0);
+    g_clock_opts = 2;
+    ck("the row kind reaches the shell as the app answered it",
+       k_group == OPT_GROUP && k_item == OPT_ITEM && k_row == OPT_ROW);
+    ck("a row outside the count is OPT_ROW without asking the app",
+       (orb_app_opt_kind(clk, 9) == OPT_ROW) && (orb_app_opt_kind(clk, -1) == OPT_ROW));
+    ck("a NULL opt_kind hook is the flat page it always was",
+       orb_app_opt_kind(pick, 0) == OPT_ROW && orb_app_opt_count(pick) == 0);
+    /* And the long press: an entry with nothing to collapse leaves it to the
+     * router, which is C8's hold-to-home untouched. The menu entry is the one that
+     * can spend it, because PG_APP's open group is the shell's own state. */
+    const orb_app_t *menu = A("menu");
+    ck("the clock declares no long-press hook, so it cannot swallow the escape hatch",
+       orb_app_opt_long(clk) == false);
+    ck("no entry at all takes nothing", orb_app_opt_long(NULL) == false);
+    if (menu) {
+        g_menu_long_taken = true;
+        ck("the shell entry can take it, and the router must then not home",
+           orb_app_opt_long(menu) == true);
+        g_menu_long_taken = false;
+        ck("and refuses it when no group is open", orb_app_opt_long(menu) == false);
+    }
     /* A NULL hook is a skip, not a crash: the picker answers none of these and
      * the shell must be able to render its (empty) page regardless. */
     TR(); orb_app_opt_sel(pick, 0); orb_app_opt_arm(pick, true);

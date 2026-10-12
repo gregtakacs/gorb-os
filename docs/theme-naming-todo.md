@@ -1,5 +1,12 @@
 # Theme naming: the card name, the baked slug, and the three caps that disagree
 
+> **SUPERSEDED 2026-10-12 — see `docs/theme-identity-plan.md`.** The owner ruled
+> that theme identity comes from the name inside the container, and the card
+> filename becomes `sha256(name)[:12]`. §1–§3 below describe a class of defect
+> that cannot exist under that design, and §4 cites `orb_theme_stage_load()` and
+> `h_theme_load()`, both deleted by the D13 squash. This file is deleted at the
+> end of that plan's work. **Do not implement anything from this file.**
+
 **Status: PARTIALLY FIXED — the firmware now refuses a mismatched file early, the
 underlying cap disagreement is NOT fixed, and none of it is verified on hardware.**
 

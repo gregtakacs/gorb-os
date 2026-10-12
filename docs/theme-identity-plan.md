@@ -392,6 +392,25 @@ Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits
   `show=[1,1,0,0,0]` against the archived `show=[1,1,0,1,0]` (the c2 enamel
   subdial's seconds hand), so the original bake flags are not yet known and the
   archived `clock_app_default.orbtheme` stays until they are.
+- NOT COVERED BY THIS PLAN: the orb-manager hub. The §8 work order names the firmware,
+  `tools/orbtheme.py`, `tools/bake_clock.py` and the device's own page JS. It never
+  names `tools/orb-manager/`, and the tool has since diverged across the two clones:
+  - this clone refreshed its embedded editor to FORMAT 2
+    (`tools/orb-manager/web/composer/orbtheme-baker.js` reports `FORMAT = 2`), but its
+    `internal/orbnet/` has no theme client at all — only `client.go`, `scan.go` and the
+    test file;
+  - the sibling clone `/home/greg/docker/Projects/gorb-os`, where hub iterations 0-6
+    landed, holds the theme card and `internal/orbnet/themes.go`. That client still
+    speaks the FORMAT 1 contract: `?name=` on install, delete and upload, no `id` field
+    on `ThemeEntry`, and `CheckThemeName` caps a name at 31 ASCII characters against
+    the 55-byte UTF-8 this scheme allows. Its embedded editor is still `FORMAT = 1`.
+  No checkout on this machine therefore has the FORMAT 2 firmware and a working hub
+  theme card together. What the merge breaks, and the `?name=` to `?id=` trap where
+  `themes.go:14-17` reads the theme `id` as an orb `id`, are recorded in that clone's
+  `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor are
+  FORMAT 1". It is open and unassigned. `support.js`, `dial-renderer.js` and
+  `watch-engine.js` are byte-identical across the two clones, so only
+  `orbtheme-baker.js` and `Watch Composer.dc.html` move with it.
 - Defect found by this verification and fixed: bake_clock.py truncated an
   over-55-byte `--theme-name` SILENTLY, twice over and disagreeing — a Python
   55-CHARACTER slice before the id hash and a 55-BYTE slice in

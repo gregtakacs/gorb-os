@@ -166,8 +166,9 @@ bool orb_files_path(const orb_file_src_t *src, const char *name,
     if (src == NULL || !src->dir[0] || src->dir[0] != '/' || !src->ext[0]) return false;
     if (!dir_under_sd(src->dir)) return false;
     /* The one name validator, reached from here rather than from each caller:
-     * this is the only thing between a crafted ?name= and the rest of the
-     * volume. */
+     * the names that arrive on this line are only ever a sha256-derived theme id,
+     * a screenshot the device wrote itself, or an entry FATFS listed from a card
+     * that anything could have been copied onto. All three are untrusted. */
     if (!orb_sd_name_ok(name)) return false;
 
     const int n = snprintf(out, outsz, "%s/%s%s", src->dir, name, src->ext);

@@ -49,7 +49,8 @@
 #include "clock_assets.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
 
 #define ORB_THEME_EXT      ".orbtheme"
-#define ORB_THEME_SLUG_MAX 31      /* == ORB_SD_NAME_MAX: one path segment */
+#define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */
+#define ORB_THEME_ID_HEX   12      /* sha256(name)[:12] — the card filename stem */
 
 /* Partition offsets inside `assets`, both 64 KB aligned so esp_partition_mmap
  * wastes no MMU entry on rounding. ORB_THEME_SLOT_CAP is what a theme has to fit
@@ -212,7 +213,7 @@ typedef struct {
     uint16_t      n_bank;
     size_t         art_size;          /* pixel bytes, not partition bytes */
     bool           from_container;    /* false = the compiled-in pair */
-    char           slug[ORB_THEME_SLUG_MAX + 1];
+    char           name[ORB_THEME_NAME_MAX + 1];  /* the installed theme's owner name */
 } orb_theme_geo_t;
 
 /* The five accessors clock_view.c reads through — clk_theme, clk_bg_rects,
@@ -240,7 +241,8 @@ const orb_theme_geo_t *orb_theme_geo(void);
 
 /** "slot-A", "slot-B" or "baked-in": what the dial is drawing from. */
 const char *orb_theme_source(void);
-const char *orb_theme_active_slug(void);
+/** The owner name of the theme currently on the wall, "" for the factory dial. */
+const char *orb_theme_active_name(void);
 
 /** The owner's choice, as resolved at boot: "default" or "card". */
 #define THEME_LIVE_DEFAULT "default"
@@ -260,17 +262,25 @@ esp_err_t orb_theme_set_live(const char *which);
  * verify the copy out of the partition, then commit the header that makes it
  * live, then set live=card. Runs the same verify-first ladder the old boot path
  * ran, in the same order, for the same reason — a failed copy costs a row message
- * and not a brick. Takes the card lock for the copy and writes flash, so it is a
- * WORKER TASK call: a multi-second SD-to-flash copy on the LVGL task freezes the
- * dial and swallows the knob. `why` receives the sentence the row shows; it may
- * be NULL.
+ * and not a brick. `id` is a device-issued card filename stem (12 hex chars); it is
+ * resolved by walking the themes directory and re-verified by hashing that file's
+ * header name, so a file swapped under an id cannot install and no browser string
+ * ever reaches a path builder. Takes the card lock for the copy and writes flash,
+ * so it is a WORKER TASK call: a multi-second SD-to-flash copy on the LVGL task
+ * freezes the dial and swallows the knob. `why` receives the sentence the row shows;
+ * it may be NULL.
  */
-esp_err_t orb_theme_install(const char *slug, char *why, size_t whysz);
+esp_err_t orb_theme_install(const char *id, char *why, size_t whysz);
+
+/* True when `id` is exactly ORB_THEME_ID_HEX chars of [0-9a-f] — a card filename
+ * stem this device could have issued. The HTTP handlers call it to reject a
+ * malformed id at the edge; install/delete re-check it on the resolve path. */
+bool orb_theme_id_ok(const char *id);
 
 /** Why the choice on the wall is not what the owner picked: both are "" when the
- *  slot boot wanted verified, and the slug of the install that did not when it
+ *  slot boot wanted verified, and the id of the install that did not when it
  *  did not. The picker shows the sentence on that theme's row. */
-const char *orb_theme_damage_slug(void);
+const char *orb_theme_damage_id(void);
 const char *orb_theme_damage_why(void);
 
 /**
@@ -285,23 +295,24 @@ const char *orb_theme_damage_why(void);
  * one. The reason a refused install costs is in orb_theme_try_why(), which the
  * row and the page read as one string.
  */
-esp_err_t orb_theme_post_install(const char *slug);
+esp_err_t orb_theme_post_install(const char *id);
 esp_err_t orb_theme_post_default(void);
 
-/** What the last pick could not do: the slug it was asked for and the sentence
+/** What the last pick could not do: the id it was asked for and the sentence
  *  the ladder answered with. Both "" after a success, and the picker puts them on
  *  the row that was pressed rather than in a status line nothing can reach. */
-const char *orb_theme_try_slug(void);
+const char *orb_theme_try_id(void);
 const char *orb_theme_try_why(void);
 
 typedef struct {
-    char      slug[ORB_THEME_SLUG_MAX + 1];
-    char      title[40];
-    char      why[56];            /* why it is unloadable; empty when err == ESP_OK */
+    char      name[ORB_THEME_NAME_MAX + 1];  /* the owner's name, from the header */
+    char      id[ORB_THEME_ID_HEX + 1];      /* sha256(name)[:12] — card filename stem */
+    char      why[72];            /* why it is unloadable; empty when err == ESP_OK */
     uint32_t  art_size;
     uint32_t  serial;
     esp_err_t err;              /* ESP_OK = loadable */
-    bool      active;
+    bool      active;           /* this file is what the dial is drawing */
+    bool      changed;          /* the installed copy of this name has different bytes */
 } orb_theme_entry_t;
 
 /**
@@ -333,18 +344,29 @@ typedef struct orb_theme_up orb_theme_up_t;
  * refused on Content-Length, before a byte of it reaches the card. */
 #define ORB_THEME_UPLOAD_MAX  (0x00400000u + 0x20000u)
 
-esp_err_t orb_theme_upload_begin(const char *slug, orb_theme_up_t **out);
+esp_err_t orb_theme_upload_begin(orb_theme_up_t **out);
 esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n);
-/* Verifies the whole .part file and renames it into place. On failure nothing is
- * committed and the .part is removed, so a bad upload cannot be loaded by mistake. */
-esp_err_t orb_theme_upload_end(orb_theme_up_t **u, const char **why);
+/* A distinct code so the page can tell a name collision (offer overwrite, then
+ * retry with ?overwrite=1) from any other refusal, which is a plain error the owner
+ * fixes by re-baking. Chosen above the ESP common-error range so it cannot collide
+ * with an esp_err_t the transport already assigns a meaning to. */
+#define ORB_THEME_UPLOAD_E_DUP  ((esp_err_t)0x0101F2)
+/* Verifies the whole .part file and renames it into place under the name its own
+ * header carries (the filename is theme_id(header.name), never an upload argument).
+ * Duplicate policy: same name + same geom_crc/art_crc/serial is accepted
+ * idempotently; a different set of bytes under an existing name is refused with
+ * ORB_THEME_UPLOAD_E_DUP unless overwrite. On failure nothing is committed and the
+ * .part is removed, so a bad upload cannot be loaded by mistake. */
+esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why);
 void      orb_theme_upload_cancel(orb_theme_up_t **u);
 
 /* True while an upload owns the card, so the status endpoint can answer instead of
  * blocking the httpd worker behind the write. */
 bool orb_theme_upload_busy(void);
 
-/** Delete one theme file from the card. Only ever /sd/themes/<slug>.orbtheme. */
-esp_err_t orb_theme_delete(const char *slug);
+/** Delete one theme file from the card by its device-issued id (12 hex chars),
+ *  resolved by walking the themes directory and re-verified against the file's
+ *  header name. Never builds a path from the caller's string. */
+esp_err_t orb_theme_delete(const char *id);
 
 #define ORB_THEME_SLOT_CAP    0x003F0000u   /* 4 MB less the 64 KB header block */

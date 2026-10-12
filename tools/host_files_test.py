@@ -7,7 +7,10 @@ main/sd/orb_files.c decides, from a browser-supplied name, which file on the car
 gets listed or unlinked. That is the same class of risk host_sd_test.py already
 guards on orb_sd_name_ok()/orb_sd_theme_path(): a bench with no card in the
 socket cannot mount a volume, but it CAN exhaustively test the pure functions
-that stand between ?name=../../ and the rest of the volume. So the shipped code
+that stand between a name nobody vouched for and the rest of the volume -- under
+FORMAT 2 the theme side of that surface only ever hands over a sha256-derived id,
+but the listing path still sees whatever FATFS reports, so the rules stay in force.
+The shipped code
 is lifted VERBATIM out of main/sd/orb_files.c and compiled here, not re-typed in
 Python. A lift that silently came back empty would keep this suite green while
 testing a copy that no longer ships, so the lifts die loudly instead.

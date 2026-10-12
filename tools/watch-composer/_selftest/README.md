@@ -457,9 +457,11 @@ The block exists for one texel. A canvas composited onto a premultiplied backing
 would bake a washed-out plate through that chain and throw nothing at all, so the block
 paints `rgba(200,60,20,alpha 128)`, encodes it with Chrome's own encoder, decodes it back
 and compares against `getImageData`: 100 levels of red separate pass from fail, so no
-tolerance can hide the bug. Two refusals close it out — a dirty-but-rescuable slug must
-download under the normalized name the header itself carries, and `***` plus a missing
-`window.GorbBake` must report rather than ship a container.
+tolerance can hide the bug. Two refusals close it out — a 56-byte name must be refused by
+the field's own byte limit, naming the number it measured, and a missing
+`window.GorbBake` must report rather than ship a container. The name itself is free text
+now: `../Bad Name!` must bake verbatim into the header and still download as
+`sha256(name)[:12].orbtheme`, with no path reaching the filename.
 
 All three gates are mutation-verified: premultiplying the decoder's RGB, flipping the last
 payload byte after its CRC was taken, and renaming the download each turn the block red

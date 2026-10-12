@@ -197,7 +197,7 @@ KNOB_HELPERS = (
 
 TH_H = P("main", "art", "orb_theme.h")
 th_hdr = open(TH_H).read()
-ENTRY_T = lift(th_hdr, r"typedef struct \{\n    char      slug\[[\s\S]*?\} orb_theme_entry_t;", TH_H)
+ENTRY_T = lift(th_hdr, r"typedef struct \{\n    char      name\[[\s\S]*?\} orb_theme_entry_t;", TH_H)
 
 # ---------------------------------------------------------------------------
 # The C harness: the lifted functions, compiled, with the outside world stubbed.
@@ -664,12 +664,17 @@ int main(void)
 """
 
 
-SLUG_DEF = lift(th_hdr, r"#define ORB_THEME_SLUG_MAX\s+\d+[^\n]*", TH_H)
+# The two caps the shipped orb_theme_entry_t is sized with, lifted from the header
+# alongside the struct itself: the row prints the name and addresses the theme by its
+# id, and a harness that hardcoded either length would keep passing while the device's
+# struct grew past it.
+ENTRY_DEFS = "\n".join(lift(th_hdr, r"#define " + k + r"\s+\d+[^\n]*", TH_H)
+                      for k in ("ORB_THEME_NAME_MAX", "ORB_THEME_ID_HEX"))
 
 def assembled(src):
     """The harness source: the shipped types and functions, spliced verbatim."""
     consts, funcs = lifts(src)
-    body = "\n".join(consts[:2] + [SLUG_DEF, ENTRY_T] + consts[2:])
+    body = "\n".join(consts[:2] + [ENTRY_DEFS, ENTRY_T] + consts[2:])
     return (HARNESS
             .replace("__CONSTS__", body + "\n" + KNOB_HELPERS)
             .replace("__FUNCS__", "\n".join(funcs))

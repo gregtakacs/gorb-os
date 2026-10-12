@@ -304,10 +304,11 @@ void orb_sd_unlock(void)
 
 /* The two pure helpers below are lifted verbatim by tools/host_tz_test.py, so
  * they must stay free of the card, the lock, and the CONFIG_ORB_SD_ENABLE body
- * above. That is not cosmetic: `name` arrives from a browser query parameter,
- * and this guard is the only thing between ?name=../../ and the rest of the
- * volume — the one part of the SD feature a radio-less, card-less bench CAN
- * prove, so it is proved here instead of at a wall. */
+ * above. That is not cosmetic: FORMAT 2 leaves the theme endpoints handing this
+ * layer only a ?id= the browser typed, and the card's own directory entries come
+ * through it too, so this guard is the last thing between a crafted string and
+ * the rest of the volume — the one part of the SD feature a radio-less,
+ * card-less bench CAN prove, so it is proved here instead of at a wall. */
 bool orb_sd_name_ok(const char *name)
 {
     if (name == NULL || name[0] == '\0') return false;

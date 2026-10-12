@@ -1,6 +1,8 @@
 # Theme identity: the name lives in the file, never in the filename
 
-**Status: APPROVED — design finalized with owner 2026-10-12, not started.**
+**Status: IMPLEMENTED on the bench — all layers landed 2026-10-12 (§8 steps 1–9);
+the §9 hardware ladder has NOT been run.** See §10 for what is green, what is
+blocked, and the two node-gated suites that have never been executed.
 Self-contained implementation plan; pick it up cold. This document supersedes
 `docs/theme-naming-todo.md`, which is deleted at the end of this work (its §1–§3
 describe a defect class this design removes outright).
@@ -334,20 +336,46 @@ them into one commit — the battery is the safety net between steps.
 
 ## 10. Bench state at hand-off
 
-- HEAD `ea5043c`; working tree clean; all 11 host suites green; `idf.py build`
-  rc=0.
-- Board orb-A is alive on the network at **192.168.2.32** — usable for reads
-  (`/api/v1/status`, `GET /api/v1/sd` for the headroom measure) without USB.
-- Physical reflash is **blocked** on a Windows-side USB re-attach
-  (`usbipd attach --wsl`). The board reports `fw":"fc74aa9"`, a cosmetic stamp
-  mismatch only; the flashed image is bit-identical to HEAD content.
-- Tag `pre-squash-backup` is retained as the history-rewrite safety net. Delete it
+Rewritten 2026-10-12 after the FORMAT 2 landing, on the tree this change commits.
+
+- §8 steps 1–7 and 9 are done. orbtheme.py defines FORMAT 2 (FORMAT = 2,
+  NAME_MAX = 56, W_NAME = 14, the canonical theme_id()); orb_theme.{h,c} reads and
+  writes the single name field, resolves load/delete by id, refuses duplicates and
+  carries s_active_crc[2] plus the changed flag; orb_sd keeps name_ok/theme_path as
+  defence in depth; orb_net.c speaks ?id= and ?overwrite=1 and emits
+  {name,id,changed}; clock_themes.c labels and posts by id and shows the §6/D11
+  changed hint; bake_clock.py takes --theme-name (--theme-title remains as a
+  deprecated alias).
+- The watch composer is FORMAT 2 end to end: the baker packs the one name block,
+  the studio page carries a free-text Theme name field with a live UTF-8 byte
+  counter, and the download is named sha256(name)[:12].orbtheme from the browser's
+  own crypto.subtle. The id has three independent implementations — orbtheme.py, the
+  C reader, and the baker in the page — pinned against each other by the themeId
+  field orbtheme_vectors.py emits and asserted by the node mirror.
+- Green on this bench: all 11 C-host suites. host_sd_test.py reports 139 ok lines
+  and its mutation battery kills 64 of 64 mutants, above the ≥51 §9 asks for; the
+  other ten exit 0. idf.py build rc=0, with only the four pre-existing
+  orb_carousel.c deprecation warnings.
+- NOT EXECUTED ANYWHERE: _selftest/headless-orbtheme.test.js (needs node) and
+  _selftest/export-test.html (needs Chrome). This container has neither, so the
+  mirror suite has been parsed but never run. Run both on the host before flashing:
+  the FORMAT 2 name/id assertions, the nameOk byte rules and the themeIdFromDigest
+  pin are unproven until then.
+- Still open: §8 step 8 (the LAN json[2400] headroom read), step 10 (re-bake the
+  four themes and regenerate the D10 container), and the §9 D11/D12 reflash rows.
+  Physical reflash remains blocked on the Windows-side usbipd attach.
+- Board orb-A is alive at 192.168.2.32 and serves reads (/api/v1/status,
+  GET /api/v1/sd) without USB. tools/serflash.sh --rollback restores
+  /tmp/orb-previous.bin, the D11 safety net.
+- Tag pre-squash-backup is retained as the history-rewrite safety net. Delete it
   once the owner is satisfied — do not delete it as part of this work.
+- docs/theme-naming-todo.md may be deleted once the §9 ladder has run: its §1–§5
+  describe the slug-vs-filename defect class FORMAT 2 removes outright.
 - Four pre-existing LVGL deprecation warnings in
-  `main/app/orb_carousel.c:83,92,125,126` (`lv_obj_add_flag`/`lv_obj_remove_flag`)
+  main/app/orb_carousel.c:83,92,125,126 (lv_obj_add_flag/lv_obj_remove_flag)
   are not this plan's business. Separate commit if touched at all.
 - M3 is blocked on P4 (mechanism B unimplemented, no banked apps, no second
-  partition in `partitions.csv`). Unrelated to this plan.
+  partition in partitions.csv). Unrelated to this plan.
 
 ## Appendix: the 11 host suites
 

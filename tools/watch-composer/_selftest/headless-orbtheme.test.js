@@ -101,7 +101,7 @@ ok(JSON.stringify(packed.tourbillon) === JSON.stringify(M.tourbillonRecs), 'carr
    JSON.stringify(packed.tourbillon[0] || {}).slice(0, 80));
 // ---- 3. the whole file -----------------------------------------------------
 const cont = B.writeContainer({ geom: jsGeom, art: art, scrW: M.scrW, scrH: M.scrH,
-                                serial: M.serial, bakedMs: M.bakedMs, slug: M.slug, title: M.title });
+                                serial: M.serial, bakedMs: M.bakedMs, name: M.name });
 const ref = fs.readFileSync(path.join(OUT, 'container.bin'));
 ok(Buffer.from(cont).equals(ref), 'the container is the same file the bench produces',
    'js ' + cont.length + ' B vs py ' + ref.length + ' B');
@@ -117,15 +117,31 @@ const wordStr = (base, nbytes) => {
 };
 // The header fields the /themes page and the card actually use.
 ok(dv.getUint32(0, true) >>> 0 === 0x474f5254, 'magic');
-ok(dv.getUint32(4, true) === 1, 'format');
+ok(dv.getUint32(4, true) === 2 && B.FORMAT === 2,
+   'format 2: the one value that decides whether main/art/orb_theme.c reads this file at all');
 ok(dv.getUint32(8, true) === 1, 'geometry ABI');
-ok(wordStr(14, 24) === M.slug, 'the slug travels in the header: the card files a theme under it');
-// The title field holds TITLE_MAX bytes of UTF-8 with the NUL reserved, so the cut falls
-// in bytes and not characters: a title with an em dash loses part of one. Compared against
-// the Python's own field bytes, since a partial sequence is exactly what the C reader gets.
-ok(Buffer.from(cont.buffer, cont.byteOffset + 20 * 4, 32).equals(
-       Buffer.from(ref.buffer, ref.byteOffset + 20 * 4, 32)) &&
-   wordStr(20, 32).length > 0, 'title, truncated at TITLE_MAX bytes of UTF-8');
+// FORMAT 2's identity rule in one row. The name is the ONLY thing that names a theme now
+// — the card filename is derived from it — so the field is compared as raw bytes against
+// the bench's own, not through a JS string: the sentinel name carries an em dash, and a
+// writer that mangled the UTF-8 would still print something close.
+const field = Buffer.from(cont.buffer, cont.byteOffset + B.W_NAME * 4, B.NAME_MAX);
+ok(field.equals(Buffer.from(ref.buffer, ref.byteOffset + B.W_NAME * 4, B.NAME_MAX)),
+   'the name travels in the header as the same bytes the bench wrote',
+   Buffer.from(M.name).toString('hex').slice(0, 24) + ' vs ' + field.toString('hex').slice(0, 24));
+ok(M.nameBytes === Buffer.byteLength(M.name, 'utf8') && M.nameBytes <= B.NAME_MAX - 1 &&
+   M.nameBytes > Buffer.byteLength(M.name, 'latin1'),
+   'the sentinel is multibyte and inside the field, so the row above is a byte compare',
+   M.nameBytes + ' bytes in ' + M.name.length + ' characters');
+ok(field[M.nameBytes] === 0 && field[M.nameBytes + 1] === 0,
+   'the field keeps its NUL: setWord cuts at NAME_MAX - 1, and the C reader stops there');
+const sha256 = (s) => new Uint8Array(require('crypto').createHash('sha256').update(s, 'utf8').digest());
+ok(wordStr(B.W_NAME, B.NAME_MAX).slice(0, 6) === 'Mirror',
+   'the field reads back as the reader reads it: little-endian bytes out of words 14 up');
+ok(B.themeIdFromDigest(sha256(M.name)) === M.themeId,
+   'the JS id rule matches orbtheme.theme_id(): three implementations, one identity',
+   B.themeIdFromDigest(sha256(M.name)) + ' vs ' + M.themeId);
+ok(B.themeIdFromDigest(new Uint8Array(5)) === null && B.themeIdFromDigest(null) === null,
+   'a short or missing digest is refused, not padded into an id');
 ok(dv.getUint32(44, true) === M.serial, 'serial');
 ok(dv.getUint32(20, true) === M.geomSize, 'geom_size');
 ok(dv.getUint32(28, true) === M.artSize, 'art_size');
@@ -165,14 +181,21 @@ throws(() => { const m = baseModel(); m.rects = m.rects.slice(0, 3); B.packGeom(
 throws(() => { const m = baseModel(); m.aux = new Array(9).fill(M.auxRecs[0]); B.packGeom(m); }, /cap/, 'nine aux rows exceed the dial cap');
 throws(() => { const m = baseModel(); m.comps = new Array(17).fill(M.comps[0]); B.packGeom(m); }, /cap/, 'seventeen complications exceed the dial cap');
 throws(() => { const m = baseModel(); m.bank = new Array(257).fill(baseModel().hands[0]); B.packGeom(m); }, /cap/, 'two hundred fifty-seven bank rows exceed the cap');
-throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(128), slug: 'x' }),
+throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(128), name: 'x' }),
        /shorter than one full plate/, 'a payload that cannot hold a plate is refused');
-throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), slug: 'x' }),
+throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), name: 'x' }),
        /over the/, 'a payload bigger than a theme slot is refused before it is ever offered');
-ok(!B.slugOk('bad name'), 'a slug with a space would never match its card filename');
-ok(!B.slugOk('.hidden'), 'a slug with a leading dot would never match its card filename');
-ok(!B.slugOk('exactly-twenty-four-characters'), 'a slug over 23 chars is refused');
-ok(B.slugOk('my_theme-2.orb'), 'a plain slug is accepted');
+throws(() => B.writeContainer({ geom: jsGeom, art: art, scrW: M.scrW, scrH: M.scrH, title: 'no name' }),
+       /no name/, 'a container holding only FORMAT 1 title field is refused: the name is what the card files under');
+// A name is free text under FORMAT 2 — the card filename is the hash, so the charset
+// rules that kept a slug matchable on the card are gone. What is left is the field.
+ok(B.nameOk('Mirror — Gold Nº 3'), 'a name with spaces, an em dash and a superscript is the theme name now');
+ok(!B.nameOk(''), 'an empty name is refused: it would hash to an id no header can be matched to');
+ok(!B.nameOk('a\u0000b'), 'an embedded NUL is refused: the C reader stops there and the tail would silently not be the name');
+ok(B.nameOk('x'.repeat(B.NAME_MAX - 1)), 'the field exactly full is accepted');
+ok(!B.nameOk('x'.repeat(B.NAME_MAX)), 'one byte past the field is refused');
+ok(!B.nameOk('é'.repeat(28)), 'fifty-six bytes in twenty-eight characters is over the field: the cap counts BYTES');
+ok(B.nameBytes('ééé') === 6, 'and nameBytes reports that unit to the studio');
 
 // ---- 6. the blob's own size rule ------------------------------------------
 // main/art/orb_theme.c:geom_counts() takes a blob only when its length matches what its
@@ -299,7 +322,7 @@ import json; sys.stdout.write(json.dumps(out))
                       '--bg-frames', OUTF + '/theme/frames', '--bg-fps', '8',
                       '--tourbillon', OUTF + '/theme/tourbillon', '--tourbillon-fps', '8',
                       '--tick-rate', '8', '--matte', 'off', '--bg-occlude', 'auto',
-                      '--orbtheme', REF, '--theme-slug', 'orbital3', '--theme-title', 'orbital3',
+                      '--orbtheme', REF, '--theme-name', 'orbital3',
                       '--bin', OUTF + '/a.bin', '--header', OUTF + '/a.h'],
                  { cwd: ROOT, stdio: 'pipe', maxBuffer: 1 << 24 });
     fs.writeFileSync(STAMP, '');
@@ -318,7 +341,7 @@ import json; sys.stdout.write(json.dumps(out))
                             (u) => new Uint8Array(inflateSync(Buffer.from(u))));
   }
   let js = null, why = '';
-  try { js = B.bakeKit({ manifest, planes, slug: 'orbital3', title: 'orbital3', serial: 0, bakedMs: 0 }).bytes; }
+  try { js = B.bakeKit({ manifest, planes, name: 'orbital3', serial: 0, bakedMs: 0 }).bytes; }
   catch (e) { why = e && e.message || String(e); }
   ok(!!js, 'the real kit bakes without throwing', why);
   if (!js) return;

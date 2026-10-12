@@ -80,8 +80,12 @@ void orb_sd_unlock(void);
 /**
  * Is `name` safe to use as a single FATFS path segment?
  *
- * Pure, no card needed — and the browser supplies these, so this is the only
- * thing standing between a crafted ?name= and an arbitrary path on /sd.
+ * Pure, no card needed. FORMAT 2 leaves exactly one browser-supplied string
+ * reaching a path — the ?id= of the install and delete endpoints, which is a
+ * 12-char lowercase hex theme id — and this is the last thing that looks at it
+ * before it becomes a path on /sd. The card's own directory entries are checked
+ * with it too (main/sd/orb_files.c), because a file FATFS lists is not a file
+ * this device necessarily wrote.
  * Accepted: 1..ORB_SD_NAME_MAX bytes of [A-Za-z0-9._-] with no leading '.'
  * (a leading dot hides the entry from the page and '.'/'..' are the escapes
  * that matter). Everything else — '/', '\', whitespace, control bytes, UTF-8,
@@ -92,5 +96,11 @@ bool orb_sd_name_ok(const char *name);
 /**
  * Build "/sd/themes/<name>" into out. Returns false (and writes nothing) if
  * the name fails orb_sd_name_ok() or does not fit. Always NUL-terminates.
+ *
+ * The theme layer calls this with a theme id, never with a card name: its one
+ * caller is theme_file() in main/art/orb_theme.c, which runs after that file
+ * matched the id against sha256() of the name read out of the container header.
+ * The check stays anyway — a path builder that validates nothing is the exact
+ * bug this layer exists to prevent, and the pin costs one strcmp-free loop.
  */
 bool orb_sd_theme_path(char *out, size_t outsz, const char *name);

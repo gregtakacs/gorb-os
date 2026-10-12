@@ -9,17 +9,26 @@ pair could never leave the bench. The container carries the geometry alongside
 the pixels so the firmware can run a theme it was not built around.
 
 The layout below is the single definition. main/art/orb_theme.c mirrors it field
-for field, and tools/host_tz_test.py proves the mirror: it builds a container
-with a distinct sentinel in every field through THIS module and asserts the
-lifted C reader recovers each one. Reordering a field on one side only therefore
-fails a test rather than shipping a dial with the hands' pivots in the overlay's
-slots — which is the exact class of bug a struct-layout mismatch produces, and it
-would look like bad art, not like a bug.
+for field, and the host suites prove the mirror: tools/host_tz_test.py and
+tools/host_sd_test.py build a container with a distinct sentinel in every field
+through THIS module and assert the lifted C reader recovers each one. Reordering a
+field on one side only therefore fails a test rather than shipping a dial with the
+hands' pivots in the overlay's slots — which is the exact class of bug a
+struct-layout mismatch produces, and it would look like bad art, not like a bug.
+
+FORMAT 2 — the theme's identity lives in the header's `name`, never in the
+filename. A theme's one true name is the string the owner set when they built the
+file, stored in the single NAME_MAX-byte field at W_NAME (words 14..27). The card
+filename is derived from it by theme_id(name) = sha256(name)[:12] + ".orbtheme" —
+opaque hex nobody types, reads, or labels with. The upload filename is meaningless
+once the bytes land and is not stored. FORMAT 1 (a slug + title pair) is refused
+outright: this reader has no legacy path and there is no migration. GEOM_ABI stays
+1; only the name fields changed, so W_HDR_CRC stays 28 and HDR_WORDS stays 32.
 
 Wire format, all little-endian u32 words (every field widened to 32 bits, so
 there is no padding rule for either side to disagree about):
 
-  header   (HDR_WORDS words, pack_header)
+  header   (HDR_WORDS words, pack_header; one name field at W_NAME)
   geometry (geom_size bytes at geom_off):
       n_rects, n_first, n_delays, n_bgframes        <- 4 count words
       clk_theme_t scalars per THEME_FIELDS
@@ -35,16 +44,16 @@ one bake serving both paths: `idf.py flash` still takes the pair, the card takes
 the container.
 """
 
+import hashlib
 import struct
 import zlib
 
 MAGIC         = 0x474F5254        # 'T','R','O','G' little-endian on the wire
-FORMAT        = 1                 # this file's container layout
+FORMAT        = 2                 # this file's container layout
 GEOM_ABI      = 1                 # the clock_view.c geometry struct it describes
 SECTOR        = 4096
 HDR_WORDS     = 32                # 128 B, the rest reserved for the next format
-NAME_MAX      = 24
-TITLE_MAX     = 32
+NAME_MAX      = 56                # one name field; 55 usable bytes + NUL
 SPRITE_FIELDS = ("w", "h", "offx", "offy", "pivotx", "pivoty",
                  "centerx", "centery", "blend", "show", "color_off",
                  "diffx", "diffy", "diffw", "diffh")
@@ -57,13 +66,13 @@ SPRITE_FIELDS = ("w", "h", "offx", "offy", "pivotx", "pivoty",
 GEOM_COUNTS = ("n_rects", "n_first", "n_delays", "n_frames",
                "n_comp", "n_aux", "n_bank")
 
-# Header word map. Kept in one place because slug and title are byte arrays
-# spread over whole words, and their ranges must stay DISJOINT: the first draft
-# of this put the 24-byte slug at word 14 (words 14..19) and the 32-byte title at
-# word 18, so a long slug silently overwrote the head of the title. Two short
-# strings hid it — tools/host_tz_test.py now fills both to their maximum, and
-# HDR_WORDS is derived from the fields rather than fixed at 32, so the ranges
-# cannot collide again without the size and the test both moving.
+# Header word map. Kept in one place because the name is a byte array spread over
+# whole words. FORMAT 2 collapses the old slug+title pair into ONE name field that
+# occupies exactly the bytes the pair used (words 14..27), so W_HDR_CRC stays 28 and
+# HDR_WORDS stays 32. The first draft of this format put two name strings on
+# overlapping words and a long slug silently overwrote the head of the title; two
+# short strings hid it. The range is now derived from the single field rather than
+# spelled twice, so it cannot collide again without the size and the test both moving.
 W_MAGIC     = 0
 W_FORMAT    = 1
 W_GEOM_ABI  = 2
@@ -78,10 +87,9 @@ W_SCR_H     = 10
 W_SERIAL    = 11
 W_BAKED_MS  = 12
 W_ART_OFF   = 13
-W_SLUG      = 14                                  # NAME_MAX  bytes
-W_TITLE     = W_SLUG  + ((NAME_MAX  + 3) // 4)    # TITLE_MAX bytes
-W_HDR_CRC   = W_TITLE + ((TITLE_MAX + 3) // 4)    # crc32 over the whole header
-HDR_WORDS   = W_HDR_CRC + 4                       # +4 words spare for v2
+W_NAME      = 14                                  # NAME_MAX bytes (words 14..27)
+W_HDR_CRC   = W_NAME + ((NAME_MAX + 3) // 4)      # crc32 over the whole header == 28
+HDR_WORDS   = W_HDR_CRC + 4                       # +4 words spare for the next format
 
 
 # clk_theme_t's scalars in clock_view.c's declaration order, as (name, type).
@@ -321,7 +329,26 @@ def art_offset(geom_size):
     return (HDR_WORDS * 4 + geom_size + SECTOR - 1) & ~(SECTOR - 1)
 
 
-def pack_header(slug, title, geom_size, art_size, geom_crc, art_crc,
+def theme_id(name):
+    """The card identity of a theme name: sha256(name)[:12], lowercase hex.
+
+    THE INPUT IS THE NAME UP TO ITS NUL, never the padded NAME_MAX-byte array, so
+    "Neon" hashes exactly as hashlib.sha256(b"Neon") and a stored name never picks
+    up trailing zero bytes as identity. This is the canonical implementation; the
+    firmware's theme_id() in main/art/orb_theme.c mirrors it byte for byte, and
+    tools/host_sd_test.py lifts the C version and pins it against this one on
+    known-answer rows (ASCII, UTF-8, the 55-char boundary, and a row that proves
+    the padded array and the NUL-terminated bytes hash differently). An empty name
+    is refused: otherwise every nameless theme hashes to one constant.
+
+    The card filename is theme_id(name) + ".orbtheme" — opaque hex no human types
+    or reads. The upload filename carries no identity and is not stored."""
+    if not name:
+        raise ValueError("theme_id: an empty name is refused")
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+
+
+def pack_header(name, geom_size, art_size, geom_crc, art_crc,
                 scr_w, scr_h, serial=0, baked_ms=0):
     hdr = [0] * HDR_WORDS
     hdr[0], hdr[1], hdr[2], hdr[3] = (_u(MAGIC), _u(FORMAT), _u(GEOM_ABI),
@@ -331,8 +358,7 @@ def pack_header(slug, title, geom_size, art_size, geom_crc, art_crc,
     hdr[7], hdr[8] = _u(art_size), _u(art_crc)
     hdr[9], hdr[10] = _u(scr_w), _u(scr_h)
     hdr[11], hdr[12], hdr[13] = _u(serial), _u(baked_ms), _u(art_offset(geom_size))
-    _setword(hdr, W_SLUG, slug, NAME_MAX)
-    _setword(hdr, W_TITLE, title, TITLE_MAX)
+    _setword(hdr, W_NAME, name, NAME_MAX)
     # The header checksum covers the whole 128 bytes with its own word zeroed, so
     # a torn header (a bad count, a wrong art_off) is caught by the 128 bytes read
     # first rather than after streaming a multi-megabyte payload to the card.
@@ -347,12 +373,12 @@ def _hdr_crc(hdr):
     return zlib.crc32(b"".join(struct.pack("<I", v) for v in z)) & 0xFFFFFFFF
 
 
-def write_container(path, slug, title, geom_bytes, art_bytes, scr_w, scr_h,
+def write_container(path, name, geom_bytes, art_bytes, scr_w, scr_h,
                     serial=0, baked_ms=0):
     """Emit one `.orbtheme`. The checksums are zlib CRC-32 — the same polynomial
     as esp_rom_crc32_le on the device — so a value computed here is checkable
     there without a second implementation free to drift."""
-    hdr = pack_header(slug, title, len(geom_bytes), len(art_bytes),
+    hdr = pack_header(name, len(geom_bytes), len(art_bytes),
                       zlib.crc32(geom_bytes) & 0xFFFFFFFF,
                       zlib.crc32(art_bytes) & 0xFFFFFFFF,
                       scr_w, scr_h, serial, baked_ms)
@@ -389,12 +415,17 @@ def parse_header(raw):
         # pixels has been looked at, and the difference is whether the owner
         # re-copies the file (a torn copy) or re-bakes it (a broken bake).
         raise ValueError("container header checksum mismatch — re-copy the file onto the card")
+    name = _wordstr(hdr, W_NAME, NAME_MAX)
+    if not name:
+        # Every nameless theme would hash to one constant and collide with each
+        # other on the card, so an empty name is refused here, at parse, exactly as
+        # the firmware's hdr_parse() refuses it.
+        raise ValueError("theme has no name in its header — re-bake it")
     return {"fmt": hdr[1], "abi": hdr[2], "hdr_size": hdr[3], "geom_off": hdr[4],
             "geom_size": hdr[5], "geom_crc": hdr[6], "art_size": hdr[7],
             "art_crc": hdr[8], "scr_w": hdr[9], "scr_h": hdr[10],
             "serial": hdr[W_SERIAL], "baked_ms": hdr[W_BAKED_MS], "art_off": hdr[W_ART_OFF],
-            "slug": _wordstr(hdr, W_SLUG, NAME_MAX),
-            "title": _wordstr(hdr, W_TITLE, TITLE_MAX)}
+            "name": name}
 
 
 def read_container(path):
@@ -421,8 +452,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--inspect":
         h, geom, art = read_container(sys.argv[2])
         g = unpack_geom(geom)
-        print("%-24s '%s'  %dx%d  geom %d B  art %d B  serial %d"
-              % (h["slug"], h["title"], h["scr_w"], h["scr_h"],
+        print("%-12s '%s'  %dx%d  geom %d B  art %d B  serial %d"
+              % (theme_id(h["name"]), h["name"], h["scr_w"], h["scr_h"],
                  h["geom_size"], h["art_size"], h["serial"]))
         print("  hands show=%s  tourbillon_n=%d  gif_frames=%d  rects=%d  bg_frames=%d"
               % ([x["show"] for x in g["hands"]], g["scalars"]["tourbillon_n"],

@@ -25,13 +25,18 @@
   var KINDS = ['hour', 'minute', 'second', 'static1', 'static2'];
 
   /* ---- tools/orbtheme.py: the container ---------------------------------- */
-  var MAGIC = 0x474f5254, FORMAT = 1, GEOM_ABI = 1, SECTOR = 4096;
-  var NAME_MAX = 24, TITLE_MAX = 32;
+  var MAGIC = 0x474f5254, FORMAT = 2, GEOM_ABI = 1, SECTOR = 4096;
+  var NAME_MAX = 56;                       // one name field: 55 usable bytes + NUL
   var SPRITE_FIELDS = ['w', 'h', 'offx', 'offy', 'pivotx', 'pivoty', 'centerx', 'centery',
                        'blend', 'show', 'color_off', 'diffx', 'diffy', 'diffw', 'diffh'];
   var GEOM_COUNTS = ['n_rects', 'n_first', 'n_delays', 'n_frames', 'n_comp', 'n_aux', 'n_bank'];
-  var W_SLUG = 14, W_TITLE = W_SLUG + ((NAME_MAX + 3) / 4 | 0),
-      W_HDR_CRC = W_TITLE + ((TITLE_MAX + 3) / 4 | 0);
+  // FORMAT 2 collapsed FORMAT 1's slug+title pair into ONE name field occupying exactly
+  // the bytes that pair used (words 14..27), so W_HDR_CRC stays 28 and HDR_WORDS 32: a
+  // container baked for either format lands its tables in the same places, and only the
+  // identity rule differs. The numbers are pinned against tools/orbtheme.py by the two
+  // checks named in the header comment above.
+  var W_NAME = 14,
+      W_HDR_CRC = W_NAME + ((NAME_MAX + 3) / 4 | 0);
   var HDR_WORDS = W_HDR_CRC + 4;
   var THEME_FIELDS = [
     ['bg', 'u32'], ['plate_follow', 'u8'], ['shadow_on', 'u8'],
@@ -234,6 +239,11 @@
     return crc32(wordsToBytes(z));
   }
   function packHeader(o) {
+    // The name IS the theme now: main/art/orb_theme.c files the container under
+    // sha256(name)[:12] and refuses a container whose name field is empty, so baking one
+    // with no name would only produce a file the device can never list. Refuse it here,
+    // where the reason can be said, instead of at the card.
+    if (!o.name) throw new Error('the theme has no name to bake — the card files a theme by sha256(name)[:12] and refuses a container with an empty name');
     var hdr = new Array(HDR_WORDS).fill(0);
     hdr[0] = MAGIC >>> 0; hdr[1] = FORMAT; hdr[2] = GEOM_ABI; hdr[3] = HDR_WORDS * 4;
     hdr[4] = HDR_WORDS * 4;
@@ -243,8 +253,7 @@
     hdr[11] = val('serial', 'u32', o.serial || 0);
     hdr[12] = val('baked_ms', 'u32', o.bakedMs || 0);
     hdr[13] = val('art_off', 'u32', artOffset(o.geomSize));
-    setWord(hdr, W_SLUG, o.slug || '', NAME_MAX);
-    setWord(hdr, W_TITLE, o.title || '', TITLE_MAX);
+    setWord(hdr, W_NAME, o.name || '', NAME_MAX);
     hdr[W_HDR_CRC] = hdrCrc(hdr);
     return wordsToBytes(hdr);
   }
@@ -252,6 +261,34 @@
    * straight out of the assets partition, and an unaligned start costs an MMU page
    * entry to round. */
   function artOffset(geomSize) { return (HDR_WORDS * 4 + geomSize + SECTOR - 1) & ~(SECTOR - 1); }
+
+  /* The card filename a name yields: hex(sha256(name))[:12], lowercase — the same rule
+   * tools/orbtheme.py's theme_id() defines and main/art/orb_theme.c's theme_id() mirrors.
+   * The DIGEST arrives from the caller, because the baker runs in three places: Chrome
+   * (window.crypto.subtle.digest, in the studio's own async path), node (the mirror
+   * suite, require('crypto')), and nowhere that has a hash this file may reimplement.
+   * A hand-rolled SHA-256 here would be a third implementation of the one rule the
+   * whole format hangs on, checked against the other two only by whoever wrote it.
+   * Six bytes is the entire id: reading further would be a second, freer rule. */
+  function themeIdFromDigest(digest) {
+    if (!digest || digest.length < 6) return null;
+    var h = '';
+    for (var i = 0; i < 6; i++) {
+      h += (digest[i] >> 4).toString(16) + (digest[i] & 15).toString(16);
+    }
+    return h;
+  }
+
+  /* A theme name in the unit the header actually measures: UTF-8 BYTES, not JS
+   * characters. setWord cuts at NAME_MAX - 1 to leave the NUL the C reader stops at, so
+   * "Mirage — Gold" at 15 characters is 17 bytes, and the number the studio has to show
+   * an owner is the one the field enforces. An embedded NUL is refused outright: the
+   * reader would stop early and the tail of the name would silently not be the name. */
+  function nameBytes(s) { return new TextEncoder().encode(String(s)).length; }
+  function nameOk(s) {
+    return typeof s === 'string' && s.indexOf('\u0000') < 0 &&
+           s.length > 0 && nameBytes(s) <= NAME_MAX - 1;
+  }
 
   /* One .orbtheme: header, geometry, zero padding to the sector, pixel payload. */
   function writeContainer(o) {
@@ -266,7 +303,7 @@
       geomSize: geom.length, artSize: art.length,
       geomCrc: crc32(geom), artCrc: crc32(art),
       scrW: o.scrW || SCREEN_W, scrH: o.scrH || SCREEN_H,
-      serial: o.serial || 0, bakedMs: o.bakedMs || 0, slug: o.slug, title: o.title
+      serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name
     });
     var out = new Uint8Array(off + art.length);
     out.set(hdr, 0);
@@ -1442,7 +1479,7 @@
     });
     var bytes = writeContainer({
       geom: geom, art: art, scrW: SCREEN_W, scrH: SCREEN_H,
-      slug: kit.slug, title: kit.title || kit.slug,
+      name: kit.name,
       serial: kit.serial || 0, bakedMs: kit.bakedMs || 0
     });
     report.bytes = bytes.length;
@@ -1582,12 +1619,12 @@
   root.GorbBake = {
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
-    HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, TITLE_MAX: TITLE_MAX, SLOT_CAP: SLOT_CAP,
+    HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, SLOT_CAP: SLOT_CAP,
     // The header layout is exported so a reader can check a finished container instead of
     // trusting the writer: the selftest re-CRCs the geometry and the pixel payload it read
     // back off a real Chrome canvas, exactly as orb_theme.c does before it accepts a theme.
     MAGIC: MAGIC, FORMAT: FORMAT, GEOM_ABI: GEOM_ABI, SECTOR: SECTOR,
-    W_SLUG: W_SLUG, W_TITLE: W_TITLE, W_HDR_CRC: W_HDR_CRC,
+    W_NAME: W_NAME, W_HDR_CRC: W_HDR_CRC,
     caps: { comp: CLK_COMP_MAX, aux: CLK_AUX_MAX, bank: CLK_BANK_MAX, rects: RECTS_MAX, gifs: GIFS_MAX, tourb: TOURB_MAX },
     crc32: crc32, blankSpr: blankSpr, packSpr: packSpr, packGeom: packGeom, geomNeed: geomNeed,
     packHeader: packHeader, writeContainer: writeContainer, artOffset: artOffset,
@@ -1606,14 +1643,12 @@
     fieldsOf: fieldsOf, wordsOf: wordsOf, sourceOf: sourceOf, tileOrder: tileOrder,
     staticRun: staticRun, underLayers: underLayers, AUX_KINDS: AUX_KINDS,
     bakeKit: bakeKit, decodePng: decodePng, decodePngAsync: decodePngAsync,
-    // The slug the card will file the theme under, which is orb_sd.c's orb_sd_name_ok
-    // read here rather than trusted: A-Z a-z 0-9 . _ -, no leading dot (".", "..", and
-    // hidden entries are refused outright), and 23 chars because the header's slug field
-    // is NAME_MAX 24 bytes including the NUL — a longer name can never match on the card.
-    slugOk: function (s) {
-      return typeof s === 'string' && s.length > 0 && s.length <= NAME_MAX - 1 &&
-        s.charAt(0) !== '.' && /^[A-Za-z0-9._-]+$/.test(s);
-    }
+    // The name rule the studio enforces before it spends a second baking, read here
+    // rather than trusted: the field is NAME_MAX bytes with the NUL reserved, measured
+    // in UTF-8 bytes because that is the unit the header cuts in, and an embedded NUL
+    // is refused because the C reader stops at it and the rest of the name would be
+    // silently gone — from the list, from the id, and from the card filename.
+    nameOk: nameOk, nameBytes: nameBytes, themeIdFromDigest: themeIdFromDigest
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

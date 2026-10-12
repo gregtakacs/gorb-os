@@ -49,14 +49,15 @@ Two launch gotchas that burned time this session, both avoided by using a
   `Project build complete` / `binary size` / `warning:` / `error:`.
 - **`idf.py flash monitor`**, and any `monitor`/serial capture held open longer
   than ~25 s (e.g. watching the association ladder). Use the short bounded
-  capture scripts (`/tmp/cap.py <log> <secs>`, `/tmp/cap_reset.py`) with a
-  duration under ~12 s inline; longer captures go detached.
+  capture scripts (`tools/capf.py <secs> <log> [--no-reset]`,
+  `tools/cap.py <secs> [reset]`) with a duration under ~12 s inline; longer
+  captures go detached.
 
 ### Known operations that are SAFE inline (under 30 s)
 - `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s).
 - Steady-state `idf.py build` after editing a single source file (~10 s).
 - `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
-- Short serial captures (≤ ~12 s) like `/tmp/cap_reset.py`.
+- Short serial captures (≤ ~12 s) like `tools/capf.py 8 /tmp/x.txt --no-reset`.
 
 ## sdkconfig is local + untracked — a NEW Kconfig `default y` does NOT appear on a rebuild
 
@@ -156,11 +157,31 @@ There is no wireless adapter on the host, so the phone-side captive-portal popup
 ("Sign in to network") and any real client joining the AP cannot be proven here.
 What IS verifiable on the bench, via USB serial + the LAN the orb joins as a
 station:
-- Serial console: `sudo` on `/dev/ttyACM0` (re-attach via usbipd drops dialout).
-  Flash/boot capture: `/tmp/cap_reset.py`, `/tmp/cap.py <log> <secs>`.
+## One clone, one orb — the .orb-target binding (2026-10-11)
+
+Two ESP32-S3 orbs share this bench and enumerate identically (`303a:1001`); only
+the MAC in the `/dev/serial/by-id` name tells them apart. Each clone therefore
+binds exactly one orb through the **untracked** `.orb-target` at its root
+(`ORB_LABEL`, `ORB_BASE_MAC`, `ORB_SERIAL`, `ORB_IP`), and every device tool in
+`tools/` refuses to run without it: no bare `/dev/ttyACMx` and no hardcoded orb
+IP survives in tracked code. `tools/orb_bind.sh` (shell) and `tools/orb_bind.py`
+(python) implement the gates — port must exist, esptool `read_mac` must match
+the bound MAC, `ip neigh` must confirm the LAN address — and the per-orb
+sidecar flock in `/tmp/orb-<label>-<mac>.lock` makes a second writer fail
+loudly. Binding follows the working copy, not the branch: switching branches
+never moves a tool onto the other orb. Current bindings: clone `gorb-os-2` →
+orb-A (`44:bd:8d:60:80:88`, ttyACM0, `192.168.2.32`, the provisioned bench
+orb); clone `gorb-os` → orb-B (`44:bd:8d:78:26:18`, ttyACM1, not yet on the
+LAN — `ORB_IP` empty until the owner provisions it via the phone captive
+portal). If usbipd re-attach renames ACM numbers, nothing breaks: tools ask by
+by-id path, not number.
+
+- Serial console: plain opens work (user is in `dialout`; re-attach via usbipd
+  can drop it — `sudo` then). Flash/boot capture: `tools/capf.py <secs> <log>
+  [--no-reset]`, `tools/cap.py <secs> [reset]`, `tools/grab_boot.py`.
 - `/api/v1/status` over LAN (state/fw/slot/img/rssi/synced/ap/assoc_fails).
 - AP open/close lifecycle + `captive DNS answering for …` via
-  `/tmp/ap_cp_test.sh` (opens AP while station holds a lease, checks the station
+  `tools/ap_cp_test.sh` (opens AP while station holds a lease, checks the station
   stays connected+synced, fires the probe endpoints, closes AP, greps serial).
 - **Audit loop**: flash, then confirm `/api/v1/status`'s `fw` is the git hash you
   built (`-dirty` = uncommitted edits). Ship = test = commit, same bytes.
@@ -638,7 +659,7 @@ out of the serial log (`menu: AP selected`), not out of the script's intent.
 `input_router_inject()` and never touches `knob_rot_isr`, so `knob.raw`/`knob.det` stay
 at zero through a fully successful injected walk. Any claim about quadrature, the
 valley, the commit rule or debounce needs a finger on the knob and a read of
-`/api/v1/status`'s `knob` block (`/tmp/turnsession.py` drives exactly that).
+`/api/v1/status`'s `knob` block (`tools/turnsession.py` drives exactly that).
 
 ### Measured on the board (2026-10-10, menu build)
 

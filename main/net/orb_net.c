@@ -1355,8 +1355,11 @@ static esp_err_t h_status(httpd_req_t *req)
      * room for that growth. Measured 650 B on the device on 2026-10-12, tz at
      * "US/Eastern", with the idle block's writes_failed present; the figure moves
      * a few bytes as the counters gain digits, which is why it is measured and not
-     * added up. */
-    char json[960];
+     * added up. The P3 apps ledger joins it — ~110 B per row (three compiled rows
+     * today) plus the grants words and any status line an app printed, capped
+     * inside its own 768 B buffer — which is why the frame is 1536 now; re-measure
+     * on the device and shrink it back if the rows stay short. */
+    char json[1536];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -1441,6 +1444,53 @@ static esp_err_t h_status(httpd_req_t *req)
     const int      idle_worst_mg  = idle_dim_worst_mg();
     const int      idle_worst_dk  = idle_dim_worst_dark_mg();
 
+    /* P3 pass line (plan §8): the broker's ledger, published. Per app: the
+     * owner's grants, what it has asked for without holding, its call and
+     * denial counts, its D16 beat in force, the bytes of its config quota,
+     * and the C2 fault count with the failed flag. The denial count is what
+     * makes "no code path lets an app call below its grant" checkable from
+     * the LAN — a broker nobody can audit is a broker nobody has to trust.
+     * Rows, not walkable entries: the ledger is exactly about the failed
+     * and disabled apps the carousel hides. */
+    static char apps_json[768];        /* static: h_config_get's argument —
+                                        * httpd handlers run serially */
+    {
+        int off = snprintf(apps_json, sizeof apps_json, "[");
+        if (off < 0 || (size_t)off >= sizeof apps_json) off = -1;
+        for (size_t i = 0; off >= 0; i++) {
+            const orb_app_t *a = orb_app_row(i);
+            if (!a) break;
+            char grants[64];
+            int goff = 0;
+            grants[0] = '\0';
+            static const orb_cap_t OC[4] = { CAP_POWER, CAP_NET,
+                                             CAP_SD_READ, CAP_THEMES };
+            for (unsigned c = 0; c < 4; c++) {
+                if (!(orb_svc_grants(a) & (1u << OC[c]))) continue;
+                const int gw = snprintf(grants + goff, sizeof grants - (size_t)goff,
+                                        "%s\"%s\"", goff ? "," : "",
+                                        orb_svc_cap_name(OC[c]));
+                if (gw < 0 || (size_t)gw >= sizeof grants - (size_t)goff) break;
+                goff += gw;
+            }
+            const int w = snprintf(apps_json + off, sizeof apps_json - (size_t)off,
+                "%s{\"slug\":\"%s\",\"grants\":[%s],\"asked\":%u,\"calls\":%u,"
+                "\"denials\":%u,\"beat_ms\":%u,\"cfg_used\":%u,\"faults\":%u,"
+                "\"failed\":%s,\"status\":\"%s\"}",
+                i ? "," : "", a->slug, grants,
+                (unsigned)orb_svc_pending(a), (unsigned)orb_svc_calls(a),
+                (unsigned)orb_svc_denials(a), (unsigned)orb_svc_beat_ms(a),
+                (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
+                a->failed ? "true" : "false", orb_svc_last_status(a));
+            if (w < 0 || (size_t)w >= sizeof apps_json - (size_t)off) break;
+            off += w;
+        }
+        if (off >= 0 && (size_t)off + 1 < sizeof apps_json)
+            snprintf(apps_json + off, sizeof apps_json - (size_t)off, "]");
+        else
+            snprintf(apps_json, sizeof apps_json, "[{\"error\":\"ledger too large\"}]");
+    }
+
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -1486,7 +1536,8 @@ static esp_err_t h_status(httpd_req_t *req)
          * dimmed stuck true is the whole diagnosis of "it will not wake". */
         "\"idle\":{\"on\":%s,\"dimmed\":%s,\"since_s\":%u,\"timeout_s\":%u,"
         "\"lit_pct\":%u,\"dim_pct\":%u,\"wakes\":%u,\"worst_mg\":%d,"
-        "\"worst_dark_mg\":%d,\"stamps\":%u,\"writes_failed\":%u}}",
+        "\"worst_dark_mg\":%d,\"stamps\":%u,\"writes_failed\":%u},"
+        "\"apps\":%s}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
         s_provisioning ? "provisioning" : "down",
@@ -1514,7 +1565,8 @@ static esp_err_t h_status(httpd_req_t *req)
         idle_on ? "true" : "false", idle_dark, idle_since_s, idle_timeout_s,
         idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
         (unsigned)idle_dim_activity_count(),
-        (unsigned)idle_dim_level_write_fail_count());
+        (unsigned)idle_dim_level_write_fail_count(),
+        apps_json);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail

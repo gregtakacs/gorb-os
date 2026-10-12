@@ -560,6 +560,17 @@ static void svc_status(orb_app_t *a, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(s_row[slot].last_status, sizeof s_row[slot].last_status, fmt, ap);
     va_end(ap);
+    /* The line reaches /api/v1/status inside a JSON string, and an app owns
+     * the bytes it printed. This is the same echo the tz field learned from
+     * (json_str drops a backslash and keeps the escape's target, so a stored
+     * quote lets a client forge keys inside the device's own replies): strip
+     * to printable ASCII with quote and backslash folded to '.'. A status
+     * line is a sentence, not a payload; the app loses two characters and the
+     * device keeps its reply honest. */
+    for (char *p = s_row[slot].last_status; *p; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c > 0x7E || c == '"' || c == '\\') *p = '.';
+    }
 }
 
 /* The frozen table. The order IS orb_svc_t's field order — the one place a

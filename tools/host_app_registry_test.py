@@ -517,6 +517,9 @@ int main(void)
        A("color_picker")->failed && orb_app_count() == 2);
     ck("and it is the registry's failed flag the shell already reads",
        orb_app_at(orb_app_index_of(A("color_picker"))) == NULL);
+    ck("while the owner's ledger accessor still sees the row the carousel hides",
+       orb_app_row((size_t)orb_app_index_of(A("color_picker"))) == A("color_picker") &&
+       orb_app_rows() == 3);
     restore_table(); g_fault_slug = "clock"; orb_app_init_all();
     ck("the HOME entry survives faulting — boot-into-clock needs a clock",
        !A("clock")->failed && orb_app_count() == 3);

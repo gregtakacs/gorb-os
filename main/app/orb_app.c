@@ -286,6 +286,19 @@ const orb_app_t *orb_app_at(size_t idx)
     return &s_apps[idx];
 }
 
+size_t orb_app_rows(void)
+{
+    /* Raw row count, disabled and FAILED entries included: the owner's
+     * ledger (/api/v1/status, the P4 APPS page) is exactly about the apps
+     * the carousel hides. The carousel keeps using orb_app_count(). */
+    return ORB_APP_N;
+}
+
+const orb_app_t *orb_app_row(size_t i)
+{
+    return i < ORB_APP_N ? &s_apps[i] : NULL;
+}
+
 const orb_app_t *orb_app_find_slug(const char *slug)
 {
     if (!slug || !*slug) return NULL;

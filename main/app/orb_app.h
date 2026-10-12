@@ -184,6 +184,11 @@ esp_err_t orb_app_init_all(void);
 /** Table access. Index order IS the knob's carousel order. */
 size_t            orb_app_count(void);
 const orb_app_t  *orb_app_at(size_t idx);
+/** Raw table access for the owner's ledger: rows includes disabled and failed
+ *  entries — the ones orb_app_at() hides from the carousel and the ones the
+ *  status endpoint and the P4 APPS page exist to show. */
+size_t            orb_app_rows(void);
+const orb_app_t  *orb_app_row(size_t i);
 /** Slug lookup for the shell and for GET /api/v1/screen. NULL means no such
  *  app, and the caller refuses with a named reason rather than guessing a
  *  slot. Matches the exact slug and any registered alias, never a

@@ -476,6 +476,11 @@ int main(int argc, char **argv)
     /* ---- status / ghost ---------------------------------------------------- */
     S->status(A, "beat %d", 7);
     CK("status line stored for the OS page", !strcmp(orb_svc_last_status(A), "beat 7"));
+    S->status(A, "he\"said\"no\\path");
+    CK("the status echo carries no quote or backslash into the device's JSON",
+       !strstr(orb_svc_last_status(A), "\"") &&
+       !strchr(orb_svc_last_status(A), '\\') &&
+       orb_svc_last_status(A)[0] == 'h');
     opens0 = g_opens;
     CK("an app outside the table gets nothing, even a free cap",
        S->power_request(GHOST, 1, true) == ESP_ERR_NOT_ALLOWED);

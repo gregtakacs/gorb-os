@@ -413,7 +413,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12) — the carousel, the `opt_*` shell rendering and M3 are still open, and **M1 has not been re-run against the registry switches**** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12) — the carousel, the `opt_*` shell rendering and M3 are still open, and M1 re-run on hardware (§12.7)** | knob walks both apps; long-press still homes to the clock (C8); the carousel survives a disable/enable cycle |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -788,8 +788,66 @@ makes it observable.
 | `opt_*` through the shell (B1/B2) | The hooks are in the ABI and NULL everywhere; the clock's settings tiles are still painted by its own view code until the shell renders them |
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
-| **M1 re-run** | **Not yet done on hardware.** The pass lines are full activate under 250 ms, second switch under 60 ms, no new watchdog, and the boot dial at its baked tempo. The `switch %s sync %lld ms` and frame-window probes in `input_router.c` are intact, so the run is a capture, not a build task |
+| **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
 
 Re-running M1 against registry switches is the gate that says this step worked.
 Until it is captured on the wall-powered bench, the registry is host-proven and
 hardware-unproven, and the honest reading of P2 is "half landed".
+
+### 12.7 M1 re-run against the registry — captured 2026-10-11, `8535154`
+
+Kit3 (`3,858,874 B`, `8 frames @ 125 ms`), ota_0, serial flash, wall-powered,
+`sta ip 192.168.2.32`, **rssi -73**. Screens driven over `GET /api/v1/screen`,
+which is the same `set_screen()` the knob reaches.
+
+| Switch | sync | on glass | commits |
+|---|---|---|---|
+| → color_picker (first ever) | 0 ms | +76 ms | 1, avg 65 ms |
+| → menu | 0 ms | +87 ms | 1, avg 76 ms |
+| → color_picker (2nd) | 0 ms | +70 ms | 1, avg 63 ms |
+| → color_picker (3rd, via `hue`) | 0 ms | +63 ms | 1, avg 57 ms |
+| → clock (return to the dial) | 1 ms | +411 / +476 ms | 1, avg 394-462 ms |
+
+**Verdict against the four pass lines.**
+
+1. **Full activate under 250 ms — passes for an app** (63-87 ms), and the clock's
+   return is the one case that does not: 411-476 ms. That number is not switch
+   cost. `clock_view_set_bounce(true)` forces a clean repaint, which is one
+   full-page commit, and kit3's full commit is 403 ms in `.clinerules`' own
+   measurement; §10 measured the same shape at 256-273 ms on the skeleton bank
+   and 464 ms on perpetual-calendar. The switch adds roughly 8-70 ms on top of a
+   commit the dial was always going to pay. The bar is met by apps and missed by
+   the dial's own reveal, for a reason owned by the dial.
+2. **Second switch under 60 ms — passes where it means anything.** Sync is 0 ms
+   every time, and the to-glass cost is flat across first/second/third entry into
+   the picker (76/70/63 ms), which is the proof that objects survive and only the
+   model re-pushes. The glass figure cannot go below ~60 ms at all: it is one
+   commit of a 466-wide band, and the average commit measured 57-65 ms.
+3. **No new watchdog — passes.** Zero `guru`/`abort`/`watchdog`/`stack overflow`
+   in both boot captures; clean `boot: Loaded app from partition at offset
+   0x20000`.
+4. **Boot dial at baked tempo — passes on the only comparison that is valid.**
+   The A/B, same bank (md5-identical `aba381f3…`), same rig, same session:
+
+   | image | stamp | one-second samples | fps median | flush avg median |
+   |---|---|---|---|---|
+   | pre-registry | `24fc3c2` | 44 | 7 | 133 ms |
+   | registry | `8535154` | 45 | 7 | 132 ms |
+
+   Zero delta, so the registry costs the dial nothing. The absolute 7 fps sits
+   below kit3's documented 8.32 (`1999911`'s table), and the honest reading is
+   rig state, not code: rssi is -73 tonight against -56/-61 in those runs, and
+   this rig's established rssi sensitivity says the flush cost roughly doubles by
+   -84. Named rather than explained away — the number to reproduce after the next
+   antenna-side change is 8.32 with rssi above -60.
+
+Also proven on hardware: `?to=color_picker` and the `hue` alias both switch, and
+`?to=bogus` answers `{"error":"unknown app","known":[…]}` with a 400 without
+echoing the caller's value. The registry costs **2,256 B** of app image
+(1,478,240 against 1,475,984 for the same tree one commit earlier).
+
+**Bench caveats worth repeating.** DHCP did not complete on the first retry boot
+(no `sta ip` line at all), so the run needs a reachability poll rather than a
+fixed sleep. The dial auto-dims at 60 s on this build, so the usable lit window
+is t≈12-58 s; every figure above is from that window, and `frames` in each fps
+line is a one-second count, not the cumulative total.

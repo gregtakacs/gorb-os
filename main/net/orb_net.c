@@ -2430,6 +2430,9 @@ static esp_err_t h_ota(httpd_req_t *req)
 static void reboot_timer_cb(void *arg)
 {
     (void)arg;
+    /* Same C2 courtesy as orb_jobs' reboot_fire: a POST /api/v1/reboot is
+     * the owner talking, so the next boot bills no app. */
+    orb_svc_note_clean_reboot();
     ESP_LOGW(TAG, "rebooting on request (POST /api/v1/reboot)");
     esp_restart();
 }

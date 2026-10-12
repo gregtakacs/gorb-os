@@ -201,6 +201,23 @@ uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the 
  *  shell's act, never the app's permission). */
 void         orb_svc_app_suspended(const orb_app_t *a);
 
+/* ---- C2: fault counting (plan §1.4) ------------------------------------------
+ * The reset record's protocol lives in orb_svc.c; these are its doors.
+ * Two consecutive faults mark an app failed with its reason until
+ * orb_svc_clear_faults(); the HOME entry counts but never fails, because
+ * "boot into the clock" needs the clock. */
+int          orb_svc_reset_verdict(uint32_t magic, uint32_t booted); /* pure, host-pinned */
+void         orb_svc_note_fault(const orb_app_t *a, const char *why);
+uint32_t     orb_svc_fault_count(const orb_app_t *a);
+bool         orb_svc_faulted(const orb_app_t *a);
+const char  *orb_svc_fault_reason(const orb_app_t *a);
+esp_err_t    orb_svc_clear_faults(orb_app_t *a);       /* P4's reinstall path */
+/* Boot ladder: orb_svc_init arms, boot completion RUNs, activation stamps
+ * the slot, and every OS-owned reboot disarms. */
+void         orb_svc_boot_done(void);
+void         orb_svc_current_note(const orb_app_t *a);
+void         orb_svc_note_clean_reboot(void);
+
 #ifdef __cplusplus
 }
 #endif

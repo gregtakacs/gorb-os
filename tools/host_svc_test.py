@@ -148,6 +148,13 @@ esp_err_t nvs_set_str(nvs_handle_t h, const char *k, const char *v)
 }
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h; g_commits++; return g_fail_commit ? ESP_FAIL : ESP_OK; }
 void      nvs_close(nvs_handle_t h) { if (h < 16) OPEN_USED[h] = 0; }
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *k)
+{
+    ent *e = find_ent(OPEN_NS[h], k);
+    if (!e) return ESP_ERR_NVS_NOT_FOUND;
+    *e = S[--SN];                    /* swap-remove: the store is order-free */
+    return ESP_OK;
+}
 esp_err_t nvs_flash_init_partition(const char *p) { (void)p; return ESP_OK; }
 const char *esp_err_to_name(esp_err_t e)
 {
@@ -185,6 +192,9 @@ int orb_app_index_of(const orb_app_t *a)
     for (int i = 0; i < 3; i++) if (&TBL[i] == a) return i;
     return -1;
 }
+static orb_app_t *g_cur;                /* the entry on the glass, for the
+                                         * boot-RUN stamp */
+const orb_app_t *orb_app_current(void) { return g_cur; }
 
 /* Leaves the broker delegates to. */
 static uint8_t BANKMEM[8];
@@ -433,6 +443,36 @@ int main(int argc, char **argv)
            orb_svc_cfg_used(A) == 21);
     }
 
+    /* ---- C2: the fault rule — two strikes, persisted, clearable ---------- */
+    CK("RUN with any boot flag bills", orb_svc_reset_verdict(0x52554E21u, 1u) == 1 &&
+       orb_svc_reset_verdict(0x52554E21u, 0u) == 1);
+    CK("ARM unbooted bills; ARM booted does not",
+       orb_svc_reset_verdict(0x41524D21u, 0u) == 1 &&
+       orb_svc_reset_verdict(0x41524D21u, 1u) == 0);
+    CK("cold-boot garbage and the disarmed word bill nobody",
+       orb_svc_reset_verdict(0xDEADBEEFu, 7u) == 0 && orb_svc_reset_verdict(0u, 0u) == 0);
+    orb_svc_note_fault(B, "unexpected reset");
+    CK("first fault counts, does not fail",
+       orb_svc_fault_count(B) == 1 && !orb_svc_faulted(B));
+    orb_svc_note_fault(B, "unexpected reset");
+    CK("second consecutive fault marks failed with a reason",
+       orb_svc_faulted(B) && orb_svc_fault_count(B) == 2 &&
+       orb_svc_fault_reason(B)[0] != '\0');
+    {
+        ent *x1 = find_ent("orb.fault", "x1");
+        ent *c1 = find_ent("orb.fault", "c1");
+        CK("both words persisted, not just the RAM claim",
+           x1 && !x1->is_str && x1->u32 == 1 && c1 && !c1->is_str && c1->u32 == 2);
+    }
+    CK("clear_faults lifts the ban (P4 reinstall door)",
+       orb_svc_clear_faults(B) == ESP_OK && !orb_svc_faulted(B) &&
+       orb_svc_fault_count(B) == 0);
+    {
+        ent *x1 = find_ent("orb.fault", "x1");
+        CK("and the NVS words follow the RAM back down",
+           x1 && !x1->is_str && x1->u32 == 0);
+    }
+
     /* ---- status / ghost ---------------------------------------------------- */
     S->status(A, "beat %d", 7);
     CK("status line stored for the OS page", !strcmp(orb_svc_last_status(A), "beat 7"));
@@ -478,6 +518,7 @@ HDRS = {
              "esp_err_t nvs_set_str(nvs_handle_t, const char *, const char *);\n"
              "esp_err_t nvs_commit(nvs_handle_t);\n"
              "void nvs_close(nvs_handle_t);\n"
+             "esp_err_t nvs_erase_key(nvs_handle_t, const char *);\n"
              "esp_err_t nvs_flash_init_partition(const char *);\n",
 }
 

@@ -192,6 +192,23 @@ void orb_svc_app_suspended(const orb_app_t *a)
     g_svc_revoke_calls++;
     T("svc_revoke:%s", a && a->slug ? a->slug : "?");
 }
+/* The C2 doors the registry consults at build time: one knob, the slug the
+ * broker has marked failed. */
+static const char *g_fault_slug;
+bool orb_svc_faulted(const orb_app_t *a)
+{
+    return g_fault_slug && a && a->slug && !strcmp(a->slug, g_fault_slug);
+}
+uint32_t orb_svc_fault_count(const orb_app_t *a) { (void)a; return g_fault_slug ? 2u : 0u; }
+const char *orb_svc_fault_reason(const orb_app_t *a)
+{
+    (void)a;
+    return "unexpected reset";
+}
+void orb_svc_current_note(const orb_app_t *a)
+{
+    T("cur_note:%s", a && a->slug ? a->slug : "?");
+}
 
 esp_err_t art_bank_map_extra(size_t off, size_t need, int *out_slot)
 {
@@ -492,6 +509,21 @@ int main(void)
      * page on the glass. */
     s_apps[0].enabled = false;   /* the clock is the table's first entry */
     ck("a disabled app offers no rows", orb_app_opt_count(clk) == 0 && !orb_app_has_options(clk));
+    restore_table();
+
+    /* -- C2: the failed app the broker names does not build -- */
+    restore_table(); g_fault_slug = "color_picker"; orb_app_init_all();
+    ck("an app faulted twice is marked failed and stays out of the carousel",
+       A("color_picker")->failed && orb_app_count() == 2);
+    ck("and it is the registry's failed flag the shell already reads",
+       orb_app_at(orb_app_index_of(A("color_picker"))) == NULL);
+    restore_table(); g_fault_slug = "clock"; orb_app_init_all();
+    ck("the HOME entry survives faulting — boot-into-clock needs a clock",
+       !A("clock")->failed && orb_app_count() == 3);
+    restore_table(); g_fault_slug = NULL;
+    TR(); orb_app_activate(A("color_picker"));
+    ck("every activation stamps the reset record's slot",
+       strstr(g_trace, "cur_note:color_picker") != NULL);
     restore_table();
 
     /* -- the shell page is chrome, not an app -- */

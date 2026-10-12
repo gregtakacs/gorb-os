@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "orb_svc.h"        /* orb_svc_note_clean_reboot: an owned reboot bills nobody */
 
 static const char *TAG = "jobs";
 
@@ -110,6 +111,10 @@ bool orb_jobs_busy(void)
 static void reboot_fire(void *arg)
 {
     (void)arg;
+    /* C2: this reboot is the owner's, not the app's misfortune. Disarm the
+     * reset record first so the boot it causes bills nobody — an owner who
+     * restarts after a theme install must not hand the clock a fault. */
+    orb_svc_note_clean_reboot();
     ESP_LOGW(TAG, "rebooting");
     esp_restart();
 }

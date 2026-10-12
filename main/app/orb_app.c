@@ -325,6 +325,22 @@ esp_err_t orb_app_init_all(void)
      * path needs, and it must exist before anything posts to it. */
     for (size_t i = 0; i < ORB_APP_N; i++) {
         orb_app_t *app = &s_apps[i];
+        /* C2: an app the broker marked failed — two unexpected resets with
+         * it on the glass — does not build this boot. Its reason stays in
+         * the broker until the APPS page (P4) can show it; the home entry is
+         * deliberately exempt, because "boot into the clock" needs a clock
+         * that boots (the counter still runs and the status endpoint shows
+         * it, which is how a faulting home stays visible without being
+         * fatal). */
+        if (orb_svc_faulted(app) && !app->is_home) {
+            app->failed = true;
+            ESP_LOGE(TAG, "%s: %u faults — booting without it (%s)",
+                     app->slug, (unsigned)orb_svc_fault_count(app),
+                     orb_svc_fault_reason(app));
+        } else if (orb_svc_faulted(app)) {
+            ESP_LOGE(TAG, "%s: faulting HOME entry — it still boots; there is "
+                         "no other destination", app->slug);
+        }
         if (!app->enabled || app->failed) continue;
         if (!app->iface || !app->iface->init || !app->iface->screen) {
             ESP_LOGE(TAG, "%s: no init/screen hook — disabled", app->slug);
@@ -491,6 +507,9 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
     if (old) old->active = false;
     app->active   = true;
     s_current     = app;
+    /* C2: the reset record follows the glass, so the slot it bills for an
+     * unowned reset is the one that was actually up when it landed. */
+    orb_svc_current_note(app);
     return ESP_OK;
 }
 

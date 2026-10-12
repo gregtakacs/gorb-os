@@ -55,14 +55,31 @@ typedef struct {
     uint32_t calls, denials;/* lifetime totals, any entry, either outcome  */
     uint32_t beat_ms;       /* D16 rate in force; 0 = stopped              */
     uint32_t cfg_used;      /* bytes charged against ORB_CFG_QUOTA_BYTES   */
+    uint32_t faults;        /* C2: unexpected resets with this app shown   */
+    bool     faulted;       /* C2: two consecutive faults — never boots    */
     bool     loaded;        /* grant word read from NVS                    */
     bool     cfg_loaded;    /* quota charge read from NVS                  */
+    bool     faults_loaded; /* fault words read from NVS                   */
     char     last_status[72];
+    char     fault_reason[48];
 } svc_row_t;
 
 static svc_row_t s_row[ORB_SVC_ROWS];
 
 #define GRANTS_NS "orb.grants"
+
+/* The C2 reset record — defined up here so orb_svc_init below can consume
+ * and re-arm it; the boot-protocol commentary and the counter live with the
+ * fault section further down. */
+#define FAULTS_NS       "orb.fault"     /* storage partition, one namespace */
+#define FAULT_MAGIC_ARM 0x41524D21u      /* 'ARM!' */
+#define FAULT_MAGIC_RUN 0x52554E21u      /* 'RUN!' */
+#define FAULT_SLOT_NONE 0xFFFFu
+
+typedef struct { uint32_t magic; uint32_t slot; uint32_t booted; } orb_reset_rec_t;
+static orb_reset_rec_t s_rec __attribute__((section(".noinit"), aligned(4)));
+
+static void note_fault_slot(int slot, const char *why);   /* below, with C2 */
 
 /* One NVS round trip per row, per boot. Read-only and small; the boot ladder
  * and the first gated call are the only callers, neither on the frame path. */
@@ -614,6 +631,18 @@ esp_err_t orb_svc_init(void)
      * safe direction — and the log line says which of the two it is. */
     if (nvs_flash_init_partition("storage") != ESP_OK)
         ESP_LOGW(TAG, "storage partition not up — every owner cap reads OFF");
+    /* C2, first act: read last boot's reset record BEFORE anything else can
+     * crash, bill the slot it names if the verdict says the reset was not
+     * the owner's, and re-arm for this boot. The registry has not run yet,
+     * so this reads only the broker's own NVS words. */
+    if (orb_svc_reset_verdict(s_rec.magic, s_rec.booted)) {
+        const int slot = (s_rec.slot < ORB_SVC_ROWS) ? (int)s_rec.slot : -1;
+        if (slot >= 0) note_fault_slot(slot, "unexpected reset");
+        else ESP_LOGW(TAG, "unexpected reset with no app on the glass — nothing billed");
+    }
+    s_rec.magic  = FAULT_MAGIC_ARM;
+    s_rec.slot   = FAULT_SLOT_NONE;
+    s_rec.booted = 0;
     for (int i = 0; i < ORB_SVC_ROWS; i++)
         row_load_grants(&s_row[i], i);
     /* The line is the P3 pass line's boot-half: it names the table so a
@@ -694,6 +723,189 @@ uint32_t orb_svc_cfg_used(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
     return (slot >= 0) ? s_row[slot].cfg_used : 0;
+}
+
+/* ---- C2: the fault counter and the boot-into-clock rule (plan §1.4) ---------
+ *
+ * The S3 gives no MPU wall around an app, so an abort inside a hook is a
+ * reboot boundary, not a recoverable error — and IDF 5.4 offers no supported
+ * panic-time hook to stamp from the crash itself. The shipped mechanism is
+ * the reset RECORD instead: a .noinit word survives every warm reset (panic,
+ * task watchdog, brownout-that-kept-DRAM), and the boot reads it before
+ * anything can crash again. Its states are the whole protocol:
+ *
+ *   0                 idle / a reboot the owner asked for (the OS's own
+ *                     reboot paths disarm it — an owner's reboot is not
+ *                     the app's fault)
+ *   ARM  booted=0     armed by orb_svc_init, before any app builds: a reset
+ *                     seen here died DURING boot — the armed slot pays
+ *   ARM  booted=1     transient; orb_svc_boot_done moves it to RUN
+ *   RUN  slot=X       on the glass showing X past the boot ladder: any reset
+ *                     seen here was not the owner's, and X pays
+ *
+ * Two consecutive faults mark the app failed with its reason until the owner
+ * reinstalls (orb_svc_clear_faults is that door, P4's APPS page will use it).
+ * The HOME entry is exempt from the fail: with the clock itself faulting,
+ * "boot into the clock" has no destination, and a dial that tells the time
+ * through a misbehaving clock beats a bricked orb — the counter still runs
+ * and the status endpoint still shows it.
+ * (The record itself and the namespace words are declared above, next to
+ * orb_svc_init, which consumes them first.)
+ */
+
+int orb_svc_reset_verdict(uint32_t magic, uint32_t booted)
+{
+    if (magic == FAULT_MAGIC_RUN) return 1;
+    if (magic == FAULT_MAGIC_ARM && booted == 0) return 1;
+    return 0;   /* 0, garbage after a cold boot, or a boot that finished */
+}
+
+static esp_err_t fault_word(int slot, const char *prefix, uint32_t *rw, bool write)
+{
+    nvs_handle_t h;
+    const esp_err_t e = nvs_open_from_partition("storage", FAULTS_NS,
+                                                write ? NVS_READWRITE : NVS_READONLY,
+                                                &h);
+    if (e != ESP_OK) return e;
+    char key[16];
+    snprintf(key, sizeof key, "%s%d", prefix, slot);
+    esp_err_t r = ESP_OK;
+    if (write) {
+        r = nvs_set_u32(h, key, *rw);
+        if (r == ESP_OK) r = nvs_commit(h);
+    } else {
+        uint32_t v = *rw;
+        if (nvs_get_u32(h, key, &v) != ESP_OK) v = *rw;   /* absent = caller's seed */
+        *rw = v;
+    }
+    nvs_close(h);
+    return r;
+}
+
+static void fault_load_row(svc_row_t *r, int slot)
+{
+    r->faults_loaded = true;
+    uint32_t v = 0;
+    if (fault_word(slot, "c", &v, false) == ESP_OK) r->faults = v;
+    v = 0;
+    if (fault_word(slot, "x", &v, false) == ESP_OK) r->faulted = v != 0;
+    if (r->faulted) {
+        nvs_handle_t h;
+        if (nvs_open_from_partition("storage", FAULTS_NS, NVS_READONLY, &h) == ESP_OK) {
+            char key[16];
+            snprintf(key, sizeof key, "r%d", slot);
+            size_t n = sizeof r->fault_reason;
+            if (nvs_get_str(h, key, r->fault_reason, &n) != ESP_OK)
+                snprintf(r->fault_reason, sizeof r->fault_reason, "unexpected reset");
+            nvs_close(h);
+        }
+    }
+}
+
+static void note_fault_slot(int slot, const char *why)
+{
+    svc_row_t *r = &s_row[slot];
+    if (!r->faults_loaded) fault_load_row(r, slot);
+    r->faults++;
+    uint32_t v = r->faults;
+    fault_word(slot, "c", &v, true);
+    if (r->faults >= 2u) {
+        r->faulted = true;
+        v = 1;
+        fault_word(slot, "x", &v, true);
+        snprintf(r->fault_reason, sizeof r->fault_reason, "%s",
+                 why ? why : "unexpected reset");
+        nvs_handle_t h;
+        if (nvs_open_from_partition("storage", FAULTS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            char key[16];
+            snprintf(key, sizeof key, "r%d", slot);
+            nvs_set_str(h, key, r->fault_reason);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+    ESP_LOGE(TAG, "slot %d faulted (%s) — %u consecutive%s", slot,
+             why ? why : "unexpected reset", (unsigned)r->faults,
+             r->faulted ? ", marked FAILED until reinstall" : "");
+}
+
+void orb_svc_note_fault(const orb_app_t *a, const char *why)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot >= 0) note_fault_slot(slot, why);
+}
+
+uint32_t orb_svc_fault_count(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return 0;
+    if (!s_row[slot].faults_loaded) fault_load_row(&s_row[slot], slot);
+    return s_row[slot].faults;
+}
+
+bool orb_svc_faulted(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return false;
+    if (!s_row[slot].faults_loaded) fault_load_row(&s_row[slot], slot);
+    return s_row[slot].faulted;
+}
+
+const char *orb_svc_fault_reason(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot < 0 || !s_row[slot].faulted) return "";
+    return s_row[slot].fault_reason;
+}
+
+esp_err_t orb_svc_clear_faults(orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return ESP_ERR_INVALID_ARG;
+    if (!s_row[slot].faults_loaded) fault_load_row(&s_row[slot], slot);
+    s_row[slot].faults = 0;
+    s_row[slot].faulted = false;
+    s_row[slot].fault_reason[0] = '\0';
+    uint32_t zero = 0;
+    esp_err_t e = fault_word(slot, "c", &zero, true);
+    zero = 0;
+    if (e == ESP_OK) e = fault_word(slot, "x", &zero, true);
+    nvs_handle_t h;
+    if (nvs_open_from_partition("storage", FAULTS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof key, "r%d", slot);
+        nvs_erase_key(h, key);       /* absent = ESP_ERR_NVS_NOT_FOUND: nothing
+                                      * stored, nothing to do — not an error */
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    return e;
+}
+
+/* The boot protocol, run by the ladder in main.c and the registry:
+ * orb_svc_init arms the record, the first frame past the ladder moves it to
+ * RUN, every activation keeps the slot honest, and the OS's own reboot paths
+ * disarm it so the owner's reboot never bills an app. */
+void orb_svc_boot_done(void)
+{
+    if (s_rec.magic == FAULT_MAGIC_ARM) {
+        s_rec.magic  = FAULT_MAGIC_RUN;
+        s_rec.booted = 1;
+        const orb_app_t *c = orb_app_current();
+        s_rec.slot = c ? (uint32_t)orb_app_index_of(c) : FAULT_SLOT_NONE;
+    }
+}
+
+void orb_svc_current_note(const orb_app_t *a)
+{
+    if (s_rec.magic == FAULT_MAGIC_RUN) s_rec.slot = (uint32_t)orb_app_index_of(a);
+}
+
+void orb_svc_note_clean_reboot(void)
+{
+    s_rec.magic = 0;
+    s_rec.slot = FAULT_SLOT_NONE;
+    s_rec.booted = 0;
 }
 
 /* The registry calls this where it suspends the outgoing entry

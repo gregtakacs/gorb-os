@@ -211,5 +211,12 @@ void app_main(void)
         ESP_LOGW(TAG, "no SD card — themes can still be installed from the "
                       "card once one is inserted (POST /api/v1/sd/rescan)");
 #endif
+
+    /* C2, last act of the ladder: the boot survived to here — the dial is
+     * built, the router polls, the network and card tried — so the reset
+     * record moves from ARM to RUN and starts following the glass. A reset
+     * seen by the NEXT boot's orb_svc_init is then an unexpected one, and
+     * the app it names pays for it. */
+    orb_svc_boot_done();
 }
 

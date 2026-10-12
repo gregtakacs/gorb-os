@@ -196,6 +196,11 @@ const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printe
 uint32_t     orb_svc_beat_ms(const orb_app_t *a);  /* the D16 rate in force; the scheduler reads this */
 uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the quota */
 
+/** The registry's revoke, called where it suspends an entry: an app that
+ *  left the glass loses its power ask with it (§4.2 — auto-revoke is the
+ *  shell's act, never the app's permission). */
+void         orb_svc_app_suspended(const orb_app_t *a);
+
 #ifdef __cplusplus
 }
 #endif

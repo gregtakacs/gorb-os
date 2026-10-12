@@ -224,6 +224,23 @@ menu "Orb idle dim"
             from an AMOLED that has died, and the dial must stay findable in a
             dark room.
 
+    config ORB_APP_POWER_MAX_S
+        int "Longest dial-awake an APP may request, seconds"
+        depends on ORB_IDLE_DIM_ENABLE
+        default 300
+        range 5 3600
+        help
+            The ceiling on the broker's power_request entry (plan §4.2):
+            an app is a third input that can only ASK — the Kconfig values
+            here are the boot defaults, the owner's DISPLAY choice is the
+            truth, and this number is the most wall-clock an app may ask
+            the countdown to stretch to in one request. A longer request
+            is clamped to it, not refused, because the row that said
+            "keep reading" should still keep reading, just not forever.
+            The hold form bypasses the number entirely and is why the
+            capability is owner-granted on the dial and auto-revoked the
+            moment the app leaves the glass (orb_svc_app_suspended).
+
     config ORB_IDLE_MOTION_ENABLE
         bool "Wake on the accelerometer as well as the rotary"
         depends on ORB_IDLE_DIM_ENABLE

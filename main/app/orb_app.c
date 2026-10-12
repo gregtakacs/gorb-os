@@ -447,6 +447,11 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * still holding. */
     if (old && old->iface->suspend) old->iface->suspend(old);
     if (old) app_art_release(old);
+    /* §4.2's auto-revoke, in the one place that knows what left the glass:
+     * the app whose view was suspended cannot also hold the dial awake.
+     * Deliberately after the suspend hook — an app finishing real work in
+     * its suspend gets its last word on power too, and then loses it. */
+    if (old) orb_svc_app_suspended(old);
 
     const esp_err_t art_err = app_art_claim(app);
     if (art_err != ESP_OK) {

@@ -28,6 +28,7 @@
 #include "orb_jobs.h"
 #include "art_bank.h"
 #include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
+#include "idle_dim.h"         /* the power request path — a request, not a write */
 
 #include <math.h>             /* fabs, floor — the drift rule's own tools */
 #include <stdarg.h>
@@ -389,8 +390,15 @@ static esp_err_t svc_tz_offset(orb_app_t *a, time_t when, int32_t *offset_min)
 static esp_err_t svc_power_request(orb_app_t *a, uint32_t timeout_s, bool hold)
 {
     SVC(a, POWER);
-    (void)timeout_s; (void)hold;
-    return ESP_ERR_NOT_SUPPORTED;                /* the idle_dim request path */
+    /* A request, not a write (§4.2:375): idle_dim stays the policy owner,
+     * applies the Kconfig ceiling and the owner's DISPLAY truth, and the
+     * registry revokes the ask when the app leaves the glass below.
+     * (0, false) is the app withdrawing an earlier ask. */
+    if (!hold && timeout_s == 0) {
+        idle_dim_app_release(a->slug);
+        return ESP_OK;
+    }
+    return idle_dim_app_request(a->slug, timeout_s, hold);
 }
 
 static esp_err_t svc_http_get(orb_app_t *a, const char *url, orb_buf_t *out)
@@ -608,6 +616,16 @@ esp_err_t orb_svc_init(void)
         ESP_LOGW(TAG, "storage partition not up — every owner cap reads OFF");
     for (int i = 0; i < ORB_SVC_ROWS; i++)
         row_load_grants(&s_row[i], i);
+    /* The line is the P3 pass line's boot-half: it names the table so a
+     * glance at serial says the broker shipped, and taking its address is
+     * what stops the linker collecting an unreferenced S_TABLE out of the
+     * image before P4's loader (and the status endpoint) wire consumers to
+     * it — a broker that boots invisibly and a broker that is gone read the
+     * same from the dial. */
+    ESP_LOGI(TAG, "broker up: table %p, %u entries, %u app rows",
+             (const void *)orb_svc_table(),
+             (unsigned)(sizeof S_TABLE / sizeof(void *)),
+             (unsigned)ORB_SVC_ROWS);
     return ESP_OK;
 }
 
@@ -676,4 +694,15 @@ uint32_t orb_svc_cfg_used(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
     return (slot >= 0) ? s_row[slot].cfg_used : 0;
+}
+
+/* The registry calls this where it suspends the outgoing entry
+ * (orb_app.c): §4.2's "auto-revoked when the app is not visible", executed
+ * by the one place that knows visibility rather than trusted to the app.
+ * Only the power ask is revoked — the beat stops with the tick delivery,
+ * and the config bytes are the app's to keep. */
+void orb_svc_app_suspended(const orb_app_t *a)
+{
+    if (orb_app_index_of(a) < 0) return;      /* not a registered entry */
+    idle_dim_app_release(a->slug);
 }

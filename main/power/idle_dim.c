@@ -27,6 +27,8 @@
 #include "nvs.h"
 #include "nvs_flash.h"   /* nvs_flash_init_partition: see settings_load */
 #include "sdkconfig.h"
+#include <stdio.h>       /* the holder-name copy in idle_dim_app_request */
+#include <string.h>      /* the holder check in idle_dim_app_release */
 
 /* The two clocks, per the argument in the header. */
 #define TICK_MS_LIGHT   1000
@@ -109,6 +111,28 @@ bool idle_dim_elapsed_decide(uint32_t now_ms, uint32_t last_ms,
     return (uint32_t)(now_ms - last_ms) >= timeout_ms;
 }
 
+bool idle_dim_app_decide(uint32_t now_ms, uint32_t last_ms,
+                         uint32_t timeout_ms, bool enabled,
+                         bool app_hold, uint32_t app_until_ms)
+{
+    /* The owner's switch outranks every app (§4.2): with dim off the face is
+     * lit anyway and no app ask changes that, in either direction. */
+    if (!enabled) return false;
+    if (app_hold) return false;
+    /* An open window: until_ms was stamped at request time as now + a
+     * clamped span, so "still open" means until lies within the ceiling's
+     * reach AHEAD of now — the same unsigned-subtraction shape the elapsed
+     * test uses, and for the same reason: a wrap of the 49-day clock must
+     * read as closed (expired), never as an open window. A zero is the
+     * no-request sentinel, and the Kconfig range (<= 3600 s) keeps the
+     * ceiling a millisecond count well under 2^31, so the test cannot alias. */
+    if (app_until_ms != 0 &&
+        (uint32_t)(app_until_ms - now_ms) <
+            (uint32_t)CONFIG_ORB_APP_POWER_MAX_S * 1000u)
+        return false;
+    return idle_dim_elapsed_decide(now_ms, last_ms, timeout_ms, enabled);
+}
+
 bool idle_dim_level_apply_decide(bool want, bool dimmed, bool wrote)
 {
     /* What the task is allowed to believe about the panel after ONE attempt at
@@ -180,6 +204,15 @@ static volatile uint32_t s_level_writes_failed; /* brightness writes the panel d
 static nvs_handle_t  s_nvs;                   /* 0 = open failed; see settings_nvs() */
 static volatile bool     s_enabled;           /* the switch, as last set            */
 static volatile uint32_t s_timeout_ms;        /* timeout * 1000, pre-multiplied     */
+
+/* The app voice (§4.2): the live hold flag, the far edge of the last timeout
+ * request, and who asked. Every field is a single volatile word read by the
+ * policy task and written from the broker on the LVGL task — the same
+ * one-word-per-fact discipline as s_enabled above; the holder string is for
+ * the status line only, and a half-copied name there is cosmetic at worst. */
+static volatile bool     s_app_hold;
+static volatile uint32_t s_app_until_ms;
+static char              s_app_holder[24];     /* slug cap, plan §4.1 */
 
 /* Open on first use, like orb_theme.c's theme_nvs(): by the time the menu
  * posts its first save the worker that boots `storage` has run, and an early
@@ -338,9 +371,11 @@ static void idle_task(void *arg)
 
         /* The two settings live in RAM the DISPLAY menu can change at any
          * moment, so both are read per tick, not cached across the loop; the
-         * decision itself is the host-pinned idle_dim_elapsed_decide. */
-        const bool want = idle_dim_elapsed_decide(now, s_last_ms,
-                                                  s_timeout_ms, s_enabled);
+         * decision itself is the host-pinned idle_dim_app_decide, which folds
+         * the app's third voice around the elapsed test. */
+        const bool want = idle_dim_app_decide(now, s_last_ms,
+                                              s_timeout_ms, s_enabled,
+                                              s_app_hold, s_app_until_ms);
         if (want != s_dimmed) {
             /* Ask the panel first, believe it second. The write is the fact; the
              * flag is a claim about it, and a claim the next tick cannot retry is
@@ -496,6 +531,12 @@ bool idle_dim_enabled(void)
 esp_err_t idle_dim_set_enabled(bool on)
 {
     s_enabled = on;
+    /* The owner's DISPLAY choice outranks any app ask (§4.2:375 — "the owner
+     * turns the dim back on" IS the release): a hold that outlived the
+     * switch's use would be an app owning the power state by the back door. */
+    s_app_hold = false;
+    s_app_until_ms = 0;
+    s_app_holder[0] = '\0';
     /* Setting from the menu IS a touch, stamped here rather than leaning on
      * input_router's stamp of the detent that opened the row: enabling after a
      * long off-period would otherwise hand the task a stale s_last_ms and dim
@@ -520,7 +561,73 @@ esp_err_t idle_dim_set_timeout_s(uint32_t seconds)
      * out the old one: stamping is what the touch path does, and a menu choice
      * is a touch. */
     s_last_ms = now_ms();
+    /* And the owner picking a timeout voids any app's longer ask — same
+     * third-input rule as the switch above: the app asked, the owner chose. */
+    s_app_hold = false;
+    s_app_until_ms = 0;
+    s_app_holder[0] = '\0';
     return settings_persist(DIM_NVS_KEY_TO, s);
+}
+
+/* ---- the app voice: the broker's two doors (see idle_dim.h) ----------------
+ * Both run on the LVGL task through orb_svc.c and touch only single-word
+ * volatile state, never NVS and never the brightness register — the task
+ * stays the one writer of 0x51 (apply_level's rule), and an app's ask is
+ * only ever an input to its next decision. */
+
+esp_err_t idle_dim_app_request(const char *slug, uint32_t timeout_s, bool hold)
+{
+    if (!hold && timeout_s == 0) return ESP_ERR_INVALID_ARG;   /* (0,false) is
+                                                  * the withdraw — it goes to
+                                                  * idle_dim_app_release, not
+                                                  * through here */
+    if (hold) {
+        s_app_hold = true;
+        s_app_until_ms = 0;                      /* the hold outranks a stale
+                                                  * window; clearing keeps the
+                                                  * status line telling who
+                                                  * holds what */
+    } else {
+        if (timeout_s > CONFIG_ORB_APP_POWER_MAX_S)
+            timeout_s = CONFIG_ORB_APP_POWER_MAX_S;   /* clamp, not refuse:
+                                                  * §4.2 — the countdown may
+                                                  * stretch to the ceiling
+                                                  * and no further */
+        const uint32_t want = now_ms() + timeout_s * 1000u;
+        /* Last ask wins, so an app cannot lengthen another's window by
+         * re-asking short — adopt only a strictly later edge, read with the
+         * same wrap-safe subtraction the decision uses (both edges are
+         * recent-by-construction, so one ceiling's span disambiguates). */
+        if (s_app_until_ms == 0 ||
+            (uint32_t)(want - s_app_until_ms) <
+                (uint32_t)CONFIG_ORB_APP_POWER_MAX_S * 1000u)
+            s_app_until_ms = want;
+    }
+    if (slug) snprintf(s_app_holder, sizeof s_app_holder, "%s", slug);
+    return ESP_OK;
+}
+
+void idle_dim_app_release(const char *slug)
+{
+    /* Holder-checked: the registry revokes each app's ask as it leaves the
+     * glass, and that must never cut short the app that is actually on it. */
+    if (slug && s_app_holder[0] && strcmp(s_app_holder, slug) != 0) return;
+    s_app_hold = false;
+    s_app_until_ms = 0;
+    s_app_holder[0] = '\0';
+}
+
+bool idle_dim_app_hold(void)
+{
+    return s_app_hold ||
+           (s_app_until_ms != 0 &&
+            (uint32_t)(s_app_until_ms - now_ms()) <
+                (uint32_t)CONFIG_ORB_APP_POWER_MAX_S * 1000u);
+}
+
+const char *idle_dim_app_holder(void)
+{
+    return s_app_holder;
 }
 
 bool idle_dim_dimmed(void)

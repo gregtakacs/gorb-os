@@ -183,6 +183,16 @@ bool menu_view_armed(void)              { return g_menu_armed != 0; }
 void menu_view_set_armed(bool a)        { g_menu_armed = a ? 1 : 0; T(a ? "menu_arm(1)" : "menu_arm(0)"); }
 void menu_view_service(void)            { g_service_calls++; T("menu_service"); }
 
+/* The broker's revoke door — §4.2's auto-revoke, called by the registry when
+ * an entry leaves the glass. Recorded, and asserted below: a swap that stops
+ * calling it hands every parked app a free hold on the dial. */
+static int g_svc_revoke_calls;
+void orb_svc_app_suspended(const orb_app_t *a)
+{
+    g_svc_revoke_calls++;
+    T("svc_revoke:%s", a && a->slug ? a->slug : "?");
+}
+
 esp_err_t art_bank_map_extra(size_t off, size_t need, int *out_slot)
 {
     g_map_calls++;
@@ -337,10 +347,12 @@ int main(void)
        g_map_calls == 1 && s_apps[1].art_slot >= 0 && strstr(g_trace, "map(4194304,524288)") != NULL);
     ck("the slot the registry booked is the slot handed to the compositor",
        s_apps[1].art_slot >= 3 && art_bank_extra_ptr(s_apps[1].art_slot) == NULL);
-    TR(); g_unmap_calls = 0;
+    TR(); g_unmap_calls = 0; g_svc_revoke_calls = 0;
     orb_app_activate(A("clock"));
     ck("suspending releases the bank, so a parked app costs no MMU pages",
        g_unmap_calls == 1 && s_apps[1].art_slot == -1);
+    ck("and the same swap revokes the parked app's hold on the dial",
+       g_svc_revoke_calls == 1 && strstr(g_trace, "svc_revoke:color_picker") != NULL);
 
     /* -- the overflow path: a refused claim must not blank the dial -- */
     restore_table(); orb_app_init_all();

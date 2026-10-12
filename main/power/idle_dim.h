@@ -88,6 +88,31 @@ uint32_t idle_dim_timeout_s(void);
 /** Apply and persist the timeout; clamped to idle_dim_clamp_timeout_s(). */
 esp_err_t idle_dim_set_timeout_s(uint32_t seconds);
 
+/* ---- the app input: a request, never a write (plan §4.2, P3) --------------
+ *
+ * Three inputs decide when the face dims, and the order is the policy: the
+ * Kconfig values are the boot defaults, the owner's DISPLAY choice is the
+ * truth, and an app is the third voice that can only ask. Both doors below
+ * are the broker's alone (orb_svc.c, behind CAP_POWER owner-granted); no app
+ * links these directly, and the registry revokes through
+ * orb_svc_app_suspended() the moment the asking app leaves the glass. The
+ * owner overriding DISPLAY — flipping the switch or the timeout — voids the
+ * app's ask too, right in the setters below: a dim the owner just turned
+ * back on must actually dim. */
+
+/** Ask for the countdown to stretch to at least timeout_s from now (clamped
+ *  to CONFIG_ORB_APP_POWER_MAX_S), or with hold=true keep the face lit until
+ *  released. Last ask wins; slug names the holder for status. */
+esp_err_t idle_dim_app_request(const char *slug, uint32_t timeout_s, bool hold);
+
+/** Drop holder slug's ask, if it is the holder's — a second app cannot
+ *  revoke a first one's hold. */
+void idle_dim_app_release(const char *slug);
+
+/** What /api/v1/status shows: whether any app ask is live, and whose. */
+bool        idle_dim_app_hold(void);
+const char *idle_dim_app_holder(void);
+
 /* ---- the pure decisions, exposed for the host bench -----------------------
  * The two new ones are the ones with silent wrong answers: an elapsed test
  * that mishandles the 49-day wrap dims a freshly touched dial, and a clamp
@@ -111,6 +136,16 @@ uint32_t idle_dim_clamp_timeout_s(uint32_t s);
  *  49-day clock reads as a big idle time, never a negative one. */
 bool idle_dim_elapsed_decide(uint32_t now_ms, uint32_t last_ms,
                              uint32_t timeout_ms, bool enabled);
+
+/** The task's whole gate with the app's third voice folded in: owner switch
+ *  first (off never dims, whatever an app asked), then the app hold, then an
+ *  open timeout window, then the shipped elapsed test. The window's liveness
+ *  is read the way the elapsed test reads age — an unsigned subtraction of a
+ *  span the Kconfig ceiling (< 2^32 ms) bounds, so a wrap reads as closed,
+ *  never as open. Pinned by tools/host_idle_dim_test.py. */
+bool idle_dim_app_decide(uint32_t now_ms, uint32_t last_ms,
+                         uint32_t timeout_ms, bool enabled,
+                         bool app_hold, uint32_t app_until_ms);
 
 /** The dimmed flag the task is allowed to hold after ONE brightness attempt:
  *  `want` if the panel took the write, `dimmed` (unchanged) if it refused. A

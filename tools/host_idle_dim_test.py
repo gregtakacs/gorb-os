@@ -52,7 +52,8 @@ def ok(cond, label):
         FAILS.append(label)
 
 
-def lifted_c(mutations=(), funcs=(("idle_motion_decide", "idle_motion_t", "bool"),)):
+def lifted_c(mutations=(), funcs=(("idle_motion_decide", "idle_motion_t", "bool"),),
+             defines=""):
     """The shipping functions, extracted verbatim, in a compile harness.
 
     Parameterised by function because the file now ships four decisions worth
@@ -113,7 +114,8 @@ typedef struct { int32_t base[3]; int32_t worst; bool have_base; } idle_motion_t
 typedef struct { uint8_t run; bool fired; } idle_wake_t;
 %s
 %s
-""" % (bounds, NL.join(bodies))
+%s
+""" % (defines, bounds, NL.join(bodies))
 
 
 def run(vectors, mutations=()):
@@ -421,6 +423,73 @@ CLAMP_MUTATIONS = [
      "if (s > IDLE_DIM_TIMEOUT_MAX_S) return s;"),
 ]
 
+# ---- the app voice: idle_dim_app_decide (plan §4.2, P3) -----------------------
+#
+# The third input to the dim decision. The silent wrong answers here are the
+# expensive kind: an app's hold that the owner's DISPLAY override cannot beat
+# is an app owning the power state (that half is enforced in the SETTERS and
+# the base predicate's own enabled gate, pinned by the battery above); an
+# expiry test that reads direction through the 49-day wrap is a dial that
+# stays lit for six weeks on one badly-timed request. The vectors exist
+# because no bench session waits out the wrap, same argument as the elapsed
+# battery's own.
+#
+# (label, enabled, app_hold, now_ms, last_ms, timeout_ms, app_until_ms, expect)
+
+def app_ceiling_ms():
+    """The SHIPPED ceiling, read from the stamped sdkconfig.h — not restated:
+    a bench copy that drifts prices a rule the device does not enforce. A
+    fresh Kconfig option absent here is the workspace .clinerules trap: append
+    it to sdkconfig and rebuild before the bench may trust anything."""
+    h = os.path.join(ROOT, "build", "config", "sdkconfig.h")
+    try:
+        txt = open(h).read()
+    except OSError:
+        raise SystemExit("no %s -- the bench cannot pin a ceiling the build "
+                         "has never stamped" % h)
+    m = re.search(r"#define CONFIG_ORB_APP_POWER_MAX_S (\d+)", txt)
+    if not m:
+        raise SystemExit("CONFIG_ORB_APP_POWER_MAX_S absent from %s -- a new "
+                         "Kconfig default does not appear in an existing "
+                         "sdkconfig by itself: append it, rebuild, rerun" % h)
+    return int(m.group(1)) * 1000
+
+CEIL_MS = app_ceiling_ms()
+
+APP_VECTORS = [
+    ("owner_off_no_hold",            False, False,  700_000,      0, 600_000,        0, False),
+    ("hold_beats_elapsed",            True,  True,  700_000,      0, 600_000,        0, False),
+    ("no_request_idle_dims",          True, False,  700_000,      0, 600_000,        0,  True),
+    ("no_request_fresh_stays",        True, False,  300_000,      0, 600_000,        0, False),
+    ("window_extends_past_elapsed",   True, False,  700_000,      0, 600_000,   900_000, False),
+    ("window_expired_dims",           True, False,  700_000,      0, 600_000,   600_000,  True),
+    # The wrap pair: `until` BEHIND now across the boundary reads expired —
+    # the direction mutant sees it as a far-future window and keeps the dial
+    # lit for six weeks, which is exactly the silent wrong answer.
+    ("wrap_expired_dims",             True, False, 0x0000_0B00, 0xFFFF_F000, 6_000, 0xFFFF_F500, True),
+    ("edge_closed_at_ceiling",        True, False, 2_000_000,      0, 600_000, 2_000_000 + CEIL_MS, True),
+    ("just_inside_ceiling_stays",     True, False, 2_000_000,      0, 600_000, 2_000_000 + CEIL_MS - 1, False),
+]
+
+APP_MUTATIONS = [
+    # The hold becomes advisory: the elapsed clock dims over a live request.
+    ("if (app_hold) return false;", "if (app_hold && false) return false;"),
+    # The window test reads direction the wrong way (the wrap vector judges).
+    ("(uint32_t)(app_until_ms - now_ms)", "(uint32_t)(now_ms - app_until_ms)"),
+    # The window never opens. Neutered with `&& false` rather than deleted:
+    # deleting it strands app_until_ms/now_ms and -Wextra kills the mutant
+    # before the vectors can judge it (the same trick the elapsed battery
+    # uses on its own gate). window_extends_past_elapsed judges.
+    ("if (app_until_ms != 0 &&", "if (app_until_ms != 0 && false &&"),
+    # The boundary included: a window aged to exactly the ceiling stays open.
+    ("now_ms) <", "now_ms) <="),
+    # The wrapper asks the base and throws the answer away: never dims
+    # again. The call stays so last_ms/timeout_ms stay referenced.
+    ("return idle_dim_elapsed_decide(now_ms, last_ms, timeout_ms, enabled);",
+     "return idle_dim_elapsed_decide(now_ms, last_ms, timeout_ms, enabled) && false;"),
+]
+
+
 # ---- the level-commit decision: what the task may believe after ONE write ----
 #
 # The dim is a QSPI write to the panel's brightness register, and the wake is the
@@ -638,6 +707,55 @@ def run_cfg(elapsed_vectors, clamp_vectors, mutations=()):
     return out.returncode != 0
 
 
+def run_app(vectors, mutations=()):
+    """Compile the lifted app-voice gate WITH the shipped base it wraps and
+    replay every vector. Lifted together on purpose: the wrapper's whole
+    contract is to defer correctly to idle_dim_elapsed_decide, and a binary
+    that contained only the wrapper could not see a mutant that stops asking.
+    """
+    d = tempfile.mkdtemp(prefix="orb_idle_app_")
+    cf, bf = os.path.join(d, "t.c"), os.path.join(d, "t")
+    calls = []
+    for i, vec in enumerate(vectors):
+        label, en, hold, now, last, to, until, expect = vec
+        calls.append(
+            "    {" + NL +
+            '        bool got = idle_dim_app_decide(%uU, %uU, %uU, %s, %s, %uU);'
+            % (now, last, to, "true" if en else "false",
+               "true" if hold else "false", until) + NL +
+            '        fails += (got != %s) ? 1 : 0;' % ("true" if expect else "false") + NL +
+            '        if (got != %s && !bad) bad = %d;' % ("true" if expect else "false",
+                                                          i + 1) + NL +
+            '    }')
+    open(cf, "w").write(lifted_c(mutations, funcs=(
+            # base first in the tuple: the lifted bodies follow the tuple
+            # order, and the wrapper calls the base.
+            ("idle_dim_elapsed_decide", "uint32_t", "bool"),
+            ("idle_dim_app_decide", "uint32_t", "bool"),
+        ),
+        defines="#define CONFIG_ORB_APP_POWER_MAX_S %d" % (CEIL_MS // 1000)) +
+        '#include <stdio.h>' + NL +
+        'static int bad = 0;' + NL +
+        'static int run_all(void) {' + NL +
+        '    int fails = 0;' + NL +
+        chr(10).join(calls) + NL +
+        '    if (bad) {' + NL +
+        '        puts("an app-voice decision came out wrong: first bad vector #");' + NL +
+        '        printf("%d", bad);' + NL +
+        '        puts("");' + NL +
+        '    }' + NL +
+        '    return fails;' + NL +
+        '}' + NL +
+        'int main(void) { return run_all(); }' + NL)
+    cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
+                         "-Werror", "-o", bf, cf], capture_output=True, text=True)
+    if cc.returncode:
+        raise SystemExit("host build failed:" + NL + cc.stderr)
+    out = subprocess.run([bf], capture_output=True, text=True)
+    sys.stdout.write(out.stdout)
+    return out.returncode != 0
+
+
 def main():
     if "--mutations" in sys.argv:
         survivors = 0
@@ -680,6 +798,18 @@ def main():
             else:
                 survivors += 1
                 print("FAIL  config mutant SURVIVED: %s" % mut[0][:50])
+        for mut in APP_MUTATIONS:
+            try:
+                bad = run_app(APP_VECTORS, mutations=[mut])
+            except SystemExit as e:
+                ok(False, "app mutant does not compile (%s): %s"
+                   % (mut[0][:40], str(e).splitlines()[0] if str(e) else "?"))
+                continue
+            if bad:
+                print("ok    app mutant caught: %s" % mut[0][:50])
+            else:
+                survivors += 1
+                print("FAIL  app mutant SURVIVED: %s" % mut[0][:50])
         for mut in LEVEL_MUTATIONS:
             try:
                 bad = run_level(LEVEL_VECTORS, mutations=[mut])
@@ -702,7 +832,8 @@ def main():
                 print("FAIL  lint mutant SURVIVED: %s" % mut[0][:50])
         total = (len(MUTATIONS) + len(WAKE_MUTATIONS)
                  + len(ELAPSED_MUTATIONS) + len(CLAMP_MUTATIONS)
-                 + len(LEVEL_MUTATIONS) + len(LINT_MUTATIONS))
+                 + len(LEVEL_MUTATIONS) + len(LINT_MUTATIONS)
+                 + len(APP_MUTATIONS))
         ok(survivors == 0, "%d mutants, %d survived" % (total, survivors))
     else:
         bad = run(VECTORS)
@@ -715,6 +846,10 @@ def main():
         ok(not bad, "every DISPLAY-menu decision came out as expected "
                     "(%d elapsed + %d clamp cases)"
                     % (len(ELAPSED_VECTORS), len(CLAMP_VECTORS)))
+        bad = run_app(APP_VECTORS)
+        ok(not bad, "every app-voice vector came out as expected "
+                    "(%d cases, ceiling %d s)"
+                    % (len(APP_VECTORS), CEIL_MS // 1000))
         bad = run_level(LEVEL_VECTORS)
         ok(not bad, "every level-commit vector came out as expected "
                     "(%d cases: a refused write never moves the flag)"

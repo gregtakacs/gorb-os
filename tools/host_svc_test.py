@@ -222,6 +222,25 @@ esp_err_t orb_net_tz_offset(time_t when, int32_t *off)
     return ESP_OK;
 }
 
+/* ---- the power leaves: what the broker's request path must call ----------- */
+int g_pwr_calls;                       /* app_request invocations */
+int g_rel_calls;                       /* app_release invocations */
+char g_pwr_slug[24]; uint32_t g_pwr_to; int g_pwr_hold;
+char g_rel_slug[24];
+esp_err_t g_pwr_rc;
+esp_err_t idle_dim_app_request(const char *slug, uint32_t timeout_s, bool hold)
+{
+    g_pwr_calls++;
+    snprintf(g_pwr_slug, sizeof g_pwr_slug, "%s", slug ? slug : "");
+    g_pwr_to = timeout_s; g_pwr_hold = hold ? 1 : 0;
+    return g_pwr_rc;
+}
+void idle_dim_app_release(const char *slug)
+{
+    g_rel_calls++;
+    snprintf(g_rel_slug, sizeof g_rel_slug, "%s", slug ? slug : "");
+}
+
 static void jobfn(void *arg) { (void)arg; }
 
 static int g_fail;
@@ -316,6 +335,7 @@ int main(int argc, char **argv)
     /* ---- owner caps: denied, counted, and latched once (B3 input) --------- */
     uint32_t d0 = orb_svc_denials(A);
     CK("power refused ungranted", S->power_request(A, 5, true) == ESP_ERR_NOT_ALLOWED);
+    CK("and the leaf was never touched", g_pwr_calls == 0 && g_rel_calls == 0);
     CK("denial counted", orb_svc_denials(A) == d0 + 1);
     CK("ask latched for the prompt", orb_svc_pending(A) == (1u << CAP_POWER));
     S->power_request(A, 5, true);
@@ -330,8 +350,18 @@ int main(int argc, char **argv)
     CK("granted mask reads back", orb_svc_grants(A) == (1u << CAP_POWER));
     CK("stored as orb.grants/g<slot>", u32_at("orb.grants", "g0") == (1u << CAP_POWER));
     d0 = orb_svc_denials(A);
-    CK("granted power passes the gate, hits the stub body",
-       S->power_request(A, 5, true) == ESP_ERR_NOT_SUPPORTED);
+    CK("granted power reaches the idle_dim door",
+       S->power_request(A, 30, false) == ESP_OK &&
+       g_pwr_calls == 1 && !strcmp(g_pwr_slug, "alpha") &&
+       g_pwr_to == 30 && g_pwr_hold == 0);
+    CK("hold form asks for the hold", S->power_request(A, 0, true) == ESP_OK &&
+       g_pwr_hold == 1);
+    CK("the (0,false) pair is the withdraw, not a request",
+       S->power_request(A, 0, false) == ESP_OK &&
+       g_rel_calls == 1 && !strcmp(g_rel_slug, "alpha") && g_pwr_calls == 2);
+    orb_svc_app_suspended(A);
+    CK("leaving the glass revokes the ask through the same holder door",
+       g_rel_calls == 2 && !strcmp(g_rel_slug, "alpha"));
     CK("body-not-gate: no denial added", orb_svc_denials(A) == d0);
     g_fail_commit = 1;
     CK("refused NVS commit fails the set_grant",
@@ -460,7 +490,8 @@ def build_run(td, tag, extra_cflags, arg):
     exe = os.path.join(td, "svc_harness_%s" % tag)
     cmd = (["cc", "-std=gnu17", "-g", "-O0", "-Wall", "-Wno-unused-parameter",
             "-I", td]                          # the IDF-shaped stubs shadow mine
-           + ["-I", P("app"), "-I", P("art"), "-I", P("net")]  # real project headers
+           + ["-I", P("app"), "-I", P("art"), "-I", P("net"),
+              "-I", P("power")]               # real project headers
            + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

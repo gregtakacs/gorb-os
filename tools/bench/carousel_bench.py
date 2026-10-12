@@ -12,17 +12,24 @@ commit(s)`).
 
 Both directions are asserted, because only one of them is a test:
   coalesce   N tight detents  -> exactly 1 activation, 1 commit, hops == N
-  control    N detents spaced beyond the window -> N activations, N commits
+  control    N detents spaced beyond the READ window -> N activations, N commits
 A suite that checked only `coalesce` would also pass if the window were infinite
 (nothing would ever switch) and if it were zero (every detent switches, which is
 the pre-carousel behaviour). The control is what makes the number mean something.
+Since §12.9 the module carries TWO windows (in-burst settle / read hold), so the
+control spacing is taken beyond the read one — detents spaced between the two
+would coalesce legitimately, and a control that coalesces is not a control.
 
-Two cases the first bench pass produced by accident, kept because they are the
+Three cases the first bench pass produced by accident, kept because they are the
 interesting ones:
   wrap       N == walkable count lands back on the entry already on the glass,
-             and orb_carousel.c:164 CANCELS rather than commit a phantom switch:
+             and orb_carousel.c CANCELS rather than commit a phantom switch:
              0 activations, 1 "cancelled" line.
   hold       long-press from a non-home screen returns to the clock (C8).
+  press      a lone detent deep inside the read window, then push=1: the press
+             must switch NOW ("that one, now", input_router.c), not wait out
+             the read window. Timed: the activation must land well before the
+             auto-commit could, or the press path silently fell back to it.
 
 Where it is honest about its own limits
 ---------------------------------------
@@ -30,10 +37,11 @@ Detents are fired over `GET /api/v1/screen?turn=+1`, which reaches the router
 through input_router_inject() — the same fold the encoder's own detent uses
 (input_router.c:202), so from there down the path is the shipping one. It is NOT
 a finger: injection enters downstream of knob.c, and `/api/v1/status` proves it
-(raw/det/spd10 stay 0 after 31 injected turns while the walk visibly happens).
-So this suite can decide whether the settle window COALESCES. It cannot decide
-whether 400 ms is the right window for a human hand; that number still needs a
-finger on the encoder, and the tool says so rather than implying it measured it.
+(raw/det/spd10 stay 0 through injected runs while the walk visibly happens).
+This suite decides whether the windows COALESCE and whether the press commits.
+The gap distribution of a human hand is measured separately and recorded in
+§12.9 — it is not this tool's, and injected 25 ms gaps must never be quoted as
+human timing.
 
 It also refuses to trust its own spacing. HTTP round-trip at bench rssi adds
 60-300 ms of jitter per request, so the x-axis is taken from the DEVICE's serial
@@ -117,17 +125,20 @@ def wait_up(want_fw, secs=150):
 
 def consts(rs):
     """Take the constants under test FROM the device, not from this file: if
-    ORB_CAROUSEL_SETTLE_MS changes, the control case must move with it or the
-    suite is testing a window the board does not use."""
-    settle, walkable = 400, 3
+    the carousel's windows change, the control case must move with them or the
+    suite is testing windows the board does not use."""
+    settle, read, burst, walkable = 400, 2000, 300, 3
     for _, x in rs:
-        m = re.search(r"carousel: chip ready \(settle (\d+) ms\)", x)
+        m = re.search(r"carousel: chip ready \(settle (\d+) ms", x)
         if m:
             settle = int(m.group(1))
+        m = re.search(r"read (\d+) ms, burst gap (\d+) ms", x)
+        if m:
+            read, burst = int(m.group(1)), int(m.group(2))
         m = re.search(r"router running \(poll (\d+) ms, (\d+) walkable", x)
         if m:
             walkable = int(m.group(2))
-    return settle, walkable
+    return settle, read, burst, walkable
 
 
 def fire(n, gap):
@@ -164,8 +175,10 @@ def measure(rs, t0, t1):
     glms = [int(m.group(1)) for x in w if (m := re.search(r"-> glass \+(\d+) ms: (\d+) commit", x))]
     turns = [t for t, x in rs if t0 <= t <= t1 and "synthetic turn" in x]
     gaps = [int(round((turns[i + 1] - turns[i]) * 1000)) for i in range(len(turns) - 1)]
+    act_ts = [t for t, x in rs if t0 <= t <= t1
+              and re.search(r"input: screen -> (\S+)", x)]
     return dict(acts=acts, peeks=peeks, hops=hops[-1] if hops else 0, canc=canc,
-                commits=coms, glass=glms, gaps=gaps)
+                commits=coms, glass=glms, gaps=gaps, turns=turns, act_ts=act_ts)
 
 
 def main():
@@ -177,32 +190,37 @@ def main():
               (IP, st.get("fw"), st.get("rssi"), st.get("slot"), st.get("art_banks")))
         time.sleep(2.5)                      # let the boot log drain into the file
         rs = rows()
-        settle, W = consts(rs)
-        print("device says: settle %d ms, %d walkable, poll 10 ms\n" % (settle, W))
+        settle, read, burst, W = consts(rs)
+        print("device says: settle %d ms, read %d ms, burst gap %d ms, "
+              "%d walkable, poll 10 ms\n" % (settle, read, burst, W))
 
         fails, voids = [], []
         plan = [
             ("coalesce-2",     2,     TURN_GAP,             "acts==1 and hops==2"),
             ("coalesce-w+1",   W + 1, TURN_GAP,             "acts==1 (wrap-cancel then re-name)"),
             ("wrap-w",         W,     TURN_GAP,             "acts==0, cancelled>=1"),
-            ("control-2",      2,     (settle + 250) / 1000.0, "acts==2"),
+            # beyond the READ window, not the settle one: detents spaced between
+            # the two coalesce legitimately now, and a coalesced control tests
+            # nothing. The VOID below catches HTTP jitter that fails to clear it.
+            ("control-2",      2,     (read + 300) / 1000.0, "acts==2"),
         ]
         for name, n, gap, want in plan:
             home()
             t_pre = time.time() - 0.05
             fire(n, gap)
-            t_post = time.time() + 0.45 + settle / 1000.0 + 0.9
+            t_post = time.time() + read / 1000.0 + 1.3
             while time.time() < t_post:
                 time.sleep(0.05)
             rs = rows()
             m = measure(rs, t_pre, t_post)
             seen_gap = max(m["gaps"]) if m["gaps"] else 0
-            tight = gap < settle / 2000.0
+            tight = gap < burst / 2000.0
             verdict = "ok"
             if name.startswith("coalesce") or name == "wrap-w":
-                # a tight burst whose DEVICE-side gap drifted past the window did
-                # not test coalescing at all: say VOID, never pass on luck.
-                if tight and seen_gap > settle * 0.9:
+                # a tight burst whose DEVICE-side gap drifted to/beyond the
+                # burst gap was never classified in-burst: it did not test
+                # coalescing at all. Say VOID, never pass on luck.
+                if tight and seen_gap > burst * 0.9:
                     verdict = "VOID (HTTP jitter pushed detents to %d ms)" % seen_gap
                     voids.append(name)
                 elif name == "wrap-w":
@@ -216,8 +234,16 @@ def main():
                     verdict = "ok" if ok else "FAIL acts=%d hops=%d peeks=%d" % (
                         len(m["acts"]), m["hops"], m["peeks"])
             else:
-                verdict = "ok" if len(m["acts"]) == n else "FAIL acts=%d want %d" % (
-                    len(m["acts"]), n)
+                # The control's own VOID: jitter that kept the spaced detents
+                # INSIDE the read window coalesces them, and counting that as a
+                # carousel bug would blame the board for the bench link.
+                if seen_gap and seen_gap < read * 0.9:
+                    verdict = "VOID (detents only %d ms apart, want >%d)" % (
+                        seen_gap, int(read * 0.9))
+                    voids.append(name)
+                else:
+                    verdict = "ok" if len(m["acts"]) == n else "FAIL acts=%d want %d" % (
+                        len(m["acts"]), n)
             bad = verdict.startswith("FAIL")
             if bad:
                 fails.append("%s: %s (want %s)" % (name, verdict, want))
@@ -243,9 +269,40 @@ def main():
         print("%-14s long-press from color_picker -> %s | %s" % ("hold-c8", landed, v),
               flush=True)
 
-        print("\nNOT MEASURED HERE: whether %d ms suits a real hand. Injection enters" % settle)
-        print("downstream of knob.c (raw/det/spd10 stay 0 through this whole run), so")
-        print("the gap distribution of a finger is still the owner's to ratify.")
+        # press-to-commit (the B half of §12.9's ruling): one lone detent is a
+        # stop-to-read under the adaptive rule, so the read window is open; the
+        # press must switch NOW rather than let that window run out. Counting
+        # acts alone cannot see the difference — the auto-commit also produces
+        # exactly one act — so the assertion is TIMED: the activation must land
+        # clearly before the auto-commit deadline, or the press path silently
+        # fell back to waiting and the user is still holding a dead button.
+        home()
+        t_pre = time.time() - 0.05
+        fire(1, 0)
+        time.sleep(0.6)                       # deep inside READ, nowhere near it
+        get("/api/v1/screen?push=1")
+        t_post = time.time() + read / 1000.0 + 1.3
+        while time.time() < t_post:
+            time.sleep(0.05)
+        m = measure(rows(), t_pre, t_post)
+        p_verdict = "ok"
+        if len(m["acts"]) != 1 or not m["act_ts"] or not m["turns"]:
+            p_verdict = "FAIL acts=%d (want 1, with turn+act timestamps)" % len(m["acts"])
+        else:
+            delay = int(round((min(m["act_ts"]) - min(m["turns"])) * 1000))
+            p_verdict = ("ok" if 0 <= delay < read - 400 else
+                         "FAIL press did not pre-empt: act +%d ms (auto-commit ~%d)"
+                         % (delay, read))
+        print("%-14s 1 detent + press | acts=%d | %s" %
+              ("press-1", len(m["acts"]), p_verdict), flush=True)
+        if p_verdict.startswith("FAIL"):
+            fails.append("press-1: %s" % p_verdict)
+
+        print("\nHand ratification of the windows is NOT this run's evidence: it is")
+        print("the owner's 16-detent sample recorded in plan §12.9 (flick gaps")
+        print("33-157 ms, read pauses 510-1936 ms). Injection here enters")
+        print("downstream of knob.c (raw/det/spd10 stay 0), so injected 25 ms")
+        print("gaps are not human timing and must never be quoted as such.")
         if voids:
             print("\nVOID cases (re-run, or shorten the burst): %s" % ", ".join(voids))
         if fails:

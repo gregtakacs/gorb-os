@@ -423,7 +423,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 |---|---|---|
 | P0 | this file agreed and **agreed 2026-10-11 (§0.1)**; freeze the ABI on paper (`orb_app.h`, `orb_svc.h`, `.orbapp` manifest words, `theme_schema.py`'s vocabulary split OS/app) and name the first registered behaviour kinds (section 9.2) | the owner signs the vocabulary subset; no code before this line closes |
 | P1 | extract `main/gfx/` compositor, delta bank and scheduler out of `clock_view.c`, zero behaviour change; add `orb_art_reserve()`; run M1 and M2 | boot dial byte-identical behaviour, 6-7 fps, `host_comp_math_test.py` and `host_menu_test.py` green, mutations still red — **DONE. Compositor + commit pass + delta bank + frame scheduler all landed and proven identical (`836a0c2`); `orb_art_reserve()` landed; fps bar met at 8 fps on the flagship bank and 15 fps on the aviator stress bank; M1 measured, M2's two numbers taken (§10). `clock_view.c` is down to 1,957 lines of dial policy.** |
-| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11 and hardware-verified 2026-10-12 (§12.8); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering and M3 are still open** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
+| P2 | `orb_app` registry and a dynamic text carousel (C5); clock as app #0, `color_picker` as app #1; `?to=` becomes a slug; the `opt_*` hooks render through the shell (B1/B2); run M3 — **art loader landed 2026-10-11: `art_bank.c` maps and unmaps resident secondary banks behind the page budget, M2 measured (§11); registry, `color_picker` as app #1 and the slug route landed 2026-10-11 (§12); carousel landed 2026-10-11, hardware-verified 2026-10-12 (§12.8), and its settle window replaced by the hand-measured two-window rule 2026-10-12 (§12.9); M1 re-run on hardware (§12.7) — the `opt_*` shell rendering and M3 are still open** | knob walks both apps **(§12.8: 63-83 ms per activation)**; long-press still homes to the clock (C8) **(§12.8: lands on `clock`, 315 ms)**; ~~the carousel survives a disable/enable cycle~~ — moved to P4 with the `enabled`/`failed` state it needs (§12.6) |
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule | `/api/v1/status` shows per-app grants, call counts and fault count; a denied app degrades visibly; a faulting app cannot wedge the boot |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
@@ -850,7 +850,7 @@ makes it observable.
 
 | Item | Note |
 |---|---|
-| Text carousel (C5) | **DONE on hardware 2026-10-12 (§12.8)**, by `tools/bench/carousel_bench.py`: a burst inside the settle window costs ONE activation and ONE full-page commit, and the same detents spaced beyond it cost one each. Its first real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
+| Text carousel (C5) | **DONE on hardware 2026-10-12 (§12.8), ratified and re-specified by the owner's hand the same day (§12.9)**: a burst inside the settle window costs ONE activation and ONE full-page commit, detents spaced beyond the READ window cost one each, and a press commits a named peek instantly. The single 400 ms window of §12.8 is gone — measured read-pauses (510-1936 ms) made it commit under the reader. Its first real caller of `art_bank_unmap_extra()`/`map_extra()` in the shipping path is still P4 — see 12.5 |
 | `opt_*` through the shell (B1/B2) | The hooks are in the ABI and NULL everywhere; the clock's settings tiles are still painted by its own view code until the shell renders them |
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
@@ -1002,10 +1002,115 @@ measured — `orb_carousel.c:40-47`'s own note, flagged "not owner-ratified" whe
 module landed. Ratifying it needs a hand on the knob while the encoder telemetry is
 read, which is a two-minute ask rather than an engineering task.
 
+**That two-minute ask was made the same day, and it killed the single window.**
+The hand measurement, its verdict, and the two-window replacement that stands in
+the shipped code today are §12.9. Nothing in this section's bench record is
+withdrawn — every case it lists still passes — but "still un-ratified" in the
+paragraph above is now history: the number was ratified, found wrong at human
+speed, and replaced.
+
 Health: zero `Guru`/`abort()`/watchdog, zero `no display commit within` (the
 parked beat was never leaked — the commit handover and the cancel-unpark both held
 across 46 fired detents), and the dial resumed its 10-15 fps baseline after the
 run. The device was re-flashed to `71947dd` first: it had come up on
 `8eb4bf0-dirty` (branch `main` plus uncommitted edits), which the `serflash.sh`
 audit caught as a stamp mismatch before anything was written.
+
+### 12.9 The settle window, measured on a hand — 2026-10-12, ruling A+B
+
+§12.8 closed with one debt: 400 ms was arithmetic, not a feeling. The owner turned
+the knob on orb-A while `tools/orb_watch_ser.py` captured the carousel's own
+`peek`/`settle`/`cancelled` lines — the timestamps are the device's, so the
+numbers below carry no host-side clock — across two passes, with encoder
+telemetry confirming a real hand each time (`det -16, spd10 42, shits 0`;
+injection would show zeros, §12.8's proof). Logs: `/tmp/hand_flicks_20261012.log`,
+`/tmp/hand_flicks_20261012b.log`.
+
+**The measurement.** Pass 1 was free-style: 12 detents, every inter-detent gap
+510-1266 ms, every one committed alone — coalescing never once engaged at human
+speed, and the feature was a no-op for exactly the use it exists for. Pass 2
+split the two regimes deliberately: 3 fast flicks of 3 detents each, and a slow
+walk of single detents with a read-and-decide stop at each.
+
+| Regime | Gaps observed (ms) | Against the old single 400 |
+|---|---|---|
+| Fast flick, detent-to-detent | 33-157 (n=9) | coalesces, 2.5x headroom |
+| Slow read-stop, detent-to-detent | 510-1936, median ~1000 (n=24 both passes) | every one committed early, under the reader |
+| peek -> commit latency | 400-408, all 19 commits | the timer itself is faithful |
+
+The medians of the two regimes sit 15x apart, and the closest pair (157 vs 510)
+still bracket 3x. **No single number can serve both**: any window above the
+longest read-pause taxes every clean flick by ~2 s (past the ~1 s
+feels-dropped line, and past the host suite's own `<= 800` ceiling); any window
+below it dumps the reader onto an entry mid-decision — which is what the hand
+experienced at 400. An earlier 800 ms compromise from this thread is withdrawn:
+it coalesced the pass-1 gaps only by treating the reader's pauses as bursts, and
+still committed early on the 1266-1936 ms tail.
+
+**Owner ruling A+B.** (A) two windows, chosen per detent by the gap that
+precedes it; (B) press-to-commit, so nobody waits on a timer they have already
+beaten. B turned out to be already shipped — `input_router.c`'s "that one, now"
+branch has committed a named peek on press since P2 — but no bench had ever
+exercised it; it is now (press-1 below).
+
+**The shipped rule** (`main/app/orb_carousel.c`):
+
+| Constant | Value | Protects against |
+|---|---|---|
+| `ORB_CAROUSEL_SETTLE_MS` | 400 | in-burst commit delay; floors: encoder 30 ms recovery, picker 220 ms velocity-idle, 2.5x widest flick |
+| `ORB_CAROUSEL_BURST_GAP_MS` | 300 | the classifier, cut between the two regimes (157 < 300 < 510), strictly-under comparison |
+| `ORB_CAROUSEL_READ_MS` | 2000 | the hold for a detent that landed after a pause — or alone, a pause the shell never saw end; covers the 1936 ms observed max |
+
+A lone first detent is deliberately a read, not a burst: the walk-away case pays
+2 s for a switch nobody is waiting on, and the reader who has finished presses.
+`cancel()`/`commit()` reset the classification, so the first detent of the next
+gesture is a new gesture — pinned by a host case, because a predicate placed
+after the pending assignment silently makes every detent look in-burst.
+
+**Tests.** `host_carousel_test.py` gained the two-regime re-arm (fast window
+counted from the in-burst detent itself), the read-window walk (1000 ms pause:
+not due at 2999, due at 3000, walk continues from the named entry), the exact
+`BURST_GAP` boundary direction, the post-cancel new-gesture rule, and bounds
+tying all three constants to the measured regimes (`157 < GAP < 510`,
+`READ >= 1936`, `READ <= 2500`). All 11 host suites green.
+
+**Bench re-pin and the pass run.** The board now publishes all three windows in
+one boot line (`chip ready (settle 400 ms, read 2000 ms, burst gap 300 ms)`),
+and the bench takes its case spacing from the device, never from this file. The
+control moved beyond the READ window (detents spaced between the two windows
+coalesce legitimately now — a control that coalesces is not a control), the
+tight-burst VOID re-pinned to the burst gap, the control gained its own VOID
+for jitter that failed to clear READ, and `press-1` landed: one detent, a press
+0.6 s later, the activation TIMED to prove the press pre-empted the auto-commit
+(a count alone cannot tell them apart). 2026-10-12, `6188cd1-dirty`, orb-A,
+rssi -58: coalesce-2 `seen 215, 1 act, hops 2, glass 87 ms`; coalesce-w+1
+`seen 165, 1 act`; wrap-w `0 acts, 1 cancel`; control-2 `seen 2494, 2 acts,
+71/83 ms`; hold-c8 lands clock; press-1 ok. All assertions held.
+
+**Precondition fixed on the way: the association wedge.** Three bench boots in
+a row went network-dead for minutes at ~7.4 s, recovered only by pulsing EN.
+The capture named the mechanism exactly: the self-inflicted reason-3 leave at
+boot arms a 5 s retry; the association then reaches `run`; the uncancelled
+timer fires `esp_wifi_connect()` into the live-but-unleased station, gets
+`ESP_OK`, and destroys the association with no event left to re-arm the ladder
+— both old guards (`s_sta_up`, `s_provisioning`) are false in that window by
+definition. The fix (`main/net/orb_net.c`): a new `WIFI_EVENT_STA_CONNECTED`
+handler cancels a pending retry at the association (not at the lease — the
+unleased window is where the wedge lived) and arms a 15 s lease watchdog;
+`NET_CMD_CONNECT` grew `s_associated` to its guard via the pure
+`connect_attempt_is_moot()`; a stalled association is dropped the honest way
+(`lease_watch_should_drop()` + `esp_wifi_disconnect()`) so the existing,
+host-tested ladder retries from a real DISCONNECTED. Both predicates are
+truth-tabled in `host_tz_test.py` alongside the ladder they complete. The pass
+run above completed its own port-open boot with no wedge and no EN pulse.
+
+**Caveats before this is called final.** n=1 person, one device, three walkable
+entries — the 510 ms floor of the read regime especially needs a second hand
+before sign-off (a fast reader could classify their own pauses as bursts and
+get the 400; the press path caps the damage either way). The beat parks for up
+to READ_MS after the last detent, so a deliberate slow walk keeps the clock
+frozen ~2 s after the final stop; the idle-dim and every knob event bound it as
+before. §12.8's ergonomic finding stands under the new windows: a three-detent
+flick still wraps and cancels on a three-app table — correct, and now visibly
+named three times before it does.
 

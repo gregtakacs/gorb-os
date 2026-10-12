@@ -238,6 +238,72 @@ Commit: `feat(orb-manager): serve the composer offline and ship a release set`
 convention, so it stays out of this run. A workflow running vet, `go test ./...`
 and `make crosscheck` on push is the intended content.
 
+### Open — the hub and its Theme Editor are FORMAT 1; the device is now FORMAT 2
+
+Filed 2026-10-12. Nothing below is implemented. This is a dependency two plans each
+assumed the other owned, recorded so the next reader finds it in one place.
+
+The theme identity work landed in the sibling clone
+`/home/greg/docker/Projects/gorb-os-2`. That tree owns the firmware,
+`tools/orbtheme.py` and `tools/watch-composer/`. Its copy of
+`docs/theme-identity-plan.md` reports IMPLEMENTED and hardware-verified on orb-A, with
+`orbtheme.py` at `FORMAT = 2`, `NAME_MAX = 56`. This clone's copy of that same file is a
+stale approval snapshot and still says "not started". Read the gorb-os-2 one.
+
+That plan's §8 work order has ten steps. None names `tools/orb-manager/`. Its §10
+hand-off does not mention the hub either. The consumer was never listed.
+
+This clone is still FORMAT 1. Each row was read off the file on 2026-10-12:
+
+| Fact | Where |
+|---|---|
+| `FORMAT = 1`, `NAME_MAX = 24` | `tools/orbtheme.py:42,46` |
+| the baker packs the `slug`+`title` pair | `tools/watch-composer/orbtheme-baker.js:28,246` |
+| the copy the hub embeds and serves is that same FORMAT 1 baker | `tools/orb-manager/web/composer/orbtheme-baker.js:28` |
+| install, delete and upload send `?name=` | `tools/orb-manager/internal/orbnet/themes.go:94,108,131` |
+| `ThemeEntry` has no `id` field | `tools/orb-manager/internal/orbnet/themes.go:28` |
+| `CheckThemeName` allows ASCII only, 31 characters max | `tools/orb-manager/internal/orbnet/themes.go:61` |
+
+gorb-os-2's `orb_net.c` answers `?id=` and `?overwrite=1`, takes the upload body with no
+`?name=`, and emits `{name,id,changed}`. Its `tools/orb-manager/internal/orbnet/` holds
+only `client.go`, `scan.go` and `orbnet_test.go`. No tree on this machine has both the
+FORMAT 2 firmware and a working hub theme card.
+
+Four breaks follow once gorb-os merges that firmware, the way `9e79cca` merged the last
+round:
+
+1. Install and delete send `?name=` to routes that now read `?id=`. Both answer 400. The
+   card's buttons go dead with no local error.
+2. `ThemeUpload` sends `?name=`. The firmware reads the name from the container header
+   instead, so that parameter is inert.
+3. `CheckThemeName` refuses every valid FORMAT 2 name. Names are free-text UTF-8 up to
+   55 bytes. The regex is ASCII-only and caps at 31 characters.
+4. The hub's `/composer/` serves a FORMAT 1 baker. The firmware refuses those containers
+   as a theme format it cannot read. `make composer` copies from this clone's
+   `tools/watch-composer/`, so a shipped binary keeps baking the dead format until this
+   tree merges and that target is re-run.
+
+One naming trap deserves its own paragraph. The comment at `themes.go:14-17` reads the
+plan's `id` as an orb id, "so one hub can address more than the orb it last happened to
+learn". The `id` that landed is a theme id: `sha256(name)` truncated to 12 hex. Same
+token, two meanings. Correct that comment in the same commit that changes the code, or
+the next reader repeats the mistake.
+
+Two facts make the merge smaller than it looks. `support.js` is byte-identical between
+the clones and identical to the vendored copy at `web/composer/support.js`, so iteration
+6's offline work and its SRI/manifest pins survive untouched. `dial-renderer.js` and
+`watch-engine.js` match too. Only `orbtheme-baker.js` and `Watch Composer.dc.html`
+differ.
+
+Not verified, and no one should claim it: the hub's theme card has never driven a real
+device. Iteration 5 verified it against `cmd/orbfake`, which mimics `h_sd`. It mimics the
+FORMAT 1 shapes, so any statement that the hub talks to a FORMAT 2 device is untested.
+
+Suggested home for the fix is one commit here, after the firmware merge:
+`feat(orb-manager): speak theme ids`. Scope is `internal/orbnet/themes.go`, the theme
+card in `web/app.js`, the `CheckThemeName` rule, then `make composer` and
+`make vendor-composer` re-run so the embedded editor matches. `make check` is the gate.
+
 ## 3. Deliberately NOT changed
 
 - The safety model stays "you own the cable". No `.orb-target` binding and no
@@ -328,4 +394,9 @@ Updated at each commit.
   the console read both drive real ROM/CDC timing and need one live run on orb-B
   before either is called verified. The theme card was verified against
   `cmd/orbfake`, which reproduces `h_sd`'s shapes but is not the firmware.
+- Outstanding, and not an iteration: the hub's theme client and its embedded Theme
+  Editor are FORMAT 1 while gorb-os-2's firmware now requires FORMAT 2. See
+  "Open — the hub and its Theme Editor are FORMAT 1" above. No plan owns that work
+  today: `docs/theme-identity-plan.md` §8 lists ten steps and none of them names
+  `tools/orb-manager/`.
 

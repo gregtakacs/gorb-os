@@ -1,5 +1,19 @@
 # Theme identity: the name lives in the file, never in the filename
 
+> **STALE COPY — read the live one instead.** This design was implemented and
+> hardware-verified on orb-A in the sibling clone
+> `/home/greg/docker/Projects/gorb-os-2` on 2026-10-12. That clone holds the
+> authoritative copy of this file, and `tools/orbtheme.py` there is at `FORMAT = 2`
+> / `NAME_MAX = 56`. The text below is the approval snapshot taken before that work
+> and still describes the pre-change tree. Do not implement from it. Expect this
+> file to be replaced by the next clone merge.
+>
+> **One gap the live copy does not record: the orb-manager hub.** Its theme client
+> and its embedded Theme Editor are still FORMAT 1, and the §8 work order never
+> listed `tools/orb-manager/`. That dependency is documented in
+> `docs/orb-manager-plan.md`, section "Open — the hub and its Theme Editor are
+> FORMAT 1". It is open, not implemented.
+
 **Status: APPROVED — design finalized with owner 2026-10-12, not started.**
 Self-contained implementation plan; pick it up cold. This document supersedes
 `docs/theme-naming-todo.md`, which is deleted at the end of this work (its §1–§3

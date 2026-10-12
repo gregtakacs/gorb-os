@@ -64,6 +64,16 @@ These are decided. An implementer who disagrees edits this table, not the code.
 | C12 | Arena exhaustion | Evict least-recently-visible, log it |
 | C13 | Vocabulary freeze | **Ratified 2026-10-11.** The whole vocabulary is OS-frozen, none of it is app-extensible: all 4 `KINDS` (window, strip, ring, flare), all 9 `FLAGS` bits, and the 17 `SOURCES` are OS-owned names resolved through one internal table fed by the `time` and `config` capabilities. An app declares which frozen names it uses; it cannot add one. Only `text` needs a config grant (it reads an app's own NVS keys). `battery` and `power_reserve` stay reserved and unimplemented — no power source is wired, so the bake tool must refuse them. The 12 calendar sources plus `none`/`value` are OS-internal to the clock's own theme schema and need no per-app grant at all |
 
+### 0.2 Owner's ruling, 2026-10-12 — the clock app's bundled default art
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D10 | Whose art boots the clock | **The OS ships no art.** The clock app carries its own bundled default artwork, ingested from the SD card. The authoritative source is committed at `assets/sources/clock-app-default/`: the Design ID `WCD5-W1sic2…` (full string in that folder's `DESIGN_ID`), its compiled container `clock_app_default.orbtheme`, and the Watch Composer layer kit `skeleton_theme.zip` that the ID refers to. Until P4/P6 ship the `.orbapp` container and the `apps`-partition ingest, this art is **recorded, not wired**: it does not touch the boot path, and the compiled-in `assets/clock_assets.{bin,h}` pair stays the sole card-less boot fallback (section 1.1). |
+
+This container is validated, not assumed. `tools/orbtheme.py read_container` passes both CRCs; `unpack_geom` yields the geometry the Design ID describes — hands `show=[1,1,0,1,0]`, 8 GIF frames at `tick_rate 4`, 128 delta rects, 0 tourbillon, and 2 rotating-second `aux` records (the c2 enamel subdial's seconds hand). Art is 2,650,159 B = 41 pages, inside the `SLOT_CAP` (0x400000) and the 234-page budget `tools/host_art_residency_test.py` pins. `skeleton_theme.zip` is byte-identical to the owner's source (sha256 `95aa5d3a4b646d9e80c63e75a118778d548cb7a46d0fab7e90b482a6c5614d38`); its `manifest.json` carries the same `WCD5-…` ID. The Design ID holds a *reference* to the art, never the bytes (composer help, `Watch Composer.dc.html`); the layer kit holds the bytes.
+
+Three facts for whoever wires this at P6. The container's slug and title are `skeleton`, which collides with the theme already installed under that slug on orb-A's card — it cannot go on a card as-is under that name. The committed container has never rendered on hardware: routine `serflash.sh` reflashes push only the app, never the `assets` partition, and the slot headers validate before the fallback is reached. And no tool converts a finished container back into the compiled-in `clock_assets.{bin,h}` pair — `bake_clock.py` regenerates that pair only from an Arduino-style `clock_style.json`/`theme.json` folder, and the composer's `orbtheme-baker.js` emits only the container. Building that reverse path, or the `.orbapp` packaging, is P4/P6 work, not this ruling.
+
 ---
 
 ## 1. The line, drawn at today's files
@@ -92,7 +102,7 @@ Today the OS reaches into the clock by name. `input_router.c` hardcodes `INPUT_S
 
 | Area | Code to move |
 |---|---|
-| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t` |
+| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t`. The clock app's own bundled default (ruling D10) is the Design-ID-sourced container committed at `assets/sources/clock-app-default/` (§0.2) — recorded now, wired by P6 once `.orbapp`/`apps`-partition ingest exists |
 | Scene and geometry schema | `clk_theme_t`, `clk_bg_rect_t`, `clk_comp_t`, `clk_aux_t`; the `THEME_FIELDS`/`COMP_FIELDS`/`AUX_FIELDS` wire lists; `theme_schema.py` SOURCES/KINDS/FLAGS; `GEOM_ABI` |
 | Time to hand math | `hand_angles` (hour/min/sec mapping, sweep phase, railway, `second_sweep`/`tick_rate` policy), `s_bt_ctr`, `s_bt_frac` |
 | Tourbillon | `tourbillon_advance`, `tourb_chords`, `tourb_stamp_pose`, `tourbillon_ink_mark`, `tourb_mark`, frame-bank selection |
@@ -431,7 +441,7 @@ Rulings B1–B5 and C1–C12 are in section 0.1 and are not open questions. What
    the MMU's true refusal point (the probe never reached it — §11's third finding),
    which M3 measures with a second partition.
 2. **The behaviour vocabulary's first cut.** Which `CLK_KIND_*`/`CLK_SRC_*` become the OS's registered kinds, and which stay clock-app-private. `theme_schema.py`'s SOURCES/KINDS/FLAGS is the inventory; naming the subset is a P0 paper task, not a code one, and it is the last thing that must be agreed before the ABI is frozen.
-3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
+3. **Whether the compiled-in fallback is one app or several.** Today `assets/clock_assets.h` guarantees a card-less board tells the time (section 1.1). Ruling D10 (§0.2) settles the clock's own default art: the OS ships none, and the clock app's bundled default is the Design-ID-sourced container at `assets/sources/clock-app-default/`, recorded now and wired by P6. If a second shipped app also wants a baked-in pair, the image grows against the 1,476,128 B figure in section 3.1, and that is a decision the first non-clock flagship will force rather than a guess worth making now.
 4. **NVS quota per app** against the 24 KB `storage` partition with `string` settings enabled (C9) and 8 apps allowed (B5): the byte budget is a number to be chosen at P3 with the real key shapes in hand, then enforced at install.
 
 ---
@@ -789,6 +799,7 @@ makes it observable.
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
 | **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
+| **Clock app bundled default (P2 clock theme-options E2E)** | **Owner ruling D10 (§0.2), 2026-10-12.** The OS ships no art; the clock app carries its own bundled default, ingested from the SD card. Its source of truth — Design ID `WCD5-W1sic2…`, the compiled `clock_app_default.orbtheme` (both CRCs verified through `tools/orbtheme.py read_container`), and the `skeleton_theme.zip` layer kit the ID refers to — is committed at `assets/sources/clock-app-default/`, byte-identical to the owner's originals. It is **recorded, not wired**: booting it as the clock's art needs the P4/P6 `.orbapp` container, the `apps`-partition ingest, and a container→`clock_assets.{bin,h}` reverse tool that do not exist yet. Its slug `skeleton` also collides with orb-A's installed card theme, so a card install under that name is refused by the duplicate-slug check. The compiled-in `assets/clock_assets.{bin,h}` pair (av-kit) stays the card-less boot fallback and has never itself rendered on hardware — slot headers validate first |
 
 M1 is captured (§12.7), so the registry is host-proven and hardware-proven. What
 keeps P2 open is the carousel, the `opt_*` shell rendering, and M3.

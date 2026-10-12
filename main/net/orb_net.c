@@ -1320,7 +1320,10 @@ static esp_err_t h_status(httpd_req_t *req)
      * "US/Central" (563 B before the idle block and the art residency fields); every
      * field added since then has to be re-measured off the device
      * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
-     * room for that growth. */
+     * room for that growth. Measured 650 B on the device on 2026-10-12, tz at
+     * "US/Eastern", with the idle block's writes_failed present; the figure moves
+     * a few bytes as the counters gain digits, which is why it is measured and not
+     * added up. */
     char json[960];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
@@ -1442,10 +1445,16 @@ static esp_err_t h_status(httpd_req_t *req)
          * too sensitive\" cannot be answered at all without them. */
         /* Off is not the same claim as "armed and idle", so it is said with its
          * own flag and the numbers the disabled build cannot know are pinned to
-         * zero below, rather than being printed as if they were measurements. */
+         * zero below, rather than being printed as if they were measurements.
+         *
+         * writes_failed is the count of brightness writes the panel has refused.
+         * A wake that needed a second try is invisible from the glass — the dial
+         * simply comes back a tick late, which is what a dial that never comes
+         * back looks like until it does — so the retry says so here. Non-zero with
+         * dimmed stuck true is the whole diagnosis of "it will not wake". */
         "\"idle\":{\"on\":%s,\"dimmed\":%s,\"since_s\":%u,\"timeout_s\":%u,"
         "\"lit_pct\":%u,\"dim_pct\":%u,\"wakes\":%u,\"worst_mg\":%d,"
-        "\"worst_dark_mg\":%d,\"stamps\":%u}}",
+        "\"worst_dark_mg\":%d,\"stamps\":%u,\"writes_failed\":%u}}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
         s_provisioning ? "provisioning" : "down",
@@ -1472,7 +1481,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (long)knob_valley_hits(), (long)knob_settle_hits(),
         idle_on ? "true" : "false", idle_dark, idle_since_s, idle_timeout_s,
         idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
-        (unsigned)idle_dim_activity_count());
+        (unsigned)idle_dim_activity_count(),
+        (unsigned)idle_dim_level_write_fail_count());
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail

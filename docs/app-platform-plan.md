@@ -1339,4 +1339,55 @@ matters more than the three rulings read separately.
 
 §0.3: D11, D12 and D13 signed off against this run.
 
+### 13.7 The dial that would not wake, 2026-10-12, orb-A
+
+**Report.** The owner: the dial no longer wakes from the dimmed state. Intermittent — both wake
+sources answered when tested at the bench minutes later.
+
+**Ruled out on the bench, with the log as the witness.** The dim lands: `idle_dim: armed: dim to
+20% after 60 s (knob + motion)`, then `co5300_spi: set brightness to 20% (hardware value: 51)` at
+61 s of quiet. A knob event that reaches the router restores the glass in 32 ms:
+`touch (http): 2 stamps since boot` at 300641 ms, `set brightness to 100% (hardware value: 255)`
+at 300680 ms. So the poll timer runs in the dark, the decision is right and the write lands when
+the panel is answering. One bench trap cost an hour: the orb's DHCP lease moved to
+`192.168.2.32`, and every request to the old `192.168.1.177` hung until its timeout and looked
+like a wedged device. Resolve the port and IP through `tools/orb_bind`, never from memory.
+
+**The defect.** `idle_task` committed `s_dimmed = want` *before* asking the panel. The brightness
+level is one QSPI write to the CO5300's `0x51`, `apply_level()` returned `void`, and a refused
+write only logged. One refusal and the flag says lit while the glass says 20%: no later tick
+disagrees with the flag, so the transition is never attempted again, and `per` — chosen from that
+same flag — drops to the 1 Hz lit tick, taking the 20 Hz dark accelerometer poll, and the second
+wake source, with it. `apply_level` is the file's only brightness writer and `s_dimmed` its only
+assignment, which is why this one latch is the whole story inside the module.
+
+**Fix.** `apply_level()` reports whether the panel took the write. The commit goes through
+`idle_dim_level_apply_decide(want, dimmed, wrote)` — `want` if it landed, `dimmed` if not — so the
+next tick asks again at the rate of the state the panel is actually in: a lost wake retries every
+50 ms, a lost dim every second. No new timer, no new task. The dim-only side effects (the `0x51`
+stamp the wake log measures from, the motion re-seed and run reset) now happen on a dim that
+landed. The failure line is rate-capped once per second the way the touch line is, because a dead
+panel is refused at 20 Hz.
+
+**Made measurable.** `/api/v1/status` gains `idle.writes_failed`, the refused writes since boot,
+and `tools/idle_watch.py` prints it as `wfail` and names the diagnosis when `dimmed` is stuck true
+under a climbing `stamps`. Before this, a dial that woke on the third try and a dial that never
+woke produced the same evidence.
+
+**Pins.** `tools/host_idle_dim_test.py` gains 7 commit vectors (both refused directions, both
+accepted, both no-ops, and the refused-then-accepted retry — the pair no single call can
+distinguish), 4 predicate mutants and 3 mutants of the call site, checked by a lint on
+`idle_task`'s own text: the only assignment to `s_dimmed` may be the one that asks the predicate.
+Without the lint, `s_dimmed = want;` beside a correct predicate passes every vector and returns the
+dark dial. 29 mutants, 0 survivors. All 11 host suites green, `idf.py build` clean, and the
+dim-compiled-out variant (`build_vdim`) links.
+
+**On hardware.** Flashed to orb-A (`AUDIT OK`), dim at 61 s, wake to `lit_pct=100%`, a second dim
+after it, `wfail=0` throughout — the panel is answering now, so the retry did not have to.
+
+**Limit, stated plainly.** The owner's episode was not reproduced. The CO5300's `0x51` has no
+readback, so a write the driver *reports* as taken and the panel never applies stays invisible to
+this fix; it covers the refused write, which is the failure the module could turn permanent. The
+next report reads `idle.writes_failed` before it reads the glass.
+
 

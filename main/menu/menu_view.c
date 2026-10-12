@@ -57,6 +57,9 @@ typedef enum {
     PG_APP,           /* one app's own options, rendered from its opt_* answers */
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO,            /* the timeout presets                          */
+    PG_PERMS,         /* one row per installed app (B3)               */
+    PG_CAPS,          /* the selected app's four owner caps           */
+    PG_CONFIRM,       /* the two-row answer to one cap's request      */
     PG_COUNT
 } page_t;
 
@@ -68,7 +71,7 @@ typedef enum {
  * an APPS page has nothing to list until a card app and a catalog exist, and a
  * row that says "nothing installed yet" on a device with two compiled-in apps
  * would be a lie about the thing the page is for. */
-typedef enum { IT_AP = 0, IT_TZ, IT_DISPLAY, IT_OS_N } top_item_t;
+typedef enum { IT_AP = 0, IT_TZ, IT_DISPLAY, IT_PERMS, IT_OS_N } top_item_t;
 
 /** How many app rows the top page carries: one per walkable entry that declares
  *  options, in table order, which is the carousel's order — so the menu's list
@@ -136,6 +139,58 @@ static const orb_app_t *s_app;
 static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
 static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
+
+/* ---- B3: the grant ladder (plan §4.2), three pages below PERMISSIONS ---------
+ *
+ * The rows, the state, and the one rule the pages exist for: nothing an app
+ * wants is ever granted by a default — the owner's finger answers the ask, on
+ * this page, and the answer is persisted by the broker before the row reads
+ * any other way. The four caps listed are the owner-granted four: the free
+ * ones would put rows on this page that can only ever say yes, and a page of
+ * forced yeses teaches the owner to stop reading it.
+ */
+static int      s_perm_slot = -1;              /* the app under inspection  */
+static orb_cap_t s_perm_cap = CAP_POWER;       /* the cap awaiting the answer */
+static const orb_cap_t OWNER_CAPS[4] = { CAP_POWER, CAP_NET,
+                                         CAP_SD_READ, CAP_THEMES };
+
+/* The installed, non-chrome entries — which is NOT the same list as the top
+ * page's app rows: those are the apps that declare options, while
+ * PERMISSIONS must show every app that can ASK, option hooks or none. */
+static int perm_rows(void)
+{
+    int n = 0;
+    for (size_t i = 0; i < orb_app_rows(); i++) {
+        const orb_app_t *a = orb_app_row(i);
+        if (a && a->kind == ORB_APP_KIND_APP && a->installed) n++;
+    }
+    return n;
+}
+static const orb_app_t *perm_row(int i)
+{
+    for (size_t r = 0; r < orb_app_rows(); r++) {
+        const orb_app_t *a = orb_app_row(r);
+        if (a && a->kind == ORB_APP_KIND_APP && a->installed && i-- == 0) return a;
+    }
+    return NULL;
+}
+static int perm_row_of(const orb_app_t *a)
+{
+    int n = 0;
+    for (size_t r = 0; r < orb_app_rows(); r++) {
+        const orb_app_t *x = orb_app_row(r);
+        if (x && x->kind == ORB_APP_KIND_APP && x->installed) { if (x == a) return n; n++; }
+    }
+    return 0;
+}
+static bool perms_asked(void)
+{
+    for (size_t r = 0; r < orb_app_rows(); r++) {
+        const orb_app_t *a = orb_app_row(r);
+        if (a && a->kind == ORB_APP_KIND_APP && orb_svc_pending(a)) return true;
+    }
+    return false;
+}
 
 /* ---- the one level of app-owned nesting (ruling D12) -----------------------
  *
@@ -351,6 +406,14 @@ static int page_rows(void)
         case PG_TZ:     return orb_net_tz_count() + 1;      /* last row is back */
         case PG_DISPLAY:return 3;                            /* dim, timeout, back */
         case PG_TO:     return TO_PRESET_N + 1;              /* last row is back */
+        /* B3's ladder: the app list, one per installed app plus back; the four
+         * owner caps plus back; and the plan's two-row confirm — exactly two
+         * rows, no back, because the long press is the escape every page
+         * already answers and a third "back" row would make the confirm the
+         * three-row choice the ruling says it is not. */
+        case PG_PERMS:  return perm_rows() + 1;
+        case PG_CAPS:   return 4 + 1;
+        case PG_CONFIRM: return 2;
         default:        return 0;
     }
 }
@@ -380,9 +443,23 @@ static void go_back(void)
         s_cur  = IT_OS_N + ai;
         return;
     }
+    if (from == PG_CAPS) {          /* back lands on the app's own row in the
+                                      * list it came from, the PG_APP courtesy */
+        s_page = PG_PERMS;
+        s_cur  = perm_row_of(orb_app_row((size_t)s_perm_slot));
+        return;
+    }
+    if (from == PG_CONFIRM) {       /* an unanswered confirm returns under the
+                                      * cap it was about, cursor where it was */
+        s_page = PG_CAPS;
+        s_cur  = 0;
+        for (unsigned i = 0; i < 4; i++) if (OWNER_CAPS[i] == s_perm_cap) s_cur = (int)i;
+        return;
+    }
     s_page = PG_TOP;
     s_cur  = (from == PG_TZ)     ? IT_TZ
            : (from == PG_DISPLAY)? IT_DISPLAY
+           : (from == PG_PERMS)  ? IT_PERMS
            : 0;
 }
 
@@ -409,9 +486,53 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
                 case IT_AP:     snprintf(out, outsz, "AP");      break;
                 case IT_TZ:     snprintf(out, outsz, "TZ");      break;
                 case IT_DISPLAY: snprintf(out, outsz, "DISPLAY"); break;
+                /* The badge is the whole prompt: an app that asked carries its
+                 * ask into the owner's list rather than interrupting the dial,
+                 * and the ask stays until the owner answers it there. */
+                case IT_PERMS:  snprintf(out, outsz, "PERMISSIONS%s",
+                                         perms_asked() ? "  (ASKED)" : ""); break;
                 default:        snprintf(out, outsz, "exit");    break;
             }
             return;
+
+        case PG_PERMS: {
+            const int n = perm_rows();
+            if (row >= n) { snprintf(out, outsz, "<- back"); return; }
+            const orb_app_t *a = perm_row(row);
+            if (!a) { snprintf(out, outsz, "?"); return; }   /* page_rows sized it */
+            int ng = 0;
+            for (unsigned c = 0; c < 4; c++)
+                if (orb_svc_grants(a) & (1u << OWNER_CAPS[c])) ng++;
+            if (orb_svc_pending(a))
+                snprintf(out, outsz, "%s  (ASKED HERE)", a->title ? a->title : a->slug);
+            else
+                snprintf(out, outsz, "%s  (%d of 4)", a->title ? a->title : a->slug, ng);
+            return;
+        }
+
+        case PG_CAPS: {
+            if (row >= 4) { snprintf(out, outsz, "<- back"); return; }
+            const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+            if (!a) { snprintf(out, outsz, "?"); return; }
+            const bool g   = (orb_svc_grants(a) & (1u << OWNER_CAPS[row])) != 0;
+            const bool ask = (orb_svc_pending(a) & (1u << OWNER_CAPS[row])) != 0;
+            if (sel_hi) *sel_hi = g;          /* the highlight answers \"what is
+                                               * the state\" the same way the
+                                               * zone row's star does */
+            snprintf(out, outsz, "%s: %s%s", orb_svc_cap_name(OWNER_CAPS[row]),
+                     g ? "allowed" : "denied", ask ? "  (asking)" : "");
+            return;
+        }
+
+        case PG_CONFIRM: {
+            const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+            const char *nm = a ? (a->title ? a->title : a->slug) : "?";
+            if (row == 0)
+                snprintf(out, outsz, "ALLOW \"%s\" the %s", nm, orb_svc_cap_name(s_perm_cap));
+            else
+                snprintf(out, outsz, "KEEP DENIED");
+            return;
+        }
 
         case PG_TZ: {
             const int n = orb_net_tz_count();
@@ -489,6 +610,19 @@ static const char *page_title(void)
         case PG_APP:    return (s_app && s_app->title) ? s_app->title : "OPTIONS";
         case PG_DISPLAY:return "DISPLAY";
         case PG_TO:     return "DIM TIMEOUT";
+        case PG_PERMS:  return "PERMISSIONS";
+        case PG_CAPS: {
+            /* The app's own title in the header, so a page about one app can
+             * never be read as the list it came from. Static buffer, one
+             * writer, the LVGL task — same reasoning as every painted
+             * string in this file. */
+            static char caps_title[48];
+            const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+            snprintf(caps_title, sizeof caps_title, "%s PERMISSIONS",
+                     a && a->title ? a->title : a ? a->slug : "?");
+            return caps_title;
+        }
+        case PG_CONFIRM: return "GRANT?";
         default:        return "MENU";
     }
 }
@@ -506,8 +640,34 @@ static const char *page_hint(void)
                                   ? "rotate: choose   push: change   hold: close"
                                   : "rotate: choose   push: change";
         case PG_TO:      return "rotate: choose   push: set";
+        case PG_PERMS:   return "rotate: choose   push: open";
+        case PG_CAPS:    return "rotate: choose   push: answer";
+        case PG_CONFIRM: return "rotate: choose   push: answer";
         default:         return "rotate: choose   push: open";
     }
+}
+
+static void job_grant(void *arg)
+{
+    const int pack = *(const int *)arg;
+    const int slot = pack >> 9, cap = (pack >> 1) & 0xFF, on = pack & 1;
+    ui_t out; memset(&out, 0, sizeof out);
+    const orb_app_t *a = orb_app_row((size_t)slot);
+    if (!a) { snprintf(out.status, sizeof out.status, "that app is gone"); worker_publish(&out); return; }
+    const esp_err_t er = orb_svc_set_grant(a, (orb_cap_t)cap, on);
+    /* The ask is answered either way — the owner has seen it and said a word.
+     * A refused NVS write leaves the RAM answer on the glass and the status
+     * line says "not saved", the same durability/correctness split the dim
+     * toggle's line makes. */
+    orb_svc_prompt_shown(a, 1u << cap);
+    if (er != ESP_OK)
+        snprintf(out.status, sizeof out.status, "\"%s\": %s not saved (%s)",
+                 a->slug, orb_svc_cap_name((orb_cap_t)cap), esp_err_to_name(er));
+    else
+        snprintf(out.status, sizeof out.status, "\"%s\": %s %s",
+                 a->slug, orb_svc_cap_name((orb_cap_t)cap),
+                 on ? "ALLOWED" : "revoked");
+    worker_publish(&out);
 }
 
 /* Ask the worker for a job. Drops the request while one is outstanding — a
@@ -732,6 +892,14 @@ static void activate(void)
                     s_cur  = 0;
                     repaint();
                     return;
+                case IT_PERMS:
+                    /* The B3 door: an ask latched by a denied gated call shows
+                     * as the (ASKED) badge on this row, and the owner answers
+                     * it app -> cap -> two-row confirm from here. */
+                    s_page = PG_PERMS;
+                    s_cur  = 0;
+                    repaint();
+                    return;
                 default:
                     /* Reaching past the OS rows means an app row, and the only
                      * row after those is exit. Both were handled above by the
@@ -804,6 +972,43 @@ static void activate(void)
              * value the user just picked is already right when they arrive. */
             go_back();
             repaint();
+            return;
+        }
+
+        case PG_PERMS: {
+            const int n = perm_rows();
+            if (s_cur >= n) { go_back(); repaint(); return; }   /* <- back */
+            const orb_app_t *a = perm_row(s_cur);
+            if (!a) { go_back(); repaint(); return; }           /* page_rows sized it */
+            s_perm_slot = orb_app_index_of(a);
+            s_page = PG_CAPS;
+            s_cur  = 0;
+            repaint();
+            return;
+        }
+
+        case PG_CAPS: {
+            if (s_cur >= 4) { go_back(); repaint(); return; }   /* <- back */
+            s_perm_cap = OWNER_CAPS[s_cur];
+            s_page = PG_CONFIRM;
+            s_cur  = 0;
+            repaint();
+            return;
+        }
+
+        case PG_CONFIRM: {
+            const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+            if (!a) { s_page = PG_PERMS; s_cur = 0; repaint(); return; }
+            /* The answer writes NVS on the worker, the zone-select rule again:
+             * nothing that can block runs on the task that paints the dial.
+             * Both rows answer the ask — the second one answers "no" — so the
+             * badge clears either way, and an ask the owner has seen is never
+             * shown twice for the same call. */
+            const int pack = (s_perm_slot << 9) | ((int)s_perm_cap << 1)
+                           | (s_cur == 0 ? 1 : 0);
+            job_post(job_grant, pack);
+            s_page = PG_CAPS;
+            repaint();                                  /* shows "working..." */
             return;
         }
 

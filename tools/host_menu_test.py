@@ -115,18 +115,38 @@ def lifts(src):
         # D12: the long press that closes an open group instead of going home. It
         # touches no widget directly (repaint() is stubbed above), so it lifts.
         lift(src, r"bool menu_view_opt_long\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # B3: the worker's grant answer, lifted whole — pack decoding is a
+        # silent-wrong-answer machine (slot<<9|cap<<1|on), and the two rows of
+        # the confirm differ only in that low bit.
+        lift(src, r"static void job_grant\(void \*arg\)\n\{[\s\S]*?\n\}", MENU_C),
     ]
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
         presets,
         lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
         lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
+        # B3: the grant-ladder state, the four caps, and the row helpers — one
+        # block, lifted ahead of the page functions that call into it. The
+        # orb_svc doors it reaches are declared by the real orb_svc.h the
+        # harness includes and stubbed below with the registry's.
+        lift(src, r"static int      s_perm_slot[\s\S]*?static bool perms_asked\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         "static const orb_app_t *s_app;   /* the app PG_APP is showing */",
         # The one piece of D12 state the shell owns: which group is open, -1 = none.
         "static int s_group_open = -1;",
         "static bool s_busy;",
         "static bool orb_jobs_busy(void) { return s_busy; }",
         lift(src, r"typedef struct \{\n    char\s+status\[72\];[\s\S]*?\} ui_t;", MENU_C),
+        # The worker's answer half and the recorder it publishes through —
+        # after the ui_t lift, which its signature reads.
+        "static uint32_t g_pend[4], g_grnt[4];",
+        "static int g_setg_calls, g_shown_calls, g_publish_calls, g_setg_slot, g_setg_on;",
+        "static orb_cap_t g_setg_cap;",
+        "static esp_err_t g_setg_rc;",
+        "static char g_pub_line[72];",
+        "static const char *esp_err_to_name(esp_err_t e)"
+        " { static char b[16]; snprintf(b, sizeof b, \"0x%x\", (unsigned)e); return b; }",
+        "static void worker_publish(const ui_t *src)"
+        " { g_publish_calls++; snprintf(g_pub_line, sizeof g_pub_line, \"%s\", src->status); }",
     ]
     return consts, funcs
 
@@ -366,6 +386,63 @@ const orb_app_t *orb_app_at(size_t i)
     return (i == 1 && g_opt_app_count > 1) ? FAKE_APP2 : NULL;
 }
 
+/* ---- B3's side of the registry and the broker: the PERMISSIONS ladder reads
+ * the raw rows (chrome included, because a row that filtered the shell out by
+ * accident would pass every count check and still show MENU as an app), so
+ * the fake table carries the kinds the shipped filter sorts on. */
+static orb_app_t g_fake_shell;
+static int g_app_rows_n = 3;
+size_t orb_app_rows(void) { return (size_t)g_app_rows_n; }
+const orb_app_t *orb_app_row(size_t i)
+{
+    if (i == 0) return FAKE_APP;
+    if (i == 1) return FAKE_APP2;
+    if (i == 2) return &g_fake_shell;
+    return NULL;
+}
+int orb_app_index_of(const orb_app_t *a)
+{
+    if (a == FAKE_APP) return 0;
+    if (a == FAKE_APP2) return 1;
+    if (a == &g_fake_shell) return 2;
+    return -1;
+}
+uint32_t orb_svc_pending(const orb_app_t *a)
+{
+    const int i = orb_app_index_of(a);
+    return i < 0 ? 0 : g_pend[i];
+}
+uint32_t orb_svc_grants(const orb_app_t *a)
+{
+    const int i = orb_app_index_of(a);
+    return i < 0 ? 0 : g_grnt[i];
+}
+const char *orb_svc_cap_name(orb_cap_t c)
+{
+    static const char *const N[8] = { "time", "config", "ui", "art",
+                                      "power", "net", "sd_read", "themes" };
+    return (unsigned)c < 8u ? N[c] : "?";
+}
+esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t c, bool on)
+{
+    g_setg_calls++;
+    g_setg_slot = orb_app_index_of(a);
+    g_setg_cap = c;
+    g_setg_on = on ? 1 : 0;
+    if (g_setg_rc == ESP_OK && g_setg_slot >= 0)
+    {
+        if (on) g_grnt[g_setg_slot] |= 1u << (unsigned)c;
+        else    g_grnt[g_setg_slot] &= ~(1u << (unsigned)c);
+    }
+    return g_setg_rc;
+}
+void orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps)
+{
+    const int i = orb_app_index_of(a);
+    if (i >= 0) g_pend[i] &= ~caps;
+    g_shown_calls++;
+}
+
 int main(void)
 {
     /* The fake app carries a title so the header check means something. */
@@ -373,6 +450,11 @@ int main(void)
     /* A distinct second app, so "a second app adds a row" cannot pass by
      * reading the first one's title twice. */
     g_fake_app2.slug = "hue"; g_fake_app2.title = "HSB";
+    /* B3's third row: chrome that perm_rows must filter out by kind, not by
+     * position — installed like an app, invisible to the ladder like chrome. */
+    g_fake_shell.slug = "menu"; g_fake_shell.title = "Menu";
+    g_fake_shell.kind = ORB_APP_KIND_SHELL; g_fake_shell.installed = true;
+    g_fake_app.installed = true; g_fake_app2.installed = true;
 
     /* ---- unarmed is a title card, not a list ---- */
     s_armed = false; s_page = PG_LANDING; s_cur = 0; s_busy = false;
@@ -402,23 +484,24 @@ int main(void)
      * opt_*, and it disappears again below when the hook stops answering. A
      * hardcoded IT_TOP_N could not show that, which is exactly why it was
      * listed as the thing to remove. */
-    ck("top page is the OS's three rows, one app row, then exit", page_rows() == 5);
-    { const char *r0=rowline(0),*r1=rowline(1),*r2=rowline(2),*r3=rowline(3),*r4=rowline(4);
-      ck("row order AP/TZ/DISPLAY/<app>/exit",
+    ck("top page is the OS's four rows, one app row, then exit", page_rows() == 6);
+    { const char *r0=rowline(0),*r1=rowline(1),*r2=rowline(2),*r3=rowline(3),*r4=rowline(4),*r5=rowline(5);
+      ck("row order AP/TZ/DISPLAY/PERMISSIONS/<app>/exit",
          !strcmp(r0,"AP") && !strcmp(r1,"TZ") && !strcmp(r2,"DISPLAY") &&
-         !strcmp(r3,"Clock") && !strcmp(r4,"exit")); }
+         !strcmp(r3,"PERMISSIONS") && !strcmp(r4,"Clock") && !strcmp(r5,"exit")); }
     /* The row comes from the registry, not from this file's text: an app that
      * stops answering opt_* loses its row without the shell being edited. */
     g_opt_n = 0;                                    /* the app stops answering */
     ck("an app with no options has no row, and exit moves up",
-       page_rows() == 4 && !strcmp(rowline(3),"exit"));
+       page_rows() == 5 && !strcmp(rowline(4),"exit"));
     g_opt_n = 2;
     /* And a second app that declares options adds a second row, which is the
      * half IT_TOP_N could never do without an edit to the shell. */
     g_opt_app_count = 2;
-    { const char *r3=rowline(3), *r4=rowline(4);
+    { const char *r3=rowline(3), *r4=rowline(4), *r5=rowline(5);
       ck("a second app declaring options adds a row, in table order",
-         page_rows() == 6 && !strcmp(r3,"Clock") && !strcmp(r4,"HSB")); }
+         page_rows() == 7 && !strcmp(r3,"PERMISSIONS") && !strcmp(r4,"Clock") &&
+         !strcmp(r5,"HSB")); }
     g_opt_app_count = 1;
 
     /* ---- the clamp, both ends, no wrap ---- */
@@ -427,9 +510,9 @@ int main(void)
     s_cur = 0;
     turn_up(1);
     ck("rotate past the top clamps to 0", s_cur == 0);
-    s_cur = 4;
+    s_cur = 5;
     turn_down(1);
-    ck("rotate past the bottom clamps to last", s_cur == 4);
+    ck("rotate past the bottom clamps to last", s_cur == 5);
     s_cur = 1;
     turn_down(99);
     ck("one detent per event, no flying", s_cur == 2);
@@ -438,6 +521,80 @@ int main(void)
     ck("and not backwards either", s_cur == 1);
     menu_view_apply_input(0, false);
     ck("zero delta is not a move", s_cur == 1);
+
+    /* ---- B3: the permissions ladder ----
+     * The prompt the plan's §4.2 promised: an ask latched at the broker's gate
+     * surfaces as a badge on the top row, and the owner answers app -> cap ->
+     * two-row confirm. The activation half (which press posts which answer) is
+     * activate() and lives on the bench; the shapes, strings, routing and the
+     * worker's pack decoding are all lifted and pinned here. */
+    s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
+    g_opt_app_count = 1; g_opt_n = 2;
+    ck("no ask, no badge on the PERMISSIONS row",
+       !strcmp(rowline(3), "PERMISSIONS"));
+    g_pend[0] = 1u << CAP_POWER;
+    ck("an ask badges the top row for the owner",
+       (s_page = PG_TOP, !strcmp(rowline(3), "PERMISSIONS  (ASKED)")));
+    g_pend[0] = 0;
+    s_page = PG_PERMS; s_cur = 0;
+    ck("the app list counts the owner's four and filters out chrome",
+       page_rows() == 3 && !strcmp(rowline(0), "Clock  (0 of 4)") &&
+       !strcmp(rowline(1), "HSB  (0 of 4)") && !strcmp(rowline(2), "<- back"));
+    g_pend[1] = 1u << CAP_THEMES;
+    ck("an app that asked says so on its own row",
+       (s_page = PG_PERMS, !strcmp(rowline(1), "HSB  (ASKED HERE)")));
+    g_pend[1] = 0;
+    g_grnt[0] = (1u << CAP_POWER) | (1u << CAP_THEMES);
+    ck("granted caps read in the app's row",
+       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (2 of 4)")));
+    g_grnt[0] = 0;
+    s_page = PG_CAPS; s_perm_slot = 0; s_perm_cap = CAP_POWER; s_cur = 0;
+    ck("the cap page is the four owner caps plus back, never the free four",
+       page_rows() == 5 && !strcmp(rowline(0), "power: denied") &&
+       !strcmp(rowline(1), "net: denied") &&
+       !strcmp(rowline(2), "sd_read: denied") &&
+       !strcmp(rowline(3), "themes: denied") &&
+       !strcmp(rowline(4), "<- back"));
+    g_pend[0] = 1u << CAP_NET;
+    ck("the cap an app actually asked for says asking",
+       (s_page = PG_CAPS, !strcmp(rowline(1), "net: denied  (asking)")));
+    g_pend[0] = 0;
+    g_grnt[0] = 1u << CAP_SD_READ;
+    ck("an allowed cap reads allowed",
+       (s_page = PG_CAPS, !strcmp(rowline(2), "sd_read: allowed")));
+    g_grnt[0] = 0;
+    ck("the confirm is the plan's two rows exactly, no back to fall through",
+       (s_page = PG_CONFIRM, s_perm_slot = 0, s_perm_cap = CAP_THEMES,
+        page_rows() == 2 &&
+        !strcmp(rowline(0), "ALLOW \"Clock\" the themes") &&
+        !strcmp(rowline(1), "KEEP DENIED")));
+    ck("back from the cap page lands on the app's own row in the list",
+       (s_page = PG_CAPS, s_perm_slot = 1, go_back(),
+        s_page == PG_PERMS && s_cur == 1));
+    ck("back from an unanswered confirm returns under the cap it asked about",
+       (s_page = PG_CONFIRM, s_perm_slot = 0, s_perm_cap = CAP_NET, go_back(),
+        s_page == PG_CAPS && s_cur == 1));
+    ck("back from the app list lands on the PERMISSIONS row",
+       (s_page = PG_PERMS, go_back(), s_page == PG_TOP && s_cur == IT_PERMS));
+    {   /* The worker's answer half — pack decoding is where a wrong shift
+         * silently grants the wrong app or the wrong cap. */
+        int pack = (0 << 9) | ((int)CAP_THEMES << 1) | 1;
+        g_setg_rc = ESP_OK; g_setg_calls = 0; g_shown_calls = 0;
+        g_publish_calls = 0; g_pend[0] = 1u << CAP_THEMES;
+        job_grant(&pack);
+        ck("the ALLOW answer persists the grant and clears the ask",
+           g_setg_calls == 1 && g_setg_slot == 0 && g_setg_cap == CAP_THEMES &&
+           g_setg_on == 1 && (g_grnt[0] & (1u << CAP_THEMES)) != 0 &&
+           g_pend[0] == 0 && g_shown_calls == 1 && g_publish_calls == 1);
+        int pack2 = (1 << 9) | ((int)CAP_POWER << 1) | 0;
+        g_setg_calls = 0; g_shown_calls = 0; g_pend[1] = 1u << CAP_POWER;
+        job_grant(&pack2);
+        ck("KEEP DENIED answers the ask without granting it",
+           g_setg_calls == 1 && g_setg_slot == 1 && g_setg_on == 0 &&
+           !(g_grnt[1] & (1u << CAP_POWER)) && g_pend[1] == 0 &&
+           g_shown_calls == 1);
+        g_grnt[0] = 0; g_grnt[1] = 0;
+    }
 
     /* ---- the 62-row zone list ---- */
     s_page = PG_TZ; g_tz_count = 62; s_cur = 0;
@@ -925,8 +1082,8 @@ MUTATIONS = [
     ("the current zone stops being marked",
      "const bool cur = (row == orb_net_tz_current_index());", "const bool cur = false;"),
     ("back from the zone list loses its cursor position",
-     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : 0;",
-     "s_cur  = (from == PG_TZ) ? 0 : 0;"),
+     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : (from == PG_PERMS)  ? IT_PERMS\n           : 0;",
+     "s_cur  = (from == PG_TZ) ? 0 : (from == PG_DISPLAY) ? 0 : (from == PG_PERMS) ? 0 : 0;"),
     ("a worker result paints a list onto the title card",
      "if (!s_armed) {\n        /* Rows are already blank", "if (0) {\n        /* Rows are already blank"),
     # Cross-file: the scan now lives in the clock app. Painting from the posted
@@ -957,6 +1114,16 @@ MUTATIONS = [
      "s_page = PG_DISPLAY;\n        s_cur  = 1;", "s_page = PG_DISPLAY;\n        s_cur  = 0;"),
     ("a preset label drifts from what ships",
      '{   600, "10 min" },', '{   600, "10 minutes" },'),
+    ("B3: the app list loses its back row",
+     "case PG_PERMS:  return perm_rows() + 1;", "case PG_PERMS:  return perm_rows();"),
+    ("B3: the two-row confirm grows a third row",
+     "case PG_CONFIRM: return 2;", "case PG_CONFIRM: return 3;"),
+    ("B3: the chrome filter flips and lists the shell as an app",
+     "if (a && a->kind == ORB_APP_KIND_APP && a->installed) n++;",
+     "if (a && a->installed) n++;"),
+    ("B3: the ask badge stops reading the latch",
+     "if (orb_svc_pending(a))\n                snprintf(out, outsz, \"%s  (ASKED HERE)\", a->title ? a->title : a->slug);",
+     "if (false)\n                snprintf(out, outsz, \"%s  (ASKED HERE)\", a->title ? a->title : a->slug);"),
 ]
 
 

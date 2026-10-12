@@ -246,7 +246,17 @@ static void poll_timer_cb(lv_timer_t *timer)
      *
      * It also cancels any peek in flight: a name still on the glass after the
      * user has chosen to go home would commit itself over the top of the dial a
-     * settle later. */
+     * settle later.
+     *
+     * D12 gives the entry first refusal, and only the entry: an app page with a
+     * group open has to be able to close the group rather than lose the page, and
+     * the router may not learn what an open group is to allow that. Nothing that
+     * answered OPT_ROW or declared no hook takes the press, so C8's hold-to-home
+     * is untouched for every other screen — including the picker, which has
+     * nothing to collapse. */
+    if (lpress && orb_app_opt_long(s_current)) {
+        lpress = false;
+    }
     if (lpress) {
         orb_carousel_cancel();
         disarm_all();

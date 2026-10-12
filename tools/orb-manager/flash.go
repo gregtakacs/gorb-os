@@ -25,9 +25,10 @@ type flashRequest struct {
 }
 
 // handleFlash runs one flash, streaming newline-delimited JSON events so the UI
-// can render progress. Before touching the wire it checks the plan resolves, the
-// stamp audit passes (unless overridden), and the port is free — no identity is
-// required: a user flashes the orb in front of them.
+// can render progress. Before touching the wire it checks the plan resolves and
+// the port is free — no identity is required: a user flashes the orb in front of
+// them. The bundle's own sha256 and descriptor are what /api/build already showed
+// the operator, and they are re-read from the same bytes this write sends.
 func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)

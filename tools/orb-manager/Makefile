@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt run desktop flash windows win-test crosscheck clean firmware composer
+.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer
 
 all: test build
 
@@ -36,6 +36,7 @@ all: test build
 build: manager orbflash
 
 BUNDLE := internal/firmware/bundle/orb-firmware.zip
+MANIFEST := flasher_args.json
 
 ## firmware: re-pack the embedded firmware bundle from this clone's build dir.
 ## The bundle is committed, so a plain `make build` needs no ESP-IDF: this target
@@ -74,11 +75,28 @@ orbflash:
 	@echo "built $(BIN_DIR)/orbflash $(VERSION)"
 
 ## test: run the unit tests (SLIP framing, block checksum, SHA256 recalc, MAC decode, FLASH_BEGIN framing)
+##
+## The bundle staleness guard inside ./internal/firmware skips unless ORB_BUILD_DIR
+## names a real build dir, so a committed bundle that disagrees with the tree passed
+## the whole suite silently. Arm it here whenever this clone has a build, and skip it
+## cleanly where there is none — an end user's machine, and CI on a source checkout.
 test:
-	$(GO) test ./...
+	@if [ -f "$(BUILD_DIR)/$(MANIFEST)" ]; then \
+	  echo "go test ./... — bundle guard armed against $(BUILD_DIR)"; \
+	  ORB_BUILD_DIR="$(BUILD_DIR)" $(GO) test -count=1 ./... ; \
+	else \
+	  echo "go test ./... — no $(BUILD_DIR)/$(MANIFEST), bundle guard skips"; \
+	  $(GO) test ./... ; \
+	fi
 
 vet:
 	$(GO) vet ./...
+
+## check: the verification ladder in one command — the suite with the bundle guard
+## armed, vet, and every supported GOOS/GOARCH type-checked including tests. Run this
+## before every commit that touches the hub.
+check: test vet crosscheck
+	@echo 'check: tests, vet, and crosscheck all green'
 
 fmt:
 	$(GO) fmt ./...

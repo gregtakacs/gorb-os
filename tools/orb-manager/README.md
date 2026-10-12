@@ -79,8 +79,10 @@ idf.py build && make firmware    # repacks internal/firmware/bundle/orb-firmware
 ```
 
 It is committed, which is what lets a plain `make build` work without ESP-IDF.
-Run it whenever the firmware changes; `TestBuiltInBundleMatchesBuildDirWhenPresent`
-fails if the committed bundle has gone stale against `ORB_BUILD_DIR`.
+Run it whenever the firmware changes. `TestBuiltInBundleMatchesBuildDirWhenPresent`
+fails if the committed bundle has gone stale against `ORB_BUILD_DIR`, and
+`make test` sets that variable itself whenever `build/flasher_args.json` is
+present — so a stale bundle now fails the ordinary suite instead of skipping.
 
 Offsets are still never hardcoded: the manifest travels inside the bundle beside
 the exact bytes it describes, so a plan cannot mix one build's offsets with
@@ -326,7 +328,11 @@ web/                 the embedded hub UI (index.html, app.css, app.js)
 
 ```
 make test       # go test ./... — SLIP framing, block checksum, SHA256 recalc,
-                # MAC decode, FLASH_BEGIN 5-word framing
+                # MAC decode, FLASH_BEGIN 5-word framing. Arms the bundle
+                # staleness guard automatically when build/flasher_args.json
+                # exists, so a committed bundle that has drifted from the tree
+                # fails here instead of skipping.
+make check      # the whole ladder: test (guard armed) + vet + crosscheck
 make vet        # go vet ./...
 make fmt        # go fmt ./...
 make firmware   # re-pack the embedded firmware bundle from this clone's build dir

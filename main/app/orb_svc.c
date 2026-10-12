@@ -28,6 +28,7 @@
 #include "orb_jobs.h"
 #include "art_bank.h"
 #include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
+#include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
 
 #include <math.h>             /* fabs, floor — the drift rule's own tools */
@@ -309,7 +310,6 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
  *   power_request               -> the idle_dim request path (this phase)
  *   net                         -> P4's allowlisted client
  *   layer_*                     -> P5's table-driven compositor face
- *   theme_*                     -> the D18 wrappers over the shipped orb_theme
  * A stub in place of the gate would pass this file's own suite while shipping
  * an app that can call below its grant — the one failure the broker exists to
  * prevent. The suite therefore checks the gate AND the refusal per stub.
@@ -503,51 +503,79 @@ static esp_err_t svc_set_beat(orb_app_t *a, uint32_t period_ms)
     return ESP_OK;
 }
 
-/* The D18 family: enumerate and request — never a path, never bytes. Gated
- * like every owner cap; the bodies become thin wrappers over the shipped
- * orb_theme_scan()/orb_theme_post_install() with the themes commit, where the
- * id goes through orb_theme_id_ok(). */
+/* The D18 family: enumerate and request — never a path, never bytes (the
+ * assets partition belongs to the OS package manager alone; §14.4). The
+ * card walk is the entries' one hazard: theme_count reaches the card, so it
+ * carries the config entries' rule — call it from a worker job (SVC->job_post),
+ * never from a tick — while the five reads after it answer from the copy that
+ * same call left behind, which is what makes a settings page able to ask a
+ * row's state inside its own tick. An app that never called count gets the
+ * empty answer from every one of them, not a stale one. */
+#define SVC_THEME_MAX 8
+static orb_theme_entry_t s_te[SVC_THEME_MAX];
+static int s_te_n = -1;                       /* -1: nothing scanned yet */
+
 static int svc_theme_count(orb_app_t *a)
 {
-    if (!orb_grant_ok(a, CAP_THEMES)) return -1; /* -1 = no list: the int can't
-                                                  * carry a code; the counted
-                                                  * denial does */
-    return -1;                                   /* with the themes commit */
+    if (!orb_grant_ok(a, CAP_THEMES)) return -1;  /* the int cannot carry a
+                                                   * code; the counted denial
+                                                   * does */
+    const int n = orb_theme_scan(s_te, SVC_THEME_MAX);
+    s_te_n = n;
+    return n;
 }
 
 static esp_err_t svc_theme_id(orb_app_t *a, int idx, char *buf, size_t cap)
 {
     SVC(a, THEMES);
-    (void)idx; (void)buf; (void)cap;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (s_te_n < 0 || idx < 0 || idx >= s_te_n || cap < ORB_THEME_ID_HEX + 1)
+        return ESP_ERR_NOT_FOUND;              /* id is 12 hex + NUL, frozen by
+                                                * the card's own filename shape */
+    snprintf(buf, cap, "%s", s_te[idx].id);
+    return ESP_OK;
 }
 
 static bool svc_theme_active(orb_app_t *a, int idx)
 {
     if (!orb_grant_ok(a, CAP_THEMES)) return false;
-    (void)idx;
-    return false;
+    return s_te_n >= 0 && idx >= 0 && idx < s_te_n && s_te[idx].active;
 }
 
 static bool svc_theme_changed(orb_app_t *a, int idx)
 {
     if (!orb_grant_ok(a, CAP_THEMES)) return false;
-    (void)idx;
-    return false;
+    return s_te_n >= 0 && idx >= 0 && idx < s_te_n && s_te[idx].changed;
 }
 
 static const char *svc_theme_note(orb_app_t *a, int idx)
 {
     if (!orb_grant_ok(a, CAP_THEMES)) return NULL;
-    (void)idx;
-    return NULL;
+    if (s_te_n < 0 || idx < 0 || idx >= s_te_n) return NULL;
+    return s_te[idx].why[0] ? s_te[idx].why : NULL;   /* the unloadable reason,
+                                                      * entry-owned words */
 }
 
 static esp_err_t svc_theme_install(orb_app_t *a, const char *id)
 {
     SVC(a, THEMES);
-    (void)id;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (!orb_theme_id_ok(id))                  /* the door every theme id goes
+                                                * through — never a path (D18) */
+        return ESP_ERR_INVALID_ARG;
+    bool known = false;                        /* and it must be an id THIS
+                                                * card scan published: an app
+                                                * that skipped count and hands
+                                                * in a well-formed id it made
+                                                * up is still reading bytes it
+                                                * cannot see, which is exactly
+                                                * what the entry refuses */
+    for (int i = 0; s_te_n > 0 && i < s_te_n; i++)
+        if (strcmp(s_te[i].id, id) == 0 && s_te[i].err == ESP_OK) { known = true; break; }
+    if (!known) return ESP_ERR_NOT_FOUND;
+    /* D11 verbatim through the OS package manager: orb_theme_post_install owns
+     * the copy-verify-mark job on the shared worker and the reboot ask at its
+     * end — the same function the dial's picker and the browser's Load button
+     * already queue, which is the promise that all three doors agree. */
+    return orb_theme_post_install(id);
 }
 
 static void svc_status(orb_app_t *a, const char *fmt, ...)
@@ -687,7 +715,7 @@ void orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps)
     if (slot >= 0) s_row[slot].asked &= ~caps;
 }
 
-esp_err_t orb_svc_set_grant(orb_app_t *a, orb_cap_t cap, bool on)
+esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
 {
     if ((1u << cap) & CAP_FREE_MASK)
         return ESP_ERR_INVALID_ARG;              /* free caps are not the

@@ -61,6 +61,7 @@ STUBS = r'''
 #include "nvs.h"
 #include "orb_app.h"
 #include "orb_svc.h"
+#include "orb_theme.h"
 
 /* The NVS store. Keys are namespace+key pairs, values u32 or string, exactly
  * the shapes orb_svc.c uses. The counters are half the suite: "an undeclared
@@ -251,6 +252,35 @@ void idle_dim_app_release(const char *slug)
     snprintf(g_rel_slug, sizeof g_rel_slug, "%s", slug ? slug : "");
 }
 
+/* ---- the theme leaves: the shipped package manager, scripted ---------------- */
+int g_tscan_calls;
+static orb_theme_entry_t g_te[2];
+int orb_theme_scan(orb_theme_entry_t *out, int cap)
+{
+    g_tscan_calls++;
+    const int n = cap < 2 ? cap : 2;
+    for (int i = 0; i < n; i++) out[i] = g_te[i];
+    return n;
+}
+bool orb_theme_id_ok(const char *id)
+{
+    if (!id || strlen(id) != ORB_THEME_ID_HEX) return false;
+    for (const char *p = id; *p; p++)            /* hex only, like the shipped
+                                                  * gate: a 12-char path is still
+                                                  * a path — which is the point
+                                                  * of this vector */
+        if (!(((*p >= '0') && (*p <= '9')) || ((*p >= 'a') && (*p <= 'f'))))
+            return false;
+    return true;
+}
+int g_pinst_calls; char g_pinst_id[16]; esp_err_t g_pinst_rc;
+esp_err_t orb_theme_post_install(const char *id)
+{
+    g_pinst_calls++;
+    snprintf(g_pinst_id, sizeof g_pinst_id, "%s", id);
+    return g_pinst_rc;
+}
+
 static void jobfn(void *arg) { (void)arg; }
 
 static int g_fail;
@@ -395,8 +425,46 @@ int main(int argc, char **argv)
     g1->u32 = (1u << CAP_THEMES) | (1u << CAP_TIME);
     orb_svc_init();
     CK("init preloads, free bits masked out", orb_svc_grants(B) == (1u << CAP_THEMES));
-    CK("granted themes entry reaches its stub body",
-       S->theme_install(B, "kit3") == ESP_ERR_NOT_SUPPORTED);
+    CK("an id that never came off a scan is refused on shape alone",
+       S->theme_install(B, "kit3") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
+
+    /* ---- the D18 family on its real bodies -------------------------------- */
+    snprintf(g_te[0].id, sizeof g_te[0].id, "%s", "0123456789ab");
+    snprintf(g_te[0].name, sizeof g_te[0].name, "%s", "kit3");
+    g_te[0].err = ESP_OK; g_te[0].active = true; g_te[0].changed = false;
+    g_te[0].why[0] = '\0';
+    snprintf(g_te[1].id, sizeof g_te[1].id, "%s", "fedcba987654");
+    snprintf(g_te[1].name, sizeof g_te[1].name, "%s", "broken");
+    g_te[1].err = ESP_FAIL; g_te[1].active = false;
+    snprintf(g_te[1].why, sizeof g_te[1].why, "%s", "bad payload crc");
+    uint32_t den0 = orb_svc_denials(A);
+    CK("ungranted count never reaches the card",
+       S->theme_count(A) == -1 && g_tscan_calls == 0 &&
+       orb_svc_denials(A) == den0 + 1);
+    CK("granted count walks the card", S->theme_count(B) == 2 && g_tscan_calls == 1);
+    char tid[16];
+    CK("id hands back the scan's, not a path",
+       S->theme_id(B, 0, tid, sizeof tid) == ESP_OK && !strcmp(tid, "0123456789ab"));
+    CK("row out of range is a refusal, not a clamp",
+       S->theme_id(B, 2, tid, sizeof tid) == ESP_ERR_NOT_FOUND);
+    CK("active flag answers from the copy",
+       S->theme_active(B, 0) && !S->theme_active(B, 1));
+    CK("changed flag answers from the copy",
+       !S->theme_changed(B, 0) && !S->theme_changed(B, 1));
+    CK("note carries the damage reason, clean rows get none",
+       S->theme_note(B, 1) && !strcmp(S->theme_note(B, 1), "bad payload crc") &&
+       S->theme_note(B, 0) == NULL);
+    CK("a path is refused before anything else, count or no count",
+       S->theme_install(B, "../../sd/etc") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
+    CK("a well-formed id the scan never published is refused",
+       S->theme_install(B, "aaaaaaaaaaaa") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
+    CK("a damaged entry cannot be installed either",
+       S->theme_install(B, "fedcba987654") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
+    CK("the good scanned id reaches the D11 package manager",
+       S->theme_install(B, "0123456789ab") == ESP_OK &&
+       g_pinst_calls == 1 && !strcmp(g_pinst_id, "0123456789ab"));
+    CK("install behind a closed gate: ungranted alpha cannot even ask",
+       S->theme_install(A, "0123456789ab") == ESP_ERR_NOT_ALLOWED && g_pinst_calls == 1);
     /* ---- set_beat (D16): the manifest floor is the contract --------------- */
     CK("faster than the manifest refused", S->set_beat(A, 33) == ESP_ERR_INVALID_ARG);
     CK("the stored beat did not move", orb_svc_beat_ms(A) == 0);
@@ -537,7 +605,7 @@ def build_run(td, tag, extra_cflags, arg):
     cmd = (["cc", "-std=gnu17", "-g", "-O0", "-Wall", "-Wno-unused-parameter",
             "-I", td]                          # the IDF-shaped stubs shadow mine
            + ["-I", P("app"), "-I", P("art"), "-I", P("net"),
-              "-I", P("power")]               # real project headers
+              "-I", P("power"), "-I", os.path.join(ROOT, "assets")]  # real project headers
            + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

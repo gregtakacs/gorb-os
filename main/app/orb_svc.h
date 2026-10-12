@@ -189,7 +189,7 @@ const char    *orb_svc_cap_name(orb_cap_t cap);   /* log/prompt label, "power" *
 uint32_t     orb_svc_grants(const orb_app_t *a);   /* stored owner-granted mask */
 uint32_t     orb_svc_pending(const orb_app_t *a);  /* asked while denied        */
 void         orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps); /* clear asks */
-esp_err_t    orb_svc_set_grant(orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's answer */
+esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's answer */
 uint32_t     orb_svc_calls(const orb_app_t *a);
 uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */

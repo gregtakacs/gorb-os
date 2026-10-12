@@ -79,7 +79,7 @@
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
 #include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
-#include "orb_net.h"   /* orb_net_time_synced(): the dial's second time source */
+#include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
 /* Second, deliberately: this header #defines the names clock_assets.h just defined
@@ -94,11 +94,6 @@
 #include "orb_theme.h"      /* ORB_THEME_EXT, the extension that source carries */
 
 static const char *TAG = "clock";
-
-/* Free-running time base: starts at a fixed epoch, ticks in wall-clock real
- * time until SNTP lands. compose_now() takes time() from that point on, so this
- * is the unsynced source only — see the dual-source note there. */
-#define CLOCK_EPOCH 1700000000  /* Nov 2023 baseline */
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_overlay;
@@ -184,18 +179,7 @@ static int32_t  s_wp_lo, s_wp_hi;
 
 
 
-static int64_t  s_t0_us  = 0;         /* epoch anchor for the wall clock */
 static bool     s_warned_screen = false;
-
-/* Wall-clock base compose_now() ticks from, and the esp_timer instant it was
- * sampled at. ONE pair, not two sources: tm_sec and the sub-second fraction
- * must come from the same clock, or the second hand steps backward once per
- * second by the phase difference between time()'s seconds and the esp_timer
- * sawtooth. Starts on the free-running baseline and is overwritten the first
- * time the system clock looks credible (see compose_now). */
-static time_t s_epoch_base   = CLOCK_EPOCH;
-static bool   s_anchor_is_real = false;   /* has s_epoch_base ever come from time()? */
-#define CLOCK_RESYNC_SLACK 2.0            /* s of drift that re-triggers a re-anchor */
 
 /* Mapped base of the art bank, filled in by clock_view_init() (NULL until then).
  * Kept as a file static rather than calling art_bank_ptr() on every sprite read:
@@ -1710,37 +1694,16 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
 
 static void compose_now(void)
 {
-    /* Two time sources, one anchor pair (see s_epoch_base). Sampled HERE, on the
-     * LVGL task, so time() and esp_timer_get_time() are taken back-to-back and
-     * the pair is consistent; the SNTP callback deliberately only sets a flag.
-     *
-     * The system clock is trusted when it is either freshly synced or already
-     * past the dial's own baseline:
-     *   - orb_net_time_synced(): SNTP stepped it during this boot.
-     *   - time() >= CLOCK_EPOCH: IDF keeps the boot time in RTC slow memory, so
-     *     an epoch set by the previous boot SURVIVES a warm reboot (measured:
-     *     after POST /api/v1/reboot the epoch is already right ~1.5 s before the
-     *     next SNTP reply lands). Trusting it is what stops the dial from sliding
-     *     back to Nov-2023 for a few seconds every time the orb reboots.
-     * Anything lower is the 1970 default after a power cut, so the dial keeps
-     * free-running from CLOCK_EPOCH instead — a stale dial beats a 1970 dial, and
-     * the hourly CONFIG_LWIP_SNTP_UPDATE_DELAY re-sync then only re-anchors when
-     * the drift is big enough to be worth the visible jump. */
-    const int64_t now_us = esp_timer_get_time();
-    const time_t  real   = time(NULL);
-    if (orb_net_time_synced() || real >= (time_t)CLOCK_EPOCH) {
-        const double drift = (double)(real - s_epoch_base)
-                           - (double)(now_us - s_t0_us) / 1e6;
-        if (!s_anchor_is_real || fabs(drift) >= CLOCK_RESYNC_SLACK) {
-            s_epoch_base     = real;
-            s_t0_us          = now_us;
-            s_anchor_is_real = true;
-        }
-    }
-
-    const double  el   = (double)(now_us - s_t0_us) / 1e6;
-    time_t  t   = s_epoch_base + (time_t)floor(el);
-    double  frac = el - floor(el);
+    /* The wall reading is the OS's now: the two sources, the CLOCK_EPOCH
+     * baseline, the trust rule and the drift re-anchor live in main/app/
+     * orb_svc.c as orb_time_now() (plan §4.3, the P3 time commit), and the
+     * clock takes the same pair every app will. What stays in this file is
+     * the dial's own: the zone conversion below, the hands, the comps, the
+     * aux drives — D15's side of the line, app-side by ruling. */
+    bool   synced_unused;
+    time_t t;
+    double frac;
+    orb_time_now(&t, &frac, &synced_unused);
 
     /* The zone is device config, not a constant in this file: orb_net owns TZ
      * (NVS key `tz`, loaded at bring-up and settable from the config page or during
@@ -1916,7 +1879,8 @@ esp_err_t clock_view_init(void)
     s_tourb_t0 = lv_tick_get();
 
 
-    s_t0_us = esp_timer_get_time();
+    /* The wall pair is the broker's to seed now: the first orb_time_now()
+     * below stamps the anchor, exactly where the deleted s_t0_us line did. */
     compose_now();
 #if CLK_BG_DIRECT_PUSH
     display_set_commit_hook(clock_layer_commit);

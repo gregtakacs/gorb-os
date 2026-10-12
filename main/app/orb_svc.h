@@ -178,6 +178,12 @@ esp_err_t orb_svc_init(void);
  *  from here; P4's loader passes it to iface->activate, plan §1.4). */
 const orb_svc_t *orb_svc_table(void);
 
+/** The wall reading the now() entry reports, minus the gate: the OS's own
+ *  callers (clock_view's compose_now, the boot ladder) take the same pair the
+ *  apps do — two anchors is the bug the extraction was for. D15: raw second
+ *  plus scheduler fraction plus trust flag; conversion stays app-side. */
+void orb_time_now(time_t *sec, double *frac, bool *synced);
+
 /* For the grant prompt (B3) and /api/v1/status (the P3 pass line). */
 const char    *orb_svc_cap_name(orb_cap_t cap);   /* log/prompt label, "power" */
 uint32_t     orb_svc_grants(const orb_app_t *a);   /* stored owner-granted mask */

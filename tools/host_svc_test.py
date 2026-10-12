@@ -55,6 +55,7 @@ STUBS = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -201,6 +202,26 @@ esp_err_t orb_jobs_post(orb_job_fn fn, void *arg, size_t n)
     g_post_calls++;
     return g_post_rc;
 }
+
+/* ---- the time leaves: everything orb_time_now reads, scripted ------------- */
+int64_t g_timer_us;           /* the esp_timer half of the anchor pair  */
+int64_t esp_timer_get_time(void) { return g_timer_us; }
+time_t  g_real;               /* the time() half — scripted, never the host RTC */
+time_t time(time_t *tloc) { if (tloc) *tloc = g_real; return g_real; }
+bool    g_sync;
+bool    orb_net_time_synced(void) { return g_sync; }
+static const char TZ_RET[] = "America/New_York";
+const char *orb_net_tz_current(void) { return TZ_RET; }
+int g_tzoff_calls; int32_t g_tzoff_val;
+esp_err_t orb_net_tz_offset(time_t when, int32_t *off)
+{
+    (void)when;
+    if (!off) return ESP_ERR_INVALID_ARG;
+    g_tzoff_calls++;
+    *off = g_tzoff_val;
+    return ESP_OK;
+}
+
 static void jobfn(void *arg) { (void)arg; }
 
 static int g_fail;
@@ -239,13 +260,18 @@ int main(int argc, char **argv)
     F(theme_install); F(status);
     CK("all 23 frozen entries wired", holes == 0);
 
-    /* ---- free caps: pass, delegate, and get COUNTED (§8 pass line) -------- */
+    /* ---- the wall clock: one scripted timeline, the compose_now rules ---- */
     time_t sec; double frac; bool synced;
     uint32_t c0 = orb_svc_calls(A);
+    g_timer_us = 0; g_real = 0; g_sync = false;
     S->now(A, &sec, &frac, &synced);
-    CK("now answers zero-untrusted until the time commit",
-       sec == 0 && frac == 0.0 && !synced);
+    CK("first call seeds the pair and free-runs from CLOCK_EPOCH",
+       sec == 1700000000 && frac == 0.0 && !synced);
     CK("free calls are counted", orb_svc_calls(A) == c0 + 1);
+    g_timer_us = 3500000;                    /* +3.5 s, still untrusted */
+    S->now(A, &sec, &frac, &synced);
+    CK("free-running second and sweep fraction come from one pair",
+       sec == 1700000003 && frac >= 0.4999 && frac <= 0.5001 && !synced);
     CK("bank: no slot means no pointer", S->bank(A) == 0 && g_bank_calls == 1);
     CK("bank: the app's own slot maps", S->bank(G) != 0);
     g_post_rc = ESP_OK;
@@ -253,6 +279,39 @@ int main(int argc, char **argv)
     g_post_rc = ESP_ERR_INVALID_STATE;
     CK("the worker's busy gate reaches the app intact",
        S->job_post(A, jobfn, 0, 0) == ESP_ERR_INVALID_STATE);
+    /* warm boot: the RTC-kept epoch stands on its own — D15's trust rule */
+    g_real = (time_t)1700000100;             /* sync still false */
+    S->now(A, &sec, &frac, &synced);
+    CK("epoch past the baseline is trusted without the SNTP flag",
+       sec == (time_t)1700000100 && fabs(frac) < 1e-9 && !synced);
+    /* small drift holds: re-anchoring every tick is the visible jump the
+     * slack exists to prevent — base stays, so sec lands BELOW time() */
+    g_real = (time_t)1700000102; g_timer_us = 4500000;   /* drift 1.0 s < 2 s */
+    S->now(A, &sec, &frac, &synced);
+    CK("sub-slack drift holds the anchor (no jump to real)",
+       sec == (time_t)1700000101);
+    /* SNTP lands with a big step: base moves, and the SAME call reports off
+     * the new pair — el recomputes after the re-anchor, verbatim shipped */
+    g_real = (time_t)1700005000; g_sync = true; g_timer_us = 5000000;
+    S->now(A, &sec, &frac, &synced);
+    CK("big trusted drift re-anchors and the read reflects it",
+       sec == (time_t)1700005000 && fabs(frac) < 1e-9 && synced);
+    /* power cut at the far side: time() drops to 1970, the reading must not —
+     * a stale dial beats a 1970 dial, verbatim from the shipped comment */
+    g_real = 0; g_sync = false; g_timer_us = 6000000;
+    S->now(A, &sec, &frac, &synced);
+    CK("untrusted again, free-running continues off the real anchor",
+       sec == (time_t)1700005001 && !synced);
+    /* the zone surface (D17): label out, offset measured, both counted */
+    CK("tz_label answers with the owner's zone key",
+       S->tz_label(A) == TZ_RET);
+    c0 = orb_svc_calls(A);
+    g_tzoff_val = -330;                      /* +5:30 west, the shape the */
+    int32_t off = 12345;                     /* shipped echo table carries */
+    CK("tz_offset delegates the owner's zone at the asked instant",
+       S->tz_offset(A, (time_t)1700005002, &off) == ESP_OK &&
+       off == -330 && g_tzoff_calls == 1);
+    CK("time entries are counted, not gated", orb_svc_calls(A) > c0);
 
     /* ---- owner caps: denied, counted, and latched once (B3 input) --------- */
     uint32_t d0 = orb_svc_denials(A);
@@ -370,6 +429,8 @@ HDRS = {
                  "const char *esp_err_to_name(esp_err_t);\n",
     "esp_log.h": "#pragma once\n#define ESP_LOGI(t,...)\n#define ESP_LOGE(t,...)\n"
                  "#define ESP_LOGW(t,...)\n#define ESP_LOGD(t,...)\n",
+    "esp_timer.h": "#pragma once\n#include <stdint.h>\n"
+                   "int64_t esp_timer_get_time(void);\n",
     "esp_partition.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
                        "typedef struct esp_partition esp_partition_t;\n",
     "nvs_flash.h": "#pragma once\n#include \"esp_err.h\"\n"
@@ -399,8 +460,8 @@ def build_run(td, tag, extra_cflags, arg):
     exe = os.path.join(td, "svc_harness_%s" % tag)
     cmd = (["cc", "-std=gnu17", "-g", "-O0", "-Wall", "-Wno-unused-parameter",
             "-I", td]                          # the IDF-shaped stubs shadow mine
-           + ["-I", P("app"), "-I", P("art")]  # project headers are the real ones
-           + extra_cflags + [SVC_C, cpath, "-o", exe])
+           + ["-I", P("app"), "-I", P("art"), "-I", P("net")]  # real project headers
+           + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "COMPILE FAILED\n" + r.stdout + r.stderr

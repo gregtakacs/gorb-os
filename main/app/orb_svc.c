@@ -27,12 +27,15 @@
 #include "orb_app.h"
 #include "orb_jobs.h"
 #include "art_bank.h"
+#include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
 
+#include <math.h>             /* fabs, floor — the drift rule's own tools */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"        /* the anchor half of the time pair */
 #include "nvs.h"
 #include "nvs_flash.h"        /* nvs_flash_init_partition("storage") — the
                               * same idempotent call idle_dim.c makes before
@@ -285,7 +288,6 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
 /* ---- entries that await a later commit's wiring -----------------------------
  * Each sits behind its gate and says NOT_SUPPORTED. The gate and the counts
  * are the shipped part NOW; the bodies land with their commits:
- *   now / tz_label / tz_offset  -> the compose_now extraction (this phase)
  *   power_request               -> the idle_dim request path (this phase)
  *   net                         -> P4's allowlisted client
  *   layer_*                     -> P5's table-driven compositor face
@@ -295,27 +297,93 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
  * prevent. The suite therefore checks the gate AND the refusal per stub.
  */
 
+/* ---- the wall clock: compose_now's anchoring, moved verbatim (plan §4.3,
+ * the P3 time commit). The clock reads it through the same door every app
+ * will; what stayed in clock_view.c is dial policy — the zone conversion,
+ * the hands, the complications. The SECOND and its fraction are the OS's, as
+ * ruling D15 signed, and this block is the ONLY anchor pair in the firmware.
+ *
+ * Free-running time base: starts at a fixed epoch, ticks in wall-clock real
+ * time until SNTP lands. time() is taken from that point on — see the
+ * dual-source note on orb_time_now for which source wins when. */
+#define CLOCK_EPOCH 1700000000  /* Nov 2023 baseline */
+
+/* Wall-clock base the reading ticks from, and the esp_timer instant it was
+ * sampled at. ONE pair, not two sources: tm_sec and the sub-second fraction
+ * must come from the same clock, or the second hand steps backward once per
+ * second by the phase difference between time()'s seconds and the esp_timer
+ * sawtooth. Starts on the free-running baseline and is overwritten the first
+ * time the system clock looks credible (see orb_time_now). */
+static time_t s_epoch_base     = CLOCK_EPOCH;
+static int64_t s_t0_us         = 0;
+static bool   s_anchor_is_real = false;   /* has s_epoch_base ever come from time()? */
+static bool   s_seeded         = false;   /* the first call stamps t0 — the role
+                                           * clock_view_init's seed line played,
+                                           * keeping the pair sampled together */
+#define CLOCK_RESYNC_SLACK 2.0            /* s of drift that re-triggers a re-anchor */
+
+void orb_time_now(time_t *sec, double *frac, bool *synced)
+{
+    /* Two time sources, one anchor pair (see s_epoch_base). Sampled HERE, on
+     * the calling task, so time() and esp_timer_get_time() are taken
+     * back-to-back and the pair is consistent; the SNTP callback deliberately
+     * only sets a flag.
+     *
+     * The system clock is trusted when it is either freshly synced or already
+     * past the dial's own baseline:
+     *   - orb_net_time_synced(): SNTP stepped it during this boot.
+     *   - time() >= CLOCK_EPOCH: IDF keeps the boot time in RTC slow memory,
+     *     so an epoch set by the previous boot SURVIVES a warm reboot
+     *     (measured: after POST /api/v1/reboot the epoch is already right
+     *     ~1.5 s before the next SNTP reply lands). Trusting it is what stops
+     *     the dial from sliding back to Nov-2023 for a few seconds every time
+     *     the orb reboots.
+     * Anything lower is the 1970 default after a power cut, so the dial keeps
+     * free-running from CLOCK_EPOCH instead — a stale dial beats a 1970 dial,
+     * and the hourly CONFIG_LWIP_SNTP_UPDATE_DELAY re-sync then only
+     * re-anchors when the drift is big enough to be worth the visible jump. */
+    const int64_t now_us = esp_timer_get_time();
+    const time_t  real   = time(NULL);
+    const bool    trust  = orb_net_time_synced();
+    if (!s_seeded) { s_t0_us = now_us; s_seeded = true; }
+    if (trust || real >= (time_t)CLOCK_EPOCH) {
+        const double drift = (double)(real - s_epoch_base)
+                           - (double)(now_us - s_t0_us) / 1e6;
+        if (!s_anchor_is_real || fabs(drift) >= CLOCK_RESYNC_SLACK) {
+            s_epoch_base     = real;
+            s_t0_us          = now_us;
+            s_anchor_is_real = true;
+        }
+    }
+
+    const double  el   = (double)(now_us - s_t0_us) / 1e6;
+    *sec  = s_epoch_base + (time_t)floor(el);
+    *frac = el - floor(el);
+    *synced = trust;
+}
+
 static void svc_now(orb_app_t *a, time_t *sec, double *frac, bool *synced)
 {
-    (void)orb_grant_ok(a, CAP_TIME);
-    /* NOT yet the broker's to own: compose_now's anchoring moves in with the
-     * time commit. Until then the honest answer is "no reading" — the clock
-     * keeps calling its own copy, and no app sees a confident wrong time from
-     * a stub. */
-    *sec = 0; *frac = 0.0; *synced = false;
+    (void)orb_grant_ok(a, CAP_TIME);             /* counted; time is §4.2's
+                                                  * "free, always on" — no app
+                                                  * is useful without it */
+    orb_time_now(sec, frac, synced);
 }
 
 static const char *svc_tz_label(orb_app_t *a)
 {
     (void)orb_grant_ok(a, CAP_TIME);
-    return NULL;                                 /* with the time commit */
+    return orb_net_tz_current();                 /* the stored zone key ("UTC"
+                                                  * when none) — a name out,
+                                                  * never a struct tm (D15) */
 }
 
 static esp_err_t svc_tz_offset(orb_app_t *a, time_t when, int32_t *offset_min)
 {
     SVC(a, TIME);
-    (void)when; *offset_min = 0;
-    return ESP_ERR_NOT_SUPPORTED;                /* with the time commit */
+    return orb_net_tz_offset(when, offset_min);  /* D17: the owner's zone,
+                                                  * measured at `when`, via
+                                                  * orb_net's one computation */
 }
 
 static esp_err_t svc_power_request(orb_app_t *a, uint32_t timeout_s, bool hold)

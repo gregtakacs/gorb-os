@@ -29,6 +29,8 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <time.h>
 
 #include "esp_err.h"
 
@@ -95,3 +97,14 @@ int orb_net_tz_current_index(void);
  * silently left on the old zone.
  */
 esp_err_t orb_net_tz_select(int i);
+
+/**
+ * The OWNER's tz offset in effect at `when`, minutes east of UTC, DST-aware
+ * (D17, plan §0.7) — the measured localtime-minus-gmtime diff, the same
+ * computation the tz echo on /api/v1/status uses. Reports the zone; never
+ * sets it: net_tz_set() stays the single write door. ESP_ERR_INVALID_ARG for
+ * a NULL out; ESP_ERR_NOT_SUPPORTED with networking compiled out is NOT used
+ * — a disabled build answers UTC (0) so the broker's entry stays a plain
+ * pass-through.
+ */
+esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min);

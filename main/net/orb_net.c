@@ -522,6 +522,20 @@ int orb_net_tz_count(void)
     return NET_TZ_N;
 }
 
+/* The broker's D17 door (main/app/orb_svc.c): the OWNER's offset at any
+ * instant, minutes east of UTC, DST-aware — the same measured localtime-vs-
+ * gmtime diff the tz echo on /api/v1/status shows. Reports the zone, never
+ * sets it: net_tz_set() stays the single write door (one behaviour, three
+ * doors), and no app ever receives a struct tm or a source name. Sits with
+ * the accessors, not with its computation, so the tz host suite's lifted
+ * block stays the pure-C slice it was. */
+esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)
+{
+    if (!offset_min) return ESP_ERR_INVALID_ARG;
+    *offset_min = (int32_t)tz_offset_min(when);
+    return ESP_OK;
+}
+
 const char *orb_net_tz_key(int i)
 {
     if (i < 0 || i >= NET_TZ_N) return "";
@@ -3708,5 +3722,14 @@ const char *orb_net_tz_label(int i) { (void)i; return ""; }
 const char *orb_net_tz_current(void) { return ""; }
 int orb_net_tz_current_index(void) { return -1; }
 esp_err_t orb_net_tz_select(int i) { (void)i; return ESP_ERR_NOT_SUPPORTED; }
+/* No zone machinery in a disabled build: UTC is the only honest answer, and
+ * ESP_OK keeps the broker's tz_offset entry a plain pass-through. */
+esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)
+{
+    (void)when;
+    if (!offset_min) return ESP_ERR_INVALID_ARG;
+    *offset_min = 0;
+    return ESP_OK;
+}
 
 #endif /* CONFIG_ORB_NET_ENABLE */

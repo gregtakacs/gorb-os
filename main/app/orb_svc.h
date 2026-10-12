@@ -13,8 +13,11 @@
  * by the app's registry slot BEFORE doing anything, so neither a compiled-in
  * app (P3's only tier) nor a wasm3 guest (P7's) can call below its grant.
  * The gate also counts: calls and denials per app are what /api/v1/status
- * shows for the P3 pass line, and the asked-while-denied bits are what the
- * dial's grant prompt (B3) reads.
+ * shows for the P3 pass line, and the ever-refused mask is what the dial's
+ * ladder marks (D19). A refusal there is not an ask awaiting an answer: the
+ * declared set already is the answer. The mask says only that a call was
+ * refused this boot — closed by the owner's toggle, or asked for without ever
+ * having been declared — and the broker's log line names which.
  *
  * Threading. Entry functions run on the LVGL task like every other app call,
  * with one exception by design: the config entries reach NVS and may block on
@@ -59,9 +62,10 @@ struct _lv_area_t;
 /* ---- capabilities (§4.2) ---------------------------------------------------
  * FREE caps are always on — no app is useful without the clock, and a setting
  * of its own under a quota is what makes an app an app. The owner-granted
- * four default OFF, and the dial's prompt (B3) is the only door they open
- * through. The enum's bit numbers are the NVS grant word's layout: appended
- * entries take the next number, never a re-order. */
+ * four are the manifest's to declare (D19): what an app asks for at install is
+ * what it gets, and the dial's ladder is the door they close again. The enum's
+ * bit numbers are the NVS grant word's layout: appended entries take the next
+ * number, never a re-order. */
 typedef enum {
     CAP_TIME = 0,     /* now / tz_label / tz_offset (D15 + D17)        */
     CAP_CONFIG = 1,   /* own declared settings, within the quota       */
@@ -159,8 +163,11 @@ typedef struct {
 
 /** The gate, §4.2 made real. Counts the call either way — the P3 pass line is
  *  a number on /api/v1/status, and a denial that is not counted is a denial
- *  nobody can see — and records the ask when it refuses, which is what the
- *  grant prompt (B3) offers the owner on the dial. */
+ *  nobody can see. Under D19 a refusal is never a request: the declared set is
+ *  the app's whole consent, so nothing is awaited and nothing is answered. The
+ *  refused cap's bit lands in the ever-refused mask the owner's ladder marks,
+ *  which says only "this call was closed this boot" — by a revocation, or by an
+ *  app that asked for a cap it never declared. Only the log line says which. */
 bool orb_grant_ok(const orb_app_t *a, orb_cap_t cap);
 
 #define SVC(a, cap)  do { if (!orb_grant_ok((a), CAP_##cap)) \
@@ -184,12 +191,16 @@ const orb_svc_t *orb_svc_table(void);
  *  plus scheduler fraction plus trust flag; conversion stays app-side. */
 void orb_time_now(time_t *sec, double *frac, bool *synced);
 
-/* For the grant prompt (B3) and /api/v1/status (the P3 pass line). */
-const char    *orb_svc_cap_name(orb_cap_t cap);   /* log/prompt label, "power" */
-uint32_t     orb_svc_grants(const orb_app_t *a);   /* stored owner-granted mask */
-uint32_t     orb_svc_pending(const orb_app_t *a);  /* asked while denied        */
-void         orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps); /* clear asks */
-esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's answer */
+/* For the owner's ladder (D19) and /api/v1/status (the P3 pass line). */
+const char    *orb_svc_cap_name(orb_cap_t cap);   /* log label, "power" */
+uint32_t     orb_svc_grants(const orb_app_t *a);   /* EFFECTIVE mask: stored AND
+                                                   * declared — what the gate
+                                                   * will really answer */
+uint32_t     orb_svc_declared(const orb_app_t *a); /* the install-time consent,
+                                                   * and the ceiling: a cap not
+                                                   * in here is not grantable */
+uint32_t     orb_svc_denied_mask(const orb_app_t *a); /* caps refused this boot */
+esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's toggle */
 uint32_t     orb_svc_calls(const orb_app_t *a);
 uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */

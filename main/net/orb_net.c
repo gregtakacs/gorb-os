@@ -1358,8 +1358,15 @@ static esp_err_t h_status(httpd_req_t *req)
      * added up. The P3 apps ledger joins it — ~110 B per row (three compiled rows
      * today) plus the grants words and any status line an app printed, capped
      * inside its own 768 B buffer — which is why the frame is 1536 now; re-measure
-     * on the device and shrink it back if the rows stay short. */
-    char json[1536];
+     * on the device and shrink it back if the rows stay short.
+     *
+     * Static, not stack, per the s_scan_json rule above: 1536 B on a 4 KB httpd
+     * task was already most of the stack, and D19's second name list per row
+     * (declared, beside grants) pushed the frame past the point where a glance
+     * at the size is a gamble rather than a reading. Handlers run serially on
+     * the single httpd task, so one instance is safe; .bss is the honest place
+     * for a buffer this size. */
+    static char json[1536];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -1463,23 +1470,41 @@ static esp_err_t h_status(httpd_req_t *req)
             char grants[64];
             int goff = 0;
             grants[0] = '\0';
+            char declared[64];
+            int doff = 0;
+            declared[0] = '\0';
             static const orb_cap_t OC[4] = { CAP_POWER, CAP_NET,
                                              CAP_SD_READ, CAP_THEMES };
+            const uint32_t gm = orb_svc_grants(a);
+            const uint32_t dm = orb_svc_declared(a);
             for (unsigned c = 0; c < 4; c++) {
-                if (!(orb_svc_grants(a) & (1u << OC[c]))) continue;
+                if (!(gm & (1u << OC[c]))) continue;
                 const int gw = snprintf(grants + goff, sizeof grants - (size_t)goff,
                                         "%s\"%s\"", goff ? "," : "",
                                         orb_svc_cap_name(OC[c]));
                 if (gw < 0 || (size_t)gw >= sizeof grants - (size_t)goff) break;
                 goff += gw;
             }
+            /* The second list is what D19 makes the ledger for: grants alone
+             * cannot tell "the app never asked" from "the owner revoked it",
+             * and the difference is the whole answer to "what can this thing
+             * do on my network". declared is the install-time consent. */
+            for (unsigned c = 0; c < 4; c++) {
+                if (!(dm & (1u << OC[c]))) continue;
+                const int dw = snprintf(declared + doff, sizeof declared - (size_t)doff,
+                                        "%s\"%s\"", doff ? "," : "",
+                                        orb_svc_cap_name(OC[c]));
+                if (dw < 0 || (size_t)dw >= sizeof declared - (size_t)doff) break;
+                doff += dw;
+            }
             const int w = snprintf(apps_json + off, sizeof apps_json - (size_t)off,
-                "%s{\"slug\":\"%s\",\"grants\":[%s],\"asked\":%u,\"calls\":%u,"
-                "\"denials\":%u,\"beat_ms\":%u,\"cfg_used\":%u,\"faults\":%u,"
-                "\"failed\":%s,\"status\":\"%s\"}",
-                i ? "," : "", a->slug, grants,
-                (unsigned)orb_svc_pending(a), (unsigned)orb_svc_calls(a),
-                (unsigned)orb_svc_denials(a), (unsigned)orb_svc_beat_ms(a),
+                "%s{\"slug\":\"%s\",\"grants\":[%s],\"declared\":[%s],\"calls\":%u,"
+                "\"denials\":%u,\"denied_mask\":%u,\"beat_ms\":%u,\"cfg_used\":%u,"
+                "\"faults\":%u,\"failed\":%s,\"status\":\"%s\"}",
+                i ? "," : "", a->slug, grants, declared,
+                (unsigned)orb_svc_calls(a),
+                (unsigned)orb_svc_denials(a), (unsigned)orb_svc_denied_mask(a),
+                (unsigned)orb_svc_beat_ms(a),
                 (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
                 a->failed ? "true" : "false", orb_svc_last_status(a));
             if (w < 0 || (size_t)w >= sizeof apps_json - (size_t)off) break;

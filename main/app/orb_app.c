@@ -217,6 +217,17 @@ static const orb_app_iface_t s_menu_iface = {
  * display_init(), and clock_view.c reads it through the base that mapping hands
  * out. Only a SECONDARY bank goes through the fields below. */
 static orb_app_t s_apps[] = {
+    /* None of these declares owner caps (orb_app_t.caps, left 0 by static
+     * init). That is the honest answer, not an unfinished one: §14 makes the
+     * compiled tier trusted OS code, so it reaches idle_dim, orb_theme and
+     * orb_net through their own headers and never through the broker's gate —
+     * a cap they "declared" would be a permission the ledger claims is being
+     * enforced while nothing consults it. The status page therefore reads
+     * "declared":[] for all three, which is exactly what an owner should
+     * believe about the two apps that shipped inside the firmware. D19's
+     * declared set is the manifest's job, and manifests arrive with P4's card
+     * apps: the loader fills caps from the .orbapp and the ladder gains real
+     * rows to revoke on the day the first one installs. */
     {
         .slug       = "clock",
         .alias      = NULL,

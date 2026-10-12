@@ -159,6 +159,16 @@ struct orb_app {
      * tick at all and gets none at runtime. settings/n_settings are the only
      * NVS keys the app may touch: an undeclared key is below-grant, so the
      * config entries resolve every id here before any handle opens (§4.2). */
+    /* caps is the owner-cap set the app DECLARES (ruling D19, 2026-10-13;
+     * §4.2): declare-at-install is the grant, and it is also the ceiling.
+     * The owner may revoke any of these from the dial; nothing may ever make
+     * a cap effective that is not in here — not the installer, not NVS, not a
+     * reflash. Free caps (time/config/ui/art) do not belong in the mask:
+     * §4.2 grants them unconditionally, and storing them would invite a
+     * revocation the OS does not implement. Read by the broker's gate at use
+     * time, so a stale NVS word from an older declaration can only ever
+     * under-grant, never over-grant. */
+    uint32_t                  caps;
     uint32_t                  period_ms;
     const orb_setting_desc_t *settings;
     int                       n_settings;

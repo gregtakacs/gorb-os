@@ -16,13 +16,23 @@ initializers.
 
 What is under test
 ------------------
-  the gate        free caps pass unconditionally and are still counted; owner
-                  caps refuse with ESP_ERR_NOT_ALLOWED, count the denial, and
-                  latch the ask once (the prompt reads pending, not logs)
-  grants          set_grant persists "g<slot>" in orb.grants BEFORE caching, so
-                  a refused NVS write cannot leave the dial showing a grant the
-                  reboot undoes; free caps are not the owner's to give or take;
-                  orb_svc_init preloads and masks free bits out of stored words
+  the gate        free caps pass unconditionally and are still counted; an
+                  owner cap the app DECLARED passes with nothing ever stored
+                  (D19: the install carried the consent); anything else refuses
+                  with ESP_ERR_NOT_ALLOWED, counts the denial, and sets its bit
+                  in the ever-refused mask the dial marks — once per cap, which
+                  is what the single log line per (app, cap) is keyed off
+  grants          the declared set is the CEILING: set_grant refuses a cap the
+                  manifest never asked for and refuses to touch a free one, and
+                  orb_svc_init masks every undeclared bit out of a stored word,
+                  so a stale or hand-rolled NVS entry can only ever under-grant.
+                  A word that is PRESENT is the owner's last word even when it
+                  reads 0; a word that is ABSENT means never decided, which
+                  means as-declared — and the persistence writes BEFORE caching,
+                  so a refused NVS write cannot leave the dial showing a grant
+                  the reboot undoes
+  revocation      taking POWER back releases the idle_dim hold with it, because
+                  a kill switch that leaves the dial awake is a label
   set_beat (D16)  may only slow from the manifest floor or stop; faster is
                   refused; an app that declared no beat gets none
   config (C9)     undeclared keys and wrong-typed keys never reach NVS at all
@@ -166,8 +176,15 @@ const char *esp_err_to_name(esp_err_t e)
 }
 
 /* The fake registry: three entries with the manifest policy the broker reads
- * (D16 floor, declared settings). orb_svc.c reaches the table only through
- * orb_app_index_of(), which is the whole interface this stub must honour. */
+ * (D16 floor, declared settings, and D19's declared caps). orb_svc.c reaches
+ * the table only through orb_app_index_of(), which is the whole interface this
+ * stub must honour.
+ *
+ * The caps are what make this suite test the ruling rather than the plumbing:
+ * alpha declares power|net and NOT themes, so every theme call on alpha is a
+ * divergence, while beta declares themes alone and must work off a board that
+ * has never stored a grant word at all. gamma declares nothing — the ceiling's
+ * control case. */
 static orb_setting_desc_t A_SET[] = {
     { "bright", ORB_SET_INT,    0, 100, 50, ""     },
     { "mode",   ORB_SET_ENUM,   0,   3,  1, ""     },
@@ -176,6 +193,8 @@ static orb_setting_desc_t A_SET[] = {
     { "nick",   ORB_SET_STRING, 0,   0,  0, ""     },
     { "bio",    ORB_SET_STRING, 0,   0,  0, ""     },
 };
+#define DECL_A (1u << CAP_POWER | 1u << CAP_NET)
+#define DECL_B (1u << CAP_THEMES)
 static orb_app_t TBL[3];
 static orb_app_t *GHOST;              /* an app the table does not know */
 static void mk_tbl(void)
@@ -183,8 +202,11 @@ static void mk_tbl(void)
     memset(TBL, 0, sizeof TBL);
     TBL[0].slug = "alpha"; TBL[0].period_ms = 67; TBL[0].art_slot = -1;
     TBL[0].settings = A_SET; TBL[0].n_settings = 6;
+    TBL[0].caps = DECL_A;
     TBL[1].slug = "beta";  TBL[1].period_ms = 0;  TBL[1].art_slot = -1;
+    TBL[1].caps = DECL_B;
     TBL[2].slug = "gamma"; TBL[2].period_ms = 67; TBL[2].art_slot = 2;
+    TBL[2].caps = 0;                    /* never asked for an owner cap, ever */
     static orb_app_t ghost; memset(&ghost, 0, sizeof ghost);
     ghost.slug = "ghost"; ghost.period_ms = 67; ghost.art_slot = -1;
     GHOST = &ghost;
@@ -193,6 +215,14 @@ int orb_app_index_of(const orb_app_t *a)
 {
     for (int i = 0; i < 3; i++) if (&TBL[i] == a) return i;
     return -1;
+}
+/* D19's other direction: the broker reads each slot's DECLARED caps off the
+ * registry at preload, so the door it uses is part of the interface this stub
+ * must honour. Rows past the fake table answer NULL, which is the case the
+ * broker must survive without granting anything. */
+const orb_app_t *orb_app_row(size_t i)
+{
+    return i < 3 ? &TBL[i] : NULL;
 }
 static orb_app_t *g_cur;                /* the entry on the glass, for the
                                          * boot-RUN stamp */
@@ -378,25 +408,17 @@ int main(int argc, char **argv)
        off == -330 && g_tzoff_calls == 1);
     CK("time entries are counted, not gated", orb_svc_calls(A) > c0);
 
-    /* ---- owner caps: denied, counted, and latched once (B3 input) --------- */
+    /* ---- D19, act one: the declaration IS the grant -------------------------
+     * No board has ever stored a word for alpha, and it declared power at
+     * install. Under B3's rule the first call below was refused and the owner
+     * was asked; under the ruling the answer was already given when the app
+     * installed, so the very first gated call of a factory-fresh device has to
+     * reach the leaf. A suite that scripted a stored grant here would pass
+     * while the shipped broker denied every app on every new board. */
     uint32_t d0 = orb_svc_denials(A);
-    CK("power refused ungranted", S->power_request(A, 5, true) == ESP_ERR_NOT_ALLOWED);
-    CK("and the leaf was never touched", g_pwr_calls == 0 && g_rel_calls == 0);
-    CK("denial counted", orb_svc_denials(A) == d0 + 1);
-    CK("ask latched for the prompt", orb_svc_pending(A) == (1u << CAP_POWER));
-    S->power_request(A, 5, true);
-    CK("repeat counted, latch unchanged",
-       orb_svc_denials(A) == d0 + 2 && orb_svc_pending(A) == (1u << CAP_POWER));
-    CK("themes refused ungranted (int form)", S->theme_count(A) == -1);
-
-    /* ---- grants: write-through persistence, free caps untouchable --------- */
-    CK("granting a free cap is refused",
-       orb_svc_set_grant(A, CAP_TIME, true) == ESP_ERR_INVALID_ARG);
-    CK("owner grant sticks", orb_svc_set_grant(A, CAP_POWER, true) == ESP_OK);
-    CK("granted mask reads back", orb_svc_grants(A) == (1u << CAP_POWER));
-    CK("stored as orb.grants/g<slot>", u32_at("orb.grants", "g0") == (1u << CAP_POWER));
-    d0 = orb_svc_denials(A);
-    CK("granted power reaches the idle_dim door",
+    CK("the effective mask of an untouched board is its declared set",
+       orb_svc_grants(A) == DECL_A && orb_svc_declared(A) == DECL_A);
+    CK("declared power reaches the idle_dim door with nothing stored",
        S->power_request(A, 30, false) == ESP_OK &&
        g_pwr_calls == 1 && !strcmp(g_pwr_slug, "alpha") &&
        g_pwr_to == 30 && g_pwr_hold == 0);
@@ -408,29 +430,115 @@ int main(int argc, char **argv)
     orb_svc_app_suspended(A);
     CK("leaving the glass revokes the ask through the same holder door",
        g_rel_calls == 2 && !strcmp(g_rel_slug, "alpha"));
-    CK("body-not-gate: no denial added", orb_svc_denials(A) == d0);
+    CK("body-not-gate: a pass adds no denial", orb_svc_denials(A) == d0);
+    CK("and merely working wrote nothing to flash",
+       find_ent("orb.grants", "g0") == NULL);
+
+    /* ---- D19, act two: the declared set is also the ceiling -----------------
+     * alpha never asked for themes, so a theme call is alpha reaching past its
+     * own declaration. The evidence is the count and the mask, and the mask is
+     * what makes the single log line per (app, cap) observable at all. */
+    d0 = orb_svc_denials(A);
+    CK("an undeclared cap is refused, counted and marked",
+       S->theme_count(A) == -1 && g_tscan_calls == 0 &&
+       orb_svc_denials(A) == d0 + 1 &&
+       (orb_svc_denied_mask(A) & (1u << CAP_THEMES)) != 0);
+    S->theme_count(A);
+    CK("repeat counted, mark held — the once-per-cap log rule's proxy",
+       orb_svc_denials(A) == d0 + 2 &&
+       (orb_svc_denied_mask(A) & (1u << CAP_THEMES)) != 0);
+    CK("the owner cannot grant what the manifest did not declare",
+       orb_svc_set_grant(A, CAP_THEMES, true) == ESP_ERR_INVALID_ARG);
+    CK("and the refusal opened no door and wrote no word",
+       !(orb_svc_grants(A) & (1u << CAP_THEMES)) &&
+       find_ent("orb.grants", "g0") == NULL);
+    CK("themes refused on the int form too", S->theme_count(A) == -1);
+    CK("granting a free cap is refused",
+       orb_svc_set_grant(A, CAP_TIME, true) == ESP_ERR_INVALID_ARG);
+    CK("and revoking one is, so no dial can strand an app without a clock",
+       orb_svc_set_grant(A, CAP_CONFIG, false) == ESP_ERR_INVALID_ARG);
+
+    /* ---- D19, act three: the owner's ladder only ever closes a door ---------
+     * alpha declared power, so the toggle's whole job is taking it back — and
+     * taking back the dim hold has to actually put the dial down, or the kill
+     * switch is a label. */
+    d0 = orb_svc_denials(A);
+    const int rel0 = g_rel_calls;
+    CK("owner revoke of a declared cap is accepted",
+       orb_svc_set_grant(A, CAP_POWER, false) == ESP_OK);
+    CK("the word on flash is the rest of the declared set",
+       u32_at("orb.grants", "g0") == (1u << CAP_NET));
+    CK("revoking power released the hold with it",
+       g_rel_calls == rel0 + 1 && !strcmp(g_rel_slug, "alpha"));
+    CK("power refused after the revoke",
+       S->power_request(A, 5, true) == ESP_ERR_NOT_ALLOWED);
+    CK("leaf untouched behind the closed gate, refusal counted and marked",
+       g_pwr_calls == 2 && orb_svc_denials(A) == d0 + 1 &&
+       (orb_svc_denied_mask(A) & (1u << CAP_POWER)) != 0);
     g_fail_commit = 1;
     CK("refused NVS commit fails the set_grant",
-       orb_svc_set_grant(A, CAP_POWER, false) == ESP_FAIL);
-    CK("cache did not run ahead of flash", orb_svc_grants(A) == (1u << CAP_POWER));
+       orb_svc_set_grant(A, CAP_POWER, true) == ESP_FAIL);
+    CK("cache did not run ahead of flash",
+       !(orb_svc_grants(A) & (1u << CAP_POWER)));
     g_fail_commit = 0;
-    CK("revoke sticks once NVS accepts",
-       orb_svc_set_grant(A, CAP_POWER, false) == ESP_OK);
-    CK("denies again", S->power_request(A, 5, true) == ESP_ERR_NOT_ALLOWED);
-    orb_svc_prompt_shown(A, 1u << CAP_POWER);
-    /* Only the shown cap clears: the earlier ungranted theme_count latched
-     * THEMES too, and a prompt that ate every pending bit it did not show
-     * would silently drop the asks still waiting on the owner. */
-    CK("prompt clearing only clears what was shown",
-       orb_svc_pending(A) == (1u << CAP_THEMES));
-    orb_svc_prompt_shown(A, 1u << CAP_THEMES);
-    CK("and the rest clears when it is shown too", orb_svc_pending(A) == 0);
+    CK("re-grant sticks once NVS accepts",
+       orb_svc_set_grant(A, CAP_POWER, true) == ESP_OK);
+    CK("granted again reaches the leaf",
+       S->power_request(A, 12, true) == ESP_OK && g_pwr_calls == 3);
+    CK("and the effective mask never exceeded the declaration",
+       orb_svc_grants(A) == DECL_A);
+    /* The mask is history, not a request: a re-grant does not launder the fact
+     * that the app called for power while it was closed. Nothing on the dial
+     * can clear it, which is the point — the old latch had a door that let the
+     * menu make the evidence go away. */
+    CK("a re-grant does not erase a past refusal",
+       (orb_svc_denied_mask(A) & (1u << CAP_POWER)) != 0);
 
-    /* preload masks free bits a hand-rolled store could carry */
+    /* ---- D19, act four: absent is not zero ---------------------------------
+     * The rule the whole ruling turns on. A board that never decided reads as
+     * declared; a board whose owner revoked everything reads as revoked, and
+     * the two are one NVS key apart. A partition wipe now costs the owner their
+     * revocations and never costs an app its consent — which is what B3's
+     * default-off rule got backwards. */
+    CK("beta's mask is its declared set before anybody touches the dial",
+       orb_svc_grants(B) == DECL_B);
+    CK("and nobody ever wrote a word for beta", find_ent("orb.grants", "g1") == NULL);
+    CK("revoke beta's only cap, explicitly",
+       orb_svc_set_grant(B, CAP_THEMES, false) == ESP_OK &&
+       orb_svc_grants(B) == 0);
+    ent *g0 = find_ent("orb.grants", "g0");        /* alpha: still DECL_A */
+    CK("setup: alpha's word is on flash and beta's is zero, not missing",
+       g0 != NULL && g0->u32 == DECL_A &&
+       find_ent("orb.grants", "g1") != NULL);
+    orb_svc_init();                                  /* the reboot, verbatim */
+    CK("an explicit zero survives the reboot as revoked, not as declared",
+       orb_svc_grants(B) == 0);
+    CK("and a stored full set survives as itself", orb_svc_grants(A) == DECL_A);
+    nvs_handle_t wh;                                 /* the wipe, from the other
+                                                     * side: erase beta's word
+                                                     * and the declaration
+                                                     * stands again, which is
+                                                     * the ONLY direction a
+                                                     * missing key may read */
+    CK("erase opens", nvs_open_from_partition("storage", "orb.grants",
+                                              NVS_READWRITE, &wh) == ESP_OK);
+    CK("beta's word erases", nvs_erase_key(wh, "g1") == ESP_OK);
+    nvs_close(wh);
+    orb_svc_init();
+    CK("a wiped word reads as declared, not as denied",
+       orb_svc_grants(B) == DECL_B);
+
+    /* preload masks free bits AND undeclared bits out of a hand-rolled store:
+     * gamma declared nothing, so a fat word written by an older build, a
+     * restored partition or a bug in this file must open nothing. */
+    ent *g2 = new_ent("orb.grants", "g2"); g2->is_str = 0;
+    g2->u32 = (1u << CAP_THEMES) | (1u << CAP_NET) | (1u << CAP_TIME);
     ent *g1 = new_ent("orb.grants", "g1"); g1->is_str = 0;
     g1->u32 = (1u << CAP_THEMES) | (1u << CAP_TIME);
     orb_svc_init();
     CK("init preloads, free bits masked out", orb_svc_grants(B) == (1u << CAP_THEMES));
+    CK("a stored word grants nothing an app never declared",
+       orb_svc_grants(G) == 0);
     CK("an id that never came off a scan is refused on shape alone",
        S->theme_install(B, "kit3") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
 

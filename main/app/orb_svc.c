@@ -11,10 +11,13 @@
  *
  * Free caps (CAP_FREE_MASK: time/config/ui/art) are never stored and never
  * revocable — orb_grant_ok() answers them before it ever looks at NVS, which
- * is §4.2's "always on" made structural. The owner-granted four live as one
- * u32 per app under orb.grants, defaulting to 0: nothing is implicit (B3),
- * and the first ask from an ungranted app sets a pending bit the dial's
- * grant prompt will read.
+ * is §4.2's "always on" made structural. The owner-granted four follow ruling
+ * D19 (declare-at-install is the grant): an app's effective mask is its
+ * declared set (orb_app_t.caps) intersected with whatever the owner has last
+ * written, so installing is consenting and the dial's ladder is a revocation
+ * surface, not an approval queue. A cap the manifest never declared is not
+ * grantable by anyone, which is what keeps a stale NVS word, a restored
+ * partition and a mis-clicked dial all pointing one way: down, never up.
  *
  * Stubs are honest: every entry that awaits a later commit's wiring (time ->
  * the compose_now extraction, power -> the idle_dim request path, net -> P4,
@@ -52,14 +55,17 @@ static const char *TAG = "orb_svc";
 #define ORB_SVC_ROWS 16
 
 typedef struct {
-    uint32_t grants;        /* stored owner-granted mask (orb.grants)      */
-    uint32_t asked;         /* gated entries called while denied -> prompt */
+    uint32_t grants;        /* owner's last written mask (orb.grants)        */
+    uint32_t denied_mask;   /* caps ever refused this boot — the divergence
+                             * evidence the cap page marks, RAM only: like the
+                             * counts, it says what THIS build did */
     uint32_t calls, denials;/* lifetime totals, any entry, either outcome  */
     uint32_t beat_ms;       /* D16 rate in force; 0 = stopped              */
     uint32_t cfg_used;      /* bytes charged against ORB_CFG_QUOTA_BYTES   */
     uint32_t faults;        /* C2: unexpected resets with this app shown   */
     bool     faulted;       /* C2: two consecutive faults — never boots    */
     bool     loaded;        /* grant word read from NVS                    */
+    bool     stored;        /* a grant word was actually THERE, any value */
     bool     cfg_loaded;    /* quota charge read from NVS                  */
     bool     faults_loaded; /* fault words read from NVS                   */
     char     last_status[72];
@@ -83,19 +89,43 @@ static orb_reset_rec_t s_rec __attribute__((section(".noinit"), aligned(4)));
 
 static void note_fault_slot(int slot, const char *why);   /* below, with C2 */
 
+/* The declared set, cleaned: what the manifest asked for at install, minus any
+ * free bit a careless table entry tried to claim. This is the ceiling (D19) —
+ * every read of a mask goes through here, so an over-wide NVS word can never
+ * be the reason a call passes. */
+static uint32_t declared_mask(const orb_app_t *a)
+{
+    return a ? (a->caps & ~CAP_FREE_MASK) : 0;
+}
+
 /* One NVS round trip per row, per boot. Read-only and small; the boot ladder
- * and the first gated call are the only callers, neither on the frame path. */
-static void row_load_grants(svc_row_t *r, int slot)
+ * and the first gated call are the only callers, neither on the frame path.
+ *
+ * Two answers, and the difference is the ruling: a word that is THERE is the
+ * owner's last decision and is authoritative even when it is 0 (everything
+ * revoked), while a word that is ABSENT means nobody has ever decided, which
+ * under declare-at-install means the declared set stands (D19). Reading an
+ * absent word as 0 was B3's rule and it silently un-installs every app's
+ * consent on a partition wipe — the app would sit there denied, its calls
+ * counting as divergences it never caused. */
+static void row_load_grants(svc_row_t *r, const orb_app_t *a, int slot)
 {
     r->loaded = true;
+    r->grants = declared_mask(a);
+    r->stored = false;
     nvs_handle_t h;
     if (nvs_open_from_partition("storage", GRANTS_NS, NVS_READONLY, &h) != ESP_OK)
-        return;                                  /* nothing stored: all off — B3 */
+        return;                                  /* nothing stored: as declared */
     char key[12];
     snprintf(key, sizeof key, "g%d", slot);
     uint32_t v = 0;
-    if (nvs_get_u32(h, key, &v) == ESP_OK)
-        r->grants = v & ~CAP_FREE_MASK;           /* free caps are not storable */
+    if (nvs_get_u32(h, key, &v) == ESP_OK) {
+        r->grants = v & declared_mask(a);         /* free caps are not storable,
+                                                   * and undeclared ones are not
+                                                   * grantable — the AND is the
+                                                   * ceiling, not a filter */
+        r->stored = true;
+    }
     nvs_close(h);
 }
 
@@ -120,17 +150,26 @@ bool orb_grant_ok(const orb_app_t *a, orb_cap_t cap)
     if (bit & CAP_FREE_MASK) return true;        /* §4.2: always on. Counted,
                                                   * because the pass line is
                                                   * the number, not the verdict */
-    if (!r->loaded) row_load_grants(r, orb_app_index_of(a));
+    const int slot = orb_app_index_of(a);
+    if (!r->loaded) row_load_grants(r, a, slot);
     if (r->grants & bit) return true;
 
-    /* Denied — and the denial is made visible three ways at once: counted for
-     * /api/v1/status, latched for the dial's prompt (B3, shown once per ask),
-     * and logged once, because an app that retries a gated entry every tick
-     * would otherwise bury every other line on the console. */
-    if (!(r->asked & bit))
-        ESP_LOGW(TAG, "\"%s\" called %s without the grant — prompt pending",
-                 a->slug ? a->slug : "?", orb_svc_cap_name(cap));
-    r->asked |= bit;
+    /* Denied. Nothing is asked for (D19): the app already has everything it
+     * said it needed at install. Two roads reach here and only one of them is
+     * normal. The cap was declared and the owner has since closed it, which is
+     * the dial working as designed and an app that must degrade politely; or
+     * the cap was NEVER declared, which is the app reaching past its own
+     * consent — a bug in the app, and the reason this line exists. One line
+     * per (app, cap) per boot, because an app that retries a gated entry every
+     * tick would otherwise bury every other line on the console, and the
+     * ladder's * mark reads the same mask. */
+    const char *why = (declared_mask(a) & bit)
+                    ? "the owner has revoked it"
+                    : "it was never declared — the app is calling past its consent";
+    if (!(r->denied_mask & bit))
+        ESP_LOGW(TAG, "\"%s\" called %s — denied: %s",
+                 a->slug ? a->slug : "?", orb_svc_cap_name(cap), why);
+    r->denied_mask |= bit;
     r->denials++;
     return false;
 }
@@ -644,10 +683,11 @@ const char *orb_svc_cap_name(orb_cap_t cap)
 
 /* ---- the OS side -------------------------------------------------------------
  * The grant word is the only app state NVS holds outside the app's own
- * namespace, and its only writer is the owner's answer to the dial's prompt
- * (B3) — never an app, never a default. An absent key means every owner cap
- * OFF: "nothing is implicit" spelled as an absence, not as a zero somebody
- * has to remember to write at install. */
+ * namespace, and its only writer is the owner's toggle on the dial's ladder
+ * (D19) — never an app, never the installer. Writing is the act that turns
+ * "as declared" into "decided": until the owner touches a cap there is no
+ * word at all and the declared set stands, which is why a partition wipe
+ * costs the owner their revocations and never costs an app its consent. */
 static esp_err_t store_grants(int slot, uint32_t mask)
 {
     nvs_handle_t h;
@@ -666,11 +706,13 @@ esp_err_t orb_svc_init(void)
 {
     /* Preload every row so the first gated call of the boot never pays an NVS
      * read on the frame path, and so /api/v1/status has real numbers before
-     * anybody asks. A storage partition that will not open is not fatal: no
-     * grants stored is the same answer as all owner caps off — exactly the
-     * safe direction — and the log line says which of the two it is. */
+     * anybody asks. A storage partition that will not open is not fatal: under
+     * D19 no word stored is the same answer as never having revoked anything,
+     * so every app reads as its declared set — the app still works, and the
+     * log line below is what tells the two apart from the dial's own seat. */
     if (nvs_flash_init_partition("storage") != ESP_OK)
-        ESP_LOGW(TAG, "storage partition not up — every owner cap reads OFF");
+        ESP_LOGW(TAG, "storage partition not up — grants read as DECLARED, and "
+                      "no revocation the owner made earlier will be remembered");
     /* C2, first act: read last boot's reset record BEFORE anything else can
      * crash, bill the slot it names if the verdict says the reset was not
      * the owner's, and re-arm for this boot. The registry has not run yet,
@@ -692,7 +734,7 @@ esp_err_t orb_svc_init(void)
     s_rec.slot   = FAULT_SLOT_NONE;
     s_rec.booted = 0;
     for (int i = 0; i < ORB_SVC_ROWS; i++)
-        row_load_grants(&s_row[i], i);
+        row_load_grants(&s_row[i], orb_app_row((size_t)i), i);
     /* The line is the P3 pass line's boot-half: it names the table so a
      * glance at serial says the broker shipped, and taking its address is
      * what stops the linker collecting an unreferenced S_TABLE out of the
@@ -709,19 +751,31 @@ esp_err_t orb_svc_init(void)
 uint32_t orb_svc_grants(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
-    return (slot >= 0) ? s_row[slot].grants : 0;
+    if (slot < 0) return 0;
+    /* Load-on-read, the gate's own rule. orb_svc_init preloads every row on
+     * the boot ladder, so this never blocks on a real device — but it is what
+     * makes the OS's readers honest: before the first gated call of a boot an
+     * unloaded row used to read as a bare 0, which under B3 was only "nothing
+     * granted yet" and under D19 would be a lie, because an app that has never
+     * been touched by anything still runs on its declared set and the ledger
+     * and the ladder must say so. */
+    if (!s_row[slot].loaded) row_load_grants(&s_row[slot], a, slot);
+    return s_row[slot].grants;                        /* EFFECTIVE mask: stored
+                                                       * AND declared — what the
+                                                       * gate will really answer */
 }
 
-uint32_t orb_svc_pending(const orb_app_t *a)
+uint32_t orb_svc_declared(const orb_app_t *a)
 {
-    const int slot = orb_app_index_of(a);
-    return (slot >= 0) ? s_row[slot].asked : 0;
+    return declared_mask(a);                       /* the install-time consent:
+                                                    * what the app said it needed,
+                                                    * which is also the ceiling */
 }
 
-void orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps)
+uint32_t orb_svc_denied_mask(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
-    if (slot >= 0) s_row[slot].asked &= ~caps;
+    return (slot >= 0) ? s_row[slot].denied_mask : 0;
 }
 
 esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
@@ -733,13 +787,30 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
                                                   * every app on the dial */
     const int slot = orb_app_index_of(a);
     if (slot < 0) return ESP_ERR_INVALID_ARG;
-    if (!s_row[slot].loaded) row_load_grants(&s_row[slot], slot);
+    /* D19's ceiling, enforced on the owner's own door: the ladder's job is
+     * revoking what was declared, and re-granting a revocation. Turning ON a
+     * cap the manifest never asked for would sell the owner a permission the
+     * app cannot use, and would erase the one signal — a denial — that says
+     * an app reached past its declaration. */
+    if (on && !(declared_mask(a) & (1u << cap)))
+        return ESP_ERR_INVALID_ARG;
+    if (!s_row[slot].loaded) row_load_grants(&s_row[slot], a, slot);
     const uint32_t want = on ? (s_row[slot].grants | (1u << cap))
                              : (s_row[slot].grants & ~(1u << cap));
     /* Persist first, cache second: a refusal must leave the RAM answer
      * matching the flash, or the dial shows a grant the next boot undoes. */
     const esp_err_t e = store_grants(slot, want);
-    if (e == ESP_OK) s_row[slot].grants = want;
+    if (e == ESP_OK) {
+        s_row[slot].grants = want;
+        s_row[slot].stored = true;               /* there is now a decision on
+                                                  * flash, whatever it says — an
+                                                  * erase of the last cap reads
+                                                  * as revoked, not as undecided */
+        /* Revoking power while the app holds the dial awake has to actually
+         * put the dial down, or the owner's kill switch is a label. Same
+         * owner-wins release the DISPLAY choice makes. */
+        if (!on && cap == CAP_POWER) idle_dim_app_release(a->slug);
+    }
     return e;
 }
 

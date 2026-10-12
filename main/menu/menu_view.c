@@ -57,9 +57,8 @@ typedef enum {
     PG_APP,           /* one app's own options, rendered from its opt_* answers */
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO,            /* the timeout presets                          */
-    PG_PERMS,         /* one row per installed app (B3)               */
-    PG_CAPS,          /* the selected app's four owner caps           */
-    PG_CONFIRM,       /* the two-row answer to one cap's request      */
+    PG_PERMS,         /* one row per installed app: what it may do      */
+    PG_CAPS,          /* the selected app's four owner caps, togglable  */
     PG_COUNT
 } page_t;
 
@@ -140,17 +139,20 @@ static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
 static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
 
-/* ---- B3: the grant ladder (plan §4.2), three pages below PERMISSIONS ---------
+/* ---- D19: the owner's revocation ladder (plan §4.2), two pages below
+ * PERMISSIONS ---------------------------------------------------------------
  *
- * The rows, the state, and the one rule the pages exist for: nothing an app
- * wants is ever granted by a default — the owner's finger answers the ask, on
- * this page, and the answer is persisted by the broker before the row reads
- * any other way. The four caps listed are the owner-granted four: the free
- * ones would put rows on this page that can only ever say yes, and a page of
- * forced yeses teaches the owner to stop reading it.
+ * Declare-at-install is the grant, so these pages approve nothing — they let
+ * the owner take back what an app asked for at install, and show the
+ * difference between what it declared and what still runs. The rows, the
+ * state, and the one rule the pages exist for: the broker is the only authority
+ * on what a toggle may do, so a row never decides locally whether its cap is
+ * grantable, it posts the job and renders the answer. The four caps listed are
+ * the owner-granted four: the free ones would put rows on this page that can
+ * only ever say yes, and a page of forced yeses teaches the owner to stop
+ * reading it.
  */
 static int      s_perm_slot = -1;              /* the app under inspection  */
-static orb_cap_t s_perm_cap = CAP_POWER;       /* the cap awaiting the answer */
 static const orb_cap_t OWNER_CAPS[4] = { CAP_POWER, CAP_NET,
                                          CAP_SD_READ, CAP_THEMES };
 
@@ -183,11 +185,17 @@ static int perm_row_of(const orb_app_t *a)
     }
     return 0;
 }
-static bool perms_asked(void)
+/* Any app that has been refused at least once this boot. The marker is not an
+ * ask awaiting an answer (D19 deleted those): it says a call was closed, either
+ * by the owner's own toggle or by an app reaching for a cap it never declared,
+ * and only the second is the app's fault. The broker's one line per (app, cap)
+ * says which, and the owner has to do nothing either way. RAM-only, like the
+ * counts — a reboot is the reset, not a nag the owner has to dismiss. */
+static bool perms_denied(void)
 {
     for (size_t r = 0; r < orb_app_rows(); r++) {
         const orb_app_t *a = orb_app_row(r);
-        if (a && a->kind == ORB_APP_KIND_APP && orb_svc_pending(a)) return true;
+        if (a && a->kind == ORB_APP_KIND_APP && orb_svc_denied_mask(a)) return true;
     }
     return false;
 }
@@ -413,7 +421,6 @@ static int page_rows(void)
          * three-row choice the ruling says it is not. */
         case PG_PERMS:  return perm_rows() + 1;
         case PG_CAPS:   return 4 + 1;
-        case PG_CONFIRM: return 2;
         default:        return 0;
     }
 }
@@ -449,13 +456,6 @@ static void go_back(void)
         s_cur  = perm_row_of(orb_app_row((size_t)s_perm_slot));
         return;
     }
-    if (from == PG_CONFIRM) {       /* an unanswered confirm returns under the
-                                      * cap it was about, cursor where it was */
-        s_page = PG_CAPS;
-        s_cur  = 0;
-        for (unsigned i = 0; i < 4; i++) if (OWNER_CAPS[i] == s_perm_cap) s_cur = (int)i;
-        return;
-    }
     s_page = PG_TOP;
     s_cur  = (from == PG_TZ)     ? IT_TZ
            : (from == PG_DISPLAY)? IT_DISPLAY
@@ -486,11 +486,12 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
                 case IT_AP:     snprintf(out, outsz, "AP");      break;
                 case IT_TZ:     snprintf(out, outsz, "TZ");      break;
                 case IT_DISPLAY: snprintf(out, outsz, "DISPLAY"); break;
-                /* The badge is the whole prompt: an app that asked carries its
-                 * ask into the owner's list rather than interrupting the dial,
-                 * and the ask stays until the owner answers it there. */
+                /* The marker is the refusal signal, not an ask: any app the
+                 * gate closed this boot leaves one '*' on this row, and the
+                 * owner reads it here rather than being interrupted on the dial
+                 * (D19). Nothing waits on an answer. */
                 case IT_PERMS:  snprintf(out, outsz, "PERMISSIONS%s",
-                                         perms_asked() ? "  (ASKED)" : ""); break;
+                                         perms_denied() ? "  *" : ""); break;
                 default:        snprintf(out, outsz, "exit");    break;
             }
             return;
@@ -500,13 +501,29 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
             if (row >= n) { snprintf(out, outsz, "<- back"); return; }
             const orb_app_t *a = perm_row(row);
             if (!a) { snprintf(out, outsz, "?"); return; }   /* page_rows sized it */
-            int ng = 0;
-            for (unsigned c = 0; c < 4; c++)
-                if (orb_svc_grants(a) & (1u << OWNER_CAPS[c])) ng++;
-            if (orb_svc_pending(a))
-                snprintf(out, outsz, "%s  (ASKED HERE)", a->title ? a->title : a->slug);
+            /* Both counts, because under D19 they are different facts: declared
+             * is what the app asked for at install, allowed is what still runs
+             * after the owner's toggles. "2 of 2" and "0 of 2" read the same
+             * under a single count, and they are the two answers an owner
+             * actually asks — what did I agree to, and what is live now. */
+            int nd = 0, ng = 0;
+            const uint32_t dm = orb_svc_declared(a), gm = orb_svc_grants(a);
+            for (unsigned c = 0; c < 4; c++) {
+                if (dm & (1u << OWNER_CAPS[c])) nd++;
+                if (gm & (1u << OWNER_CAPS[c])) ng++;
+            }
+            /* The dial is 466 px wide and this row carries the app's own title,
+             * so the marker stays one character. A denied call is rare enough —
+             * it means an app reached past its declaration — that a lone '*'
+             * earns a look, and the cap page names which cap when they come. */
+            if (nd == 0)
+                snprintf(out, outsz, "%s%s  (nothing declared)",
+                         orb_svc_denied_mask(a) ? "* " : "",
+                         a->title ? a->title : a->slug);
             else
-                snprintf(out, outsz, "%s  (%d of 4)", a->title ? a->title : a->slug, ng);
+                snprintf(out, outsz, "%s%s  (%d of %d)",
+                         orb_svc_denied_mask(a) ? "* " : "",
+                         a->title ? a->title : a->slug, ng, nd);
             return;
         }
 
@@ -514,23 +531,29 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
             if (row >= 4) { snprintf(out, outsz, "<- back"); return; }
             const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
             if (!a) { snprintf(out, outsz, "?"); return; }
-            const bool g   = (orb_svc_grants(a) & (1u << OWNER_CAPS[row])) != 0;
-            const bool ask = (orb_svc_pending(a) & (1u << OWNER_CAPS[row])) != 0;
+            const uint32_t bit = 1u << OWNER_CAPS[row];
+            const bool g   = (orb_svc_grants(a)   & bit) != 0;
+            const bool dcl = (orb_svc_declared(a) & bit) != 0;
             if (sel_hi) *sel_hi = g;          /* the highlight answers \"what is
                                                * the state\" the same way the
                                                * zone row's star does */
+            /* Three states, and the third is the one the old page could not
+             * show: an app that never asked for the network must not read as
+             * something the owner could turn on. The row is inert, and the
+             * broker refuses the toggle anyway — this is the honest label, not
+             * a second gate. The mark rides all three, because the case worth
+             * seeing is an app calling a cap it never declared: that row IS
+             * undeclared, and dropping the mark here would hide the one
+             * refusal that says something about the app rather than the
+             * owner. */
+            const bool ref = (orb_svc_denied_mask(a) & bit) != 0;
+            if (!dcl) {
+                snprintf(out, outsz, "%s: not declared%s",
+                         orb_svc_cap_name(OWNER_CAPS[row]), ref ? " *" : "");
+                return;
+            }
             snprintf(out, outsz, "%s: %s%s", orb_svc_cap_name(OWNER_CAPS[row]),
-                     g ? "allowed" : "denied", ask ? "  (asking)" : "");
-            return;
-        }
-
-        case PG_CONFIRM: {
-            const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
-            const char *nm = a ? (a->title ? a->title : a->slug) : "?";
-            if (row == 0)
-                snprintf(out, outsz, "ALLOW \"%s\" the %s", nm, orb_svc_cap_name(s_perm_cap));
-            else
-                snprintf(out, outsz, "KEEP DENIED");
+                     g ? "allowed" : "revoked", ref ? " *" : "");
             return;
         }
 
@@ -622,7 +645,6 @@ static const char *page_title(void)
                      a && a->title ? a->title : a ? a->slug : "?");
             return caps_title;
         }
-        case PG_CONFIRM: return "GRANT?";
         default:        return "MENU";
     }
 }
@@ -641,10 +663,24 @@ static const char *page_hint(void)
                                   : "rotate: choose   push: change";
         case PG_TO:      return "rotate: choose   push: set";
         case PG_PERMS:   return "rotate: choose   push: open";
-        case PG_CAPS:    return "rotate: choose   push: answer";
-        case PG_CONFIRM: return "rotate: choose   push: answer";
+        case PG_CAPS:    return "rotate: choose   push: toggle";
         default:         return "rotate: choose   push: open";
     }
+}
+
+/* The pack the worker decodes: slot in the high bits, cap, wanted state last.
+ * Its own function because activate() is unliftable (it touches LVGL and the
+ * card) and this is the whole contract between a press on a cap row and the
+ * write that follows — a wrong shift here writes another app's word or another
+ * cap, silently, so the host suite builds packs against it.
+ *
+ * The wanted state is the INVERSE of what the row shows, so the same press
+ * allows a revoked cap and revokes an allowed one. */
+static int cap_pack(const orb_app_t *a, int row)
+{
+    const orb_cap_t cap = OWNER_CAPS[row];
+    const bool on = !(orb_svc_grants(a) & (1u << cap));
+    return (orb_app_index_of(a) << 9) | ((int)cap << 1) | (on ? 1 : 0);
 }
 
 static void job_grant(void *arg)
@@ -655,11 +691,12 @@ static void job_grant(void *arg)
     const orb_app_t *a = orb_app_row((size_t)slot);
     if (!a) { snprintf(out.status, sizeof out.status, "that app is gone"); worker_publish(&out); return; }
     const esp_err_t er = orb_svc_set_grant(a, (orb_cap_t)cap, on);
-    /* The ask is answered either way — the owner has seen it and said a word.
-     * A refused NVS write leaves the RAM answer on the glass and the status
-     * line says "not saved", the same durability/correctness split the dim
-     * toggle's line makes. */
-    orb_svc_prompt_shown(a, 1u << cap);
+    /* No ask to clear (D19): the row's meaning is the owner taking a capability
+     * back, and the broker is the one that decides whether the toggle is even
+     * legal — a cap the app never declared comes back refused, and the status
+     * line says so. A refused NVS write leaves the RAM answer matching the
+     * flash and the line says "not saved", the same durability/correctness
+     * split the dim toggle's line makes. */
     if (er != ESP_OK)
         snprintf(out.status, sizeof out.status, "\"%s\": %s not saved (%s)",
                  a->slug, orb_svc_cap_name((orb_cap_t)cap), esp_err_to_name(er));
@@ -893,9 +930,11 @@ static void activate(void)
                     repaint();
                     return;
                 case IT_PERMS:
-                    /* The B3 door: an ask latched by a denied gated call shows
-                     * as the (ASKED) badge on this row, and the owner answers
-                     * it app -> cap -> two-row confirm from here. */
+                    /* The D19 door: what each installed app declared at install,
+                     * what still runs after the owner's toggles, and a '*' where
+                     * an app has been refused for calling past its declaration.
+                     * app -> cap -> toggle from here, with no ceremony in
+                     * between — the install already carried the consent. */
                     s_page = PG_PERMS;
                     s_cur  = 0;
                     repaint();
@@ -989,25 +1028,17 @@ static void activate(void)
 
         case PG_CAPS: {
             if (s_cur >= 4) { go_back(); repaint(); return; }   /* <- back */
-            s_perm_cap = OWNER_CAPS[s_cur];
-            s_page = PG_CONFIRM;
-            s_cur  = 0;
-            repaint();
-            return;
-        }
-
-        case PG_CONFIRM: {
             const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
             if (!a) { s_page = PG_PERMS; s_cur = 0; repaint(); return; }
-            /* The answer writes NVS on the worker, the zone-select rule again:
-             * nothing that can block runs on the task that paints the dial.
-             * Both rows answer the ask — the second one answers "no" — so the
-             * badge clears either way, and an ask the owner has seen is never
-             * shown twice for the same call. */
-            const int pack = (s_perm_slot << 9) | ((int)s_perm_cap << 1)
-                           | (s_cur == 0 ? 1 : 0);
-            job_post(job_grant, pack);
-            s_page = PG_CAPS;
+            /* One press, one toggle — the ceremony is gone because there is
+             * nothing left to confirm (D19): the owner already agreed to this
+             * cap when the app declared it at install, and this row only takes
+             * it back or gives it again. An undeclared cap is NOT refused here:
+             * the broker is the single authority on what a toggle may do, so
+             * the press posts the job and the status line reports the refusal,
+             * which keeps one rule in one file instead of two that can
+             * disagree. */
+            job_post(job_grant, cap_pack(a, s_cur));
             repaint();                                  /* shows "working..." */
             return;
         }

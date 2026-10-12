@@ -115,9 +115,11 @@ def lifts(src):
         # D12: the long press that closes an open group instead of going home. It
         # touches no widget directly (repaint() is stubbed above), so it lifts.
         lift(src, r"bool menu_view_opt_long\(void\)\n\{[\s\S]*?\n\}", MENU_C),
-        # B3: the worker's grant answer, lifted whole — pack decoding is a
-        # silent-wrong-answer machine (slot<<9|cap<<1|on), and the two rows of
-        # the confirm differ only in that low bit.
+        # D19: the worker's toggle and the pack it decodes, lifted whole — the
+        # pack is built by cap_pack(), which exists on its own precisely because
+        # activate() cannot be lifted and the shift arithmetic is the whole
+        # contract between a press and the NVS word it writes.
+        lift(src, r"static int cap_pack\(const orb_app_t \*a, int row\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void job_grant\(void \*arg\)\n\{[\s\S]*?\n\}", MENU_C),
     ]
     consts = [
@@ -125,11 +127,11 @@ def lifts(src):
         presets,
         lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
         lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
-        # B3: the grant-ladder state, the four caps, and the row helpers — one
-        # block, lifted ahead of the page functions that call into it. The
-        # orb_svc doors it reaches are declared by the real orb_svc.h the
-        # harness includes and stubbed below with the registry's.
-        lift(src, r"static int      s_perm_slot[\s\S]*?static bool perms_asked\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # D19: the revocation ladder's state, the four caps, and the row
+        # helpers — one block, lifted ahead of the page functions that call into
+        # it. The orb_svc doors it reaches are declared by the real orb_svc.h
+        # the harness includes and stubbed below with the registry's.
+        lift(src, r"static int      s_perm_slot[\s\S]*?static bool perms_denied\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         "static const orb_app_t *s_app;   /* the app PG_APP is showing */",
         # The one piece of D12 state the shell owns: which group is open, -1 = none.
         "static int s_group_open = -1;",
@@ -138,8 +140,8 @@ def lifts(src):
         lift(src, r"typedef struct \{\n    char\s+status\[72\];[\s\S]*?\} ui_t;", MENU_C),
         # The worker's answer half and the recorder it publishes through —
         # after the ui_t lift, which its signature reads.
-        "static uint32_t g_pend[4], g_grnt[4];",
-        "static int g_setg_calls, g_shown_calls, g_publish_calls, g_setg_slot, g_setg_on;",
+        "static uint32_t g_decl[4], g_grnt[4], g_dmask[4];",
+        "static int g_setg_calls, g_publish_calls, g_setg_slot, g_setg_on;",
         "static orb_cap_t g_setg_cap;",
         "static esp_err_t g_setg_rc;",
         "static char g_pub_line[72];",
@@ -238,6 +240,9 @@ typedef int esp_err_t;
 struct lv_obj_t; typedef struct lv_obj_t lv_obj_t;
 
 #define ESP_OK 0
+#define ESP_FAIL (-1)          /* the refused-write answer the D19 toggle's
+                                * status line is checked against, spelled as
+                                * esp_err.h spells it rather than as a bare -1 */
 #define ESP_LOGI(tag, ...) ((void)0)
 #define ESP_LOGW(tag, ...) ((void)0)
 static const char *TAG __attribute__((unused)) = "menu";
@@ -290,11 +295,13 @@ static int xSemaphoreGive(SemaphoreHandle_t m) { (void)m; g_gives++; return 1; }
 static int g_activations;
 static void activate(void) { g_activations++; }
 
-/* job_post() is stubbed: the queue is FreeRTOS, and what matters here is that the
- * cursor moved (or did not), not that a packet was queued. The kind enum is
- * lifted, not restated, so a job kind the menu starts posting but this file never
- * learned about fails to compile instead of passing quietly. */
-static void job_post(void (*fn)(void *), int idx) { (void)fn; (void)idx; g_activations++; }
+/* job_post() is stubbed below, after the shell's own state: the queue is
+ * FreeRTOS, and what matters here is that the cursor moved (or did not), not
+ * that a packet was queued. The kind enum is lifted, not restated, so a job
+ * kind the menu starts posting but this file never learned about fails to
+ * compile instead of passing quietly. */
+static void (*g_posted_fn)(void *);
+static int g_posted_pack, g_posts;
 
 __CONSTS__
 
@@ -305,6 +312,16 @@ static ui_t   s_ui;
 static bool   s_busy;   /* the shell worker's gate, faked below */
 static bool   s_dirty;
 static ui_t   s_shared;
+
+static void job_post(void (*fn)(void *), int idx)
+{
+    /* The worker's own busy gate, not the menu's: orb_jobs_post answers
+     * INVALID_STATE while a job is outstanding and job_post() swallows it, so
+     * the fake has to drop the request the same way or the suite cannot tell a
+     * row that respects it from one that posts twice. */
+    if (s_busy) return;
+    g_posted_fn = fn; g_posted_pack = idx; g_posts++;
+}
 
 __FUNCS__
 
@@ -386,7 +403,7 @@ const orb_app_t *orb_app_at(size_t i)
     return (i == 1 && g_opt_app_count > 1) ? FAKE_APP2 : NULL;
 }
 
-/* ---- B3's side of the registry and the broker: the PERMISSIONS ladder reads
+/* ---- D19's side of the registry and the broker: the PERMISSIONS ladder reads
  * the raw rows (chrome included, because a row that filtered the shell out by
  * accident would pass every count check and still show MENU as an app), so
  * the fake table carries the kinds the shipped filter sorts on. */
@@ -395,6 +412,11 @@ static int g_app_rows_n = 3;
 size_t orb_app_rows(void) { return (size_t)g_app_rows_n; }
 const orb_app_t *orb_app_row(size_t i)
 {
+    /* Honours g_app_rows_n, not just the index: the worker's toggle writes by
+     * slot number out of a pack, and the D19 guard that refuses a slot the
+     * registry no longer has can only be tested if the table can actually
+     * shrink from under it. */
+    if ((int)i >= g_app_rows_n) return NULL;
     if (i == 0) return FAKE_APP;
     if (i == 1) return FAKE_APP2;
     if (i == 2) return &g_fake_shell;
@@ -407,15 +429,23 @@ int orb_app_index_of(const orb_app_t *a)
     if (a == &g_fake_shell) return 2;
     return -1;
 }
-uint32_t orb_svc_pending(const orb_app_t *a)
+/* declared is what the manifest asked for at install, grants is what the gate
+ * will answer — the suite scripts them apart, because the menu's whole job on
+ * these pages is showing the difference rather than one of them. */
+uint32_t orb_svc_declared(const orb_app_t *a)
 {
     const int i = orb_app_index_of(a);
-    return i < 0 ? 0 : g_pend[i];
+    return i < 0 ? 0 : g_decl[i];
 }
 uint32_t orb_svc_grants(const orb_app_t *a)
 {
     const int i = orb_app_index_of(a);
     return i < 0 ? 0 : g_grnt[i];
+}
+uint32_t orb_svc_denied_mask(const orb_app_t *a)
+{
+    const int i = orb_app_index_of(a);
+    return i < 0 ? 0 : g_dmask[i];
 }
 const char *orb_svc_cap_name(orb_cap_t c)
 {
@@ -435,12 +465,6 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t c, bool on)
         else    g_grnt[g_setg_slot] &= ~(1u << (unsigned)c);
     }
     return g_setg_rc;
-}
-void orb_svc_prompt_shown(const orb_app_t *a, uint32_t caps)
-{
-    const int i = orb_app_index_of(a);
-    if (i >= 0) g_pend[i] &= ~caps;
-    g_shown_calls++;
 }
 
 int main(void)
@@ -522,77 +546,143 @@ int main(void)
     menu_view_apply_input(0, false);
     ck("zero delta is not a move", s_cur == 1);
 
-    /* ---- B3: the permissions ladder ----
-     * The prompt the plan's §4.2 promised: an ask latched at the broker's gate
-     * surfaces as a badge on the top row, and the owner answers app -> cap ->
-     * two-row confirm. The activation half (which press posts which answer) is
-     * activate() and lives on the bench; the shapes, strings, routing and the
-     * worker's pack decoding are all lifted and pinned here. */
+    /* ---- D19: the permissions ladder ----
+     * Declare-at-install is the grant, so these pages approve nothing: they
+     * show what each app declared, what still runs after the owner's toggles,
+     * and where an app has been refused for calling past its declaration. The
+     * shapes, strings and routing are lifted and pinned here; the press half
+     * that walks the dial is activate() and lives on the bench. */
     s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
     g_opt_app_count = 1; g_opt_n = 2;
-    ck("no ask, no badge on the PERMISSIONS row",
+    /* alpha asks for two caps, beta for one — the count a row shows is the
+     * DECLARED set, not the four caps the page happens to list. */
+    g_decl[0] = (1u << CAP_POWER) | (1u << CAP_NET);
+    g_decl[1] = 1u << CAP_THEMES;
+    g_grnt[0] = g_decl[0]; g_grnt[1] = g_decl[1];
+    ck("no refusal, no mark on the PERMISSIONS row",
        !strcmp(rowline(3), "PERMISSIONS"));
-    g_pend[0] = 1u << CAP_POWER;
-    ck("an ask badges the top row for the owner",
-       (s_page = PG_TOP, !strcmp(rowline(3), "PERMISSIONS  (ASKED)")));
-    g_pend[0] = 0;
+    g_dmask[0] = 1u << CAP_POWER;
+    ck("an app refused past its declaration marks the top row",
+       (s_page = PG_TOP, !strcmp(rowline(3), "PERMISSIONS  *")));
+    g_dmask[0] = 0;
     s_page = PG_PERMS; s_cur = 0;
-    ck("the app list counts the owner's four and filters out chrome",
-       page_rows() == 3 && !strcmp(rowline(0), "Clock  (0 of 4)") &&
-       !strcmp(rowline(1), "HSB  (0 of 4)") && !strcmp(rowline(2), "<- back"));
-    g_pend[1] = 1u << CAP_THEMES;
-    ck("an app that asked says so on its own row",
-       (s_page = PG_PERMS, !strcmp(rowline(1), "HSB  (ASKED HERE)")));
-    g_pend[1] = 0;
-    g_grnt[0] = (1u << CAP_POWER) | (1u << CAP_THEMES);
-    ck("granted caps read in the app's row",
-       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (2 of 4)")));
-    g_grnt[0] = 0;
-    s_page = PG_CAPS; s_perm_slot = 0; s_perm_cap = CAP_POWER; s_cur = 0;
+    ck("the app list counts against what each declared and filters out chrome",
+       page_rows() == 3 && !strcmp(rowline(0), "Clock  (2 of 2)") &&
+       !strcmp(rowline(1), "HSB  (1 of 1)") && !strcmp(rowline(2), "<- back"));
+    g_grnt[0] = 0;                            /* the owner took both back */
+    ck("revoked caps read as live-zero, not as never-declared",
+       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (0 of 2)")));
+    g_grnt[0] = g_decl[0];
+    g_decl[0] = 0;                            /* an app that asked for nothing */
+    ck("an app that declared nothing says so in words, not as a zero count",
+       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (nothing declared)")));
+    g_decl[0] = (1u << CAP_POWER) | (1u << CAP_NET);
+    g_dmask[1] = 1u << CAP_THEMES;
+    ck("the refused app carries the mark into its own row too",
+       (s_page = PG_PERMS, !strcmp(rowline(1), "* HSB  (1 of 1)")));
+    g_dmask[1] = 0;
+    s_page = PG_CAPS; s_perm_slot = 1; s_cur = 0;
     ck("the cap page is the four owner caps plus back, never the free four",
-       page_rows() == 5 && !strcmp(rowline(0), "power: denied") &&
-       !strcmp(rowline(1), "net: denied") &&
-       !strcmp(rowline(2), "sd_read: denied") &&
-       !strcmp(rowline(3), "themes: denied") &&
+       page_rows() == 5 && !strcmp(rowline(0), "power: not declared") &&
+       !strcmp(rowline(1), "net: not declared") &&
+       !strcmp(rowline(2), "sd_read: not declared") &&
+       !strcmp(rowline(3), "themes: allowed") &&
        !strcmp(rowline(4), "<- back"));
-    g_pend[0] = 1u << CAP_NET;
-    ck("the cap an app actually asked for says asking",
-       (s_page = PG_CAPS, !strcmp(rowline(1), "net: denied  (asking)")));
-    g_pend[0] = 0;
-    g_grnt[0] = 1u << CAP_SD_READ;
-    ck("an allowed cap reads allowed",
-       (s_page = PG_CAPS, !strcmp(rowline(2), "sd_read: allowed")));
-    g_grnt[0] = 0;
-    ck("the confirm is the plan's two rows exactly, no back to fall through",
-       (s_page = PG_CONFIRM, s_perm_slot = 0, s_perm_cap = CAP_THEMES,
-        page_rows() == 2 &&
-        !strcmp(rowline(0), "ALLOW \"Clock\" the themes") &&
-        !strcmp(rowline(1), "KEEP DENIED")));
+    ck("a declared cap the owner has taken back reads revoked, not denied",
+       (s_page = PG_CAPS, s_perm_slot = 0, g_grnt[0] = (1u << CAP_NET),
+        !strcmp(rowline(0), "power: revoked") &&
+        !strcmp(rowline(1), "net: allowed")));
+    g_dmask[0] = 1u << CAP_POWER;
+    ck("the cap actually refused this boot is the one that carries the mark",
+       (s_page = PG_CAPS, s_perm_slot = 0,
+        !strcmp(rowline(0), "power: revoked *") &&
+        !strcmp(rowline(1), "net: allowed")));
+    g_dmask[0] = 0; g_grnt[0] = g_decl[0];
+    g_dmask[0] = 1u << CAP_THEMES;      /* refused on a cap the clock never
+                                         * declared: the row that says so is the
+                                         * undeclared one, and the mark belongs
+                                         * there most of all */
+    ck("the mark rides the undeclared row too, where the divergence actually shows",
+       (s_page = PG_CAPS, s_perm_slot = 0,
+        !strcmp(rowline(3), "themes: not declared *")));
+    g_dmask[0] = 0;
     ck("back from the cap page lands on the app's own row in the list",
        (s_page = PG_CAPS, s_perm_slot = 1, go_back(),
         s_page == PG_PERMS && s_cur == 1));
-    ck("back from an unanswered confirm returns under the cap it asked about",
-       (s_page = PG_CONFIRM, s_perm_slot = 0, s_perm_cap = CAP_NET, go_back(),
-        s_page == PG_CAPS && s_cur == 1));
     ck("back from the app list lands on the PERMISSIONS row",
        (s_page = PG_PERMS, go_back(), s_page == PG_TOP && s_cur == IT_PERMS));
-    {   /* The worker's answer half — pack decoding is where a wrong shift
-         * silently grants the wrong app or the wrong cap. */
+    {   /* One press, one toggle. activate() is not liftable, so the pack the
+         * press builds is checked through the helper that builds it — and the
+         * routing is checked where it can be: the press must stay on the page
+         * rather than walk anywhere, because there is no confirm to reach. */
+        s_page = PG_CAPS; s_perm_slot = 0; s_cur = 3;
+        g_grnt[0] = g_decl[0];
+        ck("a revoked cap's press asks for the grant, naming this app and cap",
+           cap_pack(FAKE_APP, 3) == ((0 << 9) | ((int)CAP_THEMES << 1) | 1));
+        s_cur = 1; g_grnt[0] = (1u << CAP_NET);   /* row 1 is net, which the
+                                                   * row still shows as allowed:
+                                                   * the press must ask to revoke
+                                                   * the very cap it names */
+        ck("an allowed cap's same press asks for the revoke",
+           cap_pack(FAKE_APP, 1) == ((0 << 9) | ((int)CAP_NET << 1) | 0));
+        ck("and the second app's pack carries its own slot, not the page's",
+           (g_grnt[1] = 0, cap_pack(FAKE_APP2, 0) ==
+            ((1 << 9) | ((int)CAP_POWER << 1) | 1)));
+        ck("the four rows pack exactly the owner's four caps, in that order",
+           ({ int bad = 0; const int w[4] = { CAP_POWER, CAP_NET, CAP_SD_READ,
+                                              CAP_THEMES };
+              for (int r = 0; r < 4; r++)
+                  if (((cap_pack(FAKE_APP, r) >> 1) & 0xFF) != w[r]) bad++;
+              bad == 0; }));
+        g_grnt[1] = g_decl[1]; g_grnt[0] = g_decl[0];
+        g_activations = 0;
+        menu_view_apply_input(0, true);
+        ck("the press routes to the action path and stays on the cap page",
+           g_activations == 1 && s_page == PG_CAPS && s_cur == 1);
+        /* The busy rule the whole menu shares: no press acts while the worker
+         * is down, so a double-tap cannot queue two writes. */
+        s_busy = true; g_activations = 0; g_posts = 0;
+        menu_view_apply_input(1, false);
+        menu_view_apply_input(0, true);
+        ck("a press while the worker is busy moves nothing and posts nothing",
+           g_activations == 0 && g_posts == 0 && s_cur == 1);
+        s_busy = false;
+    }
+    {   /* The worker's answer half — lifted whole from the shipped file. */
         int pack = (0 << 9) | ((int)CAP_THEMES << 1) | 1;
-        g_setg_rc = ESP_OK; g_setg_calls = 0; g_shown_calls = 0;
-        g_publish_calls = 0; g_pend[0] = 1u << CAP_THEMES;
+        g_setg_rc = ESP_OK; g_setg_calls = 0;
+        g_publish_calls = 0;
         job_grant(&pack);
-        ck("the ALLOW answer persists the grant and clears the ask",
+        ck("the toggle persists exactly the grant it was handed, in the slot it names",
            g_setg_calls == 1 && g_setg_slot == 0 && g_setg_cap == CAP_THEMES &&
            g_setg_on == 1 && (g_grnt[0] & (1u << CAP_THEMES)) != 0 &&
-           g_pend[0] == 0 && g_shown_calls == 1 && g_publish_calls == 1);
+           g_publish_calls == 1);
+        ck("and the line it publishes names the cap and the new state",
+           strstr(g_pub_line, "themes") && strstr(g_pub_line, "ALLOWED"));
         int pack2 = (1 << 9) | ((int)CAP_POWER << 1) | 0;
-        g_setg_calls = 0; g_shown_calls = 0; g_pend[1] = 1u << CAP_POWER;
+        g_setg_calls = 0; g_publish_calls = 0;
         job_grant(&pack2);
-        ck("KEEP DENIED answers the ask without granting it",
-           g_setg_calls == 1 && g_setg_slot == 1 && g_setg_on == 0 &&
-           !(g_grnt[1] & (1u << CAP_POWER)) && g_pend[1] == 0 &&
-           g_shown_calls == 1);
+        ck("the revoke half reaches the broker as a revoke",
+           g_setg_calls == 1 && g_setg_slot == 1 && g_setg_cap == CAP_POWER &&
+           g_setg_on == 0 && !(g_grnt[1] & (1u << CAP_POWER)) &&
+           g_publish_calls == 1);
+        ck("and says revoked, not allowed, on the status line",
+           strstr(g_pub_line, "revoked") && !strstr(g_pub_line, "ALLOWED"));
+        g_setg_rc = ESP_FAIL; g_publish_calls = 0;
+        job_grant(&pack);
+        ck("a refused NVS write says not saved instead of claiming the toggle",
+           g_publish_calls == 1 && strstr(g_pub_line, "not saved"));
+        g_setg_rc = ESP_OK;
+        /* The pack carries a slot number, and by the time the worker runs the
+         * app it named can be uninstalled. Writing then would land the toggle
+         * on whichever row slid into the number — so the answer is a line, not
+         * a write. */
+        g_app_rows_n = 0; g_setg_calls = 0; g_publish_calls = 0;
+        job_grant(&pack);
+        ck("a slot the table no longer has writes nothing and says the app is gone",
+           g_setg_calls == 0 && g_publish_calls == 1 &&
+           strstr(g_pub_line, "gone"));
+        g_app_rows_n = 3;
         g_grnt[0] = 0; g_grnt[1] = 0;
     }
 
@@ -1114,16 +1204,44 @@ MUTATIONS = [
      "s_page = PG_DISPLAY;\n        s_cur  = 1;", "s_page = PG_DISPLAY;\n        s_cur  = 0;"),
     ("a preset label drifts from what ships",
      '{   600, "10 min" },', '{   600, "10 minutes" },'),
-    ("B3: the app list loses its back row",
+    ("D19: the app list loses its back row",
      "case PG_PERMS:  return perm_rows() + 1;", "case PG_PERMS:  return perm_rows();"),
-    ("B3: the two-row confirm grows a third row",
-     "case PG_CONFIRM: return 2;", "case PG_CONFIRM: return 3;"),
-    ("B3: the chrome filter flips and lists the shell as an app",
+    ("D19: the chrome filter flips and lists the shell as an app",
      "if (a && a->kind == ORB_APP_KIND_APP && a->installed) n++;",
      "if (a && a->installed) n++;"),
-    ("B3: the ask badge stops reading the latch",
-     "if (orb_svc_pending(a))\n                snprintf(out, outsz, \"%s  (ASKED HERE)\", a->title ? a->title : a->slug);",
-     "if (false)\n                snprintf(out, outsz, \"%s  (ASKED HERE)\", a->title ? a->title : a->slug);"),
+    # The two facts the ladder exists to keep apart: what the app declared at
+    # install, and what the owner has left running. Each pin breaks one of them
+    # and only one, so the suite's (n of m) line is what catches it.
+    ("D19: the declared count stops being the declared count",
+     "if (dm & (1u << OWNER_CAPS[c])) nd++;",
+     "if (gm & (1u << OWNER_CAPS[c])) nd++;"),
+    ("D19: an app that declared nothing reads as a zero instead of a sentence",
+     "if (nd == 0)", "if (false)"),
+    ("D19: a cap the app never declared stops saying so",
+     "if (!dcl) {", "if (false) {"),
+    ("D19: the refusal mark stops reading the mask it is meant to show",
+     "if (a && a->kind == ORB_APP_KIND_APP && orb_svc_denied_mask(a)) return true;",
+     "if (a && a->kind == ORB_APP_KIND_APP && false) return true;"),
+    ("D19: the refusal mark is detached from the mask it reads",
+     "const bool ref = (orb_svc_denied_mask(a) & bit) != 0;",
+     "const bool ref = false;"),
+    # The press builds the pack through cap_pack() now, so the two shifts that
+    # decide which app and which cap the worker writes are pinned in the helper
+    # the suite lifts and calls directly.
+    ("D19: the toggle's slot field loses a shift and lands on another app",
+     "return (orb_app_index_of(a) << 9) | ((int)cap << 1) | (on ? 1 : 0);",
+     "return (orb_app_index_of(a) << 8) | ((int)cap << 1) | (on ? 1 : 0);"),
+    ("D19: the toggle stops reading the state it is showing and always allows",
+     "const bool on = !(orb_svc_grants(a) & (1u << cap));",
+     "const bool on = true;"),
+    ("D19: the worker decodes the cap from the wrong end of the pack",
+     "const int slot = pack >> 9, cap = (pack >> 1) & 0xFF, on = pack & 1;",
+     "const int slot = pack >> 9, cap = (pack >> 2) & 0xFF, on = pack & 1;"),
+    ("D19: a refused NVS write lets the row claim the toggle anyway",
+     '\\"%s\\": %s not saved (%s)', '\\"%s\\": %s %s (%s)'),
+    ("D19: the worker writes a slot the registry no longer has",
+     "if (!a) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }",
+     "if (false) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }"),
 ]
 
 

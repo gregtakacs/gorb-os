@@ -87,6 +87,15 @@ close the item; the work order is §13.
 | D12 | App option pages may nest | **Sub-menus, one level deep** (owner chose this ABI shape from the four offered). An app's option list can carry header rows that open one nested list; items live inside it, never inside each other. One ABI hook added (§1.4): `opt_kind` — `OPT_ROW` / `OPT_GROUP` / `OPT_ITEM`, contiguous-section convention, NULL hook = today's flat page. |
 | D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. |
 
+### 0.4 Owner's ruling, 2026-10-12 (third round) — the M3 overflow-mechanism choice
+
+The owner ratified the §14.1 ruling as proposed. Numbers, method and the
+refusal-hunt finding stand there unchanged.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D14 | Which mechanism serves the overflow bank | **A (flash re-map) is the mechanism — for the overflow bank as for the primary.** The measured 3.6 ms of switch and 5% of read cost an arena saves do not pay its 471 ms boot fill and 3.86 MB of PSRAM (of 7.95 free), and steady rotation is identical at the reporting resolution. **B (PSRAM arena) ships dark** (`ORB_ART_MECH_B 0`) as P4's escape hatch — the only way a third flagship can boot when the page budget says no — with its gate measured and its ABI promise host-pinned. Flipping B on is one byte (`art_bank.h:98`); if it ever ships lit, its carried-bank rule applies (§14.1: the release-for-free variant re-fills at 471 ms, so an arena app carries its parked bank — the §6/M-carrier decision is mandatory for B, not optional). |
+
 ---
 
 ## 1. The line, drawn at today's files
@@ -268,7 +277,7 @@ Do not shrink the two app slots to buy room: 1,476,128 B used of 2 MB, and `part
 | Risk | none at two flagships; a third would be measured before it shipped | OPI bandwidth is already being paid for by the flush path and the canvas restore; sprite reads there can steal the very ms the fps model measures |
 | Precedent in this tree | exactly what `art_bank.c` does today, one bank at a time (`art_bank.h:37-41`) | the tourbillon chord caches (`clock_view.c:864`) and the GIF canvas already do this |
 
-A becomes the default because the page maths is no longer in doubt at two flagships: 142 of 256, using the image's measured 22 pages rather than `.rodata` alone. What ships unchanged is the *single-bank* mapping of today; M2 now proves the two-bank case on the board rather than discovering it, and M3 checks A against B for the overflow path only. The ABI hides the choice behind `orb_art_reserve()` either way, so an app never learns which mechanism served its pixels — which is what keeps B viable if a third flagship is ever wanted.
+A becomes the default because the page maths is no longer in doubt at two flagships: 142 of 256, using the image's measured 22 pages rather than `.rodata` alone. What ships unchanged is the *single-bank* mapping of today; M2 now proves the two-bank case on the board rather than discovering it, and M3 checks A against B for the overflow path only. The ABI hides the choice behind `orb_art_reserve()` either way, so an app never learns which mechanism served its pixels — which is what keeps B viable if a third flagship is ever wanted. **M3 measured that check 2026-10-12 (§14) and the owner ratified A for the overflow bank as D14 (§0.4); B ships dark as P4's escape hatch.**
 
 ## 4. Apps, capabilities, and gated configuration
 
@@ -1483,15 +1492,16 @@ parked bank is NOT carried — costs a 251 µs free plus a **471 ms re-fill**:
 for the arena, the carry decision of §6/M-carrier is not optional, it is the
 mechanism's survival condition.
 
-**Ruling proposed to the owner.** A stays the mechanism for the overflow bank
-too: 3.6 ms of switch and 5% of read cost do not pay 471 ms of boot and half
-the PSRAM (3.86 of 7.95 MB free), and steady rotation is identical at the
-reporting resolution. B ships dark (`ORB_ART_MECH_B 0`) as P4's escape hatch —
-it is the only way a third flagship can ever boot, its gate (free minus bank
-minus 2 MB margin, refusal counted with the byte figure in the log) is
-measured, and the ABI promise of §3.3 is now code, host-pinned
-(`host_art_residency_test.py`: 16 checks, 11 mutations). If the owner wants
-B's 3.6 ms badly enough to pay the PSRAM, the define is one byte.
+**Ruling — ratified by the owner 2026-10-12 as D14 (§0.4).** A stays the
+mechanism for the overflow bank too: 3.6 ms of switch and 5% of read cost do
+not pay 471 ms of boot and half the PSRAM (3.86 of 7.95 MB free), and steady
+rotation is identical at the reporting resolution. B ships dark
+(`ORB_ART_MECH_B 0`) as P4's escape hatch — it is the only way a third
+flagship can ever boot, its gate (free minus bank minus 2 MB margin, refusal
+counted with the byte figure in the log) is measured, and the ABI promise of
+§3.3 is now code, host-pinned (`host_art_residency_test.py`: 16 checks, 11
+mutations). If B's 3.6 ms is ever wanted badly enough to pay the PSRAM, the
+define is one byte (`art_bank.h:98`).
 
 ### 14.2 The refusal hunt — §11's third finding, answered
 

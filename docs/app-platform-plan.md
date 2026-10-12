@@ -1390,4 +1390,35 @@ readback, so a write the driver *reports* as taken and the panel never applies s
 this fix; it covers the refused write, which is the failure the module could turn permanent. The
 next report reads `idle.writes_failed` before it reads the glass.
 
+### 13.8 Theme identity FORMAT 2 — outcome, hardware-verified 2026-10-12 (closes `docs/theme-naming-todo.md`)
+
+FORMAT 2 replaces the slug+title pair with one `name` field; the card filename is
+`sha256(name)[:12] + ".orbtheme"` and carries no identity of its own. The full design and the
+green/blocked inventory live in `docs/theme-identity-plan.md`; that file's §7.4 promised this
+outcome record before `docs/theme-naming-todo.md` was deleted, and the deletion is in this commit.
+
+**Verified on orb-A at `73a5acf`, over the wire and on the glass.** FORMAT 1 containers refuse at
+the format gate with an honest reason string, on the card list and at boot, and the dial degrades
+to the baked-in bank instead of drawing garbage. Upload lands the card copy under the header's own
+id — the request carries no name. Identical re-send is a no-op; same name with different bytes
+answers 409 plus `overwrite:false`, and one deliberate `?overwrite=1` replaces. Install by id
+mirrors into slot B, reboots, and boots logging `theme "skeleton" from slot-B (chosen)`; the row's
+`changed` hint lights when the card file drifts from the installed mirror. Delete resolves by id
+only: `id=skeleton` and uppercase hex are 400s. Worst-case `GET /api/v1/sd` measures 1395 B against
+the 6144 B buffer with the list at its eight-entry cap and three 55-byte UTF-8 names.
+
+**One defect fell out of the verification.** bake_clock.py truncated an over-55-byte `--theme-name`
+silently — a 55-CHARACTER slice before the id hash and a 55-BYTE slice in orbtheme.py's header
+write, disagreeing for multibyte names: the printed card id hashed a different string than the one
+the header stored. Both layers now refuse with the byte count, matching the studio page's nameOk
+rule, before any file is written. The device reader stays tolerant of a ≤56-byte stored name by
+design: its id is the hash of the stored bytes, so any such file is self-consistent.
+
+**Still open.** The node-gated `_selftest` suites (headless-orbtheme, export-test) have never been
+executed — no node or Chrome on this machine. `diver`, `perpetual-calendar` and `neon` need their
+owner's layer kits to re-bake. The archived `clock_app_default.orbtheme` is not regenerated: the
+kit bake renders `show=[1,1,0,0,0]` against the archived `[1,1,0,1,0]`, so the original bake flags
+are unknown and the archive stays byte-faithful to `skeleton_theme.zip` until they are.
+
+
 

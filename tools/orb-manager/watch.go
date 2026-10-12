@@ -113,10 +113,14 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	// Confirm that one address really is the orb before declaring success: a
 	// just-joined orb can take a beat to bring its httpd up, so poll the single
 	// known IP inside the budget. This is a targeted dial to a caller-supplied
-	// address, not a discovery sweep.
+	// address, not a discovery sweep, and dialing it here is what authorises the
+	// proxy to reach it afterwards — the Manage card's controls are otherwise
+	// refused until an address has been learned or entered.
 	deadline := time.Now().Add(watchLanBudget)
 	for {
 		if st, err := s.orb.Status(ip); err == nil {
+			s.grants.learn(ip)
+			s.setOrbIP(ip)
 			send(map[string]any{"log": "orb joined its network as a station at " + ip + " (" + source + ")"})
 			send(map[string]any{"result": map[string]any{"mode": "lan", "ip": ip, "status": st}})
 			return

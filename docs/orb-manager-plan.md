@@ -232,7 +232,18 @@ Updated at each commit.
   `make check` and `make win-test` green. Both new guards proven by mutation: with
   the block-boundary and `command()` checks removed the wire takes 3 blocks instead
   of 2, and with `quit`'s wait removed the listener is released during a flash.
-- Hardware: nothing in iterations 0-1 was run against a cable. The cancel path
+- Iteration 2: per-launch token (`X-Orb-Token` header + HttpOnly SameSite=Strict
+  cookie) and a same-origin/`Sec-Fetch-Site` check on every mutating route including
+  the whole `/orb/` proxy; `-addr` refuses a non-loopback host without
+  `-allow-remote`; the proxy now requires a LEARNED IP literal, a device-route and
+  method allowlist mirroring `orb_net.c`/`theme_app.c`, hub-owned dial port, and
+  byte caps; the swallowed proxy read error is reported. All four gates verified
+  live against a running hub and by mutation: without the learned-IP gate the hub
+  dials `127.0.0.1:80` and returns its 404, and with the token or origin check
+  disabled the cross-site cases go 200. The token injection bug (identifier eaten
+  by `ReplaceAll`) was caught here and its test hardened to pin the property name
+  `app.js` reads.
+- Hardware: nothing in iterations 0-2 was run against a cable. The cancel path
   drives real ROM timing and needs one live cancel on orb-B before it is called
   verified.
 

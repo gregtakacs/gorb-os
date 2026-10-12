@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,24 @@ type Server struct {
 	// identities caches what each port turned out to be, because a probe reboots
 	// the orb and the answer must not be paid for twice.
 	identities *identityCache
+
+	// token is this launch's control secret: minted once in main, handed to the
+	// page it serves, and required on every request that changes something. See
+	// security.go for why the loopback bind is not the thing that makes this safe.
+	token string
+	// grants are the orb addresses the proxy is willing to dial. Empty means the
+	// hub reaches nothing off the box.
+	grants *ipGrants
+	// orbIP mirrors the address the onboarding flow last learned, so the status
+	// probe has a default target before the browser supplies one. It is a UI
+	// convenience: the proxy decides with grants, never with this field.
+	imu   sync.Mutex
+	orbIP string
+	// devicePort is the TCP port the proxy dials on an orb. It is the hub's
+	// setting, never part of the /orb/ URL: a client-chosen port would turn the
+	// learned-address gate into a port scanner on the orb's host. Only a bench
+	// test against a local fake orb overrides it.
+	devicePort string
 
 	// lastBoot holds the verdict the flash session read off the boot console
 	// while it held the port across its own HardReset. /api/watch consumes it:
@@ -116,13 +135,31 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 
 func main() {
 	var addr, browser, repo, fwPath string
-	var noWindow bool
+	var noWindow, allowRemote bool
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
 	flag.StringVar(&fwPath, "firmware", "", "a firmware bundle (.zip) to flash instead of the one built into this binary")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
+	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.Parse()
+
+	// Loopback is the whole of the hub's exposure story, so binding off it has to
+	// be a decision someone typed. See security.go: a page on the browser's own
+	// machine can already reach 127.0.0.1, so the address is not what makes the
+	// control surface safe — the token and the origin check are. Binding a
+	// flasher to a LAN or to 0.0.0.0 without saying so is the part worth refusing.
+	if !isLoopbackHost(addr) && !allowRemote {
+		host := addr
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		}
+		log.Fatalf("orb-manager: refusing to bind %s: that is not a loopback address, and this tool holds a flasher."+
+			"\n  Use 127.0.0.1, or pass -allow-remote if you really mean to expose the hub on %s.", addr, host)
+	}
+	if !isLoopbackHost(addr) {
+		log.Printf("orb-manager: exposed on %s at operator request - mutating routes still require the per-launch token, but anyone on that network can reach the login-free UI", addr)
+	}
 
 	repoDir := strings.TrimSpace(repo)
 	if repoDir == "" {
@@ -130,7 +167,8 @@ func main() {
 	}
 
 	s := &Server{orb: orbnet.NewClient(scanTimeout), device: orbnet.NewClient(deviceTimeout), repoDir: repoDir,
-		identities: newIdentityCache(), ops: newOpRegistry()}
+		identities: newIdentityCache(), ops: newOpRegistry(),
+		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL)}
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -326,40 +364,68 @@ func (s *Server) routes(mux *http.ServeMux) {
 	if err != nil {
 		log.Fatalf("embed web: %v", err)
 	}
+	// Static assets only. The document itself comes from handleIndex, which is the
+	// one place that knows this launch's token.
 	mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/", s.handleIndex)
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
-	mux.HandleFunc("/api/ports", s.handlePorts)       // cached identity rides along, never a probe
-	mux.HandleFunc("/api/ports/probe", s.handleProbe) // explicit, one port, reboots it
+	mux.HandleFunc("/api/ports", s.handlePorts) // cached identity rides along, never a probe
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
-	// Firmware the user picks, uploaded rather than named: the hub never walks
-	// the filesystem looking for a build, so there is no traversal to get wrong.
-	mux.HandleFunc("/api/firmware", s.handleFirmwareUpload)
-	mux.HandleFunc("/api/firmware/reset", s.handleFirmwareReset)
-	mux.HandleFunc("/api/flash", s.handleFlash) // streaming, not s.json
+	mux.HandleFunc("/api/ops", s.handleOps)
+	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
+
+	// Everything below changes something: it resets a chip, writes a flash, drives
+	// the device, or puts a file in the repo. requireControl is the whole reason a
+	// page the operator never opened cannot do those things from a browser that
+	// can already reach this port. See security.go.
+	mux.Handle("/api/ports/probe", s.requireControl(http.HandlerFunc(s.handleProbe))) // explicit, one port, reboots it
+	mux.Handle("/api/firmware", s.requireControl(http.HandlerFunc(s.handleFirmwareUpload)))
+	mux.Handle("/api/firmware/reset", s.requireControl(http.HandlerFunc(s.handleFirmwareReset)))
+	mux.Handle("/api/flash", s.requireControl(http.HandlerFunc(s.handleFlash))) // streaming, not s.json
 	// Cancellation and live-operation state. Cancel stops the flash at its next
 	// block boundary; /api/ops says which cable is busy with what, which a
 	// process-wide flag could never answer once two orbs shared a bench.
-	mux.HandleFunc("/api/flash/cancel", s.handleCancel)
-	mux.HandleFunc("/api/ops", s.handleOps)
-	mux.HandleFunc("/api/watch", s.handleWatch)         // streaming post-flash probe
-	mux.HandleFunc("/api/provision", s.handleProvision) // streaming wired-provisioning round-trip
+	mux.Handle("/api/flash/cancel", s.requireControl(http.HandlerFunc(s.handleCancel)))
+	mux.Handle("/api/watch", s.requireControl(http.HandlerFunc(s.handleWatch)))         // streaming post-flash probe
+	mux.Handle("/api/provision", s.requireControl(http.HandlerFunc(s.handleProvision))) // streaming wired-provisioning round-trip
 
 	// Same-origin proxy for the orb's device API. The browser only ever talks
 	// to us; we reach the orb. This is what the missing CORS headers force.
-	mux.HandleFunc("/orb/", s.proxyOrb)
+	// Guarded like the rest: half of the device API it exposes writes to the orb
+	// (/wifi/join, /config, /reboot), and the page driving it is served by us.
+	mux.Handle("/orb/", s.requireControl(http.HandlerFunc(s.proxyOrb)))
 
 	// Theme Editor: the watch-composer, served from the repo.
 	s.routesComposer(mux)
 }
+
+// indexMarker is the QUOTED placeholder in web/index.html that receives the launch
+// token. The quotes are part of the match on purpose: replacing the bare identifier
+// would rewrite `window.__ORB_TOKEN__` itself, leaving the client reading a property
+// that no longer exists and sending no token at all. Replaced at serve time rather
+// than baked into the embed, so the token stays per-launch and the committed HTML
+// never carries a secret.
+const indexMarker = `"__ORB_TOKEN__"`
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-	// /web/ serves index.html via FileServer; pointing at it directly avoids the
-	// extra hop FileServer adds when handed .../index.html outright.
-	http.Redirect(w, r, "/web/", http.StatusFound)
+	page, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "embedded UI missing: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Two channels, same secret: the cookie is what the browser attaches to every
+	// request it makes from this origin — including the composer page, whose JS is
+	// vendor bytes this repo must not edit — and the inline assignment is what the
+	// hub's own client sends explicitly. A cross-site page can neither read the
+	// HttpOnly cookie nor forge the header on a simple form POST.
+	setLaunchToken(w, s.token)
+	body := strings.ReplaceAll(string(page), indexMarker, strconv.Quote(s.token))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(body))
 }

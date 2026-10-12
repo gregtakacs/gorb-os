@@ -107,6 +107,13 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		send(map[string]any{"error": err.Error()})
 		return
 	}
+	if res.IP != "" {
+		// The lease the orb announced on its own console is a USB-learned address,
+		// so the proxy may dial it without anyone typing it. An address the hub
+		// never learned over the cable, and was never handed, stays undialable.
+		s.grants.learn(res.IP)
+		s.setOrbIP(res.IP)
+	}
 	send(map[string]any{"result": map[string]any{
 		"ap_seen":  res.APSeen,
 		"sent":     res.Sent,

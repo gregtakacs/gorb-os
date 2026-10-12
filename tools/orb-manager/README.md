@@ -46,12 +46,49 @@ that protect the *operation*, not the operator's identity:
    unrelated one. The registry holds its entry for the whole operation, not for a
    flag update, and releases it even when the handler returns early.
 
+2. **The local HTTP surface is authenticated, and the proxy is a gate, not a
+   tunnel.** Binding to `127.0.0.1` is not a defence by itself: any page the browser
+   visits can POST to `127.0.0.1:3779` without a CORS grant, because a cross-origin
+   POST only needs permission to be *sent*. So every route that changes something —
+   flash, cancel, provision, identify, firmware pick/reset, watch, and the whole
+   `/orb/` device proxy, half of which writes to the orb — requires two things:
+
+   - **This launch's token**, in the `X-Orb-Token` header or the `orb_token` cookie.
+     `main()` mints 16 random bytes once per process; `handleIndex` writes it into
+     the page it serves and sets the cookie `HttpOnly; SameSite=Strict`. A page that
+     never loaded from this hub cannot produce it, and a cross-site form POST cannot
+     carry the cookie.
+   - **A same-origin check.** `Sec-Fetch-Site` must be `same-origin`/`same-site`, and
+     any `Origin` or `Referer` presented must match the host asked for. A client that
+     sends neither (curl, an agent) is not exempt from the token: that is the scripted
+     path, and it passes `-H "X-Orb-Token: …"` after fetching `/` once.
+
+   A refusal answers in the `{ok:false,error}` envelope every caller already parses,
+   and names the reason. `/api/flash` and the rest are refused **before** the port
+   claim, so a rejected request never reserves a cable.
+
+   `/orb/<ip>/…` carries three further gates, because it is the hub's only route off
+   the box: the address must be an **IP literal this hub learned** over USB or was
+   handed by `POST /api/orb/allow` when the operator committed to it in the Manage
+   card; the path and method must be in the **device route allowlist**, which mirrors
+   the URI table in `main/net/orb_net.c` and `main/theme_app.c`; and the exchange is
+   **byte-capped** (8 MiB down, 4 MiB up). The device's own `/api/v1/ota` is
+   deliberately **not** in that allowlist: the hub's rule is that firmware comes from
+   a validated bundle and the whole manifest is always written, so the bare-app path
+   is left out of the browser's reach. The port is never taken from the URL, which is
+   what keeps a learned address from becoming a port-scanning target.
+
+3. **Binding off loopback is a decision someone has to type.** `-addr` accepting a
+   LAN address used to be enough on its own; now `-allow-remote` is also required,
+   and the exposure is logged. The token still guards the mutating routes either way.
+
 The hub does no LAN discovery. It never reads the ARP/neighbour table, never
 shells out to `arp`/`arping`, and never sweeps a subnet. An orb's address is
 known only from what the hub already read over its USB console — the lease the
 provisioning door captured, or the association banner the flash logged — or from
-an IP the operator types. Every network call the hub makes is a dial to one
-address it was handed, through the same-origin proxy.
+an IP the operator types, which the Manage card registers with the hub before the
+proxy will dial it. Every network call the hub makes is a dial to one address it
+was handed, through the same-origin proxy.
 
 For an operator who wants an extra identity check before a headless flash,
 `orbflash -mac aa:bb:...` reads the chip's eFuse MAC and refuses on mismatch.
@@ -121,7 +158,8 @@ Three switches cover the exceptions:
 | `--browser=/path/to/chrome` | name the binary instead of autodetecting |
 | `--firmware=<bundle.zip>` | flash a firmware bundle instead of the one built into the binary |
 | `--repo=<clone root>` | serve the Theme Editor from the live clone instead of the copy built in |
-| `--addr=host:port` | bind somewhere other than `127.0.0.1:3779` |
+| `--addr=host:port` | bind somewhere other than `127.0.0.1:3779`; needs `--allow-remote` |
+| `--allow-remote` | permit `--addr` to name a non-loopback host, which the hub otherwise refuses at startup |
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
 dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
@@ -230,7 +268,15 @@ headless; a mismatch aborts before erasing.
 | `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
-| `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API |
+| `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
+| `POST /api/orb/allow` | `{"ip"}` — register the address the operator just typed, which is what lets `/orb/` dial it |
+
+Every route above that CHANGES something (`/api/flash`, `/api/flash/cancel`,
+`/api/provision`, `/api/watch`, `/api/ports/probe`, `/api/firmware`,
+`/api/firmware/reset`, `/api/orb/allow`, and all of `/orb/`) also demands this
+launch's token and a same-origin presentation; see Safety model. The read routes
+(`/api/status`, `/api/ports`, `/api/build`, `/api/ops`) stay open, because the page
+polls them and a GET cannot change an orb.
 
 Every route wraps its payload in `{ok,data}`. The port list sits under
 `data.ports`, not as a bare array, because `app.js` destructures that field. The
@@ -415,6 +461,17 @@ cd C:\Users\<you>\Downloads
 Invoke-RestMethod http://127.0.0.1:3779/api/status   # platform : windows
 Invoke-RestMethod http://127.0.0.1:3779/api/build    # source   : built-in
 Invoke-RestMethod http://127.0.0.1:3779/api/ports    # ports    : COM5 ...
+```
+
+Those three are reads and need nothing. A scripted POST does: fetch `/` once to
+receive this launch's token, then present it. The value changes every time the hub
+starts, so it cannot be baked into a script.
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:3779/ | sed -n 's/.*window\.__ORB_TOKEN__ = "\(.*\)".*/\1/p')
+curl -s -X POST http://127.0.0.1:3779/api/flash/cancel \
+  -H "Content-Type: application/json" -H "X-Orb-Token: $TOKEN" \
+  -d '{"port":"/dev/ttyACM0"}'
 ```
 
 `/api/build` enumerates the five images from the embedded bundle and reports the

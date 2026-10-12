@@ -1,32 +1,87 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 )
 
-// proxyOrb forwards /orb/<host>/api/v1/... to http://<host>/api/v1/... on the
-// same origin, so the browser never needs the orb to send CORS headers (it
-// sends none). Only the device API namespace is exposed and the host must be a
-// bare IPv4 literal, which keeps this from becoming an open proxy.
+// proxyOrb forwards /orb/<ipv4>/api/v1/... to http://<ipv4>/api/v1/... on the same
+// origin, so the browser never needs the orb to send CORS headers (it sends none).
+//
+// Three gates stand between a request and the dial, because this is the only route
+// in the hub that reaches off the box:
+//
+//  1. The address must be an IPv4 LITERAL the hub has LEARNED — over the USB console
+//     during a flash or a provision, or from the operator committing to it in the
+//     Manage card. An arbitrary address in that box used to be dialled, which made
+//     the hub an SSRF pivot out of 127.0.0.1: any page the browser visited could
+//     have the hub knock on 192.168.1.1, on a neighbour's laptop, or on a cloud
+//     metadata address, and read what came back through the same-origin reply.
+//  2. The path must be a route the firmware actually registers, and the method one
+//     that route accepts. The old check was a /api/v1/ prefix, which left the
+//     device's /api/v1/ota — the raw-image write the hub's own policy forbids — one
+//     URL away.
+//  3. The exchange is byte-bounded in both directions, so a route that streams turns
+//     into a truncated reply rather than an unbounded proxy.
 func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/orb/")
 	host, apiPath, ok := strings.Cut(rest, "/")
-	if !ok || !strings.HasPrefix("/"+apiPath, "/api/v1/") || !isIPv4(host) {
+	if !ok || !isIPv4(host) {
 		proxyError(w, http.StatusBadRequest, "expected /orb/<ipv4>/api/v1/...")
 		return
 	}
-	target := "http://" + host + ":80/" + apiPath
+	// Normalise the path before matching: the allowlist is exact, so a trailing
+	// slash or a doubled one must not smuggle a route past it.
+	route := "/" + strings.Trim(apiPath, "/")
+	if !strings.HasPrefix(route, "/api/v1/") || route == "/api/v1/" {
+		proxyError(w, http.StatusBadRequest, "expected /orb/<ipv4>/api/v1/...")
+		return
+	}
+	if !s.grants.allowed(host) {
+		proxyError(w, http.StatusForbidden, "the hub will not dial "+host+
+			": it is not an orb address this hub learned over USB or was given. Enter the orb's address in the Manage card first.")
+		return
+	}
+	if !routeAllowed(route, r.Method) {
+		proxyError(w, http.StatusForbidden, "route "+r.Method+" "+route+" is not one the hub forwards. "+
+			"Device firmware, not an arbitrary path, is flashed from the Onboard card.")
+		return
+	}
+	target := "http://" + host + ":" + s.devicePortOrDefault() + route
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	// The body is copied under a cap rather than streamed: io.LimitReader would
+	// silently truncate an upload, so a too-large one is refused outright. The
+	// device's multipart theme upload is the only big body the UI sends, and the
+	// hub's own upload cap (firmware.MaxAssetBytes) is smaller than this.
+	var body io.Reader
+	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodDelete {
+		raw, rerr := io.ReadAll(io.LimitReader(r.Body, proxyRequestCap+1))
+		if rerr != nil {
+			proxyError(w, http.StatusBadGateway, "reading the request body: "+rerr.Error())
+			return
+		}
+		if int64(len(raw)) > proxyRequestCap {
+			proxyError(w, http.StatusRequestEntityTooLarge, "request body over the proxy's 4 MiB cap")
+			return
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
 	if err != nil {
 		proxyError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if ct := r.Header.Get("Content-Type"); ct != "" && body != nil {
+		req.Header.Set("Content-Type", ct)
+	} else if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := s.device.HTTP().Do(req)
 	if err != nil {
 		// A wired-only hub cannot reach an orb sitting on its own provisioning
@@ -40,16 +95,46 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	copyProxyHeaders(w, resp)
 	w.WriteHeader(resp.StatusCode)
+	// Copy under a cap that is one byte larger than what may be forwarded, so a
+	// reply that overflows is DETECTED rather than silently trimmed: the loop this
+	// replaced broke on any read error and dropped it, so half a JSON body reached
+	// the client looking complete.
 	buf := make([]byte, 8192)
+	var n int64
 	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			_, _ = w.Write(buf[:n])
+		if n >= proxyResponseCap {
+			log.Printf("orb-manager: proxy reply from %s hit the %d B cap; the browser got a truncated body", host, proxyResponseCap)
+			return
+		}
+		lim := int64(len(buf))
+		if proxyResponseCap-n < lim {
+			lim = proxyResponseCap - n
+		}
+		rn, rerr := resp.Body.Read(buf[:lim])
+		if rn > 0 {
+			if _, werr := w.Write(buf[:rn]); werr != nil {
+				return // the browser went away; nothing left to report to
+			}
+			n += int64(rn)
+		}
+		if rerr == io.EOF {
+			return
 		}
 		if rerr != nil {
-			break
+			log.Printf("orb-manager: proxy read from %s aborted after %d B: %v", host, n, rerr)
+			return
 		}
 	}
+}
+
+// devicePortOrDefault is the port the proxy dials. The orb's httpd listens on 80;
+// only a test pointing the hub at a local fake orb sets something else, and the URL
+// the browser sends can never choose it.
+func (s *Server) devicePortOrDefault() string {
+	if s.devicePort == "" {
+		return "80"
+	}
+	return s.devicePort
 }
 
 // proxyError writes a hub-side proxy failure in the same {"error":...} envelope
@@ -80,13 +165,14 @@ func isIPv4(host string) bool {
 	return true
 }
 
+// copyProxyHeaders mirrors the device reply's content type and nothing else. It
+// used to forward every header the orb sent, which is how a device-side
+// Access-Control-Allow-* or a stale Server banner would reach the browser: the hub
+// is the origin the page talks to, so only the payload's own type is the browser's
+// business. Content-Length and Connection are excluded as before, since the hub's
+// reply has its own framing.
 func copyProxyHeaders(w http.ResponseWriter, resp *http.Response) {
-	for k, vs := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Connection") {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
 	}
 }

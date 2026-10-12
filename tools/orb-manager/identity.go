@@ -27,7 +27,8 @@ type identityCache struct {
 // newHub builds a Server in the state main() leaves it in, so a test cannot
 // accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
-	return &Server{identities: newIdentityCache(), ops: newOpRegistry()}
+	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
+		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL)}
 }
 
 func newIdentityCache() *identityCache {

@@ -5,6 +5,24 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
+// ORB_TOKEN arrives inlined into index.html by the hub at serve time, one value per
+// launch. The hub demands it on every request that changes anything, alongside the
+// HttpOnly cookie the browser attaches by itself: the cookie stops a cross-site form
+// POST (SameSite=Strict withholds it), and this header is the half a scripted agent
+// can supply and a cross-site page cannot forge. A page that never loaded from this
+// hub has neither.
+const ORB_TOKEN = (window.__ORB_TOKEN__ === "__ORB_TOKEN__" || !window.__ORB_TOKEN__)
+  ? "" : String(window.__ORB_TOKEN__);
+
+// hubFetch is fetch() with the launch token attached, for every call that can alter
+// something — a flash, a provision, a device route. GETs of /api/ports and the like
+// use plain fetch, so a read never carries the credential it does not need.
+async function hubFetch(url, opts = {}) {
+  const h = Object.assign({}, opts.headers || {});
+  if (ORB_TOKEN) h["X-Orb-Token"] = ORB_TOKEN;
+  return fetch(url, Object.assign({}, opts, { headers: h }));
+}
+
 async function getJSON(url) {
   const r = await fetch(url);
   const j = await r.json();
@@ -175,7 +193,7 @@ async function pickFirmware(file) {
   const form = new FormData();
   form.append("firmware", file, file.name);
   try {
-    const res = await fetch("/api/firmware", { method: "POST", body: form });
+    const res = await hubFetch("/api/firmware", { method: "POST", body: form });
     const j = await res.json().catch(() => ({}));
     if (!res.ok || j.ok === false) {
       state.textContent = (j.error || ("HTTP " + res.status)) + " — still flashing the built-in firmware";
@@ -198,7 +216,7 @@ $("#ob-fwreset").onclick = async () => {
   const state = $("#ob-fwstate");
   state.textContent = "restoring the built-in firmware…";
   try {
-    const res = await fetch("/api/firmware/reset", { method: "POST" });
+    const res = await hubFetch("/api/firmware/reset", { method: "POST" });
     const j = await res.json().catch(() => ({}));
     state.textContent = (res.ok && j.ok) ? "using the firmware built into this app" : (j.error || "HTTP " + res.status);
   } catch (e) { state.textContent = e.message; }
@@ -216,7 +234,7 @@ $("#ob-fwreset").onclick = async () => {
 async function streamPost(url, payload, onEvent) {
   let r;
   try {
-    r = await fetch(url, {
+    r = await hubFetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
@@ -272,7 +290,7 @@ async function streamFlash(url, payload, log, bar) {
     cancelBtn.disabled = true;
     opEl.textContent = "cancelling the flash on " + port +
       " — it stops at the next block boundary, and the orb stays in its bootloader";
-    try { await fetch("/api/flash/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port }) }); }
+    try { await hubFetch("/api/flash/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port }) }); }
     catch (e) { /* the stream's own log line says what happened */ }
   };
   const tick = setInterval(() => showLiveOp(port, opEl), 2000);
@@ -326,7 +344,7 @@ async function probePort() {
   card.hidden = true;
   state.textContent = "restarting the orb to read its identity — about 10 seconds";
   try {
-    const res = await fetch("/api/ports/probe", {
+    const res = await hubFetch("/api/ports/probe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ port }),
@@ -540,7 +558,7 @@ async function loadNetworks(fresh) {
   jlog.textContent = "scanning " + orbIP + "…";
   clearTimeout(scanTimer);
   try {
-    const r = await fetch(`/orb/${orbIP}/api/v1/wifi/scan` + (fresh ? "?fresh=1" : ""));
+    const r = await hubFetch(`/orb/${orbIP}/api/v1/wifi/scan` + (fresh ? "?fresh=1" : ""));
     const d = await readDeviceJSON(r);
     if (d.status === "scanning") {
       scanTimer = setTimeout(() => loadNetworks(false), 1200);
@@ -584,7 +602,7 @@ $("#j-go").onclick = async () => {
   if (tz) body.tz = tz;
   log.textContent = "→ joining " + ssid + "…";
   try {
-    const r = await fetch(`/orb/${ip}/api/v1/wifi/join`, {
+    const r = await hubFetch(`/orb/${ip}/api/v1/wifi/join`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     log.textContent += "\n← " + (await r.text());
@@ -596,7 +614,7 @@ $("#j-go").onclick = async () => {
   while (Date.now() < deadline) {
     await new Promise((res) => setTimeout(res, 1500));
     try {
-      const r = await fetch(`/orb/${ip}/api/v1/status`);
+      const r = await hubFetch(`/orb/${ip}/api/v1/status`);
       const s = await r.json();
       if (s.state === "connected") {
         log.textContent += "\n\u2713 connected — the orb is on " + ssid + " at " + ip + ".";
@@ -621,13 +639,19 @@ async function scan() {
   const list = $("#mn-list");
   const ip = $("#mn-ip").value.trim();
   if (!ip) { list.innerHTML = "<div class='hint'>enter an orb IP, then Load</div>"; return; }
-  list.innerHTML = "<div class='hint'>loading " + ip + "\u2026</div>";
+  list.innerHTML = "<div class='hint'>loading " + esc(ip) + "\u2026</div>";
+  // Register the address with the hub before dialing it. The proxy refuses any
+  // address this hub did not learn over USB or receive here, so that the box in
+  // front of the operator cannot be pointed at a router, a neighbour, or a cloud
+  // metadata address and used as a pivot.
+  try { await hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) }); }
+  catch (e) { /* the status read below reports the real failure */ }
   try {
-    const st = await readDeviceJSON(await fetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
+    const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
     list.innerHTML = "";
     list.appendChild(renderOrb({ ip: ip, status: st }));
   } catch (e) {
-    list.innerHTML = "<div class='hint err'>no orb answering at " + ip + " \u2014 " + e.message + "</div>";
+    list.innerHTML = "<div class='hint err'>no orb answering at " + esc(ip) + " \u2014 " + esc(e.message) + "</div>";
   }
 }
 
@@ -659,7 +683,7 @@ function renderOrb(o) {
   // treat a valid status object as a failure for lacking an "ok" field.
   $(".refresh", node).onclick = async () => {
     try {
-      const s = await readDeviceJSON(await fetch("/orb/" + ipEl + "/api/v1/status"));
+      const s = await readDeviceJSON(await hubFetch("/orb/" + ipEl + "/api/v1/status"));
       out.hidden = false; out.textContent = JSON.stringify(s, null, 2);
     } catch (e) { out.hidden = false; out.textContent = "\u2717 " + e.message; }
   };
@@ -670,7 +694,7 @@ function renderOrb(o) {
 async function postOrb(ip, path, body, out) {
   out.hidden = false; out.textContent = "\u2192 POST " + path;
   try {
-    const r = await fetch("/orb/" + ip + path, {
+    const r = await hubFetch("/orb/" + ip + path, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     out.textContent += "\n\u2190 " + (await r.text());

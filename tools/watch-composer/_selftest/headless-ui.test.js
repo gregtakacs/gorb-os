@@ -28,7 +28,7 @@ ok(!!fi0 && fi0.isFile, 'the file input is offered before anything is chosen', J
 ok(dial.some((f) => f.isNote && /No backdrop/.test(f.note || '')), 'and the row says the plate is procedural today');
 const after = labels('dial');
 it.state.designs.calendar.bgArt = 'ui-art';
-setTimeout(() => {
+setTimeout(async () => {
   const h2 = labels('dial').find((f) => f.isNote && /one-time store|No bytes|re-export|fills a/.test(f.note || ''));
   ok(/one-time store|re-export/.test((h2 || {}).note || ''), 'the line prices the art or refuses it, with numbers', (h2 || {}).note);
   const held = labels('dial');
@@ -437,12 +437,52 @@ setTimeout(() => {
   const r3 = rv.handRows.find((q) => q.label === 'Centre hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
-  for (const k of ['exportKit', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
+  for (const k of ['exportKit', 'exportTheme', 'themeNote', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
     // the three bindings the deselect/scroll row reads: a missing one renders a dead button
     'clearSel', 'clearLabel', 'clearOp', 'pickGuide', 'g', 'paneRef'])
     ok(rv[k] !== undefined, 'the template binding ' + k + ' has a backing property');
   ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
   for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
+  // ---- the theme export: it must report, never throw -------------------------------
+  // A button that dies silently is worse than no button: the author cannot tell a refused
+  // bake from a broken page, and every refusal here is something they can act on.
+  ok(typeof rv.exportTheme === 'function', 'the theme button is callable');
+  ok(/frame bank/.test(rv.themeNote) || /too many/.test(rv.themeNote),
+     'the theme button says what it will ship', JSON.stringify(rv.themeNote));
+  await (async () => {
+    const name = { got: null }, threw = { err: null };
+    it.download = (b, n) => { name.got = n; };
+    const origOk = global.window.GorbBake.slugOk;
+    try {
+      // a dial whose layers cannot be found must land as a sentence, not an exception
+      try { await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'cal'); }
+      catch (e) { threw.err = e; }
+      ok(!threw.err, 'an unusable kit throws nothing at the button', threw.err && threw.err.message);
+      ok(/^Not baked: /.test(it.state.status) && name.got === null,
+         'and it is refused with the reason, without a download', it.state.status.slice(0, 72));
+      // the card can only ever match a sanitized name, so the button sanitizes rather
+      // than refusing: a dial called ".hidden" or 30 chars still bakes, under a name
+      // orb_sd_name_ok would accept.
+      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, '.Hidden Name!');
+      ok(!/not a card name/.test(it.state.status), 'an awkward slug is normalized, not refused', it.state.status.slice(0, 40));
+      let checked31 = null;
+      global.window.GorbBake.slugOk = (s) => { checked31 = s; return origOk(s); };
+      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'a'.repeat(30));
+      ok(typeof checked31 === 'string' && checked31.length <= global.window.GorbBake.NAME_MAX - 1 && /^[a-z0-9._-]+$/.test(checked31),
+         'the slug handed to the baker is inside the header field and the card charset', JSON.stringify(checked31));
+      global.window.GorbBake.slugOk = origOk;
+      // a genuinely impossible name (nothing left after sanitizing) is the one refusal
+      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, '***');
+      ok(/Not baked/.test(it.state.status), 'a name with no usable character is refused', it.state.status.slice(0, 46));
+      global.window.GorbBake = null;
+      await it.finishTheme([], { size: 466 }, 'ok');
+      ok(/did not load/.test(it.state.status), 'a missing baker names the file that is gone', it.state.status.slice(0, 56));
+    } finally {
+      global.window.GorbBake = require('../orbtheme-baker.js');
+      delete it.download;
+      const n = checked; if (n < 1) fails++;
+    }
+  })();
   ok(rv.bundleNote === ex2.bundleNote, 'the bundle label is stable across renders');
   // ---- the build-gate seatbelt: a tempo flip must always be able to rebuild ----------
   // tick is absent from the art signature. Counting every rebuild against the art alone

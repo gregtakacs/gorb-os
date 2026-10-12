@@ -1293,7 +1293,7 @@ class Component extends DCLogic {
     }
     return out;
   }
-  async exportKit() {
+  async exportKit(asTheme) {
     if (this.busy()) return;
     const fc = this.face(), F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), files = [], slug = this.state.dial, s0 = this.state;
     this.setState({ status: 'Packing layer kit…' });
@@ -1456,10 +1456,42 @@ class Component extends DCLogic {
       whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
     };
     files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+    if (asTheme) return this.finishTheme(files, manifest, slug);
     files.push({ name: 'preview.png', data: await this.png(this.previewCanvas()) });
     this.download(this.zip(files), 'watch-' + slug + '-kit.zip');
     const artN = manifest.assets ? manifest.assets.length : 0;
     this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files' + (textKits.length ? ', ' + textKits.length + ' date-sprite kit' + (textKits.length > 1 ? 's' : '') : '') + (artN ? ', ' + artN + ' art source' + (artN > 1 ? 's' : '') + ' in sources/' : '') + (Object.keys(ghostSubs).length ? ', ' + Object.keys(ghostSubs).length + ' transparent sub-dial shipped as no layer' : '') + ', preview at 10:09)' });
+  }
+  /* The device theme, baked here rather than on the bench. It starts from the exact PNG
+   * bytes the layer kit would have shipped (white balance included, shadows raw), so the
+   * only difference from what tools/bake_clock.py produces is what that script folds:
+   * the browser path runs no static fold and no occlusion cull, and says so in its note.
+   * A container is refused, not written, when the dial exceeds a device table or the slug
+   * is one orb_sd.c could never match -- both are the baker's own checks. */
+  async finishTheme(files, manifest, slug) {
+    const G = window.GorbBake;
+    if (!G) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
+    const s = String(slug || 'watch').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '').replace(/[.-]+$/, '').slice(0, G.NAME_MAX - 1);
+    if (!G.slugOk(s)) { this.setState({ status: 'Not baked: "' + s + '" is not a card name (a-z 0-9 . _ -, cannot start with a dot, max ' + (G.NAME_MAX - 1) + ' characters)' }); return; }
+    this.setState({ status: 'Baking ' + s + '.orbtheme…' });
+    try {
+      const t0 = performance.now();
+      const planes = {};
+      // sources/ holds the art as data-URL text, not PNG bytes, and the kit's non-images are
+      // text: bakeKit only ever looks a plane up by the name the manifest uses.
+      for (const f of files) if (/[.]png$/i.test(f.name) && f.name.indexOf('sources/') !== 0) planes[f.name] = await G.decodePngAsync(f.data);
+      const r = G.bakeKit({ manifest, planes, slug: s, title: s, serial: G.crc32(new TextEncoder().encode(JSON.stringify(manifest))), bakedMs: Math.round(performance.now() - t0) });
+      // The card files a theme by the slug baked INSIDE it, not by its filename, so the
+      // download is named to match: a file the author renames still loads under `s`, and
+      // one they drop on the card unrenamed reads as the same name the bench bakes would print.
+      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), s + '.orbtheme');
+      const c = r.report.counts;
+      this.setState({ status: 'Downloaded ' + s + '.orbtheme (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
+    } catch (e) {
+      // The caps and the fold proof throw here: the device would silently drop or misdraw
+      // anything past them, so the bake stops instead of shipping a theme that lies.
+      this.setState({ status: 'Not baked: ' + (e && e.message ? e.message : String(e)) });
+    }
   }
   /* The bundle is the half a Design ID cannot carry: the bytes. Format is named and
    * versioned because a design that silently loads against a different shape is worse
@@ -2085,6 +2117,16 @@ class Component extends DCLogic {
       })(),
       zipNote: F + ' × .png, hands at shown time · .zip',
       exportKit: () => this.exportKit(),
+      // the theme bakes from the kit's own PNG bytes, so it rides the same render pass:
+      // exportKit(true) collects the files and hands them to finishTheme instead of zipping
+      exportTheme: () => this.exportKit(true),
+      themeNote: (() => {
+        const G = window.GorbBake;
+        if (!G) return 'baker not loaded';
+        const nw = (D.comps || []).filter((c) => c.type === 'window').length, nf = (D.comps || []).filter((c) => c.type === 'flare').length;
+        if (D.comps && D.comps.length > G.caps.comp) return 'too many complications for the device table (max ' + G.caps.comp + ')';
+        return F + '-frame bank' + (nw ? ' · ' + nw + ' window' + (nw > 1 ? 's' : '') : '') + (nf ? ' · ' + nf + ' flare' + (nf > 1 ? 's' : '') : '');
+      })(),
       exportBundle: () => this.exportBundle(),
       loadBundle: (e) => this.importBundle(e.target.files && e.target.files[0]),
       bundleNote: (() => { const n = new Set(this.artRefs(D).map((r) => r.id)).size; return n ? n + ' art asset' + (n > 1 ? 's' : '') + ' + design · .wckit' : 'design, no art · .wckit'; })(),

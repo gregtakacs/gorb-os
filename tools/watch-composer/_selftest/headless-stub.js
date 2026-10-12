@@ -144,5 +144,8 @@ const DR = new Proxy(Object.assign({
 win.DialRenderer = { TEETH_PER_LOOP: 12, bankFrames: (f) => f * 2, _: DR };
 
 require(path.join(DIR, 'watch-engine.js'));
+// the composer's theme export needs the baker the page loads, so the UI suite exercises
+// the real themeNote path rather than the "baker not loaded" fallback
+require(path.join(DIR, 'orbtheme-baker.js'));
 const E = win.WatchEngine;
 module.exports = { E, SIZES, loaded, FakeCanvas, ALPHAS, CANVASES };

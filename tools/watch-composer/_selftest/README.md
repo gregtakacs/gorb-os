@@ -253,6 +253,19 @@ python3 -m pip install --user --break-system-packages nodeenv \
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals |
 | `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, a complication already picked on the tab wins the pixel through the hand painted over it (and the same-spot cycle still reaches that hand), a pointer-down on the stage surround deselects while a bubbled canvas click does not, the ghost's picture turns with its facing while the read ray stands at the time angle, the frame-metal row appears only on styles that strike a ring, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
+| `headless-orbtheme.test.js` | the in-browser `.orbtheme` baker held against the Python that defines the format: the geometry blob, the pixel bank and keyframe, the container bytes, PIL's `alpha_composite` integer maths on 14k sampled texels, the device caps and size rule, PNG decode, and the whole shipped kit baked both ways (bench `prep_watch_kit.py` + `bake_clock.py --orbtheme` versus `GorbBake.bakeKit`), byte for byte apart from the bake stamp |
+
+`headless-orbtheme.test.js` needs the bake venv as well as node, because its reference
+side runs the real Python (`pillow` + `numpy`) and compiles nothing:
+
+```sh
+python3 -m venv /tmp/bakevenv && /tmp/bakevenv/bin/pip install pillow numpy
+ORBTHEM_VEC=/tmp/orbtheme_vectors /tmp/nodeenv/bin/node headless-orbtheme.test.js
+```
+
+Its real-kit section caches the bench bake in `/tmp/orbtheme_e2e` and reuses it until
+`assets/sources/watch-orbital-kit3.zip` is newer than the cache, so deleting that
+directory is how you force a fresh bench run.
 
 The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
 `ctx.ops`: the ops cap is sized for the `drawImage`/`fillText` assertions the older

@@ -691,6 +691,16 @@ def bake_tourbillon(blob, style, args):
         raise SystemExit("--tourbillon: frames must all be the same size")
     if imgs[0].size != (SCREEN_W, SCREEN_H):
         imgs = [resize_full(im) for im in imgs]
+    return pack_tourbillon(blob, imgs, px, py, cx, cy, args.pad, args.diff_thresh,
+                           getattr(args, "tourbillon_fps", 15) or 15)
+
+
+def pack_tourbillon(blob, imgs, px, py, cx, cy, pad, diff_thresh, fps=15):
+    """The carriage bank, fed with already-decoded frames. Split out of
+    bake_tourbillon for the same reason pack_bg_bank was: the composer's in-browser
+    baker holds itself against this maths on the same pixels (see
+    tools/watch-composer/_selftest/headless-orbtheme.test.js)."""
+    import numpy as np
     arrs = [np.asarray(im, dtype=np.int16) for im in imgs]
 
     # ONE ink bbox for the whole cycle: every frame is cropped to it, so one
@@ -705,14 +715,14 @@ def bake_tourbillon(blob, style, args):
         r = max(r, int(xs.max()) + 1); b = max(b, int(ys.max()) + 1)
     if r <= l or b <= t:
         raise SystemExit("--tourbillon: frames are fully transparent")
-    l = max(0, l - args.pad); t = max(0, t - args.pad)
-    r = min(SCREEN_W, r + args.pad); b = min(SCREEN_H, b + args.pad)
+    l = max(0, l - pad); t = max(0, t - pad)
+    r = min(SCREEN_W, r + pad); b = min(SCREEN_H, b + pad)
 
     n = len(imgs)
     if n > 16:
         raise SystemExit(f"--tourbillon: {n} frames exceeds the baked max of 16 "
                          f"(clk_theme.tourbillon[] in clock_assets.h)")
-    thr = max(1, args.diff_thresh) * 3        # per-sum, same feel as the bank's
+    thr = max(1, diff_thresh) * 3        # per-sum, same feel as the bank's
 
     recs = []
     for i, im in enumerate(imgs):
@@ -729,8 +739,9 @@ def bake_tourbillon(blob, style, args):
             diff = (0, 0, 0, 0)               # identical to predecessor: mark nothing
         recs.append(emit_sprite(blob, crop, l, t, px, py, cx, cy, 0, True, diff=diff))
     print("  {:8s} tourbillon: {} frames @ {} fps, bbox=({},{},{},{}) pivot=({},{}) centre=({},{})".format(
-        "anim", n, args.tourbillon_fps, l, t, r - l, b - t, px, py, cx, cy))
+        "anim", n, fps, l, t, r - l, b - t, px, py, cx, cy))
     return recs
+
 
 
 
@@ -1270,6 +1281,23 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
             delays = delays[::frame_step]
         print(f"  decimated every {frame_step}th frame: {len(imgs)} kept "
               f"(loop still 1 authored period)")
+    return pack_bg_bank(blob, imgs, delays, diff_thresh, denoise=denoise,
+                        fit=fit, matte=matte, max_rects=max_rects,
+                        max_flush=max_flush, occl=occl, src=src,
+                        kind="gif" if is_gif else "frames")
+
+
+def pack_bg_bank(blob, imgs, delays, diff_thresh, denoise=2, fit="cover",
+                 matte=None, max_rects=16, max_flush=0.62, occl=None,
+                 src="?", kind="frames"):
+    """The delta-rect packer, fed with already-decoded panel-size RGBA frames.
+
+    Split out of bake_bg_bank so the composer's in-browser baker (tools/watch-composer/
+    orbtheme-baker.js) can be held against THIS code on the same frames: a browser cannot
+    read a GIF or a folder of PNGs the way PIL does, but it can be given the same pixels,
+    and the packing is the half where a mismatch costs someone's dial. The two share this
+    one implementation, which is the only reason the mirror test can be byte-exact."""
+    import numpy as np
     if matte:
         # Fold the proved static layers into every frame of the bank, keyframe
         # included. The matte is identical frame to frame, so it contributes no
@@ -1279,7 +1307,7 @@ def bake_bg_bank(blob, src, diff_thresh, denoise=2, fit="cover",
             imgs = [matte_fold(im, m) for im in imgs]
         print(f"  bg bank carries {len(matte)} baked static layer(s)")
     F = [_frames_to_u16(im) for im in imgs]
-    print(f"  {'gif' if is_gif else 'frames'} bg: {src} -> {len(F)} frames @ "
+    print(f"  {kind} bg: {src} -> {len(F)} frames @ "
           f"{SCREEN_W}x{SCREEN_H} fit={fit} "
           f"(diff thresh {diff_thresh}, cluster>=12/25, tile16<={max_rects} rects)")
     F, quiet = _temporal_snap(F, denoise)

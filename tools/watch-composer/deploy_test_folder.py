@@ -3,7 +3,7 @@
 
 Chrome on the Windows side of this WSL box is the only place the composer's real
 pixel path, its file dialogs and its localStorage asset store can be exercised:
-the headless suites cover the decisions, not the rendering. This copies the five
+the headless suites cover the decisions, not the rendering. This copies the six
 files the app loads plus the whole _selftest folder into one flat Windows folder
 laid out so every relative <script src> still resolves, then prints the two
 file:// URLs to open.
@@ -20,9 +20,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TARGET = "/mnt/c/Users/greg/Downloads/test"
 
-# the app loads these four siblings; _selftest/ is copied whole and reaches the
+# the app loads these five siblings; _selftest/ is copied whole and reaches the
 # engine at ../watch-engine.js, so the folder depth is part of the contract
-APP_FILES = ["Watch Composer.dc.html", "support.js", "dial-renderer.js", "watch-engine.js"]
+APP_FILES = ["Watch Composer.dc.html", "support.js", "dial-renderer.js", "watch-engine.js",
+             "orbtheme-baker.js"]
 SELFTEST_DIR = "_selftest"
 
 

@@ -13,23 +13,19 @@
 </header>
 
 <main id="hub" class="hub">
-  <a class="card" href="#onboard" data-view="onboard">
-    <h2>Onboard</h2>
-    <p>Flash firmware onto an orb over its USB cable, then bring it onto the Wi-Fi.</p>
+  <a class="card" href="#manage" data-view="manage">
+    <h2>Orbs</h2>
+    <p>Add an orb over its USB cable, then manage the fleet: set the time zone, toggle the rescue AP, reboot, and factory-reset an orb back to provisioning.</p>
   </a>
   <a class="card" href="/composer/">
     <h2>Theme Editor</h2>
     <p>Design a watchface theme and push it to a connected orb.</p>
   </a>
-  <a class="card" href="#manage" data-view="manage">
-    <h2>Manage</h2>
-    <p>Point at an orb by its IP to set time zone, toggle the rescue AP, reboot.</p>
-  </a>
 </main>
 
 <section id="onboard" class="view" hidden>
-  <button class="back" data-back>← Home</button>
-  <h2>Onboard an orb</h2>
+  <button class="back" data-view="manage">← Orbs</button>
+  <h2>Add an orb</h2>
   <div class="grid">
     <label>Serial port
       <select id="ob-port"></select>
@@ -65,7 +61,7 @@
     <div id="ob-done" hidden>
       <p class="hint" id="ob-done-msg"></p>
       <div class="row">
-        <button id="ob-manage" class="primary">Open in Manage</button>
+        <button id="ob-manage" class="primary">Open in Orbs</button>
         <button id="ob-rejoin" class="ghost">Change network</button>
       </div>
     </div>
@@ -120,7 +116,10 @@
 
 <section id="manage" class="view" hidden>
   <button class="back" data-back>← Home</button>
-  <h2>Manage an orb</h2>
+  <h2>Orbs</h2>
+  <div class="row">
+    <button id="mn-add" class="primary" title="Flash firmware onto an orb over its USB cable and bring it onto the Wi-Fi.">+ Add an orb</button>
+  </div>
   <div class="row">
     <label class="inline">Orb IP <input id="mn-ip" size="18" placeholder="192.168.2.x"></label>
     <button id="mn-scan" class="primary">Load</button>

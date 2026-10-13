@@ -130,7 +130,7 @@ def lifts(src):
         # the sub-table's helpers between them. They ship as one unit, and a
         # lift that took half of them would compile a half-moved shell.
         lift(src, r"static const menu_row_t s_top\[\][\s\S]*?"
-                   r"static void enter_to\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+                   r"static const char \*hint_about\(void\)[^\n]*\n", MENU_C),
         # The app page's entry, the generic move, the inventory itself, and
         # the press: navigation is the shell and is now testable as such.
         lift(src, r"static void open_app\(const orb_app_t \*a\)\n\{[\s\S]*?"
@@ -188,6 +188,26 @@ def lifts(src):
         # broker's answer with it and read the status lines back.
         "void menu_view_set_armed(bool armed);",
         "static esp_err_t g_setg_rc;",
+        'static int g_act_slot, g_act_calls, g_act_rc;',
+        'static int g_en_calls, g_en_slot, g_en_on, g_en_rc;',
+        'static const char *g_en_why;',
+        'static int g_un_calls, g_un_slot, g_un_rc;',
+        'static const char *g_un_why;',
+        'static const char *g_fault_why;',
+        'typedef struct { const char *version; } host_app_desc_t;',
+        'static host_app_desc_t g_desc;',
+        'static int g_sd_mounted;',
+        'const orb_app_t *orb_app_current(void);',
+        'static const char *g_sd_id;',
+        'esp_err_t orb_app_activate(const orb_app_t *a);',
+        'esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz);',
+        'esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);',
+        'const char *orb_svc_fault_reason(const orb_app_t *a);',
+        'static const host_app_desc_t *esp_app_get_description(void);',
+        'static const char *orb_net_ip_str(void);',
+        'static const char *orb_net_tz_current(void);',
+        'static bool orb_sd_mounted(void);',
+        'static const char *orb_sd_card_id(void);',
     ]
     return consts, funcs
     return consts, funcs
@@ -280,6 +300,8 @@ typedef int esp_err_t;
 struct lv_obj_t; typedef struct lv_obj_t lv_obj_t;
 
 #define ESP_OK 0
+#define ESP_ERR_INVALID_STATE_ 263   /* the doors' refusal code, named apart from
+                                 * ESP_FAIL so a check cannot pass on the wrong one */
 #define ESP_FAIL (-1)          /* the refused-write answer the D19 toggle's
                                 * status line is checked against, spelled as
                                 * esp_err.h spells it rather than as a bare -1 */
@@ -507,6 +529,51 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t c, bool on)
     return g_setg_rc;
 }
 
+/* ---- P5.3: the APPS page's doors and ABOUT's facts -------------------------
+ * The catalog reaches the machine through calls the older pages never made.
+ * Each is recorded rather than performed: this suite owns which row posts what
+ * and which sentence lands on the status line, not the flash write behind it
+ * (that is host_orbapp_install_test.py's subject). The refusal texts are
+ * scripted per check because the row's job is to pass the door's own words
+ * through verbatim.
+ *
+ * The slot a call names is resolved from the SLUG rather than an index: the
+ * pack a press builds carries an index, so slug-out/slot-back is exactly the
+ * round trip a wrong shift would corrupt without a sound. */
+esp_err_t orb_app_activate(const orb_app_t *a)
+{
+    g_act_calls++; g_act_slot = orb_app_index_of(a);
+    return (esp_err_t)g_act_rc;
+}
+esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
+{
+    g_en_calls++; g_en_on = on ? 1 : 0;
+    g_en_slot = (slug && !strcmp(slug, g_fake_app.slug))  ? 0 :
+                (slug && !strcmp(slug, g_fake_app2.slug)) ? 1 :
+                (slug && !strcmp(slug, g_fake_shell.slug))? 2 : -1;
+    if (g_en_rc != ESP_OK && why && whysz) snprintf(why, whysz, "%s", g_en_why);
+    return (esp_err_t)g_en_rc;
+}
+esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
+{
+    g_un_calls++;
+    g_un_slot = (slug && !strcmp(slug, g_fake_app.slug))  ? 0 :
+                (slug && !strcmp(slug, g_fake_app2.slug)) ? 1 :
+                (slug && !strcmp(slug, g_fake_shell.slug))? 2 : -1;
+    if (g_un_rc != ESP_OK && why && whysz) snprintf(why, whysz, "%s", g_un_why);
+    return (esp_err_t)g_un_rc;
+}
+/* Which entry the glass is showing decides both "on the dial" rows. Settable so
+ * a check can put one of the fakes on the glass and watch the label follow. */
+static const orb_app_t *g_current;
+const orb_app_t *orb_app_current(void) { return g_current; }
+const char *orb_svc_fault_reason(const orb_app_t *a) { (void)a; return g_fault_why; }
+static const host_app_desc_t *esp_app_get_description(void) { return &g_desc; }
+static const char *orb_net_ip_str(void) { return "192.168.2.32"; }
+static const char *orb_net_tz_current(void) { return "Europe/Bucharest"; }
+static bool orb_sd_mounted(void) { return g_sd_mounted != 0; }
+static const char *orb_sd_card_id(void) { return g_sd_id; }
+
 int main(void)
 {
     /* The fake app carries a title so the header check means something. */
@@ -519,6 +586,8 @@ int main(void)
     g_fake_shell.slug = "menu"; g_fake_shell.title = "Menu";
     g_fake_shell.kind = ORB_APP_KIND_SHELL; g_fake_shell.installed = true;
     g_fake_app.installed = true; g_fake_app2.installed = true;
+    g_desc.version = "abc1234"; g_sd_mounted = 1; g_sd_id = "SDSC"; g_current = NULL;
+    g_fault_why = ""; g_en_why = ""; g_un_why = "";
 
     /* ---- unarmed is a title card, not a list ---- */
     s_armed = false; s_pg = &s_pages[PG_LANDING]; s_cur = 0; s_busy = false;
@@ -550,30 +619,34 @@ int main(void)
     snprintf(g_opt_label0, sizeof g_opt_label0, "diver");
     snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
     snprintf(g_opt_label1, sizeof g_opt_label1, "neon"); g_opt_val1[0] = '\0';
-    /* The OS's own three rows, then one per app that declares options, then
-     * exit — the plan's §7.2. THEME is gone from the list because the shell no
-     * longer knows what a theme is: "Clock" is there because the clock ANSWERS
-     * opt_*, and it disappears again below when the hook stops answering. A
-     * hardcoded IT_TOP_N could not show that, which is exactly why it was
-     * listed as the thing to remove. */
-    ck("top page is the OS's four rows, one app row, then exit", page_rows() == 6);
-    { const char *r0=rowline(0),*r1=rowline(1),*r2=rowline(2),*r3=rowline(3),*r4=rowline(4),*r5=rowline(5);
-      ck("row order AP/TZ/DISPLAY/PERMISSIONS/<app>/exit",
-         !strcmp(r0,"AP") && !strcmp(r1,"TZ") && !strcmp(r2,"DISPLAY") &&
-         !strcmp(r3,"PERMISSIONS") && !strcmp(r4,"Clock") && !strcmp(r5,"exit")); }
+    /* Six OS rows — AP, TZ, DISPLAY, PERMISSIONS and, since P5.3, APPS and
+     * ABOUT — then one per app that declares options, then exit: the plan's
+     * §7.2. Every index below is derived from top_os_rows() rather than written
+     * out, because a check that hardcodes "exit is row 5" goes red for the wrong
+     * reason the day the OS grows a seventh row, and a suite that cries wolf at
+     * a legitimate new row is a suite someone turns off. */
+    const int OSN = top_os_rows(), FIRST_APP = OSN, EXIT = OSN + 1;
+    ck("top page is the OS's six rows, one app row, then exit",
+       OSN == 6 && page_rows() == 8);
+    { const int n = OSN;
+      ck("row order AP/TZ/DISPLAY/PERMISSIONS/APPS/ABOUT/<app>/exit",
+         !strcmp(rowline(0),"AP") && !strcmp(rowline(1),"TZ") &&
+         !strcmp(rowline(2),"DISPLAY") && !strcmp(rowline(3),"PERMISSIONS") &&
+         !strcmp(rowline(4),"APPS") && !strcmp(rowline(5),"ABOUT") &&
+         !strcmp(rowline(FIRST_APP),"Clock") && !strcmp(rowline(EXIT),"exit"));
+      (void)n; }
     /* The row comes from the registry, not from this file's text: an app that
      * stops answering opt_* loses its row without the shell being edited. */
     g_opt_n = 0;                                    /* the app stops answering */
     ck("an app with no options has no row, and exit moves up",
-       page_rows() == 5 && !strcmp(rowline(4),"exit"));
+       page_rows() == OSN + 1 && !strcmp(rowline(OSN), "exit"));
     g_opt_n = 2;
     /* And a second app that declares options adds a second row, which is the
      * half IT_TOP_N could never do without an edit to the shell. */
     g_opt_app_count = 2;
-    { const char *r3=rowline(3), *r4=rowline(4), *r5=rowline(5);
-      ck("a second app declaring options adds a row, in table order",
-         page_rows() == 7 && !strcmp(r3,"PERMISSIONS") && !strcmp(r4,"Clock") &&
-         !strcmp(r5,"HSB")); }
+    ck("a second app declaring options adds a row, in table order",
+       page_rows() == OSN + 3 && !strcmp(rowline(FIRST_APP), "Clock") &&
+       !strcmp(rowline(FIRST_APP + 1), "HSB") && !strcmp(rowline(EXIT + 1), "exit"));
     g_opt_app_count = 1;
 
     /* ---- the clamp, both ends, no wrap ---- */
@@ -582,9 +655,9 @@ int main(void)
     s_cur = 0;
     turn_up(1);
     ck("rotate past the top clamps to 0", s_cur == 0);
-    s_cur = 5;
+    s_cur = EXIT;
     turn_down(1);
-    ck("rotate past the bottom clamps to last", s_cur == 5);
+    ck("rotate past the bottom clamps to last", s_cur == EXIT);
     s_cur = 1;
     turn_down(99);
     ck("one detent per event, no flying", s_cur == 2);
@@ -1011,6 +1084,147 @@ int main(void)
     ck("armed, the result line is taken from the worker",
        !strcmp(s_ui.status, "zone set: Europe/Budapest"));
 
+    /* ---- P5.3: APPS, its doors, and ABOUT ---------------------------------
+     * The catalog is the registry's installed tier and nothing else: chrome
+     * stays out, disabled apps stay IN, and a failed app carries its reason.
+     * The two doors are the shipped orb_app_enable()/orb_app_uninstall(), so
+     * what is checked here is which press posts which pack and what the line
+     * says when the door refuses — not the flash write behind it. */
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 4; s_busy = false;
+    g_posts = 0; g_act_calls = 0; g_en_calls = 0; g_un_calls = 0;
+    g_fake_app.enabled = false; g_fake_app.failed = false; g_fake_app.active = false;
+    g_fake_app2.enabled = true;  g_fake_app2.failed = false; g_fake_app2.active = false;
+    g_current = NULL; g_fault_why = "";
+    menu_view_apply_input(0, true);
+    ck("the APPS row opens the catalog on its first app",
+       s_pg == &s_pages[PG_APPS] && s_cur == 0);
+    ck("the catalog is every installed app, the B5 count, then back",
+       page_rows() == 4 && !strcmp(rowline(0), "Clock  on card") &&
+       !strcmp(rowline(1), "HSB  enabled") &&
+       !strcmp(rowline(2), "2 of 8 slots used") &&
+       !strcmp(rowline(3), "<- back"));
+    ck("a disabled installed app reads on card, not absent",
+       strstr(rowline(0), "absent") == NULL);
+    ck("chrome keeps out of the catalog", strstr(rowline(0), "Menu") == NULL &&
+       strstr(rowline(1), "Menu") == NULL);
+    g_current = FAKE_APP2;
+    ck("the entry the glass is showing wins over its enable bit",
+       !strcmp(rowline(1), "HSB  on the dial"));
+    g_current = NULL;
+    g_fake_app.failed = true; g_fault_why = "two faults in a row";
+    ck("a failed app shows its reason rather than a bare switch",
+       !strcmp(rowline(0), "Clock  failed: two faults in a row"));
+    g_fake_app.failed = false; g_fault_why = "";
+    g_app_rows_n = 0;
+    ck("no installed app is a count row and a back row, not an empty page",
+       page_rows() == 2 && !strcmp(rowline(0), "0 of 8 slots used") &&
+       !strcmp(rowline(1), "<- back"));
+    g_app_rows_n = 3;
+    s_cur = page_rows() - 1; menu_view_apply_input(0, true);
+    ck("the catalog's back row lands on its own top row",
+       s_pg == &s_pages[PG_TOP] && s_cur == 4);
+
+    /* the doors page */
+    s_pg = &s_pages[PG_APPS]; s_cur = 0; s_door_slot = -1; s_uninst_arm = -1;
+    menu_view_apply_input(0, true);
+    ck("an app row opens that app's doors, not a toggle",
+       s_pg == &s_pages[PG_APPACT] && s_cur == 0 && s_door_slot == 0);
+    ck("the doors page carries the app's name, not the shell's",
+       !strcmp(page_title(), "Clock APP"));
+    ck("three doors and a back row, activate first and uninstall last",
+       page_rows() == 4 && !strcmp(rowline(0), "show on the dial") &&
+       !strcmp(rowline(1), "switch: off") && !strcmp(rowline(2), "uninstall") &&
+       !strcmp(rowline(3), "<- back"));
+    ck("the doors page names the second press in its hint",
+       strstr(page_hint(), "two presses") != NULL);
+    g_act_rc = 0; g_posts = 0;
+    s_cur = 0; menu_view_apply_input(0, true);
+    ck("activate runs the registry's own door, not a local copy",
+       g_act_calls == 1 && g_act_slot == 0 && g_posts == 0);
+    ck("a successful activate says so on the line and stays on the page",
+       !strcmp(s_ui.status, "\"Clock\": on the dial") &&
+       s_pg == &s_pages[PG_APPACT]);
+    g_act_rc = ESP_FAIL; g_act_calls = 0;
+    menu_view_apply_input(0, true);
+    ck("a refused activate says which app failed to move",
+       g_act_calls == 1 && !strcmp(s_ui.status, "\"Clock\": clock will not go on the dial"));
+    g_act_rc = 0;
+    g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
+    ck("the switch posts the worker with the slot and the wanted state",
+       g_posts == 1 && g_posted_fn == job_enable && g_posted_pack == ((0 << 2) | 1));
+    ck("the switch is a wanted state, not the one on the row",
+       door_pack(FAKE_APP, 1) == ((0 << 2) | 1) &&
+       door_pack(FAKE_APP2, 0) == ((1 << 2) | 0));
+    g_en_rc = 0; g_publish_calls = 0; g_posted_fn(&g_posted_pack);
+    ck("the enabled answer names the app and the new state",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": on") &&
+       g_en_calls == 1 && g_en_slot == 0 && g_en_on == 1);
+    g_en_rc = ESP_ERR_INVALID_STATE_; g_en_why = "it is on the dial";
+    g_posts = 0; g_publish_calls = 0; s_cur = 1; menu_view_apply_input(0, true);
+    g_posted_fn(&g_posted_pack);
+    ck("a refused switch prints the door's sentence, not the menu's",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": it is on the dial"));
+    g_en_rc = 0; g_en_why = "";
+
+    /* the two-press uninstall, and the detent that cancels it */
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    ck("the first uninstall press arms and posts nothing",
+       g_posts == 0 && s_uninst_arm == 0 &&
+       strstr(s_ui.status, "press uninstall again") != NULL);
+    ck("the armed row says so on the glass",
+       !strcmp(rowline(2), "uninstall \u2014 press again"));
+    turn_up(1);
+    ck("a detent ends the arm", s_uninst_arm == -1);
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    ck("the next press arms again rather than erasing",
+       g_posts == 0 && g_un_calls == 0 && s_uninst_arm == 0);
+    s_cur = 2; menu_view_apply_input(0, true);
+    ck("the second press on the same row posts the removal",
+       g_posts == 1 && g_posted_fn == job_uninstall && g_posted_pack == (0 << 2) &&
+       s_uninst_arm == -1);
+    g_un_rc = 0; g_publish_calls = 0; g_posted_fn(&g_posted_pack);
+    ck("a removal says the card copy survives",
+       g_un_calls == 1 && g_un_slot == 0 &&
+       !strcmp(g_pub_line, "\"Clock\": uninstalled, the card copy stays"));
+    g_un_rc = ESP_ERR_INVALID_STATE_; g_un_why = "that app is on the dial";
+    g_posts = 0; g_publish_calls = 0; s_cur = 2; menu_view_apply_input(0, true);
+    s_cur = 2; menu_view_apply_input(0, true);
+    g_posted_fn(&g_posted_pack);
+    ck("a refused removal prints the door's reason",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": that app is on the dial"));
+    g_un_rc = 0; g_un_why = "";
+    s_cur = page_rows() - 1; menu_view_apply_input(0, true);
+    ck("the doors page back lands on its own catalog row",
+       s_pg == &s_pages[PG_APPS] && s_cur == 0);
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 4; menu_view_apply_input(0, true);
+    ck("back into the catalog clears the app and the arm with it",
+       s_pg == &s_pages[PG_APPS] && s_door_slot == -1 && s_uninst_arm == -1);
+
+    /* ABOUT: five facts, and no press that does anything */
+    s_pg = &s_pages[PG_TOP]; s_cur = 5; g_posts = 0;
+    menu_view_apply_input(0, true);
+    ck("ABOUT opens as a list of facts",
+       s_pg == &s_pages[PG_ABOUT] && page_rows() == 6);
+    ck("the facts are the image, the address, the card, the count and the zone",
+       !strcmp(rowline(0), "firmware  abc1234") &&
+       !strcmp(rowline(1), "address  192.168.2.32") &&
+       !strcmp(rowline(2), "card  SDSC") &&
+       !strcmp(rowline(3), "installed  2 of 8") &&
+       !strcmp(rowline(4), "zone  Europe/Bucharest") &&
+       !strcmp(rowline(5), "<- back"));
+    ck("ABOUT says it is read-only in its hint",
+       strstr(page_hint(), "nothing here") != NULL);
+    s_cur = 1; menu_view_apply_input(0, true);
+    ck("a press on a fact row does nothing at all",
+       s_pg == &s_pages[PG_ABOUT] && s_cur == 1 && g_posts == 0);
+    g_sd_mounted = 0;
+    ck("no card is stated, not left blank", !strcmp(rowline(2), "card  none"));
+    g_sd_mounted = 1;
+    s_cur = page_rows() - 1; menu_view_apply_input(0, true);
+    ck("ABOUT back lands on its own top row",
+       s_pg == &s_pages[PG_TOP] && s_cur == 5);
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
+
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
 }
@@ -1252,6 +1466,65 @@ MUTATIONS = [
     ("the back row is dropped from the app options page",
      "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0; }",
      "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) : 0; }"),
+    # P5.3's own pins. Each is one way the catalog or its doors can go wrong
+    # while every older page still passes, which is what a new page needs red
+    # before it reaches a dial.
+    ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + 2; }",
+     "static int rows_apps(void)   { return perm_rows() + 1; }"),
+    ("a failed app loses its reason",
+     'snprintf(out, outsz, "%s  failed: %s", a->title ? a->title : a->slug,\n                 orb_svc_fault_reason(a));',
+     'snprintf(out, outsz, "%s  failed", a->title ? a->title : a->slug);'),
+    ("the entry on the glass stops winning over its enable bit",
+     '    return a == orb_app_current() || a->active;',
+     '    return false;'),
+    ("the B5 count row stops naming the cap",
+     'snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);',
+     'snprintf(out, outsz, "%d slots used", n);'),
+    ("the doors page drops uninstall",
+     "static int rows_appact(void) { return 3 + 1; }",
+     "static int rows_appact(void) { return 2 + 1; }"),
+    ("a door page forgets which app it is about",
+     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n}",
+     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n}"),
+    ("back from the doors page lands on row 0 rather than its own app",
+     "    return a ? perm_row_of(a) : 0;",
+     "    return 0;"),
+    ("activate bypasses the registry's own door",
+     "        const esp_err_t e = orb_app_activate(a);",
+     "        const esp_err_t e = ESP_OK;"),
+    ("the switch pack drops the slot, so one press writes another app",
+     "    return (orb_app_index_of(a) << 2) | (on ? 1 : 0);",
+     "    return (on ? 1 : 0);"),
+    ("the switch posts the state the row shows instead of the one wanted",
+     "job_post(job_enable, door_pack(a, a->enabled ? 0 : 1));",
+     "job_post(job_enable, door_pack(a, a->enabled ? 1 : 0));"),
+    ("the first uninstall press fires it",
+     "        if (s_uninst_arm != s_door_slot) {",
+     "        if (0) {"),
+    ("a detent leaves the uninstall armed",
+     "    s_uninst_arm = -1;\n    s_cur = next;",
+     "    s_cur = next;"),
+    ("leaving the catalog keeps the previous app and its arm",
+     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_uninst_arm = -1;\n}",
+     "static void enter_apps(void)\n{\n}"),
+    ("the refused switch gets the menu's words instead of the door's",
+     'e == ESP_OK ? (on ? "on" : "off") : why);',
+     'e == ESP_OK ? (on ? "on" : "off") : "not changed");'),
+    ("a removal stops saying the card copy survives",
+     'e == ESP_OK ? "uninstalled, the card copy stays" : why);',
+     'e == ESP_OK ? "uninstalled" : why);'),
+    ("ABOUT stops promising it is read-only",
+     'static const char *hint_about(void)  { return "rotate: read   push: nothing here"; }',
+     'static const char *hint_about(void)  { return "rotate: choose   push: change"; }'),
+    ("ABOUT shows a blank where the card answer belongs",
+     'orb_sd_mounted() ? (orb_sd_card_id()[0] ? orb_sd_card_id() : "mounted")\n                                  : "none");',
+     'orb_sd_mounted() ? "mounted" : "");'),
+    ("the back row of ABOUT disappears",
+     "static int rows_about(void)  { return 5 + 1; }",
+     "static int rows_about(void)  { return 5; }"),
+    ("APPS and ABOUT swap places on the top page",
+     '    { "APPS",        PG_APPS,        NULL },\n    { "ABOUT",       PG_ABOUT,       NULL },',
+     '    { "ABOUT",       PG_ABOUT,       NULL },\n    { "APPS",        PG_APPS,       NULL },'),
     ("an app's value stops being rendered",
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : orb_app_opt_value(s_app, ar);',
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : NULL;'),
@@ -1486,10 +1759,15 @@ def main():
     check("the pages are exactly one table",
           len(re.findall(r"s_pages\[PG_N\]\s*=\s*\{", tcode)) == 1)
     entry_ids = re.findall(r"(?m)^\s*\[PG_(\w+)\]\s*=", tcode)
+    # P5.3 adds APPS (the catalog), APPACT (its one app's doors) and ABOUT.
+    # The list is exact rather than "at least": a page that ships without a
+    # table row is a page the dispatcher cannot reach, and the enum growing
+    # past the table would leave PG_N counting one more than exists.
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "TZ", "APP", "DISPLAY",
-                                       "TO", "PERMS", "CAPS"])
-          and len(entry_ids) == 8, ",".join(entry_ids))
+                                       "TO", "PERMS", "CAPS", "APPS", "APPACT",
+                                       "ABOUT"])
+          and len(entry_ids) == 11, ",".join(entry_ids))
     _tparts = re.split(r"\[PG_(\w+)\]\s*=\s*\{",
                        tcode[tcode.index("s_pages[PG_N] = {") + len("s_pages[PG_N] = {"):])
     entries = dict(zip(_tparts[1::2], _tparts[2::2]))
@@ -1500,8 +1778,10 @@ def main():
           all(".rows" in entry(p) and ".label" in entry(p) and ".title" in entry(p)
               for p in entry_ids if p != "LANDING")
           and ".rows" not in entry("LANDING"))
+    # APPACT joins the two that needed one in P5.2: its parent is APPS, whose
+    # rows move when an app is uninstalled, so back has to be computed too.
     check("the ordinal answers only where the parent's list moves",
-          all((".ordinal" in entry(p)) == (p in ("APP", "CAPS"))
+          all((".ordinal" in entry(p)) == (p in ("APP", "CAPS", "APPACT"))
               for p in entry_ids))
     check("a leaving app page says how to leave it",
           ".leave = leave_app" in entry("APP"))
@@ -1511,8 +1791,33 @@ def main():
     check("the top page's last row is exit", ".back_to = MENU_GO_EXIT" in entry("TOP"))
     top_rows = re.search(r"menu_row_t s_top\[\] = \{([\s\S]*?)\n\};", menu_src)
     labels = re.findall(r'\{\s*"([^"]+)"', top_rows.group(1)) if top_rows else []
-    check("the OS's top rows are AP, TZ, DISPLAY and PERMISSIONS — nothing else yet",
-          labels == ["AP", "TZ", "DISPLAY", "PERMISSIONS"], ",".join(labels))
+    # The order IS the glass: the owner walks this sequence, and an inserted
+    # row silently retargets every back_cur literal in the table. PERMISSIONS
+    # keeps row 3, so PG_PERMS's back_cur stayed valid when APPS/ABOUT landed.
+    check("the OS's top rows are AP, TZ, DISPLAY, PERMISSIONS, APPS, ABOUT",
+          labels == ["AP", "TZ", "DISPLAY", "PERMISSIONS", "APPS", "ABOUT"],
+          ",".join(labels))
+    # P5.3's two new sub-pages say their own parent row, and ABOUT promises the
+    # inertness its hint claims: no act hook means no press can do anything.
+    check("APPS and ABOUT land back on their own top rows",
+          ".back_cur = 4" in entry("APPS") and ".back_cur = 5" in entry("ABOUT"))
+    check("ABOUT has no press hook at all", ".act" not in entry("ABOUT"))
+    check("the door page reaches the machine through the two owner doors",
+          ".open = open_appact" in entry("APPACT")
+          and "orb_app_enable" in tcode and "orb_app_uninstall" in tcode
+          and "orb_app_activate" in tcode)
+    # Structural half of the two-press rule; the behavioural half is the check
+    # in the harness that presses the uninstall row twice, and once either side
+    # of a detent. The arm is cleared exactly where the cursor moves, and the
+    # row's own label is the other place the arm appears.
+    check("uninstall arms, and only a cursor move clears it",
+          # declaration, the list page clearing it on entry, the firing press
+          # disarming before it posts, and the cursor move. Four, or a site is
+          # missing: without the one in apply_input a detent leaves the arm live.
+          tcode.count("s_uninst_arm = -1") == 4          # decl, enter, fire, move
+          and tcode.count("s_uninst_arm") == 7
+          and tcode.count("s_uninst_arm != s_door_slot") == 1
+          and tcode.count("s_uninst_arm == s_door_slot") == 1)
     check("the switch model stays dead",
           "top_item_t" not in menu_src and re.search(r"\bs_page\b", menu_src) is None
           and not re.search(r"\bcase PG_", tcode))

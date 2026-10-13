@@ -402,7 +402,7 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
     s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
     s->app.is_home      = false;           /* the clock stays home (C8)           */
     s->app.installed    = true;
-    s->app.enabled      = false;           /* P6 wires the run-on-boot decision   */
+    s->app.enabled      = false;           /* the enable path is owed to P4: §8 P4 */
     s->app.active       = false;
     s->used             = true;
 }

@@ -388,6 +388,27 @@ def lint(src):
     if src.count("row.behaviour_kind = h->behaviour_kind;") != 1 or \
        src.count("row.behaviour_kind = h.behaviour_kind;") != 1:
         bad.append("D1/C6: behaviour_kind must be assigned exactly once per upsert site")
+    # 3c. THE STACK BUDGET (hardware-found 2026-10-13, orb-A). orb_jobs runs this
+    #     ladder on a hard-measured 4096 B stack (orb_jobs.c:65: "needs more stack
+    #     is a crash rather than a log line"), and settings[] + sw[] are ~1 KB each.
+    #     With them as frame locals the install overflowed the worker on its
+    #     first-ever bench — the same bug boot_resolve() documents for the 3584 B
+    #     main task. Both tables must come from ONE PSRAM block that the single
+    #     out: label frees, and must never reappear as stack arrays: no host
+    #     vector can see a stack overflow, so only this pin stops the regression.
+    if "MALLOC_CAP_SPIRAM" not in ladder:
+        bad.append("stack: orb_app_install's settings scratch must come from "
+                   "heap_caps_malloc(MALLOC_CAP_SPIRAM) — the orb_jobs worker has a "
+                   "hard-measured 4096 B stack and overflowed on these two arrays")
+    if "heap_caps_free(scratch)" not in ladder:
+        bad.append("stack: the install's PSRAM scratch must be freed at the single "
+                   "out: label, or every install leaks ~2 KB of PSRAM")
+    for stack_arr in ("orb_setting_desc_t settings[ORBAPP_SETTINGS_MAX]",
+                      "uint32_t sw[ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS]"):
+        if stack_arr in ladder:
+            bad.append("stack: %r is back on the worker's frame — ~1 KB each on a "
+                       "4096 B stack is the crash orb_jobs.c:65 warns about" % stack_arr)
+
     # 4. the installer never writes or reads a grant word, and never touches NVS
     #    directly (settings persist only through the broker). An absent grant stays
     #    absent — as-declared.
@@ -497,6 +518,22 @@ MUTATIONS = [
     ("upload reaches for the payload CRC from the httpd task (starves httpd)", "device",
      _m("    const char *r = app_hdr_validate(fd, &h);",
         "    const char *r = app_hdr_validate(fd, &h); if (!r) verify_payload(fd, &h);")),
+    ("install's settings tables back on the worker's stack (the 4096 B overflow)", "device",
+     _m("""    uint8_t *scratch = heap_caps_malloc(ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u +
+                                        ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t),
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!scratch) { install_close(fd);
+        return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
+                              why, whysz); }
+    uint32_t *sw = (uint32_t *)scratch;
+    orb_setting_desc_t *settings = (orb_setting_desc_t *)(scratch +
+                                        ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u);""",
+        """    orb_setting_desc_t settings[ORBAPP_SETTINGS_MAX];
+    uint32_t sw[ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS];
+    uint8_t *scratch = NULL;
+    if (false) { install_close(fd);
+        return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
+                              why, whysz); }""")),
     ("upload scratch carries the walk's extension (a half-file is selectable)", "device",
      _m('#define APPS_SCRATCH "upload.part"',
         '#define APPS_SCRATCH "upload.orbapp"')),

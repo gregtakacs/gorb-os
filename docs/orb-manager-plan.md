@@ -651,11 +651,18 @@ the joined NIC's IP and reverts a host-side `netsh` static, so the on-subnet add
 was set from inside WSL; `dig` cannot elicit the answer because it discards the orb's
 RFC-6762 `id=0` reply, so the query must be framed as real mDNS; and the orb answers a
 query from an ephemeral source port (`orb_mdns.c:630` replies to the `recvfrom` peer).
-**Not yet shipped.** Before this becomes a firmware commit the trim needs a
-minimality pass (the smallest counts that still open the AP every time, since buffer
-headroom is what carried the OTA art-bank transfer) and the committed bundle re-packed
-via `make firmware`. orb-B was restored to the verified `094fa22` and re-checked
-healthy after every experiment.
+**Shipped.** The trim is in `sdkconfig.defaults` (the tracked file, so a clean
+clone rebuilds the working pool size), committed at `bafcd4e`, and the committed
+firmware bundle was re-packed from a clean `build/` via `make firmware` with the
+`BuiltInBundle` staleness guard and full `make check` green. orb-B runs this image
+(stamp `bafcd4e`): the same `POST /api/v1/wifi/ap` that panicked now returns `200`,
+reaches `ap=true`, logs `wifi:mode : sta … + softAP`, `SoftAP … OPEN`, and
+`advertising _orb._tcp on SoftAP` with no Guru. The minimality pass — the smallest
+counts that still open the AP every time, since buffer headroom also carried the OTA
+art-bank transfer — is deferred to the next firmware change: `6/12/12/12` is validated
+and safe to ship now, so shipping a known-good config beat tuning it further at the
+risk of re-introducing the panic. The surgical alternative (an EB-reclaim retry inside
+`ap_open()`, no throughput cost) stays open as item 4's possible follow-up.
 
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` — done; the card lists what announced itself, and dials none of it | 3, 4 |
 

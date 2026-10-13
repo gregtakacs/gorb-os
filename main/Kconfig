@@ -103,6 +103,27 @@ menu "Orb networking"
             via the passthrough rules), so nothing here links mbedtls's
             server-side SSL path.
 
+    config ORB_NET_PROV_SOJOURN_S
+        int "Seconds a RECOVERY provisioning session stays open"
+        depends on ORB_NET_AP_FALLBACK
+        default 600
+        help
+            How long a provisioning boot that still holds usable credentials in
+            flash keeps the AP up before giving up and rebooting into the normal
+            STA path, so the stored network gets retried. This is the exit a
+            recovery session needs and a factory device must NOT have: with no
+            credentials stored, rebooting returns to the same provisioning
+            branch, so the timer stays disarmed and the AP stays open
+            indefinitely exactly as it does today. See the guard on
+            sojourn_arms() and D4 in docs/orb-manager-plan.md.
+
+            600 s is long enough to fumble a passphrase twice from a phone and
+            short enough that an orb nobody is tending rejoins its own network
+            within ten minutes rather than sitting in AP mode overnight. Set 0
+            to disable the exit (not recommended: an unattended recovery session
+            then holds an OPEN AP with an unauthenticated /api/v1/ota behind it
+            until someone power-cycles the device).
+
     config ORB_NET_MDNS
         bool "Advertise _orb._tcp over mDNS so the hub can browse for orbs"
         depends on ORB_NET_ENABLE

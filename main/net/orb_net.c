@@ -130,6 +130,12 @@ static volatile bool s_sta_up;         /* has an IP */
 static volatile bool s_associated;     /* the association is real; the lease may not be */
 static volatile bool s_joining;        /* a user-initiated join is in flight */
 static volatile bool s_provisioning;   /* booted with no credentials at all */
+/* D4: this provisioning boot happened DESPITE credentials being present in
+ * flash, so it is a recovery session with something to fall back to and it owns
+ * a deadline. A factory boot (nothing stored) leaves this false forever: for that
+ * device the AP is the only door there is, and rebooting returns to the same
+ * branch. Latched once where the boot branch reads NVS, never re-read after. */
+static volatile bool s_prov_recovery_session;
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 /* Set only when a human asked for the AP (the config page / POST /wifi/ap).
  * It exists because every STA lease re-arms the AP timer with the short
@@ -1082,6 +1088,29 @@ static bool prov_ap_idle(bool provisioning, bool joining)
     return provisioning && !joining;
 }
 
+/* D4, decision one: does THIS provisioning boot own a deadline? The credentials
+ * term is the whole hazard. A factory orb has nothing to fall back to, so a
+ * sojourn that rebooted it would land back on the same provisioning branch, open
+ * the AP, re-arm and reboot again — forever, on a device nobody is watching. Only
+ * a boot that has a stored network to go back to may time out, and the two boot
+ * paths therefore stay observably different. Pure so host_tz_test.py can pin it. */
+static bool sojourn_arms(bool recovery_session, int sojourn_s)
+{
+    return recovery_session && sojourn_s > 0;
+}
+
+/* D4, decision two: the deadline fired. Nothing to fall back to must never be
+ * reached from here (sojourn_arms gated the arming), but the answer is still
+ * "reboot into the normal path and let the stored credentials try again" and not
+ * ap_close(): ap_close() calls set_mode(STA) and leaves s_provisioning set, which
+ * tears the radio down to a half state rather than restoring a join attempt.
+ * If a lease DID arrive first, s_sta_up is true and the AP closes normally — the
+ * session ended by succeeding, which is the only other way out. */
+static bool sojourn_reboots(bool sta_up, bool recovery_session)
+{
+    return recovery_session && !sta_up;
+}
+
 /* Third argument is prov_ap_idle(), never the raw provisioning flag. */
 static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle);
 static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle);
@@ -1203,6 +1232,24 @@ static void net_task_loop(void *arg)
              * out. With no lease the AP is the only door a phone can walk up
              * to, so it stays open and the check merely re-arms. */
             if (s_sta_up) ap_close("lease held, hold expired");
+            else if (sojourn_reboots(s_sta_up, s_prov_recovery_session)) {
+                /* D4: the recovery session ran out of time and nothing was
+                 * achieved. Reboot into the normal path so the stored network is
+                 * retried, rather than holding an OPEN AP with an unauthenticated
+                 * /api/v1/ota behind it indefinitely. Disarm the fault record
+                 * first — the same courtesy POST /api/v1/reboot pays: this is a
+                 * planned exit the device decided on, and a next boot that billed
+                 * an app for it would report a crash that never happened, which is
+                 * exactly the false alarm that makes a fleet UI untrustworthy.
+                 * Nothing is written on the way out (D3): a failed session's
+                 * credentials never reached flash, so the reboot resumes the pair
+                 * that was stored before it. */
+                ESP_LOGW(TAG, "provisioning sojourn expired after %d s with no "
+                              "lease; rebooting to retry the stored network",
+                         CONFIG_ORB_NET_PROV_SOJOURN_S);
+                orb_svc_note_clean_reboot();
+                esp_restart();
+            }
             else if (!s_provisioning) {
                 arm_oneshot(s_ap_timer, NET_AP_RECHECK_S, "ap recheck");
                 ESP_LOGI(TAG, "SoftAP stays up: no lease yet, checking again in %d s",
@@ -4024,7 +4071,13 @@ esp_err_t orb_net_start(void)
 
     s_sta_netif = esp_netif_create_default_wifi_sta();
 
-    if (ssid[0] != '\0') {
+    /* D4's guard reads exactly like the branch it guards: "credentials exist"
+     * means nothing more than "this boot would have taken the STA path". Anything
+     * that forces the provisioning branch anyway (the RTC intent flag of D2, or a
+     * bench build that inverts this condition) is by definition a recovery session
+     * with a network to go back to, and gets the deadline. */
+    const bool creds_in_flash = (ssid[0] != '\0');
+    if (creds_in_flash) {
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     } else {
 #if CONFIG_ORB_NET_AP_FALLBACK
@@ -4032,6 +4085,13 @@ esp_err_t orb_net_start(void)
          * 466x466 panel is too small and glossy to render a scannable QR, so
          * pairing is by joining this AP from a phone instead. */
         s_provisioning = true;
+        /* Latch the session kind here, once, where the decision is actually
+         * derivable. The deadline itself is armed later in this function — the
+         * timer handle does not exist yet at this point. A factory boot takes this
+         * branch precisely because creds_in_flash is false, so it stays as it has
+         * always been: AP open with no deadline, because there is nothing to fall
+         * back to and rebooting would return here. */
+        s_prov_recovery_session = creds_in_flash;
 #if CONFIG_ORB_NET_MDNS
         /* Set before the AP comes up, so the very first announcement this boot
          * can make already says "provisioning" rather than making item 5's
@@ -4090,6 +4150,20 @@ esp_err_t orb_net_start(void)
         s_net_q = NULL;
     }
     stage_probe("post-nettask");
+
+    /* D4: the bounded sojourn, armed HERE and not in the provisioning branch
+     * above. That branch runs before esp_timer_create() gives s_ap_timer a handle
+     * and before the queue the expiry posts to exists, so arming there produced
+     * "prov sojourn timer does not exist" and the session ran with no deadline at
+     * all — invisible to every truth table in tools/host_tz_test.py, which pin the
+     * predicate and cannot see the call site. Bench 2026-10-13. */
+    if (sojourn_arms(s_prov_recovery_session, CONFIG_ORB_NET_PROV_SOJOURN_S)) {
+        arm_oneshot(s_ap_timer, CONFIG_ORB_NET_PROV_SOJOURN_S, "prov sojourn");
+        ESP_LOGW(TAG, "RECOVERY provisioning: credentials are stored but this boot "
+                      "was forced into provisioning, so the AP gives up in %d s and "
+                      "the stored network is retried",
+                 CONFIG_ORB_NET_PROV_SOJOURN_S);
+    }
 
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi_start");
     stage_probe("post-wifi_start");

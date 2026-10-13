@@ -544,6 +544,14 @@ def lint(src):
         if art_read in src:
             bad.append("P4b: install.c reads the art word %r — the reader owns "
                        "that refusal now" % art_read)
+    # 10b. the bench's own catch: both header validators RETURN their reason,
+    #      so the reason's buffer must outlive the frame. The pre-P4b stack
+    #      version reached the browser as garbage bytes; P4b is the first phase
+    #      to send a real sentence through the door, and it arrived as `#\x04\x06`.
+    if src.count("static char why[160];") != 2:
+        bad.append("P4b: both read_and_check_header and app_hdr_validate must "
+                   "carry the refusal in static storage — the door prints it "
+                   "after the validators' frames are gone")
     ih = read(INSTALL_H)
     if "#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)" not in ih:
         bad.append("P4b: the upload bound still carries an art term — the "
@@ -658,6 +666,13 @@ MUTATIONS = [
      _m("    if (crc != h->geom_crc)\n        return \"the geometry does not match",
         "    pos = h->art_off; left = h->art_size;\n"
         "    if (crc != h->geom_crc)\n        return \"the geometry does not match")),
+    # the dangling-reason bug P4b's bench found: the mutant puts the frame-local
+    # buffer back in app_hdr_validate — lint 10b must eat it.
+    ("P4b: upload refusal goes back on the stack (dangling detail)", "device",
+     _m("     * httpd task, one upload at a time (orb_app_upload_begin's gate). */\n"
+        "    static char why[160];",
+        "     * httpd task, one upload at a time (orb_app_upload_begin's gate). */\n"
+        "    char why[128];")),
 ]
 
 

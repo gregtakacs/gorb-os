@@ -113,6 +113,7 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
        NET_CMD_SCAN_BOOT,     /* first-boot scan armed by AP_START, logged as PROVSCAN */
        NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
+       NET_CMD_STORE_CREDS,   /* a lease verified the pending pair: write it to NVS now  */
        NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
@@ -680,6 +681,73 @@ static bool net_post_join(const char *ssid, const char *pass)
     return xQueueSend(s_net_q, &m, pdMS_TO_TICKS(200)) == pdTRUE;
 }
 
+/* ---------------- pending (unverified) credentials, D3 ----------------
+ * The submitted pair waits here, not in NVS, until a lease proves it works.
+ * Both doors used to nvs_set_str() the moment the form was accepted, so one
+ * mistyped passphrase overwrote a working credential and took the orb off its
+ * network with nothing to fall back to (bench 2026-10-13). A lease is the only
+ * evidence a network can give that the pair is right, so the write rides it.
+ *
+ * Written only by the net task inside NET_CMD_JOIN, and read and cleared only by
+ * the net task inside NET_CMD_STORE_CREDS — which on_ip() merely POSTS, carrying
+ * nothing, so no buffer here is ever touched by two tasks and the queue stays the
+ * only ordering needed, exactly as for net_msg_t's own credential fields. ~100 B
+ * static, in internal RAM, unconditionally: this is the code that decides what a
+ * device boots with, and it must not depend on an optional feature. */
+static char s_pend_ssid[NET_SSID_MAX + 1];
+static char s_pend_pass[NET_PASS_MAX + 1];
+/* Mirrors pend_any() for the one reader that must not touch the buffers: on_ip()
+ * runs on the default event loop, and a single bool is the only cross-task read
+ * worth having here. Stale-by-one-tick is safe in either direction — it can only
+ * skip or duplicate an idempotent write, never invent a credential. */
+static volatile bool s_pend_valid;
+
+/* Does this lease authorise a credential write? Both terms are needed. Pending
+ * without join intent is a boot-time auto-retry of what flash already holds, and
+ * writing that back is a no-op at best. Join intent without a pending pair cannot
+ * happen (NET_CMD_JOIN sets both), and must not clear or write anything either. */
+static bool lease_verifies_creds(bool pending, bool joining)
+{
+    return pending && joining;
+}
+
+static void pend_set(const char *ssid, const char *pass)
+{
+    snprintf(s_pend_ssid, sizeof(s_pend_ssid), "%s", ssid ? ssid : "");
+    snprintf(s_pend_pass, sizeof(s_pend_pass), "%s", pass ? pass : "");
+    s_pend_valid = s_pend_ssid[0] != '\0';
+}
+
+static bool pend_any(void) { return s_pend_ssid[0] != '\0'; }
+
+static void pend_clear(void) { s_pend_ssid[0] = '\0'; s_pend_pass[0] = '\0'; s_pend_valid = false; }
+
+/* Empty passphrase means an OPEN network, and the stored key must be removed
+ * rather than set to "": a blank pass left in flash reads back as a configured
+ * credential, and the orb then retries an enterprise association the AP never
+ * offered. Pure and pinned by tools/host_tz_test.py, because both doors used to
+ * spell this branch inline and a typo here silently strands a device. */
+static bool creds_erase_key(const char *pass)
+{
+    return pass == NULL || pass[0] == '\0';
+}
+
+/* Write the pair a lease just vouched for. */
+static void creds_commit(const char *ssid, const char *pass)
+{
+    if (!ssid || ssid[0] == '\0') return;
+    const esp_err_t e1 = nvs_set_str(s_nvs, "ssid", ssid);
+    const esp_err_t e2 = creds_erase_key(pass) ? nvs_erase_key(s_nvs, "pass")
+                                              : nvs_set_str(s_nvs, "pass", pass);
+    nvs_commit(s_nvs);
+    if (e1 != ESP_OK || (e2 != ESP_OK && e2 != ESP_ERR_NVS_NOT_FOUND))
+        ESP_LOGE(TAG, "creds for \"%s\" NOT stored (%s/%s) — this lease will not "
+                      "survive a reboot", ssid, esp_err_to_name(e1), esp_err_to_name(e2));
+    else
+        ESP_LOGW(TAG, "credentials for \"%s\" accepted by the network and now "
+                      "stored (the pair the orb will boot with)", ssid);
+}
+
 /* Timer callbacks may only post: the esp_timer task is shared and must not
  * block, and the esp_wifi_* calls do block on the driver's own task. */
 static void retry_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_CONNECT, 0); }
@@ -1073,6 +1141,10 @@ static void net_task_loop(void *arg)
              * ignored the Connect button (the first live phone test, where the
              * join actually succeeded and the user never saw it). */
             s_joining = true;
+            /* Hold the pair here until a lease vouches for it. Set on this task,
+             * before the radio sees it, so a lease that arrives while this handler
+             * is still running cannot consume a pair that was never recorded. */
+            pend_set(m.ssid, m.pass);
             {
                 const esp_err_t je = net_apply_sta_config(m.ssid, m.pass);
                 if (je != ESP_OK)
@@ -1088,6 +1160,17 @@ static void net_task_loop(void *arg)
              * to the lease watchdog, and a connect() during a live attempt
              * returns ESP_ERR_WIFI_CONN and is ignored. */
             arm_oneshot(s_retry_timer, NET_STA_RETRY_S, "retry");
+            break;
+
+        case NET_CMD_STORE_CREDS:
+            /* A lease arrived, so the network accepted this pair: it is now the
+             * credential the device will boot with. Nothing writes ssid/pass to
+             * NVS anywhere else (see the s_pend_ssid block comment) — that is the
+             * point of the whole arrangement, and the reason a wrong passphrase
+             * submitted on the config page costs a failed join instead of a
+             * device that can no longer reach its own network. */
+            if (pend_any()) creds_commit(s_pend_ssid, s_pend_pass);
+            pend_clear();
             break;
 
         case NET_CMD_AP_OPEN:
@@ -1533,11 +1616,24 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 #endif
     /* The lease is the word that the join the user pressed Connect for actually
      * landed; until then /api/v1/status keeps saying "joining" rather than falling
-     * back to "provisioning", which is what made the first phone test look ignored. */
+     * back to "provisioning", which is what made the first phone test look ignored.
+     *
+     * Captured BEFORE the clear below, because it is also what authorises the
+     * credential write: a lease that answers a submission means the submitted pair
+     * worked, and only that pair may be committed. A lease from the boot-time
+     * auto-retry of what is already in flash must not touch NVS at all. */
+    const bool answers_a_join = s_joining;
+    const bool store_creds    = lease_verifies_creds(s_pend_valid, answers_a_join);
     s_joining      = false;
     s_assoc_fails  = 0;      /* back-off is per-outage, not per-device-life */
     ESP_LOGI(TAG, "associated: config page at http://%s/", s_ip);
     stage_probe("sta-connected");
+
+    /* Deferred credential write, D3. Posted rather than done here: the pending
+     * pair belongs to the radio task, and this handler runs on the default event
+     * loop. If the queue is full the pair simply survives to the next lease —
+     * losing the write is safe, losing the old credential was not. */
+    if (store_creds) net_post(NET_CMD_STORE_CREDS, 0);
 
     /* A lease is what closes the provisioning AP — see NET_CMD_AP_EXPIRED for
      * why the close is conditioned on this rather than on the timer alone.
@@ -2160,11 +2256,13 @@ static void prov_reader_task(void *arg)
         ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
                  pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
 
-        /* h_wifi_join()'s order: persist first, so a failed association still
-         * retries on next boot rather than dropping the user to square one. */
-        nvs_set_str(s_nvs, "ssid", ssid);
-        if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
-        nvs_commit(s_nvs);
+        /* NOT persisted here. The pair waits in the radio task's pending buffer
+         * (see s_pend_ssid) until a lease proves it, and only then reaches NVS —
+         * h_wifi_join() does the same. The previous behaviour, writing here, is how
+         * one mistyped passphrase on a working device took the device off its own
+         * network. The zone is a different case and still applies immediately: it
+         * is fully validated above, cannot lock anyone out, and a wrong one is
+         * fixable from the LAN. */
         if (tz[0]) {
             const char *why = net_tz_set(tz);
             if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
@@ -2173,7 +2271,11 @@ static void prov_reader_task(void *arg)
 
         ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
         if (!net_post_join(ssid, pass)) {
+            /* No queue means no radio task, so nothing can hold the pair or commit
+             * it on a lease. This degenerate path (bring-up OOM) keeps the old
+             * write-first behaviour: a lost credential beats a lost join. */
             ESP_LOGW(TAG, "prov: no radio queue — applying from this task");
+            creds_commit(ssid, pass);
             const esp_err_t e = net_apply_sta_config(ssid, pass);
             if (e != ESP_OK) ESP_LOGE(TAG, "prov: join(%s) failed: %s", ssid, esp_err_to_name(e));
         }
@@ -2462,12 +2564,13 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
              tz_present ? " tz=" : "", tz_present ? tz : "");
 
-    /* Persist FIRST, then apply: if the association fails, the credentials are
-     * already on the device so the next boot retries them instead of dropping
-     * the user back to an unprovisioned state they have to redo. */
-    nvs_set_str(s_nvs, "ssid", ssid);
-    if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
-    nvs_commit(s_nvs);
+    /* NOT persisted here: the submitted pair waits in the radio task's pending
+     * buffer until this join earns a lease, and only then reaches NVS (see
+     * s_pend_ssid). Writing here, which is what this line used to do, let one
+     * mistyped passphrase replace a working credential on the first submit - the
+     * failure this change exists to remove. The "joining" reply below is now true
+     * in a stronger sense: the device has not committed to this network, it is
+     * trying it. */
 
     /* Zone goes through net_tz_set() rather than a local nvs_set_str(), so the
      * write, the setenv/tzset and the log line are literally the same code the
@@ -2504,13 +2607,15 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     const esp_err_t sent = httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
     vTaskDelay(pdMS_TO_TICKS(250));
 
-    /* Nothing left can fail in a way the caller needs told about: the
-     * credentials are already committed, and the radio outcome is not known yet —
-     * it is what /api/v1/status reports as state/assoc_fails/wifi_reason. If the
-     * queue never came up (bring-up OOM), do the radio work on this task rather
-     * than not do it at all. */
+    /* Nothing left can fail in a way the caller needs told about: the radio
+     * outcome is not known yet — it is what /api/v1/status reports as
+     * state/assoc_fails/wifi_reason. If the queue never came up (bring-up OOM)
+     * there is no radio task to hold the pair or commit it on a lease, so this
+     * degenerate path keeps the old write-first behaviour and does the radio work
+     * here rather than not do it at all. */
     if (!net_post_join(ssid, pass)) {
         ESP_LOGW(TAG, "join: no radio queue — applying from the httpd task");
+        creds_commit(ssid, pass);
         const esp_err_t e = net_apply_sta_config(ssid, pass);
         if (e != ESP_OK) ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
     }

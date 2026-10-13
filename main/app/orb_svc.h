@@ -70,7 +70,7 @@ typedef enum {
     CAP_TIME = 0,     /* now / tz_label / tz_offset (D15 + D17)        */
     CAP_CONFIG = 1,   /* own declared settings, within the quota       */
     CAP_UI = 2,       /* bank / layer_* / status                       */
-    CAP_ART = 3,      /* its own bank (free for itself, §4.2)          */
+    CAP_ART = 3,      /* theme slot the registry resolved for it (D23) */
     CAP_POWER = 4,    /* owner: dim-timeout request and the hold       */
     CAP_NET = 5,      /* owner: the OS http client, P4                 */
     CAP_SD_READ = 6,  /* owner: /sd/apps/<id>/ only, P4                */

@@ -1626,9 +1626,12 @@ boot-branch check of it — **done together in `b913dbe`**, because a flag with 
 reader is untestable and step (4) is one line. Writers so far: none —
 `orb_net_request_provisioning()` had no in-tree caller as of `b913dbe`, so the feature
 was inert in a ship build exactly as D4 was. (5a) **done: `POST /api/v1/reprov`**, the
-HTTP writer — see the next heading. (5b) D5 knob sample, still net-new. (6) hub-side
-intent state — **unblocked**: the route exists, so the Manage card can hold an
-"Ask this orb to re-provision" action against a real verb. Ship nothing before (1).
+HTTP writer — **bench-proven end to end on orb-B**, see the proof below it. It is also the
+first in-tree caller of `orb_net_request_provisioning()`, so the feature stopped being inert
+in a ship build the moment the route landed. (5b) D5 knob sample, still net-new. (6) hub-side
+intent state — **unblocked and hardware-backed**: the route exists and a real orb performed,
+so the Manage card can hold an "Ask this orb to re-provision" action against a verb that has
+been observed on a device rather than only on the double. Ship nothing before (1).
 
 **D2's first writer: `POST /api/v1/reprov`.** The design point above asked for "a one-shot
 `orb.net` verb (e.g. `reprov`)"; this is it, registered in the uri table beside
@@ -1645,6 +1648,41 @@ VDD, because a chip reset keeps the RTC domain powered.
 Hub side: allowlisted in `deviceRoutes`, answered by the double (which transitions to
 `provisioning` / `192.168.4.1` in the call, since it has no boot to wait for, and takes a
 `NoAPFallback` knob to exercise the refusal no LAN caller can ask for).
+
+**Bench-proven on orb-B (2026-10-13, `9224bd7`, console on `/dev/ttyACM1`).** Flashed with
+`orbflash -port /dev/ttyACM1 -mode full -mac 44:bd:8d:78:26:18`; the MAC gate is what makes
+flashing two identical boards on one bench safe. Every claim in the paragraph above was then
+observed rather than reasoned about:
+
+| Step | Measured |
+|---|---|
+| POST `/api/v1/reprov` | `200 {"state":"rebooting","into":"provisioning"}` |
+| Handler warn | `reprov: provisioning boot armed, rebooting in 750 ms` at t=35390 |
+| Timer callback | `rebooting into provisioning on request` at t=36140 — 750 ms later, exactly |
+| Clean leave | `disassociated: assoc-leave (reason 8) — self-initiated, not counted` |
+| Reset cause | `rst:0xc (RTC_SW_CPU_RST),boot:0x2b` — planned, no watchdog |
+| Boot branch | `provisioning requested — coming up as "orb-2619" (open) for ONE boot` |
+| D4 sojourn | `RECOVERY provisioning: … the AP gives up in 600 s` — the ship duration, not D2's 40 s probe value |
+| Route exists | `GET /api/v1/reprov` → `405`, where an unknown URI → `404` |
+
+Consume-once was proven by resetting mid-sojourn rather than waiting the 600 s out: the next
+boot printed **no** `provisioning requested` line, took the stored network, and reported
+`state connected / ap false` on the LAN within about a minute. The one-arm that stays
+unproven on hardware is the 409 `already provisioning` refusal — reaching it needs a client
+joined to the orb's open AP, and this bench box has no radio (`ip neigh` and
+`/sys/class/net` confirm wired and docker bridges only). It is covered by the double and by
+`host_tz_test.py`, and the guard it checks, `orb_net_is_provisioning()`, is the same one the
+console showed true on the forced boot.
+
+Two bench facts worth keeping. A `-mode full` flash writes bootloader, partition table,
+otadata, app and assets — **no NVS** — so stored credentials survive a reflash and the orb
+self-joins; the recovery-provisioning path is not how a reflash lands. And during the ~90 s
+outage the bench router handed `.34` to the *other* board: the first post-flash `status` came
+back `mac 44bd8d608088 fw 36f21a4`, which is orb-A, and it briefly looked like the bundle had
+flashed a stale build. Identify an orb by MAC, never by address. The `no lease 15 s after
+associating; dropping the association` retry cost this run about a minute at rssi −72 on a
+second radio; that is bench RF, and it is the behaviour to expect from the drop-and-retry
+path, not a `reprov` defect.
 
 **Corrected while building D2.** This line previously said the D4 expiry path would
 set the flag. It must NOT. D4's whole exit is "give up here and retry the stored

@@ -600,6 +600,20 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
                               why, whysz);
     }
 
+    /* P4a fresh-install wipe: when the chosen slot is not the slug's own, any
+     * grant revoke, fault count or enable word it carries belongs to a former
+     * occupant — an inherited revoke denies an innocent app, an inherited
+     * fault count fails one that never crashed, an inherited enable makes the
+     * confirm's promise lie. An upgrade (same slug, same slot) keeps them all:
+     * re-flashing an app does not un-ask its owner's decisions (D19). Nothing
+     * has erased yet, so a refusal after this point still costs no slot — it
+     * cost a dirty slot its stale words, which it was owed. */
+    if (v.slot != sl.existing_slot) {
+        if (orb_svc_forget_row(ORB_APP_BASE + v.slot) != ESP_OK)
+            ESP_LOGW(TAG, "slot %d's stored owner words could not be cleared — "
+                          "check this app's PERMISSIONS ladder after the install", v.slot);
+    }
+
     /* Erase + copy + read-back CRC; the header goes live only once the geometry
      * came back intact (orb_theme.c:1494's ordering — a slot never goes live on
      * bytes nobody read back). The card lock comes off with install_close. */
@@ -623,6 +637,7 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     row.title      = h->title;
     row.kind       = ORB_APP_KIND_APP;
     row.behaviour_kind = h->behaviour_kind;   /* D1/C6: selects the compiled module */
+    row.flash_slot     = v.slot;              /* P4a: the row IS its slot — key stability */
     row.caps       = h->caps;
     row.period_ms  = h->period_ms;
     row.settings   = (n_settings > 0) ? settings : NULL;
@@ -765,6 +780,7 @@ int orb_app_install_resolve_boot(void)
         row.title      = h.title;
         row.kind       = ORB_APP_KIND_APP;
         row.behaviour_kind = h.behaviour_kind;  /* D1/C6: selects the compiled module */
+        row.flash_slot     = slot;              /* P4a: the row IS its slot — key stability */
         row.caps       = h.caps;                 /* D19: from the slot header only */
         row.period_ms  = h.period_ms;
         row.settings   = (n_settings > 0) ? settings : NULL;
@@ -788,6 +804,166 @@ int orb_app_install_resolve_boot(void)
     ESP_LOGI(TAG, "resolved %d installed app%s from the \"" APPS_PARTITION_NAME "\" partition",
              resolved, resolved == 1 ? "" : "s");
     return resolved;
+}
+
+/* ============================================================================
+ *  P4a — the owner's two doors: enable and uninstall (plan §8 P4, B4).
+ * =========================================================================== */
+
+/* The boot ladder's second step (after orb_svc_init, before orb_app_init_all):
+ * an installed app walks only what its stored word says it may. resolve_boot
+ * could not read these words — it runs before the NVS partition is initialised
+ * and its contract is partition-reads-only — so the enable pass is its own rung,
+ * and the default for "no word" is the same answer card_fill gave: off, exactly
+ * what the install confirm promises. */
+void orb_app_install_apply_enable(void)
+{
+    if (!orb_app_card_count()) return;                /* nothing installed: nothing to ask */
+    for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
+        const orb_app_t *row = orb_app_row(i);
+        if (!row || !row->installed) continue;        /* positional span: holes are free slots */
+        if (!orb_svc_enabled(ORB_APP_BASE + row->flash_slot)) continue;
+        if (orb_app_set_enabled(row, true) == ESP_OK)
+            ESP_LOGI(TAG, "enabled \"%s\" from its stored word", row->slug);
+    }
+}
+
+/* One refusal sentence for both doors. */
+static esp_err_t door_refuse(esp_err_t e, const char *w, char *why, size_t whysz)
+{
+    if (why && whysz) snprintf(why, whysz, "%s", w);
+    ESP_LOGW(TAG, "owner door: %s", w);
+    return e;
+}
+
+/* Shared front of both doors: a usable name, no card job in the way, and the
+ * slug's resident row. Returns NULL and fills why otherwise. Compiled/shell
+ * rows answer NOT_SUPPORTED with the same sentence on both doors. */
+static const orb_app_t *door_open(const char *slug, char *why, size_t whysz,
+                                  esp_err_t *err)
+{
+    if (!slug || !orb_sd_name_ok(slug)) {
+        *err = door_refuse(ESP_ERR_INVALID_ARG, "not a usable app name", why, whysz);
+        return NULL;
+    }
+    if (orb_jobs_busy() || orb_app_upload_busy()) {
+        *err = door_refuse(ESP_ERR_INVALID_STATE,
+                           "a card job is running — try again when it finishes",
+                           why, whysz);
+        return NULL;
+    }
+    const orb_app_t *row = orb_app_find_slug(slug);
+    if (!row || !row->installed) {
+        *err = door_refuse(ESP_ERR_NOT_FOUND,
+                           "no app by that name is installed on this dial", why, whysz);
+        return NULL;
+    }
+    if (!orb_app_is_card(row)) {
+        *err = door_refuse(ESP_ERR_NOT_SUPPORTED,
+                           "that app ships inside the firmware — it is always on",
+                           why, whysz);
+        return NULL;
+    }
+    return row;
+}
+
+
+esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    esp_err_t err = ESP_OK;
+    const orb_app_t *row = door_open(slug, why, whysz, &err);
+    if (!row) return err;
+
+    if (!on && (orb_app_current() == row || row->active))
+        return door_refuse(ESP_ERR_INVALID_STATE,
+                           "that app is on the dial — carousel away from it first",
+                           why, whysz);
+
+    if (on) {
+        if (!row->iface)
+            return door_refuse(ESP_ERR_INVALID_STATE,
+                               "no firmware module implements this app's behaviour — "
+                               "it cannot be shown", why, whysz);
+        if (row->failed) {
+            /* The owner pressing ON IS the revive gesture (C2): clear the
+             * record first, and say so if NVS refuses — a failed app turned
+             * on with its counts still standing would fail the boot it cannot
+             * win. This is clear_faults' first device caller. */
+            if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)
+                return door_refuse(ESP_FAIL, "the fault record would not clear — "
+                                             "the app stays failed", why, whysz);
+            ((orb_app_t *)row)->failed = false;
+            ((orb_app_t *)row)->fault_count = 0;
+        }
+    }
+
+    /* Word first, RAM second: a crash between the two leaves the intent on
+     * disk and next boot applies it (apply_enable). The reverse order loses
+     * the owner's decision with nothing to show for it. */
+    const int slot = orb_app_index_of(row);
+    const esp_err_t e = orb_svc_set_enabled(slot, on);
+    if (e != ESP_OK)
+        return door_refuse(e, "the owner ledger refused it — nothing changed",
+                           why, whysz);
+    orb_app_set_enabled(row, on);
+    ESP_LOGI(TAG, "%s \"%s\"", on ? "enabled" : "disabled", row->slug);
+    return ESP_OK;
+}
+
+esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    esp_err_t err = ESP_OK;
+    const orb_app_t *row = door_open(slug, why, whysz, &err);
+    if (!row) return err;
+    if (orb_app_current() == row || row->active)
+        return door_refuse(ESP_ERR_INVALID_STATE,
+                           "that app is on the dial — carousel away from it first",
+                           why, whysz);
+
+    const int slot = orb_app_index_of(row);
+    const esp_partition_t *p = apps_partition();
+
+    /* Which flash slot carries it? The headers are the truth (read_slots is
+     * the installer's own census); a row whose slot cannot be found is the
+     * registry disagreeing with flash — finish the removal anyway: the ledger
+     * row and the owner words are real state to clear, and the next boot's
+     * resolve would drop the row regardless. */
+    int fslot = -1;
+    if (p) {
+        orbapp_install_slots_t sl;
+        read_slots(p, slug, &sl);
+        fslot = sl.existing_slot;
+    }
+    if (fslot >= 0) {
+        /* Header sector only: from this byte the D9 rule makes the app no app
+         * at all — no reboot needed, nothing aliases a headerless slot, and
+         * the blob bytes below cost nobody until the slot's next copy erases
+         * them (an uninstalled slot reads to every reader exactly as a slot a
+         * torn install never completed: absent). */
+        const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),
+                                                      APPS_SLOT_HDR_BYTES);
+        if (e != ESP_OK)
+            return door_refuse(e, "the flash would not erase — the app is still installed",
+                               why, whysz);
+    } else {
+        ESP_LOGW(TAG, "uninstall \"%s\": no flash slot found for it — clearing the "
+                      "registry and the owner words only", slug);
+    }
+
+    /* Erase first, then the words, then the row: every power cut between the
+     * three leaves the app already dead (D9) and at worst stale words on a
+     * dirty slot, which the next fresh install wipes. */
+    if (orb_svc_forget_row(slot) != ESP_OK)
+        ESP_LOGW(TAG, "uninstall \"%s\": some owner words could not be erased — "
+                      "reinstalling will wipe them again", slug);
+    if (!orb_app_card_remove(slug))
+        return door_refuse(ESP_ERR_INVALID_STATE,
+                           "it came off the flash but the registry still holds it",
+                           why, whysz);
+    ESP_LOGI(TAG, "uninstalled \"%s\" from app slot %d", slug, fslot);
+    return ESP_OK;
 }
 
 /* ============================================================================ *

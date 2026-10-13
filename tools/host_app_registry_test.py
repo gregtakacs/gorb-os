@@ -530,7 +530,11 @@ int main(void)
        orb_app_at(orb_app_index_of(A("color_picker"))) == NULL);
     ck("while the owner's ledger accessor still sees the row the carousel hides",
        orb_app_row((size_t)orb_app_index_of(A("color_picker"))) == A("color_picker") &&
-       orb_app_rows() == 3);
+       /* P4a: the ledger span is POSITIONAL — compiled tier plus the whole
+        * card table — so index == index_of == the broker's key even when a
+        * slot is free (row() answers NULL for the hole). A rank-dense count
+        * here would drift on every uninstall. */
+       orb_app_rows() == 3 + ORB_APP_CAP);
     restore_table(); g_fault_slug = "clock"; orb_app_init_all();
     ck("the HOME entry survives faulting — boot-into-clock needs a clock",
        !A("clock")->failed && orb_app_count() == 3);

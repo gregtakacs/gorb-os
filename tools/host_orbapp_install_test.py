@@ -461,6 +461,69 @@ def lint(src):
     # one upload owns the one card lock at a time (the scan reports busy, not blocked).
     if "if (s_up) return ESP_ERR_INVALID_STATE" not in src:
         bad.append("upload: orb_app_upload_begin must refuse a second concurrent upload")
+    # 6/7. P4a uninstall and enable. Uninstall order is the power-cut safety:
+    #    erase the header (D9: no header, no app), forget the owner words, free
+    #    the row — reversed, a live slot resurrects at reboot or a row outlives
+    #    its flash. Header sector only: B5 counts live headers, not bytes. Enable
+    #    persists the e<slot> word BEFORE the RAM flip (a crash keeps the decision
+    #    on disk), and a failed app goes through clear_faults — first caller.
+    ulo2 = src.find("esp_err_t orb_app_uninstall(")
+    uhi2 = src.find("orb_app_upload_begin", ulo2 if ulo2 >= 0 else 0)
+    if ulo2 < 0 or uhi2 < 0:
+        bad.append("P4a: could not locate orb_app_uninstall body")
+    else:
+        ub = src[ulo2:uhi2]
+        ierase, ifork, irem = (ub.find("esp_partition_erase_range("),
+                               ub.find("orb_svc_forget_row("),
+                               ub.find("orb_app_card_remove("))
+        if ierase < 0 or ifork < 0 or irem < 0 or not (ierase < ifork < irem):
+            bad.append("P4a: uninstall must erase the header, then forget the words,")
+        if "APPS_SLOT_HDR_BYTES)" not in ub:
+            bad.append("P4a: uninstall must erase exactly the header sector")
+        if "APPS_SLOT_STRIDE" in ub:
+            bad.append("P4a: uninstall must not erase the whole slot stride")
+        if "that app is on the dial" not in ub or "orb_app_current()" not in ub:
+            bad.append("P4a: uninstall must refuse a row the knob is holding")
+    elo = src.find("esp_err_t orb_app_enable(")
+    ehi = src.find("esp_err_t orb_app_uninstall(", elo if elo >= 0 else 0)
+    if elo < 0 or ehi < 0:
+        bad.append("P4a: could not locate orb_app_enable body")
+    else:
+        eb = src[elo:ehi]
+        iw, ir = eb.find("orb_svc_set_enabled("), eb.find("orb_app_set_enabled(")
+        if iw < 0 or ir < 0 or iw > ir:
+            bad.append("P4a: enable must persist the word BEFORE the RAM flip")
+        if "orb_svc_clear_faults(" not in eb:
+            bad.append("P4a: enabling a failed app must clear its record first")
+        if "that app is on the dial" not in eb:
+            bad.append("P4a: disabling the app on the glass must be refused")
+    # 8. key stability: the fresh-install wipe guards a REUSED slot (an
+    #    upgrade keeps words — D19), and main.c runs the apply rung between
+    #    the broker coming up and the first screen building.
+    if "if (v.slot != sl.existing_slot)" not in src:
+        bad.append("P4a: a fresh install must wipe a reused slot stale words")
+    blo = src.find("void orb_app_install_apply_enable(void)")
+    if blo < 0 or src.find("orb_svc_enabled(", blo) < 0:
+        bad.append("P4a: the boot apply rung must read the stored enable words")
+    ms = read(os.path.join(ROOT, "main", "main.c"))
+    i1, i2, i3 = (ms.find("orb_svc_init())"),
+                  ms.find("orb_app_install_apply_enable();"),
+                  ms.find("orb_app_init_all())"))
+    if not (0 <= i1 < i2 < i3):
+        bad.append("P4a: main.c ladder order (apply after svc_init, before init_all)")
+    # 9. net doors: both POSTs registered, both reaching the device, and the
+    #    installed tier streamed — refusal text stays the device sentence.
+    nsrc = read(os.path.join(ROOT, "main", "net", "orb_net.c"))
+    for lit in ("/api/v1/apps/enable", "/api/v1/apps/uninstall",
+                "h_app_enable", "h_app_uninstall",
+                "orb_app_enable(id", "orb_app_uninstall(id",
+                "apps_send_installed(req, row, APPS_ROW_MAX);"):
+        if lit not in nsrc:
+            bad.append("P4a: orb_net.c lost %r" % lit)
+    for uri in ("/api/v1/apps/enable", "/api/v1/apps/uninstall"):
+        iu = nsrc.find('.uri = "%s"' % uri)
+        if iu < 0 or "HTTP_POST" not in nsrc[iu:iu + 120]:
+            bad.append("P4a: %s must be registered as a POST" % uri)
     return bad
 
 
@@ -477,6 +540,20 @@ def _m(old, new):
     return f
 
 
+    ("P4a: uninstall frees row and words but never erases the header", "device",
+     _m("const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),",
+        "const esp_err_t e = ESP_OK; (void)slot_base;")),
+    ("P4a: uninstall keeps the owner words (revokes outlive their app)", "device",
+     _m("if (orb_svc_forget_row(slot) != ESP_OK)", "if ((slot) != ESP_OK)")),
+    ("P4a: enable flips RAM before the word persists", "device",
+     _m("const esp_err_t e = orb_svc_set_enabled(slot, on);",
+        "orb_app_set_enabled(row, on); const esp_err_t e = orb_svc_set_enabled(slot, on);")),
+    ("P4a: enable skips clear_faults (revive over live crash counts)", "device",
+     _m("if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)", "if (false)")),
+    ("P4a: fresh install inherits a dirty slot stale words", "device",
+     _m("if (v.slot != sl.existing_slot) {", "if (false) {")),
+    ("P4a: uninstall erases the whole slot stride", "device",
+     _m("APPS_SLOT_HDR_BYTES);", "APPS_SLOT_STRIDE);")),
 MUTATIONS = [
     ("serial bumped on reinstall (a re-copy moves the grant key)", "pure",
      _m("v->serial = sl->slot_serial[sl->existing_slot];   /* kept, not bumped */",

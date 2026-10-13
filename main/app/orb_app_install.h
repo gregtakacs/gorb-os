@@ -14,19 +14,21 @@
  *
  * The apps partition (partitions.csv:57, offset 0xD80000 size 0x280000) holds,
  * per app, ONE slot of a header sector (written last) plus a geometry blob. It
- * holds NO pixels: art installs into the re-sliced `assets` slots (§3.2/D10) and
- * maps at activation through orb_app_t's art_offset/art_bytes/art_slot, the same
- * second-bank machinery color_picker's art-light case already runs with zero
- * bytes. FORMAT 1's P4 install set is art-light or fits the small slot; a bank
- * large enough to alias the live theme slot (art0/art1) is refused by size with
- * a named reason — the plan defers the reconciliation to P6, so no theme bank is
- * ever an install target here.
+ * holds NO pixels and never will: ruling D21 (§0.9) voided the container's art
+ * claim, so art_size is always 0 and art_slot always -1 — the bank machinery
+ * that P4 wired art-light stays for the compiled tier's banked clock and is
+ * dead code for every card row until a container's payload is code (P6/P7).
+ * The re-sliced assets install targets this header once described are
+ * withdrawn (D21/D26); nothing here erases or maps a bank.
  *
  * Identity, the cap and the quota are the installer's three gates, all applied
  * BEFORE the first erase so a refusal costs a sentence, not a slot. Grants are
  * NOT the installer's to write (D19): the installer fills orb_app_t.caps from
  * the manifest, never from a scan row and never a stored grant word, so an
- * absent or stale orb.grants can only ever under-grant.
+ * absent or stale orb.grants can only ever under-grant. P4a's two owner doors
+ * in this file (enable, uninstall) still never WRITE a grant — uninstall only
+ * ERASES the removed row's owner words through orb_svc_forget_row(), and a
+ * fresh install wipes a reused slot's stale ones for the same reason.
  *
  * install_decide() — the pure decision — is lifted verbatim by
  * tools/host_orbapp_install_test.py the way host_orbapp_scan_test.py lifts
@@ -117,6 +119,39 @@ esp_err_t orb_app_install_post(const char *stem);
  * refresh to show the same words the dial would. */
 const char *orb_app_install_try_stem(void);
 const char *orb_app_install_try_why(void);
+
+/* ---- P4a: the owner's doors — enable, uninstall ------------------------------
+ * Both take the app's SLUG (not a card stem — an installed app has left the
+ * card; its identity is the header's slug, which is FATFS-safe by the reader's
+ * own rule, so it passes orb_sd_name_ok too). The /apps page is the only
+ * caller today; the dial's APPS page (P5) will reach the same two entries.
+ * Both refuse while a card job owns the queue, because an install landing in
+ * the same slot mid-toggle is the only way these two can interleave.
+ *
+ * Enable: persist the e<slot> word FIRST (a crash between the two leaves the
+ * intent on disk and the boot applies it), then flip the registry's RAM bit.
+ * Turning an app ON revives a failed one — the owner's press IS the clear-
+ * faults gesture, and it is that door's first caller. Turning one OFF while
+ * it is the entry on the glass is refused: the walkable set may not lose the
+ * row the knob is holding; carousel away first.
+ *
+ * Uninstall: erase the slot's HEADER sector first — from that byte the D9
+ * rule makes it no app at all — then forget the row's owner words, then free
+ * the registry entry. A power cut after the erase costs an app the owner had
+ * already ordered gone and grants nothing: the next fresh install wipes the
+ * leftover words anyway. The blob bytes stay behind, unreferenced, until the
+ * slot's next copy_prefix erases them — the geometry of an app nobody can
+ * name is nobody's quota. The card is never touched: the owner's /sd/apps
+ * file stays exactly where it was, ready to reinstall from. */
+esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz);
+esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);
+
+/** Boot ladder, AFTER orb_svc_init() and BEFORE orb_app_init_all(): apply the
+ *  stored enable words to the rows resolve_boot placed. Separate from resolve
+ *  because the words live in NVS and resolve runs before the partition is up
+ *  (its contract is partition-reads-only); an app with no stored word stays
+ *  exactly as installed — off. */
+void orb_app_install_apply_enable(void);
 
 /* ---- uploading an .orbapp FROM the browser TO the card (P4) ------------------
  *

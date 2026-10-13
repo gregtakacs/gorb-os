@@ -201,6 +201,24 @@ uint32_t     orb_svc_declared(const orb_app_t *a); /* the install-time consent,
                                                    * in here is not grantable */
 uint32_t     orb_svc_denied_mask(const orb_app_t *a); /* caps refused this boot */
 esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's toggle */
+
+/* ---- P4a: the owner's enable ledger and the uninstall wipe --------------------
+ * The enable word lives in the SAME namespace as the grants (orb.grants, key
+ * e<slot>): both are owner decisions keyed by registry slot, and the installer
+ * may touch neither (D19) — the /apps page reaches both through this door.
+ * Absent means OFF, which is what a fresh install's confirm promises; unlike
+ * grants, an absent enable word is never "as declared", because an installed
+ * app walking unasked is the failure D19's twin half forbids. */
+bool orb_svc_enabled(int slot);                            /* the stored word, absent = false */
+esp_err_t orb_svc_set_enabled(int slot, bool on);          /* on writes 1, off erases the key */
+/** Uninstall and fresh-install wipe: erase every per-slot word this row owns —
+ *  g, e, the c/x/r fault record, the orb.app<slot> settings namespace — and
+ *  zero the broker's RAM row. Owner state never outlives the app it names:
+ *  an inherited revoke would deny an innocent successor, and an inherited
+ *  fault count would fail an app that never crashed. A slot the flash header
+ *  names is re-derived from the header on the next install, so this wipe can
+ *  be interrupted by any power loss without granting anything. */
+esp_err_t orb_svc_forget_row(int slot);
 uint32_t     orb_svc_calls(const orb_app_t *a);
 uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */

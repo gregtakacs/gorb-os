@@ -702,6 +702,83 @@ static esp_err_t store_grants(int slot, uint32_t mask)
     return w;
 }
 
+/* ---- the enable ledger and the uninstall wipe (P4a) --------------------------
+ * One u32 per row, key e<slot> beside the grant words it lives with: the same
+ * owner's-door provenance, the same slot keying, the opposite default — a
+ * stored 1 is the ONLY way an app walks (an absent grant word means "as
+ * declared"; an absent enable word means "off", because the install confirm
+ * promises the app stays off until the owner turns it on). */
+bool orb_svc_enabled(int slot)
+{
+    nvs_handle_t h;
+    if (nvs_open_from_partition("storage", GRANTS_NS, NVS_READONLY, &h) != ESP_OK)
+        return false;                        /* no ledger readable: the dial stands */
+    char key[12];
+    snprintf(key, sizeof key, "e%d", slot);
+    uint32_t v = 0;
+    const esp_err_t r = nvs_get_u32(h, key, &v);
+    nvs_close(h);
+    return r == ESP_OK && (v & 1u) != 0;
+}
+
+esp_err_t orb_svc_set_enabled(int slot, bool on)
+{
+    nvs_handle_t h;
+    const esp_err_t e = nvs_open_from_partition("storage", GRANTS_NS,
+                                                NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    char key[12];
+    snprintf(key, sizeof key, "e%d", slot);
+    esp_err_t w;
+    if (on) {
+        w = nvs_set_u32(h, key, 1);
+        if (w == ESP_OK) w = nvs_commit(h);
+    } else {
+        w = nvs_erase_key(h, key);           /* off is the erased state, not a stored 0 */
+        if (w == ESP_ERR_NVS_NOT_FOUND) w = ESP_OK;
+        if (w == ESP_OK) w = nvs_commit(h);
+    }
+    nvs_close(h);
+    return w;
+}
+
+esp_err_t orb_svc_forget_row(int slot)
+{
+    if (slot < 0 || slot >= ORB_SVC_ROWS) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    if (nvs_open_from_partition("storage", GRANTS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        char key[12];
+        snprintf(key, sizeof key, "g%d", slot); nvs_erase_key(h, key);
+        snprintf(key, sizeof key, "e%d", slot); nvs_erase_key(h, key);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    if (nvs_open_from_partition("storage", FAULTS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof key, "c%d", slot); nvs_erase_key(h, key);
+        snprintf(key, sizeof key, "x%d", slot); nvs_erase_key(h, key);
+        snprintf(key, sizeof key, "r%d", slot); nvs_erase_key(h, key);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    char ns[20];
+    snprintf(ns, sizeof ns, "orb.app%d", slot);
+    esp_err_t e = nvs_open_from_partition("storage", ns, NVS_READWRITE, &h);
+    if (e == ESP_OK) {
+        nvs_erase_all(h);                    /* the app's own settings die with it:
+                                              * an id collision must not hand a
+                                              * successor values it never chose */
+        nvs_commit(h);
+        nvs_close(h);
+    } else if (e != ESP_ERR_NVS_NOT_FOUND)
+        return e;                            /* a ledger that will not open: retry later */
+    memset(&s_row[slot], 0, sizeof s_row[slot]);   /* lazy re-read sees an empty ledger,
+                                                   * which under D19 is DECLARED — the
+                                                   * honest state for whoever lands on
+                                                   * this slot next */
+    return ESP_OK;
+}
+
 esp_err_t orb_svc_init(void)
 {
     /* Preload every row so the first gated call of the boot never pays an NVS

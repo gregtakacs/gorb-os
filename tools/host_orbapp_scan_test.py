@@ -569,8 +569,17 @@ def lint():
     # half keeps the card id and the -1 count the page renders as "no apps
     # folder"; dropping the distinction is the h_sd lie this endpoint has to
     # be better at (orb_files.c:196).
-    assert '"{\\"mounted\\":false,\\"count\\":-1,\\"apps\\":[]}"' in nn
-    assert '{\\"mounted\\":true,\\"card\\":\\"%s\\",\\"count\\":-1,\\"apps\\":[]}' in nn
+    # P4a added the installed tier to every response — the no-card bodies now
+    # open the installed array instead of closing the apps array, and the
+    # stream still ends in the terminator chunk.
+    assert '"{\\"mounted\\":false,\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
+    assert '{\\"mounted\\":true,\\"card\\":\\"%s\\",\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
+    # P4a's invariant: the installed tier is streamed on EVERY path — card or
+    # no card, folder or none. An installed app's existence does not depend on
+    # the socket's contents, and a page that only learns of it when a card is
+    # in cannot turn an app off before a trip without the card.
+    assert nn.count("apps_send_installed(req, row, APPS_ROW_MAX);") == 3, \
+        "the installed tier stopped riding one of the three response paths"
     assert "no card in the socket" in nn and "no apps folder" in nn
     # the chunked-encoding contract: repeated httpd_resp_send is NOT the
     # documented stream; the chunk API closed with a zero-length chunk is.

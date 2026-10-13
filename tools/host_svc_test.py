@@ -167,6 +167,17 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *k)
     *e = S[--SN];                    /* swap-remove: the store is order-free */
     return ESP_OK;
 }
+esp_err_t nvs_erase_all(nvs_handle_t h)
+{
+    /* namespace wipe, real erase_all's act: drop every entry filed under this
+       handle's namespace — swap-remove, the store is order-free */
+    for (int i = 0; i < SN;)
+    {
+        if (!strcmp(S[i].ns, OPEN_NS[h])) S[i] = S[--SN];
+        else i++;
+    }
+    return ESP_OK;
+}
 esp_err_t nvs_flash_init_partition(const char *p) { (void)p; return ESP_OK; }
 const char *esp_err_to_name(esp_err_t e)
 {
@@ -528,6 +539,34 @@ int main(int argc, char **argv)
     CK("a wiped word reads as declared, not as denied",
        orb_svc_grants(B) == DECL_B);
 
+    /* ---- P4a: the enable word and the uninstall wipe ---------------------
+     * The enable ledger is the grants namespace with its own key and the
+     * opposite default; orb_svc_forget_row is uninstall's sweep and the fresh
+     * install's clean slate — it must take g, e, the C2 fault record and the
+     * app's own settings namespace, and leave every NEIGHBOUR's words alone
+     * (the P4a positional keying is what makes "leave alone" mean leave). */
+    CK("enable: absent is off", orb_svc_enabled(1) == false);
+    CK("enable: store works", orb_svc_set_enabled(1, true) == ESP_OK);
+    CK("enable: reads back on", orb_svc_enabled(1) == true);
+    CK("enable: the key is e1 in orb.grants", find_ent("orb.grants", "e1") != NULL);
+    CK("enable: off erases the key, not stores zero",
+       orb_svc_set_enabled(1, false) == ESP_OK && find_ent("orb.grants", "e1") == NULL);
+    orb_svc_set_grant(B, CAP_THEMES, false);         /* beta has a revoke word again */
+    ent *fc1 = new_ent("orb.fault", "c1"); fc1->is_str = 0; fc1->u32 = 2;
+    ent *fx1 = new_ent("orb.fault", "x1"); fx1->is_str = 0; fx1->u32 = 1;
+    ent *fs1 = new_ent("orb.app1", "theme"); fs1->is_str = 1;
+    strcpy(fs1->s, "midnight");
+    CK("forget: the row is wiped clean", orb_svc_forget_row(1) == ESP_OK);
+    CK("forget: the grant word is gone", find_ent("orb.grants", "g1") == NULL);
+    CK("forget: the enable word is gone", find_ent("orb.grants", "e1") == NULL &&
+       orb_svc_enabled(1) == false);
+    CK("forget: the fault record is gone", find_ent("orb.fault", "c1") == NULL &&
+       find_ent("orb.fault", "x1") == NULL);
+    CK("forget: the settings namespace is gone", find_ent("orb.app1", "theme") == NULL);
+    CK("forget: the neighbour keeps its word", find_ent("orb.grants", "g0") != NULL);
+    orb_svc_init();
+    CK("forget: after reboot beta reads as declared", orb_svc_grants(B) == DECL_B);
+
     /* preload masks free bits AND undeclared bits out of a hand-rolled store:
      * gamma declared nothing, so a fat word written by an older build, a
      * restored partition or a bug in this file must open nothing. */
@@ -772,6 +811,7 @@ HDRS = {
              "esp_err_t nvs_commit(nvs_handle_t);\n"
              "void nvs_close(nvs_handle_t);\n"
              "esp_err_t nvs_erase_key(nvs_handle_t, const char *);\n"
+             "esp_err_t nvs_erase_all(nvs_handle_t);\n"
              "esp_err_t nvs_flash_init_partition(const char *);\n",
 }
 

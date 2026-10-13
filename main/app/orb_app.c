@@ -277,6 +277,7 @@ static orb_app_t s_apps[] = {
         .art_offset = 0,
         .art_bytes  = 0,             /* primary bank, mapped at boot */
         .art_slot   = -1,
+        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
         .iface      = &s_clock_iface,
         .installed  = true,
         .enabled    = true,
@@ -290,6 +291,7 @@ static orb_app_t s_apps[] = {
         .art_offset = 0,
         .art_bytes  = 0,             /* vector-only: LVGL draws the whole face */
         .art_slot   = -1,
+        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
         .iface      = &s_picker_iface,
         .installed  = true,
         .enabled    = true,
@@ -303,6 +305,7 @@ static orb_app_t s_apps[] = {
         .art_offset = 0,
         .art_bytes  = 0,
         .art_slot   = -1,
+        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
         .iface      = &s_menu_iface,
         .installed  = true,
         .enabled    = true,
@@ -402,8 +405,14 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
     s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
     s->app.is_home      = false;           /* the clock stays home (C8)           */
     s->app.installed    = true;
-    s->app.enabled      = false;           /* the enable path is owed to P4: §8 P4 */
+    s->app.enabled      = false;           /* P4a default: an install lands off, and the
+                                            * enable word or the owner's toggle turns it
+                                            * on — the install confirm's promise (D9) */
     s->app.active       = false;
+    /* The entry index IS the identity (P4a): stamp it so a row placed by the
+     * fallback path still knows its own key, and an upserted row's word keys
+     * match orb_app_index_of() without the caller having asked. */
+    s->app.flash_slot   = (int)(s - s_card);
     s->used             = true;
 }
 
@@ -422,6 +431,15 @@ int orb_app_card_upsert(const orb_app_t *row)
     if (!card_table()) return -1;                       /* no PSRAM: table full    */
 
     card_entry_t *s = card_find(row->slug);           /* re-install: keep the index */
+    if (!s) {
+        /* P4a: a card row lives at the index its FLASH slot names, so the
+         * broker's g/c/x/r/e words for ORB_APP_BASE+slot always belong to this
+         * app and to no successor. A caller that names no slot (the host
+         * sentinel's bare upsert) falls back to the first free entry. */
+        if (row->flash_slot >= 0 && row->flash_slot < ORB_APP_CAP &&
+            !s_card[row->flash_slot].used)
+            s = &s_card[row->flash_slot];
+    }
     if (!s) {
         for (int i = 0; i < ORB_APP_CAP; i++)
             if (!s_card[i].used) { s = &s_card[i]; break; }
@@ -445,6 +463,43 @@ int orb_app_card_count(void)
 void orb_app_card_reset(void)
 {
     if (s_card) memset(s_card, 0, (size_t)ORB_APP_CAP * sizeof *s_card);
+}
+
+/* ---- the enable path and the uninstall door (P4a) --------------------------
+ * The registry answers RAM state only; persistence is the broker's (the e<slot>
+ * word in orb.grants), because the sentinel forbids NVS in the installer and
+ * the broker already owns every per-row NVS key. Contexts: set_enabled runs on
+ * the worker (via orb_app_enable) or the httpd task; card_remove only on the
+ * worker / boot ladder — neither touches a widget. */
+
+bool orb_app_is_card(const orb_app_t *app)
+{
+    if (!app || !s_card) return false;
+    return app >= (const orb_app_t *)&s_card[0] &&
+           app <  (const orb_app_t *)&s_card[ORB_APP_CAP];
+}
+
+esp_err_t orb_app_set_enabled(const orb_app_t *app, bool on)
+{
+    if (!app) return ESP_ERR_INVALID_ARG;
+    if (!orb_app_is_card(app))
+        return ESP_ERR_NOT_SUPPORTED;   /* the compiled tier and the shell chrome
+                                         * ARE the dial: no row to turn off */
+    orb_app_t *a = (orb_app_t *)app;
+    a->enabled = on;
+    return ESP_OK;
+}
+
+bool orb_app_card_remove(const char *slug)
+{
+    card_entry_t *s = card_find(slug);
+    if (!s) return false;
+    /* The knob may not be holding a row that vanishes under it: the caller has
+     * to carousel away (or home) first, and uninstall refuses with that exact
+     * reason before it ever reaches here. */
+    if (s_current == &s->app || s->app.active) return false;
+    memset(s, 0, sizeof *s);            /* used=false: entry free, ledger forgets */
+    return true;
 }
 
 /* ---- the combined walkable order (D1/C6) ----------------------------------
@@ -502,23 +557,28 @@ const orb_app_t *orb_app_at(size_t idx)
 
 size_t orb_app_rows(void)
 {
-    /* Raw row count, disabled and FAILED entries included: the owner's
-     * ledger (/api/v1/status, the P4 APPS page) is exactly about the apps
+    /* Raw row span, disabled and FAILED entries included: the owner's
+     * ledger (/api/v1/status, the APPS page) is exactly about the apps
      * the carousel hides. The carousel keeps using orb_app_count(). Card
-     * apps appear here and nowhere the knob can reach: with nothing installed
-     * this is still ORB_APP_N, so every host registry pin on the count holds. */
-    return ORB_APP_N + (size_t)orb_app_card_count();
+     * apps appear here and nowhere the knob can reach.
+     *
+     * P4a: the span is POSITIONAL — the compiled tier plus the whole card
+     * table — so index == orb_app_index_of() == the broker's key for every
+     * row a caller enumerates. A sparse table (slot 2 and slot 5 installed,
+     * 3 and 4 free) answers row() with NULL for the holes; ledger walkers
+     * skip them. A rank-dense span would drift on every uninstall and hand
+     * a removed app's grant, fault and enable words to its successor —
+     * exactly the misfiling D19 forbids. */
+    return ORB_APP_N + ORB_APP_CAP;
 }
 
 const orb_app_t *orb_app_row(size_t i)
 {
     if (i < ORB_APP_N) return &s_apps[i];
-    /* The card rows follow, in slot order, skipping the free slots so the
-     * ledger's i is dense over what is actually installed. */
-    int seen = (int)i - (int)ORB_APP_N;
-    for (int k = 0; s_card && k < ORB_APP_CAP; k++)
-        if (s_card[k].used && seen-- == 0) return &s_card[k].app;
-    return NULL;
+    const size_t p = i - ORB_APP_N;
+    if (p >= ORB_APP_CAP) return NULL;
+    return (s_card && s_card[p].used) ? &s_card[p].app : NULL;   /* hole: no row
+                                                                  * at this slot */
 }
 
 const orb_app_t *orb_app_find_slug(const char *slug)
@@ -630,6 +690,27 @@ esp_err_t orb_app_init_all(void)
             ESP_LOGW(TAG, "%s: no registered behaviour module (kind %lu) — ledger only",
                      app->slug, (unsigned long)app->behaviour_kind);
             app->enabled = false;
+            continue;
+        }
+        /* C6 singleton rule: a behaviour module builds its widgets once. A row
+         * whose module is already built — the installed HSB beside the compiled
+         * HSB, or two card apps naming one kind — rides the first row's screen
+         * instead of re-running init() and stranding the first widget tree
+         * (color_picker_init builds a fresh s_scr and leaks the old one). Two
+         * rows, one face: the carousel may show the same live module twice,
+         * and the ledger keeps each row's own grant, fault and enable words. */
+        bool built = false;
+        for (size_t i = 0; i < ORB_APP_N; i++)
+            if (s_apps[i].iface == app->iface && s_apps[i].enabled && !s_apps[i].failed)
+                built = true;
+        for (int j = 0; j < k && !built; j++)
+            if (s_card[j].used && s_card[j].app.installed && s_card[j].app.enabled &&
+                s_card[j].app.iface == app->iface)
+                built = true;
+        if (built) {
+            app->installed = true;
+            ESP_LOGI(TAG, "%s: reuses its behaviour module's built screen — walkable",
+                     app->slug);
             continue;
         }
         const esp_err_t err = app->iface->init(app);

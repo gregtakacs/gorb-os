@@ -1483,9 +1483,11 @@ static esp_err_t h_status(httpd_req_t *req)
     {
         int off = snprintf(apps_json, sizeof apps_json, "[");
         if (off < 0 || (size_t)off >= sizeof apps_json) off = -1;
-        for (size_t i = 0; off >= 0; i++) {
+        for (size_t i = 0; off >= 0 && i < orb_app_rows(); i++) {
             const orb_app_t *a = orb_app_row(i);
-            if (!a) break;
+            if (!a) continue;           /* P4a: the span is positional — a free card
+                                         * slot answers NULL and the next slot is a
+                                         * different app, not the end of the list */
             char grants[64];
             int goff = 0;
             grants[0] = '\0';
@@ -2955,6 +2957,44 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
  * row outgrows its scratch. A format that cannot overflow needs no
  * all-or-nothing error body, because there is no partial to protect. */
 #define APPS_ROW_MAX 1024
+
+/* P4a's installed tier — streamed by h_apps_list on every response, card or
+ * no card: what is ON the dial does not depend on what is in the socket. One
+ * row per used table position (the span is positional — NULL answers are
+ * holes, and a hole is a free slot, not the end of the list). The row carries
+ * everything the page needs to draw its two buttons: identity for the POST,
+ * state for the labels, and on_glass for the one refusal the page should warn
+ * about before the device does. */
+static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
+{
+    char e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * ORB_APP_TITLE_MAX], caps[40];
+    int seen = 0;
+    for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
+        const orb_app_t *a = orb_app_row(i);
+        if (!a || !a->installed) continue;
+        json_put(e_slug, sizeof e_slug, a->slug);
+        json_put(e_title, sizeof e_title, a->title ? a->title : "");
+        if (orbapp_caps_names(a->caps, caps, sizeof caps) < 0)
+            caps[0] = '\0';                       /* same rule as the card tier */
+        const int w = snprintf(row, rowsz,
+            "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
+            "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
+            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s}",
+            seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
+            a->period_ms, a->n_settings,
+            a->enabled ? "true" : "false", a->failed ? "true" : "false",
+            a->iface ? "true" : "false",
+            (a == orb_app_current() || a->active) ? "true" : "false");
+        if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
+                                                  * a placeholder keeps the body valid */
+            ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);
+            httpd_resp_send_chunk(req, "{}", HTTPD_RESP_USE_STRLEN);
+            continue;
+        }
+        httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+    }
+}
+
 static esp_err_t h_apps_list(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -2991,8 +3031,13 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     const bool mounted = orb_sd_mounted();
     char card[83], head[160];
     json_put(card, sizeof card, mounted ? orb_sd_card_id() : "");
-    if (n < 0 && !mounted)
-        return httpd_resp_sendstr(req, "{\"mounted\":false,\"count\":-1,\"apps\":[]}");
+    if (n < 0 && !mounted) {
+        httpd_resp_send_chunk(req, "{\"mounted\":false,\"count\":-1,\"apps\":[],\"installed\":[",
+                              HTTPD_RESP_USE_STRLEN);
+        apps_send_installed(req, row, APPS_ROW_MAX);
+        httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send_chunk(req, NULL, 0);
+    }
     if (n < 0) {
         /* The card answered and the walk still refused: what it refused is
          * the apps DIRECTORY. An absent directory is not the same answer as
@@ -3000,8 +3045,12 @@ static esp_err_t h_apps_list(httpd_req_t *req)
          * difference for the owner between "the folder is misnamed" and "the
          * files are there but all refused" — the second lists rows. */
         snprintf(head, sizeof head,
-                 "{\"mounted\":true,\"card\":\"%s\",\"count\":-1,\"apps\":[]}", card);
-        return httpd_resp_sendstr(req, head);
+                 "{\"mounted\":true,\"card\":\"%s\",\"count\":-1,\"apps\":[],\"installed\":[",
+                 card);
+        httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
+        apps_send_installed(req, row, APPS_ROW_MAX);
+        httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send_chunk(req, NULL, 0);
     }
     snprintf(head, sizeof head,
              "{\"mounted\":true,\"card\":\"%s\",\"count\":%d,\"apps\":[",
@@ -3046,6 +3095,9 @@ static esp_err_t h_apps_list(httpd_req_t *req)
         }
         httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
     }
+    /* Close the card tier, then the installed tier (P4a), then the object. */
+    httpd_resp_send_chunk(req, "],\"installed\":[", HTTPD_RESP_USE_STRLEN);
+    apps_send_installed(req, row, APPS_ROW_MAX);
     /* the chunked-encoding contract (esp_http_server.h:1129): finish by calling
      * the chunk API with length 0 — that is the terminating chunk. */
     httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
@@ -3092,6 +3144,87 @@ static esp_err_t h_apps_install(httpd_req_t *req)
     char b[192];
     const int n = snprintf(b, sizeof b, "{\"state\":\"installing\",\"stem\":\"%s\"}", stem);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"stem too long\"}");
+    return httpd_resp_sendstr(req, b);
+}
+
+/* ---- P4a's two owner doors: /api/v1/apps/enable and /apps/uninstall ----------
+ * Both are synchronous — the opposite of the install POST, and for the same
+ * reason inverted: install is a multi-second card copy that must not sit on
+ * this task, while these touch one NVS key or one 4 KB header sector, so the
+ * handler can answer with the TRUTH of the attempt instead of a 202 the page
+ * has to reload to discover. The id is the app's SLUG (the identity the
+ * reader validated as FATFS-safe), never a path; orb_app_enable/uninstall
+ * re-validate it and own every refusal sentence the body echoes. The slugs
+ * and the reason texts here are device-authored (no quotes, no backslashes),
+ * so the bodies need no json_put — same rule h_apps_install cites. */
+static const char *door_http_status(esp_err_t e)
+{
+    switch (e) {
+        case ESP_ERR_NOT_FOUND:       return "404 Not Found";
+        case ESP_ERR_INVALID_ARG:     return "400 Bad Request";
+        case ESP_ERR_NOT_SUPPORTED:   return "400 Bad Request";
+        case ESP_ERR_INVALID_STATE:   return "409 Conflict";
+        default:                      return "500 Internal Server Error";
+    }
+}
+
+/* POST /api/v1/apps/enable?id=<slug>&on=0|1 — the owner's toggle (P4a). The
+ * install confirm's "stays off until you turn it on" ends here: ON persists
+ * the word before the RAM flip, so the choice survives whatever the dial
+ * does next, and a failed app's ON doubles as the fault-record clear (C2's
+ * owner door, its first caller). */
+static esp_err_t h_app_enable(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "", onv[4] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
+    }
+    if (!q_param(req, "on", onv, sizeof onv) ||
+        (strcmp(onv, "0") != 0 && strcmp(onv, "1") != 0)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"on must be 0 or 1\"}");
+    }
+    char why[144] = "";
+    const esp_err_t e = orb_app_enable(id, strcmp(onv, "1") == 0, why, sizeof why);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, door_http_status(e));
+        char b[208];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[224];
+    snprintf(b, sizeof b, "{\"state\":\"%s\",\"slug\":\"%s\"}",
+             strcmp(onv, "1") == 0 ? "enabled" : "disabled", id);
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/apps/uninstall?id=<slug> — the B4 door (P4a). Erases the slot
+ * header (D9: no header, no app — no reboot, the card file untouched), forgets
+ * every owner word the row owned, and frees the table entry that keeps the
+ * slot's place in the quota. The page confirms first; the device does not
+ * trust the confirm — it just refuses anything on the glass. */
+static esp_err_t h_app_uninstall(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
+    }
+    char why[144] = "";
+    const esp_err_t e = orb_app_uninstall(id, why, sizeof why);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, door_http_status(e));
+        char b[208];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    snprintf(b, sizeof b, "{\"state\":\"uninstalled\",\"slug\":\"%s\"}", id);
     return httpd_resp_sendstr(req, b);
 }
 
@@ -3776,6 +3909,7 @@ static const char HTML_APPS[] =
 "<h1>apps on the card</h1>"
 "<div id=msg>loading&hellip;</div>"
 "<div id=card></div>"
+"<div id=inst></div>"
 "<div id=list></div>"
 "<div class=row>Pick a <b>.orbapp</b> to copy onto the card, or drop files into an <b>apps</b> folder and reload. Nothing installs until you confirm it.</div>"
 "<div class=row><input id=file type=file accept=.orbapp> <button onclick=doAppUp()>Upload to card</button></div>"
@@ -3789,6 +3923,7 @@ static const char HTML_APPS[] =
 "function draw(){"
 "var L=document.getElementById('list'),C=document.getElementById('card');"
 "if(!data){return;}"
+"drawInst();"
 "if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
 "if(data.count<0){C.textContent=(data.card||'the card')+' \\u2014 the card has no apps folder';L.innerHTML='<div class=row>Copy .orbapp files into an <b>apps</b> folder in the card\\'s top-level directory, then reload.</div>';return;}"
 "C.textContent=data.card+' \\u2014 '+data.count+' file'+(data.count==1?'':'s')+' in apps/';"
@@ -3796,7 +3931,7 @@ static const char HTML_APPS[] =
 "var h='';"
 "for(var i=0;i<data.apps.length;i++){var a=data.apps[i];"
 "h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):'(no title claimed)')+'</div>';"
-"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+esc(a.app_id)+(a.serial?' \\u00b7 #'+a.serial:'')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':' \\u00b7 no beat')+'</div>';"
+"h=h+'<div class=sub>'+esc(a.slug)+(onDial(a.slug)?' \\u00b7 on the dial':'')+' \\u00b7 '+esc(a.app_id)+(a.serial?' \\u00b7 #'+a.serial:'')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':' \\u00b7 no beat')+'</div>';"
 "h=h+'<div class=sub>may use: '+(a.caps?esc(a.caps):'nothing beyond its own settings')"
 "+(a.n_settings?' \\u00b7 '+a.n_settings+' setting'+(a.n_settings==1?'':'s'):'')"
 "+(a.art_size?' \\u00b7 art '+bytes(a.art_size):'')+' \\u00b7 file '+bytes(a.file_size)+'</div>';"
@@ -3805,6 +3940,22 @@ static const char HTML_APPS[] =
 "h=h+'</div>';}L.innerHTML=h;}"
 "function install(stem,btn){if(!confirm('Install '+stem+' from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.')){return;}if(btn){btn.disabled=true;}say('installing '+stem+' from the card...','');j('/api/v1/apps/install?id='+encodeURIComponent(stem),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused the install: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('install queued for '+stem+' — reload to see whether it landed','');refresh();}).catch(function(){say('orb not reachable','bad');if(btn){btn.disabled=false;}});}"
 "function doAppUp(ow){var f=document.getElementById('file').files[0];if(!f){say('choose a .orbapp file first','bad');return;}var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/app'+(ow?'?overwrite=1':''),true);x.timeout=900000;x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};x.onload=function(){var d={};try{d=JSON.parse(x.responseText);}catch(e){}if(x.status==200){say('uploaded - the app is on the card','ok');refresh();}else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different app with that name is already on the card. Replace it?')){doAppUp(true);return;}say('not replaced: the existing file is kept','bad');}else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};x.ontimeout=function(){say('upload timed out','bad');};say('copying to the card\\u2026','');x.send(f);}"
+"function onDial(s){var x=data.installed||[];for(var i=0;i<x.length;i++){if(x[i].slug==s)return true;}return false;}"
+"function drawInst(){"
+"var I=document.getElementById('inst'),x=data.installed||[];"
+"if(!x.length){I.innerHTML='<div class=row><b>On the dial</b> \\u2014 nothing installed yet.</div>';return;}"
+"var h='<div class=row><b>On the dial</b></div>';"
+"for(var i=0;i<x.length;i++){var a=x[i];"
+"h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):esc(a.slug))+'</div>';"
+"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 slot '+a.slot+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
+"h=h+'<div class=sub>'+(a.enabled?'on the carousel':'turned off')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
+"h=h+'<div style=\"margin-top:.3rem\">';"
+"h=h+(a.enabled?'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',0)\">Turn off</button> ':'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',1)\">Turn on</button> ');"
+"h=h+'<button onclick=\"unin(\\''+esc(a.slug)+'\\')\">Uninstall</button></div></div>';}"
+"I.innerHTML=h;"
+"}"
+"function setOn(s,on){say((on?'turning on ':'turning off ')+s+'...','');j('/api/v1/apps/enable?id='+encodeURIComponent(s)+'&on='+on,{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say(on?'turned on - it walks the dial now':'turned off - the slot keeps its place','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions; the file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
 "</script></body></html>";
@@ -3907,10 +4058,11 @@ static esp_err_t net_start_httpd(void)
      * it with room for the endpoints this feature needs, and check the return
      * below rather than trusting the count. The /timezone page brings the table
      * to 15 registered routes; the /apps pair brought it to 25, the /apps install
-     * POST is the 26th, and this slice's /api/v1/sd/app upload POST is the 27th, so
-     * 29 keeps headroom for the uninstall POST and the next pair without touching
-     * this line again. */
-    cfg.max_uri_handlers  = 29;
+     * POST is the 26th, the /api/v1/sd/app upload POST is the 27th, and P4a's
+     * enable and uninstall doors make 29 registered — exactly the old ceiling,
+     * so 32 keeps the headroom the plan's route budget (P5's APPS-page mirror
+     * and the theme pair) was priced against touching this line again. */
+    cfg.max_uri_handlers  = 32;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -3963,6 +4115,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
+        { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
+        { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

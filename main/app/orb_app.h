@@ -161,6 +161,15 @@ struct orb_app {
     uint32_t            art_bytes;
     int                 art_slot;  /* the secondary slot claimed; -1 = none */
 
+    /* P4a: the apps-partition slot this card row was resolved from (0..7), or
+     * -1 for a compiled-in entry. It is the row's STABLE identity: the registry
+     * index of a card entry is ORB_APP_BASE + flash_slot by construction, so
+     * uninstalling one app never renumbers another's grant, fault or enable
+     * words (the migration a rank-keyed table would need on every removal).
+     * boot_resolve assigns it from the flash scan; the install ladder from the
+     * verdict. card_fill places the entry at exactly this index. */
+    int                 flash_slot;
+
     /* Frozen manifest policy (plan §4.1), read by the broker's gate. P4's
      * manifest reader fills these for card apps; the boot ladder fills the
      * compiled-in pair. period_ms is the app's FASTEST beat — svc's set_beat
@@ -228,6 +237,26 @@ struct orb_app {
  *  updated in place, keeping its index — so a re-install does not move the
  *  broker's grant word. */
 int orb_app_card_upsert(const orb_app_t *row);
+
+/** P4a enable/uninstall. Both refuse compiled-in entries; the toggle and the
+ *  erase exist for card apps. Context: like card_upsert, these run on the
+ *  worker or the boot ladder (the enable call additionally from the httpd
+ *  task) — they only write scalars, never widgets. */
+/** Flip the RAM-enabled bit of a card row. Compiled-in and shell entries are
+ *  not togglable (refused); an app whose behaviour_kind resolved to no module
+ *  may be enabled — it stays ledger-only either way. Persistence is the
+ *  caller's (orb_svc_enable): the registry answers what IS, not what NVS
+ *  says. */
+esp_err_t orb_app_set_enabled(const orb_app_t *app, bool on);
+/** Free a card row's table entry. False means refused or absent: an unknown
+ *  slug, or the row is on the glass (current or active) — the walkable set may
+ *  not lose the entry the knob is holding. NVS cleanup is the caller's, which
+ *  is why uninstall forgets the row's words BEFORE removing it: an erased
+ *  slot plus stale owner state is the dirty-slot case the install wipes. */
+bool orb_app_card_remove(const char *slug);
+/** True for a row that lives in the card table (P4a keying check for the
+ *  broker's per-slot words; compiled and shell rows are never togglable). */
+bool orb_app_is_card(const orb_app_t *app);
 
 /** True when a card row already holds `slug`. The install gate asks before it
  *  decides whether this is a new install (B5 counts it) or a re-use (it does

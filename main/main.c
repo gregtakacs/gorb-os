@@ -144,6 +144,11 @@ void app_main(void)
      * (plan §8, the P3 pass line). Inert until an app calls through it; the
      * compiled-in pair reaches the OS directly until P6, as §14 records. */
     ESP_ERROR_CHECK(orb_svc_init());
+    /* P4a's rung: the owner's enable words apply after the broker has the
+     * partition up and before anything builds a screen — an installed app
+     * walks this boot only if its stored word says so, and one with no word
+     * stays exactly as installed: off. */
+    orb_app_install_apply_enable();
     ESP_ERROR_CHECK(orb_app_init_all());
 
     /* The carousel's name chip, on the top layer, built once here so no flick

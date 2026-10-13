@@ -3095,6 +3095,125 @@ static esp_err_t h_apps_install(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
+/* POST /api/v1/sd/app[?overwrite=1], body = the .orbapp bytes.
+
+ * The apps twin of h_theme_upload, and the missing first step of the card ladder:
+ * the owner's card socket is unreachable from the laptop that baked the file, and
+ * the /apps install button can only act on a container already in /sd/apps. This
+ * streams the bytes in so they CAN get there without a physical card read.
+ *
+ * Raw body, mandatory Content-Length, one upload at a time, and NO name from the
+ * client — the file lands under <slug>.orbapp, the slug its OWN header carries,
+ * decided in orb_app_upload_end() once the bytes arrive (h_theme_upload's rules,
+ * inherited whole). The device cannot tell an .orbapp from a random blob until the
+ * last byte is in and the reader's ladder plus both payload CRCs have run off the
+ * card, so nothing is named, filed, or listed until that has passed; a half-upload
+ * is cancelled to .part and never reaches a loadable name. ?overwrite=1 is the only
+ * client decision, and only governs replacing a DIFFERENT app already filed under
+ * the same slug. */
+static esp_err_t h_app_upload(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    /* Only the overwrite flag is read; the destination is the header's own slug. */
+    char ow[4] = "";
+    const bool overwrite = q_param(req, "overwrite", ow, sizeof ow) && strcmp(ow, "1") == 0;
+
+    const int clen = (int)req->content_len;
+    if (clen <= 0) {
+        httpd_resp_set_status(req, "411 Length Required");
+        return httpd_resp_sendstr(req, "{\"error\":\"Content-Length required\"}");
+    }
+    if (clen > (int)ORB_APP_UPLOAD_MAX) {
+        /* Refused on the declared length before a byte reaches the card. */
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"too large\",\"max\":%u}", (unsigned)ORB_APP_UPLOAD_MAX);
+        return httpd_resp_sendstr(req, b);
+    }
+    if (orb_app_upload_busy()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"an upload is already in progress\"}");
+    }
+
+    orb_app_up_t *up = NULL;
+    const esp_err_t be = orb_app_upload_begin(&up);
+    if (be != ESP_OK) {
+        /* no card (503), no room for the card read buffer (507), a card that would
+         * not open the file (500) — the page has to say which one it hit. */
+        httpd_resp_set_status(req, be == ESP_ERR_NOT_FOUND ? "503 Service Unavailable"
+                                       : be == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+                                                              : "500 Internal Server Error");
+        return httpd_resp_sendstr(req, be == ESP_ERR_NOT_FOUND
+            ? "{\"error\":\"no card in the socket\"}"
+            : be == ESP_ERR_NO_MEM
+                ? "{\"error\":\"out of memory for the card read buffer\"}"
+                : "{\"error\":\"could not open the app file on the card\"}");
+    }
+
+    /* The receive buffer lives in PSRAM, not internal .bss. This file already
+     * carries the theme upload's static rx[4096] and the OTA chunk; a SECOND
+     * internal-static rx starved the httpd task's own stack on orb-A the day it
+     * shipped (ESP_ERR_HTTPD_TASK — the h_apps_list comment records it, and it bit
+     * again the moment this route added one). PSRAM has megabytes to spare, and the
+     * worker copies straight from here to the card, so it needs no DMA-capable
+     * memory. Allocated once, kept for the process's life (only one upload runs at a
+     * time, so this one buffer is never contended). */
+    static char *rx;
+    if (!rx) {
+        rx = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!rx) {
+            orb_app_upload_cancel(&up);
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "{\"error\":\"out of memory for the upload buffer\"}");
+        }
+    }
+    int got = 0;
+    while (got < clen) {
+        const int room = clen - got;
+        const int r = httpd_req_recv(req, rx,
+                                    (size_t)(room < (int)sizeof rx ? room : (int)sizeof rx));
+        if (r <= 0) {
+            /* Client vanished: cancel() deletes the .part, so nothing survives on the
+             * card to be listed as an app and fail to load. */
+            orb_app_upload_cancel(&up);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
+        }
+        if (orb_app_upload_data(up, rx, (size_t)r) != ESP_OK) {
+            orb_app_upload_cancel(&up);
+            httpd_resp_set_status(req, "413 Payload Too Large");
+            return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+        }
+        got += r;
+    }
+
+    const char *why = NULL;
+    const esp_err_t ee = orb_app_upload_end(&up, overwrite, &why);
+    if (ee == ORB_APP_UPLOAD_E_DUP) {
+        /* A different app already lives under that slug. 409, not 422: nothing is
+         * wrong with the upload — the owner decides, and the page re-sends with
+         * ?overwrite=1 to keep the one they are pushing. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"a different app with that name is already on the card\","
+            "\"overwrite\":false}");
+    }
+    if (ee != ESP_OK) {
+        /* The reason goes in the body, not only the status line: whoever is at this
+         * page has no serial cable and no reason to go and get one. */
+        char b[256];
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\"}",
+                 why ? why : "not a valid app file");
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    snprintf(b, sizeof b, "{\"state\":\"stored\",\"bytes\":%d}", got);
+    return httpd_resp_sendstr(req, b);
+}
+
 /* POST /api/v1/sd/theme[?overwrite=1], body = the .orbtheme bytes.
  *
  * Raw body, not multipart: a boundary-following parser is ~200 lines of state machine
@@ -3658,8 +3777,8 @@ static const char HTML_APPS[] =
 "<div id=msg>loading&hellip;</div>"
 "<div id=card></div>"
 "<div id=list></div>"
-"<div class=row>Copy <b>.orbapp</b> files into an <b>apps</b> folder on the card, then reload this page. "
-"Nothing installs until the owner confirms it.</div>"
+"<div class=row>Pick a <b>.orbapp</b> to copy onto the card, or drop files into an <b>apps</b> folder and reload. Nothing installs until you confirm it.</div>"
+"<div class=row><input id=file type=file accept=.orbapp> <button onclick=doAppUp()>Upload to card</button></div>"
 "<div class=row><a href=/themes>themes on the card</a> &nbsp; <a href=/timezone>clock setup</a> &nbsp; <a href=/>network</a></div>"
 "<script>"
 "var data=null;"
@@ -3685,6 +3804,7 @@ static const char HTML_APPS[] =
 "else{h=h+'<div style=\"margin-top:.3rem\"><button onclick=\"install(\\''+esc(a.stem)+'\\',this)\">Install on the dial</button></div>';}"
 "h=h+'</div>';}L.innerHTML=h;}"
 "function install(stem,btn){if(!confirm('Install '+stem+' from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.')){return;}if(btn){btn.disabled=true;}say('installing '+stem+' from the card...','');j('/api/v1/apps/install?id='+encodeURIComponent(stem),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused the install: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('install queued for '+stem+' — reload to see whether it landed','');refresh();}).catch(function(){say('orb not reachable','bad');if(btn){btn.disabled=false;}});}"
+"function doAppUp(ow){var f=document.getElementById('file').files[0];if(!f){say('choose a .orbapp file first','bad');return;}var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/app'+(ow?'?overwrite=1':''),true);x.timeout=900000;x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};x.onload=function(){var d={};try{d=JSON.parse(x.responseText);}catch(e){}if(x.status==200){say('uploaded - the app is on the card','ok');refresh();}else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different app with that name is already on the card. Replace it?')){doAppUp(true);return;}say('not replaced: the existing file is kept','bad');}else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};x.ontimeout=function(){say('upload timed out','bad');};say('copying to the card\\u2026','');x.send(f);}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
 "</script></body></html>";
@@ -3786,9 +3906,10 @@ static esp_err_t net_start_httpd(void)
      * already answers 404 on the running device while the 8 before it 302. Raise
      * it with room for the endpoints this feature needs, and check the return
      * below rather than trusting the count. The /timezone page brings the table
-     * to 15 registered routes; the /apps pair brought it to 25, and this slice's
-     * /api/v1/apps/install POST is the 26th, so 29 keeps headroom for the uninstall
-     * POST and the next pair without touching this line again. */
+     * to 15 registered routes; the /apps pair brought it to 25, the /apps install
+     * POST is the 26th, and this slice's /api/v1/sd/app upload POST is the 27th, so
+     * 29 keeps headroom for the uninstall POST and the next pair without touching
+     * this line again. */
     cfg.max_uri_handlers  = 29;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -3842,6 +3963,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
+        { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/install",  .method = HTTP_POST, .handler = h_theme_install },

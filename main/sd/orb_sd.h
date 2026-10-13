@@ -36,6 +36,7 @@
 
 #define ORB_SD_BASE        "/sd"
 #define ORB_SD_THEME_DIR   ORB_SD_BASE "/themes"
+#define ORB_SD_APPS_DIR    ORB_SD_BASE "/apps"   /* the .orbapp drop zone; must equal ORB_APP_DIR */
 #define ORB_SD_NAME_MAX    31    /* one FATFS name, sans directory */
 #define ORB_SD_PATH_MAX    128   /* ORB_SD_THEME_DIR + name + spare */
 

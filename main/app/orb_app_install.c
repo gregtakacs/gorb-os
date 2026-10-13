@@ -159,6 +159,7 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
  * =========================================================================== */
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>          /* calloc/free for the upload state */
 #include <unistd.h>
 
 #include "esp_heap_caps.h"
@@ -535,32 +536,52 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     const int fd = open_verified_stem(&h, &h_store, raw, stem, &cw);
     if (fd < 0) return install_failed(ESP_FAIL, cw, why, whysz);
 
+    /* The unpacked settings and the wire words that feed them are ~1 KB each and
+     * must NOT sit on this worker's stack: orb_jobs is a hard-measured 4096 B
+     * (orb_jobs.c:65 — "needs more stack is a crash rather than a log line"), and
+     * settings[] + sw[] + h_store + raw + the verdict's why[128] + the deep
+     * read/decide/copy chain overflowed it on orb-A the day this path was first
+     * benched (*** stack overflow in task orb_jobs). This is the fix boot_resolve()
+     * already documents for the same arrays on the 3584 B main task (its comment
+     * above); the install path had never run on hardware to find it. One PSRAM
+     * block carries both, freed at the single out: label at the tail. */
+    uint8_t *scratch = heap_caps_malloc(ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u +
+                                        ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t),
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!scratch) { install_close(fd);
+        return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
+                              why, whysz); }
+    uint32_t *sw = (uint32_t *)scratch;
+    orb_setting_desc_t *settings = (orb_setting_desc_t *)(scratch +
+                                        ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u);
+    esp_err_t ret = ESP_OK;
+    bool fd_open = true;
+
     /* The WHOLE payload checksums off the card before any erase. Both CRCs, over
      * the full geometry and the full art range, exactly as orb_theme.c verifies a
      * container — the half-copy D9 prices is caught here, on a page that still
      * lists the card, not after a reboot into a slot that will not draw. */
     const char *vv = verify_payload(fd, h);
-    if (vv) { install_close(fd); return install_failed(ESP_ERR_INVALID_CRC, vv, why, whysz); }
+    if (vv) { ret = install_failed(ESP_ERR_INVALID_CRC, vv, why, whysz); goto out; }
 
     /* Unpack the declared settings — needed twice over: the quota prices them and
-     * the resident record carries them (only these ids may reach NVS, §4.2). */
-    orb_setting_desc_t settings[ORBAPP_SETTINGS_MAX];
+     * the resident record carries them (only these ids may reach NVS, §4.2). The
+     * tables live in the PSRAM scratch above, never this frame. */
     int n_settings = 0;
     if (h->n_settings > 0) {
-        uint32_t sw[ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS];
         size_t spos = h->setting_off;
         const size_t need = (size_t)h->n_settings * ORBAPP_SETTINGS_WORDS * 4u;
         if (rd_at(fd, &spos, (uint8_t *)sw, need) != (ssize_t)need) {
-            install_close(fd);
-            return install_failed(ESP_ERR_INVALID_SIZE,
-                                  "the app file ended inside its settings table — re-copy it",
-                                  why, whysz);
+            ret = install_failed(ESP_ERR_INVALID_SIZE,
+                                 "the app file ended inside its settings table — re-copy it",
+                                 why, whysz);
+            goto out;
         }
         char rwhy[128];
         const char *r = orbapp_unpack_settings(sw,
                                                (size_t)h->n_settings * ORBAPP_SETTINGS_WORDS,
                                                h->n_settings, settings, rwhy, sizeof rwhy);
-        if (r) { install_close(fd); return install_failed(ESP_ERR_INVALID_ARG, r, why, whysz); }
+        if (r) { ret = install_failed(ESP_ERR_INVALID_ARG, r, why, whysz); goto out; }
         n_settings = (int)h->n_settings;
     }
 
@@ -586,15 +607,16 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     esp_err_t e = copy_prefix(p, fd, h, v.slot, &fw);
     if (e == ESP_OK) e = verify_slot_geom(p, h, v.slot, &fw);
     if (e == ESP_OK) e = write_slot_header(p, v.slot, raw, &fw);
-    install_close(fd);
-    if (e != ESP_OK) return install_failed(e, fw, why, whysz);
+    install_close(fd); fd_open = false;
+    if (e != ESP_OK) { ret = install_failed(e, fw, why, whysz); goto out; }
 
 
     /* Commit to the registry LAST, from the manifest — D19: caps come from the
      * header, never a stored grant word; art is art-light in P4 so no bank is
      * claimed (art_slot -1), and the boot ladder re-derives the same record from
      * the slot header next power. card_upsert copies slug/title/settings into the
-     * table's own buffers, so this stack row and h_store may die on return. */
+     * table's own buffers, so this stack row, h_store and the scratch may all die
+     * on return. */
     orb_app_t row;
     memset(&row, 0, sizeof row);
     row.slug       = h->slug;
@@ -608,14 +630,20 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     row.art_offset = 0;
     row.art_bytes  = h->art_size;
     row.art_slot   = -1;
-    if (orb_app_card_upsert(&row) < 0)
-        return install_failed(ESP_ERR_NO_MEM,
-                              "it reached flash but the app registry is full — uninstall one",
-                              why, whysz);
+    if (orb_app_card_upsert(&row) < 0) {
+        ret = install_failed(ESP_ERR_NO_MEM,
+                             "it reached flash but the app registry is full — uninstall one",
+                             why, whysz);
+        goto out;
+    }
 
     ESP_LOGI(TAG, "installed \"%s\" (%s) into app slot %d in %lld ms",
              h->title, stem, v.slot, (long long)((esp_timer_get_time() - t0) / 1000));
-    return ESP_OK;
+
+out:
+    if (fd_open) install_close(fd);
+    heap_caps_free(scratch);
+    return ret;
 }
 
 /* The worker's request: the stem, nothing else — small enough the queue owns it
@@ -760,6 +788,230 @@ int orb_app_install_resolve_boot(void)
     ESP_LOGI(TAG, "resolved %d installed app%s from the \"" APPS_PARTITION_NAME "\" partition",
              resolved, resolved == 1 ? "" : "s");
     return resolved;
+}
+
+/* ============================================================================ *
+ *  The browser→card upload. Mirror of orb_theme_upload_* (orb_theme.c:1835),
+ *  for an .orbapp into the OS-owned /sd/apps drop zone. Bytes land in
+ *  upload.part under the one card lock; the container is verified IN FULL —
+ *  reader ladder plus both payload CRCs — off the card, and only then rename()d
+ *  to the <slug>.orbapp its OWN header names. Half-arrived or damaged bytes are
+ *  deleted, never published, so a torn upload can never be listed as an app the
+ *  install then selects. The scratch carries no ORB_APP_EXT, so orb_files_walk
+ *  (and therefore the install's resolve-by-stem) cannot select it, exactly as the
+ *  theme scratch is invisible to orb_theme_scan.                                        *
+ * =========================================================================== */
+
+/* The upload in progress. orb_app_upload_busy() is the gate every scan checks
+ * first, so at most one exists — which is what lets the scratch keep one fixed
+ * name and the card lock stay held across the whole transfer. */
+struct orb_app_up {
+    int      fd;
+    char     tmp[ORB_SD_PATH_MAX];
+    uint32_t got;
+};
+static orb_app_up_t *s_up;
+
+/* Not .orbapp, so the walk never lists it and the install never resolves it. One
+ * fixed name (in /sd/apps, where the theme's upload.part lives in /sd/themes), so
+ * the two uploads cannot collide and a single scratch cannot race a second. */
+#define APPS_SCRATCH "upload.part"
+
+/* Validate an open container's header block the way the reader does — parse, then
+ * the identity triple against the FILENAME the file will be filed under (derived
+ * from the header's own slug, since an upload has no name on disk yet), then the
+ * placement rule. Returns the refusal sentence, or NULL. A caller-supplied stem
+ * would be the only difference from read_and_check_header, and there is none here:
+ * the upload's destination IS whatever this header says it is. */
+static const char *app_hdr_validate(int fd, orbapp_hdr_t *h)
+{
+    uint32_t hdr[ORBAPP_HDR_WORDS];
+    size_t pos = 0;
+    if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
+        return "the file ends inside its own header block — re-send it";
+
+    char why[128];
+    const char *r = orbapp_parse_header(hdr, h, why, sizeof why);
+    if (r) return r;
+
+    char fname[ORBAPP_SLUG_MAX + 16];
+    snprintf(fname, sizeof fname, "%s%s", h->slug, ORB_APP_EXT);
+    r = orbapp_check_header(h, 0, false, fname, why, sizeof why);
+    if (r) return r;
+    return orbapp_check_file_layout(h, why, sizeof why);
+}
+
+bool orb_app_upload_busy(void) { return s_up != NULL; }
+
+esp_err_t orb_app_upload_begin(orb_app_up_t **out)
+{
+    *out = NULL;
+    if (s_up) return ESP_ERR_INVALID_STATE;                 /* one at a time */
+    const orb_file_src_t *src = orb_files_src(ORB_APP_SCAN_SLUG, ORB_APP_SCAN_ID);
+    if (!src) return ESP_ERR_NOT_FOUND;
+    if (orb_sd_ensure_mounted() != ESP_OK) return ESP_ERR_NOT_FOUND;
+    /* No card read buffer reserved HERE, and none needed: the upload verifies only
+     * the header block (a stack copy), not the payload. The payload CRCs are the
+     * INSTALL's job — orb_app_install() runs verify_payload() off the card before
+     * the first erase (D9), and orb_app_scan.c:17 states the division outright:
+     * only the header is read at the card-facing tiers. Checking the whole payload
+     * here would need install.c's internal DMA buffer from the httpd task, where
+     * the WiFi/SDMMC scratch already contends for contiguous internal heap — the
+     * exact squeeze h_apps_list documents as ESP_ERR_HTTPD_TASK. The install is the
+     * right place to pay it: it runs on the worker, off the dial's hot path. */
+
+    orb_app_up_t *u = calloc(1, sizeof *u);
+    if (!u) return ESP_ERR_NO_MEM;
+    /* The scratch path is built from the OS's own declared apps directory, never
+     * from a client string — the destination filename is not even known yet,
+     * because it is the slug still inside the bytes still arriving. */
+    const int n = snprintf(u->tmp, sizeof u->tmp, "%s/%s", src->dir, APPS_SCRATCH);
+    if (n < 0 || (size_t)n >= sizeof u->tmp) { free(u); return ESP_ERR_INVALID_SIZE; }
+
+    orb_sd_lock();
+    u->fd = open(u->tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (u->fd < 0) {
+        const int e = errno;
+        orb_sd_unlock(); free(u);
+        ESP_LOGW(TAG, "app upload: create failed (%s)", strerror(e));
+        return ESP_FAIL;
+    }
+    s_up = u;
+    *out = u;
+    ESP_LOGI(TAG, "uploading an app to the card");
+    return ESP_OK;
+}
+
+esp_err_t orb_app_upload_data(orb_app_up_t *u, const void *buf, size_t n)
+{
+    if (!u || u != s_up) return ESP_ERR_INVALID_STATE;
+    if (u->got + n > ORB_APP_UPLOAD_MAX) {
+        /* Refused before the write, not after (orb_theme.c:1915). */
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const uint8_t *p = buf;
+    while (n) {
+        const ssize_t w = write(u->fd, p, n);
+        if (w <= 0) return ESP_FAIL;          /* ENOSPC and friends: caller reports it */
+        p += w; n -= (size_t)w; u->got += (uint32_t)w;
+    }
+    return ESP_OK;
+}
+
+esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
+{
+    orb_app_up_t *const up = *u;
+    *why = NULL;
+    if (!up || up != s_up) { *why = "no upload is in progress"; return ESP_ERR_INVALID_STATE; }
+
+    close(up->fd);
+    s_up = NULL;                     /* the card is still locked; released below */
+
+    /* Verify the file that is NOW on the card — not the bytes that passed through
+     * this handler. A card that dropped a write, or a client that lied about the
+     * length, is caught here rather than by the install three boots later. */
+    const int fd = open(up->tmp, O_RDONLY);
+    if (fd < 0) {
+        *why = "the uploaded file is not on the card";
+        unlink(up->tmp); orb_sd_unlock(); free(up);
+        return ESP_FAIL;
+    }
+    orbapp_hdr_t h;
+    /* Header-only verify, matching the card-facing tier's contract (scan.c:17) and
+     * the install's re-verify: app_hdr_validate reads only the header block (a stack
+     * copy, ~150 B), so the httpd task never reaches for install.c's internal DMA
+     * buffer. The whole payload CRCs are run off the card by orb_app_install()
+     * before the first erase (D9), so a container whose art/geometry disagree with
+     * its header never reaches a live slot even if it is filed and listed here. */
+    const char *r = app_hdr_validate(fd, &h);
+    close(fd);
+
+    /* The card filename is the header's own slug, filed by orb_files_path (which
+     * appends .orbapp and re-runs orb_sd_name_ok). Nothing the client named this
+     * upload — the destination is whatever this decides, from bytes that had to
+     * arrive intact. app_hdr_validate already refused a header with no usable slug. */
+    char final[ORB_SD_PATH_MAX];
+    const orb_file_src_t *src = orb_files_src(ORB_APP_SCAN_SLUG, ORB_APP_SCAN_ID);
+    if (!r && (!src || !orb_files_path(src, h.slug, final, sizeof final)))
+        r = "the app name is not one the card can hold";
+
+    /* Duplicate policy, the theme's rule verbatim: a file already sits at this
+     * path. Byte-identical on the identity tuple is the same app re-sent — accept
+     * quietly and leave the file that is there. Different bytes are a real
+     * collision: refuse without ?overwrite=1, because silently replacing an app
+     * the owner installed is the surprise this whole rule exists to prevent. */
+    bool replace = false;
+    if (!r) {
+        const int efd = open(final, O_RDONLY);
+        if (efd >= 0) {
+            orbapp_hdr_t oh;
+            const char *or_ = app_hdr_validate(efd, &oh);
+            close(efd);
+            if (!or_ && oh.geom_crc == h.geom_crc && oh.art_crc == h.art_crc &&
+                oh.serial == h.serial && strcmp(oh.slug, h.slug) == 0) {
+                unlink(up->tmp); orb_sd_unlock(); free(up);
+                ESP_LOGI(TAG, "app upload of \"%s\" is unchanged — kept as is", h.slug);
+                return ESP_OK;
+            }
+            if (!overwrite) {
+                unlink(up->tmp); orb_sd_unlock(); free(up);
+                *why = "a different app with that name is already on the card";
+                ESP_LOGW(TAG, "app upload \"%s\" collides with a different file of that name", h.slug);
+                return ORB_APP_UPLOAD_E_DUP;
+            }
+            replace = true;    /* overwrite=1 and it verified: replace the old bytes */
+        }
+    }
+
+    if (r) {
+        /* Deleted, not left: a rejected upload that survives on the card shows up
+         * in the list as an unloadable entry (orb_theme.c:1996). */
+        unlink(up->tmp);
+        orb_sd_unlock();
+        static char whybuf[128];
+        strlcpy(whybuf, r, sizeof whybuf);
+        free(up);
+        *why = whybuf;
+        ESP_LOGW(TAG, "app upload rejected: %s", r);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* f_rename fails on an existing destination, so an overwrite is an unlink plus
+     * a rename, not a replace — the theme's reasoning verbatim (orb_theme.c:2008).
+     * Nothing is renamed until this point has verified the whole container, so the
+     * window between them never exposes a half-written app. */
+    if (replace) unlink(final);
+    const int rr = rename(up->tmp, final);
+    const int re = errno;
+    orb_sd_unlock();
+    free(up);
+    if (rr != 0) {
+        static char whybuf2[64];
+        strlcpy(whybuf2, "could not put the uploaded app in place", sizeof whybuf2);
+        *why = whybuf2;
+        ESP_LOGE(TAG, "app upload rename: %s", strerror(re));
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "app \"%s\" uploaded to the card as %s.orbapp%s", h.slug, h.slug,
+             replace ? " (overwrote the previous one)" : "");
+    return ESP_OK;
+}
+
+void orb_app_upload_cancel(orb_app_up_t **u)
+{
+    orb_app_up_t *const up = *u;
+    if (!up) return;
+    *u = NULL;
+    if (up == s_up) {
+        close(up->fd);
+        s_up = NULL;
+        /* The partial file is always removed: a .part left here is a file with an
+         * app's name and none of its bytes, the kind of thing investigated as
+         * corruption months later (orb_theme.c:2039). */
+        unlink(up->tmp);
+        orb_sd_unlock();
+    }
+    free(up);
 }
 
 

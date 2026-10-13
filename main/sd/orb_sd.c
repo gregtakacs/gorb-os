@@ -160,9 +160,21 @@ static esp_err_t mount_now(void)
     /* The one directory the device owns, created at mount rather than at first
      * upload: a card in a locked adapter, or one whose controller has worn out,
      * says so here at boot instead of under a progress bar. */
+    /* The two directories the device owns, created at mount rather than at first
+     * upload: a card in a locked adapter, or one whose controller has worn out,
+     * says so here at boot instead of under a progress bar. The apps drop zone
+     * needs the same create as the themes dir — the browser upload opens
+     * /sd/apps/upload.part and FATFS refuses to create a file whose PARENT dir is
+     * absent (FR_NO_PATH). It is ORB_APP_DIR, the same path orb_app_scan registers,
+     * so the walk, the install's resolve-by-stem, and the upload all agree on one
+     * directory. */
     if (mkdir(ORB_SD_THEME_DIR, 0777) != 0 && errno != EEXIST) {
         ESP_LOGW(TAG, "mkdir %s: %s — theme uploads will fail",
                  ORB_SD_THEME_DIR, strerror(errno));
+    }
+    if (mkdir(ORB_SD_APPS_DIR, 0777) != 0 && errno != EEXIST) {
+        ESP_LOGW(TAG, "mkdir %s: %s — app uploads will fail",
+                 ORB_SD_APPS_DIR, strerror(errno));
     }
     return ESP_OK;
 }

@@ -395,6 +395,51 @@ def lint(src):
         if forbidden in src:
             bad.append("D19: %r found — the installer must never write a grant word "
                        "or reach NVS itself" % forbidden)
+
+    # 5. the browser→card upload (P4). The ordering here is the card-side twin of
+    #    the D9 ladder above: a half-arrived container must never reach a loadable
+    #    name, or the very next walk would list it and the install could select it.
+    #    Scoped to orb_app_upload_end()'s body ONLY — verify_payload()'s own
+    #    DEFINITION sits far earlier in the file and would invert an order check,
+    #    the exact trap the install ladder above scopes around.
+    ulo = src.find("esp_err_t orb_app_upload_end(")
+    uhi = src.find("void orb_app_upload_cancel(", ulo if ulo >= 0 else 0)
+    if ulo < 0 or uhi < 0:
+        bad.append("upload: could not locate orb_app_upload_end()'s body — the ladder is gone")
+    else:
+        ubody = src[ulo:uhi]
+
+        def uorder(a, b, why):
+            ia, ib = ubody.find(a), ubody.find(b)
+            if ia < 0 or ib < 0 or ia > ib:
+                bad.append("upload order: %r must precede %r — %s" % (a, b, why))
+
+        # the reader's header ladder runs off the card, before the publish rename.
+        uorder("app_hdr_validate(fd, &h)", "rename(up->tmp, final)",
+               "the container must pass the reader before it is filed under its loadable name")
+        # The payload CRCs are NOT verified here — that is the install's D9 job, run
+        # on the worker off the httpd task. The card-facing tier reads only the header
+        # (scan.c:17). If the upload reaches for verify_payload it reintroduces the
+        # internal-DMA-buffer squeeze that starves httpd (ESP_ERR_HTTPD_TASK).
+        if "verify_payload" in ubody:
+            bad.append("upload: verify_payload must not run in the upload tier — the install "
+                       "re-checks the payload off the card (D9); checking it from the httpd "
+                       "task needs the internal DMA buffer that starves httpd")
+        # the destination is the header's OWN slug, never a client-supplied name.
+        if "orb_files_path(src, h.slug, final" not in ubody:
+            bad.append("upload: the destination must come from orb_files_path(src, h.slug, ...), "
+                       "never a client string — a nameable upload chooses what the next walk lists")
+        # a rejected or colliding upload deletes the scratch, never leaving it to be listed.
+        if "unlink(up->tmp)" not in ubody:
+            bad.append("upload: a rejected upload must unlink(up->tmp), not survive as a loadable file")
+    # the scratch must NOT carry the walk's extension, or a half upload is listed and
+    # the install's resolve-by-stem can select a file that is two thirds of an app.
+    if '#define APPS_SCRATCH "upload.part"' not in src:
+        bad.append("upload: APPS_SCRATCH must be \"upload.part\" — a scratch ending in .orbapp "
+                   "would be listed by orb_files_walk and selectable by the install")
+    # one upload owns the one card lock at a time (the scan reports busy, not blocked).
+    if "if (s_up) return ESP_ERR_INVALID_STATE" not in src:
+        bad.append("upload: orb_app_upload_begin must refuse a second concurrent upload")
     return bad
 
 
@@ -446,6 +491,18 @@ MUTATIONS = [
     ("installer writes a grant word (breaks as-declared persistence)", "device",
      _m("row.caps       = h.caps;                 /* D19: from the slot header only */",
         "row.caps       = h.caps; orb_svc_set_grant(h.slug, h.caps);")),
+    ("upload publishes before reading the header (rename before validate)", "device",
+     _m("    const char *r = app_hdr_validate(fd, &h);",
+        "    const char *r = NULL; (void)app_hdr_validate;")),
+    ("upload reaches for the payload CRC from the httpd task (starves httpd)", "device",
+     _m("    const char *r = app_hdr_validate(fd, &h);",
+        "    const char *r = app_hdr_validate(fd, &h); if (!r) verify_payload(fd, &h);")),
+    ("upload scratch carries the walk's extension (a half-file is selectable)", "device",
+     _m('#define APPS_SCRATCH "upload.part"',
+        '#define APPS_SCRATCH "upload.orbapp"')),
+    ("upload names the destination from the client, not the header's slug", "device",
+     _m("orb_files_path(src, h.slug, final, sizeof final)",
+        "orb_files_path(src, \"guessed\", final, sizeof final)")),
 ]
 
 
@@ -478,7 +535,8 @@ def main():
             print("FAIL  ladder lint: " + b)
     else:
         print("ok    ladder lint: off-card verify, decide-before-erase, "
-              "header-last, caps-from-manifest, no grant/NVS write")
+              "header-last, caps-from-manifest, no grant/NVS write, "
+              "upload verify-before-publish + header-derived name")
     fails += run_pure()
     if "--mutations" in argv:
         fails += run_mutations()

@@ -43,5 +43,22 @@ www,      data, ,           0xC20000, 0x140000,
 # which esp_wifi may then repopulate, but which can no longer take the user's
 # SSID/passphrase with it, because those live here under "orb.net".
 storage,  data, nvs,        0xD60000, 0x6000,
-# Ends at 0xD66000 of a 16 MB flash; ~2.6 MB deliberately unallocated.
+# The app install ledger (plan §3.2): catalog rows, manifest copies, and the
+# geometry blobs — every per-app byte that must survive a card pull. The art
+# payloads do NOT live here: they install into the three `assets` slots (D9),
+# and installed/enabled/order/grants live in NVS "orb.apps" inside `storage`.
+# Sized for B5's cap of 8 at the writer's own ceilings: 8 x 256 KB geometry
+# (GEOM_BYTES_MAX, tools/orbapp.py) + 8 manifest blocks + the catalog + the
+# art-light banks = ~2.34 MB worst case, < 0.2 MB for the real install set.
+# Starts at the next 64 KB boundary after `storage` — mmap-alignment rule as
+# the assets row above — and ends at exactly 0x1000000: the whole flash. The
+# 104 KB gap before it is `storage`'s free in-place growth room. Subtype
+# blank-and-present for the same positional-parse reason as the assets row.
+apps,     data, ,           0xD80000, 0x280000,
+# Ends at the 16 MB limit; nothing left unallocated. (Was: tail free from
+# 0xD66000, "deliberately unallocated" — claimed 2026-10-12 for the P4 apps
+# ledger; `storage` and every row above it keep byte-identical offsets, so
+# the retention invariant at the top of this file still holds. The board
+# needs the new table written once at 0x8000: serflash.sh pushes only app +
+# otadata, so without that push the board never learns this row exists.)
 

@@ -10,7 +10,8 @@ drives it with containers the real writer (tools/orbapp.py) packed.
 
 What it owns that the reader suite cannot reach:
   1. THE TWO CARD FACTS. A file that ends inside its own header block, and a
-     file shorter than the art it claims, are volume truths the reader has
+     file shorter than the geometry it claims (D21 left no art claim to be
+     short of), are volume truths the reader has
      no way to know; the writer has no twin sentence for either. They are
      pinned here, and the strictness choices around them (longer-than-claims
      is TOLERATED; the boundary end == size is ACCEPTED) are pinned too,
@@ -300,7 +301,12 @@ class Row:
 
 
 def _end_of(hdr):
-    return hdr[orbapp.W_ART_OFF] + hdr[orbapp.W_ART_SIZE]
+    """What the SHARED decide claims the file must at least hold: the copied
+    prefix, geom_off+geom_size. D21 (§0.9) ended the art claim, so no payload
+    word reaches this arithmetic any more — art_size is 0 on every header the
+    reader lets through, and art_off's sector pad is junk the prefix copy never
+    reads. This is the same boundary the installer's copy indexes by."""
+    return hdr[orbapp.W_GEOM_OFF] + hdr[orbapp.W_GEOM_SIZE]
 
 
 def _golden(**kw):
@@ -317,7 +323,7 @@ def cases_all():
     FN = GOLDEN_SLUG + orbapp.EXT        # the filename row_decide rebuilds
 
     common = dict(slug=GOLDEN_SLUG, title=GOLDEN_TITLE, app_id=aid, caps=0x10,
-                  period=3000, serial=0, n_set=4, art=8)
+                  period=3000, serial=0, n_set=4, art=0)
     V.append(Row("golden_junk_tail", g, GOLDEN_SLUG, HB, _end_of(g) + 512,
                  ERR_OK, **common,
                  note="trailing bytes are junk, not damage: TOLERATED by ruling"))
@@ -330,11 +336,12 @@ def cases_all():
     V.append(Row("golden_vector_only", g_v, GOLDEN_SLUG, HB, _end_of(g_v),
                  ERR_OK, slug=GOLDEN_SLUG, title=GOLDEN_TITLE, app_id=aid,
                  caps=0x10, period=3000, serial=0, n_set=0, art=0,
-                 note="the color-picker shape: claims no payload past art_off"))
+                 note="the color-picker shape: zero geometry, zero art (D21 makes "
+                      "every card this shape on the art axis)"))
     gf = _golden(caps=0xF0)
     V.append(Row("caps_all_four_echoed", gf, GOLDEN_SLUG, HB, _end_of(gf),
                  ERR_OK, caps=0xF0, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
-                 app_id=aid, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, period=3000, serial=0, n_set=4, art=0,
                  note="the disclosure line's source bits ride out unchanged"))
 
     # ---- the two card facts (this layer's own refusals) ----------------------
@@ -349,13 +356,13 @@ def cases_all():
     V.append(Row("file_short_by_one", g3, GOLDEN_SLUG, HB, _end_of(g3) - 1,
                  ERR_SIZE, why=size_why(_end_of(g3), _end_of(g3) - 1),
                  slug=GOLDEN_SLUG, title=GOLDEN_TITLE, app_id=aid, caps=0x10,
-                 period=3000, serial=0, n_set=4, art=8, py=("none", None),
+                 period=3000, serial=0, n_set=4, art=0, py=("none", None),
                  note="the half-copy D9 prices; named in bytes"))
     g4 = _golden()
     V.append(Row("file_grossly_short", g4, GOLDEN_SLUG, HB, 4,
                  ERR_SIZE, why=size_why(_end_of(g4), 4),
                  slug=GOLDEN_SLUG, title=GOLDEN_TITLE, app_id=aid, caps=0x10,
-                 period=3000, serial=0, n_set=4, art=8, py=("none", None)))
+                 period=3000, serial=0, n_set=4, art=0, py=("none", None)))
 
     # ---- reader refusals arrive verbatim, with the echo rules ----------------
     mt = _golden()
@@ -377,7 +384,7 @@ def cases_all():
     ok, msg = python_scan_outcome(sm, "weather2" + orbapp.EXT)
     V.append(Row("stem_misfiled", sm, "weather2", HB, _end_of(sm),
                  ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
-                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=0,
                  py=("refuse", msg),
                  note="filed as another app's slug: refused, and the row still "
                       "shows who it claimed to be — the post-CRC echo rule"))
@@ -386,7 +393,7 @@ def cases_all():
     ok, msg = python_scan_outcome(ac, FN)              # would refuse them
     V.append(Row("caps_free_bit_time", ac, GOLDEN_SLUG, HB, _end_of(ac),
                  ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
-                 app_id=aid, caps=0x1, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, caps=0x1, period=3000, serial=0, n_set=4, art=0,
                  hcalls=0, py=("refuse", msg)))
 
     te = _golden()
@@ -396,7 +403,7 @@ def cases_all():
     ok, msg = python_scan_outcome(te, FN)
     V.append(Row("title_empty_refused_slug_kept", te, GOLDEN_SLUG, HB,
                  _end_of(te), ERR_ARG, why=msg, slug=GOLDEN_SLUG, title="",
-                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=0,
                  hcalls=0, py=("refuse", msg)))
 
     ai = R.patch(_golden(), orbapp.W_APP_ID, 0xDEADBEEF)
@@ -404,7 +411,7 @@ def cases_all():
     V.append(Row("app_id_not_the_slug", ai, GOLDEN_SLUG, HB, _end_of(ai),
                  ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
                  app_id=0xDEADBEEF, caps=0x10, period=3000, serial=0, n_set=4,
-                 art=8, py=("refuse", msg),
+                 art=0, py=("refuse", msg),
                  note="the claimed id echoes so the owner can name the file; "
                       "nothing downstream may trust the echoed id"))
 
@@ -412,17 +419,30 @@ def cases_all():
     ok, msg = python_scan_outcome(lo, FN)
     V.append(Row("settings_table_moved", lo, GOLDEN_SLUG, HB, _end_of(lo),
                  ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
-                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=0,
                  py=("refuse", msg)))
 
     pn = _golden()
     ok, msg = python_scan_outcome(pn, "weather.part" + orbapp.EXT)
     V.append(Row("staging_name_refused", pn, "weather.part", HB, _end_of(pn),
                  ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
-                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=8,
+                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4, art=0,
                  py=("refuse", msg),
                  note="an upload mid-flight is invisible to the walk; named "
                       "for what it claims if a caller ever conjures one"))
+
+    # D21 (§0.9): a pre-D21 card that still ships a bank is LISTED WITH A
+    # REASON, not shrugged past — the refusal words come from the shared reader
+    # gate, and the post-CRC echo still names the file. art_size 8 on the row
+    # is the claim being refused, not a payload the scan would read.
+    ab = _golden(art_size=8)
+    ok, msg = python_scan_outcome(ab, FN)
+    V.append(Row("art_carrying_refused", ab, GOLDEN_SLUG, HB, _end_of(ab) + 8,
+                 ERR_ARG, why=msg, slug=GOLDEN_SLUG, title=GOLDEN_TITLE,
+                 app_id=aid, caps=0x10, period=3000, serial=0, n_set=4,
+                 art=8, py=("refuse", msg),
+                 note="the container ships art; the reader gate refuses it and "
+                      "the row shows why (D21)"))
     return V
 
 # ---- run + compare -------------------------------------------------------------
@@ -595,6 +615,19 @@ def lint():
     assert "orbapp_caps_names(e->caps, caps" in nn
     i0 = nn.index("static esp_err_t h_apps_list")
     body = nn[i0:nn.index("\n/* ", i0)]
+    ih = nn.index("static void apps_send_installed(")
+    # P4a gave the caps cell a second streaming site — the installed tier — and
+    # it obeys the same one-source rule: no spelled capability word in EITHER
+    # body. The helper answers through orbapp_caps_names exactly once.
+    body += nn[ih:i0]
+    assert "orbapp_caps_names(" in nn[ih:i0], \
+        "the installed tier stopped asking the reader for its caps names"
+    # the terminator belongs to THIS handler, not just to the file: three
+    # handlers close on the same line, and a mutant that keeps the others'
+    # while dropping this one's would pass a file-wide `in`.
+    assert 'httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);\n' \
+           "    return httpd_resp_send_chunk(req, NULL, 0);" in body, \
+        "the apps list stream itself lost its terminating chunk"
     for word in ("power", "sd_read"):
         assert word not in body, \
             "orb_net.c spelled a capability word (%r) beside its one source" % word
@@ -656,12 +689,21 @@ def lint():
 CALLER_MUTATIONS = [
     ("scratch lowered", "#define APPS_ROW_MAX 1024", "#define APPS_ROW_MAX 900"),
     ("scan call dropped", "orb_app_scan(ent, ORB_APP_SCAN_MAX)", "orb_app_scan(ent, 4)"),
-    ("second caps list appears", "\"caps\\\":\\\"%s\\\"",
-     "\"caps\\\":\\\"power\\\",\\\"caps2\\\":\\\"%s\\\""),
+    # P4b note: the installed tier added a second legitimate caps cell, so the
+    # anchor now spans the slot field — unique to h_apps_list's row format.
+    ("second caps list appears", "\\\"slot\\\":%d,\\\"caps\\\":\\\"%s\\\"",
+     "\\\"slot\\\":%d,\\\"caps\\\":\\\"power\\\",\\\"caps2\\\":\\\"%s\\\""),
     ("page re-cuts the reason", "CANNOT INSTALL: '+esc(a.why)",
      "CANNOT INSTALL: 'see the log'"),
     ("page stops drawing", "'bad');return;}data=r.d;draw();", "'bad');return;}data=r.d;"),
-    ("terminating chunk dropped", "httpd_resp_send_chunk(req, NULL, 0);", "0;"),
+    # P4b note: three handlers end on the same one-liner; the anchor is the
+    # apps list's OWN two-line close ("]}" then the zero-length chunk), and the
+    # lint asserts the pair inside this handler's body, not anywhere in the file.
+    ("terminating chunk dropped",
+     "httpd_resp_send_chunk(req, \"]}\", HTTPD_RESP_USE_STRLEN);\n"
+     "    return httpd_resp_send_chunk(req, NULL, 0);",
+     "httpd_resp_send_chunk(req, \"]}\", HTTPD_RESP_USE_STRLEN);\n"
+     "    return ESP_OK;"),
 ]
 
 

@@ -62,10 +62,6 @@ extern "C" {
 #define APPS_SLOT_STRIDE     (APPS_SLOT_HDR_BYTES + APPS_SLOT_GEOM_CAP)  /* 0x41000 */
 #define APPS_N_SLOTS         ORB_APP_CAP                  /* B5: 8 slots, one per app */
 
-/* A bank into the large assets slots would alias the live theme bank until P6
- * reconciles the install paths; the P4 install set fits the small slot only. */
-#define APPS_ART_SMALL_MAX   0x00050000u   /* 0.375 MB — assets art2, never a theme target */
-
 /* install_decide()'s inputs: the slot state the caller read under the lock, plus
  * the unpacked declared-settings table (the header carries n_settings but not the
  * per-row TYPES, and the quota prices a STRING at its 32-byte descriptor, an
@@ -185,10 +181,12 @@ void orb_app_install_apply_enable(void);
  * multi-second card write (the reason orb_theme_scan has the same gate). */
 typedef struct orb_app_up orb_app_up_t;
 
-/* The writer's real ceilings, not an invented cap: art + geometry + header block
- * and the alignment gap. A bigger body is refused on Content-Length, before a byte
- * of it reaches the card. */
-#define ORB_APP_UPLOAD_MAX  (ORBAPP_ART_BYTES_MAX + ORBAPP_GEOM_BYTES_MAX + 0x20000u)
+/* The writer's real ceilings, not an invented cap: geometry + header block and
+ * the alignment gap. D21 (§0.9) retired the art term — a container that carries
+ * art bytes is refused by the reader, so the largest file that can legally exist
+ * is header + settings + geometry, padded to the payload sector. A bigger body
+ * is refused on Content-Length, before a byte of it reaches the card. */
+#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)
 
 esp_err_t orb_app_upload_begin(orb_app_up_t **out);
 esp_err_t orb_app_upload_data(orb_app_up_t *u, const void *buf, size_t n);

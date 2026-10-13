@@ -11,7 +11,7 @@
  * tools/orbapp.py answers with and the sentinel suites pin that pair. The
  * two refusals BELOW with no reader twin are card facts the reader cannot
  * know: a file that ends inside its own header block, and a file shorter
- * than the art it claims. They are pinned as vectors in
+ * than the geometry it claims (D21 left no art claim to be short of). They are pinned as vectors in
  * tools/host_orbapp_scan_test.py, which lifts row_decide() the way
  * host_sd_test.py lifts theme_state().
  */
@@ -95,13 +95,15 @@ static void row_decide(const orb_file_rec_t *rec, const uint32_t *hdr,
     if (r) { e->err = ESP_ERR_INVALID_ARG; return; }
 
     /* The card's facts against the header's claims. Longer than the claims
-     * is tolerated: art is read at art_off for art_size bytes and the crc
-     * covers exactly that range, so trailing bytes are junk, not damage —
-     * refusing them would fail a file an editor had touched for one stray
-     * newline, against an author who did nothing wrong. Shorter than the
-     * claims is the half-copy D9 prices, caught here so the owner hears it
-     * from the listing instead of after a failed install and a reboot lost. */
-    const uint64_t end = (uint64_t)h.art_off + h.art_size;
+     * is tolerated: the copied prefix ends at geom_off+geom_size and the rest
+     * of the file is the writer's zero pad to the payload sector, so trailing
+     * bytes are junk, not damage — refusing them would fail a file an editor
+     * had touched for one stray newline, against an author who did nothing
+     * wrong. Shorter than the claims is the half-copy D9 prices, caught here
+     * so the owner hears it from the listing instead of after a failed install
+     * and a reboot lost. Since D21 (§0.9) the prefix is the whole claim: an
+     * art-carrying header is refused above us, by the reader's own gate. */
+    const uint64_t end = (uint64_t)h.geom_off + h.geom_size;
     if (end > (uint64_t)rec->size) {
         e->err = ESP_ERR_INVALID_SIZE;
         snprintf(why, wsz,

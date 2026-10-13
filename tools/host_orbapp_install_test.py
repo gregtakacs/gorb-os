@@ -9,7 +9,9 @@ a slot state the caller read under the lock. It is PURE — no partition, no fd,
 no NVS — so this suite LIFTS it verbatim (dying by name if it moves, the way
 host_orbapp_scan_test.py lifts row_decide), recompiles it with host gcc -Werror
 against the SHIPPED orbapp_hdr_t / orb_setting_desc_t, and drives it with headers
-whose geometry/art/settings fields it sets directly. install_decide never calls
+whose geometry/art/settings fields it sets directly — the art field since P4b
+(D21) filled with JUNK the decision must not read, pinning the shedding by
+demanding the same verdict as if it were zero. install_decide never calls
 the reader, so building its input struct field-by-field is the honest vector, not
 a shortcut.
 
@@ -70,7 +72,7 @@ inst_hdr = read(INSTALL_H)
 f_decide = lift(inst_src, r"bool install_decide\(const orbapp_hdr_t \*h[\s\S]*?\n\}", INSTALL_C)
 f_slots = lift(inst_hdr, r"typedef struct \{[^}]*\} orbapp_install_slots_t;", INSTALL_H)
 f_verdict = lift(inst_hdr, r"typedef struct \{[^}]*\} orbapp_install_verdict_t;", INSTALL_H)
-f_appcap = lift(inst_hdr, r"#define APPS_PARTITION_NAME[\s\S]*?#define APPS_ART_SMALL_MAX[^\n]*\n", INSTALL_H)
+f_appcap = lift(inst_hdr, r"#define APPS_PARTITION_NAME[\s\S]*?#define APPS_N_SLOTS[^\n]*\n", INSTALL_H)
 
 f_worst = lift(inst_src, r"#define APPS_STR_WORST[\s\S]*?#define APPS_NUM_WORST[^\n]*\n", INSTALL_C)
 
@@ -199,7 +201,10 @@ NL = "\n"
 # ever disagree — a re-typed number that quietly drifts is the whole reason the
 # decision is lifted instead of reimplemented.
 GEOM_CAP = 0x00040000          # ORBAPP_GEOM_BYTES_MAX == APPS_SLOT_GEOM_CAP
-ART_SMALL = 0x00050000         # APPS_ART_SMALL_MAX
+ART_JUNK = 0x003D0001          # over the OLD slot cap; install_decide must not
+                               # read the art word at all since D21 (P4b) — the
+                               # vectors fill it with an impossible claim and
+                               # demand the same verdict as if it were zero
 N_SLOTS = 8                    # APPS_N_SLOTS == ORB_APP_CAP
 STR_WORST = 32                 # sizeof orb_setting_desc_t.def_str
 NUM_WORST = 4                  # one nvs_set_u32
@@ -207,7 +212,7 @@ SETTINGS_MAX = 16              # ORBAPP_SETTINGS_MAX
 
 # A refusal is checked by the fragment of its sentence that names WHICH gate fired
 # (the wording itself belongs to the reader mirror, not to this decision).
-WHY_KEY = {"geom": "manifest and geometry", "art": "art bank",
+WHY_KEY = {"geom": "manifest and geometry",
            "quota": "setting(s) need", "cap": "already holds",
            "range": "out of range"}
 
@@ -219,8 +224,9 @@ def ref(geom_off, geom_size, art_size, strc, nset, existing, cnt, mask, serial, 
     blob = geom_off + geom_size
     if blob > GEOM_CAP:
         return dict(accept=0, slot=-1, reinstall=0, serial=0, cfg_worst=0, key="geom")
-    if art_size > ART_SMALL:
-        return dict(accept=0, slot=-1, reinstall=0, serial=0, cfg_worst=0, key="art")
+    # D21 (P4b): no art gate lives here. The installer reads no art word; the
+    # vectors still carry one, filled with junk, and the model ignores it — the
+    # pair of omissions is what pins "the decision prices geometry alone".
     n = min(nset, SETTINGS_MAX)
     worst = strc * STR_WORST + (n - strc) * NUM_WORST
     if worst > quota:
@@ -253,9 +259,12 @@ def V():
     a(("accept_new_empty", 152, 1024, 0, 0, 0, -1, 0, 0b0, S0))
     a(("accept_exact_cap", 0, GEOM_CAP, 0, 0, 0, -1, 0, 0b0, S0))
     a(("refuse_geom_over", 152, GEOM_CAP, 0, 0, 0, -1, 0, 0b0, S0))
-    a(("geom_before_all", 0, GEOM_CAP + 1, ART_SMALL + 1, 0, 0, -1, 9, 0xFF, S0))
-    a(("art_before_quota", 0, 1024, ART_SMALL + 1, 8, 8, -1, 0, 0b0, S0))
-    a(("accept_art_small_edge", 0, 1024, ART_SMALL, 0, 0, -1, 0, 0b0, S0))
+    a(("geom_before_all", 0, GEOM_CAP + 1, ART_JUNK, 0, 0, -1, 9, 0xFF, S0))
+    # D21 (P4b): a header claiming a flagship bank reaches the decision with a
+    # junk art word — the reader refuses that file upstream, and if a vector
+    # shows the decision ANY opinion about the word, an installer regrew one.
+    a(("art_junk_ignored", 0, 1024, ART_JUNK, 0, 0, -1, 0, 0b0, S0))
+    a(("art_junk_still_capped", 0, 1024, ART_JUNK, 0, 0, -1, 8, 0b11111110, S0))
     a(("accept_reuse", 0, 1024, 0, 0, 0, 3, 3, 0b1111, [0, 0, 0, 7] + [0] * 4))
     a(("reuse_out_of_range", 0, 1024, 0, 0, 0, 8, 1, 0b0, S0))
     a(("accept_new_serial_stale", 0, 1024, 0, 0, 0, -1, 1, 0b1, [9] + S0[1:]))
@@ -524,6 +533,21 @@ def lint(src):
         iu = nsrc.find('.uri = "%s"' % uri)
         if iu < 0 or "HTTP_POST" not in nsrc[iu:iu + 120]:
             bad.append("P4a: %s must be registered as a POST" % uri)
+    # 10. P4b (D21): the installer reads NO art word. The reader refuses an
+    #     art-carrying container; a second opinion in the installer would be a
+    #     second policy, and P4b exists to leave exactly one. verify_payload
+    #     checksums geometry only; the registry row lands art-free; the upload
+    #     bound carries no art term.
+    for art_read in ("h->art_size", "h.art_size", "h->art_crc", "h.art_crc",
+                     "oh.art_crc", "h->art_off", "h.art_off",
+                     "APPS_ART_SMALL_MAX"):
+        if art_read in src:
+            bad.append("P4b: install.c reads the art word %r — the reader owns "
+                       "that refusal now" % art_read)
+    ih = read(INSTALL_H)
+    if "#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)" not in ih:
+        bad.append("P4b: the upload bound still carries an art term — the "
+                   "largest legal container is header + settings + geometry")
     return bad
 
 
@@ -540,20 +564,6 @@ def _m(old, new):
     return f
 
 
-    ("P4a: uninstall frees row and words but never erases the header", "device",
-     _m("const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),",
-        "const esp_err_t e = ESP_OK; (void)slot_base;")),
-    ("P4a: uninstall keeps the owner words (revokes outlive their app)", "device",
-     _m("if (orb_svc_forget_row(slot) != ESP_OK)", "if ((slot) != ESP_OK)")),
-    ("P4a: enable flips RAM before the word persists", "device",
-     _m("const esp_err_t e = orb_svc_set_enabled(slot, on);",
-        "orb_app_set_enabled(row, on); const esp_err_t e = orb_svc_set_enabled(slot, on);")),
-    ("P4a: enable skips clear_faults (revive over live crash counts)", "device",
-     _m("if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)", "if (false)")),
-    ("P4a: fresh install inherits a dirty slot stale words", "device",
-     _m("if (v.slot != sl.existing_slot) {", "if (false) {")),
-    ("P4a: uninstall erases the whole slot stride", "device",
-     _m("APPS_SLOT_HDR_BYTES);", "APPS_SLOT_STRIDE);")),
 MUTATIONS = [
     ("serial bumped on reinstall (a re-copy moves the grant key)", "pure",
      _m("v->serial = sl->slot_serial[sl->existing_slot];   /* kept, not bumped */",
@@ -567,9 +577,11 @@ MUTATIONS = [
     ("geometry cap gate switched off (blob can overrun the slot)", "pure",
      _m("if (blob > (uint64_t)APPS_SLOT_GEOM_CAP)",
         "if (false && blob > (uint64_t)APPS_SLOT_GEOM_CAP)")),
-    ("art-size gate switched off (flagship bank accepted)", "pure",
-     _m("if (h->art_size > APPS_ART_SMALL_MAX)",
-        "if (false && h->art_size > APPS_ART_SMALL_MAX)")),
+    ("installer re-reads the art word (a P4b regression re-grows the gate)", "pure",
+     _m("    /* Gate 1 — the manifest+geometry prefix the slot must hold.",
+        "    if (h->art_size) { snprintf(v->why, sizeof v->why, \"its art bank "
+        "is too big\"); return false; }\n\n"
+        "    /* Gate 1 — the manifest+geometry prefix the slot must hold.")),
     ("off-card payload check dropped (erase before verify)", "device",
      _m("const char *vv = verify_payload(fd, h);",
         "const char *vv = NULL; (void)verify_payload;")),
@@ -617,6 +629,35 @@ MUTATIONS = [
     ("upload names the destination from the client, not the header's slug", "device",
      _m("orb_files_path(src, h.slug, final, sizeof final)",
         "orb_files_path(src, \"guessed\", final, sizeof final)")),
+    # P4a's six — authored beside the list last session; P4b folded them IN
+    # after the fold caught them sitting orphaned between the _m def and the
+    # list opener, where Python parses them and the runner never runs them.
+    ("P4a: uninstall frees row and words but never erases the header", "device",
+     _m("const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),",
+        "const esp_err_t e = ESP_OK; (void)slot_base;")),
+    ("P4a: uninstall keeps the owner words (revokes outlive their app)", "device",
+     _m("if (orb_svc_forget_row(slot) != ESP_OK)", "if ((slot) != ESP_OK)")),
+    ("P4a: enable flips RAM before the word persists", "device",
+     _m("const esp_err_t e = orb_svc_set_enabled(slot, on);",
+        "orb_app_set_enabled(row, on); const esp_err_t e = orb_svc_set_enabled(slot, on);")),
+    ("P4a: enable skips clear_faults (revive over live crash counts)", "device",
+     _m("if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)", "if (false)")),
+    ("P4a: fresh install inherits a dirty slot stale words", "device",
+     _m("if (v.slot != sl.existing_slot) {", "if (false) {")),
+    ("P4a: uninstall erases the whole slot stride", "device",
+     _m("const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),\n"
+        "                                                      APPS_SLOT_HDR_BYTES);",
+        "const esp_err_t e = esp_partition_erase_range(p, slot_base(fslot),\n"
+        "                                                      APPS_SLOT_STRIDE);")),
+    # P4b: the reader owns the art refusal; the installer trusting an art word
+    # again — at the registry row or in the payload loop — is what lint 10 eats.
+    ("P4b: registry row trusts the header art word again", "device",
+     _m("row.art_bytes  = 0;               /* D21: the container carries no art */",
+        "row.art_bytes  = h->art_size;")),
+    ("P4b: verify_payload re-grows the art CRC loop", "device",
+     _m("    if (crc != h->geom_crc)\n        return \"the geometry does not match",
+        "    pos = h->art_off; left = h->art_size;\n"
+        "    if (crc != h->geom_crc)\n        return \"the geometry does not match")),
 ]
 
 

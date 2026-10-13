@@ -150,13 +150,13 @@ struct orb_app {
      * with no screen, never a corrupt dial — the theme_schema.py:23 rule. */
     uint32_t            behaviour_kind;
 
-    /* Art coordinates inside the `assets` partition. Both zero means the app
-     * is vector-only and claims no bank — color_picker's case. A non-zero
-     * size is claimed through art_bank_map_extra() at activate and released
-     * through art_bank_unmap_extra() at suspend, and the compositor reads it
-     * through art_bank_extra_ptr(app->art_slot). Offset and size are 64 KB
-     * aligned because the MMU page is, and the reservation budgeting them is
-     * booked at install time with orb_art_reserve(). */
+    /* Art coordinates inside the `assets` partition — the COMPILED tier's
+     * mechanism (the banked clock overflow). D21 (§0.9) voided the card claim:
+     * both zero means the app is vector-only and claims no bank, and every
+     * card row lands that way at install and at boot resolve — the reader
+     * refuses a container that ships art before an installer ever sees it.
+     * A non-zero size on a compiled row is claimed through art_bank_map_extra()
+     * at activate and released through art_bank_unmap_extra() at suspend. */
     uint32_t            art_offset;
     uint32_t            art_bytes;
     int                 art_slot;  /* the secondary slot claimed; -1 = none */

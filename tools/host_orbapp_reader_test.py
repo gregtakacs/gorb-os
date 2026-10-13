@@ -194,15 +194,24 @@ GOLDEN_SLUG, GOLDEN_TITLE = "weather", "Weather"
 
 def build_hdr(slug=GOLDEN_SLUG, title=GOLDEN_TITLE, caps=0x10, period=3000,
               abi=None, counts=(1, 1, 1, 1), settings=SETTINGS_GOLDEN,
-              art_size=8, geom_size=16, sig=0, app_id=None):
+              art_size=0, geom_size=16, sig=0, app_id=None):
     """The writer's own pack_header at its legal best, then the payload-size
     words the caller fills, then a RE-computed hdr_crc — so every vector that
-    reaches the semantic stage really did pass the checksum stage too."""
+    reaches the semantic stage really did pass the checksum stage too. D21
+    (§0.9) made the golden art-free: a non-zero art_size kw cannot come from
+    pack_header any more (the writer sheds the field), so the vector FORGES it
+    into the packed words, header CRC and all — exactly the pre-D21 file shape
+    a stranger's card could still carry, which is precisely what the gate must
+    refuse. The forged claim also drags art_req with it, matching the old
+    tie art_req=art_size that pre-D21 files carried."""
     sblob = orbapp.pack_settings(orbapp.check_settings(list(settings)))
     hdr = orbapp.pack_header(app_id if app_id is not None else orbapp.app_id_of(slug),
                              slug, title, caps, period, art_size, counts,
-                             sblob, art_size, abi=abi, sig=sig)
+                             sblob, abi=abi, sig=sig)
     hdr[orbapp.W_GEOM_SIZE] = geom_size
+    if art_size:
+        hdr[orbapp.W_ART_SIZE] = art_size
+        hdr[orbapp.W_ART_REQ] = art_size
     hdr[orbapp.W_HDR_CRC] = orbapp._hdr_crc(hdr)
     return hdr, sblob
 
@@ -379,13 +388,19 @@ def vectors_refuse(add):
         ok, msg = python_outcome(cp)
         add(Case(nm, cp, flags=F_CHECK, check=msg, hash_calls=0,
                  py=("refuse", msg)))
-    # -- the size and count bounds -------------------------------------------------
+    # -- the size and count bounds (D21: art words are a gate, not a price) -----
     asz = patch(build_hdr()[0][:], orbapp.W_ART_SIZE, orbapp.ART_BYTES_MAX + 1)
     ok, msg = python_outcome(asz)
-    add(Case("art_size_past_slot", asz, flags=F_CHECK, check=msg, py=("refuse", msg)))
+    add(Case("art_payload_claimed", asz, flags=F_CHECK, check=msg, py=("refuse", msg)))
     areq = patch(build_hdr()[0][:], orbapp.W_ART_REQ, orbapp.ART_BYTES_MAX + 4)
     ok, msg = python_outcome(areq)
-    add(Case("art_req_past_slot", areq, flags=F_CHECK, check=msg, py=("refuse", msg)))
+    add(Case("art_req_past_bound", areq, flags=F_CHECK, check=msg, py=("refuse", msg)))
+    amax = patch(build_hdr()[0][:], orbapp.W_ART_REQ, orbapp.ART_BYTES_MAX)
+    ok, msg = python_outcome(amax)
+    add(Case("art_req_at_bound_declared", amax, flags=F_CHECK, check=None,
+             py=("ok", None),
+             note="the bound is inclusive: the old slot size alone, declared and "
+                  "unbacked, is D21's expected shape"))
     gos = patch(build_hdr()[0][:], orbapp.W_GEOM_SIZE, orbapp.GEOM_BYTES_MAX + 4)
     ok, msg = python_outcome(gos)
     add(Case("geom_past_cap", gos, flags=F_CHECK, check=msg, py=("refuse", msg)))
@@ -397,18 +412,24 @@ def vectors_refuse(add):
     ok, msg = python_outcome(gc)
     add(Case("geom_shorter_than_counts", gc, flags=F_CHECK, check=msg,
              py=("refuse", msg)))
-    z = build_hdr(art_size=0)[0][:]
-    z[orbapp.W_ART_REQ] = 400
-    z[orbapp.W_HDR_CRC] = orbapp._hdr_crc(z)
+    z = patch(build_hdr()[0][:], orbapp.W_ART_REQ, 400)
     ok, msg = python_outcome(z)
-    add(Case("art_req_without_payload", z, flags=F_CHECK, check=msg,
-             py=("refuse", msg)))
-    small = build_hdr(art_size=100)[0][:]
-    small[orbapp.W_ART_REQ] = 50
-    small[orbapp.W_HDR_CRC] = orbapp._hdr_crc(small)
-    ok, msg = python_outcome(small)
-    add(Case("art_req_under_its_payload", small, flags=F_CHECK, check=msg,
-             py=("refuse", msg)))
+    add(Case("art_req_without_payload", z, flags=F_CHECK, check=None,
+             py=("ok", None),
+             note="D21 INVERTED this refusal: an unbacked art_req is now the "
+                  "declaration D18 always meant — requests, never bytes"))
+    crc = patch(build_hdr()[0][:], orbapp.W_ART_CRC, 0xDEAD)
+    ok, msg = python_outcome(crc)
+    add(Case("art_crc_without_payload", crc, flags=F_CHECK, check=msg,
+             py=("refuse", msg),
+             note="the empty payload's own crc is 0; any other value is a stale "
+                  "pre-D21 bank claim wearing the right word offsets"))
+    claim = build_hdr(art_size=100)[0][:]
+    ok, msg = python_outcome(claim)
+    add(Case("art_payload_small_claim", claim, flags=F_CHECK, check=msg,
+             py=("refuse", msg),
+             note="a forged 100 B bank (req tied to it, old-file shape): refused "
+                  "as art-carrying, not priced — no size fits post-D21"))
     per = patch(build_hdr()[0][:], orbapp.W_PERIOD_MS, 2999)
     ok, msg = python_outcome(per)
     add(Case("beat_under_the_floor", per, flags=F_CHECK, check=msg,
@@ -668,6 +689,13 @@ MUTATIONS = [
      "h->n_settings >= ORBAPP_SETTINGS_MAX"),
     ("owner_mask_check_dropped", "c", "(h->caps & ~owner_mask)",
      "(0 && (h->caps & ~owner_mask))"),
+    # D21 (§0.9): the art-carry gate and the art_req bound are the two words
+    # the phase flipped; each must have a vector that dies without it.
+    ("d21_art_carry_gate_dropped", "c",
+     "if (h->art_size != 0 || h->art_crc != 0)",
+     "if (0 && (h->art_size != 0 || h->art_crc != 0))"),
+    ("art_req_bound_doubled", "h", "ORBAPP_ART_BYTES_MAX  0x003D0000u",
+     "ORBAPP_ART_BYTES_MAX  0x007A0000u"),
     # get_field refuses an unterminated field through TWO arms — the loop's
     # end-of-capacity guard and the loop-tail return. Each alone makes the
     # other's removal invisible (verified: both single-arm mutants escape, as

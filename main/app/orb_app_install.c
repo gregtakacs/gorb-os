@@ -52,9 +52,10 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
 
     /* Gate 1 — the manifest+geometry prefix the slot must hold. The blob copied
      * into a slot is the container's bytes [0, geom_end): header, the settings
-     * table the reader unpacked, and the geometry the app draws from — art bytes
-     * are NOT copied in P4 (no assets writer yet, so the P4 bench installs
-     * art-light at art_size 0). geom_off+geom_size is therefore the whole thing
+     * table the reader unpacked, and the geometry the app draws from. Since D21
+     * (§0.9) that prefix is the WHOLE payload — the reader refuses any container
+     * with art bytes before this gate is ever consulted, so no art term enters
+     * the slot arithmetic. geom_off+geom_size is therefore the whole thing
      * that has to fit APPS_SLOT_GEOM_CAP; the reader already capped geom_size at
      * ORBAPP_GEOM_BYTES_MAX, so this fires only if that cap and the slot geometry
      * drift apart. == cap is ACCEPTED: the last word before the header sector. */
@@ -68,20 +69,7 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
     }
 
 
-    /* Gate 2 — the art bank. P4 installs are art-light (art_size 0, the bench's
-     * case) or fit the small assets slot (art2, 0.375 MB). A bank the size of the
-     * flagship art0/art1 slots has no home until P6 reconciles the two install
-     * paths into the re-sliced slots, so it is refused BY SIZE with the byte count
-     * named — the owner hears "too big for now", not a silent skip. */
-    if (h->art_size > APPS_ART_SMALL_MAX) {
-        snprintf(v->why, sizeof v->why,
-                 "its art bank is %u B and the small slot holds %u B — flagship "
-                 "art arrives with the next release",
-                 (unsigned)h->art_size, (unsigned)APPS_ART_SMALL_MAX);
-        return false;
-    }
-
-    /* Gate 3 — the config quota, priced at the declared settings' NVS worst case
+    /* Gate 2 — the config quota, priced at the declared settings' NVS worst case
      * (§9.4 item 4). A STRING can be written to its full def_str width at runtime,
      * so it is charged there and not at its default's length; an int/enum/toggle
      * costs the four bytes nvs_set_u32 stores. A legal manifest fits this by
@@ -105,7 +93,7 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
         return false;
     }
 
-    /* Gate 4 — the cap (B5) and the slot that follows from it. A slug already
+    /* Gate 3 — the cap (B5) and the slot that follows from it. A slug already
      * installed is a REUSE, not a new install: it does not bill the cap and it
      * keeps its slot's serial, so re-copying the same app can never be the thing
      * that fills the dial or moves the broker's grant word. A new slug must find
@@ -278,11 +266,11 @@ static const char *read_and_check_header(int fd, orbapp_hdr_t *h, const char *st
 
 
 
-/* The whole payload, checksummed OFF the card, both CRCs the writer emitted: geom
- * over the geometry, art over the pixels, each running crc32 starting at 0 the way
- * zlib.crc32 / esp_rom_crc32_le compose them (orbapp.py's order). An art-light app
- * has art_size 0 and an empty-bank crc of 0, which is exactly what orbapp.py writes,
- * so the loop runs zero times and the equality still holds. Mirrors
+/* The geometry CRC, checksummed OFF the card, the way the writer emitted it:
+ * crc32 starting at 0 the way zlib.crc32 / esp_rom_crc32_le compose them
+ * (orbapp.py's order). The ART CRC is not read — D21 (§0.9): the reader has
+ * already refused any container that ships art bytes or carries a non-empty art
+ * crc before this runs, so there is no second payload left to check. Mirrors
  * verify_container() (orb_theme.c:805) minus the geometry COUNT check — that belongs
  * to the painter and lands with P5's compositor, not the byte-for-byte checksum the
  * copy needs. */
@@ -301,18 +289,6 @@ static const char *verify_payload(int fd, const orbapp_hdr_t *h)
     }
     if (crc != h->geom_crc)
         return "the geometry does not match its checksum — re-copy the file onto the card";
-
-    crc = 0;
-    pos = h->art_off; left = h->art_size;
-    while (left) {
-        const size_t want = left > APPS_CHUNK_BYTES ? APPS_CHUNK_BYTES : left;
-        if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
-            return "the art is shorter than its header claims — re-copy it";
-        crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
-        left -= want;
-    }
-    if (crc != h->art_crc)
-        return "the art does not match its checksum — re-copy the file onto the card";
     return NULL;
 }
 
@@ -626,9 +602,10 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
 
 
     /* Commit to the registry LAST, from the manifest — D19: caps come from the
-     * header, never a stored grant word; art is art-light in P4 so no bank is
-     * claimed (art_slot -1), and the boot ladder re-derives the same record from
-     * the slot header next power. card_upsert copies slug/title/settings into the
+     * header, never a stored grant word; D21 (§0.9): the container carries no
+     * art, so the row lands art-free (art_bytes 0, art_slot -1) and the boot
+     * ladder re-derives the same record from the slot header next power.
+     * card_upsert copies slug/title/settings into the
      * table's own buffers, so this stack row, h_store and the scratch may all die
      * on return. */
     orb_app_t row;
@@ -643,7 +620,7 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     row.settings   = (n_settings > 0) ? settings : NULL;
     row.n_settings = n_settings;
     row.art_offset = 0;
-    row.art_bytes  = h->art_size;
+    row.art_bytes  = 0;               /* D21: the container carries no art */
     row.art_slot   = -1;
     if (orb_app_card_upsert(&row) < 0) {
         ret = install_failed(ESP_ERR_NO_MEM,
@@ -786,7 +763,7 @@ int orb_app_install_resolve_boot(void)
         row.settings   = (n_settings > 0) ? settings : NULL;
         row.n_settings = n_settings;
         row.art_offset = 0;
-        row.art_bytes  = h.art_size;              /* art-light in P4: none claimed */
+        row.art_bytes  = 0;        /* D21: the container carries no art */
         row.art_slot   = -1;
         if (orb_app_card_upsert(&row) < 0) {
             ESP_LOGW(TAG, "app slot %d: registry refused it", slot);
@@ -1123,8 +1100,11 @@ esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
             orbapp_hdr_t oh;
             const char *or_ = app_hdr_validate(efd, &oh);
             close(efd);
-            if (!or_ && oh.geom_crc == h.geom_crc && oh.art_crc == h.art_crc &&
+            if (!or_ && oh.geom_crc == h.geom_crc &&
                 oh.serial == h.serial && strcmp(oh.slug, h.slug) == 0) {
+                /* geom_crc + serial + slug is the whole identity tuple: the art
+                 * words on both sides are zero because app_hdr_validate just
+                 * refused any file that carried art (D21). */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
                 ESP_LOGI(TAG, "app upload of \"%s\" is unchanged — kept as is", h.slug);
                 return ESP_OK;

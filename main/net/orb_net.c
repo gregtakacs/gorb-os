@@ -3634,7 +3634,7 @@ static esp_err_t h_app_uninstall(httpd_req_t *req)
  * client — the file lands under <slug>.orbapp, the slug its OWN header carries,
  * decided in orb_app_upload_end() once the bytes arrive (h_theme_upload's rules,
  * inherited whole). The device cannot tell an .orbapp from a random blob until the
- * last byte is in and the reader's ladder plus both payload CRCs have run off the
+ * last byte is in and the reader's ladder plus the geometry CRC have run off the
  * card, so nothing is named, filed, or listed until that has passed; a half-upload
  * is cancelled to .part and never reaches a loadable name. ?overwrite=1 is the only
  * client decision, and only governs replacing a DIFFERENT app already filed under

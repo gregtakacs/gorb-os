@@ -60,6 +60,11 @@ type Orb struct {
 	// the hub's client has no way to send one, and a double you cannot drive into the
 	// awkward state from the caller's side is a double that never tests that state.
 	Busy bool
+	// NoAPFallback stands in for CONFIG_ORB_NET_AP_FALLBACK=n: /api/v1/reprov refuses
+	// instead of arming. Same reason as Busy — no caller on the LAN can ask for that
+	// build, and "the hub handles a refusal gracefully" is exactly the test a fleet of
+	// ordinary orbs would never exercise on its own.
+	NoAPFallback bool
 
 	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
 	dev *device
@@ -162,6 +167,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveConfigPost(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
+	case r.URL.Path == "/api/v1/reprov" && r.Method == http.MethodPost:
+		o.serveReprov(w)
 	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:
 		o.serveScreen(w, r)
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:

@@ -878,10 +878,12 @@ recovery action, and recovery actions restart things.
 
 **Design points to settle before any code:**
 
-1. **A boot-intent flag, not a credential wipe.** Needs a one-shot key in
+1. **A boot-intent flag, not a credential wipe.** Needed a one-shot key in
    `orb.net` (e.g. `reprov`) that forces the provisioning branch even when
-   credentials exist. The branch to force is the `else` at `orb_net.c:3904` — its
-   real condition is `ssid[0] != '\0'`, not a `have_prov_creds` helper.
+   credentials exist — **built: `POST /api/v1/reprov`, see D2's as-built note.** The
+   branch to force was the `else` at `orb_net.c:3904` — its
+   real condition is `ssid[0] != '\0'`, not a `have_prov_creds` helper. The line moved
+   with the merge; in the current file it is `if (creds_in_flash && !prov_forced)`.
    Tonight's bench build proved the mechanism works: one forced condition on a
    credentialed orb entered the full provisioning path, served the menu and the
    live scan list, and erased nothing.
@@ -1492,13 +1494,20 @@ carrying `PROV_INTENT_MAGIC` `0x4F524250` ("ORBP"), plus a pure `prov_intent_arm
 and a `prov_intent_consume()` that the boot branch calls exactly once. The consume
 zeroes on EVERY read, not only on a hit: that is what stops a cold boot's garbage
 from surviving to be misread later, and it is what makes one request equal one boot.
-`orb_net_request_provisioning()` is the only writer; it sets the word and returns,
+`orb_net_request_provisioning()` is the only arming writer; it sets the word and returns,
 deliberately not rebooting, because a knob handler and an HTTP handler owe the user
 different courtesies before the connection dies. It returns false without touching
 anything when `ORB_NET_AP_FALLBACK` is off, and the boot branch logs the dropped
 request rather than swallowing it. The branch condition is now
 `if (creds_in_flash && !prov_forced)`; D4's latch stays `= creds_in_flash`, which is
 what makes a forced boot a recovery session and gets it the deadline.
+
+**Corrected again (`reprov`, below):** "the only writer" needs one qualifier.
+`prov_intent_disarm()` is a second, rollback-only writer, added for the path where the
+setter succeeded and the reboot could not be scheduled. It clears and never sets, so the
+arming invariant — nothing forces a provisioning boot that a human did not ask for —
+still holds. Six lifecycle rows in `tools/host_tz_test.py` now pin consume-once and the
+rollback against the shipped functions rather than against the predicate alone.
 
 **Two corrections to this section as written.** (a) The magic is not a stylistic
 preference: `.rtc_noinit` is `(NOLOAD)` and nothing zeroes it, so at cold power-on
@@ -1615,9 +1624,27 @@ decide whether the case needs a hole. Do not describe it as existing until it is
 credential-present guard — **done, bench-proved**. (3+4) D2 RTC flag AND the
 boot-branch check of it — **done together in `b913dbe`**, because a flag with no
 reader is untestable and step (4) is one line. Writers so far: none —
-`orb_net_request_provisioning()` has no in-tree caller yet, so the feature is inert
-in a ship build exactly as D4 was. (5) D5 knob sample, the first real writer.
-(6) hub-side intent state. Ship nothing before (1).
+`orb_net_request_provisioning()` had no in-tree caller as of `b913dbe`, so the feature
+was inert in a ship build exactly as D4 was. (5a) **done: `POST /api/v1/reprov`**, the
+HTTP writer — see the next heading. (5b) D5 knob sample, still net-new. (6) hub-side
+intent state — **unblocked**: the route exists, so the Manage card can hold an
+"Ask this orb to re-provision" action against a real verb. Ship nothing before (1).
+
+**D2's first writer: `POST /api/v1/reprov`.** The design point above asked for "a one-shot
+`orb.net` verb (e.g. `reprov`)"; this is it, registered in the uri table beside
+`/api/v1/reboot` rather than folded into it, because "come back as you were" and "come
+back in your AP" are different instructions to a wall clock. It refuses with 409 before it
+arms anything, on two counts: already provisioning (restarting would only reset the D4
+clock and drop the page the operator is standing on), and no AP fallback in this build
+(provisioning with no SoftAP is a state with no way in and no way out). On a timer failure
+after the setter wrote the word, it rolls the word back and answers 500, so a refusal
+never leaves an orb that will come up in AP mode an hour later at someone's house. It
+does not touch the D4 latch or write flash: the boot branch forces the branch, the boot
+branch arms the sojourn, and the cancel path stays what D2 measured it to be — remove
+VDD, because a chip reset keeps the RTC domain powered.
+Hub side: allowlisted in `deviceRoutes`, answered by the double (which transitions to
+`provisioning` / `192.168.4.1` in the call, since it has no boot to wait for, and takes a
+`NoAPFallback` knob to exercise the refusal no LAN caller can ask for).
 
 **Corrected while building D2.** This line previously said the D4 expiry path would
 set the flag. It must NOT. D4's whole exit is "give up here and retry the stored

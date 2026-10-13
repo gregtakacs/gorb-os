@@ -118,6 +118,14 @@ sojreboot_fn = lift(r"static bool sojourn_reboots\(bool[^;]*?return[^;]*;\n\}")
 # that collides with an obvious garbage pattern (all-zero, all-one) still shows up here.
 magic_def = lift(r"#define PROV_INTENT_MAGIC [^\n]*")
 intent_fn = lift(r"static bool prov_intent_armed\(uint32_t w\)\n\{[^}]*\}")
+# The read-and-clear and the rollback are lifted with it, because the interesting D2
+# behaviour is not the predicate — it is what the word does across a boot. A word that
+# stayed armed after the boot branch read it would force provisioning on every restart,
+# and a word that survived a failed 500 would boot the next power cycle into an AP
+# nobody asked for. Neither is observable on a bench that cannot cheaply cycle RTC
+# memory, so both are pinned here against the shipped functions.
+consume_fn = lift(r"static bool prov_intent_consume\(void\)\n\{[^}]*\}")
+disarm_fn = lift(r"static void prov_intent_disarm\(void\)\n\{[^}]*\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -292,6 +300,12 @@ harness = f"""
 {sojreboot_fn}
 {magic_def}
 {intent_fn}
+/* A plain word in the harness where the device has an RTC_NOINIT one: the lifecycle
+ * being pinned is the read/clear/rollback logic, and that logic never touches the
+ * memory type. The memory type is the link map's problem, checked at build time. */
+static uint32_t s_prov_intent;
+{consume_fn}
+{disarm_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -434,6 +448,32 @@ static void intent_case(uint32_t w, int want, const char *why){{
     printf("%-5s prov_intent_armed(0x%08X, %-12s) -> %-9s (want %s)\\n",
            ok ? "ok" : "FAIL", (unsigned)w, why,
            got ? "PROVISION" : "no-intent", want ? "PROVISION" : "no-intent");
+}}
+/* D2's lifecycle, not its predicate: set the word the way the setter does, then ask what
+ * one consume leaves behind. want_word is what the word must hold afterwards — zero is
+ * the whole point of read-and-clear, and the rollback row is the 500 path in h_reprov. */
+static void life_case(const char *why, uint32_t start, int want_got, uint32_t want_word){{
+    s_prov_intent = start;
+    const bool got = prov_intent_consume();
+    const uint32_t word = s_prov_intent;
+    const int ok = ((int)got == want_got) && (word == want_word);
+    if (!ok) fails++;
+    printf("%-5s intent life %-22s consume -> %-9s word left 0x%08X (want %s 0x%08X)\\n",
+           ok ? "ok" : "FAIL", why, got ? "PROVISION" : "no-intent",
+           (unsigned)word, want_got ? "PROVISION" : "no-intent", (unsigned)want_word);
+}}
+/* A request armed and then refused: h_reprov hits a timer failure after the setter
+ * already wrote the word, and an orb that came back armed anyway would cost its next
+ * owner a surprise AP. */
+static void rollback_case(const char *why){{
+    s_prov_intent = PROV_INTENT_MAGIC;
+    prov_intent_disarm();
+    const bool got = prov_intent_consume();
+    const int ok = !got && s_prov_intent == 0;
+    if (!ok) fails++;
+    printf("%-5s intent rollback %-18s -> %-9s word 0x%08X (want no-intent 0x00000000)\\n",
+           ok ? "ok" : "FAIL", why, got ? "PROVISION" : "no-intent",
+           (unsigned)s_prov_intent);
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -654,6 +694,16 @@ int main(void)
     intent_case('O', 0, "one-ascii");
     intent_case(PROV_INTENT_MAGIC ^ 1u, 0, "bit-flipped");
     intent_case(PROV_INTENT_MAGIC, 1, "the magic");
+    /* One boot's request, no more: consume reports it and leaves the word cleared, so
+     * the restart after a forced session is an ordinary boot. The garbage rows go through
+     * the same call to prove a miss clears too — that is what stops a cold-boot pattern
+     * from surviving to be misread on a later boot. */
+    life_case("armed -> consumed once", PROV_INTENT_MAGIC, 1, 0u);
+    life_case("consumed again", 0u, 0, 0u);
+    life_case("cold-zero miss", 0u, 0, 0u);
+    life_case("all-ones miss", 0xFFFFFFFFu, 0, 0u);
+    life_case("bit-flipped miss", PROV_INTENT_MAGIC ^ 1u, 0, 0u);
+    rollback_case("after a refused POST");
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

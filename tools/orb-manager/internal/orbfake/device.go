@@ -111,6 +111,11 @@ type device struct {
 
 	// Rebooted counts accepted /api/v1/reboot calls.
 	Rebooted int
+	// Reprov counts accepted /api/v1/reprov calls — the D2 intent request. Kept apart
+	// from Rebooted because the two mean different things to a caller: one says "come
+	// back as you were", the other says "come back in your AP", and a hub test that
+	// could not tell them apart could not tell a mis-wired button from a correct one.
+	Reprov int
 	// Screened records each accepted /api/v1/screen argument, in order.
 	Screened []string
 }
@@ -592,6 +597,46 @@ func (o *Orb) serveReboot(w http.ResponseWriter) {
 	d.Rebooted++
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"rebooting"}`)
+}
+
+// serveReprov mirrors h_reprov: both refusals come before any action, and the accepted
+// answer is the same body the firmware sends from in front of a 750 ms timer.
+//
+// The double performs the boot transition in the call, because it has no boot to wait
+// for. That is the same compromise serveReboot made from the start, and it is the useful
+// one: a hub test that had to poll its way through a fake reboot would be asserting on
+// the double's theatre rather than on the hub's handling.
+func (o *Orb) serveReprov(w http.ResponseWriter) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	switch {
+	case d.Provisioning || d.State == "provisioning":
+		// The firmware's guard is orb_net_is_provisioning(), which is the boot branch's
+		// flag and not merely "the AP is up": an orb whose owner opened the AP from the
+		// config page is connected, reachable and still worth rebooting into recovery.
+		// Refusing on APOpen here would make the double disagree with the device.
+		o.mu.Unlock()
+		writeJSON(w, 409, `{"error":"already provisioning"}`)
+		return
+	case o.NoAPFallback:
+		o.mu.Unlock()
+		writeJSON(w, 409, `{"error":"no AP fallback in this build"}`)
+		return
+	}
+	d.Reprov++
+	d.State, d.Provisioning = "provisioning", true
+	d.APOpen, d.ApIP, d.StaUp = true, "192.168.4.1", false
+	o.mu.Unlock()
+	writeJSON(w, 200, `{"state":"rebooting","into":"provisioning"}`)
+}
+
+// Reprovisioned reports how many /api/v1/reprov requests the double accepted. Separate
+// from Device() rather than another slot in its tuple: that signature has callers across
+// the hub's tests, and a reprov counter does not belong with the radio fields.
+func (o *Orb) Reprovisioned() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.deviceLocked().Reprov
 }
 
 // --- screen (h_screen, orb_net.c:2657) -------------------------------------------

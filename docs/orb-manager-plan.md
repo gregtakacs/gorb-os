@@ -916,7 +916,67 @@ waiting for the close. Add `-H 'Connection: close'` (or `--no-keepalive`) or eve
 timeout is ambiguous — with it, the same promote POST returned `HTTP 200 in
 0.168s` and the body `{"state":"ap_opening","ap_ssid":"orb-2619","seconds":900}`.
 Distinguish `000` with a written body (keep-alive, request landed) from `000` with
-an empty body (unreachable). (2) After repeated hard resets the host's ARP entry
+an empty body (unreachable).
+
+**2026-10-13 — "was 64 KB raised for a reason?" No. Measured, and the answer
+changes what the risk actually is.**
+
+Provenance first, because the premise was wrong in a useful way: `65536` was never
+chosen by anyone. It is LVGL's own default (`managed_components/lvgl__lvgl/Kconfig:112`,
+`default 65536`), and `git log --all -S 'CONFIG_LV_MEM_SIZE'` returns only my two
+commits — no tracked file ever mentioned the symbol, so no requirement was being
+honored and no prior rationale exists to preserve. The app-based UI train is
+explicitly not the cause: `orb_carousel.c` creates exactly two objects total
+(`s_chip` and one label, `main/app/orb_carousel.c:105-108`), independent of how
+many apps are registered.
+
+Demand was then measured rather than estimated, using `lv_mem_monitor_core()`
+sampled on the LVGL task (the only context that mutates the pool; there is no
+LVGL locking in this app) and exposed through `/api/v1/status` — a temporary probe,
+since reverted. The app was driven through every screen it has (clock, menu plus a
+full knob walk in both directions, color picker):
+
+| Pool | Usable (TLSF) | Live used | **Peak** | Biggest free block | Allocations |
+|---|---|---|---|---|---|
+| 24,576 | 22,052 | 15,804 | **19,796** | 5,936 | 310 |
+| 65,536 | 62,880 | 15,804 | **19,796** | 46,764 | 310 |
+
+Peak is identical to the byte at both sizes. The extra 40 KB bought literally
+nothing; it only parked memory the network stack needed. On the same boot at
+64 KB, internal free measured 7,411 / largest block 3,328 — the exact signature of
+the provisioning failure, reproduced by accident and matching the original
+5,499/3,328 reading.
+
+**So the negative impact of the reduction is headroom, not behavior.** Nothing
+regressed on the dial (15 fps, `blend/s` in the same band, zero LVGL allocation
+warnings, `art_ready` true), but peak sits at 90% of the 24 KB pool with 5,936 B
+in its largest block. Two consequences for anyone adding UI:
+
+- Exhaustion is **silent**, not fatal. `CONFIG_LV_USE_ASSERT_MALLOC` is off (LVGL
+  asserts are opt-in and none are enabled in this build), so a failed allocation
+  logs `LV_LOG_WARN` and returns NULL; `lv_obj_create` yields NULL and the widget
+  simply never appears while the clock keeps rendering. That is the same
+  invisible-failure shape as the provisioning bug, so a new screen must be checked
+  for `lv_max`, not just looked at.
+- Screen switching does not grow the pool: 310 allocations before and after the
+  full walk, because views are created once and reused. Growth would come from new
+  persistent widgets, not from more apps in the carousel.
+
+`CONFIG_LV_USE_CLIB_MALLOC=y` was tested as a way out of the fixed array and is not
+the fix it appears to be. Internal free came back healthy (55,183 / largest 25,600)
+and the clock held 15 fps, but PSRAM was untouched (7,472,960 free, unchanged):
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384` routes every allocation under 16 KB to
+internal RAM regardless of PSRAM, and LVGL objects are all small. It also blinds
+the readout — the clib core has no TLSF walker, so `lv_mem_monitor_core()` returned
+1,070,150,384 for total. It buys flexible sizing, not PSRAM residency. Moving LVGL
+objects onto PSRAM for real means lowering `ALWAYSINTERNAL` and then re-measuring
+dial frame rate, since object reads would cross the SPI bus.
+
+Recommendation: keep 24,576, and re-measure with this same probe the first time a
+screen adds persistent widgets. A permanent `lv_*` field in `/api/v1/status` is the
+cheap guard — it is roughly ten lines, read-only, and is the only way this failure
+mode is visible from the hub without a serial cable. Not added, pending the
+decision on what the status payload should carry. (2) After repeated hard resets the host's ARP entry
 for `.34` sat in `FAILED` for a minute or more while the orb's own serial log
 showed a valid lease and a working clock, and no number of plain pings fixed it.
 `ip neigh del 192.168.2.34 dev eth0` cleared it instantly — interface is `eth0`,

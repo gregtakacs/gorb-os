@@ -170,13 +170,35 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # Measured on orb-B 2026-10-13, at the trim above: 47,051 B internal free /
 # 23,552 B largest block after boot at 24 KB, versus 20,623 / 7,168 at 64 KB.
 # Provisioning then served the menu and handed out a lease.
-# DO NOT RAISE THIS without re-checking that the largest internal block stays well
-# above 8 KB at post-httpd_start: this one array is what the OTA failures and the
-# multi-second first HTTP request were also tracing back to. It is a byte-count
-# symbol (CONFIG_LV_MEM_SIZE_KILOBYTES stays 0). If the dial ever grows a
-# widget-heavy screen and LVGL reports exhaustion, measure real usage with
-# lv_mem_monitor() and move the pool to PSRAM rather than growing it in internal
-# DRAM -- this app's pixel buffers and theme arenas are already in PSRAM.
+#
+# PROVENANCE: nobody chose 64 KB. It is LVGL's own default
+# (managed_components/lvgl__lvgl/Kconfig:112, `default 65536`), inherited silently
+# because the symbol never appeared in any tracked file -- `git log --all
+# -S CONFIG_LV_MEM_SIZE` returns only the commits that set it to 24576. So there
+# is no earlier requirement being honored here, and no UI work (menu, carousel,
+# theme import included) that ever needed more.
+#
+# MEASURED DEMAND, via lv_mem_monitor_core() sampled on the LVGL task and
+# reported in /api/v1/status, with the app driven through every screen it has
+# (clock, menu + full knob walk, color picker) and at both pool sizes:
+#   peak used 19,796 B, live 15,804 B, 310 allocations -- IDENTICAL at 24 KB and
+#   at 64 KB. Growing the pool changed the high-water mark by zero bytes; it only
+#   moved unused memory out of the network stack's reach.
+#   At 24 KB the pool presents 22,052 usable bytes (TLSF header), so peak is 90%
+#   of it with 5,936 B in the largest free block. That headroom is thin, and it is
+#   the ONLY cost of this line: nothing regressed measurably on the dial.
+#   At 64 KB internal free fell to 7,411 / largest 3,328, which is the exact
+#   signature of the provisioning failure -- re-measured by accident on this bench.
+# HEADROOM IS THE RISK, NOT RENDERING. If a screen pushes peak past ~21 KB, LVGL
+# returns NULL and the widget silently fails to appear (LV_LOG_WARN only; no
+# assert trips, the clock keeps running), so it must be caught before shipping.
+# Re-measure the same way. `CONFIG_LV_USE_CLIB_MALLOC=y` was tested as an escape
+# from the fixed array and is NOT the fix it looks like: the 20 KB stayed in
+# internal RAM anyway, because CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 sends
+# every allocation under 16 KB there regardless of PSRAM, and lv_mem_monitor()
+# stops reporting (clib has no TLSF walker). It gives flexible sizing, not PSRAM.
+# Reaching PSRAM for real needs ALWAYSINTERNAL lowered, then a re-measure of dial
+# frame rate, since object reads would cross the SPI bus.
 CONFIG_LV_MEM_SIZE=24576
 
 # ---------------------------------------------------------------------------

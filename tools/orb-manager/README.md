@@ -67,16 +67,44 @@ that protect the *operation*, not the operator's identity:
    and names the reason. `/api/flash` and the rest are refused **before** the port
    claim, so a rejected request never reserves a cable.
 
-   `/orb/<ip>/…` carries three further gates, because it is the hub's only route off
+   `/orb/<ip>/…` carries four further gates, because it is the hub's only route off
    the box: the address must be an **IP literal this hub learned** over USB or was
    handed by `POST /api/orb/allow` when the operator committed to it in the Manage
-   card; the path and method must be in the **device route allowlist**, which mirrors
-   the URI table in `main/net/orb_net.c` and `main/theme_app.c`; and the exchange is
-   **byte-capped** (8 MiB down, 4 MiB up). The device's own `/api/v1/ota` is
+   card; the **fleet must not contradict that** — see below; the path and method must
+   be in the **device route allowlist**, which mirrors the URI table in
+   `main/net/orb_net.c` and `main/theme_app.c`; and the exchange is **byte-capped**
+   (8 MiB down, 4 MiB up). The device's own `/api/v1/ota` is
    deliberately **not** in that allowlist: the hub's rule is that firmware comes from
    a validated bundle and the whole manifest is always written, so the bare-app path
    is left out of the browser's reach. The port is never taken from the URL, which is
    what keeps a learned address from becoming a port-scanning target.
+
+   The fleet gate is the one item 6 added, and it can only ever **refuse** a dial the
+   grant set allowed. The hub remembers each board by `{mac, name, room}`, keyed on the
+   chip and never on the lease, because an address is something an orb has at a moment
+   and a MAC is something an orb is. So a grant may name the board it was committed
+   for, and before dialing the hub asks the fleet who announces that address today:
+
+   - one board, the same board the grant named: dial.
+   - one board, a **different** MAC than the grant named: refuse **and revoke**, so the
+     next attempt is a fresh decision by a person rather than a retry of an old one.
+   - **two** live boards claim it: refuse. A DHCP handover and an impersonation look
+     identical in that instant, so the hub declines to pick a winner and keeps the
+     commitment until the contention ages out. If the board the grant named is not
+     among the claimants at all, that is not a handover and the grant goes.
+   - **nobody** announces it: dial on the operator's word alone. That is the typed
+     address and the wired-bench case; refusing it would make the hub unusable on a LAN
+     it cannot browse, and the card labels such a grant `unverified` instead of
+     pretending the hub checked it.
+
+   Liveness comes from announcements: the browse tick renews a grant whose board is
+   still announcing, so an orb in daily use is never cut off mid-afternoon. Only the
+   tick may renew — `GET /api/orbs` and `GET /api/fleet` cannot, or any same-origin page
+   could hold a dial open by polling. A grant that went quiet past `ipGrantTTL` is gone
+   and **no announcement brings it back**: an mDNS MAC is broadcast unsigned, so
+   repeating one must not resurrect a permission a person already let expire. A separate
+   `grantCeiling` (30 days from the first commitment) bounds even a continuously
+   renewed grant, so a permanent dial still needs a human now and then.
 
 3. **Binding off loopback is a decision someone has to type.** `-addr` accepting a
    LAN address used to be enough on its own; now `-allow-remote` is also required,
@@ -300,14 +328,26 @@ comparison against every cached identity without probing again.
     orb is not reset — this is `tools/cap.py` for someone with no Python and no
     clone. It registers as a port operation, so it refuses to share a cable with
     a flash, appears in `/api/ops`, and is cancellable.
+  - **Remembered fleet.** The LAN card names each board by its MAC: type a name and a
+    room and press **Remember**, and the label follows that chip across every DHCP
+    lease, reboot and re-flash. Two live boards may not answer to one name — the hub
+    refuses the second and says which MAC already holds it — because an orb the operator
+    cannot name apart is an orb a later credential would be pointed at the wrong device
+    for. The instance name is derived from the low three bytes of the MAC, so two boards
+    really can derive the same one; such rows are marked `shared` rather than left to
+    look identical. **Forget** drops the board and revokes the address it held, unless
+    another live board still claims that address.
   - **Remembered orb.** The address the hub last had an orb at — learned over
     USB or typed in — comes back on the next launch, so the address is typed once
-    rather than every session. It lives in `state.json` under the OS config dir
-    (mode 0600, beside the app-window profile) and holds **addresses only**: no
-    launch token, no Wi-Fi passphrase, no SSID. A corrupt file reads as
-    "nothing remembered", never as a dial list, and only IPv4 literals are ever
-    accepted into it — a hostname in that file cannot make the hub resolve
-    something.
+    rather than every session, along with the MAC it was committed for and the
+    fleet's names and rooms. It lives in `state.json` under the OS config dir
+    (mode 0600, beside the app-window profile) and holds **addresses, MACs, names and
+    rooms**: no launch token, no Wi-Fi passphrase, no SSID, because the orb owns the
+    passphrase (`orb_net.c` keeps it in NVS) and a second copy in a config dir is a
+    second place it leaks. A corrupt file reads as "nothing remembered", never as a
+    dial list; only IPv4 literals are accepted into it, so a hostname in that file
+    cannot make the hub resolve something, and a version 1 file still loads (its
+    grants come back unbound, labelled as such).
 
 ## Headless flasher
 
@@ -341,7 +381,10 @@ headless; a mismatch aborts before erasing.
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
-| `POST /api/orb/allow` | `{"ip"}` — register the address the operator just committed to, which is what lets `/orb/` dial it |
+| `POST /api/orb/allow` | `{"ip", "mac"?}` — register the address the operator just committed to, which is what lets `/orb/` dial it; the optional MAC is the board the grant is then cross-locked to |
+| `GET  /api/fleet` | the remembered fleet — `{mac, name, room}`, cable and contention state, and the learned addresses with whether each is bound |
+| `POST /api/fleet/set` | `{"mac", "name", "room"}` — name a board the hub has actually met; token-guarded, and refuses a second live claim on a taken name |
+| `POST /api/fleet/forget` | `{"mac"}` — drop a board and revoke the address it held; token-guarded |
 | `POST /api/orb/forget` | `{"ip"}` — drop an address from the dialable set without restarting the hub |
 | `GET  /api/orb/known` | the remembered address, the learned set, and where the state file lives |
 | `POST /api/theme/list` | `{"ip"}` — the orb's SD themes plus card state, mount, active face, and the last refused install. Each row carries the `name` and the `id` the orb derived from it |
@@ -463,7 +506,8 @@ watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
 theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal theme id
 console.go           POST /api/console: read-only USB console, registered as a port operation
-state.go             remembered orb addresses (state.json under the OS config dir; addresses only)
+state.go             remembered orbs (state.json under the OS config dir: addresses, their MAC bindings, names, rooms)
+fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
@@ -484,6 +528,7 @@ cmd/orbprobe/        headless "what is on this cable", same probe the Identify b
 internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
                      unshared CreateFile handle on Windows
 internal/orbnet/     single-orb status client (no sweep, no ARP), and the device theme API
+internal/orbfleet/   who the hub believes is behind the addresses it will dial: the MAC-keyed store, the one-name-one-board cross-lock, cable sightings outranking announcements, and liveness by announcement rather than by wall clock
 internal/orbmdns/    the hub's side of the browse: a strict RFC 1035/6762 decoder, one
                      multicast socket per eligible interface, and the identity checks a
                      candidate must pass before it is listed. It imports no HTTP client,

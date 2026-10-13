@@ -751,30 +751,74 @@ async function readFound() {
   } else {
     state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced";
   }
-  for (const o of orbs) {
-    const li = document.createElement("li");
-    li.className = "found";
-    const label = document.createElement("button");
-    label.className = "ghost found-pick";
-    label.textContent = [o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
-      o.state === "provisioning" ? "PROVISIONING" : o.state,
-      o.solicited ? "" : "unasked", o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
-    // An orb reachable only on its own SoftAP is dialable by nobody on the wired LAN,
-    // so the button says so instead of filling in an address the proxy must refuse.
-    label.disabled = !o.ip || (!!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0);
-    label.title = o.dialable
-      ? "already an address this hub dials"
-      : "fills the Orb IP box; the hub dials it only once you load it";
-    label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
-    li.appendChild(label);
-    list.appendChild(li);
-  }
+  for (const o of orbs) list.appendChild(foundRow(o));
   for (const f of (d.refused || []).slice(-3).reverse()) {
     const li = document.createElement("li");
     li.className = "found refused";
     li.textContent = "refused " + (f.name || "a packet") + ": " + f.reason;
     list.appendChild(li);
   }
+}
+
+// foundRow builds one row of the LAN list. Everything on it is createElement/textContent:
+// the instance name and the mac arrive over UDP from a device on the LAN, and the name and
+// room come back out of a file the hub wrote, so neither is content this page may interpolate.
+function foundRow(o) {
+  const li = document.createElement("li");
+  li.className = "found";
+
+  const label = document.createElement("button");
+  label.className = "ghost found-pick";
+  const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
+  label.textContent = [o.name || o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
+    o.state === "provisioning" ? "PROVISIONING" : o.state,
+    o.cable ? "on usb" : "announced", o.contended ? "CONTESTED" : "",
+    o.shared ? "shared name" : "", o.bound ? "" : "unverified",
+    o.solicited ? "" : "unasked", o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
+  // Three separate reasons a row cannot be dialed, and the button says which one it is
+  // rather than leaving the operator to discover it by clicking: the address belongs to
+  // nobody on the wired LAN, two boards both claim it, or it was never allowed at all.
+  label.disabled = !o.ip || softAP || !!o.contended;
+  label.title = softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
+    : o.contended ? "two boards both announce this address, so the hub will not dial either"
+    : (o.refusal || (o.dialable ? "already an address this hub dials"
+      : "fills the Orb IP box; the hub dials it only once you load it"));
+  label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
+  li.appendChild(label);
+
+  // Naming is keyed on the mac and never on the address, so the label the operator
+  // chooses survives the lease the router hands out tomorrow.
+  const ident = document.createElement("span");
+  ident.className = "row";
+  const name = document.createElement("input");
+  name.placeholder = "name"; name.maxLength = 32; name.value = o.name || "";
+  name.title = "the word you use for this orb; the hub keys it on the mac";
+  const room = document.createElement("input");
+  room.placeholder = "room"; room.maxLength = 32; room.value = o.room || "";
+  const save = document.createElement("button");
+  save.className = "ghost"; save.textContent = "Remember";
+  save.onclick = () => hubFetch("/api/fleet/set", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mac: o.mac, name: name.value, room: room.value }),
+  }).then(async (r) => {
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok) { $("#mn-find-note").textContent = "\u2717 " + (j.error || "rename refused"); return; }
+    readFound();
+  });
+  const forget = document.createElement("button");
+  forget.className = "ghost"; forget.textContent = "Forget";
+  // The confirm is not ceremony: forgetting drops the name the operator chose and
+  // revokes the address the hub was willing to dial.
+  forget.onclick = () => {
+    if (!confirm("Forget " + (o.name || o.instance) + "? The hub stops dialing " + o.ip + ".")) return;
+    hubFetch("/api/fleet/forget", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mac: o.mac }),
+    }).then(readFound);
+  };
+  ident.append(name, room, save, forget);
+  li.appendChild(ident);
+  return li;
 }
 
 $("#mn-scan").onclick = scan;

@@ -7,26 +7,40 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 )
 
-// Remembered orb addresses. A hub that forgets the orb it just found makes the
-// operator retype an address every launch, and the proxy will not dial an address it
-// has not learned — so the learned set has to outlive the process that learned it.
+// Remembered orbs. A hub that forgets the orb it just found makes the operator retype
+// an address every launch, and the proxy will not dial an address it has not learned —
+// so the learned set has to outlive the process that learned it.
 //
-// What is persisted is an ADDRESS, nothing secret: the launch token is per-process
-// and never written, and no credential the operator typed for a Wi-Fi join is stored
-// anywhere either. The file lives under the OS config dir beside the app-window
-// profile, and holds one timestamp per address so an old list can expire on its own
-// rather than accreting every orb the machine has ever touched.
+// What is persisted is an ADDRESS, the MAC it was committed for, and the two words the
+// operator chose for it. None of that is a credential. The launch token stays
+// per-process and is never written, and the Wi-Fi passphrase a join used is not stored
+// either, because the orb owns that secret (orb_net.c keeps it in NVS) and a second
+// copy in a config dir is a second place it leaks. Item 9 rewrites this paragraph on
+// purpose: display pairing hands the hub a PERMANENT device token, and the first real
+// credential in this file must be written with the same 0600, never logged, never
+// echoed to a page, and never copied into a firmware bundle.
+//
+// The file lives under the OS config dir beside the app-window profile, and holds one
+// timestamp per address so an old list can expire on its own rather than accreting
+// every orb the machine has ever touched.
 
 // stateVersion is written into the file so a future format change can read old ones
-// instead of mistaking them for corruption.
-const stateVersion = 1
+// instead of mistaking them for corruption. Version 2 added the fleet: the MAC each
+// grant was committed for, and the operator's own name and room for the board.
+// Version 1 files still load — they simply have no MAC to cross-check, and those
+// grants come back unbound rather than being dropped on the floor.
+const stateVersion = 2
 
 type hubState struct {
-	Version int            `json:"version"`
-	LastIP  string         `json:"lastIp,omitempty"`
-	Grants  map[string]int `json:"grants"` // ip -> unix seconds it was learned
+	Version int               `json:"version"`
+	LastIP  string            `json:"lastIp,omitempty"`
+	Grants  map[string]int    `json:"grants"` // ip -> unix seconds it was learned
+	MACs    map[string]string `json:"macs,omitempty"`
+	Fleet   []orbfleet.Orb    `json:"fleet,omitempty"`
 }
 
 // statePath is where the remembered addresses live. It follows the same convention as
@@ -52,9 +66,15 @@ func (s *Server) saveState() {
 	if s.statePath == "" {
 		return
 	}
-	st := hubState{Version: stateVersion, Grants: map[string]int{}}
+	st := hubState{Version: stateVersion, Grants: map[string]int{}, MACs: map[string]string{}}
 	for _, ip := range s.grants.list() {
 		st.Grants[ip] = int(time.Now().Unix())
+		if m := s.grants.bound(ip); m != "" {
+			st.MACs[ip] = m
+		}
+	}
+	if s.fleet != nil {
+		st.Fleet = s.fleet.Snapshot()
 	}
 	st.LastIP = s.currentOrbIP()
 	b, err := json.MarshalIndent(st, "", "  ")
@@ -100,9 +120,16 @@ func (s *Server) loadState() int {
 	n := 0
 	for ip := range st.Grants {
 		if isV4Literal(ip) {
-			s.grants.learn(ip)
+			// The MAC this address was committed for, when the file carries one. A
+			// version 1 file has none, and the grant comes back unbound: dialable,
+			// because the operator did commit to it, but the card has to say the hub
+			// cannot prove which board is there.
+			s.grants.learnAs(ip, st.MACs[ip])
 			n++
 		}
+	}
+	if s.fleet != nil && len(st.Fleet) > 0 {
+		s.fleet.Restore(st.Fleet)
 	}
 	if isV4Literal(strings.TrimSpace(st.LastIP)) {
 		s.setOrbIP(strings.TrimSpace(st.LastIP))

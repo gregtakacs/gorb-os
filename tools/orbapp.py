@@ -35,7 +35,8 @@ Layout (§4.1's words, in §4.1's order; every name below is the paper's):
   settings   n_settings x SETTINGS_WORDS words: id[16] type min max def
     def_str[32]               <- C9's four types, frozen
   geometry   the app's own records, OPAQUE to the OS (D15)
-  payload    the art bank
+  payload    NONE since D21 (§0.9): art_size and art_crc are written 0 and the
+             file ends at the sector pad; art_req is a declaration, not bytes
 
 Three rules this writer enforces, all of them from `.clinerules:444-458` and
 §4.1's own bullets:
@@ -56,10 +57,12 @@ Three rules this writer enforces, all of them from `.clinerules:444-458` and
 
 Geometry content is never inspected, range-checked or refused: the OS registers
 no behaviour vocabulary (D15), so `behaviour_kind` and the geometry bytes are
-the app's own dialect. What the OS does price is the SIZE — geom_size and
-art_bytes reach `orb_art_reserve()` at install, and that is what §3.2's capacity
-arithmetic is about — so the byte counts are the validated fields and the bytes
-themselves are opaque.
+the app's own dialect. What the OS does price is the SIZE — geom_size — because
+that is what §3.2's slot arithmetic is about. Art is priced nowhere because
+D21 (§0.9) withdrew it: `.orbapp` never ships art bytes, so art_size and art_crc
+are always 0 and this writer refuses to write otherwise; art_req survives as
+D18's request-as-declaration, answered at runtime by the theme and asset
+registries, and bounded here only against mis-count.
 
 The three-way mirror rule from tools/theme_schema.py applies to this file: the
 Python writer, the C reader (main/app/orb_app_manifest.c), and the sentinel
@@ -89,10 +92,11 @@ TITLE_MAX  = 32                # header bytes, NUL included (31 usable chars)
 ID_MAX     = 16                # settings id bytes; the NVS key limit is 15+NUL
 DEFSTR_MAX = 32                # STRING default bytes, NUL included
 
-# §3.2's large art slot (art0/art1): the app world's ORB_THEME_SLOT_CAP. A bank
-# bigger than this the installer refuses with its byte count in the reason, and
-# refusing at write time puts that number in front of the author instead.
-ART_BYTES_MAX  = 0x003D0000    # 3.81 MB
+# D21 (§0.9) withdrew the container's art payload: art_size and art_crc are
+# always 0 and pack_header refuses otherwise. ART_BYTES_MAX survives as the
+# plausibility bound on art_req — a DECLARED need past the old slot size is a
+# mis-count, not a wish — and the C reader mirrors this number and this rule.
+ART_BYTES_MAX  = 0x003D0000    # 3.81 MB — art_req DECLARATION bound, nothing more
 SETTINGS_MAX   = 16            # the descriptor table the loader is sized for
 GEOM_BYTES_MAX = 0x00040000    # 256 KB of the app's own records
 
@@ -256,24 +260,25 @@ def caps_names(caps):
     return [n for n in CAP_OWNER if caps & cap_bit(n)]
 
 
-def disclosure(slug, title, caps, period_ms, art_bytes, n_settings):
+def disclosure(slug, title, caps, period_ms, n_settings):
     """The install-time disclosure text (D19, §4.2's last sentence).
 
     The words the owner consents to, built from the same bytes the gate will
     consult. One function rather than strings at each call site because P4's UI,
     this CLI's --disclose and the host suite must print exactly the same thing:
     a disclosure the reader can disagree with is the ceremony D19 deleted.
+    Art is not in the text: D21 (§0.9) withdrew the container's payload, so an
+    app ships no pixels to consent to — pixels arrive only in theme bundles.
     """
     beat = ("no animation (period_ms 0 = never ticks)" if period_ms == 0
             else "%d ms fastest beat (set_beat may only slow from here)" % period_ms)
-    art = ("no art bank" if art_bytes == 0 else "%d B art bank" % art_bytes)
     caps_txt = ", ".join(caps_names(caps)) or "(nothing declared)"
     return ('Install "%s" (%s)\n'
             '  may use:    %s\n'
             '  will run:   %s\n'
-            '  will store: %s, %d setting(s) inside a %d B quota\n'
+            '  will store: %d setting(s) inside a %d B quota\n'
             'Revoke any of it on the dial: MENU -> PERMISSIONS -> %s.'
-            % (title, slug, caps_txt, beat, art, n_settings,
+            % (title, slug, caps_txt, beat, n_settings,
                CFG_QUOTA_BYTES, slug))
 
 
@@ -527,32 +532,15 @@ def _period(period_ms):
     return period_ms
 
 
-def _art_size(art_size):
-    _u(art_size, "art_size")
-    if art_size > ART_BYTES_MAX:
-        raise ValueError("art payload is %d B, past the %d B large art slot (§3.2): "
-                         "re-bake smaller, or the install refuses it with this "
-                         "count" % (art_size, ART_BYTES_MAX))
-    return art_size
-
-
-def _art_req(art_req, art_size):
-    """What the app asks the residency budget for, against what it ships.
-    art_req < art_size is the real bug: the installer would reserve less than the
-    bank needs, and the map would fail AFTER the commit."""
+def _art_req(art_req):
+    """D21 (§0.9): the container carries no payload to reserve against, so
+    art_req is purely a DECLARATION of need (D18's requests-not-bytes) — the
+    theme and asset registries answer it at runtime. It is bounded only against
+    mis-count: the number itself may not exceed the old slot's size."""
     _u(art_req, "art_req")
-    if art_size == 0:
-        if art_req:
-            raise ValueError("art_req %d with an empty payload: a bank-less app "
-                             "claims no pages, and a reservation it never maps "
-                             "holds the DROM budget off every other app (§3.3)"
-                             % art_req)
-        return 0
-    if art_req < art_size:
-        raise ValueError("art_req %d is under the %d B payload it has to hold"
-                         % (art_req, art_size))
     if art_req > ART_BYTES_MAX:
-        raise ValueError("art_req %d B exceeds the %d B large art slot (§3.2)"
+        raise ValueError("declares an art need of %d B past the %d B ever "
+                         "budgeted — a demand that size is a miscount"
                          % (art_req, ART_BYTES_MAX))
     return art_req
 
@@ -579,10 +567,14 @@ def _geom_size(geom_size, counts):
 
 
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
-                settings_blob, art_size, serial=0, baked_ms=0, abi=None,
+                settings_blob, serial=0, baked_ms=0, abi=None,
                 sig=0, behaviour_kind=0):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
+
+    There is no art argument: D21 (§0.9) withdrew the container's payload, so
+    art_size and art_crc go to the block as constants — zero, the only shape a
+    reader will accept. art_req stays declarable; see _art_req.
 
     The CRC word goes last and covers the WHOLE block including the caps word:
     that is the D19 property, and the one respect in which this container is
@@ -610,7 +602,7 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     hdr[W_PERIOD_MS] = _period(period_ms)
     hdr[W_CAPS]      = check_caps(caps)
     n_layer, n_comp, n_aux, n_bank = counts
-    hdr[W_ART_REQ] = _art_req(art_req, art_size)
+    hdr[W_ART_REQ] = _art_req(art_req)
     for w, v, nm in ((W_N_LAYER, n_layer, "n_layer"), (W_N_COMP, n_comp, "n_comp"),
                      (W_N_AUX, n_aux, "n_aux"), (W_N_BANK, n_bank, "n_bank")):
         hdr[w] = _u(v, nm)
@@ -621,7 +613,7 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     if n_set > SETTINGS_MAX:
         raise ValueError("%d settings; the loader's table holds %d" % (n_set, SETTINGS_MAX))
     hdr[W_N_SETTINGS] = n_set
-    hdr[W_ART_SIZE]   = _art_size(art_size)
+    hdr[W_ART_SIZE]   = 0            # D21 (§0.9): a container never carries art
     # The three offsets are DERIVED from the sizes, never supplied: a caller that
     # could place the parts anywhere could also overlap them, and the theme path's
     # FORMAT-1 scar is exactly a hand-placed pair of ranges disagreeing.
@@ -726,9 +718,17 @@ def check_header(h, app_id=None, stem=None):
     if h["n_settings"] > SETTINGS_MAX:
         raise ValueError("%d settings declared; the loader's table holds %d"
                          % (h["n_settings"], SETTINGS_MAX))
-    if h["art_size"] > ART_BYTES_MAX or h["art_req"] > ART_BYTES_MAX:
-        raise ValueError("art size/req %d/%d B exceeds the %d B art slot (§3.2)"
-                         % (h["art_size"], h["art_req"], ART_BYTES_MAX))
+    # D21 (§0.9): no container carries art. These two refusals are the device's
+    # own (orb_app_manifest.c mirrors them in the same words), and the tear-test
+    # property stays: an art-bearing file is refused at pack, at read and on the
+    # dial with the one sentence the owner can act on.
+    if h["art_size"] != 0 or h["art_crc"] != 0:
+        raise ValueError("carries a %d B art payload: no container ships art "
+                         "(D21) — re-package it" % h["art_size"])
+    if h["art_req"] > ART_BYTES_MAX:
+        raise ValueError("declares an art need of %d B past the %d B ever "
+                         "budgeted — a demand that size is a miscount"
+                         % (h["art_req"], ART_BYTES_MAX))
     if h["geom_size"] > GEOM_BYTES_MAX or h["geom_size"] % 4:
         raise ValueError("geometry blob is %d B: past the cap, or not a whole "
                          "number of words" % h["geom_size"])
@@ -739,15 +739,10 @@ def check_header(h, app_id=None, stem=None):
     if h["geom_size"] < need:
         raise ValueError("geometry blob is %d B but its counts need %d"
                          % (h["geom_size"], need))
-    if h["art_size"] == 0:
-        if h["art_req"]:
-            raise ValueError("art_req %d with no payload: nothing to map, and a "
-                             "reservation never mapped starves every other app"
-                             % h["art_req"])
-    else:
-        if h["art_req"] < h["art_size"]:
-            raise ValueError("art_req %d is under the %d B it must hold"
-                             % (h["art_req"], h["art_size"]))
+    # The pair that lived here (art_req-with-no-payload refused, art_req under
+    # its payload refused) is D21-inverted: no payload is the only legal shape,
+    # so the art_size gate above owns the whole question and art_req stands
+    # alone as the declaration it always meant to be.
     if h["period_ms"] and h["period_ms"] < BEAT_MIN_MS:
         raise ValueError("period_ms %d is below the %d ms the OS can commit (D16)"
                          % (h["period_ms"], BEAT_MIN_MS))
@@ -766,39 +761,37 @@ def check_file_layout(h):
 
 
 def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
-                   art=b"", period_ms=0, art_req=None, counts=(0, 0, 0, 0),
+                   period_ms=0, art_req=0, counts=(0, 0, 0, 0),
                    behaviour_kind=0, serial=0, baked_ms=0, abi=None):
     """Emit one `.orbapp`, its name derived from the header that is its identity.
 
-    Nothing is written unless every check passes, and the CRCs are computed over
+    Nothing is written unless every check passes, and the CRC is computed over
     the bytes as they will sit in the file — the same rule that lets the device
-    stream a payload and check it instead of holding 3.8 MB in RAM. A container
+    stream a payload and check it instead of holding it in RAM. A container
     that reaches the card is one this function already refused to write if it was
-    wrong.
+    wrong. There is no `art` argument (D21, §0.9): the payload is geometry and
+    nothing else; art_req is a declaration, not bytes.
     """
-    if not isinstance(geometry, (bytes, bytearray)) or not isinstance(art, (bytes, bytearray)):
-        raise ValueError("geometry and art must be bytes")
+    if not isinstance(geometry, (bytes, bytearray)):
+        raise ValueError("geometry must be bytes")
     check_slug(slug)
     rows = check_settings(settings)
     s_blob = pack_settings(rows)
-    art_bytes = bytes(art)
     geom_bytes = bytes(geometry)
-    if art_req is None:
-        art_req = len(art_bytes)
     hdr = pack_header(app_id_of(slug), slug, title, caps, period_ms, art_req,
-                      counts, s_blob, len(art_bytes), serial=serial,
+                      counts, s_blob, serial=serial,
                       baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind)
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
-    # the blob it is about to lay down; fill and re-checksum in one place.
+    # the blob it is about to lay down; fill and re-checksum in one place. The
+    # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
     hdr[W_GEOM_SIZE] = _geom_size(len(geom_bytes), counts)
     hdr[W_GEOM_OFF]  = SET_OFF + len(s_blob)
     hdr[W_ART_OFF]   = art_offset(hdr[W_GEOM_OFF], hdr[W_GEOM_SIZE])
     hdr[W_GEOM_CRC]  = zlib.crc32(geom_bytes) & 0xFFFFFFFF
-    hdr[W_ART_CRC]   = zlib.crc32(art_bytes) & 0xFFFFFFFF
+    hdr[W_ART_CRC]   = 0
     hdr[W_HDR_CRC]   = _hdr_crc(hdr)
     raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + geom_bytes
     raw += b"\0" * (hdr[W_ART_OFF] - len(raw))
-    raw += art_bytes
     # The NAME is derived from the slug, exactly as the theme upload renames a
     # .part into theme_id(header.name): a writer that honoured the caller's
     # filename could be talked into filing slug "bar" as "foo.orbapp", and the
@@ -822,9 +815,11 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
 
 
 def read_container(path, verify=True):
-    """Whole-file read plus both payload CRCs. Host and bench only: the device
-    streams, so it never holds an app's bank in RAM. Returns (header, settings,
-    geometry, art)."""
+    """Whole-file read plus the geometry CRC. Host and bench only: the device
+    streams, so it never holds an app's blob in RAM. Returns (header, settings,
+    geometry, art) — the fourth is always empty: check_header refuses any
+    container that ships art (D21), so the tuple's shape survives from the
+    pre-D21 days and nothing fills it."""
     with open(path, "rb") as f:
         raw = f.read()
     h = parse_header(raw)
@@ -834,23 +829,17 @@ def read_container(path, verify=True):
     end = h["geom_off"] + h["geom_size"]
     if end > len(raw):
         raise ValueError("geometry blob runs past the end of the file")
-    if h["art_off"] + h["art_size"] > len(raw):
-        raise ValueError("art payload runs past the end of the file")
     if h["setting_off"] + h["n_settings"] * SETTINGS_WORDS * 4 > len(raw):
         raise ValueError("the settings table runs past the end of the file")
     s_blob = raw[SET_OFF:SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4]
     geom = raw[h["geom_off"]:end]
-    art  = raw[h["art_off"]:h["art_off"] + h["art_size"]]
+    art  = b""
     if verify:
-        # Both CRCs, named: a bad geometry table and a bad bank are different
-        # repairs for the owner (re-copy vs re-bake), and the theme path's scar
-        # is a message that could not tell them apart.
+        # The one payload CRC, named: the art word's twin is zero-gated by
+        # check_header, so a damaged copy can only be the geometry's.
         if zlib.crc32(geom) & 0xFFFFFFFF != h["geom_crc"]:
             raise ValueError("geometry checksum mismatch — the copy on the card "
                              "is damaged")
-        if zlib.crc32(art) & 0xFFFFFFFF != h["art_crc"]:
-            raise ValueError("art checksum mismatch — the copy on the card is "
-                             "damaged")
     return h, unpack_settings(s_blob, h["n_settings"]), geom, art
 
 
@@ -885,7 +874,7 @@ if __name__ == "__main__":
         # words. Run it on a package before handing it to anybody.
         h = read_header(sys.argv[2])
         print(disclosure(h["slug"], h["title"], h["caps"], h["period_ms"],
-                         h["art_size"], h["n_settings"]))
+                         h["n_settings"]))
     else:
         print("usage: python3 tools/orbapp.py --inspect <file.orbapp>\n"
               "       python3 tools/orbapp.py --disclose <file.orbapp>")

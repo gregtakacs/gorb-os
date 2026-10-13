@@ -48,7 +48,9 @@ extern "C" {
 
 #define ORBAPP_SETTINGS_MAX   16u
 #define ORBAPP_GEOM_BYTES_MAX 0x00040000u  /* 256 KB — the apps-partition sizing depends on it */
-#define ORBAPP_ART_BYTES_MAX  0x003D0000u  /* 3.81 MB — the assets slot cap (§3.2/D9) */
+#define ORBAPP_ART_BYTES_MAX  0x003D0000u  /* 3.81 MB — plausibility bound on the
+                                            * art_req DECLARATION only: D21 (§0.9)
+                                            * says no container carries art bytes */
 
 /* D16: the manifest's period_ms is the FASTEST beat the app may run. 0 means
  * never ticks; the floor is the commit pass measured at 185 ms, priced at

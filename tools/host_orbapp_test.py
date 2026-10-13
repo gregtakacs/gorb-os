@@ -189,18 +189,20 @@ check("period_ms, the counts and the settings count are inside it too",
 
 SENT = dict(id="weather", title="Weather",
             caps=A.cap_bit("power") | A.cap_bit("sd_read") | A.cap_bit("themes"),
-            period_ms=4000, counts=(1, 2, 3, 4), serial=0x5E51, baked_ms=0x1234)
+            period_ms=4000, counts=(1, 2, 3, 4), serial=0x5E51, baked_ms=0x1234,
+            art_req=0x10000)   # a D21 declaration with no payload behind it
 SETTS = [dict(id="city", type="string", def_str="Denver"),
          dict(id="offset", type="int", min=-720, max=720, default=-1),
          dict(id="units", type="enum", min=0, max=2, default=2),
          dict(id="alarm", type="toggle", default=1)]
 GEOM = bytes((i * 7) & 0xFF for i in range(4 * 10))       # 10 words, opaque
-ART = bytes((i * 13 + 1) & 0xFF for i in range(4096 * 3))  # 3 pages, opaque
+ART = b""                                                 # D21: none ships
 
 D = tempfile.mkdtemp(prefix="orbapp-")
 PATH = os.path.join(D, "weather.orbapp")
 n = A.write_container(PATH, SENT["id"], SENT["title"], caps=SENT["caps"],
-                      settings=SETTS, geometry=GEOM, art=ART,
+                      settings=SETTS, geometry=GEOM,
+                      art_req=SENT["art_req"],
                       period_ms=SENT["period_ms"], counts=SENT["counts"],
                       serial=SENT["serial"], baked_ms=SENT["baked_ms"],
                       behaviour_kind=0xABCD)
@@ -212,15 +214,15 @@ FIELDS = (("fmt", A.FORMAT), ("abi", A.GEOM_ABI), ("hdr_size", A.HDR_WORDS * 4),
           ("app_id", A.app_id_of(SENT["id"])), ("behaviour_kind", 0xABCD),
           ("period_ms", SENT["period_ms"]), ("caps", SENT["caps"]),
           ("n_settings", len(SETTS)), ("n_layer", 1), ("n_comp", 2),
-          ("n_aux", 3), ("n_bank", 4), ("art_req", len(ART)),
-          ("art_size", len(ART)), ("geom_size", len(GEOM)),
+          ("n_aux", 3), ("n_bank", 4), ("art_req", SENT["art_req"]),
+          ("art_size", 0), ("geom_size", len(GEOM)),
           ("slug", SENT["id"]), ("title", SENT["title"]))
 for k, want in FIELDS:
     check("field %s carries its own sentinel through the write" % k,
           h[k] == want, "wrote %r, read %r" % (want, h[k]))
 check("the geometry blob is byte-identical (opaque, not reinterpreted)",
       geom == GEOM, "%d B vs %d B" % (len(geom), len(GEOM)))
-check("the art payload is byte-identical", art == ART,
+check("the container ships no art payload (D21)", art == ART,
       "%d B vs %d B" % (len(art), len(ART)))
 check("every settings descriptor round-trips its four bounds",
       st == [dict(id="city", type="string", min=0, max=0, default=0,
@@ -240,28 +242,34 @@ check("the settings table sits right after the header", h["setting_off"] == A.SE
 check("the geometry follows the settings table exactly",
       h["geom_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4,
       hex(h["geom_off"]))
-check("the container is bigger than a bare header only because of its payloads",
-      n > A.HDR_BYTES and h["art_size"] == len(ART))
+check("the container is bigger than a bare header only because of its geometry",
+      n > A.HDR_BYTES and h["art_size"] == 0 and h["art_crc"] == 0)
 
-# Each CRC must actually be load-bearing: tear one payload byte and the read
-# names the part, without ever consulting the other.
-def tear(off):
-    b = bytearray(open(PATH, "rb").read())
-    b[off] ^= 0xFF
-    open(PATH, "rb").close()
-    with open(PATH, "wb") as f:
+# Each CRC must actually be load-bearing: tear a payload byte and the read
+# names the part. The art region no longer exists to be torn — a file that
+# CLAIMS art bytes at all is refused at the read gate itself, which is this
+# vector: patch a clean header's art_size (fixing the header CRC, so the
+# refusal can only come from the D21 gate) and read_header must name it.
+def patch_hdr_file(path, word, value):
+    b = bytearray(open(path, "rb").read())
+    w = A._words(bytes(b[:A.HDR_BYTES]))
+    w[word] = value
+    w[A.W_HDR_CRC] = A._hdr_crc(w)
+    for i, v in enumerate(w):
+        b[i * 4:i * 4 + 4] = struct.pack("<I", v)
+    with open(path, "wb") as f:
         f.write(bytes(b))
-    return PATH
+    return path
 
-p = tear(h["art_off"]); A.read_header(p)          # header still clean
+p = patch_hdr_file(PATH, A.W_ART_SIZE, 4096)
 try:
-    A.read_container(p, verify=True)
-except ValueError as e:
-    check("a torn art byte is named as ART, not as a generic failure",
-          "art checksum" in str(e), e)
-else:
-    check("a torn art byte is named as ART, not as a generic failure", False,
+    A.read_header(p)
+    check("a file claiming art bytes is refused at the read gate (D21)", False,
           "read clean")
+except ValueError as e:
+    check("a file claiming art bytes is refused at the read gate (D21)",
+          "no container ships art" in str(e), e)
+patch_hdr_file(PATH, A.W_ART_SIZE, 0)          # hand the golden back
 p2 = os.path.join(D, "weather.orbapp")             # same file, next tear
 b = bytearray(open(p2, "rb").read())
 b[h["geom_off"]] ^= 0xFF
@@ -283,7 +291,8 @@ else:
 C = tempfile.mkdtemp(prefix="orbapp-crc-")
 cp = os.path.join(C, "weather.orbapp")
 A.write_container(cp, SENT["id"], SENT["title"], caps=SENT["caps"],
-                  settings=SETTS, geometry=GEOM, art=ART,
+                  settings=SETTS, geometry=GEOM,
+                  art_req=SENT["art_req"],
                   period_ms=SENT["period_ms"], counts=SENT["counts"],
                   serial=SENT["serial"], baked_ms=SENT["baked_ms"])
 b = bytearray(open(cp, "rb").read())
@@ -361,12 +370,20 @@ check("the beat floor itself is accepted", A._period(A.BEAT_MIN_MS) == A.BEAT_MI
 check("0 means never ticks and is accepted", A._period(0) == 0)
 expect_refuse("a beat past a day is refused (say 0 instead)",
               lambda: A._period(A.BEAT_MAX_MS + 1))
-expect_refuse("art over the slot is refused with its byte count",
-              lambda: A._art_size(A.ART_BYTES_MAX + 4))
-expect_refuse("a reservation under the payload it must hold is refused",
-              lambda: A._art_req(10, 4096))
-expect_refuse("a bank-less app claiming pages is refused",
-              lambda: A._art_req(4096, 0))
+expect_refuse("a declared art need past the bound is refused as a mis-count",
+              lambda: A._art_req(A.ART_BYTES_MAX + 4))
+check("the old slot size itself is still declarable (the bound is inclusive)",
+      A._art_req(A.ART_BYTES_MAX) == A.ART_BYTES_MAX)
+check("a D21 declaration with no payload is the normal shape, accepted",
+      A._art_req(4096) == 4096)
+try:
+    A.write_container(os.path.join(D, "noart.orbapp"), "noart", "NoArt",
+                      art=b"\0" * 16)
+    check("write_container has no art argument left to offer (D21)", False,
+          "it accepted one")
+except TypeError as e:
+    check("write_container has no art argument left to offer (D21)",
+          "art" in str(e), e)
 expect_refuse("a geometry blob shorter than its counts is refused",
               lambda: A._geom_size(8, (0, 0, 0, 40)))
 expect_refuse("a ragged geometry blob is refused (the format is words)",
@@ -479,14 +496,23 @@ expect_refuse("an empty title is refused (the confirm would have no subject)",
               lambda: A.check_header(dict(h, title="")))
 expect_refuse("caps smuggled into a parsed header are refused",
               lambda: A.check_header(dict(h, caps=1 << 0)))
-expect_refuse("an art_req under the payload is refused on read too",
-              lambda: A.check_header(dict(h, art_req=4)))
+_h4 = dict(h, art_req=4)
+check("an art_req declaration alone passes the read gate (D21 inverts the pair)",
+      A.check_header(_h4) == _h4)
+expect_refuse("a payload claim of any size is refused on read (D21)",
+              lambda: A.check_header(dict(h, art_size=A.ART_BYTES_MAX + 1)),
+              wants="ships art")
+expect_refuse("a small payload claim is refused too — no size fits (D21)",
+              lambda: A.check_header(dict(h, art_size=4096)), wants="ships art")
+expect_refuse("a stale art crc is refused as if it shipped pixels (D21)",
+              lambda: A.check_header(dict(h, art_crc=0xDEAD)), wants="ships art")
+expect_refuse("an art need past the bound is refused on read as a miscount",
+              lambda: A.check_header(dict(h, art_req=A.ART_BYTES_MAX + 1)),
+              wants="miscount")
 expect_refuse("a beat under the floor is refused on read too",
               lambda: A.check_header(dict(h, period_ms=100)))
 expect_refuse("a blob too short for its counts is refused on read too",
               lambda: A.check_header(dict(h, geom_size=4)))
-expect_refuse("an art size over the slot is refused on read too",
-              lambda: A.check_header(dict(h, art_size=A.ART_BYTES_MAX + 1)))
 expect_refuse("a settings count over the table is refused on read too",
               lambda: A.check_header(dict(h, n_settings=A.SETTINGS_MAX + 1)))
 check("a header that came from the writer still passes the read checks",
@@ -507,16 +533,18 @@ expect_refuse("a newer FORMAT is refused rather than half-read",
 
 # ---- the disclosure, which IS the consent (D19) ----------------------------
 txt = A.disclosure(h["slug"], h["title"], h["caps"], h["period_ms"],
-                   h["art_size"], h["n_settings"])
+                   h["n_settings"])
 for want in ("weather", "Weather", "power", "sd_read", "themes", "4000",
-             str(len(ART)), str(len(SETTS)), "PERMISSIONS"):
+             str(len(SETTS)), "PERMISSIONS"):
     check("the install confirm names %r" % want, want in txt, txt[:100])
+check("the D21 disclosure offers the owner no art line to consent to (D21)",
+      "art" not in txt.lower(), txt)
 check("the confirm lists exactly the declared owner caps, in order",
       "power, sd_read, themes" in txt, txt)
 check("the confirm never offers a free cap as revocable",
       "time" not in txt.split("may use:")[1].split("\n")[0], txt)
 check("nothing declared says so in the ladder's words",
-      "nothing declared" in A.disclosure("x", "X", 0, 0, 0, 0))
+      "nothing declared" in A.disclosure("x", "X", 0, 0, 0))
 check("the period is the app's fastest, not a runtime rate",
       "fastest beat" in txt, txt)
 
@@ -538,10 +566,11 @@ MUTATIONS = [
      'SET_TYPES = ("int", "enum", "toggle", "string")',
      'SET_TYPES = ("int", "enum", "string")'),
     ("the beat floor is gone", "if period_ms < BEAT_MIN_MS:", "if 0:"),
-    ("the art slot cap is gone", "if art_size > ART_BYTES_MAX:", "if 0:"),
-    ("art_req may understate the payload", "if art_req < art_size:", "if 0:"),
-    ("a bank-less app may reserve pages",
-     "if art_size == 0:\n        if art_req:", "if art_size == 0:\n        if 0:"),
+    ("the D21 art-carry gate is gone from check_header",
+     'if h["art_size"] != 0 or h["art_crc"] != 0:', "if False:"),
+    ("art_req may declare past any bound", "if art_req > ART_BYTES_MAX:", "if 0:"),
+    ("pack_header ships art bytes again",
+     "hdr[W_ART_SIZE]   = 0", "hdr[W_ART_SIZE]   = 8"),
     ("the counts no longer price the blob", "if geom_size < need:", "if 0:"),
     ("the slug charset check is gone",
      "if not isinstance(slug, str) or not SLUG_RE.match(slug):", "if 0:"),

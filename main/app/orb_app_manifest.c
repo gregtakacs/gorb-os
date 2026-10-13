@@ -294,10 +294,20 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
     if (h->n_settings > ORBAPP_SETTINGS_MAX)
         return refuse(reason, cap, "%u settings declared; the loader's table"
                       " holds %u", h->n_settings, (unsigned)ORBAPP_SETTINGS_MAX);
-    if (h->art_size > ORBAPP_ART_BYTES_MAX || h->art_req > ORBAPP_ART_BYTES_MAX)
-        return refuse(reason, cap, "art size/req %u/%u B exceeds the %u B art"
-                      " slot (§3.2)", h->art_size, h->art_req,
-                      (unsigned)ORBAPP_ART_BYTES_MAX);
+    /* D21 (§0.9): no container carries art. The payload words are a shape to
+     * refuse, not a size to price — a file shipping bytes at art_off predates
+     * the ruling and must be re-baked. art_req alone survives: it is D18's
+     * request-as-declaration, answered by the theme and asset registries, and
+     * no container byte depends on it, so the old slot cap bounds it for
+     * plausibility only. The writer's check_header mirrors these two refusals
+     * in the same words. */
+    if (h->art_size != 0 || h->art_crc != 0)
+        return refuse(reason, cap, "carries a %u B art payload: no container "
+                      "ships art (D21) — re-package it", h->art_size);
+    if (h->art_req > ORBAPP_ART_BYTES_MAX)
+        return refuse(reason, cap, "declares an art need of %u B past the %u B "
+                      "ever budgeted — a demand that size is a miscount",
+                      h->art_req, (unsigned)ORBAPP_ART_BYTES_MAX);
     if (h->geom_size > ORBAPP_GEOM_BYTES_MAX || (h->geom_size % 4))
         return refuse(reason, cap, "geometry blob is %u B: past the cap, or"
                       " not a whole number of words", h->geom_size);
@@ -314,16 +324,11 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
                       (unsigned long long)(need > 0xFFFFFFFFull
                                            ? 0xFFFFFFFFull : need));
 
-    if (h->art_size == 0) {
-        if (h->art_req)
-            return refuse(reason, cap,
-                          "art_req %u with no payload: nothing to map, and a"
-                          " reservation never mapped starves every other app",
-                          h->art_req);
-    } else if (h->art_req < h->art_size) {
-        return refuse(reason, cap, "art_req %u is under the %u B it must hold",
-                      h->art_req, h->art_size);
-    }
+    /* D21 inverted the pair that lived here: art_req with no payload USED to be
+     * the refusal (a reservation nothing mapped starved the bank budget). With
+     * no payload to map the word can only be a declaration, and a declaration
+     * needs no backing store — this is now the container's expected shape, and
+     * any art_size is already gone refused above. */
 
     /* D16's floor, and only the floor: the writer refuses a too-low beat at
      * pack time and its own reader re-checks it on cards; the too-high end

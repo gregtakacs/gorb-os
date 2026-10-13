@@ -1346,13 +1346,17 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    /* 1536, sized by a reading rather than an estimate. The merged body measured
-     * 1115 B on orb-B on 2026-10-12, twelve identical requests, and 1116 B on the
-     * boot before. The byte is wifi_reason_name, auth-leave against assoc-leave,
-     * and counter digit widths move it the same way, so quote a range. Idle block
-     * dimmed with writes_failed present, art ready, three ledger rows, and no app
-     * status line printed. The frame grew from 512 through 640 and 960 as fields
-     * joined it, and each addition was re-measured (`status | wc -c`), not added.
+    /* 1536, sized by readings taken on orb-B on 2026-10-12, not by estimates.
+     * A freshly booted board at 21de002 measured 1111 B over eight identical
+     * requests. The idle block was dimmed and its writes_failed field was
+     * present. Three ledger rows published, and no app had printed a status
+     * line. A board that has roamed measures more, because wifi_reason_name
+     * lengthens. Observed: 1115 B at auth-leave, 1116 B at assoc-leave. The
+     * longest name reason_name() returns is handshake-timeout at 17 B. That
+     * puts the ceiling near 1122 B before counter digits grow. Quote a range,
+     * never one number: the width tracks uptime. The frame grew from 512 through
+     * 640 and 960 as fields joined it. Every addition was re-measured with
+     * `curl -s ORB/api/v1/status | wc -c` rather than added up here.
      *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and those three rows filled 440 B of it. Two more rows fit at the

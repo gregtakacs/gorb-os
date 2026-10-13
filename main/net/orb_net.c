@@ -997,8 +997,26 @@ static void dns_stop(void)
 static void scan_begin(void);
 static void scan_collect(void);
 static void scan_boot_begin(void);   /* arms SCAN_SCANNING then starts, radio task */
-static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning);
-static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning);
+/* The station interface of a PROVISIONING boot is up but unclaimed: the boot
+ * branch opened the AP and never asked for an association. In that state a
+ * STA_DISCONNECTED event means nothing and a connect() would be pointless.
+ * Once NET_CMD_JOIN has run, though, a human has submitted credentials on the
+ * AP - the same event is now the only feedback that submission produced, and
+ * swallowing it leaves the device broadcasting an AP with nothing behind it and
+ * no pending retry (bench, 2026-10-13: reason 202 auth-fail, then silence; the
+ * ladder, the failure counter, the rescue and the AP timeout all sit behind the
+ * event that got dropped). So the discriminator for the retry ladder is join
+ * intent, not boot mode: `if (s_provisioning) break;` conflated "nothing asked
+ * yet" with "the thing you asked for just failed". Pure, and pinned by
+ * tools/host_tz_test.py. */
+static bool prov_ap_idle(bool provisioning, bool joining)
+{
+    return provisioning && !joining;
+}
+
+/* Third argument is prov_ap_idle(), never the raw provisioning flag. */
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle);
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle);
 
 static void net_task_loop(void *arg)
 {
@@ -1018,8 +1036,8 @@ static void net_task_loop(void *arg)
              * by the second-event guard, which is the same dead device by
              * another door. */
             s_retry_pending = false;
-            if (connect_attempt_is_moot(s_associated, s_sta_up, s_provisioning)) {
-                if (lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+            if (connect_attempt_is_moot(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining))) {
+                if (lease_watch_should_drop(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining)))
                     arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
                 break;
             }
@@ -1136,7 +1154,7 @@ static void net_task_loop(void *arg)
              * already-tested ladder path re-arms without counting a refusal.
              * A disconnect() that itself fails leaves nothing pending, so the
              * watch re-arms rather than handing the device to the silence. */
-            if (!lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+            if (!lease_watch_should_drop(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining)))
                 break;
             ESP_LOGW(TAG, "no lease %u s after associating; dropping the association",
                      (unsigned)NET_LEASE_WATCHDOG_S);
@@ -1206,14 +1224,14 @@ static bool sta_leave_is_self_inflicted(uint8_t reason)
  * sta_leave_is_self_inflicted() above, so tools/host_tz_test.py can pin the
  * truth tables without a radio: from the LAN a wrong answer here looks
  * exactly like a router that hates the orb. */
-static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning)
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle)
 {
-    return sta_up || associated || provisioning;
+    return sta_up || associated || ap_idle;
 }
 
-static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning)
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle)
 {
-    return associated && !sta_up && !provisioning;
+    return associated && !sta_up && !ap_idle;
 }
 
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -1257,7 +1275,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
          * a blip that never reaches a lease withdrawal costs one goodbye. */
         orb_mdns_set_sta(false, 0);
 #endif
-        if (s_provisioning) break;         /* AP-only mode: nothing to retry */
+        if (prov_ap_idle(s_provisioning, s_joining)) break;   /* AP up, nothing submitted: no ladder */
         if (s_retry_pending) break;        /* driver's second event for one failure */
         /* See sta_leave_is_self_inflicted(): a leave we caused is not a refusal,
          * so it costs the ladder nothing. The retry is armed regardless, because

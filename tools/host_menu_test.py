@@ -1225,6 +1225,47 @@ int main(void)
        s_pg == &s_pages[PG_TOP] && s_cur == 5);
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
 
+    /* ---- P5.4: the position readout on a list that scrolls -----------------
+     * The header is the only place a 63-row picker can say where the cursor is:
+     * five physical rows show a window, and the highlight answers "which of
+     * these" and never "how far from the end". The gate is the window's own, so
+     * these checks pin the boundary in both directions and the count's
+     * dependence on the cursor rather than on the page id. */
+    static char hb[64];
+    s_armed = true; s_pg = &s_pages[PG_TZ]; g_tz_count = 62; s_cur = 0;
+    title_line(hb, sizeof hb);
+    ck("a scrolled page names the row and the total",
+       !strcmp(hb, "TIME ZONE  1/63"));
+    s_cur = 62; title_line(hb, sizeof hb);
+    ck("the readout reaches the last row, the back row included",
+       !strcmp(hb, "TIME ZONE  63/63"));
+    s_cur = 4; turn_down(1); title_line(hb, sizeof hb);
+    ck("the count moves with the cursor", !strcmp(hb, "TIME ZONE  6/63"));
+    s_cur = 0; turn_up(1); title_line(hb, sizeof hb);
+    ck("and does not move past the clamp", !strcmp(hb, "TIME ZONE  1/63"));
+    s_pg = &s_pages[PG_DISPLAY]; title_line(hb, sizeof hb);
+    ck("a page that draws every row says no digits", !strcmp(hb, "DISPLAY"));
+    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; title_line(hb, sizeof hb);
+    ck("five rows fill the window exactly and stop there",
+       page_rows() == 5 && !strcmp(hb, "Clock PERMISSIONS"));
+    s_pg = &s_pages[PG_TO]; s_cur = 0; title_line(hb, sizeof hb);
+    ck("the preset picker scrolls, so it counts",
+       page_rows() == 8 && !strcmp(hb, "DIM TIMEOUT  1/8"));
+    /* The gate is the count crossing the glass, not a per-page flag: the same
+     * page function gains the readout at 6 zones and has none at 5, which is the
+     * only shape of this rule that survives a page nobody thought to annotate. */
+    s_pg = &s_pages[PG_TZ]; s_cur = 0; g_tz_count = 4;
+    title_line(hb, sizeof hb);
+    ck("the zone list is silent while it all fits", !strcmp(hb, "TIME ZONE"));
+    g_tz_count = 5; title_line(hb, sizeof hb);
+    ck("one row more than the glass and it counts",
+       !strcmp(hb, "TIME ZONE  1/6"));
+    g_tz_count = 62;
+    s_armed = false; title_line(hb, sizeof hb);
+    ck("unarmed, the count is gone whatever the page was",
+       !strcmp(hb, "TIME ZONE"));
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
+
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
 }
@@ -1380,6 +1421,13 @@ def repaint_lint(src):
         bad.append("the armed branch sets the large title, which is the landing's")
     if "s_ui.status" not in armed:
         bad.append("the result line is no longer written by the armed branch alone")
+    # P5.4: the header the armed branch paints must be the composed one. Painting
+    # page_title() here instead is invisible to every pure check — title_line()
+    # would still pass its own checks while nothing called it, which is the same
+    # unfalsifiable shape the guard above was added for.
+    if "title_line(" not in armed:
+        bad.append("the armed header is painted from page_title() directly, so the "
+                   "position readout exists but nothing draws it")
     return bad
 
 
@@ -1658,6 +1706,27 @@ MUTATIONS = [
     ("D19: the worker writes a slot the registry no longer has",
      "if (!a) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }",
      "if (false) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }"),
+    # P5.4's position readout. The rule is a comparison against the window, so
+    # each of these is one way it can be wrong at the boundary or wrong in the
+    # digits, and each lands on a check that pins the exact header text.
+    ("P5.4: the readout counts from zero",
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur, rows);'),
+    ("P5.4: the total drops the row the cursor stands on",
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows - 1);'),
+    ("P5.4: a page one row short of scrolling starts counting",
+     "    if (rows > ROW_MAX)\n        snprintf(out, outsz, \"%s  %d/%d\"",
+     "    if (rows >= ROW_MAX)\n        snprintf(out, outsz, \"%s  %d/%d\""),
+    ("P5.4: the scrolled page stops naming its total",
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
+     'snprintf(out, outsz, "%s  %d", page_title(), s_cur + 1);'),
+    ("P5.4: the header loses the page name and keeps only the count",
+     'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
+     'snprintf(out, outsz, "%d/%d", s_cur + 1, rows);'),
+    ("P5.4: the painted header bypasses the readout",
+     "        title_line(head, sizeof head);\n        lv_label_set_text(s_title, head);",
+     "        lv_label_set_text(s_title, page_title());"),
 ]
 
 def run_mutations():

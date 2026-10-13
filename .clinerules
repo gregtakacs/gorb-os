@@ -718,17 +718,25 @@ Since P5.2 (`924d9ec`) one `const menu_page_t s_pages[PG_N]` table is the whole 
 model, so `tools/host_menu_test.py` reads the table instead of a set of switches. It
 lifts the model block, the table, every hook it names, and `activate()` — the press
 paths run on the host now, because the dispatcher no longer touches LVGL. It checks
-169 things: the clamp at both ends, the no-wrap rule, the 62-row zone list with its
+179 things: the clamp at both ends, the no-wrap rule, the 62-row zone list with its
 back row, each sub-page's back landing, the D19 cap rows and the worker's pack, the
 press of every page, a worker result landing while the screen is disarmed (which must
 not paint a list on the title card), and since P5.3 the APPS catalog's four states,
 its two worker doors and the two-press uninstall — including the detent that cancels
-the arm. The top page's row indices are derived from `top_os_rows()` rather than
+the arm. Since P5.4 the painted header carries the position readout on any page
+long enough to scroll — `title_line()` is the one composer, gated on the window's
+own `rows > ROW_MAX` rather than on a per-page flag, and the checks pin its exact
+text at the boundary in both directions (5 rows: no digits; 6: `1/6`). The walk
+driver still reads the bare title in the cursor log line on purpose: that line's
+`row N/M` is the same `s_cur`/`page_rows()` pair the header composes, so the 229
+records the walk checks are the numbers the readout prints. The digits themselves
+are host-pinned — the bench has no framebuffer readback door. The top page's row
+indices are derived from `top_os_rows()` rather than
 written out, so a legitimate new OS row does not redden a row-order check. The
 damaged-theme row is no longer this file's subject: B2 gave the theme list to the
 clock app.
 
-`--mutations` must stay red on all sixty-seven. Six of the checks are structural
+`--mutations` must stay red on all seventy-three. Six of the checks are structural
 lints that read the table's text and pin the switch model dead, so a second way to
 say what a page IS fails the suite even when every behavioural check passes. One
 round of the battery "survived" eleven mutants because the lifts were taken at

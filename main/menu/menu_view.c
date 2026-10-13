@@ -171,6 +171,7 @@ static void job_enable(void *arg);   static void job_uninstall(void *arg);
 static int  page_rows(void);
 static void row_text(int, char *, size_t, bool *);
 static const char *page_title(void);
+static void title_line(char *, size_t);
 static const char *page_hint(void);
 static void go_back(void);       static void activate(void);
 static void repaint(void);       static void job_post(orb_job_fn fn, int idx);
@@ -1208,8 +1209,10 @@ static void repaint(void)
         lv_label_set_text(s_hint, "push to open");
         lv_label_set_text(s_status, "");
     } else {
+        char head[64];
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_14, 0);
-        lv_label_set_text(s_title, page_title());
+        title_line(head, sizeof head);
+        lv_label_set_text(s_title, head);
         lv_label_set_text(s_hint, page_hint());
         lv_label_set_text(s_status, s_ui.status);
     }
@@ -1462,6 +1465,27 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
 }
 
 static const char *page_title(void) { return s_pg->title ? s_pg->title() : "MENU"; }
+
+/* The header as painted (§7 item 6). A page longer than the glass scrolls, and a
+ * scrolled list with no position readout cannot answer "how far am I from the
+ * end" — the zone picker is 63 rows and the highlight alone does not say whether
+ * you are at 4 or 60. The gate is the window's own (rows > ROW_MAX), not a flag
+ * a page can forget to set: a page that draws every row needs no readout and
+ * gets none, and a page that scrolls cannot be reached without one. The
+ * denominator is page_rows() rather than the plan's example 62 because this page
+ * has 63 rows and the cursor fits on the back row; a header that could read
+ * 63/62 would be a worse lie than one the plan miscounted. The cursor log line
+ * keeps page_title(): its row N/M is the same number in the walk driver's own
+ * 0-based shape, so the line stays the glass's witness without doubling the
+ * digits into the log. */
+static void title_line(char *out, size_t outsz)
+{
+    const int rows = page_rows();
+    if (rows > ROW_MAX)
+        snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);
+    else
+        snprintf(out, outsz, "%s", page_title());
+}
 
 static const char *page_hint(void)
 {

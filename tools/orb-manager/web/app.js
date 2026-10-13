@@ -746,8 +746,8 @@ async function readFound() {
   const orbs = d.orbs || [];
   if (!orbs.length) {
     state.textContent = d.askError
-      ? "nothing heard yet \u2014 this hub cannot originate multicast (" + d.askError + ")"
-      : "nothing heard in the last few seconds; reboot an orb or press Browse again";
+      ? "the hub could not send its query: " + d.askError + ". This box may not reach the LAN multicast group. Reboot an orb, or type its address in the box above."
+      : "no orb answered. Orbs announce once when they join, and a hub on this box may not reach them over multicast. Reboot an orb, or type its address in the box above.";
   } else {
     state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced";
   }

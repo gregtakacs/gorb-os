@@ -59,7 +59,9 @@ type Refusal struct {
 // onto the LAN, so a browser testable only through a live group join is a browser
 // that was never tested. The browser always writes to the group address and has no
 // field that aims a query at one host: the bench's unicast workaround stays in the
-// bench script that needs it.
+// bench script that needs it. The gap that unicast was proposed to fill — a hub
+// starting after an orb's one-time join announcement — is now closed by a sustained,
+// RFC-shaped multicast querier (§6, §7.1, §10) instead, so the boundary holds.
 type Source interface {
 	ReadFrom(p []byte) (int, net.Addr, error)
 	WriteTo(p []byte, addr net.Addr) (int, error)
@@ -194,15 +196,73 @@ func (b *Browser) pump(s Source) {
 	}
 }
 
-// Ask puts the browse question on the group from every socket, and follows up on
-// any instance still missing its SRV, TXT or A. Listening alone is not enough: an
+// browseKnownLocked collects the browse question's RFC 6762 §7.1 known answers:
+// one PTR per live instance, carrying its AGED remaining TTL. The caller holds the
+// lock. Only instances with more than half their TTL left are listed — a record past
+// half is left off so the next answer refreshes it before it can expire, honouring
+// §7.1's rule that a known answer younger than a quarter TTL must not suppress.
+//
+// It is PTR-only on purpose. The browse asks PTR; the A/SRV/TXT the firmware bundles
+// into that one reply are additional records a listing of PTRs does not claim to
+// hold, and reconstructing a TXT from the Candidate's decoded fields would risk a
+// known answer that does not match the responder's byte-for-byte, which defeats the
+// suppression it is there to trigger. Naming back the PTRs is the exact, canonical
+// case. Instances past the maxKnownAnswers cap go un-named (map order is not sorted
+// for this): the only cost is one redundant answer from them, never a missed orb.
+//
+// Our own firmware reads only a query's question and ignores this section entirely,
+// so known-answer suppression buys nothing against an orb. It is here for third-party
+// responders sharing the LAN and for spec correctness — and it is what makes the
+// timer-driven re-ask (§6) polite rather than a standing 1 q/s broadcast.
+func (b *Browser) browseKnownLocked(now time.Time) []Record {
+	if len(b.byMAC) == 0 {
+		return nil
+	}
+	out := make([]Record, 0, len(b.byMAC))
+	for _, c := range b.byMAC {
+		ttl := int64(c.TTL)
+		if ttl <= 0 {
+			continue
+		}
+		// True expiry is LastSeen + TTL. Candidate.Expires adds a grace window the
+		// row lingers on for the UI; counting that as freshness would list a stale
+		// record as a known answer and suppress the refresh that would fix it.
+		left := ttl - int64(now.Sub(c.LastSeen).Seconds())
+		if left*2 < ttl {
+			continue
+		}
+		out = append(out, Record{
+			Name: ServiceName,
+			Type: typePTR,
+			PTR:  InstanceName(c.Instance),
+			TTL:  uint32(left),
+		})
+		if len(out) >= maxKnownAnswers {
+			break
+		}
+	}
+	return out
+}
+
+// Ask puts the browse question on the group from every socket, carrying the
+// records it already holds as RFC 6762 §7.1 known answers, and follows up on any
+// instance still missing its SRV, TXT or A. Listening alone is not enough: an
 // announcement comes once, at the orb's join, so a hub started after that would be
 // waiting on a rhythm it does not control.
+//
+// The known answers are what make this safe to do on a timer. §6 requires a querier
+// that retransmits to suppress what it already knows, so a sustained browse lists
+// its live, still-fresh instances and a responder that has nothing new stays quiet.
+// Only records with more than half their TTL left are listed: a record past half is
+// deliberately omitted so the next answer refreshes it before it can expire. Every
+// packet still leaves for the group and only the group.
 func (b *Browser) Ask() error {
 	b.mu.Lock()
 	srcs := append([]Source(nil), b.sources...)
 	b.txid++
 	txid := b.txid
+	now := b.now()
+	known := b.browseKnownLocked(now)
 	waiting := make([]string, 0, len(b.pending))
 	for k, p := range b.pending {
 		if p.srv == nil || p.txt == nil || p.a == nil {
@@ -213,7 +273,7 @@ func (b *Browser) Ask() error {
 	if len(srcs) == 0 {
 		return fmt.Errorf("orbmdns: no sockets attached")
 	}
-	pkts := [][]byte{BrowseQuery(txid)}
+	pkts := [][]byte{BuildQueryWithKnown(txid, ServiceName, typePTR, known)}
 	for _, inst := range waiting {
 		if inst == "" {
 			continue

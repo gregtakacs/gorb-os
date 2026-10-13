@@ -2959,26 +2959,56 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    static orbapp_scan_entry_t ent[ORB_APP_SCAN_MAX];
+    /* The rows array AND the row scratch live in PSRAM, not in .bss. This
+     * file's own heap ladders log internal free in double digits by the time
+     * httpd starts, and the task's 8 kB stack (cfg.stack_size, sized for the
+     * FatFs chain) plus the card's AES scratch both draw from what is left:
+     * the internal-static version of these buffers starved one or the other
+     * on orb-A the day it shipped (ESP_ERR_HTTPD_TASK 2026-10-12 — the boot
+     * window here is a two-way squeeze, and every static this page adds
+     * bids against both). One PSRAM block carries the 16 rows and, appended
+     * past them, the row scratch; the escapes are stack locals, the
+     * h_sd convention for buffers under ~1 kB (its d_id/d_why sit on the
+     * same 8 kB task this handler runs on). */
+    static orbapp_scan_entry_t *ent;
+    static char *row;                      /* tail bytes of the same block */
+    if (!ent) {
+        ent = heap_caps_malloc(ORB_APP_SCAN_MAX * sizeof *ent + APPS_ROW_MAX,
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ent)
+            row = (char *)(ent + ORB_APP_SCAN_MAX);
+        if (!ent) {
+            ESP_LOGE(TAG, "apps listing: no PSRAM for the row block");
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+        }
+    }
     const int n = orb_app_scan(ent, ORB_APP_SCAN_MAX);
-    /* -1 is the card's answer, distinct from zero rows in the one way that
-     * matters to the owner reading the page: no card in the socket, or the
-     * drop zone was never registered (a boot-ladder bug the log names). The
-     * walk asks the volume to mount itself (orb_files.c:185), so a card
-     * inserted after boot answers here without a rescan press. */
-    if (n < 0)
-        return httpd_resp_sendstr(req, "{\"mounted\":false,\"count\":-1,\"apps\":[]}");
-
+    /* Read AFTER the scan: the walk asks the volume to mount itself
+     * (orb_files.c:185), so a card inserted after boot answers true here and
+     * the listing needs no rescan press to know about it. */
+    const bool mounted = orb_sd_mounted();
     char card[83], head[160];
-    json_put(card, sizeof card, orb_sd_mounted() ? orb_sd_card_id() : "");
+    json_put(card, sizeof card, mounted ? orb_sd_card_id() : "");
+    if (n < 0 && !mounted)
+        return httpd_resp_sendstr(req, "{\"mounted\":false,\"count\":-1,\"apps\":[]}");
+    if (n < 0) {
+        /* The card answered and the walk still refused: what it refused is
+         * the apps DIRECTORY. An absent directory is not the same answer as
+         * an empty one (orb_files.c:196), and this distinction is the whole
+         * difference for the owner between "the folder is misnamed" and "the
+         * files are there but all refused" — the second lists rows. */
+        snprintf(head, sizeof head,
+                 "{\"mounted\":true,\"card\":\"%s\",\"count\":-1,\"apps\":[]}", card);
+        return httpd_resp_sendstr(req, head);
+    }
     snprintf(head, sizeof head,
              "{\"mounted\":true,\"card\":\"%s\",\"count\":%d,\"apps\":[",
              card, n);
     httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
 
-    static char row[APPS_ROW_MAX];
-    static char e_stem[2 * sizeof ent[0].stem], e_slug[2 * sizeof ent[0].slug],
-                  e_title[2 * sizeof ent[0].title], e_why[2 * sizeof ent[0].why];
+    char e_stem[2 * sizeof ent[0].stem], e_slug[2 * sizeof ent[0].slug],
+         e_title[2 * sizeof ent[0].title], e_why[2 * sizeof ent[0].why];
     char caps[40];
     for (int i = 0; i < n; i++) {
         /* stem is the handle every later call comes back with — the same
@@ -2996,7 +3026,7 @@ static esp_err_t h_apps_list(httpd_req_t *req)
                                     * caps to the four owner bits, and their
                                     * names total 27 B. Never show a torn-off
                                     * disclosure line. */
-        const int w = snprintf(row, sizeof row,
+        const int w = snprintf(row, APPS_ROW_MAX,
             "%s{\"stem\":\"%s\",\"slug\":\"%s\",\"title\":\"%s\",\"app_id\":\"0x%08" PRIx32 "\","
             "\"caps\":\"%s\",\"period_ms\":%" PRIu32 ",\"serial\":%" PRIu32 ","
             "\"n_settings\":%" PRIu32 ",\"art_size\":%" PRIu32 ",\"file_size\":%" PRIu32 ","
@@ -3004,7 +3034,7 @@ static esp_err_t h_apps_list(httpd_req_t *req)
             i ? "," : "", e_stem, e_slug, e_title, e->app_id, caps,
             e->period_ms, e->serial, e->n_settings, e->art_size, e->file_size,
             e->err == ESP_OK ? "true" : "false", e_why);
-        if (w < 0 || (size_t)w >= sizeof row) {
+        if (w < 0 || (size_t)w >= APPS_ROW_MAX) {
             /* The bound check says it cannot; a placeholder keeps the body
              * valid JSON if someone disproves the arithmetic anyway, and the
              * log names the row so the sentinel's omission shows up red. */
@@ -3593,7 +3623,8 @@ static const char HTML_APPS[] =
 "function draw(){"
 "var L=document.getElementById('list'),C=document.getElementById('card');"
 "if(!data){return;}"
-"if(data.count<0||!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
+"if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
+"if(data.count<0){C.textContent=(data.card||'the card')+' \\u2014 the card has no apps folder';L.innerHTML='<div class=row>Copy .orbapp files into an <b>apps</b> folder in the card\\'s top-level directory, then reload.</div>';return;}"
 "C.textContent=data.card+' \\u2014 '+data.count+' file'+(data.count==1?'':'s')+' in apps/';"
 "if(!data.apps.length){L.innerHTML='<div class=row>No .orbapp files in apps/ yet.</div>';return;}"
 "var h='';"

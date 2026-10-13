@@ -548,16 +548,37 @@ def lint():
     nn = read(NET_C)
     assert '{ .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },' in nn
     assert '{ .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },' in nn
-    assert "static orbapp_scan_entry_t ent[ORB_APP_SCAN_MAX];" in nn
+    # the row block must live in PSRAM, not .bss: the first board build with
+    # these buffers as internal statics starved either httpd_start
+    # (ESP_ERR_HTTPD_TASK) or the card's AES scratch — the boot window's 8 kB
+    # blocks are bid for by the httpd task stack and the SD driver at once
+    # (the heap ladders in this file log that budget in double digits). A
+    # silent move back to internal statics must cost this suite, not the
+    # board, the regression.
+    assert "static orbapp_scan_entry_t *ent;" in nn
+    assert "static char *row;" in nn
+    assert "heap_caps_malloc(ORB_APP_SCAN_MAX * sizeof *ent + APPS_ROW_MAX," in nn
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in nn
+    assert "static orbapp_scan_entry_t ent[" not in nn, \
+        "the row array walked back into internal .bss — httpd_start will fail"
+    assert "static char row[" not in nn, \
+        "the row scratch walked back into internal .bss — same squeeze"
     assert "orb_app_scan(ent, ORB_APP_SCAN_MAX)" in nn, \
         "the endpoint stopped asking the scan for its rows — it is serving a copy"
+    # absent-directory and no-card are two answers, not one: the mounted
+    # half keeps the card id and the -1 count the page renders as "no apps
+    # folder"; dropping the distinction is the h_sd lie this endpoint has to
+    # be better at (orb_files.c:196).
+    assert '"{\\"mounted\\":false,\\"count\\":-1,\\"apps\\":[]}"' in nn
+    assert '{\\"mounted\\":true,\\"card\\":\\"%s\\",\\"count\\":-1,\\"apps\\":[]}' in nn
+    assert "no card in the socket" in nn and "no apps folder" in nn
     # the chunked-encoding contract: repeated httpd_resp_send is NOT the
     # documented stream; the chunk API closed with a zero-length chunk is.
     # A handler that drops the terminator hangs every client waiting for a
     # body that never ends — invisible to a vector suite, fatal on a phone.
     assert "httpd_resp_send_chunk(req, NULL, 0)" in nn, \
         "the apps stream lost its terminating chunk"
-    assert "httpd_resp_sendstr(req, head)" not in nn
+    assert "httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);" in nn
     # one disclosure source: the handler renders orbapp_caps_names' answer and
     # never spells a capability word itself (the names belong to the reader,
     # and the reader suite pins them to the writer). Two of the four words are

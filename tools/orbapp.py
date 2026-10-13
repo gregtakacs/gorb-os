@@ -62,10 +62,11 @@ arithmetic is about — so the byte counts are the validated fields and the byte
 themselves are opaque.
 
 The three-way mirror rule from tools/theme_schema.py applies to this file: the
-Python writer, the C reader, and the sentinel test move together. The C reader
-lands with P4's installer; until it exists the mirror is TWO legs and this
-suite's header says so out loud rather than implying a coverage it does not
-have.
+Python writer, the C reader (main/app/orb_app_manifest.c), and the sentinel
+tools/host_orbapp_reader_test.py move together. The mirror stands on all
+THREE legs: the sentinel compiles the shipping reader with host
+gcc and feeds it this writer's bytes, device refusals and pack-tool refusals
+pinned to each other — in the same words, not merely the same verdicts.
 """
 
 import hashlib

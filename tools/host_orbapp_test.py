@@ -11,12 +11,13 @@ author wrote `power` ships an app holding a socket the owner never read about,
 and nothing on the dial can raise that ceiling — so the ceiling has to be right,
 and only a test can say so.
 
-Two legs, not three — said out loud
------------------------------------
-The theme path's three-way mirror rule (writer, C reader, sentinel test) needs a
-C reader, and P4 has not landed one: the installer reads the `apps` partition,
-which the owner still has to decide (§3.2). This suite makes NO reader
-round-trip claim. What it pins today, with no board and no reader:
+Three legs, standing
+--------------------
+The theme path's three-way mirror rule (writer, C reader, sentinel test): the
+C reader is main/app/orb_app_manifest.c and its sentinel is
+tools/host_orbapp_reader_test.py, which compiles the shipping reader and pins
+its refusals — in the writer's own words — against this file's answers. What
+THIS suite owns, with no board and no reader in sight:
 
   1. THE CAP ORDER — orbapp's tuples against orb_svc.h's orb_cap_t, lifted by
      regex, order AND count. A renumber moves every installed app's consent to a

@@ -1462,3 +1462,73 @@ design item, not a test-harness item, and stays open.
 lease. Both belong in the spec. This commit only removes the blocker that made
 the feature unsafe to design around.
 
+## SPEC — reboot-to-provisioning, buildable form (2026-10-13)
+
+Resolves design points 1, 2, 3, 7 and 8 from the note above. Unblocks the moment
+the failure-path fix lands (done: `a2765b9`). Five decisions, in build order.
+
+**D1. Provisioning is a boot-time mode. One entry path, the boot branch.**
+Late promotion stays in the tree for the 8-failure rescue only. It is no longer a
+door a human is supposed to rely on. This collapses points 2, 3 and 8: the flag
+clears by booting, no AP-close endpoint is needed, and every manual door is
+identical to the boot branch — the only path ever proven joinable by eye.
+
+**D2. The intent flag lives in RTC slow memory, not NVS.**
+`RTC_SLOW_MEM` survives `esp_restart()` and is wiped by a power cycle. That is
+precisely the semantics point 2 asked for: a request that loses power before the
+reboot lands cannot strand the orb in AP mode, because the flag dies with the
+power. No expiry counter, no boot-count bookkeeping, no NVS wear, and nothing for
+a botched OTA to leave behind. Shape: one `uint32_t` magic in a plain C global carrying `RTC_NOINIT_ATTR`
+(`esp_attr.h:89`, section `.rtc_noinit`; present in the S3 linker script, and the
+header states it "will keep its value after restart or during a deep sleep / wake
+cycle" — which is exactly D2's requirement). Consumed (zeroed) by the boot
+branch as it reads it, so one request equals exactly one provisioning boot.
+Rejected: an NVS key — it survives power cycles, which turns any lost-write race
+into a permanently AP-only device, the failure mode point 2 was trying to avoid.
+
+**D3. Credential write moves to lease time. This is the hazard that outvotes
+everything else in this file.**
+Today `prov_reader_task` (serial PROV, write at `orb_net.c:2165`) and
+`h_wifi_join` (config page, write at `orb_net.c:2468`) call `nvs_set_str` for ssid and pass BEFORE any association exists. One mistyped
+passphrase therefore overwrites a working credential with a broken one, and the
+orb is off its network until a human with a phone intervenes. The bounded sojourn
+in D4 is worthless if the session it reboots back to has already destroyed the
+credentials it would resume with. Required behaviour: the submitted pair is held
+in `s_net_q`'s message and a static RAM copy only; `nvs_set_str` runs from
+`IP_EVENT_STA_GOT_IP`, exactly once, when the network has proven the pair works.
+A failed session then leaves flash untouched and the reboot resumes the old
+network. The page must show "verifying" during the window, and must be told
+plainly that a refusal leaves the previous network in force.
+
+**D4. Bounded sojourn, and the reboot-loop hazard that comes with it.**
+A provisioning boot that carries credentials arms the existing `s_ap_timer`
+(`NET_CMD_AP_EXPIRED` already owns the expiry path). On expiry: `esp_restart()`,
+never `ap_close()` — D1 explains why closing leaves a half state.
+**The guard:** arm the timer ONLY when stored credentials exist. A factory orb with
+no SSID that reboots on expiry returns to the same provisioning branch, opens the
+AP, re-arms, and reboots forever. That device must keep the current indefinite
+AP, exactly as it does today. The condition is therefore
+`sojourn_timer_armed = s_provisioning && credentials_in_flash`, and the two boot
+paths (unprovisioned / re-provisioning) stay observably different.
+Sojourn length: 10 minutes, Kconfig `CONFIG_ORB_NET_PROV_SOJOURN_S`, default 600.
+Long enough to fumble a passphrase twice on a phone; short enough that a
+forgotten orb rejoins its network on its own before an owner notices it is away.
+
+**D5. Physical trigger is net-new code.**
+Nothing samples the knob before `orb_net_start()` (`main.c:201`). Add a sample
+after `knob_init()` (`main.c:151`): press held at boot for >= 3 s sets the D2 flag
+and reboots, which then enters provisioning by the normal route. This is the only
+trigger that works when the network is gone and no phone is on the LAN, and the
+orb is wall-powered with the knob behind a closed case — so implement it, then
+decide whether the case needs a hole. Do not describe it as existing until it is.
+
+**Build order.** (1) D3, credential write at lease — smallest diff, removes the
+data-loss risk that makes every later experiment dangerous. (2) D4 sojourn +
+credential-present guard. (3) D2 RTC flag. (4) boot-branch check of the flag
+(the one-line condition the bench build already proved). (5) D5 knob sample.
+(6) hub-side intent state. Ship nothing before (1).
+
+**Not covered here, unchanged by this feature:** the 8-failure rescue stays a late
+promotion; `lv_*` in `/api/v1/status` stays open; the fleet's untracked
+`sdkconfig` overrides stay the top OTA risk.
+

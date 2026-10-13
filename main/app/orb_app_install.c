@@ -245,7 +245,13 @@ static const char *read_and_check_header(int fd, orbapp_hdr_t *h, const char *st
     if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
         return "the file ends inside its own header block — re-copy it onto the card";
 
-    char why[128];
+    /* STATIC, like s_try_why above: the return value is the caller's refusal
+     * sentence and outlives this frame — the upload door snprintfs it into the
+     * 422 body after close() and the unlock have both reused the stack. The P4b
+     * bench watched a live D21 refusal arrive as `#\x04\x06` for exactly that
+     * reason. One validator per task (install on the worker, upload on httpd,
+     * each serialised by its own slot), so one static per validator is safe. */
+    static char why[160];
     const char *r = orbapp_parse_header(hdr, h, why, sizeof why);
     if (r) return r;
 
@@ -983,7 +989,10 @@ static const char *app_hdr_validate(int fd, orbapp_hdr_t *h)
     if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
         return "the file ends inside its own header block — re-send it";
 
-    char why[128];
+    /* Static for the same reason read_and_check_header's is: the door prints
+     * this sentence after the frame that held it is gone. Runs only on the
+     * httpd task, one upload at a time (orb_app_upload_begin's gate). */
+    static char why[160];
     const char *r = orbapp_parse_header(hdr, h, why, sizeof why);
     if (r) return r;
 

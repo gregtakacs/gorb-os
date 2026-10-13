@@ -131,6 +131,49 @@ func TestAskOnlyWritesToTheGroup(t *testing.T) {
 	}
 }
 
+// TestWindowsSocketBindsWildcardNotGroup is the third structural half of the same
+// promise, aimed at the platform the Unix guards cannot see. A live orb answers a
+// browse with a UNICAST packet to whoever asked (orb_mdns.c replies to the query's
+// source, not the group), so a browser whose socket is bound to the group address
+// discards every answer to a query it sent itself and refreshes only on a reboot —
+// the symptom that reads as "mDNS is broken" to a Windows operator but never shows on
+// the Linux box the other guards were written on. net.ListenMulticastUDP binds exactly
+// that group address. This fails the moment mcastsock_windows.go reaches for it, so the
+// trap cannot silently return on the one platform most operators use.
+func TestWindowsSocketBindsWildcardNotGroup(t *testing.T) {
+	src, err := os.ReadFile("mcastsock_windows.go")
+	if err != nil {
+		t.Fatalf("read mcastsock_windows.go: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mcastsock_windows.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse mcastsock_windows.go: %v", err)
+	}
+	// Walk the real code, not the comments: this file's own doc says it must not call
+	// ListenMulticastUDP, so a text match would fire on the explanation, not the fault.
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name == "ListenMulticastUDP" {
+			t.Error("mcastsock_windows.go calls net.ListenMulticastUDP: it binds the socket to the group, " +
+				"which discards the unicast answer an orb sends back and makes live discovery reboot-only")
+		}
+		return true
+	})
+	// The wildcard bind is what the AST cannot infer, so check for the literal once more.
+	if !strings.Contains(string(src), "0.0.0.0") {
+		t.Error("mcastsock_windows.go must bind the wildcard 0.0.0.0, the only address that receives " +
+			"an orb's unicast answer to the hub's own LAN IP")
+	}
+}
+
 // recordingSource is the Source a test hands the browser: it records every
 // destination Ask aimed at, and delivers nothing, so the only packets on the wire
 // are the ones the browser chose to send.

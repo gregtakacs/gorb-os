@@ -618,7 +618,7 @@ The browse adds no third-party library: `internal/orbmdns` and the advertiser in
 `internal/orbfake` are stdlib `net` plus `syscall` setsockopt, so `make vendor-check`
 and `go.mod` stay exactly as they were. Two options the stdlib does not offer decide
 whether discovery works at all, which is why the sockets are built by hand in
-`mcastsock_unix.go` and `mdnssock_unix.go`:
+`mcastsock_unix.go`, `mcastsock_windows.go` and `mdnssock_unix.go`:
 
 - `SO_REUSEADDR` **before** bind. Without it the group port belongs to whoever got
   there first, and on a desktop that is avahi and systemd-resolved, not the hub.
@@ -627,6 +627,12 @@ whether discovery works at all, which is why the sockets are built by hand in
   every test of the loop has to be done across two machines.
 - `SO_REUSEPORT` deliberately not set: it load-balances a multiply-bound port, and
   the hub's own per-interface sockets would each get a slice of one orb's four records.
+- The bind address is the wildcard `0.0.0.0`, not the group. A live orb answers a
+  browse with a UNICAST packet to whoever asked (orb_mdns.c replies to the query's
+  source), so a socket bound to `224.0.0.251` — which is what `net.ListenMulticastUDP`
+  gives you on Windows — hears the boot-time announce and drops every answer to a
+  query it sent itself. That reads as "the hub only sees an orb after a reboot," and it
+  is why `mcastsock_windows.go` mirrors the Unix file rather than reaching for the helper.
 
 Run the loop on one host — the fake as the orb, a stranger's stack as the judge:
 
@@ -674,6 +680,24 @@ cp bin/windows-amd64/orb-manager.exe /mnt/c/Users/<you>/Downloads/
 Copy it to `C:` rather than running it from `\\wsl.localhost`: Windows marks
 files fetched from another host, and SmartScreen questions an unsigned `.exe`
 once. `Unblock-File .\orb-manager.exe` in PowerShell clears that.
+Discovery on Windows needs one firewall allowance. The hub joins the mDNS group and
+*listens* on UDP 5353; a fresh unsigned `.exe` doing that is blocked inbound, so the
+Orbs card stays empty and a live orb never appears until you open the port. Answer **Allow
+access** to the first-run prompt, or add the rule up front (elevated PowerShell), scoped
+to this one program on Private networks:
+
+```powershell
+New-NetFirewallRule -DisplayName 'orb-manager mDNS' -Direction Inbound -Action Allow `
+  -Protocol UDP -LocalPort 5353 -Program 'C:\Users\<you>\Downloads\orb-manager.exe'
+```
+
+With the port open and the wildcard-bind socket in `mcastsock_windows.go`, the startup
+burst reaches every live orb and it re-answers on its own — no reboot, no IP box — the
+same behaviour Linux and macOS already had. If a live orb still does not appear after
+this, the next suspect is the access point converting or dropping multicast over Wi-Fi,
+which is on the network, not the hub.
+
+
 
 Give Windows the cable first. A port attached to WSL through `usbipd` is invisible
 to Windows, and the picker has nothing to list — it says `(no serial ports

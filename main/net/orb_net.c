@@ -1346,40 +1346,37 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    /* 640, not the 512 this started with: the body has since grown a tz string
-     * (up to NET_TZ_MAX) plus the ap/assoc_fails pair and the idle block below,
-     * and a truncated body is worse than an error because the page just fails to
-     * parse it. The overflow check below is what makes that visible rather than
-     * subtle. Unlike the /api/v1/config buffer — whose worst case host_tz_test.py
-     * recomputes from the zone table and asserts — nothing on the host checks
-     * this one. It measured 629 B on the device on 2026-10-11 with the tz at
-     * "US/Central" (563 B before the idle block and the art residency fields); every
-     * field added since then has to be re-measured off the device
-     * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
-     * room for that growth. Measured 650 B on the device on 2026-10-12, tz at
-     * "US/Eastern", with the idle block's writes_failed present; the figure moves
-     * a few bytes as the counters gain digits, which is why it is measured and not
-     * added up. The P3 apps ledger joins it — ~110 B per row (three compiled rows
-     * today) plus the grants words and any status line an app printed, capped
-     * inside its own 768 B buffer — which is why the frame is 1536 now; re-measure
-     * on the device and shrink it back if the rows stay short.
+    /* 1536, sized by a reading rather than an estimate. The merged body measured
+     * 1116 B on orb-B on 2026-10-12, six requests, all identical. The idle block
+     * was dimmed with its writes_failed field present, art was ready, three ledger
+     * rows published, and no app had printed a status line. The frame grew from 512
+     * through 640 and 960 as fields joined it, and every addition had to be
+     * re-measured on the cable (`curl -s ORB/api/v1/status | wc -c`) rather than
+     * added up here.
      *
-     * The mac field joins from the fleet line: a fixed 21 B ("mac":"..." plus its
-     * comma), counted off the wire. The fleet build measured 668-676 B on orb-B on
-     * 2026-10-12 at the 960 frame, tz at "US/Central", the -dirty stamp adding the
-     * extra 5-7 B. The merged body must be re-measured on the cable
-     * (`curl -s ORB/api/v1/status | wc -c`). The value is verified against
-     * hardware: orb-B reported 44bd8d782618, equal to `esptool read_mac` on that
-     * board, to the eFuse read through the native Go flasher, and to the USB
-     * serial-number descriptor sysfs exposes for the same port. The SOFTAP
-     * variant would have ended 2619, one off, and every hub join key is BASE.
+     * The ledger binds before this frame does. apps_json holds the whole array in
+     * 768 B, and those three rows filled 440 B of it. Two more rows fit at the
+     * observed 146 B per row. The ~110 B per row this comment carried was low by a
+     * third, because declared and denied_mask joined the row after that figure was
+     * set. Both buffers reject rather than clip. The ledger answers an error array
+     * and the body answers a 500, because a truncated body parses as nothing and
+     * the page shows a blank card.
+     *
+     * The mac field costs a fixed 21 B, counted off the wire. Its value is verified
+     * against hardware. orb-B reports 44bd8d782618, equal to `esptool read_mac` on
+     * that board, and it matches the eFuse read through the native Go flasher and
+     * the sysfs USB descriptor for the same port. ESP_MAC_WIFI_SOFTAP would have
+     * ended 2619, one off, and every hub join key is BASE. mac_addr.c:366-387
+     * derives the SoftAP address as memcpy(base) then mac[5] += 1, live while
+     * CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y.
      *
      * Static, not stack, per the s_scan_json rule above: 1536 B on a 4 KB httpd
-     * task was already most of the stack, and D19's second name list per row
-     * (declared, beside grants) pushed the frame past the point where a glance
-     * at the size is a gamble rather than a reading. Handlers run serially on
-     * the single httpd task, so one instance is safe; .bss is the honest place
-     * for a buffer this size. */
+     * task was already most of the stack. D19's second name list per row pushed it
+     * past the point where a glance at the size is a gamble. Handlers run serially
+     * on the single httpd task, so one instance is safe, and .bss is the honest
+     * place for a buffer this size. Nothing on the host checks this one. The
+     * /api/v1/config buffer has host_tz_test.py recomputing its worst case from the
+     * zone table, and this has no equivalent. */
     static char json[1536];
 
     /* Which A/B slot is running, and whether the bootloader still considers it

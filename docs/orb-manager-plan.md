@@ -664,6 +664,123 @@ and safe to ship now, so shipping a known-good config beat tuning it further at 
 risk of re-introducing the panic. The surgical alternative (an EB-reclaim retry inside
 `ap_open()`, no throughput cost) stays open as item 4's possible follow-up.
 
+**2026-10-13 correction — item 10 REOPENED; item 4 vindicated by measurement.**
+The paragraph above closed item 10 on a false premise, and the error was still
+being repeated an hour ago, so both halves are recorded here.
+
+Item 10's closure was an artifact. The bench client that "answered `200` at
+`192.168.4.1`" was hand-assigned `192.168.4.100` (see the `netsh` note three
+lines above), and every byte proven over the SoftAP was **unicast** — the mDNS
+probe was deliberately framed unicast to `192.168.4.1:5353`. **DHCP over this AP
+has therefore never been tested even once.** A DHCP DISCOVER is broadcast at both
+L2 and L3, which is the one traffic class that test could not exercise.
+
+First real phone join, `af43c50-dirty`, config-page-opened `orb-2619`. **The
+phone IS issued an address.** `esp_netif_dhcps_get_clients_by_mac()` reports
+`192.168.4.2` three seconds after association and `192.168.4.3` one second after
+a second join, and the driver establishes an AMPDU block-ack session with the
+client (`<ba-add>idx:2 (ifx:1, …), winSize:64`). The earlier "no lease, four
+timeouts" reading was **wrong**: it rested on `IP_EVENT_AP_STAIPASSIGNED`, which
+does not fire on this IDF path even when a lease is granted, so its silence was
+evidence of nothing. There is therefore **no fleet-wide lease regression**, the
+shipped bundle needs no emergency revert, and `bafcd4e` stands. Still open is
+only the user-visible half: a client took its address and left ~16 s later
+(`reason 8`, a normal client-initiated deauth), and httpd logs no requests, so
+whether the config page actually rendered on the phone is unmeasured.
+
+The trim was **not** the cause, and `bafcd4e` is **correct**. Restoring the IDF
+defaults (10/32/32/32) and re-running the same POST brought the panic straight
+back: `alloc eb len=752 type=4 fail` twice, then `LoadProhibited` in
+`ieee80211_hostap`. `esp_wifi_disconnect()` immediately before the promotion
+does **not** help either — heap genuinely improves (`free=12791 largest=7168`)
+and it still faults, because static RX EBs are carved at `esp_wifi_init` and a
+disconnect never returns them. The failing 752 B type=4 EB *is* the beacon: the
+driver logs `Init max length of beacon: 752/752`. So `static-rx=6` works by
+leaving slack in that carve, and no amount of station-releasing substitutes for
+it. Both dead ends are now written into `ap_open()` and `sdkconfig.defaults`.
+
+Two things that were asserted as fact and are **false**, listed so nobody trusts
+them again: `RX_BA_WIN` was never `32→6` (independent symbol, default 6 all
+along, and a lower static-rx satisfies the guidance anyway), and there is no
+`--rebind-orb` flag or `tools/orb_erase.sh` — neither exists.
+
+Why the failure was invisible: `lwip/apps/dhcpserver/dhcpserver.c` is 1567 lines
+with **no logging of any kind**. The device could not distinguish "no DISCOVER
+ever arrived" from "it arrived and the server refused it," which is why four
+hypotheses got traded instead of measured. Instrumentation now in place:
+`WIFI_EVENT_AP_STACONNECTED` posts a delayed
+`esp_netif_dhcps_get_clients_by_mac()` poll, so one join reports whether the
+server actually granted a lease. The `netif->input` frame counter tried first was
+REMOVED — IDF delivers Wi-Fi frames through `esp_netif_receive()`, which bypasses
+`netif->input`, so that counter read zero during provably-live traffic. Treat any
+`netif->input` hook as structurally unable to witness RX in this stack.
+
+Two build findings that affect the fleet test, unrelated to WiFi:
+`sdkconfig` (untracked, generated) **overrides** `sdkconfig.defaults` — `idf.py`
+will not re-apply defaults to an existing `sdkconfig`, so deleting lines in the
+tracked file silently changes nothing (measured: a "reverted" build still had
+6/12/12/12). And `ORB_IDLE_DIM_*`, `ORB_IDLE_MOTION_*`, `ORB_NET_AP_HOLD_S`,
+`ORB_NET_AP_MANUAL_S`, `ORB_NET_AP_RESCUE_FAILS` and `ORB_APP_POWER_MAX_S` exist
+**only** in that untracked file, so a clean clone does not reproduce this
+device's build. Related gap: nothing can clear the net credentials — there is no
+erase URI in `orb_net.c`, no hub endpoint, and `main.c:60`'s `nvs_flash_erase()`
+cannot reach `storage`/`orb.net` by design. Item 10's "factory reset then
+re-provision" therefore has no trigger, and the rescue path is today the only
+door back to the SoftAP.
+
+**2026-10-13, later the same day — item 10 CLOSED. Root cause found, and it is not
+WiFi at all.** The fault is `CONFIG_LV_MEM_SIZE`: LVGL's builtin heap was a 64 KB
+**static array in internal DRAM** (`LV_USE_CLIB_MALLOC` is off, so it is not a
+malloc), which left the network stack unable to hold a DHCP server, an HTTP server
+and an AP in the same boot. Which symptom appeared depended only on which
+allocation lost:
+
+- Server started after the radio → `httpd_start` returns `ESP_ERR_HTTPD_TASK`,
+  `main` logs `networking down — clock running without config page`, the clock
+  keeps animating, the captive DNS still answers, and phones are pointed at
+  `192.168.4.1` with **nobody listening**. That is "Secured, connected, no prompt."
+- Server started before the radio → server comes up, but `dma_free` drops to 2095 B
+  and the AP cannot answer a DISCOVER: client gets no address. (A reorder was tried
+  and is reverted; it moved the failure, it did not fix it.)
+
+Measured at the trim, same firmware, 64 KB → 24 KB LVGL pool: `post-wifi_start`
+5,499 free / 3,328 largest → **63,803 / 31,744**; `post-httpd_start` 20,623 / 7,168
+→ **47,051 / 23,552**. Provisioning on orb-B then handed out a lease **and served
+the menu with the scan list** — verified by eye on the phone, which is the behavior
+two earlier orbs were provisioned with. Side effects on the wired path confirm the
+diagnosis rather than merely accompanying it: first HTTP request **26.9 s →
+0.26 s**, and ping loss **12% → 0%** (control, same window: router 0% / 3.2 ms).
+The clock is unaffected: `blend/s 913707`, no LVGL allocation errors.
+
+Seven explanations were tried and falsified before this one, all of them inferred
+from one side of a transaction: EB pool starvation, `esp_wifi_disconnect()` before
+promote, broadcast-vs-unicast, a missing DNS option, DHCP option 114, late
+promotion ordering (a driver stop/start was implemented, verified to remove the
+double `AP_START` and the Guru, and **reverted** — it cost the LAN 8 s and fixed
+nothing), and the buffer trim itself, since raising the counts to 8/24/24 made the
+ping loss *worse* (4%/4%/8% at 154 ms mean vs 12% at 42 ms). The recurring error
+was treating the device's own accounting as evidence of the client's experience:
+the lease table said "ASSIGNED" while the phone said "nothing", seven times.
+
+Still open, in priority order:
+1. **Is the buffer trim still needed?** ~40 KB of internal DRAM came back, and the
+   trim exists to give the beacon's 752 B EB a slot during late promotion. To test:
+   delete the four `CONFIG_ESP_WIFI_*_BUFFER_NUM` lines from BOTH
+   `sdkconfig.defaults` and `sdkconfig` and repeat the `POST /api/v1/wifi/ap` that
+   first panicked. Until then the trim stays and `bafcd4e` remains load-bearing.
+2. **No supported way back into provisioning on a credentialed device** (item 10's
+   remaining half). Today this was tested by temporarily forcing the provisioning
+   branch in a bench build; credentials were never erased. The real fix is a
+   flag in `orb.net` that makes the next boot enter the provisioning path
+   *without* wiping the stored SSID — proven feasible by that bench build — plus a
+   hub/UI trigger.
+3. **Raise `CONFIG_LV_MEM_SIZE` awareness**: 24 KB is sized to today's dial. If a
+   widget-heavy screen lands and LVGL reports exhaustion, measure with
+   `lv_mem_monitor()` and move the pool to PSRAM rather than growing it internally.
+   The same 64 KB that broke provisioning is what the OTA failures (items 2/9) were
+   tracing to, so this line is the cheapest lead on that problem too.
+
+
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` — done; the card lists what announced itself, and dials none of it | 3, 4 |
 
 Item 5 shipped `internal/orbmdns` (a hand-parsed RFC 1035/6762 decoder, a

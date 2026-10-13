@@ -25,6 +25,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+/* Item 10 visibility: lwIP's dhcpserver.c contains no logging at all, so the
+ * DHCP server's own lease table is the only trustworthy witness of whether a
+ * joined client was ever handed an address. IP_EVENT_AP_STAIPASSIGNED is NOT:
+ * measured 2026-10-13, it stays silent while the table reports a granted lease,
+ * which is what produced a false "no lease" regression report. A netif->input
+ * frame counter was tried here first and removed — IDF delivers Wi-Fi frames via
+ * esp_netif_receive(), bypassing netif->input, so it read 0 during real joins. */
+static void ap_lease_probe(void);   /* defined beside on_ap_lease, used by the net task */
+static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -103,7 +112,8 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
        NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
        NET_CMD_SCAN_BOOT,     /* first-boot scan armed by AP_START, logged as PROVSCAN */
-       NET_CMD_LEASE_WATCH }; /* associated but no lease: rearm the watch or drop it */
+       NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
+       NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
@@ -120,6 +130,18 @@ static volatile bool s_associated;     /* the association is real; the lease may
 static volatile bool s_joining;        /* a user-initiated join is in flight */
 static volatile bool s_provisioning;   /* booted with no credentials at all */
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
+/* Set only when a human asked for the AP (the config page / POST /wifi/ap).
+ * It exists because every STA lease re-arms the AP timer with the short
+ * CONFIG_ORB_NET_AP_HOLD_S backstop, which is right for the boot and rescue APs
+ * — their whole purpose is to close once the orb is reachable — but fatal for a
+ * manual one: the orb already HAS a lease the instant you open this AP, so the
+ * fuse relights to 120 s while you are walking to your phone. Measured on orb-B
+ * 2026-10-13: opened at 29.7 s logging "900 s hold", leased at 37.5 s, closed at
+ * 157.5 s. The phone saw no SSID at all, which is how "I don't see the AP" was
+ * produced twice. s_ap_hold_s is what the opener promised, so a short
+ * backstop can never preempt a longer promise. */
+static volatile bool     s_ap_manual;
+static volatile uint32_t s_ap_hold_s;
 static volatile int  s_rssi = -999;
 static char          s_ip[16] = "";
 
@@ -698,9 +720,49 @@ static void ap_open(uint32_t hold_s, const char *why)
         s_ap_netif = esp_netif_create_default_wifi_ap();
         if (!s_ap_netif) { ESP_LOGE(TAG, "ap netif: out of memory"); return; }
     }
+
+    /* Declare ourselves a captive portal — RFC 8910 DHCP option 114 — so a joined
+     * phone prompts instead of sitting on a network it silently grades "no
+     * internet". The probes and their 302 (h_captive) and the DNS responder
+     * already exist; this removes the dependence on each vendor's probe
+     * heuristic, which is what let a phone report "connected" with no prompt
+     * while holding a valid lease. Options are writable only with the server
+     * stopped; the default AP glue starts it again on WIFI_EVENT_AP_START. */
+    {
+        static const char portal_uri[] = "http://192.168.4.1/";
+        esp_netif_dhcps_stop(s_ap_netif);   /* already-stopped is expected here */
+        const esp_err_t oe = esp_netif_dhcps_option(
+            s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
+            (void *)portal_uri, sizeof(portal_uri) - 1);
+        /* Restart it ourselves. The default AP glue starts the server on netif
+         * ATTACH only — esp_netif_lwip_defaults.c has no AP_START handler that
+         * does it — so stopping it here to write the option would otherwise leave
+         * the AP with no DHCP server at all, which is exactly what the first
+         * restart-path test measured. Measured before the fix: option 114 logged
+         * OK, no `DHCP server started` line, phone got nothing. */
+        const esp_err_t se = esp_netif_dhcps_start(s_ap_netif);
+        ESP_LOGI(TAG, "ap open (%s): DHCP option 114 -> %s (server restart %s)", why,
+                 oe == ESP_OK ? portal_uri : esp_err_to_name(oe), esp_err_to_name(se));
+    }
     wifi_config_t ap;
     ap_fill_config(&ap);
 
+    /* Late promotion (set_mode on a running driver) is the ONE thing here that
+     * still needs the buffer trim above. Measured 2026-10-13: calling
+     * esp_wifi_disconnect() first does not help -- it frees general heap
+     * (free=12791 largest=7168 at the probe) while the static RX EBs stay carved
+     * since esp_wifi_init -- and set_mode(APSTA) still dies with
+     * `alloc eb len=752 type=4 fail` -> Guru in ieee80211_hostap. That 752 B
+     * type=4 EB is the beacon itself (the driver logs `Init max length of beacon:
+     * 752/752`), so static-rx=6 rather than 10 is what leaves it a slot.
+     *
+     * What this is NOT any more: a fix for a phone that would not get an address.
+     * That fault was CONFIG_LV_MEM_SIZE starving the config server and the AP's
+     * DHCP path (see sdkconfig.defaults); restarting the driver here only cost the
+     * LAN ~8 s and changed nothing, so it is out. Whether the trim is still needed
+     * now that ~40 KB of internal DRAM is back is OPEN -- to find out, delete the
+     * four buffer lines from BOTH sdkconfig.defaults and sdkconfig and repeat the
+     * POST /api/v1/wifi/ap that first panicked. Until that is run, keep the trim. */
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
         ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
         return;
@@ -745,6 +807,7 @@ static void ap_open(uint32_t hold_s, const char *why)
         }
     }
 
+    s_ap_hold_s = hold_s;     /* the promise NET_CMD_AP_HOLD must not break */
     arm_oneshot(s_ap_timer, hold_s, "ap expiry");
     ESP_LOGW(TAG, "SoftAP \"%s\" OPEN (%s) — join it, then open http://192.168.4.1/"
                   " (%u s hold)", (const char *)ap.ap.ssid, why, (unsigned)hold_s);
@@ -1010,15 +1073,27 @@ static void net_task_loop(void *arg)
             break;
 
         case NET_CMD_AP_OPEN:
+            /* A human asked for this AP, so it gets the hold the page promised. */
+            s_ap_manual = true;
             ap_open((uint32_t)m.arg, "requested from the config page");
             break;
 
         case NET_CMD_AP_RESCUE:
+            s_ap_manual = false;   /* a door, not a request: the lease may close it */
             ap_open((uint32_t)m.arg, "credentials not working");
             break;
 
         case NET_CMD_AP_HOLD:
-            if (s_ap_up) arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
+            /* The lease backstop must never shorten a hold a user was promised.
+             * See the s_ap_manual note: this is the line that ate the manual AP
+             * at 120 s, twice, while the phone was still in the owner's pocket. */
+            if (s_ap_up && s_ap_manual && (uint32_t)m.arg < s_ap_hold_s) {
+                ESP_LOGI(TAG, "SoftAP hold kept at %u s (manual request beats the "
+                              "%u s lease backstop)",
+                         (unsigned)s_ap_hold_s, (unsigned)m.arg);
+            } else if (s_ap_up) {
+                arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
+            }
             break;
 
         case NET_CMD_AP_EXPIRED:
@@ -1047,6 +1122,10 @@ static void net_task_loop(void *arg)
              * WIFI_EVENT_AP_START while s_provisioning, so the driver is up;
              * scan_boot_begin() is the radio-task owner of the scan state. */
             scan_boot_begin();
+            break;
+
+        case NET_CMD_AP_LEASE_POLL:      /* DIAGNOSTIC (item 10) */
+            ap_lease_probe();
             break;
 
         case NET_CMD_LEASE_WATCH:
@@ -1247,6 +1326,8 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         /* The driver's word that the AP is really gone, which is what makes
          * ap_close()'s early return honest. */
         s_ap_up = false;
+        s_ap_manual = false;    /* the promise expired with the AP, not before it */
+        s_ap_hold_s = 0;
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_stop();                  /* the AP is down; take its resolver with it */
 #endif
@@ -1260,6 +1341,37 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         orb_mdns_set_ap(false, 0);
 #endif
         break;
+
+    case WIFI_EVENT_AP_STACONNECTED: {
+        /* Provisioning evidence, and the half a lease can never stand in for:
+         * this says a client associated with the SoftAP. Whether it then got an
+         * address is on_ap_lease below. Together the two lines separate a phone
+         * that never reached the orb from one that reached it and was refused an
+         * address — a distinction that could not be made from the device before,
+         * because neither event was observed. */
+        const wifi_event_ap_staconnected_t *ac = data;
+        if (ac) {
+            ESP_LOGI(TAG, "SoftAP: %02x%02x%02x%02x%02x%02x joined (aid %u)",
+                     ac->mac[0], ac->mac[1], ac->mac[2],
+                     ac->mac[3], ac->mac[4], ac->mac[5], (unsigned)ac->aid);
+            /* DIAGNOSTIC (item 10): remember who joined, zero the frame counter,
+             * and let the net task watch for their address. Posted, never run
+             * inline: the probe blocks, and an event callback must not. */
+            memcpy(s_ap_last_mac, ac->mac, 6);
+            net_post(NET_CMD_AP_LEASE_POLL, 0);
+        }
+        break;
+    }
+
+    case WIFI_EVENT_AP_STADISCONNECTED: {
+        const wifi_event_ap_stadisconnected_t *ad = data;
+        if (ad)
+            ESP_LOGI(TAG, "SoftAP: %02x%02x%02x%02x%02x%02x left (aid %u, reason %u)",
+                     ad->mac[0], ad->mac[1], ad->mac[2],
+                     ad->mac[3], ad->mac[4], ad->mac[5],
+                     (unsigned)ad->aid, (unsigned)ad->reason);
+        break;
+    }
 
     case WIFI_EVENT_SCAN_DONE:
         /* Post only — the event task must not call into the driver, same rule
@@ -1330,6 +1442,54 @@ static void sntp_sync_cb(struct timeval *tv)
      * compose_now() regardless of what the callback saw. */
     ESP_LOGI(TAG, "sntp: time synced, epoch %lld s",
              (long long)(tv ? tv->tv_sec : 0));
+}
+
+/* DIAGNOSTIC (item 10) — see the note by s_ap_last_mac for why the lease table
+ * and not an IP event is the witness here.
+ * RADIO TASK ONLY: blocks ~14 s, so it must never run in an event callback. */
+static void ap_lease_probe(void)
+{
+    if (!s_ap_netif) return;
+    esp_netif_pair_mac_ip_t pair = { 0 };
+    memcpy(pair.mac, s_ap_last_mac, 6);
+
+    for (int i = 0; i < 14; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        pair.ip.addr = 0;
+        if (esp_netif_dhcps_get_clients_by_mac(s_ap_netif, 1, &pair) == ESP_OK &&
+            pair.ip.addr != 0) {
+            ESP_LOGW(TAG, "SoftAP probe: server ASSIGNED " IPSTR " to "
+                          "%02x:%02x:%02x:%02x:%02x:%02x after %d s",
+                     IP2STR(&pair.ip), pair.mac[0], pair.mac[1], pair.mac[2],
+                     pair.mac[3], pair.mac[4], pair.mac[5], i + 1);
+            return;
+        }
+    }
+    ESP_LOGE(TAG, "SoftAP probe: the DHCP server granted NO address to "
+                  "%02x:%02x:%02x:%02x:%02x:%02x in 14 s",
+             s_ap_last_mac[0], s_ap_last_mac[1], s_ap_last_mac[2],
+             s_ap_last_mac[3], s_ap_last_mac[4], s_ap_last_mac[5]);
+}
+
+/* The SoftAP's DHCP server reporting a lease. esp_netif posts this from lwIP's
+ * dhcps new-lease callback (esp_netif_lwip.c:1133 -> :1064) the moment an
+ * address is committed to a joined client, so it is the device's own answer to
+ * the one item 10 question the bench could not settle: does a phone that joins
+ * the provisioning AP actually get an address? Logged, not acted on: the only
+ * interface here running a server is the AP, and a lease handed to someone else
+ * must not be mistaken for the station's own — which is why this is not folded
+ * into on_ip(), whose whole job is to claim a lease for the STA. */
+static void on_ap_lease(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base;
+    if (id != IP_EVENT_AP_STAIPASSIGNED) return;
+
+    const ip_event_ap_staipassigned_t *ev = data;
+    if (!ev) return;
+    ESP_LOGI(TAG, "SoftAP: leased " IPSTR " to %02x%02x%02x%02x%02x%02x",
+             IP2STR(&ev->ip),
+             ev->mac[0], ev->mac[1], ev->mac[2],
+             ev->mac[3], ev->mac[4], ev->mac[5]);
 }
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -3725,6 +3885,13 @@ esp_err_t orb_net_start(void)
                         TAG, "wifi handler");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL),
                         TAG, "ip handler");
+    /* Registered beside the STA's own lease handler rather than inside the AP
+     * bring-up: the SoftAP opens from three places (provisioning boot, rescue,
+     * manual), and the lease must be visible from whichever one a person at a
+     * wall actually used. */
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_AP_STAIPASSIGNED,
+                                                   on_ap_lease, NULL),
+                        TAG, "ap lease handler");
 
     char ssid[NET_SSID_MAX + 1] = "";
     char pass[NET_PASS_MAX + 1] = "";

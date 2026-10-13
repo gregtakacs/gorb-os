@@ -547,7 +547,16 @@ the cable; hub items go green on this bench.
 |---|---|---|
 | 1 | `feat(net): report the station MAC in /api/v1/status` | none (keystone for 6, 7, 9) |
 | 2 | `feat(esprom): refuse a flash whose image chip ID is not ESP32-S3` | none |
-| 3 | `test(orb-manager): give orbfake the device verbs and an mDNS advertiser` | none |
+| 3 | `test(orb-manager): give orbfake the device verbs` — done; mDNS advertiser moved to 5 | none |
+
+Item 3 landed as the verbs and shipped with two pieces moved off it. The `menu` and
+`pair` verbs in its original description do not exist in firmware until items 8 and
+9, and putting them in the double early would make the fake answer routes no orb
+serves — the self-agreeing-double failure this package's own doc comment was written
+to prevent. The mDNS advertiser moved to item 5, to be written against the real
+announcement from item 4: an advertiser built now can only be tested against a
+browser that is also fiction. Item 4's dependency on 3 stands, because announcing a
+service needs no test double.
 | 4 | `feat(net): announce _orb._tcp on the STA and AP interfaces` | 1, 3 |
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |
 | 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |

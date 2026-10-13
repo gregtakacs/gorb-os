@@ -989,8 +989,15 @@ is true here via the `AP_START` handler, so it could not fire even if counted;
 (d) nothing arms `s_ap_timer`, so there is no timeout. A wrong password entered on
 the provisioning page therefore ends the session permanently, with the AP still
 broadcasting and nothing behind it. The only recovery is resubmitting the form or
-power-cycling — and power-cycling restores the *original* credentials, because the
-provisioning submit does not persist them until a lease is held.
+power-cycling.
+  Corrected same day, after this test cost a bench credential: the submit path
+DOES persist immediately — `nvs_set_str` of ssid and pass at `orb_net.c:2147`
+(serial PROV) and `2450` (config page), before any lease is held. So a mistyped
+passphrase is not a transient session failure; it overwrites the good credential
+in flash, the orb is cut off from its network on the next boot, and the only
+recovery is learning the real passphrase again. The recovery-AP design should
+therefore withhold the write until a lease is held, or keep the previous
+credential until the new one proves itself.
 
 **This settles the design question, and it changes the shape of the work.** The
 feature is not "make Open AP reboot into provisioning." It is "give a provisioning

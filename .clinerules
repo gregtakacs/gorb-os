@@ -732,9 +732,14 @@ import and the mutated text never reached the compiler: if you touch this suite,
 check it can still fail.
 
 The lifted labels, titles and hints are the shipped strings, so identical rendered
-text is pinned here rather than on the glass. When the bench radio will not carry
-`/api/v1/screen`, say the frame-diff line is pending and point at this suite — do
-not claim a rendered-output pass.
+text is pinned here rather than on the glass. The frame-diff walk ran 2026-10-13:
+`e74d500` (pre-table) against `185af12` (P5.2), 221 cursor records each, 49 checks
+0 failed both sides, and the only diff line is the boot's own image stamp. The
+driver is `tools/bench_menu_walk.py` (closed-loop, nudge-based — `go_to()` and
+back emit no line, so every landing is read by injecting one detent); re-run it
+before signing off any change to a `rows()`/`label()`/`back_cur`. If the bench
+radio will not carry `/api/v1/screen`, say the frame-diff line is pending and
+point at this suite — do not claim a rendered-output pass.
 
   the deadlock in one boot, which is the argument for putting it in before the bisecting.
 

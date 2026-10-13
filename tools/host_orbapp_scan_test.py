@@ -25,6 +25,12 @@ What it owns that the reader suite cannot reach:
      checksum — but not one before it. A scan that shows who a container
      claimed to be when its CRC is torn is a scan that blames the wrong file.
 
+  4. THE NAME CAPS AGREE. P5.1 (plan §7 item 7) closed the 23/24/31 disagreement
+     the theme path hit first: the row's stem cell is the WALK's width, and two
+     _Static_asserts in the shipped header hold the reader's id cap, the
+     extension and the volume's name cap in one arithmetic. All three are read
+     back here, and HEADER_MUTATIONS proves each reading can go red.
+
 The device-only glue (scan_entry's pread loop, the walk, the registration)
 is NOT compiled here — same line host_sd_test.py draws at the pure/function
 boundary; the bench card run of the next slice is what exercises it.
@@ -49,11 +55,14 @@ SCAN_H = os.path.join(ROOT, "main", "app", "orb_app_scan.h")
 MANIFEST_C = os.path.join(ROOT, "main", "app", "orb_app_manifest.c")
 MANIFEST_H = os.path.join(ROOT, "main", "app", "orb_app_manifest.h")
 SD_H = os.path.join(ROOT, "main", "sd", "orb_sd.h")
+FILES_H = os.path.join(ROOT, "main", "sd", "orb_files.h")
 NET_C = os.path.join(ROOT, "main", "net", "orb_net.c")
 MAIN_C = os.path.join(ROOT, "main", "main.c")
 
 NET_OVERRIDE = None            # set only by caller_mutation_fails(): a mutated
                                # copy of orb_net.c, read under its own path
+SCAN_H_OVERRIDE = None         # set only by header_mutation_fails(): the same
+                               # trick for orb_app_scan.h, where P5.1's caps live
 
 _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
 orbapp = importlib.util.module_from_spec(_spec)
@@ -65,6 +74,8 @@ NL = "\n"
 def read(p):
     if p == NET_C and NET_OVERRIDE is not None:
         return NET_OVERRIDE                    # caller_mutation_fails' injected copy
+    if p == SCAN_H and SCAN_H_OVERRIDE is not None:
+        return SCAN_H_OVERRIDE                 # header_mutation_fails' injected copy
     if not os.path.exists(p):
         sys.exit("missing " + p + " — the lifts below have no fallback")
     return open(p, encoding="utf-8").read()
@@ -140,8 +151,12 @@ HARNESS_C = r"""
 #include "orb_app_manifest.h"
 
 /* the walk's record, spelled once here — the shipped row_decide sees the
- * same two fields through sd/orb_files.h (orb_file_rec_t: name[33], size) */
-typedef struct { char name[33]; uint32_t size; } orb_file_rec_t;
+ * same two fields through sd/orb_files.h. P5.1 (§7 item 7): the width arrives
+ * from that header rather than being restated, because the row's own stem cell
+ * is now `ORB_FILES_MAX_NAME + 1` and a hand-typed 33 here would let the two
+ * drift while every vector still passed on names shorter than either. */
+#define ORB_FILES_MAX_NAME @FILESNAME@
+typedef struct { char name[ORB_FILES_MAX_NAME + 1]; uint32_t size; } orb_file_rec_t;
 
 static size_t orbhost_strlcpy(char *dst, const char *src, size_t n)
 {
@@ -234,6 +249,8 @@ def compile_harness(tmp, rowdecide_text, ext_define, entry_text):
     open(hdr, "w").write(open(MANIFEST_H, encoding="utf-8").read())
     harness = (HARNESS_C
                .replace("@EXT@", ext_define)
+               .replace("@FILESNAME@", re.search(r"#define ORB_FILES_MAX_NAME\s+(\d+)",
+                                                 read(FILES_H)).group(1))
                .replace("@ENTRY@", entry_text)
                .replace("@ROWDECIDE@", rowdecide_text))
     hac = os.path.join(tmp, "harness.c")
@@ -671,8 +688,30 @@ def lint():
                   r"\s*\n\s*e_title\[2 \* sizeof ent\[0\]\.title\], e_why\[2 \* sizeof ent\[0\]\.why\]", nn)
     assert m, "the handler's escape buffers left their pinned shape"
     cap_scratch = int(re.search(r"#define APPS_ROW_MAX (\d+)", nn).group(1))
-    stem_n = int(re.search(r"stem\[(\d+)\]", scan_hdr).group(1))
-    why_n = int(re.search(r"why\[(\d+)\]", scan_hdr).group(1))
+    # P5.1 (§7 item 7): the stem cell stopped being a hand-typed 32 and became
+    # the WALK's own cap plus its terminator, so the width is read from
+    # orb_files.h rather than matched as a literal — the lint now moves with the
+    # constant it is meant to check against, and a shrunk cell still goes red
+    # because this recomputes the row from whatever the header declares.
+    files_hdr = read(FILES_H)
+    files_n = int(re.search(r"#define ORB_FILES_MAX_NAME\s+(\d+)", files_hdr).group(1))
+    m_stem = re.search(r"stem\[(ORB_FILES_MAX_NAME \+ 1)\]", sh)
+    assert m_stem, ("the row's stem cell is not the walk's cap plus its terminator "
+                    "(plan §7 item 7): a hand-typed width here is the third number "
+                    "in the 23/24/31 disagreement, and a name longer than it is a "
+                    "truncated echo of a file the card really holds")
+    stem_n = files_n + 1
+    # The two compile-time asserts are the half of the fix that no vector can
+    # reach: they fire on a FUTURE cap change, not on today's bytes, so the only
+    # witness is this read. Deleting one must go red here, or the closure the
+    # plan recorded is a comment with a build behind it.
+    assert "_Static_assert(ORBAPP_SLUG_MAX - 1u + (sizeof(ORB_APP_EXT) - 1u) <= ORB_SD_NAME_MAX" in sh, \
+        ("the id-fits-the-volume assert is gone (plan §7 item 7): the writer could "
+         "again bake a file the walk refuses to list")
+    assert "_Static_assert(ORB_SD_NAME_MAX <= ORB_FILES_MAX_NAME" in sh, \
+        ("the walk-buffer assert is gone (plan §7 item 7): a name the volume admits "
+         "would again overflow the row's echoed stem")
+    why_n = int(re.search(r"why\[(\d+)\]", sh).group(1))
     slug_n = int(re.search(r"ORBAPP_SLUG_MAX\s+(\d+)u", man_hdr).group(1))
     title_n = int(re.search(r"ORBAPP_TITLE_MAX\s+(\d+)u", man_hdr).group(1))
     worst = (2 * (stem_n + slug_n + title_n + why_n)      # all four escaped ×2
@@ -775,6 +814,44 @@ def mutated_rowdecide(pairs):
     return f.replace("strlcpy", "orbhost_strlcpy")
 
 
+def header_mutation_fails():
+    """P5.1's name-cap fix lives in orb_app_scan.h, not in orb_net.c, so it needs
+    its own text battery: shrink the stem cell or delete the assert, and lint()
+    must go red. Without this the derived width is a claim with no witness — the
+    lint would read any text the file happened to contain."""
+    reds = []
+    for nm, old, new in HEADER_MUTATIONS:
+        base = read(SCAN_H)
+        assert base.count(old) == 1, "header anchor lost: " + nm
+        global SCAN_H_OVERRIDE
+        SCAN_H_OVERRIDE = base.replace(old, new)
+        try:
+            lint()
+        except (AssertionError, AttributeError, ValueError):
+            reds.append(nm)
+        finally:
+            SCAN_H_OVERRIDE = None
+    return reds
+
+
+# Each targets one half of the 23/24/31 closure (plan §7 item 7): the cell that
+# stops the echoed handle being a truncation, and the asserts that make the caps
+# agree at compile time instead of on the bench.
+HEADER_MUTATIONS = [
+    ("stem cell back to a hand-typed 32",
+     "char      stem[ORB_FILES_MAX_NAME + 1];", "char      stem[32];"),
+    # Commenting the line out is NOT the mutation: the lint reads the shipped
+    # text, and `// _Static_assert(...)` still contains it. The mutant has to
+    # remove the token the assert is recognised by.
+    ("the id-fits-the-volume assert deleted",
+     "_Static_assert(ORBAPP_SLUG_MAX - 1u + (sizeof(ORB_APP_EXT) - 1u) <= ORB_SD_NAME_MAX,",
+     "/* the caps used to agree by arithmetic (plan §7 item 7) */"),
+    ("the walk-buffer assert deleted",
+     "_Static_assert(ORB_SD_NAME_MAX <= ORB_FILES_MAX_NAME,",
+     "/* the walk's buffer used to be checked against the volume's cap */"),
+]
+
+
 def main():
     cases = cases_all()
     lint()
@@ -805,13 +882,24 @@ def main():
                 else:
                     print("caught: %-30s (lint red)" % nm)
                 n += 1 if nm in ceds else 0
+            # P5.1's caps live in the scan header, so the pair that closes the
+            # 23/24/31 disagreement gets its own text battery (see above).
+            heds = header_mutation_fails()
+            for nm, _, _ in HEADER_MUTATIONS:
+                if nm not in heds:
+                    print("MUTATION ESCAPED (header): " + nm)
+                    fails.append("header mutant escaped: " + nm)
+                else:
+                    print("caught: %-30s (lint red)" % nm)
+                n += 1 if nm in heds else 0
     for f in fails:
         print("FAIL " + f)
     print("%d vectors, %d mismatches" % (len(cases), len(fails)))
     if "--mutations" in sys.argv:
-        print("%d mutants, %d escaped"
-              % (len(MUTATIONS) + len(CALLER_MUTATIONS),
-                 len(MUTATIONS) + len(CALLER_MUTATIONS) - n))
+        # P5.1 added the header battery, so the total is the three lists' sum:
+        # an escaped mutant here must never be able to print as a negative.
+        tot = len(MUTATIONS) + len(CALLER_MUTATIONS) + len(HEADER_MUTATIONS)
+        print("%d mutants, %d escaped" % (tot, tot - n))
     sys.exit(1 if fails else 0)
 
 

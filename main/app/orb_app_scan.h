@@ -35,6 +35,7 @@
 #include "esp_err.h"
 #include "orb_app_manifest.h"   /* the caps/title caps are the row's shape */
 #include "sd/orb_sd.h"          /* ORB_SD_BASE: one definition of the volume */
+#include "sd/orb_files.h"       /* ORB_FILES_MAX_NAME: the walk's own name cap */
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,7 +54,15 @@ extern "C" {
  * must still be addressable (orb_theme_entry_t's reason-is-not-the-name
  * rule, orb_theme.c:1749). */
 typedef struct {
-    char      stem[32];               /* filename, extension stripped, as listed */
+    /* The filename as the walk listed it, extension stripped. Sized from the
+     * WALK's cap, not from the slug cap (plan §7 item 7 — the 23/24/31
+     * disagreement): the stem is the handle the page posts back even on a
+     * refused row, so a buffer narrower than the name the card actually carries
+     * turns "a file that cannot install" into "a file with a name that was never
+     * on the card". The assert below is the arithmetic that makes the two caps
+     * agree instead of merely coexist: every app id the reader admits produces a
+     * filename that fits the volume, so no legal app is ever refused for length. */
+    char      stem[ORB_FILES_MAX_NAME + 1];
     char      slug[ORBAPP_SLUG_MAX];
     char      title[ORBAPP_TITLE_MAX];
     uint32_t  app_id;
@@ -66,6 +75,25 @@ typedef struct {
     esp_err_t err;
     char      why[256];               /* refusal sentence; "" when err == ESP_OK */
 } orbapp_scan_entry_t;
+
+/* The name-cap disagreement, closed by arithmetic instead of by a comment (plan
+ * §7 item 7). Three caps meet on one card filename: the id the reader admits
+ * (ORBAPP_SLUG_MAX bytes, so ORBAPP_SLUG_MAX-1 characters), the extension this
+ * header appends, and the name the volume admits (ORB_SD_NAME_MAX). If the first
+ * two ever outgrow the third, the writer can bake a file the walk refuses to list
+ * — an app that installs from nothing. The theme path hit exactly this (the
+ * superseded docs/theme-naming-todo.md §3: a 24..31-char card file could never
+ * load), and app ids hit it the same way, so the relationship is now a compile
+ * error rather than a bench discovery. It is also why the row's stem below is
+ * sized from the WALK's cap: the reader's narrower cap refusing a long name is a
+ * sentence, and a truncated echo of that name is a lie. */
+_Static_assert(ORBAPP_SLUG_MAX - 1u + (sizeof(ORB_APP_EXT) - 1u) <= ORB_SD_NAME_MAX,
+               "an app id at the reader's cap plus ORB_APP_EXT no longer fits a "
+               "FATFS name: the walk would refuse to list a file the writer can "
+               "legally bake (plan §7 item 7)");
+_Static_assert(ORB_SD_NAME_MAX <= ORB_FILES_MAX_NAME,
+               "the walk's name buffer no longer admits a name orb_sd_name_ok() "
+               "accepts, so a listed row's stem is a truncated handle");
 
 /** Register the ("orb","apps") file source. Call on the boot ladder after
  *  orb_files' own init and before any scan can be asked for, exactly as

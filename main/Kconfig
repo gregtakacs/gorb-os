@@ -171,6 +171,23 @@ menu "Orb networking"
             the small task + one UDP socket; the config page stays reachable at
             the printed http://192.168.4.1/ either way.
 
+    config ORB_DEBUG_HTTP
+        bool "Serve /api/v1/screen (synthetic knob + screen switch) to the LAN"
+        depends on ORB_NET_ENABLE
+        default y
+        help
+            The bench door: the rotary encoder is three GPIOs driven only by a
+            finger, so without GET /api/v1/screen?to=&turn=&push= the menu and the
+            picker cannot be exercised from a script, and a screen nobody has
+            painted has never been looked at. It switches what the glass shows and
+            injects knob events; it reaches no card, radio or bootloader path.
+
+            It is still a door anybody on the LAN can knock, and it is the only
+            route whose whole reason for existing is measurement. Turn off for a
+            build that leaves for a shelf, and prove the build actually dropped it
+            (this file's sdkconfig caveat): a route compiled out answers 404, and
+            every scripted walk that drives it fails with nothing in the log.
+
 endmenu
 
 menu "Orb microSD (theme storage)"

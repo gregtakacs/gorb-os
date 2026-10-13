@@ -3077,6 +3077,14 @@ static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
 
 /* GET /api/v1/screen?to=<slug> - put a registered app on the glass from the LAN.
  *
+ * Gated by CONFIG_ORB_DEBUG_HTTP (plan §7 item 7): it is the only route whose
+ * whole purpose is measurement, and a build that leaves the bench should not
+ * carry a LAN-reachable knob injector. With the symbol off, both this handler and
+ * its entry in the uri table are compiled out, so the route 404s rather than
+ * answering. host_tz_test.py counts routes textually over this table, so an
+ * off-build count is one higher than what registers — the safe direction: the
+ * lint refuses cap < count, and an over-count can only ever ask for more room.
+ *
  * This exists so the menu and the picker can be verified without a hand on the
  * knob. The encoder is three GPIOs driven only by a human finger, so every other
  * route into lv_screen_load() is unreachable from the bench, and a screen that
@@ -3087,6 +3095,7 @@ static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
  *
  * The switch is requested, not performed: lv_screen_load() touches widgets and
  * belongs on the LVGL task, so the router applies it on its next poll tick. */
+#if CONFIG_ORB_DEBUG_HTTP
 static esp_err_t h_screen(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -3177,6 +3186,7 @@ static esp_err_t h_screen(httpd_req_t *req)
     }
     return httpd_resp_sendstr(req, "{\"state\":\"accepted\"}");
 }
+#endif /* CONFIG_ORB_DEBUG_HTTP */
 
 /* Copy src into dst as JSON string contents. Every string on this page came from a
  * filename on somebody's card or from a browser, and a title containing a quote would
@@ -3251,7 +3261,16 @@ static esp_err_t h_sd(httpd_req_t *req)
         orb_theme_source(), active_name, orb_theme_live(), n > 0 ? n : 0,
         t_id, t_why, d_id, d_why);
 
+    bool too_big = false;
     for (int i = 0; n > 0 && i < n; i++) {
+        /* The bound is checked HERE, before the row is written. snprintf returns
+         * the length it WOULD have written, so once off passes the buffer the next
+         * `sizeof json - (size_t)off` wraps to a huge size_t and that row writes
+         * past the end of the array — a check after the loop (the shape this code
+         * shipped with, docs/theme-naming-todo.md §5) closes the truncation bug
+         * and leaves the overrun open. An error body is the only honest answer,
+         * because a partial list reads as "no card". */
+        if (off < 0 || (size_t)off >= sizeof json) { too_big = true; break; }
         /* name is the owner's free-text label (escaped, up to NAME_MAX chars); id is
          * the 12-hex handle every later request comes back with. A damaged row keeps
          * its id (the filename the OS normalised) so it stays addressable, and puts
@@ -3269,8 +3288,9 @@ static esp_err_t h_sd(httpd_req_t *req)
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false");
     }
-    off += snprintf(json + off, sizeof json - (size_t)off, "]}");
-    if (off < 0 || (size_t)off >= sizeof json) {
+    if (!too_big)
+        off += snprintf(json + off, sizeof json - (size_t)off, "]}");
+    if (too_big || off < 0 || (size_t)off >= sizeof json) {
         ESP_LOGE(TAG, "sd status overflow (%d B) — raise the json[] bound", off);
         return httpd_resp_sendstr(req, "{\"error\":\"sd status too large\"}");
     }
@@ -4554,7 +4574,9 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
+#if CONFIG_ORB_DEBUG_HTTP
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
+#endif
         /* microSD + themes. /themes is the page; the six under /api/v1/sd are its
          * backing calls, and none of them can do anything to the clock beyond
          * staging a theme the owner then chooses to reboot into. */

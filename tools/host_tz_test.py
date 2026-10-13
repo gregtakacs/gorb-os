@@ -1003,6 +1003,39 @@ def landing_page_js():
     if not (0 < nroutes <= cap):
         print(f'FAIL orb_net.c: {nroutes} routes vs max_uri_handlers {cap}'); rc = 1
 
+    # P5.1 (§7 item 7): /api/v1/screen is the one route whose whole purpose is
+    # measurement, so it must be gated in BOTH places — an ungated handler inside
+    # a #if'd table entry still registers nothing (harmless), and a table entry
+    # inside the #if over an ungated handler is the bug that actually ships: the
+    # knob injector stays in the image and simply becomes unreachable by URL, so
+    # nobody auditing the build notices it is still there.
+    mscr = re.search(r'#if CONFIG_ORB_DEBUG_HTTP\s*\n\s*\{ \.uri = "/api/v1/screen"[^\n]*\n\s*#endif', src)
+    if not mscr:
+        print('FAIL orb_net.c: /api/v1/screen is not registered inside its own '
+              'CONFIG_ORB_DEBUG_HTTP guard (plan §7 item 7)'); rc = 1
+    hsc = re.search(r'(?:/\*[^/]*?\*/\s*)*#if CONFIG_ORB_DEBUG_HTTP\s*\n\s*static esp_err_t h_screen', src)
+    if not hsc:
+        print('FAIL orb_net.c: h_screen() is not wrapped in #if CONFIG_ORB_DEBUG_HTTP, '
+              'so a build that drops the route still carries the knob injector'); rc = 1
+
+    # P5.1 (§7 item 7): h_sd()'s row loop must test the bound BEFORE writing each
+    # row. snprintf returns the length it WOULD have written, so with the check
+    # only after the loop the next iteration's `sizeof json - (size_t)off` wraps
+    # to a huge size_t and the write runs off the end of a 6 KB static.
+    if 'static esp_err_t h_sd' in src:
+        isd = src.index('static esp_err_t h_sd')
+        body = src[isd:src.index('\nstatic ', isd + 10)]
+        iro = body.index('for (int i = 0; n > 0 && i < n; i++)')
+        itail = body.find('off += snprintf(json + off, sizeof json - (size_t)off, "]}")', iro)
+        loop = body[iro:itail if itail > 0 else len(body)]
+        if 'if (off < 0 || (size_t)off >= sizeof json)' not in loop:
+            print('FAIL orb_net.c: h_sd() no longer checks the row bound inside the '
+                  'loop — the post-loop check catches the truncation and misses the '
+                  'overrun (theme-naming-todo §5, plan §7 item 7)'); rc = 1
+        if 'too_big' not in loop:
+            print('FAIL orb_net.c: h_sd() breaks out of its row loop without recording '
+                  'that it overflowed, so the error body is unreachable'); rc = 1
+
     if rc:
         return rc
     print(f'ok    landing ({len(ljs)} B) + clock ({len(cjs)} B) JS parse + call linter; '
@@ -1029,6 +1062,18 @@ MUTATIONS = [
      'CET-1CEST,M3.5.0,M10.4.0/3'),
     ('iana never emitted', '? "" : "\\"iana\\":\\"",', '? "" : "",'),
     ('config buffer shrunk', 'static char json[6144];\n\n    httpd_resp_set_type(req, "application/json");', 'static char json[2048];\n\n    httpd_resp_set_type(req, "application/json");'),
+    # P5.1's two debt fixes, mutated at the shipped site. Each is the regression
+    # the fix exists to close, and each must turn a lint above red: the bound
+    # check back outside the row loop (the overrun theme-naming-todo §5 named),
+    # and the debug door registered without its guard.
+    ('h_sd overflow check back after the loop',
+     '        if (off < 0 || (size_t)off >= sizeof json) { too_big = true; break; }\n', ''),
+    ('the screen door loses its guard',
+     '#if CONFIG_ORB_DEBUG_HTTP\n        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },\n#endif',
+     '        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },'),
+    ('the screen handler stays compiled in',
+     '#if CONFIG_ORB_DEBUG_HTTP\nstatic esp_err_t h_screen(httpd_req_t *req)',
+     'static esp_err_t h_screen(httpd_req_t *req)'),
     # Every registered route must fit the httpd table cap. The anchor is read from
     # the source so the battery cannot go stale when a phase raises the number
     # (29 routes registered as of P4a). Lowering the cap past the count is the bug:

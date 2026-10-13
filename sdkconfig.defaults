@@ -225,3 +225,9 @@ CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
 CONFIG_FATFS_CODEPAGE_437=y
 
+# The /api/v1/screen bench door (plan §7 item 7). Tracked here because a new
+# Kconfig `default y` does NOT materialize into an existing local sdkconfig —
+# idf.py treats that file as authoritative, and a #if CONFIG_ORB_DEBUG_HTTP
+# handler silently compiles out with a binary that barely grows.
+CONFIG_ORB_DEBUG_HTTP=y
+

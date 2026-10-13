@@ -111,6 +111,13 @@ erase_fn  = lift(r"static bool creds_erase_key\(const char \*pass\)\n\{[^}]*\}")
 # means, and it must not be confused with the lease-closes-the-AP path.
 arms_fn = lift(r"static bool sojourn_arms\(bool[^;]*?return[^;]*;\n\}")
 sojreboot_fn = lift(r"static bool sojourn_reboots\(bool[^;]*?return[^;]*;\n\}")
+# D2 (2026-10-13): the reboot-to-provisioning intent word lives in RTC NOINIT memory,
+# which means it holds GARBAGE at cold power-on. Only the exact magic counts, so these
+# rows are the reason it is a uint32_t magic and not a bool. The #define is lifted with
+# the predicate on purpose: retarget the magic and the table follows it, and a magic
+# that collides with an obvious garbage pattern (all-zero, all-one) still shows up here.
+magic_def = lift(r"#define PROV_INTENT_MAGIC [^\n]*")
+intent_fn = lift(r"static bool prov_intent_armed\(uint32_t w\)\n\{[^}]*\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -283,6 +290,8 @@ harness = f"""
 {erase_fn}
 {arms_fn}
 {sojreboot_fn}
+{magic_def}
+{intent_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -416,6 +425,15 @@ static void sojreboot_case(int sta_up, int recovery, int want){{
     printf("%-5s sojourn_reboots(sta_up=%d recovery=%d) -> %-6s (want %s)\\n",
            ok ? "ok" : "FAIL", sta_up, recovery,
            got ? "REBOOT" : "no-reboot", want ? "REBOOT" : "no-reboot");
+}}
+/* D2: does this RTC word read as a provisioning request? */
+static void intent_case(uint32_t w, int want, const char *why){{
+    const bool got = prov_intent_armed(w);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s prov_intent_armed(0x%08X, %-12s) -> %-9s (want %s)\\n",
+           ok ? "ok" : "FAIL", (unsigned)w, why,
+           got ? "PROVISION" : "no-intent", want ? "PROVISION" : "no-intent");
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -624,6 +642,18 @@ int main(void)
     sojreboot_case(1, 1, 0);
     sojreboot_case(0, 0, 0);
     sojreboot_case(1, 0, 0);
+    puts("== D2: the RTC intent word, and the garbage it must survive ==");
+    /* .rtc_noinit is NOLOAD and nothing zeroes it, so at cold power-on the word is
+     * whatever the SRAM came up with. These are not hypothetical rows: a word that
+     * happens to come up zero, all-ones, or one bit off must NOT put a sealed
+     * wall-powered orb into AP mode. The cold-zero row also proves the magic is not
+     * 0, and the all-ones row proves it is not ~0u, without a separate assert. */
+    intent_case(0, 0, "cold-zero");
+    intent_case(0xFFFFFFFFu, 0, "all-ones");
+    intent_case(0xA5A5A5A5u, 0, "pattern-fill");
+    intent_case('O', 0, "one-ascii");
+    intent_case(PROV_INTENT_MAGIC ^ 1u, 0, "bit-flipped");
+    intent_case(PROV_INTENT_MAGIC, 1, "the magic");
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

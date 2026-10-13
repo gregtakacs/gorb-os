@@ -48,9 +48,14 @@ of `docs/tourbillon-axis-spec.md` ("The 7-vs-8 fps question" section).
 
 ## Known numbers (the setup-correctness gate for Phase 1)
 
-Device: ESP32-S3R8, 466×466 CO5300 AMOLED QSPI, shipped kit =
+Device: ESP32-S3R8, 466×466 CO5300 AMOLED QSPI, kit measured =
 `assets/sources/watch-orbital-kit3.zip` (orbital arrow, 8 frames @ 8 fps, 125 ms GIF
-delays). From the 65 s probe capture at commit `6b127a1`:
+delays). Two cautions. That kit is no longer committed — the theme art cleanup of
+2026-10-12 deleted it, so every recipe below needs it restored from git history first
+(`git log --diff-filter=D -- assets/sources/`), and it is not the shipped bank: the
+compiled-in art has been av-kit (18 pages, no tourbillon) since `fb15a96`, so the
+numbers below price the kit3 dial, not the dial a current build boots. From the 65 s
+probe capture at commit `6b127a1`:
 
 | Quantity | Value |
 |---|---|

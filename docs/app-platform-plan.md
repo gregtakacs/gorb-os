@@ -74,9 +74,9 @@ These are decided. An implementer who disagrees edits this table, not the code.
 
 | Ref | Decision | Ruling |
 |---|---|---|
-| D10 | Whose art boots the clock | **The OS ships no art.** The clock app carries its own bundled default artwork, ingested from the SD card. The authoritative source is committed at `assets/sources/clock-app-default/`: the Design ID `WCD5-W1sic2…` (full string in that folder's `DESIGN_ID`), its compiled container `clock_app_default.orbtheme`, and the Watch Composer layer kit `skeleton_theme.zip` that the ID refers to. Until P4/P6 ship the `.orbapp` container and the `apps`-partition ingest, this art is **recorded, not wired**: it does not touch the boot path, and the compiled-in `assets/clock_assets.{bin,h}` pair stays the sole card-less boot fallback (section 1.1). |
+| D10 | Whose art boots the clock | **The OS ships no art.** The clock app carries its own bundled default artwork, ingested from the SD card. **The committed-source half of this ruling is revoked as of 2026-10-12:** the Design ID `WCD5-W1sic2…` (full string preserved in git history at `assets/sources/clock-app-default/DESIGN_ID`), its compiled container `clock_app_default.orbtheme`, and the Watch Composer layer kit `skeleton_theme.zip` the ID refers to are no longer in the tree. Restore them with `git log --diff-filter=D -- assets/sources/clock-app-default/` and verify against sha256 `95aa5d3a4b646d9e80c63e75a118778d548cb7a46d0fab7e90b482a6c5614d38` (kit) / `4559e0f525bf69f49acf7e4ea8cfb5df893e48ffd05897ee80063ef5f2e2bdc0` (container); the copies on the owner's Windows Downloads folder are *different files* and are not substitutes. Until P4/P6 ship the `.orbapp` container and the `apps`-partition ingest, this art is **recorded, not wired**: it does not touch the boot path, and the compiled-in `assets/clock_assets.{bin,h}` pair — source kit committed at `assets/sources/av-kit/` — stays the sole card-less boot fallback (section 1.1). |
 
-This container is validated, not assumed. `tools/orbtheme.py read_container` passes both CRCs; `unpack_geom` yields the geometry the Design ID describes — hands `show=[1,1,0,1,0]`, 8 GIF frames at `tick_rate 4`, 128 delta rects, 0 tourbillon, and 2 rotating-second `aux` records (the c2 enamel subdial's seconds hand). Art is 2,650,159 B = 41 pages, inside the `SLOT_CAP` (0x400000) and the 234-page budget `tools/host_art_residency_test.py` pins. `skeleton_theme.zip` is byte-identical to the owner's source (sha256 `95aa5d3a4b646d9e80c63e75a118778d548cb7a46d0fab7e90b482a6c5614d38`); its `manifest.json` carries the same `WCD5-…` ID. The Design ID holds a *reference* to the art, never the bytes (composer help, `Watch Composer.dc.html`); the layer kit holds the bytes.
+This container was validated when it was written, and it is still byte-intact, but it is a FORMAT 1 file and no current reader will open it. `tools/orbtheme.py read_container` now refuses it at its format gate (`theme format 1; this build reads format 2`) before it reaches the checksums; recomputing them directly on 2026-10-12 still matches (header `86092E66`, art `DB5CC981`), so nothing is corrupt — the file simply predates FORMAT 2, which has no legacy path. The geometry below (`unpack_geom` on the blob it carries) was read while that call still accepted the container, and is recorded rather than re-verifiable today: hands `show=[1,1,0,1,0]`, 8 GIF frames at `tick_rate 4`, 128 delta rects, 0 tourbillon, and 2 rotating-second `aux` records (the c2 enamel subdial's seconds hand). Art is 2,650,159 B = 41 pages, inside the `SLOT_CAP` (0x400000) and the 234-page budget `tools/host_art_residency_test.py` pins. `skeleton_theme.zip` was byte-identical to the owner's source (sha256 `95aa5d3a4b646d9e80c63e75a118778d548cb7a46d0fab7e90b482a6c5614d38`) and its `manifest.json` carried the same `WCD5-…` ID; it is no longer committed. The Design ID holds a *reference* to the art, never the bytes (composer help, `Watch Composer.dc.html`); the layer kit holds the bytes, so the kit in history is the only remaining copy of those pixels.
 
 Three facts for whoever wires this at P6. The container's slug and title are `skeleton`, which collides with the theme already installed under that slug on orb-A's card — it cannot go on a card as-is under that name. The committed container has never rendered on hardware: routine `serflash.sh` reflashes push only the app, never the `assets` partition, and the slot headers validate before the fallback is reached. And no tool converts a finished container back into the compiled-in `clock_assets.{bin,h}` pair — `bake_clock.py` regenerates that pair only from an Arduino-style `clock_style.json`/`theme.json` folder, and the composer's `orbtheme-baker.js` emits only the container. Building that reverse path, or the `.orbapp` packaging, is P4/P6 work, not this ruling.
 
@@ -188,7 +188,7 @@ Today the OS reaches into the clock by name. `input_router.c` hardcodes `INPUT_S
 
 | Area | Code to move |
 |---|---|
-| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t`. The clock app's own bundled default (ruling D10) is the Design-ID-sourced container committed at `assets/sources/clock-app-default/` (§0.2) — recorded now, wired by P6 once `.orbapp`/`apps`-partition ingest exists |
+| Dial art | the whole pixel bank: `assets/clock_assets.bin`, every `clk_sprite_t`. The clock app's own bundled default (ruling D10) was the Design-ID-sourced container committed at `assets/sources/clock-app-default/` (§0.2) — no longer committed, recoverable from git history — recorded now, wired by P6 once `.orbapp`/`apps`-partition ingest exists |
 | Scene and geometry schema | `clk_theme_t`, `clk_bg_rect_t`, `clk_comp_t`, `clk_aux_t`; the `THEME_FIELDS`/`COMP_FIELDS`/`AUX_FIELDS` wire lists; `theme_schema.py` SOURCES/KINDS/FLAGS; `GEOM_ABI` |
 | Time to hand math | `hand_angles` (hour/min/sec mapping, sweep phase, railway, `second_sweep`/`tick_rate` policy), `s_bt_ctr`, `s_bt_frac` |
 | Tourbillon | `tourbillon_advance`, `tourb_chords`, `tourb_stamp_pose`, `tourbillon_ink_mark`, `tourb_mark`, frame-bank selection |
@@ -292,13 +292,14 @@ So the accepted failure is bounded: a bad install costs the owner that one app a
 | App `.flash.rodata` (the shared claim on that window) | 298 KB = 4a7c8 | `build/gorb-os.map` |
 | App `.flash.text` | 1.00 MB = 10054c | `build/gorb-os.map` |
 | App image in a 2 MB slot | 1,476,128 B | `build/gorb-os.bin` |
-| One flagship theme | 3,858,874 B = 59 pages of 64 KB | `assets/clock_assets.bin`, `stat` |
+| Shipped compiled-in bank (av-kit) | 1,173,563 B = **18 pages** of 64 KB | `assets/clock_assets.bin`, `stat`; `CLK_BLOB_BYTES`, `LAT_BYTES_PRIMARY` in `main/art/art_bank.c:640`; source kit at `assets/sources/av-kit/` |
+| Flagship bench theme (kit3) | 3,858,874 B = 59 pages of 64 KB | measured 2026-10-12 from `assets/sources/watch-orbital-kit3.zip` (sha256 `c910be26dde63eb4…`), which is no longer committed: restore it from git history to re-run this bake. **Not** `assets/clock_assets.bin`, which holds av-kit — an earlier revision of this row cited that file and so read as if the shipped bank were kit3 |
 | `assets` partition | 8 MB at 0x420000, two A/B slots at 0x0/0x400000, cap 4,128,764 B (0x3F0000) each | `partitions.csv`, `orb_theme.h:48-55,296` |
 | `www` partition | 1.25 MB at 0xC20000 | `partitions.csv` |
 | `storage` (NVS) | 24 KB at 0xD60000, shared with the WiFi credentials | `partitions.csv` |
 | Unallocated flash tail | 2.60 MB (0x29a000, ends 0xD66000 of 16 MB) | `partitions.csv` comment, verified by arithmetic |
 
-| Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the two rows above |
+| Per-app art footprint, flagship | 3,924,410 B (3,858,874 art + a 64 KB header block) = **60 pages** | arithmetic on the flagship row above |
 | Two flagships mapped together | 120 pages + the image's own **22** (`.text` 17 + `.rodata`/`.appdesc` 5, per `idf.py size` 2026-10-11) = **142 of 256** | arithmetic; 114 pages of headroom. An earlier revision of this row counted only `.rodata`'s 5 and said 125 |
 | Measured flagship, for calibration | `perpetual-calendar` = 2,503,747 B = **39 pages** on the board (§10); two of *these* plus `.rodata` = 83 of 256 | boot line `39 MMU pages`, `art_pages` in `/api/v1/status` |
 | Two flagships in `assets` | 7,848,820 B of 8,388,608, **539,788 B spare** | arithmetic; the partition is the binding limit, not the MMU |
@@ -490,7 +491,16 @@ Recommendation: build the declarative interpreter and the broker now (no VM cost
 
 ## 6. Measurement protocol (the answers this plan refuses to guess)
 
-All three run on the board with the shipped kit3 art, before any app code exists, because a change that regresses the shipped dial invalidates everything above it.
+All three ran on the board with the kit3 art that was compiled in when they were
+recorded (§10's `lat: kit3 59 pages` boot lines), before any app code existed,
+because a change that regresses the shipped dial invalidates everything above it.
+The shipped bank is av-kit (18 pages) since `fb15a96`, so re-run all three against
+it before citing these numbers as the shipped dial's — the `ORB_ART_LAT_PROBE` bench
+in `main/art/art_bank.c:739-741` measures avkit, d10 and kit3 side by side, which is
+what keeps the two sets comparable. Only avkit is re-measurable today: the other two
+rows take their byte counts from compile-time constants, and the kits behind them
+(kit3, the d10 default) left the tree on 2026-10-12, so restoring them from git
+history is the first step of any re-run.
 
 ### M1 — switch latency and carousel liveness
 
@@ -546,7 +556,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | P3 | broker and grants: `time`, `config` (int/enum/toggle/string), `power` first; on-dial grant prompts (B3); `compose_now`'s anchoring becomes `orb_time_now()`; the dim-timeout request path; the C2 fault counter and boot-into-clock rule — **landed 2026-10-12 as seven commits (`f10b054` broker+gate+config+quota, `b26f1c7` `orb_time_now`+`tz_offset`, `a241463` power request, `3e8ddf2` C2, `d2839ae` status ledger, `bf1272e` D18 themes, `da0ecd7` B3 prompt): `main/app/orb_svc.c/h` beside `tools/host_svc_test.py` (all entries verbatim-compiled and pinned, gates and stubs separately observable); the anchor pair now lives in exactly one file and `clock_view.c` calls it like any app would; grants persist in `orb.grants`, config in per-slot `orb.app<slot>` namespaces under the chosen 2048 B quota (§9.4.4, decided); the D16 beat POLICY (manifest floor, slow-only, stop) ships in the broker — its DELIVERY (the shared tick owning cadence, budget parking) waits for P4's first card app, per D16's own measure-before-shipping rule; the C2 mechanism is a `.noinit` reset record, not a panic hook — IDF 5.4 ships none; the ARM/RUN/disarm protocol bills a live record only when `esp_reset_reason()` blames the code, because the bench's own RTS pulses leave a live record too** | `/api/v1/status` shows per-app grants, call counts and fault count — **landed, ledger `apps[]`**; a denied app degrades visibly — **pinned on host (denial counts, ever-refused mask, `*` mark on the ladder row and in the status ledger; D19 removed the pending latch and the `(ASKED)` badge the earlier flash of this row pinned)**; a faulting app cannot wedge the boot — **pinned on host (two strikes, HOME exempt)**; **bench 2026-10-12, orb-A on `28d9aea`: the dial after the `compose_now` move — booted, `synced true`, epoch advanced across two boots, 15 fps with the usual phase breakdown; the status body measured **1041 B** with three apps on the ledger, inside the 1536 B frame the P3.5 commit reserved (960 B would not have held it); the PERMISSIONS ladder under a real ask — **closed by design under D19 (§0.8), not by the bench: nothing that ships can be asked for, because the declaration at install is the grant. What the bench still owes narrows accordingly — the ladder's rows, strings and toggles are host-pinned and have never been walked on the board under a live owner toggle, and the denial half waits for P4's first card app, which will be the first caller that can be refused at all.** That flash also caught C2's first false accusation: esptool's RTS pulse ends a boot with the reset record live, and the record alone cannot say who ended it, so two flashes marked the OS's own clock FAILED. Fixed in `28d9aea`: the chip's `esp_reset_reason()` decides (PANIC, the watchdog family, lockup, and an unrouted SW bill; UNKNOWN/POWERON/EXT/USB and the supply-side causes do not), an unbilled reset breaks the consecutive chain and heals a mark the chain set from a reset alone, and a fault with a recorded reason keeps its ban. Proven both ways on the board: reason 11 (USB) billed nobody, and a scratch `__builtin_trap` build billed slot 0 every cycle while HOME kept booting.** |
 | P4 | the `apps` partition, `/sd/apps` scan, verify-then-header install with reboot (D9), uninstall from the OS APPS page (B4), boot resolve; the three `assets` art slots; the 8-app cap and slot arithmetic (B5); `net` with an allowlisted client; **and, new under D19 (§0.8): the manifest's `capability bitmask` fills `orb_app_t.caps` at install, the install confirm prints that declared list as the disclosure that carries the consent, and the first card app is the first caller the gate can actually refuse** | the `.clinerules:444-458` install ladder re-run with real apps; refusal reasons reach the dial, not only serial; a power cut mid-install leaves the dial bootable and the app marked failed; **an install that declared nothing shows a `*` on the ladder the first time it calls past its declaration, and the owner's toggle cannot clear it. **Partial, 2026-10-13:** the container is settled and host-pinned — `tools/orbapp.py` is the only sanctioned writer (C11) and `tools/host_orbapp_test.py` holds it with 143 checks and 24 mutants, all caught. That fixes the word map, the caps validation, the identity triple and the disclosure text. No firmware code is in this slice and nothing was flashed: the `apps` partition decision (§3.2) is still open, and the C reader lands with the installer that calls it, so the three-way mirror rule stands at two legs until then — stated in the suite's own header rather than implied. |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes | `host_menu_test.py` rewritten for the table, all mutations red |
-| P6 | split `apps/clock/` for real: bake emits `.orbapp`, the compiled-in pair stays as the fallback, and the theme install path reconciles with the app install path rather than running both | the shipped kit3 bank still rebuilds byte-identically (`.clinerules:172-200` proof) and a card-less board still boots the dial |
+| P6 | split `apps/clock/` for real: bake emits `.orbapp`, the compiled-in pair stays as the fallback, and the theme install path reconciles with the app install path rather than running both | the shipped av-kit bank still rebuilds from its committed source kit (`assets/sources/av-kit/`, and the `Clock themes from watch-designer kits` section of `.clinerules`) and a card-less board still boots the dial |
 | P7 | optional wasm3 tier over the same `orb_svc_t` | only after an app provably needs logic the vocabulary cannot carry |
 
 ## 9. Resolved, and what is still genuinely open
@@ -978,7 +988,7 @@ makes it observable.
 | APPS page (B3/B4) | Needs the manifest and catalog (P4) to have anything to list |
 | Disable/enable CRC round-trip | Testable once an app owns a bank, since it is the remap path that must CRC-verify |
 | **M1 re-run** | **DONE on hardware 2026-10-11 (§12.7)**: apps activate in 63-87 ms, second switch flat, zero watchdog, and an md5-matched A/B shows the dial's tempo unchanged at 7 fps median either side. The dial's own return costs 411-476 ms, which is its full-page commit, not the switch |
-| **Clock app bundled default (P2 clock theme-options E2E)** | **Owner ruling D10 (§0.2), 2026-10-12.** The OS ships no art; the clock app carries its own bundled default, ingested from the SD card. Its source of truth — Design ID `WCD5-W1sic2…`, the compiled `clock_app_default.orbtheme` (both CRCs verified through `tools/orbtheme.py read_container`), and the `skeleton_theme.zip` layer kit the ID refers to — is committed at `assets/sources/clock-app-default/`, byte-identical to the owner's originals. It is **recorded, not wired**: booting it as the clock's art needs the P4/P6 `.orbapp` container, the `apps`-partition ingest, and a container→`clock_assets.{bin,h}` reverse tool that do not exist yet. Its slug `skeleton` also collides with orb-A's installed card theme, so a card install under that name is refused by the duplicate-slug check. The compiled-in `assets/clock_assets.{bin,h}` pair (av-kit) stays the card-less boot fallback and has never itself rendered on hardware — slot headers validate first |
+| **Clock app bundled default (P2 clock theme-options E2E)** | **Owner ruling D10 (§0.2), 2026-10-12; committed-source clause revoked 2026-10-12.** The OS ships no art; the clock app carries its own bundled default, ingested from the SD card. Its source of truth was Design ID `WCD5-W1sic2…`, the compiled `clock_app_default.orbtheme` (a FORMAT 1 file: `read_container` refuses it at its format gate, though its stored header and art CRCs still match when recomputed directly), and the `skeleton_theme.zip` layer kit the ID referred to; those three files sat in `assets/sources/clock-app-default/` and now exist only in git history, verified by the sha256 in §0.2. It is **recorded, not wired**: booting it as the clock's art needs the P4/P6 `.orbapp` container, the `apps`-partition ingest, and a container→`clock_assets.{bin,h}` reverse tool that do not exist yet. Its archived container is FORMAT 1, so no current orb can read it at all. Under FORMAT 2 it would also collide: the name field of that container holds `skeleton`, which is the name of a theme already on orb-A's card, and FORMAT 2 files both under the same `theme_id("skeleton")`, so the device refuses the second one as a duplicate name until the operator sends `?overwrite=1`. The compiled-in `assets/clock_assets.{bin,h}` pair (av-kit, source kit committed at `assets/sources/av-kit/`) stays the card-less boot fallback and has never itself rendered on hardware — slot headers validate first |
 
 M1 is captured (§12.7) and the carousel is captured (§12.8), so the registry is
 host-proven and hardware-proven, and C5's deferral is hardware-proven. The `opt_*`
@@ -1367,6 +1377,14 @@ choice.
 
 ### 13.6 The sign-off run, 2026-10-12, orb-A
 
+**Superseded on the theme routes by §13.8 below.** This run predates FORMAT 2, so the
+`?name=` verbs, the `try_slug`/`damage_slug` fields and the `name is missing or not a
+theme name` 400 are what the device said that day and are kept as the bench record it
+is. A FORMAT 2 orb takes `?id=` with exactly 12 chars of `[0-9a-f]`, reports `try_id` and
+`damage_id`, and refuses with `id is missing or not a theme id`. Copy routes from §13.8,
+not from here.
+
+
 Image: the tree these three commits record, stamped `c0a224b-dirty`, audited by
 `tools/serflash.sh` (`AUDIT OK: the image's own stamp matches the working tree`)
 before the write at `0x20000`. Card: `SD16G SDHC 29.4GB @20000kHz`, four containers:
@@ -1522,9 +1540,10 @@ design: its id is the hash of the stored bytes, so any such file is self-consist
 
 **Still open.** The node-gated `_selftest` suites (headless-orbtheme, export-test) have never been
 executed — no node or Chrome on this machine. `diver`, `perpetual-calendar` and `neon` need their
-owner's layer kits to re-bake. The archived `clock_app_default.orbtheme` is not regenerated: the
-kit bake renders `show=[1,1,0,0,0]` against the archived `[1,1,0,1,0]`, so the original bake flags
-are unknown and the archive stays byte-faithful to `skeleton_theme.zip` until they are.
+owner's layer kits to re-bake. The archived `clock_app_default.orbtheme` is no longer committed
+(revoked D10 source, §0.2), and was never regeneratable in any case: the kit bake renders
+`show=[1,1,0,0,0]` against the archived `[1,1,0,1,0]`, so the original bake flags are unknown.
+Restore it from git history against its sha256 rather than re-baking it.
 
 
 

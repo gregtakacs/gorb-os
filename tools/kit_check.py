@@ -3,7 +3,7 @@
 
 Run it on the zip BEFORE baking it:
 
-    python3 tools/kit_check.py assets/sources/watch-orbital-kit.zip
+    python3 tools/kit_check.py <kit.zip>
 
 Exit 0 = safe to bake. Exit 1 = the carriage staff does not sit on the
 rotation centre the manifest declares, and the device will render a ~1.7 px
@@ -13,6 +13,13 @@ The gate measures the red staff jewel in every tourbillon frame and demands
 that its alpha-weighted centroid land exactly on the manifest's declared
 `centre`. It also demands an odd x odd ink bbox: an even-width blob on an
 even-dimension canvas cannot have an integer centroid at all.
+
+This gate needs a kit WITH a tourbillon: a kit without one fails at the
+manifest check, which is correct but not a geometry verdict. Its historical
+must-fail fixture, the off-axis kit2 (sha256 c13fe2f7d178aa31..., 3493631 B),
+left the repo on 2026-10-12 with the rest of the orbital art bank. Re-create
+the negative case by shifting a carriage's declared centre by (0.5, 0.5) px;
+docs/tourbillon-axis-spec.md keeps the numbers it was rejected on.
 """
 import json
 import os

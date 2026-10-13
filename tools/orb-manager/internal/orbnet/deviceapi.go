@@ -3,6 +3,7 @@ package orbnet
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,9 +61,40 @@ func (c *Client) roundTrip(req *http.Request) (json.RawMessage, error) {
 	return raw, nil
 }
 
+// DeviceError is a non-2xx answer from the orb, carrying the status and the body it
+// came with. The message alone is enough to show an operator, but a caller that has to
+// *act* on a refusal needs the structured reply behind it — h_theme_upload answers 409
+// with {"overwrite":false} precisely so the page can ask "replace it?" and re-send, and
+// that decision is lost if the only thing the hub kept is a sentence.
+type DeviceError struct {
+	Status int
+	Path   string
+	Body   json.RawMessage
+	err    error
+}
+
+func (e *DeviceError) Error() string { return e.err.Error() }
+
+// OverwriteConflict reports the one device refusal a caller can resolve by asking the
+// operator: a verified file that would replace a DIFFERENT theme already filed under
+// the same name, offered by the firmware only when ?overwrite=1 was not sent.
+func (e *DeviceError) OverwriteConflict() bool {
+	if e.Status != http.StatusConflict {
+		return false
+	}
+	var env struct {
+		Overwrite *bool `json:"overwrite"`
+	}
+	if err := json.Unmarshal(e.Body, &env); err != nil {
+		return false
+	}
+	return env.Overwrite != nil && !*env.Overwrite
+}
+
 // maxDeviceReply bounds what one device call may pull. The firmware's own replies are
-// small by construction — h_sd caps its JSON at 2400 B — so this is a ceiling against
-// whatever else happens to answer on port 80, not a guess at a real size.
+// small by construction — h_sd writes into a static json[6144] and reports an overflow
+// rather than truncating — so this is a ceiling against whatever else happens to answer
+// on port 80, not a guess at a real size.
 const maxDeviceReply = 1 << 20
 
 // deviceError turns a non-2xx device reply into an error carrying the firmware's
@@ -71,10 +103,19 @@ const maxDeviceReply = 1 << 20
 // than silently parsed.
 func deviceError(req *http.Request, status int, raw []byte) error {
 	var env struct {
-		Error string `json:"error"`
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
 	}
+	base := fmt.Sprintf("orbnet: %s answered %s with HTTP %d", req.URL.Host, req.URL.Path, status)
 	if err := json.Unmarshal(raw, &env); err == nil && env.Error != "" {
-		return fmt.Errorf("orbnet: the orb refused %s: %s", req.URL.Path, env.Error)
+		base = fmt.Sprintf("orbnet: the orb refused %s: %s", req.URL.Path, env.Error)
+		// h_theme_upload's verdict is {"error":"rejected","detail":"…"}: the reason a
+		// container was refused is the only thing an operator can act on, and h_ota puts
+		// its reason beside it the same way. Dropping detail turns a diagnosable
+		// rejection into "rejected".
+		if env.Detail != "" {
+			base += " (" + env.Detail + ")"
+		}
 	}
-	return fmt.Errorf("orbnet: %s answered %s with HTTP %d", req.URL.Host, req.URL.Path, status)
+	return &DeviceError{Status: status, Path: req.URL.Path, Body: json.RawMessage(append([]byte(nil), raw...)), err: errors.New(base)}
 }

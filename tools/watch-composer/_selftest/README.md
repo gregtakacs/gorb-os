@@ -264,8 +264,9 @@ ORBTHEM_VEC=/tmp/orbtheme_vectors /tmp/nodeenv/bin/node headless-orbtheme.test.j
 ```
 
 Its real-kit section caches the bench bake in `/tmp/orbtheme_e2e` and reuses it until
-`assets/sources/watch-orbital-kit3.zip` is newer than the cache, so deleting that
-directory is how you force a fresh bench run.
+`assets/sources/av-kit/watch-aviator-kit.zip` is newer than the cache, so deleting that
+directory is how you force a fresh bench run. It bakes with `--bg-fps 15 --tick-rate 15`,
+matching the cadence the JS side derives from that kit's manifest.
 
 The stub records path/turn calls in a second log, `ctx.geom`, deliberately NOT in
 `ctx.ops`: the ops cap is sized for the `drawImage`/`fillText` assertions the older
@@ -299,7 +300,9 @@ python3 ../deploy_test_folder.py     # -> /mnt/c/Users/greg/Downloads/test, prin
 
 `make_art_kit.py` turns a real kit zip into a custom-art kit (transparent sub-dial,
 art-backed hand, translucent case) so `prep_watch_kit.py` and `bake_clock.py` can be run
-end to end offline. Run the bake from outside the repo root: it also writes
+end to end offline. It takes the kit zip as a required argument: the repo keeps no kit
+with a sub-dial or tourbillon, so the shipped av-kit is not a valid input and you must
+supply an exported one. Run the bake from outside the repo root: it also writes
 `assets/clock_assets.h` into its cwd, and that file is tracked here.
 
 ## Regression guards

@@ -168,6 +168,11 @@ management lives only on the device page.
    the switch to the `?id=` form that `docs/theme-identity-plan.md` mandates is a
    one-file change when that plan lands. This plan does not pre-empt it and does
    not rename anything the firmware still calls a slug.
+
+   (*As written at iteration 5. The FORMAT 2 plan has since landed: the device takes
+   `?id=` only, the slug fields are gone, and the switch this item deferred is done —
+   see "Closed 2026-10-12" below. The routes above are what the card was built against,
+   not what an orb answers now.)*
 2. Add theme upload through the same module.
 3. Persist the last-used orb IP across restarts, and poll status with backoff.
 4. Add a read-only USB console card, replacing `tools/cap.py` for an end user who
@@ -238,10 +243,11 @@ Commit: `feat(orb-manager): serve the composer offline and ship a release set`
 convention, so it stays out of this run. A workflow running vet, `go test ./...`
 and `make crosscheck` on push is the intended content.
 
-### Open — the hub and its Theme Editor are FORMAT 1; the device is now FORMAT 2
+### Closed 2026-10-12 — the hub spoke FORMAT 1 while the device spoke FORMAT 2
 
-Filed 2026-10-12, still open. The two clones merged the same day in `448a703`, which is
-what turns every item below from a forecast into a present defect in one tree.
+Filed 2026-10-12 and closed the same day. The two clones merged in `448a703`, which is
+what turned every item below from a forecast into a present defect in one tree; the
+follow-up commit on the merged tree is what closed it.
 
 The firmware, `tools/orbtheme.py` and `tools/watch-composer/` are FORMAT 2. Each row was
 read off the merged file on 2026-10-12:
@@ -251,9 +257,10 @@ read off the merged file on 2026-10-12:
 | `FORMAT = 2`, `NAME_MAX = 56` (55 usable bytes + NUL) | `tools/orbtheme.py:52,56` |
 | the baker packs one `name`, not the `slug`+`title` pair | `tools/watch-composer/orbtheme-baker.js:28` |
 | the copy the hub embeds and serves is that same FORMAT 2 baker | `tools/orb-manager/web/composer/orbtheme-baker.js:28` |
-| install, delete and upload still send `?name=` | `tools/orb-manager/internal/orbnet/themes.go:94,108,131` |
-| `ThemeEntry` has no `id` field, and still has a dead `Title` | `tools/orb-manager/internal/orbnet/themes.go:28-36` |
-| `CheckThemeName` allows ASCII only, 31 characters max | `tools/orb-manager/internal/orbnet/themes.go:61` |
+| install and delete send `?id=`, the handle the firmware reads | `internal/orbnet/themes.go` `ThemeInstall`, `ThemeDelete` |
+| `ThemeEntry` carries `ID` and `Changed`, and no `Title` | `internal/orbnet/themes.go` |
+| `CheckThemeName` allows free-text UTF-8 to 55 bytes; `CheckThemeID` is the 12-hex gate | `internal/orbnet/themes.go` |
+| an upload is filed by the name inside the container; the hub reads it with `ContainerName` and refuses FORMAT 1 before dialling | `internal/orbnet/themecontainer.go` |
 
 The device answers the other way. `h_theme_install` and `h_theme_del` both refuse unless
 `?id=` is exactly 12 chars of `[0-9a-f]` (`main/net/orb_net.c:2719,2774`, `theme_id_ok` at
@@ -263,33 +270,44 @@ The device answers the other way. `h_theme_install` and `h_theme_del` both refus
 container header (`:2825,2829`). The id is `sha256(name)[:12]` lowercase hex
 (`main/art/orb_theme.h:53`, mirrored by `theme_id()` at `tools/orbtheme.py:340-356`).
 
-Three breaks are live now, not hypothetical:
+Three breaks were live on the merged tree, not hypothetical. All three are closed on the
+hub side; none of them could be closed by a green `make check`, which is the real finding.
 
-1. Install and delete send `?name=` to routes that read `?id=`. Both answer 400
-   `"id is missing or not a theme id"`. The card's buttons go dead with no local error.
-2. `ThemeUpload` sends `?name=`. The firmware reads the name from the container header
-   instead, so that parameter is inert, and the hub never sends the `?overwrite=1` the
+1. Install and delete sent `?name=` to routes that read `?id=`. Both answered 400
+   `"id is missing or not a theme id"`. The card's buttons were dead with no local error.
+2. `ThemeUpload` sent `?name=`. The firmware reads the name from the container header
+   instead, so that parameter was inert, and the hub never sent the `?overwrite=1` the
    device offers.
-3. `CheckThemeName` refuses every valid FORMAT 2 name. Names are free-text UTF-8 up to
-   55 bytes. The regex is ASCII-only and caps at 31 characters.
+3. `CheckThemeName` refused every valid FORMAT 2 name. Names are free-text UTF-8 up to
+   55 bytes. The regex was ASCII-only and capped at 31 characters, so it rejected
+   `Ünit ☃` and `Mirage — Gold` — names the baker had already accepted and baked.
 
 The fourth break from the original list — the hub serving a FORMAT 1 baker — closed with
 the merge. Both bakers report `FORMAT = 2` and `make vendor-composer` verifies.
 
-The worst part is that the suite cannot see any of this. The client, its unit test and the
-fake device all encode the FORMAT 1 contract together, so they agree with each other and
-disagree with the firmware: `themes_test.go:105,107,109` assert `?name=` on install, delete
-and upload, and `cmd/orbfake/main.go:77,102` answer `?name=`. `make check` is green while a
-real orb 400s every install. Rebuilding `orbfake` and those assertions against
-`orb_net.c` is part of the fix, not an afterthought — a mock that copies the client's own
-wrong assumption proves nothing.
+The worst part was that the suite could not see any of this. The client, its unit test and
+the fake device all encoded the FORMAT 1 contract together, so they agreed with each other
+and disagreed with the firmware: `themes_test.go` asserted `?name=` on install, delete and
+upload, and `cmd/orbfake` answered `?name=`. `make check` was green while a real orb 400s
+every install.
 
+That is fixed structurally, not by editing assertions. The device double moved out of
+`cmd/orbfake` into `internal/orbfake/`, where the suite and the live binary run one copy,
+and it was rebuilt from `orb_net.c`: it refuses any name-addressed verb with the
+firmware's own 400, holds its own copy of the 12-hex rule and the container read, and
+files uploads by the embedded name. `internal/orbfake/orbfake_test.go` pins those
+refusals, so the double cannot quietly agree with the client again.
+`themes_contract_test.go` then drives the real client against it, taking ids off the
+list the device returned rather than typing them. Seven mutations of the client — revert
+`?id=` to `?name=`, drop the container gate, loosen the id regex, count the name cap in
+characters, hash the padded field, drop `changed`, revert `try_id` to `try_slug` — each
+one turns that suite red.
 
-One naming trap deserves its own paragraph. The comment at `themes.go:14-17` reads the
-plan's `id` as an orb id, "so one hub can address more than the orb it last happened to
-learn". The `id` that landed is a theme id: `sha256(name)` truncated to 12 hex. Same
-token, two meanings. Correct that comment in the same commit that changes the code, or
-the next reader repeats the mistake.
+One naming trap deserved its own paragraph, and is now closed in the code. The comment at
+`themes.go` read the plan's `id` as an orb id, "so one hub can address more than the orb
+it last happened to learn". The `id` that landed is a theme id: `sha256(name)` truncated
+to 12 hex. Same token, two meanings. The module comment now says so out loud, because the
+orb's own device identity is a third thing and will need its own parameter.
 
 The merge already settled what the editor ships. `support.js`, `dial-renderer.js` and
 `watch-engine.js` were byte-identical between the two clones, so iteration 6's offline
@@ -298,26 +316,22 @@ against the merged `tools/watch-composer/` today. Only `orbtheme-baker.js` and
 `Watch Composer.dc.html` moved.
 
 Not verified, and no one should claim it: the hub's theme card has never driven a real
-device. Iteration 5 verified it against `cmd/orbfake`, which mimics `h_sd`. It mimics the
-FORMAT 1 shapes, so any statement that the hub talks to a FORMAT 2 device is untested.
-That gap is why the merge could land without anyone noticing the card was already wrong.
-
-The fix is one commit on the merged tree: `feat(orb-manager): speak theme ids`. Scope is
-`internal/orbnet/themes.go` (send `?id=`, add `ID` to `ThemeEntry`, drop the dead `Title`,
-rename `TrySlug`/`DamageSlug` to the device's `try_id`/`damage_id`), the `CheckThemeName`
-rule (UTF-8, 55 bytes, matching `ORB_THEME_NAME_MAX`), the theme card in `web/app.js`,
-`cmd/orbfake`, and the three `themes_test.go` assertions above. Then re-run `make composer`
-and `make vendor-composer` so the embedded editor matches. `make check` is the gate, but a
-green check does not prove the contract: only a real orb, or a fake built from `orb_net.c`,
-does.
+device. What now stands behind that claim is a double built from `orb_net.c`, plus the
+host suite `tools/host_sd_test.py`, which pins the firmware's `theme_id()` against
+`tools/orbtheme.py` on the same vectors `internal/orbnet/themes_test.go` pins the Go copy
+against — so C, Python and Go agree on the hash, and only the physical orb remains
+unproven.
 
 ## 3. Deliberately NOT changed
 
 - The safety model stays "you own the cable". No `.orb-target` binding and no
   MAC gate return, per README "Safety model". Iteration 2 restricts who may ask,
   not which orb you may act on.
-- No subnet sweep, no ARP, no mDNS. Every network call stays a dial to one
-  address the hub learned or was handed.
+- No subnet sweep, no ARP. Every network call stays a dial to one address the
+  hub learned or was handed. mDNS discovery, banned here since the sweep was
+  deleted, is now in scope as the replacement for handing the hub an address;
+  see §5. The sweep itself stays banned. Discovery is solicited from the orb,
+  never extracted from the subnet.
 - The ROM-only flasher path stays. No stub loader returns.
 - The hub always writes the full manifest. App-only reflash stays in `orbflash`.
 - `docs/theme-identity-plan.md` and `docs/app-platform-plan.md` keep their own
@@ -399,13 +413,225 @@ Updated at each commit.
   Linux, the positive branch still needs one capture from a real Mac.
 - Hardware: nothing in iterations 0-5 was run against a cable. The cancel path and
   the console read both drive real ROM/CDC timing and need one live run on orb-B
-  before either is called verified. The theme card was verified against
-  `cmd/orbfake`, which reproduces `h_sd`'s shapes but is not the firmware.
-- Outstanding, and not an iteration: the hub's theme client still speaks FORMAT 1 while
-  the firmware in this same tree now requires FORMAT 2. The two clones merged in
-  `448a703` on 2026-10-12, so this is a live defect in one tree rather than a pending
-  cross-clone merge; the embedded Theme Editor landed FORMAT 2 with it and is closed out.
-  See "Open — the hub and its Theme Editor are FORMAT 1" above. No plan owns that work
-  today: `docs/theme-identity-plan.md` §8 lists ten steps and none of them names
-  `tools/orb-manager/`.
+  before either is called verified. The theme card was verified against the device
+  double in `internal/orbfake`, which is written from `main/net/orb_net.c` and holds
+  its own copy of the id rule — a faithful stand-in, but not the firmware.
+- Theme identity: closed 2026-10-12 in `feat(orb-manager): speak theme ids`. The hub
+  spoke FORMAT 1 (`?name=`, `Title`, `try_slug`, a 31-char ASCII name rule) while the
+  firmware in the same tree, merged in `448a703`, required FORMAT 2 — so install and
+  delete were dead against a real orb and nothing in `make check` noticed. The client
+  now addresses by `?id=`, `ThemeEntry` carries `ID`/`Changed`, the name rule matches
+  the header's 55 UTF-8 bytes, upload reads the name out of the container and refuses
+  FORMAT 1 before dialling, and `?overwrite=1` is wired to the firmware's 409. The
+  device double moved to `internal/orbfake/` and was rewritten from `orb_net.c`, so
+  client, test and double no longer share one wrong assumption; seven mutations of the
+  client each turn the contract suite red. `docs/theme-identity-plan.md` §8 never named
+  `tools/orb-manager/` as a consumer, which is how the gap survived the merge.
+
+
+
+## 5. Fleet UI redesign: Onboard merged into Manage (2026-10-12)
+
+Onboard and Manage are one surface. Manage lists named orbs; Onboard's
+serial flow becomes "Add an orb" inside it. Discovery moves from the deleted
+/24 sweep to mDNS: the firmware advertises `_orb._tcp` and the hub browses.
+The owner types nothing.
+
+### 5.1 Decisions taken
+
+1. **Menu-as-settings.** The web settings page renders the device's own option
+   registry over `GET /api/v1/menu` + `POST /api/v1/menu`. The `opt_*` ABI is
+   already data-driven and accepted (`main/app/orb_app.h:104-118`, rulings
+   D11-D13, executed as §13 of `docs/app-platform-plan.md`); `menu_view.c`
+   walks it generically and §13.4 forbids an app keeping a second opinion
+   about what is on the page. New apps and new rows therefore appear in the
+   hub with no hub change. The POST path must expose arm/disarm, because
+   ruling D11 made a pick install-and-reboot by itself and an unguarded POST
+   would reboot a wall clock with one click.
+2. **Factory reset, full stop.** Implemented as an armed `opt_*` menu row and
+   mirrored over the serial path. Erases `ssid`/`pass`/`tz` from
+   `storage`/`orb.net` and reboots into the provisioning SoftAP. Sends an mDNS
+   Goodbye first so the fleet does not show a ghost. `orb_net.c:233` is the
+   reason this is never a side effect.
+3. **Display-pairing, not manager self-assertion.** `POST /api/v1/pair/start`
+   mints a 6-digit nonce the orb renders full-screen; the operator types it
+   back; the orb issues a session token. Proves the requestor had display
+   access. Threat model is explicit: physical presence, over HTTP, not
+   cryptographic.
+4. **Pairing is permanent.** One pairing per orb, stored in NVS, TTL forever
+   unless revoked. Revocation is a factory reset **or** a dedicated on-device
+   "Clear pairing" row, so an owner without the hub is never stranded. Every
+   state-changing write is gated, timezone included. While `s_provisioning` is
+   true (`orb_net.c:120`, set only at `:3573` on no-credentials boot) the orb
+   is exempt, so first setup needs no code; the exemption cannot be reached
+   remotely, and the reset that re-enters it sits behind pairing plus arm.
+5. **OTA is its own plan.** Sequenced after the fleet UI is real. Prerequisites
+   stated up front: `h_status` must carry `built` + `elf_sha` so
+   `firmware.Compare` has something it can compare, and `/api/v1/ota` must earn
+   its way back into `deviceRoutes` (`security.go:232-236`) against the
+   validated-bundle guarantee that exclusion cites.
+6. **Unconfigured orbs reach the owner by QR.** Factory reset leaves the orb in
+   the SoftAP flow of `docs/ap-onboarding-qr-plan.md` (PLAN ONLY; the QR half
+   is not written). The Add wizard hands off to the phone rather than implying
+   the desktop finished.
+7. **LAN refuses during a cable flash.** Correlated by MAC, since the port
+   holder and the IP proxy have no shared key until item 1.
+8. **The board gate is mandatory**, per item 2 below.
+
+### 5.2 Facts that changed the design (verified 2026-10-12)
+
+- **`ESP_MAC_WIFI_SOFTAP` is base + 1.** `mac_addr.c:366-387` derives it as
+  `memcpy(base)` then `mac[5] += 1`, live because
+  `CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y` on this S3 target. STA and BASE are
+  exact copies. Both of the hub's join keys are BASE: the USB serial descriptor
+  (`esprom/identity.go:138`, `usbclass.go:22-25`) and the flasher's eFuse read
+  (`esprom/commands.go:222-223`). Copying the existing
+  `esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP)` idiom (`orb_net.c:667`, `:2253`)
+  into `h_status` would report base+1, miss every USB correlation by one in
+  the last octet, and be invisible on this bench. `h_status` uses
+  `ESP_MAC_BASE`, and that is now hardware-verified rather than read from
+  source: on orb-B the field returned `44bd8d782618`, equal to `esptool
+  read_mac` on that board, to the eFuse read taken through the native Go
+  flasher, and to the serial-number descriptor sysfs exposes for the same port
+  (`/sys/bus/usb/devices/1-2/serial`). That measured equality is what the hub
+  needs, and it makes the offset itself no longer load-bearing: whatever
+  SoftAP's address turns out to be, the field is the BASE the join keys use.
+  The AP name was not observed, only derived: `orb_net.c:671-672` formats it
+  from `ESP_MAC_WIFI_SOFTAP`, so with the documented base+1 it should read
+  `orb-2619` on that board while its base ends `2618`. Raise the AP once and
+  the derivation becomes an observation. The displayed SSID comes from the
+  boot verdict (`setBoot`, `main.go:127-147`), never recomputed in Go, so the
+  `ap_fill_config` SSID builder (`orb_net.c:667-668`) stays the single source
+  of the name.
+- **The image chip ID is at bytes 12-13, little-endian, 2 bytes.** Packed
+  `esp_image_header_t` is exactly 24 bytes (`esp_app_format.h:79-107`);
+  `esp_chip_id_t` is asserted 16-bit (`:33`) and `ESP_CHIP_ID_ESP32S3 =
+  0x0009` (`:23`). `s3ImageChipID = 9` (`commands.go:38`) was declared and
+  never referenced: the flasher verifies the attach-time magic
+  (`commands.go:205-216`) and so knows the chip is an S3, but never checks
+  what is about to be written to it. Exercised on hardware 2026-10-12: a
+  committed bundle with its app chip ID doctored from 9 to 2 was refused with
+  "built for the ESP32-S2 (chip ID 2)" before any write, and the same board
+  then accepted the untampered bundle through `Session()` and booted it.
+- **Headerless images are legitimate.** `partition-table.bin`, otadata, and
+  `../assets/clock_assets.bin` carry no `0xE9` header. The gate skips them, as
+  `patchBootloaderFlashParams` already does (`flash.go:67-69`). A gate that
+  rejected them would break every real flash.
+- **`macNorm` (`watch.go:173-176`) is not enough.** It lowercases and maps
+  `-`→`:`, but never collapses the separator-free hex a device emits, and lets
+  an empty MAC equal an empty MAC. It must canonicalize and refuse empty.
+- **The 960 B status buffer measured 668-669 B on the cable**, replacing the
+  650 B estimate the comment carried. The `mac` field costs a fixed 21 B,
+  counted off the wire. The figure wobbles a byte with the free-psram digit
+  count and six bytes with the width of `fw`, so it is measured per build and
+  never added up.
+- **`wifi_reason` outlives a successful connect.** Observed on orb-B
+  2026-10-12 after hard resets issued over the serial cable by esptool and by
+  the native Go flasher: `state: connected`, `assoc_fails: 0`, and still
+  `wifi_reason: 3` named `auth-leave`. It is the last disconnect code, not a
+  current failure. The device's own page labels it so (`orb_net.c:2973`,
+  "last reason"). Any hub wizard or pairing screen that surfaces it must repeat
+  that label and must never gate on it, or an orb that is healthy reads as
+  broken and an orb that is broken reads as healthy.
+- **LWIP_IGMP is forced to 1** (`components/lwip/port/include/lwipopts.h:474`),
+  so the hand-rolled advertiser's multicast joins work in this build.
+- **Socket budget is 10** (`sdkconfig.defaults:68`): one mDNS socket with two
+  `IP_ADD_MEMBERSHIP` calls, not per-interface sockets.
+
+### 5.3 The ladder
+
+Each commit carries the §0 verification ladder. Firmware items are gated on
+the cable; hub items go green on this bench.
+
+| # | Commit | Depends |
+|---|---|---|
+| 1 | `feat(net): report the station MAC in /api/v1/status` | none (keystone for 6, 7, 9) |
+| 2 | `feat(esprom): refuse a flash whose image chip ID is not ESP32-S3` | none |
+| 3 | `test(orb-manager): give orbfake the device verbs and an mDNS advertiser` | none |
+| 4 | `feat(net): announce _orb._tcp on the STA and AP interfaces` | 1, 3 |
+| 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |
+| 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |
+| 7 | `feat(orb-manager): merge onboarding into Manage as Add an orb` | 6 |
+| 8 | `feat(net): render the option registry as /api/v1/menu` | 1, 3, 6 |
+| 9 | `feat(net): gate device writes behind a display pairing code` | 1, 6, 8 |
+| 10 | `feat(net): factory reset into provisioning mode` | 8, 9, QR screen |
+| 11 | separate plan: OTA | 1 |
+
+Item 10 is last on purpose: the most destructive new verb is the only one that
+cannot ship until the pairing gate and the on-device arm both exist. Item 9
+must also register `/api/v1/menu` and the pair routes in `deviceRoutes`
+(`security.go:238-253`): the last device verb added in firmware but not in
+that map was unreachable from the hub.
+
+Device header is `X-Orb-Pair`, never `X-Orb-Token`: `X-Orb-Token` is the hub's
+own control token (`security.go:32`), and reusing it would let a proxied
+request satisfy the hub's gate with a device secret. `proxy.go` strips any
+client-supplied value of both names before injecting the stored one. The nonce
+lives about 120 s with a small attempt cap, so 10^6 is never guessable; the
+token is what the hub keeps. Fleet identity is `{mac, name, room}`, keyed on
+MAC and never on IP, so a DHCP rebind cannot orphan a name or misroute a
+credential; liveness comes from announcements, replacing the 6 h `ipGrantTTL`.
+
+### 5.4 Documentation debt carried by these commits
+
+Item 5 rewrites the six sites that encode the discovery ban: `README.md:12-14`,
+`main.go:1-8`, this file's §3, `web/app.js:639-641`, `watch.go:93`, and
+`internal/orbnet/client.go:60`, the last of which still justifies its timeout
+against a "subnet sweep" that no longer exists. Item 6 rewrites the
+`state.go:16-20` promise that "no credential is stored anywhere", which the
+permanent token makes false; the hub still refuses to persist a Wi-Fi
+passphrase, since the orb already owns that (`orb_net.c:1819-1820`).
+`orb_net.c:225` retires its "Phase 4" `PATCH /api/v1/settings` note: that
+numbering is the net plan's, not `app-platform-plan.md`'s P4, and the real
+target is `/api/v1/menu`.
+
+### 5.5 Logged, not built: the settings content gap
+
+The `opt_*` plumbing is accepted and renders through the shell, but only
+`clock_themes.c:207` registers rows today. Idle-dim timeout and motion
+threshold, knob steps-per-detent, SNTP servers, and the app `enabled`/`failed`
+toggle each still need an owner's rows; the `enabled` toggle arrives with P4
+(`app-platform-plan.md` §12.6). The plumbing being ready is not the content
+being ready, and the hub cannot show a row nobody registered.
+
+### 5.6 The fork with the P3 line, and the resolution already proven
+
+Verified 2026-10-12 before pushing anything. `origin/main` moved to `62a5e91`
+carrying nineteen app-platform P3 commits from `gorb-os-2`: the broker, the
+grant table, the D18 theme family, the P3 pass line, and the C2 fault counter.
+This clone holds its own line of commits on top of the shared `d7de71f`, ending
+with items 1 and 2 of this ladder. Neither side is an ancestor of the other, so
+a plain push is rejected and `--force` would delete their P3 work. Neither was
+done.
+
+The only real coupling is `h_status`: `d2839ae feat(svc): P3.6` publishes the
+broker ledger from the same snprintf that now carries `mac`. Their branch adds
+no endpoints, so the hub's route-vs-token test sees no new obligations, and it
+touches no orb-manager file at all.
+
+The merge was resolved and gated in a scratch worktree, not guessed. Take their
+`char json[1536]`, because the ledger needs it and the `mac` field's 21 B fits
+with room to spare. Keep both blocks in the second hunk and restore the one
+brace the shared context line would otherwise have eaten. Git's auto-merge of
+the format string is correct: 44 conversion specifiers, with both `mac_str` and
+`apps_json` present in the argument list. Both gates passed on the resolved
+merge: `idf.py build` exited 0 with no warnings for `orb_net.c`, and the compiled
+image contains `"mac":"%s"`, `"apps":%s`, `ledger too large`, and
+`status too large`. All twelve host suites pass merged, including the broker
+suite `tools/host_svc_test.py`, and all six hub packages pass with the bundle
+guard armed.
+
+Two obligations fall out of a merge, and neither is optional. The bundle must
+be re-packed from the merged build: armed against it, the freshness guard goes
+red on `gorb-os.bin` and `bootloader.bin` exactly as designed, and shipping it
+unre-packed would put out a hub whose firmware has no broker. The merged status
+body must be re-measured on the cable before the buffer comment states a
+number, which is what that comment's closing line is for.
+
+Not verified: the merged image has never booted. Nothing here claims orb-B ran
+P3 alongside the `mac` field.
+
+Their line is mid-flight. `gorb-os-2` sits at `e223a01` with two P4 commits
+still unpushed, so this work went to its own branch rather than into `main`,
+and integration should wait for their push and happen once.
 

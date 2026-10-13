@@ -222,8 +222,12 @@ static bool json_str(const char *body, size_t len, const char *key, char *out, s
     return i > 0;
 }
 
-/* (The numeric-argument helper lands with PATCH /api/v1/settings in Phase 4;
- * carrying it unused would only trip -Wunused-function.) */
+/* (The numeric-argument helper lands with the option-registry endpoint
+ * `POST /api/v1/menu` (docs/orb-manager-plan.md §5.3 item 8), which drives the
+ * same opt_* rows the dial renders; carrying it unused would only trip
+ * -Wunused-function. The older note here pointed at "PATCH /api/v1/settings in
+ * Phase 4", and that numbering was the onboarding plan's own, not
+ * app-platform-plan.md's P4, and no such endpoint is planned.) */
 
 /* --------------------------------------------------------------------------
  * Timezone — device config, never a firmware constant.
@@ -1360,6 +1364,16 @@ static esp_err_t h_status(httpd_req_t *req)
      * inside its own 768 B buffer — which is why the frame is 1536 now; re-measure
      * on the device and shrink it back if the rows stay short.
      *
+     * The mac field joins from the fleet line: a fixed 21 B ("mac":"..." plus its
+     * comma), counted off the wire. The fleet build measured 668-676 B on orb-B on
+     * 2026-10-12 at the 960 frame, tz at "US/Central", the -dirty stamp adding the
+     * extra 5-7 B. The merged body must be re-measured on the cable
+     * (`curl -s ORB/api/v1/status | wc -c`). The value is verified against
+     * hardware: orb-B reported 44bd8d782618, equal to `esptool read_mac` on that
+     * board, to the eFuse read through the native Go flasher, and to the USB
+     * serial-number descriptor sysfs exposes for the same port. The SOFTAP
+     * variant would have ended 2619, one off, and every hub join key is BASE.
+     *
      * Static, not stack, per the s_scan_json rule above: 1536 B on a 4 KB httpd
      * task was already most of the stack, and D19's second name list per row
      * (declared, beside grants) pushed the frame past the point where a glance
@@ -1516,8 +1530,27 @@ static esp_err_t h_status(httpd_req_t *req)
             snprintf(apps_json, sizeof apps_json, "[{\"error\":\"ledger too large\"}]");
     }
 
+    /* The chip's BASE MAC, not the SoftAP one. esp_read_mac(ESP_MAC_WIFI_SOFTAP)
+     * returns base+1 on this target (mac_addr.c:366-387 derives it as memcpy(base)
+     * then mac[5] += 1, live because CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y), and
+     * both of the hub's join keys are BASE: the USB serial-number descriptor
+     * (esprom/usbclass.go:22-25) and the flasher's eFuse read
+     * (esprom/commands.go:222-231, ROM targets/esp32s3.py). Reporting
+     * SOFTAP here would miss every cable/LAN correlation by one in the last
+     * octet, and would look entirely healthy on a bench with no radio. Lowercase
+     * hex with no separators, so the wire form is stable and the hub only has to
+     * canonicalize case. Empty on the impossible read failure, which the hub
+     * treats as "unidentified" rather than matching every other empty MAC. */
+    uint8_t base_mac[6] = { 0 };
+    char mac_str[13] = { 0 };
+    if (esp_read_mac(base_mac, ESP_MAC_BASE) == ESP_OK) {
+        snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
+                 base_mac[0], base_mac[1], base_mac[2],
+                 base_mac[3], base_mac[4], base_mac[5]);
+    }
+
     const int n = snprintf(json, sizeof(json),
-        "{\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
+        "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
@@ -1566,7 +1599,7 @@ static esp_err_t h_status(httpd_req_t *req)
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
         s_provisioning ? "provisioning" : "down",
-        s_ip, rssi, app->version, app->idf_ver,
+        s_ip, mac_str, rssi, app->version, app->idf_ver,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),

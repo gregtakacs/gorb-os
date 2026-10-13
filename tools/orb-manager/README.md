@@ -281,13 +281,16 @@ comparison against every cached identity without probing again.
   through that same proxy. No subnet scan, no ARP table.
   - **Theme card.** List the orb's SD themes, `Use` one, restore the built-in
     face, `Re-read card`, delete one (it asks first — the firmware's delete is a
-    plain unlink and there is no undo from here), and push a `theme.bin` exported
+    plain unlink and there is no undo from here), and push a `.orbtheme` exported
     from the Theme Editor straight to the orb. The hub never writes that file to
     its own disk. Every one of these is a call to
     `internal/orbnet/themes.go`, the single module that dials the device theme
-    API, so the orb-`id` scheme `docs/theme-identity-plan.md` plans for lands in
-    one file rather than six handlers. This card does not pre-empt that plan and
-    does not rename what the firmware still calls a slug.
+    API. A theme's identity is the `name` baked inside its container; the orb
+    files it under `theme_id(name)` = `sha256(name)[:12]`, and that 12-hex `id`
+    is the only handle `install` and `delete` accept, because the device has no
+    route that takes a name. The card shows the name and sends the id. There is
+    no name box on an upload: the name is already in the file, and the hub reads
+    it out of the header to tell you where the theme will land.
   - **USB console (read-only).** Opens the port, forwards what the running app
     prints for a bounded window, closes. Nothing is written to the wire and the
     orb is not reset — this is `tools/cap.py` for someone with no Python and no
@@ -337,12 +340,12 @@ headless; a mismatch aborts before erasing.
 | `POST /api/orb/allow` | `{"ip"}` — register the address the operator just committed to, which is what lets `/orb/` dial it |
 | `POST /api/orb/forget` | `{"ip"}` — drop an address from the dialable set without restarting the hub |
 | `GET  /api/orb/known` | the remembered address, the learned set, and where the state file lives |
-| `POST /api/theme/list` | `{"ip"}` — the orb's SD themes plus card state, mount, active face, and the last refused install |
-| `POST /api/theme/install` | `{"ip","name"}` — queue an install; the device reboots itself when the copy verifies |
+| `POST /api/theme/list` | `{"ip"}` — the orb's SD themes plus card state, mount, active face, and the last refused install. Each row carries the `name` and the `id` the orb derived from it |
+| `POST /api/theme/install` | `{"ip","id"}` — queue an install by the 12-hex id `list` returned; the device reboots itself when the copy verifies |
 | `POST /api/theme/default` | `{"ip"}` — restore the built-in face |
-| `POST /api/theme/delete` | `{"ip","name"}` — remove a theme from the card (the UI confirms first) |
+| `POST /api/theme/delete` | `{"ip","id"}` — remove a theme from the card by id (the UI confirms first) |
 | `POST /api/theme/rescan` | `{"ip"}` — re-read the card without rebooting |
-| `POST /api/theme/upload` | `?ip&name`, body = raw `theme.bin` — push a theme to the orb; never written to the hub's disk |
+| `POST /api/theme/upload` | `?ip[&overwrite=1]`, body = the raw `.orbtheme` — push a theme; never written to the hub's disk. No name: the orb files it under the name inside the container, and `overwrite` is the answer to the 409 it raises when a different theme already holds that name |
 | `POST /api/console` | `{"port","secs"}` — NDJSON of what the running app prints; read-only, and a port operation |
 
 Every route above that CHANGES something (`/api/flash`, `/api/flash/cancel`,
@@ -454,7 +457,7 @@ identity.go          port identity: the probe cache, /api/ports and /api/ports/p
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
-theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal name
+theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal theme id
 console.go           POST /api/console: read-only USB console, registered as a port operation
 state.go             remembered orb addresses (state.json under the OS config dir; addresses only)
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
@@ -473,7 +476,15 @@ cmd/orbpack/         release-time packer: build dir + manifest -> the committed 
 cmd/orbprobe/        headless "what is on this cable", same probe the Identify button runs
 internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
                      unshared CreateFile handle on Windows
-internal/orbnet/     single-orb status client (no sweep, no ARP)
+internal/orbnet/     single-orb status client (no sweep, no ARP), and the device theme API
+internal/orbfake/    the theme/console device double, written from main/net/orb_net.c. Both
+                     the Go suite and cmd/orbfake run this one copy. Keep it that way: the
+                     first double was transcribed from the hub's own client, so it answered
+                     ?name=, agreed with the bug, and stayed green while every real orb
+                     400-ed an install. It keeps its own copy of the 12-hex id rule and the
+                     container read for exactly that reason — drift between the two copies
+                     is a failing test, not a shared assumption.
+cmd/orbfake/         runs that double as a listening server for a human driving a real hub
 web/                 the embedded hub UI (index.html, app.css, app.js)
 ```
 

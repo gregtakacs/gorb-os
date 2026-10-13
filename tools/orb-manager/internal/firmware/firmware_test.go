@@ -21,9 +21,22 @@ const testManifest = `{"flash_settings":{"flash_mode":"dio","flash_size":"16MB",
 
 // espImage builds bytes with a valid ESP image header so the offset-0 validation
 // passes, plus an appended esp_app_desc_t for the provenance check.
+// espImage builds bytes with a valid ESP image header so the offset-0 validation
+// passes, plus an appended esp_app_desc_t for the provenance check.
+//
+// The header is the real packed shape, all 24 bytes (esp_app_format.h:79-107),
+// with the 2-byte LE chip ID at 12-13 carrying ESP_CHIP_ID_ESP32S3 = 9. The
+// flash gate reads that field, so a fixture that left it zero would be an image
+// for the original ESP32 and would be rightly refused. The descriptor sits
+// wherever findAppDesc locates its magic, so lengthening the header cannot move
+// a field a test depends on.
 func espImage(extra []byte) []byte {
-	head := []byte{0xE9, 0x01, 0x02, 0x22, 0, 0, 0, 0}
-	return append(append([]byte{}, head...), extra...)
+	head := make([]byte, 24)
+	head[0], head[1], head[2], head[3] = 0xE9, 0x01, 0x02, 0x22
+	head[12], head[13] = 0x09, 0x00
+	out := make([]byte, 0, len(head)+len(extra))
+	out = append(out, head...)
+	return append(out, extra...)
 }
 
 func le32(b []byte, v uint32) {

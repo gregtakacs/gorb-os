@@ -205,14 +205,17 @@ belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see ho
 block are tested. Do not claim a radio-dependent behavior is verified.
 ## Clock themes from watch-designer kits (tourbillon/animated second hand)
 
-`tools/bake_clock.py` takes a layered watch kit (`assets/sources/watch-orbital-kit.zip`
-is the shipped example: base gear frames, hands/, layers/{dial,glass,outer}, a
-15-frame tourbillon/, and a manifest.json carrying every pivot/centre). Do NOT
-trust the manifest's tourbillon `centre`: it is the renderer's own claim and was
-found wrong by half a texel on both axes (kit2: declared [233,233], measured
-centroid (232.5,232.5) — a texel corner no integer pivot can sit on, giving a
-1.70 px hub bob). Run `python3 tools/kit_check.py <kit.zip>` on the zip BEFORE
-baking and let it gate the drop; see `docs/tourbillon-axis-spec.md`. After the
+`tools/bake_clock.py` takes a layered watch kit: base gear frames, hands/,
+layers/{dial,glass,outer}, an optional tourbillon/, and a manifest.json carrying
+every pivot/centre. The only kit the repo still ships is
+`assets/sources/av-kit/watch-aviator-kit.zip`, the source of the embedded bank;
+it has no tourbillon. Do NOT trust the manifest's tourbillon `centre`: it is the
+renderer's own claim and was found wrong by half a texel on both axes (kit2:
+declared [233,233], measured centroid (232.5,232.5) — a texel corner no integer
+pivot can sit on, giving a 1.70 px hub bob). Run
+`python3 tools/kit_check.py <kit.zip>` on the zip BEFORE baking and let it gate
+the drop; see `docs/tourbillon-axis-spec.md`. The gate needs a kit WITH a
+tourbillon, so it takes an exported kit, not the shipped av-kit. After the
 bake, `python3 tools/sim_tourb_bob.py` re-measures on the emitted pair. The three
 tools share one implementation (sim_tourb_mark's integer maths, kit_check's red
 gate), so they cannot disagree.
@@ -221,27 +224,41 @@ generated together and must be committed together — the firmware reads
 `clk_theme` by layout, so a stale half of the pair is a corrupt dial.
 System python has no PIL; use a venv with `pillow numpy` for both tools.
 
-    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit.zip /tmp/out
-    /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-tourbillon \
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py <kit.zip> /tmp/out
+    /tmp/bakevenv/bin/python tools/bake_clock.py /tmp/out/theme \
         --bg-frames /tmp/out/frames --bg-fps 15 \
-        --tourbillon <unzipped kit>/tourbillon --tourbillon-fps 15 \
-        --force-sweep --tick-rate 15 --dump-dir assets/preview-orbital
+        --tourbillon /tmp/out/tourbillon --tourbillon-fps 15 \
+        --force-sweep --tick-rate 15 --dump-dir /tmp/preview
 
-The SHIPPED theme is orbital-arrow-3 (kit3). The committed blob rebuilds
-byte-identically from the committed zip — verify that before believing any bake
-(the emitted `.h` differs only in its provenance comment, which records the input
-dir path, so compare the `.bin` by md5 and the `.h` by ignoring line 4):
+The SHIPPED compiled-in bank is **av-kit** (composer preset `Aviator`, 15 base
+frames at 15 fps, no tourbillon), not kit3. Its source kit is committed at
+`assets/sources/av-kit/` with its `DESIGN_ID`; read that folder's README before
+re-baking. It reproduces exactly on the geometry half and to within 59 bytes
+(0.005%, one 1-px antialiasing fringe at 932 B stride) on pixels — measured
+2026-10-12 by running the recipe below against the committed zip. Verify rather
+than believe: the emitted `.h` differs only in its provenance comment, which
+records the input dir path, so compare the `.bin` by md5 and the `.h` by ignoring
+line 4. `assets/clock_assets.h:3` names the source theme; if it disagrees with the
+kit you just baked, you baked the wrong kit.
 
-    unzip -q assets/sources/watch-orbital-kit3.zip -d /tmp/k3
-    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/watch-orbital-kit3.zip /tmp/kit3
-    /tmp/bakevenv/bin/python tools/bake_clock.py assets/sources/orbital-arrow-3 \
-        --bg-frames /tmp/kit3/frames --bg-fps 8 \
-        --tourbillon /tmp/kit3/tourbillon --tourbillon-fps 8 \
-        --force-sweep --tick-rate 8 --dump-dir assets/preview-orbital-arrow-3
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/av-kit/watch-aviator-kit.zip /tmp/p1/av-kit
+    /tmp/bakevenv/bin/python tools/bake_clock.py /tmp/p1/av-kit/theme \
+        --bg-frames /tmp/p1/av-kit/frames --bg-fps 15 --tick-rate 15 --force-sweep
 
-It bakes carriage bbox=(109,46,249,310) pivot=(233,233) centre=(233,233), i.e.
-header pivotx/pivoty = (124,187), which is 0.0000 px from the measured staff
-axis. kit2 is superseded but its zip stays as `kit_check.py`'s must-fail fixture.
+The 59-page **flagship** bench bank (`LAT_BYTES_KIT3 = 3858874` in
+`main/art/art_bank.c:642`) was baked from `watch-orbital-kit3.zip`, sha256
+c910be26dde63eb4... That zip and its prep output left the repo on 2026-10-12;
+`git log --diff-filter=D -- assets/sources/` recovers them. The constant is a
+pinned measurement of art no longer in the tree, so re-running that bake
+requires the kit back from history first. `headless-orbtheme.test.js`'s
+whole-container fixture now bakes the shipped av-kit instead: prep it with
+`prep_watch_kit.py`, then bake with `--bg-fps 15 --tick-rate 15 --matte off
+--bg-occlude auto`, which mirrors the JS side's manifest-derived cadence.
+
+What kit3 measured, kept as the acceptance record: carriage
+bbox=(109,46,249,310) pivot=(233,233) centre=(233,233), i.e. header
+pivotx/pivoty = (124,187), 0.0000 px from the measured staff axis. kit2 was the
+rejected case (0.707 px off-axis) and is likewise no longer committed.
 
 Layer mapping (kit drawOrder -> compositor slots, verified against the ink radial
 surveys — check the same numbers before trusting a new kit's art into a slot):
@@ -361,8 +378,9 @@ work — and of the artifacts — was simply being skipped. Correct marks cost
 what they cost; speed work must shave per-px blend cost, not coverage.)
 Before the rotated-ink marks + commit flush gate, sweep ran 5 fps at ~450
 rows/commit.
-`assets/preview-orbital/` holds the bake's own inspection
-PNGs (canvas_NN, stale_NN must be black, sprites over checkerboard).
+`--dump-dir` writes the bake's own inspection PNGs (canvas_NN, stale_NN must be
+black, sprites over checkerboard). They are debug output, not inputs: point it
+outside the repo, nothing reads them.
 
 ## The theme upload path, and what the no-card bench can prove about it
 
@@ -388,8 +406,9 @@ functions verbatim from `orb_sd.c` / `orb_theme.c` / `orb_net.c`. Same rule as
 - **The header reader**, real containers from `tools/orbtheme.py` plus
   deliberately damaged ones (bad magic, wrong format/version, wrong device,
   wrong panel size, implausible blob, oversized payload, torn header, trailing
-  words). One known-answer row: the shipped `orbital-arrow-3.orbtheme` header
-  must be ACCEPTED. A stub of `esp_rom_crc32_le` sits in the harness and must
+  words). One known-answer row: a header copied out of the orbital-arrow-3 bake
+  is embedded in the harness and must be ACCEPTED. A stub of `esp_rom_crc32_le`
+  sits in the harness and must
   match the ROM's init/final inversion, that row is what proves the stub.
 - **`/themes`' own `<script>`**, parsed with esprima (a missing parser is a
   loud SKIP, never a pass), every function it calls matched against the

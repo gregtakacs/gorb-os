@@ -289,6 +289,21 @@ func TestMetaLineFieldsMatchBetweenClientAndHandler(t *testing.T) {
 	}
 }
 
+// espImageStub completes a hand-written ESP app-image stub into the real packed
+// header length, all 24 bytes (esp_app_format.h:79-107), with the ESP32-S3 chip
+// ID in its 12-13 field. A fixture that opens with the 0xE9 magic has to answer
+// for the fields the ROM and the hub's flash gate read out of it, and a 9-byte
+// literal is not an image idf.py could have produced: esprom.CheckPlanChipIDs
+// refuses one, correctly. The original literals' trailing marker byte is kept at
+// index 8 so the images stay distinguishable, and no descriptor magic is planted,
+// so these still read as "unknown firmware" exactly as before.
+func espImageStub(b ...byte) []byte {
+	out := make([]byte, 24)
+	copy(out, b)
+	out[12], out[13] = 0x09, 0x00
+	return out
+}
+
 // fakeBundle builds a firmware bundle in memory the way the release step does,
 // so the API tests exercise the same loader an uploaded file goes through.
 func fakeBundle(t *testing.T) *firmware.Bundle {
@@ -296,7 +311,7 @@ func fakeBundle(t *testing.T) *firmware.Bundle {
 	manifest := []byte(`{"flash_settings":{"flash_mode":"dio","flash_size":"16MB"},` +
 		`"flash_files":{"0x0":"bootloader/bootloader.bin","0x10000":"orb.bin","0x420000":"../assets/clock_assets.bin"}}`)
 	files := map[string][]byte{
-		"bootloader/bootloader.bin":  {0xE9, 0x00, 0x02, 0x22, 1, 0, 0, 0, 'b'},
+		"bootloader/bootloader.bin":  espImageStub(0xE9, 0x00, 0x02, 0x22, 1, 0, 0, 0, 'b'),
 		"orb.bin":                    []byte("app"),
 		"../assets/clock_assets.bin": []byte("art"),
 	}
@@ -500,10 +515,10 @@ func TestHubWithoutFirmwareSaysSo(t *testing.T) {
 func testBundleBytes(t *testing.T) []byte {
 	t.Helper()
 	files := map[string][]byte{
-		"bootloader/bootloader.bin":           {0xE9, 0x01, 0x02, 0x22, 0, 0, 0, 0, 'b'},
+		"bootloader/bootloader.bin":           espImageStub(0xE9, 0x01, 0x02, 0x22, 0, 0, 0, 0, 'b'),
 		"partition_table/partition-table.bin": nil,
 		"ota_data_initial.bin":                bytes.Repeat([]byte{0xAA}, 8192),
-		"gorb-os.bin":                         {0xE9, 0x01, 0x02, 0x22, 0, 0, 0, 0, 'a'},
+		"gorb-os.bin":                         espImageStub(0xE9, 0x01, 0x02, 0x22, 0, 0, 0, 0, 'a'),
 		"../assets/clock_assets.bin":          []byte("art"),
 	}
 	table := make([]byte, 32)

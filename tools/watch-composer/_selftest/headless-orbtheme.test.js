@@ -304,9 +304,9 @@ import json; sys.stdout.write(json.dumps(out))
 // containers to agree. Everything after the header's bake stamp must match -- the stamp
 // is the wall clock at bake time and the header CRC covers it, so those two words are the
 // only bytes allowed to differ, and both sides' CRC is verified over its own header.
-// The bench run costs ~1.5 s, so its output is cached and reused while the zip is newer.
+// The bench run costs tens of seconds, so its output is cached and reused while the zip is newer.
 (function realKit() {
-  const KIT = path.join(ROOT, 'assets/sources/watch-orbital-kit3.zip');
+  const KIT = path.join(ROOT, 'assets/sources/av-kit/watch-aviator-kit.zip');
   if (!fs.existsSync(KIT)) { ok(false, 'the shipped kit is present to bake', KIT); return; }
   const OUTF = '/tmp/orbtheme_e2e';
   const REF = OUTF + '/ref.orbtheme', STAMP = OUTF + '/.baked';
@@ -319,10 +319,9 @@ import json; sys.stdout.write(json.dumps(out))
     execFileSync(PY, [path.join(ROOT, 'tools/prep_watch_kit.py'), KIT, OUTF + '/theme'],
                  { cwd: ROOT, stdio: 'pipe', maxBuffer: 1 << 24 });
     execFileSync(PY, [path.join(ROOT, 'tools/bake_clock.py'), OUTF + '/theme/theme',
-                      '--bg-frames', OUTF + '/theme/frames', '--bg-fps', '8',
-                      '--tourbillon', OUTF + '/theme/tourbillon', '--tourbillon-fps', '8',
-                      '--tick-rate', '8', '--matte', 'off', '--bg-occlude', 'auto',
-                      '--orbtheme', REF, '--theme-name', 'orbital3',
+                      '--bg-frames', OUTF + '/theme/frames', '--bg-fps', '15',
+                      '--tick-rate', '15', '--matte', 'off', '--bg-occlude', 'auto',
+                      '--orbtheme', REF, '--theme-name', 'aviator',
                       '--bin', OUTF + '/a.bin', '--header', OUTF + '/a.h'],
                  { cwd: ROOT, stdio: 'pipe', maxBuffer: 1 << 24 });
     fs.writeFileSync(STAMP, '');
@@ -341,7 +340,7 @@ import json; sys.stdout.write(json.dumps(out))
                             (u) => new Uint8Array(inflateSync(Buffer.from(u))));
   }
   let js = null, why = '';
-  try { js = B.bakeKit({ manifest, planes, name: 'orbital3', serial: 0, bakedMs: 0 }).bytes; }
+  try { js = B.bakeKit({ manifest, planes, name: 'aviator', serial: 0, bakedMs: 0 }).bytes; }
   catch (e) { why = e && e.message || String(e); }
   ok(!!js, 'the real kit bakes without throwing', why);
   if (!js) return;

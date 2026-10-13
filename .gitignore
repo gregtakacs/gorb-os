@@ -7,6 +7,15 @@ dependencies.lock
 .cache/
 .vscode/
 __pycache__/
+# bake_clock.py --dump-dir output: debug art, never an input. Patterns are unanchored
+# file kinds, so a dump in a folder of any name is ignored (the earlier folder-name rule
+# let 40 such PNGs get committed as assets/preview-orbital-arrow-3/).
 assets/preview/
 assets/rawframe_*.png
+canvas_*.png
+stale_*.png
+rects_*.png
+mask_*.png
+sprite_*.png
+keyframe.png
 .orb-target

@@ -174,6 +174,14 @@ func Load(raw []byte, source string) (*Bundle, error) {
 	if b.Project != "" && !strings.EqualFold(b.Project, "gorb-os") {
 		return nil, fmt.Errorf("firmware bundle %s is the project %q, not gorb-os; the hub only flashes gorb-os releases", source, b.Project)
 	}
+	// Same gate the flasher applies, applied here: a bundle holding an image for
+	// another Espressif chip should disable the Flash button, not start a flash
+	// that ends with an orb whose sectors are written and whose app cannot boot.
+	// esprom.CheckPlanChipIDs skips the headerless members (partition table,
+	// otadata, assets), so this is not a demand that every file be an app image.
+	if err := esprom.CheckPlanChipIDs(esprom.FlashPlan{Images: b.Images}); err != nil {
+		return nil, fmt.Errorf("firmware bundle %s: %w", source, err)
+	}
 	if pt := b.imageNamed("partition-table.bin"); pt != nil {
 		b.partTable = pt.Data
 	}

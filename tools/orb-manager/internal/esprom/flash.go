@@ -39,6 +39,75 @@ func parseImageHeader(b []byte) (magic byte, numSeg byte, flashMode byte, sizeFr
 	return b[0], b[1], b[2], b[3], binary.LittleEndian.Uint32(b[4:8]), nil
 }
 
+// imageChipIDOff is where a packed esp_image_header_t carries its 2-byte LE
+// chip ID: 8 bytes of magic/segments/flash-mode/entry, then wp_pin and the
+// three spi_pin_drv bytes (esp_app_format.h:79-89). The header is asserted to
+// be exactly 24 bytes there, so a short blob is not a header to read.
+const imageChipIDOff = 12
+
+// chipIDName maps esp_chip_id_t (esp_app_format.h:20-28) to the words a human
+// needs. The ordinary cause of a mismatch here is picking an unrelated ESP-IDF
+// build out of a Downloads folder, and "chip ID 13" does not tell that person
+// which build they picked, and "ESP32-C6" does.
+func chipIDName(id uint16) string {
+	switch id {
+	case 0x0000:
+		return "ESP32"
+	case 0x0002:
+		return "ESP32-S2"
+	case 0x0005:
+		return "ESP32-C3"
+	case s3ImageChipID:
+		return "ESP32-S3"
+	case 0x000C:
+		return "ESP32-C2"
+	case 0x000D:
+		return "ESP32-C6"
+	case 0x0010:
+		return "ESP32-H2"
+	case 0x0012:
+		return "ESP32-P4"
+	case 0x0017:
+		return "ESP32-C5"
+	case 0xFFFF:
+		return "no chip ID"
+	}
+	return fmt.Sprintf("unknown chip (ID %d)", id)
+}
+
+// CheckPlanChipIDs refuses a plan that would write an image built for another
+// Espressif chip onto the ESP32-S3.
+//
+// VerifyS3 proves the chip on the wire is an S3; nothing proved what was about
+// to be written into it. s3ImageChipID sat declared and unreferenced for exactly
+// this long. The damage this stops is not a wasted flash: an app image for a
+// different chip still writes cleanly at its offset, and the orb comes back dead
+// with no bootloader complaint, because the ROM accepted the bytes.
+//
+// Only an image carrying the ESP image magic is checked. A partition table, an
+// otadata blob and the assets bin are raw tables with no header, and refusing
+// them would break every real flash, so they pass here and the decision to
+// leave them alone is tested, not assumed.
+func CheckPlanChipIDs(p FlashPlan) error {
+	for _, img := range p.Images {
+		if len(img.Data) == 0 {
+			continue
+		}
+		if img.Data[0] != espImageMagic {
+			continue // headerless by design: partition table, otadata, assets
+		}
+		if len(img.Data) < imageChipIDOff+2 {
+			return fmt.Errorf("%s: ESP image is %d B, too short to carry a chip ID", img.Name, len(img.Data))
+		}
+		id := binary.LittleEndian.Uint16(img.Data[imageChipIDOff : imageChipIDOff+2])
+		if uint16(s3ImageChipID) != id {
+			return fmt.Errorf("%s is built for the %s (chip ID %d), not the ESP32-S3 this hub flashes; check the bundle",
+				img.Name, chipIDName(id), id)
+		}
+	}
+	return nil
+}
+
 // pad4 appends 0xFF so len(b) is a multiple of 4 (esptool pad_to(image,4)).
 // pad4 rounds an image up to a 4-byte flash boundary. It always copies: the
 // bytes it is handed come from a bundle shared by every flash this hub serves,
@@ -188,6 +257,15 @@ func Session(pt *Port, o Options) error {
 
 	if err := d.VerifyS3(); err != nil {
 		return err
+	}
+
+	// Refuse a wrong-chip bundle here, before SpiAttach and the erase: the first
+	// write is the point of no return for the sectors it lands on, and a plan
+	// that cannot boot should never reach the point where the old firmware is
+	// gone. Checked over the whole plan at once rather than per image below, so
+	// the second image cannot be the one that discovers it.
+	if err := CheckPlanChipIDs(o.Plan); err != nil {
+		return fmt.Errorf("refusing to flash: %w", err)
 	}
 
 	// USB-JTAG/Serial does not feed the RTC/SWD watchdogs, so they reset the

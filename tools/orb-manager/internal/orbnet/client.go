@@ -19,9 +19,17 @@ import (
 // synced and ap as bare true/false JSON booleans, rssi/tz_offset as numbers,
 // and slot/fw always populated (fw from app->version, slot label or "?"),
 // which is what the scan classifies an orb on.
+//
+// MAC is the chip's BASE MAC as 12 lowercase hex digits with no separators. It
+// is deliberately not the SoftAP MAC, which is base+1 on this target and would not
+// join to the USB serial descriptor or the flasher's eFuse read. It is empty
+// when the firmware could not read it; callers must never treat an empty MAC as
+// a match, which is why the fleet store keys on it only after macNorm rejects
+// empty.
 type Status struct {
 	State      string `json:"state"`
 	IP         string `json:"ip"`
+	MAC        string `json:"mac"`
 	Rssi       int    `json:"rssi"`
 	FW         string `json:"fw"`
 	IDF        string `json:"idf"`

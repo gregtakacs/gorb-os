@@ -55,7 +55,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	page := readWebFile(t, "index.html")
 	for _, id := range []string{
 		"mn-themecard", "mn-themes", "mn-themestate", "mn-default", "mn-rescan",
-		"mn-fw-file", "mn-up-btn", "mn-up-name", "mn-up-state",
+		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
 	} {
@@ -75,19 +75,88 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	}
 }
 
-// The theme list arrives from the orb's SD card, so its names and titles are
-// device-supplied bytes. They must be built with DOM APIs, never interpolated into
-// markup — the same rule the firmware panel's escaping test enforces server-side, and
-// the one a "simplification" would quietly undo.
+// The theme list arrives from the orb's SD card, so its names are device-supplied bytes.
+// They must be built with DOM APIs, never interpolated into markup — the same rule the
+// firmware panel's escaping test enforces server-side, and the one a "simplification"
+// would quietly undo.
 func TestThemeRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	body := blockOf(t, readAppJS(t), "function themeRow")
 	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "${", "outerHTML"} {
 		if strings.Contains(body, bad) {
-			t.Errorf("themeRow uses %s; theme names and titles are device-supplied and must go through textContent", bad)
+			t.Errorf("themeRow uses %s; theme names are device-supplied bytes and must go through textContent", bad)
 		}
 	}
 	if !strings.Contains(body, "createElement") || !strings.Contains(body, "textContent") {
 		t.Error("themeRow must build its row with createElement/textContent")
+	}
+}
+
+// FORMAT 2 leaves a theme exactly one identifier a caller may address: the 12-hex id the
+// orb derived from the name baked inside the container. The device has no route that
+// takes a name, so every pin here is the difference between a card that works and one
+// where every button answers "id is missing or not a theme id" — the state this client
+// shipped in, green, because the only thing it was ever tested against was a fake that
+// agreed with it.
+func TestThemeCardAddressesThemesByID(t *testing.T) {
+	row := blockOf(t, readAppJS(t), "function themeRow")
+
+	for _, want := range []string{"t.id", "/api/theme/install", "/api/theme/delete"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("themeRow never mentions %s, so the row is not addressing the orb's way", want)
+		}
+	}
+	// The buttons must hand over the id, and must not hand over a name: the hub has no
+	// route that would accept one, and the old card did exactly this.
+	for _, gone := range []string{"name: t.name", "title: t.title", "?name="} {
+		if strings.Contains(row, gone) {
+			t.Errorf("themeRow sends %s; a theme is addressed by the id the orb listed, not by a name", gone)
+		}
+	}
+	// FORMAT 1's separate display title is gone: one field is the name and the label.
+	if strings.Contains(row, "t.title") {
+		t.Error("themeRow reads t.title; FORMAT 2 headers carry one name and no title")
+	}
+	// The label is the name — the human-facing half of the identity.
+	if !strings.Contains(row, "label.textContent = t.name") {
+		t.Error("themeRow no longer labels the row with the theme's name, which is the identity an owner reads")
+	}
+
+	// An upload is named by its bytes. A box that asks the operator to type one lies to
+	// them: the device reads no such argument and files the theme under the name inside
+	// the file, so what it shows afterwards would not be what the card did.
+	src := readAppJS(t)
+	if strings.Contains(src, "mn-up-name") {
+		t.Error("app.js still asks the operator to name an upload; the name lives inside the container")
+	}
+	upload := blockOf(t, src, `$("#mn-fw-file").onchange`)
+	if strings.Contains(upload, "&name=") {
+		t.Error("the upload posts a name; h_theme_upload reads none")
+	}
+	// The replace decision is a second send with the firmware's flag on it: the card has
+	// to reach it from the refusal, and the flag has to be the one string the device reads.
+	if !strings.Contains(upload, "uploadTheme(f, true") {
+		t.Error("the upload has no path that retries with the replace flag, so a same-name re-bake dead-ends")
+	}
+	if !strings.Contains(blockOf(t, src, "async function uploadTheme"), "overwrite=1") {
+		t.Error("the retry never sets ?overwrite=1, the only upload argument the firmware reads")
+	}
+}
+
+// The orb keys the two failure sentences it reports — the install it refused and the copy
+// boot could not load — on the theme id. They have to reach the row they belong to, or a
+// press that did nothing is indistinguishable from one that worked, which is the C8 lesson
+// the firmware's own panel applies the same way.
+func TestThemeCardSurfacesTheOrbsOwnRefusals(t *testing.T) {
+	row := blockOf(t, readAppJS(t), "function themeRow")
+	for _, want := range []string{"try_id", "try_why", "damage_id", "damage_why"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("themeRow ignores %s, so a refused install stays silent on the card", want)
+		}
+	}
+	// An overwrite keeps the name and so the id: without the changed flag the row claims
+	// to be the face on the glass after the card moved on underneath it.
+	if !strings.Contains(row, "t.changed") {
+		t.Error("themeRow drops changed, so an overwritten theme keeps reporting itself as drawn")
 	}
 }
 

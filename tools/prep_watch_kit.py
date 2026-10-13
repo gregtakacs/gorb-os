@@ -739,7 +739,7 @@ def main():
         theme, frames, fps))
     if has_tb:
         print("      --tourbillon {} --tourbillon-fps {} \\".format(tb_dir, fps))
-    print("      --tick-rate {} --dump-dir assets/preview-orbital".format(
+    print("      --tick-rate {} --dump-dir /tmp/preview".format(
         1 if tick else fps))
 
 

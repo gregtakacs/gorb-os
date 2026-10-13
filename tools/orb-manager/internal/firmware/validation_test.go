@@ -171,3 +171,54 @@ func TestDescriptorFieldsDropControlCharacters(t *testing.T) {
 		t.Errorf("Version = %q, want the printable characters of the planted value", b.Version)
 	}
 }
+
+// The chip gate, at the one place a wrong file actually arrives: the bundle
+// dialog. A build for another Espressif chip writes cleanly at its offset and
+// boots as nothing, with no complaint from the ROM, so refusing it has to happen
+// while the operator still has a Flash button to leave disabled.
+func TestLoadRefusesAnImageForAnotherChip(t *testing.T) {
+	files := makeFiles(t)
+	app := append([]byte{}, files["gorb-os.bin"]...)
+	app[12], app[13] = 0x0D, 0x00 // ESP_CHIP_ID_ESP32C6
+	files["gorb-os.bin"] = app
+
+	_, err := Load(pack(t, files, testManifest), "c6.zip")
+	if err == nil {
+		t.Fatal("a bundle holding an ESP32-C6 app image was accepted")
+	}
+	if !strings.Contains(err.Error(), "ESP32-C6") {
+		t.Errorf("error = %v, want it to name the chip that was found", err)
+	}
+	if !strings.Contains(err.Error(), "gorb-os.bin") {
+		t.Errorf("error = %v, want it to name the offending image", err)
+	}
+}
+
+// The gate must not become a demand that every member be an app image: the real
+// manifest's partition table and otadata carry no 0xE9 header at all, and
+// refusing them would disable flashing entirely.
+func TestLoadAcceptsHeaderlessManifestMembers(t *testing.T) {
+	b, err := Load(pack(t, makeFiles(t), testManifest), "good.zip")
+	if err != nil {
+		t.Fatalf("the good bundle was refused: %v", err)
+	}
+	for _, name := range []string{"partition-table.bin", "ota_data_initial.bin"} {
+		if b.imageNamed(name) == nil {
+			t.Errorf("%s missing from the loaded plan", name)
+		}
+	}
+}
+
+// The bootloader is checked too, not just the app: it is the image that decides
+// whether anything boots, and a wrong-chip bootloader is the one mismatch an
+// operator cannot recover from by reflashing the app.
+func TestLoadRefusesAWrongChipBootloader(t *testing.T) {
+	files := makeFiles(t)
+	boot := append([]byte{}, files["bootloader/bootloader.bin"]...)
+	boot[12], boot[13] = 0x00, 0x00 // ESP_CHIP_ID_ESP32
+	files["bootloader/bootloader.bin"] = boot
+
+	if _, err := Load(pack(t, files, testManifest), "esp32-bootloader.zip"); err == nil {
+		t.Fatal("a bundle holding an ESP32 bootloader was accepted")
+	}
+}

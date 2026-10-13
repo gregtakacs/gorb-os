@@ -128,9 +128,14 @@ cache win. Do not retry it in that form.
 Two gates, run in this order. Both must exit 0.
 
 ```
-python3 tools/kit_check.py assets/sources/watch-orbital-kit3.zip   # the ART
-python3 tools/sim_tourb_bob.py                                      # the BAKED pair
+python3 tools/kit_check.py <kit.zip>       # the ART — any kit with a tourbillon
+python3 tools/sim_tourb_bob.py             # the BAKED pair
 ```
+
+The repo ships no kit with a tourbillon any more: the orbital kits this spec was
+written against were removed on 2026-10-12 (`assets/sources/watch-orbital-kit*.zip`,
+recoverable from git history), and the committed av-kit has no carriage to check.
+Supply an exported kit to run the art gate.
 
 `kit_check.py` decodes every `tourbillon/frame_NN.png`, isolates the red staff
 jewel (`alpha >= 60`, `R > 100`, `R - max(G,B) > 40`), and asserts: centroid ==
@@ -148,9 +153,12 @@ and disagree. Its controls perturb the stored pivot by one texel and must show
 several px of travel — they do (3.04 px at +1,+1), which proves the measurement
 is geometric rather than sampling noise.
 
-`assets/sources/watch-orbital-kit2.zip` is kept as the regression fixture:
-`kit_check.py` must exit 1 on it, reporting the `(-0.5, -0.5)` defect. Broken
-bytes that prove the gate fires are worth keeping.
+`assets/sources/watch-orbital-kit2.zip` — the off-axis kit this gate was written for,
+sha256 `c13fe2f7d178aa31…`, 3,493,631 B — was the regression fixture: `kit_check.py`
+exits 1 on it, reporting the `(-0.5, -0.5)` defect. It left the repo on 2026-10-12 with
+the rest of the orbital art, so the gate currently has no must-fail input in-tree.
+Restore it from git history to re-run that half; broken bytes that prove the gate fires
+are worth keeping, and the numbers above are the acceptance record for the replacement.
 
 ## Negative results
 

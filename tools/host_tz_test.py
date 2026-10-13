@@ -105,6 +105,12 @@ pidle_fn = lift(r"static bool prov_ap_idle\(bool[^;]*?return[^;]*;\n\}")
 # second wrong leaves a blank "pass" in flash that reads back as a credential).
 commit_fn = lift(r"static bool lease_verifies_creds\(bool[^;]*?return[^;]*;\n\}")
 erase_fn  = lift(r"static bool creds_erase_key\(const char \*pass\)\n\{[^}]*\}")
+# D4 (2026-10-13): the bounded sojourn's two decisions. sojourn_arms is the guard
+# against the reboot loop — a factory orb has no stored network to fall back to, so
+# arming for it would cycle forever; sojourn_reboots decides what a fired deadline
+# means, and it must not be confused with the lease-closes-the-AP path.
+arms_fn = lift(r"static bool sojourn_arms\(bool[^;]*?return[^;]*;\n\}")
+sojreboot_fn = lift(r"static bool sojourn_reboots\(bool[^;]*?return[^;]*;\n\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -275,6 +281,8 @@ harness = f"""
 {pidle_fn}
 {commit_fn}
 {erase_fn}
+{arms_fn}
+{sojreboot_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -390,6 +398,24 @@ static void erase_case(const char *pass, int want){{
            ok ? "ok" : "FAIL",
            pass ? (*pass ? "set" : "empty") : "NULL",
            got ? "erase" : "set", want ? "erase" : "set");
+}}
+/* D4: does this provisioning boot own a deadline? */
+static void arms_case(int recovery, int secs, int want){{
+    const bool got = sojourn_arms(recovery != 0, secs);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s sojourn_arms(recovery=%d sojourn_s=%d) -> %-6s (want %s)\\n",
+           ok ? "ok" : "FAIL", recovery, secs,
+           got ? "ARMED" : "no-timer", want ? "ARMED" : "no-timer");
+}}
+/* D4: a deadline just fired. Reboot, or leave the AP alone? */
+static void sojreboot_case(int sta_up, int recovery, int want){{
+    const bool got = sojourn_reboots(sta_up != 0, recovery != 0);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s sojourn_reboots(sta_up=%d recovery=%d) -> %-6s (want %s)\\n",
+           ok ? "ok" : "FAIL", sta_up, recovery,
+           got ? "REBOOT" : "no-reboot", want ? "REBOOT" : "no-reboot");
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -582,6 +608,22 @@ int main(void)
     erase_case("correct horse", 0);
     erase_case("", 1);
     erase_case(NULL, 1);
+    puts("== D4: the bounded sojourn, and the loop its guard prevents ==");
+    /* (0,600) is the row the whole guard exists for: a FACTORY boot — nothing in
+     * flash to fall back to — with a perfectly ordinary sojourn configured. Arm
+     * there and the orb reboots onto the same provisioning branch, re-arms, and
+     * cycles forever unattended. (1,0) is an operator disabling the exit. */
+    arms_case(0, 600, 0);
+    arms_case(0, 0, 0);
+    arms_case(1, 600, 1);
+    arms_case(1, 0, 0);
+    /* A fired deadline. (1,1) must NOT reboot: the lease arrived, so the session
+     * succeeded and the AP closes on the normal path. (0,0) is every ordinary AP
+     * expiry — rescue or manual — and stays the re-check it always was. */
+    sojreboot_case(0, 1, 1);
+    sojreboot_case(1, 1, 0);
+    sojreboot_case(0, 0, 0);
+    sojreboot_case(1, 0, 0);
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

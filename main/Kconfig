@@ -103,6 +103,32 @@ menu "Orb networking"
             via the passthrough rules), so nothing here links mbedtls's
             server-side SSL path.
 
+    config ORB_NET_MDNS
+        bool "Advertise _orb._tcp over mDNS so the hub can browse for orbs"
+        depends on ORB_NET_ENABLE
+        default y
+        help
+            The hub finds orbs by browsing for the _orb._tcp service instead of
+            sweeping the subnet or being told an address (see
+            docs/orb-manager-plan.md section 5). This answers PTR/SRV/TXT/A for
+            one instance named from the chip's BASE MAC, on the STA interface
+            and, while the SoftAP is open, on that one too — which is the only
+            way a factory-reset orb with no lease can be found at all.
+
+            One UDP socket carries both joins (two IP_ADD_MEMBERSHIP calls),
+            because LWIP_MAX_SOCKETS is 10 and six of them belong to httpd's
+            floor. Hand-rolled rather than the espressif/mdns component for the
+            same margin reason: that one allocates socket pairs per interface.
+
+            The announcement is an index, not an authority: anyone on the LAN
+            can forge these bytes, so the hub still dials /api/v1/status and
+            compares the mac it is told against the mac in the TXT (item 6's
+            cross-lock) before it trusts an address.
+
+            Turn off to reclaim one socket and a 3 KB task stack out of internal
+            DRAM; every other path — page, API, radio — is unaffected. Nothing
+            else in the firmware depends on it.
+
     config ORB_NET_CAPTIVE_DNS
         bool "Answer the AP's DNS so phones pop 'Sign in to network'"
         depends on ORB_NET_ENABLE

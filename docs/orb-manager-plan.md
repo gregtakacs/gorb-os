@@ -557,7 +557,56 @@ to prevent. The mDNS advertiser moved to item 5, to be written against the real
 announcement from item 4: an advertiser built now can only be tested against a
 browser that is also fiction. Item 4's dependency on 3 stands, because announcing a
 service needs no test double.
-| 4 | `feat(net): announce _orb._tcp on the STA and AP interfaces` | 1, 3 |
+| 4 | `feat(net): announce _orb._tcp on the STA and AP interfaces` — done on STA, AP join owed | 1, 3 |
+
+Item 4 shipped `main/net/orb_mdns.c` hand-rolled, one socket with two
+`IP_ADD_MEMBERSHIP` joins, as §5.2's socket note requires. IDF v5.4 has no in-tree
+mDNS component, and the managed one allocates a socket pair per interface against a
+four-socket margin. The captive-DNS responder at `orb_net.c:860` was the in-repo
+template: a pure builder lifted for host tests, and a task that owns its socket.
+
+What the bench settled, measured rather than reasoned:
+
+- IGMP is genuinely compiled in. `#define LWIP_IGMP 1` at
+  `components/lwip/port/include/lwipopts.h:474` in the IDF tree, which is where that
+  §5.2 citation points, and the ELF carries `igmp_joingroup_netif`. Without it an
+  advertiser sends into a void and looks healthy in the log.
+- `IP_PKTINFO` is declared at `sockets.h:282` and never implemented in `sock.c`, so
+  one socket carrying two joins cannot report which join a query arrived on. The A
+  record therefore follows the querier's subnet. Answers go back unicast, which is
+  what makes the missing option harmless.
+- The stack is sized to a reading. FreeRTOS reported 2,020 bytes free of 4,096 after
+  the first announce burst, implying a 2,076-byte peak, and the same peak appeared on
+  the 5,120-byte build before it was cut. The first 3,072-byte version overflowed
+  because it carried three 512-byte packet buffers on that stack; they live in PSRAM
+  now. The task prints its own headroom each boot, so the number cannot silently go
+  stale.
+- The AP SSID derivation is now an observation, retiring §5.2's outstanding line: the
+  boot log prints `advertising orb-782618._orb._tcp (mac=44bd8d782618 ...) while the
+  SoftAP is named orb-2619` on the same board, base and base+1 side by side.
+
+Verification was kept independent on purpose. `tools/host_mdns_test.py` lifts the
+codec between its own banners and asserts wire bytes, with twelve mutations all
+caught; it also lints the plumbing, because the codec is compiled there and the
+plumbing is not. On the wire the announcement is read by python-zeroconf 0.151.5,
+not by anything in this repo: a browser of mine agreeing with an advertiser of mine
+would be the same self-agreement that moved the fake off item 3. It parses PTR, SRV
+`port=80 server=orb-782618.local`, TXT and A, with the cache-flush bit set on the
+three unique records and clear on the shared PTR. Two scripts hold the recipe:
+`tools/bench/probe_orb_mdns.py` and `tools/bench/browse_mdns.py`.
+
+Two limits belong in the ledger rather than in a footnote. First, this WSL2 box does
+not originate multicast onto the LAN: the same PTR query gets 184 bytes back over
+unicast and nothing over the group or broadcast, while inbound multicast is received
+fine. So the browse is verified passively, from the orb's own announce burst after a
+reboot. Second, the SoftAP was never observed on air from this bench. The AP half of
+the join is coded and the per-interface A record is host-tested, but
+`POST /api/v1/wifi/ap` returns 200 without the driver ever logging `WIFI_EVENT_AP_START`, so the
+announcement that half would send has never been seen. That path is not item 4's: the
+responder's hook runs after the AP is up and cannot prevent it, and the same silence
+reproduces with `CONFIG_ORB_NET_MDNS=n`. Item 5 must treat the AP-side announcement
+as unverified until a phone or a second radio browses `192.168.4.0/24`.
+
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |
 | 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |
 | 7 | `feat(orb-manager): merge onboarding into Manage as Add an orb` | 6 |

@@ -48,6 +48,11 @@ SCAN_H = os.path.join(ROOT, "main", "app", "orb_app_scan.h")
 MANIFEST_C = os.path.join(ROOT, "main", "app", "orb_app_manifest.c")
 MANIFEST_H = os.path.join(ROOT, "main", "app", "orb_app_manifest.h")
 SD_H = os.path.join(ROOT, "main", "sd", "orb_sd.h")
+NET_C = os.path.join(ROOT, "main", "net", "orb_net.c")
+MAIN_C = os.path.join(ROOT, "main", "main.c")
+
+NET_OVERRIDE = None            # set only by caller_mutation_fails(): a mutated
+                               # copy of orb_net.c, read under its own path
 
 _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
 orbapp = importlib.util.module_from_spec(_spec)
@@ -57,6 +62,8 @@ NL = "\n"
 
 
 def read(p):
+    if p == NET_C and NET_OVERRIDE is not None:
+        return NET_OVERRIDE                    # caller_mutation_fails' injected copy
     if not os.path.exists(p):
         sys.exit("missing " + p + " — the lifts below have no fallback")
     return open(p, encoding="utf-8").read()
@@ -533,6 +540,120 @@ def lint():
     assert "orb_files_walk(src, scan_entry" in sc
     assert "pread(fd," in sc                   # the walk's fd, never lseek
 
+    # ---- the caller side: the scan is no longer inert --------------------------
+    # The boot ladder registers the drop zone; the log line says so if it does
+    # not, because a silent refusal here is an apps page that lists nothing.
+    mn = read(MAIN_C)
+    assert "orb_app_scan_init()" in mn, "main.c no longer registers the drop zone"
+    nn = read(NET_C)
+    assert '{ .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },' in nn
+    assert '{ .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },' in nn
+    assert "static orbapp_scan_entry_t ent[ORB_APP_SCAN_MAX];" in nn
+    assert "orb_app_scan(ent, ORB_APP_SCAN_MAX)" in nn, \
+        "the endpoint stopped asking the scan for its rows — it is serving a copy"
+    # the chunked-encoding contract: repeated httpd_resp_send is NOT the
+    # documented stream; the chunk API closed with a zero-length chunk is.
+    # A handler that drops the terminator hangs every client waiting for a
+    # body that never ends — invisible to a vector suite, fatal on a phone.
+    assert "httpd_resp_send_chunk(req, NULL, 0)" in nn, \
+        "the apps stream lost its terminating chunk"
+    assert "httpd_resp_sendstr(req, head)" not in nn
+    # one disclosure source: the handler renders orbapp_caps_names' answer and
+    # never spells a capability word itself (the names belong to the reader,
+    # and the reader suite pins them to the writer). Two of the four words are
+    # unmistakable in plain text; a second list would have to name them all.
+    assert "orbapp_caps_names(e->caps, caps" in nn
+    i0 = nn.index("static esp_err_t h_apps_list")
+    body = nn[i0:nn.index("\n/* ", i0)]
+    for word in ("power", "sd_read"):
+        assert word not in body, \
+            "orb_net.c spelled a capability word (%r) beside its one source" % word
+    # the page's only source of refusal text is the row's why, verbatim.
+    assert "CANNOT INSTALL: '+esc(a.why)" in nn
+    # the page must actually draw what the endpoint answered — anchored to
+    # this page's own refresh body, because the themes page draws with the
+    # same two statements and would mask a mutation of ours.
+    assert "'bad');return;}data=r.d;draw();" in nn
+    # the page parses as JavaScript. The C fragments concatenate with NO
+    # newline between them, so one missing semicolon is a page stuck at
+    # "loading" on a phone — the exact failure the themes page documents, and
+    # the same esprima gate host_tz_test.py runs on its two pages. Only
+    # column-0 whole-string fragments count as page bytes: a line with a
+    # stray quote would otherwise be silently dropped from the test.
+    try:
+        import esprima
+        m = re.search(r'static const char HTML_APPS\[\] =(.*?);\s*\n', nn, re.S)
+        assert m, "HTML_APPS not found in orb_net.c"
+        frags = []
+        for ln in m.group(1).splitlines():
+            t = ln.strip()
+            if not t or t.startswith('/*') or t.startswith('//'):
+                continue
+        # the C terminator (;") is stripped before the quotes; a JS semicolon
+        # may sit inside the last quote, and dropping it would silently alter
+        # the program under test.
+            assert re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t), \
+                "page line is not a whole C string fragment: " + t[:80]
+            frags.append(t.rstrip(';')[1:-1])
+        page = ''.join(f.encode('utf-8').decode('unicode_escape') for f in frags)
+        js = page[page.index('<script>') + 8:page.index('</script>')]
+        esprima.parseScript(js)
+    except ImportError:
+        pass                             # same rule as host_tz_test: no esprima, no parse
+    # the row bound: recompute the handler's worst-case row from the sizes the
+    # scan header and the manifest header actually ship, against the scratch it
+    # actually allocates. Every field is at its double-escaped worst; the
+    # skeleton counts keys, quotes, the longest "ok", digits, and the comma.
+    m = re.search(r"e_stem\[2 \* sizeof ent\[0\]\.stem\], e_slug\[2 \* sizeof ent\[0\]\.slug\],"
+                  r"\s*\n\s*e_title\[2 \* sizeof ent\[0\]\.title\], e_why\[2 \* sizeof ent\[0\]\.why\]", nn)
+    assert m, "the handler's escape buffers left their pinned shape"
+    cap_scratch = int(re.search(r"#define APPS_ROW_MAX (\d+)", nn).group(1))
+    stem_n = int(re.search(r"stem\[(\d+)\]", scan_hdr).group(1))
+    why_n = int(re.search(r"why\[(\d+)\]", scan_hdr).group(1))
+    slug_n = int(re.search(r"ORBAPP_SLUG_MAX\s+(\d+)u", man_hdr).group(1))
+    title_n = int(re.search(r"ORBAPP_TITLE_MAX\s+(\d+)u", man_hdr).group(1))
+    worst = (2 * (stem_n + slug_n + title_n + why_n)      # all four escaped ×2
+             + 40 + 8 + 5 * 10 + 12 + 160 + 2)            # caps, hex, digits, ok, skeleton
+    assert worst < cap_scratch, \
+        ("the worst-case apps row is %d B against an APPS_ROW_MAX of %d — "
+         "enlarge the scratch or trim a field" % (worst, cap_scratch))
+
+
+# ---- mutations that target the caller side ------------------------------------
+# These red-pilot the bound check above: shrink the scratch, and the suite must
+# go red on the arithmetic (the harness itself never recompiles — the shipped
+# handler is Python-parsed here, so these mutate the TEXT the lint reads).
+CALLER_MUTATIONS = [
+    ("scratch lowered", "#define APPS_ROW_MAX 1024", "#define APPS_ROW_MAX 900"),
+    ("scan call dropped", "orb_app_scan(ent, ORB_APP_SCAN_MAX)", "orb_app_scan(ent, 4)"),
+    ("second caps list appears", "\"caps\\\":\\\"%s\\\"",
+     "\"caps\\\":\\\"power\\\",\\\"caps2\\\":\\\"%s\\\""),
+    ("page re-cuts the reason", "CANNOT INSTALL: '+esc(a.why)",
+     "CANNOT INSTALL: 'see the log'"),
+    ("page stops drawing", "'bad');return;}data=r.d;draw();", "'bad');return;}data=r.d;"),
+    ("terminating chunk dropped", "httpd_resp_send_chunk(req, NULL, 0);", "0;"),
+]
+
+
+def caller_mutation_fails():
+    """Run the lint against a mutated COPY of orb_net.c; return the names that
+    turned it red. A mutation nothing notices is a pin that is not a pin."""
+    reds = []
+    for nm, old, new in CALLER_MUTATIONS:
+        base = read(NET_C)
+        assert base.count(old) == 1, "caller anchor lost: " + nm
+        mutated = base.replace(old, new)
+        global NET_OVERRIDE
+        NET_OVERRIDE = mutated
+        try:
+            lint()
+        except (AssertionError, AttributeError, ValueError):
+            reds.append(nm)
+        finally:
+            NET_OVERRIDE = None
+    return reds
+
+
 
 # ---- mutations ------------------------------------------------------------------
 # Each removal must cost the suite a vector. The first four are this layer's
@@ -601,11 +722,24 @@ def main():
                 else:
                     print("caught: %-30s (%d mismatches)" % (nm, len(mfails)))
                     n += 1
+            # the caller-side battery: text mutations of orb_net.c checked
+            # against lint(), the same "a survivor is an unpinned claim" rule
+            # the compiled mutants follow.
+            ceds = caller_mutation_fails()
+            for nm, _, _ in CALLER_MUTATIONS:
+                if nm not in ceds:
+                    print("MUTATION ESCAPED (caller): " + nm)
+                    fails.append("caller mutant escaped: " + nm)
+                else:
+                    print("caught: %-30s (lint red)" % nm)
+                n += 1 if nm in ceds else 0
     for f in fails:
         print("FAIL " + f)
     print("%d vectors, %d mismatches" % (len(cases), len(fails)))
     if "--mutations" in sys.argv:
-        print("%d mutants, %d escaped" % (len(MUTATIONS), len(MUTATIONS) - n))
+        print("%d mutants, %d escaped"
+              % (len(MUTATIONS) + len(CALLER_MUTATIONS),
+                 len(MUTATIONS) + len(CALLER_MUTATIONS) - n))
     sys.exit(1 if fails else 0)
 
 

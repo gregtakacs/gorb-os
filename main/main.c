@@ -17,6 +17,7 @@
 #include "board_config.h"
 #include "display.h"
 #include "orb_app.h"
+#include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
 #include "orb_jobs.h"
 #include "orb_svc.h"
 #include "orb_carousel.h"
@@ -210,6 +211,17 @@ void app_main(void)
     if (orb_sd_init() != ESP_OK)
         ESP_LOGW(TAG, "no SD card — themes can still be installed from the "
                       "card once one is inserted (POST /api/v1/sd/rescan)");
+    /* The /sd/apps drop zone, registered beside the card itself (P4). A table
+     * write with no I/O, so it stands or fails identically with or without a
+     * card in the socket; the walk asks the volume to mount when it runs. The
+     * theme source is declared by clock_view.c next to the scans it serves —
+     * this one is declared here because no compiled app owns the drop zone:
+     * the OS does (an app that could declare where card apps live would move
+     * everyone's front door). A refusal is loud and permanent: the apps page
+     * answers the -1, and the log line here says why. */
+    if (orb_app_scan_init() != ESP_OK)
+        ESP_LOGE(TAG, "the /sd/apps drop zone refused registration — "
+                      "the apps page will list nothing");
 #endif
 
     /* C2, last act of the ladder: the boot survived to here — the dial is

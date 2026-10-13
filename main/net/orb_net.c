@@ -52,6 +52,7 @@
 #include "art_bank.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 
 static const char *TAG = "orb_net";
@@ -2934,6 +2935,92 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
+/* GET /api/v1/apps — the /sd/apps drop zone, listed with its reasons (P4).
+ *
+ * The shown-with-reason rule is h_sd's, inherited whole: every file the walk
+ * surfaces gets a row, refused ones with the reader's own sentence in "why"
+ * and not one word re-cut here. The owner's problem is different for "copied
+ * nothing" and "copied four, all refused", and only the row can say which.
+ *
+ * The rows STREAM instead of assembling into one big buffer — a deliberate
+ * departure from h_sd's single static json[6144]. The drop zone lists up to
+ * ORB_APP_SCAN_MAX (16) candidates where themes list 12, and each row's
+ * "why" escapes to 510 B at worst, so the single-buffer version would cost
+ * ~9 KB of static internal DRAM on a device whose post-boot internal free
+ * the plan measures in tens of KB (§15). Here each row builds in its own
+ * scratch and a per-row overflow is arithmetic, not luck: every field's
+ * escape bound is pinned by tools/host_orbapp_scan_test.py, which
+ * recomputes row_worst() from the shipped headers and goes red when the
+ * row outgrows its scratch. A format that cannot overflow needs no
+ * all-or-nothing error body, because there is no partial to protect. */
+#define APPS_ROW_MAX 1024
+static esp_err_t h_apps_list(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static orbapp_scan_entry_t ent[ORB_APP_SCAN_MAX];
+    const int n = orb_app_scan(ent, ORB_APP_SCAN_MAX);
+    /* -1 is the card's answer, distinct from zero rows in the one way that
+     * matters to the owner reading the page: no card in the socket, or the
+     * drop zone was never registered (a boot-ladder bug the log names). The
+     * walk asks the volume to mount itself (orb_files.c:185), so a card
+     * inserted after boot answers here without a rescan press. */
+    if (n < 0)
+        return httpd_resp_sendstr(req, "{\"mounted\":false,\"count\":-1,\"apps\":[]}");
+
+    char card[83], head[160];
+    json_put(card, sizeof card, orb_sd_mounted() ? orb_sd_card_id() : "");
+    snprintf(head, sizeof head,
+             "{\"mounted\":true,\"card\":\"%s\",\"count\":%d,\"apps\":[",
+             card, n);
+    httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
+
+    static char row[APPS_ROW_MAX];
+    static char e_stem[2 * sizeof ent[0].stem], e_slug[2 * sizeof ent[0].slug],
+                  e_title[2 * sizeof ent[0].title], e_why[2 * sizeof ent[0].why];
+    char caps[40];
+    for (int i = 0; i < n; i++) {
+        /* stem is the handle every later call comes back with — the same
+         * device-issued-name rule as a theme id. The three escape buffers
+         * stay filled but empty on a pre-CRC refusal (row_decide's blanking
+         * rule), and the claimed app_id/caps ride along post-CRC so the
+         * owner can name the file that lied about itself. */
+        const orbapp_scan_entry_t *const e = &ent[i];
+        json_put(e_stem,  sizeof e_stem,  e->stem);
+        json_put(e_slug,  sizeof e_slug,  e->slug);
+        json_put(e_title, sizeof e_title, e->title);
+        json_put(e_why,   sizeof e_why,   e->why);
+        if (orbapp_caps_names(e->caps, caps, sizeof caps) < 0)
+            caps[0] = '\0';        /* unreachable post-check_header: it bounds
+                                    * caps to the four owner bits, and their
+                                    * names total 27 B. Never show a torn-off
+                                    * disclosure line. */
+        const int w = snprintf(row, sizeof row,
+            "%s{\"stem\":\"%s\",\"slug\":\"%s\",\"title\":\"%s\",\"app_id\":\"0x%08" PRIx32 "\","
+            "\"caps\":\"%s\",\"period_ms\":%" PRIu32 ",\"serial\":%" PRIu32 ","
+            "\"n_settings\":%" PRIu32 ",\"art_size\":%" PRIu32 ",\"file_size\":%" PRIu32 ","
+            "\"ok\":%s,\"why\":\"%s\"}",
+            i ? "," : "", e_stem, e_slug, e_title, e->app_id, caps,
+            e->period_ms, e->serial, e->n_settings, e->art_size, e->file_size,
+            e->err == ESP_OK ? "true" : "false", e_why);
+        if (w < 0 || (size_t)w >= sizeof row) {
+            /* The bound check says it cannot; a placeholder keeps the body
+             * valid JSON if someone disproves the arithmetic anyway, and the
+             * log names the row so the sentinel's omission shows up red. */
+            ESP_LOGE(TAG, "apps row %d exceeded %d B — host_orbapp_scan_test "
+                          "row bound is stale", i, APPS_ROW_MAX);
+            httpd_resp_send_chunk(req, "{}", HTTPD_RESP_USE_STRLEN);
+            continue;
+        }
+        httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+    }
+    /* the chunked-encoding contract (esp_http_server.h:1129): finish by calling
+     * the chunk API with length 0 — that is the terminating chunk. */
+    httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 /* POST /api/v1/sd/theme[?overwrite=1], body = the .orbtheme bytes.
  *
  * Raw body, not multipart: a boundary-following parser is ~200 lines of state machine
@@ -3203,7 +3290,7 @@ static const char HTML_TZ[] =
 "button.cur{background:#14421f}"
 "</style></head><body>"
 "<h1>orb clock</h1>"
-"<div style='margin-bottom:.6rem'><a href=/themes style='color:#7ad'>themes on the card</a></div>"
+"<div style='margin-bottom:.6rem'><a href=/themes style='color:#7ad'>themes on the card</a> &nbsp; <a href=/apps style='color:#7ad'>apps on the card</a></div>"
 "<div id=msg>loading&hellip;</div>"
 "<input id=q placeholder='Type your city' autocomplete=off>"
 "<div id=zs></div>"
@@ -3452,6 +3539,84 @@ static esp_err_t h_themes(httpd_req_t *req)
     return httpd_resp_send(req, HTML_THEMES, HTTPD_RESP_USE_STRLEN);
 }
 
+/* --------------------------------------------------------------------------
+ * /apps — the drop-zone card listing (plan P4, first surface).
+ *
+ * This is the owner's view of /sd/apps: one card per container the scan
+ * surfaces, refused ones kept and named, exactly as the themes page lists a
+ * damaged .orbtheme with its reason. The disclosure line is the page's whole
+ * point under ruling D19 (§0.8): the declared capability list printed here
+ * is the consent the install carries, from the same bits the gate will
+ * consult — orbapp_caps_names() is that one source, and this page never
+ * re-rolls a capability list of its own.
+ *
+ * There is no Install button yet, and none is faked. Installing is the
+ * verify-then-header ladder (D9) against the apps partition, and a button
+ * that queued nothing would teach the owner that the page lies. It arrives
+ * with the installer itself, the next P4 slice; until then an accepted card
+ * says what it is, and a refused one says what to fix on the card.
+ *
+ * The script follows the themes page's rules — every statement ends in a
+ * semicolon, nothing destructive skips its costing sentence — even though
+ * this slice has nothing destructive to cost. (host_tz_test.py's linters
+ * parse the landing and clock pages; this one is reviewed against the same
+ * two rules by hand, and its data shape is pinned by the scan sentinel.)
+ * ------------------------------------------------------------------------ */
+static const char HTML_APPS[] =
+"<!doctype html><html><head><meta charset=utf-8>"
+"<meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>orb apps</title><style>"
+"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
+"h1{font-size:1.2rem}"
+"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0}"
+"#msg.bad{background:#4a1414}"
+"#card{color:#8a8;font-size:.9rem;margin:.2rem 0 1rem}"
+"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;margin:.15rem 0}"
+".row{border-bottom:1px solid #262626;padding:.5rem 0}"
+".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
+".no{color:#c66;font-size:.85rem}"
+"a{color:#7ad}"
+"</style></head><body>"
+"<h1>apps on the card</h1>"
+"<div id=msg>loading&hellip;</div>"
+"<div id=card></div>"
+"<div id=list></div>"
+"<div class=row>Copy <b>.orbapp</b> files into an <b>apps</b> folder on the card, then reload this page. "
+"Nothing installs until the owner confirms it.</div>"
+"<div class=row><a href=/themes>themes on the card</a> &nbsp; <a href=/timezone>clock setup</a> &nbsp; <a href=/>network</a></div>"
+"<script>"
+"var data=null;"
+"function say(t,c){var m=document.getElementById('msg');m.textContent=t;m.className=c||'';}"
+"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
+"function bytes(n){return n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(0)+' KB';}"
+"function j(u,o){return fetch(u,o).then(function(r){return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});});}"
+"function draw(){"
+"var L=document.getElementById('list'),C=document.getElementById('card');"
+"if(!data){return;}"
+"if(data.count<0||!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
+"C.textContent=data.card+' \\u2014 '+data.count+' file'+(data.count==1?'':'s')+' in apps/';"
+"if(!data.apps.length){L.innerHTML='<div class=row>No .orbapp files in apps/ yet.</div>';return;}"
+"var h='';"
+"for(var i=0;i<data.apps.length;i++){var a=data.apps[i];"
+"h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):'(no title claimed)')+'</div>';"
+"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+esc(a.app_id)+(a.serial?' \\u00b7 #'+a.serial:'')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':' \\u00b7 no beat')+'</div>';"
+"h=h+'<div class=sub>may use: '+(a.caps?esc(a.caps):'nothing beyond its own settings')"
+"+(a.n_settings?' \\u00b7 '+a.n_settings+' setting'+(a.n_settings==1?'':'s'):'')"
+"+(a.art_size?' \\u00b7 art '+bytes(a.art_size):'')+' \\u00b7 file '+bytes(a.file_size)+'</div>';"
+"if(!a.ok){h=h+'<div class=no>CANNOT INSTALL: '+esc(a.why)+'</div>';}"
+"h=h+'</div>';}L.innerHTML=h;}"
+"function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
+"refresh();"
+"</script></body></html>";
+
+static esp_err_t h_apps(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, HTML_APPS, HTTPD_RESP_USE_STRLEN);
+}
+
+
 /* Captive-portal probes. A phone that joins an open AP with no internet
  * immediately fires these to decide whether the network is usable; if we do not
  * answer, it declares the AP dead and drops it, and the user's browser never
@@ -3541,8 +3706,9 @@ static esp_err_t net_start_httpd(void)
      * already answers 404 on the running device while the 8 before it 302. Raise
      * it with room for the endpoints this feature needs, and check the return
      * below rather than trusting the count. The /timezone page brings the table
-     * to 15 registered routes; 20 keeps headroom for the next one. */
-    cfg.max_uri_handlers  = 24;
+     * to 15 registered routes; the /apps pair brings the table to 25 today, and
+     * 28 keeps headroom for the install and uninstall POSTs (P4's next pair). */
+    cfg.max_uri_handlers  = 28;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -3590,6 +3756,10 @@ static esp_err_t net_start_httpd(void)
          * backing calls, and none of them can do anything to the clock beyond
          * staging a theme the owner then chooses to reboot into. */
         { .uri = "/themes",            .method = HTTP_GET,  .handler = h_themes },
+        /* The apps drop zone: /apps is the page, /api/v1/apps its backing
+         * call. Neither can touch anything but a read of the card. */
+        { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
+        { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/install",  .method = HTTP_POST, .handler = h_theme_install },

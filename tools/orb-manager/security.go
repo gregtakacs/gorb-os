@@ -333,6 +333,19 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},
 	"/api/v1/sd/rescan":  {http.MethodPost},
+	// P4's card-app verbs, added because the merge that landed them in firmware left
+	// them out of this map: a device feature the hub cannot dial is a feature nobody
+	// can manage. None of the five reboots, so none inherits the arm/disarm gate that
+	// /api/v1/menu will need (plan 5.1 decision 1) — install, enable and uninstall all
+	// answer for the running image and leave the next boot to settle it on its own.
+	// sd/app is the upload half (browser -> /sd staging) and apps/install is the
+	// commit half, the same two-step the theme upload uses, so the hub never streams a
+	// container straight into the apps partition.
+	"/api/v1/apps":           {http.MethodGet},
+	"/api/v1/apps/install":   {http.MethodPost},
+	"/api/v1/apps/enable":    {http.MethodPost},
+	"/api/v1/apps/uninstall": {http.MethodPost},
+	"/api/v1/sd/app":         {http.MethodPost},
 }
 
 // Byte caps for one proxied exchange. The orb's httpd is real and sometimes slow, so

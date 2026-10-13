@@ -660,6 +660,10 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	if tz == "" {
 		tz, reason = "UTC", "OK"
 	}
+	// h_status's "apps" array is the broker's pass line, so it is computed under the
+	// lock like everything else here and interpolated after: a double that always said
+	// "[]" would let a hub test pass against an orb that has apps on it.
+	ledger := o.ledgerJSONLocked()
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"`+state+`","ip":"`+ip+`","mac":"`+mac+
 		`","rssi":`+strconv.Itoa(rssi)+`,"fw":"`+fw+`","idf":"v5.4",`+
@@ -672,7 +676,7 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 		`"knob":{"raw":4000,"det":100,"spd10":40,"span":9,"valley":2,"ab":3,"vhits":90,"shits":10},`+
 		`"idle":{"on":true,"dimmed":false,"since_s":12,"timeout_s":60,"lit_pct":80,`+
 		`"dim_pct":20,"wakes":3,"worst_mg":44,"worst_dark_mg":12,"stamps":6,"writes_failed":0},`+
-		`"apps":[]}`)
+		`"apps":`+ledger+`}`)
 }
 
 // --- shared helpers --------------------------------------------------------------

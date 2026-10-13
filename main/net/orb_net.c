@@ -1342,15 +1342,17 @@ static esp_err_t h_status(httpd_req_t *req)
      * "US/Central" (563 B before the idle block and the art residency fields); every
      * field added since then has to be re-measured off the device
      * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
-     * room for that growth. Measured 674-676 B on the cable on 2026-10-12 on orb-B,
-     * tz at "US/Central", with the idle block's writes_failed present; the figure
-     * moves a few bytes as the counters gain digits, which is why it is measured and
-     * not added up. The `mac` field added 2026-10-12 costs a fixed 21 B ("mac":"..."
-     * plus its comma), measured off the wire rather than counted in the format
-     * string. Its value is now verified against hardware: it reported
-     * 44bd8d782618 on orb-B, equal to `esptool read_mac` on that board and to the
-     * USB serial-number descriptor sysfs exposes for the same port. The SOFTAP
-     * variant would have ended 2619, one off, and every hub join key is BASE. */
+     * room for that growth. Measured 669 B on the cable on 2026-10-12 on orb-B
+     * running a3e54ba, tz at "US/Central", with the idle block's writes_failed
+     * present. The figure moves with the counters and with the width of `fw`: the
+     * same build carrying a -dirty stamp measured 674-676 B. That is why it is
+     * measured and not added up. The `mac` field added 2026-10-12 costs a fixed
+     * 21 B ("mac":"..." plus its comma), counted off the wire. Its value is now
+     * verified against hardware on orb-B: it reported 44bd8d782618, equal to
+     * `esptool read_mac` on that board, to the eFuse read through the native Go
+     * flasher, and to the USB serial-number descriptor sysfs exposes for the same
+     * port. The SOFTAP variant would have ended 2619, one off, and every hub join
+     * key is BASE. */
     char json[960];
 
     /* Which A/B slot is running, and whether the bootloader still considers it

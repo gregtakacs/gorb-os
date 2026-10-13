@@ -327,8 +327,11 @@ unproven.
 - The safety model stays "you own the cable". No `.orb-target` binding and no
   MAC gate return, per README "Safety model". Iteration 2 restricts who may ask,
   not which orb you may act on.
-- No subnet sweep, no ARP, no mDNS. Every network call stays a dial to one
-  address the hub learned or was handed.
+- No subnet sweep, no ARP. Every network call stays a dial to one address the
+  hub learned or was handed. mDNS discovery, banned here since the sweep was
+  deleted, is now in scope as the replacement for handing the hub an address;
+  see §5. The sweep itself stays banned. Discovery is solicited from the orb,
+  never extracted from the subnet.
 - The ROM-only flasher path stays. No stub loader returns.
 - The hub always writes the full manifest. App-only reflash stays in `orbflash`.
 - `docs/theme-identity-plan.md` and `docs/app-platform-plan.md` keep their own
@@ -424,4 +427,147 @@ Updated at each commit.
   client, test and double no longer share one wrong assumption; seven mutations of the
   client each turn the contract suite red. `docs/theme-identity-plan.md` §8 never named
   `tools/orb-manager/` as a consumer, which is how the gap survived the merge.
+
+
+
+## 5. Fleet UI redesign: Onboard merged into Manage (2026-10-12)
+
+Onboard and Manage are one surface. Manage lists named orbs; Onboard's
+serial flow becomes "Add an orb" inside it. Discovery moves from the deleted
+/24 sweep to mDNS: the firmware advertises `_orb._tcp` and the hub browses.
+The owner types nothing.
+
+### 5.1 Decisions taken
+
+1. **Menu-as-settings.** The web settings page renders the device's own option
+   registry over `GET /api/v1/menu` + `POST /api/v1/menu`. The `opt_*` ABI is
+   already data-driven and accepted (`main/app/orb_app.h:104-118`, rulings
+   D11-D13, executed as §13 of `docs/app-platform-plan.md`); `menu_view.c`
+   walks it generically and §13.4 forbids an app keeping a second opinion
+   about what is on the page. New apps and new rows therefore appear in the
+   hub with no hub change. The POST path must expose arm/disarm, because
+   ruling D11 made a pick install-and-reboot by itself and an unguarded POST
+   would reboot a wall clock with one click.
+2. **Factory reset, full stop.** Implemented as an armed `opt_*` menu row and
+   mirrored over the serial path. Erases `ssid`/`pass`/`tz` from
+   `storage`/`orb.net` and reboots into the provisioning SoftAP. Sends an mDNS
+   Goodbye first so the fleet does not show a ghost. `orb_net.c:233` is the
+   reason this is never a side effect.
+3. **Display-pairing, not manager self-assertion.** `POST /api/v1/pair/start`
+   mints a 6-digit nonce the orb renders full-screen; the operator types it
+   back; the orb issues a session token. Proves the requestor had display
+   access. Threat model is explicit: physical presence, over HTTP, not
+   cryptographic.
+4. **Pairing is permanent.** One pairing per orb, stored in NVS, TTL forever
+   unless revoked. Revocation is a factory reset **or** a dedicated on-device
+   "Clear pairing" row, so an owner without the hub is never stranded. Every
+   state-changing write is gated, timezone included. While `s_provisioning` is
+   true (`orb_net.c:120`, set only at `:3573` on no-credentials boot) the orb
+   is exempt, so first setup needs no code; the exemption cannot be reached
+   remotely, and the reset that re-enters it sits behind pairing plus arm.
+5. **OTA is its own plan.** Sequenced after the fleet UI is real. Prerequisites
+   stated up front: `h_status` must carry `built` + `elf_sha` so
+   `firmware.Compare` has something it can compare, and `/api/v1/ota` must earn
+   its way back into `deviceRoutes` (`security.go:232-236`) against the
+   validated-bundle guarantee that exclusion cites.
+6. **Unconfigured orbs reach the owner by QR.** Factory reset leaves the orb in
+   the SoftAP flow of `docs/ap-onboarding-qr-plan.md` (PLAN ONLY; the QR half
+   is not written). The Add wizard hands off to the phone rather than implying
+   the desktop finished.
+7. **LAN refuses during a cable flash.** Correlated by MAC, since the port
+   holder and the IP proxy have no shared key until item 1.
+8. **The board gate is mandatory**, per item 2 below.
+
+### 5.2 Facts that changed the design (verified 2026-10-12)
+
+- **`ESP_MAC_WIFI_SOFTAP` is base + 1.** `mac_addr.c:366-387` derives it as
+  `memcpy(base)` then `mac[5] += 1`, live because
+  `CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y` on this S3 target. STA and BASE are
+  exact copies. Both of the hub's join keys are BASE: the USB serial descriptor
+  (`esprom/identity.go:138`, `usbclass.go:22-25`) and the flasher's eFuse read
+  (`esprom/commands.go:222-223`). Copying the existing
+  `esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP)` idiom (`orb_net.c:667`, `:2253`)
+  into `h_status` would report base+1, miss every USB correlation by one in
+  the last octet, and be invisible on this bench. `h_status` uses
+  `ESP_MAC_BASE`. The displayed SSID comes from the boot verdict
+  (`setBoot`, `main.go:127-147`), never recomputed in Go, so the
+  `ap_fill_config` SSID builder (`orb_net.c:667-668`) stays the single source
+  of the name.
+- **The image chip ID is at bytes 12-13, little-endian, 2 bytes.** Packed
+  `esp_image_header_t` is exactly 24 bytes (`esp_app_format.h:79-107`);
+  `esp_chip_id_t` is asserted 16-bit (`:33`) and `ESP_CHIP_ID_ESP32S3 =
+  0x0009` (`:23`). `s3ImageChipID = 9` (`commands.go:38`) was declared and
+  never referenced: the flasher verifies the attach-time magic
+  (`commands.go:205-216`) and so knows the chip is an S3, but never checks
+  what is about to be written to it.
+- **Headerless images are legitimate.** `partition-table.bin`, otadata, and
+  `../assets/clock_assets.bin` carry no `0xE9` header. The gate skips them, as
+  `patchBootloaderFlashParams` already does (`flash.go:67-69`). A gate that
+  rejected them would break every real flash.
+- **`macNorm` (`watch.go:173-176`) is not enough.** It lowercases and maps
+  `-`→`:`, but never collapses the separator-free hex a device emits, and lets
+  an empty MAC equal an empty MAC. It must canonicalize and refuse empty.
+- **The 960 B status buffer needs re-measuring**, not estimating. The 650 B
+  figure in the `orb_net.c:1431` comment predates the fields added since; the
+  comment already instructs re-measuring off the device.
+- **LWIP_IGMP is forced to 1** (`components/lwip/port/include/lwipopts.h:474`),
+  so the hand-rolled advertiser's multicast joins work in this build.
+- **Socket budget is 10** (`sdkconfig.defaults:68`): one mDNS socket with two
+  `IP_ADD_MEMBERSHIP` calls, not per-interface sockets.
+
+### 5.3 The ladder
+
+Each commit carries the §0 verification ladder. Firmware items are gated on
+the cable; hub items go green on this bench.
+
+| # | Commit | Depends |
+|---|---|---|
+| 1 | `feat(net): report the station MAC in /api/v1/status` | none (keystone for 6, 7, 9) |
+| 2 | `feat(esprom): refuse a flash whose image chip ID is not ESP32-S3` | none |
+| 3 | `test(orb-manager): give orbfake the device verbs and an mDNS advertiser` | none |
+| 4 | `feat(net): announce _orb._tcp on the STA and AP interfaces` | 1, 3 |
+| 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |
+| 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |
+| 7 | `feat(orb-manager): merge onboarding into Manage as Add an orb` | 6 |
+| 8 | `feat(net): render the option registry as /api/v1/menu` | 1, 3, 6 |
+| 9 | `feat(net): gate device writes behind a display pairing code` | 1, 6, 8 |
+| 10 | `feat(net): factory reset into provisioning mode` | 8, 9, QR screen |
+| 11 | separate plan: OTA | 1 |
+
+Item 10 is last on purpose: the most destructive new verb is the only one that
+cannot ship until the pairing gate and the on-device arm both exist. Item 9
+must also register `/api/v1/menu` and the pair routes in `deviceRoutes`
+(`security.go:238-253`): the last device verb added in firmware but not in
+that map was unreachable from the hub.
+
+Device header is `X-Orb-Pair`, never `X-Orb-Token`: `X-Orb-Token` is the hub's
+own control token (`security.go:32`), and reusing it would let a proxied
+request satisfy the hub's gate with a device secret. `proxy.go` strips any
+client-supplied value of both names before injecting the stored one. The nonce
+lives about 120 s with a small attempt cap, so 10^6 is never guessable; the
+token is what the hub keeps. Fleet identity is `{mac, name, room}`, keyed on
+MAC and never on IP, so a DHCP rebind cannot orphan a name or misroute a
+credential; liveness comes from announcements, replacing the 6 h `ipGrantTTL`.
+
+### 5.4 Documentation debt carried by these commits
+
+Item 5 rewrites the six sites that encode the discovery ban: `README.md:12-14`,
+`main.go:1-8`, this file's §3, `web/app.js:639-641`, `watch.go:93`, and
+`internal/orbnet/client.go:60`, the last of which still justifies its timeout
+against a "subnet sweep" that no longer exists. Item 6 rewrites the
+`state.go:16-20` promise that "no credential is stored anywhere", which the
+permanent token makes false; the hub still refuses to persist a Wi-Fi
+passphrase, since the orb already owns that (`orb_net.c:1819-1820`).
+`orb_net.c:225` retires its "Phase 4" `PATCH /api/v1/settings` note: that
+numbering is the net plan's, not `app-platform-plan.md`'s P4, and the real
+target is `/api/v1/menu`.
+
+### 5.5 Logged, not built: the settings content gap
+
+The `opt_*` plumbing is accepted and renders through the shell, but only
+`clock_themes.c:207` registers rows today. Idle-dim timeout and motion
+threshold, knob steps-per-detent, SNTP servers, and the app `enabled`/`failed`
+toggle each still need an owner's rows; the `enabled` toggle arrives with P4
+(`app-platform-plan.md` §12.6). The plumbing being ready is not the content
+being ready, and the hub cannot show a row nobody registered.
 

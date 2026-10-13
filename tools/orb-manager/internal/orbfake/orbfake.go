@@ -71,10 +71,21 @@ type Orb struct {
 
 	// apps is the P4 card-app store, keyed by slug, with appsOrder holding the
 	// registration order so the installed tier's slot field is positional like the
-	// device's. Nil until WithCardApps or an upload seeds it, which is what makes a
-	// fresh double answer "no apps" the way a fresh device does.
+	// device's. New seeds the inside-the-firmware rows into it, so a fresh double already
+	// reports a three-row ledger the way a fresh device does.
 	apps      map[string]*CardApp
 	appsOrder []string
+
+	// JobBusy mirrors orb_jobs_busy: with a card job in flight every door on an installed
+	// app answers 409 about the job, ahead of any lookup. Seed it to exercise the ordering.
+	JobBusy bool
+
+	// ReviveFails makes the fault-record clear on a failed app's ON refuse, which is the
+	// only path where ESP_FAIL reaches the client and door_http_status's default arm sends
+	// 500 rather than 409. UninstallSticks is its twin on the uninstall door, where the slot
+	// erased but the registry kept the row.
+	ReviveFails     bool
+	UninstallSticks bool
 }
 
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
@@ -82,7 +93,17 @@ type Orb struct {
 func New(themes ...Theme) *Orb {
 	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default",
 		apps: map[string]*CardApp{}}
+	// Seed the inside-the-firmware rows first, in device order. h_status walks the registry
+	// from row zero, so a double that omits them answers a status request with "apps":[]
+	// where every real orb names clock, color_picker and menu — and the hub's Manage card
+	// cannot tell "no apps installed" from "the device reported nothing".
+	for _, slug := range builtInSlugs {
+		o.apps[slug] = &CardApp{Stem: slug, Slug: slug, Title: slug,
+			Installed: true, Enabled: true, Builtin: true}
+		o.appsOrder = append(o.appsOrder, slug)
+	}
 	for i := range themes {
+
 		t := themes[i]
 		t.ID = themeID(t.Name)
 		o.themes = append(o.themes, &t)

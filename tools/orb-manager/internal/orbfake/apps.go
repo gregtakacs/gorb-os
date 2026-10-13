@@ -61,7 +61,26 @@ type CardApp struct {
 	Enabled   bool
 	Failed    bool
 	OnGlass   bool
+	// Status is the app's own runtime line as h_status reports it. The device sends "" for
+	// a built-in that never reported one, so the double sends "" and a caller sets it
+	// deliberately rather than the formatter inventing a word.
+	Status string
+	// NoIface marks a card whose behaviour no firmware module implements. orb_app_enable
+	// refuses to turn one on at all, so a Manage card that offered a toggle for it would
+	// be offering a button that can only ever fail.
+	NoIface bool
+	// Builtin marks a row that ships inside the firmware. door_open refuses to
+	// enable/disable/uninstall those with NOT_SUPPORTED, and they sit below
+	// ORB_APP_BASE, so they appear in h_status's ledger but NOT in h_apps's installed
+	// tier. Measured on orb-B (fw 9442432): the ledger carries clock, color_picker and
+	// menu while /api/v1/apps reports "installed":[].
+	Builtin bool
 }
+
+// builtInSlugs is the device's own inside-the-firmware set, read off orb-B's
+// /api/v1/status ledger rather than from the hub's knownApps list (which additionally
+// carries "hue", an alias that never appears in the ledger).
+var builtInSlugs = []string{"clock", "color_picker", "menu"}
 
 // sdNameOK is orb_sd_name_ok (orb_sd.c): 1..31 bytes of [A-Za-z0-9._-], no leading '.'.
 // Duplicated on purpose. The card stem is the one app identifier a caller controls, and a
@@ -108,6 +127,12 @@ func (o *Orb) WithCardApps(rows ...CardApp) *Orb {
 		if a.Slug == "" {
 			a.Slug = a.Stem
 		}
+		if a.Builtin {
+			// A caller cannot seed over an inside-the-firmware row: the device keeps those
+			// below ORB_APP_BASE and refuses every door verb on them, so a double that let a
+			// test re-register "clock" as a card would model an orb that does not exist.
+			continue
+		}
 		if _, had := o.apps[a.Slug]; !had {
 			o.appsOrder = append(o.appsOrder, a.Slug)
 		}
@@ -116,18 +141,39 @@ func (o *Orb) WithCardApps(rows ...CardApp) *Orb {
 	return o
 }
 
-// cardRowsLocked is the card tier: every row with a stem, in registration order.
+// cardRowsLocked is the card tier: every staged container, in registration order. Built-ins
+// are excluded because h_apps_list walks from ORB_APP_BASE, and because count is the number
+// of .orbapp FILES on the card — a device with three built-ins and an empty apps directory
+// reports count 0, which is exactly what orb-B reports.
 func (o *Orb) cardRowsLocked() []*CardApp {
 	var out []*CardApp
 	for _, slug := range o.appsOrder {
-		if a := o.apps[slug]; a != nil && a.Stem != "" {
+		if a := o.apps[slug]; a != nil && a.Stem != "" && !a.Builtin {
 			out = append(out, a)
 		}
 	}
 	return out
 }
 
-func (o *Orb) installedRowsLocked() []*CardApp {
+// cardInstalledLocked is h_apps's installed tier. It is NOT the same set as the ledger:
+// h_apps_list walks from ORB_APP_BASE, so the inside-the-firmware rows never appear, while
+// h_status walks from zero and always names them. Measured on orb-B: "installed":[] with a
+// three-row ledger. A double that uses one walker for both tells the hub UI it has no apps
+// on a device that has three, and a Manage card built on that shows nothing to manage.
+func (o *Orb) cardInstalledLocked() []*CardApp {
+	var out []*CardApp
+	for _, a := range o.cardRowsLocked() {
+		if a.Installed && !a.Builtin {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// allRowsLocked is the ledger's walk: every row REGISTERED IN FLASH, built-ins first. A
+// container merely staged on the card is not in the registry yet, so it must not appear —
+// h_status answers "what can this orb do", and a file sitting on a card does nothing.
+func (o *Orb) allRowsLocked() []*CardApp {
 	var out []*CardApp
 	for _, slug := range o.appsOrder {
 		if a := o.apps[slug]; a != nil && a.Installed {
@@ -136,6 +182,74 @@ func (o *Orb) installedRowsLocked() []*CardApp {
 	}
 	return out
 }
+
+// doorAppLocked returns the row a card verb operates on, or the refusal it must send, in
+// door_open's exact order (orb_app_install.c:833): name rule, then busy, then lookup, then
+// the built-in check. The order carries weight twice over. A card job in flight answers 409
+// about the job even when the id names nothing, so a double that checked the lookup first
+// would show the hub a reason the orb never had. And the name rule runs before the busy
+// check, which is why enable?id=..foo on a busy orb reports the name, not the job.
+func (o *Orb) doorAppLocked(slug string) (*CardApp, int, string) {
+	if !sdNameOK(slug) {
+		return nil, 400, notUsableNameBody
+	}
+	if o.JobBusy {
+		return nil, 409, doorBusyBody
+	}
+	row := o.apps[slug]
+	if row == nil || !row.Installed {
+		return nil, 404, notFoundBody
+	}
+	if row.Builtin {
+		return nil, 400, builtinBody
+	}
+	return row, 0, ""
+}
+
+// The refusal bodies door_open and the two doors emit, with the status each maps to under
+// door_http_status (orb_net.c): NOT_FOUND 404, INVALID_ARG 400, NOT_SUPPORTED 400,
+// INVALID_STATE 409, anything else 500. Literals live here because a double cannot parse C
+// at runtime; device_contract_test.go scrapes each one out of the firmware and fails when
+// the two drift, which is the only way a hand-copied string stays honest.
+//
+// Note what the device never does: put caller-controlled text in a REFUSAL body. Every
+// string below is the firmware's own sentence. The success bodies do echo the slug, because
+// h_app_enable formats it after the work succeeded — that difference is deliberate, and a
+// double that echoes on refusal would teach the hub to render a string it cannot trust.
+const (
+	doorBusyBody      = `{"error":"a card job is running — try again when it finishes"}`
+	notFoundBody      = `{"error":"no app by that name is installed on this dial"}`
+	builtinBody       = `{"error":"that app ships inside the firmware — it is always on"}`
+	onDialBody        = `{"error":"that app is on the dial — carousel away from it first"}`
+	noIfaceBody       = `{"error":"no firmware module implements this app's behaviour — it cannot be shown"}`
+	reviveFailBody    = `{"error":"the fault record would not clear — the app stays failed"}`
+	notUsableNameBody = `{"error":"not a usable app name"}`
+	missingIDBody     = `{"error":"id is missing"}`
+	badOnBody         = `{"error":"on must be 0 or 1"}`
+	noStemBody        = `{"error":"id is missing or not a usable app name"}`
+	uninstallHoldBody = `{"error":"it came off the flash but the registry still holds it"}`
+)
+
+// appID reads the id query parameter the way q_param resolves it, which is NOT the way the
+// name rule works. q_param rejects only an empty value and a decoded separator, so
+// enable?id=..%2Fevil answers "id is missing"; a leading dot or a space survives q_param and
+// is caught by orb_sd_name_ok inside door_open, so enable?id=..foo answers "not a usable app
+// name" instead. The two 400s are different layers, and measuring the difference is the only
+// reason this function does not just call sdNameOK. A value longer than the handler's 24-byte
+// buffer is truncated rather than refused, so a 25-character id is accepted and matches
+// nothing (both measured on orb-B, fw 9442432).
+func appID(r *http.Request) string {
+	id := r.URL.Query().Get("id")
+	if id == "" || strings.ContainsRune(id, '/') || strings.ContainsRune(id, '\\') {
+		return ""
+	}
+	if len(id) > appSlugMax {
+		id = id[:appSlugMax]
+	}
+	return id
+}
+
+const appSlugMax = 24 // ORB_APP_SLUG_MAX, orb_app_manifest.h
 
 // serveApps answers GET /api/v1/apps in h_apps's shape: card tier, then the installed
 // array opened inline. A device with no card reports count -1 rather than count 0, and a
@@ -168,10 +282,11 @@ func (o *Orb) serveApps(w http.ResponseWriter) {
 
 // installedJSONLocked formats the flash tier as h_apps's installed rows do. walkable is
 // the iface bit — whether the carousel can land on it at all — and on_glass marks the row
-// the panel is showing, which is the one uninstall refuses.
+// the panel is showing, which is the one uninstall refuses. Built-ins never appear here:
+// the device's walk starts at ORB_APP_BASE.
 func (o *Orb) installedJSONLocked() string {
 	var rows []string
-	for i, a := range o.installedRowsLocked() {
+	for i, a := range o.cardInstalledLocked() {
 		rows = append(rows, fmt.Sprintf(
 			`{"slug":%q,"title":%q,"slot":%d,"caps":%q,"period_ms":%d,"n_settings":%d,`+
 				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s}`,
@@ -182,31 +297,27 @@ func (o *Orb) installedJSONLocked() string {
 }
 
 // ledgerJSONLocked formats h_status's "apps" array. It is the broker's pass line, so it
-// lists every registered row including the failed and disabled ones the carousel hides:
-// the ledger exists precisely to answer "what can this thing do" about apps that are not
-// on screen. The double reports the counters a freshly booted orb reports (nothing called,
-// nothing denied) and takes grants from the container's declaration, except on a failed
-// row, where the broker revoked them at boot and the honest answer is an empty list.
+// lists every registered row INCLUDING the built-ins, which is why it walks allRowsLocked
+// rather than the card tier. Grants come from the container's declaration, except on a
+// failed row, where the broker revoked them at boot and the honest answer is empty.
+//
+// status is the app's own runtime line, not a state field: orb-B reports "" for all three
+// built-ins, so the double reports "" unless a caller sets Status deliberately. A double
+// that invented "ready" would teach a hub UI to render a word no device ever sends.
 func (o *Orb) ledgerJSONLocked() string {
 	var rows []string
-	for _, a := range o.installedRowsLocked() {
+	for _, a := range o.allRowsLocked() {
 		grants := capsNames(a.Caps)
 		faults := 0
-		status := "ready"
-		switch {
-		case a.Failed:
-			grants, faults, status = "", 1, "failed"
-		case !a.Enabled:
-			status = "disabled"
-		case a.OnGlass:
-			status = "running"
+		if a.Failed {
+			grants, faults = "", 1
 		}
 		rows = append(rows, fmt.Sprintf(
 			`{"slug":%q,"grants":[%s],"declared":[%s],"calls":0,"denials":0,`+
 				`"denied_mask":0,"beat_ms":%d,"cfg_used":0,"faults":%d,"failed":%s,`+
 				`"status":%q}`,
 			jsonSafe(a.Slug), quotedList(grants), quotedList(capsNames(a.Caps)),
-			a.Period, faults, tf(a.Failed), status))
+			a.Period, faults, tf(a.Failed), jsonSafe(a.Status)))
 	}
 	return "[" + strings.Join(rows, ",") + "]"
 }
@@ -241,7 +352,7 @@ func quotedList(csv string) string {
 func (o *Orb) serveAppInstall(w http.ResponseWriter, r *http.Request) {
 	stem := r.URL.Query().Get("id")
 	if !sdNameOK(stem) {
-		writeJSON(w, 400, `{"error":"id is missing or not a usable app name"}`)
+		writeJSON(w, 400, noStemBody)
 		return
 	}
 	o.mu.Lock()
@@ -271,26 +382,44 @@ func (o *Orb) serveAppInstall(w http.ResponseWriter, r *http.Request) {
 // back through door_http_status's mapping — an unknown slug is ESP_ERR_NOT_FOUND, so a
 // 404; an app that cannot be shown is ESP_ERR_INVALID_STATE, so a 409.
 func (o *Orb) serveAppEnable(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	slug, on := q.Get("id"), q.Get("on")
+	slug, on := appID(r), r.URL.Query().Get("on")
 	if slug == "" {
-		writeJSON(w, 400, `{"error":"id is missing"}`)
+		writeJSON(w, 400, missingIDBody)
 		return
 	}
 	if on != "0" && on != "1" {
-		writeJSON(w, 400, `{"error":"on must be 0 or 1"}`)
+		writeJSON(w, 400, badOnBody)
 		return
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	a := o.apps[slug]
-	if a == nil || !a.Installed {
-		writeJSON(w, 404, fmt.Sprintf(`{"error":"no installed app %q"}`, jsonSafe(slug)))
+	a, code, body := o.doorAppLocked(slug)
+	if a == nil {
+		writeJSON(w, code, body)
 		return
 	}
-	if on == "1" && a.Failed {
-		writeJSON(w, 409, `{"error":"the app stays failed"}`)
+	// Disabling the row the dial is showing is refused before anything else: the panel would
+	// otherwise drop the app under the user's finger while the registry still claimed it.
+	if on == "0" && a.OnGlass {
+		writeJSON(w, 409, onDialBody)
 		return
+	}
+	if on == "1" {
+		if a.NoIface {
+			writeJSON(w, 409, noIfaceBody)
+			return
+		}
+		if a.Failed {
+			// Pressing ON on a failed app IS the revive gesture (C2): the device clears the
+			// fault record first and refuses only if NVS won't take the write. A double that
+			// flat-refused here hides the one control that recovers a failed card, and the
+			// hub gets written to show a dead end where the orb offers a repair.
+			if o.ReviveFails {
+				writeJSON(w, 500, reviveFailBody) // ESP_FAIL: door_http_status's default arm
+				return
+			}
+			a.Failed = false
+		}
 	}
 	a.Enabled = on == "1"
 	writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"slug":%q}`,
@@ -302,20 +431,26 @@ func (o *Orb) serveAppEnable(w http.ResponseWriter, r *http.Request) {
 // so the caller has to leave it first. The double clears the install rather than the card
 // row, matching the device — the staged container stays where it is and can go back in.
 func (o *Orb) serveAppUninstall(w http.ResponseWriter, r *http.Request) {
-	slug := r.URL.Query().Get("id")
+	slug := appID(r)
 	if slug == "" {
-		writeJSON(w, 400, `{"error":"id is missing"}`)
+		writeJSON(w, 400, missingIDBody)
 		return
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	a := o.apps[slug]
-	if a == nil || !a.Installed {
-		writeJSON(w, 404, fmt.Sprintf(`{"error":"no installed app %q"}`, jsonSafe(slug)))
+	a, code, body := o.doorAppLocked(slug)
+	if a == nil {
+		writeJSON(w, code, body)
 		return
 	}
+	// The page confirms first; the device does not trust the confirm. Anything on the dial is
+	// refused with the same sentence the disable door uses.
 	if a.OnGlass {
-		writeJSON(w, 409, `{"error":"it is on the glass; leave it before uninstalling"}`)
+		writeJSON(w, 409, onDialBody)
+		return
+	}
+	if o.UninstallSticks {
+		writeJSON(w, 409, uninstallHoldBody)
 		return
 	}
 	a.Installed, a.Enabled = false, false

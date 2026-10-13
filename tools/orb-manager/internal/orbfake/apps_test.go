@@ -77,8 +77,12 @@ func TestAppsListingTiersAndCount(t *testing.T) {
 	}
 }
 
+// id25 is one character past the handler's 24-byte id buffer (ORB_APP_SLUG_MAX + 1).
+const id25 = "aaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func TestAppVerbRefusals(t *testing.T) {
 	o := New().WithCardApps(
+
 		CardApp{Stem: "hue", Slug: "hue", Installed: true, Enabled: true},
 		CardApp{Stem: "glass", Slug: "glass", Installed: true, Enabled: true, OnGlass: true},
 		CardApp{Stem: "bad", Slug: "bad", Installed: true, Failed: true},
@@ -86,25 +90,69 @@ func TestAppVerbRefusals(t *testing.T) {
 	srv := httptest.NewServer(o)
 	defer srv.Close()
 
+	// Every row pins status AND body wording, because checking only the status is what let
+	// this file pass while the device said something else. Each measured body comes off
+	// orb-B (fw 9442432); the firmware's own page at orb_net.c:4477 shows r.d.error straight
+	// to the operator, so the wording is user-visible and drift is a UI bug, not a cosmetic one.
 	cases := []struct {
-		path string
-		want int
+		path, wantBody string
+		want           int
 	}{
-		{"/api/v1/apps/install", 400},
-		{"/api/v1/apps/install?id=..%2Fevil", 400},
-		{"/api/v1/apps/install?name=hue", 400},
-		{"/api/v1/apps/enable?id=hue", 400},
-		{"/api/v1/apps/enable?id=hue&on=2", 400},
-		{"/api/v1/apps/enable?id=nope&on=1", 404},
-		{"/api/v1/apps/enable?id=bad&on=1", 409},
-		{"/api/v1/apps/uninstall?id=glass", 409},
-		{"/api/v1/apps/uninstall?id=nope", 404},
+		{"/api/v1/apps/install", noStemBody, 400},
+		{"/api/v1/apps/install?id=..%2Fevil", noStemBody, 400},
+		{"/api/v1/apps/install?name=hue", noStemBody, 400},
+		{"/api/v1/apps/enable?id=hue", badOnBody, 400},
+		{"/api/v1/apps/enable?id=hue&on=2", badOnBody, 400},
+		// q_param drops a decoded separator before the door ever sees a name.
+		{"/api/v1/apps/enable?id=..%2Fevil&on=1", missingIDBody, 400},
+		{"/api/v1/apps/uninstall?id=..%2Fevil", missingIDBody, 400},
+		// A leading dot passes q_param and is caught by orb_sd_name_ok inside door_open.
+		// Two different 400s from two layers, and the device really distinguishes them.
+		{"/api/v1/apps/enable?id=..foo&on=1", notUsableNameBody, 400},
+		{"/api/v1/apps/uninstall?id=..foo", notUsableNameBody, 400},
+		{"/api/v1/apps/enable?id=nope&on=1", notFoundBody, 404},
+		{"/api/v1/apps/uninstall?id=nope", notFoundBody, 404},
+		// A 25-character id overflows the handler's 24-byte buffer and is truncated rather
+		// than refused, so it lands on the lookup and misses.
+		{"/api/v1/apps/enable?id=" + id25 + "&on=1", notFoundBody, 404},
+		// Inside-the-firmware rows are refused on both doors with the same sentence, at 400
+		// because NOT_SUPPORTED maps there. A Manage card that rendered a toggle for these
+		// would ship a control that can only ever fail.
+		{"/api/v1/apps/enable?id=clock&on=0", builtinBody, 400},
+		{"/api/v1/apps/enable?id=menu&on=0", builtinBody, 400},
+		{"/api/v1/apps/uninstall?id=color_picker", builtinBody, 400},
+		{"/api/v1/apps/uninstall?id=glass", onDialBody, 409},
 	}
 	for _, c := range cases {
 		code, body := appDo(t, srv, http.MethodPost, c.path, []byte("{}"))
-		if code != c.want {
-			t.Errorf("POST %s -> %d %s, want %d", c.path, code, body, c.want)
+		if code != c.want || !strings.Contains(body, c.wantBody) {
+			t.Errorf("POST %s -> %d %s, want %d containing %s", c.path, code, body, c.want, c.wantBody)
 		}
+	}
+	// The refusal body carries no caller text. Enabling a name that does not exist returns
+	// the firmware's own sentence, not the name the caller supplied.
+	_, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=zzz&on=1", []byte("{}"))
+	if strings.Contains(body, "zzz") {
+		t.Errorf("refusal body echoed caller input: %s", body)
+	}
+	// A card job in flight outranks the lookup: door_open checks busy before it searches,
+	// so an unknown id on a busy orb reports the job. Reordering this in the double would
+	// show an operator a reason the orb never had.
+	o.JobBusy = true
+	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=nope&on=1", []byte("{}")); code != 409 ||
+		!strings.Contains(body, doorBusyBody) {
+		t.Errorf("busy orb, unknown id -> %d %s, want 409 job-busy", code, body)
+	}
+	o.JobBusy = false
+	// Turning ON a failed app is the revive gesture (C2), not a dead end: the device clears
+	// the fault record and lets it through. The old expectation here (flat 409) was wrong in
+	// a way that would have cost the hub the only control that recovers a failed card.
+	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=bad&on=1", []byte("{}")); code != 200 ||
+		!strings.Contains(body, `"enabled"`) {
+		t.Errorf("revive via enable -> %d %s, want 200 enabled", code, body)
+	}
+	if o.apps["bad"].Failed {
+		t.Error("enable on a failed app must clear the fault record")
 	}
 	// The one answer that looks wrong and is not: a well-formed stem naming nothing is
 	// accepted, because h_apps_install queues before it looks. The failure surfaces on
@@ -152,29 +200,40 @@ func TestAppUploadTakesItsNameFromTheHeader(t *testing.T) {
 
 	// The destination is the header's slug. The query string says something else entirely
 	// and must be ignored — that property is what makes the route safe to expose at all.
-	cont := BuildAppContainer("clock", "Wall Clock", 0x1, 60000, 7)
+	cont := BuildAppContainer("dialtest", "Dial Test", 0x1, 60000, 7)
 	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/sd/app?id=../../etc", cont); code != 200 ||
 		!strings.Contains(body, `"stored"`) {
 		t.Fatalf("valid upload -> %d %s", code, body)
 	}
-	if o.apps["clock"] == nil {
+	if o.apps["dialtest"] == nil {
 		t.Fatal("container did not land under its own header slug")
 	}
 	if o.apps["../../etc"] != nil {
 		t.Error("a caller-controlled query string influenced the destination")
 	}
-	// h_status's apps array is the broker ledger and lists only what is registered in
-	// flash, so an upload alone must leave it empty: the row is staged on the card, not
-	// installed. The ledger row appears after the install that follows it.
-	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
-	if !strings.Contains(sb, `"apps":[]`) {
-		t.Errorf("a staged-only app must not be in the ledger yet: %s", sb)
+	// Uploading over an inside-the-firmware name is refused, not silently accepted: the
+	// overwrite gate keys on the registry, and clock/color_picker/menu are already in it.
+	// Only the status is pinned here — the exact wording for a built-in collision has not
+	// been measured on hardware, and this file does not invent device strings again.
+	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/sd/app",
+		BuildAppContainer("clock", "Wall Clock", 0x1, 60000, 7)); code == 200 {
+		t.Errorf("upload over a built-in slug -> %d %s, want a refusal", code, body)
 	}
-	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/install?id=clock", []byte("{}")); code != 200 {
-		t.Fatalf("install clock -> %d %s", code, body)
+	// h_status's apps array is the broker ledger and lists only what is registered in
+	// flash, so an upload alone must leave it at the built-ins: the row is staged on the
+	// card, not installed. The ledger row for it appears after the install that follows.
+	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
+	if strings.Contains(sb, `"slug":"dialtest"`) {
+		t.Errorf("a staged-only app appeared in the ledger: %s", sb)
+	}
+	if !strings.Contains(sb, `"apps":[{"slug":"clock"`) {
+		t.Errorf("ledger lost the built-in rows a real orb always reports: %s", sb)
+	}
+	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/install?id=dialtest", []byte("{}")); code != 200 {
+		t.Fatalf("install dialtest -> %d %s", code, body)
 	}
 	_, sb = appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
-	if !strings.Contains(sb, `"slug":"clock"`) {
+	if !strings.Contains(sb, `"slug":"dialtest"`) {
 		t.Errorf("status ledger omitted the installed app: %s", sb)
 	}
 }

@@ -46,6 +46,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_attr.h"   /* D2: RTC_NOINIT_ATTR — the reboot-to-provisioning intent flag */
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -138,6 +139,51 @@ static volatile bool s_provisioning;   /* booted with no credentials at all */
  * device the AP is the only door there is, and rebooting returns to the same
  * branch. Latched once where the boot branch reads NVS, never re-read after. */
 static volatile bool s_prov_recovery_session;
+
+/* ── D2: the reboot-to-provisioning intent flag ────────────────────────────
+ * One word of RTC NOINIT memory, and nothing else. Chosen over NVS because its
+ * retention is exactly the semantics wanted: it survives esp_restart() (the
+ * bootloader only skips the segment, it does not clear it — esp_image_format.c:852
+ * "Skipping RTC slow memory segment"; the section is (NOLOAD) in the S3
+ * sections.ld.in:93, and no startup code zeroes it), but a power cycle wipes the
+ * RTC domain and takes the request with it. A request interrupted by a power loss
+ * therefore CANNOT strand the orb in AP mode, which an NVS key would.
+ *
+ * The noinit caveat is the reason this is a magic and not a bool: at cold
+ * power-on the word holds whatever the SRAM came up with. Only the exact magic
+ * counts, and the boot branch scrubs the word on every read, so one boot's
+ * garbage can never be mistaken for intent and can never linger.
+ *
+ * Measured retention, bench 2026-10-13 (orb-B, this commit's probe build):
+ * survives esp_restart() — rst:0xc RTC_SW_CPU_RST — and FORCES the provisioning
+ * branch exactly once. Also survives a chip reset that keeps VDD applied: an
+ * RTS-on-EN reset (rst:0x15 USB_UART_CHIP_RESET) came up forced as well, because
+ * the RTC power domain never lost power. So "a power cycle clears it" means
+ * removing VDD (unplug / brownout), NOT pressing the reset button — do not write
+ * a recovery flow that assumes a button press cancels a pending request. The
+ * safety argument does not rest on that assumption either way: D4's sojourn
+ * bounds any forced session and the boot branch consumes the word on read, so the
+ * worst a stale request can do is cost one extra provisioning boot. */
+#define PROV_INTENT_MAGIC 0x4F524250u   /* 'O' 'R' 'B' 'P' */
+static RTC_NOINIT_ATTR uint32_t s_prov_intent;
+
+/* Pure so tools/host_tz_test.py can pin the garbage rows (0, all-ones, off-by-one)
+ * that are the whole reason for a magic rather than a flag. */
+static bool prov_intent_armed(uint32_t w)
+{
+    return w == PROV_INTENT_MAGIC;
+}
+
+/* Read-and-clear, called exactly once per boot by the boot branch. Zeroing on
+ * every read (not only on a hit) is what keeps a cold-boot garbage word from
+ * surviving to be misread later, and makes the request good for exactly one
+ * provisioning boot. */
+static bool prov_intent_consume(void)
+{
+    const bool armed = prov_intent_armed(s_prov_intent);
+    s_prov_intent = 0;
+    return armed;
+}
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 /* Set only when a human asked for the AP (the config page / POST /wifi/ap).
  * It exists because every STA lease re-arms the AP timer with the short
@@ -4624,12 +4670,23 @@ esp_err_t orb_net_start(void)
     s_sta_netif = esp_netif_create_default_wifi_sta();
 
     /* D4's guard reads exactly like the branch it guards: "credentials exist"
-     * means nothing more than "this boot would have taken the STA path". Anything
-     * that forces the provisioning branch anyway (the RTC intent flag of D2, or a
-     * bench build that inverts this condition) is by definition a recovery session
-     * with a network to go back to, and gets the deadline. */
+     * means nothing more than "this boot would have taken the STA path". D2's RTC
+     * intent flag forces the provisioning branch anyway, and is by definition a
+     * recovery session with a network to go back to, so it gets the deadline. */
     const bool creds_in_flash = (ssid[0] != '\0');
-    if (creds_in_flash) {
+#if CONFIG_ORB_NET_AP_FALLBACK
+    const bool prov_forced = prov_intent_consume();
+#else
+    /* No SoftAP in this build, so there is nothing to force the branch onto. The
+     * word is still scrubbed, and the request is reported as dropped rather than
+     * silently ignored: an operator who pressed the knob should see why nothing
+     * happened. */
+    const bool prov_forced = false;
+    if (prov_intent_consume())
+        ESP_LOGE(TAG, "provisioning requested but ORB_NET_AP_FALLBACK is disabled; "
+                      "booting into the stored network instead");
+#endif
+    if (creds_in_flash && !prov_forced) {
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     } else {
 #if CONFIG_ORB_NET_AP_FALLBACK
@@ -4667,8 +4724,16 @@ esp_err_t orb_net_start(void)
          * the credentials stays attached while the association proceeds. */
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "mode");
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "ap config");
-        ESP_LOGW(TAG, "no stored network — provisioning AP \"%s\" (open), "
-                      "then open http://192.168.4.1/", (const char *)ap.ap.ssid);
+        if (prov_forced)
+            /* Deliberately not the factory wording: credentials ARE stored, and
+             * saying otherwise would send an operator hunting for a pairing they
+             * never lost. The request is good for this boot only. */
+            ESP_LOGW(TAG, "provisioning requested — coming up as \"%s\" (open) for ONE "
+                          "boot; the stored network is left untouched as the fallback",
+                     (const char *)ap.ap.ssid);
+        else
+            ESP_LOGW(TAG, "no stored network — provisioning AP \"%s\" (open), "
+                          "then open http://192.168.4.1/", (const char *)ap.ap.ssid);
 #else
         ESP_LOGE(TAG, "no stored network and SoftAP fallback is disabled");
         return ESP_ERR_NOT_FOUND;
@@ -4765,6 +4830,25 @@ bool orb_net_is_up(void)
 bool orb_net_is_provisioning(void)
 {
     return s_provisioning;
+}
+
+/* D2: request a provisioning boot. Sets the RTC intent word and returns true;
+ * returns false and changes nothing when this build has no SoftAP to fall back
+ * on, so a caller can report the refusal instead of rebooting into a dead end.
+ *
+ * It deliberately does NOT reboot. The caller owns the timing: a knob press must
+ * let the panel show something first, and an HTTP caller must get its response
+ * out before the connection dies — see reboot_timer_cb(), which defers for the
+ * same reason. Nothing is written to flash: the whole point of D2 is that a
+ * request which loses power before it boots disappears with the power. */
+bool orb_net_request_provisioning(void)
+{
+#if CONFIG_ORB_NET_AP_FALLBACK
+    s_prov_intent = PROV_INTENT_MAGIC;
+    return true;
+#else
+    return false;
+#endif
 }
 
 const char *orb_net_ip_str(void)

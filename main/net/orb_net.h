@@ -48,8 +48,30 @@ esp_err_t orb_net_start(void);
 /** True once STA has an IP (or the SoftAP is up and reachable). */
 bool orb_net_is_up(void);
 
-/** True while serving as the first-boot provisioning SoftAP with no STA link. */
+/** True while serving the provisioning SoftAP with no STA link: a first boot
+ *  with no credentials, or a one-boot session requested by
+ *  orb_net_request_provisioning(). */
 bool orb_net_is_provisioning(void);
+
+/**
+ * D2: ask the NEXT boot to come up in provisioning even though credentials are
+ * stored, so an orb on a network that no longer works can be recovered from a
+ * phone. The request lives in RTC slow memory (noinit): it survives esp_restart()
+ * and is consumed by that one boot. It is never written to flash, so it cannot
+ * outlive a reboot loop or a botched OTA.
+ *
+ * "Dies with the power" means VDD removal — an unplug or a brownout. Measured on
+ * the bench: a chip reset that keeps power applied (rst:0x15, RTS on EN) does NOT
+ * clear it. Do not build a cancel path on the reset button.
+ *
+ * Returns false (having changed nothing) when this build has no SoftAP fallback.
+ * Does NOT reboot — the caller decides when, and how to be polite about it.
+ *
+ * Writers today: none yet. D5's knob hold and any hub-initiated recovery call
+ * this; D4's sojourn expiry must NOT, or the reboot it performs re-enters
+ * provisioning and the session never ends.
+ */
+bool orb_net_request_provisioning(void);
 
 /** The STA IPv4 as dotted-quad text, or "" when not associated. */
 const char *orb_net_ip_str(void);

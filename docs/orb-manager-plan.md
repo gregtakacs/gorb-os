@@ -835,11 +835,26 @@ rebooting, and that is the difference between the working case and the broken on
 
 | Door | Path | Radio sequence | Proven? |
 |---|---|---|---|
-| No credentials in `orb.net` | boot straight into `ap_open()` | `set_mode` from `WIFI_MODE_NULL` after `esp_wifi_init` | **Yes** — verified by eye on orb-B: lease + menu + scan list |
-| Physical: power-cycle an unprovisioned orb | same as above | same | Yes (that is how the fleet was first paired) |
-| Physical: long-press-at-boot | full provisioning | same | Yes, pre-existing |
+| No credentials in `orb.net` | boot branch, `orb_net.c:3911` — does NOT call `ap_open()`; inlines `set_config(AP)` + `set_mode(APSTA)` | `set_mode(APSTA)` from `WIFI_MODE_NULL`, before `esp_wifi_start()` | **Yes** — verified by eye on orb-B: lease + menu + scan list |
+| Physical: power-cycle an unprovisioned orb | same boot branch (it is unprovisioned, so the same code) | same | Yes (that is how the fleet was first paired) |
+| Serial: `PROV <hex-ssid> <hex-pass> <hex-tz>` on the console | `prov_reader_task`, armed only when the boot branch already took | (join on the running APSTA boot) | Yes — but only reachable on a device with no stored SSID, and only over a USB serial cable |
 | Credentials refused 8x (`CONFIG_ORB_NET_AP_RESCUE_FAILS`) | `NET_CMD_AP_RESCUE` -> `ap_open()` | **late promotion** on a running STA | Fragile |
 | Config page / hub "Open AP" (`POST /api/v1/wifi/ap`) | `NET_CMD_AP_OPEN` -> `ap_open()` | **late promotion** on a running STA | Fragile |
+
+**Corrected 2026-10-13 — there is no physical door on a credentialed orb.** An
+earlier version of this table claimed a "long-press-at-boot" door, pre-existing.
+It does not exist: nothing samples the knob before `orb_net_start()`
+(`main.c:201`), `orb_net_start()` takes no force argument, and `s_provisioning` is
+assigned in exactly two places — set at `orb_net.c:3911` (no stored SSID) and
+cleared at `orb_net.c:1506` (STA lease acquired). The long press is the in-app
+"return home" gesture (`orb_app.c:199`, `input_router.c:242`) and reaches no
+networking code. Row 1's mechanism was also wrong: the boot branch never calls
+`ap_open()`, which is why it arms no expiry timer.
+
+Consequence for the design: for a credentialed orb whose network has gone away,
+the only doors are the two fragile late promotions, or opening the case and
+attaching a serial cable. A wall-powered device with no button-reachable
+recovery is the real defect here, and it is bigger than the button semantics.
 
 "Late promotion" means `esp_wifi_set_mode(WIFI_MODE_APSTA)` on an already-running
 station driver. Every failure seen in this investigation lived there: the Guru
@@ -864,23 +879,39 @@ recovery action, and recovery actions restart things.
 **Design points to settle before any code:**
 
 1. **A boot-intent flag, not a credential wipe.** Needs a one-shot key in
-   `orb.net` (e.g. `reprov`) that forces the existing `!have_prov_creds` branch
-   even when credentials exist. It MUST preserve the stored SSID: that is what
-   pre-fills the form and what lets a wrong password be corrected rather than
-   re-typed. Tonight's bench build proved this works — it entered the full
-   provisioning path on a credentialed orb with one flag, served the menu and the
+   `orb.net` (e.g. `reprov`) that forces the provisioning branch even when
+   credentials exist. The branch to force is the `else` at `orb_net.c:3904` — its
+   real condition is `ssid[0] != '\0'`, not a `have_prov_creds` helper.
+   Tonight's bench build proved the mechanism works: one forced condition on a
+   credentialed orb entered the full provisioning path, served the menu and the
    live scan list, and erased nothing.
+   Corrected 2026-10-13: preserving the SSID is still the right call, but NOT for
+   the reason stated here originally. Nothing pre-fills the form. The stored SSID
+   is never echoed — `/api/v1/status` has no `ssid` field, `GET /api/v1/config`
+   returns timezone zones only, and the sole `"ssid"` string in the file is the
+   parse of the POST body in `h_wifi_join`. So preserve the credential for two
+   other reasons: it is the fallback the bounded sojourn reboots back to (point 3),
+   and wiping it converts a recovery action into a factory reset. If pre-fill is
+   wanted, that is a separate small endpoint, not a property of the flag.
 2. **Write the flag before rebooting, and make it survivable.** If power is lost
    between setting the flag and booting, the device must still come up in
    provisioning, and the flag must clear on a successful re-provision or on the
    next plain power-cycle, so an orb cannot get permanently stuck in AP mode.
    Decide: does the flag expire (one boot only, or N boots)?
-3. **Bounded sojourn, then resume.** The AP already times out (`hold_s`,
-   `NET_CMD_AP_EXPIRED`, and `ap_timer_cb` re-arms while the STA has no lease).
-   For a reboot-initiated provisioning session that re-arm is wrong — there is no
-   lease to wait for, and the point of the session is that the network is broken.
-   Specify the end state explicitly: on timeout, reboot back to normal boot rather
-   than sit on an unattended AP forever.
+3. **Bounded sojourn, then resume — this is net-new code, not a config change.**
+   Corrected 2026-10-13 against the source: a provisioning boot arms NO expiry
+   timer (arming lives in `ap_open()` at `orb_net.c:811`, which the boot branch
+   does not call), and `NET_CMD_AP_EXPIRED` deliberately does nothing while
+   `s_provisioning` (`orb_net.c:1104` closes only on a lease; the re-arm branch is
+   gated by `!s_provisioning`). So a boot into provisioning has exactly one exit —
+   acquire an STA lease — and otherwise holds the AP open indefinitely. That is
+   correct for a factory device and wrong for a recovery session, because the
+   stored credentials may be perfectly good and the router merely rebooting: the
+   orb would sit in AP mode forever instead of rejoining. Specify a real exit:
+   arm the existing expiry timer on a flag-initiated boot, and on expiry REBOOT to
+   normal boot so the stored credentials get retried. Note `ap_close()` cannot
+   serve as that exit — it calls `set_mode(STA)` and leaves `s_provisioning` set,
+   so it tears the radio down to a half state rather than restoring a join attempt.
 4. **The page dies mid-action.** The config page is served over the LAN while the
    AP it advertises is a *different* network the phone must join by hand. A reboot
    means the tab the user clicked is gone. UI must state the consequence and give
@@ -896,15 +927,80 @@ recovery action, and recovery actions restart things.
    command is still harmless in the worst case (one reboot), but confirm it is not
    reachable in a way that lets a LAN neighbour reboot-loop the device; rate-limit
    or require the AP to be up first.
-7. **Trigger set.** At minimum: the config page button, the hub's orb actions, and
-   the physical long-press (already exists). Consider whether the 8-failure rescue
-   should *also* switch to this path — it is currently a late promotion, i.e. the
-   fragile door, and it is the one that fires without anyone watching.
+7. **Trigger set — corrected.** The config page button and the hub's orb actions.
+   There is NO physical trigger to inherit (see the door table above): no boot-time
+   knob sample exists, so "hold the knob while powering up" is work to be
+   implemented, not an existing door. Given a credentialed orb otherwise has no
+   button-reachable recovery, the physical gesture is arguably the most important
+   trigger in this feature, and it is the only one that works when the network is
+   gone and no phone is on the LAN.
+   On the 8-failure rescue: it is still a late promotion, but the fragility argued
+   for here was measured to be the LVGL pool, not the promotion. At 24 KB + default
+   buffers the promotion path returns HTTP 200 in 0.128 s with `SoftAP OPEN`,
+   `DHCP server started`, zero `alloc eb` and zero Guru. So moving the rescue to a
+   reboot is now a judgement about robustness under an unattended failure, not a
+   fix for a known panic. Do not move it on the strength of the old evidence.
 8. **Keep a plain "Open AP" too, or not?** If late promotion is dropped entirely
    the code gets simpler and there is one path to test; if it stays, the config
    page has two buttons that look the same and behave very differently. Recommend
    one button, reboot semantics, and delete the promotion path once the rescue
    path moves over.
+
+**Next step in the design (2026-10-13): settle ONE question, not eight.**
+Points 1, 2, 3 and 7 are all downstream of a single choice — is provisioning a
+*boot-time mode* with exactly one entry path, or a *radio state* the running
+device can enter and leave at will? Tonight's measurements answer the empirical
+half of it: booting into APSTA is the only door ever proven to work, and the
+running-device door now also works at 24 KB. So the choice is no longer about
+reliability; it is about whether a recovery action is allowed to reconfigure the
+radio under load. Recommend boot-time mode, because it makes points 2, 3 and 8
+collapse into "clear the flag and reboot", removes the need for an AP-close
+endpoint, and makes every door identical to the one that works.
+Before writing that spec, run one bench test that prices it. The serial `PROV`
+door is armed only while `s_provisioning`, so forcing the boot branch on orb-B
+both enters provisioning AND makes the join path drivable over the console — no
+phone needed. Send a deliberately wrong passphrase and answer the one open
+question the spec turns on: does the 8-failure rescue ever fire during a
+provisioning boot? It is gated on `!s_ap_up` (`orb_net.c:1286`), and `s_ap_up` is
+set true by the `WIFI_EVENT_AP_START` handler (`orb_net.c:1296`) on a boot that
+never called `ap_open()`. If the gate blocks it, then a wrong password typed on
+the provisioning page has no recovery but the bounded sojourn of point 3 — which
+means the spec must make that sojourn end in a REBOOT, not an `ap_close()`.
+
+**TEST RUN 2026-10-13 — done, and the answer is worse than the question.** On
+orb-B (24 KB pool, IDF-default buffers, boot branch forced, real credentials left
+untouched in NVS): `PROV <GTROUTER2> <wrong-pass> <Etc/UTC>` over the console
+returned `prov: received ssid="GTROUTER2" pass=(set) +tz` then `PROV-ACK`. The
+join attempt was refused — `wifi:state: auth -> init (0x600)` — and then the
+device went silent. No `disassociated:` line, no retry, no attempt counter, no
+rescue, no timeout. It sat broadcasting for the rest of the observation window.
+
+The cause is one line: `if (s_provisioning) break;` at `orb_net.c:1260`, in
+`WIFI_EVENT_STA_DISCONNECTED`, annotated `/* AP-only mode: nothing to retry */`.
+That comment is false on this path. The boot branch deliberately sets
+`WIFI_MODE_APSTA` rather than AP precisely so the station CAN associate (its own
+comment at `orb_net.c:3927` says under AP-only "connect() is a no-op, so the orb
+looks configured and never comes back"). So the flag that exists to enable a
+join-in-provisioning is the same flag that discards the join's failure.
+Consequences, all measured: (a) every retry ladder, backoff, and the mDNS goodbye
+are skipped; (b) `s_assoc_fails` never increments, so the rescue threshold is
+unreachable; (c) the 8-failure rescue is additionally gated on `!s_ap_up`, which
+is true here via the `AP_START` handler, so it could not fire even if counted;
+(d) nothing arms `s_ap_timer`, so there is no timeout. A wrong password entered on
+the provisioning page therefore ends the session permanently, with the AP still
+broadcasting and nothing behind it. The only recovery is resubmitting the form or
+power-cycling — and power-cycling restores the *original* credentials, because the
+provisioning submit does not persist them until a lease is held.
+
+**This settles the design question, and it changes the shape of the work.** The
+feature is not "make Open AP reboot into provisioning." It is "give a provisioning
+session a failure path," which does not exist today at all. Point 3's bounded
+sojourn is now mandatory rather than tidy — it is the only exit for the most
+common operator error, a mistyped passphrase. And it must end in a reboot, not
+`ap_close()`: a close leaves `s_provisioning` set, which re-triggers the same
+discard. Fixing `orb_net.c:1260` to retry under APSTA is a one-line change worth
+making on its own merits regardless of which way the larger design goes, because
+it is the reason a mistyped password looks like a dead device.
 
 **Explicitly out of scope for this note:** whether the AP is joinable without an
 IP (it is — static lease `192.168.4.2`, and wired tests are unaffected by the

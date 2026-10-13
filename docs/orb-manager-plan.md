@@ -635,3 +635,29 @@ Their line is mid-flight. `gorb-os-2` sits at `e223a01` with two P4 commits
 still unpushed, so this work went to its own branch rather than into `main`,
 and integration should wait for their push and happen once.
 
+#### 5.6.1 How it actually landed (2026-10-12, same day)
+
+The P4 commits landed first and the other agent did the merge, as `af1bc79` in
+`gorb-os-2` (parents `e223a01` and `3d2df79`). This clone's `main` was then
+rebased onto it, which is a fast-forward: the nine fleet commits are ancestors
+of the merge, so no commit was rewritten and none duplicated.
+
+Their resolution differs from the scratch one in two ways, both better. The
+`json` buffer is `static`, not stack, following the `s_scan_json` rule: 1536 B
+on a 4 KB httpd task is most of a stack. And the ledger row grew past what this
+section was written against, gaining `declared` and `denied_mask` beside
+`grants`. The `mac` code came through untouched, still `ESP_MAC_BASE`, still
+feeding `mac_str` to the same snprintf.
+
+The merge did leave one obligation unmet, and the guard caught it: it kept the
+fleet branch's bundle, so the hub shipped a `gorb-os.bin` with no broker in it.
+Built clean at `af1bc79` and re-packed as the next commit, the image stamp reads
+`af1bc79` and `orb_svc_declared` and `orb_svc_denied_mask` link at addresses.
+
+One local trap cost a false red here, and `.clinerules` already documents it.
+`host_idle_dim_test.py` failed on the merged tree for want of
+`CONFIG_ORB_APP_POWER_MAX_S`, which their P4 added as a new Kconfig default. A
+new `default y` never materializes into an existing untracked `sdkconfig`; the
+symbol was appended and the suite went green. Thirteen of thirteen host suites
+now pass on the merged tree.
+

@@ -1347,12 +1347,12 @@ static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
     /* 1536, sized by a reading rather than an estimate. The merged body measured
-     * 1116 B on orb-B on 2026-10-12, six requests, all identical. The idle block
-     * was dimmed with its writes_failed field present, art was ready, three ledger
-     * rows published, and no app had printed a status line. The frame grew from 512
-     * through 640 and 960 as fields joined it, and every addition had to be
-     * re-measured on the cable (`curl -s ORB/api/v1/status | wc -c`) rather than
-     * added up here.
+     * 1115 B on orb-B on 2026-10-12, twelve identical requests, and 1116 B on the
+     * boot before. The byte is wifi_reason_name, auth-leave against assoc-leave,
+     * and counter digit widths move it the same way, so quote a range. Idle block
+     * dimmed with writes_failed present, art ready, three ledger rows, and no app
+     * status line printed. The frame grew from 512 through 640 and 960 as fields
+     * joined it, and each addition was re-measured (`status | wc -c`), not added.
      *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and those three rows filled 440 B of it. Two more rows fit at the

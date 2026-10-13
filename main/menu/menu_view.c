@@ -35,10 +35,12 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"   /* ABOUT: the running image's own stamp */
 
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_app.h"
+#include "orb_app_install.h"   /* APPS: the enable/uninstall doors (P5.3) */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_home() */
 
@@ -61,8 +63,8 @@ static const char *TAG = "menu";
  *
  * The top page is its first row: s_top carries the OS's own entries, and
  * rows_top() adds the dynamic ones — one per app that declares options, then
- * exit. APPS and ABOUT are the plan's §7.2 top level and land as s_top entries
- * in P5.3; nothing here has to change shape for them, which is the point. */
+ * exit. APPS and ABOUT landed as s_top entries in P5.3 without this shape
+ * changing at all, which is the point of the table. */
 
 typedef enum {
     PG_LANDING = 0,   /* inert title; the knob belongs to the router   */
@@ -73,6 +75,9 @@ typedef enum {
     PG_TO,            /* the timeout presets                          */
     PG_PERMS,         /* one row per installed app: what it may do    */
     PG_CAPS,          /* the selected app's four owner caps, togglable */
+    PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
+    PG_APPACT,        /* one app's own doors: activate / enable / uninstall */
+    PG_ABOUT,         /* inert identity list — no press does anything  */
     PG_N
 } page_t;
 
@@ -148,10 +153,21 @@ static void act_perms(int);      static int  ord_caps(void);
 static int  rows_caps(void);     static void label_caps(int, char *, size_t, bool *);
 static const char *title_caps(void);   static const char *hint_caps(void);
 static void act_caps(int);
+static int  rows_apps(void);     static void label_apps(int, char *, size_t, bool *);
+static const char *title_apps(void);   static const char *hint_apps(void);
+static void act_apps(int);       static void enter_apps(void);
+static int  rows_appact(void);   static void label_appact(int, char *, size_t, bool *);
+static const char *title_appact(void); static const char *hint_appact(void);
+static void act_appact(int);     static int  ord_appact(void);
+static void open_appact(const orb_app_t *);
+static int  rows_about(void);    static void label_about(int, char *, size_t, bool *);
+static const char *title_about(void);
 static int  top_os_rows(void);   static int app_row_index(const orb_app_t *);
 static void act_ap(void);        static void go_to(int to, int cur);
 static int  cap_pack(const orb_app_t *, int row);
+static int  door_pack(const orb_app_t *, int act);
 static void job_grant(void *arg);
+static void job_enable(void *arg);   static void job_uninstall(void *arg);
 static int  page_rows(void);
 static void row_text(int, char *, size_t, bool *);
 static const char *page_title(void);
@@ -485,9 +501,9 @@ static void shape_check(int rows)
 
 /* The top page's sub-table, in glass order. The clock is NOT among them: B2
  * rules the clock app supplies the theme picker and the shell only renders it,
- * so it arrives through the dynamic app rows. APPS and ABOUT are the plan's
- * §7.2 top level and land here in P5.3 — a new row is one entry plus its
- * page row, with no switch anywhere to open. The AP row stays a stub on
+ * so it arrives through the dynamic app rows. APPS and ABOUT landed here with
+ * P5.3 — a new row is one entry plus its page row, with no switch anywhere to
+ * open. The AP row stays a stub on
  * purpose: joining needs a passphrase, and a single push-input cannot type
  * one; the browser page is the way in until a keypad screen exists. */
 static const menu_row_t s_top[] = {
@@ -499,6 +515,13 @@ static const menu_row_t s_top[] = {
      * it on the top page rather than being interrupted on the dial (D19).
      * Nothing waits on an answer. */
     { "PERMISSIONS", PG_PERMS,       NULL },
+    /* APPS and ABOUT join the OS's own run rather than the dynamic one: they
+     * describe the machine, not one app, and the plan's §7.2 top level names
+     * both. Appending them after PERMISSIONS rather than slotting them before
+     * it keeps every back_cur literal in the table below valid — the row each
+     * sub-page returns to is the row it was written for. */
+    { "APPS",        PG_APPS,        NULL },
+    { "ABOUT",       PG_ABOUT,       NULL },
 };
 
 /* ---- the page table, and what its rows answer ------------------------------
@@ -817,6 +840,269 @@ static void enter_to(void)
         if (s_to_preset[i].s == cur) { s_cur = i; return; }
 }
 
+/* ---- P5.3: APPS, its doors, and ABOUT (plan §7 items 2 and 4) --------------
+ *
+ * The catalog is the registry's installed tier, the same set PERMISSIONS walks
+ * (perm_rows/perm_row) and for the same reason: `orb_app_at()` hides the
+ * shell's own entries and every installed-but-disabled app, and a page whose
+ * job is the owner's doors cannot afford to hide the disabled ones — "turned
+ * off" is exactly the row they come to turn back on.
+ *
+ * The four states are the plan's words, and the row says one of them rather
+ * than a boolean: `on the dial` (the entry the glass is showing), `enabled`
+ * (on the carousel, not showing), `on card` (installed and walkable but
+ * switched off), and `failed: <reason>` (C2's fault record, shown with its
+ * reason verbatim — the orb_theme_scan rule that a row which cannot be used is
+ * still a row that must be explained). The reason wins over the enable state
+ * because a failed app that reads merely "off" tells the owner to go looking
+ * for a switch.
+ *
+ * One press cannot carry three doors, so an app row opens PG_APPACT rather than
+ * cycling anything. B5's cap shows here as a row of its own: an owner at 8 of 8
+ * needs the page to say so before they look for something to uninstall. */
+static int rows_apps(void)   { return perm_rows() + 2; }   /* +1 cap row, +1 back */
+static int rows_appact(void) { return 3 + 1; }             /* 3 doors + back      */
+static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back      */
+
+/* The app PG_APPACT is showing, by registry index — the same convention
+ * s_perm_slot uses for PG_CAPS, so the two "which app" states are one kind of
+ * state rather than two ways to lose track of an app. s_uninst_arm is the
+ * uninstall row's first-press arm, held as the same index: a row that can no
+ * longer be pointed at cannot fire. */
+static int s_door_slot  = -1;
+static int s_uninst_arm = -1;
+
+static void open_appact(const orb_app_t *a)
+{
+    s_door_slot = orb_app_index_of(a);
+}
+static int ord_appact(void)
+{
+    /* Which APPS row this app is on, so back lands where the owner came from
+     * even if the row moved underneath them. */
+    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+    return a ? perm_row_of(a) : 0;
+}
+
+/* Which entry the glass is showing, by the registry's own answer plus the row's
+ * own active bit: one rule, asked in one place, so the catalog's "on the dial"
+ * and the door page's "showing on the dial" cannot start disagreeing about who
+ * is on the glass. */
+static bool app_on_glass(const orb_app_t *a)
+{
+    return a == orb_app_current() || a->active;
+}
+
+static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    const int n = perm_rows();
+    if (row >= n) {
+        if (row == n) {   /* B5's cap, on the glass rather than in a manual */
+            snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);
+            return;
+        }
+        snprintf(out, outsz, "<- back");
+        return;
+    }
+    const orb_app_t *a = perm_row(row);
+    if (!a) { snprintf(out, outsz, "?"); return; }    /* rows_apps sized it */
+    if (a->failed) {
+        /* Verbatim from the broker's fault record — the same sentence the
+         * ledger and the /apps page print. */
+        snprintf(out, outsz, "%s  failed: %s", a->title ? a->title : a->slug,
+                 orb_svc_fault_reason(a));
+        return;
+    }
+    const bool on_glass = app_on_glass(a);
+    snprintf(out, outsz, "%s  %s", a->title ? a->title : a->slug,
+             on_glass ? "on the dial" : (a->enabled ? "enabled" : "on card"));
+}
+
+static void act_apps(int row)
+{
+    const orb_app_t *a = perm_row(row);
+    if (!a) { go_back(); repaint(); return; }          /* the cap/back rows */
+    /* The door page is armed through its own open hook, exactly as the top
+     * page arms PG_APP: which app a page is about is the page's business, and
+     * a second place that assigns it is a second place to get it wrong. */
+    s_pages[PG_APPACT].open(a);
+    go_to(PG_APPACT, 0);
+    repaint();
+}
+
+static const char *title_apps(void) { return "APPS"; }
+static const char *hint_apps(void)  { return "rotate: choose   push: open"; }
+
+/* Leaving the list ends the door page's claim on an app and the arm with it:
+ * an arm that outlived its page would uninstall on the next press anywhere. */
+static void enter_apps(void)
+{
+    s_door_slot  = -1;
+    s_uninst_arm = -1;
+}
+
+/* The three doors, in the order an owner wants them: put it on the glass,
+ * switch it on or off, and only then take it off the machine. */
+static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+    if (!a) { snprintf(out, outsz, "?"); return; }
+    const bool on_glass = app_on_glass(a);
+    switch (row) {
+    case 0:
+        if (sel_hi) *sel_hi = on_glass;
+        snprintf(out, outsz, "%s", on_glass ? "showing on the dial"
+                                            : "show on the dial");
+        return;
+    case 1:
+        if (sel_hi) *sel_hi = a->enabled;
+        snprintf(out, outsz, "switch: %s", a->enabled ? "on" : "off");
+        return;
+    case 2:
+        /* The arm is stated on the row, not only in the status line: the owner
+         * who walks back to this row after a detent sees the press is armed. */
+        snprintf(out, outsz, "uninstall%s",
+                 s_uninst_arm == s_door_slot ? " — press again" : "");
+        return;
+    default: snprintf(out, outsz, "<- back"); return;
+    }
+}
+
+static const char *title_appact(void)
+{
+    static char act_title[48];
+    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+    snprintf(act_title, sizeof act_title, "%s APP",
+             a && a->title ? a->title : a ? a->slug : "?");
+    return act_title;
+}
+/* Uninstall is the only irreversible row on the dial, so the hint names the
+ * second press rather than letting a single push stand for consent. */
+static const char *hint_appact(void) { return "rotate: choose   push: run   uninstall needs two presses"; }
+
+/* slot in the high bits, the wanted enable state low. Same shape as cap_pack
+ * for the same reason: this is the whole contract between a press and a write,
+ * and the host suite builds packs against it directly. */
+static int door_pack(const orb_app_t *a, int on)
+{
+    return (orb_app_index_of(a) << 2) | (on ? 1 : 0);
+}
+
+static void act_appact(int row)
+{
+    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+    if (!a) { go_to(PG_APPS, 0); repaint(); return; }   /* uninstalled since */
+    if (row == 0) {
+        /* The carousel's own door, on the LVGL task where lv_screen_load()
+         * must run. It refuses an app that cannot walk, and the line says so
+         * rather than leaving the owner staring at a screen that did not move. */
+        const esp_err_t e = orb_app_activate(a);
+        snprintf(s_ui.status, sizeof(s_ui.status),
+                 e == ESP_OK ? "\"%s\": on the dial"
+                             : "\"%s\": %s will not go on the dial",
+                 a->title ? a->title : a->slug, a->slug);
+        ESP_LOGI(TAG, "apps: activate \"%s\" -> %s", a->slug, esp_err_to_name(e));
+        repaint();
+        return;
+    }
+    if (row == 1) { job_post(job_enable, door_pack(a, a->enabled ? 0 : 1)); repaint(); return; }
+    if (row == 2) {
+        /* Two presses, same row. Moving the cursor clears the arm (see
+         * menu_view_apply_input), so a row the owner rotated away from can
+         * never fire on the next press. */
+        if (s_uninst_arm != s_door_slot) {
+            s_uninst_arm = s_door_slot;
+            snprintf(s_ui.status, sizeof(s_ui.status),
+                     "\"%s\": press uninstall again to confirm",
+                     a->title ? a->title : a->slug);
+            repaint();
+            return;
+        }
+        s_uninst_arm = -1;
+        job_post(job_uninstall, door_pack(a, 0));
+        repaint();
+        return;
+    }
+}
+
+static void job_enable(void *arg)
+{
+    const int pack = *(const int *)arg;
+    const int slot = pack >> 2, on = pack & 1;
+    ui_t out; memset(&out, 0, sizeof out);
+    const orb_app_t *a = orb_app_row((size_t)slot);
+    /* The row can go between the press and the worker: an uninstall from the
+     * browser, or a reboot that resolved the slot away, both leave the pack
+     * naming an index the registry no longer holds. The sentence names which
+     * door found nothing, so an owner reading the dial can tell a switch that
+     * never happened from a cap toggle that did. */
+    if (!a) { snprintf(out.status, sizeof out.status, "that switch found no app"); worker_publish(&out); return; }
+    /* The status line is 72 bytes and a whole title has to fit beside the
+     * sentence, so the door is asked for a line that fits rather than for
+     * everything it knows: .48 leaves room for the slug and the quotes, and
+     * every refusal it returns is complete well inside that. */
+    char why[48] = "";
+    const esp_err_t e = orb_app_enable(a->slug, on != 0, why, sizeof why);
+    /* The refusal sentence is the door's own, verbatim — including the one that
+     * exists only on this surface: "carousel away from it first" is something
+     * the dial can cause and the browser page cannot. Turning ON doubles as
+     * C2's fault clear, which is why a failed row's press says "on" and the
+     * next repaint drops its reason. */
+    snprintf(out.status, sizeof out.status, "\"%s\": %s",
+             a->title ? a->title : a->slug, e == ESP_OK ? (on ? "on" : "off") : why);
+    worker_publish(&out);
+}
+
+static void job_uninstall(void *arg)
+{
+    const int slot = *(const int *)arg >> 2;
+    ui_t out; memset(&out, 0, sizeof out);
+    const orb_app_t *a = orb_app_row((size_t)slot);
+    if (!a) { snprintf(out.status, sizeof out.status, "that switch found no app"); worker_publish(&out); return; }
+    char why[48] = "";                       /* fits the line, as above */
+    const esp_err_t e = orb_app_uninstall(a->slug, why, sizeof why);
+    /* The card file survives on purpose (B4), and the line says so: an owner
+     * who reads a bare "uninstalled" looks for the app on the card next time
+     * and finds it, which reads as if the first refusal had been a lie. */
+    snprintf(out.status, sizeof out.status, "\"%s\": %s",
+             a->title ? a->title : a->slug,
+             e == ESP_OK ? "uninstalled, the card copy stays" : why);
+    worker_publish(&out);
+}
+
+/* ABOUT is a read-only list and says so in its hint: five facts, no press that
+ * changes anything. Every getter here is a RAM read — no NVS, no card, no
+ * queue — so the page paints instantly and cannot answer "working...". */
+static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    switch (row) {
+    case 0:
+        snprintf(out, outsz, "firmware  %s", esp_app_get_description()->version);
+        return;
+    case 1:
+        snprintf(out, outsz, "address  %s", orb_net_ip_str());
+        return;
+    case 2:
+        snprintf(out, outsz, "card  %s",
+                 orb_sd_mounted() ? (orb_sd_card_id()[0] ? orb_sd_card_id() : "mounted")
+                                  : "none");
+        return;
+    case 3:
+        snprintf(out, outsz, "installed  %d of %d", perm_rows(), ORB_APP_CAP);
+        return;
+    case 4:
+        snprintf(out, outsz, "zone  %s", orb_net_tz_current());
+        return;
+    default: snprintf(out, outsz, "<- back"); return;
+    }
+}
+
+static const char *title_about(void) { return "ABOUT"; }
+static const char *hint_about(void)  { return "rotate: read   push: nothing here"; }
+
 
 /* The pack the worker decodes: slot in the high bits, cap, wanted state last.
  * Its own function because this is the whole contract between a press on a cap
@@ -1132,6 +1418,19 @@ const menu_page_t s_pages[PG_N] = {
     [PG_CAPS]    = { .rows = rows_caps, .label = label_caps, .title = title_caps,
                      .hint = hint_caps, .act = act_caps, .ordinal = ord_caps,
                      .back_to = PG_PERMS, .back_cur = 0 },
+    /* APPS is the catalog and the two doors' only path on the glass (B4);
+     * ABOUT is inert. Both sit in the OS's own run of the top page, so the
+     * dynamic app rows and exit shift down two without any arithmetic here
+     * changing — rows_top() reads TOP_OS_N by sizeof. */
+    [PG_APPS]    = { .rows = rows_apps, .label = label_apps, .title = title_apps,
+                     .hint = hint_apps, .act = act_apps, .enter = enter_apps,
+                     .back_to = PG_TOP, .back_cur = 4 },
+    [PG_APPACT]  = { .rows = rows_appact, .label = label_appact, .title = title_appact,
+                     .hint = hint_appact, .act = act_appact, .open = open_appact,
+                     .ordinal = ord_appact,
+                     .back_to = PG_APPS, .back_cur = 0 },
+    [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
+                     .hint = hint_about, .back_to = PG_TOP, .back_cur = 5 },
 };
 
 /* The press, table-driven. The two answers every page shares are decided
@@ -1216,6 +1515,11 @@ void menu_view_apply_input(int32_t delta, bool pressed)
         }
     }
     if (next == s_cur) return;
+    /* Any move of the cursor ends the uninstall arm (P5.3): the confirmation is
+     * a second press on THE SAME ROW, and an arm that survived a detent would
+     * let the press that follows a rotation erase an app the owner had already
+     * walked away from. */
+    s_uninst_arm = -1;
     s_cur = next;
     /* Where the cursor landed, in the log. The menu never said: it repaints the
      * highlight and that was the only answer, so driving it blind over

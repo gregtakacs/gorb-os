@@ -42,11 +42,27 @@ type discovery interface {
 	Close() error
 }
 
-// browseInterval is how often the hub re-asks. A record's TTL is 120 s and the
-// firmware re-announces only when an interface changes, so an interval under half
-// the TTL keeps a row from ageing out while the hub is open without turning the LAN
-// into a query firehose.
+// browseInterval is the steady re-ask cadence once the startup burst settles. A
+// record's TTL is 120 s and the firmware re-announces only when an interface
+// changes, so the hub must re-ask to refresh a row. RFC 6762 §10 would re-query at
+// ~80% of TTL (~96 s); this hub stays well under half the TTL on purpose. Two
+// reasons: this host's multicast egress drops packets, so a cadence that allowed
+// only one attempt per expiry lets a UI row blink out on a single loss; and our
+// firmware answers every query regardless of known answers, so the longer interval
+// buys no reduction in our-orb traffic — only third-party responder noise, which the
+// §7.1 known answers already address. Under half the TTL gives ≥2 attempts per
+// expiry and keeps a row steady while the hub is open.
 const browseInterval = 45 * time.Second
+
+// browseBurstDelays is the RFC 6762 §6 startup cadence, expressed as the wait before
+// each probe: fire immediately, then again after 1 s, 2 s, 4 s — the gap doubling, each
+// step at least a second, because §6 caps a querier at one query per second and asks
+// for exponential back-off between retransmits. A hub that booted after an orb's
+// one-time join announcement, or behind a multicast-egress path flaky enough to drop a
+// single probe, needs several close-together attempts before settling to browseInterval.
+// The first delay is zero: that is the immediate first query, so the burst replaces the
+// old pre-loop Ask entirely.
+var browseBurstDelays = []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second}
 
 // startBrowse attaches the eligible interfaces and begins the read loop. main calls
 // it, never newHub: the suite builds servers by the dozen, and one of them holding
@@ -86,27 +102,63 @@ func (s *Server) startBrowse(ctx context.Context) {
 	s.setBrowseIfaces(names)
 	log.Printf("orb-manager: browsing %s on %d interface(s): %s",
 		orbmdns.ServiceName, len(names), strings.Join(names, ", "))
-	if err := b.Ask(); err != nil {
-		s.noteBrowseAskErr(err)
+	go s.browseLoop(ctx, b)
+}
+
+// browseLoop is the sustained querier. It fires the RFC 6762 §6 startup burst — the
+// queries at browseBurstDelays, the first immediate — then settles to the steady
+// browseInterval ticker. It takes a discovery rather than the concrete browser so a
+// test can count the asks without binding a socket (startBrowse itself binds and so is
+// not exercised by the suite; this loop, where the cadence lives, is).
+//
+// An unanswered query is normal here, not an incident: this box may not originate
+// multicast onto the LAN at all, and the answers that matter arrive unasked. The
+// error is reported once via noteBrowseAskErr, which stays quiet after the first.
+func (s *Server) browseLoop(ctx context.Context, d discovery) {
+	for _, delay := range browseBurstDelays {
+		if !sleepCtx(ctx, delay) {
+			return // ctx cancelled mid-burst: shut down before the steady ticker
+		}
+		s.reconcileFleet()
+		if err := d.Ask(); err != nil {
+			s.noteBrowseAskErr(err)
+		}
 	}
-	go func() {
-		t := time.NewTicker(browseInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				s.reconcileFleet()
-				// An unanswered query is normal here: this box may not originate
-				// multicast onto the LAN at all, and the answers that matter
-				// arrive unasked. Say it once, not every 45 s.
-				if err := b.Ask(); err != nil {
-					s.noteBrowseAskErr(err)
-				}
+	t := time.NewTicker(browseInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.reconcileFleet()
+			if err := d.Ask(); err != nil {
+				s.noteBrowseAskErr(err)
 			}
 		}
-	}()
+	}
+}
+
+// sleepCtx waits d, or returns false the moment ctx is done. A zero or negative d is
+// the "right now" step: it still honours a cancelled ctx so a burst begun at shutdown
+// cannot proceed to a query.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 func (s *Server) setDiscovery(d discovery, why string) {

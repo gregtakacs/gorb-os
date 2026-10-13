@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -467,5 +468,89 @@ func TestBrowseAskRefusesCrossOriginEvenWithTheToken(t *testing.T) {
 	if code, body := postHub(t, srv, "/api/orbs/ask",
 		map[string]string{"X-Orb-Token": "ask-token", "Origin": origin}, ""); code != http.StatusOK {
 		t.Fatalf("a tokened same-origin ask -> %d: %s", code, body)
+	}
+}
+
+// countDiscovery is the discovery a browseLoop test drives: every Ask pings a channel
+// so the test observes the query count and the gaps without a socket, and it returns
+// the four interface methods a no-op for everything Ask is not.
+type countDiscovery struct{ asks chan time.Time }
+
+func (d *countDiscovery) Ask() error                    { d.asks <- time.Now(); return nil }
+func (*countDiscovery) Candidates() []orbmdns.Candidate { return nil }
+func (*countDiscovery) Refusals() []orbmdns.Refusal     { return nil }
+func (*countDiscovery) Close() error                    { return nil }
+
+// browseLoop must fire the whole §6 startup burst — one query per browseBurstDelays
+// entry, the first immediate — then hold at the steady interval. The steady ticker is
+// 45 s, far outside this test, so anything past the burst that arrives quickly is a bug
+// (a burst that loops, or a zero steady interval).
+func TestBrowseLoopFiresTheStartupBurst(t *testing.T) {
+	saved := browseBurstDelays
+	browseBurstDelays = []time.Duration{0, 10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+	defer func() { browseBurstDelays = saved }()
+
+	s := newHub()
+	d := &countDiscovery{asks: make(chan time.Time, len(browseBurstDelays)+1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() { s.browseLoop(ctx, d); close(done) }()
+
+	// All four burst probes, in order, within a window far shorter than the steady
+	// interval. The first must be near-instant (delay 0).
+	start := time.Now()
+	stamps := make([]time.Time, 0, len(browseBurstDelays))
+	for i := range browseBurstDelays {
+		select {
+		case ts := <-d.asks:
+			stamps = append(stamps, ts)
+		case <-time.After(time.Second):
+			t.Fatalf("burst probe %d never fired", i)
+		}
+	}
+	if stamps[0].Sub(start) > 15*time.Millisecond {
+		t.Errorf("first probe waited %v; §6 wants the first query issued immediately", stamps[0].Sub(start))
+	}
+
+	// Nothing else within 5× the longest (now-shrunk) steady wait: the burst is exactly
+	// its length, then the loop is parked on the real 45 s ticker, not firing again.
+	select {
+	case <-d.asks:
+		t.Fatal("a query arrived after the burst but well inside the steady interval; the ticker or burst cadence is wrong")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("browseLoop ignored the cancellation")
+	}
+}
+
+// Cancelling during the burst must stop it before the first query: sleepCtx on the
+// zero delay still checks ctx, so a shutdown that races startup issues no stray query.
+func TestBrowseLoopHonoursCancelBeforeFirstProbe(t *testing.T) {
+	saved := browseBurstDelays
+	browseBurstDelays = []time.Duration{time.Hour} // parked: the only probe is a way-off delay
+	defer func() { browseBurstDelays = saved }()
+
+	s := newHub()
+	d := &countDiscovery{asks: make(chan time.Time, 4)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.browseLoop(ctx, d); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("browseLoop did not stop on a cancellation issued during the burst")
+	}
+	select {
+	case <-d.asks:
+		t.Fatal("a query was issued after the burst was cancelled at its first delay")
+	default:
 	}
 }

@@ -1367,8 +1367,11 @@ static esp_err_t h_status(httpd_req_t *req)
      * The mac field joins from the fleet line: a fixed 21 B ("mac":"..." plus its
      * comma), counted off the wire. The fleet build measured 668-676 B on orb-B on
      * 2026-10-12 at the 960 frame, tz at "US/Central", the -dirty stamp adding the
-     * extra 5-7 B. The merged body must be re-measured on the cable
-     * (`curl -s ORB/api/v1/status | wc -c`). The value is verified against
+     * extra 5-7 B. The merged body measured 1118 B on orb-A on 2026-10-12 over
+     * the LAN, tz at "US/Central", with the three compiled-in apps' ledger rows
+     * present and their counters at zero — the figure grows as calls, denials
+     * and faults gain digits, capped inside the ledger's own 768 B buffer. The
+     * value is verified against
      * hardware: orb-B reported 44bd8d782618, equal to `esptool read_mac` on that
      * board, to the eFuse read through the native Go flasher, and to the USB
      * serial-number descriptor sysfs exposes for the same port. The SOFTAP

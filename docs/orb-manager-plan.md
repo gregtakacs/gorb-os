@@ -680,7 +680,62 @@ real orb does. And a hub-side `Ask` cannot be shown to originate multicast here:
 card's `askError` reports it, and rows that appear unasked are marked
 `solicited=false` rather than passed off as answers to our question.
 
-| 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |
+| 6 | `feat(orb-manager): name, remember and cross-lock the fleet` — done; `{mac, name, room}` keyed on the chip, liveness from announcements, and a dial the fleet can refuse | 1, 3, 5 |
+
+Item 6 shipped `internal/orbfleet` (the MAC-keyed store and its rules), `fleet.go`
+(the cross-lock the proxy consults, the browse fold, `GET /api/fleet` and the two
+token-guarded writes), the MAC-carrying `POST /api/orb/allow`, and state file version 2
+alongside the `state.go` §5.4 rewrite. Three decisions are the item, and each is tested
+where it bites:
+
+- **Identity is the chip, so a rebind keeps the name.** Observing `44bd8d782618` at a
+  second address updates the one row it already had; the name, the room and the cable
+  flag ride along. Keying on the address was the version that orphaned a named orb the
+  moment its lease moved and handed the orphaned name to the next board.
+- **The cross-lock refuses and sometimes revokes.** A granted address whose current
+  announcer is a different MAC is refused *and* revoked, so the next attempt is a fresh
+  decision. Two live claimants are refused without revoking: a DHCP handover and an
+  impersonation are indistinguishable at that instant, the old lease stops announcing
+  within a TTL, and destroying a commitment every time a router moved a lease is how a
+  safety rule gets switched off. If the committed board is not among the claimants,
+  that is not a handover and the grant goes.
+- **Liveness comes from announcements, with two hard edges.** The browse tick renews a
+  bound grant so an orb in daily use is never cut off mid-afternoon. Only the tick may:
+  `TestReadingTheCardDoesNotExtendAGrant` asserts a `GET /api/orbs` or `GET /api/fleet`
+  leaves the timestamp alone, because a poll a page controls is not a liveness signal.
+  And a grant aged past `ipGrantTTL` is deleted and cannot be revived by its own
+  announcement — an mDNS MAC is broadcast unsigned, so treating a repeat of it as proof
+  would let whoever seized the address restore a dial a human had already let expire.
+  `grantCeiling` (30 days from the first commitment) bounds even a continuously renewed
+  grant, which is what §5.3's "the token is what the hub keeps" will hang its permanent
+  device token on.
+
+Cable outranks wire, per §5.1's correlation rule: `MarkCable` is called from the
+bootloader probe (`identity.go`, whose `info.MAC` is the serial descriptor the host can
+read) and from the flash's eFuse read (`flash.go`, beside `setBoot`), and a cable-read
+row's address cannot be moved by an announcement, only refused with a note saying why.
+The watch path's confirm-the-IP step now calls `learnAs(ip, st.MAC)` rather than
+`learn(ip)`, so the common case produces a bound grant rather than an unbound one.
+`orbmdns.CanonicalMAC` is the single canonicalizer, which retires §5.2's complaint that
+`macNorm` cannot collapse a separator-free MAC or refuse an empty one: the fleet never
+calls `macNorm`, and two empty MACs cannot meet here.
+
+Twenty mutations, each reverted from an in-memory copy and the whole set checksummed
+afterwards, because an earlier harness run that died before its restore step left the
+cross-lock deleted and the suite green: deleting the claim lookup, either revoke, the
+`renew` MAC check, the staleness check, either persistence write, either route guard, or
+the card's use of `mayDial` each turns the suite red, as does each store rule (the name
+cross-lock, naming an unseen MAC, the cable privilege, the instance derivation,
+liveness). Two mutations initially "survived" as compile errors rather than failures
+and were rewritten to stay compilable; the last real gap they exposed was that nothing
+pinned one board's Forget leaving another board's grant alive, and
+`TestForgettingOneBoardLeavesTheOthersGrantAlone` closes it.
+
+What is NOT verified: the credential does not exist yet, so the file holds no secret
+and `state.go` says so precisely rather than pre-emptively — item 9 rewrites that
+paragraph when it hands the hub a permanent token. And the contention and rebind
+semantics are tested against the double's announcements, as every browse case here is;
+the real orb's second radio is the same unobserved surface item 4 left open.
 | 7 | `feat(orb-manager): merge onboarding into Manage as Add an orb` | 6 |
 | 8 | `feat(net): render the option registry as /api/v1/menu` | 1, 3, 6 |
 | 9 | `feat(net): gate device writes behind a display pairing code` | 1, 6, 8 |
@@ -707,10 +762,15 @@ credential; liveness comes from announcements, replacing the 6 h `ipGrantTTL`.
 Item 5 rewrites the six sites that encode the discovery ban: `README.md:12-14`,
 `main.go:1-8`, this file's §3, `web/app.js:639-641`, `watch.go:93`, and
 `internal/orbnet/client.go:60`, the last of which still justifies its timeout
-against a "subnet sweep" that no longer exists. Item 6 rewrites the
-`state.go:16-20` promise that "no credential is stored anywhere", which the
-permanent token makes false; the hub still refuses to persist a Wi-Fi
-passphrase, since the orb already owns that (`orb_net.c:1819-1820`).
+against a "subnet sweep" that no longer exists. Item 6 rewrote the `state.go` header rather than
+pretending it had something to confess: the file now persists addresses, their MAC
+bindings, and the operator's names and rooms, and the paragraph says exactly that and
+still says no credential is stored, because that remains true until item 9's permanent
+device token exists. It names the thing that must never appear there — the Wi-Fi
+passphrase, which the orb owns (`orb_net.c:1819-1820`) — and states what item 9 must do
+when it puts a real secret in the file: same 0600, never logged, never echoed to a page,
+never copied into a bundle. Writing the stronger promise early would have made the
+comment false, which is the failure mode this section exists to catch.
 `orb_net.c:225` retires its "Phase 4" `PATCH /api/v1/settings` note: that
 numbering is the net plan's, not `app-platform-plan.md`'s P4, and the real
 target is `/api/v1/menu`.

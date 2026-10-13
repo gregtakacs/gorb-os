@@ -41,9 +41,13 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusBadRequest, "expected /orb/<ipv4>/api/v1/...")
 		return
 	}
-	if !s.grants.allowed(host) {
-		proxyError(w, http.StatusForbidden, "the hub will not dial "+host+
-			": it is not an orb address this hub learned over USB or was given. Enter the orb's address in the Manage card first.")
+	// One gate, one answer: the grant set decides reachability and the fleet may still
+	// take it away when the board at that address is no longer the board that was
+	// allowed. Keep the call here rather than re-testing grants.allowed above: the two
+	// checks read the same state at different times, and a route that consulted only one
+	// of them is how a rebind becomes a successful dial of the wrong orb.
+	if ok, why := s.mayDial(host); !ok {
+		proxyError(w, http.StatusForbidden, why)
 		return
 	}
 	if !routeAllowed(route, r.Method) {

@@ -122,7 +122,11 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	deadline := time.Now().Add(watchLanBudget)
 	for {
 		if st, err := s.orb.Status(ip); err == nil {
-			s.grants.learn(ip)
+			// Bind the grant to the MAC the device itself reported at that address.
+			// Still a claim, and still HTTP: what it buys is not trust, it is the
+			// cross-lock's reference point, so a later announcement naming a
+			// different board at this address is a contradiction the hub can see.
+			s.grants.learnAs(ip, st.MAC)
 			s.setOrbIP(ip)
 			s.saveState()
 			send(map[string]any{"log": "orb joined its network as a station at " + ip + " (" + source + ")"})

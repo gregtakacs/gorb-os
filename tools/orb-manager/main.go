@@ -29,6 +29,7 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -76,6 +77,11 @@ type Server struct {
 	// grants are the orb addresses the proxy is willing to dial. Empty means the
 	// hub reaches nothing off the box.
 	grants *ipGrants
+	// fleet is who the hub believes is behind those addresses: {mac, name, room},
+	// keyed on the chip and never on the lease. It is consulted before a dial, not
+	// instead of one — the grant still decides whether an address may be reached at
+	// all, and the fleet only ever takes a dial away (see mayDial).
+	fleet *orbfleet.Store
 	// orbIP mirrors the address the onboarding flow last learned, so the status
 	// probe has a default target before the browser supplies one. It is a UI
 	// convenience: the proxy decides with grants, never with this field.
@@ -458,6 +464,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// candidate list is not a dial queue, and the proxy still decides with grants.
 	mux.HandleFunc("/api/orbs", s.handleDiscovered)
 	mux.Handle("/api/orbs/ask", s.requireControl(http.HandlerFunc(s.handleBrowseNow)))
+
+	// The fleet: who the hub thinks is behind the addresses it will dial. The read is
+	// unguarded like the candidate list; the writes change what a later credential is
+	// keyed to, so they carry the token and the origin check.
+	mux.HandleFunc("/api/fleet", s.handleFleet)
+	mux.Handle("/api/fleet/set", s.requireControl(http.HandlerFunc(s.handleFleetSet)))
+	mux.Handle("/api/fleet/forget", s.requireControl(http.HandlerFunc(s.handleFleetForget)))
 
 	// Theme management for the Manage card. Each of these dials the orb itself, so
 	// each passes the same learned-address gate the proxy uses, and each names a

@@ -97,6 +97,7 @@ func (s *Server) startBrowse(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				s.reconcileFleet()
 				// An unanswered query is normal here: this box may not originate
 				// multicast onto the LAN at all, and the answers that matter
 				// arrive unasked. Say it once, not every 45 s.
@@ -148,6 +149,29 @@ type orbRow struct {
 	AgeS      int    `json:"ageS"`
 	Provision bool   `json:"provisioning"`
 	Dialable  bool   `json:"dialable"`
+
+	// What the fleet adds to what the wire claimed. Name and Room are the operator's
+	// words, so a row that has been named reads as the orb they already own instead of
+	// a hex tail they have to recognize twice.
+	Name string `json:"name,omitempty"`
+	Room string `json:"room,omitempty"`
+	// Cable says the hub has read this MAC off the chip over USB, which is the only
+	// proof in the system; without it the identity is what a packet asserted.
+	Cable bool `json:"cable"`
+	// Contended: another live board announces this same address, so the hub will not
+	// dial it for anybody. Shared: another board derives this instance name from a
+	// different MAC, so the label alone cannot identify the row.
+	Contended bool `json:"contended"`
+	Shared    bool `json:"shared"`
+	// Bound: the grant for this address names the same board, so loading it is the
+	// hub reaching the orb the operator actually committed to rather than whatever
+	// holds the lease today.
+	Bound bool   `json:"bound"`
+	Note  string `json:"note,omitempty"`
+	// Refusal is why the hub would NOT dial this address, in the hub's own words: the
+	// reason the proxy will answer with, not a paraphrase of it. A row that is simply
+	// not clickable with no explanation is a row the operator has to guess about.
+	Refusal string `json:"refusal,omitempty"`
 }
 
 // handleDiscovered is the read side: the current candidate list. It sends nothing,
@@ -171,17 +195,33 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	// Project the cache into the fleet before building rows, or the card would show a
+	// contention the proxy is already refusing over. No renewal: that is the timer's.
+	s.foldCandidates(false)
 	rows := []orbRow{}
 	for _, c := range b.Candidates() {
-		rows = append(rows, orbRow{
+		// One call, one answer: the same decision the proxy will make if this row is
+		// clicked, so the card cannot promise a dial the request would refuse.
+		may, why := s.mayDial(c.IP)
+		r := orbRow{
 			Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
 			IP: c.IP, Port: c.Port, TTL: c.TTL, Solicited: c.Solicited,
 			AgeS: int(now.Sub(c.LastSeen).Seconds()), Provision: c.Provisioning(),
 			// Dialable is a readout of the allowlist, not a request. The hub will
 			// not reach an address the operator has not committed to, and the card
 			// had better say so than let a click discover it.
-			Dialable: s.grants.allowed(c.IP),
-		})
+			Dialable: may,
+			Refusal:  why,
+			Bound:    s.grants.bound(c.IP) != "" && s.grants.bound(c.IP) == c.MAC,
+		}
+		if s.fleet != nil {
+			if row0, ok := s.fleet.ByMAC(c.MAC); ok {
+				r.Name, r.Room, r.Cable, r.Shared = row0.Name, row0.Room, row0.Cable, row0.Shared
+				r.Note = row0.Note
+				r.Contended = row0.Contended || len(s.fleet.ClaimedBy(c.IP)) > 1
+			}
+		}
+		rows = append(rows, r)
 	}
 	refused := []map[string]any{}
 	for _, f := range b.Refusals() {

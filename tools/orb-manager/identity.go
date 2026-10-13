@@ -10,6 +10,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 )
 
 // Identity is opt-in and expensive: a probe reboots the orb to catch the
@@ -50,7 +51,8 @@ const identityTTL = 30 * time.Minute
 // accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
-		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL), boots: map[string]*bootVerdict{}}
+		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
+		fleet: orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {
@@ -288,6 +290,12 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.identities.done(req.Port, info)
+	if info.MAC != "" {
+		// A bootloader descriptor read down the USB lead is the strongest thing the
+		// hub can say about a board: it is the chip answering for itself, not a name
+		// claimed on the LAN. The fleet holds that sighting above every announcement.
+		s.markCable(info.MAC)
+	}
 	info.Verdict = string(s.verdictFor(info))
 	s.jsonOK(w, info)
 }

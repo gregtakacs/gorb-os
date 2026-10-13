@@ -40,13 +40,20 @@ type discoveredBody struct {
 	OK   bool `json:"ok"`
 	Data struct {
 		Orbs []struct {
-			Instance string `json:"instance"`
-			MAC      string `json:"mac"`
-			IP       string `json:"ip"`
-			Port     int    `json:"port"`
-			FW       string `json:"fw"`
-			State    string `json:"state"`
-			Dialable bool   `json:"dialable"`
+			Instance  string `json:"instance"`
+			MAC       string `json:"mac"`
+			IP        string `json:"ip"`
+			Port      int    `json:"port"`
+			FW        string `json:"fw"`
+			State     string `json:"state"`
+			Dialable  bool   `json:"dialable"`
+			Refusal   string `json:"refusal"`
+			Name      string `json:"name"`
+			Room      string `json:"room"`
+			Cable     bool   `json:"cable"`
+			Contended bool   `json:"contended"`
+			Shared    bool   `json:"shared"`
+			Bound     bool   `json:"bound"`
 		} `json:"orbs"`
 		Refused   []map[string]any `json:"refused"`
 		Listening bool             `json:"listening"`

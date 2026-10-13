@@ -602,9 +602,12 @@ fine. So the browse is verified passively, from the orb's own announce burst aft
 reboot. Second, the SoftAP was never observed on air from this bench. The AP half of
 the join is coded and the per-interface A record is host-tested, but
 `POST /api/v1/wifi/ap` returns 200 without the driver ever logging `WIFI_EVENT_AP_START`, so the
-announcement that half would send has never been seen. That path is not item 4's: the
-responder's hook runs after the AP is up and cannot prevent it, and the same silence
-reproduces with `CONFIG_ORB_NET_MDNS=n`. Item 5 must treat the AP-side announcement
+the announcement that half would send has never been seen. That path is not item 4's,
+and the reason is causal rather than experimental: the responder's hook runs on
+`WIFI_EVENT_AP_START`, so it cannot be what stopped that event from firing. A build
+with `CONFIG_ORB_NET_MDNS=n` showed the same silence, but that arm posted a
+form-encoded body rather than the JSON the endpoint parses, so it is corroboration
+and not a control. Item 5 must treat the AP-side announcement
 as unverified until a phone or a second radio browses `192.168.4.0/24`.
 
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |

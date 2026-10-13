@@ -617,25 +617,18 @@ the format string is correct: 44 conversion specifiers, with both `mac_str` and
 `apps_json` present in the argument list. Both gates passed on the resolved
 merge: `idf.py build` exited 0 with no warnings for `orb_net.c`, and the compiled
 image contains `"mac":"%s"`, `"apps":%s`, `ledger too large`, and
-`status too large`. All twelve host suites pass merged, including the broker
+`status too large`. All thirteen host suites pass merged, including the broker
 suite `tools/host_svc_test.py`, and all six hub packages pass with the bundle
 guard armed.
 
-Two obligations fall out of a merge, and neither is optional. The bundle must
-be re-packed from the merged build: armed against it, the freshness guard goes
-red on `gorb-os.bin` and `bootloader.bin` exactly as designed, and shipping it
-unre-packed would put out a hub whose firmware has no broker. The merged status
-body must be re-measured on the cable before the buffer comment states a
-number, which is what that comment's closing line is for.
+Two obligations fell out of a merge, and neither was optional. The bundle had
+to be re-packed from the merged build: armed against it, the freshness guard
+went red on `gorb-os.bin` and `bootloader.bin` exactly as designed, and shipping
+it unre-packed would have put out a hub whose firmware has no broker. The merged
+status body had to be re-measured on the cable before the buffer comment could
+state a number. Both are discharged, in 5.6.2.
 
-Not verified: the merged image has never booted. Nothing here claims orb-B ran
-P3 alongside the `mac` field.
-
-Their line is mid-flight. `gorb-os-2` sits at `e223a01` with two P4 commits
-still unpushed, so this work went to its own branch rather than into `main`,
-and integration should wait for their push and happen once.
-
-#### 5.6.1 How it actually landed (2026-10-12, same day)
+#### 5.6.1 How the merge landed (2026-10-12, same day)
 
 The P4 commits landed first and the other agent did the merge, as `af1bc79` in
 `gorb-os-2` (parents `e223a01` and `3d2df79`). This clone's `main` was then
@@ -649,15 +642,49 @@ section was written against, gaining `declared` and `denied_mask` beside
 `grants`. The `mac` code came through untouched, still `ESP_MAC_BASE`, still
 feeding `mac_str` to the same snprintf.
 
-The merge did leave one obligation unmet, and the guard caught it: it kept the
-fleet branch's bundle, so the hub shipped a `gorb-os.bin` with no broker in it.
-Built clean at `af1bc79` and re-packed as the next commit, the image stamp reads
-`af1bc79` and `orb_svc_declared` and `orb_svc_denied_mask` link at addresses.
+Their line never reached `origin`. `origin/main` sat at `62a5e91` throughout, so
+the push that closes this session publishes their P3 and P4 work from this clone
+alongside the fleet commits.
 
-One local trap cost a false red here, and `.clinerules` already documents it.
-`host_idle_dim_test.py` failed on the merged tree for want of
-`CONFIG_ORB_APP_POWER_MAX_S`, which their P4 added as a new Kconfig default. A
-new `default y` never materializes into an existing untracked `sdkconfig`; the
-symbol was appended and the suite went green. Thirteen of thirteen host suites
-now pass on the merged tree.
+#### 5.6.2 Cable verification of the merged image (2026-10-12)
+
+The merge left one obligation unmet and the guard caught it: it kept the fleet
+branch's bundle, so the hub shipped a `gorb-os.bin` with no broker in it. Armed
+against a real merged build, the freshness test named the two offenders,
+`bootloader.bin` and `gorb-os.bin`. Nothing went out until both were rebuilt.
+
+orb-B runs the merged firmware. `serflash.sh` gated each write (`want=f716ffa
+have=f716ffa`), and the board answers with `fw: f716ffa`, `img: valid`,
+`slot: ota_0`, `mac: 44bd8d782618`, and three ledger rows: clock, color_picker,
+menu. Item 1's field therefore survived the merge intact, and the base MAC still
+agrees with the eFuse, the Go flasher and the sysfs descriptor. The committed
+bundle is packed from that same image, so its stamp names an ancestor of HEAD.
+That is the convention the repo already follows, because an image cannot be
+stamped with the commit that stores it.
+
+Two findings came out of measuring, and both are in the buffer comment now:
+
+1. **The ledger binds before the frame.** `apps_json` holds the whole array in
+   768 B, and the three compiled rows filled 440 B of it, 146 B per row. Two more
+   rows fit. The P3 note's `~110 B` per row was low by a third, because `declared`
+   and `denied_mask` joined the row after that figure was set. A fifth app reaches
+   `ledger too large` while the 1536 frame still has room, so a P4 that installs
+   apps has a lower ceiling than its buffer suggests.
+2. **The body length is not a constant.** Ten requests at one commit read 1117 B.
+   Ten at the next read 1116 B, and a fresh boot read 1111 B. `wifi_reason_name`
+   is a variable string out of `reason_name()`, whose longest entry is
+   `handshake-timeout` at 17 B, and `idle.dimmed` prints `true` or `false`. A
+   wizard must treat the size as a range of 1111-1123 B, not a single reading.
+
+`host_idle_dim_test.py` is the suite that catches a missing Kconfig symbol, and
+it fired for the wrong-looking reason: the merged tree needed
+`CONFIG_ORB_APP_POWER_MAX_S`, which their P4 added as a new `default y`. The
+local untracked `sdkconfig` excluded it. One symbol of 1185 was missing, so the
+`build/config/sdkconfig.h` diff against a healthy clone found it in one pass,
+and the suite went green. Thirteen of thirteen host suites now pass.
+
+The comment edit that recorded all this is not inert: shortening the block moved
+`__LINE__` for every `ESP_LOGx` below it and changed 75 bytes of the image. A
+comment-only change therefore still owes a rebuild and a re-flash, or the board
+runs code the tree no longer describes.
 

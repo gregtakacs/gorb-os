@@ -184,6 +184,14 @@ static bool prov_intent_consume(void)
     s_prov_intent = 0;
     return armed;
 }
+
+/* Roll a just-armed request back. Only the armed-then-could-not-reboot path needs it:
+ * leaving the word set would boot the next power cycle into a provisioning session
+ * nobody asked for, and the caller just got a 500 telling it nothing happened. */
+static void prov_intent_disarm(void)
+{
+    s_prov_intent = 0;
+}
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 /* Set only when a human asked for the AP (the config page / POST /wifi/ap).
  * It exists because every STA lease re-arms the AP timer with the short
@@ -3004,6 +3012,69 @@ static esp_err_t h_reboot(httpd_req_t *req)
     ESP_LOGW(TAG, "ota: rebooting in 750 ms");
     return httpd_resp_sendstr(req, "{\"state\":\"rebooting\"}");
 }
+/* POST /api/v1/reprov — reboot into the provisioning branch, credentials intact.
+ *
+ * D2's remote writer and the HTTP sibling of D5's knob hold. The flag write and the
+ * reboot stay two separate steps on purpose: orb_net_request_provisioning() only sets
+ * the RTC word, and the deferral below is what lets this response reach the caller
+ * before the connection dies — the same 750 ms h_reboot measured.
+ *
+ * Every branch here is a refusal or a deferral, never a partial action. Nothing is
+ * written to flash: an intent that loses power before it boots disappears with the
+ * power, which is why the cancel path is unplug-the-orb and not a button (plan D2's
+ * retention note). And the D4 sojourn needs no mention here — the boot branch arms it
+ * whenever it forces the provisioning path, so a hub-triggered reprovision expires on
+ * the same clock as a knob-triggered one and no caller can forget to arm it.
+ */
+static void reprov_timer_cb(void *arg)
+{
+    (void)arg;
+    /* Same C2 courtesy as h_reboot: this reboot is the owner talking, so the next boot
+     * bills no app for it. */
+    orb_svc_note_clean_reboot();
+    ESP_LOGW(TAG, "rebooting into provisioning on request (POST /api/v1/reprov)");
+    esp_restart();
+}
+
+static esp_err_t h_reprov(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    if (orb_net_is_provisioning()) {
+        /* Already there. Rebooting a device that is mid-provisioning would restart the
+         * sojourn clock for no reason and drop the very page the operator is using. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"already provisioning\"}");
+    }
+    if (!orb_net_request_provisioning()) {
+        /* CONFIG_ORB_NET_AP_FALLBACK=n leaves no SoftAP behind, so "provisioning" would
+         * be a state with no way in and no way out. Refuse rather than take someone's
+         * wall clock down to a dead end. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"no AP fallback in this build\"}");
+    }
+
+    static esp_timer_handle_t s_reprov_timer;
+    if (!s_reprov_timer) {
+        const esp_timer_create_args_t ta = { .callback = reprov_timer_cb };
+        if (esp_timer_create(&ta, &s_reprov_timer) != ESP_OK) {
+            prov_intent_disarm();
+            ESP_LOGE(TAG, "reprov: could not create reboot timer");
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
+        }
+    }
+    if (esp_timer_start_once(s_reprov_timer, 750 * 1000) != ESP_OK) {
+        prov_intent_disarm();
+        ESP_LOGE(TAG, "reprov: could not arm reboot timer");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
+    }
+    ESP_LOGW(TAG, "reprov: provisioning boot armed, rebooting in 750 ms");
+    return httpd_resp_sendstr(req, "{\"state\":\"rebooting\",\"into\":\"provisioning\"}");
+}
+
 
 /* Landing page for the first-boot SoftAP, when there is no PWA loaded yet (the
  * `www` partition is Phase 4). This is the whole provisioning UX, so it has to
@@ -4554,6 +4625,12 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
+        /* One-shot: reboot into the provisioning branch with the stored credential
+         * intact. Deliberately not folded into /api/v1/reboot — a caller has to be able
+         * to say "I want this orb back in its AP" without wiping anything, and a route
+         * that reboots a wall clock already needs the arm/disarm care plan 5.1 decision
+         * 1 pins for /api/v1/menu. */
+        { .uri = "/api/v1/reprov",  .method = HTTP_POST, .handler = h_reprov },
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
         /* microSD + themes. /themes is the page; the six under /api/v1/sd are its
          * backing calls, and none of them can do anything to the clock beyond
@@ -4880,6 +4957,12 @@ esp_err_t orb_net_start(void)
 bool orb_net_is_up(void) { return false; }
 
 bool orb_net_is_provisioning(void) { return false; }
+
+/* D2's setter, disabled build: there is no SoftAP to force, so this refuses the way
+ * the enabled build refuses when ORB_NET_AP_FALLBACK=n. Without the stub any caller
+ * fails to link the moment ORB_NET_ENABLE flips off, which is the one configuration
+ * this file's own guards are written to survive. */
+bool orb_net_request_provisioning(void) { return false; }
 
 const char *orb_net_ip_str(void) { return ""; }
 

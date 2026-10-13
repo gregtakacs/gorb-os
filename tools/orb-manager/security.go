@@ -318,13 +318,20 @@ func (g *ipGrants) list() []string {
 //     /connect/test.php): the UI never asks for them, and an allowlist that admits
 //     routes nobody uses is a denylist with extra steps.
 var deviceRoutes = map[string][]string{
-	"/api/v1/status":     {http.MethodGet},
-	"/api/v1/screen":     {http.MethodGet},
-	"/api/v1/sd":         {http.MethodGet},
-	"/themes":            {http.MethodGet},
-	"/timezone":          {http.MethodGet},
-	"/api/v1/config":     {http.MethodGet, http.MethodPost},
-	"/api/v1/reboot":     {http.MethodPost},
+	"/api/v1/status": {http.MethodGet},
+	"/api/v1/screen": {http.MethodGet},
+	"/api/v1/sd":     {http.MethodGet},
+	"/themes":        {http.MethodGet},
+	"/timezone":      {http.MethodGet},
+	"/api/v1/config": {http.MethodGet, http.MethodPost},
+	"/api/v1/reboot": {http.MethodPost},
+	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
+	// the stored credential intact. Allowlisted because the hub's Manage card has to be
+	// able to reach an orb it can no longer configure any other way — a wrong SSID or a
+	// dead router leaves a credentialed orb connected to nothing, and every other verb on
+	// this list needs that connection. It is one boot's worth of damage at worst: the D4
+	// sojourn bounds the session and the boot branch consumes the flag on read.
+	"/api/v1/reprov":     {http.MethodPost},
 	"/api/v1/wifi/scan":  {http.MethodGet},
 	"/api/v1/wifi/join":  {http.MethodPost},
 	"/api/v1/wifi/ap":    {http.MethodPost},

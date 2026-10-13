@@ -53,6 +53,7 @@
 #include "orb_sd.h"
 #include "orb_theme.h"
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
+#include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 
 static const char *TAG = "orb_net";
 
@@ -1169,6 +1170,14 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_associated = false;
         s_rssi   = -999;
         if (reason) s_last_reason = reason;
+#if CONFIG_ORB_NET_MDNS
+        /* Withdraw the STA advertisement on the disconnect, not on the lease
+         * expiry: an orb that has lost the association is unreachable right now,
+         * and a hub holding it in cache for another 120 s is a hub dialing a
+         * dead address. The re-announce rides the next IP_EVENT_STA_GOT_IP, and
+         * a blip that never reaches a lease withdrawal costs one goodbye. */
+        orb_mdns_set_sta(false, 0);
+#endif
         if (s_provisioning) break;         /* AP-only mode: nothing to retry */
         if (s_retry_pending) break;        /* driver's second event for one failure */
         /* See sta_leave_is_self_inflicted(): a leave we caused is not a refusal,
@@ -1211,6 +1220,21 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_start();                 /* advertise + answer, so phones show "Sign in" */
 #endif
+#if CONFIG_ORB_NET_MDNS
+        /* The AP half of the advertisement, and the reason item 4 is not just a
+         * LAN feature: after a factory reset (item 10) the orb has no lease at
+         * all, and the SoftAP is the only place it can be found. A wired hub
+         * still cannot route to 192.168.4.1 — the same limit that makes the boot
+         * scan log PROVSCAN lines — so this serves the phone that joined the AP,
+         * which is exactly who is standing there in that scenario. */
+        if (s_ap_netif) {
+            esp_netif_ip_info_t ai;
+            if (esp_netif_get_ip_info(s_ap_netif, &ai) == ESP_OK && ai.ip.addr)
+                orb_mdns_set_ap(true, ai.ip.addr);
+            else
+                ESP_LOGW(TAG, "mdns: no SoftAP address yet — not advertised on the AP");
+        }
+#endif
         /* First-boot scan for the wired-provisioning door: a wired-only hub has
          * no route to 192.168.4.1, so it reads the network list off the serial
          * log instead of the page. scan_collect() logs each result as a
@@ -1225,6 +1249,15 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_ap_up = false;
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_stop();                  /* the AP is down; take its resolver with it */
+#endif
+#if CONFIG_ORB_NET_MDNS
+        /* Same reasoning as the resolver above, and the reason this rides
+         * AP_STOP rather than ap_close()'s own early return: the driver is the
+         * only one that knows the AP is genuinely down, and a goodbye for an AP
+         * that is still up tells a hub to stop showing an orb it can still
+         * reach. If the STA still has its lease the responder keeps running for
+         * that interface and sends no goodbye at all. */
+        orb_mdns_set_ap(false, 0);
 #endif
         break;
 
@@ -1311,6 +1344,15 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
      * this hand-off has nothing left to guard. */
     esp_timer_stop(s_watch_timer);
     s_provisioning = false;
+#if CONFIG_ORB_NET_MDNS
+    /* The lease is the address a browser should be sent to, so the advertisement
+     * starts here and nowhere earlier: before the lease the orb has no reachable
+     * name on the LAN, and announcing one would hand out 0.0.0.0. Posted from an
+     * event handler, which is allowed: orb_mdns_set_sta only sets flags and, on
+     * the first call, creates the socket and its own task. */
+    orb_mdns_set_provisioning(false);
+    orb_mdns_set_sta(true, ev->ip_info.ip.addr);
+#endif
     /* The lease is the word that the join the user pressed Connect for actually
      * landed; until then /api/v1/status keeps saying "joining" rather than falling
      * back to "provisioning", which is what made the first phone test look ignored. */
@@ -3700,6 +3742,13 @@ esp_err_t orb_net_start(void)
          * 466x466 panel is too small and glossy to render a scannable QR, so
          * pairing is by joining this AP from a phone instead. */
         s_provisioning = true;
+#if CONFIG_ORB_NET_MDNS
+        /* Set before the AP comes up, so the very first announcement this boot
+         * can make already says "provisioning" rather than making item 5's
+         * browser show a factory-fresh orb as an ordinary one until the next
+         * re-announce. */
+        orb_mdns_set_provisioning(true);
+#endif
         s_ap_netif     = esp_netif_create_default_wifi_ap();
 
         wifi_config_t ap;

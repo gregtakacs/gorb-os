@@ -54,7 +54,8 @@ Two launch gotchas that burned time this session, both avoided by using a
   captures go detached.
 
 ### Known operations that are SAFE inline (under 30 s)
-- `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s).
+- `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s),
+  `python3 tools/host_mdns_test.py` (~4 s, and ~4 min with `--mutations`).
 - Steady-state `idf.py build` after editing a single source file (~10 s).
 - `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
 - Short serial captures (≤ ~12 s) like `tools/capf.py 8 /tmp/x.txt --no-reset`.

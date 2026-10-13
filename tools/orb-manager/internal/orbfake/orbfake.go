@@ -60,6 +60,9 @@ type Orb struct {
 	// the hub's client has no way to send one, and a double you cannot drive into the
 	// awkward state from the caller's side is a double that never tests that state.
 	Busy bool
+
+	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
+	dev *device
 }
 
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
@@ -138,8 +141,21 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	o.record(r)
 	switch {
 	case r.URL.Path == "/api/v1/status" && r.Method == http.MethodGet:
-		writeJSON(w, 200, `{"state":"time","ip":"127.0.0.1","rssi":-52,"fw":"orbfake","idf":"v5.4",`+
-			`"slot":"a","img":"gorb-os","art_ready":true,"synced":true,"tz":"EST5EDT","tz_offset":300,"ap":false}`)
+		o.serveStatus(w)
+	case r.URL.Path == "/api/v1/wifi/scan" && r.Method == http.MethodGet:
+		o.serveWifiScan(w, r)
+	case r.URL.Path == "/api/v1/wifi/join" && r.Method == http.MethodPost:
+		o.serveWifiJoin(w, r)
+	case r.URL.Path == "/api/v1/wifi/ap" && r.Method == http.MethodPost:
+		o.serveWifiAP(w, r)
+	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodGet:
+		o.serveConfigGet(w)
+	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodPost:
+		o.serveConfigPost(w, r)
+	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
+		o.serveReboot(w)
+	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:
+		o.serveScreen(w, r)
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
 		o.serveSD(w)
 	case r.URL.Path == "/api/v1/sd/install" && r.Method == http.MethodPost:

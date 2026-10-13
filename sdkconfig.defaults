@@ -109,6 +109,46 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # still works after a bad OTA. Costs a little otadata wear; worth it here.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+
+# WiFi driver buffer counts: UNSET, so the IDF defaults apply (static-rx 10,
+# dynamic-rx 32, dynamic-tx 32, mgmt-sbuf 32). They were pinned to 6/12/12/12 for
+# one specific reason, that reason turned out to be a different line, and the trim
+# is now gone on measurement. Do not re-add it without the evidence below.
+#
+# Why the trim existed: promoting the radio from WIFI_MODE_STA to WIFI_MODE_APSTA
+# on a running station driver died with `alloc eb len=752 type=4 fail` -- the
+# beacon's event buffer, the same 752 the driver logs at init -- followed by a
+# LoadProhibited Guru in ieee80211_hostap. The EB pool is carved once at
+# esp_wifi_init out of internal DMA RAM, and a disconnect does not return the
+# static RX EBs, so static-rx=6 looked like the slack the late promotion needed.
+#
+# The mechanism was real; the cause was elsewhere. The pool was empty because
+# CONFIG_LV_MEM_SIZE was 65536: LVGL's builtin heap is a static array in internal
+# DRAM, and 64 KB of it left the driver no room. With LVGL at 24576 the defaults
+# test clean -- measured on orb-B 2026-10-13, five first promotions after a fresh
+# boot with the station connected, every one reaching SoftAP OPEN with the DHCP
+# server banner up and zero `alloc eb` lines, at internal free 64,415-69,907 /
+# largest block 28,672-31,744 / dma_free 56,911-62,403. At the original failure
+# dma_free was 2,095.
+#
+# The earlier note here that "defaults fail" was measured at LVGL 65536 and does
+# not transfer. If a promoted AP ever logs `alloc eb len=752 type=4 fail` again,
+# check what is holding internal DRAM statically before touching these symbols.
+#
+# The wired path gave no signal either way: this build lost 5.6-11.6% of 250
+# pings at BOTH settings, tracking RSSI (-61 to -71 dBm) rather than buffer
+# counts, against a wired router control of 0.4%. The 0% reading once taken at the
+# trim was RF luck and is not reproducible.
+#
+# The SoftAP no-IP / no-captive-prompt symptom this block used to describe was
+# never a buffer problem: it was the same CONFIG_LV_MEM_SIZE shortage, which
+# starved httpd (ESP_ERR_HTTPD_TASK) and the AP's DHCP path. See that symbol's
+# own comment below and the ledger's 2026-10-13 correction.
+#
+# These live ONLY in the untracked generated sdkconfig as well; idf.py prefers
+# that file over sdkconfig.defaults, so deleting the lines here is NOT enough to
+# change a build -- the corresponding lines must go from sdkconfig too.
+
 # WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
 # `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed
 # bucket and NOT this image's real instruction-RAM usage. This target's only
@@ -120,6 +160,51 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # If IRAM ever genuinely overflows, ld says so loudly ("section .iram0.text will
 # not fit in region iram0_0_seg"); that error, not this table, is the trigger to
 # revisit CONFIG_ESP_WIFI_EXTRA_IRAM_OPT / these two knobs.
+
+# LVGL's builtin heap: CONFIG_LV_USE_CLIB_MALLOC is off, so this is a STATIC
+# ARRAY in internal DRAM, not a malloc. At the 64 KB default it starved the
+# network stack enough to break phone provisioning outright -- httpd_start()
+# returned ESP_ERR_HTTPD_TASK (its 4,096 B stack, esp_http_server.h:55, had
+# nowhere contiguous to go once DHCP + captive DNS + mDNS-on-AP had taken their
+# slices; measured largest free block on that boot: 7,936), main
+# logged "networking down", the clock kept animating, and the config page simply
+# did not exist while the captive DNS sent phones to a closed port.
+# Measured on orb-B 2026-10-13 on a FORCED-PROVISIONING boot at IDF-default
+# buffers (map-verified array size): 24576 -> largest block 31,744, page serves,
+# lease handed out; 65536 -> largest block 7,936, httpd_start fails. Scope note:
+# a CONNECTED boot promotes the SoftAP fine even at 65536 (verified tonight:
+# OPEN + option 114 + DHCP started, zero alloc eb). Provisioning is the tight
+# path because the AP is already up by the time httpd starts.
+#
+# PROVENANCE: nobody chose 64 KB. It is LVGL's own default
+# (managed_components/lvgl__lvgl/Kconfig:112, `default 65536`), inherited silently
+# because the symbol never appeared in any tracked file -- `git log --all
+# -S CONFIG_LV_MEM_SIZE` returns only the commits that set it to 24576. So there
+# is no earlier requirement being honored here, and no UI work (menu, carousel,
+# theme import included) that ever needed more.
+#
+# MEASURED DEMAND, via lv_mem_monitor_core() sampled on the LVGL task and
+# reported in /api/v1/status, with the app driven through every screen it has
+# (clock, menu + full knob walk, color picker) and at both pool sizes:
+#   peak used 19,796 B, live 15,804 B, 310 allocations -- IDENTICAL at 24 KB and
+#   at 64 KB. Growing the pool changed the high-water mark by zero bytes; it only
+#   moved unused memory out of the network stack's reach.
+#   At 24 KB the pool presents 22,052 usable bytes (TLSF header), so peak is 90%
+#   of it with 5,936 B in the largest free block. That headroom is thin, and it is
+#   the ONLY cost of this line: nothing regressed measurably on the dial.
+#   At 64 KB internal free fell to 7,411 / largest 3,328, which is the exact
+#   signature of the provisioning failure -- re-measured by accident on this bench.
+# HEADROOM IS THE RISK, NOT RENDERING. If a screen pushes peak past ~21 KB, LVGL
+# returns NULL and the widget silently fails to appear (LV_LOG_WARN only; no
+# assert trips, the clock keeps running), so it must be caught before shipping.
+# Re-measure the same way. `CONFIG_LV_USE_CLIB_MALLOC=y` was tested as an escape
+# from the fixed array and is NOT the fix it looks like: the 20 KB stayed in
+# internal RAM anyway, because CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 sends
+# every allocation under 16 KB there regardless of PSRAM, and lv_mem_monitor()
+# stops reporting (clib has no TLSF walker). It gives flexible sizing, not PSRAM.
+# Reaching PSRAM for real needs ALWAYSINTERNAL lowered, then a re-measure of dial
+# frame rate, since object reads would cross the SPI bus.
+CONFIG_LV_MEM_SIZE=24576
 
 # ---------------------------------------------------------------------------
 # microSD (theme import). See main/sd/orb_sd.h for what the socket is and is

@@ -171,6 +171,10 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		// version from before the flash.
 		s.identities.forget(req.Port)
 		s.setBoot(macNorm(flashedMAC), bootAP, bootAssocSeen, bootIP, bootNetworks)
+		// The eFuse read that named this flash is a cable sighting too: the board
+		// that was just written is the board the hub has proof of, whatever a later
+		// announcement chooses to say about where it is.
+		s.markCable(flashedMAC)
 	}
 	send("done", "flash complete - orb rebooting into the new firmware")
 }

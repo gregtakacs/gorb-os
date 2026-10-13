@@ -58,6 +58,10 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
+		// Item 5's LAN list. Pinned by id for the same reason as the rest: a
+		// one-sided rename leaves the browse card rendering an empty <ul> forever
+		// and nothing else in the suite notices.
+		"mn-findcard", "mn-find", "mn-find-state", "mn-find-go", "mn-find-note",
 	} {
 		if !strings.Contains(page, `id="`+id+`"`) {
 			t.Errorf("index.html is missing #%s", id)
@@ -67,6 +71,11 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
+		"/api/orbs", "/api/orbs/ask", "function readFound",
+		// Item 6's naming controls, pinned by the same rule as the rest: a card that
+		// stops posting to /api/fleet/set is a card whose name box does nothing, and
+		// nothing else in the suite would notice.
+		"/api/fleet", "/api/fleet/set", "/api/fleet/forget", "function foundRow",
 		"function startPolling", "function loadThemes", "function readConsole",
 	} {
 		if !strings.Contains(src, want) {
@@ -198,4 +207,39 @@ func blockOf(t *testing.T, src, marker string) string {
 	}
 	t.Fatalf("%q never closes", marker)
 	return ""
+}
+
+// Naming a board is the one part of the fleet the operator types into, and the row is
+// built from bytes that arrived over UDP plus a file the hub wrote. So the same two
+// rules the theme card applies to device names apply here: build with DOM APIs, and let
+// the hub's own refusal be what the card shows.
+func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
+	row := blockOf(t, readAppJS(t), "function foundRow")
+	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "outerHTML"} {
+		if strings.Contains(row, bad) {
+			t.Errorf("foundRow uses %s; an announced instance name is device-supplied bytes", bad)
+		}
+	}
+	for _, want := range []string{"document.createElement", "textContent"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("foundRow no longer builds rows with %s", want)
+		}
+	}
+	// The refusal is the hub's sentence, not the card's guess: a row that says "no"
+	// without saying why is the row an operator clicks again and blames the orb for.
+	if !strings.Contains(row, "o.refusal") {
+		t.Error("foundRow drops the hub's refusal, so a row that cannot be dialed has no explanation")
+	}
+	// The identity is keyed on the MAC, and the only handle the row has to the board is
+	// o.mac. A rename that posted the address would rename whatever held the lease.
+	if !strings.Contains(row, "mac: o.mac") {
+		t.Error("foundRow does not post the MAC as the identity it is renaming")
+	}
+	if strings.Contains(row, "ip: o.ip") {
+		t.Error("foundRow names a board by its address; the fleet keys on the MAC")
+	}
+	// Forgetting revokes the hub's willingness to dial, so it asks first.
+	if !strings.Contains(row, "confirm(") {
+		t.Error("Forget no longer asks before dropping a name and revoking an address")
+	}
 }

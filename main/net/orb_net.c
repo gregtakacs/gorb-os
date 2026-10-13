@@ -25,6 +25,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+/* Item 10 visibility: lwIP's dhcpserver.c contains no logging at all, so the
+ * DHCP server's own lease table is the only trustworthy witness of whether a
+ * joined client was ever handed an address. IP_EVENT_AP_STAIPASSIGNED is NOT:
+ * measured 2026-10-13, it stays silent while the table reports a granted lease,
+ * which is what produced a false "no lease" regression report. A netif->input
+ * frame counter was tried here first and removed — IDF delivers Wi-Fi frames via
+ * esp_netif_receive(), bypassing netif->input, so it read 0 during real joins. */
+static void ap_lease_probe(void);   /* defined beside on_ap_lease, used by the net task */
+static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -55,6 +64,7 @@
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
 #include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
+#include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 
 static const char *TAG = "orb_net";
 
@@ -104,7 +114,9 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
        NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
        NET_CMD_SCAN_BOOT,     /* first-boot scan armed by AP_START, logged as PROVSCAN */
-       NET_CMD_LEASE_WATCH }; /* associated but no lease: rearm the watch or drop it */
+       NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
+       NET_CMD_STORE_CREDS,   /* a lease verified the pending pair: write it to NVS now  */
+       NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
@@ -120,7 +132,25 @@ static volatile bool s_sta_up;         /* has an IP */
 static volatile bool s_associated;     /* the association is real; the lease may not be */
 static volatile bool s_joining;        /* a user-initiated join is in flight */
 static volatile bool s_provisioning;   /* booted with no credentials at all */
+/* D4: this provisioning boot happened DESPITE credentials being present in
+ * flash, so it is a recovery session with something to fall back to and it owns
+ * a deadline. A factory boot (nothing stored) leaves this false forever: for that
+ * device the AP is the only door there is, and rebooting returns to the same
+ * branch. Latched once where the boot branch reads NVS, never re-read after. */
+static volatile bool s_prov_recovery_session;
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
+/* Set only when a human asked for the AP (the config page / POST /wifi/ap).
+ * It exists because every STA lease re-arms the AP timer with the short
+ * CONFIG_ORB_NET_AP_HOLD_S backstop, which is right for the boot and rescue APs
+ * — their whole purpose is to close once the orb is reachable — but fatal for a
+ * manual one: the orb already HAS a lease the instant you open this AP, so the
+ * fuse relights to 120 s while you are walking to your phone. Measured on orb-B
+ * 2026-10-13: opened at 29.7 s logging "900 s hold", leased at 37.5 s, closed at
+ * 157.5 s. The phone saw no SSID at all, which is how "I don't see the AP" was
+ * produced twice. s_ap_hold_s is what the opener promised, so a short
+ * backstop can never preempt a longer promise. */
+static volatile bool     s_ap_manual;
+static volatile uint32_t s_ap_hold_s;
 static volatile int  s_rssi = -999;
 static char          s_ip[16] = "";
 
@@ -659,6 +689,73 @@ static bool net_post_join(const char *ssid, const char *pass)
     return xQueueSend(s_net_q, &m, pdMS_TO_TICKS(200)) == pdTRUE;
 }
 
+/* ---------------- pending (unverified) credentials, D3 ----------------
+ * The submitted pair waits here, not in NVS, until a lease proves it works.
+ * Both doors used to nvs_set_str() the moment the form was accepted, so one
+ * mistyped passphrase overwrote a working credential and took the orb off its
+ * network with nothing to fall back to (bench 2026-10-13). A lease is the only
+ * evidence a network can give that the pair is right, so the write rides it.
+ *
+ * Written only by the net task inside NET_CMD_JOIN, and read and cleared only by
+ * the net task inside NET_CMD_STORE_CREDS — which on_ip() merely POSTS, carrying
+ * nothing, so no buffer here is ever touched by two tasks and the queue stays the
+ * only ordering needed, exactly as for net_msg_t's own credential fields. ~100 B
+ * static, in internal RAM, unconditionally: this is the code that decides what a
+ * device boots with, and it must not depend on an optional feature. */
+static char s_pend_ssid[NET_SSID_MAX + 1];
+static char s_pend_pass[NET_PASS_MAX + 1];
+/* Mirrors pend_any() for the one reader that must not touch the buffers: on_ip()
+ * runs on the default event loop, and a single bool is the only cross-task read
+ * worth having here. Stale-by-one-tick is safe in either direction — it can only
+ * skip or duplicate an idempotent write, never invent a credential. */
+static volatile bool s_pend_valid;
+
+/* Does this lease authorise a credential write? Both terms are needed. Pending
+ * without join intent is a boot-time auto-retry of what flash already holds, and
+ * writing that back is a no-op at best. Join intent without a pending pair cannot
+ * happen (NET_CMD_JOIN sets both), and must not clear or write anything either. */
+static bool lease_verifies_creds(bool pending, bool joining)
+{
+    return pending && joining;
+}
+
+static void pend_set(const char *ssid, const char *pass)
+{
+    snprintf(s_pend_ssid, sizeof(s_pend_ssid), "%s", ssid ? ssid : "");
+    snprintf(s_pend_pass, sizeof(s_pend_pass), "%s", pass ? pass : "");
+    s_pend_valid = s_pend_ssid[0] != '\0';
+}
+
+static bool pend_any(void) { return s_pend_ssid[0] != '\0'; }
+
+static void pend_clear(void) { s_pend_ssid[0] = '\0'; s_pend_pass[0] = '\0'; s_pend_valid = false; }
+
+/* Empty passphrase means an OPEN network, and the stored key must be removed
+ * rather than set to "": a blank pass left in flash reads back as a configured
+ * credential, and the orb then retries an enterprise association the AP never
+ * offered. Pure and pinned by tools/host_tz_test.py, because both doors used to
+ * spell this branch inline and a typo here silently strands a device. */
+static bool creds_erase_key(const char *pass)
+{
+    return pass == NULL || pass[0] == '\0';
+}
+
+/* Write the pair a lease just vouched for. */
+static void creds_commit(const char *ssid, const char *pass)
+{
+    if (!ssid || ssid[0] == '\0') return;
+    const esp_err_t e1 = nvs_set_str(s_nvs, "ssid", ssid);
+    const esp_err_t e2 = creds_erase_key(pass) ? nvs_erase_key(s_nvs, "pass")
+                                              : nvs_set_str(s_nvs, "pass", pass);
+    nvs_commit(s_nvs);
+    if (e1 != ESP_OK || (e2 != ESP_OK && e2 != ESP_ERR_NVS_NOT_FOUND))
+        ESP_LOGE(TAG, "creds for \"%s\" NOT stored (%s/%s) — this lease will not "
+                      "survive a reboot", ssid, esp_err_to_name(e1), esp_err_to_name(e2));
+    else
+        ESP_LOGW(TAG, "credentials for \"%s\" accepted by the network and now "
+                      "stored (the pair the orb will boot with)", ssid);
+}
+
 /* Timer callbacks may only post: the esp_timer task is shared and must not
  * block, and the esp_wifi_* calls do block on the driver's own task. */
 static void retry_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_CONNECT, 0); }
@@ -699,9 +796,49 @@ static void ap_open(uint32_t hold_s, const char *why)
         s_ap_netif = esp_netif_create_default_wifi_ap();
         if (!s_ap_netif) { ESP_LOGE(TAG, "ap netif: out of memory"); return; }
     }
+
+    /* Declare ourselves a captive portal — RFC 8910 DHCP option 114 — so a joined
+     * phone prompts instead of sitting on a network it silently grades "no
+     * internet". The probes and their 302 (h_captive) and the DNS responder
+     * already exist; this removes the dependence on each vendor's probe
+     * heuristic, which is what let a phone report "connected" with no prompt
+     * while holding a valid lease. Options are writable only with the server
+     * stopped; the default AP glue starts it again on WIFI_EVENT_AP_START. */
+    {
+        static const char portal_uri[] = "http://192.168.4.1/";
+        esp_netif_dhcps_stop(s_ap_netif);   /* already-stopped is expected here */
+        const esp_err_t oe = esp_netif_dhcps_option(
+            s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
+            (void *)portal_uri, sizeof(portal_uri) - 1);
+        /* Restart it ourselves. The default AP glue starts the server on netif
+         * ATTACH only — esp_netif_lwip_defaults.c has no AP_START handler that
+         * does it — so stopping it here to write the option would otherwise leave
+         * the AP with no DHCP server at all, which is exactly what the first
+         * restart-path test measured. Measured before the fix: option 114 logged
+         * OK, no `DHCP server started` line, phone got nothing. */
+        const esp_err_t se = esp_netif_dhcps_start(s_ap_netif);
+        ESP_LOGI(TAG, "ap open (%s): DHCP option 114 -> %s (server restart %s)", why,
+                 oe == ESP_OK ? portal_uri : esp_err_to_name(oe), esp_err_to_name(se));
+    }
     wifi_config_t ap;
     ap_fill_config(&ap);
 
+    /* Late promotion (set_mode on a running driver) is the ONE thing here that
+     * still needs the buffer trim above. Measured 2026-10-13: calling
+     * esp_wifi_disconnect() first does not help -- it frees general heap
+     * (free=12791 largest=7168 at the probe) while the static RX EBs stay carved
+     * since esp_wifi_init -- and set_mode(APSTA) still dies with
+     * `alloc eb len=752 type=4 fail` -> Guru in ieee80211_hostap. That 752 B
+     * type=4 EB is the beacon itself (the driver logs `Init max length of beacon:
+     * 752/752`), so static-rx=6 rather than 10 is what leaves it a slot.
+     *
+     * What this is NOT any more: a fix for a phone that would not get an address.
+     * That fault was CONFIG_LV_MEM_SIZE starving the config server and the AP's
+     * DHCP path (see sdkconfig.defaults); restarting the driver here only cost the
+     * LAN ~8 s and changed nothing, so it is out. Whether the trim is still needed
+     * now that ~40 KB of internal DRAM is back is OPEN -- to find out, delete the
+     * four buffer lines from BOTH sdkconfig.defaults and sdkconfig and repeat the
+     * POST /api/v1/wifi/ap that first panicked. Until that is run, keep the trim. */
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
         ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
         return;
@@ -746,6 +883,7 @@ static void ap_open(uint32_t hold_s, const char *why)
         }
     }
 
+    s_ap_hold_s = hold_s;     /* the promise NET_CMD_AP_HOLD must not break */
     arm_oneshot(s_ap_timer, hold_s, "ap expiry");
     ESP_LOGW(TAG, "SoftAP \"%s\" OPEN (%s) — join it, then open http://192.168.4.1/"
                   " (%u s hold)", (const char *)ap.ap.ssid, why, (unsigned)hold_s);
@@ -935,8 +1073,49 @@ static void dns_stop(void)
 static void scan_begin(void);
 static void scan_collect(void);
 static void scan_boot_begin(void);   /* arms SCAN_SCANNING then starts, radio task */
-static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning);
-static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning);
+/* The station interface of a PROVISIONING boot is up but unclaimed: the boot
+ * branch opened the AP and never asked for an association. In that state a
+ * STA_DISCONNECTED event means nothing and a connect() would be pointless.
+ * Once NET_CMD_JOIN has run, though, a human has submitted credentials on the
+ * AP - the same event is now the only feedback that submission produced, and
+ * swallowing it leaves the device broadcasting an AP with nothing behind it and
+ * no pending retry (bench, 2026-10-13: reason 202 auth-fail, then silence; the
+ * ladder, the failure counter, the rescue and the AP timeout all sit behind the
+ * event that got dropped). So the discriminator for the retry ladder is join
+ * intent, not boot mode: `if (s_provisioning) break;` conflated "nothing asked
+ * yet" with "the thing you asked for just failed". Pure, and pinned by
+ * tools/host_tz_test.py. */
+static bool prov_ap_idle(bool provisioning, bool joining)
+{
+    return provisioning && !joining;
+}
+
+/* D4, decision one: does THIS provisioning boot own a deadline? The credentials
+ * term is the whole hazard. A factory orb has nothing to fall back to, so a
+ * sojourn that rebooted it would land back on the same provisioning branch, open
+ * the AP, re-arm and reboot again — forever, on a device nobody is watching. Only
+ * a boot that has a stored network to go back to may time out, and the two boot
+ * paths therefore stay observably different. Pure so host_tz_test.py can pin it. */
+static bool sojourn_arms(bool recovery_session, int sojourn_s)
+{
+    return recovery_session && sojourn_s > 0;
+}
+
+/* D4, decision two: the deadline fired. Nothing to fall back to must never be
+ * reached from here (sojourn_arms gated the arming), but the answer is still
+ * "reboot into the normal path and let the stored credentials try again" and not
+ * ap_close(): ap_close() calls set_mode(STA) and leaves s_provisioning set, which
+ * tears the radio down to a half state rather than restoring a join attempt.
+ * If a lease DID arrive first, s_sta_up is true and the AP closes normally — the
+ * session ended by succeeding, which is the only other way out. */
+static bool sojourn_reboots(bool sta_up, bool recovery_session)
+{
+    return recovery_session && !sta_up;
+}
+
+/* Third argument is prov_ap_idle(), never the raw provisioning flag. */
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle);
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle);
 
 static void net_task_loop(void *arg)
 {
@@ -956,8 +1135,8 @@ static void net_task_loop(void *arg)
              * by the second-event guard, which is the same dead device by
              * another door. */
             s_retry_pending = false;
-            if (connect_attempt_is_moot(s_associated, s_sta_up, s_provisioning)) {
-                if (lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+            if (connect_attempt_is_moot(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining))) {
+                if (lease_watch_should_drop(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining)))
                     arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
                 break;
             }
@@ -993,6 +1172,10 @@ static void net_task_loop(void *arg)
              * ignored the Connect button (the first live phone test, where the
              * join actually succeeded and the user never saw it). */
             s_joining = true;
+            /* Hold the pair here until a lease vouches for it. Set on this task,
+             * before the radio sees it, so a lease that arrives while this handler
+             * is still running cannot consume a pair that was never recorded. */
+            pend_set(m.ssid, m.pass);
             {
                 const esp_err_t je = net_apply_sta_config(m.ssid, m.pass);
                 if (je != ESP_OK)
@@ -1010,16 +1193,39 @@ static void net_task_loop(void *arg)
             arm_oneshot(s_retry_timer, NET_STA_RETRY_S, "retry");
             break;
 
+        case NET_CMD_STORE_CREDS:
+            /* A lease arrived, so the network accepted this pair: it is now the
+             * credential the device will boot with. Nothing writes ssid/pass to
+             * NVS anywhere else (see the s_pend_ssid block comment) — that is the
+             * point of the whole arrangement, and the reason a wrong passphrase
+             * submitted on the config page costs a failed join instead of a
+             * device that can no longer reach its own network. */
+            if (pend_any()) creds_commit(s_pend_ssid, s_pend_pass);
+            pend_clear();
+            break;
+
         case NET_CMD_AP_OPEN:
+            /* A human asked for this AP, so it gets the hold the page promised. */
+            s_ap_manual = true;
             ap_open((uint32_t)m.arg, "requested from the config page");
             break;
 
         case NET_CMD_AP_RESCUE:
+            s_ap_manual = false;   /* a door, not a request: the lease may close it */
             ap_open((uint32_t)m.arg, "credentials not working");
             break;
 
         case NET_CMD_AP_HOLD:
-            if (s_ap_up) arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
+            /* The lease backstop must never shorten a hold a user was promised.
+             * See the s_ap_manual note: this is the line that ate the manual AP
+             * at 120 s, twice, while the phone was still in the owner's pocket. */
+            if (s_ap_up && s_ap_manual && (uint32_t)m.arg < s_ap_hold_s) {
+                ESP_LOGI(TAG, "SoftAP hold kept at %u s (manual request beats the "
+                              "%u s lease backstop)",
+                         (unsigned)s_ap_hold_s, (unsigned)m.arg);
+            } else if (s_ap_up) {
+                arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
+            }
             break;
 
         case NET_CMD_AP_EXPIRED:
@@ -1028,6 +1234,24 @@ static void net_task_loop(void *arg)
              * out. With no lease the AP is the only door a phone can walk up
              * to, so it stays open and the check merely re-arms. */
             if (s_sta_up) ap_close("lease held, hold expired");
+            else if (sojourn_reboots(s_sta_up, s_prov_recovery_session)) {
+                /* D4: the recovery session ran out of time and nothing was
+                 * achieved. Reboot into the normal path so the stored network is
+                 * retried, rather than holding an OPEN AP with an unauthenticated
+                 * /api/v1/ota behind it indefinitely. Disarm the fault record
+                 * first — the same courtesy POST /api/v1/reboot pays: this is a
+                 * planned exit the device decided on, and a next boot that billed
+                 * an app for it would report a crash that never happened, which is
+                 * exactly the false alarm that makes a fleet UI untrustworthy.
+                 * Nothing is written on the way out (D3): a failed session's
+                 * credentials never reached flash, so the reboot resumes the pair
+                 * that was stored before it. */
+                ESP_LOGW(TAG, "provisioning sojourn expired after %d s with no "
+                              "lease; rebooting to retry the stored network",
+                         CONFIG_ORB_NET_PROV_SOJOURN_S);
+                orb_svc_note_clean_reboot();
+                esp_restart();
+            }
             else if (!s_provisioning) {
                 arm_oneshot(s_ap_timer, NET_AP_RECHECK_S, "ap recheck");
                 ESP_LOGI(TAG, "SoftAP stays up: no lease yet, checking again in %d s",
@@ -1050,6 +1274,10 @@ static void net_task_loop(void *arg)
             scan_boot_begin();
             break;
 
+        case NET_CMD_AP_LEASE_POLL:      /* DIAGNOSTIC (item 10) */
+            ap_lease_probe();
+            break;
+
         case NET_CMD_LEASE_WATCH:
             /* The association promised a lease and NET_LEASE_WATCHDOG_S passed
              * with none arriving — the state the bench orb sat in for four
@@ -1058,7 +1286,7 @@ static void net_task_loop(void *arg)
              * already-tested ladder path re-arms without counting a refusal.
              * A disconnect() that itself fails leaves nothing pending, so the
              * watch re-arms rather than handing the device to the silence. */
-            if (!lease_watch_should_drop(s_associated, s_sta_up, s_provisioning))
+            if (!lease_watch_should_drop(s_associated, s_sta_up, prov_ap_idle(s_provisioning, s_joining)))
                 break;
             ESP_LOGW(TAG, "no lease %u s after associating; dropping the association",
                      (unsigned)NET_LEASE_WATCHDOG_S);
@@ -1128,14 +1356,14 @@ static bool sta_leave_is_self_inflicted(uint8_t reason)
  * sta_leave_is_self_inflicted() above, so tools/host_tz_test.py can pin the
  * truth tables without a radio: from the LAN a wrong answer here looks
  * exactly like a router that hates the orb. */
-static bool connect_attempt_is_moot(bool associated, bool sta_up, bool provisioning)
+static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle)
 {
-    return sta_up || associated || provisioning;
+    return sta_up || associated || ap_idle;
 }
 
-static bool lease_watch_should_drop(bool associated, bool sta_up, bool provisioning)
+static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle)
 {
-    return associated && !sta_up && !provisioning;
+    return associated && !sta_up && !ap_idle;
 }
 
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -1171,7 +1399,15 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_associated = false;
         s_rssi   = -999;
         if (reason) s_last_reason = reason;
-        if (s_provisioning) break;         /* AP-only mode: nothing to retry */
+#if CONFIG_ORB_NET_MDNS
+        /* Withdraw the STA advertisement on the disconnect, not on the lease
+         * expiry: an orb that has lost the association is unreachable right now,
+         * and a hub holding it in cache for another 120 s is a hub dialing a
+         * dead address. The re-announce rides the next IP_EVENT_STA_GOT_IP, and
+         * a blip that never reaches a lease withdrawal costs one goodbye. */
+        orb_mdns_set_sta(false, 0);
+#endif
+        if (prov_ap_idle(s_provisioning, s_joining)) break;   /* AP up, nothing submitted: no ladder */
         if (s_retry_pending) break;        /* driver's second event for one failure */
         /* See sta_leave_is_self_inflicted(): a leave we caused is not a refusal,
          * so it costs the ladder nothing. The retry is armed regardless, because
@@ -1213,6 +1449,21 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_start();                 /* advertise + answer, so phones show "Sign in" */
 #endif
+#if CONFIG_ORB_NET_MDNS
+        /* The AP half of the advertisement, and the reason item 4 is not just a
+         * LAN feature: after a factory reset (item 10) the orb has no lease at
+         * all, and the SoftAP is the only place it can be found. A wired hub
+         * still cannot route to 192.168.4.1 — the same limit that makes the boot
+         * scan log PROVSCAN lines — so this serves the phone that joined the AP,
+         * which is exactly who is standing there in that scenario. */
+        if (s_ap_netif) {
+            esp_netif_ip_info_t ai;
+            if (esp_netif_get_ip_info(s_ap_netif, &ai) == ESP_OK && ai.ip.addr)
+                orb_mdns_set_ap(true, ai.ip.addr);
+            else
+                ESP_LOGW(TAG, "mdns: no SoftAP address yet — not advertised on the AP");
+        }
+#endif
         /* First-boot scan for the wired-provisioning door: a wired-only hub has
          * no route to 192.168.4.1, so it reads the network list off the serial
          * log instead of the page. scan_collect() logs each result as a
@@ -1225,10 +1476,52 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         /* The driver's word that the AP is really gone, which is what makes
          * ap_close()'s early return honest. */
         s_ap_up = false;
+        s_ap_manual = false;    /* the promise expired with the AP, not before it */
+        s_ap_hold_s = 0;
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_stop();                  /* the AP is down; take its resolver with it */
 #endif
+#if CONFIG_ORB_NET_MDNS
+        /* Same reasoning as the resolver above, and the reason this rides
+         * AP_STOP rather than ap_close()'s own early return: the driver is the
+         * only one that knows the AP is genuinely down, and a goodbye for an AP
+         * that is still up tells a hub to stop showing an orb it can still
+         * reach. If the STA still has its lease the responder keeps running for
+         * that interface and sends no goodbye at all. */
+        orb_mdns_set_ap(false, 0);
+#endif
         break;
+
+    case WIFI_EVENT_AP_STACONNECTED: {
+        /* Provisioning evidence, and the half a lease can never stand in for:
+         * this says a client associated with the SoftAP. Whether it then got an
+         * address is on_ap_lease below. Together the two lines separate a phone
+         * that never reached the orb from one that reached it and was refused an
+         * address — a distinction that could not be made from the device before,
+         * because neither event was observed. */
+        const wifi_event_ap_staconnected_t *ac = data;
+        if (ac) {
+            ESP_LOGI(TAG, "SoftAP: %02x%02x%02x%02x%02x%02x joined (aid %u)",
+                     ac->mac[0], ac->mac[1], ac->mac[2],
+                     ac->mac[3], ac->mac[4], ac->mac[5], (unsigned)ac->aid);
+            /* DIAGNOSTIC (item 10): remember who joined, zero the frame counter,
+             * and let the net task watch for their address. Posted, never run
+             * inline: the probe blocks, and an event callback must not. */
+            memcpy(s_ap_last_mac, ac->mac, 6);
+            net_post(NET_CMD_AP_LEASE_POLL, 0);
+        }
+        break;
+    }
+
+    case WIFI_EVENT_AP_STADISCONNECTED: {
+        const wifi_event_ap_stadisconnected_t *ad = data;
+        if (ad)
+            ESP_LOGI(TAG, "SoftAP: %02x%02x%02x%02x%02x%02x left (aid %u, reason %u)",
+                     ad->mac[0], ad->mac[1], ad->mac[2],
+                     ad->mac[3], ad->mac[4], ad->mac[5],
+                     (unsigned)ad->aid, (unsigned)ad->reason);
+        break;
+    }
 
     case WIFI_EVENT_SCAN_DONE:
         /* Post only — the event task must not call into the driver, same rule
@@ -1301,6 +1594,54 @@ static void sntp_sync_cb(struct timeval *tv)
              (long long)(tv ? tv->tv_sec : 0));
 }
 
+/* DIAGNOSTIC (item 10) — see the note by s_ap_last_mac for why the lease table
+ * and not an IP event is the witness here.
+ * RADIO TASK ONLY: blocks ~14 s, so it must never run in an event callback. */
+static void ap_lease_probe(void)
+{
+    if (!s_ap_netif) return;
+    esp_netif_pair_mac_ip_t pair = { 0 };
+    memcpy(pair.mac, s_ap_last_mac, 6);
+
+    for (int i = 0; i < 14; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        pair.ip.addr = 0;
+        if (esp_netif_dhcps_get_clients_by_mac(s_ap_netif, 1, &pair) == ESP_OK &&
+            pair.ip.addr != 0) {
+            ESP_LOGW(TAG, "SoftAP probe: server ASSIGNED " IPSTR " to "
+                          "%02x:%02x:%02x:%02x:%02x:%02x after %d s",
+                     IP2STR(&pair.ip), pair.mac[0], pair.mac[1], pair.mac[2],
+                     pair.mac[3], pair.mac[4], pair.mac[5], i + 1);
+            return;
+        }
+    }
+    ESP_LOGE(TAG, "SoftAP probe: the DHCP server granted NO address to "
+                  "%02x:%02x:%02x:%02x:%02x:%02x in 14 s",
+             s_ap_last_mac[0], s_ap_last_mac[1], s_ap_last_mac[2],
+             s_ap_last_mac[3], s_ap_last_mac[4], s_ap_last_mac[5]);
+}
+
+/* The SoftAP's DHCP server reporting a lease. esp_netif posts this from lwIP's
+ * dhcps new-lease callback (esp_netif_lwip.c:1133 -> :1064) the moment an
+ * address is committed to a joined client, so it is the device's own answer to
+ * the one item 10 question the bench could not settle: does a phone that joins
+ * the provisioning AP actually get an address? Logged, not acted on: the only
+ * interface here running a server is the AP, and a lease handed to someone else
+ * must not be mistaken for the station's own — which is why this is not folded
+ * into on_ip(), whose whole job is to claim a lease for the STA. */
+static void on_ap_lease(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base;
+    if (id != IP_EVENT_AP_STAIPASSIGNED) return;
+
+    const ip_event_ap_staipassigned_t *ev = data;
+    if (!ev) return;
+    ESP_LOGI(TAG, "SoftAP: leased " IPSTR " to %02x%02x%02x%02x%02x%02x",
+             IP2STR(&ev->ip),
+             ev->mac[0], ev->mac[1], ev->mac[2],
+             ev->mac[3], ev->mac[4], ev->mac[5]);
+}
+
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base;
@@ -1313,13 +1654,35 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
      * this hand-off has nothing left to guard. */
     esp_timer_stop(s_watch_timer);
     s_provisioning = false;
+#if CONFIG_ORB_NET_MDNS
+    /* The lease is the address a browser should be sent to, so the advertisement
+     * starts here and nowhere earlier: before the lease the orb has no reachable
+     * name on the LAN, and announcing one would hand out 0.0.0.0. Posted from an
+     * event handler, which is allowed: orb_mdns_set_sta only sets flags and, on
+     * the first call, creates the socket and its own task. */
+    orb_mdns_set_provisioning(false);
+    orb_mdns_set_sta(true, ev->ip_info.ip.addr);
+#endif
     /* The lease is the word that the join the user pressed Connect for actually
      * landed; until then /api/v1/status keeps saying "joining" rather than falling
-     * back to "provisioning", which is what made the first phone test look ignored. */
+     * back to "provisioning", which is what made the first phone test look ignored.
+     *
+     * Captured BEFORE the clear below, because it is also what authorises the
+     * credential write: a lease that answers a submission means the submitted pair
+     * worked, and only that pair may be committed. A lease from the boot-time
+     * auto-retry of what is already in flash must not touch NVS at all. */
+    const bool answers_a_join = s_joining;
+    const bool store_creds    = lease_verifies_creds(s_pend_valid, answers_a_join);
     s_joining      = false;
     s_assoc_fails  = 0;      /* back-off is per-outage, not per-device-life */
     ESP_LOGI(TAG, "associated: config page at http://%s/", s_ip);
     stage_probe("sta-connected");
+
+    /* Deferred credential write, D3. Posted rather than done here: the pending
+     * pair belongs to the radio task, and this handler runs on the default event
+     * loop. If the queue is full the pair simply survives to the next lease —
+     * losing the write is safe, losing the old credential was not. */
+    if (store_creds) net_post(NET_CMD_STORE_CREDS, 0);
 
     /* A lease is what closes the provisioning AP — see NET_CMD_AP_EXPIRED for
      * why the close is conditioned on this rather than on the timer alone.
@@ -1348,43 +1711,45 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    /* 640, not the 512 this started with: the body has since grown a tz string
-     * (up to NET_TZ_MAX) plus the ap/assoc_fails pair and the idle block below,
-     * and a truncated body is worse than an error because the page just fails to
-     * parse it. The overflow check below is what makes that visible rather than
-     * subtle. Unlike the /api/v1/config buffer — whose worst case host_tz_test.py
-     * recomputes from the zone table and asserts — nothing on the host checks
-     * this one. It measured 629 B on the device on 2026-10-11 with the tz at
-     * "US/Central" (563 B before the idle block and the art residency fields); every
-     * field added since then has to be re-measured off the device
-     * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
-     * room for that growth. Measured 650 B on the device on 2026-10-12, tz at
-     * "US/Eastern", with the idle block's writes_failed present; the figure moves
-     * a few bytes as the counters gain digits, which is why it is measured and not
-     * added up. The P3 apps ledger joins it — ~110 B per row (three compiled rows
-     * today) plus the grants words and any status line an app printed, capped
-     * inside its own 768 B buffer — which is why the frame is 1536 now; re-measure
-     * on the device and shrink it back if the rows stay short.
+    /* 1536, sized by readings taken on orb-B on 2026-10-12, not by estimates.
+     * Ten identical requests at e85645e measured 1117 B, with three ledger rows
+     * published and no app status line printed. A board that had just booted read
+     * 1111 B, and 1115 B and 1116 B appeared between those. The spread comes from
+     * the fields themselves, not from noise: wifi_reason_name is a string out of
+     * reason_name(), and idle.dimmed prints true or false. The longest name that
+     * table offers is handshake-timeout at 17 B, 6 B beyond the assoc-leave seen
+     * here, and counter digit widths add a byte apiece. A realistic ceiling sits
+     * near 1123 B, which leaves about 410 B in this frame. Quote a range, never
+     * one number: the width tracks uptime and recent drops. The frame grew from
+     * 512 through 640 and 960 as fields joined it, and every addition was
+     * re-measured with `curl -s ORB/api/v1/status | wc -c`, never added up here.
      *
-     * The mac field joins from the fleet line: a fixed 21 B ("mac":"..." plus its
-     * comma), counted off the wire. The fleet build measured 668-676 B on orb-B on
-     * 2026-10-12 at the 960 frame, tz at "US/Central", the -dirty stamp adding the
-     * extra 5-7 B. The merged body measured 1118 B on orb-A on 2026-10-12 over
-     * the LAN, tz at "US/Central", with the three compiled-in apps' ledger rows
-     * present and their counters at zero — the figure grows as calls, denials
-     * and faults gain digits, capped inside the ledger's own 768 B buffer. The
-     * value is verified against
-     * hardware: orb-B reported 44bd8d782618, equal to `esptool read_mac` on that
-     * board, to the eFuse read through the native Go flasher, and to the USB
-     * serial-number descriptor sysfs exposes for the same port. The SOFTAP
-     * variant would have ended 2619, one off, and every hub join key is BASE.
+     * The ledger binds before this frame does. apps_json holds the whole array in
+     * 768 B, and the three compiled-in rows filled 440 B of it; two more rows fit
+     * at the observed 146 B per row. The ~110 B per row this comment carried was
+     * low by a third, because declared and denied_mask joined the row after that
+     * figure was set. Both buffers reject rather than clip: the ledger answers an
+     * error array and the body answers a 500, because a truncated body parses as
+     * nothing and the page shows a blank card. The merged body measured 1118 B on
+     * orb-A on 2026-10-12 over the LAN with those rows' counters at zero, and the
+     * fleet build before the ledger measured 668-676 B on orb-B at the 960 frame,
+     * the -dirty stamp adding the extra 5-7 B.
+     *
+     * The mac field costs a fixed 21 B, counted off the wire. Its value is
+     * verified against hardware: orb-B reports 44bd8d782618, equal to `esptool
+     * read_mac` on that board, and it matches the eFuse read through the native Go
+     * flasher and the sysfs USB descriptor for the same port. ESP_MAC_WIFI_SOFTAP
+     * would have ended 2619, one off, and every hub join key is BASE.
+     * mac_addr.c:366-387 derives the SoftAP address as memcpy(base) then
+     * mac[5] += 1, live while CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y.
      *
      * Static, not stack, per the s_scan_json rule above: 1536 B on a 4 KB httpd
-     * task was already most of the stack, and D19's second name list per row
-     * (declared, beside grants) pushed the frame past the point where a glance
-     * at the size is a gamble rather than a reading. Handlers run serially on
-     * the single httpd task, so one instance is safe; .bss is the honest place
-     * for a buffer this size. */
+     * task was already most of the stack. D19's second name list per row pushed it
+     * past the point where a glance at the size is a gamble. Handlers run serially
+     * on the single httpd task, so one instance is safe, and .bss is the honest
+     * place for a buffer this size. Nothing on the host checks this one. The
+     * /api/v1/config buffer has host_tz_test.py recomputing its worst case from the
+     * zone table, and this has no equivalent. */
     static char json[1536];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
@@ -1945,11 +2310,13 @@ static void prov_reader_task(void *arg)
         ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
                  pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
 
-        /* h_wifi_join()'s order: persist first, so a failed association still
-         * retries on next boot rather than dropping the user to square one. */
-        nvs_set_str(s_nvs, "ssid", ssid);
-        if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
-        nvs_commit(s_nvs);
+        /* NOT persisted here. The pair waits in the radio task's pending buffer
+         * (see s_pend_ssid) until a lease proves it, and only then reaches NVS —
+         * h_wifi_join() does the same. The previous behaviour, writing here, is how
+         * one mistyped passphrase on a working device took the device off its own
+         * network. The zone is a different case and still applies immediately: it
+         * is fully validated above, cannot lock anyone out, and a wrong one is
+         * fixable from the LAN. */
         if (tz[0]) {
             const char *why = net_tz_set(tz);
             if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
@@ -1958,7 +2325,11 @@ static void prov_reader_task(void *arg)
 
         ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
         if (!net_post_join(ssid, pass)) {
+            /* No queue means no radio task, so nothing can hold the pair or commit
+             * it on a lease. This degenerate path (bring-up OOM) keeps the old
+             * write-first behaviour: a lost credential beats a lost join. */
             ESP_LOGW(TAG, "prov: no radio queue — applying from this task");
+            creds_commit(ssid, pass);
             const esp_err_t e = net_apply_sta_config(ssid, pass);
             if (e != ESP_OK) ESP_LOGE(TAG, "prov: join(%s) failed: %s", ssid, esp_err_to_name(e));
         }
@@ -2247,12 +2618,13 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
              tz_present ? " tz=" : "", tz_present ? tz : "");
 
-    /* Persist FIRST, then apply: if the association fails, the credentials are
-     * already on the device so the next boot retries them instead of dropping
-     * the user back to an unprovisioned state they have to redo. */
-    nvs_set_str(s_nvs, "ssid", ssid);
-    if (pass[0]) nvs_set_str(s_nvs, "pass", pass); else nvs_erase_key(s_nvs, "pass");
-    nvs_commit(s_nvs);
+    /* NOT persisted here: the submitted pair waits in the radio task's pending
+     * buffer until this join earns a lease, and only then reaches NVS (see
+     * s_pend_ssid). Writing here, which is what this line used to do, let one
+     * mistyped passphrase replace a working credential on the first submit - the
+     * failure this change exists to remove. The "joining" reply below is now true
+     * in a stronger sense: the device has not committed to this network, it is
+     * trying it. */
 
     /* Zone goes through net_tz_set() rather than a local nvs_set_str(), so the
      * write, the setenv/tzset and the log line are literally the same code the
@@ -2289,13 +2661,15 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     const esp_err_t sent = httpd_resp_sendstr(req, "{\"state\":\"joining\"}");
     vTaskDelay(pdMS_TO_TICKS(250));
 
-    /* Nothing left can fail in a way the caller needs told about: the
-     * credentials are already committed, and the radio outcome is not known yet —
-     * it is what /api/v1/status reports as state/assoc_fails/wifi_reason. If the
-     * queue never came up (bring-up OOM), do the radio work on this task rather
-     * than not do it at all. */
+    /* Nothing left can fail in a way the caller needs told about: the radio
+     * outcome is not known yet — it is what /api/v1/status reports as
+     * state/assoc_fails/wifi_reason. If the queue never came up (bring-up OOM)
+     * there is no radio task to hold the pair or commit it on a lease, so this
+     * degenerate path keeps the old write-first behaviour and does the radio work
+     * here rather than not do it at all. */
     if (!net_post_join(ssid, pass)) {
         ESP_LOGW(TAG, "join: no radio queue — applying from the httpd task");
+        creds_commit(ssid, pass);
         const esp_err_t e = net_apply_sta_config(ssid, pass);
         if (e != ESP_OK) ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
     }
@@ -4233,6 +4607,13 @@ esp_err_t orb_net_start(void)
                         TAG, "wifi handler");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL),
                         TAG, "ip handler");
+    /* Registered beside the STA's own lease handler rather than inside the AP
+     * bring-up: the SoftAP opens from three places (provisioning boot, rescue,
+     * manual), and the lease must be visible from whichever one a person at a
+     * wall actually used. */
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_AP_STAIPASSIGNED,
+                                                   on_ap_lease, NULL),
+                        TAG, "ap lease handler");
 
     char ssid[NET_SSID_MAX + 1] = "";
     char pass[NET_PASS_MAX + 1] = "";
@@ -4242,7 +4623,13 @@ esp_err_t orb_net_start(void)
 
     s_sta_netif = esp_netif_create_default_wifi_sta();
 
-    if (ssid[0] != '\0') {
+    /* D4's guard reads exactly like the branch it guards: "credentials exist"
+     * means nothing more than "this boot would have taken the STA path". Anything
+     * that forces the provisioning branch anyway (the RTC intent flag of D2, or a
+     * bench build that inverts this condition) is by definition a recovery session
+     * with a network to go back to, and gets the deadline. */
+    const bool creds_in_flash = (ssid[0] != '\0');
+    if (creds_in_flash) {
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     } else {
 #if CONFIG_ORB_NET_AP_FALLBACK
@@ -4250,6 +4637,20 @@ esp_err_t orb_net_start(void)
          * 466x466 panel is too small and glossy to render a scannable QR, so
          * pairing is by joining this AP from a phone instead. */
         s_provisioning = true;
+        /* Latch the session kind here, once, where the decision is actually
+         * derivable. The deadline itself is armed later in this function — the
+         * timer handle does not exist yet at this point. A factory boot takes this
+         * branch precisely because creds_in_flash is false, so it stays as it has
+         * always been: AP open with no deadline, because there is nothing to fall
+         * back to and rebooting would return here. */
+        s_prov_recovery_session = creds_in_flash;
+#if CONFIG_ORB_NET_MDNS
+        /* Set before the AP comes up, so the very first announcement this boot
+         * can make already says "provisioning" rather than making item 5's
+         * browser show a factory-fresh orb as an ordinary one until the next
+         * re-announce. */
+        orb_mdns_set_provisioning(true);
+#endif
         s_ap_netif     = esp_netif_create_default_wifi_ap();
 
         wifi_config_t ap;
@@ -4301,6 +4702,20 @@ esp_err_t orb_net_start(void)
         s_net_q = NULL;
     }
     stage_probe("post-nettask");
+
+    /* D4: the bounded sojourn, armed HERE and not in the provisioning branch
+     * above. That branch runs before esp_timer_create() gives s_ap_timer a handle
+     * and before the queue the expiry posts to exists, so arming there produced
+     * "prov sojourn timer does not exist" and the session ran with no deadline at
+     * all — invisible to every truth table in tools/host_tz_test.py, which pin the
+     * predicate and cannot see the call site. Bench 2026-10-13. */
+    if (sojourn_arms(s_prov_recovery_session, CONFIG_ORB_NET_PROV_SOJOURN_S)) {
+        arm_oneshot(s_ap_timer, CONFIG_ORB_NET_PROV_SOJOURN_S, "prov sojourn");
+        ESP_LOGW(TAG, "RECOVERY provisioning: credentials are stored but this boot "
+                      "was forced into provisioning, so the AP gives up in %d s and "
+                      "the stored network is retried",
+                 CONFIG_ORB_NET_PROV_SOJOURN_S);
+    }
 
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi_start");
     stage_probe("post-wifi_start");

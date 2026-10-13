@@ -271,7 +271,10 @@ func TestGrantsAcceptOnlyIPLiterals(t *testing.T) {
 	g2 := newIPGrants(ipGrantTTL)
 	g2.learn("10.1.1.1")
 	g2.mu.Lock()
-	g2.byIP["10.1.1.1"] = g2.byIP["10.1.1.1"].Add(-2 * ipGrantTTL)
+	stored := g2.byIP["10.1.1.1"]
+	stored.at = stored.at.Add(-2 * ipGrantTTL)
+	stored.since = stored.at
+	g2.byIP["10.1.1.1"] = stored
 	g2.mu.Unlock()
 	if g2.allowed("10.1.1.1") {
 		t.Error("a grant older than the TTL still authorized the dial")

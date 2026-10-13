@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "app/orb_app.c"
         "app/orb_app_manifest.c"
+        "app/orb_app_scan.c"
         "app/orb_carousel.c"
         "app/orb_jobs.c"
         "app/orb_svc.c"

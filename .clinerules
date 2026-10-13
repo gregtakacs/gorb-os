@@ -581,6 +581,13 @@ Two bench traps, both hit for real on this feature:
 - **Wait for the radio, do not sleep.** After a reset the association ladder costs
   ~5 s at −57 dBm; poll `/api/v1/status` until it answers or the first request of the
   walk times out and reads as a crash.
+- **A stalled HTTP body at rssi near −55 is the bench RF, not the firmware.** The
+  symptom: status line and headers arrive, body bytes never do; small bodies
+  (<1 KB) still complete. Hit for real on 2026-10-12 with the /apps listing: the
+  same hammer run failed `/themes` on a known-good image as badly as on the new
+  one (ok=2/20 control vs ok=0/20 suspect, rssi −55 both). Bisect the antenna
+  before bisecting the commit: run the identical walk against a previous image
+  and compare rates.
 
 It reaches only `input_router_request()`/`input_router_inject()`, cannot touch the
 card, radio or bootloader, and sits beside `/api/v1/reboot` and `/api/v1/ota`, which

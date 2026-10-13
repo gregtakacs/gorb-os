@@ -1486,8 +1486,7 @@ branch as it reads it, so one request equals exactly one provisioning boot.
 Rejected: an NVS key — it survives power cycles, which turns any lost-write race
 into a permanently AP-only device, the failure mode point 2 was trying to avoid.
 
-**D3. Credential write moves to lease time. This is the hazard that outvotes
-everything else in this file.**
+**D3. Credential write moves to lease time. DONE — `c103fba`.**
 Today `prov_reader_task` (serial PROV, write at `orb_net.c:2165`) and
 `h_wifi_join` (config page, write at `orb_net.c:2468`) call `nvs_set_str` for ssid and pass BEFORE any association exists. One mistyped
 passphrase therefore overwrites a working credential with a broken one, and the
@@ -1499,6 +1498,28 @@ in `s_net_q`'s message and a static RAM copy only; `nvs_set_str` runs from
 A failed session then leaves flash untouched and the reboot resumes the old
 network. The page must show "verifying" during the window, and must be told
 plainly that a refusal leaves the previous network in force.
+
+**As built (`c103fba`, 2026-10-13).** The pair waits in a net-task-owned pending
+buffer (`s_pend_ssid`/`s_pend_pass`), set inside `NET_CMD_JOIN` and consumed by
+the new `NET_CMD_STORE_CREDS`, which `on_ip()` posts only when
+`lease_verifies_creds(pending, join_intent)` holds. `creds_commit()` is the sole
+remaining writer of `ssid`/`pass`, so the invariant is one function, four call
+sites fewer than the draft assumed. Two departures from the draft, both
+deliberate: the timezone still writes at submit time (validated in full, cannot
+lock anyone out, fixable from the LAN), and the no-queue fallback keeps
+write-first, because with no radio task nothing exists to defer to and a lost
+credential beats a lost join.
+
+Bench proof, the exact sequence that cost the device earlier today: wrong
+passphrase submitted over the config page, `storage` (0xD60000) dumped after,
+md5 identical to the pre-test dump, and the orb rejoined its real network 5.2 s
+after the next boot. Pinned by seven new host rows (`lease_verifies_creds` four,
+`creds_erase_key` three, including NULL and empty-string).
+
+**Consequence for D4.** This is what makes the bounded sojourn safe: rebooting
+out of a failed recovery session now resumes a credential the session could not
+destroy. D4 remains the last item that can strand a device, and it is now
+downgrade-free to build.
 
 **D4. Bounded sojourn, and the reboot-loop hazard that comes with it.**
 A provisioning boot that carries credentials arms the existing `s_ap_timer`
@@ -1522,8 +1543,8 @@ trigger that works when the network is gone and no phone is on the LAN, and the
 orb is wall-powered with the knob behind a closed case — so implement it, then
 decide whether the case needs a hole. Do not describe it as existing until it is.
 
-**Build order.** (1) D3, credential write at lease — smallest diff, removes the
-data-loss risk that makes every later experiment dangerous. (2) D4 sojourn +
+**Build order.** (1) D3, credential write at lease — **done, `c103fba`**.
+(2) D4 sojourn +
 credential-present guard. (3) D2 RTC flag. (4) boot-branch check of the flag
 (the one-line condition the bench build already proved). (5) D5 knob sample.
 (6) hub-side intent state. Ship nothing before (1).

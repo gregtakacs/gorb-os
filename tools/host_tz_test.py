@@ -91,6 +91,26 @@ si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}"
 # from every direction so a future edit cannot drift them shut or open.
 moot_fn = lift(r"static bool connect_attempt_is_moot\(bool[^;]*?return[^;]*;\n\}")
 drop_fn = lift(r"static bool lease_watch_should_drop\(bool[^;]*?return[^;]*;\n\}")
+# The join-intent guard added 2026-10-13 after a bench join with a wrong
+# passphrase produced auth-fail and then silence: the ladder, the failure counter,
+# the rescue and the AP timeout all sit behind a STA_DISCONNECTED event that
+# `if (s_provisioning) break;` discarded. The discriminator is now join intent, so
+# the composition is pinned here — the two tables below only see its result.
+pidle_fn = lift(r"static bool prov_ap_idle\(bool[^;]*?return[^;]*;\n\}")
+# The lease-gated credential write (D3, 2026-10-13). Both doors used to
+# nvs_set_str() the instant the form was accepted, so one mistyped passphrase
+# overwrote a working credential and took the orb off its network. The write now
+# waits for a lease, and two pure decisions gate it: whether THIS lease authorises
+# a write, and whether the pair is a passphrase or an open network (getting the
+# second wrong leaves a blank "pass" in flash that reads back as a credential).
+commit_fn = lift(r"static bool lease_verifies_creds\(bool[^;]*?return[^;]*;\n\}")
+erase_fn  = lift(r"static bool creds_erase_key\(const char \*pass\)\n\{[^}]*\}")
+# D4 (2026-10-13): the bounded sojourn's two decisions. sojourn_arms is the guard
+# against the reboot loop — a factory orb has no stored network to fall back to, so
+# arming for it would cycle forever; sojourn_reboots decides what a fired deadline
+# means, and it must not be confused with the lease-closes-the-AP path.
+arms_fn = lift(r"static bool sojourn_arms\(bool[^;]*?return[^;]*;\n\}")
+sojreboot_fn = lift(r"static bool sojourn_reboots\(bool[^;]*?return[^;]*;\n\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -258,6 +278,11 @@ harness = f"""
 {si_fn}
 {moot_fn}
 {drop_fn}
+{pidle_fn}
+{commit_fn}
+{erase_fn}
+{arms_fn}
+{sojreboot_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -341,6 +366,56 @@ static void drop_case(int assoc, int up, int prov, int want){{
     printf("%-5s lease_watch(assoc=%d up=%d prov=%d) -> %-5s (want %s)\\n",
            pass ? "ok" : "FAIL", assoc, up, prov,
            got ? "drop" : "hold", want ? "drop" : "hold");
+}}
+/* The third argument both tables above receive. Four rows, all of them load-
+ * bearing: (1,1) is the bug — a submitted join whose failure was discarded. */
+static void pidle_case(int prov, int join, int want){{
+    const bool got = prov_ap_idle(prov != 0, join != 0);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s prov_ap_idle(prov=%d joining=%d) -> %-4s (want %s)\\n",
+           pass ? "ok" : "FAIL", prov, join,
+           got ? "idle" : "runs", want ? "idle" : "runs");
+}}
+/* D3: does this lease authorise writing the pair to flash? */
+static void commit_case(int pend, int join, int want){{
+    const bool got = lease_verifies_creds(pend != 0, join != 0);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s lease_verifies_creds(pend=%d joining=%d) -> %-7s (want %s)\\n",
+           pass ? "ok" : "FAIL", pend, join,
+           got ? "STORE" : "no-write", want ? "STORE" : "no-write");
+}}
+/* D3: passphrase -> set the key; open network -> ERASE it. The empty-string and
+ * NULL rows are the ones that matter: both mean "no passphrase", and leaving a
+ * blank pass in flash instead of removing the key makes the next boot retry an
+ * enterprise association the AP never offered. */
+static void erase_case(const char *pass, int want){{
+    const bool got = creds_erase_key(pass);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s creds_erase_key(%s) -> %-5s (want %s)\\n",
+           ok ? "ok" : "FAIL",
+           pass ? (*pass ? "set" : "empty") : "NULL",
+           got ? "erase" : "set", want ? "erase" : "set");
+}}
+/* D4: does this provisioning boot own a deadline? */
+static void arms_case(int recovery, int secs, int want){{
+    const bool got = sojourn_arms(recovery != 0, secs);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s sojourn_arms(recovery=%d sojourn_s=%d) -> %-6s (want %s)\\n",
+           ok ? "ok" : "FAIL", recovery, secs,
+           got ? "ARMED" : "no-timer", want ? "ARMED" : "no-timer");
+}}
+/* D4: a deadline just fired. Reboot, or leave the AP alone? */
+static void sojreboot_case(int sta_up, int recovery, int want){{
+    const bool got = sojourn_reboots(sta_up != 0, recovery != 0);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s sojourn_reboots(sta_up=%d recovery=%d) -> %-6s (want %s)\\n",
+           ok ? "ok" : "FAIL", sta_up, recovery,
+           got ? "REBOOT" : "no-reboot", want ? "REBOOT" : "no-reboot");
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -509,9 +584,46 @@ int main(void)
     moot_case(0, 0, 0, 0);   /* genuinely quiet: the attempt must proceed */
     moot_case(1, 0, 0, 1);   /* the wedge window: connect must NOT fire */
     moot_case(0, 1, 0, 1);   /* lease held: moot */
-    moot_case(0, 0, 1, 1);   /* provisioning: moot */
+    moot_case(0, 0, 1, 1);   /* AP up with nothing submitted: moot */
     moot_case(1, 1, 0, 1); moot_case(1, 0, 1, 1);
     moot_case(0, 1, 1, 1); moot_case(1, 1, 1, 1);
+    /* And what feeds that third argument. (1,1) is the provisioning session whose
+     * failure must reach the ladder instead of the silence: the row that was
+     * previously unreachable because the raw flag stood in for this value. */
+    pidle_case(0, 0, 0);   /* ordinary boot, no join pending: not the AP-only case */
+    pidle_case(0, 1, 0);   /* ordinary boot, join in flight: ladder owns it */
+    pidle_case(1, 0, 1);   /* provisioning, nobody has submitted: leave it alone */
+    pidle_case(1, 1, 0);   /* provisioning AFTER a submission: the ladder must run */
+    puts("== D3: the lease gates the credential write ==");
+    /* The write that used to happen at submit time. Only (1,1) may touch flash:
+     * (1,0) is the boot-time auto-retry of what flash already holds, and (0,1) is
+     * a submission whose pair never got stored. A build that wrote on either alone
+     * is what let one mistyped passphrase take a working orb off its network. */
+    commit_case(0, 0, 0);
+    commit_case(1, 0, 0);
+    commit_case(0, 1, 0);
+    commit_case(1, 1, 1);
+    /* Set-vs-erase on an empty passphrase, the branch both doors used to spell
+     * inline. NULL is what an absent "pass" field arrives as over the serial door. */
+    erase_case("correct horse", 0);
+    erase_case("", 1);
+    erase_case(NULL, 1);
+    puts("== D4: the bounded sojourn, and the loop its guard prevents ==");
+    /* (0,600) is the row the whole guard exists for: a FACTORY boot — nothing in
+     * flash to fall back to — with a perfectly ordinary sojourn configured. Arm
+     * there and the orb reboots onto the same provisioning branch, re-arms, and
+     * cycles forever unattended. (1,0) is an operator disabling the exit. */
+    arms_case(0, 600, 0);
+    arms_case(0, 0, 0);
+    arms_case(1, 600, 1);
+    arms_case(1, 0, 0);
+    /* A fired deadline. (1,1) must NOT reboot: the lease arrived, so the session
+     * succeeded and the AP closes on the normal path. (0,0) is every ordinary AP
+     * expiry — rescue or manual — and stays the re-check it always was. */
+    sojreboot_case(0, 1, 1);
+    sojreboot_case(1, 1, 0);
+    sojreboot_case(0, 0, 0);
+    sojreboot_case(1, 0, 0);
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

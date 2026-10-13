@@ -22,6 +22,7 @@ idf_component_register(
         "art/art_bank.c"
         "art/orb_theme.c"
         "net/orb_net.c"
+        "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
         "sd/orb_files.c"
     INCLUDE_DIRS

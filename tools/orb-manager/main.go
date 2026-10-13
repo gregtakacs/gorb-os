@@ -1,11 +1,12 @@
 // Package main is the orb-manager server: a single static binary that serves
 // the hub UI, reverse-proxies the orb's on-device API to kill CORS, and drives
-// the native Go flasher. The orb's LAN address is learned from its own console
-// over USB (the provisioning lease, or the boot banner the flash captures) or
-// typed in by the operator — the hub never sweeps a subnet or sniffs ARP. End
-// users install nothing: the UI is embedded and the serial library is compiled
-// in. By default it opens in a chromeless Chromium app window (see window.go);
-// --no-window serves the same UI as a plain web app instead.
+// the native Go flasher. The orb's LAN address comes from its own console over
+// USB (the provisioning lease, or the boot banner the flash captures), from the
+// orb's own mDNS announcement (discover.go: listed, never dialled), or from the
+// operator. The hub never sweeps a subnet and never sniffs the neighbour table.
+// End users install nothing: the UI is embedded and the serial library is
+// compiled in. By default it opens in a chromeless Chromium app window (see
+// window.go); --no-window serves the same UI as a plain web app instead.
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -75,6 +77,11 @@ type Server struct {
 	// grants are the orb addresses the proxy is willing to dial. Empty means the
 	// hub reaches nothing off the box.
 	grants *ipGrants
+	// fleet is who the hub believes is behind those addresses: {mac, name, room},
+	// keyed on the chip and never on the lease. It is consulted before a dial, not
+	// instead of one — the grant still decides whether an address may be reached at
+	// all, and the fleet only ever takes a dial away (see mayDial).
+	fleet *orbfleet.Store
 	// orbIP mirrors the address the onboarding flow last learned, so the status
 	// probe has a default target before the browser supplies one. It is a UI
 	// convenience: the proxy decides with grants, never with this field.
@@ -86,6 +93,17 @@ type Server struct {
 	statePath string
 	stateErr  error
 	pmu       sync.Mutex
+
+	// browse is the _orb._tcp discovery cache, started by main and not by newHub:
+	// the suite builds servers by the dozen, and one of them holding UDP 5353 makes
+	// the next one's bind a coin flip. dmu guards it and nothing else, because the
+	// browse runs on its own goroutine against a Server that is otherwise single-
+	// gowned-per-field.
+	dmu          sync.Mutex
+	browse       discovery
+	browseErr    string
+	browseAskErr string
+	browseIfaces []string
 
 	// boots holds the verdicts the flash session read off the boot console while
 	// it held the port across its own HardReset, keyed by the chip MAC. /api/watch
@@ -224,6 +242,14 @@ func main() {
 	} else if s.stateErr != nil {
 		log.Printf("orb-manager: orb address history unavailable (%v); starting with none remembered", s.stateErr)
 	}
+
+	// Discovery starts before the first request is served, so the Manage card has
+	// something to show on the open-orb path and the operator never types an
+	// address the LAN already announced. A failure here is a line in the log and an
+	// empty list with a reason: the hub still flashes, still themes, still manages.
+	browseCtx, stopBrowse := context.WithCancel(context.Background())
+	defer stopBrowse()
+	s.startBrowse(browseCtx)
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -431,6 +457,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
 	mux.Handle("/api/orb/forget", s.requireControl(http.HandlerFunc(s.handleForgetIP)))
 	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
+
+	// Discovery. The list is a read of what the hub overheard, so it is unguarded
+	// like /api/ports; asking the LAN again is an outbound action, so it carries a
+	// token like everything else that sends something. Neither one dials: the
+	// candidate list is not a dial queue, and the proxy still decides with grants.
+	mux.HandleFunc("/api/orbs", s.handleDiscovered)
+	mux.Handle("/api/orbs/ask", s.requireControl(http.HandlerFunc(s.handleBrowseNow)))
+
+	// The fleet: who the hub thinks is behind the addresses it will dial. The read is
+	// unguarded like the candidate list; the writes change what a later credential is
+	// keyed to, so they carry the token and the origin check.
+	mux.HandleFunc("/api/fleet", s.handleFleet)
+	mux.Handle("/api/fleet/set", s.requireControl(http.HandlerFunc(s.handleFleetSet)))
+	mux.Handle("/api/fleet/forget", s.requireControl(http.HandlerFunc(s.handleFleetForget)))
 
 	// Theme management for the Manage card. Each of these dials the orb itself, so
 	// each passes the same learned-address gate the proxy uses, and each names a

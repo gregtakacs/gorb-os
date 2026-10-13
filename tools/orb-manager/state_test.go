@@ -114,6 +114,16 @@ func TestStateSaveFailureKeepsTheOldFile(t *testing.T) {
 		t.Skipf("cannot make the directory read-only on this platform: %v", err)
 	}
 	defer os.Chmod(dir, 0o700)
+	// Chmod returning nil does not mean the directory rejects writes. Windows
+	// accepts the call and enforces nothing, so the save below would succeed and
+	// this test would report a broken save path that is only unreachable. Probe
+	// for the denial instead of trusting the call, and skip where it cannot be had.
+	probe := filepath.Join(dir, "write-probe")
+	err = os.WriteFile(probe, []byte("x"), 0o600)
+	os.Remove(probe)
+	if err == nil {
+		t.Skip("this platform's file modes do not deny writes to the directory: a save cannot be made to fail here")
+	}
 
 	s.grants.learn("10.8.8.8")
 	s.saveState()

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 )
 
 // The local HTTP surface: who may ask the hub to act, and where the hub is willing
@@ -155,26 +157,103 @@ func reject(w http.ResponseWriter, r *http.Request, code int, format string, arg
 // one the operator committed to in the Manage card. Without it the hub is an open
 // SSRF pivot out of 127.0.0.1: any LAN host, and any cloud metadata address,
 // dialable by any page the browser happens to visit.
+//
+// A grant may also carry the MAC it was committed FOR. That is item 6's cross-lock:
+// "dial 192.168.2.31" and "dial the orb whose chip is 44bd8d782618" are one request
+// when they agree and a security hole when they do not, because the address is a
+// lease from a DHCP pool and the MAC is the board. A grant with no MAC is the older,
+// weaker kind — the operator typed an address and the hub cannot cross-check it — and
+// it is labelled as such on the card rather than being silently upgraded.
 type ipGrants struct {
-	mu   sync.Mutex
-	byIP map[string]time.Time
-	ttl  time.Duration
+	mu      sync.Mutex
+	byIP    map[string]grant
+	ttl     time.Duration
+	ceiling time.Duration
+}
+
+// grant is one remembered address. at is what the TTL measures from, and since is
+// when the commitment first happened, which the renewal cannot move: an orb that
+// announces forever must still be re-confirmed by a human eventually.
+type grant struct {
+	at    time.Time
+	since time.Time
+	mac   string // canonical 12-hex, or "" for a grant nobody cross-locked
 }
 
 func newIPGrants(ttl time.Duration) *ipGrants {
-	return &ipGrants{byIP: map[string]time.Time{}, ttl: ttl}
+	return &ipGrants{byIP: map[string]grant{}, ttl: ttl, ceiling: grantCeiling}
 }
 
-// learn records an address the hub has legitimate business with. Only an IP literal
-// is admissible: a hostname would be resolved by the proxy's dial, which is exactly
-// the behaviour this set exists to exclude.
-func (g *ipGrants) learn(ip string) {
+// learn records an address the hub has legitimate business with, with no board
+// attached to it.
+func (g *ipGrants) learn(ip string) { g.learnAt(ip, "") }
+
+// learnAs records an address AND the board the operator meant to be there. The MAC is
+// canonicalized or dropped: a garbage MAC must not be stored as a binding, because
+// then nothing at that address could ever match it and the grant becomes undialable
+// forever. Losing the binding is the safe failure; the address itself still works.
+func (g *ipGrants) learnAs(ip, mac string) { g.learnAt(ip, mac) }
+
+func (g *ipGrants) learnAt(ip, mac string) {
 	if g == nil || net.ParseIP(ip) == nil || !strings.Contains(ip, ".") {
 		return
 	}
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		c = ""
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.byIP[ip] = time.Now()
+	now := time.Now()
+	prev, had := g.byIP[ip]
+	gr := grant{at: now, since: now, mac: c}
+	if had {
+		gr.since = prev.since
+	}
+	g.byIP[ip] = gr
+}
+
+// bound names the board a grant was committed for, or "" for an unbound one.
+func (g *ipGrants) bound(ip string) string {
+	if g == nil {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.byIP[ip].mac
+}
+
+// renew extends a grant because the board it was committed for is still announcing
+// itself at it. That is the whole of "liveness comes from announcements": an orb the
+// operator pointed at once does not fall off the hub mid-session. Only the committed
+// MAC renews its own grant, and only while the grant is still live: an mDNS MAC is
+// broadcast unsigned, so a repeat of it must not resurrect a decision a human already
+// let expire, or whoever seized the address could restore the dial by replaying it.
+func (g *ipGrants) renew(ip, mac string) bool {
+	if g == nil {
+		return false
+	}
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gr, ok := g.byIP[ip]
+	if !ok || gr.mac == "" || gr.mac != c {
+		return false
+	}
+	if g.ttl > 0 && time.Since(gr.at) > g.ttl {
+		delete(g.byIP, ip)
+		return false
+	}
+	if g.ceiling > 0 && !gr.since.IsZero() && time.Since(gr.since) > g.ceiling {
+		delete(g.byIP, ip)
+		return false
+	}
+	gr.at = time.Now()
+	g.byIP[ip] = gr
+	return true
 }
 
 func (g *ipGrants) allowed(ip string) bool {
@@ -186,11 +265,15 @@ func (g *ipGrants) allowed(ip string) bool {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	at, ok := g.byIP[ip]
+	gr, ok := g.byIP[ip]
 	if !ok {
 		return false
 	}
-	if g.ttl > 0 && time.Since(at) > g.ttl {
+	if g.ttl > 0 && time.Since(gr.at) > g.ttl {
+		delete(g.byIP, ip)
+		return false
+	}
+	if g.ceiling > 0 && !gr.since.IsZero() && time.Since(gr.since) > g.ceiling {
 		delete(g.byIP, ip)
 		return false
 	}
@@ -259,6 +342,11 @@ const (
 	proxyResponseCap = 8 << 20 // device body copied back to the browser
 	proxyRequestCap  = 4 << 20 // browser body forwarded to the device
 	ipGrantTTL       = 6 * time.Hour
+	// grantCeiling caps how far a live announcement stream may stretch a commitment,
+	// measured from the first time the operator committed. Without it an orb that
+	// announces forever holds a dial open on a decision made months ago; with the TTL
+	// alone an orb the operator uses every day falls off mid-afternoon.
+	grantCeiling = 30 * 24 * time.Hour
 )
 
 // routeAllowed reports whether path+method is a device route the hub will forward.
@@ -310,7 +398,8 @@ func (s *Server) handleAllowIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		IP string `json:"ip"`
+		IP  string `json:"ip"`
+		MAC string `json:"mac"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonErr(w, "bad request: "+err.Error())
@@ -321,10 +410,15 @@ func (s *Server) handleAllowIP(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, "not an IPv4 address: "+ip)
 		return
 	}
-	s.grants.learn(ip)
+	// The MAC is optional and it is not trusted: it is what the operator clicked, and
+	// the hub has no key that proves it. Recording it is what lets the cross-lock
+	// notice later that a DIFFERENT mac announced this address, and refuse. A typed
+	// address arrives with none and stays an unbound grant the card labels honestly.
+	s.grants.learnAs(ip, strings.TrimSpace(req.MAC))
 	s.setOrbIP(ip)
 	s.saveState()
-	s.jsonOK(w, map[string]any{"ip": ip, "allowed": true})
+	m := s.grants.bound(ip)
+	s.jsonOK(w, map[string]any{"ip": ip, "allowed": true, "mac": m, "bound": m != ""})
 }
 
 // handleForgetIP drops a remembered address, so an operator can take an orb out of

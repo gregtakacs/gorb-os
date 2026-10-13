@@ -16,15 +16,22 @@ silently tests a stale copy is worse than no suite.
 
 What is under test
 ------------------
-  page_rows()          the single authority for "how many rows exist"; armed and
-                       busy gating; the DISPLAY page and the preset picker, whose
-                       row count comes from the lifted s_to_preset table
-  go_back()            which row the cursor lands on when a sub-page is left, and
-                       from the timeout picker back to its parent at its own row
-  row_text()           the labels, including the damaged-theme row that must be
-                       shown rather than hidden, the current-zone marker, and the
-                       DISPLAY submenu's two rows (the dim switch reads the real
-                       enable, the timeout row reads the real seconds)
+  s_pages[]            the page table (P5.2): the single inventory of what each
+                       page IS - its count, labels, title, hint, press and back
+                       target - plus the structural lints over its text below
+  page_rows()          one line of that table plus the armed gate: the single
+                       authority for "how many rows exist"
+  activate()           the press, liftable for the first time: the back row and
+                       the top page's exit are answered before the page's act()
+                       hears about the press, and the press checks below run
+                       the shipped dispatcher instead of a counter
+  go_back()            which row the cursor lands on when a sub-page is left,
+                       read from the table: the parent's page row, or the
+                       ordinal function where the parent's list moves under it
+  label_*()            the labels, including the current-zone marker, the D19
+                       counts, and the DISPLAY submenu's two rows (the dim
+                       switch reads the real enable, the timeout row reads the
+                       real seconds)
   menu_view_apply_input  the cursor clamp: one detent = one row, no wrapping
   menu_view_service()  a worker result landing while the screen is disarmed must
                        NOT paint a list on the title card
@@ -79,13 +86,22 @@ def lift(text, pattern, where):
 # ---------------------------------------------------------------------------
 def lifts(src):
     """Return the (types, functions) spliced out of the given menu_view.c text."""
-    f_row = lift(src, r"static void row_text\(int row,[\s\S]*?\n\}\n\nstatic const char \*page_title", MENU_C)
-    f_row = f_row[:f_row.index("static const char *page_title")]
-    # The DISPLAY submenu's data, lifted rather than restated: which timeouts the
-    # picker offers IS the setting the owner chooses, so a hand-typed copy of the
-    # table would keep this suite green while the shipped menu offered something
-    # else. timeout_label is the same story one level up -- it is the row's claim
-    # about the value in force, and it must be the code that ships.
+    # The model block, whole: the page ids, the navigation contract, both
+    # structs, the table's linkage and the page cursor. One lift - the suite
+    # reads the same inventory the dispatcher does, so a rename that splits
+    # the two dies here at compile time instead of passing quietly against a
+    # restated copy.
+    model = lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?"
+                      r"#define TOP_EXIT [^\n]*", MENU_C)
+    # The prototypes the table's rows name. Lifted, not restated: a hook the
+    # shipped code renamed would otherwise compile against a harness-only
+    # declaration and test a function no longer wired to anything.
+    protos = lift(src, r"static int  rows_top\(void\);[\s\S]*?"
+                       r"static void activate\(void\);", MENU_C)
+    # The DISPLAY submenu's data, lifted rather than restated: which timeouts
+    # the picker offers IS the setting the owner chooses, so a hand-typed copy
+    # of the table would keep this suite green while the shipped menu offered
+    # something else. timeout_label is the same story one level up.
     presets = lift(src, r"typedef struct \{ uint32_t s; const char \*lbl; \} to_preset_t;\n"
                        r"static const to_preset_t s_to_preset\[\][\s\S]*?\n\};\n"
                        r"#define TO_PRESET_N[^\n]*", MENU_C)
@@ -94,43 +110,53 @@ def lifts(src):
         lift(src, r"static int app_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static const orb_app_t \*app_row\(int i\)\n\{[\s\S]*?\n\}", MENU_C),
         f_timeout,
-        # D12's shape predicates, lifted as a block: page_rows(), row_text() and
-        # apply_input()'s clamp all lean on them, and a harness that restated any
-        # one of them would keep passing while the shipped shell hid the wrong
-        # rows. The block is one lift because the functions are written together
-        # and die together.
+        # D12's shape predicates, lifted as a block: the app page's count and
+        # label lean on them, and a harness that restated any one of them
+        # would keep passing while the shipped shell hid the wrong rows.
         lift(src, r"static int owner_group\(int rows, int idx\)\n\{[\s\S]*?"
                    r"static void shape_check\(int rows\)\n\{[\s\S]*?\n\}", MENU_C),
-        lift(src, r"static int page_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
-        lift(src, r"static void go_back\(void\)\n\{[\s\S]*?\n\}", MENU_C),
-        # D12's press half: what a header does when it is pressed. Lifted on its own
-        # because it sits by activate(), which is not liftable (it paints). cursor_fit
-        # came along with the shape block above, and a second lift of it would be a
-        # redefinition.
+        # D12's press half: what a header does when it is pressed. The
+        # dispatcher reaches it through the app page's act(), so it stays in.
         lift(src, r"static bool group_press\(int rows, int ar\)\n\{[\s\S]*?\n\}", MENU_C),
-        f_row,
-        lift(src, r"static const char \*page_hint\(void\)\n\{[\s\S]*?\n\}", MENU_C),
-        lift(src, r"void menu_view_apply_input\(int32_t delta, bool pressed\)\n\{[\s\S]*?\n\}", MENU_C),
-        lift(src, r"void menu_view_service\(void\)\n\{[\s\S]*?\n    repaint\(\);\n\}", MENU_C),
-        # D12: the long press that closes an open group instead of going home. It
-        # touches no widget directly (repaint() is stubbed above), so it lifts.
-        lift(src, r"bool menu_view_opt_long\(void\)\n\{[\s\S]*?\n\}", MENU_C),
-        # D19: the worker's toggle and the pack it decodes, lifted whole — the
-        # pack is built by cap_pack(), which exists on its own precisely because
-        # activate() cannot be lifted and the shift arithmetic is the whole
-        # contract between a press and the NVS word it writes.
+        # D19's pack and worker, pinned on their own: cap_pack exists because
+        # the contract between a press and the NVS word it writes is the whole
+        # shift arithmetic, and it stays checked even now that the press
+        # itself lifts. It precedes the page block below because act_caps
+        # names it, and C reads top to bottom.
         lift(src, r"static int cap_pack\(const orb_app_t \*a, int row\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void job_grant\(void \*arg\)\n\{[\s\S]*?\n\}", MENU_C),
+        # The page block as one lift: the top sub-table, every count, label,
+        # title, hint, press, ordinal, enter and leave the table names, and
+        # the sub-table's helpers between them. They ship as one unit, and a
+        # lift that took half of them would compile a half-moved shell.
+        lift(src, r"static const menu_row_t s_top\[\][\s\S]*?"
+                   r"static void enter_to\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # The app page's entry, the generic move, the inventory itself, and
+        # the press: navigation is the shell and is now testable as such.
+        lift(src, r"static void open_app\(const orb_app_t \*a\)\n\{[\s\S]*?"
+                   r"static void activate\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # The four accessors the view calls, one lift: page_rows keeps the
+        # armed gate, row_text keeps the label clear, and the suite must see
+        # the shipped versions of both decisions.
+        lift(src, r"static int page_rows\(void\)[\s\S]*?"
+                   r"static const char \*page_hint\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        lift(src, r"void menu_view_set_armed\(bool armed\)\n\{[\s\S]*?\n\}", MENU_C),
+        lift(src, r"void menu_view_apply_input\(int32_t delta, bool pressed\)\n\{[\s\S]*?\n\}", MENU_C),
+        lift(src, r"void menu_view_service\(void\)\n\{[\s\S]*?\n    repaint\(\);\n\}", MENU_C),
+        # D12: the long press that closes an open group instead of going home.
+        # It touches no widget directly (repaint() is stubbed above), so it
+        # lifts; the router's half of the bargain is pinned in input_router.c.
+        lift(src, r"bool menu_view_opt_long\(void\)\n\{[\s\S]*?\n\}", MENU_C),
     ]
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
         presets,
-        lift(src, r"typedef enum \{\n    PG_LANDING[\s\S]*?\} page_t;", MENU_C),
-        lift(src, r"typedef enum \{ IT_AP[\s\S]*?\} top_item_t;", MENU_C),
+        model,
+        protos,
         # D19: the revocation ladder's state, the four caps, and the row
-        # helpers — one block, lifted ahead of the page functions that call into
-        # it. The orb_svc doors it reaches are declared by the real orb_svc.h
-        # the harness includes and stubbed below with the registry's.
+        # helpers - one block, lifted ahead of the page functions that call
+        # into it. The orb_svc doors it reaches are declared by the real
+        # orb_svc.h the harness includes and stubbed below with the registry's.
         lift(src, r"static int      s_perm_slot[\s\S]*?static bool perms_denied\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         "static const orb_app_t *s_app;   /* the app PG_APP is showing */",
         # The one piece of D12 state the shell owns: which group is open, -1 = none.
@@ -138,18 +164,32 @@ def lifts(src):
         "static bool s_busy;",
         "static bool orb_jobs_busy(void) { return s_busy; }",
         lift(src, r"typedef struct \{\n    char\s+status\[72\];[\s\S]*?\} ui_t;", MENU_C),
-        # The worker's answer half and the recorder it publishes through —
+        # The worker's answer half and the recorder it publishes through -
         # after the ui_t lift, which its signature reads.
         "static uint32_t g_decl[4], g_grnt[4], g_dmask[4];",
         "static int g_setg_calls, g_publish_calls, g_setg_slot, g_setg_on;",
         "static orb_cap_t g_setg_cap;",
-        "static esp_err_t g_setg_rc;",
         "static char g_pub_line[72];",
         "static const char *esp_err_to_name(esp_err_t e)"
         " { static char b[16]; snprintf(b, sizeof b, \"0x%x\", (unsigned)e); return b; }",
         "static void worker_publish(const ui_t *src)"
         " { g_publish_calls++; snprintf(g_pub_line, sizeof g_pub_line, \"%s\", src->status); }",
+        # The three jobs the shipped act_* functions post. job_post() itself is
+        # stubbed below, so these exist to make the pointers the lifted presses
+        # hand it real symbols; what they would do on a worker is the subject
+        # of the dedicated suites, not this one.
+        "static void job_tz(void *a) { (void)a; }",
+        "static void job_dim_en(void *a) { (void)a; }",
+        "static void job_dim_to(void *a) { (void)a; }",
+        # go_to's exit answer reaches through the public door; the harness
+        # declares it before the lifted dispatcher and defines the real one
+        # among the funcs, so a press on the exit row is testable. g_setg_rc
+        # rode the original consts block: the D19 toggle tests script the
+        # broker's answer with it and read the status lines back.
+        "void menu_view_set_armed(bool armed);",
+        "static esp_err_t g_setg_rc;",
     ]
+    return consts, funcs
     return consts, funcs
 
 # The app registry owns what the menu is registered IN: the carousel order, the
@@ -267,7 +307,8 @@ static int  s_painted_rows;      /* stamped by the stub below, read by the lifte
 static int  page_rows(void);     /* the lifted definition follows */
 static int  g_repaints;
 static void repaint(void) { g_repaints++; s_painted_rows = page_rows(); }
-static void input_router_home(void) { }
+static int  g_homes;               /* the press on the exit row lands here */
+static void input_router_home(void) { g_homes++; }
 
 /* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
  * settable globals, the way the zone list stubs orb_net: the menu must show the
@@ -290,10 +331,10 @@ static SemaphoreHandle_t s_res_mx;
 static int xSemaphoreTake(SemaphoreHandle_t m, unsigned t) { (void)m; (void)t; g_takes++; return 1; }
 static int xSemaphoreGive(SemaphoreHandle_t m) { (void)m; g_gives++; return 1; }
 
-/* activate() touches LVGL and the card, so it is not lifted; apply_input()'s
- * cursor half is, and this records that a press was routed to the action path. */
+/* The press lifts now — it reaches the card only through the stubs — and
+ * g_activations survives as the opt_sel recorder: the lifted app dispatcher
+ * below counts every press the shell hands its own app. */
 static int g_activations;
-static void activate(void) { g_activations++; }
 
 /* job_post() is stubbed below, after the shell's own state: the queue is
  * FreeRTOS, and what matters here is that the cursor moved (or did not), not
@@ -305,7 +346,6 @@ static int g_posted_pack, g_posts;
 
 __CONSTS__
 
-static page_t s_page = PG_LANDING;
 static bool   s_armed;
 static int    s_cur;
 static ui_t   s_ui;
@@ -481,21 +521,29 @@ int main(void)
     g_fake_app.installed = true; g_fake_app2.installed = true;
 
     /* ---- unarmed is a title card, not a list ---- */
-    s_armed = false; s_page = PG_LANDING; s_cur = 0; s_busy = false;
+    s_armed = false; s_pg = &s_pages[PG_LANDING]; s_cur = 0; s_busy = false;
     g_delta_down = knob_row_step(1);
     ck("unarmed has no rows", page_rows() == 0);
     turn_down(1);
     ck("unarmed ignores rotate", s_cur == 0);
     g_activations = 0;
     menu_view_apply_input(0, true);
-    /* The press is counted, not merely observed via s_cur: activate() is stubbed,
-     * so a check on s_cur alone would pass even if the armed guard were gone and
-     * the press had reached the action path. It is g_activations that makes
-     * "unarmed ignores press" actually pin that guard. */
-    ck("unarmed ignores press", g_activations == 0 && s_cur == 0 && s_page == PG_LANDING);
+    /* The press is observed, not merely counted: activate() lifts, so a press
+     * that leaked past the armed guard would reach the landing page's act() —
+     * which is NULL, and the two g_ counters make that visible instead of a
+     * counter that only existed to be incremented. */
+    g_posts = 0;
+    s_pg = &s_pages[PG_TZ];  /* a list left set behind a disarm: only the armed
+                              * guard in apply_input answers this, not the
+                              * landing's missing rows — activate() would post
+                              * the zone write straight through it. */
+    menu_view_apply_input(0, true);
+    ck("unarmed ignores press",
+       g_activations == 0 && g_posts == 0 && s_cur == 0 && s_pg == &s_pages[PG_TZ]);
+    s_pg = &s_pages[PG_LANDING];
 
     /* ---- armed top page ---- */
-    s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
     /* One fake app declaring two option rows, which is what earns it a line on
      * the top page. g_opt_n starts at 0 for the earlier unarmed checks. */
     g_opt_app_count = 1; g_opt_n = 2;
@@ -546,13 +594,66 @@ int main(void)
     menu_view_apply_input(0, false);
     ck("zero delta is not a move", s_cur == 1);
 
+    /* ---- presses, through the table ----
+     * The dispatcher lifted with the table, so the shell's navigation half is
+     * testable here for the first time: which page a row opens, which cursor
+     * it opens with, what the back row and the exit row do. Each answer used
+     * to be a switch arm only the bench could reach. */
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
+    g_homes = 0; g_posts = 0; g_arms = 0; g_activations = 0;
+    g_opt_n = 2; g_opt_app_count = 1; g_kind_hook = false;
+    s_cur = 1;
+    menu_view_apply_input(0, true);
+    ck("the TZ row opens the zone list ON the zone in force",
+       s_pg == &s_pages[PG_TZ] && s_cur == g_tz_current && g_tz_current == 1);
+    s_pg = &s_pages[PG_TOP]; s_cur = 2;
+    menu_view_apply_input(0, true);
+    ck("DISPLAY opens at its first row",
+       s_pg == &s_pages[PG_DISPLAY] && s_cur == 0);
+    s_cur = 1; g_dim_to = 600;
+    menu_view_apply_input(0, true);
+    ck("the timeout row opens the picker ON the preset in force",
+       s_pg == &s_pages[PG_TO] && s_cur == 3);
+    s_cur = 4;
+    menu_view_apply_input(0, true);
+    ck("choosing a preset posts the write and closes the picker",
+       g_posts == 1 && g_posted_fn == job_dim_to &&
+       s_pg == &s_pages[PG_DISPLAY] && s_cur == 1);
+    g_posts = 0;
+    s_pg = &s_pages[PG_TOP]; s_cur = 3;
+    menu_view_apply_input(0, true);
+    ck("PERMISSIONS opens the app list",
+       s_pg == &s_pages[PG_PERMS] && s_cur == 0);
+    s_pg = &s_pages[PG_TOP]; s_cur = 0;
+    menu_view_apply_input(0, true);
+    ck("the AP stub answers on the status line and stays put",
+       s_pg == &s_pages[PG_TOP] &&
+       !strcmp(s_ui.status, "AP needs a passphrase: use the web page"));
+    s_cur = top_os_rows();
+    menu_view_apply_input(0, true);
+    ck("an app row opens the app on its first option, group closed, knob armed",
+       s_pg == &s_pages[PG_APP] && s_cur == 0 && s_group_open == -1 && g_arms == 1);
+    menu_view_apply_input(0, true);
+    ck("a press on an option row reaches the app at its own row number",
+       g_activations == 1 && g_last_opt_sel == 0);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("back from the app lands on that app's own top row and disarms it",
+       s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows() && g_arms == 0);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("the last row of the top page closes the menu and goes home",
+       !s_armed && s_pg == &s_pages[PG_LANDING] && g_homes == 1);
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
+
     /* ---- D19: the permissions ladder ----
      * Declare-at-install is the grant, so these pages approve nothing: they
      * show what each app declared, what still runs after the owner's toggles,
      * and where an app has been refused for calling past its declaration. The
-     * shapes, strings and routing are lifted and pinned here; the press half
-     * that walks the dial is activate() and lives on the bench. */
-    s_armed = true; s_page = PG_TOP; s_cur = 0; s_busy = false;
+     * shapes, strings and routing are lifted and pinned here, and so is the
+     * press half now: the block under "presses, through the table" walks the
+     * same rows through the lifted dispatcher. */
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
     g_opt_app_count = 1; g_opt_n = 2;
     /* alpha asks for two caps, beta for one — the count a row shows is the
      * DECLARED set, not the four caps the page happens to list. */
@@ -563,25 +664,25 @@ int main(void)
        !strcmp(rowline(3), "PERMISSIONS"));
     g_dmask[0] = 1u << CAP_POWER;
     ck("an app refused past its declaration marks the top row",
-       (s_page = PG_TOP, !strcmp(rowline(3), "PERMISSIONS  *")));
+       (s_pg = &s_pages[PG_TOP], !strcmp(rowline(3), "PERMISSIONS  *")));
     g_dmask[0] = 0;
-    s_page = PG_PERMS; s_cur = 0;
+    s_pg = &s_pages[PG_PERMS]; s_cur = 0;
     ck("the app list counts against what each declared and filters out chrome",
        page_rows() == 3 && !strcmp(rowline(0), "Clock  (2 of 2)") &&
        !strcmp(rowline(1), "HSB  (1 of 1)") && !strcmp(rowline(2), "<- back"));
     g_grnt[0] = 0;                            /* the owner took both back */
     ck("revoked caps read as live-zero, not as never-declared",
-       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (0 of 2)")));
+       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(0), "Clock  (0 of 2)")));
     g_grnt[0] = g_decl[0];
     g_decl[0] = 0;                            /* an app that asked for nothing */
     ck("an app that declared nothing says so in words, not as a zero count",
-       (s_page = PG_PERMS, !strcmp(rowline(0), "Clock  (nothing declared)")));
+       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(0), "Clock  (nothing declared)")));
     g_decl[0] = (1u << CAP_POWER) | (1u << CAP_NET);
     g_dmask[1] = 1u << CAP_THEMES;
     ck("the refused app carries the mark into its own row too",
-       (s_page = PG_PERMS, !strcmp(rowline(1), "* HSB  (1 of 1)")));
+       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(1), "* HSB  (1 of 1)")));
     g_dmask[1] = 0;
-    s_page = PG_CAPS; s_perm_slot = 1; s_cur = 0;
+    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 1; s_cur = 0;
     ck("the cap page is the four owner caps plus back, never the free four",
        page_rows() == 5 && !strcmp(rowline(0), "power: not declared") &&
        !strcmp(rowline(1), "net: not declared") &&
@@ -589,12 +690,12 @@ int main(void)
        !strcmp(rowline(3), "themes: allowed") &&
        !strcmp(rowline(4), "<- back"));
     ck("a declared cap the owner has taken back reads revoked, not denied",
-       (s_page = PG_CAPS, s_perm_slot = 0, g_grnt[0] = (1u << CAP_NET),
+       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0, g_grnt[0] = (1u << CAP_NET),
         !strcmp(rowline(0), "power: revoked") &&
         !strcmp(rowline(1), "net: allowed")));
     g_dmask[0] = 1u << CAP_POWER;
     ck("the cap actually refused this boot is the one that carries the mark",
-       (s_page = PG_CAPS, s_perm_slot = 0,
+       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0,
         !strcmp(rowline(0), "power: revoked *") &&
         !strcmp(rowline(1), "net: allowed")));
     g_dmask[0] = 0; g_grnt[0] = g_decl[0];
@@ -603,19 +704,19 @@ int main(void)
                                          * undeclared one, and the mark belongs
                                          * there most of all */
     ck("the mark rides the undeclared row too, where the divergence actually shows",
-       (s_page = PG_CAPS, s_perm_slot = 0,
+       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0,
         !strcmp(rowline(3), "themes: not declared *")));
     g_dmask[0] = 0;
     ck("back from the cap page lands on the app's own row in the list",
-       (s_page = PG_CAPS, s_perm_slot = 1, go_back(),
-        s_page == PG_PERMS && s_cur == 1));
+       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 1, go_back(),
+        s_pg == &s_pages[PG_PERMS] && s_cur == 1));
     ck("back from the app list lands on the PERMISSIONS row",
-       (s_page = PG_PERMS, go_back(), s_page == PG_TOP && s_cur == IT_PERMS));
-    {   /* One press, one toggle. activate() is not liftable, so the pack the
-         * press builds is checked through the helper that builds it — and the
-         * routing is checked where it can be: the press must stay on the page
-         * rather than walk anywhere, because there is no confirm to reach. */
-        s_page = PG_CAPS; s_perm_slot = 0; s_cur = 3;
+       (s_pg = &s_pages[PG_PERMS], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 3 /* s_top[3] */));
+    {   /* One press, one toggle. The pack the press builds is checked through
+         * the helper that builds it — and the routing through the dispatcher
+         * itself: the press must post the grant and stay on the page rather
+         * than walk anywhere, because there is no confirm to reach. */
+        s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 3;
         g_grnt[0] = g_decl[0];
         ck("a revoked cap's press asks for the grant, naming this app and cap",
            cap_pack(FAKE_APP, 3) == ((0 << 9) | ((int)CAP_THEMES << 1) | 1));
@@ -635,17 +736,21 @@ int main(void)
                   if (((cap_pack(FAKE_APP, r) >> 1) & 0xFF) != w[r]) bad++;
               bad == 0; }));
         g_grnt[1] = g_decl[1]; g_grnt[0] = g_decl[0];
-        g_activations = 0;
+        g_posts = 0;
         menu_view_apply_input(0, true);
-        ck("the press routes to the action path and stays on the cap page",
-           g_activations == 1 && s_page == PG_CAPS && s_cur == 1);
+        ck("the press posts the grant and stays on the cap page",
+           g_posts == 1 && g_posted_fn == job_grant &&
+           s_pg == &s_pages[PG_CAPS] && s_cur == 1);
         /* The busy rule the whole menu shares: no press acts while the worker
          * is down, so a double-tap cannot queue two writes. */
-        s_busy = true; g_activations = 0; g_posts = 0;
+        s_busy = true; g_posts = 0;
         menu_view_apply_input(1, false);
         menu_view_apply_input(0, true);
+        /* Both witnesses are page-appropriate now: the caps press that this
+         * guard blocks would post, and only an app page could arm through
+         * opt_sel — so g_posts and the cursor are what a leak would move. */
         ck("a press while the worker is busy moves nothing and posts nothing",
-           g_activations == 0 && g_posts == 0 && s_cur == 1);
+           g_posts == 0 && s_cur == 1);
         s_busy = false;
     }
     {   /* The worker's answer half — lifted whole from the shipped file. */
@@ -687,18 +792,18 @@ int main(void)
     }
 
     /* ---- the 62-row zone list ---- */
-    s_page = PG_TZ; g_tz_count = 62; s_cur = 0;
+    s_pg = &s_pages[PG_TZ]; g_tz_count = 62; s_cur = 0;
     ck("tz list is zones + back row", page_rows() == 63);
     s_cur = 61;
     turn_down(1);
     ck("last zone reaches the back row", s_cur == 62);
     ck("back row says back",
-       (s_page = PG_TZ, !strcmp(rowline(62), "<- back")));
+       (s_pg = &s_pages[PG_TZ], !strcmp(rowline(62), "<- back")));
     ck("back from tz returns to TZ row",
-       (s_page = PG_TZ, go_back(), s_page == PG_TOP && s_cur == 1));
+       (s_pg = &s_pages[PG_TZ], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 1));
     ck("current zone is marked",
-       (s_page = PG_TZ, !strcmp(rowline(1), "New York  *")));
-    s_page = PG_TZ;
+       (s_pg = &s_pages[PG_TZ], !strcmp(rowline(1), "New York  *")));
+    s_pg = &s_pages[PG_TZ];
     ck("a non-current zone is not marked", !strcmp(rowline(2), "Chicago"));
 
     /* ---- the app options page, rendered from the registry ---- *
@@ -710,7 +815,7 @@ int main(void)
     /* The shell renders an app's rows without knowing what they mean (B1/B2).
      * g_opt_n/g_opt_v are the fake app's answers; the clock's real ones are
      * pinned against the shipped clock_themes.c in host_clock_opts_test.py. */
-    s_page = PG_APP; s_app = FAKE_APP; s_cur = 0; g_opt_n = 2;
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; g_opt_n = 2;
     snprintf(g_opt_label0, sizeof g_opt_label0, "diver"); snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
     snprintf(g_opt_label1, sizeof g_opt_label1, "neon");   g_opt_val1[0] = '\0';
     ck("an app row reads the app's label and value",
@@ -720,7 +825,7 @@ int main(void)
     ck("the shell counts the app's rows plus its own back row", page_rows() == 3);
     ck("the header is the app's own title", (s_app->title && !strcmp(s_app->title, "Clock")));
     ck("back from an app page returns to that app's row",
-       (s_page = PG_APP, go_back(), s_page == PG_TOP && s_cur == IT_OS_N));
+       (s_pg = &s_pages[PG_APP], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows()));
 
     /* ---- D12: one level of app-owned nesting, validated by the shell ----
      * The page is the clock's shape: a plain Factory default row, one GROUP
@@ -728,7 +833,7 @@ int main(void)
      * half — what gets drawn, where the cursor may go, and what the two
      * malformed shapes become — because the app that owns the answer must never
      * also own the owner's ability to reach a row. */
-    s_armed = true; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0;
+    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
     g_opt_n = 5; g_nkind = 5; g_kind_hook = true;
     g_kind[0] = OPT_ROW; g_kind[1] = OPT_GROUP;
     g_kind[2] = g_kind[3] = g_kind[4] = OPT_ITEM;
@@ -753,7 +858,7 @@ int main(void)
     ck("a valueless item is indented too", !strncmp(rowline(2), "  ", 2));
     snprintf(g_opt_val1, sizeof g_opt_val1, "1 of 3: meadow");
     ck("the hint names the gesture that leaves an open group",
-       (s_page = PG_APP, !strcmp(page_hint(), "rotate: choose   push: change   hold: close")));
+       (s_pg = &s_pages[PG_APP], !strcmp(page_hint(), "rotate: choose   push: change   hold: close")));
     s_cur = 2;
     for (int t = 0; t < 6; t++) turn_down(1);      /* one row per event, by design */
     ck("inside an open group the cursor clamps at its last item", s_cur == 4);
@@ -763,7 +868,7 @@ int main(void)
        row_to_vis(5, 2) == 2 && row_to_vis(5, 4) == 4 && row_to_vis(5, 1) == 1);
     s_cur = 3;
     ck("hold closes the group, stays on the page, and parks on the header",
-       menu_view_opt_long() && s_group_open == -1 && s_page == PG_APP && s_cur == 1);
+       menu_view_opt_long() && s_group_open == -1 && s_pg == &s_pages[PG_APP] && s_cur == 1);
     s_group_open = -1; s_cur = 0;
     ck("with nothing open the hold is the router's to spend on going home",
        !menu_view_opt_long());
@@ -794,7 +899,8 @@ int main(void)
        page_rows() == 5 && !row_hidden(4, 0) && !row_hidden(4, 3));
     for (int t = 0; t < 3; t++) turn_down(1);
     ck("and its cursor reaches the last row and the back row", s_cur == 3);
-    g_kind_hook = true; g_nkind = 0; g_opt_n = 2; s_group_open = -1; s_cur = 0;
+    g_kind_hook = true; g_nkind = 0; g_opt_n = 2; g_opt_app_count = 1;
+    s_group_open = -1; s_cur = 0;
 
     /* ---- the app's own scan landing must repaint the shell (B2 reachability) --
      * Entering the theme page posts the clock's card walk; that walk reaps in
@@ -804,7 +910,7 @@ int main(void)
      * the owner turned the knob. g_repaints is the witness: the count going up
      * with s_dirty clear is exactly the fixed behaviour, and deleting the
      * app_grew re-check from the shipped file drops it back to no repaint. */
-    g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; s_armed = true;
     s_dirty = false;
     repaint();                                 /* stamp the settled baseline */
     const int base_paints = g_repaints;
@@ -818,7 +924,7 @@ int main(void)
     g_opt_n = 2;
     /* Entered properly: the go_back() above left PG_TOP with s_app cleared, and
      * an app page that was never entered proves nothing about leaving one. */
-    g_opt_n = 0; s_page = PG_APP; s_app = FAKE_APP; s_cur = 0;
+    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
     ck("an app page whose app answers nothing still lets you out", page_rows() == 1);
     ck("that one row is the back row", !strcmp(rowline(0), "<- back"));
     g_opt_n = 2;
@@ -828,12 +934,12 @@ int main(void)
      * the theme page, so a cursor check there would pass even with apply_input's
      * own s_busy guard deleted. The zone page ignores s_busy, which leaves that
      * guard as the only thing holding the cursor — the only place it can be seen. */
-    s_page = PG_TZ; s_cur = 0; s_busy = true; g_tz_count = 62;
+    s_pg = &s_pages[PG_TZ]; s_cur = 0; s_busy = true; g_tz_count = 62;
     turn_down(1);
     ck("cursor frozen on the zone page while a job runs", s_cur == 0);
-    g_activations = 0;
+    g_posts = 0;
     menu_view_apply_input(0, true);
-    ck("press frozen too", g_activations == 0);
+    ck("press frozen too", g_posts == 0);
     s_busy = false;
     turn_down(1);
     ck("the cursor moves again once the job lands", s_cur == 1);
@@ -843,7 +949,7 @@ int main(void)
      * failure modes are invisible on a bench: a picker that marks the wrong preset
      * tells the owner a 10 minute timer is in force while the panel actually dims
      * after 45 seconds. */
-    s_page = PG_DISPLAY; s_cur = 0; g_dim_on = true; g_dim_to = 600;
+    s_pg = &s_pages[PG_DISPLAY]; s_cur = 0; g_dim_on = true; g_dim_to = 600;
     ck("display page has dim, timeout and back", page_rows() == 3);
     ck("the dim row reads the switch", !strcmp(rowline(0), "dim after idle:  on"));
     ck("the dim row follows the switch off",
@@ -855,11 +961,11 @@ int main(void)
     g_dim_to = 600;
     ck("the display page ends with back", !strcmp(rowline(2), "<- back"));
     ck("the display page offers push, not just rotate",
-       (s_page = PG_DISPLAY, !strcmp(page_hint(), "rotate: choose   push: change")));
+       (s_pg = &s_pages[PG_DISPLAY], !strcmp(page_hint(), "rotate: choose   push: change")));
     ck("back from display returns to the DISPLAY row",
-       (s_page = PG_DISPLAY, go_back(), s_page == PG_TOP && s_cur == IT_DISPLAY));
+       (s_pg = &s_pages[PG_DISPLAY], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 2 /* s_top[2] */));
 
-    s_page = PG_TO; s_cur = 0;
+    s_pg = &s_pages[PG_TO]; s_cur = 0;
     ck("the picker offers every preset plus back", page_rows() == TO_PRESET_N + 1);
     /* Rows that are not the current one, so the label is compared bare: the row in
      * force carries the "  *" mark and is pinned on its own below. */
@@ -873,25 +979,25 @@ int main(void)
     g_dim_to = 600;
     ck("the picker ends with back", !strcmp(rowline(TO_PRESET_N), "<- back"));
     ck("the picker page says what rotate and push do",
-       (s_page = PG_TO, !strcmp(page_hint(), "rotate: choose   push: set")));
+       (s_pg = &s_pages[PG_TO], !strcmp(page_hint(), "rotate: choose   push: set")));
     s_cur = TO_PRESET_N;
     turn_down(1);
     ck("the picker clamps at its back row", s_cur == TO_PRESET_N);
     ck("back from the picker lands on the timeout row, not the top page",
-       (s_page = PG_TO, go_back(), s_page == PG_DISPLAY && s_cur == 1));
+       (s_pg = &s_pages[PG_TO], go_back(), s_pg == &s_pages[PG_DISPLAY] && s_cur == 1));
 
     /* ---- a worker result landing while disarmed must NOT paint a list ---- */
-    s_armed = true; s_page = PG_TOP; s_cur = 0;
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
     memset(&s_shared, 0, sizeof s_shared);
     snprintf(s_shared.status, sizeof s_shared.status, "zone set: Europe/Budapest");
     s_dirty = true;
     s_armed = false;                       /* the user rotated away mid-job */
     menu_view_service();
     ck("a landing never becomes a list because a result landed", page_rows() == 0);
-    ck("the landing keeps its title", s_page == PG_TOP);
+    ck("the landing keeps its title", s_pg == &s_pages[PG_TOP]);
 
 
-    s_armed = true; s_page = PG_TOP; s_cur = 0;
+    s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
     memset(&s_shared, 0, sizeof s_shared);
     snprintf(s_shared.status, sizeof s_shared.status, "zone set: Europe/Budapest");
     s_dirty = true;
@@ -901,7 +1007,7 @@ int main(void)
      * page out from under an owner who had already scrolled elsewhere. Whether a
      * staged theme deserves a question is the clock's decision now; the shell's
      * job is to repaint and stay put. */
-    ck("armed, a landing result does not change the page", s_page == PG_TOP);
+    ck("armed, a landing result does not change the page", s_pg == &s_pages[PG_TOP]);
     ck("armed, the result line is taken from the worker",
        !strcmp(s_ui.status, "zone set: Europe/Budapest"));
 
@@ -1126,7 +1232,7 @@ MUTATIONS = [
     ("unarmed menu starts accepting input",
      "if (!s_armed) return;                    /* the router owns the knob here */", ""),
     ("a running job no longer freezes the cursor",
-     "    if (orb_jobs_busy()) return;\n\n    if (pressed)", "    if (0) return;\n\n    if (pressed)"),
+     "    if (orb_jobs_busy()) return;\n\n    if (pressed", "    if (0) return;\n\n    if (pressed)"),
     # The bug that made a theme page unreachable-but-not-obvious: the app's scan
     # lands with the menu's own worker idle, so a service() that repaints only on
     # s_dirty opens the page empty. Forcing that back must red the new check.
@@ -1134,19 +1240,21 @@ MUTATIONS = [
      "    const bool own_result = s_dirty;\n    if (!own_result && !app_grew) return;",
      "    const bool own_result = s_dirty;\n    (void)app_grew;\n    if (!own_result) return;"),
     ("page_rows forgets that unarmed means no list",
-     "if (!s_armed) return 0;", "if (0) return 0;"),
+     "static int page_rows(void) { return s_armed && s_pg->rows ? s_pg->rows() : 0; }",
+     "static int page_rows(void) { return s_pg->rows ? s_pg->rows() : 0; }"),
     ("the back row is dropped from the zone list",
-     "case PG_TZ:     return orb_net_tz_count() + 1;", "case PG_TZ:   return orb_net_tz_count();"),
+     "static int rows_tz(void)      { return orb_net_tz_count() + 1; }",
+     "static int rows_tz(void)      { return orb_net_tz_count(); }"),
     # The theme list's own rows left for the clock app (B2), so the two pins that
     # watched them now watch the shell's rendering of ANY app's answer: drop the
     # back row and the owner is trapped; drop the value and the page stops saying
     # which theme is on the dial. host_clock_opts_test.py pins the answers.
     ("the back row is dropped from the app options page",
-     "case PG_APP:    return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0;",
-     "case PG_APP:    return s_app ? visible_rows(orb_app_opt_count(s_app)) : 0;"),
+     "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0; }",
+     "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) : 0; }"),
     ("an app's value stops being rendered",
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n                      : orb_app_opt_value(s_app, ar);',
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n                      : NULL;'),
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : orb_app_opt_value(s_app, ar);',
+     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : NULL;'),
     # D12's own pins. Each is one way the shell can get its one level of nesting
     # wrong, and each must turn one of the shape checks above red.
     ("a closed group stops hiding its items",
@@ -1161,7 +1269,7 @@ MUTATIONS = [
      "                if (next > hi) next = hi;\n            }",
      "            if (0) { }"),
     ("the long press goes home instead of closing the group",
-     "    if (!s_armed || s_page != PG_APP || !s_app || s_group_open < 0) return false;",
+     "    if (!s_armed || s_pg != P(PG_APP) || !s_app || s_group_open < 0) return false;",
      "    return false;"),
     ("an open header loses the fact that it is open",
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"',
@@ -1171,9 +1279,39 @@ MUTATIONS = [
      'snprintf(out, outsz, "%s%s", "",'),
     ("the current zone stops being marked",
      "const bool cur = (row == orb_net_tz_current_index());", "const bool cur = false;"),
-    ("back from the zone list loses its cursor position",
-     "s_cur  = (from == PG_TZ)     ? IT_TZ\n           : (from == PG_DISPLAY)? IT_DISPLAY\n           : (from == PG_PERMS)  ? IT_PERMS\n           : 0;",
-     "s_cur  = (from == PG_TZ) ? 0 : (from == PG_DISPLAY) ? 0 : (from == PG_PERMS) ? 0 : 0;"),
+    # The table's own agreements, new to P5.2: where the old switch could drift
+    # from the row that used it, these are one initializer each — and each of
+    # these mutations says the old switch was right to fear.
+    ("back from the zone list opens the top page on the wrong row",
+     ".act = act_tz, .enter = enter_tz, .back_to = PG_TOP, .back_cur = 1 },",
+     ".act = act_tz, .enter = enter_tz, .back_to = PG_TOP, .back_cur = 0 },"),
+    ("back from DISPLAY opens the top page on the wrong row",
+     ".back_to = PG_TOP, .back_cur = 2 },",
+     ".back_to = PG_TOP, .back_cur = 0 },"),
+    ("back from the app list opens the top page on the wrong row",
+     ".act = act_perms, .back_to = PG_TOP, .back_cur = 3 },",
+     ".act = act_perms, .back_to = PG_TOP, .back_cur = 0 },"),
+    ("back from the app page loses its row in the dynamic run",
+     ".act = act_app, .open = open_app, .ordinal = ord_app,",
+     ".act = act_app, .open = open_app,"),
+    ("back from the caps page loses the app's row in the list",
+     ".hint = hint_caps, .act = act_caps, .ordinal = ord_caps,",
+     ".hint = hint_caps, .act = act_caps,"),
+    ("the app page is left with its app armed",
+     ".leave = leave_app, .back_to = PG_TOP, .back_cur = 0 },",
+     ".back_to = PG_TOP, .back_cur = 0 },"),
+    ("the top page's last row stops being exit",
+     ".act = act_top, .back_to = MENU_GO_EXIT },",
+     ".act = act_top, .back_to = MENU_GO_NONE },"),
+    ("the timeout row forgets the preset it opened on",
+     "        if (s_to_preset[i].s == cur) { s_cur = i; return; }",
+     "        if (s_to_preset[i].s == cur) { return; }"),
+    ("the zone list opens at row 0 instead of the zone",
+     "    s_cur = (c < 0) ? 0 : c;",
+     "    s_cur = 0;"),
+    ("the top page stops counting its dynamic rows",
+     "static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }",
+     "static int rows_top(void)     { return TOP_OS_N + 1; }"),
     ("a worker result paints a list onto the title card",
      "if (!s_armed) {\n        /* Rows are already blank", "if (0) {\n        /* Rows are already blank"),
     # Cross-file: the scan now lives in the clock app. Painting from the posted
@@ -1184,12 +1322,13 @@ MUTATIONS = [
      "        const int n = orb_theme_scan(out.e, THEME_MAX); lv_label_set_text(NULL, \"x\");",
      CT_C),
     # The DISPLAY submenu. Each of these is a way the two rows can lie about the
-    # setting they claim to show, which is exactly the failure nobody notices until
-    # the panel dims at the wrong time.
+    # setting they claim to show, which is exactly the failure nobody notices
+    # until the panel dims at the wrong time.
     ("the DISPLAY row drops off the top menu",
-     'case IT_DISPLAY: snprintf(out, outsz, "DISPLAY"); break;', ''),
+     '    { "DISPLAY",     PG_DISPLAY,     NULL },\n', ''),
     ("the DISPLAY page loses a row",
-     "case PG_DISPLAY:return 3;", "case PG_DISPLAY:return 2;"),
+     "static int rows_display(void) { return 3; }",
+     "static int rows_display(void) { return 2; }"),
     ("the dim row stops reading the switch it is showing",
      'idle_dim_enabled() ? "on" : "off"', 'true ? "on" : "off"'),
     ("the timeout preset in force stops being marked",
@@ -1199,13 +1338,16 @@ MUTATIONS = [
      'snprintf(out, outsz, "%lu s", (unsigned long)cur);',
      'snprintf(out, outsz, "%s", s_to_preset[0].lbl);'),
     ("the timeout picker loses its back row",
-     "case PG_TO:     return TO_PRESET_N + 1;", "case PG_TO:     return TO_PRESET_N;"),
+     "static int rows_to(void)      { return TO_PRESET_N + 1; }",
+     "static int rows_to(void)      { return TO_PRESET_N; }"),
     ("back from the picker loses its place in the parent",
-     "s_page = PG_DISPLAY;\n        s_cur  = 1;", "s_page = PG_DISPLAY;\n        s_cur  = 0;"),
+     ".act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 1 },",
+     ".act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 0 },"),
     ("a preset label drifts from what ships",
      '{   600, "10 min" },', '{   600, "10 minutes" },'),
     ("D19: the app list loses its back row",
-     "case PG_PERMS:  return perm_rows() + 1;", "case PG_PERMS:  return perm_rows();"),
+     "static int rows_perms(void)   { return perm_rows() + 1; }",
+     "static int rows_perms(void)   { return perm_rows(); }"),
     ("D19: the chrome filter flips and lists the shell as an app",
      "if (a && a->kind == ORB_APP_KIND_APP && a->installed) n++;",
      "if (a && a->installed) n++;"),
@@ -1225,9 +1367,10 @@ MUTATIONS = [
     ("D19: the refusal mark is detached from the mask it reads",
      "const bool ref = (orb_svc_denied_mask(a) & bit) != 0;",
      "const bool ref = false;"),
-    # The press builds the pack through cap_pack() now, so the two shifts that
+    # The press builds the pack through cap_pack(), so the two shifts that
     # decide which app and which cap the worker writes are pinned in the helper
-    # the suite lifts and calls directly.
+    # the suite lifts and calls directly — and the dispatcher that reaches it
+    # is pinned by the press checks above.
     ("D19: the toggle's slot field loses a shift and lands on another app",
      "return (orb_app_index_of(a) << 9) | ((int)cap << 1) | (on ? 1 : 0);",
      "return (orb_app_index_of(a) << 8) | ((int)cap << 1) | (on ? 1 : 0);"),
@@ -1243,7 +1386,6 @@ MUTATIONS = [
      "if (!a) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }",
      "if (false) { snprintf(out.status, sizeof out.status, \"that app is gone\"); worker_publish(&out); return; }"),
 ]
-
 
 def run_mutations():
     rc = 0
@@ -1333,6 +1475,48 @@ def main():
     check("picker gained the same two-level gate",
           "bool color_picker_armed(void)" in open(P("main", "color", "color_picker.c")).read()
           and "if (!s_armed) return;" in open(P("main", "color", "color_picker.c")).read())
+
+    # ---- P5.2: the table's shape, read as text --------------------------------
+    # The harness above proves the table DRIVES the real dispatcher; these prove
+    # it is still one table of the shape the dispatcher trusts, and that the
+    # switch model it replaced stays dead. They exist because the whole point of
+    # the refactor is that a new page is one entry — these fail the day someone
+    # starts a second way to say what a page is.
+    tcode = _code_only(menu_src)
+    check("the pages are exactly one table",
+          len(re.findall(r"s_pages\[PG_N\]\s*=\s*\{", tcode)) == 1)
+    entry_ids = re.findall(r"(?m)^\s*\[PG_(\w+)\]\s*=", tcode)
+    check("the table rows name every page id exactly once",
+          sorted(entry_ids) == sorted(["LANDING", "TOP", "TZ", "APP", "DISPLAY",
+                                       "TO", "PERMS", "CAPS"])
+          and len(entry_ids) == 8, ",".join(entry_ids))
+    _tparts = re.split(r"\[PG_(\w+)\]\s*=\s*\{",
+                       tcode[tcode.index("s_pages[PG_N] = {") + len("s_pages[PG_N] = {"):])
+    entries = dict(zip(_tparts[1::2], _tparts[2::2]))
+    def entry(pg):
+        body = entries.get(pg, "")
+        return body[:body.find("},")]
+    check("every page that can show rows says its count, its labels and its header",
+          all(".rows" in entry(p) and ".label" in entry(p) and ".title" in entry(p)
+              for p in entry_ids if p != "LANDING")
+          and ".rows" not in entry("LANDING"))
+    check("the ordinal answers only where the parent's list moves",
+          all((".ordinal" in entry(p)) == (p in ("APP", "CAPS"))
+              for p in entry_ids))
+    check("a leaving app page says how to leave it",
+          ".leave = leave_app" in entry("APP"))
+    check("back lands on the sub-table row the page was opened from",
+          ".back_cur = 1" in entry("TZ") and ".back_cur = 2" in entry("DISPLAY")
+          and ".back_cur = 3" in entry("PERMS"))
+    check("the top page's last row is exit", ".back_to = MENU_GO_EXIT" in entry("TOP"))
+    top_rows = re.search(r"menu_row_t s_top\[\] = \{([\s\S]*?)\n\};", menu_src)
+    labels = re.findall(r'\{\s*"([^"]+)"', top_rows.group(1)) if top_rows else []
+    check("the OS's top rows are AP, TZ, DISPLAY and PERMISSIONS — nothing else yet",
+          labels == ["AP", "TZ", "DISPLAY", "PERMISSIONS"], ",".join(labels))
+    check("the switch model stays dead",
+          "top_item_t" not in menu_src and re.search(r"\bs_page\b", menu_src) is None
+          and not re.search(r"\bcase PG_", tcode))
+
 
     print("all host checks pass" if not FAILS else "%d FAILED" % len(FAILS))
     return 1 if FAILS else 0

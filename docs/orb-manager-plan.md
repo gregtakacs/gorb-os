@@ -780,6 +780,45 @@ Still open, in priority order:
    The same 64 KB that broke provisioning is what the OTA failures (items 2/9) were
    tracing to, so this line is the cheapest lead on that problem too.
 
+**How provisioning ever worked at 64 KB — measured, and it corrects the block
+above.** A/B on the SAME forced-provisioning boot (bench hack taking the
+`ssid[0] != '\0'` branch at orb_net.c:3903, so NVS is untouched), map-verified
+LVGL array, IDF-default buffers, one variable:
+
+| LVGL pool | Result on a provisioning boot |
+|---|---|
+| 65536 | `post-wifi_start` free 15,715 / largest 7,936 / dma 8,211 → `E orb_net: httpd_start: ESP_ERR_HTTPD_TASK` → `E main: networking down - clock running without config page`. The field symptom, reproduced exactly. |
+| 24576 | server listening, DHCP server started, phone got a lease, scan list rendered. |
+
+The two paths differ structurally, which is why only one was ever broken:
+provisioning calls `esp_wifi_set_mode(WIFI_MODE_APSTA)` at orb_net.c:3934,
+BEFORE `esp_wifi_start()` at 3971, so the driver sizes its EB pool for AP+STA at
+init - no beacon block is retrofitted, no second AP_START. The config page and
+the rescue path promote on a driver already started in STA mode: a different
+allocation order, and the only one that ever Guru'd.
+
+**Correction:** at 64 KB + default buffers the CONNECTED late promotion works
+fine - HTTP 200 in 0.128 s, `option 114` logged, `SoftAP OPEN`, `DHCP server
+started`, zero `alloc eb`, zero Guru; the AP costs ~7.6 KB of internal free. The
+array did not starve that path. It starves the **provisioning boot**, where AP +
+DHCP server + captive DNS + mDNS-on-AP + the 4 KB provserial stack + the boot
+scan all coexist and httpd's task is the last thing that must fit.
+
+So why did it pair the fleet and then stop? The margin was hundreds of bytes.
+httpd's stack is 4,096 (esp_http_server.h:55); the failing boot's largest block
+was 7,936 with DHCP, captive DNS and mDNS still to come. Every feature that
+landed on the provisioning path after the fleet was paired took a slice: mDNS
+advertised on the AP interface (094fa22), the captive-DNS + option-114 work,
+PROVSCAN, provserial, the 15-handler route table. Nobody touched the WiFi code;
+the boot path simply stopped fitting - and `networking down` at boot is the
+signature of exactly that.
+
+Caution, recorded the hard way: two probe readings earlier today that I
+attributed to a 64 KB boot came from an image that was not map-verified and
+differed from the true one by exactly 40,960. Treat only map-verified heap
+readings as evidence. The same firmware also swings 39,575-48,071 internal free
+with device state, so one `heap_internal` sample is not a capacity claim.
+
 ---
 
 ## DESIGN NOTE (not built) — "Open AP" should REBOOT into provisioning

@@ -164,12 +164,17 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # LVGL's builtin heap: CONFIG_LV_USE_CLIB_MALLOC is off, so this is a STATIC
 # ARRAY in internal DRAM, not a malloc. At the 64 KB default it starved the
 # network stack enough to break phone provisioning outright -- httpd_start()
-# returned ESP_ERR_HTTPD_TASK (its 8 KB stack had nowhere contiguous to go), main
+# returned ESP_ERR_HTTPD_TASK (its 4,096 B stack, esp_http_server.h:55, had
+# nowhere contiguous to go once DHCP + captive DNS + mDNS-on-AP had taken their
+# slices; measured largest free block on that boot: 7,936), main
 # logged "networking down", the clock kept animating, and the config page simply
 # did not exist while the captive DNS sent phones to a closed port.
-# Measured on orb-B 2026-10-13, at the trim above: 47,051 B internal free /
-# 23,552 B largest block after boot at 24 KB, versus 20,623 / 7,168 at 64 KB.
-# Provisioning then served the menu and handed out a lease.
+# Measured on orb-B 2026-10-13 on a FORCED-PROVISIONING boot at IDF-default
+# buffers (map-verified array size): 24576 -> largest block 31,744, page serves,
+# lease handed out; 65536 -> largest block 7,936, httpd_start fails. Scope note:
+# a CONNECTED boot promotes the SoftAP fine even at 65536 (verified tonight:
+# OPEN + option 114 + DHCP started, zero alloc eb). Provisioning is the tight
+# path because the AP is already up by the time httpd starts.
 #
 # PROVENANCE: nobody chose 64 KB. It is LVGL's own default
 # (managed_components/lvgl__lvgl/Kconfig:112, `default 65536`), inherited silently

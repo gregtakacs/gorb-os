@@ -1347,16 +1347,17 @@ static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
     /* 1536, sized by readings taken on orb-B on 2026-10-12, not by estimates.
-     * A freshly booted board at 21de002 measured 1111 B over eight identical
-     * requests. The idle block was dimmed and its writes_failed field was
-     * present. Three ledger rows published, and no app had printed a status
-     * line. A board that has roamed measures more, because wifi_reason_name
-     * lengthens. Observed: 1115 B at auth-leave, 1116 B at assoc-leave. The
-     * longest name reason_name() returns is handshake-timeout at 17 B. That
-     * puts the ceiling near 1122 B before counter digits grow. Quote a range,
-     * never one number: the width tracks uptime. The frame grew from 512 through
-     * 640 and 960 as fields joined it. Every addition was re-measured with
-     * `curl -s ORB/api/v1/status | wc -c` rather than added up here.
+     * Ten identical requests at e85645e measured 1117 B, with three ledger rows
+     * published and no app status line printed. A board that had just booted read
+     * 1111 B, and 1115 B and 1116 B appeared between those. The spread comes from
+     * the fields themselves, not from noise: wifi_reason_name is a string out of
+     * reason_name(), and idle.dimmed prints true or false. The longest name that
+     * table offers is handshake-timeout at 17 B, 6 B beyond the assoc-leave seen
+     * here, and counter digit widths add a byte apiece. A realistic ceiling sits
+     * near 1123 B, which leaves about 410 B in this frame. Quote a range, never
+     * one number: the width tracks uptime and recent drops. The frame grew from
+     * 512 through 640 and 960 as fields joined it, and every addition was
+     * re-measured with `curl -s ORB/api/v1/status | wc -c`, never added up here.
      *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and those three rows filled 440 B of it. Two more rows fit at the

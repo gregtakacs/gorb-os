@@ -12,12 +12,23 @@
 //
 //	orbfake -addr 127.0.0.1:8099        # the orb's httpd listens on 80, so run
 //	                                    # the hub against this port instead.
+//	orbfake -advertise                  # also answer _orb._tcp over mDNS on 5353, so
+//	                                    # the hub's browse list and tools/bench/browse_mdns.py
+//	                                    # have something to find with no orb on a cable.
+//	                                    # It binds with SO_REUSEADDR, so a responder
+//	                                    # already on 5353 on this box is not a problem.
+//	                                    # -mdns-port moves the answer port off 5353;
+//	                                    # nothing but a browser told about the port can
+//	                                    # then find the fake, the hub included.
 package main
 
 import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
@@ -25,6 +36,13 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8099", "address to listen on")
+	advertise := flag.Bool("advertise", false,
+		"announce _orb._tcp over mDNS too, so a real browser (the hub, or tools/bench/browse_mdns.py) can find this fake without an orb on a cable")
+	mac := flag.String("mac", "44bd8d782618", "the 12 hex digits to announce and to serve from /api/v1/status; the instance name is derived from them as the firmware derives it")
+	staIP := flag.String("ip", "192.168.2.34", "the IPv4 to answer the A record with")
+	fw := flag.String("fw", "094fa22", "the fw= string; the status route reports the same value, one field two readers, as on the device")
+	port := flag.Int("mdns-port", 0, "UDP port to answer mDNS on; 0 takes the standard 5353, and an ephemeral one is what lets a second advertiser run beside avahi")
+	provisioning := flag.Bool("provisioning", false, "announce state=provisioning, the factory-reset shape item 10 depends on")
 	flag.Parse()
 
 	f := orbfake.New(
@@ -39,13 +57,69 @@ func main() {
 	// forever. The Go suite settles scans itself and never goes through this.
 	go emulateRadioTask(f)
 
-	state, mac, ip, _, _, _, _, _, _, _ := f.Device()
+	// The identity is set before either reader can see it — the status route and the
+	// advertiser take it from the same fields, which is the agreement Item 6's
+	// cross-lock exists to test. Setting it after the log line below is what made the
+	// startup line report a different MAC from the one on the wire.
+	f.SetAddress(*mac, *staIP)
+	f.SetFirmware(*fw)
+	f.SetSTA(true)
+	f.SetProvisioning(*provisioning)
+
+	state, gmac, ip, _, _, _, _, _, _, _ := f.Device()
 	log.Printf("orbfake listening on %s (card %s, %d themes, state=%s mac=%s ip=%s)",
-		*addr, f.Card, len(f.Themes()), state, mac, ip)
+		*addr, f.Card, len(f.Themes()), state, gmac, ip)
 	for _, t := range f.Themes() {
 		log.Printf("  %-20s id=%s ok=%t active=%t", t.Name, t.ID, t.OK, t.Active)
 	}
+
+	var adv *orbfake.Advertiser
+	if *advertise {
+		adv = f.Advertise(orbfake.AdvertiseConfig{ListenPort: *port})
+		if err := adv.Serve(); err != nil {
+			log.Fatalf("orbfake: advertise: %v", err)
+		}
+		// Serve returns once the burst is out; the responder keeps answering on its
+		// own goroutine. The totals are printed on the way out, where a browse
+		// actually has an answer to give.
+		log.Printf("orbfake advertising orb-%s._orb._tcp (mac=%s fw=%s) on udp/%d: announce burst sent, answers and goodbyes until stop",
+			macTail(*mac), *mac, *fw, orElseInt(*port, 5353))
+	}
+
+	// Ctrl-C (or the systemd stop) sends the TTL-0 flush before the process goes, so
+	// a hub that had this fake on its card drops it now rather than showing a phantom
+	// orb until the 120 s TTL expires, and prints the counters that answer "did the
+	// browser ever ask?" without guessing.
+	stopping := make(chan os.Signal, 1)
+	signal.Notify(stopping, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stopping
+		if adv != nil {
+			adv.Goodbye()
+			read, answered, broken, neighbours, why := adv.Stats()
+			log.Printf("orbfake mDNS totals: read=%d answered=%d broken=%d neighbours=%d last_defect=%q",
+				read, answered, broken, neighbours, why)
+			_ = adv.Close()
+		}
+		os.Exit(0)
+	}()
 	log.Fatal(http.ListenAndServe(*addr, f))
+}
+
+// macTail is the six digits the firmware builds the instance name out of, spelled
+// the same way in the log line as on the wire.
+func macTail(mac string) string {
+	if len(mac) < 6 {
+		return mac
+	}
+	return mac[len(mac)-6:]
+}
+
+func orElseInt(v, alt int) int {
+	if v == 0 {
+		return alt
+	}
+	return v
 }
 
 // emulateRadioTask settles a scan 600 ms after it is armed, which is the shape of

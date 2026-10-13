@@ -89,11 +89,14 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	// Phase B: the orb joined its stored network. Its address is known only from
 	// what the hub already read over USB — the lease the serial door captured
 	// (req.ip), or the "associated: config page at http://<ip>/" banner the flash
-	// logged during its own boot read (the boot verdict's ip). The hub does NOT
-	// hunt for it: no neighbour-table lookup, no /24 sweep, no mDNS. With no
-	// USB-learned address (e.g. a full flash whose boot banner was missed inside
-	// the window), it reports "no_ip" and the operator enters the address to
-	// manage the orb — rather than the tool guessing.
+	// logged during its own boot read (the boot verdict's ip). This path stays
+	// cable-only deliberately: no neighbour-table lookup, no /24 sweep, and the
+	// mDNS browse does not feed it either. A flash's verdict is worth what the
+	// chip said down the lead, not what a name on the LAN claimed about itself
+	// while the window was open. With no USB-learned address (e.g. a full flash
+	// whose boot banner was missed inside the window), it reports "no_ip" and the
+	// operator enters the address to manage the orb — rather than the tool
+	// guessing.
 	ip := strings.TrimSpace(req.IP)
 	source := "read off the USB console"
 	if ip == "" {

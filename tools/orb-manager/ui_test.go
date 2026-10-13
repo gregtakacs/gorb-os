@@ -58,6 +58,10 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
+		// Item 5's LAN list. Pinned by id for the same reason as the rest: a
+		// one-sided rename leaves the browse card rendering an empty <ul> forever
+		// and nothing else in the suite notices.
+		"mn-findcard", "mn-find", "mn-find-state", "mn-find-go", "mn-find-note",
 	} {
 		if !strings.Contains(page, `id="`+id+`"`) {
 			t.Errorf("index.html is missing #%s", id)
@@ -67,6 +71,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
+		"/api/orbs", "/api/orbs/ask", "function readFound",
 		"function startPolling", "function loadThemes", "function readConsole",
 	} {
 		if !strings.Contains(src, want) {

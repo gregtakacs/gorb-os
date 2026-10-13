@@ -610,7 +610,76 @@ form-encoded body rather than the JSON the endpoint parses, so it is corroborati
 and not a control. Item 5 must treat the AP-side announcement
 as unverified until a phone or a second radio browses `192.168.4.0/24`.
 
-| 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` | 3, 4 |
+| 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` — done; the card lists what announced itself, and dials none of it | 3, 4 |
+
+Item 5 shipped `internal/orbmdns` (a hand-parsed RFC 1035/6762 decoder, a
+per-interface browser, and the identity checks a candidate must pass), the
+`GET /api/orbs` card and its token-guarded `POST /api/orbs/ask`, the advertiser in
+`internal/orbfake`, and `tools/bench/browse_mdns.py` as the stranger's browser. The
+`/24` sweep and its `!sweep` ban came out with it: an announcement answered beats 254
+dials that must each be refused.
+
+What the bench settled, measured rather than reasoned:
+
+- Both sides of the socket had to leave `net.ListenMulticastUDP`. The stdlib sets no
+  `SO_REUSEADDR` before bind, so the hub lost `EADDRINUSE` to avahi and
+  systemd-resolved on the box the orb is browsed from, and it sets
+  `IP_MULTICAST_LOOP=0`, which makes a same-host browse unanswerable by construction —
+  the advertiser sends, the browser receives nothing, and the log reports a LAN with no
+  orbs. `internal/orbmdns/mcastsock_unix.go` and `internal/orbfake/mdnssock_unix.go`
+  set the options before bind through `net.ListenConfig`'s Control hook.
+- `IP_MULTICAST_IF` takes the local address in the `ip_mreq` struct's *first* word,
+  while `IP_ADD_MEMBERSHIP` reads that same word as the group and the interface from
+  the second. One struct, two opposite conventions: two values, one per option, or the
+  join is aimed at the source address and no membership is ever added.
+- `SO_REUSEPORT` is deliberately not set. It load-balances a multiply-bound group
+  port, which would hand each of the browser's own per-interface sockets a different
+  slice of one orb's four records and produce an orb with no address.
+- With those three decisions the loop closes on one host: `orbfake -advertise` and
+  python-zeroconf 0.151.5 agree on PTR, SRV `port=80 server=orb-782618.local`, TXT and
+  A on `192.168.2.48`, and the hub's own card listed the double
+  (`orb-782618 / 44bd8d782618 / 094fa22 / 192.168.2.34:80, ttl 120, dialable=false`)
+  while `refused` stayed empty on a LAN carrying roughly fifteen other mDNS speakers.
+- The advertiser's counters separate our defect from a neighbour's traffic, which is
+  the only reason the number is readable: `read=22 answered=2 broken=0 neighbours=20`
+  on that run. `broken` counts a packet we should have answered and did not;
+  `neighbours` counts traffic that was never ours, and a live LAN at `broken=0` is the
+  healthy state.
+- Two decoder defects surfaced only from bytes off the air, and both are pinned by
+  `testdata/mdns-neighbours-2026-10-12.json` (26 packets from five neighbour hosts,
+  captured with our own sockets excluded). The name walker moved the cursor to the end
+  of the bytes a pointer expanded instead of the end of the pointer field, so the next
+  record's TYPE was read from inside a name: Home Assistant's probes came back
+  "reserved label form 0x65" and a Chromecast's A/AAAA pair "RDLENGTH 28525 over the
+  bound". `decodeTXT` refused RFC 6762's zero-length character-string and RFC 6763's
+  flag string, and because a refused record takes its datagram with it, one iPad
+  filled the card with thirty refusals. Reverting either fix fails
+  `TestNeighbourStackTrafficIsParsedNotRefused`; the orb-level rules (a candidate whose
+  TXT carries no mac this instance can have) are untouched and still tested.
+- The provisioning AP is now exercised end-to-end off the air-free path:
+  `TestAnnounceNamesTheApAddressAndTheProvisioningState` walks the fake's SoftAP-only
+  announcement back out (A=192.168.4.1, `state=provisioning`, SRV port 80),
+  `TestAnswerToPicksTheAddressOfTheInterfaceTheQuerierUsed` pins the
+  querier-subnet-or-STA fallback, and
+  `TestProvisioningApRowIsLabelledAndNotDialable` feeds those bytes to the browser and
+  the card and requires provisioning set and `dialable=false`.
+
+§5.4's six documentation sites are rewritten in this item, since a browse makes every
+one of them a half-truth if they are left alone: `README.md`'s bench-discipline line
+and its "no LAN discovery" paragraph, `main.go`'s package comment, the Manage card's
+header in `web/app.js`, `watch.go`'s Phase B comment (which keeps its cable-only rule
+and now states why the browse does not feed it), and
+`internal/orbnet/client.go`'s timeout justification against a sweep that no longer
+exists. `TestDiscoveredAddressIsNotDialable` and `internal/orbmdns/imports_test.go`
+are what keep the rewrites from becoming a licence: the ban on sweeping stays in the
+code as well as in the prose.
+
+Two limits stay in the ledger. The AP half of item 4 is still unobserved on air from
+this bench — these tests prove the fake emits it and the browser reads it, not that a
+real orb does. And a hub-side `Ask` cannot be shown to originate multicast here: the
+card's `askError` reports it, and rows that appear unasked are marked
+`solicited=false` rather than passed off as answers to our question.
+
 | 6 | `feat(orb-manager): name, remember and cross-lock the fleet` | 1, 3, 5 |
 | 7 | `feat(orb-manager): merge onboarding into Manage as Add an orb` | 6 |
 | 8 | `feat(net): render the option registry as /api/v1/menu` | 1, 3, 6 |

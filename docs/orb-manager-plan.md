@@ -489,8 +489,18 @@ The owner types nothing.
   `esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP)` idiom (`orb_net.c:667`, `:2253`)
   into `h_status` would report base+1, miss every USB correlation by one in
   the last octet, and be invisible on this bench. `h_status` uses
-  `ESP_MAC_BASE`. The displayed SSID comes from the boot verdict
-  (`setBoot`, `main.go:127-147`), never recomputed in Go, so the
+  `ESP_MAC_BASE`, and that is now hardware-verified rather than read from
+  source: on orb-B the field returned `44bd8d782618`, equal to `esptool
+  read_mac` on that board, to the eFuse read taken through the native Go
+  flasher, and to the serial-number descriptor sysfs exposes for the same port
+  (`/sys/bus/usb/devices/1-2/serial`). That measured equality is what the hub
+  needs, and it makes the offset itself no longer load-bearing: whatever
+  SoftAP's address turns out to be, the field is the BASE the join keys use.
+  The AP name was not observed, only derived: `orb_net.c:671-672` formats it
+  from `ESP_MAC_WIFI_SOFTAP`, so with the documented base+1 it should read
+  `orb-2619` on that board while its base ends `2618`. Raise the AP once and
+  the derivation becomes an observation. The displayed SSID comes from the
+  boot verdict (`setBoot`, `main.go:127-147`), never recomputed in Go, so the
   `ap_fill_config` SSID builder (`orb_net.c:667-668`) stays the single source
   of the name.
 - **The image chip ID is at bytes 12-13, little-endian, 2 bytes.** Packed
@@ -499,7 +509,10 @@ The owner types nothing.
   0x0009` (`:23`). `s3ImageChipID = 9` (`commands.go:38`) was declared and
   never referenced: the flasher verifies the attach-time magic
   (`commands.go:205-216`) and so knows the chip is an S3, but never checks
-  what is about to be written to it.
+  what is about to be written to it. Exercised on hardware 2026-10-12: a
+  committed bundle with its app chip ID doctored from 9 to 2 was refused with
+  "built for the ESP32-S2 (chip ID 2)" before any write, and the same board
+  then accepted the untampered bundle through `Session()` and booted it.
 - **Headerless images are legitimate.** `partition-table.bin`, otadata, and
   `../assets/clock_assets.bin` carry no `0xE9` header. The gate skips them, as
   `patchBootloaderFlashParams` already does (`flash.go:67-69`). A gate that
@@ -507,9 +520,19 @@ The owner types nothing.
 - **`macNorm` (`watch.go:173-176`) is not enough.** It lowercases and maps
   `-`→`:`, but never collapses the separator-free hex a device emits, and lets
   an empty MAC equal an empty MAC. It must canonicalize and refuse empty.
-- **The 960 B status buffer needs re-measuring**, not estimating. The 650 B
-  figure in the `orb_net.c:1431` comment predates the fields added since; the
-  comment already instructs re-measuring off the device.
+- **The 960 B status buffer measured 668-669 B on the cable**, replacing the
+  650 B estimate the comment carried. The `mac` field costs a fixed 21 B,
+  counted off the wire. The figure wobbles a byte with the free-psram digit
+  count and six bytes with the width of `fw`, so it is measured per build and
+  never added up.
+- **`wifi_reason` outlives a successful connect.** Observed on orb-B
+  2026-10-12 after hard resets issued over the serial cable by esptool and by
+  the native Go flasher: `state: connected`, `assoc_fails: 0`, and still
+  `wifi_reason: 3` named `auth-leave`. It is the last disconnect code, not a
+  current failure. The device's own page labels it so (`orb_net.c:2973`,
+  "last reason"). Any hub wizard or pairing screen that surfaces it must repeat
+  that label and must never gate on it, or an orb that is healthy reads as
+  broken and an orb that is broken reads as healthy.
 - **LWIP_IGMP is forced to 1** (`components/lwip/port/include/lwipopts.h:474`),
   so the hand-rolled advertiser's multicast joins work in this build.
 - **Socket budget is 10** (`sdkconfig.defaults:68`): one mDNS socket with two

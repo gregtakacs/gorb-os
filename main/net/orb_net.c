@@ -1342,8 +1342,8 @@ static esp_err_t h_status(httpd_req_t *req)
      * "US/Central" (563 B before the idle block and the art residency fields); every
      * field added since then has to be re-measured off the device
      * (`curl -s ORB/api/v1/status | wc -c`) rather than estimated here, and 960 leaves
-     * room for that growth. Measured 669 B on the cable on 2026-10-12 on orb-B
-     * running a3e54ba, tz at "US/Central", with the idle block's writes_failed
+     * room for that growth. Measured 668-669 B on the cable on 2026-10-12 on orb-B
+     * running 87bee0c, tz at "US/Central", with the idle block's writes_failed
      * present. The figure moves with the counters and with the width of `fw`: the
      * same build carrying a -dirty stamp measured 674-676 B. That is why it is
      * measured and not added up. The `mac` field added 2026-10-12 costs a fixed

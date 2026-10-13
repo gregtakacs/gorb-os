@@ -91,6 +91,23 @@ type device struct {
 	// AP without one, and that refusal is the lockout guard worth having a double for.
 	StaUp  bool
 	APOpen bool
+	// ApIP is the SoftAP's own address while it is up. The firmware's responder
+	// hands a querier on 192.168.4.0/24 THAT address rather than the STA's
+	// (orb_mdns.c build_answer's subnet test), and it is the one half of item 4's
+	// join this bench cannot put on air — the AP never raises here, so
+	// WIFI_EVENT_AP_START never fires and the announcement it would send has never
+	// been seen. Hosting it in the fake is how the per-interface A record gets
+	// tested at all; it is not evidence about the device.
+	ApIP string
+	// FW is the version string both readers must agree on: h_status's fw and the
+	// TXT fw= the browser reads. One field, read twice, because two copies is how
+	// a fake device and a fake browser start agreeing with each other instead of
+	// with the orb. The device fills both from esp_app_get_description() once.
+	FW string
+	// Provisioning is orb_mdns_id_t.provisioning: the SoftAP is up and no lease
+	// has landed, which is item 10's factory-reset case and the reason the TXT
+	// carries a state at all.
+	Provisioning bool
 
 	// Rebooted counts accepted /api/v1/reboot calls.
 	Rebooted int
@@ -102,7 +119,10 @@ type device struct {
 func (o *Orb) deviceLocked() *device {
 	if o.dev == nil {
 		o.dev = &device{State: "connected", MAC: "a4cf12aa11bb", IP: "192.0.2.7",
-			RSSI: -52, TZ: "US/Eastern", TZOffset: 300, WifiReasonName: "OK",
+			// FW is the one place the fake's version lives: /api/v1/status and
+			// the TXT fw= both read it, so they cannot drift apart into the
+			// self-agreeing pair this package's doc comment was written against.
+			FW: "orbfake", RSSI: -52, TZ: "US/Eastern", TZOffset: 300, WifiReasonName: "OK",
 			Scanning: true,
 			Networks: []Net{{SSID: "lab-2g", RSSI: -47, Ch: 6, Open: false}}}
 	}
@@ -115,6 +135,37 @@ func (o *Orb) SetState(s string) { o.mu.Lock(); d := o.deviceLocked(); d.State =
 
 // SetSTA sets the lease bit that both h_wifi_ap's close path and h_status read.
 func (o *Orb) SetSTA(up bool) { o.mu.Lock(); d := o.deviceLocked(); d.StaUp = up; o.mu.Unlock() }
+
+// SetAddress sets the MAC and the address /api/v1/status reports, and so the
+// instance name the mDNS announcement derives from the same two facts. A test that
+// wants an orb whose browse row and status row agree sets them here, once; there is
+// deliberately no separate setter for the announcement's copy, because two setters
+// is two fields that can disagree.
+func (o *Orb) SetAddress(mac, ip string) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.MAC, d.IP = mac, ip
+	o.mu.Unlock()
+}
+
+// SetFirmware sets the version h_status reports as fw and the TXT fw= the browser
+// reads. One call, one field: a double whose announcement and status could carry
+// different versions is the double that hides a wrong stamp in one of them.
+func (o *Orb) SetFirmware(fw string) { o.mu.Lock(); o.deviceLocked().FW = fw; o.mu.Unlock() }
+
+// SetSoftAP raises or lowers the provisioning AP and the address it answers for.
+// The device derives both from the driver; a test names them.
+func (o *Orb) SetSoftAP(up bool, ip string) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.APOpen, d.ApIP = up, ip
+	o.mu.Unlock()
+}
+
+// SetProvisioning is orb_mdns_set_provisioning: the state= word of the
+// announcement, and the one thing that tells a hub a factory-reset orb from a
+// joined one without dialing an address no wired hub can route to.
+func (o *Orb) SetProvisioning(p bool) { o.mu.Lock(); o.deviceLocked().Provisioning = p; o.mu.Unlock() }
 
 // SetNetworks installs scan results and settles the scan, as scan_collect does.
 func (o *Orb) SetNetworks(nets ...Net) {
@@ -602,12 +653,16 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	state, mac, ip := d.State, d.MAC, d.IP
 	rssi, tz, offset := d.RSSI, d.TZ, d.TZOffset
 	reason, fails, ap := d.WifiReasonName, d.AssocFails, d.APOpen
+	fw := d.FW
+	if fw == "" {
+		fw = "orbfake"
+	}
 	if tz == "" {
 		tz, reason = "UTC", "OK"
 	}
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"`+state+`","ip":"`+ip+`","mac":"`+mac+
-		`","rssi":`+strconv.Itoa(rssi)+`,"fw":"orbfake","idf":"v5.4",`+
+		`","rssi":`+strconv.Itoa(rssi)+`,"fw":"`+fw+`","idf":"v5.4",`+
 		`"heap_internal":131072,"heap_internal_largest":65536,"heap_psram":2097152,`+
 		`"art_ready":true,"art_bytes":8388608,"art_pages":2048,"art_banks":8,"art_refusals":0,`+
 		`"slot":"a","img":"valid","synced":`+fmt.Sprint(state == "connected")+

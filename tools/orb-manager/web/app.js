@@ -636,9 +636,11 @@ $("#j-go").onclick = async () => {
 };
 
 // ---- manage ----------------------------------------------------------------
-// The hub discovers nothing. The operator points it at one orb by the IP that
-// USB provisioning reported (or one they look up on their router), and we dial
-// that single address through the same-origin proxy — no ARP table, no sweep.
+// The browse lists and this card dials: the two are separate on purpose. The
+// operator commits to one orb — by the IP the Find card offered, the one USB
+// provisioning reported, or one they look up on their router — and we dial that
+// single address through the same-origin proxy. A listing grants nothing; the
+// allow POST below is what does. No ARP table, no sweep.
 async function scan() {
   const list = $("#mn-list");
   const ip = $("#mn-ip").value.trim();
@@ -710,8 +712,78 @@ async function postOrb(ip, path, body, out) {
   } catch (e) { out.textContent += "\n\u2717 " + e.message; }
 }
 
+// ---- discovered orbs --------------------------------------------------------------
+//
+// The hub browses _orb._tcp and the hub alone: the page reads a server-side list and
+// never touches 5353, because a browser cannot and a page must not pick its own
+// targets. What that list may contain is what an orb announced — the instance name,
+// the TXT mac/fw/state and an A record. What it may not do is make any of them
+// reachable. Choosing a row fills the IP box the operator then loads, so the click
+// that authorises a dial stays a human one, exactly as it was when the only way to
+// get an address was to type it.
+//
+// Rows are built with createElement/textContent, never interpolated markup: an
+// instance name and a fw stamp arrive over UDP from a device on the LAN, which is the
+// same trust level as a theme name off an SD card, and the same rule applies.
+async function readFound() {
+  const list = $("#mn-find"), state = $("#mn-find-state"), note = $("#mn-find-note");
+  let d;
+  try {
+    const r = await fetch("/api/orbs");
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || ("HTTP " + r.status));
+    d = j.data;
+  } catch (e) {
+    state.textContent = "\u2717 browse unavailable: " + e.message;
+    return;
+  }
+  if (!d.listening) {
+    state.textContent = "no browse running here: " + (d.error || "unknown reason");
+    if (d.askError) note.textContent = "query: " + d.askError;
+    return;
+  }
+  list.textContent = "";
+  const orbs = d.orbs || [];
+  if (!orbs.length) {
+    state.textContent = d.askError
+      ? "nothing heard yet \u2014 this hub cannot originate multicast (" + d.askError + ")"
+      : "nothing heard in the last few seconds; reboot an orb or press Browse again";
+  } else {
+    state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced";
+  }
+  for (const o of orbs) {
+    const li = document.createElement("li");
+    li.className = "found";
+    const label = document.createElement("button");
+    label.className = "ghost found-pick";
+    label.textContent = [o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
+      o.state === "provisioning" ? "PROVISIONING" : o.state,
+      o.solicited ? "" : "unasked", o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
+    // An orb reachable only on its own SoftAP is dialable by nobody on the wired LAN,
+    // so the button says so instead of filling in an address the proxy must refuse.
+    label.disabled = !o.ip || (!!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0);
+    label.title = o.dialable
+      ? "already an address this hub dials"
+      : "fills the Orb IP box; the hub dials it only once you load it";
+    label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
+    li.appendChild(label);
+    list.appendChild(li);
+  }
+  for (const f of (d.refused || []).slice(-3).reverse()) {
+    const li = document.createElement("li");
+    li.className = "found refused";
+    li.textContent = "refused " + (f.name || "a packet") + ": " + f.reason;
+    list.appendChild(li);
+  }
+}
+
 $("#mn-scan").onclick = scan;
 $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
+$("#mn-find-go").onclick = () =>
+  hubFetch("/api/orbs/ask", { method: "POST" }).then(readFound).catch((e) => {
+    $("#mn-find-state").textContent = "\u2717 " + e.message;
+  });
+readFound();
 
 // ---- themes -----------------------------------------------------------------
 // Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.

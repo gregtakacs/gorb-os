@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,18 +56,28 @@ type Client struct {
 	DevicePort string
 }
 
+// DefaultPort is the port an orb's own httpd listens on: CONFIG_ORB_NET_HTTPD_PORT,
+// named once here so the hub's dial default, the browse's SRV port and the bench's
+// -orb-port override have one answer to point at. TestFirmwarePortIsWhatBothSidesSay
+// pins it against the firmware's Kconfig, because a browse that promises a port the
+// proxy never dials is a listing of orbs that cannot be managed.
+const DefaultPort = 80
+
 // Port is the dial port, defaulted. Every caller takes the port from here so there
 // is exactly one answer to "which port does the hub reach an orb on".
 func (c *Client) Port() string {
 	if c.DevicePort == "" {
-		return "80"
+		return strconv.Itoa(DefaultPort)
 	}
 	return c.DevicePort
 }
 
-// NewClient returns a client tuned for a flaky bench link: a per-request
-// timeout short enough that a dead host during a subnet sweep does not hang
-// the whole scan.
+// NewClient returns a client tuned for a flaky bench link: a per-request timeout
+// short enough that one orb which stopped answering — asleep, reflashed, or simply
+// gone after a DHCP rebind between the announcement that listed it and the dial —
+// fails its read in seconds instead of holding the card open until the OS gives up.
+// Every dial here is one address the hub was handed or overheard, so the timeout
+// bounds a single host, never a range.
 func NewClient(respTimeout time.Duration) *Client {
 	return &Client{h: &http.Client{
 		Timeout: respTimeout,

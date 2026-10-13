@@ -10,9 +10,9 @@ a browser tab.
 It lives at `tools/orb-manager/` inside the gorb-os clone and drives the same
 native flasher as the bash/Python bench tools (`tools/serflash.sh`), but it
 deliberately drops their shared-bench discipline: no `.orb-target` device
-binding, no `orb_bind` MAC/IP gate, no ARP or subnet discovery. A user owns the
-orb on the cable they picked; the hub reaches it over USB or an address they
-give it.
+binding, no `orb_bind` MAC/IP gate, no ARP table and no subnet sweep. A user owns the
+orb on the cable they picked; the hub reaches it over USB, over an address they
+give it, or over the address the orb announced itself.
 
 ## Why no esptool
 
@@ -82,13 +82,17 @@ that protect the *operation*, not the operator's identity:
    LAN address used to be enough on its own; now `-allow-remote` is also required,
    and the exposure is logged. The token still guards the mutating routes either way.
 
-The hub does no LAN discovery. It never reads the ARP/neighbour table, never
-shells out to `arp`/`arping`, and never sweeps a subnet. An orb's address is
-known only from what the hub already read over its USB console — the lease the
-provisioning door captured, or the association banner the flash logged — or from
-an IP the operator types, which the Manage card registers with the hub before the
-proxy will dial it. Every network call the hub makes is a dial to one address it
-was handed, through the same-origin proxy.
+The hub never sweeps a subnet. It never reads the ARP/neighbour table, never
+shells out to `arp`/`arping`, and never dials a range hoping one address answers.
+An orb's address comes from one of three places: what the hub already read over
+its USB console — the lease the provisioning door captured, or the association
+banner the flash logged — an IP the operator types, or the orb's own mDNS
+announcement, which `internal/orbmdns` listens for on `_orb._tcp.local`. The
+announcement fills the Find card's list and nothing else. A listed address is not
+reachable: the proxy dials only addresses the operator committed to, and the card
+says so per row (`dialable` reads the allowlist, it does not request an entry).
+Every network call the hub makes is a dial to one address it was handed, through
+the same-origin proxy.
 
 For an operator who wants an extra identity check before a headless flash,
 `orbflash -mac aa:bb:...` reads the chip's eFuse MAC and refuses on mismatch.
@@ -463,6 +467,9 @@ state.go             remembered orb addresses (state.json under the OS config di
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
+discover.go          the mDNS browse: candidate list, GET /api/orbs, POST /api/orbs/ask.
+                     It listens and lists; a listing never dials and never grants, and
+                     internal/orbmdns cannot import an HTTP client to make it otherwise
 composer.go          serves the repo's watch-composer at /composer/, and the vendored
                      React/Babel/fonts offline copies at /composer/vendor/
 cmd/orbflash/        headless face of the same flasher
@@ -477,14 +484,35 @@ cmd/orbprobe/        headless "what is on this cable", same probe the Identify b
 internal/orbbind/    per-port exclusive lock (LockPort): flock on Unix, an
                      unshared CreateFile handle on Windows
 internal/orbnet/     single-orb status client (no sweep, no ARP), and the device theme API
-internal/orbfake/    the theme/console device double, written from main/net/orb_net.c. Both
-                     the Go suite and cmd/orbfake run this one copy. Keep it that way: the
+internal/orbmdns/    the hub's side of the browse: a strict RFC 1035/6762 decoder, one
+                     multicast socket per eligible interface, and the identity checks a
+                     candidate must pass before it is listed. It imports no HTTP client,
+                     no orbnet and no orbfake — imports_test.go parses its own import
+                     declarations to keep that true, because a browser that could dial
+                     turns a listing into an SSRF pivot. Its socket is built with raw
+                     setsockopt, not net.ListenMulticastUDP: the stdlib sets no
+                     SO_REUSEADDR before bind (so avahi and systemd-resolved cost it the
+                     port) and forces IP_MULTICAST_LOOP off (so a same-host browse can
+                     never be answered). It also keeps its own copy of the 12-hex id and
+                     instance-derivation rules rather than importing orbnet's.
+internal/orbfake/    the theme/console/mDNS device double: the HTTP and SSE half is
+                     written from main/net/orb_net.c and the advertiser from
+                     main/net/orb_mdns.c, each against that file's bytes rather than
+                     against this repo's reader. Both the Go suite and cmd/orbfake run
+                     this one copy. Keep it that way: the
                      first double was transcribed from the hub's own client, so it answered
                      ?name=, agreed with the bug, and stayed green while every real orb
                      400-ed an install. It keeps its own copy of the 12-hex id rule and the
                      container read for exactly that reason — drift between the two copies
                      is a failing test, not a shared assumption.
-cmd/orbfake/         runs that double as a listening server for a human driving a real hub
+cmd/orbfake/         runs that double as a listening server for a human driving a real hub,
+                     and as an orb on the LAN with -advertise: announce, answer queries on
+                     udp/5353, goodbye on stop. Its log line splits what it read from what it
+                     answered, and separates our own defect from a neighbour's traffic —
+                     `read=22 answered=2 broken=0 neighbours=20` is a healthy run on a live
+                     LAN, while a non-zero `broken` is a bug here. Judge it from outside with
+                     tools/bench/browse_mdns.py, which browses with python-zeroconf rather
+                     than with this repo's browser: see "Browsing an orb" under Development.
 web/                 the embedded hub UI (index.html, app.css, app.js)
 ```
 
@@ -512,6 +540,7 @@ make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
 make release    # cross-compile the darwin/linux/windows artifact set into
                 # bin/release/<name>-<os>-<arch>/ + sha256sums.txt, no network needed
+```
 
 ### What the client cannot be checked with here
 
@@ -531,13 +560,54 @@ what it can without one, in `jscheck_test.go` and `ui_test.go`:
 That is a smoke check, not a parser, and it will not catch a semantic JS error. If a
 JavaScript engine is available to you, add `node --check web/app.js` to `check` and
 delete this paragraph.
-```
 
 `make crosscheck` is not decoration. The port lock was written against
 `syscall.Flock`, which has no Windows counterpart, and the hub simply had never
 been compiled for Windows — so a binary that could not exist looked exactly like
 a platform that was fine. Vet type-checks `_test.go` files too, so this covers
 the suite as well as the shipped code.
+
+### Browsing an orb, with no orb and no new dependency
+
+The browse adds no third-party library: `internal/orbmdns` and the advertiser in
+`internal/orbfake` are stdlib `net` plus `syscall` setsockopt, so `make vendor-check`
+and `go.mod` stay exactly as they were. Two options the stdlib does not offer decide
+whether discovery works at all, which is why the sockets are built by hand in
+`mcastsock_unix.go` and `mdnssock_unix.go`:
+
+- `SO_REUSEADDR` **before** bind. Without it the group port belongs to whoever got
+  there first, and on a desktop that is avahi and systemd-resolved, not the hub.
+- `IP_MULTICAST_LOOP` on. The stdlib's `ListenMulticastUDP` turns it off, so the
+  advertiser's own announce never reaches the browser in the same process group and
+  every test of the loop has to be done across two machines.
+- `SO_REUSEPORT` deliberately not set: it load-balances a multiply-bound port, and
+  the hub's own per-interface sockets would each get a slice of one orb's four records.
+
+Run the loop on one host — the fake as the orb, a stranger's stack as the judge:
+
+```
+make manager                                        # bin/orb-manager
+go build -o /tmp/orbfake ./cmd/orbfake
+/tmp/orbfake -advertise                             # announces, answers, goodbyes on stop
+../bench/browse_mdns.py --iface 192.168.2.48 \
+    --expect-ip 192.168.2.34 --expect-mac 44bd8d782618   # python-zeroconf, not our browser
+curl -s localhost:3779/api/orbs                     # the hub's own card, tokenless read
+```
+
+`browse_mdns.py` exits non-zero unless PTR, SRV `port=80`, the TXT `mac=` and the A
+record all agree with the values esptool reported for that board, and it is the
+independent reader the item is judged by — our browser agreeing with our advertiser
+would prove nothing. The fake's stop line is the other half of the evidence:
+`read=22 answered=2 broken=0 neighbours=20`. `broken` is a packet that should have
+been answered and was not, so a live LAN at `broken=0` is the healthy result;
+`neighbours` is avahi, CUPS and printers talking to themselves, which is expected
+traffic and not a defect of ours. A non-zero `answered` with zero `broken` is what an
+outside browser querying the fake looks like.
+
+This box still does not originate multicast onto the LAN (item 4's measured limit), so
+`Ask` can report an `askError` while answers arrive unasked; the card says which
+happened, and `solicited=false` marks a row that announced itself rather than one that
+answered our question.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window

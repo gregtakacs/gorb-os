@@ -63,12 +63,20 @@ type Orb struct {
 
 	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
 	dev *device
+
+	// apps is the P4 card-app store, keyed by slug, with appsOrder holding the
+	// registration order so the installed tier's slot field is positional like the
+	// device's. Nil until WithCardApps or an upload seeds it, which is what makes a
+	// fresh double answer "no apps" the way a fresh device does.
+	apps      map[string]*CardApp
+	appsOrder []string
 }
 
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
 // so a caller cannot seed a row whose id disagrees with its name.
 func New(themes ...Theme) *Orb {
-	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default"}
+	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default",
+		apps: map[string]*CardApp{}}
 	for i := range themes {
 		t := themes[i]
 		t.ID = themeID(t.Name)
@@ -168,6 +176,19 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/rescan" && r.Method == http.MethodPost:
 		writeJSON(w, 200, fmt.Sprintf(`{"mounted":true,"card":%q}`, o.Card))
+	// The P4 card-app verbs. Registered here in the same order orb_net.c's uri table
+	// lists them, so a route the firmware grows and this switch does not fails the
+	// contract test rather than quietly answering 404 like a made-up path.
+	case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
+		o.serveApps(w)
+	case r.URL.Path == "/api/v1/apps/install" && r.Method == http.MethodPost:
+		o.serveAppInstall(w, r)
+	case r.URL.Path == "/api/v1/apps/enable" && r.Method == http.MethodPost:
+		o.serveAppEnable(w, r)
+	case r.URL.Path == "/api/v1/apps/uninstall" && r.Method == http.MethodPost:
+		o.serveAppUninstall(w, r)
+	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:
+		o.serveAppUpload(w, r)
 	default:
 		writeJSON(w, 404, `{"error":"no such route on this orb"}`)
 	}

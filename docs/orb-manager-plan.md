@@ -594,3 +594,44 @@ toggle each still need an owner's rows; the `enabled` toggle arrives with P4
 (`app-platform-plan.md` §12.6). The plumbing being ready is not the content
 being ready, and the hub cannot show a row nobody registered.
 
+### 5.6 The fork with the P3 line, and the resolution already proven
+
+Verified 2026-10-12 before pushing anything. `origin/main` moved to `62a5e91`
+carrying nineteen app-platform P3 commits from `gorb-os-2`: the broker, the
+grant table, the D18 theme family, the P3 pass line, and the C2 fault counter.
+This clone holds its own line of commits on top of the shared `d7de71f`, ending
+with items 1 and 2 of this ladder. Neither side is an ancestor of the other, so
+a plain push is rejected and `--force` would delete their P3 work. Neither was
+done.
+
+The only real coupling is `h_status`: `d2839ae feat(svc): P3.6` publishes the
+broker ledger from the same snprintf that now carries `mac`. Their branch adds
+no endpoints, so the hub's route-vs-token test sees no new obligations, and it
+touches no orb-manager file at all.
+
+The merge was resolved and gated in a scratch worktree, not guessed. Take their
+`char json[1536]`, because the ledger needs it and the `mac` field's 21 B fits
+with room to spare. Keep both blocks in the second hunk and restore the one
+brace the shared context line would otherwise have eaten. Git's auto-merge of
+the format string is correct: 44 conversion specifiers, with both `mac_str` and
+`apps_json` present in the argument list. Both gates passed on the resolved
+merge: `idf.py build` exited 0 with no warnings for `orb_net.c`, and the compiled
+image contains `"mac":"%s"`, `"apps":%s`, `ledger too large`, and
+`status too large`. All twelve host suites pass merged, including the broker
+suite `tools/host_svc_test.py`, and all six hub packages pass with the bundle
+guard armed.
+
+Two obligations fall out of a merge, and neither is optional. The bundle must
+be re-packed from the merged build: armed against it, the freshness guard goes
+red on `gorb-os.bin` and `bootloader.bin` exactly as designed, and shipping it
+unre-packed would put out a hub whose firmware has no broker. The merged status
+body must be re-measured on the cable before the buffer comment states a
+number, which is what that comment's closing line is for.
+
+Not verified: the merged image has never booted. Nothing here claims orb-B ran
+P3 alongside the `mac` field.
+
+Their line is mid-flight. `gorb-os-2` sits at `e223a01` with two P4 commits
+still unpushed, so this work went to its own branch rather than into `main`,
+and integration should wait for their push and happen once.
+

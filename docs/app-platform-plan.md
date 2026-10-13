@@ -1831,3 +1831,29 @@ police", is met from this commit: an enabled card row is walkable and schedulabl
 What it still lacks is a second BEAT — the bench `hsb_color` declares `period_ms 0`,
 so the shared-beat delivery waits for an installed app that asks for a tick.
 
+**The P4a bench, orb-A, `fw 36f21a4`, rssi -62 (marginal: two HTTP timeouts mid-run,
+none lost a state transition — every refusal was re-probed before the ladder moved).**
+The full lifecycle ran over the two new doors, card file untouched in `/sd/apps`
+throughout. Enable → `{"state":"enabled"}`; a cold boot then carries `appinstall:
+enabled "hsb_color" from its stored word`, `app: hsb_color: reuses its behaviour
+module's built screen — walkable`, and `4 walkable` — the apply rung, the word's
+durability across a reboot, and the C6 iface-reuse guard all proven on silicon. On
+the glass, disable answers 409 with the device sentence (`that app is on the dial —
+carousel away from it first`), and the refusal held even after injected detents
+re-committed the row — the check runs at door time, not at page-draw time. Carousel
+away, disable lands, and five detents never bring the row back: the disabled app is
+out of the walkable set, P4's deferred disable/enable cycle pass line, closed. The
+glass needs two settles after a `to=` before the row reads `on_glass: false` — a
+one-second window is not enough, and a bench that does not wait sees a false refusal.
+Uninstall → `{"state":"uninstalled"}`, the ledger drops to three rows, `installed:[]`
+streams, and no reboot follows; the next cold boot reads `resolved 0 installed apps`
+and `3 walkable` — the single-sector erase made the slot absent exactly as D9 promises.
+Reinstall from the same card file lands the row back in slot 0 with `enabled:false`:
+`orb_svc_forget_row` erased the `e0` word and the fresh install refused to resurrect
+the owner's last ON through flash residue — absent means off, on hardware. The bench
+also caught one stale string no host vector could: `h_screen`'s 400 body still listed
+`["clock","color_picker","hue","menu"]` by hand while the registry had grown a card
+slug the same endpoint happily resolves — fixed in the same commit to stream slugs and
+aliases from the table (the array was also malformed JSON: a stray quote made `known`
+a string, not a list).
+

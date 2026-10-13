@@ -2689,12 +2689,33 @@ static esp_err_t h_screen(httpd_req_t *req)
             /* The bad value goes to the log, never into the body: it is
              * caller-controlled text, and an error page that repeats it is how a
              * quoting bug becomes someone else's problem. The body names only
-             * what the device accepts, which is device-owned text. */
+             * what the device accepts — and since the registry grew card slugs,
+             * it streams them from the table instead of restating a hand-kept
+             * list that is wrong the day an app installs. Slugs and aliases are
+             * writer-validated to [a-z0-9_] and compiled literals: no escaping. */
             ESP_LOGW(TAG, "screen: unknown to=\"%s\"", to);
             httpd_resp_set_status(req, "400 Bad Request");
-            return httpd_resp_sendstr(req,
-                   "{\"error\":\"unknown app\",\"known\":"
-                   "[\"clock\",\"color_picker\",\"hue\",\"menu\"]}");
+            char body[512];
+            size_t kn = (size_t)snprintf(body, sizeof body,
+                                         "{\"error\":\"unknown app\",\"known\":[");
+            bool first = true;
+            for (size_t i = 0; i < orb_app_rows(); i++) {
+                const orb_app_t *r = orb_app_row(i);
+                if (!r) continue;   /* positional span: a free slot is a hole */
+                const int w = snprintf(body + kn, sizeof body - kn, "%s\"%s\"",
+                                       first ? "" : ",", r->slug);
+                if (w < 0 || (size_t)w >= sizeof body - kn - 4) break;
+                kn += (size_t)w;
+                first = false;
+                if (r->alias && r->alias[0]) {
+                    const int v = snprintf(body + kn, sizeof body - kn,
+                                           ",\"%s\"", r->alias);
+                    if (v < 0 || (size_t)v >= sizeof body - kn - 4) break;
+                    kn += (size_t)v;
+                }
+            }
+            snprintf(body + kn, sizeof body - kn, "]}");
+            return httpd_resp_sendstr(req, body);
         }
         ESP_LOGI(TAG, "screen request -> %s", app->slug);
         input_router_request(app);

@@ -780,6 +780,169 @@ Still open, in priority order:
    The same 64 KB that broke provisioning is what the OTA failures (items 2/9) were
    tracing to, so this line is the cheapest lead on that problem too.
 
+---
+
+## DESIGN NOTE (not built) — "Open AP" should REBOOT into provisioning
+
+Raised 2026-10-13 during the provisioning fix. Record only: no code, no schema
+change, no endpoint. Decide the open questions first, then build.
+
+**The ask.** The on-orb config page's "Open AP" button (and the hub's equivalent)
+should put the orb into a state where the SoftAP is reliably joinable, **including
+when the stored credential is now wrong**. Today it tries to do that without
+rebooting, and that is the difference between the working case and the broken one.
+
+**What exists today (four doors, only one of which has ever been proven):**
+
+| Door | Path | Radio sequence | Proven? |
+|---|---|---|---|
+| No credentials in `orb.net` | boot straight into `ap_open()` | `set_mode` from `WIFI_MODE_NULL` after `esp_wifi_init` | **Yes** — verified by eye on orb-B: lease + menu + scan list |
+| Physical: power-cycle an unprovisioned orb | same as above | same | Yes (that is how the fleet was first paired) |
+| Physical: long-press-at-boot | full provisioning | same | Yes, pre-existing |
+| Credentials refused 8x (`CONFIG_ORB_NET_AP_RESCUE_FAILS`) | `NET_CMD_AP_RESCUE` -> `ap_open()` | **late promotion** on a running STA | Fragile |
+| Config page / hub "Open AP" (`POST /api/v1/wifi/ap`) | `NET_CMD_AP_OPEN` -> `ap_open()` | **late promotion** on a running STA | Fragile |
+
+"Late promotion" means `esp_wifi_set_mode(WIFI_MODE_APSTA)` on an already-running
+station driver. Every failure seen in this investigation lived there: the Guru
+panic inside `sta_set_mac`/`SetBlock`, the double `AP_START` (one per mode bit),
+and the `alloc eb len=752 type=4 fail` that surfaced as a half-open AP — an
+interface that associates and then dies silently, because the beacon is the only
+thing that needs a type-4 buffer and the driver has no retry path for a failed
+beacon allocation. The WiFi buffer trim (`bafcd4e`) was a workaround for exactly
+this, and see the retest result below before assuming it still applies.
+
+**The proposal.** Change the *semantics* of the button, not the mechanism: it
+requests a reboot into the provisioning state instead of promoting the radio in
+place. The boot-time path is the one that works, it is already written, and it
+costs nothing to reach — a reboot from the APSTA-connected state is the same boot
+sequence as a power-cycle, which has always opened a joinable AP.
+
+**Why this is more than a workaround.** It removes an entire class of ordering
+bugs by refusing to reconfigure the radio under load. It also matches the user's
+mental model: pressing "Open AP" on a device that cannot reach its network is a
+recovery action, and recovery actions restart things.
+
+**Design points to settle before any code:**
+
+1. **A boot-intent flag, not a credential wipe.** Needs a one-shot key in
+   `orb.net` (e.g. `reprov`) that forces the existing `!have_prov_creds` branch
+   even when credentials exist. It MUST preserve the stored SSID: that is what
+   pre-fills the form and what lets a wrong password be corrected rather than
+   re-typed. Tonight's bench build proved this works — it entered the full
+   provisioning path on a credentialed orb with one flag, served the menu and the
+   live scan list, and erased nothing.
+2. **Write the flag before rebooting, and make it survivable.** If power is lost
+   between setting the flag and booting, the device must still come up in
+   provisioning, and the flag must clear on a successful re-provision or on the
+   next plain power-cycle, so an orb cannot get permanently stuck in AP mode.
+   Decide: does the flag expire (one boot only, or N boots)?
+3. **Bounded sojourn, then resume.** The AP already times out (`hold_s`,
+   `NET_CMD_AP_EXPIRED`, and `ap_timer_cb` re-arms while the STA has no lease).
+   For a reboot-initiated provisioning session that re-arm is wrong — there is no
+   lease to wait for, and the point of the session is that the network is broken.
+   Specify the end state explicitly: on timeout, reboot back to normal boot rather
+   than sit on an unattended AP forever.
+4. **The page dies mid-action.** The config page is served over the LAN while the
+   AP it advertises is a *different* network the phone must join by hand. A reboot
+   means the tab the user clicked is gone. UI must state the consequence and give
+   the post-reboot instructions inline: SSID `orb-<id>`, then `http://192.168.4.1/`,
+   for N minutes.
+5. **Hub visibility and the offline gap.** Rebooting into provisioning drops the
+   hub connection for the whole session, so the hub must record the intent and
+   show "awaiting re-provisioning" — and should stop alerting on "unreachable" for
+   that device while the intent is outstanding. Otherwise the feature manufactures
+   false alarms.
+6. **Auth and blast radius.** Today the config page is open on the AP subnet with
+   no auth and no CSRF protection (deliberate, so provisioning works). A reboot
+   command is still harmless in the worst case (one reboot), but confirm it is not
+   reachable in a way that lets a LAN neighbour reboot-loop the device; rate-limit
+   or require the AP to be up first.
+7. **Trigger set.** At minimum: the config page button, the hub's orb actions, and
+   the physical long-press (already exists). Consider whether the 8-failure rescue
+   should *also* switch to this path — it is currently a late promotion, i.e. the
+   fragile door, and it is the one that fires without anyone watching.
+8. **Keep a plain "Open AP" too, or not?** If late promotion is dropped entirely
+   the code gets simpler and there is one path to test; if it stays, the config
+   page has two buttons that look the same and behave very differently. Recommend
+   one button, reboot semantics, and delete the promotion path once the rescue
+   path moves over.
+
+**Explicitly out of scope for this note:** whether the AP is joinable without an
+IP (it is — static lease `192.168.4.2`, and wired tests are unaffected by the
+phone's AP address), captive-portal DNS specifics, and the separate question of an
+erase-credentials endpoint.
+
+**Measurement this note depends on.** The trim's own necessity is now in doubt —
+see the retest result appended directly below.
+
+**RETEST RESULT 2026-10-13: the trim is NOT needed. Removed.** With all four
+`CONFIG_ESP_WIFI_*_BUFFER_NUM`/`MGMT_SBUF_NUM` lines deleted from BOTH
+`sdkconfig.defaults` and the generated `sdkconfig` (verified in
+`build_*/config/sdkconfig.h`: 10 / 32 / 32 / 32, mgmt-sbuf 32), five independent
+first promotions — each a fresh boot, station connected to the LAN, then
+`POST /api/v1/wifi/ap` — reached `SoftAP "orb-2619" OPEN` with the lwIP banner
+`DHCP server started on interface WIFI_AP_DEF`. Zero `alloc eb len=752 type=4
+fail`, zero Guru, zero backtraces, in any capture window. Heap at defaults:
+internal free 64,415–69,907, largest block 28,672–31,744, dma_free 56,911–62,403.
+For contrast, the boot that could not promote had `dma_free 2,095`.
+
+The measurement that originally justified the trim recorded defaults failing with
+`alloc eb len=752 type=4 fail` then a Guru in `ieee80211_hostap`. It was taken at
+`CONFIG_LV_MEM_SIZE=65536`, so it measured the LVGL shortage, not the buffer
+counts — the EB pool was starved from the other direction. Both facts stand; only
+their attribution changes. `bafcd4e` is therefore superseded by `9d21afc`, not
+complemented by it.
+
+The wired path refused to be a discriminator. Four 250-packet samples at 5 pps:
+
+| Build | AP state | RSSI | loss | mean rtt |
+|---|---|---|---|---|
+| defaults | down | −71 | 11.6% | 60.6 ms |
+| defaults | up | ~−70 | 8.0% | 59.5 ms |
+| trim 6/12/12/12 | down | −61 | 5.6% | 50.8 ms |
+| trim 6/12/12/12 | up | −63 | 10.0% | not recorded |
+
+Router control, wired, same host, same window: **0.4%**. Loss tracked RSSI, not
+buffer counts, and the order even flipped between the two AP-up/down pairs. The
+earlier "12% → 0%" improvement claimed for the LVGL fix is not reproducible in
+tonight's RF and should be read as a coincidence; the claim that raising counts to
+8/24/24 made loss *worse* was the same noise. Ping loss on this bench is a
+WiFi-link measurement, not a memory one — the orb is the only wireless hop in it.
+
+**Two harness bugs that each produced a false reading, recorded because both will
+recur.** (1) `curl` reported `HTTP 000` on requests whose bodies were fully
+received: esp_http_server holds the connection open, and curl's `--max-time` fires
+waiting for the close. Add `-H 'Connection: close'` (or `--no-keepalive`) or every
+timeout is ambiguous — with it, the same promote POST returned `HTTP 200 in
+0.168s` and the body `{"state":"ap_opening","ap_ssid":"orb-2619","seconds":900}`.
+Distinguish `000` with a written body (keep-alive, request landed) from `000` with
+an empty body (unreachable). (2) After repeated hard resets the host's ARP entry
+for `.34` sat in `FAILED` for a minute or more while the orb's own serial log
+showed a valid lease and a working clock, and no number of plain pings fixed it.
+`ip neigh del 192.168.2.34 dev eth0` cleared it instantly — interface is `eth0`,
+not `eno1`. A "device stopped responding" reading on this bench is therefore
+suspect until the ARP entry has been checked or cleared.
+
+**Finding made while testing this: there is no way to close the AP.** The route
+table registers only `/wifi/scan`, `/wifi/join` and `/wifi/ap`; a POST to
+`/api/v1/wifi/ap/close` returns 404 `Nothing matches the given URI`. `ap_close()`
+exists in the file and is reachable only from `NET_CMD_AP_EXPIRED`, so the sole
+door down is the hold timer — `CONFIG_ORB_NET_AP_MANUAL_S=900`, fifteen minutes of
+a broadcast SSID with an unauthenticated config server after anyone opens it from
+the LAN. Any redesign here must add an explicit close, and the reboot semantics
+proposed above make the question moot inside a provisioning session (the session
+ends by rebooting) but do not remove the need for one.
+
+**Methodology warning, self-inflicted and worth recording.** Four close POSTs in a
+row returned 404 with the response body discarded (`-o /dev/null`), and the run
+was read as "seven clean promotions". It was one promotion and six no-op re-arms
+of an AP that never went down: `esp_netif_dhcps_start()` on an already-running
+server returns `ESP_OK` without printing its banner, which is why the banner count
+(1) disagreed with the open count (7). The disagreement is the only honest signal
+in the log. Two rules follow, and both are the same rule as the root-cause lesson:
+never discard the response body of a call you are treating as evidence, and count
+the effect at the far end, not the call at the near end.
+
 
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` — done; the card lists what announced itself, and dials none of it | 3, 4 |
 

@@ -109,46 +109,45 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # still works after a bad OTA. Costs a little otadata wear; worth it here.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# WiFi driver buffer counts, below the IDF defaults. THIS SETTING IS LOAD-BEARING
-# -- the SoftAP panics without it. Measured again 2026-10-13 on orb-B: with the
-# IDF defaults restored (10/32/32/32), the POST /api/v1/wifi/ap that works at
-# 6/12/12/12 died again with `alloc eb len=752 type=4 fail` twice then a
-# LoadProhibited Guru in ieee80211_hostap.
+
+# WiFi driver buffer counts: UNSET, so the IDF defaults apply (static-rx 10,
+# dynamic-rx 32, dynamic-tx 32, mgmt-sbuf 32). They were pinned to 6/12/12/12 for
+# one specific reason, that reason turned out to be a different line, and the trim
+# is now gone on measurement. Do not re-add it without the evidence below.
 #
-# Mechanism: the driver carves its dedicated event-buffer (EB) pool at
-# esp_wifi_init, sized by these counts, and the static RX EBs are never
-# returned by a disconnect. ap_open() promotes WIFI_MODE_STA to WIFI_MODE_APSTA
-# AFTER esp_wifi_start, and the beacon's 752 B type=4 EB (the driver logs
-# `Init max length of beacon: 752/752` -- the same 752) then has no free slot,
-# because static-rx=10 consumed all of them. static-rx=6 leaves the slack the
-# late promotion needs. esp_wifi_disconnect() before the promote does NOT help
-# (it frees general heap, not EBs) -- see the note in ap_open().
+# Why the trim existed: promoting the radio from WIFI_MODE_STA to WIFI_MODE_APSTA
+# on a running station driver died with `alloc eb len=752 type=4 fail` -- the
+# beacon's event buffer, the same 752 the driver logs at init -- followed by a
+# LoadProhibited Guru in ieee80211_hostap. The EB pool is carved once at
+# esp_wifi_init out of internal DMA RAM, and a disconnect does not return the
+# static RX EBs, so static-rx=6 looked like the slack the late promotion needed.
 #
-# Unrelated to that, and RESOLVED 2026-10-13: the phone that joined this SoftAP,
-# associated as aid 1 and never got an address was NOT a buffer-trim problem and
-# not a DHCP problem. The real fault is CONFIG_LV_MEM_SIZE below -- LVGL's builtin
-# heap was a 64 KB static array in internal DRAM, which left no room for the
-# config server and the AP's DHCP path in the same boot. Depending on which
-# allocation lost, the same shortage showed up as no captive prompt, as a lease
-# the client never received, or as a 26.9 s first HTTP request (measured: 26.884 s
-# then 0.124 s, i.e. a dropped SYN plus retransmit backoff, not slow handlers).
-# Five explanations were tried and disproven on this bench before it: EB pool
-# starvation, disconnect-before-promote, broadcast-vs-unicast, a missing DNS
-# option, DHCP option 114, late promotion ordering, and the trim itself (raising
-# the counts to 8/24/24 made the ping loss WORSE, 4%/4%/8% with 154 ms mean vs
-# 12%/42 ms at the trim). Every one of them was inferred from one side of a
-# transaction: the orb's own accounting said "lease granted" while the client said
-# "nothing". The witness that finally located it was httpd_start's return code --
-# ESP_ERR_HTTPD_TASK, i.e. the config server never started at all, so the captive
-# DNS was pointing phones at a port nobody listened on.
+# The mechanism was real; the cause was elsewhere. The pool was empty because
+# CONFIG_LV_MEM_SIZE was 65536: LVGL's builtin heap is a static array in internal
+# DRAM, and 64 KB of it left the driver no room. With LVGL at 24576 the defaults
+# test clean -- measured on orb-B 2026-10-13, five first promotions after a fresh
+# boot with the station connected, every one reaching SoftAP OPEN with the DHCP
+# server banner up and zero `alloc eb` lines, at internal free 64,415-69,907 /
+# largest block 28,672-31,744 / dma_free 56,911-62,403. At the original failure
+# dma_free was 2,095.
+#
+# The earlier note here that "defaults fail" was measured at LVGL 65536 and does
+# not transfer. If a promoted AP ever logs `alloc eb len=752 type=4 fail` again,
+# check what is holding internal DRAM statically before touching these symbols.
+#
+# The wired path gave no signal either way: this build lost 5.6-11.6% of 250
+# pings at BOTH settings, tracking RSSI (-61 to -71 dBm) rather than buffer
+# counts, against a wired router control of 0.4%. The 0% reading once taken at the
+# trim was RF luck and is not reproducible.
+#
+# The SoftAP no-IP / no-captive-prompt symptom this block used to describe was
+# never a buffer problem: it was the same CONFIG_LV_MEM_SIZE shortage, which
+# starved httpd (ESP_ERR_HTTPD_TASK) and the AP's DHCP path. See that symbol's
+# own comment below and the ledger's 2026-10-13 correction.
 #
 # These live ONLY in the untracked generated sdkconfig as well; idf.py prefers
 # that file over sdkconfig.defaults, so deleting the lines here is NOT enough to
 # change a build -- the corresponding lines must go from sdkconfig too.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
-CONFIG_ESP_WIFI_MGMT_SBUF_NUM=12
 
 # WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
 # `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed

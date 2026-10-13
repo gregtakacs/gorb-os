@@ -1521,7 +1521,8 @@ out of a failed recovery session now resumes a credential the session could not
 destroy. D4 remains the last item that can strand a device, and it is now
 downgrade-free to build.
 
-**D4. Bounded sojourn, and the reboot-loop hazard that comes with it.**
+**D4. Bounded sojourn, and the reboot-loop hazard that comes with it. DONE —
+bench-proved this session.**
 A provisioning boot that carries credentials arms the existing `s_ap_timer`
 (`NET_CMD_AP_EXPIRED` already owns the expiry path). On expiry: `esp_restart()`,
 never `ap_close()` — D1 explains why closing leaves a half state.
@@ -1535,6 +1536,34 @@ Sojourn length: 10 minutes, Kconfig `CONFIG_ORB_NET_PROV_SOJOURN_S`, default 600
 Long enough to fumble a passphrase twice on a phone; short enough that a
 forgotten orb rejoins its network on its own before an owner notices it is away.
 
+**How it landed (two pure predicates, one latch, one action).** `sojourn_arms()
+= recovery_session && sojourn_s > 0` and `sojourn_reboots() = recovery_session &&
+!sta_up` sit next to `prov_ap_idle` and are pinned by 8 new `host_tz_test.py` rows.
+`s_prov_recovery_session` latches once at the boot branch. The expiry action runs
+in the existing `NET_CMD_AP_EXPIRED` case ahead of the plain re-arm, calls
+`orb_svc_note_clean_reboot()` before `esp_restart()` (same courtesy as
+`POST /api/v1/reboot` — a planned exit must not bill the next boot a crash), and
+writes nothing on the way out (D3 keeps the failure clean).
+
+**The placement bug the bench caught, and the table could not.** The arm first sat
+in the provisioning branch beside the latch, and that branch runs BEFORE
+`esp_timer_create()` gives `s_ap_timer` a handle and before the queue the expiry
+posts to exists. Live boot logged `prov sojourn timer does not exist` and ran the
+whole session with no deadline — the feature would have shipped inert, invisible to
+every truth-table row because those pin the predicate, not the call site. The arm
+moved to after the timer and queue exist (post-`stage_probe("post-nettask")`).
+Lesson: a pure predicate passing a table proves the DECISION, never that the CALL
+SITE is reachable. Bench 2026-10-13.
+
+**Bench evidence.** (1) Forced branch with credentials, sojourn 45 s: armed, retried
+auth-fail at 5/10/20 s, then at T+46.3 logged `sojourn expired` and rebooted on
+`rst:0xc (RTC_SW_CPU_RST)` — the intended exit. (2) Factory boot (storage erased,
+same 45 s config): no `RECOVERY` line, no arm, no reboot across a 72 s window — the
+loop the guard prevents. (3) Ship build (creds present, sojourn 600): takes the STA
+branch, no `RECOVERY` line, sojourn inert, settles with a lease at 192.168.2.34.
+Storage payload intact throughout (GTROUTER2 present; the boot auto-retry lease
+wrote nothing, per D3).
+
 **D5. Physical trigger is net-new code.**
 Nothing samples the knob before `orb_net_start()` (`main.c:201`). Add a sample
 after `knob_init()` (`main.c:151`): press held at boot for >= 3 s sets the D2 flag
@@ -1545,8 +1574,11 @@ decide whether the case needs a hole. Do not describe it as existing until it is
 
 **Build order.** (1) D3, credential write at lease — **done, `c103fba`**.
 (2) D4 sojourn +
-credential-present guard. (3) D2 RTC flag. (4) boot-branch check of the flag
-(the one-line condition the bench build already proved). (5) D5 knob sample.
+credential-present guard — **done, bench-proved this session**. (3) D2 RTC flag —
+**next**; the sojourn's D4 expiry path and D5's knob both set the flag D2 defines.
+(4) boot-branch check of the flag (the one-line condition the bench build already
+proved, and the same hook D4's guard keys off: force the provisioning branch while
+`creds_in_flash` is true, and the sojourn arms). (5) D5 knob sample.
 (6) hub-side intent state. Ship nothing before (1).
 
 **Not covered here, unchanged by this feature:** the 8-failure rescue stays a late

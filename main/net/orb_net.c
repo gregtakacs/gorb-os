@@ -1291,7 +1291,15 @@ static void net_task_loop(void *arg)
                  * exactly the false alarm that makes a fleet UI untrustworthy.
                  * Nothing is written on the way out (D3): a failed session's
                  * credentials never reached flash, so the reboot resumes the pair
-                 * that was stored before it. */
+                 * that was stored before it.
+                 *
+                 * DELIBERATELY NOT DONE HERE: do not set D2's intent flag on this
+                 * path. This reboot's purpose is to retry the stored network; if it
+                 * requested provisioning instead, the next boot would force the AP,
+                 * expire, reboot, and request again — an infinite loop between two
+                 * unusable states, which is the hazard the guard above exists to
+                 * prevent. Only a human requests provisioning: D5's knob, or the
+                 * hub on someone's say-so. */
                 ESP_LOGW(TAG, "provisioning sojourn expired after %d s with no "
                               "lease; rebooting to retry the stored network",
                          CONFIG_ORB_NET_PROV_SOJOURN_S);

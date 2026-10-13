@@ -1473,7 +1473,7 @@ door a human is supposed to rely on. This collapses points 2, 3 and 8: the flag
 clears by booting, no AP-close endpoint is needed, and every manual door is
 identical to the boot branch — the only path ever proven joinable by eye.
 
-**D2. The intent flag lives in RTC slow memory, not NVS.**
+**D2. The intent flag lives in RTC slow memory, not NVS. DONE — `b913dbe`.**
 `RTC_SLOW_MEM` survives `esp_restart()` and is wiped by a power cycle. That is
 precisely the semantics point 2 asked for: a request that loses power before the
 reboot lands cannot strand the orb in AP mode, because the flag dies with the
@@ -1485,6 +1485,44 @@ cycle" — which is exactly D2's requirement). Consumed (zeroed) by the boot
 branch as it reads it, so one request equals exactly one provisioning boot.
 Rejected: an NVS key — it survives power cycles, which turns any lost-write race
 into a permanently AP-only device, the failure mode point 2 was trying to avoid.
+DONE — `b913dbe`.
+
+**As built (`b913dbe`, 2026-10-13).** One `RTC_NOINIT_ATTR uint32_t s_prov_intent`
+carrying `PROV_INTENT_MAGIC` `0x4F524250` ("ORBP"), plus a pure `prov_intent_armed()`
+and a `prov_intent_consume()` that the boot branch calls exactly once. The consume
+zeroes on EVERY read, not only on a hit: that is what stops a cold boot's garbage
+from surviving to be misread later, and it is what makes one request equal one boot.
+`orb_net_request_provisioning()` is the only writer; it sets the word and returns,
+deliberately not rebooting, because a knob handler and an HTTP handler owe the user
+different courtesies before the connection dies. It returns false without touching
+anything when `ORB_NET_AP_FALLBACK` is off, and the boot branch logs the dropped
+request rather than swallowing it. The branch condition is now
+`if (creds_in_flash && !prov_forced)`; D4's latch stays `= creds_in_flash`, which is
+what makes a forced boot a recovery session and gets it the deadline.
+
+**Two corrections to this section as written.** (a) The magic is not a stylistic
+preference: `.rtc_noinit` is `(NOLOAD)` and nothing zeroes it, so at cold power-on
+the word is SRAM garbage, and a plain bool would be true roughly half the time.
+Six host rows now pin that — cold-zero, all-ones, `0xA5A5A5A5`, one ASCII byte,
+bit-flipped, and the magic itself. (b) "Wiped by a power cycle" means **VDD
+removal**. Measured: the flag survives `esp_restart()` (`rst:0xc`) as required, AND
+survives an RTS-on-EN chip reset (`rst:0x15`), because the RTC domain never lost
+power. So the reset button is not a cancel button, and no recovery flow may assume
+it is. The safety argument does not depend on that: the word is consumed on read and
+D4 bounds any forced session, so the worst a stale request costs is one extra
+provisioning boot.
+
+**Evidence (orb-B).** Ordinary boot with garbage in the word: no trigger, joins
+192.168.2.34. `REPROV` → `esp_restart()` → `rst:0xc` → boots FORCED: `provisioning
+requested — coming up as "orb-2619" (open) for ONE boot` and `RECOVERY provisioning:
+... gives up in 40 s`, proving D2's force and D4's guard interlock for real rather
+than by bench inversion. At T+41.5 s (exactly 40 s after arming) the sojourn expired,
+rebooted, and the next boot took the STA path with no `provisioning requested` line
+and rejoined — consume-once, no loop. Set-without-reboot + chip reset reproduced the
+survival above. Storage payload verified intact after the whole sequence
+(`GTROUTER2` present). Ship build clean at 26% app partition free; 17/17 host suites
+pass; `build/gorb-os.map` shows `.rtc_noinit 0x50000000 0x4`, sole occupant — the
+placement was read from the map, not assumed from the attribute.
 
 **D3. Credential write moves to lease time. DONE — `c103fba`.**
 Today `prov_reader_task` (serial PROV, write at `orb_net.c:2165`) and
@@ -1574,12 +1612,20 @@ decide whether the case needs a hole. Do not describe it as existing until it is
 
 **Build order.** (1) D3, credential write at lease — **done, `c103fba`**.
 (2) D4 sojourn +
-credential-present guard — **done, bench-proved this session**. (3) D2 RTC flag —
-**next**; the sojourn's D4 expiry path and D5's knob both set the flag D2 defines.
-(4) boot-branch check of the flag (the one-line condition the bench build already
-proved, and the same hook D4's guard keys off: force the provisioning branch while
-`creds_in_flash` is true, and the sojourn arms). (5) D5 knob sample.
+credential-present guard — **done, bench-proved**. (3+4) D2 RTC flag AND the
+boot-branch check of it — **done together in `b913dbe`**, because a flag with no
+reader is untestable and step (4) is one line. Writers so far: none —
+`orb_net_request_provisioning()` has no in-tree caller yet, so the feature is inert
+in a ship build exactly as D4 was. (5) D5 knob sample, the first real writer.
 (6) hub-side intent state. Ship nothing before (1).
+
+**Corrected while building D2.** This line previously said the D4 expiry path would
+set the flag. It must NOT. D4's whole exit is "give up here and retry the stored
+network"; if its reboot re-armed the intent, the next boot would force provisioning
+again, expire again, and the orb would cycle between two unusable states forever —
+the exact hazard D4's guard exists to avoid. `orb_net.c` states the ban at the
+`NET_CMD_AP_EXPIRED` branch and at the setter's declaration. The legitimate writers
+are a human: D5's knob, or the hub on a person's say-so.
 
 **Not covered here, unchanged by this feature:** the 8-failure rescue stays a late
 promotion; `lv_*` in `/api/v1/status` stays open; the fleet's untracked

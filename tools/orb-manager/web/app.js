@@ -632,7 +632,7 @@ $("#j-go").onclick = async () => {
       }
     } catch (e) { /* the join drops requests mid-flight; the next tick recovers */ }
   }
-  log.textContent += "\nstill not connected after 30 s — check Manage in a moment.";
+  log.textContent += "\nstill not connected after 30 s — check the Orbs list in a moment.";
 };
 
 // ---- manage ----------------------------------------------------------------
@@ -822,6 +822,7 @@ function foundRow(o) {
 }
 
 $("#mn-scan").onclick = scan;
+$("#mn-add").onclick = () => show("onboard");
 $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
 $("#mn-find-go").onclick = () =>
   hubFetch("/api/orbs/ask", { method: "POST" }).then(readFound).catch((e) => {

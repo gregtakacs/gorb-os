@@ -109,6 +109,25 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # still works after a bad OTA. Costs a little otadata wear; worth it here.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# WiFi driver buffer counts, lowered from the IDF defaults so the SoftAP can
+# open while the STA is already up. The driver carves its dedicated event-buffer
+# (EB) pool at esp_wifi_init, sized by these counts. ap_open() (main/net/orb_net.c)
+# promotes WIFI_MODE_STA to WIFI_MODE_APSTA only AFTER esp_wifi_start, and the
+# beacon's 752 B type=4 EB then has nowhere to come from: the STA's own buffers
+# already hold the pool. The symptom was a LoadProhibited panic in
+# ieee80211_hostap on POST /api/v1/wifi/ap (alloc eb len=752 type=4 fail). A true
+# MDNS=n control build reproduced the identical panic, so the mDNS responder is
+# NOT the cause. static-rx 10->6, dynamic rx/tx 32->12, mgmt-sbuf 32->12 leaves
+# enough dedicated EBs for the late APSTA promotion; measured on orb-B, the same
+# POST that panicked now returns 200 and opens orb-<mac> with no Guru. Tradeoff:
+# lower burst throughput on the 2.4 GHz STA link, acceptable for this device's
+# control-plane traffic. If STA throughput or a heavier concurrent-AP load ever
+# regresses, the surgical alternative is an EB-reclaim retry inside ap_open().
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=12
+
 # WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
 # `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed
 # bucket and NOT this image's real instruction-RAM usage. This target's only

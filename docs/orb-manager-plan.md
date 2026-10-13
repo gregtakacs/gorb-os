@@ -610,6 +610,53 @@ form-encoded body rather than the JSON the endpoint parses, so it is corroborati
 and not a control. Item 5 must treat the AP-side announcement
 as unverified until a phone or a second radio browses `192.168.4.0/24`.
 
+Third, corrected by measurement (2026-10-13, the true control the paragraph above
+called for): an `MDNS=n` image — responder strings verified absent from the binary,
+5.7 KB smaller — was built into a scratch dir and MAC-gated-flashed to orb-B, then
+`POST /api/v1/wifi/ap` with the JSON body the parser accepts. The SoftAP still
+panicked, identically: `wifi:alloc eb len=752 type=4 fail` twice, then
+`LoadProhibited`, `EXCVADDR 0x2c`, backtrace
+`ieee80211_hostap ← wifi_softap_start ← _do_wifi_start ← wifi_set_mode_process ←
+ieee80211_ioctl_process ← ppTask` (symbolized off the scratch ELF). The responder is
+exonerated. The failed 752-byte allocation is a WiFi-driver EB from its own buffer
+pool, not the general heap: at the crash the control held `largest=7168` and
+`dma_free=5863`, both far above 752. Two consequences for the fix: a heap gate on
+`heap_caps_get_largest_free_block(INTERNAL|DMA)` (the planned step 2) would not have
+refused this call — the block it checks was big enough — and shrinking the mDNS task
+stack (the planned step 3) removes a consumer that was not the cause. orb-B was
+restored to the verified `094fa22` and re-checked healthy (`ap=false`, connected)
+afterward. The AP fix must instead address the driver's EB pool: pre-provision the
+SoftAP's buffers at `esp_wifi_init` while internal DRAM is ample, or shrink the
+STA-side pool (dynamic RX/TX `32/32`, AMPDU, `MGMT_SBUF_NUM`) so the AP beacon's EB
+still fits. The Wi-Fi-side browse experiment stays blocked until the AP actually
+comes up — there is nothing to join while the open panics. Item 4's AP half stays
+open.
+
+**Resolved by the second build (same session).** The driver-heap diagnosis was
+confirmed and the AP half closed, on the air. A scratch image with `MDNS=y` and the
+driver's dedicated EB demand trimmed — `STATIC_RX_BUFFER_NUM 10→6`,
+`DYNAMIC_RX/TX_BUFFER_NUM 32→12`, `MGMT_SBUF_NUM 32→12` (config only, no tracked
+source change) — brought the SoftAP up on the *same* JSON POST that had panicked:
+`WIFI_EVENT_AP_START` logged, `SoftAP "orb-2619" OPEN (900 s hold)`, captive DNS
+answering, and `orb_mdns: advertising _orb._tcp on SoftAP`. The host's second radio
+(WSL mirrored `eth1`, wired `eth0` holding the LAN) joined `orb-2619` at L2 (AP BSSID
+`44:bd:8d:78:26:19` = STA base +1), was placed on-subnet `192.168.4.100`, and an
+independent `zeroconf 0.151.5` decoder, sending the browse query *unicast* to
+`192.168.4.1:5353`, read back PTR→SRV(`port=80 server=orb-782618.local`)→TXT(47 B)→
+**A `orb-782618.local = 192.168.4.1`** — the querier-subnet pick (`orb_mdns.c:419`)
+proven on air for the first time, returning the SoftAP address because the querier sat
+on the AP `/24`. The config page answered `200` at `192.168.4.1`, closing item 10's
+provisioning path too. Three bench notes the attempt surfaced: WSL mirrored mode owns
+the joined NIC's IP and reverts a host-side `netsh` static, so the on-subnet address
+was set from inside WSL; `dig` cannot elicit the answer because it discards the orb's
+RFC-6762 `id=0` reply, so the query must be framed as real mDNS; and the orb answers a
+query from an ephemeral source port (`orb_mdns.c:630` replies to the `recvfrom` peer).
+**Not yet shipped.** Before this becomes a firmware commit the trim needs a
+minimality pass (the smallest counts that still open the AP every time, since buffer
+headroom is what carried the OTA art-bank transfer) and the committed bundle re-packed
+via `make firmware`. orb-B was restored to the verified `094fa22` and re-checked
+healthy after every experiment.
+
 | 5 | `feat(orb-manager): browse _orb._tcp and list candidates without dialing` — done; the card lists what announced itself, and dials none of it | 3, 4 |
 
 Item 5 shipped `internal/orbmdns` (a hand-parsed RFC 1035/6762 decoder, a

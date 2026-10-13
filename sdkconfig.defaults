@@ -109,20 +109,42 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # still works after a bad OTA. Costs a little otadata wear; worth it here.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# WiFi driver buffer counts, lowered from the IDF defaults so the SoftAP can
-# open while the STA is already up. The driver carves its dedicated event-buffer
-# (EB) pool at esp_wifi_init, sized by these counts. ap_open() (main/net/orb_net.c)
-# promotes WIFI_MODE_STA to WIFI_MODE_APSTA only AFTER esp_wifi_start, and the
-# beacon's 752 B type=4 EB then has nowhere to come from: the STA's own buffers
-# already hold the pool. The symptom was a LoadProhibited panic in
-# ieee80211_hostap on POST /api/v1/wifi/ap (alloc eb len=752 type=4 fail). A true
-# MDNS=n control build reproduced the identical panic, so the mDNS responder is
-# NOT the cause. static-rx 10->6, dynamic rx/tx 32->12, mgmt-sbuf 32->12 leaves
-# enough dedicated EBs for the late APSTA promotion; measured on orb-B, the same
-# POST that panicked now returns 200 and opens orb-<mac> with no Guru. Tradeoff:
-# lower burst throughput on the 2.4 GHz STA link, acceptable for this device's
-# control-plane traffic. If STA throughput or a heavier concurrent-AP load ever
-# regresses, the surgical alternative is an EB-reclaim retry inside ap_open().
+# WiFi driver buffer counts, below the IDF defaults. THIS SETTING IS LOAD-BEARING
+# -- the SoftAP panics without it. Measured again 2026-10-13 on orb-B: with the
+# IDF defaults restored (10/32/32/32), the POST /api/v1/wifi/ap that works at
+# 6/12/12/12 died again with `alloc eb len=752 type=4 fail` twice then a
+# LoadProhibited Guru in ieee80211_hostap.
+#
+# Mechanism: the driver carves its dedicated event-buffer (EB) pool at
+# esp_wifi_init, sized by these counts, and the static RX EBs are never
+# returned by a disconnect. ap_open() promotes WIFI_MODE_STA to WIFI_MODE_APSTA
+# AFTER esp_wifi_start, and the beacon's 752 B type=4 EB (the driver logs
+# `Init max length of beacon: 752/752` -- the same 752) then has no free slot,
+# because static-rx=10 consumed all of them. static-rx=6 leaves the slack the
+# late promotion needs. esp_wifi_disconnect() before the promote does NOT help
+# (it frees general heap, not EBs) -- see the note in ap_open().
+#
+# Unrelated to that, and RESOLVED 2026-10-13: the phone that joined this SoftAP,
+# associated as aid 1 and never got an address was NOT a buffer-trim problem and
+# not a DHCP problem. The real fault is CONFIG_LV_MEM_SIZE below -- LVGL's builtin
+# heap was a 64 KB static array in internal DRAM, which left no room for the
+# config server and the AP's DHCP path in the same boot. Depending on which
+# allocation lost, the same shortage showed up as no captive prompt, as a lease
+# the client never received, or as a 26.9 s first HTTP request (measured: 26.884 s
+# then 0.124 s, i.e. a dropped SYN plus retransmit backoff, not slow handlers).
+# Five explanations were tried and disproven on this bench before it: EB pool
+# starvation, disconnect-before-promote, broadcast-vs-unicast, a missing DNS
+# option, DHCP option 114, late promotion ordering, and the trim itself (raising
+# the counts to 8/24/24 made the ping loss WORSE, 4%/4%/8% with 154 ms mean vs
+# 12%/42 ms at the trim). Every one of them was inferred from one side of a
+# transaction: the orb's own accounting said "lease granted" while the client said
+# "nothing". The witness that finally located it was httpd_start's return code --
+# ESP_ERR_HTTPD_TASK, i.e. the config server never started at all, so the captive
+# DNS was pointing phones at a port nobody listened on.
+#
+# These live ONLY in the untracked generated sdkconfig as well; idf.py prefers
+# that file over sdkconfig.defaults, so deleting the lines here is NOT enough to
+# change a build -- the corresponding lines must go from sdkconfig too.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
@@ -139,6 +161,24 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=12
 # If IRAM ever genuinely overflows, ld says so loudly ("section .iram0.text will
 # not fit in region iram0_0_seg"); that error, not this table, is the trigger to
 # revisit CONFIG_ESP_WIFI_EXTRA_IRAM_OPT / these two knobs.
+
+# LVGL's builtin heap: CONFIG_LV_USE_CLIB_MALLOC is off, so this is a STATIC
+# ARRAY in internal DRAM, not a malloc. At the 64 KB default it starved the
+# network stack enough to break phone provisioning outright -- httpd_start()
+# returned ESP_ERR_HTTPD_TASK (its 8 KB stack had nowhere contiguous to go), main
+# logged "networking down", the clock kept animating, and the config page simply
+# did not exist while the captive DNS sent phones to a closed port.
+# Measured on orb-B 2026-10-13, at the trim above: 47,051 B internal free /
+# 23,552 B largest block after boot at 24 KB, versus 20,623 / 7,168 at 64 KB.
+# Provisioning then served the menu and handed out a lease.
+# DO NOT RAISE THIS without re-checking that the largest internal block stays well
+# above 8 KB at post-httpd_start: this one array is what the OTA failures and the
+# multi-second first HTTP request were also tracing back to. It is a byte-count
+# symbol (CONFIG_LV_MEM_SIZE_KILOBYTES stays 0). If the dial ever grows a
+# widget-heavy screen and LVGL reports exhaustion, measure real usage with
+# lv_mem_monitor() and move the pool to PSRAM rather than growing it in internal
+# DRAM -- this app's pixel buffers and theme arenas are already in PSRAM.
+CONFIG_LV_MEM_SIZE=24576
 
 # ---------------------------------------------------------------------------
 # microSD (theme import). See main/sd/orb_sd.h for what the socket is and is

@@ -91,6 +91,12 @@ si_fn = lift(r"static bool sta_leave_is_self_inflicted\(uint8_t reason\).*?\n\}"
 # from every direction so a future edit cannot drift them shut or open.
 moot_fn = lift(r"static bool connect_attempt_is_moot\(bool[^;]*?return[^;]*;\n\}")
 drop_fn = lift(r"static bool lease_watch_should_drop\(bool[^;]*?return[^;]*;\n\}")
+# The join-intent guard added 2026-10-13 after a bench join with a wrong
+# passphrase produced auth-fail and then silence: the ladder, the failure counter,
+# the rescue and the AP timeout all sit behind a STA_DISCONNECTED event that
+# `if (s_provisioning) break;` discarded. The discriminator is now join intent, so
+# the composition is pinned here — the two tables below only see its result.
+pidle_fn = lift(r"static bool prov_ap_idle\(bool[^;]*?return[^;]*;\n\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -258,6 +264,7 @@ harness = f"""
 {si_fn}
 {moot_fn}
 {drop_fn}
+{pidle_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -341,6 +348,16 @@ static void drop_case(int assoc, int up, int prov, int want){{
     printf("%-5s lease_watch(assoc=%d up=%d prov=%d) -> %-5s (want %s)\\n",
            pass ? "ok" : "FAIL", assoc, up, prov,
            got ? "drop" : "hold", want ? "drop" : "hold");
+}}
+/* The third argument both tables above receive. Four rows, all of them load-
+ * bearing: (1,1) is the bug — a submitted join whose failure was discarded. */
+static void pidle_case(int prov, int join, int want){{
+    const bool got = prov_ap_idle(prov != 0, join != 0);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s prov_ap_idle(prov=%d joining=%d) -> %-4s (want %s)\\n",
+           pass ? "ok" : "FAIL", prov, join,
+           got ? "idle" : "runs", want ? "idle" : "runs");
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -509,9 +526,16 @@ int main(void)
     moot_case(0, 0, 0, 0);   /* genuinely quiet: the attempt must proceed */
     moot_case(1, 0, 0, 1);   /* the wedge window: connect must NOT fire */
     moot_case(0, 1, 0, 1);   /* lease held: moot */
-    moot_case(0, 0, 1, 1);   /* provisioning: moot */
+    moot_case(0, 0, 1, 1);   /* AP up with nothing submitted: moot */
     moot_case(1, 1, 0, 1); moot_case(1, 0, 1, 1);
     moot_case(0, 1, 1, 1); moot_case(1, 1, 1, 1);
+    /* And what feeds that third argument. (1,1) is the provisioning session whose
+     * failure must reach the ladder instead of the silence: the row that was
+     * previously unreachable because the raw flag stood in for this value. */
+    pidle_case(0, 0, 0);   /* ordinary boot, no join pending: not the AP-only case */
+    pidle_case(0, 1, 0);   /* ordinary boot, join in flight: ladder owns it */
+    pidle_case(1, 0, 1);   /* provisioning, nobody has submitted: leave it alone */
+    pidle_case(1, 1, 0);   /* provisioning AFTER a submission: the ladder must run */
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

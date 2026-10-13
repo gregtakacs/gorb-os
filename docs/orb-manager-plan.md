@@ -1414,3 +1414,51 @@ The comment edit that recorded all this is not inert: shortening the block moved
 comment-only change therefore still owes a rebuild and a re-flash, or the board
 runs code the tree no longer describes.
 
+## FIX (2026-10-13) — provisioning join failures were silently discarded
+
+**Symptom, reproduced on the bench.** A forced provisioning boot accepted a
+`PROV` line with the real SSID and a wrong passphrase. The radio answered
+`reason 202` and the device then did nothing at all: no log line past the
+refusal, no failure counter, no retry, no rescue, no timeout. The AP kept
+broadcasting with nothing behind it, `/api/v1/status` stayed frozen at
+`state=provisioning`, and the session was unrecoverable without a reflash.
+
+**Root cause.** `WIFI_EVENT_STA_DISCONNECTED` opened with
+`if (s_provisioning) break;`, commented "AP-only mode: nothing to retry". The
+comment is false on the APSTA boot path — that path is APSTA precisely so the
+station can associate. The gate confused two different states:
+
+| | Provisioning, nothing submitted | Provisioning, join submitted |
+|---|---|---|
+| Old gate | skip — correct | **skip — wrong: this is the user's feedback** |
+| New gate | skip | run the ladder |
+
+**Fix.** New pure predicate `prov_ap_idle(provisioning, joining)`
+(`provisioning && !joining`) now gates the disconnect handler and feeds the third
+argument of both `connect_attempt_is_moot` and `lease_watch_should_drop`. The
+second gate was redundant but real: it would have swallowed the retry even after
+line 1260 was fixed, so the log line would have appeared and the device still
+would never have retried. Signatures unchanged. All three call sites were on the
+`provisioning`-keyed path; `s_joining` is set by `NET_CMD_JOIN` and cleared on
+lease, so an ordinary boot behaves exactly as before.
+
+**Evidence.** Attempts 1 through 4 observed at 5/10/20 s backoff, matching
+`retry_delay_s` exactly; zero `Guru`, zero `alloc eb`; the rescue arm correctly
+did NOT fire (gated on `!s_ap_up`, AP already open — no second AP, no misleading
+"credentials not working" provenance). Ordinary boot re-verified after the
+change: `state connected`, `ap false`, `assoc_fails 0`, RSSI -62. Host suite
+green, including the four new `prov_ap_idle` rows — `prov=1 joining=1 -> runs`
+is the previously unreachable row.
+
+**Test method note worth keeping.** The test overwrites the stored passphrase,
+because the serial PROV path persists credentials before any lease is held.
+`esptool read_flash` of `storage` (0xD60000, 0x6000) before the run and
+`write_flash` after makes it reversible; that is what turned a device-bricking
+bench test into a routine one. The underlying write-before-verify hazard is a
+design item, not a test-harness item, and stays open.
+
+**Still open after this commit.** The provisioning sojourn remains unbounded (no
+`s_ap_timer` armed on that boot), and the credential write still precedes the
+lease. Both belong in the spec. This commit only removes the blocker that made
+the feature unsafe to design around.
+

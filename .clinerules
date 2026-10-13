@@ -714,13 +714,27 @@ Two refusals that are features, not bugs — both cost me a debugging cycle here
   to a second name therefore does not create a second theme; patch `W_SLUG`/`W_TITLE`
   and re-run `_hdr_crc()`, leaving the pixel payload byte-identical.
 
-`tools/host_menu_test.py` covers what the bench cannot reach by hand: the cursor clamp
-at both ends, the no-wrap rule, the 62-row windowing, the back row on both sub-pages,
-the damaged-theme row that must be *shown* with its reason, and a worker result
-landing while the screen is disarmed (which must not paint a list on the title card).
-`--mutations` must stay red on all twelve; one round of it "survived" eleven because
-the lifts were taken at import and the mutated text never reached the compiler — if
-you touch this suite, check it can still fail.
+Since P5.2 (`924d9ec`) one `const menu_page_t s_pages[PG_N]` table is the whole page
+model, so `tools/host_menu_test.py` reads the table instead of a set of switches. It
+lifts the model block, the table, every hook it names, and `activate()` — the press
+paths run on the host now, because the dispatcher no longer touches LVGL. It checks
+131 things: the clamp at both ends, the no-wrap rule, the 62-row zone list with its
+back row, each sub-page's back landing, the D19 cap rows and the worker's pack, the
+press of every page, and a worker result landing while the screen is disarmed (which
+must not paint a list on the title card). The damaged-theme row is no longer this
+file's subject: B2 gave the theme list to the clock app.
+
+`--mutations` must stay red on all forty-eight. Six of the checks are structural
+lints that read the table's text and pin the switch model dead, so a second way to
+say what a page IS fails the suite even when every behavioural check passes. One
+round of the battery "survived" eleven mutants because the lifts were taken at
+import and the mutated text never reached the compiler: if you touch this suite,
+check it can still fail.
+
+The lifted labels, titles and hints are the shipped strings, so identical rendered
+text is pinned here rather than on the glass. When the bench radio will not carry
+`/api/v1/screen`, say the frame-diff line is pending and point at this suite — do
+not claim a rendered-output pass.
 
   the deadlock in one boot, which is the argument for putting it in before the bisecting.
 

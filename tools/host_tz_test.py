@@ -887,11 +887,11 @@ MUTATIONS = [
      'CET-1CEST,M3.5.0,M10.4.0/3'),
     ('iana never emitted', '? "" : "\\"iana\\":\\"",', '? "" : "",'),
     ('config buffer shrunk', 'static char json[6144];\n\n    httpd_resp_set_type(req, "application/json");', 'static char json[2048];\n\n    httpd_resp_set_type(req, "application/json");'),
-    # The cap must stay above the registered-route count (22 today: /, /timezone, /themes,
-    # status, 3 wifi, 2 config, ota, reboot, 5 sd/theme, 5 captive probes). Lowering it
-    # past the count is the bug: httpd_register_uri_handler fails and the route 404s
-    # forever with nothing in the log.
-    ('httpd route cap lowered', 'cfg.max_uri_handlers  = 28;', 'cfg.max_uri_handlers  = 12;'),
+    # The cap must stay above the registered-route count (26 today: /, /timezone,
+    # /themes, /apps, status, 3 wifi, 2 config, ota, reboot, screen, 5 sd/theme,
+    # 2 apps list+install, 5 captive probes). Lowering it past the count is the bug:
+    # httpd_register_uri_handler fails and the route 404s forever with nothing in the log.
+    ('httpd route cap lowered', 'cfg.max_uri_handlers  = 29;', 'cfg.max_uri_handlers  = 12;'),
     # Ruling D13's two predicates, mutated in the file that ships them. Each is the
     # failure the ruling was written to remove, and each must turn a row of the
     # table above red: an install aimed at the factory bank, a boot that draws a

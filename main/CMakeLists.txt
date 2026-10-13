@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "app/orb_app.c"
+        "app/orb_app_install.c"
         "app/orb_app_manifest.c"
         "app/orb_app_scan.c"
         "app/orb_carousel.c"

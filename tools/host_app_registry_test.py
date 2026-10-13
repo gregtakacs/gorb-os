@@ -94,9 +94,11 @@ STUBS = r'''
 /* ---- recording leaf stubs (the real headers declare these) -------------- */
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "orb_app.h"
 #include "clock_view.h"
@@ -138,6 +140,15 @@ const char *esp_err_to_name(esp_err_t c)
         case ESP_ERR_NOT_FOUND: return "ESP_ERR_NOT_FOUND";
         default: return "ERR";
     }
+}
+
+/* The card table is one heap_caps_calloc block on the device; here calloc stands
+ * in (no PSRAM on a host, block is a few KB). It backs the same card_table() the
+ * shipped code runs, so the ledger paths are exercised for real. */
+void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps)
+{
+    (void)caps;
+    return calloc(n, sz);
 }
 
 esp_err_t clock_view_init(void)  { T("clock_init");  return g_rc_clock; }
@@ -529,6 +540,65 @@ int main(void)
        strstr(g_trace, "cur_note:color_picker") != NULL);
     restore_table();
 
+    /* -- D1/C6: an installed card app resolves its behaviour_kind to a
+     *    compiled-in module, then walks the carousel like any compiled entry.
+     *    The card table is a PSRAM block on the device and a calloc here; the
+     *    lift drives the SHIPPED orb_app_card_upsert()/card_fill(), so the
+     *    iface attach, the walk gather, and the ledger-only refusal are the real
+     *    shipping code, not a re-typed copy. -- */
+    restore_table(); orb_app_card_reset();
+    orb_app_t card; memset(&card, 0, sizeof card);
+    card.slug = (char *)"hsb2";            /* distinct from the compiled picker */
+    card.title = (char *)"HSB Card";
+    card.kind = ORB_APP_KIND_APP;
+    card.behaviour_kind = ORB_BEHAVIOUR_COLOR_PICKER;   /* resolves to s_picker_iface */
+    int cidx = orb_app_card_upsert(&card);
+    const orb_app_t *crow = orb_app_row((size_t)cidx);
+    ck("a card app's behaviour_kind resolves to the registered module's iface",
+       cidx == ORB_APP_BASE && crow && crow->iface == orb_app_behaviour_iface(ORB_BEHAVIOUR_COLOR_PICKER)
+       && crow->iface != NULL);
+    ck("a registered card app starts ledger-only: enabled is false from card_fill",
+       crow && crow->enabled == false && orb_app_count() == 3
+       && orb_app_index_of(crow) == ORB_APP_BASE);
+    /* Enable the one card row and rebuild: init_all must run its iface hooks. */
+    ((orb_app_t *)crow)->enabled = true;
+    TR(); orb_app_init_all();
+    ck("an enabled card app builds through its module iface on the boot ladder",
+       strstr(g_trace, "picker_init") != NULL);
+    ck("the qualified card row joins the walkable count", orb_app_count() == 4);
+    /* The menu entry is the compiled tier's last walkable stop; it now steps
+     * onto the card, and the card wraps forward to the dial. */
+    ck("the card app sits in the carousel after the compiled tier",
+       orb_app_neighbour(A("menu"), 1) == crow
+       && orb_app_neighbour(crow, 1) == A("clock")
+       && orb_app_neighbour(A("clock"), -1) == crow);
+    TR(); orb_app_activate(crow);
+    ck("activating the installed card loads the picker screen and stamps its slot",
+       strcmp(g_trace, "load|picker_show|cur_note:hsb2|") == 0);
+    restore_table(); orb_app_card_reset();
+
+    /* An unknown behaviour_kind names no module: the row is in the ledger but
+     * never walkable and never activatable — the validated-not-drawn rule. */
+    orb_app_t bad; memset(&bad, 0, sizeof bad);
+    bad.slug = (char *)"future";
+    bad.title = (char *)"Future";
+    bad.kind = ORB_APP_KIND_APP;
+    bad.behaviour_kind = 4242;             /* no firmware module registers this */
+    int bidx = orb_app_card_upsert(&bad);
+    const orb_app_t *brow = orb_app_row((size_t)bidx);
+    ck("an unregistered behaviour_kind resolves to no iface",
+       brow && brow->iface == NULL && orb_app_behaviour_known(4242) == false
+       && orb_app_behaviour_iface(4242) == NULL);
+    ((orb_app_t *)brow)->enabled = true;   /* force-enable: it must STILL stay out */
+    ck("a card app with no module never joins the walkable set",
+       orb_app_count() == 3 && orb_app_neighbour(A("menu"), 1) == A("clock")
+       && orb_app_neighbour(crow, 1) != brow);
+    ck("and it cannot be activated — no screen to load, the dial stays put",
+       orb_app_activate(brow) != ESP_OK && orb_app_current() != brow);
+    ck("but it IS in the owner's ledger, indexed at its card slot",
+       orb_app_row((size_t)bidx) == brow && orb_app_index_of(brow) == ORB_APP_BASE + (bidx - ORB_APP_BASE));
+    restore_table(); orb_app_card_reset();
+
     /* -- the shell page is chrome, not an app -- */
     restore_table();
     ck("the options page is tagged shell chrome", A("menu")->kind == ORB_APP_KIND_SHELL);
@@ -587,6 +657,10 @@ def main():
                       "void lv_screen_load(lv_obj_t *new_screen);\n",
             "esp_partition.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
                                "typedef struct esp_partition esp_partition_t;\n",
+            "esp_heap_caps.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
+                               "#define MALLOC_CAP_SPIRAM 0\n"
+                               "#define MALLOC_CAP_8BIT 0\n"
+                               "void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps);\n",
         }
         for n, body in hdrs.items():
             with open(os.path.join(td, n), "w") as f:

@@ -53,6 +53,7 @@
 #include "orb_sd.h"
 #include "orb_theme.h"
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
+#include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 
 static const char *TAG = "orb_net";
@@ -3051,6 +3052,49 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
+/* POST /api/v1/apps/install?id=X — queue a card .orbapp onto the worker (P4).
+ *
+ * The browser names a container by the card stem the /api/v1/apps listing gave
+ * it, never by a path it typed: orb_app_install resolves that stem by walking the
+ * registered ("orb","apps") source and re-verifying the header under the card lock,
+ * so a crafted id can only ever select a real .orbapp in the drop zone. The route
+ * itself only validates the stem is a legal FATFS name (orb_sd_name_ok) and queues
+ * the job; the multi-second card-to-flash copy is the worker's, exactly as a theme
+ * install's is. A 202-style "installing" reply means the job was accepted, not that
+ * it finished — the owner reloads /apps to see the row and any refusal it earned. */
+static esp_err_t h_apps_install(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char stem[ORB_SD_NAME_MAX + 1] = "";
+    if (!q_param(req, "id", stem, sizeof stem) || !orb_sd_name_ok(stem)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a usable app name\"}");
+    }
+    const esp_err_t e = orb_app_install_post(stem);
+    if (e == ESP_ERR_INVALID_STATE) {
+        /* One job at a time (orb_jobs' gate): a second press while a copy runs is
+         * 409, not 422 — the app may be perfectly installable and the answer is to
+         * wait for the first to finish and reload. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"a card job is already running\"}");
+    }
+    if (e == ESP_ERR_NO_MEM) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"the install queue is full\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    const int n = snprintf(b, sizeof b, "{\"state\":\"installing\",\"stem\":\"%s\"}", stem);
+    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"stem too long\"}");
+    return httpd_resp_sendstr(req, b);
+}
+
 /* POST /api/v1/sd/theme[?overwrite=1], body = the .orbtheme bytes.
  *
  * Raw body, not multipart: a boundary-following parser is ~200 lines of state machine
@@ -3580,11 +3624,14 @@ static esp_err_t h_themes(httpd_req_t *req)
  * consult — orbapp_caps_names() is that one source, and this page never
  * re-rolls a capability list of its own.
  *
- * There is no Install button yet, and none is faked. Installing is the
- * verify-then-header ladder (D9) against the apps partition, and a button
- * that queued nothing would teach the owner that the page lies. It arrives
- * with the installer itself, the next P4 slice; until then an accepted card
- * says what it is, and a refused one says what to fix on the card.
+ * The Install button queues the verify-then-header ladder (D9) against the apps
+ * partition through the worker — it is the same orb_app_install() the boot ladder
+ * mirrors from the slot side, so the page and the dial cannot disagree about what
+ * installing means. The button is behind a confirm(): an install writes flash and
+ * the plan's rule is that nothing destructive runs without the owner costing it
+ * first. An accepted card says what it is and offers the copy; a refused one says
+ * what to fix on the card and offers nothing, and the row's refusal never gains a
+ * button.
  *
  * The script follows the themes page's rules — every statement ends in a
  * semicolon, nothing destructive skips its costing sentence — even though
@@ -3635,7 +3682,9 @@ static const char HTML_APPS[] =
 "+(a.n_settings?' \\u00b7 '+a.n_settings+' setting'+(a.n_settings==1?'':'s'):'')"
 "+(a.art_size?' \\u00b7 art '+bytes(a.art_size):'')+' \\u00b7 file '+bytes(a.file_size)+'</div>';"
 "if(!a.ok){h=h+'<div class=no>CANNOT INSTALL: '+esc(a.why)+'</div>';}"
+"else{h=h+'<div style=\"margin-top:.3rem\"><button onclick=\"install(\\''+esc(a.stem)+'\\',this)\">Install on the dial</button></div>';}"
 "h=h+'</div>';}L.innerHTML=h;}"
+"function install(stem,btn){if(!confirm('Install '+stem+' from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.')){return;}if(btn){btn.disabled=true;}say('installing '+stem+' from the card...','');j('/api/v1/apps/install?id='+encodeURIComponent(stem),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused the install: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('install queued for '+stem+' — reload to see whether it landed','');refresh();}).catch(function(){say('orb not reachable','bad');if(btn){btn.disabled=false;}});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
 "</script></body></html>";
@@ -3737,9 +3786,10 @@ static esp_err_t net_start_httpd(void)
      * already answers 404 on the running device while the 8 before it 302. Raise
      * it with room for the endpoints this feature needs, and check the return
      * below rather than trusting the count. The /timezone page brings the table
-     * to 15 registered routes; the /apps pair brings the table to 25 today, and
-     * 28 keeps headroom for the install and uninstall POSTs (P4's next pair). */
-    cfg.max_uri_handlers  = 28;
+     * to 15 registered routes; the /apps pair brought it to 25, and this slice's
+     * /api/v1/apps/install POST is the 26th, so 29 keeps headroom for the uninstall
+     * POST and the next pair without touching this line again. */
+    cfg.max_uri_handlers  = 29;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -3791,6 +3841,7 @@ static esp_err_t net_start_httpd(void)
          * call. Neither can touch anything but a read of the card. */
         { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
+        { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/install",  .method = HTTP_POST, .handler = h_theme_install },

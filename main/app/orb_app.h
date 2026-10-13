@@ -141,6 +141,15 @@ struct orb_app {
     orb_app_kind_t      kind;
     bool                is_home;   /* C8: the long-press returns here */
 
+    /* D1/C6: the compiled-in behaviour module that interprets this app. Zero
+     * (ORB_BEHAVIOUR_NONE) means the entry carries its iface directly — every
+     * compiled-in app, and every card app whose declared kind the firmware does
+     * not know. A card row's kind comes from the slot header (orbapp_hdr_t);
+     * when it names a registered module, card_fill() attaches that module's
+     * iface and the app becomes walkable. An unknown kind is a ledger-only row
+     * with no screen, never a corrupt dial — the theme_schema.py:23 rule. */
+    uint32_t            behaviour_kind;
+
     /* Art coordinates inside the `assets` partition. Both zero means the app
      * is vector-only and claims no bank — color_picker's case. A non-zero
      * size is claimed through art_bank_map_extra() at activate and released
@@ -186,6 +195,82 @@ struct orb_app {
 };
 
 #define ORB_APP_CAP 8   /* B5: cap 8 installed, hard, no repartition */
+
+/* Card-app storage caps — the manifest's field widths restated here so the
+ * registry's card table compiles WITHOUT main/app/orb_app_manifest.h (the
+ * registry's host sentinel, tools/host_app_registry_test.py, lifts this whole
+ * file and recompiles it against orb_app.h and the view headers alone — it
+ * does not have the manifest reader in scope). tools/host_orbapp_install_test.py
+ * pins that each number here equals its orb_app_manifest.h twin; a change that
+ * moves one and not the other fails there, not on the dial. */
+#define ORB_APP_SLUG_MAX     24   /* == ORBAPP_SLUG_MAX   */
+#define ORB_APP_TITLE_MAX    32   /* == ORBAPP_TITLE_MAX  */
+#define ORB_APP_SETTINGS_MAX 16   /* == ORBAPP_SETTINGS_MAX */
+
+/** The compiled-in entry count — the base every card-app registry index sits on.
+ *  Clock, color_picker, menu. Card apps occupy indices ORB_APP_BASE..+CAP-1 so
+ *  the broker keys their grants on a slot no compiled-in app can ever hold. */
+#define ORB_APP_BASE 3
+
+/** The registry's card table (plan P4). Installed .orbapp apps live here, beside
+ *  the three compiled-in entries rather than inside them, so orb_app_count()/at()/
+ *  neighbour()/service_all() keep walking only the compiled tier (a card app has
+ *  no iface until the P6 VM tier builds one) while the ledger — orb_app_rows()/
+ *  row()/find_slug()/index_of() and therefore the broker's grant words — sees
+ *  both. On a build with nothing installed the card table is empty and every
+ *  compiled-tier count is exactly what it was before P4. Boot-resolve (main.c)
+ *  and orb_app_install() are the only writers; both run off the LVGL task.
+ *
+ *  row is copied in by value; its slug/title/settings are re-pointed at THIS
+ *  table's own stable storage before it is stored, so the caller's buffers may
+ *  be a stack temporary. Returns the row's registry index (>= ORB_APP_BASE), or
+ *  -1 when the table is full and the slug is new (B5). An existing slug is
+ *  updated in place, keeping its index — so a re-install does not move the
+ *  broker's grant word. */
+int orb_app_card_upsert(const orb_app_t *row);
+
+/** True when a card row already holds `slug`. The install gate asks before it
+ *  decides whether this is a new install (B5 counts it) or a re-use (it does
+ *  not). Scans the card table only; the compiled tier's slugs never collide. */
+bool orb_app_card_has(const char *slug);
+
+/** How many installed card apps there are — the B5 tally the installer reads
+ *  before it spends an erase on a ninth. */
+int orb_app_card_count(void);
+
+/** Boot-resolve's reset: clear the card table so the boot ladder can rebuild it
+ *  from the apps-partition slots without a stale row from a prior boot surviving
+ *  a partition that changed underneath it. Only main.c calls it, once. */
+void orb_app_card_reset(void);
+
+/* ---- the behaviour-module registry (D1 / C6) ------------------------------
+ *
+ * A `.orbapp` carries data, never code (D2). Its `behaviour_kind` word is an
+ * opaque index into this compiled-in table; the module it names is the OS code
+ * that interprets that data — builds the widgets, drives the tick, answers the
+ * knob. Ruling D15 (2026-10-12) shipped the OS registering NONE, so the word sat
+ * reserved at zero; naming the first kind is D15's own "first real use reopens
+ * it" clause, exercised here by the HSB picker. The IDs are append-only (C6):
+ * never renumbered, never reused, so an installed app keeps pointing at the same
+ * module across every firmware build. */
+enum {
+    ORB_BEHAVIOUR_NONE         = 0,  /* reserved: not a module, entry keeps its own iface */
+    ORB_BEHAVIOUR_COLOR_PICKER = 1,  /* the HSB editor: LVGL-drawn, vector-only   */
+};
+
+/** The iface the compiled-in module behind `behaviour_kind` builds with, or NULL
+ *  when nothing is registered under that id. A card app is walkable only when
+ *  this answers non-NULL AND it is enabled: an unregistered kind is the
+ *  validated-not-drawn discipline's bad row — it stays in the ledger, unreachable
+ *  by the knob, exactly as theme_schema.py:23 treats an unknown vocabulary kind. */
+const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind);
+
+/** True when a compiled-in module is registered under this id. The status
+ *  endpoint and the APPS page read it to show WHY a card app cannot open: an
+ *  installed app declaring a kind this firmware build does not know is refused at
+ *  install with that reason on the row (shown-with-reason), rather than silently
+ *  booting as a blank screen. */
+bool orb_app_behaviour_known(uint32_t behaviour_kind);
 
 /** Build every enabled app in table order. Call after display_init and before
  *  input_router_init: the clock must exist before the router loads it. */

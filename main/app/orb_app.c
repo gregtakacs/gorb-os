@@ -26,7 +26,10 @@
 
 #include "orb_app.h"
 
+#include <stdio.h>      /* card_fill's snprintf into the row's own buffers */
 #include <string.h>
+
+#include "esp_heap_caps.h"   /* the card table lives in PSRAM, not internal .bss */
 
 #include "clock_view.h"
 #include "clock_themes.h"
@@ -203,6 +206,43 @@ static const orb_app_iface_t s_menu_iface = {
     .opt_long   = menu_long,
 };
 
+/* ---- the behaviour-module registry (D1 / C6) ------------------------------
+ *
+ * The one table a declarative `.orbapp` package is matched against. A card row's
+ * `behaviour_kind` is an index here; the module it names is the compiled-in OS
+ * code that actually draws the app. D1's whole premise is that the pixel path is
+ * priced in hardware and cannot be interpreted, so an installed app never carries
+ * drawing code — it carries data (slug, title, settings, the caps the manifest
+ * declares) plus this one integer, and the interpreter lives in the firmware.
+ *
+ * Append-only (C6): IDs are assigned forever and never reused. ORB_BEHAVIOUR_NONE
+ * (0) is deliberately absent from the table — it is not a module, it means "this
+ * entry names its iface directly", which is how every compiled-in app and every
+ * unknown-kind card row behaves. The picker registers as the FIRST real module,
+ * reopens D15's reserved-zero clause under its own "first real use" allowance, and
+ * reuses s_picker_iface verbatim: the installed app and the compiled-in one are
+ * the same code interpreting the same container words, which is the point. */
+typedef struct {
+    uint32_t                  kind;
+    const orb_app_iface_t    *iface;
+} orb_behaviour_module_t;
+
+static const orb_behaviour_module_t s_behaviour[] = {
+    { ORB_BEHAVIOUR_COLOR_PICKER, &s_picker_iface },
+};
+
+const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind)
+{
+    for (size_t i = 0; i < sizeof s_behaviour / sizeof s_behaviour[0]; i++)
+        if (s_behaviour[i].kind == behaviour_kind) return s_behaviour[i].iface;
+    return NULL;   /* ORB_BEHAVIOUR_NONE and any unregistered id */
+}
+
+bool orb_app_behaviour_known(uint32_t behaviour_kind)
+{
+    return orb_app_behaviour_iface(behaviour_kind) != NULL;
+}
+
 /* ---- the table ----------------------------------------------------------- */
 
 /* Index order is the knob's carousel order, and the boot order. The plan's P2
@@ -272,6 +312,169 @@ static orb_app_t s_apps[] = {
 #define ORB_APP_N (sizeof(s_apps) / sizeof(s_apps[0]))
 
 static orb_app_t *s_current;
+
+/* ---- the card table (P4): installed .orbapp apps, beside the compiled three --
+ *
+ * A card app draws nothing until its declared behaviour_kind names a
+ * compiled-in module (D1/C6): orb_app_behaviour_iface() turns that integer into
+ * the orb_app_iface_t that builds its widgets. A qualified card row — used,
+ * enabled, not failed, iface non-NULL — walks the carousel exactly like a
+ * compiled entry; orb_app_walk_gather() below is the one place that ordering is
+ * defined, so neighbour()/count()/service_all()/disarm_all() all agree on the
+ * walkable set. A row whose iface is NULL (ORB_BEHAVIOUR_NONE or a kind this
+ * firmware build does not register) is NEVER walkable and NEVER activated: it
+ * belongs in the ledger only — the status endpoint, the APPS page, orb_app_
+ * find_slug() for the ?to= route, and above all the broker's grant words keyed by
+ * orb_app_index_of(). Hence a parallel table at indices ORB_APP_BASE.., exactly
+ * the slack orb_svc.c reserves (ORB_SVC_ROWS = 3 compiled + 8 apps). The three
+ * compiled entries stay the whole of s_apps, so every host registry-test pin on
+ * count()/rows()/index_of() is unchanged when nothing is installed.
+ *
+ * Strings and settings are copied into this entry's OWN buffers on upsert, so a
+ * caller may hand a stack orb_app_t whose slug/title/settings point at the manifest
+ * bytes it is about to free; the resident row keeps valid pointers after.
+ *
+ * The table is one PSRAM block, not an internal .bss array. Eight entries each
+ * carrying a settings_store[ORB_APP_SETTINGS_MAX] of ~64 B descriptors total ~9 KB,
+ * and orb_theme.c and art_bank.c already establish that any block of this size is
+ * heap_caps_malloc'd from MALLOC_CAP_SPIRAM here — the device boots with only ~7 KB
+ * of largest internal block, so a 9 KB static is not spare it can afford. Readers
+ * run the compiled tier even when s_card is NULL (no block = nothing installed);
+ * only the writers force the allocation, and a failed allocation is the same answer
+ * as an empty table to the ledger. */
+typedef struct {
+    orb_app_t          app;                 /* the ledger-visible record        */
+    bool               used;                /* this card slot holds an install  */
+    char               slug_store[ORB_APP_SLUG_MAX];
+    char               title_store[ORB_APP_TITLE_MAX];
+    orb_setting_desc_t settings_store[ORB_APP_SETTINGS_MAX];
+} card_entry_t;
+
+static card_entry_t *s_card;   /* PSRAM, one block; NULL until a writer needs it */
+
+/* Allocate the card table from PSRAM on first use, zeroed. Idempotent: the writers
+ * call it, and the readers only touch s_card once a writer has run. Returns NULL
+ * only if the block cannot be had, which leaves the ledger showing the compiled
+ * three — the pre-P4 answer — never a half-formed table. */
+static card_entry_t *card_table(void)
+{
+    if (!s_card)
+        s_card = heap_caps_calloc(ORB_APP_CAP, sizeof *s_card,
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return s_card;
+}
+
+/* Copy row's scalar fields into slot s, re-pointing slug/title/settings at s's
+ * own stable buffers. The scalar copy is by value (orb_app_t is small and POD);
+ * the three pointers are then fixed up. kind comes from row so a card app is
+ * tagged ORB_APP_KIND_APP; is_home is forced false (the clock stays home, C8) and
+ * iface is DERIVED here from behaviour_kind, never taken from the caller — see the
+ * D1/C6 note at the assignment. behaviour_kind itself rides in from row (the slot
+ * header), which is the word the dispatch keys on. */
+static void card_fill(card_entry_t *s, const orb_app_t *row)
+{
+    const orb_setting_desc_t *settings = row->settings;
+    int n = row->n_settings;
+    s->app = *row;                       /* scalars + the caller's pointers      */
+
+    s->slug_store[0] = '\0';
+    if (row->slug) snprintf(s->slug_store, sizeof s->slug_store, "%s", row->slug);
+    s->app.slug = s->slug_store;
+
+    s->title_store[0] = '\0';
+    if (row->title) snprintf(s->title_store, sizeof s->title_store, "%s", row->title);
+    s->app.title = s->title_store;
+
+    if (n > ORB_APP_SETTINGS_MAX) n = ORB_APP_SETTINGS_MAX;
+    if (settings && n > 0)
+        memcpy(s->settings_store, settings, (size_t)n * sizeof(orb_setting_desc_t));
+    s->app.settings     = s->settings_store;
+    s->app.n_settings   = n;
+    s->app.alias        = NULL;            /* a card app has no legacy name      */
+    /* D1/C6: the iface comes from the compiled-in module its behaviour_kind
+     * names, NOT from the caller — a card package carries data only. A kind the
+     * firmware registers resolves to that module's iface and the app is walkable;
+     * ORB_BEHAVIOUR_NONE or an unknown id resolves to NULL and the row stays
+     * ledger-only, so nothing can ever draw a screen nobody wrote. The caller's
+     * iface field is deliberately ignored here (card_fill's whole reason to
+     * re-point the string fields): a stack row from a scan cannot smuggle an
+     * iface into the resident record. */
+    s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
+    s->app.is_home      = false;           /* the clock stays home (C8)           */
+    s->app.installed    = true;
+    s->app.enabled      = false;           /* P6 wires the run-on-boot decision   */
+    s->app.active       = false;
+    s->used             = true;
+}
+
+static card_entry_t *card_find(const char *slug)
+{
+    if (!slug || !*slug || !s_card) return NULL;
+    for (int i = 0; i < ORB_APP_CAP; i++)
+        if (s_card[i].used && strcmp(s_card[i].slug_store, slug) == 0)
+            return &s_card[i];
+    return NULL;
+}
+
+int orb_app_card_upsert(const orb_app_t *row)
+{
+    if (!row || !row->slug || !row->slug[0]) return -1;
+    if (!card_table()) return -1;                       /* no PSRAM: table full    */
+
+    card_entry_t *s = card_find(row->slug);           /* re-install: keep the index */
+    if (!s) {
+        for (int i = 0; i < ORB_APP_CAP; i++)
+            if (!s_card[i].used) { s = &s_card[i]; break; }
+    }
+    if (!s) return -1;                                /* B5: table full, slug new   */
+    const int idx = ORB_APP_BASE + (int)(s - s_card);
+    card_fill(s, row);
+    return idx;
+}
+
+bool orb_app_card_has(const char *slug) { return card_find(slug) != NULL; }
+
+int orb_app_card_count(void)
+{
+    if (!s_card) return 0;                              /* no block = nothing installed */
+    int n = 0;
+    for (int i = 0; i < ORB_APP_CAP; i++) if (s_card[i].used) n++;
+    return n;
+}
+
+void orb_app_card_reset(void)
+{
+    if (s_card) memset(s_card, 0, (size_t)ORB_APP_CAP * sizeof *s_card);
+}
+
+/* ---- the combined walkable order (D1/C6) ----------------------------------
+ *
+ * The one definition of "what the knob can stop on": the compiled entries in
+ * table order, then the qualified card rows in slot order. A card row is
+ * qualified when it is used, enabled, not failed, and its behaviour_kind named a
+ * registered module — so iface is non-NULL and there is code to run it. That
+ * last clause is the whole point of the registry: an installed package cannot
+ * walk the dial unless the firmware actually ships the module it names, exactly
+ * as an unknown vocabulary kind is a skipped row in a theme (theme_schema.py:23).
+ *
+ * The count and the gather walk the SAME predicate so neighbour(), count(),
+ * service_all() and disarm_all() can never disagree about the walkable set, and
+ * a caller cannot get a pointer from one that the others refuse. With no card
+ * installed the list is exactly the compiled walkable tier, so every existing
+ * registry pin on these numbers holds unchanged. */
+static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < ORB_APP_N && n < max; i++)
+        if (s_apps[i].enabled && !s_apps[i].failed) list[n++] = &s_apps[i];
+    if (s_card)
+        for (int k = 0; k < ORB_APP_CAP && n < max; k++)
+            if (s_card[k].used && s_card[k].app.enabled &&
+                !s_card[k].app.failed && s_card[k].app.iface)
+                list[n++] = &s_card[k].app;
+    return n;
+}
+
 /* ---- the API the shell calls --------------------------------------------- */
 
 size_t orb_app_count(void)
@@ -280,11 +483,11 @@ size_t orb_app_count(void)
      * APPS page can still show it with its reason, but the carousel must not
      * stop on a blank screen. The count is computed, not cached, because
      * P4's enable/disable flips these flags at runtime and a cached count is
-     * one more thing to forget to update. */
-    size_t n = 0;
-    for (size_t i = 0; i < ORB_APP_N; i++)
-        if (s_apps[i].enabled && !s_apps[i].failed) n++;
-    return n;
+     * one more thing to forget to update. Card rows join only once enabled AND
+     * their behaviour_kind resolved to a registered module (walkable gather);
+     * with nothing installed s_card is empty and this is the compiled count. */
+    orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
+    return orb_app_walk_gather(list, sizeof list / sizeof list[0]);
 }
 
 const orb_app_t *orb_app_at(size_t idx)
@@ -301,13 +504,21 @@ size_t orb_app_rows(void)
 {
     /* Raw row count, disabled and FAILED entries included: the owner's
      * ledger (/api/v1/status, the P4 APPS page) is exactly about the apps
-     * the carousel hides. The carousel keeps using orb_app_count(). */
-    return ORB_APP_N;
+     * the carousel hides. The carousel keeps using orb_app_count(). Card
+     * apps appear here and nowhere the knob can reach: with nothing installed
+     * this is still ORB_APP_N, so every host registry pin on the count holds. */
+    return ORB_APP_N + (size_t)orb_app_card_count();
 }
 
 const orb_app_t *orb_app_row(size_t i)
 {
-    return i < ORB_APP_N ? &s_apps[i] : NULL;
+    if (i < ORB_APP_N) return &s_apps[i];
+    /* The card rows follow, in slot order, skipping the free slots so the
+     * ledger's i is dense over what is actually installed. */
+    int seen = (int)i - (int)ORB_APP_N;
+    for (int k = 0; s_card && k < ORB_APP_CAP; k++)
+        if (s_card[k].used && seen-- == 0) return &s_card[k].app;
+    return NULL;
 }
 
 const orb_app_t *orb_app_find_slug(const char *slug)
@@ -322,6 +533,13 @@ const orb_app_t *orb_app_find_slug(const char *slug)
     for (size_t i = 0; i < ORB_APP_N; i++)
         if (s_apps[i].alias && strcmp(s_apps[i].alias, slug) == 0)
             return &s_apps[i];
+    /* Card apps resolve too — ?to=<card-slug> and GET /api/v1/screen name them —
+     * but only after the compiled tier, so an installed app can never shadow the
+     * clock or the picker. A card app has no iface, so activation refuses it; a
+     * slug lookup still finds it for the ledger. */
+    for (int k = 0; s_card && k < ORB_APP_CAP; k++)
+        if (s_card[k].used && strcmp(s_card[k].slug_store, slug) == 0)
+            return &s_card[k].app;
     return NULL;
 }
 
@@ -339,6 +557,11 @@ int orb_app_index_of(const orb_app_t *app)
     if (!app) return -1;
     for (size_t i = 0; i < ORB_APP_N; i++)
         if (&s_apps[i] == app) return (int)i;
+    /* Card rows get a stable index at ORB_APP_BASE + slot, which is what keys
+     * the broker's grant word — pointer-matched so the answer cannot drift from
+     * the row the ledger handed out. */
+    for (int k = 0; s_card && k < ORB_APP_CAP; k++)
+        if (s_card[k].used && &s_card[k].app == app) return ORB_APP_BASE + k;
     return -1;
 }
 
@@ -390,6 +613,36 @@ esp_err_t orb_app_init_all(void)
         }
         app->installed = true;
     }
+
+    /* The card table, built after the compiled tier so an installed app never
+     * init()s ahead of the clock's worker task (the boot-order rule above).
+     * card_fill() leaves every card disabled until the run-on-boot decision
+     * lands, so on a real flash this loop is inert and nothing is installed; the
+     * registry's host sentinel enables a row to prove an installed app's iface
+     * init/screen hooks run exactly like a compiled entry's. A card row here
+     * always has an iface — the caller resolved behaviour_kind to a registered
+     * module — so a NULL iface means an unregistered kind: it stays ledger-only
+     * (never built, never walkable), the validated-not-drawn rule made literal. */
+    for (int k = 0; s_card && k < ORB_APP_CAP; k++) {
+        orb_app_t *app = &s_card[k].app;
+        if (!s_card[k].used || !app->enabled || app->failed) continue;
+        if (!app->iface || !app->iface->init || !app->iface->screen) {
+            ESP_LOGW(TAG, "%s: no registered behaviour module (kind %lu) — ledger only",
+                     app->slug, (unsigned long)app->behaviour_kind);
+            app->enabled = false;
+            continue;
+        }
+        const esp_err_t err = app->iface->init(app);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "%s: init failed (%s) — dropped from the carousel",
+                     app->slug, esp_err_to_name(err));
+            app->enabled = false;
+            app->failed  = true;
+            continue;
+        }
+        app->installed = true;
+    }
+
     ESP_LOGI(TAG, "%u app(s) built, %d walkable",
              (unsigned)ORB_APP_N, (int)orb_app_count());
     return ESP_OK;
@@ -465,6 +718,12 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
     if (orb_app_index_of(app) < 0) return ESP_ERR_INVALID_ARG;
     if (app->failed)  return ESP_ERR_INVALID_STATE;
     if (!app->enabled) return ESP_ERR_NOT_SUPPORTED;
+    /* D1/C6: an installed card app whose declared behaviour_kind no firmware
+     * module registered has no iface — nothing was ever built to draw it. The
+     * gather already keeps it out of the carousel; refusing it here too closes
+     * the direct-activate path (?to=<card-slug>, a route) so a below-ABI package
+     * can never reach the iface derefs below and take the dial down with it. */
+    if (!app->iface) return ESP_ERR_NOT_SUPPORTED;
 
     orb_app_t *old = s_current;
     if (old == app) {
@@ -570,10 +829,13 @@ void orb_app_service_all(void)
     /* Every enabled entry, not just the visible one: C7 keeps a parked app's
      * worker jobs reaping, so a refresh posted before a rotation still lands.
      * Repainting from here would be the cadence collapse the fps findings
-     * measured, which is why nothing in this loop loads a screen. */
-    for (size_t i = 0; i < ORB_APP_N; i++) {
-        orb_app_t *app = &s_apps[i];
-        if (!app->enabled || app->failed) continue;
+     * measured, which is why nothing in this loop loads a screen. The combined
+     * gather is used so a qualified card app reaps its jobs too; its iface is
+     * non-NULL by the gather's own condition, so the deref is safe. */
+    orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
+    const size_t n = orb_app_walk_gather(list, sizeof list / sizeof list[0]);
+    for (size_t k = 0; k < n; k++) {
+        orb_app_t *app = list[k];
         if (app->iface->service) app->iface->service(app);
     }
 }
@@ -584,9 +846,10 @@ void orb_app_disarm_all(void)
      * app can never be left armed off-screen and then steal the next turn from
      * the view actually showing — the failure input_router.c guarded against by
      * hand when it named the menu and the picker in disarm_all(). */
-    for (size_t i = 0; i < ORB_APP_N; i++) {
-        orb_app_t *app = &s_apps[i];
-        if (!app->enabled || app->failed) continue;
+    orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
+    const size_t n = orb_app_walk_gather(list, sizeof list / sizeof list[0]);
+    for (size_t k = 0; k < n; k++) {
+        orb_app_t *app = list[k];
         if (app->iface->set_armed) app->iface->set_armed(app, false);
     }
 }
@@ -599,26 +862,32 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step)
      * entry, which is what the boot ask wants — the dial, since the table leads
      * with it.
      *
+     * The walk is over the combined order (compiled tier then qualified card
+     * rows), the same predicate count() reports, so a qualified installed app
+     * sits in the ring beside the compiled pair and an unqualified one (iface
+     * NULL — no module this firmware registers) is skipped exactly like a
+     * disabled entry. Position is found by pointer, not orb_app_index_of(),
+     * because a card row's index is ORB_APP_BASE+slot while this walk is dense
+     * over only the walkable set.
+     *
      * One step per call, in the direction turned: a fast burst reports several
      * detents and must not fly past every screen and stop somewhere nobody
      * aimed at, which is why input_router feeds this one step per poll. */
-    const size_t n = ORB_APP_N;
-    int i = orb_app_index_of(from);
-    if (i < 0) {
-        /* Nothing visible yet: the first walkable entry, from the top. */
-        for (size_t k = 0; k < n; k++)
-            if (s_apps[k].enabled && !s_apps[k].failed) return &s_apps[k];
-        return NULL;
-    }
-    /* Skip over anything unwalkable, but never loop forever: at most n hops in
-     * the given direction, so a table of one walkable entry returns itself and
-     * a table of none returns NULL rather than spinning the LVGL task. */
-    for (size_t hops = 0; hops < n; hops++) {
-        i = (int)(((long)i + step) % (long)n);
-        if (i < 0) i += (int)n;
-        if (s_apps[i].enabled && !s_apps[i].failed) return &s_apps[i];
-    }
-    return NULL;
+    orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
+    const size_t n = orb_app_walk_gather(list, sizeof list / sizeof list[0]);
+    if (n == 0) return NULL;
+
+    int i = -1;
+    for (size_t k = 0; k < n; k++)
+        if (list[k] == from) { i = (int)k; break; }
+    if (i < 0) return list[0];   /* nothing visible yet: the first walkable, the dial */
+
+    /* The gather already dropped every unwalkable entry, so a step never needs
+     * to skip: one modular move lands on the next thing the knob can stop on,
+     * and a table of one walkable entry returns itself (the ring folds back). */
+    i = (int)(((long)i + step) % (long)n);
+    if (i < 0) i += (int)n;
+    return list[i];
 }
 
 /* ---- options, one face per app (B1/B2) ------------------------------------

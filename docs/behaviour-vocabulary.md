@@ -47,9 +47,19 @@ interprets in its own code. Three consequences:
   validated-not-drawn discipline (`clock_view.c:1086-1091`) is vocabulary
   rules the clock app carries, and §12's ABI already lets a bad app hang
   itself without touching the OS.
-- `behaviour_kind` in §4.1's manifest header is **reserved 0**, same
+- `behaviour_kind` in §4.1's manifest header shipped **reserved 0**, same
   discipline as `sig` (C3: reserved, signing later moves nothing). Nothing
-  registers into it until something demands it.
+  registered into it until something demanded it — that "first real use"
+  landed 2026-10-13 when the HSB colour picker became the first registered
+  behaviour kind (`ORB_BEHAVIOUR_COLOR_PICKER = 1`, `main/app/orb_app.c`'s
+  `s_behaviour[]`, the C6 table). The IDs are append-only: never renumbered,
+  never reused. A card app is walkable only when its declared kind names a
+  module this firmware registers; an unknown kind stays a ledger-only row with
+  no screen — the same skipped-row discipline `theme_schema.py:23` applies to an
+  unknown vocabulary kind. The picker stayed compiled-in alongside the new
+  module (P6 splits `apps/clock/` for real and removes it); registering the kind
+  proved the resolver → `s_card` → broker-grants dispatch, host-pinned by
+  `tools/host_app_registry_test.py`.
 
 ## 3. The conversion ruling — D15's Q1, answered
 
@@ -139,7 +149,7 @@ Owner, 2026-10-12:
 | Q | Question | Answer |
 |---|---|---|
 | **Q1** | Does `orb_svc_t.now()` hand out the OS's converted local `struct tm`, or only the raw `time_t`? | **Raw `time_t` only — apps convert themselves; the OS just guarantees the seconds.** Recorded in full in §3 |
-| Q2 | §4.1's `behaviour_kind` ships reserved 0? | Stands as decided by precedent (`sig`, `COMP_FIELDS.reserve`); no owner input required, first real use reopens it |
+| Q2 | §4.1's `behaviour_kind` ships reserved 0? | **Reopened and answered 2026-10-13** under its own "first real use" clause: the HSB picker registered as `ORB_BEHAVIOUR_COLOR_PICKER = 1` in the C6 table (`orb_app.c`'s `s_behaviour[]`). Append-only IDs. See §2 above |
 
 This paper is signed as **D15** (`docs/app-platform-plan.md` §0.5). It
 closes §8's P0 row — the last open gate — and §9's item 2, and freezes the

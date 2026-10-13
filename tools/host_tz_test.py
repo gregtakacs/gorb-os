@@ -97,6 +97,14 @@ drop_fn = lift(r"static bool lease_watch_should_drop\(bool[^;]*?return[^;]*;\n\}
 # `if (s_provisioning) break;` discarded. The discriminator is now join intent, so
 # the composition is pinned here — the two tables below only see its result.
 pidle_fn = lift(r"static bool prov_ap_idle\(bool[^;]*?return[^;]*;\n\}")
+# The lease-gated credential write (D3, 2026-10-13). Both doors used to
+# nvs_set_str() the instant the form was accepted, so one mistyped passphrase
+# overwrote a working credential and took the orb off its network. The write now
+# waits for a lease, and two pure decisions gate it: whether THIS lease authorises
+# a write, and whether the pair is a passphrase or an open network (getting the
+# second wrong leaves a blank "pass" in flash that reads back as a credential).
+commit_fn = lift(r"static bool lease_verifies_creds\(bool[^;]*?return[^;]*;\n\}")
+erase_fn  = lift(r"static bool creds_erase_key\(const char \*pass\)\n\{[^}]*\}")
 # The captive-portal DNS reply builder, lifted for the same reason as the ladder
 # and the self-inflicted guard: it is exactly the code this bench cannot exercise
 # (no WiFi radio to send a real query), and every byte is a silent failure mode —
@@ -265,6 +273,8 @@ harness = f"""
 {moot_fn}
 {drop_fn}
 {pidle_fn}
+{commit_fn}
+{erase_fn}
 {dns_fn}
 {d13_lift}
 #define TAG "host"
@@ -358,6 +368,28 @@ static void pidle_case(int prov, int join, int want){{
     printf("%-5s prov_ap_idle(prov=%d joining=%d) -> %-4s (want %s)\\n",
            pass ? "ok" : "FAIL", prov, join,
            got ? "idle" : "runs", want ? "idle" : "runs");
+}}
+/* D3: does this lease authorise writing the pair to flash? */
+static void commit_case(int pend, int join, int want){{
+    const bool got = lease_verifies_creds(pend != 0, join != 0);
+    const int pass = ((int)got == want);
+    if (!pass) fails++;
+    printf("%-5s lease_verifies_creds(pend=%d joining=%d) -> %-7s (want %s)\\n",
+           pass ? "ok" : "FAIL", pend, join,
+           got ? "STORE" : "no-write", want ? "STORE" : "no-write");
+}}
+/* D3: passphrase -> set the key; open network -> ERASE it. The empty-string and
+ * NULL rows are the ones that matter: both mean "no passphrase", and leaving a
+ * blank pass in flash instead of removing the key makes the next boot retry an
+ * enterprise association the AP never offered. */
+static void erase_case(const char *pass, int want){{
+    const bool got = creds_erase_key(pass);
+    const int ok = ((int)got == want);
+    if (!ok) fails++;
+    printf("%-5s creds_erase_key(%s) -> %-5s (want %s)\\n",
+           ok ? "ok" : "FAIL",
+           pass ? (*pass ? "set" : "empty") : "NULL",
+           got ? "erase" : "set", want ? "erase" : "set");
 }}
 /* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
  * install may write are the two numbers a wrong answer about costs a device its
@@ -536,6 +568,20 @@ int main(void)
     pidle_case(0, 1, 0);   /* ordinary boot, join in flight: ladder owns it */
     pidle_case(1, 0, 1);   /* provisioning, nobody has submitted: leave it alone */
     pidle_case(1, 1, 0);   /* provisioning AFTER a submission: the ladder must run */
+    puts("== D3: the lease gates the credential write ==");
+    /* The write that used to happen at submit time. Only (1,1) may touch flash:
+     * (1,0) is the boot-time auto-retry of what flash already holds, and (0,1) is
+     * a submission whose pair never got stored. A build that wrote on either alone
+     * is what let one mistyped passphrase take a working orb off its network. */
+    commit_case(0, 0, 0);
+    commit_case(1, 0, 0);
+    commit_case(0, 1, 0);
+    commit_case(1, 1, 1);
+    /* Set-vs-erase on an empty passphrase, the branch both doors used to spell
+     * inline. NULL is what an absent "pass" field arrives as over the serial door. */
+    erase_case("correct horse", 0);
+    erase_case("", 1);
+    erase_case(NULL, 1);
     drop_case(1, 0, 0, 1);   /* the wedge state: drop it; the ladder owns the retry */
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);

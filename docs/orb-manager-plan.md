@@ -434,7 +434,8 @@ Updated at each commit.
 
 Onboard and Manage are one surface. Manage lists named orbs; Onboard's
 serial flow becomes "Add an orb" inside it. Discovery moves from the deleted
-/24 sweep to mDNS: the firmware advertises `_orb._tcp` and the hub browses.
+/24 sweep to mDNS: the firmware advertises `_orb._tcp` on its own check-in rhythm and
+the hub only listens.
 The owner types nothing.
 
 ### 5.1 Decisions taken
@@ -537,6 +538,18 @@ The owner types nothing.
   so the hand-rolled advertiser's multicast joins work in this build.
 - **Socket budget is 10** (`sdkconfig.defaults:68`): one mDNS socket with two
   `IP_ADD_MEMBERSHIP` calls, not per-interface sockets.
+
+- **The hub listens; it does not ask (changed 2026-10-14).** The ledger entries above
+  and in the item-5 record describe the querier as it stood: a startup burst, a 45 s
+  re-ask ticker, `POST /api/orbs/ask`, and the `askError` / `solicited=false` card
+  surface that admitted this bench cannot originate multicast. The firmware
+  self-refresh (`MDNS_ADV_REFRESH_S` 60 s, half of `MDNS_TTL`) made all of it redundant,
+  and `47a77f5` removed it: `orbmdns.Source` is read-only, `MulticastConn` has no
+  `WriteTo`, `query.go` is now `names.go`, and `TestBrowserNeverSends` fails the package
+  if a send reappears. The load the querier carried is now the device's: cold discovery
+  costs up to one check-in interval, and `TestCheckinCadenceMatchesFirmware` pins the
+  cadence the card promises to the firmware constant rather than to a comment.
+
 
 ### 5.3 The ladder
 

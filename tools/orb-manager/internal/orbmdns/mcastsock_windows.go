@@ -2,36 +2,26 @@
 
 package orbmdns
 
-// The Windows browser socket, the twin of mcastsock_unix.go. It exists because
-// net.ListenMulticastUDP — the fallback mcastsock_other.go reaches for — is wrong
-// for a browser here, in a way that is invisible until you look at how an orb answers.
+// The Windows browser socket, the twin of mcastsock_unix.go. The hub is a pure
+// listener now — the firmware's self-refresh announce is what keeps a row alive,
+// so the browser never sends — and this socket exists to receive that announce
+// without the two failure modes the stdlib helper would reintroduce:
 //
-// The helper binds the socket to the GROUP address, not the wildcard: udpsock_posix.go
-// (whose build tag includes windows) calls internetSocket with gaddr as the local
-// address, so the socket is bound to 224.0.0.251:5353. A UDP socket bound to a
-// specific address is delivered only the datagrams destined for that address. And an
-// orb does NOT answer a browse to the group: orb_mdns.c's receive loop replies with
-// sendto(fd, tx, .., &from, ..), a UNICAST packet to whatever address the query came
-// from — the hub's LAN address, say 192.168.2.48. So a group-bound Windows socket
-// hears an orb's boot-time announce (that one is multicast, destined for the group)
-// and silently discards every answer to a query it sent itself. The operator sees a
-// list that only ever refreshes on a reboot. This is exactly the failure a Linux dev
-// box never shows, because mcastsock_unix.go already binds the wildcard and joins the
-// group separately — the same three setsockopt calls the stdlib helper declines to make.
-//
-// The options mirror the Unix file for the same reasons, with the two spellings that
-// differ on this platform called out where they are used:
-//
-//   - SO_REUSEADDR before bind, so the browse can stand alongside a responder already
-//     holding 5353; on Windows the fd a Control hook receives is a socket HANDLE, not
-//     an int, and every Setsockopt* here takes that Handle.
-//   - IP_MULTICAST_IF as a bare interface address (SetsockoptInet4Addr), the spelling
-//     the stdlib's own Windows multicast path uses, not the ip_mreq the Unix file's
-//     first-word trick feeds it — the two platforms read that option's argument
-//     through different structs.
-//   - IP_MULTICAST_LOOP on, matching Unix, so an orb faked on the same Windows host is
-//     still heard. Ingest drops the query the socket sends itself (browse.go's
-//     !m.Response guard), so the loop is harmless to real browsing.
+//   - The helper binds to the GROUP address (udpsock_posix.go's listenIPv4MulticastUDP
+//     passes gaddr as the local address), so the socket is bound to 224.0.0.251:5353
+//     and is delivered only datagrams destined for that address. A wildcard bind also
+//     receives anything sent to the hub's own LAN address — a firmware answer routed
+//     unicast, a diagnostic, a probe reply — which is the difference between a list
+//     that can see the whole LAN and one that can see the group alone.
+//   - The helper sets SO_REUSEADDR after the bind, and on Windows that window is
+//     closed by then. Windows' DNS Client service holds 5353 on nearly every desktop,
+//     so a bind without the option set first fails outright and the hub ships with no
+//     discovery at all. This file exists because that failure is silent: an empty list
+//     and a LAN with no orbs look identical. The same three setsockopt calls the
+//     stdlib helper declines to make, spelled for this platform: SO_REUSEADDR before
+//     bind, IP_MULTICAST_IF per interface, IP_MULTICAST_LOOP on so an orb faked on the
+//     same host is still heard. Ingest drops questions and echoes (browse.go's
+//     !m.Response guard), so the loop changes nothing.
 //
 // This needs no dependency outside the standard library: syscall's Windows build
 // carries SetsockoptInt, SetsockoptIPMreq and IP_ADD_MEMBERSHIP itself, so go.mod,
@@ -44,9 +34,9 @@ import (
 	"syscall"
 )
 
-// groupSock opens one socket on port, joined to group on iface, its sends leaving on
-// iface. iface may be nil, which lets the stack pick. The wildcard bind is the point:
-// it is what lets the socket receive the unicast answers an orb sends back to us.
+// groupSock opens one socket on port, joined to group on iface. iface may be nil,
+// which lets the stack pick. The wildcard bind is the point: it is what lets the
+// socket receive traffic addressed to the hub's own LAN address as well as the group.
 func groupSock(port int, iface *net.Interface, group net.IP) (*net.UDPConn, error) {
 	lc := net.ListenConfig{Control: reuseBeforeBind}
 	pc, err := lc.ListenPacket(context.Background(), "udp4", fmt.Sprintf("0.0.0.0:%d", port))

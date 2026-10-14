@@ -714,19 +714,20 @@ async function postOrb(ip, path, body, out) {
 
 // ---- discovered orbs --------------------------------------------------------------
 //
-// The hub browses _orb._tcp and the hub alone: the page reads a server-side list and
-// never touches 5353, because a browser cannot and a page must not pick its own
-// targets. What that list may contain is what an orb announced — the instance name,
-// the TXT mac/fw/state and an A record. What it may not do is make any of them
-// reachable. Choosing a row fills the IP box the operator then loads, so the click
-// that authorises a dial stays a human one, exactly as it was when the only way to
-// get an address was to type it.
+// The hub listens for _orb._tcp check-ins and the hub alone: the page reads a
+// server-side list and never touches 5353, because a browser cannot and a page must
+// not pick its own targets. Nothing on this card sends a query — the orb re-announces
+// itself every d.checkinS seconds, so a row appears on its own and an orb that goes
+// quiet ages out. What the list may not do is make any of them reachable: choosing a
+// row fills the IP box the operator then loads, so the click that authorises a dial
+// stays a human one, exactly as it was when the only way to get an address was to
+// type it.
 //
 // Rows are built with createElement/textContent, never interpolated markup: an
 // instance name and a fw stamp arrive over UDP from a device on the LAN, which is the
 // same trust level as a theme name off an SD card, and the same rule applies.
 async function readFound() {
-  const list = $("#mn-find"), state = $("#mn-find-state"), note = $("#mn-find-note");
+  const list = $("#mn-find"), state = $("#mn-find-state");
   let d;
   try {
     const r = await fetch("/api/orbs");
@@ -734,22 +735,22 @@ async function readFound() {
     if (!j.ok) throw new Error(j.error || ("HTTP " + r.status));
     d = j.data;
   } catch (e) {
-    state.textContent = "\u2717 browse unavailable: " + e.message;
+    state.textContent = "\u2717 discovery unread: " + e.message;
     return;
   }
   if (!d.listening) {
     state.textContent = "no browse running here: " + (d.error || "unknown reason");
-    if (d.askError) note.textContent = "query: " + d.askError;
     return;
   }
+  const beat = "check-ins arrive every " + (d.checkinS || 60) + " s";
   list.textContent = "";
   const orbs = d.orbs || [];
   if (!orbs.length) {
-    state.textContent = d.askError
-      ? "the hub could not send its query: " + d.askError + ". This box may not reach the LAN multicast group. Reboot an orb, or type its address in the box above."
-      : "no orb answered. Orbs announce once when they join, and a hub on this box may not reach them over multicast. Reboot an orb, or type its address in the box above.";
+    state.textContent = "no orb has checked in yet; " + beat
+      + ", so a joined orb shows up within a minute of this page opening. An orb on older"
+      + " firmware announces only when it joins \u2014 reboot it, or type its address in the box above.";
   } else {
-    state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced";
+    state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced (" + beat + ")";
   }
   for (const o of orbs) list.appendChild(foundRow(o));
   for (const f of (d.refused || []).slice(-3).reverse()) {
@@ -774,7 +775,7 @@ function foundRow(o) {
     o.state === "provisioning" ? "PROVISIONING" : o.state,
     o.cable ? "on usb" : "announced", o.contended ? "CONTESTED" : "",
     o.shared ? "shared name" : "", o.bound ? "" : "unverified",
-    o.solicited ? "" : "unasked", o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
+    o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
   // Three separate reasons a row cannot be dialed, and the button says which one it is
   // rather than leaving the operator to discover it by clicking: the address belongs to
   // nobody on the wired LAN, two boards both claim it, or it was never allowed at all.
@@ -824,11 +825,22 @@ function foundRow(o) {
 $("#mn-scan").onclick = scan;
 $("#mn-add").onclick = () => show("onboard");
 $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
-$("#mn-find-go").onclick = () =>
-  hubFetch("/api/orbs/ask", { method: "POST" }).then(readFound).catch((e) => {
-    $("#mn-find-state").textContent = "\u2717 " + e.message;
-  });
+// "Refresh" re-reads the hub's cache and nothing else. The hub itself sends no query,
+// so the button cannot speed up the LAN — it only stops the page showing a snapshot
+// older than the packets already in the hub's hand.
+$("#mn-find-go").onclick = () => readFound();
 readFound();
+
+// Rows arrive when an orb checks in, so the card follows the orb's own rhythm instead
+// of the operator's clicks: one re-read every 20 s against a hub whose cache turns
+// over every 60. The refresh skips while focus sits inside a row, because the name
+// and room boxes live there and a timer that wipes half-typed text is a timer that
+// loses work.
+setInterval(() => {
+  const a = document.activeElement;
+  if (a && a.closest && a.closest("#mn-find")) return;
+  readFound();
+}, 20000);
 
 // ---- themes -----------------------------------------------------------------
 // Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.

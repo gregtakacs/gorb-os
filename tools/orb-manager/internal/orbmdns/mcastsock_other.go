@@ -12,7 +12,7 @@ package orbmdns
 // What that costs, stated rather than left to be discovered:
 //
 //   - Without SO_REUSEADDR before bind, a responder already holding 5353 makes the
-//     bind fail. The hub survives that — startBrowse reports the failure on the
+//     bind fail. The hub survives that — startListening reports the failure on the
 //     discovery card rather than dying — but the browse is off until something frees
 //     the port.
 //   - IP_MULTICAST_LOOP is left at the stdlib's choice, so a browser and an advertiser

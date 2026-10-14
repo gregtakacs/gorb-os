@@ -511,7 +511,7 @@ fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, G
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
-discover.go          the mDNS browse: candidate list, GET /api/orbs, POST /api/orbs/ask.
+discover.go          the mDNS listener: candidate list, GET /api/orbs, and the upkeep tick.
                      It listens and lists; a listing never dials and never grants, and
                      internal/orbmdns cannot import an HTTP client to make it otherwise
 composer.go          serves the repo's watch-composer at /composer/, and the vendored
@@ -557,7 +557,7 @@ cmd/orbfake/         runs that double as a listening server for a human driving 
                      `read=22 answered=2 broken=0 neighbours=20` is a healthy run on a live
                      LAN, while a non-zero `broken` is a bug here. Judge it from outside with
                      tools/bench/browse_mdns.py, which browses with python-zeroconf rather
-                     than with this repo's browser: see "Browsing an orb" under Development.
+                     than with this repo's listener: see "Listening for an orb" under Development.
 web/                 the embedded hub UI (index.html, app.css, app.js)
 ```
 
@@ -614,9 +614,9 @@ been compiled for Windows — so a binary that could not exist looked exactly li
 a platform that was fine. Vet type-checks `_test.go` files too, so this covers
 the suite as well as the shipped code.
 
-### Browsing an orb, with no orb and no new dependency
+### Listening for an orb, with no orb and no new dependency
 
-The browse adds no third-party library: `internal/orbmdns` and the advertiser in
+Discovery adds no third-party library: `internal/orbmdns` and the advertiser in
 `internal/orbfake` are stdlib `net` plus `syscall` setsockopt, so `make vendor-check`
 and `go.mod` stay exactly as they were. Two options the stdlib does not offer decide
 whether discovery works at all, which is why the sockets are built by hand in
@@ -629,12 +629,11 @@ whether discovery works at all, which is why the sockets are built by hand in
   every test of the loop has to be done across two machines.
 - `SO_REUSEPORT` deliberately not set: it load-balances a multiply-bound port, and
   the hub's own per-interface sockets would each get a slice of one orb's four records.
-- The bind address is the wildcard `0.0.0.0`, not the group. A live orb answers a
-  browse with a UNICAST packet to whoever asked (orb_mdns.c replies to the query's
-  source), so a socket bound to `224.0.0.251` — which is what `net.ListenMulticastUDP`
-  gives you on Windows — hears the boot-time announce and drops every answer to a
-  query it sent itself. That reads as "the hub only sees an orb after a reboot," and it
-  is why `mcastsock_windows.go` mirrors the Unix file rather than reaching for the helper.
+- The bind address is the wildcard `0.0.0.0`, not the group. A group-bound socket is
+  delivered only datagrams destined for `224.0.0.251`, which is what
+  `net.ListenMulticastUDP` gives you on Windows. The hub binds the wildcard so it also
+  hears anything addressed to its own LAN IP, and so one socket shape works on every
+  platform the file is mirrored across.
 
 Run the loop on one host — the fake as the orb, a stranger's stack as the judge:
 
@@ -657,10 +656,12 @@ been answered and was not, so a live LAN at `broken=0` is the healthy result;
 traffic and not a defect of ours. A non-zero `answered` with zero `broken` is what an
 outside browser querying the fake looks like.
 
-This box still does not originate multicast onto the LAN (item 4's measured limit), so
-`Ask` can report an `askError` while answers arrive unasked; the card says which
-happened, and `solicited=false` marks a row that announced itself rather than one that
-answered our question.
+The hub is a listener only. It sends no query: an orb re-announces itself every 60 s
+(`MDNS_ADV_REFRESH_S` in `main/net/orb_mdns.c`, pinned against the hub's copy by
+`TestCheckinCadenceMatchesFirmware`), so a hub that starts after an orb's join waits
+at most one interval, and a hub on a box that cannot originate multicast loses nothing
+at all — receive is the whole job. `TestBrowserNeverSends` fails the package if a write
+path reappears inside `internal/orbmdns`.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window
@@ -705,11 +706,12 @@ New-NetFirewallRule -DisplayName 'orb-manager mDNS' -Direction Inbound -Action A
   -Protocol UDP -LocalPort 5353 -Program 'C:\Users\<you>\Downloads\orb-manager.exe'
 ```
 
-With the port open and the wildcard-bind socket in `mcastsock_windows.go`, the startup
-burst reaches every live orb and it re-answers on its own — no reboot, no IP box — the
-same behaviour Linux and macOS already had. If a live orb still does not appear after
-this, the next suspect is the access point converting or dropping multicast over Wi-Fi,
-which is on the network, not the hub.
+With the port open and the wildcard-bind socket in `mcastsock_windows.go`, an orb's
+check-in lands and keeps landing — the firmware re-announces every 60 s, so no reboot
+and no IP box is involved; the row appears within a minute of the hub starting and
+sustains itself. This is the same behaviour Linux and macOS have. If a live orb still
+does not appear after this, the next suspect is the access point converting or
+dropping multicast over Wi-Fi, which is on the network, not the hub.
 
 ### Ship path for a non-technical Windows user (not yet built)
 

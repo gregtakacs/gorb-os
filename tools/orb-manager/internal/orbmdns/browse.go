@@ -23,14 +23,16 @@ type Candidate struct {
 	// separators — the field h_status reports and the USB serial descriptor
 	// carries. It is the row's key. An orb that changes address is still the same
 	// orb; an orb that changes MAC is a different board.
-	MAC       string
-	FW        string
-	State     string
-	IP        string
-	Port      uint16
-	From      string // who sent it, kept for the log line and nothing else
-	Solicited bool   // false when the orb announced itself unasked
-	TTL       uint32
+	MAC   string
+	FW    string
+	State string
+	IP    string
+	Port  uint16
+	// From is who sent the packet, kept for the log line. It is not part of the
+	// row's identity and never has been: neither it nor the A record is anything
+	// but a claim, and only the TXT mac has a hardware fact behind it.
+	From string
+	TTL  uint32
 
 	FirstSeen time.Time
 	LastSeen  time.Time
@@ -52,33 +54,34 @@ type Refusal struct {
 	At     time.Time
 }
 
-// Source carries mDNS traffic between the browser and the LAN: it delivers
-// datagrams in and takes queries out. Production is one net.PacketConn per
-// eligible interface; a test hands in a loopback pair. That is the reason for the
-// interface rather than a *net.UDPConn — this bench cannot originate multicast
-// onto the LAN, so a browser testable only through a live group join is a browser
-// that was never tested. The browser always writes to the group address and has no
-// field that aims a query at one host: the bench's unicast workaround stays in the
-// bench script that needs it. The gap that unicast was proposed to fill — a hub
-// starting after an orb's one-time join announcement — is now closed by a sustained,
-// RFC-shaped multicast querier (§6, §7.1, §10) instead, so the boundary holds.
+// Source carries mDNS traffic between the LAN and the browser, in one direction
+// only: it delivers datagrams in, and that is all that exists. The browser has no
+// write method to reach — it sends nothing, ever. Discovery rides the orb's own
+// check-ins: the firmware re-announces every MDNS_ADV_REFRESH_S (60 s, under half
+// the record TTL), so a hub that joined late waits one interval, not a reboot.
+// Production is one read-only view of a multicast socket per eligible interface;
+// a test hands in a loopback pair or a memory feed.
+//
+// The interface is ReadFrom-and-Close by decision, not by omission. The hub used
+// to query on a timer and answer its own traffic's absence with retries; that
+// whole path — burst, ticker, known-answer suppression, follow-ups for half-heard
+// instances — is gone, and a Source that cannot be written through means the
+// querier cannot come back by accident. The one boundary that held then still
+// holds: no field, argument, or option here can aim traffic at a single host.
 type Source interface {
 	ReadFrom(p []byte) (int, net.Addr, error)
-	WriteTo(p []byte, addr net.Addr) (int, error)
 	Close() error
 }
 
-// groupEndpoint is the only destination the browser will ever send to.
-var groupEndpoint = &net.UDPAddr{IP: net.ParseIP(GroupAddr), Port: Port}
-
 // partial is an instance heard in a PTR whose SRV, TXT or A has not landed yet. It
 // is keyed by instance name because there is no MAC to key by until the TXT
-// arrives; the provable rows are keyed by MAC, and only by MAC.
+// arrives; the provable rows are keyed by MAC, and only by MAC. A partial is not a
+// problem to chase: the firmware bundles all four records in every check-in, so
+// whatever is missing arrives with the next one.
 type partial struct {
 	instance    string
 	srv, txt, a *Record
 	from        string
-	solicited   bool
 	seen        time.Time
 }
 
@@ -103,7 +106,11 @@ type Config struct {
 }
 
 const (
-	defaultGrace   = 30 * time.Second
+	// DefaultGrace is exported because the hub's card promises a row's life in
+	// seconds, and that promise is TTL + this. TestCheckinCadenceMatchesFirmware
+	// reads it from out here so the firmware, the browser and the copy cannot each
+	// keep their own idea of how long an orb may stay listed.
+	DefaultGrace   = 30 * time.Second
 	maxRefusalTail = 32
 )
 
@@ -116,7 +123,6 @@ type Browser struct {
 	hosts    map[string]*AHost
 	refusals []Refusal
 	sources  []Source
-	txid     uint16
 
 	now   func() time.Time
 	logf  func(string, ...any)
@@ -125,7 +131,9 @@ type Browser struct {
 
 // NewBrowser returns an empty browser. A browser with no sockets still answers
 // Ingest and Candidates, which is how the wire behaviour gets tested with no
-// network under it.
+// network under it. The browser takes traffic in and puts none out: check
+// BrowserNeverSends in the suite, which fails the package if a write path ever
+// reappears in it.
 func NewBrowser(cfg Config) *Browser {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -134,7 +142,7 @@ func NewBrowser(cfg Config) *Browser {
 		cfg.Logf = func(string, ...any) {}
 	}
 	if cfg.Grace <= 0 {
-		cfg.Grace = defaultGrace
+		cfg.Grace = DefaultGrace
 	}
 	return &Browser{
 		byMAC:   map[string]*Candidate{},
@@ -143,7 +151,6 @@ func NewBrowser(cfg Config) *Browser {
 		now:     cfg.Now,
 		logf:    cfg.Logf,
 		grace:   cfg.Grace,
-		txid:    0xC0FE,
 	}
 }
 
@@ -194,107 +201,6 @@ func (b *Browser) pump(s Source) {
 		}
 		b.Ingest(append([]byte(nil), buf[:n]...), from)
 	}
-}
-
-// browseKnownLocked collects the browse question's RFC 6762 §7.1 known answers:
-// one PTR per live instance, carrying its AGED remaining TTL. The caller holds the
-// lock. Only instances with more than half their TTL left are listed — a record past
-// half is left off so the next answer refreshes it before it can expire, honouring
-// §7.1's rule that a known answer younger than a quarter TTL must not suppress.
-//
-// It is PTR-only on purpose. The browse asks PTR; the A/SRV/TXT the firmware bundles
-// into that one reply are additional records a listing of PTRs does not claim to
-// hold, and reconstructing a TXT from the Candidate's decoded fields would risk a
-// known answer that does not match the responder's byte-for-byte, which defeats the
-// suppression it is there to trigger. Naming back the PTRs is the exact, canonical
-// case. Instances past the maxKnownAnswers cap go un-named (map order is not sorted
-// for this): the only cost is one redundant answer from them, never a missed orb.
-//
-// Our own firmware reads only a query's question and ignores this section entirely,
-// so known-answer suppression buys nothing against an orb. It is here for third-party
-// responders sharing the LAN and for spec correctness — and it is what makes the
-// timer-driven re-ask (§6) polite rather than a standing 1 q/s broadcast.
-func (b *Browser) browseKnownLocked(now time.Time) []Record {
-	if len(b.byMAC) == 0 {
-		return nil
-	}
-	out := make([]Record, 0, len(b.byMAC))
-	for _, c := range b.byMAC {
-		ttl := int64(c.TTL)
-		if ttl <= 0 {
-			continue
-		}
-		// True expiry is LastSeen + TTL. Candidate.Expires adds a grace window the
-		// row lingers on for the UI; counting that as freshness would list a stale
-		// record as a known answer and suppress the refresh that would fix it.
-		left := ttl - int64(now.Sub(c.LastSeen).Seconds())
-		if left*2 < ttl {
-			continue
-		}
-		out = append(out, Record{
-			Name: ServiceName,
-			Type: typePTR,
-			PTR:  InstanceName(c.Instance),
-			TTL:  uint32(left),
-		})
-		if len(out) >= maxKnownAnswers {
-			break
-		}
-	}
-	return out
-}
-
-// Ask puts the browse question on the group from every socket, carrying the
-// records it already holds as RFC 6762 §7.1 known answers, and follows up on any
-// instance still missing its SRV, TXT or A. Listening alone is not enough: an
-// announcement comes once, at the orb's join, so a hub started after that would be
-// waiting on a rhythm it does not control.
-//
-// The known answers are what make this safe to do on a timer. §6 requires a querier
-// that retransmits to suppress what it already knows, so a sustained browse lists
-// its live, still-fresh instances and a responder that has nothing new stays quiet.
-// Only records with more than half their TTL left are listed: a record past half is
-// deliberately omitted so the next answer refreshes it before it can expire. Every
-// packet still leaves for the group and only the group.
-func (b *Browser) Ask() error {
-	b.mu.Lock()
-	srcs := append([]Source(nil), b.sources...)
-	b.txid++
-	txid := b.txid
-	now := b.now()
-	known := b.browseKnownLocked(now)
-	waiting := make([]string, 0, len(b.pending))
-	for k, p := range b.pending {
-		if p.srv == nil || p.txt == nil || p.a == nil {
-			waiting = append(waiting, k)
-		}
-	}
-	b.mu.Unlock()
-	if len(srcs) == 0 {
-		return fmt.Errorf("orbmdns: no sockets attached")
-	}
-	pkts := [][]byte{BuildQueryWithKnown(txid, ServiceName, typePTR, known)}
-	for _, inst := range waiting {
-		if inst == "" {
-			continue
-		}
-		pkts = append(pkts,
-			InstanceQuery(txid, inst, typeSRV),
-			InstanceQuery(txid, inst, typeTXT),
-			HostQuery(txid, HostnameFor(inst)))
-	}
-	var firstErr error
-	for _, s := range srcs {
-		for _, p := range pkts {
-			if _, err := s.WriteTo(p, groupEndpoint); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	if firstErr != nil {
-		return fmt.Errorf("orbmdns: query: %w", firstErr)
-	}
-	return nil
 }
 
 // Ingest folds one received datagram into the discovered set. from is the packet's
@@ -487,7 +393,7 @@ func (b *Browser) promote(instance string) {
 		c.State = "normal"
 	}
 	c.IP, c.Port, c.TTL = ip, p.srv.SRVPort, p.txt.TTL
-	c.From, c.Solicited = p.from, p.solicited
+	c.From = p.from
 	c.LastSeen, c.Expires = now, now.Add(time.Duration(p.txt.TTL)*time.Second+b.grace)
 	delete(b.pending, instance)
 }

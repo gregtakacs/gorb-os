@@ -1722,3 +1722,76 @@ are a human: D5's knob, or the hub on a person's say-so.
 promotion; `lv_*` in `/api/v1/status` stays open; the fleet's untracked
 `sdkconfig` overrides stay the top OTA risk.
 
+## SPEC — the orb owns its name (2026-10-14)
+
+The fleet row's `name` stopped being the record and became a cache of one. Item 6
+keyed the name on the MAC, which fixed the DHCP case: a rebind keeps the label. It did
+not fix the storage case. The hub's whole state is one JSON file, so a deleted file, a
+machine move, or a reflash cost the owner the word they had typed, and the board went on
+announcing `orb-44bd8d782618` to a card that could only call it a hex suffix. The name
+now lives in the device's `storage` partition beside the credentials, under NVS key
+`name`, and the hub keeps its copy because a fleet view that dialed thirty boards to
+render thirty labels is not a view.
+
+**The write order is the feature.** `handleFleetSet` cleans the input, refuses anything
+the orb cannot store, checks the cross-lock, dials, and only then writes its own file.
+Each step's position is load-bearing:
+
+- Cleaning and `orbfleet.CheckNameASCII` run before the dial so an operator typing
+  "Café" gets one sentence from the hub instead of a bare 400 attributed to an IP.
+  `cleanWord` accepted that name for as long as the hub owned the string; the firmware
+  cannot store a byte above `0x7e`, so the hub's tolerance became a lie it told the
+  card.
+- The cross-lock runs before the dial, not after. Put the word on the board first and
+  let the fleet refuse it second, and the orb now carries a name the hub will not
+  record — the drift this change exists to remove, arrived at because the operator
+  clicked. `CheckNameFree` is `SetName`'s own helper extracted for exactly this, so the
+  pre-check cannot drift from the rule it predicts.
+- The device write precedes `SetName`. A hub that stored first and dialed second leaves
+  a file claiming a name no orb carries, and every later credential lookup keys on that
+  word.
+- `handleFleetSet` always dials, even when the cleaned value matches the cache. A
+  comparison shortcut would skip the request precisely when the cache is the thing that
+  is wrong, and the sharpest case is a clear: an empty cache and a board holding a name
+  look identical from the hub.
+
+**The read half is a poll, not a button.** The Manage panel already GETs
+`/api/v1/status` through the proxy, and that reply used to be delivered and forgotten.
+`proxy.go` now accumulates that one route's body under the cap the copy already
+enforces, and `foldDeviceName` refolds the row on EOF. The fold keys on the MAC inside
+the payload rather than the address it was fetched from, because an address is something
+an orb has at a moment. It decodes `name` as a `*string`: an absent key is not an answer
+and must not clear anything, while `""` is an answer and does. Board firmware from
+before this field, a body truncated by the proxy cap, and an unreachable orb are all
+ordinary events, and a fold that read any of them as "no name" would un-name an orb for
+answering slowly. The fold is read-only and writes the state file only on a change, so
+a poll every few seconds does not rewrite disk on a loop.
+
+**Two endpoints disagree about a missing key, on purpose.** `POST /api/v1/name` with no
+`name` in the body answers 200 with the name unchanged; `POST /api/v1/config` with no
+`tz` answers 400. Name is one field of several a client may be setting, so an absent key
+means "leave it alone". Timezone is the only thing config owns, so an absent key can only
+mean a broken client. `device_contract_test.go` pins that split by omitting the config
+endpoint's refusal string from the name endpoint's list.
+
+**The device validator is stricter than `cleanWord`,** and rejects `<`, `>`, double
+spaces, and leading or trailing spaces on top of quote, backslash, and non-printables.
+Those four are `cleanWord`'s own normalization restated as a refusal, which keeps the
+card and the orb from disagreeing by invisible bytes. Non-ASCII is the one case where
+the hub must refuse what it used to store, and `CheckNameASCII` is where it does.
+
+**Measured, orb-B, 2026-10-14:** `/api/v1/status` is 1127 B unnamed and 1159 B at the
+32-byte ceiling, in a 1536 B frame. The field costs its full 32 B and nothing else moved.
+Persistence verified three ways: survives an HTTP reboot, survives the port-open reset
+of a boot capture, and survives the fresh-key case where the first write allocates the
+entry. One earlier attempt lost a name set seconds before a reboot; NVS commit is
+synchronous and the sequence did not reproduce in three repeats, so it is recorded as
+the documented commit-failure window rather than a defect, and the log line beside it
+says the same thing.
+
+**Not changed by this:** serial provisioning (`PROV` line) still carries ssid/pass/tz
+and no name — an unprovisioned board gets named after it joins, from the card, and the
+join body accepts `name` so an onboarding flow can do it in one request. The D4/D5
+recovery paths keep the name exactly as they keep the credential: recovery is not a
+reason to lose what a person typed.
+

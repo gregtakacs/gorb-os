@@ -20,14 +20,20 @@ import (
 
 // Device limits, copied from orb_net.c so a test can drive the fake into the same
 // corner the firmware enforces. NET_SSID_MAX/NET_PASS_MAX/NET_TZ_MAX are at
-// orb_net.c:79-81, JOIN_BODY_MAX at :2175, NET_CONFIG_BODY_MAX at :83,
-// SCAN_MAX_NETWORKS at :1790.
+// orb_net.c:92-95, NET_NAME_MAX at :109, JOIN_BODY_MAX at :2849,
+// NET_CONFIG_BODY_MAX and NET_NAME_BODY_MAX at :96 and :114, SCAN_MAX_NETWORKS at
+// :1790.
 const (
-	SSIDMax       = 32
-	PassMax       = 64
-	TZMax         = 64
-	JoinBodyMax   = 256
+	SSIDMax = 32
+	PassMax = 64
+	TZMax   = 64
+	// NameMax is NET_NAME_MAX, and it is the same number as orbfleet.MaxName on
+	// purpose: the card and the device must refuse the 33rd byte at the same point.
+	// device_contract_test.go pins all three.
+	NameMax       = 32
+	JoinBodyMax   = 320
 	ConfigBodyMax = 128
+	NameBodyMax   = 128
 	ScanMaxNets   = 12
 	// APManualS is CONFIG_ORB_NET_AP_MANUAL_S, the seconds a hand-opened AP stays up.
 	APManualS = 900
@@ -59,6 +65,12 @@ type device struct {
 	// TZOffset is what the device measured, not what was stored: h_config_post
 	// returns the EFFECT, so a zone newlib degraded to UTC cannot look like a win.
 	TZOffset int
+	// Name is the device's own, and the DEVICE is the authority for it — the
+	// hub's fleet row caches this value rather than owning it. Empty means
+	// unnamed, which the firmware reports as "" and never as a placeholder, so a
+	// hub test can tell "the owner has not named this board" from "no status read
+	// has landed yet".
+	Name string
 
 	// Networks is /api/v1/wifi/scan's answer once the scan has settled.
 	Networks []Net
@@ -230,6 +242,28 @@ func (o *Orb) Device() (state, mac, ip, tz string, offset int, staUp, apOpen, sc
 		[3]string{d.Joined.SSID, d.Joined.Pass, d.Joined.TZ}
 }
 
+// DeviceName snapshots what POST /api/v1/name and the join body left in the double's
+// NVS equivalent. A separate accessor rather than an eleventh slot on Device(): that
+// signature is already ten positional returns deep, and a caller who wants the name
+// should not have to count commas to get it.
+func (o *Orb) DeviceName() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.deviceLocked().Name
+}
+
+// SetDeviceName plants a name in the double's NVS equivalent WITHOUT going over the
+// wire — the one thing every other setter here avoids, and the reason it has a
+// comment. The hub's cache is now a cache of a fact the device owns, so a test has to
+// be able to move the device's copy out from under the hub: that is what the onboarding
+// flow, a curl on the bench, or a second hub does. Status and join both echo the same
+// single field, so no second copy here can disagree with the first.
+func (o *Orb) SetDeviceName(name string) {
+	o.mu.Lock()
+	o.deviceLocked().Name = name
+	o.mu.Unlock()
+}
+
 // ScreenCalls returns the /api/v1/screen arguments accepted so far, in order.
 func (o *Orb) ScreenCalls() []string {
 	o.mu.Lock()
@@ -316,6 +350,7 @@ func (o *Orb) serveWifiJoin(w http.ResponseWriter, r *http.Request) {
 		SSID *string `json:"ssid"`
 		Pass *string `json:"pass"`
 		TZ   *string `json:"tz"`
+		Name *string `json:"name"`
 	}
 	if json.Unmarshal(body, &req) != nil {
 		writeJSON(w, 400, `{"error":"ssid required or too long"}`)
@@ -336,10 +371,23 @@ func (o *Orb) serveWifiJoin(w http.ResponseWriter, r *http.Request) {
 	if why == "" && req.TZ != nil && (tzRejected(*req.TZ) || rawTzEscaped(body)) {
 		why = "tz rejected"
 	}
+	// The name's pair of guards, same reasoning: absent leaves the stored name
+	// alone, and an explicit "" clears it — which is why this branch distinguishes
+	// a nil pointer from a pointer to an empty string rather than calling the
+	// value truthy.
+	if why == "" && req.Name != nil && (nameRejected(*req.Name) || rawNameEscaped(body)) {
+		why = "name rejected"
+	}
 	if why == "" {
 		d.Joined.SSID, d.Joined.Pass = ssid, pass
 		if req.TZ != nil {
 			d.Joined.TZ, d.TZ = *req.TZ, *req.TZ
+		}
+		if req.Name != nil {
+			// Readable through DeviceName(), and deliberately NOT added to the
+			// Joined tuple: that is a [3]string at five call sites, and a fourth
+			// slot there buys nothing a getter cannot do.
+			d.Name = *req.Name
 		}
 		d.State = "joining"
 		d.AssocFails = 0 // a human just said "try these": the back-off ladder restarts
@@ -474,13 +522,48 @@ func tzRejected(tz string) bool {
 	return false
 }
 
-// rawTzEscaped is the guard that only the undecoded bytes can give: json_str drops
-// the backslash and keeps the character after it, so {"tz":"EST5EDT\t"} reaches the
-// device's own guard as the printable EST5EDTt and gets stored. tz_body_value
-// refuses the escape outright for that reason (orb_net.c, the "may not contain an
-// escape" branch), and a double built on encoding/json would decode and accept it.
-func rawTzEscaped(body []byte) bool {
-	i := bytes.Index(body, []byte(`"tz"`))
+// nameRejected mirrors name_reject_reason (orb_net.c) including the two checks
+// tzRejected has no reason to make: angle brackets, which orbfleet.cleanWord already
+// refuses, and the whitespace form. The whitespace rules are here because the hub
+// normalizes with strings.Fields BEFORE it dials, and a double that accepted
+// "  Hall  " would let a hub test pass against an orb that stores a different
+// string than the card displayed — the exact drift the feature exists to remove.
+//
+// Empty is NOT rejected here, because on POST /api/v1/name an empty value is a
+// clear rather than a malformed one; the caller decides which of the two it sent.
+func nameRejected(name string) bool {
+	if len(name) > NameMax {
+		return true
+	}
+	if name == "" {
+		return false
+	}
+	prev := byte(' ')
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c > 0x7e || c == '"' || c == '\\' || c == '<' || c == '>' {
+			return true
+		}
+		if c == ' ' && prev == ' ' {
+			return true
+		}
+		prev = c
+	}
+	return name[0] == ' ' || name[len(name)-1] == ' '
+}
+
+// rawNameEscaped is nameRejected's undecoded-bytes half, for the same reason
+// rawTzEscaped exists: encoding/json erases the escape by decoding it, so the only
+// way to see {"name":"Hall\u0000Clock"} is to look at the bytes.
+func rawNameEscaped(body []byte) bool {
+	return rawKeyEscaped(body, "name")
+}
+
+// rawKeyEscaped scans the raw value for one key. Shared with tz so the two cannot
+// drift apart in the one respect that matters — both must look at the bytes the JSON
+// decoder would have laundered.
+func rawKeyEscaped(body []byte, key string) bool {
+	i := bytes.Index(body, []byte(`"`+key+`"`))
 	if i < 0 {
 		return false
 	}
@@ -495,6 +578,15 @@ func rawTzEscaped(body []byte) bool {
 		end = len(inner)
 	}
 	return bytes.IndexByte(inner[:end], '\\') >= 0
+}
+
+// rawTzEscaped is the guard that only the undecoded bytes can give: json_str drops
+// the backslash and keeps the character after it, so {"tz":"EST5EDT\t"} reaches the
+// device's own guard as the printable EST5EDTt and gets stored. tz_body_value
+// refuses the escape outright for that reason (orb_net.c, the "may not contain an
+// escape" branch), and a double built on encoding/json would decode and accept it.
+func rawTzEscaped(body []byte) bool {
+	return rawKeyEscaped(body, "tz")
 }
 
 func (o *Orb) serveConfigGet(w http.ResponseWriter) {
@@ -565,6 +657,40 @@ func (o *Orb) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"zoned","tz":%q,"posix":%q,"tz_offset":%d}`,
 		shown, posixFor(shown), offset))
+}
+
+// serveNamePost mirrors h_name_post (orb_net.c), including the one place its
+// contract deliberately differs from the config handler above: a body WITHOUT the
+// "name" key answers 200 with the name unchanged, because name is one field of
+// several a client may be setting, while tz is the only thing /api/v1/config owns
+// and a body missing it can only be a broken client. A test that conflates the two
+// would pass against a firmware that rejects a request the real device accepts.
+func (o *Orb) serveNamePost(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBoundedBody(w, r, NameBodyMax)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name *string `json:"name"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		writeJSON(w, 400, `{"error":"name rejected"}`)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	if req.Name != nil {
+		name := *req.Name
+		if name != "" && (nameRejected(name) || rawNameEscaped(body)) {
+			o.mu.Unlock()
+			writeJSON(w, 400, `{"error":"name rejected"}`)
+			return
+		}
+		d.Name = name
+	}
+	out := d.Name
+	o.mu.Unlock()
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"named","name":%q}`, out))
 }
 
 // offsetFor is the fake's stand-in for tz_offset_min: the hub needs a number that
@@ -698,6 +824,10 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	state, mac, ip := d.State, d.MAC, d.IP
 	rssi, tz, offset := d.RSSI, d.TZ, d.TZOffset
 	reason, fails, ap := d.WifiReasonName, d.AssocFails, d.APOpen
+	// The device's own name, echoed in the firmware's position — after tz_offset,
+	// before ap. jsonSafe because a test steers an odd string into the double
+	// directly, which the real device's own guard would have refused on the way in.
+	name := jsonSafe(d.Name)
 	fw := d.FW
 	if fw == "" {
 		fw = "orbfake"
@@ -716,6 +846,7 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 		`"art_ready":true,"art_bytes":8388608,"art_pages":2048,"art_banks":8,"art_refusals":0,`+
 		`"slot":"a","img":"valid","synced":`+fmt.Sprint(state == "connected")+
 		`,"epoch":1760000000,"tz":"`+tz+`","tz_offset":`+strconv.Itoa(offset)+
+		`,"name":"`+name+`"`+
 		`,"ap":`+fmt.Sprint(ap)+`,"assoc_fails":`+strconv.FormatUint(uint64(fails), 10)+
 		`,"wifi_reason":0,"wifi_reason_name":"`+jsonSafe(reason)+`",`+
 		`"knob":{"raw":4000,"det":100,"spd10":40,"span":9,"valley":2,"ab":3,"vhits":90,"shits":10},`+

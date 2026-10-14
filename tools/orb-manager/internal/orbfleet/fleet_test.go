@@ -385,3 +385,190 @@ func TestClaimedByAnswersForTheLiveRowsOnly(t *testing.T) {
 		t.Errorf("the store resolved the contradiction itself: %+v", got)
 	}
 }
+
+// --- the device's authority over its own name ------------------------------------
+//
+// Since the name moved onto the board, the store's copy is a cache. These are the
+// rules that make the word "cache" mean something: a device answer wins on sight,
+// a device answer never grants a rename that was refused, and a device answer that
+// collides is reported rather than overwritten.
+
+// The reason the hub keeps the string at all: a board that changed hands, or that was
+// named by a second hub, or that was named from a curl on the bench, has to arrive at
+// the next poll wearing its new name. A cache the device cannot overrule is a second
+// owner of the fact, which is the arrangement this feature removed.
+func TestANameFromTheDeviceOverrulesTheHubsOwn(t *testing.T) {
+	s := newTest()
+	observe(t, s, macA, "192.168.2.31")
+	if err := s.SetName(macA, "Hall"); err != nil {
+		t.Fatalf("hub-side name: %v", err)
+	}
+
+	row, changed, err := s.NoteDeviceName(macA, "Nursery")
+	if err != nil {
+		t.Fatalf("device-reported name: %v", err)
+	}
+	if !changed || row.Name != "Nursery" {
+		t.Errorf("the device said %q and the store kept %q (changed %v)", "Nursery", row.Name, changed)
+	}
+	if got := s.All()[0].Name; got != "Nursery" {
+		t.Errorf("the fold returned %q but the row still reads %q", row.Name, got)
+	}
+	// An empty device answer is an answer: the board was cleared, and a cache that
+	// treats "no name" as "no news" would keep rendering a card for an orb that
+	// stopped calling itself anything.
+	if _, changed, err := s.NoteDeviceName(macA, ""); err != nil || !changed {
+		t.Errorf("a cleared name on the device did not clear the cache (changed %v, err %v)", changed, err)
+	}
+	// And the repeat that changes nothing says so, which is what lets the poll skip
+	// writing the state file on every card refresh.
+	if _, changed, err := s.NoteDeviceName(macA, ""); err != nil || changed {
+		t.Errorf("a no-change fold reported changed=%v (err %v), so the poller would rewrite the file every few seconds",
+			changed, err)
+	}
+}
+
+// The fold must not be a door. If a device could name itself into a slot another board
+// holds, then the one-name-one-board rule that makes a credential mean something would
+// be enforceable by the hub's own card and not by anything a stranger announces. So the
+// colliding name is stored — the device is authoritative, and refusing it would put the
+// card back in the position of outshouting the board — and the clash is filed where the
+// card can show it.
+func TestANameFromTheDeviceThatCollidesIsKeptAndFlagged(t *testing.T) {
+	s := newTest()
+	observe(t, s, macA, "192.168.2.31")
+	observe(t, s, macB, "192.168.2.32")
+	if err := s.SetName(macA, "Hall"); err != nil {
+		t.Fatalf("first name: %v", err)
+	}
+
+	row, changed, err := s.NoteDeviceName(macB, "Hall")
+	if err != nil {
+		t.Errorf("the store refused a fact about a board it cannot contradict: %v", err)
+	}
+	if !changed || row.Name != "Hall" {
+		t.Errorf("the colliding device name did not land: %+v", row)
+	}
+	var flagged bool
+	for _, r := range s.Refusals() {
+		if strings.Contains(r.Why, "collides") && r.MAC == macB {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Errorf("two live boards now answer to one word and the refusal list does not mention it: %+v", s.Refusals())
+	}
+	// Repeating the same report must not repeat the complaint, or the list fills with
+	// one fact's echo every time a card refreshes.
+	before := len(s.Refusals())
+	if _, changed, _ := s.NoteDeviceName(macB, "Hall"); changed {
+		t.Error("a fold that changed nothing reported a change")
+	}
+	if after := len(s.Refusals()); after != before {
+		t.Errorf("the same collision was filed %d more time(s)", after-before)
+	}
+}
+
+// The fold is a refresh, not a create. A board the hub has never met has no row, and a
+// status body from an ungranted address must not be able to start one: the rows the
+// fleet has are what the operator committed to, and an announcement that invented a row
+// would put a name on a card nobody named.
+func TestANameFromAnUnknownBoardCreatesNothing(t *testing.T) {
+	s := newTest()
+	_, changed, err := s.NoteDeviceName(macA, "Ghost")
+	if err == nil {
+		t.Error("the store invented a row for a board it never met")
+	}
+	if changed {
+		t.Error("a fold that failed still reported a change to persist")
+	}
+	if len(s.All()) != 0 {
+		t.Errorf("a refused fold made %d rows", len(s.All()))
+	}
+}
+
+// CheckNameFree exists because the rename now goes over the wire before it goes in the
+// file. It predicts SetName's cross-lock verdict without writing anything, so that a
+// name the hub would not carry is never branded onto a board that would then have to be
+// renamed by hand.
+func TestThePreCheckPredictsSetNameAndWritesNothing(t *testing.T) {
+	s := newTest()
+	observe(t, s, macA, "192.168.2.31")
+	observe(t, s, macB, "192.168.2.32")
+	if err := s.SetName(macA, "Hall"); err != nil {
+		t.Fatalf("first name: %v", err)
+	}
+
+	if err := s.CheckNameFree(macA, "Study"); err != nil {
+		t.Errorf("the pre-check refused a free name for the board that holds none: %v", err)
+	}
+	if err := s.CheckNameFree(macB, "Hall"); err == nil {
+		t.Error("the pre-check let through a name SetName would refuse, so the device gets branded first and refused after")
+	} else if !strings.Contains(err.Error(), "already the name") {
+		t.Errorf("the pre-check's refusal is not the one the operator needs: %v", err)
+	}
+	// Its own name is not a collision: re-saving an unchanged orb is the normal case,
+	// and refusing it would make the pre-check unusable as a pre-check.
+	if err := s.CheckNameFree(macA, "Hall"); err != nil {
+		t.Errorf("the pre-check refused a board's own name: %v", err)
+	}
+	// Nothing above may have written. The whole point of a pre-check is that the
+	// caller can still walk away.
+	if row, _ := s.ByMAC(macB); row.Name != "" {
+		t.Errorf("the pre-check named %s as %q on its own", macB, row.Name)
+	}
+	if row, _ := s.ByMAC(macA); row.Name != "Hall" {
+		t.Errorf("the pre-check disturbed its subject: %q", row.Name)
+	}
+	// And a board nobody has met is refused here too, so a caller cannot dial a MAC the
+	// fleet has no row for just because the check passed.
+	if err := s.CheckNameFree("001122334455", "Ghost"); err == nil {
+		t.Error("the pre-check passed a board the fleet has never met")
+	}
+}
+
+// CleanName is the other half of the same requirement: the caller needs the form that
+// WILL be stored before it stores anything, because reading it back after SetName means
+// a device refusal leaves a file claiming a name no orb carries.
+func TestCleanNameReturnsWhatSetNameWouldStore(t *testing.T) {
+	clean, err := CleanName("  Hall   Clock  ")
+	if err != nil || clean != "Hall Clock" {
+		t.Fatalf("CleanName returned %q (%v), want the normalized form SetName stores", clean, err)
+	}
+	s := newTest()
+	observe(t, s, macA, "192.168.2.31")
+	if err := s.SetName(macA, "  Hall   Clock  "); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	if row, _ := s.ByMAC(macA); row.Name != clean {
+		t.Errorf("CleanName promised %q and SetName stored %q; a caller that dials the promise and stores "+
+			"the result has just told the orb something the card will not say back", clean, row.Name)
+	}
+	if _, err := CleanName(strings.Repeat("n", MaxName+1)); err == nil {
+		t.Error("CleanName accepted a name over the cap it documents")
+	}
+	if got, err := CleanName("   "); err != nil || got != "" {
+		t.Errorf("an all-space name returned %q (%v), want the empty clear", got, err)
+	}
+}
+
+// CheckNameASCII is the firmware's rule restated, and the only thing standing between
+// an operator and a bare 400 from an IP. The corpus that pins it against the device
+// proper lives in device_contract_test.go; what is pinned here is that the restatement
+// is not merely permissive — and that the empty name is the clear rather than a
+// refusal, because a card that cannot un-name an orb has no way to finish the job.
+func TestCheckNameASCIIRefusesWhatTheOrbCannotStore(t *testing.T) {
+	bad := []string{"Café", "日本語", `Say "Hall"`, "back\\slash", "<b>", "a\tb", "a\x01b",
+		strings.Repeat("n", MaxName+1)}
+	for _, s := range bad {
+		if err := CheckNameASCII(s); err == nil {
+			t.Errorf("CheckNameASCII accepted %q, which the orb cannot echo", s)
+		}
+	}
+	good := []string{"", "Hall", "Living Room Clock", "Nursery-2", strings.Repeat("n", MaxName)}
+	for _, s := range good {
+		if err := CheckNameASCII(s); err != nil {
+			t.Errorf("CheckNameASCII refused %q: %v", s, err)
+		}
+	}
+}

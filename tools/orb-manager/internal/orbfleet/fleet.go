@@ -261,6 +261,41 @@ func (s *Store) SetName(mac, name string) error {
 	// The cross-lock: two live rows may not answer to one word. Compare the normalized
 	// forms, so "Kitchen " and "kitchen" cannot both exist, and report who holds it so
 	// the operator can fix the real problem instead of retrying the typo.
+	if err := s.nameClashLocked(c, clean); err != nil {
+		return err
+	}
+	row.Name = clean
+	return nil
+}
+
+// CheckNameFree answers the cross-lock question without writing the answer. It exists
+// because a caller that has to put the name on the DEVICE before it can record it
+// needs to know the hub would not have accepted it AFTERWARD — dialing first and
+// refusing second brands the board with a word the fleet will not carry, which is a
+// worse state than the one the refusal was trying to prevent.
+//
+// SetName calls the same helper, so the pre-check cannot drift from the rule it
+// predicts. It is still a check and not a lock: a second rename landing between this
+// return and the write is caught by SetName the ordinary way.
+func (s *Store) CheckNameFree(mac, name string) error {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return errors.New(why)
+	}
+	clean, err := cleanWord(name, MaxName, "name")
+	if err != nil || clean == "" {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byMAC[c]; !ok {
+		return fmt.Errorf("no orb %s to name: it has never announced and is not on a cable", c)
+	}
+	return s.nameClashLocked(c, clean)
+}
+
+// nameClashLocked is the one-name-one-board rule. Callers hold s.mu.
+func (s *Store) nameClashLocked(c, clean string) error {
 	for other, r := range s.byMAC {
 		if other == c || !r.Live(s.live, s.now()) || strings.TrimSpace(r.Name) == "" {
 			continue
@@ -269,8 +304,61 @@ func (s *Store) SetName(mac, name string) error {
 			return fmt.Errorf("%q is already the name of %s (%s); rename that orb first", clean, r.DisplayName(), other)
 		}
 	}
-	row.Name = clean
 	return nil
+}
+
+// NoteDeviceName folds what the DEVICE reported into the row, and it is the reason
+// the hub's Name field is a cache rather than an owner: the device's word always
+// wins, and the two disagree in exactly one direction.
+//
+// It deliberately does not call SetName. SetName enforces the one-name-one-board
+// cross-lock, which is the right rule for an operator typing a word and the wrong
+// rule for a packet the board sent about itself — refusing it would leave the card
+// displaying a name no orb answers to, which is the failure the whole arrangement
+// exists to prevent. A live collision is therefore ADMITTED and written to the
+// refusal list: the operator sees two boards answering to one word and can rename
+// one, and the card got that story from a device rather than from a stale file.
+//
+// An empty name clears the cache. A FAILED status read must not come through here at
+// all — clearing on a read that never landed would lose the name over one dropped
+// packet, and the caller is what distinguishes those two cases.
+func (s *Store) NoteDeviceName(mac, name string) (Orb, bool, error) {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return Orb{}, false, errors.New(why)
+	}
+	s.mu.Lock()
+	row, ok := s.byMAC[c]
+	if !ok {
+		s.mu.Unlock()
+		return Orb{}, false, fmt.Errorf("no orb %s to refresh a name for", c)
+	}
+	out := *row
+	changed := out.Name != name
+	if changed {
+		out.Name = name
+		row.Name = name
+	}
+	// Look for a collision only on a change that introduced one; re-reporting the
+	// same clash on every read would bury the refusal list in repeats of a fact the
+	// operator already acted on.
+	collision := ""
+	if changed && name != "" {
+		for other, r := range s.byMAC {
+			if other == c || !r.Live(s.live, s.now()) || r.Name == "" {
+				continue
+			}
+			if normWord(r.Name) == normWord(name) {
+				collision = fmt.Sprintf("%s holds %q too", other, name)
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if collision != "" {
+		s.noteRefusal("device-reported name collides: "+collision, c, "")
+	}
+	return out, changed, nil
 }
 
 // SetRoom places a board in a room. Rooms are not unique on purpose: a hallway holds
@@ -453,6 +541,58 @@ func (s *Store) Restore(rows []Orb) int {
 		n++
 	}
 	return n
+}
+
+// CleanName applies the store's own operator-input rules and returns the form it
+// would persist. A caller that must act on the cleaned value BEFORE storing it — the
+// card dialing the device to write the name through — needs this, because reading it
+// back out of SetName means storing it first, and a device refusal after that leaves a
+// hub file claiming a name no orb carries.
+func CleanName(s string) (string, error) { return cleanWord(s, MaxName, "name") }
+
+// CheckNameASCII reports whether a cleaned name can live on the DEVICE, which is a
+// narrower set than what the hub itself will store. The firmware echoes the value
+// into JSON with %s and no escaper (orb_net.c name_reject_reason), so it refuses
+// every byte above 0x7e — and an accented name is the one thing this rules out that
+// cleanWord above happily accepted for as long as the hub owned the string.
+//
+// Callers run this BEFORE dialing. Refusing at the hub turns "Café" into one
+// sentence the operator can act on; skipping it gets a bare 400 from an IP with the
+// reason parked in a serial log nobody has attached.
+//
+// The rule is narrower than "is this ASCII": it is the firmware's rule restated, and
+// device_contract_test.go pins the two against each other so a loosening on one side
+// fails a test rather than surfacing as a name that sticks on the card and never
+// lands on the orb.
+func CheckNameASCII(name string) error {
+	if name == "" {
+		return nil // a clear, which the device accepts
+	}
+	if len(name) > MaxName {
+		return fmt.Errorf("name %q is %d bytes, over the %d the orb stores", name, len(name), MaxName)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c > 0x7e {
+			return fmt.Errorf("name %q needs plain ASCII: the orb stores what it displays and has no room for %s",
+				name, hexByte(c))
+		}
+		if c == '"' || c == '\\' || c == '<' || c == '>' {
+			return fmt.Errorf("name %q carries a character the orb refuses (%q)", name, c)
+		}
+	}
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") || strings.Contains(name, "  ") {
+		return fmt.Errorf("name %q has spaces the orb will not store", name)
+	}
+	return nil
+}
+
+// hexByte names an invisible byte in a refusal without printing it. A message that
+// echoed "Café" back with the raw byte in it tells the operator nothing they could
+// type; 0xC3 is at least searchable.
+func hexByte(c byte) string {
+	const dig = "0123456789ABCDEF"
+	return "0x" + string([]byte{dig[c>>4], dig[c&0xf]})
 }
 
 // cleanWord trims and bounds an operator-typed word, refusing control bytes and

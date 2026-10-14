@@ -227,6 +227,13 @@ type orbRow struct {
 	// costs nothing.
 	Forgettable bool   `json:"forgettable"`
 	ForgetWhy   string `json:"forgetWhy,omitempty"`
+
+	// Update says the firmware this hub carries is a decided upgrade over the
+	// stamp this row wears, by the same comparator the flash gate applies. It is
+	// the card's amber alert and the manage view's Update button, and it arrives
+	// as the hub's verdict for the same reason Forgettable does: the page does
+	// not parse version strings, and an absent field is a no.
+	Update bool `json:"update"`
 }
 
 // handleDiscovered is the read side: the current candidate list in one shot. It sends

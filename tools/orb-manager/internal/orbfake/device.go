@@ -137,6 +137,17 @@ type device struct {
 
 	// Rebooted counts accepted /api/v1/reboot calls.
 	Rebooted int
+	// Staged and StagedBytes are h_ota's effect: the image a caller last pushed to
+	// /api/v1/ota, and its length. A reboot consumes them the way the bootloader
+	// consumes a staged slot — FW moves to the staged stamp and the stage clears —
+	// so a hub test can assert the two-request shape (stage, then reboot) rather
+	// than a double that lies about booting what it never accepted. OTANextFW is
+	// the stamp the reboot boots into: the double does not parse app-image bytes,
+	// and a test naming the version it staged is the honest way to get one.
+	Staged         []byte
+	StagedBytes    int
+	OTANextFW      string
+	RebootedViaOTA bool
 	// Reprov counts accepted /api/v1/reprov calls — the D2 intent request. Kept apart
 	// from Rebooted because the two mean different things to a caller: one says "come
 	// back as you were", the other says "come back in your AP", and a hub test that
@@ -815,6 +826,50 @@ func offsetFor(tz string) int {
 	return 0
 }
 
+// --- ota (h_ota, orb_net.c:3522) -------------------------------------------------
+//
+// The firmware's rules, mirrored rather than invented: Content-Length is
+// mandatory (411 without it), 96 bytes is the floor below which the body is not
+// an image (400), and the success body names the slot and points at the reboot
+// that activates it. The double stages bytes and waits; it does not apply them
+// until serveReboot says so.
+func (o *Orb) serveOTA(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength <= 0 {
+		writeJSON(w, 411, `{"error":"Content-Length required"}`)
+		return
+	}
+	blob, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength+1))
+	if err != nil || int64(len(blob)) != r.ContentLength {
+		writeJSON(w, 400, `{"error":"upload aborted by client"}`)
+		return
+	}
+	if len(blob) < 96 {
+		writeJSON(w, 400, `{"error":"body too small to be an image"}`)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.Staged, d.StagedBytes = blob, len(blob)
+	o.mu.Unlock()
+	writeJSON(w, 200, `{"state":"staged","slot":"b","bytes":`+strconv.Itoa(len(blob))+
+		`,"reboot":"POST /api/v1/reboot"}`)
+}
+
+// OTAState reports what /api/v1/ota last staged and whether a reboot consumed
+// it, for the hub-side test that wants the two-request shape rather than its
+// own call log.
+func (o *Orb) OTAState() (stagedBytes int, bootedStaged bool, fw string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	d := o.deviceLocked()
+	return d.StagedBytes, d.RebootedViaOTA, d.FW
+}
+
+// SetOTANextFW names the stamp the next staged-and-rebooted image will report,
+// the double's honest stand-in for a device that reads the version out of the
+// app image it just validated.
+func (o *Orb) SetOTANextFW(fw string) { o.mu.Lock(); o.deviceLocked().OTANextFW = fw; o.mu.Unlock() }
+
 // --- reboot (h_reboot, orb_net.c:2552) ------------------------------------------
 //
 // The device arms a one-shot esp_timer for 750 ms and answers before it fires, so
@@ -824,6 +879,17 @@ func (o *Orb) serveReboot(w http.ResponseWriter) {
 	o.mu.Lock()
 	d := o.deviceLocked()
 	d.Rebooted++
+	// h_ota staged a slot and h_reboot is the request that activates it: the
+	// running stamp moves to what the caller declared, once. A double that moved
+	// FW on the upload would let a hub test pass on a client that never learns
+	// the reboot is a second request (orb_net.c says so in the body it echoes).
+	if d.StagedBytes > 0 {
+		d.RebootedViaOTA = true
+		if d.OTANextFW != "" {
+			d.FW = d.OTANextFW
+		}
+		d.Staged, d.StagedBytes = nil, 0
+	}
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"rebooting"}`)
 }

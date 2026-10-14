@@ -274,6 +274,22 @@ func (b *Bundle) imageNamed(name string) *esprom.Image {
 	return nil
 }
 
+// AppImage returns the app-bin payload — the single image an OTA takes. The
+// device's /api/v1/ota stages one app slot, so this is exactly one image's
+// bytes, found the same way AppPlan finds it: by name, with the partition
+// offset as the tiebreak for a manifest that renamed it.
+func (b *Bundle) AppImage() []byte {
+	if im := b.imageNamed("gorb-os.bin"); im != nil {
+		return im.Data
+	}
+	for _, im := range b.Images {
+		if im.Offset == 0x20000 { // the ota_0 slot from partitions.csv
+			return im.Data
+		}
+	}
+	return nil
+}
+
 // WriteBundle packs a build's manifest and the images it names into the bundle
 // format. It is the release step's whole job, and the only place in this program
 // that consults OS paths: once the bytes are in a bundle they are self-describing.

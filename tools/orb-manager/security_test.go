@@ -127,6 +127,15 @@ func TestEveryMutatingRouteRefusesAnUncredentialedPOST(t *testing.T) {
 	routes := []string{
 		"/api/ports/probe", "/api/firmware", "/api/firmware/reset", "/api/flash",
 		"/api/flash/cancel", "/api/watch", "/api/provision", "/api/orb/allow",
+		// The chip erase belongs in this list more than anywhere else: it is the
+		// one route that destroys the thing it operates on, and a cross-origin
+		// POST that reached it would blank a board with nobody able to undo it.
+		"/api/wipe",
+		// The by-IP door and the OTA door both reach off the box on a typed
+		// address — one learns a grant, the other pushes an image. Refused
+		// before the handler, they dial nothing; the assertion below that no
+		// port got claimed is what proves the guard runs first.
+		"/api/orb/add", "/api/orb/update",
 	}
 	for _, r := range routes {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+r, strings.NewReader(`{"port":"/dev/ttyACM0","ip":"192.0.2.9"}`))

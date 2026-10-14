@@ -33,7 +33,12 @@ import (
 type opKind string
 
 const (
-	opFlash     opKind = "flash"
+	opFlash opKind = "flash"
+	// opWipe is the whole-chip erase. It holds the port exactly like a flash:
+	// anything sharing the wire during a 16 MB erase corrupts it, and the
+	// operation needs its own cancel handle and its own line in /api/ops so the
+	// UI can say which cable is being emptied.
+	opWipe      opKind = "wipe"
 	opProvision opKind = "provision"
 	opProbe     opKind = "identify"
 	// opConsole is a read, but it still HOLDS the port, so it claims the same slot a

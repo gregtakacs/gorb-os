@@ -33,6 +33,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 )
 
 const (
@@ -431,6 +433,38 @@ func (s *Server) annotateForget(rows []orbRow, now time.Time) {
 		rows[i].Forgettable, rows[i].ForgetWhy = ok, why
 	}
 	s.annotateReachability(rows, now)
+	s.annotateUpdate(rows)
+}
+
+// annotateUpdate stamps each row with whether the firmware this hub carries is a
+// decided upgrade over the stamp the row wears. It is the card's amber dot and
+// the manage view's Update button, and it is the hub's answer rather than the
+// page's guess for the same reason Forget is: the comparison engine lives here,
+// it knows the bundle the hub would actually flash, and a page that compared
+// version strings itself would put a different meaning on "newer" than the flash
+// gate uses the first time either side grows a rule.
+//
+// A row with no parseable stamp gets no flag. That is the same fail-closed rule
+// firmware.Compare applies to a legacy board: the absence of evidence is not
+// evidence of an upgrade, and a badge that promises an update the flash gate
+// would refuse is a badge that teaches people to ignore badges.
+func (s *Server) annotateUpdate(rows []orbRow) {
+	b := s.firmwareBundle()
+	if b == nil {
+		return
+	}
+	for i := range rows {
+		if rows[i].FW == "" {
+			continue
+		}
+		// The row's stamp against the hub's bundle, through the one comparator.
+		// Elf digests do not travel on a row, so this weighs declared
+		// versions and the timestamps the stamps carry — the half of Compare
+		// that is decidable from what a browse packet holds.
+		if firmware.Compare(firmware.Release{Version: rows[i].FW}, b.Release()) == firmware.VerdictUpgrade {
+			rows[i].Update = true
+		}
+	}
 }
 
 // agoWords keeps a refusal readable at a glance. The number is the fact the operator

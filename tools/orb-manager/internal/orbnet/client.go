@@ -5,6 +5,8 @@
 package orbnet
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -199,6 +201,31 @@ func (c *Client) postJSON(ip, path string, payload any) (json.RawMessage, error)
 		return nil, err
 	}
 	resp, err := c.h.Post(c.url(ip, path), "application/json", strings.NewReader(string(buf)))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode >= 400 {
+		return body, fmt.Errorf("orbnet: POST %s%s -> %s", ip, path, resp.Status)
+	}
+	return body, nil
+}
+
+// PostImage POSTs raw bytes — an app image — to one device route and returns the
+// reply. It exists for /api/v1/ota, which is the one orb endpoint whose body is
+// not JSON: the firmware stages the bytes it receives with Content-Length as the
+// declared size (orb_net.c h_ora), so this sends a real length rather than
+// streaming through a hub the size of the image. The caller owns the bytes;
+// nothing here reads a disk.
+func (c *Client) PostImage(ctx context.Context, ip, path string, contentType string, blob []byte) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(ip, path), bytes.NewReader(blob))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = int64(len(blob))
+	resp, err := c.h.Do(req)
 	if err != nil {
 		return nil, err
 	}

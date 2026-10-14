@@ -192,6 +192,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
+	case r.URL.Path == "/api/v1/ota" && r.Method == http.MethodPost:
+		o.serveOTA(w, r)
 	case r.URL.Path == "/api/v1/reprov" && r.Method == http.MethodPost:
 		o.serveReprov(w)
 	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:

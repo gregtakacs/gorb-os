@@ -34,6 +34,21 @@ menu "Orb networking"
             code legibly, so the pairing URL is printed to the serial log and
             shown on-screen).
 
+    config ORB_NET_AP_ISOLATED
+        bool "Allow the persistent AP-only (isolated) mode"
+        depends on ORB_NET_AP_FALLBACK
+        default y
+        help
+            Lets an owner park a configured orb in a mode where it runs only its
+            own open SoftAP and web page and never associates with any Wi-Fi
+            network, so the ONLY way to reach it is that AP. The choice is
+            persistent (NVS orb.net "mode" = "ap") and survives a reboot until a
+            MODE command (serial door or the config page) switches it back to
+            station. The on-demand rescue AP is separate and unaffected; this
+            option only gates the deliberate, persistent isolated mode. A device
+            in this mode is unreachable from the LAN and cannot be OTA'd over it:
+            it is a self-contained clock serving 192.168.4.1.
+
     config ORB_NET_AP_HOLD_S
         int "Seconds to keep the SoftAP after the STA gets a lease"
         depends on ORB_NET_ENABLE

@@ -169,14 +169,20 @@ type orbRow struct {
 	// words, so a row that has been named reads as the orb they already own instead of
 	// a hex tail they have to recognize twice.
 	Name string `json:"name,omitempty"`
-	Room string `json:"room,omitempty"`
-	// Cable says the hub has read this MAC off the chip over USB, which is the only
-	// proof in the system; without it the identity is what a packet asserted.
+	// Cable says the hub read this MAC off the chip over USB *during this run*. It is a
+	// session fact, never a stored one: the only proof in the system is a proof the hub
+	// has to have performed, and a file cannot carry it forward. Without it the identity
+	// is what a packet asserted, which is what Identity is for.
 	Cable bool `json:"cable"`
 	// OnCable is a different fact and must not be confused with Cable: the current port
 	// sweep found a cable carrying this MAC, which says nothing about whether anyone has
 	// ever read the chip. It arrives and goes away with the plug.
 	OnCable bool `json:"onCable"`
+	// Reachable is the address book's honesty field on a restored row: "unknown" from
+	// the first paint until the startup dial answers, then "alive" or "dead". Empty on a
+	// row the wire or the bench is producing, because those are not remembered — they
+	// are seen. A row whose address does not answer is the row Forget is for.
+	Reachable string `json:"reachable,omitempty"`
 	// Ports are the ttys the current sweep found this board behind, sorted. Two entries
 	// mean one board on two cables, not two boards.
 	Ports []string `json:"ports,omitempty"`
@@ -204,6 +210,23 @@ type orbRow struct {
 	// reason the proxy will answer with, not a paraphrase of it. A row that is simply
 	// not clickable with no explanation is a row the operator has to guess about.
 	Refusal string `json:"refusal,omitempty"`
+
+	// Forgettable says the hub will not rebuild this row if the operator deletes it, so
+	// the card may offer Forget; ForgetWhy is the reason it may not when that is false.
+	// Derived, never stored: it is a statement about what the hub can reach right now,
+	// and a row that carries it from a previous frame is a button that lies. See
+	// liveness.go for the three-part rule and for why the answer can lag a fact.
+	//
+	// NO omitempty on the bool, and this is the one field in the file where that is not a
+	// style choice. The refusal is the false, and omitempty deletes a false from the
+	// wire: every "do not offer Forget" — on a cable, announcing, answering HTTP — arrived
+	// at the page as a missing field, which is indistinguishable from "yes". The gate then
+	// guarded nothing on screen, and Forget stayed lit on boards plugged into the hub.
+	// The page reads this field as "enabled only if literally true", so an absent verdict
+	// stays a dead button. ForgetWhy keeps its omitempty: it is prose, and an empty one
+	// costs nothing.
+	Forgettable bool   `json:"forgettable"`
+	ForgetWhy   string `json:"forgetWhy,omitempty"`
 }
 
 // handleDiscovered is the read side: the current candidate list in one shot. It sends
@@ -239,6 +262,7 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 		// merge exists to kill. The failure still reads as the reason LAN rows are
 		// missing, and the version carries it, so a hub that recovers re-sends.
 		rows, cableErr := s.roster(nil, now)
+		s.annotateForget(rows, now)
 		body := map[string]any{
 			"orbs": rows, "refused": []map[string]any{}, "interfaces": ifaces,
 			"listening": false, "error": orElse(listenErr, "discovery is not running"),
@@ -270,7 +294,8 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 		}
 		if s.fleet != nil {
 			if row0, ok := s.fleet.ByMAC(c.MAC); ok {
-				r.Name, r.Room, r.Cable, r.Shared = row0.Name, row0.Room, row0.Cable, row0.Shared
+				r.Name, r.Shared = row0.Name, row0.Shared
+				r.Cable = s.chipRead(c.MAC)
 				r.Note = row0.Note
 				r.Contended = row0.Contended || len(s.fleet.ClaimedBy(c.IP)) > 1
 			}
@@ -282,6 +307,7 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 	// factory-fresh device, and the list that goes blank on it is the bug this merge
 	// was built to fix.
 	rows, cableErr := s.roster(rows, now)
+	s.annotateForget(rows, now)
 	refused := []map[string]any{}
 	for _, f := range b.Refusals() {
 		refused = append(refused, map[string]any{
@@ -301,7 +327,7 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 // own: a row the orb refreshed on schedule says nothing new about the orb, so a stream
 // that counted age as content would repaint the page once a minute to change a number
 // nobody reads. Everything an operator would call a change is in the digest — address,
-// port, firmware, state, name, room, the cable/contended/shared/bound flags, the refusal
+// port, firmware, state, name, the cable/contended/shared/bound flags, the refusal
 // text, and which interfaces the hub joined. A row's ttl and first-seen are in too, so a
 // record about to expire and a row that just arrived are different answers even when every
 // word on them matches.
@@ -311,6 +337,11 @@ func orbVersion(rows []orbRow, refused []map[string]any, ifaces []string) string
 	for _, r := range rows {
 		a := r
 		a.AgeS = 0
+		// Forgettable is the verdict and belongs in the digest, so a board that goes
+		// quiet earns its button without a poll. ForgetWhy is that same verdict wearing
+		// an age ("announced itself 42s ago"), which moves on its own and would repaint
+		// the card every frame for a number nobody reads — AgeS's problem exactly.
+		a.ForgetWhy = ""
 		fmt.Fprintf(h, "row %v\n", a)
 	}
 	for _, f := range refused {

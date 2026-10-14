@@ -103,6 +103,20 @@ type device struct {
 	// AP without one, and that refusal is the lockout guard worth having a double for.
 	StaUp  bool
 	APOpen bool
+	// Mode is the persistent reachability choice POST /api/v1/wifi/mode writes: "" is
+	// the station default, "ap" is the isolated mode. It is kept as the stored word
+	// rather than as a bool because that is what flash holds, and the firmware's
+	// reject list ("AP", "AP-isolated", a 4-byte value) is a statement about the
+	// STRING, not about a flag.
+	Mode string
+	// ModeSets counts accepted mode writes, the same way Rebooted counts reboots: a
+	// hub test that asserts the reply alone cannot tell "the orb accepted the mode"
+	// from "the hub parsed a 200 and the orb said nothing".
+	ModeSets int
+	// ModeRefused answers 409, standing in for a firmware built with
+	// CONFIG_ORB_NET_AP_ISOLATED=n, where the door exists and refuses by design
+	// rather than being absent.
+	ModeRefused bool
 	// ApIP is the SoftAP's own address while it is up. The firmware's responder
 	// hands a querier on 192.168.4.0/24 THAT address rather than the STA's
 	// (orb_mdns.c build_answer's subnet test), and it is the one half of item 4's
@@ -152,6 +166,27 @@ func (o *Orb) SetState(s string) { o.mu.Lock(); d := o.deviceLocked(); d.State =
 
 // SetSTA sets the lease bit that both h_wifi_ap's close path and h_status read.
 func (o *Orb) SetSTA(up bool) { o.mu.Lock(); d := o.deviceLocked(); d.StaUp = up; o.mu.Unlock() }
+
+// ModeSet reports the stored reachability word ("" = station, "ap" = isolated) and how
+// many accepted writes put it there. A hub test asserting only the reply body cannot
+// tell a mode the orb stored from a mode the orb refused.
+func (o *Orb) ModeSet() (string, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.dev == nil {
+		return "", 0
+	}
+	return o.dev.Mode, o.dev.ModeSets
+}
+
+// SetModeRefused makes POST /api/v1/wifi/mode answer 409, the CONFIG_ORB_NET_AP_ISOLATED=n
+// build: the door is registered and refuses on purpose.
+func (o *Orb) SetModeRefused(v bool) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.ModeRefused = v
+	o.mu.Unlock()
+}
 
 // SetAddress sets the MAC and the address /api/v1/status reports, and so the
 // instance name the mDNS announcement derives from the same two facts. A test that
@@ -447,6 +482,74 @@ func (o *Orb) serveWifiAP(w http.ResponseWriter, r *http.Request) {
 	// standing at a wall with a phone asks (orb_net.c:2381).
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"ap_opening","ap_ssid":"orb-%s","seconds":%d}`,
 		suffix, APManualS))
+}
+
+// The mode door's three refusals, named so the scrape in door_bodies_test.go can hold
+// them against h_wifi_mode's own text. A hand-typed refusal here is a sentence no orb
+// has ever sent, which is the exact rot that test exists to catch.
+const (
+	noModeBody  = `{"error":"mode required (\"ap\" or \"sta\")"}`
+	badModeBody = `{"error":"mode must be \"ap\" or \"sta\""}`
+	modeOffBody = `{"error":"AP-isolated mode is not in this build"}`
+)
+
+// --- wifi/mode (h_wifi_mode) -----------------------------------------------------
+//
+// The persistent reachability choice, and the only HTTP door out of an isolation the
+// page can itself put an orb into. Body is {"mode":"ap"|"sta"}; the reply names the
+// mode that was stored rather than echoing the request, so a hub test can tell a
+// device that normalised "sta" to the empty default from one that parroted a string.
+// It reboots as its last act, exactly like /api/v1/reboot, so the double counts the
+// accepted write and leaves the radio state as the new boot would find it: AP-isolated
+// means the SoftAP is the only address, and the STA lease is gone.
+func (o *Orb) serveWifiMode(w http.ResponseWriter, r *http.Request) {
+	// h_wifi_mode's own char body[64]: it refuses content_len > 63 with 413, so the
+	// bound is the buffer minus its NUL, not the buffer size.
+	body, ok := readBoundedBody(w, r, 63)
+	if !ok {
+		return
+	}
+	var req struct {
+		Mode *string `json:"mode"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Mode == nil {
+		writeJSON(w, 400, noModeBody)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	if d.ModeRefused {
+		o.mu.Unlock()
+		writeJSON(w, 409, modeOffBody)
+		return
+	}
+	o.mu.Unlock()
+	// net_mode_set's own accept set: "ap", or "sta"/"" for the station default.
+	// Anything else — "AP", "station", 4 bytes — is refused with the firmware's
+	// wording, because the exact strings are what the hub's card shows a person.
+	mode := *req.Mode
+	switch mode {
+	case "ap":
+	case "sta", "":
+		mode = "sta"
+	default:
+		writeJSON(w, 400, badModeBody)
+		return
+	}
+	o.mu.Lock()
+	d = o.deviceLocked()
+	d.Mode = "" // "sta" is the absent key, the station default
+	if mode == "ap" {
+		d.Mode = "ap"
+	}
+	d.ModeSets++
+	if mode == "ap" {
+		d.APOpen, d.StaUp, d.ApIP = true, false, "192.168.4.1"
+	}
+	o.mu.Unlock()
+	// 750 ms of reboot grace, then the CDC-less equivalent of dropping the client:
+	// the reply is the last thing this boot says on the old mode.
+	writeJSON(w, 200, `{"state":"rebooting","mode":"`+mode+`"}`)
 }
 
 // spelledOff accepts the two spellings one intent has, matching the firmware's

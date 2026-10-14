@@ -182,6 +182,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveWifiJoin(w, r)
 	case r.URL.Path == "/api/v1/wifi/ap" && r.Method == http.MethodPost:
 		o.serveWifiAP(w, r)
+	case r.URL.Path == "/api/v1/wifi/mode" && r.Method == http.MethodPost:
+		o.serveWifiMode(w, r)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodGet:
 		o.serveConfigGet(w)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodPost:

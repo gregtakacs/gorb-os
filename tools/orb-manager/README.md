@@ -80,9 +80,11 @@ that protect the *operation*, not the operator's identity:
    what keeps a learned address from becoming a port-scanning target.
 
    The fleet gate is the one item 6 added, and it can only ever **refuse** a dial the
-   grant set allowed. The hub remembers each board by `{mac, name, room}`, keyed on the
+   grant set allowed. The hub keeps an ADDRESS BOOK of `{mac, ip, port, name}`, keyed on the
    chip and never on the lease, because an address is something an orb has at a moment
-   and a MAC is something an orb is. So a grant may name the board it was committed
+   and a MAC is something an orb is. The name in the book is a cache, not an authority:
+   the board owns the word, the hub stores the last one it read off the board, and the
+   next read corrects it. So a grant may name the board it was committed
    for, and before dialing the hub asks the fleet who announces that address today:
 
    - one board, the same board the grant named: dial.
@@ -329,26 +331,60 @@ comparison against every cached identity without probing again.
     orb is not reset — this is `tools/cap.py` for someone with no Python and no
     clone. It registers as a port operation, so it refuses to share a cable with
     a flash, appears in `/api/ops`, and is cancellable.
-  - **Remembered fleet.** The LAN card names each board by its MAC: type a name and a
-    room and press **Remember**, and the label follows that chip across every DHCP
-    lease, reboot and re-flash. Two live boards may not answer to one name — the hub
-    refuses the second and says which MAC already holds it — because an orb the operator
-    cannot name apart is an orb a later credential would be pointed at the wrong device
-    for. The instance name is derived from the low three bytes of the MAC, so two boards
-    really can derive the same one; such rows are marked `shared` rather than left to
-    look identical. **Forget** drops the board and revokes the address it held, unless
-    another live board still claims that address.
+  - **Remembered fleet.** The store is an address book with name tags: `{mac, ip, port,
+    name}`. It exists so a launch can show and dial boards it already knows without
+    waiting out a full announce interval (up to 60 s) for each to think of announcing,
+    and so a remembered row reads "Hall" at first paint instead of a MAC the operator
+    cannot pronounce. The board still owns its name: the card's name field writes through
+    to the board (`/api/v1/name`, or the serial `NAME` verb over the cable), the hub
+    stores the word it read back as a cache, and every status read corrects or clears
+    the copy. There is no room or location field: a word the hub kept about where a
+    board sits could disagree with the board, so the book stores the address it was last
+    reachable at and the name the board last reported. A restored address shows as
+    `remembered` and becomes clickable once the startup dial or a real announce says it
+    answers. A board the hub knows only from a cable is not remembered at all: an entry
+    with no address cannot be dialed, so the row lives on the cable tier while the lead
+    is in and disappears from the list on the sweep after it is not — and its address is
+    re-dialed the instant a departed cable leaves the bench, because the unplug alone
+    does not say the board left the LAN. Every board the hub can see is already in the
+    list — a browse reply, an announcement, a cable enumeration or a restored address —
+    so there is no **Remember** button and nothing to press to add one. Two live boards
+    may not answer to one name — the hub refuses the second and says which MAC already
+    holds it — because an orb the operator cannot name apart is an orb a later credential
+    would be pointed at the wrong device for. The instance name is derived from the low
+    three bytes of the MAC, so two boards really can derive the same one; such rows are
+    marked `shared` rather than left to look identical. **Forget** is the only removal,
+    and it is armed the minute a board is gone: the hub gates it on the board being
+    unreachable by every route it checks — not on a cable the current sweep attributes to
+    that MAC, not announcing inside the last minute (the clock is the time the browser
+    last HEARD a packet, never the time a card rebuild re-folded its cache — a clock the
+    hub winds itself is a gate that never opens), and no fresh verdict of alive at the
+    address the row still holds. That verdict is re-priced by a bounded concurrent sweep
+    every ten seconds over every remembered address, once at launch and again the second
+    a cable goes quiet — so a board unplugged everywhere has an armed button at 60 s,
+    not at the browser's expiry plus a grace. A row whose address has no verdict yet is
+    refused with "the hub is asking": a render never dials, the door re-asks the gate
+    synchronously when pressed, and a page that ignores the disabled button still gets a
+    refusal. A board the hub can reach re-creates its own row, so a Forget on one is a
+    button that appears to do nothing, and a dead button prints its reason on the row
+    rather than hiding it in a tooltip. The page enables the button only on a literal
+    `forgettable: true`: an absent field is a hub that did not answer, and is read as a
+    refusal. Dropping a board revokes the address it held, unless another live board
+    still claims that address. The gate lives in `liveness.go`.
   - **Remembered orb.** The address the hub last had an orb at — learned over
-    USB or typed in — comes back on the next launch, so the address is typed once
-    rather than every session, along with the MAC it was committed for and the
-    fleet's names and rooms. It lives in `state.json` under the OS config dir
-    (mode 0600, beside the app-window profile) and holds **addresses, MACs, names and
-    rooms**: no launch token, no Wi-Fi passphrase, no SSID, because the orb owns the
-    passphrase (`orb_net.c` keeps it in NVS) and a second copy in a config dir is a
-    second place it leaks. A corrupt file reads as "nothing remembered", never as a
-    dial list; only IPv4 literals are accepted into it, so a hostname in that file
-    cannot make the hub resolve something, and a version 1 file still loads (its
-    grants come back unbound, labelled as such).
+    USB or typed in — comes back on the next launch with the MAC it was committed for
+    and the last name read off the board, so the address is typed once rather than every
+    session and the remembered row reads by name before anything is dialed. It lives in
+    `state.json` under the OS config dir (mode 0600, beside the app-window profile) and
+    holds **addresses, MAC bindings and cached names** — the address book and the
+    grants, nothing else: no launch token, no Wi-Fi passphrase, no SSID, because the orb
+    owns the passphrase (`orb_net.c` keeps it in NVS) and a second copy in a config dir
+    is a second place it leaks. A corrupt file reads as "nothing remembered", never as a
+    dial list; only IPv4 literals are accepted into it and entries with no address are
+    dropped at load, so a hostname cannot make the hub resolve something and a cable-only
+    board never resurfaces as a phantom row; a version 1 or 2 file still loads (its name
+    re-enters as the cache, its rooms, sockets and cable claims are read and dropped, its
+    grants come back unbound, and the next save rewrites the smaller shape).
 
 ## Headless flasher
 
@@ -381,11 +417,12 @@ headless; a mismatch aborts before erasing.
 | `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
+| `POST /api/orb/cmd` | one always-on serial console verb over a port (`ping` `name` `scan` `prov` `mode` `reset`), NDJSON; `name` is written to the board and the card re-reads it; the store keeps no copy |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
 | `POST /api/orb/allow` | `{"ip", "mac"?}` — register the address the operator just committed to, which is what lets `/orb/` dial it; the optional MAC is the board the grant is then cross-locked to |
-| `GET  /api/fleet` | the remembered fleet — `{mac, name, room}`, cable and contention state, and the learned addresses with whether each is bound |
-| `POST /api/fleet/set` | `{"mac", "name", "room"}` — name a board the hub has actually met; token-guarded, and refuses a second live claim on a taken name |
-| `POST /api/fleet/forget` | `{"mac"}` — drop a board and revoke the address it held; token-guarded |
+| `GET  /api/fleet` | the address book — each row's `{mac, ip, port}` and cached name, plus this frame's device-reported instance, firmware and shared/contended flags, and the learned addresses with whether each is bound |
+| `POST /api/fleet/set` | `{"mac", "name"}` — name a board the hub has actually met by writing to the board itself; the read-back word is cached in the store on success; token-guarded, and refuses a second live claim on a taken name |
+| `POST /api/fleet/forget` | `{"mac"}` — drop a board and revoke the address it held; token-guarded, and refused with a reason when the hub can still reach the board (on a cable now, announcing within the announce grace, or answering at its remembered address) |
 | `POST /api/orb/forget` | `{"ip"}` — drop an address from the dialable set without restarting the hub |
 | `GET  /api/orb/known` | the remembered address, the learned set, and where the state file lives |
 | `POST /api/theme/list` | `{"ip"}` — the orb's SD themes plus card state, mount, active face, and the last refused install. Each row carries the `name` and the `id` the orb derived from it |
@@ -485,10 +522,31 @@ persist-then-join path, and neither erases the shared `storage` partition, so th
 
 Caveat, stated plainly: the serial door sends the passphrase over the wire in hex
 — obfuscated, not encrypted. That is acceptable only because it runs over the
-user's own USB lead to a physically-adjacent device during onboarding. It is not
-a path for a remote or shared link; use the AP/HTTP door there. The serial door is
-for an *unprovisioned* orb only — a device that already has credentials boots as a
-station, never opens the stdin reader, and must be re-configured through its HTTP page.
+user's own USB lead to a physically-adjacent device. It is not
+a path for a remote or shared link; use the AP/HTTP door there.
+
+The serial door is no longer limited to an unprovisioned orb. `orb_net.c` runs the
+console reader for the whole life of the app, on every boot and in every state, and
+accepts six verbs, each replying with an `-ACK`/`-NAK` line the hub can key on:
+
+| verb | what it does |
+|---|---|
+| `PROV <hex-ssid> <hex-pass> <hex-tz>` | join a network — the first-boot credential line, and now also the reconfigure line for a station orb (refused while AP-isolated) |
+| `NAME <hex-name>` | set the orb's own name, through the same validating door `POST /api/v1/name` uses |
+| `SCAN` | arm a scan and mirror the results to the console as `PROVSCAN` lines — the network list, without joining the orb's AP |
+| `MODE <hex-ap\|hex-sta>` | switch the persistent reachability mode and reboot: `ap` = isolated (own AP + page only, never associates), `sta` = rejoin Wi-Fi. `POST /api/v1/wifi/mode {"mode":"ap\|"sta"}` is the same door over HTTP, and the page's only exit from an isolation the page can also enter — an isolated orb is reachable at exactly one address, its own `192.168.4.1`, so a one-way mode would be a trap |
+| `RESET ALL` | factory-reset, the whole device: erase **both** NVS partitions and reboot as if freshly flashed. The literal `ALL` guard is required and it is the scope — credentials, tz, name and mode go, and so do the theme choice, the app grants and enables, every per-app setting, the fault ledger and the idle-dim timeout, plus esp_wifi's own copy of the passphrase in `nvs.net80211` (a reset that left the driver's copy behind would leave a passphrase on a board that is changing hands). Same two partitions the flash-time `wipe` target (`nvs` + `storage`) — the runtime door and the wired-flash door now mean the same thing. Answers `RESET-ACK`, or `RESET-PART` when one partition refused to erase; either way it reboots, because a half-wiped orb is neither configured nor clean. Not erased: installed app *blobs* (they resolve from the `apps` partition headers, so they come back present but unarmed and defaulted) and the firmware itself. No HTTP door matches it — `POST /api/v1/reset` only reboots into provisioning and keeps the config |
+| `PING` | report the orb's own state: `ORB-PING b` (unconfigured), `c-ap` or `c-sta` |
+
+A board boots with one `GorbOS-STATE <b|c-ap|c-sta>` line so the hub can classify it
+without a reboot-probe. State (a) — a bare ESP32-S3 with no gorb-os — is the absence of
+that line on a chip that answers the ROM, which is what `ProbeOrb` already reports as
+"an ESP32-S3 at …, but no gorb-os firmware booted".
+
+`POST /api/orb/cmd {"port","command","operand"|"ssid/pass/tz"}` drives one such verb
+over a port, streaming the console as NDJSON like `/api/provision` does, and lands a
+name that the orb acknowledged into the fleet store. `handleFleetSet` now uses it too:
+naming a cable-only board goes down that cable instead of being refused.
 
 The proxy only forwards the `/api/v1/` namespace to a bare IPv4 literal, so it
 cannot become an open proxy or a path-traversal foothold.
@@ -507,9 +565,11 @@ watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
 theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal theme id
 console.go           POST /api/console: read-only USB console, registered as a port operation
-state.go             remembered orbs (state.json under the OS config dir: addresses, their MAC bindings, names, rooms)
+state.go             remembered orbs (state.json under the OS config dir: addresses, MAC bindings, cached names)
 fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
 roster.go            the one-list merge: TTL-cached USB sweep behind a seam, MAC-joined LAN+cable rows, plug-change digest
+liveness.go          the Forget gate: cached per-address liveness verdicts, the background sweeper that fills them,
+                     and the one rule the card and the forget door both call
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
@@ -687,11 +747,14 @@ serial the host reads free, never an address. A board on both carries `via:
 ["lan","usb"]`, its tty in `ports`, and stays dialable on its LAN address; a board on
 a cable only sits on the list undialable, `ip` empty, refusal naming its port.
 `identity` says who vouches for the mac: `confirmed` (a hub read it off the chip —
-stickiest and store-backed), `descriptor` (the host cable saw it), `claimed` (the
+stickiest), `descriptor` (the host cable saw it), `claimed` (the
 packet says so), `unknown` (an unattributed port, listed under its tty path so two
-unknowns cannot collide). The hybrid rule: a descriptor-only sighting shows and
-expires with the plug and never reaches `state.json`; the store gains a row only from
-a probe, a flash, a console verdict, or an announcement. `cable` (chip-confirmed,
+unknowns cannot collide). The remembering rule: every board the hub can see is
+remembered by MAC from the moment it is seen, so `state.json` gains a row from a
+browse reply, a multicast announcement, a cable enumeration, a probe, a flash, or a
+console verdict, with nothing to press. What a descriptor-only sighting does NOT get is
+an address, so it shows while plugged and stays dialable-free after the plug.
+`cable` (chip-confirmed,
 sticky) and `onCable` (in this sweep) stay distinct fields — an orb you flashed
 yesterday is not tethered today. A failed enumeration keeps the last good bench and
 reports `cableError` instead of showing an empty list. `/api/ports` stays raw: the

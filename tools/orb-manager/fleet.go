@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 )
@@ -147,10 +149,33 @@ func (s *Server) foldCandidates(renew bool) {
 	}
 }
 
+// orbmdnsToObservation projects a browse record into a store observation. At carries
+// the time the browser actually HEARD the packet, not the time of this fold: the card
+// rebuild re-projects the whole cache every wake, and stamping fold-time would let an
+// unplugged board refresh its presence clock from the hub's own memory for the two
+// minutes the browser holds the record. The Forget gate reads that clock (liveness.go);
+// a clock the hub winds itself is a gate that never opens.
 func orbmdnsToObservation(c orbmdns.Candidate) orbfleet.Observation {
 	return orbfleet.Observation{
 		MAC: c.MAC, Instance: c.Instance, IP: c.IP, Port: c.Port, FW: c.FW, State: c.State,
+		At: c.LastSeen,
 	}
+}
+
+// seeCable records a descriptor sighting — the host enumerated this MAC on this port —
+// without claiming the chip was read over that lead. It is what makes remembering
+// automatic: every board the sweep can attribute earns a row, and the row is what lets a
+// later packet fold an address onto the same MAC. Chip reads (a flash's eFuse, a console
+// verdict, an identify) still go through markCable, which outranks packets.
+func (s *Server) seeCable(mac, port string) {
+	if s.fleet == nil {
+		return
+	}
+	if _, err := s.fleet.Confirm(mac); err != nil {
+		log.Printf("orb-manager: cable sighting not recorded (%s): %v", mac, err)
+		return
+	}
+	log.Printf("orb-manager: %s seen on %s", mac, port)
 }
 
 // markCable records that the hub read this MAC off the chip itself. Every cable path
@@ -160,12 +185,13 @@ func (s *Server) markCable(mac string) {
 	if s.fleet == nil {
 		return
 	}
-	row, err := s.fleet.MarkCable(mac)
+	row, err := s.fleet.Confirm(mac)
 	if err != nil {
 		log.Printf("orb-manager: cable sighting not recorded (%s): %v", mac, err)
 		return
 	}
-	log.Printf("orb-manager: %s confirmed over USB as %s", row.DisplayName(), row.MAC)
+	s.markChipRead(row.MAC)
+	log.Printf("orb-manager: %s confirmed over USB", row.MAC)
 }
 
 // --- the fleet endpoints ----------------------------------------------------------
@@ -179,16 +205,33 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.fleet == nil {
-		s.jsonOK(w, map[string]any{"orbs": []orbfleet.Orb{}, "refused": []orbfleet.Refusal{}})
+		s.jsonOK(w, map[string]any{"orbs": []map[string]any{}, "refused": []orbfleet.Refusal{}})
 		return
 	}
 	// Fold the cache before answering, with no renewal: see foldCandidates.
 	s.foldCandidates(false)
 	s.jsonOK(w, map[string]any{
-		"orbs":    s.fleet.All(),
+		"orbs":    fleetView(s.fleet.All()),
 		"refused": s.fleet.Refusals(),
 		"learned": s.knownGrants(),
 	})
+}
+
+// fleetView is the read shape for /api/fleet. The persisted store now carries only the
+// address book (mac, ip, port); the display fields and the derived clash flags live on
+// the row only for the current frame, so the endpoint maps them out explicitly rather
+// than marshaling the store struct — which no longer serializes them by design.
+func fleetView(rows []orbfleet.Orb) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, map[string]any{
+			"mac": r.MAC, "ip": r.IP, "port": r.Port,
+			"name": r.Name, "instance": r.Instance, "fw": r.FW, "state": r.State,
+			"note": r.Note, "shared": r.Shared, "contended": r.Contended,
+			"displayName": r.DisplayName(),
+		})
+	}
+	return out
 }
 
 // knownGrants pairs each remembered address with the board it was committed for, so
@@ -202,8 +245,8 @@ func (s *Server) knownGrants() []map[string]any {
 	return out
 }
 
-// handleFleetSet is the operator's side of the identity: give a board a name and a
-// room. Guarded, because it writes to disk and because the name is what later points
+// handleFleetSet is the operator's side of the identity: give a board a name.
+// Guarded, because it writes to disk and because the name is what later points
 // a credential: a page that could rename an orb could aim whatever the hub stores for
 // it at a different board.
 //
@@ -217,7 +260,6 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MAC  string `json:"mac"`
 		Name string `json:"name"`
-		Room string `json:"room"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonErr(w, "bad request: "+err.Error())
@@ -244,10 +286,17 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 		// The roster knows things the store does not: a board on a cable this sweep
 		// read a MAC from is seen, not unknown. Say which plug it is on rather than
 		// "never announced", which a cable makes false, and still refuse the write — a
-		// descriptor sighting earns a row in the list, not a row in state.json.
+		// descriptor sighting earns a row in the list, not a name the hub can write with
+		// no address to dial. Writing over the lead is the Onboard card's job, where the
+		// port is already the thing under test.
 		canon, badmac := orbmdns.CanonicalMAC(req.MAC)
 		if badmac == "" {
 			if port := s.cables.cablePortFor(canon, time.Now()); port != "" {
+				// The cable sighting is a fact independent of the rename: remember the
+				// board is on a lead even as this write is refused, so a failed rename
+				// does not un-see it. What it does not do is put a name on the file —
+				// the write goes to the board, and there is no board address to reach.
+				s.seeCable(canon, port)
 				s.jsonErr(w, "no orb "+req.MAC+" to name: on a cable at "+port+
 					" with no address yet, so there is nothing to write to — identify it or bring it onto the LAN first")
 				return
@@ -274,20 +323,19 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, err.Error())
 		return
 	}
-	// Both fields are applied or neither reports success: a row left half-renamed
-	// reads as the operator's typo rather than the hub's half-measure. The device has
-	// said yes and the cross-lock has already been paid, so the only way SetName can
-	// still refuse is a rename that landed between the check and the write — rare, and
-	// self-correcting: the orb holds the new word and the next status read folds it in.
-	if err := s.fleet.SetName(req.MAC, req.Name); err != nil {
+	// The device accepted it, so the hub's copy is now the board's word: fold it in and
+	// persist it, so the row reads by name at the next launch even if the board stays in
+	// a drawer until then. There is no room field and there is no write on no change: the
+	// board owns the name, the file caches it, and a refused device write never reaches
+	// this line.
+	_, changed, err := s.fleet.NoteDeviceName(req.MAC, clean)
+	if err != nil {
 		s.jsonErr(w, err.Error())
 		return
 	}
-	if err := s.fleet.SetRoom(req.MAC, req.Room); err != nil {
-		s.jsonErr(w, err.Error())
-		return
+	if changed {
+		s.saveState()
 	}
-	s.saveState()
 	row, _ = s.fleet.ByMAC(req.MAC)
 	s.jsonOK(w, map[string]any{"orb": row})
 }
@@ -346,8 +394,16 @@ func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
 // renders first.
 func (s *Server) writeNameToDevice(row orbfleet.Orb, name string) error {
 	if row.IP == "" {
-		if row.Cable {
-			return fmt.Errorf("%s is on a cable but has no address yet: bring it onto the LAN (POST /api/v1/wifi/join) before naming it", row.DisplayName())
+		// A board on a cable with no address used to be unnamedable at all. The
+		// firmware's always-on serial door (orb_net.c NAME) closes that gap: the live
+		// sweep says which port carries this MAC right now, so the name goes down the
+		// wire the board is actually on. That is the only source, and it is the right
+		// one — a remembered socket is a claim about a previous plug-in.
+		if port := s.cables.cablePortFor(row.MAC, time.Now()); port != "" {
+			return s.serialName(port, row.MAC, name)
+		}
+		if s.chipRead(row.MAC) {
+			return fmt.Errorf("%s is on a cable but the hub cannot say which port: identify it first", row.DisplayName())
 		}
 		return fmt.Errorf("%s has no address the hub can dial: name it from the Manage card once its address is known", row.DisplayName())
 	}
@@ -360,9 +416,40 @@ func (s *Server) writeNameToDevice(row orbfleet.Orb, name string) error {
 	return nil
 }
 
+// serialName writes a NAME command over the cable already carrying this board and
+// waits for the firmware's ack, reusing the one serial-command driver the /api/orb/cmd
+// door uses. It refuses rather than half-writing: an orb that NAK'd the value keeps its
+// old name and the store is not touched.
+func (s *Server) serialName(port, mac, name string) error {
+	pt, oerr := esprom.OpenPort(port)
+	if oerr != nil {
+		return fmt.Errorf("%s: %s unreachable for a serial write: %v", mac, port, oerr)
+	}
+	defer pt.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	line := esprom.SerialLine("NAME", esprom.ProvField(name))
+	res, err := esprom.RunCommand(ctx, pt, line, []string{"NAME-ACK"}, nil)
+	if res != nil && res.Nak != "" {
+		return fmt.Errorf("%s refused the name (%s); nothing was renamed", mac, res.Nak)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: serial name on %s failed: %v", mac, port, err)
+	}
+	if res == nil || !res.Ack {
+		return fmt.Errorf("%s did not acknowledge the name over %s; nothing was renamed", mac, port)
+	}
+	return nil
+}
+
 // handleFleetForget takes a board out of the fleet and revokes the addresses it held.
 // Forgetting the identity while the hub still dials the address would leave the exact
 // thing the operator was trying to get rid of.
+//
+// The gate is the same forgetGate the card reads, called with confirm=true, so an answer
+// the sweep has not priced yet is priced here: one dial, once per button press, at the
+// only point where deleting something is about to happen. A button the card should not
+// have drawn is refused here, and the row comes back on the next frame.
 func (s *Server) handleFleetForget(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MAC string `json:"mac"`
@@ -373,6 +460,10 @@ func (s *Server) handleFleetForget(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.fleet == nil {
 		s.jsonErr(w, "no fleet is configured on this hub")
+		return
+	}
+	if ok, why := s.forgetGate(req.MAC, time.Now(), true); !ok {
+		s.jsonErr(w, why)
 		return
 	}
 	held, err := s.fleet.Forget(req.MAC)

@@ -14,9 +14,13 @@
 //     instance while differing in the high bytes of their addresses. Those rows are
 //     marked ambiguous rather than left to look identical, because a row the operator
 //     cannot tell apart is a row they will click wrong.
-//   - A cable outranks a packet. Once the hub has read a MAC off the chip itself, an
-//     announcement cannot move, rename, or re-prove that row: the console said it
-//     down a lead, and a UDP reply cannot outvote that.
+//   - The announced address wins. A board moves — DHCP rebind, re-flash, a bench that
+//     joins the LAN — and updates its own row: the hub follows the MAC, and an address
+//     is the row's least durable fact.
+//   - The name in the file is a cache, not an authority. The board owns its name (NVS,
+//     read back over /api/v1/status); the hub stores the last word it read so a
+//     remembered row can show a name instead of a bare MAC, and every device read
+//     corrects or clears the copy.
 package orbfleet
 
 import (
@@ -35,40 +39,57 @@ import (
 // two different orbs depending on which surface you look at.
 const (
 	MaxName     = 32
-	MaxRoom     = 32
 	DefaultLive = 6 * time.Minute
 )
 
-// Orb is one board as the hub remembers it. IP and Port are a snapshot of the last
-// announcement, not identity: they are what the operator clicks, and the proxy still
-// decides separately whether the hub may dial them.
+// Orb is one board as the hub remembers it.
+//
+// The hub's memory is an ADDRESS BOOK WITH A NAME TAG. Its job is to let a launch dial
+// the boards it already knows about instead of waiting up to one announce interval
+// (MDNS_ADV_REFRESH_S, 60 s) for a packet to arrive, and to show each remembered board
+// by the word its owner gave it rather than by a bare MAC. Four fields cross the restart
+// boundary: MAC, IP, Port, and the last Name the hub read off the board. The board still
+// owns its name — the hub names a board by writing to the board (fleet.go's
+// writeNameToDevice), and the copy here is the read-back: every status fold corrects it,
+// and a board answering with "" clears it. Everything else a row displays is a fact
+// about this frame only, and a second copy in a file would be a second place for it to
+// be wrong.
+//
+// MAC, IP, Port and Name are the persisted four. The fields below that are json:"-" and
+// are a snapshot of the current frame only: presence, the live device facts, and the
+// two derived clash flags.
 type Orb struct {
-	MAC       string    `json:"mac"`
-	Name      string    `json:"name,omitempty"`
-	Room      string    `json:"room,omitempty"`
-	Instance  string    `json:"instance,omitempty"`
-	FW        string    `json:"fw,omitempty"`
-	IP        string    `json:"ip,omitempty"`
-	Port      uint16    `json:"port,omitempty"`
-	State     string    `json:"state,omitempty"`
-	Cable     bool      `json:"cable,omitempty"`
-	FirstSeen time.Time `json:"firstSeen"`
-	LastSeen  time.Time `json:"lastSeen"`
-	Announces int       `json:"announces"`
+	MAC  string `json:"mac"`
+	IP   string `json:"ip,omitempty"`
+	Port uint16 `json:"port,omitempty"`
+
+	// Name is the last word the DEVICE gave for itself, folded in by NoteDeviceName.
+	// It persists so a remembered row reads "Hall" at first paint instead of a MAC the
+	// operator cannot read off a label; it is a cache and not an authority. Writing a
+	// name goes to the board first, and the next status read settles the copy.
+	Name     string `json:"name,omitempty"`
+	Instance string `json:"-"`
+	FW       string `json:"-"`
+	State    string `json:"-"`
+
+	// LastSeen is when this process last heard an announce for the row. It is a
+	// presence statement, never a reason to hide a row: a restored address book entry
+	// has no LastSeen at all, and dropping it from the card for that is the bug this
+	// struct's shape exists to kill.
+	LastSeen time.Time `json:"-"`
 
 	// Note is the last thing the store refused to fold into this row, with the
 	// reason. A row that quietly stopped matching its announcements looks exactly
 	// like a healthy one otherwise.
-	Note string `json:"note,omitempty"`
+	Note string `json:"-"`
 
-	// Shared names an instance that more than one live MAC claimed. Deriving it on
-	// read means it cannot go stale when the other board goes silent.
-	Shared bool `json:"shared,omitempty"`
+	// Shared names an instance that more than one live MAC claimed. Derived on read, so
+	// it cannot go stale when the other board goes silent.
+	Shared bool `json:"-"`
 
 	// Contended marks an address two live boards both announced. The hub will not dial
-	// one: it cannot know which of the two the operator meant. Derived on read, for the
-	// same reason Shared is.
-	Contended bool `json:"contended,omitempty"`
+	// one: it cannot know which of the two the operator meant.
+	Contended bool `json:"-"`
 }
 
 // Live reports whether the row still describes a board the hub can reach. It is a
@@ -168,17 +189,15 @@ func (s *Store) Observe(o Observation) (*Orb, error) {
 	}
 	row := s.byMAC[mac]
 	if row == nil {
-		row = &Orb{MAC: mac, FirstSeen: now}
+		row = &Orb{MAC: mac}
 		s.byMAC[mac] = row
 	}
 
-	// A cable-verified row is not moved by a packet. The address may still genuinely
-	// have changed — in which case the next console read updates it, and until then the
-	// card shows the address the hub proved, with the note saying what it refused.
-	if row.Cable && row.IP != "" && o.IP != "" && o.IP != row.IP {
-		row.Note = fmt.Sprintf("ignored %s from %s: this board was read over USB at %s", o.IP, o.Instance, row.IP)
-		return row, errors.New(row.Note)
-	}
+	// The address a board announces now wins, always. A board flashed on the bench and
+	// brought onto the network is the ordinary case, and it updates its own entry: the
+	// hub follows the MAC. What used to stand here was a guard refusing to move the
+	// address of a row the hub had read off a chip, which blocked exactly that case —
+	// the chip read says which board a MAC belongs to, not which address it keeps.
 
 	// An accepted observation clears the previous note. A note that only ever got
 	// written would keep reporting a contradiction the LAN stopped producing an hour ago.
@@ -210,15 +229,21 @@ func (s *Store) Observe(o Observation) (*Orb, error) {
 		row.Port = o.Port
 	}
 	row.LastSeen = now
-	row.Announces++
 	copied := *row
 	return &copied, nil
 }
 
-// MarkCable says the hub read this MAC off the chip itself. It is the strongest thing
-// the hub can know about a board, and it is what makes Observe stop trusting packets
-// about it.
-func (s *Store) MarkCable(mac string) (*Orb, error) {
+// Confirm says the hub has proof this board is present right now, and refreshes the
+// row's presence clock. Two things call it: the USB sweep attributed a port to this
+// MAC (seeCable), and a chip read named the MAC over a lead (markCable). A dial that
+// answers deliberately does NOT call it — a dial earns a verdict, not an announce, and
+// a presence clock the hub could wind by knocking would make the Forget gate refuse on
+// the hub's own fabrication.
+//
+// Creating the row here is what makes a cable-only board a row at all. It carries a MAC
+// and no address, so the address book gains nothing from it: Snapshot skips it, and the
+// row dies with the lead.
+func (s *Store) Confirm(mac string) (*Orb, error) {
 	c, why := orbmdns.CanonicalMAC(mac)
 	if why != "" {
 		return nil, errors.New(why)
@@ -227,45 +252,12 @@ func (s *Store) MarkCable(mac string) (*Orb, error) {
 	defer s.mu.Unlock()
 	row, ok := s.byMAC[c]
 	if !ok {
-		row = &Orb{MAC: c, FirstSeen: s.now()}
+		row = &Orb{MAC: c}
 		s.byMAC[c] = row
 	}
-	row.Cable = true
 	row.LastSeen = s.now()
 	copied := *row
 	return &copied, nil
-}
-
-// SetName gives a board the operator's word. Naming is only possible for a board the
-// hub has actually met — over the cable or on the air — because a name attached to a
-// MAC nobody has ever confirmed is a phantom that will outlive the typo that made it.
-func (s *Store) SetName(mac, name string) error {
-	c, why := orbmdns.CanonicalMAC(mac)
-	if why != "" {
-		return errors.New(why)
-	}
-	clean, err := cleanWord(name, MaxName, "name")
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	row, ok := s.byMAC[c]
-	if !ok {
-		return fmt.Errorf("no orb %s to name: it has never announced and is not on a cable", c)
-	}
-	if clean == "" {
-		row.Name = ""
-		return nil
-	}
-	// The cross-lock: two live rows may not answer to one word. Compare the normalized
-	// forms, so "Kitchen " and "kitchen" cannot both exist, and report who holds it so
-	// the operator can fix the real problem instead of retrying the typo.
-	if err := s.nameClashLocked(c, clean); err != nil {
-		return err
-	}
-	row.Name = clean
-	return nil
 }
 
 // CheckNameFree answers the cross-lock question without writing the answer. It exists
@@ -274,9 +266,9 @@ func (s *Store) SetName(mac, name string) error {
 // refusing second brands the board with a word the fleet will not carry, which is a
 // worse state than the one the refusal was trying to prevent.
 //
-// SetName calls the same helper, so the pre-check cannot drift from the rule it
-// predicts. It is still a check and not a lock: a second rename landing between this
-// return and the write is caught by SetName the ordinary way.
+// It is the cross-lock on its own now: the hub stores no name, so nothing re-checks
+// this on write. It remains a check and not a lock — a second rename landing between
+// this return and the POST to the board is caught the ordinary way, on the next read.
 func (s *Store) CheckNameFree(mac, name string) error {
 	c, why := orbmdns.CanonicalMAC(mac)
 	if why != "" {
@@ -311,12 +303,12 @@ func (s *Store) nameClashLocked(c, clean string) error {
 // the hub's Name field is a cache rather than an owner: the device's word always
 // wins, and the two disagree in exactly one direction.
 //
-// It deliberately does not call SetName. SetName enforces the one-name-one-board
-// cross-lock, which is the right rule for an operator typing a word and the wrong
-// rule for a packet the board sent about itself — refusing it would leave the card
-// displaying a name no orb answers to, which is the failure the whole arrangement
-// exists to prevent. A live collision is therefore ADMITTED and written to the
-// refusal list: the operator sees two boards answering to one word and can rename
+// It does not enforce the one-name-one-board cross-lock, which CheckNameFree applies to
+// an operator's keystroke instead. That rule is the right one for a word a human typed
+// and the wrong one for a packet the board sent about itself — refusing it would leave
+// the card displaying a name no orb answers to, which is the failure the whole
+// arrangement exists to prevent. A live collision is therefore ADMITTED and written to
+// the refusal list: the operator sees two boards answering to one word and can rename
 // one, and the card got that story from a device rather than from a stale file.
 //
 // An empty name clears the cache. A FAILED status read must not come through here at
@@ -359,27 +351,6 @@ func (s *Store) NoteDeviceName(mac, name string) (Orb, bool, error) {
 		s.noteRefusal("device-reported name collides: "+collision, c, "")
 	}
 	return out, changed, nil
-}
-
-// SetRoom places a board in a room. Rooms are not unique on purpose: a hallway holds
-// four clocks, and refusing the second would teach the operator to type nonsense.
-func (s *Store) SetRoom(mac, room string) error {
-	c, why := orbmdns.CanonicalMAC(mac)
-	if why != "" {
-		return errors.New(why)
-	}
-	clean, err := cleanWord(room, MaxRoom, "room")
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	row, ok := s.byMAC[c]
-	if !ok {
-		return fmt.Errorf("no orb %s to place in a room", c)
-	}
-	row.Room = clean
-	return nil
 }
 
 // Forget drops a board from the fleet. It returns the addresses the row held so the
@@ -465,7 +436,44 @@ func (s *Store) All() []Orb {
 	return out
 }
 
-// ByMAC returns one live row.
+// Look returns one row. The store applies no liveness filter to reads: an entry is in
+// the address book or it is not, and whether the board is reachable is a question the
+// caller answers from the live browser, the cable sweep, or a dial. Look and ByMAC are
+// the same read today; Look stays named because the Forget gate asks a different question
+// of a row than the card does and should not read like the same call.
+func (s *Store) Look(mac string) (Orb, bool) {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return Orb{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byMAC[c]
+	if !ok {
+		return Orb{}, false
+	}
+	return *r, true
+}
+
+// Every returns every remembered row, live or not, sorted by MAC. It is the address
+// book read whole, and it wears two hats that come from the same fact: it is the source
+// of the card's remembered tier, and the dial schedule for the hub's liveness sweep. The
+// addresses worth asking about are the ones a row still points at, including the rows a
+// Live filter would drop — a board that stopped announcing is exactly the case where "does
+// it still answer?" matters, and it is the case the file exists to keep visible at launch.
+func (s *Store) Every() []Orb {
+	s.mu.Lock()
+	out := make([]Orb, 0, len(s.byMAC))
+	for _, r := range s.byMAC {
+		out = append(out, *r)
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].MAC < out[j].MAC })
+	return out
+}
+
+// ByMAC returns one live row. A caller that wants the row regardless of presence —
+// the Forget gate, the roster's remembered tier — reads Look or Every instead.
 func (s *Store) ByMAC(mac string) (Orb, bool) {
 	c, why := orbmdns.CanonicalMAC(mac)
 	if why != "" {
@@ -499,14 +507,18 @@ func (s *Store) noteRefusal(why, mac, ip string) {
 	}
 }
 
-// Snapshot is the persisted form: everything the hub knows about a board that a
-// restart cannot relearn by itself. It is a copy, so a caller may write it to disk
-// while the browse keeps updating the live rows.
+// Snapshot is the persisted form: the address book and the name tags, and nothing a
+// restart could only get wrong. Rows with no address are skipped deliberately — a
+// board the hub has only ever touched over USB cannot be dialed, and persisting it
+// would resurrect the cable as a phantom row long after the lead is gone.
 func (s *Store) Snapshot() []Orb {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Orb, 0, len(s.byMAC))
 	for _, r := range s.byMAC {
+		if r.IP == "" {
+			continue
+		}
 		copied := *r
 		out = append(out, copied)
 	}
@@ -515,8 +527,9 @@ func (s *Store) Snapshot() []Orb {
 }
 
 // Restore refills the store after a launch. Rows are revalidated rather than trusted:
-// a hand-edited or future-version file that named a non-hex MAC or an address that is
-// not an IPv4 literal is dropped, not dialed.
+// a hand-edited or future-version file that named a non-hex MAC, an address that is
+// not an IPv4 literal, or no address at all is dropped rather than loaded — a book
+// entry with nothing to dial is the cable phantom this store exists to stop resurfacing.
 func (s *Store) Restore(rows []Orb) int {
 	n := 0
 	for _, r := range rows {
@@ -527,12 +540,16 @@ func (s *Store) Restore(rows []Orb) int {
 		if r.IP != "" && !isV4(r.IP) {
 			r.IP, r.Port = "", 0
 		}
-		if r.LastSeen.IsZero() {
-			r.LastSeen = s.now()
+		if r.IP == "" {
+			continue
 		}
-		if r.FirstSeen.IsZero() {
-			r.FirstSeen = r.LastSeen
+		if len(r.Name) > MaxName {
+			r.Name = ""
 		}
+		// Presence is never restored. A row that came out of the file has not been
+		// heard from, and claiming otherwise would make a board that has been in a
+		// drawer for a month look like one that announced a second ago: the Forget gate
+		// would refuse on its own fake clock, and the card would show it as alive.
 		copied := r
 		copied.MAC = c
 		s.mu.Lock()

@@ -129,9 +129,10 @@ func TestRosterListsCableOnlyBoardWithNoAddress(t *testing.T) {
 	if got.Data.CableError != "" {
 		t.Errorf("cableError = %q on a good sweep", got.Data.CableError)
 	}
-	// Hybrid persistence: a descriptor sighting is a row, never a fleet store row.
-	if _, ok := s.fleet.ByMAC("44bd8d608088"); ok {
-		t.Error("a cable sighting reached the fleet store without a probe or a packet")
+	// Remember-on-sight: a descriptor sighting is a fleet row now, so the board the
+	// hub is holding in its hand survives the unplug instead of vanishing with it.
+	if _, ok := s.fleet.ByMAC("44bd8d608088"); !ok {
+		t.Error("a cable sighting did not reach the fleet store")
 	}
 }
 
@@ -210,8 +211,11 @@ func TestRosterFoldsStoreAddressIntoCableRow(t *testing.T) {
 	s.browse = filled(t)
 	s.fleet.Restore([]orbfleet.Orb{{
 		MAC: "44bd8d608088", Name: "Nursery", IP: "192.168.2.50", Port: 80,
-		Cable: true, LastSeen: time.Now(),
+		LastSeen: time.Now(),
 	}})
+	// The chip read is a fact about THIS run, so it lives in the session set, not the
+	// row: a restored entry cannot carry a claim that a previous process made.
+	s.markChipRead("44bd8d608088")
 	f := plugCables(s, nil)
 	f.set(orbAt("/dev/ttyACM0", "44bd8d608088"))
 	got := getDiscovered(t, s)
@@ -310,10 +314,11 @@ func TestRosterSweepFailureKeepsTheLastBench(t *testing.T) {
 	}
 }
 
-// Naming a cable-only board is the refusal the merge has to earn the right to word
-// correctly. "Never announced" is what the old message claimed about a board the hub is
-// holding in its hand; the new one names the plug and still refuses, because hybrid
-// persistence means no store row and no device to write to.
+// Naming a cable-only board is the case the always-on serial door was added for: the
+// hub has the board on a wire it can write down, so the refusal that used to be correct
+// ("no address to dial") is now a lie. With no real port behind the name in this test,
+// the hub must still refuse rather than claim a write it did not perform, and it must
+// say which cable it tried.
 func TestNamingACableOnlyOrbRefusesByNameOfTheCable(t *testing.T) {
 	s := newHub()
 	s.token = "tk"
@@ -325,7 +330,7 @@ func TestNamingACableOnlyOrbRefusesByNameOfTheCable(t *testing.T) {
 		map[string]string{"X-Orb-Token": "tk"})
 	body := rec.Body.String()
 	if rec.Code == http.StatusOK {
-		t.Fatalf("naming an address-less cable-only board succeeded: %s", body)
+		t.Fatalf("naming an address-less cable-only board succeeded with no port to write: %s", body)
 	}
 	if !strings.Contains(body, "ttyACM0") {
 		t.Errorf("the refusal does not name the cable the board is on: %s", body)
@@ -333,8 +338,10 @@ func TestNamingACableOnlyOrbRefusesByNameOfTheCable(t *testing.T) {
 	if strings.Contains(body, "never announced") {
 		t.Errorf("the refusal still claims the board was never seen: %s", body)
 	}
-	if _, ok := s.fleet.ByMAC("44bd8d608088"); ok {
-		t.Error("a refused rename still created a fleet row")
+	// The sighting itself is remembered even though the write failed: remembering and
+	// naming are separate facts, and a failed rename must not un-see a board.
+	if _, ok := s.fleet.ByMAC("44bd8d608088"); !ok {
+		t.Error("a cable sighting did not reach the fleet store")
 	}
 }
 
@@ -347,7 +354,7 @@ func TestRosterIsDocumentedAndBadged(t *testing.T) {
 	for _, want := range []string{
 		"one merged list",
 		"never an address",
-		"never reaches `state.json`",
+		"remembered by MAC from the moment it is seen",
 		"`cable` (chip-confirmed", // the two cable facts stay named apart, in the doc too
 	} {
 		if !strings.Contains(readme, want) {

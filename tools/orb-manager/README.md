@@ -580,11 +580,13 @@ make vendor-check     # verify that committed tree against its manifest and SRI 
 make run        # rebuild + open the app window against 127.0.0.1:3779
                 # add --no-window to serve without a window (SSH, CI, bench)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
-make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe
+make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe (console: prints to the terminal)
+make windows-gui # the one-window hub exe (PE subsystem 2: double-click shows only the app window)
 make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
 make release    # cross-compile the darwin/linux/windows artifact set into
-                # bin/release/<name>-<os>-<arch>/ + sha256sums.txt, no network needed
+                # bin/release/<name>-<os>-<arch>/ + sha256sums.txt, no network needed;
+                # the Windows hub ships windows-gui, the flasher stays console
 ```
 
 ### What the client cannot be checked with here
@@ -673,9 +675,21 @@ to test the paths WSL cannot reach: native COM enumeration, the Windows profile
 dir, and a Chrome started without the interop launcher in between.
 
 ```
-make windows                          # -> bin/windows-amd64/orb-manager.exe
-cp bin/windows-amd64/orb-manager.exe /mnt/c/Users/<you>/Downloads/
+make windows                          # -> bin/windows-amd64/orb-manager.exe (console)
+make windows-gui                      # -> bin/windows-gui/orb-manager.exe (one window, no console)
+cp bin/windows-gui/orb-manager.exe /mnt/c/Users/<you>/Downloads/
 ```
+
+The release and `windows-gui` exes are PE subsystem 2 (`-H windowsgui`), so a
+double-click opens the app window and nothing else: no black terminal beside it.
+Closing that window shuts the hub down the same way Ctrl-C does — a live flash
+finishes first. A subsystem-2 exe launched with no console has nowhere to print,
+so its log, stdout and stderr append to `%TEMP%\orb-manager.log`, beside the
+browser log; the first lines of that file name its own path. Run from `cmd.exe`
+or Windows Terminal and it prints to the terminal like the console build — the
+flag suppresses the allocated window, not an inherited console. `make windows`
+stays console on purpose: `win-test` and the bench flows execute it and read its
+stdout.
 
 Copy it to `C:` rather than running it from `\\wsl.localhost`: Windows marks
 files fetched from another host, and SmartScreen questions an unsigned `.exe`
@@ -697,7 +711,41 @@ same behaviour Linux and macOS already had. If a live orb still does not appear 
 this, the next suspect is the access point converting or dropping multicast over Wi-Fi,
 which is on the network, not the hub.
 
+### Ship path for a non-technical Windows user (not yet built)
 
+A bench run and a first-day user run differ in three places, all measured here. The
+`windows-gui` build already fixes the first: double-clicking the release `.exe` opens
+one app window, no console, no PowerShell. Two remain, and neither is a code change —
+both are distribution artifacts this repo does not yet produce.
+
+1. **The manual firewall step.** Inbound UDP 5353 is unavoidable: the orb's
+   self-refresh announce is unsolicited inbound, and Windows Defender Firewall drops it
+   for a program with no allow rule. A first `bind(5353)` pops the OS "Allow access"
+   dialog, which creates the right rule scoped to the current profile — so the *manual*
+   `New-NetFirewallRule` above is a bench shortcut, not a user step. It only fails on a
+   Public profile or an unsigned `.exe` the OS declines to prompt cleanly for. The
+   install-time fix: the installer adds the rule as an elevated custom action running as
+   SYSTEM, so the user sees no firewall UI at all. Verify the true first-run prompt on a
+   fresh profile; this box has rules already and no clean VM to clear them on.
+2. **SmartScreen.** "Windows protected your PC" fires because the downloaded `.exe` is
+   unsigned and carries Mark-of-the-Web. Authenticode signing clears it, and the
+   installer wraps the single signed binary so there is one artifact to sign:
+   - **Azure Trusted Signing** — about \$10/month, cloud cert signed through `signtool`
+     after a one-time org identity check. The cheap modern path; the intended default.
+   - **OV or EV cert** (DigiCert, SSL.com, GlobalSign) — \$100–\$400/year. EV clears the
+     SmartScreen reputation gap immediately; an OV or brand-new Trusted Signing cert
+     still trips SmartScreen until clean downloads accrue. Tell the first users once.
+   - Self-signed is free and useless here: it is trusted only where the root is installed.
+   Installer choice: **Inno Setup** (one signed `setup.exe`, simplest) or **WiX** (signed
+   `.msi`, the format enterprises and SmartScreen favor). Install to `Program Files` for
+   a stable path, add a Start Menu shortcut, and add the firewall rule as the SYSTEM
+   custom action above. Then the shipped experience is: download one signed installer,
+   run it elevated, double-click one shortcut — no terminal, no firewall prompt, no
+   "More info → Run anyway".
+
+Until an installer exists, `make release` ships the loose `.exe` and the user does the
+Unblock-File and Allow-access steps by hand. That is the gap the signing task closes;
+nothing in this repo blocks it.
 
 Give Windows the cable first. A port attached to WSL through `usbipd` is invisible
 to Windows, and the picker has nothing to list — it says `(no serial ports

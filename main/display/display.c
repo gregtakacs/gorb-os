@@ -26,6 +26,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -239,6 +240,43 @@ static volatile uint32_t s_tile_done;   /* tile trans-dones this commit (task re
 static int          s_tiles_n __attribute__((unused)); /* buffers actually allocated */
 static bool         s_tiles_ok __attribute__((unused)); /* s_tiles_n >= 2, ring enabled */
 
+/* ---- Tile-ring loan: internal DMA RAM handed to the SD bus -------------------
+ * The ring is the largest freeable block of internal DMA RAM on the board
+ * (TILE_BUFS x 18,640 B, allocated at MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA), and
+ * the SD driver's bring-up allocates small DMA-capable buffers out of the same
+ * pool. The measured refusal is 125 bytes with 4,315 bytes free (docs/
+ * app-platform-plan.md §17.5), so the shortage is CONTIGUITY, not total: no
+ * radio buffer size produces a block that small, and the radio has to stay up
+ * because the upload is the thing asking. Lending the ring produces two
+ * contiguous 18,640 B blocks on command and costs the radio nothing.
+ *
+ * While lent, a flush must be DROPPED, not routed to PSRAM-direct. Direct
+ * submit needs trans_queue_depth == 1 (see the queue-depth policy comment in
+ * display_init); this loan path runs on a board whose IO was created at depth
+ * s_tiles_n == 2, and at depth > 1 the SPI master's bounce copies pile up and
+ * consume the internal DMA RAM the card is borrowing -- the loan would pay for
+ * the stall and the stall would take the money back. Dropping is cheap because
+ * the CO5300 holds its own GRAM: the glass keeps showing the last committed
+ * frame, s_fb keeps taking every pixel meanwhile, and the whole page is re-sent
+ * when the ring is funded back (s_ring_redraw).
+ *
+ * Refcounted, so a caller that holds the ring across an operation which itself
+ * takes the card lock is not undercut by that inner return: only the outermost
+ * lend frees, and only the outermost return re-funds. Today the one borrower is
+ * orb_sd_lock() itself, which is never recursive, so the count only ever reaches
+ * 1 -- it is there so the next borrower cannot corrupt the state of the first.
+ *
+ * s_ring_mux guards the ring against the LVGL task, which runs at priority 5
+ * and preempts the worker asking for the loan: the ring is freed only with the
+ * mutex held and only after the in-flight tiles have retired. */
+static SemaphoreHandle_t s_ring_mux;
+static int               s_ring_loan;      /* >0 == ring lent (nesting depth)  */
+static bool              s_ring_parked;    /* flush path must drop, not submit */
+static bool              s_ring_dropped;   /* at least one frame was dropped   */
+static bool              s_ring_redraw;    /* first funded flush re-sends all  */
+static size_t            s_ring_bytes;     /* one tile, remembered for restore */
+static size_t            s_ring_freed;     /* bytes the current loan returned  */
+
 /* Rows the clock's commit-time painter marks between commits (display_mark_rows
  * while no LVGL frame is in flight). The commit-time frame-start snapshot in
  * lvgl_flush_cb folds them into s_dirty_row so a mark made in tick context,
@@ -395,8 +433,90 @@ static void mirror_chunk(int32_t x1, int32_t y1, int32_t w, int32_t h,
 /* Coalesce the rows marked dirty this frame into <= DB_MAX_BANDS full-width
  * horizontal bands and DMA each straight from s_fb. Returns the band count
  * issued (>=1 always, so a frame with nothing dirty still reports cleanly). */
+/* Re-fund the tile ring. Caller holds s_ring_mux. Used by display_dma_return()
+ * and, when the card has not given the memory back, retried by the flush path
+ * (which is the only other place allowed to allocate the ring, because it runs
+ * on the LVGL task). Returns ESP_OK only with >= 2 buffers back -- one tile
+ * cannot ping-pong, and depth 1 at a queue depth of 2 is the write-guard
+ * hazard the L1 comment calls out. */
+static esp_err_t ring_refund(void)
+{
+    if (!s_ring_bytes) return ESP_ERR_NOT_FOUND;      /* init never funded it   */
+    uint16_t *t[TILE_BUFS] = { NULL };
+    int n = 0;
+    for (int i = 0; i < TILE_BUFS; i++) {
+        t[i] = heap_caps_malloc(s_ring_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (!t[i]) break;
+        n++;
+    }
+    if (n < 2) {
+        for (int i = 0; i < TILE_BUFS; i++) free(t[i]);
+        return ESP_ERR_NO_MEM;
+    }
+    for (int i = 0; i < TILE_BUFS; i++) s_tile[i] = t[i];
+    s_tiles_n   = n;
+    s_tiles_ok  = true;
+    s_ring_parked = false;
+    s_tile_done = 0;
+    s_band_inflight = 0;
+    /* Set from s_ring_dropped, not unconditionally: a mount or a directory scan
+     * that never spanned a frame costs the dial nothing at all, which matters
+     * because this loan now rides the card lock and GET /themes takes it. An
+     * unconditional full page would put a ~107 ms repaint behind every cheap
+     * read. The mirror is not re-sent on a loan that dropped nothing, because
+     * every frame that asked did get through. */
+    if (s_ring_dropped) s_ring_redraw = true;
+    s_ring_dropped = false;
+    ESP_LOGI(TAG, "tile ring reclaimed the display: %d x %u B (largest internal DMA block %u B)",
+             n, (unsigned)s_ring_bytes,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+    return ESP_OK;
+}
+
+/* Band submit, guarded by the loan mutex: a borrow from another task cannot
+ * free the ring while this window is inside it. */
+static int dma_dirty_bands_locked(lv_display_t *disp);
+
 static int dma_dirty_bands(lv_display_t *disp)
 {
+    if (!s_ring_mux) return dma_dirty_bands_locked(disp);   /* pre-init: nothing to guard */
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    const int n = dma_dirty_bands_locked(disp);
+    xSemaphoreGive(s_ring_mux);
+    return n;
+}
+
+static int dma_dirty_bands_locked(lv_display_t *disp)
+{
+    /* Ring on loan to the card (see the tile-ring loan block): nothing is
+     * submitted while the loan is open. PSRAM-direct is NOT the fallback here
+     * -- this IO was created at trans_queue_depth 2, and a direct submit at
+     * depth > 1 makes the SPI master pile up bounce copies in the very internal
+     * DMA RAM the loan just handed over. So the frame is dropped: s_fb keeps
+     * every pixel meanwhile, the CO5300 keeps showing its own GRAM (it is not
+     * scanned, so a missed frame is a still image, never a blank or a flicker),
+     * and the first funded build re-sends the whole page.
+     *
+     * A closed loan with the ring still unfunded is the case where the return
+     * could not re-alloc because the card kept the memory. It is retried from
+     * here rather than left stuck, because this runs on the LVGL task, which is
+     * the one context allowed to allocate the ring. */
+    if (s_ring_parked) {
+        if (s_ring_loan > 0) {
+            s_ring_dropped = true;   /* pixels missed: the return owes a full page */
+            return 0;                /* loan open: drop the frame                  */
+        }
+        if (ring_refund() != ESP_OK) return 0;   /* card kept it: drop, retry */
+    }
+    if (s_ring_redraw) {
+        /* The glass missed at least one frame's pixels and s_fb is the only
+         * complete picture of it. Re-mark every row so this band set covers the
+         * panel. s_dirty_row only: the fold at the next frame start has already
+         * run, so pushing into s_push_row would make the NEXT frame full too. */
+        s_ring_redraw = false;
+        memset(s_dirty_row, 1, sizeof(s_dirty_row));
+    }
+
     /* Contiguous dirty row-ranges, then merge toward DB_MAX_BANDS by bridging
      * the cheapest gaps. Bounded work: <= SCREEN_HEIGHT rows, a few passes. */
     int32_t r0[SCREEN_HEIGHT / 2 + 1], r1[SCREEN_HEIGHT / 2 + 1];
@@ -703,6 +823,10 @@ esp_err_t display_init(void)
         TAG, "spi_bus_initialize");
 
 #if USE_DMA_TILES
+    /* The loan mutex guards the ring against any task that borrows it, so it
+     * has to exist before anything can allocate the ring or lend it. */
+    if (!s_ring_mux) s_ring_mux = xSemaphoreCreateMutex();
+    s_ring_bytes = buf_bytes;
     /* Ping-pong tile buffers (see L1 comment above the TILE_ROWS define).
      * Sized exactly like the LVGL buffers == the bus max_transfer_sz, so each
      * tile is a single SPI transaction. Internal DMA RAM is the scarce
@@ -933,6 +1057,105 @@ uint16_t *display_fb_mirror(void)
 {
     return s_coalesce_mode ? s_fb : NULL;
 }
+
+/* ---- Tile-ring loan (see the loan block above the flush path) ----
+ * Lend the display's internal DMA RAM to the SD bus for one card sequence.
+ * Returns the bytes actually handed over, or 0 when there was nothing to lend
+ * (a board that booted without the ring, or a nested call inside a loan that
+ * already covers it -- the nesting case reports 0 and the caller's memory is
+ * already free either way).
+ *
+ * Task-safe from any task except the ISR. The LVGL task preempts the caller
+ * (priority 5 vs the worker's 4/5), so the free happens under s_ring_mux with
+ * the in-flight tiles drained first: s_band_inflight is retired by the SPI
+ * driver's trans-done ISR, which does not take this mutex, so the drain cannot
+ * deadlock against the task blocked behind it. */
+size_t display_dma_borrow(void)
+{
+    if (!s_ring_mux) return 0;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_ring_loan++ > 0) {                 /* nested: the outer loan covers it */
+        xSemaphoreGive(s_ring_mux);
+        return 0;
+    }
+    if (!s_tiles_ok || !s_ring_bytes) {      /* nothing to lend */
+        s_ring_loan = 0;
+        xSemaphoreGive(s_ring_mux);
+        return 0;
+    }
+    s_ring_parked = true;                    /* flush path drops from here */
+
+    /* Drain, bounded by the same 100 ms the tile write-guard already uses (see
+     * the guard in the tiled branch): two tiles are ~4 ms of wire at 80 MHz, so
+     * a healthy retirement is over in one or two ticks and the bound is only
+     * ever reached by a lost callback. The LVGL task blocks behind this mutex
+     * for the duration, so the bound IS the worst-case dial stall. */
+    const int64_t t0 = esp_timer_get_time();
+    while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 100000)
+        vTaskDelay(1);
+    if (s_band_inflight > 0) {
+        /* Tiles still in flight: freeing now would hand the heap a block the
+         * SPI master is still reading, the same race the write-guard exists for.
+         * Withdraw the loan and keep submitting -- the card sequence proceeds
+         * with whatever the pool happens to have. */
+        s_ring_parked = false;
+        s_ring_loan   = 0;
+        xSemaphoreGive(s_ring_mux);
+        ESP_LOGW(TAG, "tile borrow refused: %d tiles still in flight after 100 ms",
+                 (int)s_band_inflight);
+        return 0;
+    }
+
+    size_t freed = 0;
+    for (int t = 0; t < TILE_BUFS; t++) {
+        if (s_tile[t]) { freed += s_ring_bytes; free(s_tile[t]); s_tile[t] = NULL; }
+    }
+    s_tiles_ok  = false;
+    s_tiles_n   = 0;
+    s_ring_freed = freed;
+    xSemaphoreGive(s_ring_mux);
+    ESP_LOGI(TAG, "tile ring borrowed by the card: %u B internal DMA RAM free "
+                  "(largest block %u B)",
+             (unsigned)freed,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+    return freed;
+}
+
+/* Take the ring back after a borrow. Returns ESP_ERR_NO_MEM when the memory did
+ * not come back: the loan flag is cleared regardless, so the ring is NOT left
+ * parked on a card that outstays its welcome -- the flush path re-funds it on
+ * the next frame instead, which is the same retry the boot path already does.
+ * A caller that ignores this return leaves the dial correct and merely stalled
+ * for one more frame; it does not leak the loan. */
+esp_err_t display_dma_return(void)
+{
+    if (!s_ring_mux) return ESP_OK;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_ring_loan == 0) {                  /* return without a borrow: no-op */
+        xSemaphoreGive(s_ring_mux);
+        return ESP_OK;
+    }
+    if (--s_ring_loan > 0) {                 /* inner return of a nested pair */
+        xSemaphoreGive(s_ring_mux);
+        return ESP_OK;
+    }
+    const esp_err_t e = ring_refund();
+    const size_t was = s_ring_freed;
+    s_ring_freed = 0;
+    xSemaphoreGive(s_ring_mux);
+    if (e != ESP_OK) {
+        /* Left PARKED on purpose. s_ring_loan is back to 0, so the flush path's
+         * own refund runs on its next frame and recovers the ring as soon as the
+         * card gives the memory back. Clearing the flag instead would put the
+         * flush into PSRAM-direct submit at this board's queue depth of 2 -- the
+         * bounce pile-up this whole design exists to avoid -- in exchange for a
+         * still dial while the retry waits. */
+        ESP_LOGW(TAG, "tile ring not reclaimed (%u B short); the flush path will retry",
+                 (unsigned)was);
+    }
+    return e;
+}
+
 
 /* Rows the clock's commit-time painter is about to repaint without LVGL ever
  * having rendered them. They must join the band set or the panel never sees

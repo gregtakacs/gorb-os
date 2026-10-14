@@ -734,16 +734,28 @@ static uint32_t install_target(void) { return SLOT_B_HDR; }
  * ------------------------------------------------------------------------- */
 
 static uint8_t *s_chunk;
-#define CHUNK_BYTES 4096
+#define CHUNK_BYTES 4096            /* the ask */
+#define CHUNK_MIN   1024            /* below this the copy is mostly command overhead */
+static uint32_t  s_chunk_bytes;     /* what the heap granted; every clamp site reads THIS */
 
+/* INTERNAL, not PSRAM: this buffer is the source or sink of the SPI DMA the sdmmc
+ * driver runs underneath these reads. The size is a ladder, not a constant, because
+ * the board's real budget does not contain 4 KB contiguous: the measured steady
+ * state after association is `internal free=8,139 largest=3,328` (orb_net's own heap
+ * line), and a flat 4 KB ask answered 507 to every upload and refused the card copy
+ * too — docs/app-platform-plan.md §16.1 names the hour this was the whole feature.
+ * Granting 2 KB costs four extra round trips per 8 KB of pixels; on the 1.17 MB av-kit
+ * bank that is the same 0.5 s of SPI wire time, since the clock rate, not the chunk,
+ * is the floor. Below 1 KB the command overhead leads the data and a slow install
+ * stops being the right trade against a dead config server, so the ladder stops. */
 static esp_err_t ensure_chunk(void)
 {
     if (s_chunk) return ESP_OK;
-    /* INTERNAL, not PSRAM: this buffer is the source or sink of the SPI DMA the
-     * sdmmc driver runs underneath these reads. 4 KB against an internal budget the
-     * network stack already spends most of is the cost of the feature. */
-    s_chunk = heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    return s_chunk ? ESP_OK : ESP_ERR_NO_MEM;
+    for (uint32_t n = CHUNK_BYTES; n >= CHUNK_MIN; n /= 2) {
+        s_chunk = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (s_chunk) { s_chunk_bytes = n; return ESP_OK; }
+    }
+    return ESP_ERR_NO_MEM;
 }
 
 /* "/sd/themes/<stem>.orbtheme", or false. The extension is appended HERE, not by
@@ -817,7 +829,7 @@ static const char *verify_container(int fd, const orb_thdr_t *h)
     uint32_t crc = 0;
     size_t pos = h->geom_off, left = h->geom_size;
     while (left) {
-        const size_t want = left > CHUNK_BYTES ? CHUNK_BYTES : left;
+        const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
             return "file is shorter than its header claims — re-copy it";
         crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
@@ -829,7 +841,7 @@ static const char *verify_container(int fd, const orb_thdr_t *h)
     crc = 0;
     pos = h->art_off; left = h->art_size;
     while (left) {
-        const size_t want = left > CHUNK_BYTES ? CHUNK_BYTES : left;
+        const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
             return "pixel data is shorter than its header claims — re-copy it";
         crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
@@ -1073,8 +1085,8 @@ static esp_err_t slot_verify_pixels(const slot_t *s, const esp_partition_t *p)
     if (ensure_chunk() != ESP_OK) return ESP_ERR_NO_MEM;
     uint32_t crc = 0;
     for (uint32_t done = 0; done < s->h.art_size; ) {
-        const uint32_t want = (s->h.art_size - done > CHUNK_BYTES) ? CHUNK_BYTES
-                                                                   : (s->h.art_size - done);
+        const uint32_t want = (s->h.art_size - done > s_chunk_bytes) ? s_chunk_bytes
+                                                                     : (s->h.art_size - done);
         const esp_err_t e = esp_partition_read(p, s->art_base + done, s_chunk, want);
         if (e != ESP_OK) return e;
         crc = esp_rom_crc32_le(crc, s_chunk, want);
@@ -1331,8 +1343,8 @@ static esp_err_t copy_into(int fd, const orb_thdr_t *h, const esp_partition_t *p
 
     size_t pos = h->geom_off;
     for (uint32_t done = 0; done < h->geom_size; ) {
-        const uint32_t want = (h->geom_size - done > CHUNK_BYTES) ? CHUNK_BYTES
-                                                                   : (h->geom_size - done);
+        const uint32_t want = (h->geom_size - done > s_chunk_bytes) ? s_chunk_bytes
+                                                                    : (h->geom_size - done);
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want) {
             *why = "theme file ended before its declared geometry"; return ESP_ERR_INVALID_SIZE;
         }
@@ -1342,8 +1354,8 @@ static esp_err_t copy_into(int fd, const orb_thdr_t *h, const esp_partition_t *p
     }
     pos = h->art_off;
     for (uint32_t done = 0; done < h->art_size; ) {
-        const uint32_t want = (h->art_size - done > CHUNK_BYTES) ? CHUNK_BYTES
-                                                                  : (h->art_size - done);
+        const uint32_t want = (h->art_size - done > s_chunk_bytes) ? s_chunk_bytes
+                                                                   : (h->art_size - done);
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want) {
             *why = "theme file ended before its declared pixels"; return ESP_ERR_INVALID_SIZE;
         }

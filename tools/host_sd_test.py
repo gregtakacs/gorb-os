@@ -85,6 +85,12 @@ f_theme_pt = lift(sd_src, r"bool orb_sd_theme_path\(char \*out[\s\S]*?\n\}", SD_
 # open paths actually call. Tested rather than trusted because it is the last place
 # the ".orbtheme" suffix gets added: a client that could spell it would control both
 # the extension and, through it, what the scanner on the next page considers a theme.
+# The card read buffer and its granting ladder, lifted verbatim for the same reason as
+# the arena: the board refused the flat 4 KB ask (docs 16.1 -- upload 507 at largest
+# block 3,328), and what the grant lands at is now a fact the vectors have to pin
+# against the shipped text rather than a comment. The whole statics-plus-function block
+# comes over, defines included, so CHUNK_MIN cannot be restated wrong here.
+f_chunk = lift(th_src, r"static uint8_t \*s_chunk;[\s\S]*?\n\}", TH_C)
 f_theme_file = lift(th_src, r"static bool theme_file\(const char \*stem[\s\S]*?\n\}", TH_C)
 # The §6 installed-slot comparison, lifted for the same reason: it decides which row
 # the page calls "on the dial" and which one it offers to re-install, and getting it
@@ -181,6 +187,7 @@ static uint32_t host_crc32(uint32_t crc, const uint8_t *b, uint32_t n)
 #define TAG "host"
 typedef int esp_err_t;
 #define ESP_OK 0
+#define ESP_ERR_NO_MEM (-100)   /* esp_err.h; the card buffer ladder answers it */
 
 /* theme_id() asks mbedtls for the SHA-256 of the name. The device uses the ROM
  * implementation; this host build substitutes a HOOK instead of a second SHA-256,
@@ -745,9 +752,14 @@ static unsigned long ar_allocs, ar_frees;
 static int ar_oom;                     /* the no-room row arms this */
 #define MALLOC_CAP_SPIRAM 0x1000
 #define MALLOC_CAP_8BIT   0x0008
+#define MALLOC_CAP_INTERNAL 0x0001
+static size_t ar_int_max;                  /* the no-room-for-N-contiguous arm */
 static void *heap_caps_malloc(size_t n, int caps)
-{ (void)caps; if (ar_oom) return NULL; ar_allocs++; return malloc(n); }
+{ if (ar_oom) return NULL;
+  if (ar_int_max && (caps & MALLOC_CAP_INTERNAL) && n > ar_int_max) return NULL;
+  ar_allocs++; return malloc(n); }
 static void host_arena_free(void *p) { if (p) { ar_frees++; free(p); } }
+__ENSURE_FN__
 __ARENA_FN__
 static void arena_reset(void)
 {
@@ -757,7 +769,9 @@ static void arena_reset(void)
     s_active_valid = false;
     s_rects = NULL; s_first = NULL; s_delays = NULL; s_bgframes = NULL;
     s_comps = NULL; s_aux = NULL; s_bank = NULL;
-    ar_allocs = 0; ar_frees = 0; ar_oom = 0;
+    ar_allocs = 0; ar_frees = 0; ar_oom = 0; ar_int_max = 0;
+    if (s_chunk) { free(s_chunk); s_chunk = NULL; }
+    s_chunk_bytes = 0;
 }
 static void arow(const char *what, int cond)
 {
@@ -794,6 +808,38 @@ static void arena_hdr(orb_thdr_t *h, int two)
 '''
 
 ARENA_CASES = r'''
+    puts("== the card read buffer: a granting ladder, not a 4 KB ultimatum ==");
+    {
+        /* The bug the board found: a flat heap_caps_malloc(4096, INTERNAL) at a steady
+         * largest block of 3,328 answered 507 to every upload AND refused the card
+         * copy, because both reserve the same buffer. The rows below are the grant,
+         * the cache, each rung, and the refusal floor -- the four facts the shipped
+         * ladder has to keep. */
+        arena_reset();
+        esp_err_t ce = ensure_chunk();
+        arow("a healthy internal heap still gets the whole 4 KB",
+             ce == ESP_OK && s_chunk != NULL && s_chunk_bytes == CHUNK_BYTES);
+        unsigned long c_before = ar_allocs;
+        ce = ensure_chunk();
+        arow("the second call reserves nothing new -- the grant is cached",
+             ce == ESP_OK && ar_allocs == c_before);
+
+        arena_reset(); ar_int_max = 3328;          /* the measured largest block */
+        ce = ensure_chunk();
+        arow("the measured starved board gets 2 KB, not a 507",
+             ce == ESP_OK && s_chunk_bytes == 2048);
+
+        arena_reset(); ar_int_max = 1500;
+        ce = ensure_chunk();
+        arow("a smaller hole falls one more rung to 1 KB", ce == ESP_OK && s_chunk_bytes == 1024);
+
+        arena_reset(); ar_int_max = 512;
+        ce = ensure_chunk();
+        arow("the ladder stops at 1 KB and says NO_MEM rather than crawl",
+             ce == ESP_ERR_NO_MEM && s_chunk == NULL && s_chunk_bytes == 0);
+        arena_reset();
+    }
+
     puts("== the geometry arena: who owns the tables, per adopt ==");
     {
         orb_thdr_t h1, h2, hb;
@@ -860,7 +906,7 @@ ARENA_CASES = r'''
              why == NULL && s_geo.from_container && ar_allocs > ar_frees);
     }
 '''
-for _k, _v in (("__ARENA_FN__", arena_fn), ("__ART__", str(ART_BYTES)),
+for _k, _v in (("__ARENA_FN__", arena_fn), ("__ENSURE_FN__", f_chunk), ("__ART__", str(ART_BYTES)),
                ("__NAME__", json.dumps(NAME)),
                ("__N0__", _N[0]), ("__N1__", _N[1]), ("__N2__", _N[2]),
                ("__N3__", _N[3]), ("__N4__", _N[4]), ("__N5__", _N[5]),
@@ -1637,6 +1683,12 @@ MUTATIONS = [
     # The bug the hardware found for real: verify_container() reached s_chunk while it
     # was still NULL, because only the OTHER two users of that buffer reserved it. The
     # device rebooted at the end of a completed 3.87 MB upload.
+    # The bug of 2026-10-14 evening: the flat 4 KB ask answered 507 at largest block
+    # 3,328 and killed the card feature whole. A re-flattened ladder is the regression
+    # this row exists to catch; the grant-ladder vectors red on it.
+    ("the card buffer ladder re-flattens to a single 4 KB ask", "th",
+     "    for (uint32_t n = CHUNK_BYTES; n >= CHUNK_MIN; n /= 2) {",
+     "    for (uint32_t n = CHUNK_BYTES; n >= CHUNK_BYTES; n /= 2) {"),
     ("upload verify reads through an unreserved buffer", "th",
      'if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";', ""),
     ("installer copies through an unreserved buffer",   "th",

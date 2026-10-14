@@ -82,10 +82,18 @@ typedef struct {
     bool     stored;        /* a grant word was actually THERE, any value */
     bool     cfg_loaded;    /* quota charge read from NVS                  */
     bool     faults_loaded; /* fault words read from NVS                   */
-    orb_layer_tab_t layers; /* P5.5: this app's live compositor rows. BY
-                             * VALUE: static, never on the heap the app
-                             * could OOM us with, and forget_row's memset
-                             * takes it back — after the wipe frees planes. */
+    orb_layer_tab_t *layers; /* P5.5: this app's live compositor rows, in PSRAM
+                             * and allocated on the first layer_add. BY VALUE
+                             * was the first design, and the board refused it:
+                             * 16 x 920 B of .bss starved httpd_start to
+                             * ESP_ERR_HTTPD_TASK at 3,343 B of DMA free. The
+                             * table now costs what the planes already cost —
+                             * PSRAM an app pays for by using layers. Forget
+                             * frees it after the wipe frees the planes. */
+    uint32_t layer_refuses;  /* refusals with nowhere to ride the table's own
+                             * counter: no table yet (handle without rows, or
+                             * PSRAM out at add). Summed into the ledger pair
+                             * beside the table's count. */
     char     last_status[72];
     char     fault_reason[48];
 } svc_row_t;
@@ -496,14 +504,32 @@ static const uint8_t *svc_bank(orb_app_t *a)
  * the table in gfx/orb_layers.c answers for the row, and answers nothing to an
  * app that never held the cap. A void entry cannot return a refusal, so a
  * denial rides the counted path and the row simply never moves: what was on
- * the glass stays on the glass. */
+ * the glass stays on the glass.
+ * create=false reads the table without paying for it; set/touch/del on a row
+ * that never added anything is a refusal, and a refusal must not mint a table
+ * an OOM later could not have. The allocation is PSRAM calloc — the table is
+ * 920 B of book-keeping, zero-initialised is the state it wants, and internal
+ * RAM is the budget the boot log just proved is spoken for. */
+static orb_layer_tab_t *row_layers(int slot, bool create)
+{
+    orb_layer_tab_t *t = s_row[slot].layers;
+    if (t || !create) return t;
+    t = heap_caps_calloc(1, sizeof *t, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!t) s_row[slot].layer_refuses++;   /* the add the table never heard of */
+    else    s_row[slot].layers = t;
+    return t;
+}
+
 static int svc_layer_add(orb_app_t *a, const orb_layer_desc_t *d)
 {
     SVC(a, UI);
     const int slot = orb_app_index_of(a);
     if (slot < 0 || !d) return -1;                 /* not a registered entry,
                                                    * or nothing to add        */
-    return orb_layers_add(&s_row[slot].layers, d);
+    orb_layer_tab_t *t = row_layers(slot, true);
+    if (!t) return -1;                             /* PSRAM out: counted, and
+                                                   * the app keeps its themes */
+    return orb_layers_add(t, d);
 }
 
 static void svc_layer_set(orb_app_t *a, int h, const orb_layer_desc_t *d)
@@ -513,7 +539,9 @@ static void svc_layer_set(orb_app_t *a, int h, const orb_layer_desc_t *d)
                                                    * status page sees         */
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;
-    (void)orb_layers_set(&s_row[slot].layers, h, d);
+    orb_layer_tab_t *t = row_layers(slot, false);
+    if (!t) { s_row[slot].layer_refuses++; return; } /* no rows to set       */
+    (void)orb_layers_set(t, h, d);
 }
 
 static void svc_layer_touch(orb_app_t *a, int h, const struct _lv_area_t *area)
@@ -524,7 +552,9 @@ static void svc_layer_touch(orb_app_t *a, int h, const struct _lv_area_t *area)
                                                    * (orb_layers.h)           */
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;
-    (void)orb_layers_touch(&s_row[slot].layers, h);
+    orb_layer_tab_t *t = row_layers(slot, false);
+    if (!t) { s_row[slot].layer_refuses++; return; }
+    (void)orb_layers_touch(t, h);
 }
 
 static void svc_layer_del(orb_app_t *a, int h)
@@ -532,7 +562,9 @@ static void svc_layer_del(orb_app_t *a, int h)
     if (!orb_grant_ok(a, CAP_UI)) return;
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;
-    (void)orb_layers_del(&s_row[slot].layers, h);
+    orb_layer_tab_t *t = row_layers(slot, false);
+    if (!t) { s_row[slot].layer_refuses++; return; }
+    (void)orb_layers_del(t, h);
 }
 
 static esp_err_t svc_job_post(orb_app_t *a, orb_job_fn fn, void *arg, size_t arglen)
@@ -804,12 +836,19 @@ esp_err_t orb_svc_forget_row(int slot)
         nvs_close(h);
     } else if (e != ESP_ERR_NVS_NOT_FOUND)
         return e;                            /* a ledger that will not open: retry later */
-    orb_layers_wipe(&s_row[slot].layers);    /* P5.5: the planes are heap, and the
-                                              * memset below would forget the
-                                              * pointers with them. The memset
-                                              * takes the generations too: the
-                                              * slot's next tenant inherits no
-                                              * handles, dead or otherwise. */
+    if (s_row[slot].layers) {                  /* P5.5: the planes are heap, and
+                                              * the memset below would forget
+                                              * the pointers with them. The
+                                              * wipe frees planes; the free
+                                              * below takes the table itself —
+                                              * the memset zeroes the pointer,
+                                              * and the slot's next tenant
+                                              * inherits no handles, dead or
+                                              * otherwise. */
+        orb_layers_wipe(s_row[slot].layers);
+        heap_caps_free(s_row[slot].layers);
+        s_row[slot].layers = NULL;
+    }
     memset(&s_row[slot], 0, sizeof s_row[slot]);   /* lazy re-read sees an empty ledger,
                                                    * which under D19 is DECLARED — the
                                                    * honest state for whoever lands on
@@ -970,19 +1009,27 @@ uint32_t orb_svc_cfg_used(const orb_app_t *a)
     return (slot >= 0) ? s_row[slot].cfg_used : 0;
 }
 
-/* P5.5's ledger pair. The row embeds its table by value, so these read the
- * same static the four entries write — no lock, no allocation, one array
- * index: the frame path never comes through here. */
+/* P5.5's ledger pair. Read-only on either shape of the row's state: no table
+ * yet is zero live, and the row's own counter sums beside the table's. No
+ * allocation happens here — a status read must never be the thing that runs
+ * the board out of PSRAM. */
 int orb_svc_layers_live(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
-    return (slot >= 0) ? orb_layers_count(&s_row[slot].layers) : 0;
+    if (slot < 0 || !s_row[slot].layers) return 0;
+    return orb_layers_count(s_row[slot].layers);
 }
 
 uint32_t orb_svc_layers_refused(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
-    return (slot >= 0) ? orb_layers_refuses(&s_row[slot].layers) : 0;
+    if (slot < 0) return 0;
+    /* The row's own refusals (no table yet, PSRAM out at add) plus every answer
+     * the table gave. A ledger row that showed only the table's count would
+     * hide the refusals made before a first table existed — exactly the ones an
+     * owner wants to see. */
+    return s_row[slot].layer_refuses +
+           (s_row[slot].layers ? orb_layers_refuses(s_row[slot].layers) : 0);
 }
 
 /* ---- C2: the fault counter and the boot-into-clock rule (plan §1.4) ---------
@@ -1237,10 +1284,13 @@ void orb_svc_app_suspended(const orb_app_t *a)
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;                      /* not a registered entry */
     idle_dim_app_release(a->slug);
-    orb_layers_wipe(&s_row[slot].layers);      /* P5.5: an app behind the dial
+    if (s_row[slot].layers)                    /* P5.5: an app behind the dial
                                               * holding rows on the glass is
                                               * §4.2's clause's other half. The
-                                              * wipe's kept generations leave
-                                              * every held handle dead through
-                                              * suspend and resume. */
+                                              * wipe frees the planes and KEEPS
+                                              * the table: generations survive,
+                                              * so every held handle stays dead
+                                              * through suspend and resume —
+                                              * and resume pays no new table. */
+        orb_layers_wipe(s_row[slot].layers);
 }

@@ -78,9 +78,14 @@ typedef struct orb_layer_desc {
  * to draw: a hand bar, a ring, a rounded card, a status glyph run. 128x128. */
 #define ORB_LAYER_PLANE_MAX (4u + 128u * 128u * 3u)
 
-/* One app's layers. The broker embeds this BY VALUE in its row: static, never
- * stored anywhere (layers are a live-frame fact, not a durable one), and an
- * uninstall is a wipe away. */
+/* One app's layers. The broker owns this through a PSRAM pointer, allocated on
+ * the first layer_add and freed on uninstall. It was embedded BY VALUE until the
+ * P5.5 flash measured the cost: 16 rows x 920 B of .bss took 14,720 B from the
+ * internal heap, and httpd_start answered ESP_ERR_HTTPD_TASK on the board. The
+ * host suite, the compile and the link all passed; only the boot log saw it. A
+ * live-frame fact now rides the heap exactly like the planes it points at:
+ * PSRAM, paid for only by an app that actually claims rows, and a refusal that
+ * costs a layer rather than the config server is the honest shape. */
 typedef struct orb_layer_tab {
     orb_layer_desc_t row[ORB_LAYER_MAX];
     clk_sprite_t     spr[ORB_LAYER_MAX];   /* the committed record: tier 1 built

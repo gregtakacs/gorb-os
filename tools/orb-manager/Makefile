@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release
+.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
 
 all: test build
 
@@ -249,6 +249,15 @@ win-test:
 	$(WIN_TEST_DIR)/firmware.test.exe $(TEST_ARGS)
 	@echo '--- orb-manager (Windows window, profile, API) ---'
 	$(WIN_TEST_DIR)/main.test.exe $(TEST_ARGS)
+
+## usb-doc-test: the pins on docs/wsl-usb-reattach.md and scripts/wsl-usb.sh. The
+## runbook records behaviour measured once, by hand, so it drifts: a path, a verb or an
+## exit code can go stale and nothing else here would notice. These are static checks, so
+## they pass with no Windows, no cable and no board. Deliberately not part of test or
+## check — those run on a Go toolchain alone, and win-test runs on Windows where python3
+## is not guaranteed.
+usb-doc-test:
+	python3 -m unittest discover -s scripts -p '*_test.py'
 
 clean:
 	rm -rf $(BIN_DIR)

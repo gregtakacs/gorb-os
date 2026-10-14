@@ -263,7 +263,7 @@ orb_asset_ans_t orb_asset_resolve_all(const orb_asset_decl_t *decls, int n,
  * The whole of the OS's shipped art is these five routines. Each bakes a plate
  * into the layout the art bank uses — colour RGB565 (w*h*2), then alpha A8 (w*h)
  * — so a fallback is indistinguishable from a banked sprite at commit time and
- * rides the same path. orb_gfx.c's gfx_prim_ctx_init() is the compositor-side
+ * rides the same path. orb_layers.c's gfx_prim_ctx_init() is the compositor-side
  * entry: it bakes into the caller's plane and fills a gfx_paint_ctx_t, which is
  * what puts a fallback INSIDE the role counters rather than beside them. */
 typedef enum {

@@ -112,12 +112,18 @@ typedef struct {
  * Deferred-owner records whose CONTENTS P4/P5 freeze: the broker returns them
  * only through these pointers, and the entries that consume them answer
  * ESP_ERR_NOT_SUPPORTED until their wiring commit (net -> P4's allowlisted
- * client, layer_* -> P5's table-driven compositor). The slots exist NOW
- * because the struct is the frozen ABI; a stub refuses loudly rather than
- * pretending, and the host suite pins that each stub sits BEHIND its gate,
- * not in place of it. */
+ * client, layer_* -> P5.5's orb_layers table). The slots exist NOW because the
+ * struct is the frozen ABI; a stub refuses loudly rather than pretending, and
+ * the host suite pins that each stub sits BEHIND its gate, not in place of it. */
 typedef struct { uint8_t *data; size_t cap, len; } orb_buf_t;
-typedef struct { const void *opaque; }              orb_layer_desc_t;
+/* P5.5: the layer records are no longer a placeholder. The full types live in
+ * main/gfx/orb_layers.h, which the CONSUMER includes when it builds a
+ * descriptor; this header forward-declares them so the frozen table reaches an
+ * app TU without dragging the registry, the generated sprite record, or a
+ * single LVGL type across the boundary (the include-propagation breakage P5b
+ * learned the hard way is the lesson this shape encodes). */
+typedef struct orb_layer_desc      orb_layer_desc_t;
+typedef struct orb_layer_tab       orb_layer_tab_t;
 
 typedef struct {
   /* time — cap TIME (free, always on) */
@@ -224,6 +230,15 @@ uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */
 uint32_t     orb_svc_beat_ms(const orb_app_t *a);  /* the D16 rate in force; the scheduler reads this */
 uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the quota */
+
+/* P5.5's ledger pair for the compositor face, for /api/v1/status: how many
+ * rows the app holds right now, and how many times its own table refused it
+ * (full, stale, bad art, no heap). The gate's call/denial counters already
+ * count the DOOR; these count the ANSWERS behind it, and the two numbers
+ * disagreeing is the evidence an app is hammering something that cannot take
+ * its layer. */
+int      orb_svc_layers_live(const orb_app_t *a);
+uint32_t orb_svc_layers_refused(const orb_app_t *a);
 
 /** The registry's revoke, called where it suspends an entry: an app that
  *  left the glass loses its power ask with it (§4.2 — auto-revoke is the

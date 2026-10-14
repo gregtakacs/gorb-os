@@ -25,6 +25,16 @@
  * corrupt partition must not quietly put the dial an hour out with nothing on
  * screen to explain it. Unset means UTC, and /api/v1/status says so rather than
  * letting a wrong-looking dial be the only symptom.
+ *
+ * The orb's NAME lives beside it under `name`, on the same argument and with the
+ * same durability requirement — and the DEVICE, not the hub, is the authority for
+ * it. The hub's fleet row keeps a copy so a card can render a fleet without
+ * dialing thirty boards, but that copy is a cache: a deleted hub store or a
+ * reflashed board used to cost the owner the word they typed while the device
+ * went on announcing its MAC. Set it with POST /api/v1/name, or in the join body
+ * during onboarding, and read it off /api/v1/status. Unset means unnamed, and the
+ * status field is the empty string rather than a placeholder, so a caller can
+ * still tell "never named" from "could not be asked".
  */
 #pragma once
 
@@ -130,3 +140,31 @@ esp_err_t orb_net_tz_select(int i);
  * pass-through.
  */
 esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min);
+
+/* ---- the orb's own name -----------------------------------------------------
+ *
+ * Accessors over the ONE copy orb_net.c keeps in s_name, so a caller cannot get a
+ * stale second copy. The name is the device's, not the hub's: read it here, and
+ * POST /api/v1/status mirrors it.
+ */
+
+/** The stored name, or "" when the orb is unnamed. Never NULL, always NUL-terminated,
+ *  and safe from any task: the string is only ever replaced whole by net_name_set(). */
+const char *orb_net_name(void);
+
+/** The longest name this device accepts (orbfleet.MaxName, kept equal by test). */
+int orb_net_name_max(void);
+
+/**
+ * Validate and persist — the identical sequence POST /api/v1/name runs, and the
+ * only way to name the device from on-device code. ESP_ERR_INVALID_ARG for a NULL
+ * `name`; ESP_FAIL when the device refused the string or could not write it (the
+ * reason is logged, not returned); ESP_OK otherwise. `name` may be "" to clear,
+ * which is not an error. Nothing on the dial displays this today; it is the record
+ * the hub and any later UI read from.
+ *
+ * Call it after orb_net_start(). There is no not-yet-open state to report, because
+ * the tz setter beside it has none either and an unopened handle simply fails the
+ * write, which lands as ESP_FAIL — the same answer a refused string gives.
+ */
+esp_err_t orb_net_name_set(const char *name);

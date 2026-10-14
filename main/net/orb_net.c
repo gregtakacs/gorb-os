@@ -95,6 +95,24 @@ static const char *TAG = "orb_net";
 #define NET_TZ_KEY       "tz"   /* NVS: a table name OR a raw POSIX string */
 #define NET_CONFIG_BODY_MAX 128 /* POST /api/v1/config is {"tz":"…"} and nothing else */
 
+/* The orb's own name. The DEVICE is the authority for this string and the hub's
+ * fleet row is a cache of it, which is the opposite way round from how the hub
+ * first stored names (§ orbfleet). The reason is durability: the hub's store is
+ * one JSON file, so a deleted file or a reflashed board used to cost the word an
+ * owner typed, while the device went on announcing orb-44bd8d782618. A name that
+ * lives in the `storage` partition beside the credentials survives both.
+ *
+ * 32 is not a free choice — it is orbfleet.MaxName, and the two must agree. The
+ * card enforces 32 before it sends, and the device refuses 33 after that; a name
+ * accepted by one and clipped by the other reads as two different orbs depending
+ * on which surface you looked at last. */
+#define NET_NAME_MAX     32     /* == orbfleet.MaxName; keep them equal */
+#define NET_NAME_KEY     "name" /* NVS; absent means "unnamed" */
+/* {"name":"…"} for 32 printable bytes is 41 B. Same 128 B frame as config: this
+ * endpoint carries one key and nothing else, so the sizing argument from
+ * NET_CONFIG_BODY_MAX applies unchanged. */
+#define NET_NAME_BODY_MAX 128
+
 /* Everything that MUTATES THE RADIO runs on its own task, not on the default
  * event loop and not on an esp_timer callback. esp_wifi_set_mode() is explicitly
  * off-limits from inside a WiFi/IP event handler — the callback is executed in
@@ -435,6 +453,12 @@ static const tz_entry_t s_tz_tbl[] = {
  * the serial httpd task, so no lock is needed. */
 static char s_tz[NET_TZ_MAX + 1];
 
+/* The name exactly as NVS holds it ("" = unnamed), mirrored in RAM for the same
+ * reason s_tz is: /api/v1/status is polled at a few Hz and must not touch flash
+ * to say what it is called. Same writer rule — orb_net_start() and the serial
+ * httpd task — so no lock. */
+static char s_name[NET_NAME_MAX + 1];
+
 /* Days since 1970-01-01 for a broken-down date (Howard Hinnant's civil-days
  * algorithm; exact across the whole Gregorian range this device can hold).
  * Hand-rolled because this newlib has NO timegm(): its libc.a exports tzset,
@@ -488,6 +512,72 @@ static const char *tz_reject_reason(const char *tz)
     }
     if (n == 0) return "tz empty (send \"UTC\")";
     if (n > NET_TZ_MAX) return "tz too long";
+    return NULL;
+}
+
+/* NULL when acceptable, else the reason to hand back in the 400.
+ *
+ * Printable ASCII only, no quote and no backslash, for the same reason and by the
+ * same argument as tz_reject_reason: the value is echoed straight into JSON with
+ * %s by /api/v1/status, and json_str() DROPS the backslash of an escape and keeps
+ * the character after it — so an accepted escape sequence becomes a stored quote
+ * one hop later, and a stored quote lets the client forge keys inside the
+ * device's own replies.
+ *
+ * Two checks tz does not have, and both exist because a SECOND component now
+ * enforces this string. orbfleet.cleanWord collapses runs of whitespace with
+ * strings.Fields and rejects < and >. A device that accepted "  Hall  " would
+ * store a string the hub would have cleaned before sending, so the operator's
+ * own card and the orb's own status line would disagree by invisible bytes —
+ * precisely the drift this change sets out to remove. Refusing an unnormalized
+ * value is cheaper than normalizing it here and then disagreeing about who did
+ * the normalizing: the hub has already collapsed the spaces before it dials, so
+ * anything arriving here that still needs collapsing came from a client that did
+ * not go through the card.
+ *
+ * The visible consequence of putting the rules on the device rather than trusting
+ * the card: a non-Latin name the hub used to store ("Café") is now refused here,
+ * and the card surfaces that refusal rather than storing a word the orb will
+ * never answer to. The hub rejects it before dialing — see the ASCII guard in
+ * orbfleet.cleanNameASCII — so the operator sees one message, not a 400 from an
+ * IP. */
+static const char *name_reject_reason(const char *name)
+{
+    size_t n = 0;
+    char prev = ' ';
+    for (const char *p = name; *p; p++, n++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c > 0x7e)  return "name must be printable ASCII";
+        if (c == '"' || c == '\\') return "name may not contain quotes";
+        if (c == '<' || c == '>')  return "name may not contain angle brackets";
+        if (c == ' ' && prev == ' ') return "name may not contain a double space";
+        prev = c;
+    }
+    if (n == 0) return "name empty (send \"\" to clear)";
+    if (n > NET_NAME_MAX) return "name too long";
+    if (name[0] == ' ' || name[n - 1] == ' ') return "name may not start or end with a space";
+    return NULL;
+}
+
+/* Pull the "name" out of a request body, same contract and same reasoning as
+ * tz_body_value: *present distinguishes an absent key from {"name":""}, and the
+ * escape scan runs BEFORE json_str() because that helper would hand back the
+ * collapsed form of an escape and the guard above would then wave through what it
+ * cannot see. Empty is a legitimate CLEAR here, not an error the way an empty tz
+ * would be meaningless. */
+static const char *name_body_value(const char *body, size_t len, char *out, size_t out_sz,
+                                   bool *present)
+{
+    out[0] = '\0';
+    *present = false;
+    const char *v = json_find(body, len, NET_NAME_KEY);
+    if (!v) return NULL;
+    *present = true;
+    if (v[0] == '"' && v[1] == '"') return NULL;                 /* clear it */
+    for (const char *p = v + 1; p < body + len && *p != '"'; p++) {
+        if (*p == '\\') return "name may not contain an escape";
+    }
+    if (!json_str(body, len, NET_NAME_KEY, out, out_sz)) return "name not a string, or too long";
     return NULL;
 }
 
@@ -601,6 +691,53 @@ static const char *net_tz_set(const char *tz)
     return NULL;
 }
 
+/* Load during bring-up, right beside net_tz_load(). A stored value that no longer
+ * validates (a hand-written NVS, or firmware that has since tightened
+ * name_reject_reason) degrades to unnamed rather than being echoed: status would
+ * otherwise put bytes into a JSON string that the device's own guard says do not
+ * belong there. Degrading is safe here in a way it is not for tz — an unnamed orb
+ * still announces itself by MAC and still works. */
+static void net_name_load(void)
+{
+    s_name[0] = '\0';
+    size_t sz = sizeof(s_name);
+    if (nvs_get_str(s_nvs, NET_NAME_KEY, s_name, &sz) != ESP_OK) s_name[0] = '\0';
+    const char *why = s_name[0] ? name_reject_reason(s_name) : NULL;
+    if (why) {
+        ESP_LOGW(TAG, "stored name rejected (%s); leaving unnamed", why);
+        s_name[0] = '\0';
+    }
+}
+
+/* Validate, then persist, then mirror in RAM — the order net_tz_set() uses and for
+ * the same reason: a value the device will not echo must never reach flash.
+ *
+ * "" is an explicit CLEAR and erases the key rather than writing it empty, so
+ * status reads the same "" from a cleared orb and from a factory one, with no
+ * special case around a stored empty string.
+ *
+ * Nothing applies. A zone changes what the dial shows the instant it lands; a name
+ * changes nothing the device displays today, so the only effect worth reporting is
+ * the one the caller already has — the value it just sent. */
+static const char *net_name_set(const char *name)
+{
+    if (!name[0]) {
+        nvs_erase_key(s_nvs, NET_NAME_KEY);
+        nvs_commit(s_nvs);
+        s_name[0] = '\0';
+        return NULL;
+    }
+    const char *why = name_reject_reason(name);
+    if (why) return why;
+    if (nvs_set_str(s_nvs, NET_NAME_KEY, name) != ESP_OK) return "name not stored (nvs)";
+    /* Same rule as the tz commit below: the value is in flash and in s_name
+     * either way, so a failed commit costs durability across a reboot, not the
+     * correctness of the reply the caller is about to see. */
+    if (nvs_commit(s_nvs) != ESP_OK) ESP_LOGW(TAG, "name: commit failed (kept until reboot)");
+    snprintf(s_name, sizeof(s_name), "%s", name);
+    return NULL;
+}
+
 /* ---- the zone table, as the on-dial menu sees it (see orb_net.h) -------------
  *
  * Thin accessors over the one table this file already serves, each reaching the
@@ -674,6 +811,33 @@ esp_err_t orb_net_tz_select(int i)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "menu tz: set to \"%s\"", s_tz_tbl[i].name);
+    return ESP_OK;
+}
+
+const char *orb_net_name(void)
+{
+    return s_name;
+}
+
+int orb_net_name_max(void)
+{
+    return NET_NAME_MAX;
+}
+
+esp_err_t orb_net_name_set(const char *name)
+{
+    if (!name) return ESP_ERR_INVALID_ARG;
+    /* net_name_set() and nothing else, which is the whole point of the accessor:
+     * the dial, the page and the hub cannot end up with three different rules
+     * about what a name may contain. The reason string is logged rather than
+     * returned because the caller gets the useful half of it in ESP_FAIL — the
+     * prose is device-side and about a value the caller already holds. */
+    const char *why = net_name_set(name);
+    if (why) {
+        ESP_LOGW(TAG, "name: refused (%s)", why);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "name: set to \"%s\"", s_name);
     return ESP_OK;
 }
 
@@ -1786,6 +1950,18 @@ static esp_err_t h_status(httpd_req_t *req)
      * 512 through 640 and 960 as fields joined it, and every addition was
      * re-measured with `curl -s ORB/api/v1/status | wc -c`, never added up here.
      *
+     * The "name" field is the one whose width a measurement cannot pin, because
+     * the operator chooses it: the field costs 10 B unnamed and 42 B at the
+     * 32-byte ceiling orbfleet and NET_NAME_MAX both enforce. Measured on orb-B
+     * on 2026-10-14 at the ceiling, eight identical requests read 1159 B and five
+     * after the clear read 1127 B, so the field costs its full 32 B and nothing
+     * else moved. Worst case is therefore 1159 B in a 1536 B buffer — 377 B of
+     * headroom, and 36 B below the ~1165 B this comment estimated before the bench
+     * run. Re-measure the same way when a field joins the frame: set a 32-character
+     * name with `curl -X POST -d '{"name":"nnn…"}' ORB/api/v1/name`, then count
+     * `curl -s ORB/api/v1/status | wc -c`, and quote a range rather than one number
+     * because the width still tracks uptime and recent drops.
+     *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and the three compiled-in rows filled 440 B of it; two more rows fit
      * at the observed 146 B per row. The ~110 B per row this comment carried was
@@ -1987,7 +2163,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
-        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
+        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
         /* What the encoder actually did, not what the driver chose to believe. raw is
          * the quadrature count and det the stream the UI sees, so the pair separates
@@ -2043,6 +2219,15 @@ static esp_err_t h_status(httpd_req_t *req)
         (slot ? slot->label : "?"), img_str,
         s_time_synced ? "true" : "false", (long long)now,
         s_tz[0] ? s_tz : "UTC", tz_offset_min(now),
+        /* Unescaped, and safe for exactly the reason s_tz is: name_reject_reason
+         * ran over this string before net_name_set() let it into flash, so it
+         * holds no quote and no backslash, and net_name_load() re-checks anything
+         * read back out of NVS at boot. An unnamed orb reports the empty string
+         * rather than a placeholder, so a card can tell "the owner has not named
+         * this" from "the device could not say" — which is the distinction that
+         * makes the hub's cache rule below implementable at all. Costs 10 B of
+         * key plus up to 32 B of value at the widest name either surface allows. */
+        s_name,
         /* The AP's real state, from the driver's own events. Without this the
          * whole lifecycle added here is invisible from the LAN — you could not
          * tell a closed AP from a firmware that never closes it, which is
@@ -2198,6 +2383,82 @@ static esp_err_t h_config_post(httpd_req_t *req)
                            s_tz[0] ? s_tz : "UTC", posix, tz_offset_min(time(NULL)));
     if (n < 0 || (size_t)n >= sizeof(resp))
         return httpd_resp_sendstr(req, "{\"state\":\"zoned\"}");
+    return httpd_resp_sendstr(req, resp);
+}
+
+/* POST /api/v1/name {"name":"Hall Clock"} — {"name":""} clears it.
+ *
+ * A separate endpoint rather than a second key on /api/v1/config, and the reason
+ * is the contract that endpoint documents: NET_CONFIG_BODY_MAX is 128 sized for
+ * {"tz":"…"} and nothing else, and the handler answers 400 "no tz in body" when
+ * the key is absent, because silently accepting a tz-less body would turn a
+ * client bug into a no-op the page then reports as saved. Adding a second key
+ * means reworking that rule — a name-only body is valid, so the handler would
+ * have to demand "at least one of the two" and the frame would have to grow for
+ * both values at once. That is a larger change to a handler whose sizing is
+ * already tight, to buy a request that saves a round trip nobody needs: setting
+ * a name and a zone together happens once, during onboarding, and the join body
+ * already carries both.
+ *
+ * Read-until-content_len for the reason h_wifi_join documents in full: a body
+ * that arrived in two segments would otherwise parse as truncated, and here the
+ * cost of that is storing half a name or clearing one that was meant to be kept. */
+static esp_err_t h_name_post(httpd_req_t *req)
+{
+    static char body[NET_NAME_BODY_MAX + 1];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    const int clen = (int)req->content_len;
+    if (clen < 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_NAME_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    /* Unlike config's tz, a body WITHOUT the key is a real request that means
+     * nothing: name is one field of several a client may be setting, and an
+     * absent key is "leave the name alone". {} therefore answers 200 with the
+     * name it already had. That is the opposite of h_config_post's rule, and the
+     * two disagree on purpose — there, tz is the only setting the endpoint owns,
+     * so a body missing it can only be a broken client. */
+    char name[NET_NAME_MAX + 1];
+    bool present = false;
+    const char *why = name_body_value(body, len, name, sizeof(name), &present);
+    if (!why && present) why = net_name_set(name);
+    if (why) {
+        /* The reason stays in the log, as config does: it is device-side prose
+         * about a value the client controls, and putting it in the reply invites a
+         * caller to render attacker-chosen text. The 400 is the contract. */
+        ESP_LOGW(TAG, "name: rejected (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name rejected\"}");
+    }
+
+    /* Reports the EFFECT rather than the request, by the same rule as
+     * h_config_post: s_name is what net_name_set() left in RAM after validation
+     * and after the clear branch, so a request the device silently degraded comes
+     * back degraded instead of echoing what was sent. s_name needs no escaping
+     * for the reason given at its /api/v1/status echo. */
+    static char resp[80];
+    const int n = snprintf(resp, sizeof(resp), "{\"state\":\"named\",\"name\":\"%s\"}", s_name);
+    if (n < 0 || (size_t)n >= sizeof(resp))
+        return httpd_resp_sendstr(req, "{\"state\":\"named\"}");
     return httpd_resp_sendstr(req, resp);
 }
 
@@ -2610,7 +2871,11 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
     }
 }
 
-#define JOIN_BODY_MAX 256
+/* 256 was sized for ssid(32) + pass(64) + tz(64) plus keys and braces. The name
+ * field costs a further 42 B at its 32-byte ceiling ("name" key, two quotes, a
+ * comma and the braces), so 320 covers the worst case of all four keys present
+ * and full without any of them clipping. Refuse rather than clip, as below. */
+#define JOIN_BODY_MAX 320
 
 static esp_err_t h_wifi_join(httpd_req_t *req)
 {
@@ -2677,8 +2942,30 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"tz rejected\"}");
     }
 
-    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
-             tz_present ? " tz=" : "", tz_present ? tz : "");
+    /* Same rule as the zone directly above it, and the reason to name an orb
+     * during the join is the reason to zone it there: this is the one moment a
+     * fresh board can leave provisioning already called "Hall Clock" instead of
+     * orb-44bd8d782618, which is the difference between a card that reads as a
+     * room and a card that reads as a hex string. Absent means leave the stored
+     * name alone; {"name":""} clears it. Validated here, before the credentials
+     * wait for a lease, so a bad name cannot half-apply. */
+    static char name[NET_NAME_MAX + 1];
+    bool name_present = false;
+    const char *name_why = name_body_value(body, len, name, sizeof(name), &name_present);
+    if (!name_why && name_present && name[0]) name_why = name_reject_reason(name);
+    if (name_why) {
+        ESP_LOGW(TAG, "join: name rejected (%s)", name_why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name rejected\"}");
+    }
+
+    /* One line, so an operator watching the console during onboarding sees the
+     * whole request the orb refused or accepted — including the name, which is the
+     * field most likely to be typed by hand and the one with nothing on screen to
+     * read back at this moment. */
+    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
+             tz_present ? " tz=" : "", tz_present ? tz : "",
+             name_present ? " name=" : "", name_present ? name : "");
 
     /* NOT persisted here: the submitted pair waits in the radio task's pending
      * buffer until this join earns a lease, and only then reaches NVS (see
@@ -2696,6 +2983,17 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     if (tz_present) {
         const char *why = net_tz_set(tz);
         if (why) ESP_LOGW(TAG, "join: tz \"%s\" not applied (%s)", tz, why);
+    }
+
+    /* Same door as POST /api/v1/name, same one-behaviour-two-roads argument the
+     * tz line above makes: this cannot fail on validation (checked before the
+     * credentials were touched), so the only reason it returns is NVS, and a name
+     * that did not persist is worth a log line rather than a failed join. A board
+     * that joined the LAN unnamed is a naming problem; a board that did not join
+     * is the actual failure, and the two must not be conflated in one reply. */
+    if (name_present) {
+        const char *why = net_name_set(name);
+        if (why) ESP_LOGW(TAG, "join: name \"%s\" not applied (%s)", name, why);
     }
 
     /* A human just said "try these", so start the back-off ladder over — the
@@ -4579,8 +4877,9 @@ static esp_err_t net_start_httpd(void)
      * below rather than trusting the count. The /timezone page brings the table
      * to 15 registered routes; the /apps pair brought it to 25, the /apps install
      * POST is the 26th, the /api/v1/sd/app upload POST is the 27th, and P4a's
-     * enable and uninstall doors make 29 registered — exactly the old ceiling,
-     * so 32 keeps the headroom the plan's route budget (P5's APPS-page mirror
+     * enable and uninstall doors make 29 registered, and the /api/v1/name door
+     * makes 30 — one over the old ceiling of 29 that line records, still inside
+     * the 32 that keeps the headroom the plan's route budget (P5's APPS-page mirror
      * and the theme pair) was priced against touching this line again. */
     cfg.max_uri_handlers  = 32;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
@@ -4623,6 +4922,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/wifi/ap",  .method = HTTP_POST, .handler = h_wifi_ap },
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
+        { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* One-shot: reboot into the provisioning branch with the stored credential
@@ -4692,6 +4992,12 @@ esp_err_t orb_net_start(void)
      * what makes the very first render local instead of UTC-for-two-seconds. It
      * only reads NVS — nothing here touches the network. */
     net_tz_load();
+    /* Same moment and same reason as the zone: the card reads a name off
+     * /api/v1/status the first time it folds this board, and a name that only
+     * appeared after the association completed would show as blank during the
+     * one window an operator is watching most closely — a board that just joined.
+     * NVS read only, no radio. */
+    net_name_load();
 
     stage_probe("pre-sntp_init");
 
@@ -4986,5 +5292,15 @@ esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)
     *offset_min = 0;
     return ESP_OK;
 }
+
+/* Name accessors, disabled build: "" is the honest answer. The limit is a literal
+ * 32 because NET_NAME_MAX is defined inside the enabled half of this file, so it
+ * is not visible here — the one place in this feature where the two builds state
+ * the same number twice. device_contract_test.go pins it against orbfleet.MaxName
+ * and against the string in the enabled half, which is what keeps the duplication
+ * from drifting. */
+const char *orb_net_name(void) { return ""; }
+int orb_net_name_max(void) { return 32; }
+esp_err_t orb_net_name_set(const char *name) { return name ? ESP_ERR_NOT_SUPPORTED : ESP_ERR_INVALID_ARG; }
 
 #endif /* CONFIG_ORB_NET_ENABLE */

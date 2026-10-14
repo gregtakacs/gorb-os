@@ -246,25 +246,54 @@ CONFIG_ORB_DEBUG_HTTP=y
 # during the WPA3-SAE handshake on the same boot. §15's tail billed the identical
 # squeeze a day earlier, and §16.1 named this the real wall in front of M5.
 #
-# The four lines below move the radio off that pool rather than shrink it:
-#   - TRY_ALLOCATE_WIFI_LWIP: radio + lwIP buffers go to PSRAM first.
-#   - TX_BUFFER_TYPE=0 (the static choice): a fixed TX ring instead of 32
-#     dynamic buffers competing for the same DMA heap at TX time.
-#   - STATIC_TX_BUFFER_NUM=8: the ring sized to what this link actually
-#     in-flights (IDF default 16 halves the saving).
+# ---------------------------------------------------------------------------
+# Radio off the internal-DMA budget, so the SD driver gets its asks back
+# (docs/app-platform-plan.md §16.1, §17).
+#
+# SERIAL EVIDENCE, same boot, orb-A 2026-10-14 (image `e3733a5`): a theme upload
+# died 1.5 s in with `esp_dma_capable_malloc(125): Not enough heap memory` and
+# `sdmmc_write_blocks failed (0x101)`. The card is healthy — SD16G SDHC 29.4 GB
+# mounts at 20 MHz on POST /api/v1/sd/rescan — so the failure is the budget at
+# that instant, not the slot. sdmmc's per-operation ask is 125 B and it must be
+# internal DMA RAM. The radio holds that pool: dynamic TX (32 buffers,
+# allocated per-frame as the heap allows), AMPDU RX windows (RX_BA_WIN=6
+# reorder contexts), and `esp-aes: Failed to allocate memory` already logged
+# during the WPA3-SAE handshake on the same boot. §15's tail billed the identical
+# squeeze a day earlier, and §16.1 named this the real wall in front of M5.
+#
+# Two lines, both non-negotiable together:
+#   - TX_BUFFER_TYPE=0 (the static choice): a fixed 8-buffer TX ring carved once
+#     at esp_wifi_init, instead of 32 dynamic buffers contending for the same DMA
+#     heap at TX time. Stops the churn that fragments the pool.
 #   - AMPDU_RX off: drops the RX reorder windows, the other standing claim on
-#     internal DMA RAM. Costs aggregation on the RX side; the dial and the
-#     upload path both live inside the link's own throughput.
+#     internal DMA RAM.
+#
+# MEASURED, two boots on `9fec1b9` (which also carried CONFIG_SPIRAM_TRY_ALLOCATE_
+# WIFI_LWIP=y): the SD squeeze is gone — `esp-aes` absent on both boots, card
+# mounting clean, dma_free 2,255 -> 11,607, largest block at sta-connected 3,328
+# -> 7,936, dial steady 12-17 fps. AND the config server died on both boots:
+# `httpd_start: ESP_ERR_HTTPD_TASK`. The failure is contiguous-block SHAPE, not
+# total — internal free was the highest this board has reported. PSRAM-first puts
+# the radio's buffers where they no longer consolidate into one large internal
+# region, so the 8 KB contiguous worker stack (`orb_net.c:4545`) has nowhere to
+# land, and `config server listening` never prints. See §17.
+#
+# So CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is deliberately NOT set here. The radio
+# and the config server must both be alive at once — a theme upload is the whole
+# point of the card, and it arrives over the radio. The owner accepts the dial
+# stalling for the duration of an upload; that is a handler-side pause, not a
+# budget at boot, and it is not a reason to lose the server. If the two lines
+# below turn out not to clear enough contiguous RAM on their own, the next lever
+# is httpd's stack_size ladder in net_start_httpd, not this line's return.
 #
 # CONFIG_ESP_WIFI_TX_BUFFER_TYPE is a derived int with no prompt: the CHOICE
 # symbols are what kconfig reads, so the local sdkconfig must carry
 # CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y and DYNAMIC_TX_BUFFER off for the int to
-# land at 0 — and DYNAMIC_TX_BUFFER cannot survive TRY_ALLOCATE_WIFI_LWIP=y
-# anyway (Kconfig:82 makes it undeterminable when PSRAM is not ignorable).
-# Prove all four in build/config/sdkconfig.h after reconfigure, per the
-# materialization rule: an EXIT=0 build that silently kept the dynamic pools is
-# the false pass this file has been burned by twice already.
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# land at 0. NOTE the coupling: setting SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y makes
+# DYNAMIC_TX_BUFFER unselectable (Kconfig:82), so that line was forcing static TX
+# whether wanted or not. Prove both lines in build/config/sdkconfig.h after
+# reconfigure, per the materialization rule — an EXIT=0 build that silently kept
+# the dynamic pools is the false pass this file has been burned by twice.
 CONFIG_ESP_WIFI_TX_BUFFER_TYPE=0
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n

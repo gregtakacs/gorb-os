@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
@@ -240,7 +241,19 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 	}
 	row, ok := s.fleet.ByMAC(req.MAC)
 	if !ok {
-		s.jsonErr(w, "no orb "+req.MAC+" to name: it has never announced and is not on a cable")
+		// The roster knows things the store does not: a board on a cable this sweep
+		// read a MAC from is seen, not unknown. Say which plug it is on rather than
+		// "never announced", which a cable makes false, and still refuse the write — a
+		// descriptor sighting earns a row in the list, not a row in state.json.
+		canon, badmac := orbmdns.CanonicalMAC(req.MAC)
+		if badmac == "" {
+			if port := s.cables.cablePortFor(canon, time.Now()); port != "" {
+				s.jsonErr(w, "no orb "+req.MAC+" to name: on a cable at "+port+
+					" with no address yet, so there is nothing to write to — identify it or bring it onto the LAN first")
+				return
+			}
+		}
+		s.jsonErr(w, "no orb "+req.MAC+" to name: it has never announced and no cable carries it now")
 		return
 	}
 	// The cross-lock BEFORE the dial. Order matters more here than anywhere else in

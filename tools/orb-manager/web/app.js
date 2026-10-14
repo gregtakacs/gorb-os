@@ -744,36 +744,19 @@ let orbBytesAt = 0;
 // focus, wipe a half-typed name, or scroll a list the operator is reading.
 function applyFound(d) {
   const list = $("#mn-find"), state = $("#mn-find-state");
-  if (!d.listening) {
-    // Clear the rows rather than leaving them. A card that keeps showing a fleet after the
-    // listener died looks exactly like a fleet that is still there, and on a pushed page
-    // nothing else will ever correct it: no timer is coming to redraw this card, because a
-    // timer is the design the stream replaced.
-    for (const entry of foundRows) entry[1].remove();
-    foundRows.clear();
-    for (const li of Array.prototype.slice.call(list.querySelectorAll("li.refused"))) li.remove();
-    refusedTail = "|";
-    state.textContent = "\u2717 no listener running here: " + (d.error || "unknown reason");
-    return;
-  }
-  const beat = "check-ins every " + (d.checkinS || 60) + " s";
-  const orbs = d.orbs || [];
-  state.textContent = (orbs.length
-    ? orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced (" + beat + ")"
-    : "no orb has checked in yet; " + beat + ", so a joined orb shows up within a minute of"
-      + " this page opening. An orb on older firmware announces only when it joins \u2014 reboot"
-      + " it, or type its address in the box above.")
-    + (orbs.length && d.error ? "  \u00b7  " + d.error : "");
-
+  const orbs = Array.isArray(d.orbs) ? d.orbs : [];
   const live = new Set();
   for (const o of orbs) {
-    live.add(o.mac);
-    let li = foundRows.get(o.mac);
+    // Keyed on the roster key, not the mac: a cable the host cannot attribute has no
+    // mac, and two of them must not fight over one <li>.
+    const k = o.key || o.mac;
+    live.add(k);
+    let li = foundRows.get(k);
     if (!li) {
       li = foundRow(o);
-      foundRows.set(o.mac, li);
-      // Above the refusal tail, which is not a row and is rebuilt wholesale; below the rows
-      // already there, which stay exactly where the operator left them.
+      foundRows.set(k, li);
+      // Above the refusal tail, which is not a row and is rebuilt wholesale; below the
+      // rows already there, which stay exactly where the operator left them.
       const tail = list.querySelector("li.refused");
       if (tail) list.insertBefore(li, tail); else list.appendChild(li);
     }
@@ -783,6 +766,22 @@ function applyFound(d) {
     if (!live.has(entry[0])) { entry[1].remove(); foundRows.delete(entry[0]); }
   }
   drawRefused(list, (d.refused || []).slice(-3).reverse());
+
+  // The header describes what the list is a view of. A deaf mDNS listener no longer
+  // empties it: rows on cables are as real as rows from packets, and the old card that
+  // cleared itself on a bind failure is the bug the merge exists to fix.
+  const beat = "check-ins every " + (d.checkinS || 60) + " s";
+  const onCable = orbs.filter((o) => o.onCable).length;
+  const lanN = orbs.filter((o) => (o.via || []).indexOf("lan") >= 0).length;
+  const parts = [];
+  if (lanN) parts.push(lanN + " by LAN");
+  if (onCable) parts.push(onCable + " on cable");
+  state.textContent = (!d.listening
+    ? "\u2717 no LAN listener: " + (d.error || "unknown reason")
+    : orbs.length
+      ? orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " \u2014 " + parts.join(" + ") + " (" + beat + ")"
+      : "no orb seen: none announced, and none on a cable")
+    + (d.cableError ? "  \u00b7  port list failed: " + d.cableError : "");
 }
 
 // drawRefused replaces the refused tail, and only when its content moved. Those lines are the
@@ -847,7 +846,15 @@ async function watchOrbs() {
       }
     }
   } catch (e) {
-    if (!ctrl.signal.aborted) state.textContent = "\u2717 discovery stream lost: " + e.message;
+    if (!ctrl.signal.aborted) {
+      // A lost stream is not a quiet LAN: the hub itself went away, and with it every
+      // fact this card renders — packets and cable sightings alike. Clear the rows
+      // rather than leaving last night's bench on screen, which is what the pin on
+      // foundRows.clear() below guards.
+      for (const entry of foundRows) entry[1].remove();
+      foundRows.clear();
+      state.textContent = "\u2717 discovery stream lost: " + e.message;
+    }
   }
   if (orbAbort === ctrl) {
     orbAbort = null;
@@ -873,10 +880,14 @@ setInterval(() => {
 function foundRow(o) {
   const li = document.createElement("li");
   li.className = "found";
-  li.dataset.mac = o.mac;
+  li.dataset.key = o.key || o.mac;
+  li.dataset.mac = o.mac || "";
 
   const label = document.createElement("button");
   label.className = "ghost found-pick";
+  const badge = document.createElement("span");
+  badge.className = "found-via";
+
   const name = document.createElement("input");
   name.placeholder = "name"; name.maxLength = 32;
   // "stored on the orb" is the sentence that changed. The word goes onto the board
@@ -912,12 +923,40 @@ function foundRow(o) {
     }).then(pullFound);
   };
 
+  // A cable the host cannot attribute is a row with a tty and nothing else, and the one
+  // action that changes that is the probe: it costs a reboot, so the hub offers it here
+  // and pays for it on the Onboard card, where the port is already the thing under test.
+  const identify = document.createElement("button");
+  identify.className = "ghost"; identify.textContent = "Identify"; identify.hidden = true;
+  identify.title = "select this cable on the Onboard card and read the mac off the chip once; costs a reboot";
+  identify.onclick = () => {
+    if (!show("onboard")) return;
+    const sel = $("#ob-port");
+    if (li._port) { sel.value = li._port; refreshIdentityFromCache(); }
+  };
+
   const ident = document.createElement("span");
   ident.className = "row";
-  ident.append(name, room, save, forget);
-  li.append(label, ident);
-  li._label = label; li._name = name; li._room = room;
+  ident.append(name, room, save, forget, identify);
+  li.append(label, badge, ident);
+  li._label = label; li._badge = badge; li._name = name; li._room = room;
+  li._nameable = [name, room, save, forget]; li._identify = identify;
   return li;
+}
+
+// viaBadge spells the access paths out in the words the hub means: how it could reach this
+// board if asked, right now. "on LAN" and "on cable" are not synonyms — one is a packet
+// from a network, the other is a fact about this machine's USB ports.
+function viaBadge(o) {
+  const via = Array.isArray(o.via) ? o.via : [];
+  const lan = via.indexOf("lan") >= 0, usb = via.indexOf("usb") >= 0;
+  const access = lan && usb ? "LAN + cable" : usb ? "on cable" : lan ? "on LAN" : "not seen now";
+  const where = usb && o.ports && o.ports.length ? " (" + o.ports.join(", ") + ")" : "";
+  const idn = o.identity === "confirmed" ? "mac confirmed"
+    : o.identity === "descriptor" ? "mac from USB descriptor"
+    : o.identity === "unknown" ? "mac unreadable: identify it"
+    : "mac announced by the orb";
+  return access + where + " \u00b7 " + idn;
 }
 
 // paintFound writes what the hub currently believes onto a row that already exists. It runs on
@@ -926,20 +965,32 @@ function foundRow(o) {
 function paintFound(li, o) {
   const label = li._label;
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
-  label.textContent = [o.name || o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
-    o.state === "provisioning" ? "PROVISIONING" : o.state,
-    o.cable ? "on usb" : "announced", o.contended ? "CONTESTED" : "",
+  const shown = o.name || o.instance || o.mac || o.key || "?";
+  const addr = o.ip ? o.ip + ":" + o.port : "no address";
+  li.dataset.mac = o.mac || "";
+  li._port = (o.ports && o.ports.length) ? o.ports[0] : "";
+  label.textContent = [shown, addr, o.mac ? "mac " + o.mac : "no mac", o.fw ? "fw " + o.fw : "",
+    o.state === "provisioning" ? "PROVISIONING" : (o.state || ""),
+    o.contended ? "CONTESTED" : "",
     o.shared ? "shared name" : "", o.bound ? "" : "unverified",
-    o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
-  // Three separate reasons a row cannot be dialed, and the button says which one it is rather
-  // than letting a click discover it: the address belongs to nobody the hub can reach, two
-  // boards both claim it, or it was never allowed at all.
+    typeof o.ageS === "number" ? o.ageS + "s" : ""].filter(Boolean).join("  \u00b7  ");
+  li._badge.textContent = viaBadge(o);
+  // Four separate reasons a row cannot be dialed, and the button says which one it is rather
+  // than letting a click discover it: the board has no address at all, its address is a SoftAP
+  // the hub cannot route to, two boards both claim it, or it was never allowed.
   label.disabled = !o.ip || softAP || !!o.contended;
-  label.title = softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
+  label.title = !o.ip ? (o.refusal || "no address: nothing to load")
+    : softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
     : o.contended ? "two boards both announce this address, so the hub will not dial either"
     : (o.refusal || (o.dialable ? "already an address this hub dials"
       : "fills the Orb IP box; the hub dials it only once you load it"));
-  label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
+  label.onclick = () => { if (o.ip) { $("#mn-ip").value = o.ip; scan(); } };
+  // Identity is what the naming controls key on. A cable with no mac has no row anywhere to
+  // write a name against — offering the box anyway would promise a save that cannot happen,
+  // so the controls go dark and the Identify button takes their place.
+  const nameable = !!o.mac;
+  for (const el of li._nameable) { el.disabled = !nameable; }
+  li._identify.hidden = o.identity !== "unknown";
   li._ip = o.ip;
   if (document.activeElement !== li._name) li._name.value = o.name || "";
   if (document.activeElement !== li._room) li._room.value = o.room || "";

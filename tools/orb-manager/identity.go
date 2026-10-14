@@ -52,7 +52,8 @@ const identityTTL = 30 * time.Minute
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
-		fleet: orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+		cables: newCableCache(),
+		fleet:  orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {

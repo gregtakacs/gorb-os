@@ -127,13 +127,20 @@
   <div id="mn-list" class="orbs"></div>
 
   <article class="card" id="mn-findcard">
-    <h3>Orbs on the LAN</h3>
+    <h3>Orbs</h3>
     <p class="hint" id="mn-find-state">Loading…</p>
     <ul id="mn-find" class="themelist"></ul>
     <div class="row">
       <span class="hint" id="mn-find-note"></span>
     </div>
-    <p class="hint">This list updates itself: the hub listens for the orb's own check-ins and shows a row the moment one lands, so there is nothing to press. A row here is what an orb said about itself, not what the hub confirmed. Choosing one puts its address in the box above; the hub dials it only after you load it. Remember names the board by its MAC, so the name survives the address changing; Forget drops the name and takes the address out of the set the hub will dial.</p>
+    <p class="hint">One list, both doors: an orb that checked in over the LAN, an orb plugged into a
+    cable on this machine, or one board that is both, each shown once and keyed on its MAC. A badge
+    says how the hub can reach it right now, and a cable row is only ever as trustworthy as the MAC
+    the host read from its USB descriptor. This list updates itself: the hub listens for the orb's
+    own check-ins and re-reads the USB ports as plugs move, so there is nothing to press. Choosing a
+    row with an address puts it in the box above; the hub dials it only after you load it. Remember
+    writes the name onto the board itself and the hub keeps its copy; Forget drops both and takes the
+    address out of the set the hub will dial.</p>
   </article>
 
   <article class="card" id="mn-themecard" hidden>

@@ -59,3 +59,7 @@ button.ghost{background:none}
 .themelist .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid #6fbf73;color:#9adc9e}
 .themelist .tag.err{border-color:#c9525a;color:#f2a0a6}
 #mn-con-log{max-height:280px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px}
+
+/* The one list's access badge: LAN / cable / both, and how strongly the mac is known.
+   Muted and monospaced so it reads as the hub's evidence, not as a second label. */
+.found-via{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}

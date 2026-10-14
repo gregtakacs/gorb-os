@@ -1795,3 +1795,68 @@ join body accepts `name` so an onboarding flow can do it in one request. The D4/
 recovery paths keep the name exactly as they keep the credential: recovery is not a
 reason to lose what a person typed.
 
+## SPEC (built 2026-10-14) — one list, both doors
+
+**The problem.** The hub learned about a board two ways that did not overlap: mDNS
+told it about orbs that had joined a network, and the USB enumeration told it about
+orbs plugged into that machine. Each had its own endpoint — `/api/orbs` and
+`/api/ports` — so the operator was the merge. A board on a cable and on the LAN
+showed twice, once without its address and once without its port. A board only on a
+cable did not appear in the list at all, and a hub that failed to bind UDP 5353
+answered "no orbs" while one sat in the machine. The second is the bug; the rest is
+the shape that prevents it coming back.
+
+**The design.** `roster.go` composes one list keyed on the canonical base MAC — the
+same key the fleet store uses and for the same reason (§5.3): an address is something
+an orb has at a moment, a MAC is something an orb is. `orbCard` builds the LAN rows
+and hands them to `roster`, which folds in a TTL-cached port sweep. `/api/orbs` and
+`/api/orbs/stream` serve the union; `/api/ports` stays raw because the Onboard picker
+needs the non-orb ports too.
+
+**Two cable facts, kept apart.** `cable` still means a hub (or Onboard) read the MAC
+off the chip — the only proof in the system, and the reason it is store-backed and
+sticky. The new `onCable` means the current sweep saw a cable carrying this MAC — a
+fact about this machine's sockets that arrives and goes with the plug. A row can hold
+both, and collapsing them would make every flashed orb claim a phantom tether forever.
+New row fields: `ports` (sorted ttys; two entries are one board on two leads), `via`
+(`lan`, `usb`, or both), `identity` (`confirmed` > `descriptor` > `claimed`; a cable
+outranks a packet, and an unattributed port is `unknown`), and `key` (the MAC, or the
+tty path — two unknown cables must not collide on an empty mac).
+
+**Hybrid persistence, decided.** The roster is wider than the store. A descriptor
+sighting is ephemeral: shown while the plug is in, gone after, and never written to
+`state.json`. The store still gains a row for a MAC only from a probe, a flash, a
+console verdict, or an announcement — otherwise the file fills with an entry for every
+ESP32 that ever touched this machine's sockets, each one carrying a ghost of the
+operator's naming. `handleFleetSet` says the refusal in the same terms: a board on a
+lead with no address is refused by name of its cable ("on a cable at /dev/ttyACM0 with
+no address yet"), not by the old "never announced", which a cable makes false.
+
+**What a cable may not do.** It never invents an address: a cable row's `ip` comes from
+the store, and the row stays undialable until `mayDial` says otherwise on the store's
+address. The announcement and the sweep meet only at the MAC; an IP that disagrees with
+a confirmed row is still the store's problem (§5.3), and the fold still refuses it.
+
+**The stream had to learn a second trigger.** Nothing in the mDNS path notices a board
+being plugged in, so `watchCables` re-sweeps every half-TTL (5 s) and `refresh` fires
+`wakeOrbs` when the plug digest moves — after the first sweep only, so a hub coming up
+with a cable in it does not push a frame for free. A failed enumeration keeps the last
+good set and reports `cableError` on the envelope rather than reporting an empty bench,
+and the version digest carries the rows even when the listener is deaf: a plug-in while
+deaf is still news. `/api/ports` keeps its raw shape and its hint strings for Onboard.
+
+**As built and verified.** `roster.go` (sweep seam + TTL cache + merge + digest),
+`orbCard` rewired through it, the no-listener early-return fixed to answer cable rows,
+`handleFleetSet`'s refusal reworded, and the UI: the card is "Orbs", each row wears a
+badge of its access path and identity ("on cable (/dev/ttyACM0) · mac from USB
+descriptor"), naming controls go dark on a row with no mac, and an unattributed cable
+row offers "Identify", which jumps to the Onboard card with that port selected. The UI
+keys rows on `key` rather than `mac` so two unknown cables cannot fight over one `<li>`;
+a lost stream still clears the whole card. Tests in `roster_test.go` cover: merged both-
+doors row; cable-only row with no address and no store write; cables listed while deaf;
+two ttys one board; unattributed ports kept apart; store-address fold; digest moves on
+plug and returns on unplug; a real plug-in pushing to an open stream through the watch
+loop; sweep failure keeping the bench; and the refusal-by-cable-name. Live bench 2026-
+10-14: two S31 cores cabled, `/api/orbs` listed both by descriptor MAC with per-port
+attribution and `/api/ports` stayed raw; the row that also announced on LAN will fold
+`via: [lan, usb]` on its next check-in (orb-B, previously verified reachable).

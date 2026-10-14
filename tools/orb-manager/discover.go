@@ -173,6 +173,23 @@ type orbRow struct {
 	// Cable says the hub has read this MAC off the chip over USB, which is the only
 	// proof in the system; without it the identity is what a packet asserted.
 	Cable bool `json:"cable"`
+	// OnCable is a different fact and must not be confused with Cable: the current port
+	// sweep found a cable carrying this MAC, which says nothing about whether anyone has
+	// ever read the chip. It arrives and goes away with the plug.
+	OnCable bool `json:"onCable"`
+	// Ports are the ttys the current sweep found this board behind, sorted. Two entries
+	// mean one board on two cables, not two boards.
+	Ports []string `json:"ports,omitempty"`
+	// Via names how the hub can reach this board right now: "lan", "usb", or both.
+	// Empty means the row is remembered rather than seen.
+	Via []string `json:"via,omitempty"`
+	// Identity is how strongly the hub knows the row is the board it names:
+	// "confirmed" (read off the chip), "descriptor" (host USB serial), "claimed" (an
+	// announcement said so), "unknown" (a cable with nothing to read).
+	Identity string `json:"identity,omitempty"`
+	// Key is the row's handle for the page: the MAC, or the tty path for a cable with no
+	// MAC yet. Two unknown cables must not collide on an empty mac.
+	Key string `json:"key,omitempty"`
 	// Contended: another live board announces this same address, so the hub will not
 	// dial it for anybody. Shared: another board derives this instance name from a
 	// different MAC, so the label alone cannot identify the row.
@@ -204,7 +221,8 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, body)
 }
 
-// orbCard builds the discovery card and its fingerprint. The payload is what GET
+// orbCard builds the one list and its fingerprint: the mDNS cache, the fleet store, the
+// grants, and the live USB sweep, merged by MAC in roster.go. The payload is what GET
 // /api/orbs answers and what every /api/orbs/stream frame carries, byte for byte, so a
 // row cannot mean one thing on a poll and another on a push; the version is what the
 // stream compares to decide whether a frame is worth the wire. now is a parameter so
@@ -215,15 +233,21 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 	ifaces := append([]string(nil), s.browseIfaces...)
 	s.dmu.Unlock()
 	if b == nil {
+		// Deaf on mDNS is not deaf on the bench. A board on a cable is listed with its
+		// MAC and its tty even when no socket bound — the old empty list here made a
+		// hub that could not multicast claim an empty bench, which is the lie this
+		// merge exists to kill. The failure still reads as the reason LAN rows are
+		// missing, and the version carries it, so a hub that recovers re-sends.
+		rows, cableErr := s.roster(nil, now)
 		body := map[string]any{
-			"orbs": []orbRow{}, "refused": []map[string]any{}, "interfaces": ifaces,
+			"orbs": rows, "refused": []map[string]any{}, "interfaces": ifaces,
 			"listening": false, "error": orElse(listenErr, "discovery is not running"),
-			"checkinS": checkinSeconds,
+			"cableError": cableErr,
+			"checkinS":   checkinSeconds,
 		}
-		// The version carries the reason, so a hub that fails to bind and then
-		// recovers is a version change, and the stream says "listening" the moment it
-		// is true rather than leaving the failure up forever.
-		return body, "not-listening|" + listenErr
+		// The version carries the reason (so a hub that binds later re-sends) and the
+		// rows themselves (so a plug change while deaf is still news to an open stream).
+		return body, "not-listening|" + listenErr + "|" + orbVersion(rows, nil, nil) + "|cable|" + cableErr
 	}
 	// Project the cache into the fleet before building rows, or the card would show a
 	// contention the proxy is already refusing over. No renewal: that is the upkeep tick's.
@@ -234,8 +258,8 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 		// clicked, so the card cannot promise a dial the request would refuse.
 		may, why := s.mayDial(c.IP)
 		r := orbRow{
-			Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
-			IP: c.IP, Port: c.Port, TTL: c.TTL,
+			Key: c.MAC, Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
+			IP: c.IP, Port: c.Port, TTL: c.TTL, Via: []string{"lan"},
 			AgeS: int(now.Sub(c.LastSeen).Seconds()), Provision: c.Provisioning(),
 			// Dialable is a readout of the allowlist, not a request. The hub will
 			// not reach an address the operator has not committed to, and the card
@@ -253,6 +277,11 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 		}
 		rows = append(rows, r)
 	}
+	// The cable half, merged by MAC. It runs whether or not a single orb announced: a
+	// bench with one board on a lead and nothing on Wi-Fi is the normal state of a
+	// factory-fresh device, and the list that goes blank on it is the bug this merge
+	// was built to fix.
+	rows, cableErr := s.roster(rows, now)
 	refused := []map[string]any{}
 	for _, f := range b.Refusals() {
 		refused = append(refused, map[string]any{
@@ -262,9 +291,10 @@ func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 	}
 	body := map[string]any{
 		"orbs": rows, "refused": refused, "interfaces": ifaces,
-		"listening": true, "error": "", "checkinS": checkinSeconds,
+		"listening": true, "error": "", "cableError": cableErr,
+		"checkinS": checkinSeconds,
 	}
-	return body, orbVersion(rows, refused, ifaces)
+	return body, orbVersion(rows, refused, ifaces) + "|cable|" + cableErr
 }
 
 // orbVersion fingerprints the card minus the clock. Age is the field that moves on its

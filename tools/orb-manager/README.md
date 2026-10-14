@@ -285,13 +285,27 @@ OS cannot name is refused with an explanation rather than reset on a guess.
 
 The card compares the firmware ready to flash against what the orb runs and says
 `upgrade`, `downgrade`, `same`, or `same-version`, colouring a downgrade so it
-cannot be mistaken for an upgrade. A git describe like `8eb4bf0-dirty` carries no
-ordering, so the decision uses the two facts that do: the **build timestamp** for
-order and the **ELF digest** for identity. Equal describes with different
-timestamps report `same-version` — a rebuild is not a release — and anything
-missing a usable stamp reports that it cannot tell, rather than pushing a user to
-replace a working orb on no evidence. Uploading a different bundle re-runs the
-comparison against every cached identity without probing again.
+cannot be mistaken for an upgrade. The order has three tiers. The **ELF digest**
+decides first: identical bytes are `same` whatever either side claims. A parsed
+**declared version** decides next — `v1.1.0` is an upgrade over `v1.0.0` and
+`v1.0.0` is a downgrade from `v1.1.0` even when the older build carries the later
+clock, which is the clock-skew decision the version scheme exists to kill. The
+**build timestamp** is the fallback, used only when a side predates the scheme and
+has no triple to order by: a git describe like `8eb4bf0` carries no ordering, so the
+timestamp is the only fact left. Commit metadata and `-dirty` never decide order —
+one release built at two commits or with a modified tree reports `same-version`, a
+rebuild and not a release. Anything missing a usable stamp reports that it cannot
+tell, rather than pushing a user to replace a working orb on no evidence. Uploading a
+different bundle re-runs the comparison against every cached identity without probing
+again. `firmware.ParseVersion` is the parser, in `internal/firmware/version.go`, and
+it refuses anything that is not `v<MAJOR>.<MINOR>.<PATCH>[-<pre>]+<7 hex>[-dirty]` —
+the legacy forms are refused, not half-parsed, so an unversioned orb stays legacy
+rather than becoming a bogus 0.0.0 that orders below every release.
+`/api/v1/firmware` and the identity rows carry the parsed form as a `semver` object
+beside the raw string, so no front end parses semver.
+`cmd/orbpack` refuses to ship a bundle whose stamp does not parse; `-force` overrides
+that for a bench build, and a hand-loaded `.zip` is still accepted whatever it says,
+so a deliberate downgrade stays possible.
 - **Theme Editor** — the watch-composer at `/composer/`. With a gorb-os clone
   reachable it is served from `tools/watch-composer`, so edits to the composer
   appear on reload with no rebuild; with no clone, as on every end user's machine,

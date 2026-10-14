@@ -109,11 +109,13 @@ func (s *Server) firmwareName() string {
 // are a UI contract, pinned by TestBuildPanelFieldsMatchBetweenClientAndHandler:
 // app.js reads present, images, source, version, project and sha256 here, and
 // takes .length/.map on images, so that list must be a (possibly empty) array and
-// never null.
+// never null. semver travels beside version as structure for any reader that wants
+// the triple unparsed; app.js still renders the raw stamp, so adding it cannot
+// change what the panel shows.
 func (s *Server) describeFirmware(*http.Request) (any, error) {
 	b := s.firmwareBundle()
 	if b == nil {
-		return map[string]any{"present": false, "images": []any{},
+		return map[string]any{"present": false, "images": []any{}, "semver": semverPayload(""),
 			"source": "", "version": "", "project": "", "sha256": "", "built": "", "idf": ""}, nil
 	}
 	return firmwareSummaryPayload(b), nil
@@ -180,7 +182,22 @@ func firmwareSummaryPayload(b *firmware.Bundle) map[string]any {
 		"present": true, "images": imgs,
 		"source": b.Source, "version": b.Version, "project": b.Project,
 		"idf": b.IDFVersion, "built": b.Built, "sha256": b.SHA256,
+		"semver": semverPayload(b.Version),
 	}
+}
+
+// semverPayload is the version as structure, so the UI never parses a stamp. An
+// unversioned build is reported as legacy rather than as v0.0.0, because a fake zero
+// would render as the oldest release rather than as the unknown it is.
+func semverPayload(raw string) map[string]any {
+	v, ok := firmware.ParseVersion(raw)
+	if !ok {
+		return map[string]any{"legacy": true, "raw": raw, "declared": "",
+			"major": 0, "minor": 0, "patch": 0, "pre": "", "commit": "", "dirty": false}
+	}
+	return map[string]any{"legacy": false, "raw": v.Raw, "declared": v.Declared(),
+		"major": v.Major, "minor": v.Minor, "patch": v.Patch, "pre": v.Pre,
+		"commit": v.Commit, "dirty": v.Dirty}
 }
 
 func (s *Server) jsonOK(w http.ResponseWriter, payload any) {

@@ -850,8 +850,8 @@ func TestProbeRefusesPortsItCannotAttribute(t *testing.T) {
 	}
 }
 
-// The comparison itself. A git describe has no order, so only the build timestamp
-// and the ELF digest may decide what a user is about to do to their orb.
+// The comparison itself. A declared version decides first; only when a side predates
+// the scheme do the build timestamp and the ELF digest get a vote.
 func TestCompareVersions(t *testing.T) {
 	base := time.Date(2026, 10, 12, 1, 58, 41, 0, time.UTC)
 	older := base.Add(-24 * time.Hour)
@@ -886,12 +886,62 @@ func TestCompareVersions(t *testing.T) {
 	if got := firmware.Compare(firmware.Release{Version: "a"}, firmware.Release{Version: "b"}); got != firmware.VerdictUnknown {
 		t.Errorf("Compare of two undated builds = %q, want unknown", got)
 	}
+
+	// The same pairs once the stamps parse. Row two is the whole point: the target
+	// carries the LATER clock and is still refused as the downgrade it is, which is
+	// the clock-skew decision this scheme exists to make impossible.
+	for _, tc := range []struct {
+		name   string
+		orb    firmware.Release
+		target firmware.Release
+		want   firmware.Verdict
+	}{
+		{"named upgrade", firmware.Release{Version: "v1.0.0+aaaaaaa", CompiledAt: older},
+			firmware.Release{Version: "v1.1.0+bbbbbbb", CompiledAt: newer}, firmware.VerdictUpgrade},
+		{"version outranks the clock", firmware.Release{Version: "v1.1.0+aaaaaaa", CompiledAt: older},
+			firmware.Release{Version: "v1.0.0+bbbbbbb", CompiledAt: newer}, firmware.VerdictDowngrade},
+		{"one release, another commit", firmware.Release{Version: "v1.0.0+aaaaaaa", CompiledAt: base},
+			firmware.Release{Version: "v1.0.0+bbbbbbb", CompiledAt: newer}, firmware.VerdictSameVersion},
+		{"one release, dirty tree", firmware.Release{Version: "v1.0.0+aaaaaaa-dirty", CompiledAt: base},
+			firmware.Release{Version: "v1.0.0+aaaaaaa", CompiledAt: newer}, firmware.VerdictSameVersion},
+		{"candidate to release", firmware.Release{Version: "v2.0.0-rc.1+aaaaaaa", CompiledAt: base},
+			firmware.Release{Version: "v2.0.0+aaaaaaa", CompiledAt: older}, firmware.VerdictUpgrade},
+		// A legacy orb has no triple to order by, so this upgrade is decided by the
+		// timestamp alone — the fallback stays reachable on purpose for a mixed fleet.
+		{"legacy orb, named target, newer clock", firmware.Release{Version: "8eb4bf0", CompiledAt: older},
+			firmware.Release{Version: "v9.9.9+aaaaaaa", CompiledAt: newer}, firmware.VerdictUpgrade},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firmware.Compare(tc.orb, tc.target); got != tc.want {
+				t.Errorf("Compare(%s, %s) = %q, want %q", tc.orb.Version, tc.target.Version, got, tc.want)
+			}
+		})
+	}
 }
 
 // A probe resets the chip, so it must refuse while an operation holds THAT cable.
 // The refusal is per port, which is the point of the operation registry: a flash on
 // one cable used to block Identify on every cable, and a mutex peek would only ever
 // race with the flag it was meant to read.
+// The built-in bundle is what the Release page offers and what a serial flash writes,
+// so its version is the version the fleet reports after installing it. A pre-scheme
+// bundle in there means the repack was skipped: the firmware rebuilt with a stamp and
+// the hub kept shipping the old bytes.
+func TestBuiltInBundleCarriesASemver(t *testing.T) {
+	b, err := firmware.BuiltIn()
+	if err != nil {
+		t.Fatalf("BuiltIn: %v", err)
+	}
+	v, ok := firmware.ParseVersion(b.Version)
+	if !ok {
+		t.Errorf("built-in bundle version %q does not parse: the release step shipped a pre-scheme bundle", b.Version)
+		return
+	}
+	if v.Raw != b.Version {
+		t.Errorf("built-in bundle version %q came back trimmed as %q", b.Version, v.Raw)
+	}
+}
+
 func TestProbeRefusesWhileAnOperationHoldsThatPort(t *testing.T) {
 	s := newHub()
 	job, _, err := s.ops.start(context.Background(), "/dev/ttyACM0", opFlash, 0)

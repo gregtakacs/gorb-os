@@ -205,6 +205,9 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			e["mac"] = info.MAC
 			e["project"] = info.Project
 			e["version"] = info.Version
+			// The same stamp as structure, so a card can print v1.0.0 without
+			// parsing the string. Legacy boards come back as legacy: true.
+			e["semver"] = semverPayload(info.Version)
 			e["compileTime"] = info.CompileTime
 			e["compiledAt"] = info.CompiledAt
 			e["elfSha256"] = info.ElfSHA256

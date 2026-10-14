@@ -142,8 +142,9 @@ hub needs no ESP-IDF, no `build/` directory, no `git`, and no clone to flash an
 orb. It reads one file: the firmware bundle it ships with.
 
 To flash a different firmware — a downgrade, or a build newer than this binary —
-click **Use my own firmware…** on the Onboard card and pick a `*.zip` bundle.
-**Use built-in firmware** returns to the shipped one. `--firmware <bundle.zip>`
+click **Use my own firmware…** in the firmware panel (the same bar both flash
+doors read from) and pick a `*.zip` bundle.
+**Restore built-in firmware** returns to the shipped one. `--firmware <bundle.zip>`
 starts on one from the command line.
 
 A bundle is a zip of `flasher_args.json` plus the images it names, under
@@ -226,13 +227,58 @@ hosted in the same engine and `/composer/` opens inside that window. No Chromium
 on the host, or an unreadable profile directory, falls back to the default
 browser and the hub still works as a plain web app.
 
-The three hub cards:
+The page opens on the fleet and nowhere else. One card per orb the hub has met:
+the name it answers to, the address the hub remembers, the MAC underneath both,
+and a badge saying how the hub could reach it right now. A cable with no orb on
+it is not a card — it is the **New Orb** button, which appears only while an
+Espressif chip with no fleet row sits on some tty, and asks for exactly two
+things: which cable, and a name. A board the page should not offer to Forget
+shows no Forget; that verdict is the hub's, not the card's guess.
 
-- **Onboard** — pick a serial port, click **Identify this orb**, then **Flash
-  orb**. The hub always writes the whole `flasher_args.json` manifest: which halves
-  to write is bench knowledge, and the app-only reflash lives on in
-  `orbflash -mode app`. A successful flash runs the post-flash onboarding probe; the
-  boot verdict the flash captured picks the branch (AP card vs. connected panel).
+- **New Orb** — flash the built-in firmware onto a blank ESP32-S3 and name it.
+  The hub always writes the whole `flasher_args.json` manifest and clears the
+  NVS the way a board leaving the factory does: which halves to write is bench
+  knowledge, and the app-only reflash lives on in `orbflash -mode app`. A
+  successful flash runs the post-flash onboarding probe; the boot verdict the
+  flash captured picks the branch (AP card vs. connected panel), and a finished
+  board opens straight in its manage state. Progress is a bar; the raw ROM
+  traffic sits collapsed one click below it.
+
+- **Add by IP…** — for the orb whose broadcasts the network swallows. The dialog
+  dials the typed address once; only an orb answering `/api/v1/status` earns a
+  fleet row and a bound grant, and a wrong typing costs one sentence inside the
+  dialog. Cancel does nothing at all.
+
+- **Update firmware** — on an orb's card, lit only when the hub's own compare
+  says the bundle it carries is newer than that board's stamp (the same verdict
+  colors the card on the fleet list). Over the LAN the hub POSTs its app image
+  to the device's staging slot and reboots only after the device has validated
+  it — a refused upload never touches the running image. On a cable the same
+  bundle goes through the ROM instead, with a factory-reset box that stays
+  unchecked.
+
+- **Wipe chip** — inside an orb's firmware card, only when that orb is on a
+  cable, in its own colour, and it does not act until you type `WIPE`. It
+  ROM-erases the whole flash: firmware, partition table, NVS credentials, the
+  name and the factory config all go together, and the chip is left holding
+  nothing, so it prints nothing, opens no AP and announces nothing until it is
+  flashed again. This is the operation that makes a used orb a fresh one for
+  testing the whole flow, and it is what `erase-flash` means with no esptool and no
+  stub loader: the ROM erases inside `FLASH_BEGIN`, so the erase is `FLASH_BEGIN`
+  over the whole capacity with no blocks to follow. The wipe is then **verified** —
+  the ROM hashes the chip and the digest must equal the hash of that many `0xFF`
+  bytes, so "blank" is a measurement rather than a hope. The hub forgets the board
+  along with erasing it (fleet row, name, address grant, on-disk state file),
+  because a card describing
+  a firmware that is gone is a lie. The eFuse MAC cannot be erased; the port stays
+  listed, unidentified. That listing comes from ROM silicon, not from anything the
+  image used to provide — so if the port disappears from the list entirely, the
+  erase is not the cause. Check the cable and the host's view of the port first
+  (`usbipd list` on Windows tells you whether the host sees it at all). And a
+  blank S3 boot-loops: its USB port re-enumerates every few seconds, which is
+  expected, not a bad link. Hold BOOT, tap RESET, release BOOT to force download
+  mode, then flash it again.
+
 
 ### Identifying an orb
 
@@ -324,10 +370,13 @@ so a deliberate downgrade stays possible.
   Each vendored file carries a sha256 and the SRI the composer demands, recorded in
   `MANIFEST.json`; `make vendor-check` re-verifies both and runs as part of
   `make check`, so a hand-edited React fails the build instead of blanking the page.
-- **Manage** — point at one orb by the IP provisioning reported (or one you look
-  up on your router) and it dials that single address through the same-origin
-  proxy to show a live status panel. Reboot, timezone, and Wi-Fi actions go
-  through that same proxy. No subnet scan, no ARP table.
+- **Manage** — the card an orb row opens. It dials that board's single address
+  through the same-origin proxy for status, and the actions on the card — Update
+  firmware (OTA, staged-then-verified), the cable flash when the board is on a
+  lead, name, Wi-Fi join, and time zone — go through the hub's own routes or
+  that same proxy. No subnet scan, no ARP table, and no address box: the page
+  dials what it has learned, and the **Add by IP…** dialog is the one door for an
+  address the hub has not heard announced.
   - **Theme card.** List the orb's SD themes, `Use` one, restore the built-in
     face, `Re-read card`, delete one (it asks first — the firmware's delete is a
     plain unlink and there is no undo from here), and push a `.orbtheme` exported
@@ -410,7 +459,17 @@ make orbflash
 ./bin/orbflash -mode full -port /dev/ttyACM0                    # whole manifest
 ./bin/orbflash -mode app  -port /dev/ttyACM0 -mac 44:bd:8d:60:80:88
 ./bin/orbflash -mode full -port /dev/ttyACM0 -firmware ./some-bundle.zip
+./bin/orbflash -mode wipe -port /dev/ttyACM0   # erase the whole chip to blank, then verify the digest
+./bin/orbflash -mode md5  -port /dev/ttyACM0   # read-only: the digest the flash holds now
 ```
+
+`-mode wipe` is the same `esprom.Wipe` the hub's **Wipe chip** button calls: it
+writes nothing, so it needs no bundle and works on a bench with no firmware
+loaded. It ends by asking the ROM to hash the whole chip and refuses to report
+success unless the digest is the one an erased flash must have. Takes a couple of
+minutes with nothing printed during it, so on this bench it must run detached.
+`-mode md5` answers the same question without touching anything — the way to tell
+a blank board from a running one over the cable, with no mDNS or HTTP involved.
 
 The default `-mode probe` only enters download mode, syncs, reads the chip id and
 eFuse MAC, then hard-resets back to the app. `-mac` applies the eFuse gate even
@@ -427,13 +486,16 @@ headless; a mismatch aborts before erasing.
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
+| `POST /api/wipe`   | `{"port","confirm":"WIPE"}` — ROM-erase that port's **whole flash** to blank, NDJSON like `/api/flash`. Irreversible in the ordinary sense: firmware, NVS credentials, the name and the partition table all go, and the orb cannot boot or answer anything until it is flashed again. `confirm` must be exactly `WIPE`; the typed-confirmation UI will not arm the button until it matches. On success the hub also drops every trace of that board — the port identity, the boot verdict, the fleet row with its name, and the address grant (unless another live board still claims it). Erase span comes from the active bundle's declared geometry, defaulting to the orb's 16 MB |
 | `POST /api/flash/cancel` | `{"port"}` — ask the flash on that port to stop. It ends at the next 1 KB block boundary, never mid-block, and leaves the orb in its bootloader rather than running a partial image |
-| `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `provision` or `identify` |
+| `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `wipe`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `POST /api/orb/cmd` | one always-on serial console verb over a port (`ping` `name` `scan` `prov` `mode` `reset`), NDJSON; `name` is written to the board and the card re-reads it; the store keeps no copy |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
 | `POST /api/orb/allow` | `{"ip", "mac"?}` — register the address the operator just committed to, which is what lets `/orb/` dial it; the optional MAC is the board the grant is then cross-locked to |
+| `POST /api/orb/add` | `{"ip"}` — the Add-by-IP dialog's door: dial one address, and only an orb answering its own status adopts it (bound grant plus fleet row); a no-answer gets a refusal and changes nothing; token-guarded |
+| `POST /api/orb/update` | `{"ip"}` — the OTA door: the hub's app image into the device's staging slot, then the reboot, gated on a decided upgrade; replies `{from, to, verdict, rebooting}`; token-guarded |
 | `GET  /api/fleet` | the address book — each row's `{mac, ip, port}` and cached name, plus this frame's device-reported instance, firmware and shared/contended flags, and the learned addresses with whether each is bound |
 | `POST /api/fleet/set` | `{"mac", "name"}` — name a board the hub has actually met by writing to the board itself; the read-back word is cached in the store on success; token-guarded, and refuses a second live claim on a taken name |
 | `POST /api/fleet/forget` | `{"mac"}` — drop a board and revoke the address it held; token-guarded, and refused with a reason when the hub can still reach the board (on a cable now, announcing within the announce grace, or answering at its remembered address) |
@@ -572,7 +634,7 @@ main.go              flag parsing, embeds web/, routes, app-window wiring, run l
 window.go            app-window mode: Chromium discovery, --app launch, window-lifetime shutdown
 window_devtools.go   DevTools page-target watch: shutdown follows the window through Chrome's single-instance hand-off
 api.go               the /api/* JSON handlers (status, ports)
-firmware.go          the active firmware bundle, its upload/reset handlers, and the Onboard panel payload
+firmware.go          the active firmware bundle, its upload/reset handlers, and the firmware panel payload
 identity.go          port identity: the probe cache, /api/ports and /api/ports/probe, the newer/older verdict
 flash.go             POST /api/flash: port lock + NDJSON stream + boot verdict (with USB lease)
 watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb IP
@@ -581,6 +643,8 @@ theme.go             POST /api/theme/*: the Manage card's theme surface, gated o
 console.go           POST /api/console: read-only USB console, registered as a port operation
 state.go             remembered orbs (state.json under the OS config dir: addresses, MAC bindings, cached names)
 fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
+adopt.go             the typed-address door and the OTA door: POST /api/orb/{add,update} — verify-by-dial before any row, stage-then-reboot before any swap
+wipe.go              POST /api/wipe: the whole-chip ROM erase, the verified blank, and the forget-everywhere that follows it
 roster.go            the one-list merge: TTL-cached USB sweep behind a seam, MAC-joined LAN+cable rows, plug-change digest
 liveness.go          the Forget gate: cached per-address liveness verdicts, the background sweeper that fills them,
                      and the one rule the card and the forget door both call
@@ -772,7 +836,7 @@ an address, so it shows while plugged and stays dialable-free after the plug.
 sticky) and `onCable` (in this sweep) stay distinct fields — an orb you flashed
 yesterday is not tethered today. A failed enumeration keeps the last good bench and
 reports `cableError` instead of showing an empty list. `/api/ports` stays raw: the
-Onboard picker needs the non-orb ports too.
+New Orb picker needs the non-orb ports too.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window

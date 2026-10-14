@@ -10,49 +10,177 @@
 <header>
   <h1>Orb Manager</h1>
   <div id="meta" class="meta">loading…</div>
+  <nav>
+    <a id="composer-link" href="/composer/">Theme Editor</a>
+    <button id="ad-open" class="ghost" title="Add an orb the hub cannot hear: type its address, and the hub adopts it only if an orb answers there.">Add by IP…</button>
+    <button id="mn-add" class="primary" data-view="onboard" hidden title="A blank ESP32-S3 is on a cable: flash it and it becomes an orb.">+ New Orb</button>
+  </nav>
 </header>
 
-<main id="hub" class="hub">
-  <a class="card" href="#manage" data-view="manage">
-    <h2>Orbs</h2>
-    <p>Add an orb over its USB cable, then manage the fleet: set the time zone, toggle the rescue AP, reboot, and factory-reset an orb back to provisioning.</p>
-  </a>
-  <a class="card" href="/composer/">
-    <h2>Theme Editor</h2>
-    <p>Design a watchface theme and push it to a connected orb.</p>
-  </a>
+<!-- The fleet is the page. It is what the hub already knows, rendered as the hub
+     said it: one card per board, the Forget button only where the hub's own
+     verdict says the board cannot come straight back, and nothing at all for a
+     cable with no orb on it — a blank chip is a candidate for New Orb, not an
+     orb. A blank port never renders here. -->
+<main id="manage" class="view">
+  <article class="card" id="mn-findcard">
+    <h3>Orbs</h3>
+    <p class="hint" id="mn-find-state">Loading…</p>
+    <ul id="mn-find" class="orbgrid"></ul>
+    <div class="row"><span class="hint" id="mn-find-note"></span></div>
+    <p class="hint">Every board the hub has met as an orb gets one card, keyed on its MAC and
+    followed through address changes. A card turns amber when this hub carries newer firmware
+    than that orb runs. Forget appears only on a board that is not answering, not announcing,
+    and not on a cable — a board you can still reach will re-list itself. A chip on a cable with
+    no orb on it is not listed at all: it is the New Orb button.</p>
+  </article>
+
+  <p class="hint" id="mn-empty" hidden>No orbs yet. Flash a blank ESP32-S3 with the New Orb
+  button, or add an orb by its address if the hub cannot hear it announce.</p>
 </main>
 
 <section id="onboard" class="view" hidden>
   <button class="back" data-view="manage">← Orbs</button>
-  <h2>Add an orb</h2>
+  <h2>New orb</h2>
   <div class="grid">
-    <label>Serial port
+    <label id="ob-blankpick" hidden>Which board
       <select id="ob-port"></select>
       <button id="ob-refresh" class="ghost">Refresh</button>
     </label>
+    <p class="hint" id="ob-blankone" hidden>This board is blank: it is an ESP32-S3 on a cable
+    with no orb on it, and it is the only one. Give it a name and flash it.</p>
+    <label>Name the orb
+      <input id="ob-name" size="18" maxlength="32" placeholder="kitchen" autocomplete="off">
+    </label>
+  </div>
+  <p class="hint" id="ob-blanknone" hidden>No blank board is on a cable right now. Plug one in
+  and the button comes back.</p>
+  <div class="row">
+    <button id="ob-go" class="primary">Flash this orb</button>
+    <span id="ob-blankstate" class="hint"></span>
+  </div>
+
+  <!-- A fresh flash is the one flash with nothing to preserve, so it takes the
+       full manifest and clears the NVS the way a board leaving the factory does.
+       An existing orb's firmware is a different decision with different doors,
+       and it lives on that orb's own card, not here. -->
+</section>
+<section id="orb" class="view" hidden>
+  <button class="back" data-view="manage">&#8592; Orbs</button>
+  <h2 id="mn-orbname">Orb</h2>
+  <div class="row"><span class="hint" id="mn-orbident"></span></div>
+
+  <article class="card" id="mn-fwcard">
+    <h3>Firmware</h3>
+    <div class="row">
+      <span class="hint" id="mn-curfw">no orb loaded</span>
+      <span class="verdict" id="mn-verdict"></span>
+    </div>
+    <div id="ob-build" class="buildlist"></div>
+    <div class="row" id="mn-updaterow">
+      <button id="mn-update" class="primary" disabled title="Push the firmware this hub carries up over the LAN. The orb stages it, verifies it, and reboots once - a bad upload never costs the running image.">Update over Wi-Fi</button>
+      <span class="hint" id="mn-updatenote">load an orb to compare versions</span>
+    </div>
+    <div class="row" id="mn-cablerow" hidden>
+      <button id="mn-cable" title="Flash the firmware this hub carries over the USB cable. Slower to reach for, and it works with no network at all.">Flash over cable</button>
+      <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them - check this to send the orb to its provisioning AP.</label>
+    </div>
+    <div class="row" id="ob-fwrow">
+      <input type="file" id="ob-fwfile" accept=".zip,application/zip" hidden>
+      <button id="ob-fwpick" class="ghost" title="Flash a firmware bundle (.zip) from disk instead of the one built into this app. Needs the cable.">Use my own firmware&#8230;</button>
+      <button id="ob-fwreset" class="ghost" hidden>Use built-in firmware</button>
+      <span id="ob-fwstate" class="hint"></span>
+    </div>
     <div class="row" id="ob-identify">
       <button id="ob-probe" class="ghost" title="Restart this orb and read what it is running">Identify this orb</button>
-      <span id="ob-idstate" class="hint">select a port, then identify it — the orb restarts and its screen blanks for a moment</span>
+      <span id="ob-idstate" class="hint">identify the board on this cable once; costs a reboot, about 10 seconds</span>
     </div>
     <div id="ob-idcard" class="idcard" hidden></div>
-    <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them — check this to send the orb to its provisioning AP.</label>
-  </div>
-  <div id="ob-build" class="buildlist"></div>
-  <div class="row" id="ob-fwrow">
-    <input type="file" id="ob-fwfile" accept=".zip,application/zip" hidden>
-    <button id="ob-fwpick" class="ghost" title="Flash a firmware bundle (.zip) from disk instead of the one built into this app">Use my own firmware…</button>
-    <button id="ob-fwreset" class="ghost" hidden>Use built-in firmware</button>
-    <span id="ob-fwstate" class="hint"></span>
-  </div>
-  <div class="row">
-    <button id="ob-go" class="primary">Flash orb</button>
-    <button id="ob-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
-    <span id="ob-op" class="hint"></span>
-  </div>
-  <pre id="ob-log" class="log" aria-live="polite"></pre>
-  <div id="ob-bar" class="bar"><div></div></div>
+    <div class="row" id="ob-chipwiperow">
+      <button id="ob-chipwipe" class="danger" title="ROM-erase the entire flash. The orb will not boot, print, or announce itself until it is flashed again, and the blank chip boot-loops so its port flaps until you hold BOOT and tap RESET.">Wipe chip&#8230;</button>
+      <span id="ob-chipwipe-confirm" class="hint" hidden>
+        Type <b>WIPE</b> <input id="ob-chipwipe-word" size="6" autocomplete="off" spellcheck="false" aria-label="Type WIPE to confirm the chip erase">
+        <button id="ob-chipwipe-go" class="danger" disabled>erase everything on <span id="ob-chipwipe-port">this orb</span></button>
+        <button id="ob-chipwipe-no" class="ghost">Cancel</button>
+      </span>
+      <span id="ob-chipwipe-hint" class="hint">Erase the chip back to factory blank &#8212; firmware, Wi-Fi credentials and name all go. No undo. The blank chip then boot-loops, so the port flaps until you hold BOOT and tap RESET.</span>
+    </div>
+  </article>
 
+  <article class="card">
+    <h3>Name</h3>
+    <div class="row">
+      <label class="inline">Name <input id="mn-name" size="18" maxlength="32"></label>
+      <button id="mn-name-go" class="ghost">Save name</button>
+      <span class="hint" id="mn-name-note">the name lives on the board; the hub keeps the copy</span>
+    </div>
+  </article>
+
+  <article class="card" id="mn-wificard">
+    <h3>Wi-Fi</h3>
+    <div class="grid">
+      <label>Network (SSID)
+        <select id="j-ssid"></select>
+        <button id="j-rescan" class="ghost">Rescan</button>
+      </label>
+      <label>Password <input id="j-pass" type="password"></label>
+      <label>Time zone <input id="j-tz" placeholder="America/New_York"></label>
+    </div>
+    <div class="row"><button id="j-go" class="primary">Join network</button></div>
+    <pre id="j-log" class="log" aria-live="polite"></pre>
+    <p class="hint">Scans come from the orb's own radio. A board on a cable with no address yet is
+    provisioned from the New Orb flow instead, over the USB link.</p>
+  </article>
+
+  <article class="card">
+    <h3>Time zone</h3>
+    <div class="row">
+      <label class="inline">Time zone <input id="mn-tz" size="18" placeholder="America/New_York"></label>
+      <button id="mn-tz-go" class="ghost">Set time zone</button>
+      <span class="hint" id="mn-tz-note"></span>
+    </div>
+  </article>
+
+
+  <article class="card" id="mn-themecard" hidden>
+    <h3>Themes on this orb</h3>
+    <p class="hint" id="mn-themestate">Load an orb to see its themes.</p>
+    <ul id="mn-themes" class="themelist"></ul>
+    <div class="row">
+      <button id="mn-default" class="ghost" title="Restore the built-in face">Restore built-in</button>
+      <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
+    </div>
+    <div class="row">
+      <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>
+      <button id="mn-up-btn" class="ghost" title="Send a .orbtheme to the orb. Its name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Add a theme&#8230;</button>
+      <span id="mn-up-state" class="hint"></span>
+    </div>
+    <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
+  </article>
+
+  <article class="card" id="mn-consolecard">
+    <h3>USB console (read-only)</h3>
+    <p class="hint">Nothing is sent to the orb and it is not restarted: the port is opened, read for a few seconds, and closed.
+      IDF only emits console output while a host holds the port, so this is also how you see a running orb talk.</p>
+    <div class="row">
+      <label class="inline">Port
+        <select id="mn-con-port" class="portlist"></select>
+      </label>
+      <button id="mn-con-go" class="ghost">Read console</button>
+      <button id="mn-con-stop" class="ghost" hidden>Stop</button>
+      <span id="mn-con-state" class="hint"></span>
+    </div>
+    <pre id="mn-con-log" class="log" aria-live="polite"></pre>
+  </article>
+</section>
+
+<div class="flashpanel" id="ob-flashpanel" hidden>
+  <div class="row">
+    <b id="ob-doing">working&#8230;</b>
+    <span id="ob-op" class="hint"></span>
+    <button id="ob-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
+  </div>
+  <div id="ob-bar" class="bar"><div></div></div>
   <div id="ob-join" class="join" hidden>
     <h3>Bring it onto Wi-Fi</h3>
     <div id="ob-watch" class="hint">waiting for the orb to boot…</div>
@@ -61,7 +189,7 @@
     <div id="ob-done" hidden>
       <p class="hint" id="ob-done-msg"></p>
       <div class="row">
-        <button id="ob-manage" class="primary">Open in Orbs</button>
+        <button id="ob-manage" class="primary">Open this orb</button>
         <button id="ob-rejoin" class="ghost">Change network</button>
       </div>
     </div>
@@ -97,102 +225,31 @@
       </div>
     </div>
 
-
-    <div id="ob-pick" hidden>
-      <div class="grid">
-        <label>Orb IP <input id="j-ip" size="14" placeholder="192.168.2.x"></label>
-        <label>Network (SSID)
-          <select id="j-ssid"></select>
-          <button id="j-rescan" class="ghost">Rescan</button>
-        </label>
-        <label>Password <input id="j-pass" type="password"></label>
-        <label>Time zone <input id="j-tz" placeholder="America/New_York"></label>
-      </div>
-      <div class="row"><button id="j-go" class="primary">Join network</button></div>
-    </div>
-    <pre id="j-log" class="log" aria-live="polite"></pre>
   </div>
-</section>
+  <details id="ob-logdetails">
+    <summary class="hint">the bytes behind the bar</summary>
+    <pre id="ob-log" class="log" aria-live="polite"></pre>
+  </details>
+</div>
 
-<section id="manage" class="view" hidden>
-  <button class="back" data-back>← Home</button>
-  <h2>Orbs</h2>
-  <div class="row">
-    <button id="mn-add" class="primary" title="Flash firmware onto an orb over its USB cable and bring it onto the Wi-Fi.">+ Add an orb</button>
+<div id="ad-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ad-title">
+    <h3 id="ad-title">Add an orb by its address</h3>
+    <p class="hint">For the orb the hub cannot hear &#8212; a network that blocks its broadcasts, a board
+    that took a new lease. The hub asks that address who it is, and only an orb answering earns a
+    row. Nothing changes if you cancel.</p>
+    <div class="row">
+      <label class="inline">Orb IP <input id="ad-ip" size="16" placeholder="192.168.2.x" autocomplete="off"></label>
+    </div>
+    <p class="hint err" id="ad-err" hidden></p>
+    <div class="row">
+      <button id="ad-check" class="primary">Check and add</button>
+      <button id="ad-cancel" class="ghost">Cancel</button>
+    </div>
   </div>
-  <div class="row">
-    <label class="inline">Orb IP <input id="mn-ip" size="18" placeholder="192.168.2.x"></label>
-    <button id="mn-scan" class="primary">Load</button>
-  </div>
-  <div id="mn-list" class="orbs"></div>
+</div>
 
-  <article class="card" id="mn-findcard">
-    <h3>Orbs</h3>
-    <p class="hint" id="mn-find-state">Loading…</p>
-    <ul id="mn-find" class="themelist"></ul>
-    <div class="row">
-      <span class="hint" id="mn-find-note"></span>
-    </div>
-    <p class="hint">One list, both doors: an orb that checked in over the LAN, an orb plugged into a
-    cable on this machine, or one board that is both, each shown once and keyed on its MAC. A badge
-    says how the hub can reach it right now, and a cable row is only ever as trustworthy as the MAC
-    the host read from its USB descriptor. This list updates itself: the hub listens for the orb's
-    own check-ins and re-reads the USB ports as plugs move, so there is nothing to press. Choosing a
-    row with an address puts it in the box above; the hub dials it only after you load it. Every
-    board the hub can see is remembered the moment it is seen, by MAC, with nothing to press; the
-    name you type is written onto the board itself and copied into the hub's list. A board that
-    moves to a new address keeps its row and its name — the hub follows the MAC. Forget is the
-    only removal, and it appears only on a board that cannot come straight back: not on a cable,
-    not announcing, and not answering at the address the hub remembers. A board you can still
-    reach is a board that will re-list itself, so to clear one of those, factory-reset it.</p>
-  </article>
-
-  <article class="card" id="mn-themecard" hidden>
-    <h3>Themes on this orb</h3>
-    <p class="hint" id="mn-themestate">Load an orb to see its themes.</p>
-    <ul id="mn-themes" class="themelist"></ul>
-    <div class="row">
-      <button id="mn-default" class="ghost" title="Restore the built-in face">Restore built-in</button>
-      <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
-    </div>
-    <div class="row">
-      <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>
-      <button id="mn-up-btn" class="ghost" title="Send a .orbtheme to the orb. Its name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Add a theme…</button>
-      <span id="mn-up-state" class="hint"></span>
-    </div>
-    <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
-  </article>
-
-  <article class="card" id="mn-consolecard">
-    <h3>USB console (read-only)</h3>
-    <p class="hint">Nothing is sent to the orb and it is not restarted: the port is opened, read for a few seconds, and closed.
-      IDF only emits console output while a host holds the port, so this is also how you see a running orb talk.</p>
-    <div class="row">
-      <label class="inline">Port
-        <select id="mn-con-port" class="portlist"></select>
-      </label>
-      <button id="mn-con-go" class="ghost">Read console</button>
-      <button id="mn-con-stop" class="ghost" hidden>Stop</button>
-      <span id="mn-con-state" class="hint"></span>
-    </div>
-    <pre id="mn-con-log" class="log" aria-live="polite"></pre>
-  </article>
-</section>
-
-<template id="orb-tpl">
-  <article class="orb">
-    <header><b class="ip"></b> <span class="state"></span></header>
-    <dl class="kv"></dl>
-    <div class="controls">
-      <label>Time zone <input class="tz" size="18"></label>
-      <button class="set-tz">Set</button>
-      <button class="ap">Toggle rescue AP</button>
-      <button class="reboot">Reboot</button>
-      <button class="refresh">Refresh</button>
-    </div>
-    <pre class="out log" hidden></pre>
-  </article>
-</template>
+<input id="mn-ip" size="18" hidden>
 
 <script>window.__ORB_TOKEN__ = "__ORB_TOKEN__";</script>
 <script src="/web/app.js"></script>

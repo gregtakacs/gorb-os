@@ -44,6 +44,11 @@ const (
 	// loop, so first byte can exceed the scan's aggressive 400 ms; the proxy
 	// must not fail a deliberate user click the way a sweep tolerates a miss.
 	deviceTimeout = 8 * time.Second
+	// otaTimeout is the budget for one whole app-image upload. The device
+	// erases and writes flash with the cache disabled (orb_net.c h_ota), and
+	// a ~2 MB image over LAN is minutes of patient streaming, not a call. The
+	// 8 s management budget would kill every honest update at the first flush.
+	otaTimeout = 180 * time.Second
 )
 
 // version is stamped at build time via -ldflags "-X main.version=..." (see the
@@ -53,9 +58,13 @@ var version = "dev"
 
 // Server holds the shared clients and the in-flight operation registry.
 type Server struct {
-	device  *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
-	orb     *orbnet.Client // status-probe tuned: short timeout for a single known IP
-	repoDir string         // the gorb-os clone root, for the Theme Editor only
+	device *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
+	orb    *orbnet.Client // status-probe tuned: short timeout for a single known IP
+	// ota is the upload-tuned client: one app image POSTed to /api/v1/ota is
+	// minutes of flash erase and write with the cache off, and reusing the 8 s
+	// management client would cancel every honest update mid-image.
+	ota     *orbnet.Client
+	repoDir string // the gorb-os clone root, for the Theme Editor only
 	// ops is the per-port operation registry: who holds which cable, doing what,
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.
@@ -187,6 +196,20 @@ func (s *Server) setBoot(mac, apSSID string, associated bool, ip string, network
 	}
 }
 
+// forgetBoot drops a recorded boot verdict. A wipe leaves nothing to have a
+// verdict about: the one-shot answer a flash captured describes a firmware that
+// is no longer on the chip, and /api/watch serving it would send onboarding down
+// a branch for an orb that just went blank.
+func (s *Server) forgetBoot(mac string) {
+	mac = macNorm(mac)
+	if mac == "" {
+		return
+	}
+	s.bmu.Lock()
+	defer s.bmu.Unlock()
+	delete(s.boots, mac)
+}
+
 // bootFor returns the recorded verdict for mac if it is recent enough to still
 // describe the boot this watch call is following.
 func (s *Server) bootFor(mac string) *bootVerdict {
@@ -253,6 +276,7 @@ func main() {
 	s := newHub()
 	s.orb = orbnet.NewClient(scanTimeout)
 	s.device = orbnet.NewClient(deviceTimeout)
+	s.ota = orbnet.NewClient(otaTimeout)
 	s.repoDir = repoDir
 
 	// The dial port is validated here rather than at first use, so a typo surfaces as
@@ -265,6 +289,7 @@ func main() {
 	}
 	s.orb.DevicePort = orbPort
 	s.device.DevicePort = orbPort
+	s.ota.DevicePort = orbPort
 	if orbPort != "80" {
 		log.Printf("orb-manager: dialing orbs on port %s (the device's own httpd uses 80; this is a bench setting)", orbPort)
 	}
@@ -514,6 +539,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
 	mux.Handle("/api/orb/forget", s.requireControl(http.HandlerFunc(s.handleForgetIP)))
+	// The typed-address door and the OTA door (adopt.go). Both mutate the hub's
+	// willingness to dial, so both stand behind the launch token like every
+	// other hand on the grant set.
+	mux.Handle("/api/orb/add", s.requireControl(http.HandlerFunc(s.handleOrbAdd)))
+	mux.Handle("/api/orb/update", s.requireControl(http.HandlerFunc(s.handleOrbUpdate)))
 	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
 
 	// Discovery. The list is a read of what the hub overheard, so it is unguarded
@@ -560,6 +590,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/firmware", s.requireControl(http.HandlerFunc(s.handleFirmwareUpload)))
 	mux.Handle("/api/firmware/reset", s.requireControl(http.HandlerFunc(s.handleFirmwareReset)))
 	mux.Handle("/api/flash", s.requireControl(http.HandlerFunc(s.handleFlash))) // streaming, not s.json
+	// The whole-chip erase: same token, same origin check, same port lock, and
+	// the same NDJSON stream, because it is the same kind of long-running write
+	// to the wire with the one difference that what it writes is nothing.
+	mux.Handle("/api/wipe", s.requireControl(http.HandlerFunc(s.handleWipe)))
 	// Cancellation and live-operation state. Cancel stops the flash at its next
 	// block boundary; /api/ops says which cable is busy with what, which a
 	// process-wide flag could never answer once two orbs shared a bench.

@@ -11,6 +11,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // Identity is opt-in and expensive: a probe reboots the orb to catch the
@@ -53,7 +54,10 @@ func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), live: newLiveCache(),
-		fleet: orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+		orb:    orbnet.NewClient(scanTimeout),
+		device: orbnet.NewClient(deviceTimeout),
+		ota:    orbnet.NewClient(otaTimeout),
+		fleet:  orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {
@@ -192,12 +196,28 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			"hint":       usbLabel(u),
 			"attributed": u.Known,
 			"probed":     false,
+			// "espressif" is the New Orb gate: a genuine Espressif chip (VID
+			// 303A) whatever it currently enumerates as. The page asks it of a
+			// board that may be blank, boot-looping, or in download mode, and
+			// only the host can answer without touching the chip. The product
+			// id decides nothing here: blank and flashed boards report
+			// differently, and a gate keyed on the product id would hide a
+			// board precisely when the operator most needs the door open.
+			"espressif": u.IsEspressif(),
 		}
 		// The MAC the host read off the descriptor, as opposed to the one a probe
 		// heard on the console. Kept separate so the client never has to unpick a
 		// display string to label a cable.
 		if u.IsOrbDevice() && u.Serial != "" {
 			e["usbMac"] = u.Serial
+			// The fourth field the New Orb door reads: the descriptor MAC
+			// matched a fleet row, so this cable is a known orb wearing its
+			// USB clothes, not a blank to adopt. Computed here, where both
+			// facts live, so the client never re-derives the fleet from a
+			// display string.
+			if _, known := s.fleetKnown(macNorm(u.Serial)); known {
+				e["inFleet"] = true
+			}
 		}
 		if info, ok := cached[p]; ok {
 			e["probed"] = true

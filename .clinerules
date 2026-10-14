@@ -47,11 +47,61 @@ Two launch gotchas that burned time this session, both avoided by using a
   a fresh `-B` dir**, or any build after an `sdkconfig`/Kconfig change that
   drags in mbedtls/LWIP, exceeds 30 s. Run detached and grep the log for
   `Project build complete` / `binary size` / `warning:` / `error:`.
+- **A chip wipe — `orb-manager` `POST /api/wipe`, an orb card's Wipe chip
+  button, or `orbflash -mode wipe`.** The 16 MB ROM erase itself is tens of
+  seconds, and the blank-check digest that follows costs about a minute more on
+  the wire, so the whole operation is a couple of minutes with nothing printed
+  during it. Run detached.
 - **`idf.py flash monitor`**, and any `monitor`/serial capture held open longer
   than ~25 s (e.g. watching the association ladder). Use the short bounded
   capture scripts (`tools/capf.py <secs> <log> [--no-reset]`,
   `tools/cap.py <secs> [reset]`) with a duration under ~12 s inline; longer
   captures go detached.
+
+## Wiping an orb: the ROM has no chip-erase opcode, and `FLASH_MD5` needs a preamble
+
+Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
+
+- **There is no ROM chip erase.** esptool marks both `erase_flash` (0xD0) and
+  `erase_region` (0xD1) `@stub_function_only`, so a bare S3 ROM rejects them and
+  this project uploads no stub. The ROM's genuine erase is `FLASH_BEGIN`, which
+  erases its whole range before accepting any data: `num_blocks=0` writes nothing,
+  so offset 0 with `erase_size` = capacity **is** the whole-chip erase. That is the
+  same request `EraseRegion` already sends for the factory reset, one bigger number.
+- **`FLASH_MD5` (0x13) is a ROM command, but only after `SPI_SET_PARAMS`.** Attach
+  and hash without configuring the geometry and the ROM answers status `[1,9]`,
+  which looks exactly like an unsupported opcode and is not. esptool's no-stub
+  `verify_flash` prints "Enabling default SPI flash mode" then "Configuring flash
+  size" for precisely this reason. The reply layout is unusual too: 32 hex chars
+  FIRST, status bytes after them, so `checkCommand` cannot parse this one response.
+- **An erase is proven, not believed.** An erased flash reads all `0xFF`, so the
+  check is `md5(0xFF × capacity)`; for the orb's 16 MB that is
+  `d5929b7a5ad99f511fc83d7d0b48b85f`. A wipe that cannot show that digest returns
+  an error rather than a success.
+- **A wiped orb is dark, not bricked.** `/api/ports` still lists the port (the host
+  reads the USB descriptors, and the `44:BD:8D:…` serial number is the burned eFuse
+  MAC) with `probed:false` and no identity. Nothing prints, no AP opens, nothing
+  announces. The wipe also drops the hub's own memory of that board — fleet row,
+  cached name, address grant — so **`/api/fleet` showing one board fewer is the
+  expected result, not a lost row.** A board with nothing on it reports
+  "no gorb-os firmware booted" and the `Upgrade needed` verdict. Flash it back.
+- **A blank flash makes an S3 boot-loop, and the flapping port is the expected post-wipe
+  state — not a fault.** Descriptors and the `44:BD:8D:…` eFuse serial come from ROM
+  silicon, so a blank chip is still visible; but with no valid image the ROM bootloader
+  reloads every boot, so the port comes and goes every few seconds. Measured on both
+  wiped orbs (2026-10-14): enumerated as `303a:1001`, `cdc_acm` bound the ACM device,
+  then `vhci_hcd: connection closed` about 1–3 s later, repeating forever. The symptom
+  mimics a bad link exactly, so stop here before blaming cable, hub, rail or usbip.
+- **Recover a blank board with the manual BOOT-to-download sequence.** Hold BOOT, tap
+  and release RESET, keep holding BOOT a second, then release. That drops the ROM into
+  the download mode instead of the boot loop, the port stops flapping, and the hub can
+  talk to it. A **wipe should warn the operator to expect this**; a freshly wiped board
+  is unreachable by software until someone presses the buttons.
+- **Idle presence is not a health test, and neither is a DTR/RTS drop.** A boot-looping
+  orb reads `present=True status=OK` on the host between reloads, and asserting DTR/RTS
+  drives the auto-reset circuit so the handle dies inside ~2 s on a good board. Clear a
+  board of hardware by forcing download mode and seeing it hold. `vhci_hcd: connection
+  closed` only says the host tore the session down; it names neither device nor cause.
 
 ### Known operations that are SAFE inline (under 30 s)
 - `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s),

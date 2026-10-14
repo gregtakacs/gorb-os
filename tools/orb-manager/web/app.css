@@ -20,6 +20,12 @@ button{background:#21262d;color:var(--fg);border:1px solid var(--line);border-ra
 button:hover{border-color:var(--focus)}
 button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
 button.ghost{background:none}
+/* The erase button wears the colour the theme already reserves for an error, and
+   keeps a visible border so it reads as a control and not as text that happens to
+   be red. It is never the default action and never inside the Tab-first path. */
+button.danger{background:none;border-color:var(--danger);color:var(--danger)}
+button.danger:hover{background:#3a1214}
+button.danger:disabled{opacity:.45;cursor:not-allowed}
 .row{display:flex;gap:10px;align-items:center;margin:12px 0}
 .log{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-height:64px;max-height:260px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;color:#c9d1d9}
 .buildlist{color:var(--mut);font-size:12px;font-family:ui-monospace,monospace;margin:6px 0}
@@ -73,3 +79,33 @@ button:disabled:hover{border-color:var(--line)}
    second heading, and never a thing the operator has to hover a control to discover. */
 .fwhy{color:var(--mut);font-size:11px}
 .fwhy[hidden]{display:none}
+
+/* The fleet grid: one card per orb, the only thing the page leads with. Rows keep
+   the .found class the paint code writes; the grid is what makes them cards. */
+header nav{display:flex;gap:10px;align-items:baseline}
+.orbgrid{list-style:none;margin:12px 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.orbgrid li.found{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.orbgrid li.found.refused{display:list-item;border-style:dashed;color:var(--mut);font-size:12px;background:none}
+.orbgrid .found-pick{background:none;border:none;color:var(--fg);font-size:15px;text-align:left;padding:0;cursor:pointer}
+.orbgrid .found-pick:disabled{cursor:default}
+.orbgrid .row{margin:0;flex-wrap:wrap}
+.orbgrid .tag.update{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--warn);color:var(--warn);margin-left:6px}
+.orbgrid .tag.update[hidden]{display:none}
+.orbgrid .fwhy{flex-basis:100%}
+
+/* The flash panel: one surface both flash doors use, anchored bottom so the bar
+   is visible wherever on the page the click happened. The log lives under a
+   details element: it is the evidence, not the experience. */
+.flashpanel{position:fixed;right:18px;bottom:18px;width:min(460px,calc(100vw - 36px));background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 8px 30px #0009;z-index:40}
+.flashpanel[hidden]{display:none}
+.flashpanel .log{max-height:180px;font-size:11px}
+
+/* The Add-by-IP dialog. A decision that must not leave the page it belongs to:
+   a wrong address returns to the same box, Cancel returns to the fleet. */
+.mask{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:50}
+.mask[hidden]{display:none}
+.dialog{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;width:min(430px,calc(100vw - 40px))}
+.dialog h3{margin:0 0 6px;font-size:16px}
+.dialog p{margin:6px 0}
+

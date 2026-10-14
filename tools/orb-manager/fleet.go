@@ -442,6 +442,32 @@ func (s *Server) serialName(port, mac, name string) error {
 	return nil
 }
 
+// fleetKnown reports whether the address book already holds this chip, and the
+// row it holds. Two doors read it: the port list, to tell a known orb on its
+// cable from a blank to adopt, and the by-IP add, to refuse adopting a board the
+// operator can already see. It sits here rather than inline because both doors
+// must weigh the same fact the same way, and a nil store is the same answer as
+// an empty one.
+func (s *Server) fleetKnown(mac string) (orbfleet.Orb, bool) {
+	if s.fleet == nil || mac == "" {
+		return orbfleet.Orb{}, false
+	}
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return orbfleet.Orb{}, false
+	}
+	// Every, not ByMAC: the question is whether the hub has ever met this chip,
+	// not whether its last sighting is fresh. A board in a drawer is still the
+	// board the operator named, and a gate that blinked with the TTL would
+	// advertise a known orb as blank to adopt once an hour.
+	for _, o := range s.fleet.Every() {
+		if o.MAC == c {
+			return o, true
+		}
+	}
+	return orbfleet.Orb{}, false
+}
+
 // handleFleetForget takes a board out of the fleet and revokes the addresses it held.
 // Forgetting the identity while the hub still dials the address would leave the exact
 // thing the operator was trying to get rid of.

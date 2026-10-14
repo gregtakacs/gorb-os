@@ -33,6 +33,7 @@
 #include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
+#include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
 
 #include <math.h>             /* fabs, floor — the drift rule's own tools */
 #include <stdarg.h>
@@ -42,12 +43,25 @@
 #include "esp_log.h"
 #include "esp_system.h"       /* esp_reset_reason_t — who ended last boot */
 #include "esp_timer.h"        /* the anchor half of the time pair */
+#include "esp_heap_caps.h"    /* the layer planes: PSRAM, off the frame path */
 #include "nvs.h"
 #include "nvs_flash.h"        /* nvs_flash_init_partition("storage") — the
                               * same idempotent call idle_dim.c makes before
                               * opening its namespace */
 
 static const char *TAG = "orb_svc";
+
+/* The layer plane allocator, installed into orb_layers.c below at init.
+ * PSRAM like every other bulk pixel claim in this firmware (the tourbillon's
+ * chords, the canvas, the bank arena): a fallback plane is read once per
+ * commit by the same pass that already streams PSRAM art, and internal RAM
+ * is exactly the budget the framebuffer and the staging bands spend. NULL on
+ * an out-of-memory is the honest answer — the table turns it into a counted
+ * refusal, and the app keeps its themes. */
+static void *svc_layers_alloc(uint32_t bytes)
+{
+    return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 
 /* Registry slots, incl. the shell's chrome entries — which is why this is not
  * ORB_APP_CAP: B5 caps installed APPS at 8, and the compiled-in pair plus the
@@ -68,6 +82,10 @@ typedef struct {
     bool     stored;        /* a grant word was actually THERE, any value */
     bool     cfg_loaded;    /* quota charge read from NVS                  */
     bool     faults_loaded; /* fault words read from NVS                   */
+    orb_layer_tab_t layers; /* P5.5: this app's live compositor rows. BY
+                             * VALUE: static, never on the heap the app
+                             * could OOM us with, and forget_row's memset
+                             * takes it back — after the wipe frees planes. */
     char     last_status[72];
     char     fault_reason[48];
 } svc_row_t;
@@ -474,33 +492,47 @@ static const uint8_t *svc_bank(orb_app_t *a)
                                                   * which reads as "none". */
 }
 
+/* P5.5: the four frozen entries are live. The gate and the ledger stay here —
+ * the table in gfx/orb_layers.c answers for the row, and answers nothing to an
+ * app that never held the cap. A void entry cannot return a refusal, so a
+ * denial rides the counted path and the row simply never moves: what was on
+ * the glass stays on the glass. */
 static int svc_layer_add(orb_app_t *a, const orb_layer_desc_t *d)
 {
     SVC(a, UI);
-    (void)d;
-    return -1;                                   /* P5's compositor face */
+    const int slot = orb_app_index_of(a);
+    if (slot < 0 || !d) return -1;                 /* not a registered entry,
+                                                   * or nothing to add        */
+    return orb_layers_add(&s_row[slot].layers, d);
 }
 
 static void svc_layer_set(orb_app_t *a, int h, const orb_layer_desc_t *d)
 {
-    if (!orb_grant_ok(a, CAP_UI)) return;        /* a void entry cannot return
-                                                  * the refusal; the denial is
-                                                  * counted, and that is what
-                                                  * the owner's status page
-                                                  * sees */
-    (void)h; (void)d;
+    if (!orb_grant_ok(a, CAP_UI)) return;          /* the denial is counted;
+                                                   * that is what the owner's
+                                                   * status page sees         */
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return;
+    (void)orb_layers_set(&s_row[slot].layers, h, d);
 }
 
 static void svc_layer_touch(orb_app_t *a, int h, const struct _lv_area_t *area)
 {
     if (!orb_grant_ok(a, CAP_UI)) return;
-    (void)h; (void)area;
+    (void)area;                                    /* the OS's swept box is the
+                                                   * mark, not the app's claim
+                                                   * (orb_layers.h)           */
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return;
+    (void)orb_layers_touch(&s_row[slot].layers, h);
 }
 
 static void svc_layer_del(orb_app_t *a, int h)
 {
     if (!orb_grant_ok(a, CAP_UI)) return;
-    (void)h;
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return;
+    (void)orb_layers_del(&s_row[slot].layers, h);
 }
 
 static esp_err_t svc_job_post(orb_app_t *a, orb_job_fn fn, void *arg, size_t arglen)
@@ -772,6 +804,12 @@ esp_err_t orb_svc_forget_row(int slot)
         nvs_close(h);
     } else if (e != ESP_ERR_NVS_NOT_FOUND)
         return e;                            /* a ledger that will not open: retry later */
+    orb_layers_wipe(&s_row[slot].layers);    /* P5.5: the planes are heap, and the
+                                              * memset below would forget the
+                                              * pointers with them. The memset
+                                              * takes the generations too: the
+                                              * slot's next tenant inherits no
+                                              * handles, dead or otherwise. */
     memset(&s_row[slot], 0, sizeof s_row[slot]);   /* lazy re-read sees an empty ledger,
                                                    * which under D19 is DECLARED — the
                                                    * honest state for whoever lands on
@@ -810,6 +848,11 @@ esp_err_t orb_svc_init(void)
     s_rec.magic  = FAULT_MAGIC_ARM;
     s_rec.slot   = FAULT_SLOT_NONE;
     s_rec.booted = 0;
+    /* P5.5, first act after the fault ledger: wire the table's heap. Before
+     * this line returns no bake is possible and the table says so by refusal
+     * count — an app that somehow ticks before the broker cannot corrupt
+     * anything, it just draws tier 1 and counts misses. */
+    orb_layers_set_alloc(svc_layers_alloc, heap_caps_free);
     for (int i = 0; i < ORB_SVC_ROWS; i++)
         row_load_grants(&s_row[i], orb_app_row((size_t)i), i);
     /* The line is the P3 pass line's boot-half: it names the table so a
@@ -887,6 +930,12 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
          * put the dial down, or the owner's kill switch is a label. Same
          * owner-wins release the DISPLAY choice makes. */
         if (!on && cap == CAP_POWER) idle_dim_app_release(a->slug);
+        /* P5.5 notes what it does NOT do here: no layer wipe rides a revoke,
+         * because CAP_UI is free (never stored, never revoked), so there is no
+         * owner door that closes an app's ink. The rows end at suspend and at
+         * uninstall — the two doors that actually exist for a free cap — and
+         * an app that wants its own glass back calls layer_del like it owns
+         * the handles it was given. */
     }
     return e;
 }
@@ -919,6 +968,21 @@ uint32_t orb_svc_cfg_used(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
     return (slot >= 0) ? s_row[slot].cfg_used : 0;
+}
+
+/* P5.5's ledger pair. The row embeds its table by value, so these read the
+ * same static the four entries write — no lock, no allocation, one array
+ * index: the frame path never comes through here. */
+int orb_svc_layers_live(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    return (slot >= 0) ? orb_layers_count(&s_row[slot].layers) : 0;
+}
+
+uint32_t orb_svc_layers_refused(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    return (slot >= 0) ? orb_layers_refuses(&s_row[slot].layers) : 0;
 }
 
 /* ---- C2: the fault counter and the boot-into-clock rule (plan §1.4) ---------
@@ -1170,6 +1234,13 @@ void orb_svc_note_clean_reboot(void)
  * and the config bytes are the app's to keep. */
 void orb_svc_app_suspended(const orb_app_t *a)
 {
-    if (orb_app_index_of(a) < 0) return;      /* not a registered entry */
+    const int slot = orb_app_index_of(a);
+    if (slot < 0) return;                      /* not a registered entry */
     idle_dim_app_release(a->slug);
+    orb_layers_wipe(&s_row[slot].layers);      /* P5.5: an app behind the dial
+                                              * holding rows on the glass is
+                                              * §4.2's clause's other half. The
+                                              * wipe's kept generations leave
+                                              * every held handle dead through
+                                              * suspend and resume. */
 }

@@ -11,6 +11,11 @@ idf_component_register(
         "display/display.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
+        # P5.5: the app layer table. Its header stays LVGL-free and the suite
+        # shims the lvgl.h its .c reaches for, so tools/host_orblayers_test.py
+        # compiles the shipped file as-is — the suite is the proof the
+        # gate-to-table path is honest.
+        "gfx/orb_layers.c"
         "clock/clock_view.c"
         "clock/clock_themes.c"
         "knob/knob.c"

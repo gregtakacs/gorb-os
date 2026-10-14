@@ -1940,12 +1940,13 @@ static esp_err_t h_status(httpd_req_t *req)
             const int w = snprintf(apps_json + off, sizeof apps_json - (size_t)off,
                 "%s{\"slug\":\"%s\",\"grants\":[%s],\"declared\":[%s],\"calls\":%u,"
                 "\"denials\":%u,\"denied_mask\":%u,\"beat_ms\":%u,\"cfg_used\":%u,"
-                "\"faults\":%u,\"failed\":%s,\"status\":\"%s\"}",
+                "\"faults\":%u,\"layers\":[%d,%u],\"failed\":%s,\"status\":\"%s\"}",
                 i ? "," : "", a->slug, grants, declared,
                 (unsigned)orb_svc_calls(a),
                 (unsigned)orb_svc_denials(a), (unsigned)orb_svc_denied_mask(a),
                 (unsigned)orb_svc_beat_ms(a),
                 (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
+                orb_svc_layers_live(a), (unsigned)orb_svc_layers_refused(a),
                 a->failed ? "true" : "false", orb_svc_last_status(a));
             if (w < 0 || (size_t)w >= sizeof apps_json - (size_t)off) break;
             off += w;

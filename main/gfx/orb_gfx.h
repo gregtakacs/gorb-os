@@ -47,8 +47,11 @@ extern "C" {
 #define CLK_COMMIT_BAND 8
 #define CLK_PAINT_TILE  32
 
-/* One layer's row-independent blend maths, resolved ONCE per commit. */
-typedef struct {
+/* One layer's row-independent blend maths, resolved ONCE per commit. (The tag
+ * is load-bearing since P5.5: orb_layers.h forward-declares this struct to
+ * declare its job builder without dragging lvgl.h across the app boundary.) */
+typedef struct gfx_paint_ctx {
+
     const uint16_t *col;
     const uint8_t  *alp;
     int32_t  bx1, by1, bx2, by2;      /* the (padded) swept box, screen coords */

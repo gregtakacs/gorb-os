@@ -310,6 +310,7 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
         + (int32_t)spr->pivoty * 256 + 0x80;
     return true;
 }
+
 /* Composite one layer into ONE already-staged device row, over the caller's
  * [xa..xb] intersected with the layer's swept box (never outside it: those
  * pixels already hold a correct composite and re-blending them would

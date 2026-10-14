@@ -241,6 +241,37 @@ const orb_app_t *orb_app_current(void) { return g_cur; }
 
 /* Leaves the broker delegates to. */
 static uint8_t BANKMEM[8];
+int g_layers_add_calls, g_layers_set_calls, g_layers_touch_calls,
+    g_layers_del_calls, g_layers_wipe_calls;
+int g_layers_add_rc = 0x101;                /* the handle the fake table hands back */
+int g_layers_count_rc; uint32_t g_layers_refuses_rc;
+#include "orb_layers.h"                      /* the SHIPPED boundary header — the
+                                              * stubs below match its prototypes
+                                              * by the compiler, not by eye */
+void orb_layers_set_alloc(orb_layers_alloc_fn a, orb_layers_free_fn f)
+{ (void)a; (void)f; }
+int orb_layers_add(orb_layer_tab_t *t, const orb_layer_desc_t *d)
+{ (void)t; (void)d; g_layers_add_calls++; return g_layers_add_rc; }
+bool orb_layers_set(orb_layer_tab_t *t, int h, const orb_layer_desc_t *d)
+{ (void)t; (void)h; (void)d; g_layers_set_calls++; return true; }
+bool orb_layers_get(const orb_layer_tab_t *t, int h, orb_layer_desc_t *o)
+{ (void)t; (void)h; (void)o; return false; }
+bool orb_layers_touch(orb_layer_tab_t *t, int h)
+{ (void)t; (void)h; g_layers_touch_calls++; return true; }
+bool orb_layers_del(orb_layer_tab_t *t, int h)
+{ (void)t; (void)h; g_layers_del_calls++; return true; }
+void orb_layers_wipe(orb_layer_tab_t *t) { (void)t; g_layers_wipe_calls++; }
+int orb_layers_count(const orb_layer_tab_t *t) { (void)t; return g_layers_count_rc; }
+uint32_t orb_layers_refuses(const orb_layer_tab_t *t)
+{ (void)t; return g_layers_refuses_rc; }
+int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *b,
+                    struct gfx_paint_ctx *j, int m)
+{ (void)t; (void)b; (void)j; (void)m; return 0; }
+bool gfx_prim_ctx_init(struct gfx_paint_ctx *pc, const orb_prim_arg_t *a,
+                       uint8_t *plane, uint32_t plane_cap, uint8_t role)
+{ (void)pc; (void)a; (void)plane; (void)plane_cap; (void)role; return false; }
+void *heap_caps_malloc(size_t n, uint32_t f) { (void)f; return malloc(n); }
+void heap_caps_free(void *p) { free(p); }
 int g_bank_calls;
 const uint8_t *art_bank_extra_ptr(int slot)
 {
@@ -379,6 +410,7 @@ int main(int argc, char **argv)
     CK("free-running second and sweep fraction come from one pair",
        sec == 1700000003 && frac >= 0.4999 && frac <= 0.5001 && !synced);
     CK("bank: no slot means no pointer", S->bank(A) == 0 && g_bank_calls == 1);
+
     CK("bank: the app's own slot maps", S->bank(G) != 0);
     g_post_rc = ESP_OK;
     CK("job_post forwards", S->job_post(A, jobfn, 0, 0) == ESP_OK && g_post_calls == 1);
@@ -763,7 +795,48 @@ int main(int argc, char **argv)
        S->power_request(GHOST, 1, true) == ESP_ERR_NOT_ALLOWED);
     CK("and its cfg never reaches NVS",
        S->cfg_set(GHOST, "bright", 5) == ESP_ERR_NOT_ALLOWED && g_opens == opens0);
+    /* P5.5: the layer entries pass the free gate for any REGISTERED app and
+     * the table never hears from one that is not. The denial here is the
+     * not-in-registry shape, and the pass is the call counter moving. */
+    {
+        int c0 = g_layers_add_calls;
+        uint32_t d0 = orb_svc_denials(G);
+        orb_layer_desc_t d; memset(&d, 0, sizeof d);
+        CK("layer_add for an unregistered app refuses before the table",
+           S->layer_add(GHOST, &d) == (int)ESP_ERR_NOT_ALLOWED
+           && g_layers_add_calls == c0);
+        g_layers_add_rc = 0x1234;
+        CK("layer_add granted (free cap, counted) mints the table's handle",
+           S->layer_add(G, &d) == 0x1234 && g_layers_add_calls == c0 + 1);
+        CK("the pass added no denial", orb_svc_denials(G) == d0);
+        c0 = g_layers_set_calls;
+        S->layer_set(GHOST, 0x1234, &d);
+        S->layer_set(G, 0x1234, &d);
+        CK("layer_set gated the same way", g_layers_set_calls == c0 + 1);
+        c0 = g_layers_touch_calls;
+        S->layer_touch(GHOST, 0x1234, 0);
+        S->layer_touch(G, 0x1234, 0);
+        CK("layer_touch gated the same way", g_layers_touch_calls == c0 + 1);
+        c0 = g_layers_del_calls;
+        S->layer_del(GHOST, 0x1234);
+        S->layer_del(G, 0x1234);
+        CK("layer_del gated the same way", g_layers_del_calls == c0 + 1);
+        g_layers_count_rc = 3; g_layers_refuses_rc = 7;
+        CK("the ledger pair reads the table, not the gate",
+           orb_svc_layers_live(G) == 3 && orb_svc_layers_refused(G) == 7);
+        c0 = g_layers_wipe_calls;
+        orb_svc_app_suspended(G);
+        CK("suspend wipes the layers with the power ask", g_layers_wipe_calls == c0 + 1);
+        CK("the owner has no door to close a free cap's rows",
+           orb_svc_set_grant(G, CAP_UI, false) == ESP_ERR_INVALID_ARG
+           && g_layers_wipe_calls == c0 + 1);
+        CK("forgetting the row wipes too",
+           orb_svc_forget_row(2) == ESP_OK && g_layers_wipe_calls == c0 + 2);
+    }
+
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
+
+
     return g_fail ? 1 : 0;
 }
 '''
@@ -781,6 +854,11 @@ HDRS = {
                  "const char *esp_err_to_name(esp_err_t);\n",
     "esp_log.h": "#pragma once\n#define ESP_LOGI(t,...)\n#define ESP_LOGE(t,...)\n"
                  "#define ESP_LOGW(t,...)\n#define ESP_LOGD(t,...)\n",
+    "esp_heap_caps.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
+             "#define MALLOC_CAP_SPIRAM (1u << 11)\n"
+             "#define MALLOC_CAP_8BIT   (1u << 2)\n"
+             "void *heap_caps_malloc(size_t, uint32_t);\n"
+             "void heap_caps_free(void *);\n",
     "esp_timer.h": "#pragma once\n#include <stdint.h>\n"
                    "int64_t esp_timer_get_time(void);\n",
     # Copied verbatim from IDF 5.4's esp_system.h, order included: the shipped
@@ -824,7 +902,8 @@ def build_run(td, tag, extra_cflags, arg):
     exe = os.path.join(td, "svc_harness_%s" % tag)
     cmd = (["cc", "-std=gnu17", "-g", "-O0", "-Wall", "-Wno-unused-parameter",
             "-I", td]                          # the IDF-shaped stubs shadow mine
-           + ["-I", P("app"), "-I", P("art"), "-I", P("net"),
+           + ["-I", P("app"), "-I", P("art"), "-I", P("gfx"), "-I", P("."),
+              "-I", P("assets"), "-I", P("net"),
               "-I", P("power"), "-I", os.path.join(ROOT, "assets")]  # real project headers
            + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)

@@ -234,7 +234,9 @@ func winProfileDir() (string, error) {
 	if err != nil {
 		return "", errors.New("cmd.exe not on PATH: cannot locate a Windows profile dir")
 	}
-	out, err := exec.Command(csh, "/c", "echo", "%LOCALAPPDATA%").Output()
+	cmd := exec.Command(csh, "/c", "echo", "%LOCALAPPDATA%")
+	cmd.SysProcAttr = hiddenProc() // probe: never flash a console window
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -287,6 +289,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 		log.Printf("orb-manager: browser profile dir unavailable (%v); using the browser default", perr)
 	}
 	cmd := exec.Command(browser, appArgs(url, profile)...)
+	cmd.SysProcAttr = visibleProc() // the app window itself must never be suppressed
 	browserLog, logPath := chromeLog()
 	cmd.Stderr = browserLog
 	if err := cmd.Start(); err != nil {

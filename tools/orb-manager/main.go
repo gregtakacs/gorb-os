@@ -190,6 +190,14 @@ func main() {
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.Parse()
 
+	// Windowed mode on Windows can start with no console (double-click on a
+	// -H windowsgui build), and log output must not die with it; a console
+	// launch prints on unchanged. See log_gui_windows.go. --no-window keeps
+	// stderr even console-less: its contract is the printed URL.
+	if !noWindow {
+		redirectLogsForGUI()
+	}
+
 	// Loopback is the whole of the hub's exposure story, so binding off it has to
 	// be a decision someone typed. See security.go: a page on the browser's own
 	// machine can already reach 127.0.0.1, so the address is not what makes the

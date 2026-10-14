@@ -62,5 +62,7 @@ func openBrowser(url string) {
 		cmd = "xdg-open"
 	}
 	args = append(args, url)
-	_ = exec.Command(cmd, args...).Start()
+	c := exec.Command(cmd, args...)
+	c.SysProcAttr = hiddenProc() // fallback tab: no console window beside it
+	_ = c.Start()
 }

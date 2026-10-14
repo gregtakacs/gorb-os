@@ -2086,6 +2086,11 @@ static esp_err_t h_status(httpd_req_t *req)
      * `curl -s ORB/api/v1/status | wc -c`, and quote a range rather than one number
      * because the width still tracks uptime and recent drops.
      *
+     * The fw field grew when the image began carrying a declared version rather than
+     * a bare git describe: it now reads v1.0.0+e1a2b3c-dirty at 20 B, and 25 B with
+     * an -rc.N in front of the metadata. That is inside the 377 B of headroom just
+     * measured, and the re-measure above is what settles it against hardware.
+     *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and the three compiled-in rows filled 440 B of it; two more rows fit
      * at the observed 146 B per row. The ~110 B per row this comment carried was

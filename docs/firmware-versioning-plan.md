@@ -152,6 +152,46 @@ a message, (5) no git repo prints the bare triple, (6) an empty repo with no com
 prints the bare triple. Print `SELFTEST OK` and exit 0. This is the only check that
 runs without ESP-IDF, so make it real rather than decorative.
 
+### Corrected on 2026-10-14, during implementation
+
+The block above is the contract's shape, not the shipped script. Four things had to
+change, and every one of them was a bug in this plan rather than a preference:
+
+- **The declared part accepts a prerelease.** The step-1 grammar was
+  `^v[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,2}$`, which refuses `v1.3.0-rc.1` outright —
+  so the step would have shipped a composer unable to emit the grammar its own
+  contract section specifies. The shipped check splits the line, matches the triple
+  against the eight patterns a one-or-two-digit component allows (bash `case` has no
+  counted repeat), and runs a `valid_pre` function over the identifiers. The width
+  check runs BEFORE the grammar check, so a too-long line fails with the width named.
+- **`v1.0.0-dirty+e1a2b3c` is not the dirty form.** The contract's own
+  `<sha>[<build>]` order puts `-dirty` last, and that is what the composer emits.
+  The pattern above is accepted by the parser as the prerelease `dirty` with no
+  provenance, so it reads clean-and-named when it is neither. The split is written
+  so `dirty` in the prerelease position is not special-cased anywhere.
+- **The split's guard pattern does not work in bash.** The plan's
+  `case "$decl" in v[0-9][0-9]?*.-*)` intends "v, two optional digits, then a dot".
+  Bash reads `[0-9]?` as bracket-then-single-character-wildcard, so the pattern needs
+  a digit in position two and a third character, and it refuses `v1.0.0` outright:
+  every good version line came back as malformed. The shipped guard is `v[0-9]*`, and
+  the two-digit rule is enforced by the enumerated core patterns, where it belongs.
+- **The dirty predicate is a function, and the dispatcher is a `case`.** Cases (3)
+  and (6) only exercise the stamp as a whole; a swapped `-dirty` inside the composer
+  passes them both. `dirty_check` and `sha_after_commit` are separate functions with
+  their own cases, and the self-test's temp repos are nested inside the real working
+  tree, so the first thing `dirty_check` does is compare `rev-parse --show-toplevel`
+  against the named root and refuse. `--selftest` (no hyphen) is accepted as an
+  alias because `serflash.sh`'s audit flag is spelled that way, and that script is
+  the composer's other caller.
+
+Self-verification now covers 14 assertions: the six above, plus the dirty predicate
+alone on clean/dirty/untracked-only, a nested checkout, the prerelease round trip,
+`rc.01` refused, a trailing hyphen refused, and a 32-byte line refused with the width
+named. The oversize case needs a 32-byte line, not the 31-byte one this step
+originally proposed: at 31 bytes the width check passes and the grammar message
+answers instead, which is a correct refusal but not the one under test.
+
+
 ## Step 2 — `version.txt` (new), at the repo root
 
 One line: `v1.0.0`. No comment, no blank line, no trailing space — see the
@@ -170,7 +210,7 @@ beats `git describe`. Without this block the empty tag list keeps producing
 #
 # version.txt declares v<MAJOR>.<MINOR>.<PATCH>. The metadata appended here lets a
 # board name the exact bytes it runs, and the whole string lands in
-# esp_app_desc_t.version, a 32-byte field. PROJECT_VER set here wins: IDF takes a
+# esp_app_desc_t.version: char[32], so 31 usable bytes once strlcpy NUL-counts. PROJECT_VER set here wins: IDF takes a
 # pre-defined PROJECT_VER first and only then tries version.txt, a VERSION
 # argument, and git describe (project.cmake:660-712).
 #
@@ -575,6 +615,29 @@ existing legacy row green — that is the mixed-fleet proof — and add:
 
 Row two is the regression this whole change exists to kill: a higher version must
 outrank a later clock.
+
+### Corrected on 2026-10-14, during implementation
+
+Four points in the list above do not say what they look like they say:
+
+- The dirty row is written `v1.0.0+aaaaaaa-dirty`, not `v1.0.0-dirty+aaaaaaa`. The
+  second string parses, but as prerelease `dirty` with no provenance — the exact
+  ambiguity the grammar forbids, and a test that asserted on it would pin the parser
+  to accepting a stamp the composer can never emit.
+- The legacy-orb row's `VerdictUpgrade` comes from the timestamp, as the table says,
+  and it is worth the comment it carries: it is the proof that the fallback stays
+  reachable, not an oversight in the version-first rule.
+- `TestBuiltInBundleCarriesASemver` belongs to this step and FAILS until
+  `make firmware` repacks the bundle. It is the only test in the suite that can tell
+  a stamping change from a stamping change that was never shipped, so it stays.
+- The oversize row is a 33-byte line whose components are three digits. A length cap
+  is not part of the parser's contract — cmake enforces the 31-byte field — so the
+  refusal has to come from the grammar.
+
+`TestOrbpackRefusesAnUnversionedBundle` calls the packer through a `pack()` function
+rather than `os.Exit`, because `os.Exit` inside `main()` cannot be observed by a test
+in the same package. `-force` returns 0 where a bare call returns 1; the refusal text
+is pinned by a source-grep test, the idiom this suite already uses elsewhere.
 
 Add `TestOrbpackRefusesAnUnversionedBundle` driving `cmd/orbpack`'s flag handling
 through a synthetic build dir, modelled on `TestWriteBundleFromBuildDir`

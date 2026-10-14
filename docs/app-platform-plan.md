@@ -2170,4 +2170,105 @@ the bench rather than a claim about it.
    granted-size fallback in `ensure_chunk` stays unwritten, and the mis-map that
    reports `esp_dma_capable_malloc` failure as 413 is still open.
 4. D30 stays unrationalised. Its price is still unpaid, and the owner rules it.
+### 17.5 Correction, same night: the radio knobs were the wrong lever
+
+§17 stopped at two identical refusals. The owner's reply reframed the requirement:
+the upload is rare, the dial may stall for its duration, and the only hard rule is
+that the radio and the card are both alive at the same moment. That makes the
+config server a non-negotiable, and it makes §17's own conclusion — "the two wifi
+knobs may not clear 4 KB of largest" — the wrong thing to chase.
+
+Two more boots were run to settle which knob killed httpd, and both refused the
+config server again:
+
+| Image | Knobs | post-wifi_start largest | post-wifi_start dma_free | `config server listening` |
+|---|---|---|---|---|
+| `9fec1b9` boot 1 | static TX 8 + AMPDU RX off + PSRAM radio | 14,848 | 15,147 | absent |
+| `9fec1b9` boot 2 | same | 8,704 | 11,179 | absent |
+| `164d667` | static TX **8** + AMPDU RX off, PSRAM line gone | **7,168** | 5,583 | absent |
+| `164d667`+TX4 | static TX **4** + AMPDU RX off | **11,264** | 12,507 | absent |
+| `4367e7a` | all reverted (dynamic TX 32, AMPDU RX on) | — | — | **present** |
+
+The last line is the point: `TX_BUFFER_NUM=4` restored `largest=11,264` — comfortably
+over the 8,192 B worker stack — and `httpd_start` **still** refused. The stack-size
+theory in §17.2 was wrong about the trigger, and so was the premise underneath it.
+
+**Why the whole direction was wrong.** Between the `post-wifi_start` probe and
+`httpd_start`, `orb_net.c:4835` runs `net_post_join()`, which starts the association.
+Association is what allocates the WPA3/SAE and mgmt-frame state, and `esp-aes` takes
+its buffer from that pool during the handshake — the very allocation that §16 saw
+*failing* on a starved boot. Removing the radio's own DMA pressure simply moved
+those allocations from "fails" to "succeeds", and they land in the same large block
+httpd's stack wants. The radio knobs changed the total and the first-fit order;
+they could not change the fact that association and httpd's worker stack are
+allocated back to back and compete for the same remaining region. No combination of
+these four symbols fixes that, because the shortage is not in the radio's own
+buffers. It is in what sits above them: `CONFIG_LV_MEM_SIZE=24576` as a static
+internal array, and the display's tile ring.
+
+**The lever the owner's license actually points at.** `display.c:721` allocates the
+tile ring with `heap_caps_malloc(18640, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)` —
+2 tiles, **37,280 B**, the largest single internal-DMA consumer on the board, and
+one of only two places the SD driver's asks can come from. It is already reclaimed
+and re-acquired cleanly elsewhere in the same file (`s_scratch` is freed at
+`display.c:718` precisely to fund the ring, and the ring itself degrades to
+PSRAM-direct submit when it cannot get 2 tiles). "The clock may stop for the
+duration of the upload" therefore converts directly into a code change: park the
+### 17.6 Upload reproduction on the restored image — the answer to "can I upload?"
+
+Run on `4367e7a` (radio config identical to `e3733a5`), via `tools/m5_armA.sh` with
+the serial epoch as the clock, `/tmp/m5_armA2_ser.txt`:
+
+| Step | Result |
+|---|---|
+| `POST /api/v1/sd/rescan` | `code=200` **body transferred, 53 B**: `{"mounted":true,"card":"SD16G SDHC 29.4GB @20000kHz"}` |
+| `POST /api/v1/sd/theme` | `code=000 size=0 t=120.0` — client timed out with no response at all |
+| Serial at 31.34 s | `dma_utils: esp_dma_capable_malloc(125): Not enough heap memory` |
+| Serial, same instant | `orb_theme: upload: create failed (I/O error)` |
+| Heap at 29.45 s (`sta-connected`) | internal free=7,719 largest=3,328 **dma_free=4,315** |
+| `POST /api/v1/sd/install` | refused: `install: no card in the socket`, `job done` |
+
+So: **no, the upload does not work today, on any image this session produced.** The
+restored config-server build reproduces the handoff's original failure to the byte —
+the card mounts, and the first write dies because the sdmmc driver cannot get **125
+bytes** of contiguous internal DMA RAM out of a pool reporting 4,315 B free. The
+pool is fragmented below a 125 B ask. That is the whole bug.
+
+`dma_free=4,315` next to a refused 125 B allocation is the number to hold onto: this
+is not a shortage of DMA memory, it is a shortage of DMA memory **in one piece**, and
+the piece that is missing is smaller than anything the four Kconfig symbols move.
+
+Two bench-hygiene notes, both caught mid-run and both capable of producing a false
+green: `/tmp/m5_up.json` and `/tmp/m5_inst.json` are reused by the script and were
+45 minutes stale — the "out of memory for the card read buffer" body that
+`m5_armA.sh` printed at 01:49 is the **previous session's** refusal at 00:52, not this
+boot's (the real result is `code=000 size=0`). And a `/tmp/st4.json` that appeared to
+show orb-B's identity at orb-A's address was likewise an Oct 13 15:48 file. Read the
+serial line and the file's mtime before believing any HTTP body on this bench.
+
+**The fix this evidence selects.** Free the display's tile ring for the duration of a
+card write. `display.c:721` holds `2 x 18,640 B` = 37,280 B of
+`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` — the board's largest single internal-DMA
+consumer, and it is already heap-allocated, already freed wholesale on the
+`!s_tiles_ok` path, and already survived by a documented PSRAM-direct degradation.
+Reclaiming it around the upload handler gives the sdmmc driver ~37 KB instead of a
+fragmented 4,315 B, restores the config server's own 8 KB untouched, and costs the
+dial exactly what the owner licensed: a stall for the length of the copy. It needs a
+release/restore pair in `display.c` and a call in the upload/install paths — code, not
+`sdkconfig`. **No Kconfig change is required, and §17's and §17.5's rejections of the
+radio knobs stand.**
+
+dial, free the ring, hand ~37 KB of internal DMA back to the sdmmc driver for the
+length of the copy, restore the ring and redraw. That is a handler-scoped pause in
+`orb_theme.c`/`orb_net.c` plus one release/restore pair in `display.c` — not a
+boot-time budget renegotiation, and not a Kconfig search.
+
+The board is flashed with `4367e7a` (both config commits reverted, tracked defaults
+back at their `e3733a5` state, audit `want=4367e7a have=4367e7a`) so the orb is
+usable and the named failure is on the bench rather than papered over.
+
+**Open, unchanged by this section:** the upload has still never been proven on a
+boot with a healthy DMA pool; the 413 mis-map on `esp_dma_capable_malloc` failure is
+still open; and D30 stays unrationalised, still owed its two timings.
+
 

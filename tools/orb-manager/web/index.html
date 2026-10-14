@@ -138,9 +138,13 @@
     says how the hub can reach it right now, and a cable row is only ever as trustworthy as the MAC
     the host read from its USB descriptor. This list updates itself: the hub listens for the orb's
     own check-ins and re-reads the USB ports as plugs move, so there is nothing to press. Choosing a
-    row with an address puts it in the box above; the hub dials it only after you load it. Remember
-    writes the name onto the board itself and the hub keeps its copy; Forget drops both and takes the
-    address out of the set the hub will dial.</p>
+    row with an address puts it in the box above; the hub dials it only after you load it. Every
+    board the hub can see is remembered the moment it is seen, by MAC, with nothing to press; the
+    name you type is written onto the board itself and copied into the hub's list. A board that
+    moves to a new address keeps its row and its name — the hub follows the MAC. Forget is the
+    only removal, and it appears only on a board that cannot come straight back: not on a cable,
+    not announcing, and not answering at the address the hub remembers. A board you can still
+    reach is a board that will re-list itself, so to clear one of those, factory-reset it.</p>
   </article>
 
   <article class="card" id="mn-themecard" hidden>

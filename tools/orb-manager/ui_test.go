@@ -305,4 +305,35 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	if !strings.Contains(row, "confirm(") {
 		t.Error("Forget no longer asks before dropping a name and revoking an address")
 	}
+	// Forget is the hub's verdict, not the card's guess: the row carries whether the board
+	// can be reached, and the button is disabled from that field. A card that decided this
+	// locally would offer the button to an announcing orb, whose next check-in puts the row
+	// straight back — the failure this gate exists to prevent.
+	if !strings.Contains(row, "o.forgettable !== true") {
+		t.Error("the found row no longer requires the hub's forgettable verdict before it enables Forget")
+	}
+	// The exact shape of that comparison is the bug this pin keeps out. Written "=== false"
+	// it reads an ABSENT field as permission, and an absent field is what a hub that refuses
+	// sends if the bool carries an omitempty: every refusal, cable included, becomes a live
+	// button. The page must be able to tell "no" from "not told", and treat both as no.
+	if strings.Contains(row, "o.forgettable === false") || strings.Contains(row, "o.forgettable != true") {
+		t.Error("the Forget button treats a missing verdict as permission; only a literal true may enable it")
+	}
+	if !strings.Contains(row, "forget.disabled") {
+		t.Error("the Forget button is never disabled, so the verdict is read and ignored")
+	}
+	if !strings.Contains(row, "o.forgetWhy") {
+		t.Error("a disabled Forget carries no reason, so the button is a mystery to the operator")
+	}
+	// The reason is text on the row, not only a hover. A greyed button whose explanation is
+	// reachable only by pointing at it reads as a broken button, and an operator who cannot
+	// see which of the three facts refused cannot act on it.
+	if !strings.Contains(row, "_fwhy") {
+		t.Error("the Forget refusal is a tooltip only, so the row cannot explain itself")
+	}
+	// The door can still refuse a button the card drew a frame too early, and the card must
+	// show that rather than redraw as if the delete worked.
+	if !strings.Contains(row, "mn-find-note") {
+		t.Error("a refused forget is silent: the card repaints the row back with no explanation")
+	}
 }

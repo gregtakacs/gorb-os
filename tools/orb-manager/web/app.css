@@ -63,3 +63,13 @@ button.ghost{background:none}
 /* The one list's access badge: LAN / cable / both, and how strongly the mac is known.
    Muted and monospaced so it reads as the hub's evidence, not as a second label. */
 .found-via{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+
+/* A dead Forget has to look dead. Without this a disabled ghost button is pixel-identical
+   to a live one, which is how "the hub refused" reads as "the hub is slow". */
+button:disabled{opacity:.45;cursor:not-allowed}
+button:disabled:hover{border-color:var(--line)}
+
+/* Why the button next to it is dead, on the row. Muted and small: an explanation, not a
+   second heading, and never a thing the operator has to hover a control to discover. */
+.fwhy{color:var(--mut);font-size:11px}
+.fwhy[hidden]{display:none}

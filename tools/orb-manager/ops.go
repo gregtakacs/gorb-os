@@ -39,6 +39,9 @@ const (
 	// opConsole is a read, but it still HOLDS the port, so it claims the same slot a
 	// flash does: reading a console while a write is in flight is how a flash dies.
 	opConsole opKind = "console"
+	// opCmd is a generic serial command (NAME/SCAN/MODE/RESET/PING) on a configured
+	// orb. It writes, so it claims a full port slot exactly like a provision.
+	opCmd opKind = "cmd"
 )
 
 // op is one in-flight operation on one physical port.

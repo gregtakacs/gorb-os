@@ -42,11 +42,14 @@ import (
 //   - A port the host cannot attribute is a row keyed on its tty path and nothing
 //     else. Two unidentified cables never merge, and neither inherits a name.
 //
-// Persistence is narrower than the view, by decision. A descriptor-serial sighting is
-// ephemeral: shown while the plug is in, gone after. The fleet store still gains a row
-// for a MAC only from a probe, a flash, a console verdict, or an announcement —
-// otherwise state.json would fill with an entry for every ESP32 that ever touched this
-// machine's sockets.
+// Persistence is narrower than the view, by owner's order: a board earns a row the
+// moment the hub can see it, but only a board with an ADDRESS survives a restart —
+// state.json is an address book, and a cable-only row resurrecting without its lead
+// would be a lie about a bench. An orb unplugged from USB disappears from the list on
+// the next sweep; an orb that loses its lead and has an address gets that address
+// re-dialed at the instant of the unplug (liveness.go's kickLostCables). Forget is
+// offered the minute a board is provably offline (liveness.go); until then the row is
+// there because the hub can still reach it.
 //
 // Nothing here opens a port, resets a chip, or dials anything. ClassifyPort reads
 // sysfs, the registry, or a cached ioreg dump, and the whole sweep sits behind one TTL
@@ -212,6 +215,11 @@ func hostCableSweep() ([]cableSighting, error) {
 // A row the store holds that neither the LAN nor the cable currently produces is NOT
 // added. It would be a row that can never become clickable without a packet the hub
 // cannot require, and /api/fleet is already the answer to "everything I remember".
+//
+// Every board the hub CAN see is remembered, by MAC, with no operator press: the sweep
+// marks each attributable cable it finds, so a plug-in is a fleet row the moment the
+// card renders it, and the only deliberate removal left is the card's Forget. MAC is
+// the identity; a board that moves between addresses updates its row in place.
 func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 	if lan == nil {
 		// app.js destructures orbs and reads .length without a guard, so a deaf hub
@@ -219,6 +227,35 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 		lan = []orbRow{}
 	}
 	seen, cableErr := s.cables.refresh(now)
+	// An unplug is worth a dial the same second it happens. The board either moved to
+	// the LAN (its row stands, on the answer) or left the network entirely (its minute
+	// toward Forget starts now, not when the sweep budget gets around to it). Only a
+	// clean sweep may say "gone": a failed enumeration keeps the last good sight, and
+	// the hub must not dial a fleet it merely failed to see.
+	if cableErr == "" {
+		s.kickLostCables(seen)
+	}
+	// Remember the cable before building any row from it: a board that has only ever
+	// been touched over USB still earns its place in the fleet, and its row is what
+	// later folds an address onto the same MAC rather than starting a second one.
+	if s.fleet != nil {
+		fresh := false
+		for _, c := range seen {
+			if !c.isOrb || c.mac == "" {
+				continue
+			}
+			if _, ok := s.fleet.ByMAC(c.mac); !ok {
+				fresh = true
+			}
+			// Every sweep re-sees the board, so its presence clock stays current even
+			// when it moved sockets. Only a first sighting rewrites the file, and the
+			// rewrite only persists an entry that has an address to remember.
+			s.seeCable(c.mac, c.port)
+		}
+		if fresh {
+			s.saveState()
+		}
+	}
 	at := make(map[string]int, len(lan))
 	for i, r := range lan {
 		at[r.MAC] = i
@@ -245,6 +282,26 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 		at[c.mac] = len(lan)
 		lan = append(lan, s.cableRow(c.mac, c.port, now))
 	}
+	// The address book's own tier: every saved board the wire and the bench are not
+	// producing this second. This is the half that makes the file worth having — a hub
+	// that shows nothing until a packet arrives spends the first minute of every launch
+	// looking empty at a fleet it already knows the addresses of.
+	if s.fleet != nil {
+		for _, row := range s.fleet.Every() {
+			if _, produced := at[row.MAC]; produced {
+				continue
+			}
+			// A board with no address is a fact about this launch's bench, not a
+			// destination: it lives on the cable tier while the lead is in, and it
+			// dies with the lead. A remembered row it is not — there is nothing to
+			// dial and nothing to dial fast for.
+			if row.IP == "" {
+				continue
+			}
+			at[row.MAC] = len(lan)
+			lan = append(lan, s.rememberedRow(row, now))
+		}
+	}
 	for i := range lan {
 		if lan[i].Identity == "" {
 			lan[i].Identity = s.identityOf(lan[i].MAC)
@@ -252,6 +309,21 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 	}
 	sortRows(lan)
 	return lan, cableErr
+}
+
+// rememberedRow is an address-book entry on screen: a MAC, the address it was last
+// reachable at, and no claim about the present. Reachability is "unknown" until the
+// startup dial answers, because the honest answer at first paint is that the hub has not
+// asked yet. The row is deliberately not clickable — loading it dials an address the hub
+// has not confirmed, and the refusal field says that in the card's own words.
+func (s *Server) rememberedRow(row orbfleet.Orb, now time.Time) orbRow {
+	r := orbRow{
+		Key: row.MAC, MAC: row.MAC, Instance: instanceForMAC(row.MAC),
+		IP: row.IP, Port: row.Port, Name: row.Name, Reachable: "unknown",
+		Refusal: "remembered from a previous run and not yet heard from: the hub is asking " +
+			"it now, and the row becomes clickable when it answers",
+	}
+	return r
 }
 
 // cableRow is a board on a lead that has not announced: real MAC, no address, nothing
@@ -271,9 +343,9 @@ func (s *Server) cableRow(mac, port string, now time.Time) orbRow {
 	}
 	foldStoreName(&r, row)
 	r.FW, r.State, r.IP, r.Port = row.FW, row.State, row.IP, row.Port
-	r.Cable = row.Cable
+	r.Cable = s.chipRead(row.MAC)
 	r.AgeS = int(now.Sub(row.LastSeen).Seconds())
-	if row.Cable {
+	if r.Cable {
 		r.Identity = "confirmed"
 	}
 	// The store had an address the browse did not, which is the ordinary shape of an
@@ -304,14 +376,46 @@ func (s *Server) unknownCableRow(port string) orbRow {
 }
 
 // identityOf labels a row the browse produced. confirmed means the fleet store holds a
-// chip-read MAC for it; claimed means everything the row knows came from a packet.
+// chip-read MAC for it — a fact that does not expire, because the hub read the chip.
+// claimed means everything the row currently knows came from a packet.
+//
+// A remembered descriptor sighting is deliberately NOT one of the answers here. The
+// store keeps the TTY so the board survives the unplug and so a later rename can find
+// the lead to go down, but identity answers "who vouches for this row right now", and
+// once the cable is gone the only thing vouching is the announcement. The merge loop
+// puts "descriptor" on a row the CURRENT sweep matches to a port; an identity that
+// outlived the plug would also move the stream digest on an unplug that changed nothing
+// the operator can see.
 func (s *Server) identityOf(mac string) string {
-	if s.fleet != nil {
-		if row, ok := s.fleet.ByMAC(mac); ok && row.Cable {
-			return "confirmed"
-		}
+	if s.chipRead(mac) {
+		return "confirmed"
 	}
 	return "claimed"
+}
+
+// chipRead reports whether THIS RUN of the hub read the MAC off a chip over USB. The
+// set is in memory and deliberately never persisted: the strongest fact in the system
+// is a record of an act this process performed, and a file written by an earlier one
+// cannot make this process remember performing it. A hub restarted beside the same bench
+// re-reads the descriptors and earns the answer again inside one sweep.
+func (s *Server) chipRead(mac string) bool {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	return s.read[mac]
+}
+
+// markChipRead records the read. markCable is the only caller, because a chip's word
+// for its own MAC is the only thing that can justify the claim.
+func (s *Server) markChipRead(mac string) {
+	if mac == "" {
+		return
+	}
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	if s.read == nil {
+		s.read = map[string]bool{}
+	}
+	s.read[mac] = true
 }
 
 // appendPort keeps a row's port list sorted and duplicate-free. Two ttys on one board
@@ -363,11 +467,11 @@ func displayOf(r orbRow) string {
 // on its cable row as it will once it joins.
 func instanceForMAC(mac string) string { return "orb-" + mac[len(mac)-6:] }
 
-// foldStoreName is where a cable row learns the operator's words. A function rather
-// than inline so the fields the store owns — name, room, and the note about the last
-// refused fold — cannot drift from the set the LAN fold already takes.
+// foldStoreName is where a cable row learns the name the hub last read off the board.
+// A function rather than inline so the fields the store owns — the cached name and the
+// note about the last refused fold — cannot drift from the set the LAN fold takes.
 func foldStoreName(r *orbRow, row orbfleet.Orb) {
-	r.Name, r.Room, r.Note, r.Shared = row.Name, row.Room, row.Note, row.Shared
+	r.Name, r.Note, r.Shared = row.Name, row.Note, row.Shared
 }
 
 // watchCables is the push half of plug detection: nothing in the mDNS path notices a

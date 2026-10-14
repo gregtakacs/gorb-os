@@ -77,7 +77,7 @@ type Server struct {
 	// grants are the orb addresses the proxy is willing to dial. Empty means the
 	// hub reaches nothing off the box.
 	grants *ipGrants
-	// fleet is who the hub believes is behind those addresses: {mac, name, room},
+	// fleet is the hub's address book: {mac, ip, port, cached name},
 	// keyed on the chip and never on the lease. It is consulted before a dial, not
 	// instead of one — the grant still decides whether an address may be reached at
 	// all, and the fleet only ever takes a dial away (see mayDial).
@@ -85,8 +85,16 @@ type Server struct {
 	// orbIP mirrors the address the onboarding flow last learned, so the status
 	// probe has a default target before the browser supplies one. It is a UI
 	// convenience: the proxy decides with grants, never with this field.
-	imu   sync.Mutex
-	orbIP string
+	imu sync.Mutex
+	// cmu guards read: the MACs this run has confirmed off a chip. See chipRead.
+	cmu  sync.Mutex
+	read map[string]bool
+	// kickMu guards lastPlug: the orb MACs the previous cable sweep attributed, which
+	// is what lets kickLostCables (liveness.go) tell an unplug from a steady bench and
+	// re-dial the unplugged board's remembered address the second the lead goes quiet.
+	kickMu   sync.Mutex
+	lastPlug map[string]bool
+	orbIP    string
 	// statePath is where learned orb addresses are remembered across launches
 	// (state.go). stateErr holds the last failure writing or reading it, so a hub
 	// that cannot persist says so once in the log instead of silently forgetting.
@@ -109,6 +117,12 @@ type Server struct {
 	// not ask for, and a test that wants cable rows injects the sweep rather than lying
 	// about the machine it runs on.
 	cables *cableCache
+
+	// live is the answer to "does the address this row remembers still answer as an
+	// orb", cached so the discovery card never dials on the path that draws it. It is
+	// what makes Forget an offer only for a board that cannot come straight back; see
+	// liveness.go. Its probe is wired by main, not by newHub, for the cables reason.
+	live *liveCache
 
 	// orbSubs are the open /api/orbs/stream connections, each with a one-slot wake-up
 	// channel. omu guards this map and nothing else: the browser fires the wake on its own
@@ -280,6 +294,20 @@ func main() {
 	cableCtx, stopCables := context.WithCancel(context.Background())
 	defer stopCables()
 	go s.watchCables(cableCtx)
+
+	// The liveness verdicts Forget is gated on (liveness.go). The probe is the same
+	// status fetch the post-flash watch uses — one GET, orb-shaped answer or nothing —
+	// and it is wired here rather than in newHub so the suite never dials a LAN. The
+	// sweeper shares the cable context's shutdown for the same reason the cable watcher
+	// does: both exist to keep an open card current, and both are pointless without one.
+	s.live.probe = func(ip string) bool {
+		_, err := s.orb.Status(ip)
+		return err == nil
+	}
+	go s.probeLiveness(cableCtx)
+	// Once at startup, before the first card is worth looking at: the file already says
+	// which boards the hub knows, and this turns those addresses into answers.
+	go s.probeNow(cableCtx)
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -538,6 +566,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/flash/cancel", s.requireControl(http.HandlerFunc(s.handleCancel)))
 	mux.Handle("/api/watch", s.requireControl(http.HandlerFunc(s.handleWatch)))         // streaming post-flash probe
 	mux.Handle("/api/provision", s.requireControl(http.HandlerFunc(s.handleProvision))) // streaming wired-provisioning round-trip
+	// Generic serial command door (name/scan/mode/reset/ping) on a configured orb:
+	// the wired twin of the fleet card's write, for a board with no reachable address.
+	mux.Handle("/api/orb/cmd", s.requireControl(http.HandlerFunc(s.handleOrbCmd)))
 	// Read-only USB console: a port operation, because holding the cable to read it
 	// must exclude a flash for the same reason writing one does.
 	mux.Handle("/api/console", s.requireControl(http.HandlerFunc(s.handleConsole)))

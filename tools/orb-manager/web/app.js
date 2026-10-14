@@ -800,9 +800,9 @@ function drawRefused(list, tail) {
   }
 }
 
-// pullFound is the one place this card asks, and it asks once: after a Remember or a Forget,
-// where the change came from the page itself and the hub has no reason to announce it. It is
-// not a poll and it is not the button coming back — it is a write reading its own result.
+// pullFound is the one place this card asks, and it asks once: after a rename lands or a
+// Forget, where the change came from the page itself and the hub has no reason to announce
+// it. It is not a poll and it is not a button coming back — it is a write reading its result.
 async function pullFound() {
   const state = $("#mn-find-state");
   try {
@@ -894,33 +894,59 @@ function foundRow(o) {
   // first and the card keeps a copy of it, so a reflash or a state file lost in a move
   // costs the orb its label again only if the write never landed.
   name.title = "the word you use for this orb; stored on the orb itself and keyed on the mac";
-  const room = document.createElement("input");
-  room.placeholder = "room"; room.maxLength = 32;
-
-  const save = document.createElement("button");
-  save.className = "ghost"; save.textContent = "Remember";
-  // Naming is keyed on the mac and never on the address, so the label the operator chooses
-  // survives the lease the router hands out tomorrow.
-  save.onclick = () => hubFetch("/api/fleet/set", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mac: li.dataset.mac, name: name.value, room: room.value }),
-  }).then(async (r) => {
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok) { $("#mn-find-note").textContent = "\u2717 " + (j.error || "rename refused"); return; }
-    $("#mn-find-note").textContent = "";
-    pullFound();
-  });
+  // The hub remembers an orb's ADDRESS the moment it learns one, so there is nothing to
+  // press to add a row: the name field IS the save, and it saves to the board. A change
+  // commits itself on blur or Enter — one keystroke path, no dead button in it.
+  // There is deliberately no room or label field: the address book stores where a board
+  // is reachable and nothing about where it sits, because a word the hub kept about a
+  // board was a word that could disagree with the board.
+  const commit = () => {
+    if (!li.dataset.mac) return;
+    hubFetch("/api/fleet/set", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mac: li.dataset.mac, name: name.value }),
+    }).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (j.error) {
+        $("#mn-find-note").textContent = "\u2717 " + j.error;
+        pullFound();   // the store kept its answer; show that, not the typed word
+      } else {
+        $("#mn-find-note").textContent = "";
+      }
+    });
+  };
+  name.onchange = commit;
+  for (const el of [name]) {
+    el.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } };
+  }
 
   const forget = document.createElement("button");
   forget.className = "ghost"; forget.textContent = "Forget";
-  // The confirm is not ceremony: forgetting drops the name the operator chose and revokes the
-  // address the hub was willing to dial.
+  // Forget is the one removal this list offers: the hub remembers every board it has
+  // seen and never needs a press to add one. The confirm is not ceremony — it drops the
+  // name the operator chose and revokes any address the hub was willing to dial.
+  //
+  // It is also only ever worth pressing on a board that cannot come straight back, and
+  // the hub is the one who knows that: it can see the cable sweep, the last check-in and
+  // whether the remembered address still answers. So the row carries the verdict and this
+  // renders it. A Forget that deletes a row an announcing orb rebuilds in sixty seconds
+  // teaches the operator that the button does nothing, which is worse than no button.
   forget.onclick = () => {
-    if (!confirm("Forget " + (name.value || li.dataset.mac) + "? The hub stops dialing " + li._ip + ".")) return;
+    if (forget.disabled) return;   // the hub said no; the title says what to do instead
+    const where = li._ip ? "? The hub stops dialing " + li._ip + "." : "; the hub will stop listing it.";
+    if (!confirm("Forget " + (name.value || li.dataset.mac) + where)) return;
     hubFetch("/api/fleet/forget", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mac: li.dataset.mac }),
-    }).then(pullFound);
+    }).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      // The door can still refuse: the card's verdict is cached, and a board plugged
+      // back in or heard from between this frame and the click is exactly the case the
+      // rule is about. Say so on the card instead of redrawing it as if it worked.
+      if (!r.ok || j.ok === false) $("#mn-find-note").textContent = "\u2717 " + (j.error || "the hub refused");
+      else $("#mn-find-note").textContent = "";
+      pullFound();
+    });
   };
 
   // A cable the host cannot attribute is a row with a tty and nothing else, and the one
@@ -937,10 +963,15 @@ function foundRow(o) {
 
   const ident = document.createElement("span");
   ident.className = "row";
-  ident.append(name, room, save, forget, identify);
+  // The Forget refusal, spelled out on the row whenever the button is dead. Created here
+  // and filled by the paint, so a row that has not been annotated yet shows the reason
+  // rather than a mystery.
+  const fwhy = document.createElement("span");
+  fwhy.className = "fwhy"; fwhy.hidden = true;
+  ident.append(name, forget, identify, fwhy);
   li.append(label, badge, ident);
-  li._label = label; li._badge = badge; li._name = name; li._room = room;
-  li._nameable = [name, room, save, forget]; li._identify = identify;
+  li._label = label; li._badge = badge; li._name = name;
+  li._forget = forget; li._identify = identify; li._fwhy = fwhy;
   return li;
 }
 
@@ -973,7 +1004,12 @@ function paintFound(li, o) {
     o.state === "provisioning" ? "PROVISIONING" : (o.state || ""),
     o.contended ? "CONTESTED" : "",
     o.shared ? "shared name" : "", o.bound ? "" : "unverified",
-    typeof o.ageS === "number" ? o.ageS + "s" : ""].filter(Boolean).join("  \u00b7  ");
+    typeof o.ageS === "number" ? o.ageS + "s" : "",
+    // A row with no via is an address-book entry: the hub has an address and no sighting
+    // this run. Say which of remembering it is, because the dial verdict is the only thing
+    // that distinguishes a board in a drawer from a board whose lease moved.
+    (!o.via || !o.via.length) ? ("remembered" + (o.reachable === "dead" ? ", not answering"
+      : o.reachable === "alive" ? ", answering" : ", asking now")) : ""].filter(Boolean).join("  \u00b7  ");
   li._badge.textContent = viaBadge(o);
   // Four separate reasons a row cannot be dialed, and the button says which one it is rather
   // than letting a click discover it: the board has no address at all, its address is a SoftAP
@@ -989,11 +1025,34 @@ function paintFound(li, o) {
   // write a name against — offering the box anyway would promise a save that cannot happen,
   // so the controls go dark and the Identify button takes their place.
   const nameable = !!o.mac;
-  for (const el of li._nameable) { el.disabled = !nameable; }
+  li._name.disabled = !nameable;
+  // Forget is disabled on its own axis: a row can have a mac and still be one the hub
+  // will rebuild, and the reason has to be readable without a click that does nothing.
+  //
+  // The test is "literally true", not "not false". The verdict is the hub's answer, and a
+  // hub that did not answer is not a hub that said yes: an old build, a truncated frame or
+  // a row shape this page has never seen all read as an absent field, and reading those as
+  // permission is how a gate ends up guarding nothing. Fail closed, and say that is what
+  // happened, so a silent field is a visible state rather than a live button.
+  const forget = li._forget;
+  const why = typeof o.forgetWhy === "string" ? o.forgetWhy : "";
+  forget.disabled = !nameable || o.forgettable !== true;
+  forget.title = !nameable ? "no mac yet, so there is no fleet entry to forget"
+    : forget.disabled ? (why || "the hub sent no Forget verdict for this row")
+    : "drop this board from the fleet and revoke the address the hub was dialing";
+  // The reason goes on the row as well as in the title. A greyed button with no text is a
+  // fault to diagnose rather than a rule to learn, and the operator should not have to
+  // hover every row to find out which of the three facts is holding the button back.
+  const fwhy = li._fwhy;
+  fwhy.hidden = nameable && !forget.disabled;
+  fwhy.textContent = forget.disabled
+    ? (why || (nameable ? "the hub sent no Forget verdict: reload the page"
+                       : "no mac yet, so there is no fleet entry to forget"))
+    : "";
   li._identify.hidden = o.identity !== "unknown";
   li._ip = o.ip;
   if (document.activeElement !== li._name) li._name.value = o.name || "";
-  if (document.activeElement !== li._room) li._room.value = o.room || "";
+
 }
 
 

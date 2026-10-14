@@ -337,10 +337,17 @@ var deviceRoutes = map[string][]string{
 	// dead router leaves a credentialed orb connected to nothing, and every other verb on
 	// this list needs that connection. It is one boot's worth of damage at worst: the D4
 	// sojourn bounds the session and the boot branch consumes the flag on read.
-	"/api/v1/reprov":     {http.MethodPost},
-	"/api/v1/wifi/scan":  {http.MethodGet},
-	"/api/v1/wifi/join":  {http.MethodPost},
-	"/api/v1/wifi/ap":    {http.MethodPost},
+	"/api/v1/reprov":    {http.MethodPost},
+	"/api/v1/wifi/scan": {http.MethodGet},
+	"/api/v1/wifi/join": {http.MethodPost},
+	"/api/v1/wifi/ap":   {http.MethodPost},
+	// The mode door, allowlisted because it is the ONLY exit from a state the hub can
+	// put an orb into. AP-isolation is persistent: the orb never associates, so it has
+	// no lease, no LAN address and no mDNS announcement — the single address that
+	// answers is its own 192.168.4.1. A hub that could drive /wifi/ap but not /wifi/mode
+	// could open an isolation it could never close, which is a trap and not a feature.
+	// POST only; the current mode already reads off /api/v1/status.
+	"/api/v1/wifi/mode":  {http.MethodPost},
 	"/api/v1/sd/install": {http.MethodPost},
 	"/api/v1/sd/default": {http.MethodPost},
 	"/api/v1/sd/delete":  {http.MethodPost},

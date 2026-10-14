@@ -1,6 +1,7 @@
 package orbfleet
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -32,13 +33,30 @@ func observe(t *testing.T, s *Store, mac, ip string) *Orb {
 // instance the device could never have sent.
 func instanceFor(mac string) string { return "orb-" + mac[len(mac)-6:] }
 
+// nameBoard applies the naming flow the hub uses now: check the cross-lock, then fold
+// what the board reported back. The hub stores no name of its own, so a test that wants
+// a named row goes through the device's word, exactly as the handler does.
+func nameBoard(t *testing.T, s *Store, mac, nm string) error {
+	t.Helper()
+	if err := s.CheckNameFree(mac, nm); err != nil {
+		return err
+	}
+	clean, err := CleanName(nm)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.NoteDeviceName(mac, clean)
+	return err
+}
+
 const macA = "44bd8d782618"
 const macB = "aabbcc112233"
+const macC = "ddeeff556677"
 
 func TestTheFleetIsKeyedByMACAndSurvivesADHCPRebind(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
-	if err := s.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, s, macA, "Hall"); err != nil {
 		t.Fatalf("name: %v", err)
 	}
 
@@ -67,11 +85,11 @@ func TestOneNameCannotBelongToTwoBoards(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
 	observe(t, s, macB, "192.168.2.32")
-	if err := s.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, s, macA, "Hall"); err != nil {
 		t.Fatalf("first name: %v", err)
 	}
 
-	err := s.SetName(macB, "Hall")
+	err := nameBoard(t, s, macB, "Hall")
 	if err == nil {
 		rows := s.All()
 		t.Fatalf("two boards accepted one name; the fleet would not be able to tell them apart: %+v", rows)
@@ -81,10 +99,10 @@ func TestOneNameCannotBelongToTwoBoards(t *testing.T) {
 	}
 
 	// The refusal must not be a permanent lock: rename the first, and the second works.
-	if err := s.SetName(macA, "Study"); err != nil {
+	if err := nameBoard(t, s, macA, "Study"); err != nil {
 		t.Fatalf("renaming the first board: %v", err)
 	}
-	if err := s.SetName(macB, "Hall"); err != nil {
+	if err := nameBoard(t, s, macB, "Hall"); err != nil {
 		t.Errorf("the name stayed claimed after its holder gave it up: %v", err)
 	}
 }
@@ -95,10 +113,10 @@ func TestNamesAreComparedNotSpelled(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
 	observe(t, s, macB, "192.168.2.32")
-	if err := s.SetName(macA, "  The   Hall  "); err != nil {
+	if err := nameBoard(t, s, macA, "  The   Hall  "); err != nil {
 		t.Fatalf("name: %v", err)
 	}
-	if err := s.SetName(macB, "the hall"); err == nil {
+	if err := nameBoard(t, s, macB, "the hall"); err == nil {
 		t.Error(`"the hall" and "The Hall" were accepted as two names for two boards`)
 	}
 }
@@ -121,10 +139,10 @@ func TestTwoBoardsThatShareAnInstanceAreBothFlagged(t *testing.T) {
 		}
 	}
 	// Naming them apart is exactly what the flag exists to provoke, so it must clear it.
-	if err := s.SetName(one, "Hall clock"); err != nil {
+	if err := nameBoard(t, s, one, "Hall clock"); err != nil {
 		t.Fatalf("name: %v", err)
 	}
-	if err := s.SetName(two, "Bed clock"); err != nil {
+	if err := nameBoard(t, s, two, "Bed clock"); err != nil {
 		t.Fatalf("name: %v", err)
 	}
 	for _, r := range s.All() {
@@ -188,36 +206,39 @@ func TestTwoBoardsAtOneAddressAreBothFlaggedAndNeitherIsDialable(t *testing.T) {
 	}
 }
 
-// The cable is the strongest evidence the hub has. An announcement must not be able to
-// move a board the hub read off its own chip.
-func TestACableReadIsNotOvervotedByAPacket(t *testing.T) {
+// The address a board announces wins, unconditionally. What used to stand here refused
+// to move the address of a board the hub had read off a chip, which blocked the ordinary
+// case of a board flashed on the bench and put on the network: the operator had to delete
+// and re-add an entry for a rebind the store should have followed itself. A confirm now
+// records presence, not a frozen address.
+func TestAnAnnounceMovesTheAddressEvenAfterAConfirm(t *testing.T) {
 	s := newTest()
-	if _, err := s.MarkCable(macA); err != nil {
-		t.Fatalf("cable: %v", err)
+	if _, err := s.Confirm(macA); err != nil {
+		t.Fatalf("confirm: %v", err)
 	}
-	s.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.2.31", Port: 80})
-
-	_, err := s.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.9.9", Port: 80})
-	if err == nil {
-		t.Fatal("a packet moved a board the hub had read over USB")
+	observe(t, s, macA, "192.168.2.31")
+	if _, err := s.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.9.9", Port: 80}); err != nil {
+		t.Fatalf("an announce was refused after a confirm: %v", err)
 	}
 	row, _ := s.ByMAC(macA)
-	if row.IP != "192.168.2.31" {
-		t.Errorf("the cable-verified address was replaced by a claim: %s", row.IP)
+	if row.IP != "192.168.9.9" {
+		t.Errorf("the announced address did not win: %s", row.IP)
 	}
-	if !strings.Contains(row.Note, "USB") {
-		t.Errorf("the refusal does not say why it outranks the packet: %q", row.Note)
+	// A confirmed board that has never announced is still a row, carrying no address.
+	if _, err := s.Confirm(macB); err != nil {
+		t.Fatalf("confirm B: %v", err)
 	}
-	// A cable row is still live without announcing, or a bench orb with no radio
-	// management would fall off the fleet between console reads.
-	if len(s.All()) != 1 {
-		t.Errorf("the cable-only board left the fleet: %+v", s.All())
+	if r, ok := s.ByMAC(macB); !ok || r.IP != "" {
+		t.Errorf("a confirm must create an address-less row, not none at all: %+v ok=%v", r, ok)
+	}
+	if len(s.All()) != 2 {
+		t.Errorf("a confirmed board fell out of the fleet: %+v", s.All())
 	}
 }
 
 func TestNamingABoardNobodyHasMetIsRefused(t *testing.T) {
 	s := newTest()
-	if err := s.SetName(macB, "Ghost"); err == nil {
+	if err := nameBoard(t, s, macB, "Ghost"); err == nil {
 		t.Fatal("the fleet accepted a name for a board it never met; that phantom outlives the typo")
 	}
 }
@@ -252,13 +273,13 @@ func TestAnInstanceThatContradictsItsMACIsRefused(t *testing.T) {
 func TestNamesAreBoundedAndMarkupFree(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
-	if err := s.SetName(macA, strings.Repeat("x", MaxName+1)); err == nil {
+	if err := nameBoard(t, s, macA, strings.Repeat("x", MaxName+1)); err == nil {
 		t.Error("an over-long name was accepted; the card and the file disagree about its length")
 	}
-	if err := s.SetName(macA, "<script>Hall"); err == nil {
+	if err := nameBoard(t, s, macA, "<script>Hall"); err == nil {
 		t.Error("a name carrying markup was accepted into a file the hub writes")
 	}
-	if err := s.SetName(macA, "Hall\x01"); err == nil {
+	if err := nameBoard(t, s, macA, "Hall\x01"); err == nil {
 		t.Error("a control byte was accepted into a name")
 	}
 }
@@ -285,18 +306,6 @@ func TestForgettingReturnsTheAddressesToRevoke(t *testing.T) {
 	}
 }
 
-func TestRoomsMayRepeatAndNamesMayNot(t *testing.T) {
-	s := newTest()
-	observe(t, s, macA, "192.168.2.31")
-	observe(t, s, macB, "192.168.2.32")
-	if err := s.SetRoom(macA, "Hall"); err != nil {
-		t.Fatalf("room: %v", err)
-	}
-	if err := s.SetRoom(macB, "Hall"); err != nil {
-		t.Errorf("two boards in one room was refused: %v", err)
-	}
-}
-
 func TestRowsExpireOnSilence(t *testing.T) {
 	now := base
 	s := New(Config{Now: func() time.Time { return now }, Live: 6 * time.Minute})
@@ -319,10 +328,20 @@ func TestARestoredRowIsNotLiveUntilItSpeaksAgain(t *testing.T) {
 	now := base
 	first := New(Config{Now: func() time.Time { return now }, Live: 6 * time.Minute})
 	first.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.2.31", Port: 80, At: now})
-	if err := first.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, first, macA, "Hall"); err != nil {
 		t.Fatalf("name: %v", err)
 	}
-	saved := first.Snapshot()
+	// Round-trip through JSON, the way the state file actually persists a snapshot: that
+	// boundary is what strips the fields the store no longer owns, so an in-memory copy
+	// would hide the very behavior under test.
+	b, err := json.Marshal(first.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var saved []Orb
+	if err := json.Unmarshal(b, &saved); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	// Three hours and no announcements: the launch must not present the fleet as present.
 	later := now.Add(3 * time.Hour)
@@ -340,31 +359,76 @@ func TestARestoredRowIsNotLiveUntilItSpeaksAgain(t *testing.T) {
 	}
 	cold.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.2.31", Port: 80, At: later})
 	rows := cold.All()
-	if len(rows) != 1 || rows[0].Name != "Hall" {
-		t.Errorf("the name did not survive the restart: %+v", rows)
+	if len(rows) != 1 {
+		t.Fatalf("the row did not come back live: %+v", rows)
+	}
+	// The name rides in the file as a CACHE, and this is what it is for: the row reads
+	// "Hall" at first paint instead of a bare MAC, without the hub waiting on a board
+	// that may be in a drawer. The next device read settles the copy; the file never
+	// overrules it.
+	if rows[0].Name != "Hall" {
+		t.Errorf("the cached name did not survive the restart: %q", rows[0].Name)
+	}
+	if _, _, err := cold.NoteDeviceName(macA, "Hall"); err != nil {
+		t.Fatalf("the device word would not fold back in: %v", err)
+	}
+	if r, _ := cold.ByMAC(macA); r.Name != "Hall" {
+		t.Errorf("the name did not return from the device read: %+v", r)
 	}
 }
 
 func TestRestoreRefusesAHandEditedFile(t *testing.T) {
 	s := newStore()
 	n := s.Restore([]Orb{
-		{MAC: "not-a-mac", Name: "Evil"},
+		{MAC: "not-a-mac", Name: "Evil", IP: "192.168.2.9"},
 		{MAC: macA, Name: "Hall", IP: "evil.example.com"},
+		{MAC: macB, Name: "Cable-only"},
+		{MAC: macC, Name: strings.Repeat("x", MaxName+1), IP: "192.168.2.10"},
 	})
 	if n != 1 {
-		t.Fatalf("restored %d rows; the non-hex MAC should have been dropped", n)
+		t.Fatalf("restored %d rows: a non-hex MAC, a hostname address, and an address-less "+
+			"entry are all not book rows, and only the clean row should stand", n)
 	}
-	row, ok := s.ByMAC(macA)
+	// Read it unfiltered: Restore deliberately does not stamp presence, so a restored
+	// row is not live on the strength of a file, and ByMAC would hide the very thing this
+	// test checks — that the file never reached the rows at all.
+	if _, ok := s.Look(macA); ok {
+		t.Error("a row whose address was a hostname was restored; the entry is its address, " +
+			"and an address book row that cannot be dialed is the cable phantom this store " +
+			"exists to stop")
+	}
+	if _, ok := s.Look(macB); ok {
+		t.Error("a row with no address at all came back; the address tier must not resurrect " +
+			"a bench fact as a destination")
+	}
+	row, ok := s.Look(macC)
 	if !ok {
-		// live only because Restore stamped LastSeen: force it
-		s.Observe(Observation{MAC: macA, Instance: instanceFor(macA), IP: "192.168.2.31", Port: 80})
-		row, ok = s.ByMAC(macA)
-		if !ok {
-			t.Fatal("the good row did not come back")
-		}
+		t.Fatal("the clean row did not come back")
 	}
-	if row.IP != "" {
-		t.Errorf("a hostname was restored into the address the hub dials: %s", row.IP)
+	if row.Name != "" {
+		t.Errorf("an over-long hand-edited name was kept (%d bytes); the cache is dropped and "+
+			"the board re-states it", len(row.Name))
+	}
+}
+
+// Snapshot is the book, and the book is addresses. A board the hub only knows from a
+// cable — presence confirmed, nothing to dial — must not ride into the file and come
+// back as a remembered row whose lead has long been pulled.
+func TestSnapshotKeepsAddressesAndNotBenches(t *testing.T) {
+	s := newStore()
+	if _, err := s.Confirm(macA); err != nil {
+		t.Fatal(err)
+	}
+	s.Observe(Observation{MAC: macB, Instance: instanceFor(macB), IP: "192.168.2.44", Port: 80, At: base})
+	if err := nameBoard(t, s, macB, "Den"); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap) != 1 || snap[0].MAC != macB {
+		t.Fatalf("snapshot %+v: the address-less cable row must not persist", snap)
+	}
+	if snap[0].Name != "Den" {
+		t.Errorf("the name tag did not ride with the address: %+v", snap[0])
 	}
 }
 
@@ -400,7 +464,7 @@ func TestClaimedByAnswersForTheLiveRowsOnly(t *testing.T) {
 func TestANameFromTheDeviceOverrulesTheHubsOwn(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
-	if err := s.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, s, macA, "Hall"); err != nil {
 		t.Fatalf("hub-side name: %v", err)
 	}
 
@@ -438,7 +502,7 @@ func TestANameFromTheDeviceThatCollidesIsKeptAndFlagged(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
 	observe(t, s, macB, "192.168.2.32")
-	if err := s.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, s, macA, "Hall"); err != nil {
 		t.Fatalf("first name: %v", err)
 	}
 
@@ -495,7 +559,7 @@ func TestThePreCheckPredictsSetNameAndWritesNothing(t *testing.T) {
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
 	observe(t, s, macB, "192.168.2.32")
-	if err := s.SetName(macA, "Hall"); err != nil {
+	if err := nameBoard(t, s, macA, "Hall"); err != nil {
 		t.Fatalf("first name: %v", err)
 	}
 
@@ -537,7 +601,7 @@ func TestCleanNameReturnsWhatSetNameWouldStore(t *testing.T) {
 	}
 	s := newTest()
 	observe(t, s, macA, "192.168.2.31")
-	if err := s.SetName(macA, "  Hall   Clock  "); err != nil {
+	if err := nameBoard(t, s, macA, "  Hall   Clock  "); err != nil {
 		t.Fatalf("SetName: %v", err)
 	}
 	if row, _ := s.ByMAC(macA); row.Name != clean {

@@ -53,7 +53,6 @@ type discoveredBody struct {
 			Dialable  bool     `json:"dialable"`
 			Refusal   string   `json:"refusal"`
 			Name      string   `json:"name"`
-			Room      string   `json:"room"`
 			Cable     bool     `json:"cable"`
 			OnCable   bool     `json:"onCable"`
 			Key       string   `json:"key"`

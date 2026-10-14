@@ -2018,3 +2018,51 @@ interference = an `orb_jobs_post` arena copy of the av-kit bank (1,173,563 B)
 running while `display_bench_phases_us()` samples the hook/dma/te phases before,
 during, after. (5) Only then does D30 get a ruling, and §1.2b's seam is where its
 consequences land.
+
+### 16.1 Correction, same night: the card is in; the wall is one 4 KB allocation
+
+The owner's bench note — the orb has its SD card — is right, and §16's blocker 1
+was an inference from boot lines that a later witness contradicts. The
+`send_cid 0x101` triple is not an empty slot: it is the boot's DMA squeeze —
+`post-httpd_start dma_free=1883` cannot give the sdmmc driver even its 125-byte
+command buffer, and the retry throttle makes the boot attempt a single pass. The
+same board at uptime 20 s answers `POST /api/v1/sd/rescan` with a *transferred*
+53-byte body: `{"mounted":true,"card":"SD16G SDHC 29.4GB @20000kHz"}`. Seated,
+FAT32, mounting at the top clock rate as soon as the boot squeeze has passed.
+
+What actually stops M5 is one measured number, not two physical conditions:
+
+- The upload route's `orb_theme_upload_begin` → `ensure_chunk` needs a 4,096 B
+  **internal** buffer — SPI-SD is its source and sink, PSRAM cannot serve it — and
+  the verify path reserves it again before any copy. Card-install and upload share
+  the allocation, so every install door is gated on it.
+- The board's steady state after association: `sta-connected internal free=8,139
+  largest=3,328` (orb_net's own heap line). 3,328 < 4,096. The upload answered
+  `507 out of memory for the card read buffer` — clean, logged, config server
+  alive. The queue-200 family appeared a third time en route: an install for an
+  absent id returned `200 {"state":"installing"}` and the serial said
+  `install: no such theme on the card`, `job done, 864 B stack never used`.
+
+§16's blocker 2 shrinks with the same evidence: the body stall has a size
+threshold. Bodies of 50, 53 and 63 B transferred in 0.1–2.8 s all evening; the
+~1 KB status body stalled at 25 s. "Every size" was wrong, and the arms care:
+Arm A's trigger and response are readable today; only the list/status reads are
+not, and the arm's timings can come off serial anyway. The card's own content
+got one line of the truth on the way: the scan keeps **0 of 4** `*.orbtheme` —
+four files present, all refused by the validator — and the per-file reasons ride
+the `/api/v1/sd` body that stalls, so tonight they stay unknown.
+
+**Checklist steps 1–2, superseded.** The wall is not seating or pinning. The
+next session: (1) give `ensure_chunk` a granted-size fallback — 4,096, else
+2,048, else 1,024, into a new `s_chunk_bytes` the eight clamp sites read instead
+of the `CHUNK_BYTES` constant (measured: lines 745/820/832/1076/1182/1183/1205/
+1334/1345 of `orb_theme.c`; the file alone changes, the copy loops already treat
+the chunk size as a variable); (2) rebuild, re-flash, re-run the boot audit;
+(3) upload `/tmp/m5_avkit.orbtheme` — built from the committed av-kit source
+this session, FORMAT 2, 1,177,659 B, host-verified, id `5eb1ed3ae931` — and re-bake
+a second bundle for the flip's two-file precondition; (4) require a transferred
+status body before reading the `layers` field; (5) run `/tmp/m5_run.sh`, which
+now does lease→rescan→upload→install with the serial epoch as the clock, so a
+stalled response body cannot lie about any step. D30 stays unrationalised; its
+blocker is now named in bytes, and the honest fix is one fallback allocation in
+the theme module's own file.

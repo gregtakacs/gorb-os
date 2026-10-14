@@ -197,6 +197,15 @@ SETTS = [dict(id="city", type="string", def_str="Denver"),
          dict(id="alarm", type="toggle", default=1)]
 GEOM = bytes((i * 7) & 0xFF for i in range(4 * 10))       # 10 words, opaque
 ART = b""                                                 # D21: none ships
+# P5b (D23): the sentinel's table carries one row of every shape the format can
+# express — an owner-scoped slot, a required global one, and a hand with a non-square
+# box — so the file-level round trip exercises the offset arithmetic against a table
+# whose size is neither zero nor a round number, and a writer that misplaced the
+# geometry blob by one row would trip on the geometry CRC rather than pass.
+ASSETS = [dict(name="dial", cls="sprite", x=24, y=24, w=200, h=200),
+          dict(name="bg", cls="plate", ns="global", required=1,
+               x=0, y=0, w=466, h=466),
+          dict(name="hour", cls="hand", x=224, y=120, w=8, h=104)]
 
 D = tempfile.mkdtemp(prefix="orbapp-")
 PATH = os.path.join(D, "weather.orbapp")
@@ -205,7 +214,7 @@ n = A.write_container(PATH, SENT["id"], SENT["title"], caps=SENT["caps"],
                       art_req=SENT["art_req"],
                       period_ms=SENT["period_ms"], counts=SENT["counts"],
                       serial=SENT["serial"], baked_ms=SENT["baked_ms"],
-                      behaviour_kind=0xABCD)
+                      behaviour_kind=0xABCD, assets=ASSETS)
 h, st, geom, art = A.read_container(PATH)
 
 FIELDS = (("fmt", A.FORMAT), ("abi", A.GEOM_ABI), ("hdr_size", A.HDR_WORDS * 4),
@@ -234,13 +243,38 @@ check("every settings descriptor round-trips its four bounds",
                   def_str="")], st)
 check("a negative min survives the sign through the wire (int32, not u32)",
       st[1]["min"] == -720 and st[1]["default"] == -1, st[1])
+# ---- P5b: the declared table through the whole file ------------------------
+# Compared against the INPUT and not against a restatement of it: the row that comes
+# back must be the row that went in, namespace and box included, or the writer and
+# its own reader agree on a shape the device will not see.
+check("the asset count reaches the header as its own word",
+      h["n_assets"] == len(ASSETS), "%d vs %d" % (h["n_assets"], len(ASSETS)))
+check("every asset row round-trips its four fields",
+      [(r["name"], r["cls"], r["ns"], r["required"]) for r in h["assets"]] ==
+      [(r["name"], r["cls"], r.get("ns", "owner"), r.get("required", 0))
+       for r in ASSETS], h["assets"])
+check("a declared box survives the wire unchanged",
+      [(r["x"], r["y"], r["w"], r["h"]) for r in h["assets"]] ==
+      [(r["x"], r["y"], r["w"], r["h"]) for r in ASSETS],
+      [(r["x"], r["y"], r["w"], r["h"]) for r in h["assets"]])
+check("the reader assembles an owner reference from the file's own slug",
+      h["assets"][0]["ref"] == "weather/dial", h["assets"][0].get("ref"))
+check("the global namespace comes back without the owner's slug on it",
+      h["assets"][1]["ref"] == "global/bg", h["assets"][1].get("ref"))
+check("the asset table lies between the settings and the geometry",
+      h["asset_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4
+      and h["geom_off"] == h["asset_off"] + len(ASSETS) * A.ASSET_WORDS * 4,
+      "%d / %d / %d" % (h["setting_off"], h["asset_off"], h["geom_off"]))
+check("the table's own bytes do not push the geometry blob",
+      geom == GEOM, "the geometry read back damaged")
 check("the file is the sum of its declared parts, no stray bytes",
       n == h["art_off"] + h["art_size"], "%d vs %d" % (n, h["art_off"] + h["art_size"]))
 check("the payload starts sector-aligned", h["art_off"] % A.SECTOR == 0,
       hex(h["art_off"]))
 check("the settings table sits right after the header", h["setting_off"] == A.SET_OFF)
-check("the geometry follows the settings table exactly",
-      h["geom_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4,
+check("the geometry follows the asset table exactly (ABI 2)",
+      h["geom_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4
+                       + len(ASSETS) * A.ASSET_WORDS * 4,
       hex(h["geom_off"]))
 check("the container is bigger than a bare header only because of its geometry",
       n > A.HDR_BYTES and h["art_size"] == 0 and h["art_crc"] == 0)
@@ -372,6 +406,71 @@ expect_refuse("a beat past a day is refused (say 0 instead)",
               lambda: A._period(A.BEAT_MAX_MS + 1))
 expect_refuse("a declared art need past the bound is refused as a mis-count",
               lambda: A._art_req(A.ART_BYTES_MAX + 4))
+# ---- P5b: the writer's own asset-table door (D23, D26, D31) -----------------
+# Each refusal names the field it refuses, and the vector passes `wants` so a
+# neighbour rule cannot take the credit. The C reader re-applies every one of these
+# to bytes it did not write, and tools/host_orbapp_reader_test.py drives that side.
+ROW = dict(name="dial", cls="sprite", x=8, y=8, w=16, h=16)
+check("a legal row packs to the row's word count",
+      len(A.pack_assets([ROW], "weather")) == A.ASSET_WORDS * 4)
+check("an empty table is the empty string and not a zero-length row",
+      A.pack_assets([], "weather") == b"")
+check("a row's namespace is a word and not a string a caller pattern-matches",
+      A.unpack_assets(A.pack_assets(
+          [dict(ROW, ns="global")], "weather"), 1)[0]["ns"] == "global")
+expect_refuse("a class outside the frozen vocabulary is refused by the class rule",
+              lambda: A.check_assets([dict(ROW, cls="bitmap")]), wants="class")
+expect_refuse("a class named by number is refused, not coerced",
+              lambda: A.check_assets([dict(ROW, cls=1)]), wants="class")
+expect_refuse("a namespace other than owner or global is refused by name",
+              lambda: A.check_assets([dict(ROW, ns="weather")]), wants="namespace")
+expect_refuse("an uppercase slot name is refused as a reference, not downcased",
+              lambda: A.check_assets([dict(ROW, name="Dial")]), wants="lowercase")
+expect_refuse("a slot name over the row's field is refused with its own bound",
+              lambda: A.check_assets([dict(ROW, name="a" * (A.ASSET_NAME_MAX))]),
+              wants="1..%d" % (A.ASSET_NAME_MAX - 1))
+expect_refuse("a slash inside a slot name is refused: it is the separator",
+              lambda: A.check_assets([dict(ROW, name="a/b")]), wants="lowercase")
+expect_refuse("a box off the right edge is refused and never clipped",
+              lambda: A.check_assets([dict(ROW, x=A.PANEL, w=1)]), wants="panel")
+expect_refuse("a negative coordinate is refused as a bake that lost a sign",
+              lambda: A.check_assets([dict(ROW, y=-8)]), wants="panel")
+expect_refuse("a required flag that is not a bit is refused",
+              lambda: A.check_assets([dict(ROW, required=2)]), wants="one bit")
+expect_refuse("one row past the table is refused before the bytes exist",
+              lambda: A.check_assets([ROW] * (A.ASSET_MAX + 1)), wants="holds")
+expect_refuse("a non-integer box is refused as a count and not coerced",
+              lambda: A.check_assets([dict(ROW, w="16")]), wants="count")
+# The reference bound is the row's own limit crossed with the slug's. Worked out it
+# is unreachable: the field is ORB_ASSET_OWNER_MAX + 1 + ORB_ASSET_NAME_MAX, the row's
+# name check caps the name at ORB_ASSET_NAME_MAX - 1, and the slug's own check caps it
+# at ORB_ASSET_OWNER_MAX, so the widest legal pair is `23 + 1 + 11 + 1` = the field
+# exactly. pack_assets' guard therefore has no input that reaches it, which is the
+# good outcome and worth pinning: the pair is checked HERE, where a violation is a
+# message, rather than in the resolver, where it would be a silent truncation on the
+# LVGL task. What the vector proves is that the row's bound fires and not the
+# reference's, so the guard cannot be quietly replaced by the overflow it guards.
+expect_refuse("the row's own name bound fires before any reference overflow can",
+              lambda: A.pack_assets(
+                  [dict(ROW, name="a" * A.ASSET_NAME_MAX)], "z" * 23),
+              wants="1..%d" % (A.ASSET_NAME_MAX - 1))
+check("the widest reference the field holds is accepted at the boundary",
+      len(A.pack_assets([dict(ROW, name="a" * (A.ASSET_NAME_MAX - 1))],
+                        "z" * 23)) == A.ASSET_WORDS * 4)
+check("and that boundary is the field's own size, to the byte",
+      len(A.asset_ref(dict(ROW, name="a" * (A.ASSET_NAME_MAX - 1)), "z" * 23)) + 1
+      == A.ASSET_REF_MAX, A.ASSET_REF_MAX)
+expect_refuse("a table written without the owner it declares cannot be packed",
+              lambda: A.write_container(os.path.join(D, "orphan.orbapp"), "orphan",
+                                        "Orphan", assets=[dict(ROW, ns="bogus")]),
+              wants="namespace")
+check("the row's required and namespace bytes do not collide",
+      (struct.unpack("<I", A.pack_assets([dict(ROW, required=1, ns="global")],
+                                         "weather")[0:4])[0] & 0xFFFF00) == 0x010100,
+      hex(struct.unpack("<I", A.pack_assets([dict(ROW, required=1, ns="global")],
+                                            "weather")[0:4])[0]))
+check("unpack reads a signed pair back as signed",
+      A.unpack_assets(A.pack_assets([dict(ROW, x=0, y=0)], "w"), 1)[0]["y"] == 0)
 check("the old slot size itself is still declarable (the bound is inclusive)",
       A._art_req(A.ART_BYTES_MAX) == A.ART_BYTES_MAX)
 check("a D21 declaration with no payload is the normal shape, accepted",
@@ -398,7 +497,8 @@ expect_refuse("an inverted ABI range is refused (no board could install it)",
                                     (0, 0, 0, 0), b"", 0, abi=(3, 2)))
 expect_refuse("an ABI range excluding this writer is refused (C4)",
               lambda: A.pack_header(A.app_id_of("pin"), "pin", "P", 0, 0, 0,
-                                    (0, 0, 0, 0), b"", 0, abi=(2, 9)))
+                                    (0, 0, 0, 0), b"", 0,
+                                    abi=(A.GEOM_ABI + 1, A.GEOM_ABI + 9)))
 expect_refuse("a filled sig word is refused while signing is unimplemented (C3)",
               lambda: A.pack_header(A.app_id_of("pin"), "pin", "P", 0, 0, 0,
                                     (0, 0, 0, 0), b"", 0, sig=1))

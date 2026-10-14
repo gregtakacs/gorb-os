@@ -216,7 +216,17 @@ by by-id path, not number.
   (`curl -w '%{size_download}'` > 0, body to a file) before it trusts a reading,
   and a bench day whose boot log shows `esp-aes: Failed to allocate memory` or
   several BSSIDs across retries (band steering eating the ~2 KB DMA pool) is a day
-  the HTTP routes do not exist — capture serial instead, and reschedule.
+  the *large-body* routes do not exist — the same board transferred 50-63 B bodies
+  in well under a second all evening while the ~1 KB status body stalled, so
+  trigger-and-small-response steps stay usable and big-body reads go to serial.
+- **A queued 200 is not a job result, and a starved boot line is not physical
+  state.** `POST /api/v1/sd/install` answers `200 {"state":"installing"}` for an
+  id that is nowhere on the card; the worker then logs the truth (`install: no
+  such theme on the card`, `job done`) seconds later. Read the worker's serial
+  line, not the queue's. Same family: a boot-time `send_cid 0x101` triple is the
+  DMA budget at that instant, not an empty slot — the retry-on-demand route is
+  the witness for physical state. §16.1 is the named lesson: both misreadings
+  happened in one session and each produced a wrong blocker in the record.
 
 Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how

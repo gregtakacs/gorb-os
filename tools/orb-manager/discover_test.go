@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -262,6 +263,260 @@ func TestCheckinCadenceMatchesFirmware(t *testing.T) {
 // builder it judges with, so these tests build wire bytes through the same
 // transcription of the C codec the fake ships. The alternative — literal hex — would
 // pin the hub to a snapshot of the encoder rather than to the encoder.
+
+// ---- the pushed card: /api/orbs/stream --------------------------------------------
+//
+// The card moves when an orb checks in. These tests drive that end to end: a real httptest
+// listener, the real browser the hub ships (s.newBrowser, wiring and all), and a real
+// announcement from internal/orbfake fed in through Ingest — the same call the socket pump makes.
+// A test cannot pass here by firing the callback by hand, which is the difference between testing
+// the push and testing a function that pushes.
+
+// feed is one open /api/orbs/stream and the reader that owns its bytes. The bufio.Reader lives on
+// the feed rather than inside whichever assertion is reading, because the hub flushes a frame the
+// moment a check-in lands and two frames can arrive in one chunk: a reader built per call throws
+// the second one away, and the test then waits for a frame that already came.
+type feed struct {
+	s   *Server
+	b   *orbmdns.Browser
+	res *http.Response
+	// lines is the stream's lines, pumped by one goroutine for the life of the feed. A reader
+	// per assertion would fight over the same buffered body: the second assertion to read the
+	// stream would find the first one's goroutine still holding it, and the test would report a
+	// card that never moves when the fault is the harness.
+	lines chan string
+}
+
+// openFeed starts a hub with its own browser wired up and opens the stream against it, with no
+// token presented: the route answers the same bytes the unguarded read does, so it is guarded the
+// same way, which is to say not at all.
+func openFeed(t *testing.T) *feed {
+	t.Helper()
+	s := newHub()
+	b := s.newBrowser()
+	s.setDiscovery(b, "")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	srv := httptest.NewServer(mux)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/orbs/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/orbs/stream: %v", err)
+	}
+	t.Cleanup(func() { _ = res.Body.Close(); srv.Close(); _ = b.Close() })
+	if res.StatusCode != 200 {
+		t.Fatalf("the stream answered %d, not 200", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "application/x-ndjson" {
+		t.Errorf("the stream is served as %q, not the line format the client reads", got)
+	}
+	f := &feed{s: s, b: b, res: res, lines: make(chan string, 32)}
+	go f.pump(bufio.NewReader(res.Body))
+	return f
+}
+
+// pump reads the stream's non-empty lines into the feed's channel until the body ends. One
+// goroutine for the life of the feed on one bufio.Reader: two readers over one body lose the
+// bytes the first buffered, and the loss looks exactly like a card that never moved.
+func (f *feed) pump(br *bufio.Reader) {
+	defer close(f.lines)
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if l = strings.TrimSpace(l); l != "" {
+			f.lines <- l
+		}
+	}
+}
+
+// frame reads the next data frame, skipping the keepalive comments the way the page does, and
+// fails rather than blocking forever: a card that never moved is the finding, not the wait.
+func (f *feed) frame(t *testing.T) discoveredBody {
+	t.Helper()
+	for {
+		select {
+		case l, ok := <-f.lines:
+			if !ok {
+				t.Fatal("the stream closed before it answered")
+			}
+			if strings.HasPrefix(l, ":") {
+				continue
+			}
+			var out discoveredBody
+			if err := json.Unmarshal([]byte(l), &out); err != nil {
+				t.Fatalf("frame is not the envelope the UI parses: %v (%s)", err, l)
+			}
+			if !out.OK {
+				t.Fatalf("frame came back not-ok: %s", l)
+			}
+			return out
+		case <-time.After(3 * time.Second):
+			t.Fatal("no frame within 3 s: the card did not move")
+		}
+	}
+}
+
+// staysQuiet asserts that nothing but comment lines arrives for the given wait. It is the only
+// way "a refresh that changed nothing pushed nothing" means anything: the absence of a frame is
+// only observable by waiting long enough for one to have shown up.
+func (f *feed) staysQuiet(t *testing.T, wait time.Duration) {
+	t.Helper()
+	deadline := time.After(wait)
+	for {
+		select {
+		case l, ok := <-f.lines:
+			if !ok {
+				return // the hub hung up; nothing is being pushed either
+			}
+			if strings.HasPrefix(l, ":") {
+				continue
+			}
+			if strings.Contains(l, `"orbs"`) {
+				t.Errorf("a check-in that changed nothing pushed a whole card: %.200s", l)
+				return
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// checkIn feeds one announcement into the hub's own browser through Ingest, which is the entry
+// point the socket pump uses. What moves the card is the packet, not a callback the test fired.
+func checkIn(t *testing.T, b *orbmdns.Browser, mac, ip, state string) {
+	t.Helper()
+	b.Ingest(announceFor(t, orbmdns.Candidate{MAC: mac, IP: ip, State: state, FW: "094fa22"}),
+		&net.UDPAddr{IP: net.ParseIP(ip), Port: orbmdns.Port})
+}
+
+// The claim the feature is named after: an orb checks in and the page moves. Not on a timer, and
+// not on a click — there is no button left to press.
+func TestCheckInMovesTheOpenCard(t *testing.T) {
+	f := openFeed(t)
+	if first := f.frame(t); len(first.Data.Orbs) != 0 {
+		t.Fatalf("the opening frame listed %d rows before anything announced", len(first.Data.Orbs))
+	}
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "normal")
+	second := f.frame(t)
+	if len(second.Data.Orbs) != 1 {
+		t.Fatalf("the check-in produced a frame with %d rows", len(second.Data.Orbs))
+	}
+	if second.Data.Orbs[0].MAC != "44bd8d782618" {
+		t.Errorf("the pushed row is mac %s", second.Data.Orbs[0].MAC)
+	}
+	if second.Data.Orbs[0].Dialable {
+		t.Error("a pushed row arrived already dialable, so the card would be granting by arriving")
+	}
+	// The same connection keeps moving: a second orb is a second frame, not a stream that served
+	// its one snapshot and stopped.
+	checkIn(t, f.b, "44bd8daabbcc", "192.168.2.35", "normal")
+	if third := f.frame(t); len(third.Data.Orbs) != 2 {
+		t.Fatalf("the second check-in produced %d rows", len(third.Data.Orbs))
+	}
+}
+
+// Every frame is what the read answers, so the page has one renderer and its first paint is not a
+// second code path. The comparison is on the decoded payload, which drops the one field that moves
+// by itself, so two answers microseconds apart have to agree on everything else.
+func TestStreamFrameIsWhatTheGetAnswers(t *testing.T) {
+	f := openFeed(t)
+	f.frame(t) // the opening snapshot; the frame under test is the one the check-in earns
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "normal")
+	pushed := f.frame(t)
+	polled := getDiscovered(t, f.s)
+	if !reflect.DeepEqual(pushed.Data, polled.Data) {
+		a, _ := json.Marshal(pushed.Data)
+		c, _ := json.Marshal(polled.Data)
+		t.Errorf("a row means one thing pushed and another polled:\n push %s\n  get %s", a, c)
+	}
+}
+
+// A refresh is not a change. The firmware re-announces every 60 s whether or not anything moved,
+// and a stream that counted that as news would repaint the page once a minute per orb forever —
+// the polling design with extra steps. The row still has to move when the orb's state differs, or
+// this rule is just a stream that quietly stopped working.
+func TestQuietCheckInPushesNoFrame(t *testing.T) {
+	f := openFeed(t)
+	f.frame(t)
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "normal")
+	f.frame(t)
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "normal")
+	f.staysQuiet(t, 500*time.Millisecond)
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "provisioning")
+	got := f.frame(t)
+	if len(got.Data.Orbs) != 1 || got.Data.Orbs[0].State != "provisioning" {
+		t.Errorf("an orb that began provisioning never reached the card: %+v", got.Data.Orbs)
+	}
+}
+
+// One slot per open page, and a page that stopped draining is skipped rather than waited on. A
+// blocking send here would let one hung browser tab stop the goroutine reading UDP 5353, which is
+// the hub going deaf on every orb on the LAN because one page stopped caring. This test drives the
+// fan-out directly rather than through a stream, because the thing under test is what happens when
+// nobody is reading.
+func TestWakeNeverWaitsOnASubscriber(t *testing.T) {
+	s := newHub()
+	stalled := s.subscribeOrbs()
+	another := s.subscribeOrbs()
+	for i := 0; i < 50; i++ {
+		done := make(chan struct{})
+		go func() { s.wakeOrbs(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("wakeOrbs blocked on a full slot, on wake %d", i)
+		}
+	}
+	select {
+	case <-stalled:
+	default:
+		t.Error("the first wake never reached the first subscriber")
+	}
+	select {
+	case <-another:
+	default:
+		t.Error("one slow page starved a second subscriber, so the fan-out is not independent")
+	}
+	s.unsubscribeOrbs(stalled)
+	s.omu.Lock()
+	n := len(s.orbSubs)
+	s.omu.Unlock()
+	if n != 1 {
+		t.Errorf("unsubscribing left %d subscribers, so a closed page would keep being woken", n)
+	}
+}
+
+// The route exists and takes one method. The unguarded half is proved by openFeed, which opens
+// this exact route with no token: what this pins is registration, because a page whose stream 404s
+// shows a card that never moves and says nothing about why.
+func TestStreamRouteShape(t *testing.T) {
+	s := newHub()
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/orbs/stream", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/orbs/stream -> %d, want 405: the route exists and takes one method", rec.Code)
+	}
+}
+
+// The hub is still a listener. Adding a pushed read must not be the occasion for reviving the
+// querier, so the old refusal is re-asserted here rather than left to the one test above: a stream
+// is a longer-lived way of saying what the cache already says, and nothing more.
+func TestStreamSendsNoQueryEither(t *testing.T) {
+	f := openFeed(t)
+	f.frame(t)
+	checkIn(t, f.b, "44bd8d782618", "192.168.2.34", "normal")
+	f.frame(t)
+	if _, ok := reflect.TypeOf(&orbmdns.Browser{}).MethodByName("Ask"); ok {
+		t.Error("orbmdns.Browser grew an Ask method back while the card was being made live")
+	}
+}
 
 // announceFor renders one candidate as the packet a browser would have to have heard
 // to produce it, which is how a test seeds a listing without a network.

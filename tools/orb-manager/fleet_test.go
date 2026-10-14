@@ -541,6 +541,16 @@ func TestReadingTheCardDoesNotExtendAGrant(t *testing.T) {
 	if aged() != before {
 		t.Error("GET /api/orbs extended a grant's life")
 	}
+	// The pushed card goes through the same builder, and gets asserted at that seam rather
+	// than over a socket: the security property is about what building a card does, and both
+	// transports call orbCard. A stream that renewed on read would let any same-origin page hold
+	// a dial open forever by leaving one tab pointed at the hub.
+	if _, v := s.orbCard(time.Now()); v == "" {
+		t.Error("orbCard returned no version, so the stream has nothing to dedupe frames with")
+	}
+	if aged() != before {
+		t.Error("building the card for the stream extended a grant's life")
+	}
 	// And the timer does, or the previous two assertions prove nothing.
 	s.reconcileFleet()
 	if aged() == before {

@@ -103,6 +103,22 @@ type Config struct {
 	// misses one refresh window under a busy radio task does not blink out of the
 	// list. Zero means the default.
 	Grace time.Duration
+	// OnChange is told that the cache moved, in words of one syllable and with no
+	// payload: the hub's half re-reads Candidates and decides whether the answer
+	// actually differs. It exists so the card follows the orb's check-in instead of
+	// asking about it on a timer, which is the same decision the hub made when it
+	// stopped querying — the device owns the rhythm, so the hub follows it rather
+	// than sampling it.
+	//
+	// It fires from the goroutine that read the datagram, at most once per datagram
+	// however many records that datagram carried, and never with the browser's lock
+	// held. It must not block and must not call back into the Browser: a hub that
+	// wants to stop a stream unsubscribes rather than stalling this one. The hub's
+	// implementation is a non-blocking send on a one-slot channel.
+	//
+	// Nil is the default and is complete: Candidates stays the source of truth, and
+	// a hub built without a callback simply re-reads on its own clock.
+	OnChange func()
 }
 
 const (
@@ -127,6 +143,14 @@ type Browser struct {
 	now   func() time.Time
 	logf  func(string, ...any)
 	grace time.Duration
+
+	// rev counts the cache mutations that could change what Candidates or Refusals
+	// answer. The wake-up path compares it across one datagram instead of threading
+	// a flag through the six places a record can land, which is what makes the two
+	// properties that matter fall out: a packet that half-parsed and changed nothing
+	// wakes nobody, and a check-in that carries all four records wakes the card once.
+	rev     uint64
+	onEvent func()
 }
 
 // NewBrowser returns an empty browser. A browser with no sockets still answers
@@ -151,8 +175,36 @@ func NewBrowser(cfg Config) *Browser {
 		now:     cfg.Now,
 		logf:    cfg.Logf,
 		grace:   cfg.Grace,
+		onEvent: cfg.OnChange,
 	}
 }
+
+// revision reads the mutation counter, and is separate from wokeUp because the
+// reading sites take it before the work and the firing sites compare it after.
+func (b *Browser) revision() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rev
+}
+
+// wokeUp fires OnChange when the cache moved since `before`. It takes no lock of
+// its own around the callback: every caller runs it after dropping the browser lock,
+// which is the whole reason a hub that stopped draining a wake-up cannot wedge the
+// reader goroutine that produces one.
+func (b *Browser) wokeUp(before uint64) {
+	if b.onEvent == nil || b.revision() == before {
+		return
+	}
+	b.onEvent()
+}
+
+// mark says the card's answer moved. Call it with b.mu held, at the mutation and
+// not at the callback: the counter is what lets a caller decide once per datagram
+// whether anything reached the page, and the six mutators below are the whole list
+// of what can. Adding a seventh without marking it costs one stale frame, which is
+// the failure mode OnChange was chosen to avoid, so TestEveryMutationWakes pins it
+// from the other side instead of trusting this comment.
+func (b *Browser) mark() { b.rev++ }
 
 // Start attaches sockets and reads them until ctx is cancelled. It owns what it is
 // handed: a socket that comes in here is closed on shutdown, because a hub that
@@ -212,6 +264,13 @@ func (b *Browser) pump(s Source) {
 // query would be a second, lazier orb on the LAN, and its cache-flush records
 // would overwrite the real one's in every browser's cache.
 func (b *Browser) Ingest(pkt []byte, from net.Addr) {
+	// One wake-up per datagram, taken before any of it lands and fired on the way
+	// out. Every mutator below does its own locking, so this deferred comparison is
+	// the only place the whole packet is judged, and it is what stops a check-in
+	// bundling PTR/SRV/TXT/A from nudging the card four times for one row.
+	before := b.revision()
+	defer func() { b.wokeUp(before) }()
+
 	src := ""
 	if from != nil {
 		src = from.String()
@@ -326,10 +385,15 @@ func (b *Browser) cacheHost(rec *Record, from string) {
 	// definition, and a record that arrived with the address before the TXT would
 	// otherwise have a promote() run pull the stale one out of that cache.
 	b.mu.Lock()
+	moved := false
 	for _, c := range b.byMAC {
 		if strings.EqualFold(HostnameFor(c.Instance), name) && c.IP != ip {
 			c.IP = ip
+			moved = true
 		}
+	}
+	if moved {
+		b.mark()
 	}
 	b.mu.Unlock()
 }
@@ -396,6 +460,7 @@ func (b *Browser) promote(instance string) {
 	c.From = p.from
 	c.LastSeen, c.Expires = now, now.Add(time.Duration(p.txt.TTL)*time.Second+b.grace)
 	delete(b.pending, instance)
+	b.mark()
 }
 
 // rejectLocked drops an instance that failed a check and keeps its reason.
@@ -405,6 +470,7 @@ func (b *Browser) rejectLocked(instance string, p *partial, why string) {
 	if len(b.refusals) > maxRefusalTail {
 		b.refusals = b.refusals[len(b.refusals)-maxRefusalTail:]
 	}
+	b.mark()
 	b.logf("orbmdns: refused %s: %s", instance, why)
 }
 
@@ -418,6 +484,7 @@ func (b *Browser) drop(instance string) {
 	for mac, c := range b.byMAC {
 		if c.Instance == instance {
 			delete(b.byMAC, mac)
+			b.mark()
 			b.logf("orbmdns: %s said goodbye", instance)
 		}
 	}
@@ -427,12 +494,19 @@ func (b *Browser) drop(instance string) {
 // already outlived. It dials nothing: answering "what orbs are on this network"
 // without opening a socket to any of them is the item.
 func (b *Browser) Candidates() []Candidate {
+	before := b.revision()
+	// Registered before the unlock defer, so LIFO ordering runs it after the lock is
+	// gone: a card built from this call is what fires the stream, and firing under the
+	// lock would let the hub's HTTP goroutine block the reader that holds it.
+	defer func() { b.wokeUp(before) }()
+
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for mac, c := range b.byMAC {
 		if now.After(c.Expires) {
 			delete(b.byMAC, mac)
+			b.mark()
 			b.logf("orbmdns: %s expired unheard", c.Instance)
 		}
 	}
@@ -473,5 +547,6 @@ func (b *Browser) refuse(name, from, reason string) {
 	if len(b.refusals) > maxRefusalTail {
 		b.refusals = b.refusals[len(b.refusals)-maxRefusalTail:]
 	}
+	b.mark()
 	b.logf("orbmdns: refused %q from %s: %s", name, from, reason)
 }

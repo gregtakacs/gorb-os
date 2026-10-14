@@ -550,6 +550,19 @@ The owner types nothing.
   costs up to one check-in interval, and `TestCheckinCadenceMatchesFirmware` pins the
   cadence the card promises to the firmware constant rather than to a comment.
 
+- **The card is pushed off the check-in, not polled (changed 2026-10-14, same item).** The
+  page holds `GET /api/orbs/stream` (NDJSON, frame body identical to `GET /api/orbs`) and the
+  hub answers it when `orbmdns` fires `Config.OnChange` and the card's fingerprint actually
+  moved. The Refresh button is gone, and so is the 20 s timer that supplemented it: with the
+  hub originating nothing, both only re-read a cache the hub was about to push anyway. Two
+  properties are load-bearing and pinned. A refresh the orb sends on schedule pushes nothing
+  (`TestQuietCheckInPushesNoFrame`), because the fingerprint excludes row age — otherwise the
+  page repaints once a minute forever and the push is a poll with a handshake. And reading
+  the card in any transport still cannot renew a dial (`TestReadingTheCardDoesNotExtendAGrant`),
+  so a long-lived connection is not a long-lived permission. The backstop is
+  `orbStreamResync` (2 min): upkeep pruning and USB-side fleet edits change the card without
+  a packet, so a re-answer on a timer stays, demoted to a safety net rather than the design.
+
 
 ### 5.3 The ladder
 

@@ -19,6 +19,10 @@
  * the credentials survive `nvs_flash_erase()`, which main.c still calls to
  * recover from a corrupt default NVS — with the driver's namespace and ours in
  * different partitions, that recovery can no longer cost the user their WiFi.
+ * The one thing that DOES erase both partitions on purpose is the serial
+ * `RESET ALL` (orb_net.c:net_factory_reset): a factory reset has to reach the
+ * driver's copy, or it leaves a passphrase on a board that is about to change
+ * hands. Surviving an accident is not the same as surviving a factory reset.
  *
  * The timezone lives in that same namespace under `tz`, for the same reason: it
  * is device config the owner set once, and reopening the case to recover a
@@ -62,6 +66,12 @@ bool orb_net_is_up(void);
  *  with no credentials, or a one-boot session requested by
  *  orb_net_request_provisioning(). */
 bool orb_net_is_provisioning(void);
+
+/** True when the orb is in the persistent AP-isolated mode: it serves its own open
+ *  SoftAP and web page and never associates with any Wi-Fi network, so the only way in
+ *  is that AP. The mode lives in NVS (orb.net "mode" = "ap") and survives reboot until
+ *  a MODE command (serial or page) changes it. */
+bool orb_net_ap_isolated(void);
 
 /**
  * D2: ask the NEXT boot to come up in provisioning even though credentials are

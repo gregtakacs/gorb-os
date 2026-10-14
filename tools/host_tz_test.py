@@ -74,6 +74,12 @@ jsons = lift(r"static bool json_str\(const char \*body.*?\n\}")
 # for ten minutes at a serial console.
 retry_defs = "\n".join(lift(rf"#define {k} +\d+ +/[^\n]*")
                        for k in ("NET_STA_RETRY_S", "NET_STA_RETRY_MAX_S"))
+# The NAME/MODE mirrors ride inside the lifted timezone block, so their sizes and
+# their NVS key must be lifted with them rather than hand-copied: NET_NAME_MAX is
+# the same 32 the hub enforces (orbfleet.MaxName), and a harness that typed its own
+# number would keep passing after the two halves stopped agreeing.
+name_mode_defs = "\n".join(lift(rf"#define {k} +(?:\d+|\"name\") +/[^\n]*")
+                           for k in ("NET_NAME_MAX", "NET_NAME_KEY", "NET_MODE_MAX"))
 retry_fn = lift(r"static uint32_t retry_delay_s\(unsigned attempt\).*?\n\}")
 # Which disconnects the orb caused itself, and which are the network saying no.
 # Lifted for the same reason as the ladder: both decide whether the rescue AP
@@ -286,6 +292,7 @@ harness = f"""
 #include <time.h>
 #define NET_TZ_MAX 64
 #define NET_TZ_KEY "tz"
+{name_mode_defs}
 #include <stdint.h>
 {retry_defs}
 {retry_fn}
@@ -727,6 +734,22 @@ int main(void)
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();
+    puts("== name/mode mirrors: sized to their own MAX, writable at the boundary ==");
+    /* s_name and s_mode arrive with the lifted timezone block. Two rules the shipped
+     * code depends on are pinned here rather than trusted: the name mirror must hold
+     * a full NET_NAME_MAX name with room for the NUL — the hub enforces the same 32
+     * and a mirror one byte short would clip a name the card already accepted, which
+     * reads as two different orbs depending on which surface you looked at — and the
+     * mode mirror must hold the longest value it can store, "sta". */
+    char full_name[NET_NAME_MAX + 1];
+    memset(full_name, 'n', NET_NAME_MAX);
+    full_name[NET_NAME_MAX] = '\\0';
+    snprintf(s_name, sizeof s_name, "%s", full_name);
+    snprintf(s_mode, sizeof s_mode, "%s", "sta");
+    int mirror_ok = (strlen(s_name) == (size_t)NET_NAME_MAX) && (strcmp(s_mode, "sta") == 0);
+    if (!mirror_ok) fails++;
+    printf("%-5s s_name holds %d bytes, s_mode holds \\"sta\\"\\n",
+           mirror_ok ? "ok" : "FAIL", NET_NAME_MAX);
     puts("== captive-portal DNS reply encoding ==");
     /* The A answer is what actually pops the phone's "Sign in to network" box;
      * AAAA/PTR must come back with the question echoed and NO answer so the

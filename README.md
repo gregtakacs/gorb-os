@@ -129,6 +129,13 @@ black. Any lit pixel is the panel's canvas holding another frame's art.
 - [x] SNTP for real time on DHCP lease, with the timezone as device config:
       NVS key `tz`, applied with `setenv`/`tzset`, served as a zone table by
       `/api/v1/config` and settable from the config page or during provisioning
+- [x] The orb's own name as device config: NVS key `name`, 32 printable ASCII
+      bytes, served by `/api/v1/status` and set by `POST /api/v1/name` or in the
+      join body. The DEVICE owns this string; the hub's fleet row keeps a copy of
+      it, so a deleted hub store or a reflash costs the orb its label only if the
+      write never landed. Printable ASCII only because the value is echoed into
+      JSON unescaped, and the device is the last thing standing between an attacker
+      and a forged key in its own replies.
 - [ ] Touch / IMU input
 - [ ] Multiple screens / theming
 - [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a

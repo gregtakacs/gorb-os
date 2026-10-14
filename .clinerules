@@ -199,6 +199,24 @@ by by-id path, not number.
   and exits 1 without flashing on a mismatch. The verdict goes to
   `/tmp/serflash-audit-<ORB_LABEL>.log` (per orb, so the two clones' audits
   never overwrite each other); `/tmp/serflash.sh` is a wrapper for it.
+- **A green flash audit proves bytes, not bootability.** The stamp audit checks
+  the image identity; it cannot see a budget. After the FIRST flash of any build
+  that adds static arrays of ~1 KB or more, serial-capture the boot and grep
+  `heap_init`, `post-httpd_start`, `httpd_start:` and `Failed to allocate` before
+  trusting anything else. P5.5 is the named lesson (`docs/app-platform-plan.md`
+  §16): 16 embedded 920 B layer tables = 14,720 B of `.bss`, host suite + compile +
+  link all green, and the board answered `httpd_start: ESP_ERR_HTTPD_TASK` — the
+  config server died while the dial kept drawing. The `(check LWIP_MAX_SOCKETS…)`
+  hint lies at this heap level; `internal free`/`largest` on the boot line is the
+  verdict. A new static table needs its sizeof quoted in the commit message.
+- **A 200 header is not a response.** A marginal radio can complete TLS-less
+  request headers in ~0.2 s and deliver zero body bytes for a minute: the bench's
+  2026-10-14 session saw `code=200 size=0` at 12-25 s on three routes while ping
+  answered at 30 ms. Any HTTP-dependent measurement must demand transferred bytes
+  (`curl -w '%{size_download}'` > 0, body to a file) before it trusts a reading,
+  and a bench day whose boot log shows `esp-aes: Failed to allocate memory` or
+  several BSSIDs across retries (band steering eating the ~2 KB DMA pool) is a day
+  the HTTP routes do not exist — capture serial instead, and reschedule.
 
 Anything needing a radio to *observe* (the popup, real DNS answer to a client)
 belongs in `tools/host_tz_test.py` by lifting the pure logic verbatim — see how

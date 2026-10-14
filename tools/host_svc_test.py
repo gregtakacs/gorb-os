@@ -272,6 +272,9 @@ bool gfx_prim_ctx_init(struct gfx_paint_ctx *pc, const orb_prim_arg_t *a,
 { (void)pc; (void)a; (void)plane; (void)plane_cap; (void)role; return false; }
 void *heap_caps_malloc(size_t n, uint32_t f) { (void)f; return malloc(n); }
 void heap_caps_free(void *p) { free(p); }
+static int g_caps_fail;                    /* arm: the next SPIRAM calloc says no */
+void *heap_caps_calloc(size_t n, size_t s, uint32_t f)
+{ (void)f; if (g_caps_fail) { g_caps_fail = 0; return 0; } return calloc(n, s); }
 int g_bank_calls;
 const uint8_t *art_bank_extra_ptr(int slot)
 {
@@ -830,8 +833,35 @@ int main(int argc, char **argv)
         CK("the owner has no door to close a free cap's rows",
            orb_svc_set_grant(G, CAP_UI, false) == ESP_ERR_INVALID_ARG
            && g_layers_wipe_calls == c0 + 1);
+        c0 = g_layers_set_calls;
+        S->layer_set(G, 0x1234, &d);
+        CK("suspend kept the table: generations survive, the set still reaches it",
+           g_layers_set_calls == c0 + 1);
+        int w1 = g_layers_wipe_calls;
         CK("forgetting the row wipes too",
-           orb_svc_forget_row(2) == ESP_OK && g_layers_wipe_calls == c0 + 2);
+           orb_svc_forget_row(2) == ESP_OK && g_layers_wipe_calls == w1 + 1);
+        /* The fix the board forced: the table is PSRAM, lazy at add, freed at
+         * forget. These are the paths that do not exist when it is embedded,
+         * and they are the reason the embedding died — an add that cannot pay
+         * must refuse a layer, never a config server. */
+        g_layers_refuses_rc = 0;
+        uint32_t r0 = orb_svc_layers_refused(G);
+        int s0 = g_layers_set_calls, t0 = g_layers_touch_calls, dl0 = g_layers_del_calls;
+        S->layer_set(G, 0x1234, &d); S->layer_touch(G, 0x1234, 0); S->layer_del(G, 0x1234);
+        CK("after forget the table is gone: set/touch/del refuse above it, counted",
+           g_layers_set_calls == s0 && g_layers_touch_calls == t0
+           && g_layers_del_calls == dl0 && orb_svc_layers_refused(G) == r0 + 3
+           && orb_svc_layers_live(G) == 0);
+        g_caps_fail = 1;
+        int a0 = g_layers_add_calls;
+        CK("PSRAM out at add: the entry refuses, counted, and the table never hears",
+           S->layer_add(G, &d) == -1 && g_layers_add_calls == a0
+           && orb_svc_layers_refused(G) == r0 + 4 && orb_svc_layers_live(G) == 0);
+        g_layers_add_rc = 0x202;
+        CK("the same add succeeds once the pool says yes",
+           S->layer_add(G, &d) == 0x202 && g_layers_add_calls == a0 + 1
+           && orb_svc_layers_refused(G) == r0 + 4
+           && orb_svc_layers_live(G) == g_layers_count_rc);
     }
 
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
@@ -858,6 +888,7 @@ HDRS = {
              "#define MALLOC_CAP_SPIRAM (1u << 11)\n"
              "#define MALLOC_CAP_8BIT   (1u << 2)\n"
              "void *heap_caps_malloc(size_t, uint32_t);\n"
+             "void *heap_caps_calloc(size_t, size_t, uint32_t);\n"
              "void heap_caps_free(void *);\n",
     "esp_timer.h": "#pragma once\n#include <stdint.h>\n"
                    "int64_t esp_timer_get_time(void);\n",

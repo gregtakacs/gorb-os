@@ -83,7 +83,14 @@ MAGIC      = 0x00415247        # 'G','R','A'. Deliberately unlike the theme's
                                # loader dies on the magic word rather than
                                # parsing as an app with a surprising name.
 FORMAT     = 1                 # this container layout; a reader refuses others
-GEOM_ABI   = 1                 # the geometry dialect this writer stamps
+GEOM_ABI   = 2                 # The dialect this writer stamps. 1 -> 2 is P5b's
+                               # asset table (D23): the geometry records did not
+                               # move, the vocabulary did, and D23 names THIS word
+                               # as the class enum's version so there is exactly one
+                               # number that says whether a dial can read a manifest.
+                               # C4's ladder refuses anything outside abi_min..abi_max,
+                               # so an app that needs a class this build cannot spell
+                               # dies with that sentence and not as a blank dial.
 SECTOR     = 4096              # payload alignment, as the theme path's is
 PAGE       = 65536             # the MMU page an art bank is cut on
 
@@ -168,7 +175,12 @@ W_ART_OFF    = W_GEOM_CRC  + 1
 W_ART_SIZE   = W_ART_OFF   + 1
 W_ART_CRC    = W_ART_SIZE  + 1
 W_HDR_CRC    = W_ART_CRC    + 1
-HDR_WORDS    = W_HDR_CRC   + 4                      # +4 words for the next format
+# P5b (D23): the asset table's two fields take words this header left reserved for
+# exactly this, so HDR_WORDS does not move and the header CRC still covers up to
+# W_HDR_CRC. One word at the end stays free and the reader checks it zero.
+W_ASSET_OFF  = W_HDR_CRC    + 1
+W_N_ASSETS   = W_ASSET_OFF  + 1
+HDR_WORDS    = W_HDR_CRC   + 4                      # 2 taken by P5b, 2 still free
 HDR_BYTES    = HDR_WORDS * 4
 SET_OFF      = HDR_BYTES                            # settings follow the header
 
@@ -498,6 +510,187 @@ def unpack_settings(blob, n):
 # ---- the header -------------------------------------------------------------
 
 
+# ---- the asset vocabulary and its table (D23, D31; P5b) --------------------
+# The eight classes, in main/assets/orb_assets.h's orb_asset_class_t order. The
+# sentinel lifts that enum and fails if this tuple's order ever disagrees — the same
+# rule CAP_OWNER obeys, and for the same reason: the wire carries an index into this
+# list, so a silent renumber would resolve every installed app's `dial` slot as
+# somebody else's plate and nothing downstream could tell.
+ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status")
+ASSET_MAX      = 16            # rows in one manifest's table; == ORBAPP_ASSETS_MAX
+ASSET_NAME_MAX = 12            # bytes incl NUL, and the name carries NO prefix
+ASSET_OWNER_MAX = SLUG_MAX - 1 # the `<slug>` half of an owner-scoped reference
+# 36, and the arithmetic says why: an owner reference is a whole slug, a slash and a
+# whole name, and the field that holds it must be sized for the widest shape and not
+# for the `global/` one. Sized from the two bounds above so a row that grows on the
+# C side moves this number the same way.
+ASSET_REF_MAX  = ASSET_OWNER_MAX + 1 + ASSET_NAME_MAX   # ORB_ASSET_REF_MAX
+PANEL          = 466           # CLK_SCR_W/H: the panel a declared box must fit
+
+# One row on the wire, mirroring orb_app_manifest.h's ORBAPP_A_*: word 0 packs
+# class | required<<8 | ns<<16 with byte 3 reserved, words 1-3 hold the name, and
+# words 4-5 are x|y and w|h. Six words, so 16 rows cost 384 B and the worst-case
+# blob (1024 settings + 640 strings + 384 assets) fits the slot header's slack.
+A_CLASS, A_NAME, A_XY, A_WH = 0, 1, 4, 5
+ASSET_WORDS = 6
+
+ASSET_RE = re.compile(r"^[a-z0-9_]{1,%d}$" % (ASSET_NAME_MAX - 1))
+
+
+def asset_class(name):
+    """The wire index of a class name. A name outside the frozen eight is refused by
+    the writer, because a class this build cannot spell is a slot that can never
+    resolve, and D26 says an unresolved slot is not a thing to install."""
+    if name not in ASSET_CLASSES:
+        raise ValueError("asset class %r is not one of the eight the registry carries "
+                         "(%s): a PR promotes a class, a manifest never does"
+                         % (name, ", ".join(ASSET_CLASSES)))
+    return ASSET_CLASSES.index(name)
+
+
+def _asset_words(i, r):
+    """One validated row's six wire words. Every refusal here names the row, because
+    a table of sixteen with one bad box is otherwise a hunt."""
+    cls = asset_class(r["cls"])
+    req = r.get("required", 0)
+    if req not in (0, 1, True, False):
+        raise ValueError("asset %d's required flag is %r: D31's selector is one bit, "
+                         "and a value that is neither is a caller guessing"
+                         % (i, req))
+    ns = r.get("ns", "owner")
+    if ns not in ("owner", "global"):
+        raise ValueError("asset %d names namespace %r: there are two, the app's own "
+                         "and global/, and nothing between them (D23)" % (i, ns))
+    name = r["name"]
+    if not isinstance(name, str) or not ASSET_RE.match(name):
+        raise ValueError("asset %d's name %r is not lowercase a-z 0-9 _ of 1..%d chars:"
+                         " it is the half of a reference the resolver splits, and a"
+                         " character it cannot split is a slot nobody can re-request"
+                         % (i, name, ASSET_NAME_MAX - 1))
+    x, y, w, h = (r.get("x", 0), r.get("y", 0), r.get("w", 0), r.get("h", 0))
+    for v, nm in ((x, "x"), (y, "y"), (w, "w"), (h, "h")):
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError("asset %d's %s is %r, not a count" % (i, nm, v))
+    if x < 0 or y < 0 or x + w > PANEL or y + h > PANEL:
+        raise ValueError("asset %d (%s) is a %dx%d box at %d,%d, which is not inside"
+                         " the %dx%d panel: a slot off the edge draws nothing and still"
+                         " costs the rows it marks" % (i, name, w, h, x, y, PANEL, PANEL))
+    words = [0] * ASSET_WORDS
+    words[A_CLASS] = (cls | (1 if req else 0) << 8
+                      | (ASSET_NS_GLOBAL << 16 if ns == "global" else 0))
+    for j, b in enumerate(name.encode()):
+        words[A_NAME + j // 4] |= b << (8 * (j % 4))
+    words[A_XY] = (x & 0xFFFF) | ((y & 0xFFFF) << 16)
+    words[A_WH] = (w & 0xFFFF) | ((h & 0xFFFF) << 16)
+    return words
+
+
+def check_assets(rows):
+    """Validate a declared table and return its wire words — the writer's door, and
+    the same rules the C reader re-applies to bytes it did not write."""
+    if isinstance(rows, dict):
+        rows = [rows]
+    if len(rows) > ASSET_MAX:
+        raise ValueError("%d assets declared; the loader's table holds %d"
+                         % (len(rows), ASSET_MAX))
+    words = []
+    for i, r in enumerate(rows):
+        words.extend(_asset_words(i, r))
+    return words
+
+ASSET_NS_OWNER, ASSET_NS_GLOBAL = 0, 1
+
+
+def asset_ref(r, slug):
+    """The reference a row means in full: `global/<name>`, or the app's own slug with
+    the name. Assembled in one place, because the resolver splits it again and a row
+    whose assembled form the splitter rejects is a table that would install a slot
+    nothing can ask for."""
+    return (("global/" if r.get("ns", "owner") == "global" else slug + "/") + r["name"])
+
+
+def pack_assets(rows, slug):
+    """check_assets' rows as wire bytes, cross-checked against the app's OWN slug.
+
+    The row's namespace byte says which half of the registry it lives in, so an
+    owner-scoped row's full reference is `<slug>/<name>` and the slug is the row's
+    subject. A container that declares a slot in a namespace it does not own is
+    refused here, before the bytes exist: the identity triple the C reader checks
+    (slug, app_id, stem) gains a fourth member, and a mismatch is the same class of
+    bug as a file whose name disagrees with its own header."""
+    words = check_assets(rows)
+    seq = [rows] if isinstance(rows, dict) else list(rows)
+    for i, r in enumerate(seq):
+        if r.get("ns", "owner") == "global":
+            continue
+        full = asset_ref(r, slug)
+        if len(full.encode()) + 1 > ASSET_REF_MAX:
+            raise ValueError("asset %d's reference for slug %r is %d B, past the %d the"
+                             " registry's own field holds: the name shrinks, not the"
+                             " slug, which is an NVS namespace"
+                             % (i, slug, len(full.encode()) + 1, ASSET_REF_MAX))
+    return b"".join(struct.pack("<I", w) for w in words)
+
+
+def _asset_name(words, base):
+    """The name half of the row at word offset `base`, with the reader's termination
+    rule: the first NUL ends it, and a field full of bytes with none is damage."""
+    b = bytearray()
+    for j in range(ASSET_NAME_MAX):
+        c = (words[base + A_NAME + j // 4] >> (8 * (j % 4))) & 0xFF
+        if not c:
+            break
+        b.append(c)
+    return b.decode("utf-8", "replace")
+
+
+def unpack_assets(blob, n=None):
+    """Decode an asset table into dicts — orbapp_unpack_assets' twin. The writer's
+    reader is not its own writer run backwards: the bytes it checks came from
+    somewhere else, which is the whole reason the function exists."""
+    if len(blob) % (ASSET_WORDS * 4):
+        raise ValueError("asset table is %d B, not a whole number of %d B rows"
+                         % (len(blob), ASSET_WORDS * 4))
+    words = list(struct.unpack("<" + "I" * (len(blob) // 4), blob))
+    cnt = len(words) // ASSET_WORDS if n is None else n
+    if cnt > ASSET_MAX:
+        raise ValueError("%d assets; the loader's table holds %d" % (cnt, ASSET_MAX))
+    if len(words) < cnt * ASSET_WORDS:
+        raise ValueError("asset table is %d B, short of the %d B its count claims"
+                         % (len(blob), cnt * ASSET_WORDS * 4))
+    out = []
+    for i in range(cnt):
+        base = i * ASSET_WORDS
+        w = words[base:base + ASSET_WORDS]
+        cls, req = w[A_CLASS] & 0xFF, (w[A_CLASS] >> 8) & 0xFF
+        ns = (w[A_CLASS] >> 16) & 0xFF
+        if cls >= len(ASSET_CLASSES):
+            raise ValueError("asset %d declares class %d, which this build's vocabulary"
+                             " does not carry" % (i, cls))
+        if req > 1:
+            raise ValueError("asset %d's required byte is %d: D31's selector is one bit"
+                             % (i, req))
+        if ns > 1:
+            raise ValueError("asset %d's namespace byte is %d: there are two namespaces"
+                             " and no third (D23)" % (i, ns))
+        if w[A_CLASS] >> 24:
+            raise ValueError("asset %d's fourth byte is not zero: the row has no fourth"
+                             " field, and a writer that filled one means something this"
+                             " reader cannot honour" % i)
+        name = _asset_name(words, base)
+        if not name:
+            raise ValueError("asset %d has an empty name: a slot nobody can name cannot"
+                             " be resolved and cannot be refused by name, so it can only"
+                             " be refused here" % i)
+        xy, wh = w[A_XY], w[A_WH]
+        out.append(dict(name=name, cls=ASSET_CLASSES[cls], required=req,
+                        ns=("global" if ns else "owner"),
+                        x=_s32((xy & 0xFFFF) << 16) >> 16,
+                        y=_s32(xy & 0xFFFF0000) >> 16,
+                        w=wh & 0xFFFF, h=(wh >> 16) & 0xFFFF))
+    return out
+
+
 def art_offset(geom_off, geom_size):
     """Payload start for a blob at geom_off: sector-aligned, so a copy into a
     64 KB-aligned assets slot stays 64 KB-aligned. Same reason as
@@ -568,7 +761,7 @@ def _geom_size(geom_size, counts):
 
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
                 settings_blob, serial=0, baked_ms=0, abi=None,
-                sig=0, behaviour_kind=0):
+                sig=0, behaviour_kind=0, asset_blob=b""):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
 
@@ -614,11 +807,22 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
         raise ValueError("%d settings; the loader's table holds %d" % (n_set, SETTINGS_MAX))
     hdr[W_N_SETTINGS] = n_set
     hdr[W_ART_SIZE]   = 0            # D21 (§0.9): a container never carries art
-    # The three offsets are DERIVED from the sizes, never supplied: a caller that
-    # could place the parts anywhere could also overlap them, and the theme path's
-    # FORMAT-1 scar is exactly a hand-placed pair of ranges disagreeing.
-    hdr[W_SET_OFF]  = SET_OFF
-    hdr[W_GEOM_OFF] = SET_OFF + len(settings_blob)
+    if len(asset_blob) % (ASSET_WORDS * 4):
+        raise ValueError("asset table is %d B, not a whole number of %d B rows"
+                         % (len(asset_blob), ASSET_WORDS * 4))
+    n_asset = len(asset_blob) // (ASSET_WORDS * 4)
+    if n_asset > ASSET_MAX:
+        raise ValueError("%d assets; the loader's table holds %d" % (n_asset, ASSET_MAX))
+    hdr[W_N_ASSETS] = n_asset
+    # The offsets are DERIVED from the sizes, never supplied: a caller that could
+    # place the parts anywhere could also overlap them, and the theme path's
+    # FORMAT-1 scar is exactly a hand-placed pair of ranges disagreeing. The asset
+    # table rides the same rule — laid after the settings and before the geometry,
+    # so its offset is arithmetic on the blob's own parts and not a number a caller
+    # picks, which is what makes a self-overlapping container unwriteable here.
+    hdr[W_SET_OFF]   = SET_OFF
+    hdr[W_ASSET_OFF] = SET_OFF + len(settings_blob)
+    hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(asset_blob)
     hdr[W_GEOM_SIZE] = 0                             # filled below from the blob
     hdr[W_ART_OFF]  = art_offset(hdr[W_GEOM_OFF], 0)
     hdr[W_GEOM_CRC], hdr[W_ART_CRC] = 0, 0           # filled by write_container
@@ -675,7 +879,8 @@ def parse_header(raw, app_id=None):
         ("n_settings", W_N_SETTINGS), ("setting_off", W_SET_OFF),
         ("geom_off", W_GEOM_OFF), ("geom_size", W_GEOM_SIZE),
         ("geom_crc", W_GEOM_CRC), ("art_off", W_ART_OFF),
-        ("art_size", W_ART_SIZE), ("art_crc", W_ART_CRC))}
+        ("art_size", W_ART_SIZE), ("art_crc", W_ART_CRC),
+        ("asset_off", W_ASSET_OFF), ("n_assets", W_N_ASSETS))}
     h["slug"]  = _getstr(hdr, W_SLUG, SLUG_MAX)
     h["title"] = _getstr(hdr, W_TITLE, TITLE_MAX)
     return h
@@ -718,6 +923,24 @@ def check_header(h, app_id=None, stem=None):
     if h["n_settings"] > SETTINGS_MAX:
         raise ValueError("%d settings declared; the loader's table holds %d"
                          % (h["n_settings"], SETTINGS_MAX))
+    # P5b (D23): the same shape of check on the table the settings check covers —
+    # the count and the placement, not the rows. A row that breaks a rule dies in
+    # unpack_assets, and the install path runs both: a table whose count fits a
+    # struct while its rows do not fit a slot is the half-check that made the old
+    # art_size bound a lie, and the ledger would have shown a clean install.
+    if h["n_assets"] > ASSET_MAX:
+        raise ValueError("%d assets declared; the loader's table holds %d"
+                         % (h["n_assets"], ASSET_MAX))
+    if h["asset_off"] % 4 or h["asset_off"] > GEOM_BYTES_MAX:
+        raise ValueError("asset table offset %d is not word-aligned or is past the "
+                         "%d B a slot's payload region can hold"
+                         % (h["asset_off"], GEOM_BYTES_MAX))
+    # No rule that an empty table's offset must be zero: the offset is DERIVED from
+    # the settings' size, so a container with four settings and no declared slot
+    # legitimately points at the byte the geometry starts on. check_file_layout owns
+    # that equality, and it is the rule with a subject — "the table claims room the
+    # geometry then also claims" is the damage, and an offset of 432 alone is news
+    # about nobody.
     # D21 (§0.9): no container carries art. These two refusals are the device's
     # own (orb_app_manifest.c mirrors them in the same words), and the tear-test
     # property stays: an art-bearing file is refused at pack, at read and on the
@@ -753,8 +976,14 @@ def check_file_layout(h):
     """The container FILE's own placement rule, which a slot read does not share."""
     if h["setting_off"] != SET_OFF:
         raise ValueError("the settings table is not where this format puts it")
-    if h["geom_off"] != SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4:
-        raise ValueError("the geometry blob does not follow the settings table")
+    # The asset table sits BETWEEN the settings and the geometry, so its offset is
+    # derived from the settings' size and the geometry's from both. Derived and not
+    # stored-then-checked: a reader that accepted any placement would accept two
+    # tables sharing the same bytes, and the CRC would pass on the overlap.
+    if h["asset_off"] != SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4:
+        raise ValueError("the asset table does not follow the settings table")
+    if h["geom_off"] != h["asset_off"] + h["n_assets"] * ASSET_WORDS * 4:
+        raise ValueError("the geometry blob does not follow the asset table")
     if h["art_off"] != art_offset(h["geom_off"], h["geom_size"]):
         raise ValueError("the payload is not sector-aligned off the geometry blob")
     return h
@@ -762,7 +991,7 @@ def check_file_layout(h):
 
 def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                    period_ms=0, art_req=0, counts=(0, 0, 0, 0),
-                   behaviour_kind=0, serial=0, baked_ms=0, abi=None):
+                   behaviour_kind=0, serial=0, baked_ms=0, abi=None, assets=()):
     """Emit one `.orbapp`, its name derived from the header that is its identity.
 
     Nothing is written unless every check passes, and the CRC is computed over
@@ -771,26 +1000,34 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
     that reaches the card is one this function already refused to write if it was
     wrong. There is no `art` argument (D21, §0.9): the payload is geometry and
     nothing else; art_req is a declaration, not bytes.
+
+    `assets` is the D23 table — the app's named slots — and it is the only art the
+    container may describe. It ships NO pixels: every row is a reference, a class
+    and a box, and the bytes a slot draws come from a theme bundle or from one of
+    the five generators. A writer that could ship a plate here would be a writer
+    that reintroduced the payload D21 withdrew.
     """
     if not isinstance(geometry, (bytes, bytearray)):
         raise ValueError("geometry must be bytes")
     check_slug(slug)
     rows = check_settings(settings)
     s_blob = pack_settings(rows)
+    a_blob = pack_assets(assets, slug)
     geom_bytes = bytes(geometry)
     hdr = pack_header(app_id_of(slug), slug, title, caps, period_ms, art_req,
                       counts, s_blob, serial=serial,
-                      baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind)
+                      baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind,
+                      asset_blob=a_blob)
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
     # the blob it is about to lay down; fill and re-checksum in one place. The
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
     hdr[W_GEOM_SIZE] = _geom_size(len(geom_bytes), counts)
-    hdr[W_GEOM_OFF]  = SET_OFF + len(s_blob)
+    hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(a_blob)
     hdr[W_ART_OFF]   = art_offset(hdr[W_GEOM_OFF], hdr[W_GEOM_SIZE])
     hdr[W_GEOM_CRC]  = zlib.crc32(geom_bytes) & 0xFFFFFFFF
     hdr[W_ART_CRC]   = 0
     hdr[W_HDR_CRC]   = _hdr_crc(hdr)
-    raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + geom_bytes
+    raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + a_blob + geom_bytes
     raw += b"\0" * (hdr[W_ART_OFF] - len(raw))
     # The NAME is derived from the slug, exactly as the theme upload renames a
     # .part into theme_id(header.name): a writer that honoured the caller's
@@ -819,7 +1056,13 @@ def read_container(path, verify=True):
     streams, so it never holds an app's blob in RAM. Returns (header, settings,
     geometry, art) — the fourth is always empty: check_header refuses any
     container that ships art (D21), so the tuple's shape survives from the
-    pre-D21 days and nothing fills it."""
+    pre-D21 days and nothing fills it.
+
+    The header dict gains an `assets` key holding the unpacked D23 table, because
+    the table is the container's own words and not a payload: a caller that asked
+    for the manifest should not have to ask twice for the half of it that says what
+    the app intends to draw. The row dicts carry the assembled reference, so a
+    caller never rebuilds a namespace from a flag."""
     with open(path, "rb") as f:
         raw = f.read()
     h = parse_header(raw)
@@ -831,15 +1074,27 @@ def read_container(path, verify=True):
         raise ValueError("geometry blob runs past the end of the file")
     if h["setting_off"] + h["n_settings"] * SETTINGS_WORDS * 4 > len(raw):
         raise ValueError("the settings table runs past the end of the file")
+    a_end = h["asset_off"] + h["n_assets"] * ASSET_WORDS * 4
+    if a_end > len(raw):
+        raise ValueError("asset table runs past the end of the file")
     s_blob = raw[SET_OFF:SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4]
+    a_blob = raw[h["asset_off"]:a_end]
     geom = raw[h["geom_off"]:end]
     art  = b""
     if verify:
         # The one payload CRC, named: the art word's twin is zero-gated by
-        # check_header, so a damaged copy can only be the geometry's.
+        # check_header, so a damaged copy can only be the geometry's. The asset
+        # table needs no checksum of its own — it lies inside the range the slot
+        # CRC covers on the device (bytes [0, geom_off+geom_size)) and inside the
+        # header the file CRC covers here, and a second checksum over bytes two
+        # other checksums already reach is a third number that can disagree.
         if zlib.crc32(geom) & 0xFFFFFFFF != h["geom_crc"]:
             raise ValueError("geometry checksum mismatch — the copy on the card "
                              "is damaged")
+    h["assets"] = unpack_assets(a_blob, h["n_assets"])
+    for r in h["assets"]:
+        r["ref"] = ("global/" + r["name"]) if r["ns"] == "global" else \
+                   (h["slug"] + "/" + r["name"])
     return h, unpack_settings(s_blob, h["n_settings"]), geom, art
 
 
@@ -860,15 +1115,22 @@ if __name__ == "__main__":
         h, st, geom, art = read_container(sys.argv[2])
         print("%-10s 0x%08x  '%s'  caps=%s" % (h["slug"], h["app_id"], h["title"],
                                                ",".join(caps_names(h["caps"])) or "-"))
-        print("  fmt %d abi %d (%d..%d)  period %d ms  settings %d  "
+        print("  fmt %d abi %d (%d..%d)  period %d ms  settings %d  assets %d  "
               "geom %d B  art %d B (req %d)  serial %d"
               % (h["fmt"], h["abi"], h["abi_min"], h["abi_max"], h["period_ms"],
-                 h["n_settings"], h["geom_size"], h["art_size"], h["art_req"],
-                 h["serial"]))
+                 h["n_settings"], h["n_assets"], h["geom_size"], h["art_size"],
+                 h["art_req"], h["serial"]))
         for s in st:
             print("  setting %-15s %-6s min=%d max=%d def=%d %s"
                   % (s["id"], s["type"], s["min"], s["max"], s["default"],
                      ("def_str=%r" % s["def_str"]) if s["type"] == "string" else ""))
+        # P5b (D23): the declared table, in the container's own words. Printed here so
+        # --inspect answers the D26 question a builder asks before handing a package
+        # over: does every required slot the app will draw have a name to resolve.
+        for a in h["assets"]:
+            print("  asset   %-24s %-6s %-8s %4dx%-4d @%d,%d%s"
+                  % (a["ref"], a["cls"], a["ns"], a["w"], a["h"], a["x"], a["y"],
+                     "  REQUIRED" if a["required"] else ""))
     elif len(sys.argv) > 2 and sys.argv[1] == "--disclose":
         # The D19 text: what the install confirm prints, from the file's own
         # words. Run it on a package before handing it to anybody.

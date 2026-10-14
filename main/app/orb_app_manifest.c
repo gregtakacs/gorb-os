@@ -147,6 +147,16 @@ const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
     h->art_off        = w[ORBAPP_W_ART_OFF];
     h->art_size       = w[ORBAPP_W_ART_SIZE];
     h->art_crc        = w[ORBAPP_W_ART_CRC];
+    h->asset_off      = w[ORBAPP_W_ASSET_OFF];
+    h->n_assets       = w[ORBAPP_W_N_ASSETS];
+    /* The two header words P5b did not take stay reserved, and a writer that put
+     * something in them means something this reader cannot honour. Checked rather
+     * than ignored, which is the rule a comp record's own reserve word already
+     * gets (orb_theme.c:528): an ignored word is a word nobody will ever remove. */
+    if (w[ORBAPP_HDR_WORDS - 1] != 0)
+        return refuse(reason, cap, "header uses a reserved word this reader does"
+                      " not define: the container is newer than this build and"
+                      " must be read by one that speaks it");
 
     /* The writer always NUL-pads inside the field, so an unterminated field
      * is the same class of damage the CRC above answers for — and unlike a
@@ -294,6 +304,23 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
     if (h->n_settings > ORBAPP_SETTINGS_MAX)
         return refuse(reason, cap, "%u settings declared; the loader's table"
                       " holds %u", h->n_settings, (unsigned)ORBAPP_SETTINGS_MAX);
+    /* P5b (D23): the count and the offset are checked HERE and the rows are not,
+     * because the rows live in the payload region this function never sees.
+     * orbapp_unpack_assets is where a row dies, and the install path calls both:
+     * a count that fits a table while its rows do not fit the slot is exactly the
+     * half-check that made the old art_size bound a lie. */
+    if (h->n_assets > ORBAPP_ASSETS_MAX)
+        return refuse(reason, cap, "%u assets declared; the loader's table holds %u",
+                      h->n_assets, (unsigned)ORBAPP_ASSETS_MAX);
+    if ((h->asset_off & 3) || h->asset_off > ORBAPP_GEOM_BYTES_MAX)
+        return refuse(reason, cap, "asset table offset %u is not word-aligned or is"
+                      " past the %u B a slot's payload region can hold",
+                      h->asset_off, (unsigned)ORBAPP_GEOM_BYTES_MAX);
+    /* No "empty table means offset 0" rule here, on either side of the wire: the
+     * offset is derived from the settings' size, so a container with settings and
+     * no declared slot points at the byte its geometry starts on and is fine. The
+     * damage that rule was reaching for is a table claiming room the geometry also
+     * claims, and orbapp_check_layout's own equality owns that. */
     /* D21 (§0.9): no container carries art. The payload words are a shape to
      * refuse, not a size to price — a file shipping bytes at art_off predates
      * the ruling and must be re-baked. art_req alone survives: it is D18's
@@ -349,10 +376,20 @@ const char *orbapp_check_file_layout(const orbapp_hdr_t *h, char *reason,
     if (h->setting_off != ORBAPP_HDR_BYTES)
         return refuse(reason, cap,
                       "the settings table is not where this format puts it");
-    if (h->geom_off != (uint64_t)ORBAPP_HDR_BYTES +
-                       (uint64_t)h->n_settings * ORBAPP_SETTINGS_WORDS * 4)
+    /* P5b: the asset table sits between the settings and the geometry, so its own
+     * offset is arithmetic on the settings' size and the geometry's is arithmetic
+     * on both. Checked as equalities and not as ranges, because the damage is an
+     * overlap and an overlap is two fields claiming one byte — the theme
+     * container's FORMAT-1 scar, where a hand-placed pair of name ranges let a
+     * long slug overwrite the head of the title and nothing noticed. */
+    if (h->asset_off != (uint64_t)ORBAPP_HDR_BYTES +
+                        (uint64_t)h->n_settings * ORBAPP_SETTINGS_WORDS * 4)
         return refuse(reason, cap,
-                      "the geometry blob does not follow the settings table");
+                      "the asset table does not follow the settings table");
+    if (h->geom_off != (uint64_t)h->asset_off +
+                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)
+        return refuse(reason, cap,
+                      "the geometry blob does not follow the asset table");
     const uint64_t art = ((uint64_t)h->geom_off + h->geom_size + 4095) &
                          ~(uint64_t)4095;      /* SECTOR, orbapp.py:499 */
     if ((uint64_t)h->art_off != art)
@@ -417,3 +454,141 @@ int orbapp_caps_names(uint32_t caps, char *dst, size_t cap)
     dst[len] = '\0';
     return (int)len;
 }
+
+/* ---- the asset table (D23, D31; P5b) -------------------------------------
+ * One row is six words: the class/selector/namespace triple, three name words, and
+ * the box. The refusals are ordered the way the install page needs them: first the
+ * bytes that cannot mean anything (a class the frozen enum does not carry, a
+ * namespace that is not one of the two, a reserved word that is not zero), then the
+ * name, then the box, then the owner. A row that dies at the class byte and a row
+ * that dies at the owner cross-check get different sentences, and that difference
+ * is the difference between "re-bake this app" and "that is not your slot".
+ */
+const char *orbapp_unpack_assets(const uint32_t *words, size_t nwords,
+                                 uint32_t n, const char *slug,
+                                 orb_asset_decl_t out[],
+                                 char *reason, size_t reason_cap)
+{
+    if (n > ORBAPP_ASSETS_MAX)
+        return refuse(reason, reason_cap, "%u assets; the loader's table holds %u",
+                      n, (unsigned)ORBAPP_ASSETS_MAX);
+    const size_t need = (size_t)n * ORBAPP_ASSET_WORDS;
+    if (nwords < need)
+        return refuse(reason, reason_cap, "asset table is %u B, short of the %u B its"
+                      " count claims", (unsigned)(nwords * 4),
+                      (unsigned)(need * 4));
+
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t *b = words + (size_t)i * ORBAPP_ASSET_WORDS;
+        const uint32_t cls = b[ORBAPP_A_CLASS] & 0xFFu;
+        const uint32_t req = (b[ORBAPP_A_CLASS] >> 8) & 0xFFu;
+        const uint32_t ns  = (b[ORBAPP_A_CLASS] >> 16) & 0xFFu;
+
+        if (!orb_asset_class_known(cls))
+            return refuse(reason, reason_cap, "asset %u declares class %u, which this"
+                          " build's vocabulary does not carry: the app needs an ABI"
+                          " this dial does not speak", i, cls);
+        if (req > 1u)
+            return refuse(reason, reason_cap, "asset %u's required byte is %u: D31's"
+                          " selector is one bit, and a value that is neither 0 nor 1"
+                          " is a writer that guessed", i, req);
+        if (ns > 1u)
+            return refuse(reason, reason_cap, "asset %u's namespace byte is %u: there"
+                          " are two namespaces and no third (D23)", i, ns);
+        /* The row's fourth byte is reserved and zero-checked for the same reason
+         * the header's reserved block is: a word that reads as nothing today is a
+         * word that reads as something wrong tomorrow, and the row has no room for
+         * a field this reader would not know the name of. Checked here, before the
+         * row is written out, so a refused row never leaves a half-filled record
+         * behind it — the same reason the name is decoded into a local and only
+         * then copied. */
+        if ((b[ORBAPP_A_CLASS] >> 24) != 0)
+            return refuse(reason, reason_cap, "asset %u's fourth byte is not zero:"
+                          " the row has no fourth field, and a writer that filled one"
+                          " means something this reader cannot honour", i);
+
+        memset(&out[i], 0, sizeof out[i]);
+        out[i].cls      = (uint8_t)cls;
+        out[i].required = (uint8_t)req;
+
+        /* The name field carries no prefix, so the reference is assembled HERE and
+         * nowhere else: `global/` for ns 1, the caller's slug plus '/' for ns 0. A
+         * row's stored name is checked with the registry's own predicate before the
+         * row is accepted, because install that approved a reference the resolver
+         * would later refuse has shipped a lie on the ledger. */
+        char name[ORBAPP_ASSET_NAME_MAX];
+        const char *e = get_field(b, ORBAPP_A_NAME, ORBAPP_ASSET_NAME_MAX, name,
+                                  sizeof name, "asset table damaged — re-copy the"
+                                  " file onto the card");
+        if (e)
+            return refuse(reason, reason_cap, "%s", e);
+        if (!name[0])
+            return refuse(reason, reason_cap, "asset %u has an empty name: a slot"
+                          " nobody can name cannot be resolved and cannot be refused"
+                          " by name, so it can only be refused here", i);
+
+        int written;
+        if (ns)
+            written = snprintf(out[i].ref, sizeof out[i].ref,
+                               ORB_ASSET_NS_GLOBAL "%s", name);
+        else if (slug && *slug)
+            written = snprintf(out[i].ref, sizeof out[i].ref, "%s/%s", slug, name);
+        else
+            written = snprintf(out[i].ref, sizeof out[i].ref, "%s", name);
+        if (written < 0 || (size_t)written >= sizeof out[i].ref)
+            return refuse(reason, reason_cap, "asset %u's reference does not fit the"
+                          " registry's field: %s", i, out[i].ref);
+        if (!orb_asset_ref_ok(out[i].ref))
+            return refuse(reason, reason_cap, "asset %u names \"%s\", which is not a"
+                          " reference: lowercase a-z 0-9 _ up to %u chars, global/ as"
+                          " the only prefix", i, out[i].ref,
+                          (unsigned)ORB_ASSET_NAME_MAX - 1u);
+
+        const uint32_t xy = b[ORBAPP_A_XY];
+        const uint32_t wh = b[ORBAPP_A_WH];
+        out[i].at.x = (int16_t)(xy & 0xFFFFu);
+        out[i].at.y = (int16_t)((xy >> 16) & 0xFFFFu);
+        out[i].at.w = (uint16_t)(wh & 0xFFFFu);
+        out[i].at.h = (uint16_t)((wh >> 16) & 0xFFFFu);
+        /* A box the panel cannot hold is refused and not clipped: a clipped slot
+         * draws a cropped plate and the owner sees a wrong dial, where a refusal
+         * names the row that is wrong. Zero is legal — the two classes the
+         * compositor draws carry no box — and coordinates off the top or left edge
+         * are not, because a slot at -8 is a bake that lost a sign. */
+        if (out[i].at.x < 0 || out[i].at.y < 0 ||
+            (int32_t)out[i].at.x + (int32_t)out[i].at.w > (int32_t)CLK_SCR_W ||
+            (int32_t)out[i].at.y + (int32_t)out[i].at.h > (int32_t)CLK_SCR_H)
+            return refuse(reason, reason_cap, "asset %u (\"%s\") is a %ux%u box at"
+                          " %d,%d, which is not inside the %ux%u panel", i, out[i].ref,
+                          out[i].at.w, out[i].at.h, out[i].at.x, out[i].at.y,
+                          (unsigned)CLK_SCR_W, (unsigned)CLK_SCR_H);
+    }
+    return NULL;
+}
+
+/* D26's door, and the reason it is a call rather than a loop in the installer: the
+ * precedence lives in one file or it is not a precedence. Which slot wins, for whom,
+ * is orb_asset_resolve_all's; this function only carries the registry's answer into
+ * the install page's sentence. */
+orb_asset_ans_t orbapp_check_assets(const orb_asset_decl_t *decls, int n,
+                                   const char *slug, char *why, size_t cap)
+{
+    int at = -1;
+    const orb_asset_ans_t a = orb_asset_resolve_all(decls, n, slug, why, cap, &at);
+    if (a == ORB_ASSET_OK || !why || !cap)
+        return a;
+    const int cls = (at >= 0 && at < n) ? decls[at].cls : -1;
+    const char *cn = (cls >= 0 && cls < ORB_ASSET_CLASS_N)
+                   ? orb_asset_class_name[cls] : "?";
+    /* The class is appended because `bg` is a name two apps may both use for two
+     * different things, and a row naming only the reference cannot be acted on. The
+     * sentence is capped rather than cut: a page that truncates a reason has the
+     * bug it would have had by not naming the reason at all. */
+    char tail[48];
+    snprintf(tail, sizeof tail, " (class %s)", cn);
+    const size_t used = strlen(why), tl = strlen(tail);
+    if (used && used + tl < cap)
+        memcpy(why + used, tail, tl + 1);
+    return a;
+}
+

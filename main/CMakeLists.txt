@@ -21,6 +21,11 @@ idf_component_register(
         "power/idle_dim.c"
         "art/art_bank.c"
         "art/orb_theme.c"
+        # P5b: the asset registry. Its own directory because it is the one file in
+        # the tree that knows what a slot IS, and it compiles without LVGL on
+        # purpose — tools/host_orbapp_reader_test.py links it straight into the
+        # manifest reader's harness, which no other main/ TU makes possible.
+        "assets/orb_assets.c"
         "net/orb_net.c"
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
@@ -38,6 +43,10 @@ idf_component_register(
         "imu"
         "power"
         "art"
+        # P5b: main/assets is on the include path because orb_app_manifest.h includes
+        # orb_assets.h for the class enum, and the reader must not have to know that
+        # the vocabulary lives one directory over from the art it describes.
+        "assets"
         "net"
         "sd"
         "../assets"

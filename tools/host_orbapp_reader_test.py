@@ -31,6 +31,7 @@ Run:  python3 tools/host_orbapp_reader_test.py              (rc 0 = pass)
 import hashlib
 import importlib.util
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -41,6 +42,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 READER_C = os.path.join(ROOT, "main", "app", "orb_app_manifest.c")
 READER_H = os.path.join(ROOT, "main", "app", "orb_app_manifest.h")
+ASSETS_H = os.path.join(ROOT, "main", "assets", "orb_assets.h")
+# P5b: the registry is on this harness's link line, so its rules are mutable too and
+# the mutant set covers them. A suite that could only break the reader's own file
+# would leave the reference grammar — the one rule D23 rests on — unwatched.
+ASSETS_C = os.path.join(ROOT, "main", "assets", "orb_assets.c")
 
 _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
 orbapp = importlib.util.module_from_spec(_spec)
@@ -50,6 +56,12 @@ NL = "\n"
 SHIM_ESP_ERR = """#pragma once
 typedef int esp_err_t;
 #define ESP_OK 0
+/* P5b: orb_assets.c is now on this harness's link line, and the registry reports
+ * a bad bind table with the two codes the real header defines. The VALUES are the
+ * ones esp_err.h carries, so a vector that asserts on a returned code asserts on
+ * the same number the device would print. */
+#define ESP_ERR_INVALID_ARG  0x102
+#define ESP_ERR_INVALID_SIZE 0x104
 """
 SHIM_CRC = """#pragma once
 #include <stdint.h>
@@ -129,6 +141,16 @@ int main(int argc, char **argv)
         if (sw > 16 * 16) return 3;
         rdb(sbuf, sw * 4);
         const uint32_t n_unpack = rd32();
+        /* P5b: one more optional stage after the settings', so an asset vector can
+         * reach the row rules without the settings table being re-forged to satisfy
+         * the same count the header carries. The blob is the writer's pack_assets
+         * output, and `n_assets` comes from the header's own word — the count a
+         * caller lies with belongs to the unpack call, not to the file. */
+        const uint32_t abw = rd32();
+        if (abw > 6 * 16) return 3;
+        static uint32_t abuf[6 * 16];
+        rdb(abuf, abw * 4);
+        const uint32_t n_aunpack = rd32();
 
         orbapp_hdr_t h;
         memset(&h, 0, sizeof h);
@@ -163,6 +185,46 @@ int main(int argc, char **argv)
                     printf("\n");
                 }
         }
+        /* P5b. F_ASSETS (bit 16): the row rules on the table the header declares,
+         * then D26's gate over the rows that survived them — the install path in
+         * two calls and not one, because they catch different damage. unpack reads
+         * bytes against the class vocabulary and the panel; check_assets reads the
+         * declarations against the bound content sources, which is why a vector
+         * that reached only the first would bless a required slot no theme carries.
+         * The slug is the header's own and not the stem argument: ns 0 is the
+         * OWNER's namespace, and the owner is who the file says it is. */
+        orb_asset_decl_t aout[16];
+        if (!why && (flags & 16)) {
+            snprintf(tag, sizeof tag, "case%u.aunpack", i);
+            why = orbapp_unpack_assets(abuf, abw, n_aunpack, h.slug, aout,
+                                       reason, sizeof reason);
+            stage(tag, why, reason);
+            if (!why) {
+                /* Row-shaped, like .set: the class, the required flag, the
+                 * reference and the box. The reference prints whole — prefix and
+                 * all — because assembling it is this function's one irreversible
+                 * act, and a row that came back `bg` under a global/ declaration
+                 * would look identical in a name-only dump. */
+                for (uint32_t k = 0; k < n_aunpack; k++) {
+                    printf("case%u.arow %u %u %d ", i, k, aout[k].cls,
+                           aout[k].required);
+                    puthex((const unsigned char *)aout[k].ref,
+                           strnlen(aout[k].ref, ORB_ASSET_REF_MAX));
+                    printf(" %u %u %d %d\n", aout[k].at.w, aout[k].at.h,
+                           aout[k].at.x, aout[k].at.y);
+                }
+                snprintf(tag, sizeof tag, "case%u.agate", i);
+                const orb_asset_ans_t a = orbapp_check_assets(aout, (int)n_aunpack,
+                                                              h.slug, reason,
+                                                              sizeof reason);
+                /* The gate's answer is a code and not a refusal string: stage()
+                 * prints REFUSE for any non-NULL, and here the non-NULL of it is
+                 * the ladder's reason for a slot that EXISTS. Printed as the enum
+                 * value so a vector pins the answer and not the prose. */
+                if (a == ORB_ASSET_OK) printf("%s OK\n", tag);
+                else                   printf("%s GATE %d %s\n", tag, (int)a, reason);
+            }
+        }
         printf("case%u.hash %d %d ", i, g_hash_calls, g_hash_is224);
         if (g_hash_calls) { puthex(g_hash_in, g_hash_len); }
         printf("\n");
@@ -191,10 +253,15 @@ SETTINGS_GOLDEN = [
 ]
 GOLDEN_SLUG, GOLDEN_TITLE = "weather", "Weather"
 
+# One legal row, the subject of every asset-refusal vector below. A sprite at a
+# plain box, in the app's own namespace: the shape whose byte the vector breaks, and
+# nothing about it that a forged field could hide behind.
+ROW_DIAL = [{"name": "dial", "cls": "sprite", "x": 8, "y": 8, "w": 16, "h": 16}]
+
 
 def build_hdr(slug=GOLDEN_SLUG, title=GOLDEN_TITLE, caps=0x10, period=3000,
               abi=None, counts=(1, 1, 1, 1), settings=SETTINGS_GOLDEN,
-              art_size=0, geom_size=16, sig=0, app_id=None):
+              art_size=0, geom_size=16, sig=0, app_id=None, assets=()):
     """The writer's own pack_header at its legal best, then the payload-size
     words the caller fills, then a RE-computed hdr_crc — so every vector that
     reaches the semantic stage really did pass the checksum stage too. D21
@@ -203,17 +270,24 @@ def build_hdr(slug=GOLDEN_SLUG, title=GOLDEN_TITLE, caps=0x10, period=3000,
     into the packed words, header CRC and all — exactly the pre-D21 file shape
     a stranger's card could still carry, which is precisely what the gate must
     refuse. The forged claim also drags art_req with it, matching the old
-    tie art_req=art_size that pre-D21 files carried."""
+    tie art_req=art_size that pre-D21 files carried.
+
+    `assets` (P5b) is the D23 table and goes through pack_assets, so a vector that
+    declares a table gets the header's derived asset_off/geom_off for free. A
+    vector that wants a WRONG offset must patch the word afterwards: forging the
+    placement here would test the writer's arithmetic instead of the reader's rule.
+    """
     sblob = orbapp.pack_settings(orbapp.check_settings(list(settings)))
+    ablob = orbapp.pack_assets(assets, slug) if assets else b""
     hdr = orbapp.pack_header(app_id if app_id is not None else orbapp.app_id_of(slug),
                              slug, title, caps, period, art_size, counts,
-                             sblob, abi=abi, sig=sig)
+                             sblob, abi=abi, sig=sig, asset_blob=ablob)
     hdr[orbapp.W_GEOM_SIZE] = geom_size
     if art_size:
         hdr[orbapp.W_ART_SIZE] = art_size
         hdr[orbapp.W_ART_REQ] = art_size
     hdr[orbapp.W_HDR_CRC] = orbapp._hdr_crc(hdr)
-    return hdr, sblob
+    return hdr, sblob, ablob
 
 
 def patch(hdr, word, value):
@@ -248,22 +322,61 @@ def python_outcome(hdr, app_id=None, stem="__unset__"):
 class Case:
     """One vector: the header words, the harness flags, and the per-stage
     expectations. None = the stage must print OK; a string = the exact bytes
-    of the reason, compared with the sentinel's full fury."""
+    of the reason, compared with the sentinel's full fury.
+
+    P5b adds `ablob`/`n_aunpack` for the asset stage and `arows`/`agate` for its
+    expectations. The blob rides the protocol on EVERY case, empty where the vector
+    does not reach the stage, because the harness reads fields positionally: an
+    optional tail would make every older vector's shape depend on its flags."""
     def __init__(self, name, hdr, sblob=b"", flags=0, expect_id=0, stem=None,
                  n_unpack=0, parse=None, check=None, layout=None, unpack=None,
                  sets=None, hash_calls=1, hash_in=None, py=("ok", None),
-                 note=""):
+                 note="", ablob=b"", n_aunpack=0, aunpack=None, arows=None,
+                 agate=None):
         self.name, self.hdr, self.sblob = name, hdr, sblob
         self.flags, self.expect_id, self.stem = flags, expect_id, stem
         self.n_unpack = n_unpack
+        self.ablob, self.n_aunpack = ablob, n_aunpack
         self.expect = {"parse": parse, "check": check, "layout": layout,
                        "unpack": unpack}
+        # Separate dict, not two more keys in the one above: compare() walks the
+        # shared table and would demand an OK for every stage a vector does not
+        # exercise, turning 40 older vectors into failures instead of skipping them.
+        self.aexpect = {"aunpack": aunpack, "agate": agate} if (flags & 16) else {}
+        self.arows = arows          # list of "IDX CLS REQ REFHEX W H X Y" lines
         self.sets, self.hash_calls, self.hash_in = sets, hash_calls, hash_in
         self.py, self.note = py, note
 
 
 
 F_CHECK, F_LAYOUT, F_UNPACK, F_EXPECT = 1, 2, 4, 8
+F_ASSETS = 16                                  # P5b: the D23 table's own stage
+
+# orb_asset_ans_t, as the gate prints it. Named here and not read out of the header
+# because the harness emits the enum's VALUE and this file must say which value it
+# expected; the assert below is what keeps the local names from drifting from the
+# shipped enum, which is the drift these suites exist to catch.
+A_OK, A_APP, A_BOARD, A_NO_SLOT, A_NO_CONTENT = 0, 1, 2, 3, 4
+A_REQUIRED, A_UNDECLARED, A_CLASS, A_NAME, A_ROOM = 5, 6, 7, 8, 9
+ORB_ANS_ENUM = None                            # filled by lint() from the header
+
+
+def asset_rows(rows, slug):
+    """Expected `caseN.arow` payloads, in the harness's line shape, from the
+    writer's own unpacked dicts — the C reader's twin.
+
+    The class goes back to an index here because the writer's unpack hands a name
+    (a manifest author reads `sprite`, a switch statement does not) and the wire
+    and the C struct both carry the number. The conversion is the writer's own table
+    looked up rather than a second list of class names, so an appended class moves
+    both sides from one place. The reference is re-assembled from the row's own name
+    and namespace rather than from the vector's input, because assembling it is the
+    function under test's job and the one step a row cannot recover from."""
+    return ["%d %d %d %s %d %d %d %d" % (
+        i, orbapp.ASSET_CLASSES.index(r["cls"]), r["required"],
+        orbapp.asset_ref(r, slug).encode("utf-8").hex(),
+        r["w"], r["h"], r["x"], r["y"])
+        for i, r in enumerate(rows)]
 
 
 def _golden_settings16():
@@ -272,28 +385,60 @@ def _golden_settings16():
 
 
 def vectors_accept(add):
-    g, sblob = build_hdr()
+    g, sblob, _ab = build_hdr()
     want_sets = orbapp.unpack_settings(sblob, 4)
     add(Case("golden_full", g, sblob, flags=F_CHECK | F_LAYOUT | F_UNPACK,
              n_unpack=4, sets=want_sets))
+    # ---- the asset table (P5b, D23) ----------------------------------------
+    # The golden table is three rows and not one, because the shape that matters is
+    # a MIXTURE: an owner-scoped sprite, a `global/` plate, and a HAND whose box the
+    # compositor rotates about. One row per shape would let a writer that assembled
+    # every reference the same way pass, and D23 exists for the two namespaces.
+    A3 = [{"name": "dial", "cls": "sprite", "x": 24, "y": 24, "w": 200, "h": 200},
+          {"name": "bg", "cls": "plate", "ns": "global", "required": 1,
+           "x": 0, "y": 0, "w": 240, "h": 240},
+          {"name": "hour", "cls": "hand", "x": 112, "y": 40, "w": 16, "h": 80}]
+    ga, sab, ab3 = build_hdr(assets=A3)
+    # The expected rows, in the harness's own line shape, built from the writer's
+    # unpack and not from the literals above: the vector then proves the C reader
+    # and the Python reader agree, which is the point of the mirror, and a test that
+    # restated the input would only prove the test was written.
+    add(Case("assets_three_rows_round_trip", ga, sab, flags=F_CHECK | F_LAYOUT | F_ASSETS,
+             ablob=ab3, n_aunpack=3,
+             arows=asset_rows(orbapp.unpack_assets(ab3, 3), GOLDEN_SLUG),
+             agate=A_REQUIRED,   # bg is required and nothing is bound
+             note="the gate's answer IS the point here: with no source bound a"
+                  " required slot must refuse, which is D26's install gate firing on"
+                  " a table that unpacked clean"))
+    ao, sob, abo = build_hdr(assets=A3[:1] + A3[2:])
+    add(Case("assets_optional_rows_gate", ao, sob, flags=F_CHECK | F_LAYOUT | F_ASSETS,
+             ablob=abo, n_aunpack=2,
+             arows=asset_rows(orbapp.unpack_assets(abo, 2), GOLDEN_SLUG),
+             note="no required row and no source bound: the ladder answers APP for"
+                  " the sprite and the hand, which is the compiled-in default and"
+                  " not a failure, so the gate passes and install proceeds"))
+    add(Case("assets_empty_table_accepted", g, sblob,
+             flags=F_CHECK | F_LAYOUT | F_ASSETS, n_aunpack=0, arows=[],
+             note="a container with no slots is legal (D23): the pure-geometry and"
+                  " text-only apps declare nothing and must still install"))
     s16 = _golden_settings16()
-    g16, b16 = build_hdr(settings=s16)
+    g16, b16, _ab = build_hdr(settings=s16)
     add(Case("golden_16_settings", g16, b16, flags=F_CHECK | F_LAYOUT,
              note="the > vs >= cliff at SETTINGS_MAX; catches mutation 3"))
-    g0, _ = build_hdr(period=0)
+    g0, _, _ab = build_hdr(period=0)
     add(Case("period_zero_vector_only_app", g0, flags=F_CHECK | F_LAYOUT |
              F_UNPACK, n_unpack=0,
              note="0 is the D16 word for never ticks — accepted whole"))
-    gf, _ = build_hdr(caps=0xF0)
+    gf, _, _ab = build_hdr(caps=0xF0)
     add(Case("caps_all_four_owner_legal", gf, flags=F_CHECK | F_LAYOUT |
              F_UNPACK, n_unpack=0,
              note="D19 positive control: the max legal declaration passes"))
     s23 = "w" * 23
-    g23, _ = build_hdr(slug=s23)
+    g23, _, _ab = build_hdr(slug=s23)
     add(Case("slug_23_chars_field_edge", g23, flags=F_CHECK | F_LAYOUT |
              F_UNPACK, n_unpack=0, hash_in=s23,
              note="the off-by-one that would refuse the writer's own longest slug"))
-    gu, _ = build_hdr()
+    gu, _sb, _ab = build_hdr()
     add(Case("stem_upper_ext_agrees", gu, flags=F_CHECK | F_LAYOUT | F_UNPACK,
              n_unpack=0, stem="weather.ORBAPP",
              note="extension case folds; the stem itself never does"))
@@ -338,11 +483,11 @@ def vectors_refuse(add):
     ok, msg = python_outcome(es)
     add(Case("slug_empty", es, flags=F_CHECK, check=msg, hash_calls=0,
              py=("refuse", msg)))
-    bs, _ = build_hdr(slug="Bad-Slug", app_id=0x12345678)
+    bs, _, _ab = build_hdr(slug="Bad-Slug", app_id=0x12345678)
     ok, msg = python_outcome(bs)
     add(Case("slug_bad_charset", bs, flags=F_CHECK, check=msg, hash_calls=0,
              py=("refuse", msg)))
-    wa, _ = build_hdr(app_id=0x12345678)
+    wa, _, _ab = build_hdr(app_id=0x12345678)
     ok, msg = python_outcome(wa)
     add(Case("app_id_disagrees_with_slug", wa, flags=F_CHECK, check=msg,
              hash_calls=1, py=("refuse", msg)))
@@ -369,7 +514,7 @@ def vectors_refuse(add):
              note="both refuse; the writer's reader at check_slug, the device "
                   "at the field — same verdict, one stage earlier"))
     # -- the filename's side -----------------------------------------------------
-    g, _ = build_hdr()
+    g, _sb, _ab = build_hdr()
     for nm, stem in (("stem_agrees", "weather.orbapp"),
                      ("stem_is_theme", "weather.orbtheme"),
                      ("stem_is_part", "weather.orbapp.part"),
@@ -453,7 +598,7 @@ def vectors_refuse(add):
             msg = str(e)
         add(Case(nm, lay, flags=F_CHECK | F_LAYOUT, layout=msg, py=("skip", None)))
     # -- the settings table on its own --------------------------------------------------
-    g, sblob = build_hdr()
+    g, sblob, _ab = build_hdr()
     add(Case("unpack_count_over_table", g, sblob,
              flags=F_CHECK | F_LAYOUT | F_UNPACK, n_unpack=17,
              unpack="17 settings; the loader's table holds 16",
@@ -479,19 +624,27 @@ def vectors_refuse(add):
              note="the writer's unpack hands back a 16-char id; the device "
                   "refuses an id the NVS key ring could never hold"))
     # -- the ABI range (C4) ----------------------------------------------------
-    a2 = patch(build_hdr()[0][:], orbapp.W_GEOM_ABI, 2)
+    # Built from the writer's own dialect word and not from a literal 1: P5b moved
+    # the vocabulary's ABI to 2 with the asset table, and a vector that names the
+    # number it probes goes stale on every bump, reporting a refusal that never
+    # happened as one that did.
+    def abi_refuse(lo, hi):
+        return ("app needs geometry ABI %d..%d; this build speaks %d —"
+                " re-package it (C4)" % (lo, hi, orbapp.GEOM_ABI))
+    a2 = patch(build_hdr()[0][:], orbapp.W_GEOM_ABI, orbapp.GEOM_ABI + 1)
     ok, msg = python_outcome(a2)
     add(Case("abi_stamp_out_of_own_range", a2, flags=F_CHECK,
-             check="app needs geometry ABI 1..1; this build speaks 1 — "
-                   "re-package it (C4)", hash_calls=0, py=("refuse", msg),
+             check=abi_refuse(orbapp.GEOM_ABI, orbapp.GEOM_ABI), hash_calls=0,
+             py=("refuse", msg),
              note="WORDING-DIFF: the writer prints the header's own field "
                   "under its build label; the reader prints the build — both "
                   "refuse, the numbers on the page come from the reader"))
-    r23 = patch(patch(patch(build_hdr()[0][:], orbapp.W_GEOM_ABI, 2),
-                      orbapp.W_ABI_MIN, 2), orbapp.W_ABI_MAX, 3)
+    r23 = patch(patch(patch(build_hdr()[0][:], orbapp.W_GEOM_ABI, orbapp.GEOM_ABI + 1),
+                      orbapp.W_ABI_MIN, orbapp.GEOM_ABI + 1),
+                 orbapp.W_ABI_MAX, orbapp.GEOM_ABI + 2)
     add(Case("abi_range_excludes_this_build_STRICTER", r23, flags=F_CHECK,
-             check="app needs geometry ABI 2..3; this build speaks 1 — "
-                   "re-package it (C4)", hash_calls=0, py=("ok", None),
+             check=abi_refuse(orbapp.GEOM_ABI + 1, orbapp.GEOM_ABI + 2),
+             hash_calls=0, py=("ok", None),
              note="the writer's reader waves this through (its own stamped "
                   "abi sits in its own range); the device must not install "
                   "geometry it reads wrong"))
@@ -500,6 +653,126 @@ def vectors_refuse(add):
     ok, msg = python_outcome(r00)
     add(Case("abi_range_excludes_everything", r00, flags=F_CHECK, check=msg,
              hash_calls=0, py=("refuse", msg)))
+    # ---- the asset table's own refusals (P5b, D26) --------------------------
+    # Each vector forges ONE byte of an otherwise legal row and carries the header
+    # that counts it, so the vector reaches the row rule and not the count check two
+    # calls earlier. `ahdr()` re-derives the placement the writer would have derived,
+    # then patches the row; a forged OFFSET belongs to the layout vectors above and
+    # not here, where the subject is a row's content.
+    def arow_vector(nm, rows, want, forge, n_aunpack=None):
+        h, sb, ab = build_hdr(assets=rows)
+        b = bytearray(ab)
+        forge(b)                       # mutates; returns nothing on purpose
+        w = list(h)
+        # The count stays the declared one; the blob's byte count changed only in
+        # content, so the header stays honest about what it holds and the CRC is
+        # recomputed for the same reason the settings vectors do it.
+        w[orbapp.W_N_ASSETS] = len(rows)
+        w[orbapp.W_HDR_CRC] = orbapp._hdr_crc(w)
+        add(Case(nm, w, sb, flags=F_CHECK | F_LAYOUT | F_ASSETS, ablob=bytes(b),
+                 n_aunpack=len(rows) if n_aunpack is None else n_aunpack,
+                 aunpack=want, py=("skip", None)))
+
+    # Each forge breaks one field of row 0 and nothing else, so the refusal names
+    # the field and the vector proves the reader read it from the right place. The
+    # row's words are 0=class/req/ns, 1-3=name, 4=x|y, 5=w|h — laid out here in the
+    # numbers and not by name, because a vector that recomputed the offsets from the
+    # constants would keep passing if a constant and the C reader disagreed.
+    # Word 0 carries class in byte 0, the required flag in byte 1 and the namespace
+    # in byte 2, so each value below is a WHOLE word and keeps the sprite's class of
+    # 1 in place. A helper that set one byte by shifting a naked number would have
+    # made "required byte is 2" a vector about class 2 instead.
+    #
+    # Slice assignment and nothing narrower: `b[0:4].__setitem__(...)` mutates the
+    # copy a slice returns, so the first draft of these forgers forged nothing at all
+    # and every row below reported a clean reader. A test that silently stops testing
+    # is worse than no test, which is why each forger is a def that assigns.
+    def forge0(v):
+        def f(b):
+            b[0:4] = struct.pack("<I", v)
+        return f
+
+    def forgew(i, v):
+        def f(b):
+            b[i * 4:i * 4 + 4] = struct.pack("<I", v)
+        return f
+
+    def forgedeck(x, y, w, h):
+        def f(b):
+            b[16:24] = struct.pack("<II", (x & 0xFFFF) | ((y & 0xFFFF) << 16),
+                                   (w & 0xFFFF) | ((h & 0xFFFF) << 16))
+        return f
+
+    SPRITE = 1                                        # orb_asset_class_t index
+    arow_vector("asset_class_past_the_vocabulary", ROW_DIAL,
+                "asset 0 declares class 8, which this build's vocabulary does not"
+                " carry: the app needs an ABI this dial does not speak", forge0(8))
+    arow_vector("asset_class_way_past", ROW_DIAL,
+                "asset 0 declares class 200, which this build's vocabulary does not"
+                " carry: the app needs an ABI this dial does not speak", forge0(200))
+    arow_vector("asset_required_not_a_bit", ROW_DIAL,
+                "asset 0's required byte is 2: D31's selector is one bit, and a value"
+                " that is neither 0 nor 1 is a writer that guessed",
+                forge0(SPRITE | (2 << 8)))
+    arow_vector("asset_namespace_third", ROW_DIAL,
+                "asset 0's namespace byte is 3: there are two namespaces and no third"
+                " (D23)", forge0(SPRITE | (3 << 16)))
+    # The boundary and not the well-past value, because `ns > 1u` off-by-one'd to
+    # `ns > 2u` refuses 3 and accepts 2 — and 2 is the first illegal one. The
+    # settings suite learned this as settings_cliff_offbyone; a count check is only
+    # proven at the number where its own bound flips.
+    arow_vector("asset_namespace_cliff", ROW_DIAL,
+                "asset 0's namespace byte is 2: there are two namespaces and no third"
+                " (D23)", forge0(SPRITE | (2 << 16)))
+    arow_vector("asset_fourth_byte_set", ROW_DIAL,
+                "asset 0's fourth byte is not zero: the row has no fourth field, and a"
+                " writer that filled one means something this reader cannot honour",
+                forge0(SPRITE | (4 << 24)))
+    arow_vector("asset_name_empty", ROW_DIAL,
+                "asset 0 has an empty name: a slot nobody can name cannot be resolved"
+                " and cannot be refused by name, so it can only be refused here",
+                forgew(1, 0))
+    arow_vector("asset_box_off_panel", ROW_DIAL,
+                "asset 0 (\"weather/dial\") is a 1x1 box at %d,0, which is not inside"
+                " the %dx%d panel" % (orbapp.PANEL, orbapp.PANEL, orbapp.PANEL),
+                forgedeck(orbapp.PANEL, 0, 1, 1))
+    # The count the CALLER lies with, against a blob that holds one row: the same
+    # shape as the settings suite's unpack_count_over_table, and the reason the two
+    # numbers travel separately through the protocol.
+    h, sb, ab = build_hdr(assets=ROW_DIAL)
+    add(Case("asset_unpack_count_over_the_table", h, sb,
+             flags=F_CHECK | F_LAYOUT | F_ASSETS, ablob=ab, n_aunpack=17,
+             aunpack="17 assets; the loader's table holds 16", py=("skip", None)))
+    add(Case("asset_unpack_blob_short", h, sb,
+             flags=F_CHECK | F_LAYOUT | F_ASSETS, ablob=ab[:20], n_aunpack=1,
+             aunpack="asset table is 20 B, short of the 24 B its count claims",
+             py=("skip", None)))
+    h17 = patch(build_hdr()[0][:], orbapp.W_N_ASSETS, 17)
+    ok, msg = python_outcome(h17)
+    add(Case("asset_n_assets_over_the_table", h17, flags=F_CHECK, check=msg,
+             py=("refuse", msg)))
+    hun = patch(build_hdr()[0][:], orbapp.W_ASSET_OFF, 178)
+    ok, msg = python_outcome(hun)
+    add(Case("asset_offset_unaligned", hun, flags=F_CHECK, check=msg,
+             py=("refuse", msg)))
+    hbig = patch(build_hdr()[0][:], orbapp.W_ASSET_OFF, orbapp.GEOM_BYTES_MAX + 4)
+    ok, msg = python_outcome(hbig)
+    add(Case("asset_offset_past_the_region", hbig, flags=F_CHECK, check=msg,
+             py=("refuse", msg)))
+    # The placement equalities, forged one word at a time: this is the pair of rules
+    # that makes an overlapping container unrepresentable, and the theme
+    # container's FORMAT-1 scar is the precedent that says it must be a rule.
+    for nm, word, bad in (("asset_off_moved", orbapp.W_ASSET_OFF, 400),
+                          ("geom_off_overlaps_assets", orbapp.W_GEOM_OFF, 300)):
+        lay = patch(build_hdr()[0][:], word, bad)
+        ok, msg = python_outcome(lay)
+        assert ok, "%s must survive the semantic stage to reach layout" % nm
+        try:
+            orbapp.check_file_layout(orbapp.parse_header(pack_words(lay)))
+            raise AssertionError(nm + ": writer accepted the mislayout")
+        except ValueError as e:
+            msg = str(e)
+        add(Case(nm, lay, flags=F_CHECK | F_LAYOUT, layout=msg, py=("skip", None)))
 
 
 
@@ -507,7 +780,8 @@ def vectors_refuse(add):
 
 
 # ---- run: compile the SHIPPING reader, drive it, compare --------------------
-def compile_harness(tmp, reader_c_text, reader_h_text):
+def compile_harness(tmp, reader_c_text, reader_h_text, assets_c_text=None,
+                    assets_h_text=None):
     shim = os.path.join(tmp, "shim")
     os.makedirs(os.path.join(shim, "mbedtls"), exist_ok=True)
     open(os.path.join(shim, "esp_err.h"), "w").write(SHIM_ESP_ERR)
@@ -520,10 +794,32 @@ def compile_harness(tmp, reader_c_text, reader_h_text):
     open(hdr, "w").write(reader_h_text)
     open(hac, "w").write(HARNESS_C)
     binp = os.path.join(tmp, "harness")
+    # The registry compiles from its shipped path unless a caller handed over text,
+    # which happens only for a mutant: writing the copy into the harness dir is what
+    # puts it ahead of the real one on the include path, so an asset-side mutation
+    # mutates the code the reader actually links rather than a file nobody reads.
+    asrc = ASSETS_C
+    if assets_c_text is not None:
+        asrc = os.path.join(tmp, "orb_assets.c")
+        open(asrc, "w").write(assets_c_text)
+    # Same for the registry's header: a "d" mutant rewrites the class vocabulary or a
+    # bound, and the copy has to land in the harness dir, which -I lists first, or the
+    # mutation edits a file the build never opens.
+    ainc = os.path.join(ROOT, "main", "assets")
+    if assets_h_text is not None:
+        open(os.path.join(tmp, "orb_assets.h"), "w").write(assets_h_text)
+        ainc = tmp
     cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
                          "-Wno-unused-function", "-Werror",
                          "-I", tmp, "-I", os.path.join(ROOT, "main"),
-                         "-I", shim, "-o", binp, src, hac],
+                         # P5b: orb_app_manifest.h includes orb_assets.h for the
+                         # class vocabulary, and that TU's code is compiled in —
+                         # the reader's refusal of a bad class byte is the shipped
+                         # orb_asset_class_known(), not a re-typed bound. The
+                         # registry needs no shim: it reaches nothing but libc.
+                         "-I", ainc,
+                         "-I", os.path.join(ROOT, "assets"),
+                         "-I", shim, "-o", binp, src, asrc, hac],
                         capture_output=True, text=True)
     if cc.returncode:
         raise SystemExit("harness build failed:" + NL + cc.stderr[-3000:])
@@ -533,17 +829,26 @@ def compile_harness(tmp, reader_c_text, reader_h_text):
 def hdr_bytes_for(c):
     """One case, in the byte order the harness reads: flags+expect,
     the header words, the stem as raw bytes, the digest the sha hook
-    hands back, the settings words, and the unpack count."""
+    hands back, the settings words and count, and the asset words and
+    count."""
     w = c.hdr
     stem = (c.stem or "").encode("utf-8")
-    blob = bytes(c.sblob)
+    sblob = bytes(c.sblob)
+    ablob = bytes(c.ablob)
     out = [struct.pack("<II", c.flags, c.expect_id),
            b"".join(struct.pack("<I", v) for v in w),
            struct.pack("<I", len(stem)), stem,
            hashlib.sha256((c.hash_in if c.hash_in is not None else
                            GOLDEN_SLUG).encode("utf-8")).digest(),
-           struct.pack("<I", len(blob) // 4), blob,
-           struct.pack("<I", c.n_unpack)]
+           struct.pack("<I", len(sblob) // 4), sblob,
+           struct.pack("<I", c.n_unpack),
+           # P5b: the asset blob and the count to unpack it with, ALWAYS present so
+           # the record's shape does not depend on a vector's flags. Two numbers the
+           # install path keeps apart on purpose — the header's n_assets says what
+           # the file claims, and this one says what the caller asked for, and the
+           # gap between them is the vector.
+           struct.pack("<I", len(ablob) // 4), ablob,
+           struct.pack("<I", c.n_aunpack)]
     if len(stem) % 4:
         pass                                   # no pad: the harness reads
     return b"".join(out)                       # exactly slen bytes, next field
@@ -565,8 +870,25 @@ def run_harness(binp, cases):
             if parts[0].endswith(".set"):
                 sets_out.setdefault(parts[0][:-4], []).append(ln.split(" ", 1)[1])
                 continue
+            if parts[0].endswith(".arow"):
+                # Accumulated like .set, under a key of its own: a vector that
+                # unpacked settings AND assets in one run would otherwise land both
+                # row types in one bucket, and a stage that printed three slots as
+                # one is exactly the damage this line exists to catch.
+                sets_out.setdefault(parts[0][:-5] + "#arow", []).append(
+                    ln.split(" ", 1)[1])
+                continue
             if parts[0].endswith(".hash"):
                 out[parts[0]] = ln.split(" ", 1)[1]
+                continue
+            if parts[0].endswith(".agate") and parts[1] == "GATE":
+                # Kept as the code and its reason, because the code is the answer
+                # D26 routes on and the prose is what a ledger shows: a vector that
+                # pinned only one of the two would let the other drift. Index 2 and
+                # not 1: the harness's GATE marker is a stage verb, the same way a
+                # REFUSE line's is, and leaving it in would make every expectation a
+                # string that starts with a word no reader emits.
+                out[parts[0]] = ln.split(" ", 3)[2:]
                 continue
             out[parts[0]] = None if parts[1] == "REFUSE" else "OK"
             if parts[1] == "REFUSE":
@@ -579,17 +901,40 @@ def run_harness(binp, cases):
 def compare(cases, out, sets_out):
     fails = []
     for i, c in enumerate(cases):
-        for stg, bit in (("parse", 1), ("check", 1), ("layout", 2), ("unpack", 4)):
+        for stg, bit in (("parse", 1), ("check", 1), ("layout", 2), ("unpack", 4),
+                         ("aunpack", 16), ("agate", 16)):
             ran = stg == "parse" or bool(c.flags & bit)
+            # The asset stages keep their own expectation table, and a vector that
+            # did not set one is a vector that does not assert about them — the
+            # older vectors carry no F_ASSETS bit and must stay exactly as loud as
+            # they were before the protocol grew two fields.
+            want_tbl = c.aexpect if stg in c.aexpect else c.expect
+            # The asset gate runs over rows that unpacked, so a vector that expects
+            # the row stage to refuse has no gate line to compare and no missing
+            # stage to report: demanding one would fail a correct reader.
+            if stg == "agate" and isinstance(c.aexpect.get("aunpack"), str):
+                ran, want_tbl = False, {}
             if not ran:
-                if c.expect[stg] is not None:
+                if want_tbl.get(stg) is not None:
                     fails.append("%s.%s: reason expected but the stage never ran"
                                  % (c.name, stg))
                 continue
             got = out.get("case%u.%s" % (i, stg), "<MISSING>")
-            want = c.expect[stg] if c.expect[stg] is not None else "OK"
+            want = want_tbl.get(stg) if want_tbl.get(stg) is not None else "OK"
+            if isinstance(want, int):
+                # The gate expects a bare answer code: the code is the contract a
+                # caller branches on, and pinning its prose too would make every
+                # rewording of a reason line a schema change. The reason the dial
+                # prints still travels in the failure text below.
+                want = "%d" % want
+                if isinstance(got, list):
+                    got = got[0] if got else "<EMPTY>"
             if got != want:
                 fails.append("%s.%s: want %r got %r" % (c.name, stg, want, got))
+        if c.arows is not None and not isinstance(c.aexpect.get("aunpack"), str):
+            got = sets_out.get("case%u#arow" % i, [])
+            if got != c.arows:
+                fails.append("%s.arow: want %r got %r" % (c.name, c.arows, got))
         hl = (out.get("case%u.hash" % i) or "").split(" ")
         calls = int(hl[0]) if hl and hl[0].isdigit() else -1
         is224 = int(hl[1]) if len(hl) > 1 else -1
@@ -678,6 +1023,56 @@ def lint():
     except ValueError as e:
         assert str(e) == "setting 0 has type word 4, outside C9's frozen 4", str(e)
 
+    # ---- P5b: the asset mirror, read out of the shipped text ----------------
+    lint_asset_mirror(hc, hh, open(ASSETS_H).read())
+
+
+def lint_asset_mirror(hc, hh, ah):
+    """The cross-header half of the mirror, as a function so a header-side mutant can
+    be checked against the text it forged rather than only against the shipped file.
+
+    The class vocabulary is the one field order in this format that a renumber
+    corrupts silently: the wire carries an index, so a row written by a build that
+    appended before `layer` resolves `dial` as somebody else's plate on every dial in
+    the fleet, and every checksum in the container still passes. Lifting both the enum
+    and the row layout out of the headers, rather than restating them, is what turns
+    that from a shipping bug into a failed test."""
+    a_enum = re.search(r"typedef enum \{(.*?)\} orb_asset_class_t;", hc + ah, re.S)
+    assert a_enum, "orb_asset_class_t is gone from the shipped headers"
+    # The terminator and the name shape both vary: the last enumerator carries an
+    # underscore and no comma, and a reader that stopped at either would drop the very
+    # value a count-over-table vector depends on. Assert the whole list rather than
+    # trusting a regex to have found everything.
+    names = re.findall(r"^\s*(ORB_ASSET_[A-Z_]+)\s*(?:=\s*\d+)?\s*(?:,|/)",
+                       a_enum.group(1), re.M)
+    assert names == ["ORB_ASSET_TEXT", "ORB_ASSET_SPRITE", "ORB_ASSET_HAND",
+                     "ORB_ASSET_PLATE", "ORB_ASSET_RING", "ORB_ASSET_BANK",
+                     "ORB_ASSET_LAYER", "ORB_ASSET_STATUS", "ORB_ASSET_CLASS_N"], \
+        "the class vocabulary moved: %s" % (names,)
+    assert orbapp.ASSET_CLASSES == tuple(n.lower().replace("orb_asset_", "")
+                                        for n in names[:-1]), \
+        "the writer's class tuple drifted from the C enum: %s" % (orbapp.ASSET_CLASSES,)
+    # The ABI equality the two headers cannot express between themselves (they include
+    # each other one way only), checked here so a bump on one side fails a suite even
+    # when nobody builds the firmware. orb_assets.c carries the same _Static_assert;
+    # this is the copy that runs on a machine with no toolchain.
+    abi = re.search(r"#define\s+ORBAPP_GEOM_ABI\s+(\d+)u", hh)
+    aabi = re.search(r"#define\s+ORB_ASSET_CLASS_ABI\s+(\d+)u", ah)
+    assert abi and aabi, "a dialect word went missing from its own header"
+    assert int(abi.group(1)) == int(aabi.group(1)) == orbapp.GEOM_ABI, \
+        "the class vocabulary's ABI, the reader's dialect and the writer's disagree"
+    for needle in ("ORBAPP_ASSETS_MAX     16u", "ORBAPP_ASSET_NAME_MAX 12u",
+                   "ORB_ASSET_NAME_MAX      12u", "ORB_ASSET_OWNER_MAX     23u",
+                   "ORB_ASSET_MAX  16"):
+        assert needle in hc + hh + ah, "the asset mirror drifted: " + needle
+    assert orbapp.ASSET_MAX == 16 and orbapp.ASSET_NAME_MAX == 12
+    assert orbapp.ASSET_OWNER_MAX == 23, orbapp.ASSET_OWNER_MAX
+    assert orbapp.ASSET_REF_MAX == orbapp.ASSET_OWNER_MAX + 1 + orbapp.ASSET_NAME_MAX
+    assert orbapp.ASSET_WORDS == 6 and re.search(r"ORBAPP_A_WH\s*=\s*5", hh), \
+        "the wire row grew a word on one side only"
+    # An appended enumerator must grow the writer's tuple in the same commit.
+    assert len(orbapp.ASSET_CLASSES) == len(names) - 1
+
 
 MUTATIONS = [
     ("beat_floor_dropped", "h", "ORBAPP_BEAT_MIN_MS 3000u",
@@ -710,6 +1105,73 @@ MUTATIONS = [
      "((uint32_t)d[3] << 24)"),
     ("stem_checked_against_title", "c", "strcmp(stem, h->slug) != 0",
      "strcmp(stem, h->title) != 0"),
+    # ---- P5b: the asset table's own rules, each one mutated to nothing -------
+    # Added because the first draft of the row forgers mutated a slice COPY and
+    # every vector below silently reported a clean reader. A check nobody has
+    # watched fail is a check that may already be dead.
+    ("asset_class_bound_dropped", "c", "if (!orb_asset_class_known(cls))",
+     "if (0 && !orb_asset_class_known(cls))"),
+    ("asset_required_bit_unchecked", "c", "if (req > 1u)", "if (0 && req > 1u)"),
+    ("asset_namespace_third_allowed", "c", "if (ns > 1u)", "if (ns > 2u)"),
+    ("asset_reserved_byte_allowed", "c", "if ((b[ORBAPP_A_CLASS] >> 24) != 0)",
+     "if (0 && (b[ORBAPP_A_CLASS] >> 24) != 0)"),
+    ("asset_name_empty_allowed", "c", "if (!name[0])", "if (0 && !name[0])"),
+    ("asset_count_bound_dropped", "c", "if (h->n_assets > ORBAPP_ASSETS_MAX)",
+     "if (0 && h->n_assets > ORBAPP_ASSETS_MAX)"),
+    # x|y and w|h read as one word each. Swapping the pair is the mutation this
+    # vector set must die on: a reader that mixed them would accept every box in
+    # the golden table, since those are square-ish, and misplace exactly the
+    # non-square hand that the three-row vector carries.
+    ("asset_box_halves_swapped", "c", [
+        ("        out[i].at.x = (int16_t)(xy & 0xFFFFu);\n"
+         "        out[i].at.y = (int16_t)((xy >> 16) & 0xFFFFu);\n"
+         "        out[i].at.w = (uint16_t)(wh & 0xFFFFu);\n"
+         "        out[i].at.h = (uint16_t)((wh >> 16) & 0xFFFFu);\n",
+         "        out[i].at.w = (uint16_t)(xy & 0xFFFFu);\n"
+         "        out[i].at.h = (uint16_t)((xy >> 16) & 0xFFFFu);\n"
+         "        out[i].at.x = (int16_t)(wh & 0xFFFFu);\n"
+         "        out[i].at.y = (int16_t)((wh >> 16) & 0xFFFFu);\n")]),
+    # The placement equality, the rule that makes an overlapping container
+    # unrepresentable rather than merely unusual.
+    ("asset_layout_equality_dropped", "c",
+     "    if (h->geom_off != (uint64_t)h->asset_off +\n"
+     "                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)",
+     "    if (0 && h->geom_off != (uint64_t)h->asset_off +\n"
+     "                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)"),
+    # The bug this batch was written for: a splitter that forbids the owner's slash
+    # resolves nothing in an app's own namespace, and every reference the manifest
+    # carries looks damaged. Restoring the pre-fix shape must fail the round trip.
+    ("asset_owner_slash_forbidden", "a", [
+        ("        const char *s = memchr(n, '/', len);\n"
+         "        if (!s || s == n || (size_t)(s - n) > ORB_ASSET_OWNER_MAX) return false;\n"
+         "        slash = (size_t)(s - n);\n",
+         "        return false;\n")]),
+    # D26's gate reduced to always-agree: the shape an install path takes when
+    # someone moves the check "to the caller" and forgets to write the caller.
+    ("asset_gate_always_passes", "a",
+     "    for (int i = 0; i < n; i++) {",
+     "    for (int i = 0; i < 0; i++) {"),
+    # D31, and the corruption the lifted mirror exists for: a class promoted into the
+    # middle of the vocabulary. Every enumerator keeps its name and every value after
+    # it shifts by one, so a `hand` row a container wrote yesterday reads as a plate
+    # tomorrow and no checksum in the file notices. Only the suite compares the enum's
+    # ORDER against the writer's tuple.
+    ("class_renumbered_in_the_middle", "d",
+     "    ORB_ASSET_HAND,         /* a plate with a pivot: it turns                     */",
+     "    ORB_ASSET_FRAME,\n    ORB_ASSET_HAND,         /* a plate with a pivot: it turns                     */"),
+    # The vocabulary's ABI and the reader's dialect are separate words that must carry
+    # the same number, and the two headers include each other one way only, so neither
+    # can pin the pair. Bumping one side alone is the shape of a firmware that accepts
+    # a container written for a class table it does not have.
+    ("asset_abi_bumped_alone", "d",
+     "#define ORB_ASSET_CLASS_ABI   2u",
+     "#define ORB_ASSET_CLASS_ABI   3u"),
+    # The registry's name field widened past the wire's twelve bytes: the writer keeps
+    # accepting a name the device then truncates, and the truncated reference resolves
+    # as a different slot rather than as a failure.
+    ("asset_name_max_widened_past_the_wire", "d",
+     "#define ORB_ASSET_NAME_MAX      12u",
+     "#define ORB_ASSET_NAME_MAX      16u"),
 ]
 
 
@@ -725,6 +1187,7 @@ def main():
     lint()
     with tempfile.TemporaryDirectory() as tmp:
         src_c, src_h = open(READER_C).read(), open(READER_H).read()
+        src_a = open(ASSETS_C).read()
         binp = compile_harness(tmp, src_c, src_h)
         out, sets_out = run_harness(binp, cases)
         fails = compare(cases, out, sets_out)
@@ -736,18 +1199,62 @@ def main():
         bad = 0
         muts = [(e[0], e[1], [(e[2], e[3])] if len(e) == 4 else e[2])
                 for e in MUTATIONS]
+        # A "d" mutant edits the asset registry's own header. The two headers include
+        # each other one way only, so the constants that must match across them are the
+        # ones a single-source mutant cannot reach, and the suite is the only thing that
+        # can: the class vocabulary's order, its ABI, and the name field's width.
+        src_d = open(ASSETS_H).read()
         for nm, which, pairs in muts:
-            c2, h2 = src_c, src_h
+            c2, h2, a2, d2 = src_c, src_h, src_a, src_d
             for old, new in pairs:
                 if which == "c":
                     assert c2.count(old) == 1, nm + ": anchor lost in the .c"
                     c2 = c2.replace(old, new)
+                elif which == "a":
+                    assert a2.count(old) == 1, nm + ": anchor lost in orb_assets.c"
+                    a2 = a2.replace(old, new)
+                elif which == "d":
+                    assert d2.count(old) == 1, nm + ": anchor lost in orb_assets.h"
+                    d2 = d2.replace(old, new)
                 else:
                     assert h2.count(old) == 1, nm + ": anchor lost in the .h"
                     h2 = h2.replace(old, new)
+            # A header mutant is a DRIFT, and drift is what the mirror is for: ask it
+            # directly. Going through the compiler first would report a death the
+            # vector set never verified, and renumbering the vocabulary in particular
+            # leaves the build clean — every name still exists, every consumer still
+            # compiles, and only the ORDER moved.
+            if which == "d":
+                try:
+                    lint_asset_mirror(src_c, src_h, d2)
+                    escaped_mirror = True
+                except AssertionError as e:
+                    escaped_mirror = False
+                    print("caught: %-28s (%s)" % (nm, str(e)[:64]))
+                if escaped_mirror:
+                    print("MUTATION ESCAPED: %s — the mirror read the forged header "
+                          "as clean" % nm)
+                    bad += 1
+                continue
             mtmp = os.path.join(tmp, "mut_" + nm)
             os.makedirs(mtmp, exist_ok=True)
-            mb = compile_harness(mtmp, c2, h2)
+            # A mutant that stops the build IS a killed mutant, and for the two
+            # header-side ones that is the mechanism: orb_assets.c pins its ABI, its
+            # count and its name width against the manifest header with a
+            # _Static_assert, so a one-sided bump fails at compile time rather than at
+            # run time. That is the whole point of the assert, so the loop has to count
+            # it as a death instead of crashing on it — but it names the reason,
+            # because a mutant killed by a stray syntax error proves nothing.
+            try:
+                mb = compile_harness(mtmp, c2, h2,
+                                     a2 if which == "a" else None,
+                                     d2 if which == "d" else None)
+            except SystemExit as e:
+                why = str(e)
+                assert "static assertion" in why or "_Static_assert" in why, \
+                    nm + ": build died for a reason that is not the pin: " + why[-400:]
+                print("caught: %-28s (%s)" % (nm, "compile-time assert refused it"))
+                continue
             mout, msets = run_harness(mb, cases)
             mfails = compare(cases, mout, msets)
             if not mfails:

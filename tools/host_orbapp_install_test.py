@@ -182,7 +182,11 @@ def compile_harness(tmp, quota, mutate=None):
     cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
                          "-Wno-unused-function", "-Werror",
                          "-DORB_CFG_QUOTA_BYTES=%d" % quota,
+                         # P5b: orb_app_manifest.h includes orb_assets.h for the class
+                         # vocabulary an asset row's first word carries.
                          "-I", tmp, "-I", os.path.join(ROOT, "main"),
+                         "-I", os.path.join(ROOT, "main", "assets"),
+                         "-I", os.path.join(ROOT, "assets"),
                          "-I", shim, "-o", binp, hac],
                         capture_output=True, text=True)
     if cc.returncode:

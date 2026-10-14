@@ -39,7 +39,14 @@ extern "C" {
 #define ORBAPP_MAGIC      0x00415247u    /* 'G','R','A' — unlike the theme magic on purpose */
 #define ORBAPP_THEME_MAGIC 0x474F5254u   /* so a theme handed here gets named, not miscalled */
 #define ORBAPP_FORMAT     1u
-#define ORBAPP_GEOM_ABI   1u             /* the dialect this build speaks */
+#define ORBAPP_GEOM_ABI   2u    /* The dialect this build speaks. 1 -> 2 is P5b's
+                                 * asset table (D23): the geometry records did not
+                                 * move, the vocabulary did. D23 names THIS word as
+                                 * the class enum's version, so a second number that
+                                 * could contradict it is not added — and an app
+                                 * that needs a class this dial cannot name dies on
+                                 * the same abi_min/abi_max ladder as everything
+                                 * else, with the same sentence. */
 
 #define ORBAPP_SLUG_MAX    24u   /* header bytes, NUL included */
 #define ORBAPP_TITLE_MAX   32u
@@ -47,6 +54,18 @@ extern "C" {
 #define ORBAPP_DEFSTR_MAX  32u
 
 #define ORBAPP_SETTINGS_MAX   16u
+#define ORBAPP_ASSETS_MAX     16u   /* P5b (D23): the asset table's cap, twin of
+                                     * ORB_ASSET_MAX. 16 rows of 6 words = 384 B, and
+                                     * the worst-case blob (settings + strings +
+                                     * assets) fits the slot header's 4 KB slack. That
+                                     * arithmetic is the only reason the cap exists: a
+                                     * table that did not fit the region its own slot
+                                     * CRC reaches would be checked by nobody. */
+#define ORBAPP_ASSET_NAME_MAX 12u   /* bytes incl NUL, and NO prefix in them: the row
+                                     * carries a namespace byte, so a global slot is
+                                     * stored as `plate` and not `global/plate`. Nobody
+                                     * reconstructs a prefix to strip it back off, and
+                                     * `global/` + 12 still fits ORB_ASSET_REF_MAX. */
 #define ORBAPP_GEOM_BYTES_MAX 0x00040000u  /* 256 KB — the apps-partition sizing depends on it */
 #define ORBAPP_ART_BYTES_MAX  0x003D0000u  /* 3.81 MB — plausibility bound on the
                                             * art_req DECLARATION only: D21 (§0.9)
@@ -88,13 +107,38 @@ enum {
     ORBAPP_W_ART_SIZE   = ORBAPP_W_ART_OFF   + 1,
     ORBAPP_W_ART_CRC    = ORBAPP_W_ART_SIZE  + 1,
     ORBAPP_W_HDR_CRC    = ORBAPP_W_ART_CRC   + 1,
-    ORBAPP_HDR_WORDS    = ORBAPP_W_HDR_CRC   + 4,   /* +4 words reserved for the next format */
+    /* P5b's two fields take words the P2 header left reserved for exactly this, so
+     * ORBAPP_HDR_WORDS does not move and the header CRC still covers up to
+     * W_HDR_CRC. One word at the end stays free, and the reader checks it zero:
+     * a word that reads as nothing today is a word that reads as something wrong
+     * tomorrow. The table itself lives in the blob region, where the slot CRC
+     * already reaches it. A container written before any app declared a slot leaves
+     * both zero, which reads as "declares nothing": the truth for every app that
+     * ever shipped (D25), and the one answer in this table that is not a refusal. */
+    ORBAPP_W_ASSET_OFF  = ORBAPP_W_HDR_CRC   + 1,
+    ORBAPP_W_N_ASSETS   = ORBAPP_W_ASSET_OFF + 1,
+    ORBAPP_HDR_WORDS    = ORBAPP_W_HDR_CRC   + 4,   /* 2 taken by P5b, 2 still free */
     ORBAPP_HDR_BYTES    = ORBAPP_HDR_WORDS * 4,
     /* One settings descriptor on the wire, mirroring orb_setting_desc_t
      * field for field — the writer's S_* numbers (orbapp.py:172). */
     ORBAPP_S_ID = 0, ORBAPP_S_TYPE = 4, ORBAPP_S_MIN = 5, ORBAPP_S_MAX = 6,
     ORBAPP_S_DEF = 7, ORBAPP_S_STR = 8,
-    ORBAPP_SETTINGS_WORDS = ORBAPP_S_STR + ((ORBAPP_DEFSTR_MAX + 3) / 4)  /* 16 */
+    ORBAPP_SETTINGS_WORDS = ORBAPP_S_STR + ((ORBAPP_DEFSTR_MAX + 3) / 4),  /* 16 */
+    /* One asset row (D23): a class byte, D31's selector byte, a namespace byte, and
+     * a name carrying no prefix. Then the box — a slot the OS composites still has
+     * to say where it is, and the box is the only geometry a container may state
+     * about a slot it ships no pixels for. Words 4 and 5 are x|y and w|h, so a row
+     * the dial cannot place is a refusal at read and not a slot parked at (0,0). */
+    ORBAPP_A_CLASS = 0,   /* byte 0: an index into orb_asset_class_t             */
+    ORBAPP_A_REQ   = 1,   /* byte 1: D31's selector                              */
+    ORBAPP_A_NS    = 2,   /* byte 2: 0 owner-scoped, 1 the global/ namespace     */
+    ORBAPP_A_NAME  = 1,   /* words 1..3: ORBAPP_ASSET_NAME_MAX bytes             */
+    ORBAPP_A_XY    = 4,   /* x int16 | y int16                                   */
+    ORBAPP_A_WH    = 5,   /* w u16   | h u16                                     */
+    ORBAPP_ASSET_WORDS = 6            /* the row is exactly six words. Byte 3 of word 0
+                                       * is the row's reserved byte and the reader
+                                       * checks it zero, which is where a seventh word
+                                       * would start */
 };
 
 /* The decoded header — the writer's parse_header dict, flattened. The scan
@@ -111,7 +155,15 @@ typedef struct {
     uint32_t period_ms, caps, n_settings;
     uint32_t setting_off, geom_off, geom_size, geom_crc;
     uint32_t art_off, art_size, art_crc;
+    uint32_t asset_off, n_assets;   /* P5b (D23): the table, in the blob region    */
 } orbapp_hdr_t;
+
+/* The class vocabulary the table's rows index into is main/assets/orb_assets.h's
+ * frozen enum, included and not copied: the wire carries an index and a namespace
+ * byte, never a string, so there is exactly one list of class names in the tree.
+ * The include sits here because the manifest reader is what turns those bytes into
+ * an orb_asset_decl_t, and that translation is where a drift would live. */
+#include "orb_assets.h"
 
 /* Decode + the fixed-layout refusals: not a container (a theme is NAMED,
  * per .clinerules:453), a newer FORMAT, a header size that is not this
@@ -142,6 +194,36 @@ const char *orbapp_check_file_layout(const orbapp_hdr_t *h, char *reason,
 const char *orbapp_unpack_settings(const uint32_t *words, size_t nwords,
                                    uint32_t n, orb_setting_desc_t out[],
                                    char *reason, size_t reason_cap);
+
+/* Unpack n asset rows into the loader's own table — the D23/D31 half of the
+ * manifest, and the sibling of orbapp_unpack_settings for exactly the reason that
+ * one exists: the caller must not hand the registry a reinterpretation of the
+ * wire. Refuses a class byte the frozen enum does not carry, a namespace byte
+ * outside {0,1}, a reserved word that is not zero, an unterminated or too-long
+ * name, a box the panel cannot hold, and a table short of what the count claims.
+ * An empty name on a row is a refusal and not a blank slot: a slot nobody can
+ * name cannot be resolved, cannot be refused by name, and would be filed under
+ * the empty string.
+ *
+ * `slug` is the app's OWN slug, cross-checked against every owner-scoped row the
+ * same way check_header cross-checks the filename stem — the reference's owner is
+ * the identity triple's third member, so a container that names another app's
+ * slot is refused here, before the first erase (D26), and not discovered by the
+ * resolver on a tick. NULL skips the cross-check, which is what the scan does: it
+ * has no card row's identity to compare against, and it must not invent one. */
+const char *orbapp_unpack_assets(const uint32_t *words, size_t nwords,
+                                 uint32_t n, const char *slug,
+                                 orb_asset_decl_t out[],
+                                 char *reason, size_t reason_cap);
+
+/* D26's answer over a whole table: resolve every declaration in the one order the
+ * registry owns and report the FIRST refusal. Thin over orb_asset_resolve_all on
+ * purpose — the install path must not grow a second precedence, and a second
+ * precedence is a second truth about what the owner's theme says. Returns the
+ * answer; `why` carries the sentence naming the reference that failed and the
+ * class it was declared as. */
+orb_asset_ans_t orbapp_check_assets(const orb_asset_decl_t *decls, int n,
+                                   const char *slug, char *why, size_t cap);
 
 /* The declared owner caps in orb_cap_t order, e.g. "power, net" — the
  * disclosure's may-use line, from the same bits the gate consults. Returns

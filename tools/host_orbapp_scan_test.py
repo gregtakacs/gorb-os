@@ -258,8 +258,16 @@ def compile_harness(tmp, rowdecide_text, ext_define, entry_text):
     binp = os.path.join(tmp, "harness")
     cc = subprocess.run(["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra",
                          "-Wno-unused-function", "-Werror",
+                         # P5b: orb_app_manifest.h includes orb_assets.h for the class
+                         # vocabulary an asset row's first word carries.
                          "-I", tmp, "-I", os.path.join(ROOT, "main"),
-                         "-I", shim, "-o", binp, src, hac],
+                         "-I", os.path.join(ROOT, "main", "assets"),
+                         "-I", os.path.join(ROOT, "assets"),
+                         "-I", shim, "-o", binp, src,
+                         # P5b: orb_app_manifest.c's asset unpack calls the shipped
+                         # registry (orb_asset_ref_ok / class_known / resolve_all /
+                         # class_name), so that TU links rather than a re-typed stub.
+                         os.path.join(ROOT, "main", "assets", "orb_assets.c"), hac],
                         capture_output=True, text=True)
     if cc.returncode:
         raise SystemExit("harness build failed:" + NL + cc.stderr[-3000:])

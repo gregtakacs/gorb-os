@@ -436,9 +436,21 @@ static void mirror_chunk(int32_t x1, int32_t y1, int32_t w, int32_t h,
 /* Re-fund the tile ring. Caller holds s_ring_mux. Used by display_dma_return()
  * and, when the card has not given the memory back, retried by the flush path
  * (which is the only other place allowed to allocate the ring, because it runs
- * on the LVGL task). Returns ESP_OK only with >= 2 buffers back -- one tile
- * cannot ping-pong, and depth 1 at a queue depth of 2 is the write-guard
- * hazard the L1 comment calls out. */
+ * on the LVGL task).
+ *
+ * One buffer is accepted, and it is the case that matters. A mounted card keeps
+ * ~53 KB of the internal DMA pool, so after the mount this board can fund ONE
+ * 18,640 B tile and never two (measured post-mount largest block 19,456 B). A
+ * refund that insisted on two was never satisfiable after a successful mount --
+ * the dial stayed dropped forever, the clock never reached its first paint, and
+ * with CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y the bootloader rolled the whole
+ * image back. Observed on orb-A 2026-10-14 for exactly that reason.
+ *
+ * A single tile is safe: the ring write-guard takes nbuf == 1 as "buffer 0 holds
+ * the last tile", so every submit waits for the previous trans-done. That is
+ * depth-1 serialization at DEPTH-1 IN PRACTICE while the IO object still says 2,
+ * because only one transaction is ever outstanding -- no bounce copy, which is
+ * the whole reason a loan must not fall back to PSRAM-direct. */
 static esp_err_t ring_refund(void)
 {
     if (!s_ring_bytes) return ESP_ERR_NOT_FOUND;      /* init never funded it   */
@@ -449,10 +461,11 @@ static esp_err_t ring_refund(void)
         if (!t[i]) break;
         n++;
     }
-    if (n < 2) {
-        for (int i = 0; i < TILE_BUFS; i++) free(t[i]);
-        return ESP_ERR_NO_MEM;
-    }
+    if (n == 0) return ESP_ERR_NO_MEM;
+    if (n < TILE_BUFS)
+        ESP_LOGW(TAG, "tile ring re-funded short: %d of %d buffers, flushes serialize",
+                 n, TILE_BUFS);
+    for (int i = n; i < TILE_BUFS; i++) { free(t[i]); t[i] = NULL; }
     for (int i = 0; i < TILE_BUFS; i++) s_tile[i] = t[i];
     s_tiles_n   = n;
     s_tiles_ok  = true;
@@ -467,7 +480,7 @@ static esp_err_t ring_refund(void)
      * every frame that asked did get through. */
     if (s_ring_dropped) s_ring_redraw = true;
     s_ring_dropped = false;
-    ESP_LOGI(TAG, "tile ring reclaimed the display: %d x %u B (largest internal DMA block %u B)",
+    ESP_LOGI(TAG, "tile ring back: %d x %u B (largest internal DMA block %u B)",
              n, (unsigned)s_ring_bytes,
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
     return ESP_OK;

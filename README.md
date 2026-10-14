@@ -23,6 +23,43 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
 
 - USB-C cable connected to the board (flashes via the native USB-Serial-JTAG peripheral)
 
+## Versioning
+
+Every image carries a stamp in `esp_app_desc_t.version`, composed in exactly one
+place — `tools/orb_version.sh` — and read by everything else:
+
+    v<MAJOR>.<MINOR>.<PATCH>[-<prerelease>]+<7-char SHA>[-dirty]
+
+`version.txt` at the repo root holds the declared part, one line, no comments
+(cmake's `file(STRINGS)` folds every line into the value). The metadata after the
+plus is provenance and cannot be typed by hand: the SHA names the commit the tree
+was at, and `-dirty` says the tree carried uncommitted edits when cmake ran. A
+stamp is a git fact, never an aspiration.
+
+Bump `version.txt`, then:
+
+    idf.py reconfigure && idf.py build
+
+The reconfigure is not optional. cmake stamps at configure time and caches the
+result in `build/CMakeCache.txt`, so `idf.py build` alone recompiles your edits and
+keeps the old stamp — an image carrying new code under an old version.
+`tools/serflash.sh` reads the stamp back out of `build/gorb-os.bin` and refuses the
+flash when it disagrees with the working tree, so the failure is loud rather than
+silent. `tools/orb-manager`'s `make firmware` repacks the hub's built-in bundle
+from the build dir, and `orbpack` refuses to ship a stamp that is not a version
+(`-force` overrides, for a bench build).
+
+Widths are a hard limit, not a style choice. `esp_app_desc_t.version` holds 31
+bytes and cmake enforces the whole stamp against that, so each component caps at
+two digits: `v99.99.99-rc.99+e1a2b3c-dirty` is exactly 31. The realistic worst
+case for this project is 23. Check the composer after touching it — it runs the
+dirty predicate, the empty-HEAD case, the nested-checkout case and the grammar:
+
+    tools/orb_version.sh --self-test    # 14 assertions, ~2 s, no idf.py needed
+
+`docs/firmware-versioning.md` carries the grammar, the arithmetic and the four
+read-out surfaces.
+
 ## Build & Flash
 
     # one-time per shell

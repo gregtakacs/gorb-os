@@ -48,7 +48,7 @@ typedef struct {
     char instance[24];   /* "orb-782618"            — the leftmost label        */
     char hostname[32];   /* "orb-782618.local"      — the SRV target + A name   */
     char mac[13];        /* "44bd8d782618"          — same as h_status.mac      */
-    char fw[32];         /* "f716ffa"               — same as h_status.fw;
+    char fw[32];         /* "v1.0.0+e1a2b3c"        — same as h_status.fw;
                         * the width of esp_app_desc_t.version, which is what
                         * is copied in, so the copy can never truncate      */
     bool provisioning;   /* true => SoftAP-only, no lease yet: item 10's case   */

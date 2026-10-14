@@ -24,8 +24,10 @@
 # uncommitted edits can report a clean hash it was never built from (observed
 # 2026-10-11: art_bank.c edited 14:46:10, image built 14:46:31, stamp still
 # plain 54094e8). Read the stamp out of the image itself -- version at byte 48
-# of the app .bin -- and refuse the flash unless it equals
-# `git describe --always --dirty` for this tree.
+# of the app .bin -- and refuse the flash unless it equals `tools/orb_version.sh`
+# for this tree: version.txt's declared v<MAJOR>.<MINOR>.<PATCH> plus the commit
+# metadata cmake appended, `-dirty` included. CONFIG_APP_PROJECT_VER_FROM_CONFIG
+# would replace the whole mechanism with a Kconfig constant and blind this audit.
 # Fix a mismatch with:  (cd "$ORB_ROOT" && idf.py reconfigure && idf.py build)
 #
 # Usage: tools/serflash.sh [--check] [--rollback]
@@ -79,7 +81,18 @@ fi
 
 : > "/tmp/serflash-audit-$ORB_LABEL.log"
 AUDLOG="/tmp/serflash-audit-$ORB_LABEL.log"
-WANT=$(git -C "$ORB_ROOT" describe --always --dirty 2>/dev/null)
+# The stamp this image must carry, from the one composer cmake stamped the tree
+# with. No fallback: an absent or malformed version.txt is the exact condition the
+# audit exists to stop, so `git describe` here would paper over it.
+WANT_ERR="/tmp/serflash-audit-$ORB_LABEL.err"
+if ! WANT="$("$ORB_ROOT/tools/orb_version.sh" "$ORB_ROOT" 2>"$WANT_ERR")"; then
+  echo "AUDIT FAIL: the tree cannot be named, so nothing was flashed." | tee -a "$AUDLOG"
+  sed 's/^/        /' "$WANT_ERR" | tee -a "$AUDLOG"
+  echo "        Fix: write version.txt (one line, v<major>.<minor>.<patch>), then"
+  echo "               (cd $ORB_ROOT && idf.py reconfigure && idf.py build)."
+  echo "SERFLASH_DONE $(date +%T)"
+  exit 1
+fi
 HAVE=$(dd if="$APP" bs=1 skip=48 count=32 status=none | tr -d '\0')
 {
   echo "AUDIT orb=$ORB_LABEL mode=$MODE app=$APP port=$ORB_PORT mac=$ORB_BASE_MAC want=$WANT have=$HAVE" | tee -a "$AUDLOG"

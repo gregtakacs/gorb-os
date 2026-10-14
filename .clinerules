@@ -60,6 +60,18 @@ Two launch gotchas that burned time this session, both avoided by using a
 - `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
 - Short serial captures (≤ ~12 s) like `tools/capf.py 8 /tmp/x.txt --no-reset`.
 
+## `version.txt` is tracked, `PROJECT_VER` is cached — a bump with no reconfigure stamps the old version
+
+`tools/orb_version.sh` composes the stamp (`v1.0.0+92424ff-dirty`) and root
+`CMakeLists.txt` runs it at **configure** time. `idf.py build` alone recompiles changed
+sources and keeps the cached stamp, so an image carrying new code can print an old
+version. The fix after any `version.txt` edit is `idf.py reconfigure && idf.py build`.
+`tools/serflash.sh` reads the stamp back out of `build/gorb-os.bin` and refuses the
+flash on a mismatch, so the failure is loud — but only at flash time. `idf.py
+set-version` does not help: it re-runs IDF's own finder, which never sees `version.txt`
+once `PROJECT_VER` is set. Run `tools/orb_version.sh --self-test` (~2 s, no toolchain)
+after touching the composer; the hub's Go suite does not run it.
+
 ## sdkconfig is local + untracked — a NEW Kconfig `default y` does NOT appear on a rebuild
 
 Only `sdkconfig` is untracked here (there is no `*_defconfig`; `sdkconfig.defaults`

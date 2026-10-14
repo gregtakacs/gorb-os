@@ -763,14 +763,20 @@ Until an installer exists, `make release` ships the loose `.exe` and the user do
 Unblock-File and Allow-access steps by hand. That is the gap the signing task closes;
 nothing in this repo blocks it.
 
-Give Windows the cable first. A port attached to WSL through `usbipd` is invisible
-to Windows, and the picker has nothing to list — it says `(no serial ports
-found)`, correctly. Release it, and check Device Manager shows the
-`USB JTAG/serial debug unit` as a COM port:
+Give Windows the cable first. A port attached to WSL is invisible to Windows, and the
+picker has nothing to list — it says `(no serial ports found)`, correctly. Release it
+from inside WSL, then check Device Manager shows the `USB JTAG/serial debug unit` as a
+COM port:
 
 ```
-usbipd detach --busid <busid>
+tools/orb-manager/scripts/wsl-usb.sh unwatch   # only if a watcher is running
+tools/orb-manager/scripts/wsl-usb.sh detach
 ```
+
+A bare `usbipd detach --busid <busid>` is not enough once an auto-attach watcher is
+registered: the watcher re-dials the port within seconds. The script stops the watcher,
+detaches, and waits to confirm the node stayed gone. `docs/wsl-usb-reattach.md` is the
+full runbook — what survives a reboot, the board table, and the failure modes.
 
 No `-build`, no clone, no git on `PATH`: the firmware is inside the `.exe`. Start
 headless and check the two things the browser cannot tell you:

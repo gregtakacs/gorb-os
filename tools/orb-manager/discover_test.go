@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -159,68 +161,100 @@ func TestRefusedAnnouncementsReachTheCard(t *testing.T) {
 	}
 }
 
-// Asking again is an outbound action and is therefore token-guarded like every other
-// one. Without the guard a page the operator never visited could set the multicast
-// rhythm on the hub's own subnet.
-func TestBrowseAskRequiresTheLaunchToken(t *testing.T) {
+// The hub has no route that sends anything, and this pins that rather than pinning
+// the guard around a send. /api/orbs/ask used to sit here behind the launch token;
+// the querier it drove is gone, so the route is gone, and a POST to it must 404
+// rather than be re-added behind a token by the next person who misses it.
+func TestHubHasNoRouteThatAsks(t *testing.T) {
 	s := newHub()
 	s.token = "test-token"
-	// A browser with no sockets would report "no sockets attached" through the
-	// guard rather than letting the test see whether the guard ran at all, so the
-	// ask is stubbed to a recorder and the token question is the only variable.
-	s.browse = &okDiscovery{}
 	mux := http.NewServeMux()
 	s.routes(mux)
-	// No token: refused.
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/orbs/ask", nil))
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("an untokened ask -> %d, want 403", rec.Code)
-	}
-	// With it: allowed, and the payload is the envelope app.js parses.
 	req := httptest.NewRequest(http.MethodPost, "/api/orbs/ask", nil)
 	req.Header.Set("X-Orb-Token", "test-token")
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Errorf("a tokened ask -> %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// A hub whose browser cannot ask anything still serves the list: an unbindable 5353
-// degrades the browse, not the product.
-func TestAskFailureIsReportedNotFatal(t *testing.T) {
-	s := newHub()
-	s.browse = &brokenDiscovery{}
 	rec := httptest.NewRecorder()
-	s.handleBrowseNow(rec, httptest.NewRequest(http.MethodPost, "/api/orbs/ask", nil))
-	if rec.Code == 200 && strings.Contains(rec.Body.String(), `"ok":true`) {
-		t.Error("a failing Ask reported success")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST /api/orbs/ask -> %d, want 404: the hub sends no query, so the route must not exist", rec.Code)
 	}
-	s.dmu.Lock()
-	asked := s.browseAskErr
-	s.dmu.Unlock()
-	if asked == "" {
-		t.Error("the failure was swallowed: the card would show a healthy list forever")
+	// And the surface has no way to ask either: reflection on the concrete browser,
+	// so a method revived there fails this rather than only its own test.
+	if _, ok := reflect.TypeOf(&orbmdns.Browser{}).MethodByName("Ask"); ok {
+		t.Error("orbmdns.Browser grew an Ask method back: discovery is check-in only")
 	}
 }
 
-// okDiscovery answers Ask so the guard, not the network, is what the test measures.
-type okDiscovery struct{ asks int }
+// upkeepLoop is housekeeping, so the test drives it on a shrunk interval: it must
+// tick over the cache on schedule, hold nothing when ctx is cancelled, and get no
+// chance to send because the interface it reads has no send.
+func TestUpkeepLoopTicksAndStops(t *testing.T) {
+	saved := upkeepInterval
+	upkeepInterval = 10 * time.Millisecond
+	defer func() { upkeepInterval = saved }()
 
-func (d *okDiscovery) Ask() error                      { d.asks++; return nil }
-func (d *okDiscovery) Candidates() []orbmdns.Candidate { return nil }
-func (d *okDiscovery) Refusals() []orbmdns.Refusal     { return nil }
-func (d *okDiscovery) Close() error                    { return nil }
+	s := newHub()
+	d := &tickDiscovery{ticks: make(chan struct{}, 8)}
+	s.browse = d
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.upkeepLoop(ctx); close(done) }()
 
-type brokenDiscovery struct{}
+	select {
+	case <-d.ticks:
+	case <-time.After(time.Second):
+		t.Fatal("the upkeep tick never read the cache")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("upkeepLoop ignored the cancellation")
+	}
+}
 
-func (*brokenDiscovery) Ask() error                      { return errAsk }
-func (*brokenDiscovery) Candidates() []orbmdns.Candidate { return nil }
-func (*brokenDiscovery) Refusals() []orbmdns.Refusal     { return nil }
-func (*brokenDiscovery) Close() error                    { return nil }
+// tickDiscovery reports how many upkeep ticks reached it and nothing else. It cannot
+// record a send because the discovery interface has no method that could send one.
+type tickDiscovery struct{ ticks chan struct{} }
 
-var errAsk = errors.New("no route to group")
+func (d *tickDiscovery) Candidates() []orbmdns.Candidate {
+	select {
+	case d.ticks <- struct{}{}:
+	default:
+	}
+	return nil
+}
+func (*tickDiscovery) Refusals() []orbmdns.Refusal { return nil }
+func (*tickDiscovery) Close() error                { return nil }
+
+// The card's promise is a number: "check-ins arrive every 60 s". That number lives
+// in the firmware, so the firmware source gets the vote. It skips when the tree is
+// not reachable, which is the shipped-app case.
+func TestCheckinCadenceMatchesFirmware(t *testing.T) {
+	src := firmwareFile(t, "main/net/orb_mdns.c")
+	get := func(name string) int {
+		m := regexp.MustCompile(`#define\s+` + name + `\s+(\d+)`).FindStringSubmatch(src)
+		if m == nil {
+			t.Fatalf("main/net/orb_mdns.c no longer defines %s: the hub's copy of the cadence is meaningless", name)
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return n
+	}
+	if got := get("MDNS_ADV_REFRESH_S"); got != checkinSeconds {
+		t.Errorf("firmware re-announces every %d s, the hub promises the UI %d s: one of the two moved and the card now lies", got, checkinSeconds)
+	}
+	// The row lives TTL + grace, not TTL alone: that sum is how much announce loss a
+	// card absorbs before a live orb blinks out. One full interval of slack is the
+	// floor — it buys exactly one retry — and the grace the browser prunes with is
+	// hub config the UI's promise depends on, so it is read from the same place.
+	ttl := get("MDNS_TTL")
+	if ttl+int(orbmdns.DefaultGrace/time.Second) < 2*checkinSeconds {
+		t.Errorf("a row survives %d s (TTL %d + grace %d) against a %d s check-in: one lost announce drops a live orb off the card",
+			ttl+int(orbmdns.DefaultGrace/time.Second), ttl, int(orbmdns.DefaultGrace/time.Second), checkinSeconds)
+	}
+}
 
 // --- the builders the tests above need ---------------------------------------------
 //
@@ -446,111 +480,5 @@ func TestDiscoveredRowIsOnlyDialableThroughTheGuardedAllow(t *testing.T) {
 	s.handleDiscovered(rec, httptest.NewRequest(http.MethodGet, "/api/orbs", nil))
 	if !strings.Contains(rec.Body.String(), `"dialable":true`) {
 		t.Errorf("the card still reports the allowed orb undialable: %s", rec.Body.String())
-	}
-}
-
-// Asking the LAN a question is an outbound action on the hub's own subnet, so it is
-// guarded like the allow rather than like the read: no token, and a page the operator
-// never opened sets no multicast rhythm.
-func TestBrowseAskRefusesCrossOriginEvenWithTheToken(t *testing.T) {
-	s, srv := securedHub(t)
-	s.token = "ask-token"
-	s.browse = &okDiscovery{}
-	origin := "http://" + strings.TrimPrefix(srv.URL, "http://")
-
-	if code, body := postHub(t, srv, "/api/orbs/ask", nil, ""); code != http.StatusForbidden {
-		t.Errorf("an untokened ask -> %d, want 403: %s", code, body)
-	}
-	if code, body := postHub(t, srv, "/api/orbs/ask",
-		map[string]string{"X-Orb-Token": "ask-token", "Origin": "http://evil.example"}, ""); code != http.StatusForbidden {
-		t.Errorf("a cross-origin tokened ask -> %d, want 403: %s", code, body)
-	}
-	if code, body := postHub(t, srv, "/api/orbs/ask",
-		map[string]string{"X-Orb-Token": "ask-token", "Origin": origin}, ""); code != http.StatusOK {
-		t.Fatalf("a tokened same-origin ask -> %d: %s", code, body)
-	}
-}
-
-// countDiscovery is the discovery a browseLoop test drives: every Ask pings a channel
-// so the test observes the query count and the gaps without a socket, and it returns
-// the four interface methods a no-op for everything Ask is not.
-type countDiscovery struct{ asks chan time.Time }
-
-func (d *countDiscovery) Ask() error                    { d.asks <- time.Now(); return nil }
-func (*countDiscovery) Candidates() []orbmdns.Candidate { return nil }
-func (*countDiscovery) Refusals() []orbmdns.Refusal     { return nil }
-func (*countDiscovery) Close() error                    { return nil }
-
-// browseLoop must fire the whole §6 startup burst — one query per browseBurstDelays
-// entry, the first immediate — then hold at the steady interval. The steady ticker is
-// 45 s, far outside this test, so anything past the burst that arrives quickly is a bug
-// (a burst that loops, or a zero steady interval).
-func TestBrowseLoopFiresTheStartupBurst(t *testing.T) {
-	saved := browseBurstDelays
-	browseBurstDelays = []time.Duration{0, 10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
-	defer func() { browseBurstDelays = saved }()
-
-	s := newHub()
-	d := &countDiscovery{asks: make(chan time.Time, len(browseBurstDelays)+1)}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() { s.browseLoop(ctx, d); close(done) }()
-
-	// All four burst probes, in order, within a window far shorter than the steady
-	// interval. The first must be near-instant (delay 0).
-	start := time.Now()
-	stamps := make([]time.Time, 0, len(browseBurstDelays))
-	for i := range browseBurstDelays {
-		select {
-		case ts := <-d.asks:
-			stamps = append(stamps, ts)
-		case <-time.After(time.Second):
-			t.Fatalf("burst probe %d never fired", i)
-		}
-	}
-	if stamps[0].Sub(start) > 15*time.Millisecond {
-		t.Errorf("first probe waited %v; §6 wants the first query issued immediately", stamps[0].Sub(start))
-	}
-
-	// Nothing else within 5× the longest (now-shrunk) steady wait: the burst is exactly
-	// its length, then the loop is parked on the real 45 s ticker, not firing again.
-	select {
-	case <-d.asks:
-		t.Fatal("a query arrived after the burst but well inside the steady interval; the ticker or burst cadence is wrong")
-	case <-time.After(300 * time.Millisecond):
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("browseLoop ignored the cancellation")
-	}
-}
-
-// Cancelling during the burst must stop it before the first query: sleepCtx on the
-// zero delay still checks ctx, so a shutdown that races startup issues no stray query.
-func TestBrowseLoopHonoursCancelBeforeFirstProbe(t *testing.T) {
-	saved := browseBurstDelays
-	browseBurstDelays = []time.Duration{time.Hour} // parked: the only probe is a way-off delay
-	defer func() { browseBurstDelays = saved }()
-
-	s := newHub()
-	d := &countDiscovery{asks: make(chan time.Time, 4)}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { s.browseLoop(ctx, d); close(done) }()
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("browseLoop did not stop on a cancellation issued during the burst")
-	}
-	select {
-	case <-d.asks:
-		t.Fatal("a query was issued after the burst was cancelled at its first delay")
-	default:
 	}
 }

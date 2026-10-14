@@ -105,9 +105,12 @@ func lenWord(n int) string {
 }
 
 // reconcileFleet folds the current browse cache into the fleet and lets a board that
-// is still announcing keep the commitment it was given. main calls it on the browse
+// is still announcing keep the commitment it was given. main calls it on the upkeep
 // tick, and no GET route does: replaying what the hub already heard must not be able
-// to extend a dial's life, so only the timer that actually touches the wire renews.
+// to extend a dial's life, so only the timer renews — and that timer renews from the
+// cache, which only a packet the orb sent first can fill. The tick sends nothing;
+// what renews a grant is the orb's own check-in landing in the cache before the tick
+// reads it.
 func (s *Server) reconcileFleet() {
 	s.foldCandidates(true)
 }

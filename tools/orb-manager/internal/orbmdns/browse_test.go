@@ -264,12 +264,23 @@ func TestProvisioningOrbIsListedAndLabelled(t *testing.T) {
 // A query is not a thing a browser answers. The firmware answers questions and
 // announces; a hub that also answered would be a second orb on the LAN, and its
 // cache-flush records would overwrite the real one in every other browser's cache.
+// The packet is written out as bytes here rather than built: the hub's own query
+// encoder was deleted with the querier, and a test that re-implements one keeps its
+// honesty for free.
 func TestTheBrowserIgnoresQueries(t *testing.T) {
 	b, _ := hub(t)
-	b.Ingest(BrowseQuery(0xC0FE), from(goodIP))
+	b.Ingest(rawBrowseQuery(), from(goodIP))
 	if got := b.Candidates(); len(got) != 0 {
 		t.Fatalf("the hub answered a neighbour's question with a listing: %+v", got)
 	}
+}
+
+// rawBrowseQuery is a PTR question for _orb._tcp.local, by hand: header with
+// QDCOUNT=1, uncompressed labels, QTYPE=PTR, QCLASS=IN|QU.
+func rawBrowseQuery() []byte {
+	name := []byte{4, '_', 'o', 'r', 'b', 4, '_', 't', 'c', 'p', 5, 'l', 'o', 'c', 'a', 'l', 0}
+	hdr := []byte{0xC0, 0xFE, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	return append(append(hdr, name...), 0x00, 0x0C, 0x80, 0x01) // PTR, IN with QU
 }
 
 // Someone else's service table is not ours to list.

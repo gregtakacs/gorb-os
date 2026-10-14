@@ -71,7 +71,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
-		"/api/orbs", "/api/orbs/ask", "function readFound",
+		"/api/orbs", "function readFound",
 		// Item 6's naming controls, pinned by the same rule as the rest: a card that
 		// stops posting to /api/fleet/set is a card whose name box does nothing, and
 		// nothing else in the suite would notice.

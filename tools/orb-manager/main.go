@@ -102,7 +102,6 @@ type Server struct {
 	dmu          sync.Mutex
 	browse       discovery
 	browseErr    string
-	browseAskErr string
 	browseIfaces []string
 
 	// boots holds the verdicts the flash session read off the boot console while
@@ -255,9 +254,9 @@ func main() {
 	// something to show on the open-orb path and the operator never types an
 	// address the LAN already announced. A failure here is a line in the log and an
 	// empty list with a reason: the hub still flashes, still themes, still manages.
-	browseCtx, stopBrowse := context.WithCancel(context.Background())
-	defer stopBrowse()
-	s.startBrowse(browseCtx)
+	listenCtx, stopListen := context.WithCancel(context.Background())
+	defer stopListen()
+	s.startListening(listenCtx)
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -467,11 +466,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
 
 	// Discovery. The list is a read of what the hub overheard, so it is unguarded
-	// like /api/ports; asking the LAN again is an outbound action, so it carries a
-	// token like everything else that sends something. Neither one dials: the
-	// candidate list is not a dial queue, and the proxy still decides with grants.
+	// like /api/ports; asking the LAN again is not an action this hub takes. The
+	// candidate list is a record of what arrived unasked, and the proxy still
+	// decides with grants: nothing here is a dial queue.
 	mux.HandleFunc("/api/orbs", s.handleDiscovered)
-	mux.Handle("/api/orbs/ask", s.requireControl(http.HandlerFunc(s.handleBrowseNow)))
 
 	// The fleet: who the hub thinks is behind the addresses it will dial. The read is
 	// unguarded like the candidate list; the writes change what a later credential is

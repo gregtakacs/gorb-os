@@ -20,11 +20,24 @@ import (
 // were before it went. The orb has announced itself over mDNS since item 4; this
 // file is the listening.
 //
-// Two rules hold it in place.
+// The hub listens only. It used to also ask: a startup burst, then a re-query on a
+// timer, on the theory that a device which announces once at its join leaves a
+// hub that starts later waiting on a rhythm it does not control. That theory is
+// retired — the firmware now re-announces every MDNS_ADV_REFRESH_S (60 s, under
+// half the record's 120 s TTL), so the orb owns its own freshness and the hub's
+// queries bought nothing but traffic and a class of failure ("this box cannot
+// originate multicast") that only existed because the hub was trying to originate
+// something. Cold discovery now costs up to one check-in interval. Everything the
+// querier was load-bearing for — row sustenance, late-hub startup, half-heard
+// instances — the check-in carries, because the firmware bundles PTR, SRV, TXT and
+// A in every one.
+//
+// Two rules hold this file in place.
 //
 //  1. A browse never dials. internal/orbmdns cannot import an HTTP client — its own
 //     suite parses its imports to prove it — so a listing is not a port scan with
-//     better wording.
+//     better wording. It cannot send anything at all: TestBrowserNeverSends fails the
+//     package if a write path reappears.
 //  2. A browse never grants. Discovery fills a candidate list. The proxy still dials
 //     only what ipGrants holds, which is an address the operator named or the USB
 //     console read. An orb appearing in the list does not make its address reachable
@@ -35,39 +48,35 @@ import (
 // an interface so a test can hand in a browser fed from memory. Production uses
 // *orbmdns.Browser, and its absence is reported rather than fatal: a hub that
 // cannot bind 5353 still flashes, still manages, and says why the list is empty.
+// There is no Ask on this interface: the only way a row appears is a packet the
+// orb sent on its own.
 type discovery interface {
-	Ask() error
 	Candidates() []orbmdns.Candidate
 	Refusals() []orbmdns.Refusal
 	Close() error
 }
 
-// browseInterval is the steady re-ask cadence once the startup burst settles. A
-// record's TTL is 120 s and the firmware re-announces only when an interface
-// changes, so the hub must re-ask to refresh a row. RFC 6762 §10 would re-query at
-// ~80% of TTL (~96 s); this hub stays well under half the TTL on purpose. Two
-// reasons: this host's multicast egress drops packets, so a cadence that allowed
-// only one attempt per expiry lets a UI row blink out on a single loss; and our
-// firmware answers every query regardless of known answers, so the longer interval
-// buys no reduction in our-orb traffic — only third-party responder noise, which the
-// §7.1 known answers already address. Under half the TTL gives ≥2 attempts per
-// expiry and keeps a row steady while the hub is open.
-const browseInterval = 45 * time.Second
+// upkeepInterval is how often the hub tidies what it overheard: prune rows whose
+// TTL has run out, and renew the grant of a board the LAN is still producing. It
+// puts nothing on the wire — the orb's 60 s check-in is the only discovery traffic
+// this hub generates. The number only has to sit comfortably under the grant TTL
+// (ipGrantTTL, 6 h) and the record grace; 45 s keeps a dead row out of the list for
+// less than the time it takes to notice it is gone. A var so
+// TestUpkeepLoopTicksAndStops can drive a tick in test time; production never writes
+// it.
+var upkeepInterval = 45 * time.Second
 
-// browseBurstDelays is the RFC 6762 §6 startup cadence, expressed as the wait before
-// each probe: fire immediately, then again after 1 s, 2 s, 4 s — the gap doubling, each
-// step at least a second, because §6 caps a querier at one query per second and asks
-// for exponential back-off between retransmits. A hub that booted after an orb's
-// one-time join announcement, or behind a multicast-egress path flaky enough to drop a
-// single probe, needs several close-together attempts before settling to browseInterval.
-// The first delay is zero: that is the immediate first query, so the burst replaces the
-// old pre-loop Ask entirely.
-var browseBurstDelays = []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second}
+// checkinSeconds mirrors the firmware's MDNS_ADV_REFRESH_S: how often an orb
+// re-announces itself, which is the rhythm every row on the card runs on. It is
+// published to the UI so the copy can promise a real number, and
+// TestCheckinCadenceMatchesFirmware fails the build if the two spellings ever drift
+// apart — the hub has no authority to re-derive what the device decides.
+const checkinSeconds = 60
 
-// startBrowse attaches the eligible interfaces and begins the read loop. main calls
+// startListening attaches the eligible interfaces and begins the read loop. main calls
 // it, never newHub: the suite builds servers by the dozen, and one of them holding
 // 5353 makes the next one's bind a coin flip.
-func (s *Server) startBrowse(ctx context.Context) {
+func (s *Server) startListening(ctx context.Context) {
 	b := orbmdns.NewBrowser(orbmdns.Config{Logf: func(f string, a ...any) {
 		log.Printf("orb-manager: "+f, a...)
 	}})
@@ -100,31 +109,19 @@ func (s *Server) startBrowse(ctx context.Context) {
 	}
 	s.setDiscovery(b, "")
 	s.setBrowseIfaces(names)
-	log.Printf("orb-manager: browsing %s on %d interface(s): %s",
+	log.Printf("orb-manager: listening for %s check-ins on %d interface(s): %s",
 		orbmdns.ServiceName, len(names), strings.Join(names, ", "))
-	go s.browseLoop(ctx, b)
+	go s.upkeepLoop(ctx)
 }
 
-// browseLoop is the sustained querier. It fires the RFC 6762 §6 startup burst — the
-// queries at browseBurstDelays, the first immediate — then settles to the steady
-// browseInterval ticker. It takes a discovery rather than the concrete browser so a
-// test can count the asks without binding a socket (startBrowse itself binds and so is
-// not exercised by the suite; this loop, where the cadence lives, is).
-//
-// An unanswered query is normal here, not an incident: this box may not originate
-// multicast onto the LAN at all, and the answers that matter arrive unasked. The
-// error is reported once via noteBrowseAskErr, which stays quiet after the first.
-func (s *Server) browseLoop(ctx context.Context, d discovery) {
-	for _, delay := range browseBurstDelays {
-		if !sleepCtx(ctx, delay) {
-			return // ctx cancelled mid-burst: shut down before the steady ticker
-		}
-		s.reconcileFleet()
-		if err := d.Ask(); err != nil {
-			s.noteBrowseAskErr(err)
-		}
-	}
-	t := time.NewTicker(browseInterval)
+// upkeepLoop is the hub's own housekeeping tick, and it sends nothing. Candidates()
+// prunes what the clock has outlived, and reconcileFleet renews the grant of every
+// board still in the cache — a cache that only ever fills from a packet the orb sent
+// first, so renewal is the LAN continuing to produce the board, not the hub vouching
+// for it. The loop takes no browser argument and exists on the Server's own state so
+// a test can drive it with a fake in place of the socket set.
+func (s *Server) upkeepLoop(ctx context.Context) {
+	t := time.NewTicker(upkeepInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -132,32 +129,7 @@ func (s *Server) browseLoop(ctx context.Context, d discovery) {
 			return
 		case <-t.C:
 			s.reconcileFleet()
-			if err := d.Ask(); err != nil {
-				s.noteBrowseAskErr(err)
-			}
 		}
-	}
-}
-
-// sleepCtx waits d, or returns false the moment ctx is done. A zero or negative d is
-// the "right now" step: it still honours a cancelled ctx so a burst begun at shutdown
-// cannot proceed to a query.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-			return true
-		}
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
 	}
 }
 
@@ -173,22 +145,12 @@ func (s *Server) setBrowseIfaces(names []string) {
 	s.dmu.Unlock()
 }
 
-// noteBrowseAskErr records the first query failure for the card to show. A hub on
-// the WSL box in mirrored networking cannot originate multicast at all, which is a
-// fact about the host and not a fault in the orb; the honest surface is a visible
-// line rather than a list that is quietly empty forever.
-func (s *Server) noteBrowseAskErr(err error) {
-	s.dmu.Lock()
-	if s.browseAskErr == "" {
-		s.browseAskErr = err.Error()
-	}
-	s.dmu.Unlock()
-}
-
 // orbRow is one candidate as the UI sees it. Age is reported rather than a
 // timestamp so a skewed hub clock cannot make an orb look immortal or vanished, and
 // the fields are exactly what a browse is allowed to know: what the orb claimed, not
-// what the hub confirmed by dialing it.
+// what the hub confirmed by dialing it. AgeS doubles as the check-in clock: a row at
+// age 200 s is an orb whose last announce is wearing out, not a row the hub forgot
+// to refresh.
 type orbRow struct {
 	Instance  string `json:"instance"`
 	MAC       string `json:"mac"`
@@ -197,7 +159,6 @@ type orbRow struct {
 	IP        string `json:"ip"`
 	Port      uint16 `json:"port"`
 	TTL       uint32 `json:"ttl"`
-	Solicited bool   `json:"solicited"`
 	AgeS      int    `json:"ageS"`
 	Provision bool   `json:"provisioning"`
 	Dialable  bool   `json:"dialable"`
@@ -235,14 +196,14 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dmu.Lock()
-	b, listenErr, askErr := s.browse, s.browseErr, s.browseAskErr
+	b, listenErr := s.browse, s.browseErr
 	ifaces := append([]string(nil), s.browseIfaces...)
 	s.dmu.Unlock()
 	if b == nil {
 		s.jsonOK(w, map[string]any{
 			"orbs": []orbRow{}, "refused": []map[string]any{}, "interfaces": ifaces,
 			"listening": false, "error": orElse(listenErr, "discovery is not running"),
-			"askError": askErr,
+			"checkinS": checkinSeconds,
 		})
 		return
 	}
@@ -257,7 +218,7 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 		may, why := s.mayDial(c.IP)
 		r := orbRow{
 			Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
-			IP: c.IP, Port: c.Port, TTL: c.TTL, Solicited: c.Solicited,
+			IP: c.IP, Port: c.Port, TTL: c.TTL,
 			AgeS: int(now.Sub(c.LastSeen).Seconds()), Provision: c.Provisioning(),
 			// Dialable is a readout of the allowlist, not a request. The hub will
 			// not reach an address the operator has not committed to, and the card
@@ -284,25 +245,6 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 	}
 	s.jsonOK(w, map[string]any{
 		"orbs": rows, "refused": refused, "interfaces": ifaces,
-		"listening": true, "error": "", "askError": askErr,
+		"listening": true, "error": "", "checkinS": checkinSeconds,
 	})
-}
-
-// handleBrowseNow is the deliberate "ask again". It is guarded like every route that
-// puts a packet on the wire: a page the operator never opened should not be able to
-// set the rhythm the hub multicasts on.
-func (s *Server) handleBrowseNow(w http.ResponseWriter, r *http.Request) {
-	s.dmu.Lock()
-	b, listenErr := s.browse, s.browseErr
-	s.dmu.Unlock()
-	if b == nil {
-		s.jsonErr(w, orElse(listenErr, "discovery is not running on this hub"))
-		return
-	}
-	if err := b.Ask(); err != nil {
-		s.noteBrowseAskErr(err)
-		s.jsonErr(w, err.Error())
-		return
-	}
-	s.jsonOK(w, map[string]any{"asked": true})
 }

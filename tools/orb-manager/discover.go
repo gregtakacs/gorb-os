@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -77,9 +81,7 @@ const checkinSeconds = 60
 // it, never newHub: the suite builds servers by the dozen, and one of them holding
 // 5353 makes the next one's bind a coin flip.
 func (s *Server) startListening(ctx context.Context) {
-	b := orbmdns.NewBrowser(orbmdns.Config{Logf: func(f string, a ...any) {
-		log.Printf("orb-manager: "+f, a...)
-	}})
+	b := s.newBrowser()
 	ifaces, err := orbmdns.EligibleInterfaces()
 	if err != nil {
 		s.setDiscovery(nil, "interfaces: "+err.Error())
@@ -187,29 +189,44 @@ type orbRow struct {
 	Refusal string `json:"refusal,omitempty"`
 }
 
-// handleDiscovered is the read side: the current candidate list. It sends nothing,
-// opens nothing and needs no token — what the hub overheard on its own subnet is the
-// same class of information as /api/ports, and the UI polls it on a timer.
+// handleDiscovered is the read side: the current candidate list in one shot. It sends
+// nothing, opens nothing and needs no token — what the hub overheard on its own subnet
+// is the same class of information as /api/ports. The card no longer polls it: the page
+// holds /api/orbs/stream open and lets a check-in move it, and this stays the endpoint a
+// stranger, a probe or a curl hits. Both answers come from orbCard, which is the only
+// thing that decides what a row means.
 func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	body, _ := s.orbCard(time.Now())
+	s.jsonOK(w, body)
+}
+
+// orbCard builds the discovery card and its fingerprint. The payload is what GET
+// /api/orbs answers and what every /api/orbs/stream frame carries, byte for byte, so a
+// row cannot mean one thing on a poll and another on a push; the version is what the
+// stream compares to decide whether a frame is worth the wire. now is a parameter so
+// the tests can freeze the clock and age a row on purpose.
+func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 	s.dmu.Lock()
 	b, listenErr := s.browse, s.browseErr
 	ifaces := append([]string(nil), s.browseIfaces...)
 	s.dmu.Unlock()
 	if b == nil {
-		s.jsonOK(w, map[string]any{
+		body := map[string]any{
 			"orbs": []orbRow{}, "refused": []map[string]any{}, "interfaces": ifaces,
 			"listening": false, "error": orElse(listenErr, "discovery is not running"),
 			"checkinS": checkinSeconds,
-		})
-		return
+		}
+		// The version carries the reason, so a hub that fails to bind and then
+		// recovers is a version change, and the stream says "listening" the moment it
+		// is true rather than leaving the failure up forever.
+		return body, "not-listening|" + listenErr
 	}
-	now := time.Now()
 	// Project the cache into the fleet before building rows, or the card would show a
-	// contention the proxy is already refusing over. No renewal: that is the timer's.
+	// contention the proxy is already refusing over. No renewal: that is the upkeep tick's.
 	s.foldCandidates(false)
 	rows := []orbRow{}
 	for _, c := range b.Candidates() {
@@ -243,8 +260,196 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 			"ageS": int(now.Sub(f.At).Seconds()),
 		})
 	}
-	s.jsonOK(w, map[string]any{
+	body := map[string]any{
 		"orbs": rows, "refused": refused, "interfaces": ifaces,
 		"listening": true, "error": "", "checkinS": checkinSeconds,
+	}
+	return body, orbVersion(rows, refused, ifaces)
+}
+
+// orbVersion fingerprints the card minus the clock. Age is the field that moves on its
+// own: a row the orb refreshed on schedule says nothing new about the orb, so a stream
+// that counted age as content would repaint the page once a minute to change a number
+// nobody reads. Everything an operator would call a change is in the digest — address,
+// port, firmware, state, name, room, the cable/contended/shared/bound flags, the refusal
+// text, and which interfaces the hub joined. A row's ttl and first-seen are in too, so a
+// record about to expire and a row that just arrived are different answers even when every
+// word on them matches.
+func orbVersion(rows []orbRow, refused []map[string]any, ifaces []string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "ifaces %s\n", strings.Join(ifaces, ","))
+	for _, r := range rows {
+		a := r
+		a.AgeS = 0
+		fmt.Fprintf(h, "row %v\n", a)
+	}
+	for _, f := range refused {
+		fmt.Fprintf(h, "refused %v|%v|%v\n", f["name"], f["from"], f["reason"])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ---- the live card: one wake-up, many listeners ---------------------------------
+
+// newBrowser builds the browser the hub runs. It is a method rather than a call site
+// because the one thing that must not be forgotten on it is the wake-up: a browser built
+// without OnChange works, ages its rows correctly, and leaves the page frozen on whatever
+// it loaded — a bug no test would catch if the wiring lived inline in startListening,
+// where the sockets live and so no test of the whole path goes.
+func (s *Server) newBrowser() *orbmdns.Browser {
+	return orbmdns.NewBrowser(orbmdns.Config{
+		Logf:     func(f string, a ...any) { log.Printf("orb-manager: "+f, a...) },
+		OnChange: s.wakeOrbs,
 	})
+}
+
+// subscribeOrbs hands one open /api/orbs/stream its own wake-up slot. The channel is
+// buffered to one and is closed by nobody but its owner, which is what lets wakeOrbs fire
+// without waiting on a page that has stopped reading.
+func (s *Server) subscribeOrbs() chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.omu.Lock()
+	if s.orbSubs == nil {
+		s.orbSubs = map[chan struct{}]struct{}{}
+	}
+	s.orbSubs[ch] = struct{}{}
+	s.omu.Unlock()
+	return ch
+}
+
+// unsubscribeOrbs drops the slot. It does not close the channel: a wake-up landing in a
+// channel whose owner just went is a value nobody reads, while a send racing a close is a
+// panic in a goroutine the page cannot see.
+func (s *Server) unsubscribeOrbs(ch chan struct{}) {
+	s.omu.Lock()
+	delete(s.orbSubs, ch)
+	s.omu.Unlock()
+}
+
+// wakeOrbs is orbmdns.Config.OnChange: the browser's cache moved, so every open stream
+// should re-answer. It runs on the goroutine that just read a UDP datagram, so the one
+// rule is that it never blocks — a subscriber whose slot is already full has a re-read
+// coming and needs no second nudge. Ten pages and an orb flooding the LAN cannot make this
+// loop cost more than ten non-blocking sends.
+func (s *Server) wakeOrbs() {
+	s.omu.Lock()
+	defer s.omu.Unlock()
+	for ch := range s.orbSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// orbStreamKeepalive is the heartbeat the page watches to tell a quiet LAN from a dead
+// pipe. It is not the freshness bound: that is orbStreamResync.
+var orbStreamKeepalive = 25 * time.Second
+
+// orbStreamResync re-answers the card on the timer even when no wake-up fired and the
+// version has not moved, because two things the stream gets no event about can still
+// change what the card says: upkeep pruning a row whose grace ran out while nobody was
+// looking, and a grant or a fleet edit arriving over USB. Two minutes means the worst case
+// is a stale row left on screen for the length of a coffee break, on a card whose row age
+// already moves every keepalive. It is the old poll, demoted to a backstop.
+var orbStreamResync = 2 * time.Minute
+
+// handleOrbsStream keeps the discovery card open as a stream: one frame the instant it is
+// asked for, then one per check-in that changes what the card says. The body of every frame
+// is the same envelope GET /api/orbs answers, so the page has one renderer and its first
+// paint is not a second code path.
+//
+// A plain GET, not EventSource and not a WebSocket: the page has one consumer and it is a
+// WebView the hub owns, so an abortable fetch beats a reconnect loop, and the hub's own
+// streaming precedent — the console and the flasher — is line-delimited JSON over a live
+// response body the client already knows how to read. What a GET gives up is the token, and
+// the trade is deliberate rather than forced: the frames carry exactly the bytes the
+// unguarded GET answers, so guarding the stream would protect no information the poll left
+// open. The bind stays loopback by default, and the remote bind is opt-in behind a warning.
+//
+// Nothing here dials, grants, or sends a query. The stream is the read endpoint wearing a
+// longer hat, and TestHubHasNoRouteThatAsks holds over it.
+func (s *Server) handleOrbsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.jsonErr(w, "streaming unsupported on this listener")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	send := func(body map[string]any) bool {
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": body}); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	keep := func() bool {
+		if _, err := fmt.Fprint(w, ":keep\n"); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	wake := s.subscribeOrbs()
+	defer s.unsubscribeOrbs(wake)
+
+	// Seed before parking. A page opened seconds after a check-in would otherwise sit on
+	// "Loading…" until the next one, and removing the Refresh button is only honest if the
+	// stream answers the moment it opens.
+	body, version := s.orbCard(time.Now())
+	if !send(body) {
+		return
+	}
+	lastFrame := time.Now()
+	t := time.NewTicker(orbStreamKeepalive)
+	defer t.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-wake:
+			// Re-read the whole card rather than trusting what the browser thought it
+			// changed: the cache moving and the card moving are not the same question once
+			// a fleet rename, a cable MAC or an expiring grant is involved, and the browser
+			// can see none of those three.
+			body, v := s.orbCard(time.Now())
+			if v == version {
+				if !keep() {
+					return
+				}
+				continue
+			}
+			if !send(body) {
+				return
+			}
+			version, lastFrame = v, time.Now()
+
+		case <-t.C:
+			// Heartbeat and backstop in one tick: the comment stops anything between the
+			// page and the loopback port deciding an idle connection is dead, and every
+			// orbStreamResync the card gets re-answered whatever woke it or did not.
+			if !keep() {
+				return
+			}
+			if time.Since(lastFrame) < orbStreamResync {
+				continue
+			}
+			body, v := s.orbCard(time.Now())
+			if !send(body) {
+				return
+			}
+			version, lastFrame = v, time.Now()
+		}
+	}
 }

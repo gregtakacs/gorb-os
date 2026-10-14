@@ -99,7 +99,8 @@ that protect the *operation*, not the operator's identity:
 
    Liveness comes from announcements: the browse tick renews a grant whose board is
    still announcing, so an orb in daily use is never cut off mid-afternoon. Only the
-   tick may renew — `GET /api/orbs` and `GET /api/fleet` cannot, or any same-origin page
+   tick may renew — `GET /api/orbs`, `GET /api/fleet` and the pushed
+   `GET /api/orbs/stream` cannot, or any same-origin page
    could hold a dial open by polling. A grant that went quiet past `ipGrantTTL` is gone
    and **no announcement brings it back**: an mDNS MAC is broadcast unsigned, so
    repeating one must not resurrect a permission a person already let expire. A separate
@@ -511,7 +512,8 @@ fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, G
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
-discover.go          the mDNS listener: candidate list, GET /api/orbs, and the upkeep tick.
+discover.go          the mDNS listener: candidate list, GET /api/orbs, the pushed
+                     GET /api/orbs/stream, and the upkeep tick.
                      It listens and lists; a listing never dials and never grants, and
                      internal/orbmdns cannot import an HTTP client to make it otherwise
 composer.go          serves the repo's watch-composer at /composer/, and the vendored
@@ -644,6 +646,7 @@ go build -o /tmp/orbfake ./cmd/orbfake
 ../bench/browse_mdns.py --iface 192.168.2.48 \
     --expect-ip 192.168.2.34 --expect-mac 44bd8d782618   # python-zeroconf, not our browser
 curl -s localhost:3779/api/orbs                     # the hub's own card, tokenless read
+curl -sN localhost:3779/api/orbs/stream             # the same card, pushed; one frame on open
 ```
 
 `browse_mdns.py` exits non-zero unless PTR, SRV `port=80`, the TXT `mac=` and the A
@@ -662,6 +665,17 @@ The hub is a listener only. It sends no query: an orb re-announces itself every 
 at most one interval, and a hub on a box that cannot originate multicast loses nothing
 at all — receive is the whole job. `TestBrowserNeverSends` fails the package if a write
 path reappears inside `internal/orbmdns`.
+
+The Orbs-on-the-LAN card follows that rhythm instead of sampling it. The browser holds
+`GET /api/orbs/stream` open; the browser package fires `OnChange` when its cache moves,
+and the stream re-answers when the *card* would read differently — so a check-in that
+changed nothing pushes nothing, an orb that arrives pushes one frame, and the ages on
+screen move on the 25 s heartbeat. A frame body is byte for byte what `GET /api/orbs`
+answers, so the page has one renderer (`applyFound`) and patches rows in place by MAC
+rather than rebuilding the card under someone mid-word. There is no Refresh button: it
+re-read a cache the hub was already about to push, and with the hub originating nothing
+it could not speed the LAN up. What it cannot do is renew a grant by being read — the
+stream calls the same `orbCard` the poll does, and neither reaches `reconcileFleet`.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window

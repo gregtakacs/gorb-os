@@ -60,8 +60,10 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"ob-cancel", "ob-op",
 		// Item 5's LAN list. Pinned by id for the same reason as the rest: a
 		// one-sided rename leaves the browse card rendering an empty <ul> forever
-		// and nothing else in the suite notices.
-		"mn-findcard", "mn-find", "mn-find-state", "mn-find-go", "mn-find-note",
+		// and nothing else in the suite notices. There is no mn-find-go any more: the
+		// card is pushed, and TestTheDiscoveryCardIsPushedNotPolled fails the build if
+		// the button or the timer that replaced it come back.
+		"mn-findcard", "mn-find", "mn-find-state", "mn-find-note",
 	} {
 		if !strings.Contains(page, `id="`+id+`"`) {
 			t.Errorf("index.html is missing #%s", id)
@@ -71,7 +73,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
-		"/api/orbs", "function readFound",
+		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
 		// Item 6's naming controls, pinned by the same rule as the rest: a card that
 		// stops posting to /api/fleet/set is a card whose name box does nothing, and
 		// nothing else in the suite would notice.
@@ -81,6 +83,63 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js never contains %q, so that part of the card is not wired", want)
 		}
+	}
+}
+
+// The discovery card is pushed, not polled, and has no button. Both halves are load-bearing:
+// a hub that pushes nothing needs a timer, and a page with a timer and a button is the
+// previous design wearing this one's markup. A JavaScript engine is not on this machine, so
+// the check is over the source, in the direction that a later edit could realistically break.
+func TestTheDiscoveryCardIsPushedNotPolled(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	src := readAppJS(t)
+	for _, gone := range []string{"mn-find-go", "function readFound"} {
+		if strings.Contains(page, gone) || strings.Contains(src, gone) {
+			t.Errorf("%s is back: the card is pushed, so it has no refresh control and no reader of that name", gone)
+		}
+	}
+	for _, want := range []string{"/api/orbs/stream", "foundRows.get(", "document.activeElement !== li._name", "dataset.mac", "foundRows.clear()"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js no longer contains %q: the card stopped being live, patched in place, keyed by mac, or cleared when the listener died", want)
+		}
+	}
+	// No timer may re-read the card. The watchdog interval is allowed to exist and must not
+	// fetch: a card that re-reads on a clock is the design this replaced, and it fails closed
+	// as a stale card the moment the hub stops answering rather than as a dead connection.
+	for _, body := range setIntervalBodies(src) {
+		for _, banned := range []string{"pullFound", "applyFound", "watchOrbs"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("a setInterval re-reads the card through %s: the discovery stream is the only thing that moves this card\n%s", banned, body)
+			}
+		}
+	}
+}
+
+// setIntervalBodies returns the text of every setInterval(...) call in app.js. Hand-rolled and
+// bracket-counting, because there is no parser here: the point is to see what a timer does, not
+// to parse JavaScript.
+func setIntervalBodies(src string) []string {
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(src[i:], "setInterval(")
+		if j < 0 {
+			return out
+		}
+		start := i + j + len("setInterval(")
+		depth, k := 1, start
+		for ; k < len(src) && depth > 0; k++ {
+			switch src[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth != 0 {
+			return out
+		}
+		out = append(out, src[start:k-1])
+		i = k
 	}
 }
 
@@ -214,29 +273,33 @@ func blockOf(t *testing.T, src, marker string) string {
 // rules the theme card applies to device names apply here: build with DOM APIs, and let
 // the hub's own refusal be what the card shows.
 func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
-	row := blockOf(t, readAppJS(t), "function foundRow")
+	// The row is built in one function and written to in the other, because the card is pushed:
+	// foundRow makes the controls once and paintFound updates them on every frame. The pins below
+	// are about the row a person ends up looking at, so they read across both.
+	row := blockOf(t, readAppJS(t), "function foundRow") + blockOf(t, readAppJS(t), "function paintFound")
 	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "outerHTML"} {
 		if strings.Contains(row, bad) {
-			t.Errorf("foundRow uses %s; an announced instance name is device-supplied bytes", bad)
+			t.Errorf("the found row uses %s; an announced instance name is device-supplied bytes", bad)
 		}
 	}
 	for _, want := range []string{"document.createElement", "textContent"} {
 		if !strings.Contains(row, want) {
-			t.Errorf("foundRow no longer builds rows with %s", want)
+			t.Errorf("the found row no longer builds with %s", want)
 		}
 	}
 	// The refusal is the hub's sentence, not the card's guess: a row that says "no"
 	// without saying why is the row an operator clicks again and blames the orb for.
 	if !strings.Contains(row, "o.refusal") {
-		t.Error("foundRow drops the hub's refusal, so a row that cannot be dialed has no explanation")
+		t.Error("the found row drops the hub's refusal, so a row that cannot be dialed has no explanation")
 	}
-	// The identity is keyed on the MAC, and the only handle the row has to the board is
-	// o.mac. A rename that posted the address would rename whatever held the lease.
-	if !strings.Contains(row, "mac: o.mac") {
-		t.Error("foundRow does not post the MAC as the identity it is renaming")
+	// The identity is keyed on the MAC, and the row carries it as its own key rather than as
+	// whatever the last frame happened to say. A rename that posted the address would rename
+	// whatever held the lease tomorrow.
+	if !strings.Contains(row, "li.dataset.mac = o.mac") || !strings.Contains(row, "mac: li.dataset.mac") {
+		t.Error("the found row no longer posts the MAC as the identity it is renaming")
 	}
 	if strings.Contains(row, "ip: o.ip") {
-		t.Error("foundRow names a board by its address; the fleet keys on the MAC")
+		t.Error("the found row names a board by its address; the fleet keys on the MAC")
 	}
 	// Forgetting revokes the hub's willingness to dial, so it asks first.
 	if !strings.Contains(row, "confirm(") {

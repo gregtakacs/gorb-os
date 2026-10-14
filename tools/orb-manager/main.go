@@ -104,6 +104,14 @@ type Server struct {
 	browseErr    string
 	browseIfaces []string
 
+	// orbSubs are the open /api/orbs/stream connections, each with a one-slot wake-up
+	// channel. omu guards this map and nothing else: the browser fires the wake on its own
+	// reader goroutine while the handler that owns an entry is parked in a select, and the
+	// lock order across the two has to stay one-way — a handler may take dmu through
+	// orbCard, so the wake path must never take dmu to reach a subscriber.
+	omu     sync.Mutex
+	orbSubs map[chan struct{}]struct{}
+
 	// boots holds the verdicts the flash session read off the boot console while
 	// it held the port across its own HardReset, keyed by the chip MAC. /api/watch
 	// consumes them: they are the only trustworthy record of whether the orb came
@@ -470,6 +478,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// candidate list is a record of what arrived unasked, and the proxy still
 	// decides with grants: nothing here is a dial queue.
 	mux.HandleFunc("/api/orbs", s.handleDiscovered)
+
+	// The same list, pushed: opened once by the page, held until the page goes, and
+	// answered again whenever a check-in changes what the card says. Unguarded like the
+	// read, and for the same reason — every frame is a byte for byte copy of what that
+	// read answers, so a token here would protect nothing the poll left open while
+	// costing the reconnect path its header. It costs a held goroutine per connection,
+	// which is why the bind stays loopback by default and the remote bind is opt-in
+	// behind a warning; a page that stops reading is dropped by the write failing, not
+	// by a queue growing.
+	mux.HandleFunc("/api/orbs/stream", s.handleOrbsStream)
 
 	// The fleet: who the hub thinks is behind the addresses it will dial. The read is
 	// unguarded like the candidate list; the writes change what a later credential is

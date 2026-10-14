@@ -234,9 +234,16 @@ func TestUICanCancelAndQuitSafely(t *testing.T) {
 	if !strings.Contains(string(page), `id="ob-cancel"`) {
 		t.Error(`index.html has no #ob-cancel button for streamFlash to reveal`)
 	}
-	// The cancel must be the hub-side one. A client that only drops its own fetch
-	// leaves the ROM mid-write with nobody watching, which is the bug.
-	if strings.Contains(src, "abortController") || strings.Contains(src, ".abort(") {
-		t.Error("cancelling must go through /api/flash/cancel, not by dropping the fetch")
+	// The cancel must be the hub-side one, and the ban is scoped to the flasher on purpose.
+	// Dropping a fetch mid-flash leaves the ROM mid-write with nobody watching, which is the bug
+	// this pin exists to catch. A read-only stream is the opposite case: the hub is holding
+	// nothing the page could corrupt by going away, so the discovery watchdog is allowed — and
+	// required — to drop its own connection in order to reopen one. Hence: exactly one abort in
+	// the file, it belongs to the orb stream, and none belongs to a flash.
+	if flash := blockOf(t, src, "async function streamFlash"); strings.Contains(flash, ".abort(") {
+		t.Error("cancelling a flash must go through /api/flash/cancel, not by dropping the fetch")
+	}
+	if n := strings.Count(src, ".abort("); n != 1 || !strings.Contains(src, "orbAbort.abort()") {
+		t.Errorf("app.js contains %d client-side aborts: only the discovery stream's own watchdog may drop a fetch", n)
 	}
 }

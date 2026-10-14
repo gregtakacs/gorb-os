@@ -714,46 +714,86 @@ async function postOrb(ip, path, body, out) {
 
 // ---- discovered orbs --------------------------------------------------------------
 //
-// The hub listens for _orb._tcp check-ins and the hub alone: the page reads a
-// server-side list and never touches 5353, because a browser cannot and a page must
-// not pick its own targets. Nothing on this card sends a query — the orb re-announces
-// itself every d.checkinS seconds, so a row appears on its own and an orb that goes
-// quiet ages out. What the list may not do is make any of them reachable: choosing a
-// row fills the IP box the operator then loads, so the click that authorises a dial
-// stays a human one, exactly as it was when the only way to get an address was to
-// type it.
+// The hub listens for _orb._tcp check-ins and the hub alone: the page reads a server-side
+// list and never touches 5353, because a browser cannot and a page must not pick its own
+// targets. The list arrives pushed. /api/orbs/stream answers the moment the page opens and
+// again whenever a check-in changes what the card says, so a row lands within a round-trip of
+// the orb announcing itself instead of at the next tick of a timer, and there is no button to
+// press for a fact the hub already has. A frame body is the same envelope GET /api/orbs
+// answers, and applyFound renders either one: nothing on this card renders a row by a second
+// path.
 //
-// Rows are built with createElement/textContent, never interpolated markup: an
-// instance name and a fw stamp arrive over UDP from a device on the LAN, which is the
-// same trust level as a theme name off an SD card, and the same rule applies.
-async function readFound() {
+// What the list may not do is make any of them reachable. Choosing a row fills the IP box the
+// operator then loads, so the click that authorises a dial stays a human one, exactly as it
+// was when the only way to get an address was to type it.
+//
+// Rows are built with createElement/textContent, never interpolated markup: an instance name
+// and a fw stamp arrive over UDP from a device on the LAN, which is the same trust level as a
+// theme name off an SD card, and the same rule applies.
+
+// foundRows keys the DOM by mac, which is the row's identity in the hub's own terms: an orb
+// that took a new lease patches the same <li> rather than trading places with itself, and a
+// row nobody announced any more is removed rather than left to age on screen.
+const foundRows = new Map();
+let refusedTail = "";
+let orbAbort = null;
+let orbBytesAt = 0;
+
+// applyFound renders one snapshot of the card, from a stream frame or from the GET pull
+// underneath it. Rows already on screen are patched in place, so a check-in cannot steal
+// focus, wipe a half-typed name, or scroll a list the operator is reading.
+function applyFound(d) {
   const list = $("#mn-find"), state = $("#mn-find-state");
-  let d;
-  try {
-    const r = await fetch("/api/orbs");
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || ("HTTP " + r.status));
-    d = j.data;
-  } catch (e) {
-    state.textContent = "\u2717 discovery unread: " + e.message;
-    return;
-  }
   if (!d.listening) {
-    state.textContent = "no browse running here: " + (d.error || "unknown reason");
+    // Clear the rows rather than leaving them. A card that keeps showing a fleet after the
+    // listener died looks exactly like a fleet that is still there, and on a pushed page
+    // nothing else will ever correct it: no timer is coming to redraw this card, because a
+    // timer is the design the stream replaced.
+    for (const entry of foundRows) entry[1].remove();
+    foundRows.clear();
+    for (const li of Array.prototype.slice.call(list.querySelectorAll("li.refused"))) li.remove();
+    refusedTail = "|";
+    state.textContent = "\u2717 no listener running here: " + (d.error || "unknown reason");
     return;
   }
-  const beat = "check-ins arrive every " + (d.checkinS || 60) + " s";
-  list.textContent = "";
+  const beat = "check-ins every " + (d.checkinS || 60) + " s";
   const orbs = d.orbs || [];
-  if (!orbs.length) {
-    state.textContent = "no orb has checked in yet; " + beat
-      + ", so a joined orb shows up within a minute of this page opening. An orb on older"
-      + " firmware announces only when it joins \u2014 reboot it, or type its address in the box above.";
-  } else {
-    state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced (" + beat + ")";
+  state.textContent = (orbs.length
+    ? orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced (" + beat + ")"
+    : "no orb has checked in yet; " + beat + ", so a joined orb shows up within a minute of"
+      + " this page opening. An orb on older firmware announces only when it joins \u2014 reboot"
+      + " it, or type its address in the box above.")
+    + (orbs.length && d.error ? "  \u00b7  " + d.error : "");
+
+  const live = new Set();
+  for (const o of orbs) {
+    live.add(o.mac);
+    let li = foundRows.get(o.mac);
+    if (!li) {
+      li = foundRow(o);
+      foundRows.set(o.mac, li);
+      // Above the refusal tail, which is not a row and is rebuilt wholesale; below the rows
+      // already there, which stay exactly where the operator left them.
+      const tail = list.querySelector("li.refused");
+      if (tail) list.insertBefore(li, tail); else list.appendChild(li);
+    }
+    paintFound(li, o);
   }
-  for (const o of orbs) list.appendChild(foundRow(o));
-  for (const f of (d.refused || []).slice(-3).reverse()) {
+  for (const entry of foundRows) {
+    if (!live.has(entry[0])) { entry[1].remove(); foundRows.delete(entry[0]); }
+  }
+  drawRefused(list, (d.refused || []).slice(-3).reverse());
+}
+
+// drawRefused replaces the refused tail, and only when its content moved. Those lines are the
+// hub explaining why a packet did not become a row, and rebuilding them under an operator who
+// was reading one is the mistake the old timer made to the rows.
+function drawRefused(list, tail) {
+  const sig = tail.map((f) => (f.name || "") + "|" + f.reason).join(";");
+  if (sig === refusedTail) return;
+  refusedTail = sig;
+  for (const li of Array.prototype.slice.call(list.querySelectorAll("li.refused"))) li.remove();
+  for (const f of tail) {
     const li = document.createElement("li");
     li.className = "found refused";
     li.textContent = "refused " + (f.name || "a packet") + ": " + f.reason;
@@ -761,86 +801,154 @@ async function readFound() {
   }
 }
 
-// foundRow builds one row of the LAN list. Everything on it is createElement/textContent:
-// the instance name and the mac arrive over UDP from a device on the LAN, and the name and
-// room come back out of a file the hub wrote, so neither is content this page may interpolate.
+// pullFound is the one place this card asks, and it asks once: after a Remember or a Forget,
+// where the change came from the page itself and the hub has no reason to announce it. It is
+// not a poll and it is not the button coming back — it is a write reading its own result.
+async function pullFound() {
+  const state = $("#mn-find-state");
+  try {
+    applyFound(await getJSON("/api/orbs"));
+  } catch (e) {
+    state.textContent = "\u2717 discovery unread: " + e.message;
+  }
+}
+
+
+// watchOrbs holds the pushed card open, and reconnects: on loss after a beat, and on silence
+// through the watchdog below. Silence matters because a hub that went away mid-connection —
+// upgraded, rebooted, a laptop asleep — can leave the socket open with nothing ever arriving,
+// and a card that keeps showing last night's fleet is worse than one that admits it stopped
+// talking to the hub.
+async function watchOrbs() {
+  const ctrl = new AbortController();
+  orbAbort = ctrl;
+  const state = $("#mn-find-state");
+  try {
+    const r = await fetch("/api/orbs/stream", {
+      signal: ctrl.signal, headers: { Accept: "application/x-ndjson" },
+    });
+    if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const got = await rd.read();
+      if (got.done) break;
+      orbBytesAt = Date.now();
+      buf += dec.decode(got.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line || line.charAt(0) === ":") continue;
+        let j;
+        try { j = JSON.parse(line); } catch (e) { continue; }
+        if (!j.ok) { state.textContent = "\u2717 " + (j.error || "the hub refused the stream"); continue; }
+        applyFound(j.data);
+      }
+    }
+  } catch (e) {
+    if (!ctrl.signal.aborted) state.textContent = "\u2717 discovery stream lost: " + e.message;
+  }
+  if (orbAbort === ctrl) {
+    orbAbort = null;
+    setTimeout(watchOrbs, 3000);
+  }
+}
+
+// The watchdog. The hub's keepalive is 25 s, so three beats of no bytes at all is a dead pipe
+// rather than a quiet LAN. Aborting is the reconnect: the read above rejects, the catch stays
+// quiet because this side asked for it, and the tail reopens the stream.
+setInterval(() => {
+  if (!orbAbort || !orbBytesAt) return;
+  if (Date.now() - orbBytesAt < 90000) return;
+  $("#mn-find-state").textContent = "\u2717 discovery stream went quiet \u2014 reopening";
+  orbAbort.abort();
+}, 10000);
+
+
+// foundRow builds one row's shell; paintFound writes onto it. The split is the point: the
+// controls are wired to the row's mac rather than to a snapshot of the packet, so a frame that
+// lands while the operator is mid-word cannot strand a handler on a stale address, and the
+// patch has somewhere to put a new age without rebuilding the row around their cursor.
 function foundRow(o) {
   const li = document.createElement("li");
   li.className = "found";
+  li.dataset.mac = o.mac;
 
   const label = document.createElement("button");
   label.className = "ghost found-pick";
+  const name = document.createElement("input");
+  name.placeholder = "name"; name.maxLength = 32;
+  name.title = "the word you use for this orb; the hub keys it on the mac";
+  const room = document.createElement("input");
+  room.placeholder = "room"; room.maxLength = 32;
+
+  const save = document.createElement("button");
+  save.className = "ghost"; save.textContent = "Remember";
+  // Naming is keyed on the mac and never on the address, so the label the operator chooses
+  // survives the lease the router hands out tomorrow.
+  save.onclick = () => hubFetch("/api/fleet/set", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mac: li.dataset.mac, name: name.value, room: room.value }),
+  }).then(async (r) => {
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok) { $("#mn-find-note").textContent = "\u2717 " + (j.error || "rename refused"); return; }
+    $("#mn-find-note").textContent = "";
+    pullFound();
+  });
+
+  const forget = document.createElement("button");
+  forget.className = "ghost"; forget.textContent = "Forget";
+  // The confirm is not ceremony: forgetting drops the name the operator chose and revokes the
+  // address the hub was willing to dial.
+  forget.onclick = () => {
+    if (!confirm("Forget " + (name.value || li.dataset.mac) + "? The hub stops dialing " + li._ip + ".")) return;
+    hubFetch("/api/fleet/forget", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mac: li.dataset.mac }),
+    }).then(pullFound);
+  };
+
+  const ident = document.createElement("span");
+  ident.className = "row";
+  ident.append(name, room, save, forget);
+  li.append(label, ident);
+  li._label = label; li._name = name; li._room = room;
+  return li;
+}
+
+// paintFound writes what the hub currently believes onto a row that already exists. It runs on
+// every frame, so the two boxes the operator types into are left alone while they hold the
+// caret, and a row whose address moved cannot leave a stale one behind in the confirm text.
+function paintFound(li, o) {
+  const label = li._label;
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
   label.textContent = [o.name || o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
     o.state === "provisioning" ? "PROVISIONING" : o.state,
     o.cable ? "on usb" : "announced", o.contended ? "CONTESTED" : "",
     o.shared ? "shared name" : "", o.bound ? "" : "unverified",
     o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
-  // Three separate reasons a row cannot be dialed, and the button says which one it is
-  // rather than leaving the operator to discover it by clicking: the address belongs to
-  // nobody on the wired LAN, two boards both claim it, or it was never allowed at all.
+  // Three separate reasons a row cannot be dialed, and the button says which one it is rather
+  // than letting a click discover it: the address belongs to nobody the hub can reach, two
+  // boards both claim it, or it was never allowed at all.
   label.disabled = !o.ip || softAP || !!o.contended;
   label.title = softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
     : o.contended ? "two boards both announce this address, so the hub will not dial either"
     : (o.refusal || (o.dialable ? "already an address this hub dials"
       : "fills the Orb IP box; the hub dials it only once you load it"));
   label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
-  li.appendChild(label);
-
-  // Naming is keyed on the mac and never on the address, so the label the operator
-  // chooses survives the lease the router hands out tomorrow.
-  const ident = document.createElement("span");
-  ident.className = "row";
-  const name = document.createElement("input");
-  name.placeholder = "name"; name.maxLength = 32; name.value = o.name || "";
-  name.title = "the word you use for this orb; the hub keys it on the mac";
-  const room = document.createElement("input");
-  room.placeholder = "room"; room.maxLength = 32; room.value = o.room || "";
-  const save = document.createElement("button");
-  save.className = "ghost"; save.textContent = "Remember";
-  save.onclick = () => hubFetch("/api/fleet/set", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mac: o.mac, name: name.value, room: room.value }),
-  }).then(async (r) => {
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok) { $("#mn-find-note").textContent = "\u2717 " + (j.error || "rename refused"); return; }
-    readFound();
-  });
-  const forget = document.createElement("button");
-  forget.className = "ghost"; forget.textContent = "Forget";
-  // The confirm is not ceremony: forgetting drops the name the operator chose and
-  // revokes the address the hub was willing to dial.
-  forget.onclick = () => {
-    if (!confirm("Forget " + (o.name || o.instance) + "? The hub stops dialing " + o.ip + ".")) return;
-    hubFetch("/api/fleet/forget", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mac: o.mac }),
-    }).then(readFound);
-  };
-  ident.append(name, room, save, forget);
-  li.appendChild(ident);
-  return li;
+  li._ip = o.ip;
+  if (document.activeElement !== li._name) li._name.value = o.name || "";
+  if (document.activeElement !== li._room) li._room.value = o.room || "";
 }
+
 
 $("#mn-scan").onclick = scan;
 $("#mn-add").onclick = () => show("onboard");
 $("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
-// "Refresh" re-reads the hub's cache and nothing else. The hub itself sends no query,
-// so the button cannot speed up the LAN — it only stops the page showing a snapshot
-// older than the packets already in the hub's hand.
-$("#mn-find-go").onclick = () => readFound();
-readFound();
-
-// Rows arrive when an orb checks in, so the card follows the orb's own rhythm instead
-// of the operator's clicks: one re-read every 20 s against a hub whose cache turns
-// over every 60. The refresh skips while focus sits inside a row, because the name
-// and room boxes live there and a timer that wipes half-typed text is a timer that
-// loses work.
-setInterval(() => {
-  const a = document.activeElement;
-  if (a && a.closest && a.closest("#mn-find")) return;
-  readFound();
-}, 20000);
+// The card is live from the moment the page opens: the stream is what fills it, and the
+// frame that arrives on open is the snapshot the Refresh button used to fetch by hand.
+watchOrbs();
 
 // ---- themes -----------------------------------------------------------------
 // Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.

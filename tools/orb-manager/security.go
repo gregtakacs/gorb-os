@@ -324,6 +324,12 @@ var deviceRoutes = map[string][]string{
 	"/themes":        {http.MethodGet},
 	"/timezone":      {http.MethodGet},
 	"/api/v1/config": {http.MethodGet, http.MethodPost},
+	// The device owns its name, so the hub's rename button has to be able to put it
+	// there. POST only: the value is already on /api/v1/status, and a GET door on this
+	// path would be a second answer to the same question that could disagree with the
+	// first. Refused before it is ever dialed if the name will not pass the device's
+	// own rules — see orbfleet.CheckNameASCII.
+	"/api/v1/name":   {http.MethodPost},
 	"/api/v1/reboot": {http.MethodPost},
 	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
 	// the stored credential intact. Allowlisted because the hub's Manage card has to be

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -204,6 +205,13 @@ func (s *Server) knownGrants() []map[string]any {
 // room. Guarded, because it writes to disk and because the name is what later points
 // a credential: a page that could rename an orb could aim whatever the hub stores for
 // it at a different board.
+//
+// The name goes to the DEVICE first and to the hub's file second. That order is the
+// whole authority rule in practice: the orb owns its name, so a rename is not a
+// success until the board agrees, and a hub that stored the word first would be left
+// holding a name the orb refused — which then points every later credential lookup at
+// a word this board does not answer to. A board the hub cannot dial is therefore not
+// nameable right now, and says so, rather than being half-renamed in a file.
 func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MAC  string `json:"mac"`
@@ -218,8 +226,46 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, "no fleet is configured on this hub")
 		return
 	}
+	// Cleaned and checked against the DEVICE's rules before the store is touched or
+	// a packet is sent, so an accented or over-long name gets one refusal from the
+	// hub rather than a 400 attributed to an IP.
+	clean, err := orbfleet.CleanName(req.Name)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	if err := orbfleet.CheckNameASCII(clean); err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	row, ok := s.fleet.ByMAC(req.MAC)
+	if !ok {
+		s.jsonErr(w, "no orb "+req.MAC+" to name: it has never announced and is not on a cable")
+		return
+	}
+	// The cross-lock BEFORE the dial. Order matters more here than anywhere else in
+	// this handler: put the name on the board first and let the fleet refuse it
+	// second, and the orb now carries a word the hub will not record — the exact drift
+	// this whole arrangement exists to remove, arrived at by a route the operator
+	// caused. Refusing first costs them nothing but a keystroke.
+	if err := s.fleet.CheckNameFree(req.MAC, req.Name); err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	// Always dial, even when the cleaned value already matches the cache. Naming is
+	// a human clicking a button, not a hot path, and comparing against a cache first
+	// would skip the request precisely when the cache is the thing that is wrong —
+	// most sharply on a clear, where an empty cache and a device carrying a name look
+	// identical from here and the board would keep the old word forever.
+	if err := s.writeNameToDevice(row, clean); err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
 	// Both fields are applied or neither reports success: a row left half-renamed
-	// reads as the operator's typo rather than the hub's half-measure.
+	// reads as the operator's typo rather than the hub's half-measure. The device has
+	// said yes and the cross-lock has already been paid, so the only way SetName can
+	// still refuse is a rename that landed between the check and the write — rare, and
+	// self-correcting: the orb holds the new word and the next status read folds it in.
 	if err := s.fleet.SetName(req.MAC, req.Name); err != nil {
 		s.jsonErr(w, err.Error())
 		return
@@ -229,8 +275,76 @@ func (s *Server) handleFleetSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.saveState()
-	row, _ := s.fleet.ByMAC(req.MAC)
+	row, _ = s.fleet.ByMAC(req.MAC)
 	s.jsonOK(w, map[string]any{"orb": row})
+}
+
+// foldDeviceName refreshes a row's cached name from a status body the proxy already
+// delivered to the browser. It is the read half of the arrangement: POST
+// /api/v1/name puts a name on a board, and this is what pulls it back off the board
+// when the OTHER owner of the fact — a second hub, the onboarding flow, a curl on the
+// bench — is the one that wrote it.
+//
+// The row is keyed on the MAC inside the body rather than on the address it was
+// fetched from. An address is something an orb has at a moment; the MAC in the same
+// payload is something an orb is, and a fold that trusted the address could be aimed
+// at whichever board had just taken the lease. The proxy's own grant check is what
+// stops an arbitrary address being dialed at all.
+//
+// A name of "" is a real answer and clears the cache; a body that does not parse, or
+// that carries no name key at all, is not an answer. The difference is the whole point:
+// a dropped packet, a board still running firmware from before the field existed, and a
+// reply truncated by the proxy's own cap are all ordinary events, and a fold that read
+// any of them as "no name" would un-name an orb for the crime of answering slowly.
+//
+// Which is also why this decodes its own probe struct rather than orbnet.Status: a
+// string field cannot tell an absent key from a value of "", and the one thing this
+// function may not do is guess wrong about which of the two it is looking at.
+func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
+	if !want || len(body) == 0 || s.fleet == nil {
+		return
+	}
+	var probe struct {
+		MAC  string  `json:"mac"`
+		Name *string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil || probe.MAC == "" || probe.Name == nil {
+		return
+	}
+	name := *probe.Name
+	row, changed, err := s.fleet.NoteDeviceName(probe.MAC, name)
+	if err != nil || !changed {
+		return
+	}
+	log.Printf("orb-manager: %s reports its own name as %q (%s)", row.DisplayName(), name, ip)
+	// Persisted on a change and not otherwise, so a card poll every few seconds does
+	// not rewrite the state file on a loop. This is the same rule reconcileFleet
+	// follows about not writing on no news.
+	s.saveState()
+}
+
+// writeNameToDevice puts the name on the board itself. An empty name is a clear and
+// still goes over the wire: "unnamed" is a state the device stores, not just the
+// absence of one.
+//
+// It refuses rather than best-effort. The tempting alternative — store the hub's
+// string, try the device, log the failure — is what made the old arrangement wrong:
+// the card and the orb drifting apart, with the card winning the argument because it
+// renders first.
+func (s *Server) writeNameToDevice(row orbfleet.Orb, name string) error {
+	if row.IP == "" {
+		if row.Cable {
+			return fmt.Errorf("%s is on a cable but has no address yet: bring it onto the LAN (POST /api/v1/wifi/join) before naming it", row.DisplayName())
+		}
+		return fmt.Errorf("%s has no address the hub can dial: name it from the Manage card once its address is known", row.DisplayName())
+	}
+	if ok, why := s.mayDial(row.IP); !ok {
+		return fmt.Errorf("%s: %s", row.DisplayName(), why)
+	}
+	if _, err := s.device.PostName(row.IP, name); err != nil {
+		return fmt.Errorf("%s refused the name (%v); nothing was renamed", row.DisplayName(), err)
+	}
+	return nil
 }
 
 // handleFleetForget takes a board out of the fleet and revokes the addresses it held.

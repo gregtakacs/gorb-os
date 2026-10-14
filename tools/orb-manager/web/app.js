@@ -879,7 +879,10 @@ function foundRow(o) {
   label.className = "ghost found-pick";
   const name = document.createElement("input");
   name.placeholder = "name"; name.maxLength = 32;
-  name.title = "the word you use for this orb; the hub keys it on the mac";
+  // "stored on the orb" is the sentence that changed. The word goes onto the board
+  // first and the card keeps a copy of it, so a reflash or a state file lost in a move
+  // costs the orb its label again only if the write never landed.
+  name.title = "the word you use for this orb; stored on the orb itself and keyed on the mac";
   const room = document.createElement("input");
   room.placeholder = "room"; room.maxLength = 32;
 

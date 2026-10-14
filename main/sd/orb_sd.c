@@ -27,6 +27,8 @@
 
 #include "orb_sd.h"
 #include "board_config.h"
+#include "display.h"              // tile-ring loan: the SD driver's DMA asks and the display's
+                                  // ring come from one internal pool (see orb_sd_lock)
 
 static const char *TAG = "orb_sd";
 
@@ -303,10 +305,38 @@ void orb_sd_lock(void)
     }
     s_lock_holder = me;
     s_lock_taken_us = esp_timer_get_time();
+
+    /* The display's tile ring travels with the card lock.
+     *
+     * Why here, and not at each writer: the SD driver asks the internal DMA
+     * pool for small blocks at mount (sdmmc_common.c:401) and on every unaligned
+     * write (sdmmc_cmd.c:477), and with the radio associated that pool is
+     * fragmented below the ask -- measured 125 B refused with 4,315 B free. The
+     * ring is the largest freeable block on the board (2 x 18,640 B of
+     * MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA), and the lock's own lifetime is
+     * exactly the window that needs it: held for one mount, one upload, one
+     * install. Putting the loan here means a card path cannot forget it.
+     *
+     * What it costs: the flush path drops frames while the ring is out (see
+     * display_dma_borrow), so the glass is a still image for as long as the
+     * card is held. That is already the deal this mutex makes -- the clock's
+     * tick skips while the card is locked precisely because a fatfs read is a
+     * 4-second business -- and the CO5300 holds its own GRAM, so "still" is not
+     * "blank". The whole page is re-sent from the mirror on the return.
+     *
+     * Bounded and safe against the LVGL task: the loan's in-flight drain is
+     * capped, and a drain that does not settle REFUSES the loan rather than
+     * waiting, so a card path that somehow runs ahead of a flush cannot hang. */
+    display_dma_borrow();
 }
 
 void orb_sd_unlock(void)
 {
+    /* Give the ring back BEFORE releasing the mutex, so the next holder never
+     * sees the card without its DMA. If the memory did not come back (the card
+     * kept it), display_dma_return clears the loan anyway and the flush path
+     * re-funds the ring on its own next frame. */
+    display_dma_return();
     if (s_lock) {
         s_lock_holder = NULL;
         s_lock_taken_us = 0;

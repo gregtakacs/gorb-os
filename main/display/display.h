@@ -131,6 +131,32 @@ void display_set_commit_hook(display_commit_hook_t hook);
  *  LVGL-task only, and only meaningful from inside the commit hook. */
 uint16_t *display_fb_mirror(void);
 
+/**
+ * Lend the display's tile ring (2 x 18,640 B of internal DMA RAM) to another
+ * peripheral for one sequence, and take it back. The SD driver's bring-up and
+ * every unaligned sdmmc_write_words ask the same pool for small DMA-capable
+ * blocks, and with the radio associated that pool fragments below the ask:
+ * measured, 125 bytes refused with 4,315 bytes free. Lending is the only lever
+ * that works, because it is the one large freeable block on the board.
+ *
+ * While the loan is open the flush path DROPS frames rather than submitting
+ * them (PSRAM-direct is not an option at this board's trans_queue_depth), so
+ * the dial freezes on its last frame — the panel holds its own GRAM, so nothing
+ * blanks — and re-sends the whole page from the mirror when the ring returns.
+ *
+ * display_dma_borrow() returns the bytes handed over, or 0 when there was
+ * nothing to lend: a board that booted without the ring, or a nested call
+ * inside a loan that already covers it. Refcounted, so pairs may nest. Safe
+ * from any task; the free waits for in-flight tiles to retire.
+ *
+ * display_dma_return() takes the ring back. ESP_ERR_NO_MEM means the memory did
+ * not come back THIS call; the loan is still closed, and the flush path re-funds
+ * the ring on its next frame, so the dial recovers on its own and a caller may
+ * ignore the status. Until it does, the glass holds its last frame.
+ */
+size_t  display_dma_borrow(void);
+esp_err_t display_dma_return(void);
+
 void display_bench_reset(void);
 
 #ifdef __cplusplus

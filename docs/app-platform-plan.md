@@ -2066,3 +2066,108 @@ now does lease→rescan→upload→install with the serial epoch as the clock, s
 stalled response body cannot lie about any step. D30 stays unrationalised; its
 blocker is now named in bytes, and the honest fix is one fallback allocation in
 the theme module's own file.
+
+## 17. The radio moved off the DMA pool; the config server paid for it — orb-A, 2026-10-14, `9fec1b9`
+
+§16.1 named the wall in bytes. This session applied its prescribed relief: the four
+knobs below, chosen so the radio stops holding the internal DMA pool the SD driver
+asks 125 B at a time from. Committed as `9fec1b9`, flashed over serial, stamp
+audited `want=9fec1b9 have=9fec1b9`.
+
+    CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+    CONFIG_ESP_WIFI_TX_BUFFER_TYPE=0        (choice: ESP_WIFI_STATIC_TX_BUFFER=y)
+    CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+    CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+
+All four materialized. `build/config/sdkconfig.h` carries
+`SPIRAM_TRY_ALLOCATE_WIFI_LWIP 1`, `ESP_WIFI_STATIC_TX_BUFFER 1`,
+`ESP_WIFI_TX_BUFFER_TYPE 0`, `ESP_WIFI_STATIC_TX_BUFFER_NUM 8`, and no
+`ESP_WIFI_AMPDU_RX_ENABLED` line at all. `ESP_WIFI_RX_BA_WIN` disappeared with it,
+as the dependency intends. The materialization trap named in `.clinerules` did not
+fire.
+
+### 17.1 The relief worked, on the radio's own terms
+
+Two boots captured (`/tmp/hd_boot.txt`, `/tmp/hd_boot2.txt`).
+
+| Line | Before (`e3733a5`) | After (`9fec1b9`) |
+|---|---|---|
+| `heap_init` RAM region 1 | 136 KiB @ 3FCC7598 | 136 KiB @ 3FCC7698 |
+| post-wifi_start internal / dma | — | 22,651 / 15,147 |
+| post-httpd_start internal / dma | 9,759 / 2,255 | **no line — see 17.2** |
+| sta-connected internal / largest / dma | 8,139 / 3,328 / — | 19,111 / 7,936 / 11,607 |
+| `esp-aes: Failed to allocate memory` | present at first SAE attempt | **absent, both boots** |
+| Association | band-steer retries, several BSSIDs | single attempt, lease in 2.3 s |
+| Dial | 13–16 fps | 12–17 fps, mode 15 |
+| Card at boot | `send_cid 0x101` triple | mounted clean, `SD16G SDHC 29.4GB @20000kHz` |
+
+The squeeze §16.1 measured is gone. Largest internal block at sta-connected went
+3,328 → 7,936, which clears `ensure_chunk`'s 4,096 B ask with 3.8 KB to spare — the
+exact number that blocked the upload. The card mounted at boot with no `send_cid`
+triple for the first time in three sessions. `esp-aes` stopped failing. The dial did
+not regress.
+
+### 17.2 The cost: httpd's worker task no longer spawns
+
+Both boots ended with `httpd_start: ESP_ERR_HTTPD_TASK`, `orb_net_start(4837):
+httpd`, `networking down — clock running without config page`. Identical, twice.
+The `.clinerules` stop rule applies: report, do not improvise a third boot.
+
+`httpd_start` reached `httpd_os_thread_create` (`httpd_main.c:532`) and lost. The
+task wants `cfg.stack_size = 8192` with `task_caps = MALLOC_CAP_INTERNAL |
+MALLOC_CAP_8BIT` (`orb_net.c:4545`, `esp_http_server.h:57`) — 8 KB of contiguous
+internal DRAM. The `largest` column answers directly:
+
+    boot 1  post-wifi_start  internal free=22,651  largest=14,848
+    boot 2  post-wifi_start  internal free=18,683  largest= 8,704
+
+Boot 2 is the plain failure: 8,192 B of stack does not fit an 8,704 B block once
+its TCB and TLSF bookkeeping are charged. Boot 1 had 14,848 B and still failed —
+httpd takes its 4 KB header scratch, 1 KB URI scratch and socket set from the same
+block before the task is created. Total internal free is the highest this board has
+reported. The failure is contiguous-block shape, and `ESP_ERR_HTTPD_TASK` reports
+it as a task error rather than an allocation one.
+
+**Why it got worse while memory got better.** `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`
+allocates the radio's buffers PSRAM-first. Those buffers no longer consolidate into
+one internal region, so what remains internal is many medium blocks instead of a few
+large ones. The mechanism that freed 11 KB of dma_free also removed the single
+contiguous 8 KB the config server needs. §16's fix (moving 14.7 KB of `.bss` out)
+and this one fight the same budget from opposite ends: every session that enlarges
+the total must re-check the shape.
+
+**This is not the SPIRAM line alone.** The three wifi knobs are what reallocate the
+driver's buffers. The handoff's fallback (drop `SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, keep
+the two buffer-shape knobs) was scoped to a dial regression. The dial did not
+regress, so that clause does not authorize the run. It is recorded as the next
+experiment, not performed here.
+
+### 17.3 M5 Arm A: not run
+
+Steps 3 and 4 are HTTP-dependent. With no config server there is no
+`/api/v1/sd/rescan`, no upload route and no install route: `curl
+http://192.168.2.32/api/v1/status` returns `code=000` (connection refused) while
+ping answers at 7–22 ms. The bundle is intact and host-verified — `5eb1ed3ae931
+'M5 AvKit' 466x466 geom 1888 B art 1173563 B`. No install timings, no upload
+verdict and no flip numbers exist for this session, and none are invented here.
+
+Rollback stays armed and named: `/tmp/orb-previous-orb-A.bin` is stamped `e3733a5`,
+so `tools/serflash.sh --rollback` returns the board to a boot with a working config
+server. The board is left on `9fec1b9` deliberately, so the failure is the state on
+the bench rather than a claim about it.
+
+### 17.4 What the next session owes
+
+1. The shape, not the total, is the constraint. Print the largest internal block
+   *after* httpd is configured, and give the config server a smaller `stack_size`
+   retry before declaring the page dead. A server that will not spawn on a board
+   with 22 KB free is the same failure shape §4.2 exists to survive.
+2. Run the handoff's named fallback: revert only `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`
+   and keep static TX plus AMPDU RX off. It separates the PSRAM-first line from the
+   buffer-shape lines. Its risk is what this section measured — the two wifi knobs
+   alone may not clear a 4 KB largest block.
+3. The upload has never been proven on this board with a healthy DMA pool. §16.1's
+   granted-size fallback in `ensure_chunk` stays unwritten, and the mis-map that
+   reports `esp_dma_capable_malloc` failure as 413 is still open.
+4. D30 stays unrationalised. Its price is still unpaid, and the owner rules it.
+

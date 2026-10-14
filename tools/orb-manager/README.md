@@ -509,11 +509,12 @@ theme.go             POST /api/theme/*: the Manage card's theme surface, gated o
 console.go           POST /api/console: read-only USB console, registered as a port operation
 state.go             remembered orbs (state.json under the OS config dir: addresses, their MAC bindings, names, rooms)
 fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
+roster.go            the one-list merge: TTL-cached USB sweep behind a seam, MAC-joined LAN+cable rows, plug-change digest
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel
 security.go          the launch token, the origin check, the learned-address set, the device route allowlist
 proxy.go             same-origin /orb/<ip>/api/v1/... device-API proxy
-discover.go          the mDNS listener: candidate list, GET /api/orbs, the pushed
-                     GET /api/orbs/stream, and the upkeep tick.
+discover.go          the mDNS listener: candidate list, GET /api/orbs (merged by roster.go),
+                     the pushed GET /api/orbs/stream, and the upkeep tick.
                      It listens and lists; a listing never dials and never grants, and
                      internal/orbmdns cannot import an HTTP client to make it otherwise
 composer.go          serves the repo's watch-composer at /composer/, and the vendored
@@ -666,16 +667,35 @@ at most one interval, and a hub on a box that cannot originate multicast loses n
 at all — receive is the whole job. `TestBrowserNeverSends` fails the package if a write
 path reappears inside `internal/orbmdns`.
 
-The Orbs-on-the-LAN card follows that rhythm instead of sampling it. The browser holds
+The Orbs card follows that rhythm instead of sampling it. The browser holds
 `GET /api/orbs/stream` open; the browser package fires `OnChange` when its cache moves,
+the cable watch fires the same wake when its plug digest moves,
 and the stream re-answers when the *card* would read differently — so a check-in that
-changed nothing pushes nothing, an orb that arrives pushes one frame, and the ages on
+changed nothing pushes nothing, an orb that arrives or a board that gets plugged in pushes
+one frame, and the ages on
 screen move on the 25 s heartbeat. A frame body is byte for byte what `GET /api/orbs`
 answers, so the page has one renderer (`applyFound`) and patches rows in place by MAC
 rather than rebuilding the card under someone mid-word. There is no Refresh button: it
 re-read a cache the hub was already about to push, and with the hub originating nothing
 it could not speed the LAN up. What it cannot do is renew a grant by being read — the
 stream calls the same `orbCard` the poll does, and neither reaches `reconcileFleet`.
+
+`GET /api/orbs` is one merged list, not two doors the operator has to reconcile by
+hand. The LAN half is the browse; the cable half is a TTL-cached sweep of this
+machine's USB ports, and the join key is the canonical base MAC — the descriptor
+serial the host reads free, never an address. A board on both carries `via:
+["lan","usb"]`, its tty in `ports`, and stays dialable on its LAN address; a board on
+a cable only sits on the list undialable, `ip` empty, refusal naming its port.
+`identity` says who vouches for the mac: `confirmed` (a hub read it off the chip —
+stickiest and store-backed), `descriptor` (the host cable saw it), `claimed` (the
+packet says so), `unknown` (an unattributed port, listed under its tty path so two
+unknowns cannot collide). The hybrid rule: a descriptor-only sighting shows and
+expires with the plug and never reaches `state.json`; the store gains a row only from
+a probe, a flash, a console verdict, or an announcement. `cable` (chip-confirmed,
+sticky) and `onCable` (in this sweep) stay distinct fields — an orb you flashed
+yesterday is not tethered today. A failed enumeration keeps the last good bench and
+reports `cableError` instead of showing an empty list. `/api/ports` stays raw: the
+Onboard picker needs the non-orb ports too.
 
 Requires Go 1.27 (see `go.mod`). The only external dependency is
 `go.bug.st/serial`, a pure-Go serial library vendored into the binary. App-window

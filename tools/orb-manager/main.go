@@ -104,6 +104,12 @@ type Server struct {
 	browseErr    string
 	browseIfaces []string
 
+	// cables is the USB half of the one list (roster.go). Like the browse, its source is
+	// wired by main and not by newHub, so a test hub does not pay for a sysfs read it did
+	// not ask for, and a test that wants cable rows injects the sweep rather than lying
+	// about the machine it runs on.
+	cables *cableCache
+
 	// orbSubs are the open /api/orbs/stream connections, each with a one-slot wake-up
 	// channel. omu guards this map and nothing else: the browser fires the wake on its own
 	// reader goroutine while the handler that owns an entry is parked in a select, and the
@@ -265,6 +271,15 @@ func main() {
 	listenCtx, stopListen := context.WithCancel(context.Background())
 	defer stopListen()
 	s.startListening(listenCtx)
+
+	// The cable half of the one list (roster.go). Enabled here rather than in newHub so
+	// the suite never pays for a sysfs read, and watched on the same shutdown as
+	// discovery: a plug-in reaches an open stream inside half the sweep TTL instead of
+	// waiting for an mDNS packet that a cable-only board will never send.
+	s.enableCables(hostCableSweep, s.wakeOrbs)
+	cableCtx, stopCables := context.WithCancel(context.Background())
+	defer stopCables()
+	go s.watchCables(cableCtx)
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.

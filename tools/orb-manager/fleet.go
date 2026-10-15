@@ -379,7 +379,18 @@ func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
 	}
 	name := *probe.Name
 	row, changed, err := s.fleet.NoteDeviceName(probe.MAC, name)
-	if err != nil || !changed {
+	if err != nil {
+		return
+	}
+	// A board that answered a status poll with its own MAC and a name key is running
+	// orb firmware, and that outranks any memory of this hub leaving it lonely — the
+	// same rule the announcement fold applies. It sits after the store accepted the
+	// fold on purpose: the payload is whatever the far end chose to say, so the right
+	// to clear a mark is earned by landing on a row the fleet already holds, exactly
+	// as the rename above is. A lonely board could not produce this body at all — it
+	// opens no HTTP door — so the poll would have failed rather than answered.
+	s.lonely.clear(probe.MAC)
+	if !changed {
 		return
 	}
 	log.Printf("orb-manager: %s reports its own name as %q (%s)", row.DisplayName(), name, ip)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,6 +192,15 @@ func TestLonelyMarksTheBoardAndEvidenceClearsIt(t *testing.T) {
 	if !strings.Contains(readFile(t, "fleet.go"), "s.lonely.clear(c.MAC)") {
 		t.Error("an announcement no longer clears the lonely mark")
 	}
+	// The two the bench found missing: a board revived on another machine, or by
+	// the CLI, answered a probe and a status poll as an orb and stayed suppressed
+	// here, because every clear site was an act THIS hub had performed.
+	if !strings.Contains(readFile(t, "identity.go"), "s.lonely.clear(info.MAC)") {
+		t.Error("a console probe that answered as an orb no longer clears the lonely mark")
+	}
+	if !strings.Contains(readFile(t, "fleet.go"), "s.lonely.clear(probe.MAC)") {
+		t.Error("a status poll that answered with its own name no longer clears the lonely mark")
+	}
 }
 
 // TestLonelyMarkKeepsTheBoardOffTheFleet is the bug the mark exists to kill:
@@ -198,48 +208,151 @@ func TestLonelyMarksTheBoardAndEvidenceClearsIt(t *testing.T) {
 // that re-remembers that sighting puts the forgotten row straight back. The
 // mark suppresses the row, fleetKnown reports the chip unknown (New Orb sees a
 // blank board to adopt), and clearing it brings the row back.
+//
+// The two spellings here are the production pair, and the whole point of the
+// test: the flash marks the eFuse read the way the console and the USB
+// descriptor print it (colon pairs), while the sweep keys a sighting on the
+// store's canonical digits. An earlier version of this test stubbed the sighting
+// in colon form too, agreed with the bug, and stayed green while every lonely
+// board came back nameless on a real bench.
 func TestLonelyMarkKeepsTheBoardOffTheFleet(t *testing.T) {
 	s := newHub()
-	const mac = "44:bd:8d:78:26:18"
-	stubCables(s, cableSighting{port: "/dev/ttyACM0", isOrb: true, mac: mac})
+	const marked = "44:bd:8d:78:26:18" // how handleLonely formats its eFuse read
+	const canonical = "44bd8d782618"   // how the sweep and the store key it
+	stubCables(s, cableSighting{port: "/dev/ttyACM0", isOrb: true, mac: canonical})
 	now := time.Now()
 
-	s.lonely.mark(mac)
+	s.lonely.mark(marked)
 	rows, _ := s.roster(nil, now)
 	for _, r := range rows {
-		if r.MAC == mac {
+		if r.MAC == canonical {
 			t.Error("a lonely board rode a cable descriptor back onto the fleet")
 		}
 	}
-	if _, known := s.fleetKnown(mac); known {
+	if _, known := s.fleetKnown(canonical); known {
 		t.Error("fleetKnown reported a lonely chip as a known orb — the New Orb picker would hide it")
 	}
-	if s.cableOf(mac, now) != "" {
+	if _, known := s.fleetKnown(marked); known {
+		t.Error("fleetKnown reported a lonely chip as known when it asked in the descriptor's spelling")
+	}
+	if s.cableOf(canonical, now) != "" {
 		t.Error("cableOf keyed a liveness refusal off a lonely board's lead")
 	}
 
-	s.lonely.clear(mac)
+	s.lonely.clear(canonical)
 	if rows, _ := s.roster(nil, now); len(rows) == 0 {
 		t.Error("clearing the mark left the cable sighting invisible — the board is just a port again, not a ban")
 	}
 }
 
+// TestALonelyMarkAnswersEitherSpelling is the same contract stripped of the
+// roster: one mark, reachable from every form a caller arrives in, and cleared
+// from any of them too. The announcement path hands over canonical digits and the
+// ack paths hand over colon pairs, so a set that only answered one of the two
+// would either never suppress or never clear — and the failure would show up as a
+// board stuck off the fleet, or a dead row that will not die.
+func TestALonelyMarkAnswersEitherSpelling(t *testing.T) {
+	l := newLonelyMark()
+	l.mark("44:BD:8D:60:80:88")
+	for _, form := range []string{
+		"44:bd:8d:60:80:88", "44bd8d608088", "44-BD-8D-60-80-88", " 44:bd:8d:60:80:88 ",
+	} {
+		if !l.has(form) {
+			t.Errorf("the mark did not answer a query spelled %q", form)
+		}
+	}
+	if got := l.list(); len(got) != 1 || got[0] != "44bd8d608088" {
+		t.Errorf("list() = %v; the state file is written from it, so it must carry one canonical form", got)
+	}
+	// A malformed MAC keys to nothing, and must not be storable at all: a phantom
+	// entry would suppress every board whose descriptor failed to read.
+	l.mark("not-a-mac")
+	if len(l.list()) != 1 {
+		t.Errorf("list() = %v; a malformed MAC must not become a mark", l.list())
+	}
+	if l.has("not-a-mac") || l.has("") {
+		t.Error("a malformed MAC matched a mark it should never reach")
+	}
+	l.clear("44bd8d608088")
+	if l.has("44:bd:8d:60:80:88") {
+		t.Error("a canonical clear left the mark standing under the descriptor's spelling")
+	}
+}
+
 // TestLonelyMarksPersistRoundTrip: the mark is a memory of an act, so a hub
-// restart must not hand the sweep a blank slate and re-orb a lonely board.
+// restart must not hand the sweep a blank slate and re-orb a lonely board. And a
+// file written by the hub that keyed marks in the descriptor's spelling — every
+// state file on disk from before the canonical key — has to come back as the same
+// mark, or upgrading the hub silently un-forgets a board.
 func TestLonelyMarksPersistRoundTrip(t *testing.T) {
 	s := newHub()
 	const mac = "44:bd:8d:78:26:18"
 	s.statePath = filepath.Join(t.TempDir(), "state.json")
 	s.lonely.mark(mac)
 	s.saveState()
-	if !strings.Contains(readFile(t, s.statePath), `"`+mac+`"`) {
-		t.Fatal("saveState wrote no lonely set")
+	if !strings.Contains(readFile(t, s.statePath), `"44bd8d782618"`) {
+		t.Fatal("saveState wrote no lonely set in the store's canonical form")
 	}
 	s2 := newHub()
 	s2.statePath = s.statePath
 	s2.loadState()
-	if !s2.lonely.has(mac) {
+	if !s2.lonely.has(mac) || !s2.lonely.has("44bd8d782618") {
 		t.Error("the lonely set did not come back from the state file")
+	}
+
+	s3 := newHub()
+	s3.statePath = filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(s3.statePath,
+		[]byte(`{"version":3,"grants":{},"lonely":["44:BD:8D:60:80:88"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s3.loadState()
+	if !s3.lonely.has("44bd8d608088") {
+		t.Error("a state file written in the old colon spelling restored as no mark at all")
+	}
+}
+
+// TestFlashNamesTheCardDirectly: the New Orb dialog writes the name to the chip
+// over the lead, and the store has to hear about it in the same breath. A row
+// with no name, no address and no version proves nothing to storeProvesOrb, so
+// the orbSeen gate stays shut and the board the operator just set up and named
+// keeps appearing on the New Orb picker as a blank to adopt — the report this
+// pin exists for. Pinned at the call site because the fold is invisible to a
+// suite that drives no real serial.
+func TestFlashNamesTheCardDirectly(t *testing.T) {
+	src := readFile(t, "flash.go")
+	if !strings.Contains(src, `s.fleet.NoteDeviceName(macNorm(flashedMAC), req.Name)`) {
+		t.Error("a flash-time name no longer reaches the fleet store")
+	}
+	if i, j := strings.Index(src, "NAME-ACK"), strings.Index(src, "NoteDeviceName(macNorm(flashedMAC)"); j < i {
+		t.Error("the store write moved ahead of the ack it depends on")
+	}
+}
+
+// TestAPollAnswerClearsALonelyMark: the suppression has to end the moment the
+// board speaks for itself, wherever it was re-flashed. And it ends only for the
+// board that spoke — a status body is whatever the far end chose to say, so a
+// clear rides on the same precondition as a rename: the store had to hold a row
+// for that MAC already.
+func TestAPollAnswerClearsALonelyMark(t *testing.T) {
+	s := newHub()
+	s.lonely.mark("44:BD:8D:60:80:88")
+	if _, err := s.fleet.Confirm("44bd8d608088"); err != nil {
+		t.Fatal(err)
+	}
+	s.foldDeviceName("192.168.2.32", []byte(`{"mac":"44:bd:8d:60:80:88","name":"Pantry"}`), true)
+	if s.lonely.has("44bd8d608088") {
+		t.Error("a board that answered a poll for itself stayed lonely")
+	}
+	if row, _ := s.fleet.ByMAC("44bd8d608088"); row.Name != "Pantry" {
+		t.Errorf("row name = %q, want Pantry", row.Name)
+	}
+
+	// A body claiming a MAC the fleet never met gets nothing, including a clear.
+	s.lonely.mark("aabbcc112233")
+	s.foldDeviceName("192.168.2.32", []byte(`{"mac":"aabbcc112233","name":"Squatter"}`), true)
+	if !s.lonely.has("aabbcc112233") {
+		t.Error("a status body about an unknown board cleared that board's lonely mark")
 	}
 }
 

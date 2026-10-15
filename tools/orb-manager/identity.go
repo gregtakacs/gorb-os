@@ -347,6 +347,13 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		// hub can say about a board: it is the chip answering for itself, not a name
 		// claimed on the LAN. The fleet holds that sighting above every announcement.
 		s.markCable(info.MAC)
+		// And a console that answered the orb door ends any lonely mark on the
+		// chip, whoever re-flashed it. Without this the mark only ever cleared on
+		// this hub's own acts, so a board revived on another bench — or by the CLI —
+		// stayed suppressed here forever while probing back as an orb.
+		if info.IsOrb {
+			s.lonely.clear(info.MAC)
+		}
 	}
 	info.Verdict = string(s.verdictFor(info))
 	s.jsonOK(w, info)

@@ -200,9 +200,13 @@ the window shuts the hub down, so no listener is left behind. That shutdown
 follows the real window, not the process we launched: Chrome is single-instance
 per profile and hands the URL to an already-running browser — the usual outcome
 for `chrome.exe` under WSL — so the hub watches its own page in that browser's
-DevTools target list and exits when the page goes. When no window can be
-watched at all, the hub keeps serving rather than shutting down on a guess, and
-says how to stop it.
+DevTools target list and exits when the page goes. A first probe that finds no page is
+normal rather than final — `chrome.exe` under WSL writes its endpoint late, and the
+window can appear after the launcher is already gone — so the watcher keeps asking for
+the life of the hub and says "still looking" once instead of giving up. A hub that gave
+up there kept serving a window it could never see close, and closing that window cost
+the operator a Ctrl-C and a lost prompt (bench, 2026-10-15). It still never shuts down
+on a guess about a window it has not seen.
 
 The browser's own chatter stays out of your terminal. A `chrome.exe` started from
 WSL prints dozens of unrelated named-pipe and GCM errors at startup. They go to

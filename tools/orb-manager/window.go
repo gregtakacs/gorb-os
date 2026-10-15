@@ -325,20 +325,47 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 		events <- childExit
 	}()
 	go func() {
-		t := awaitOpen(profile, url, firstWindow, poll)
-		if t == nil {
-			events <- unwatchable
+		// Keep looking for the page for the life of the hub. A first probe that
+		// finds nothing is normal — chrome.exe under WSL writes its endpoint late
+		// and the window can appear after the launcher is already gone — and a
+		// watcher that gave up there left the hub serving a window it could never
+		// see close, so closing the window cost the operator a Ctrl-C and a lost
+		// prompt (bench, 2026-10-15). Each round waits devtoolsFirstWindow and
+		// reports once, so the log says "not yet" exactly as many times as it is
+		// true and never claims the window is unwatchable for good.
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			t := awaitOpen(profile, url, firstWindow, poll)
+			if t == nil {
+				select {
+				case events <- unwatchable:
+				case <-done:
+					return
+				}
+				continue
+			}
+			if err := waitForClose(t, poll); err != nil {
+				select {
+				case events <- endpointDead:
+				case <-done:
+					return
+				}
+				continue
+			}
+			select {
+			case events <- pageClosed:
+			case <-done:
+			}
 			return
 		}
-		if err := waitForClose(t, poll); err != nil {
-			events <- endpointDead
-			return
-		}
-		events <- pageClosed
 	}()
 
 	go func() {
-		childGone, endpointSeen := false, false
+		childGone, detachSaid := false, false
 		for {
 			select {
 			case <-done: // already decided
@@ -374,16 +401,15 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 					// flaky endpoint must not kill a hub mid-flash. The child's
 					// own exit will decide.
 				case unwatchable:
-					endpointSeen = true
-					if childGone {
-						// Launcher detached and no page is visible anywhere:
-						// we have nothing to watch, so never shut down on a guess.
-						log.Printf("orb-manager: browser detached with no watchable window; the hub keeps serving %s - stop it with Ctrl-C, or run with --no-window", url)
-						return
+					// Detached and blind, so there is nothing to shut down on
+					// yet — and NOT a reason to stop looking. The watcher keeps
+					// asking, and this line is said once rather than every round,
+					// because a hub that prints "still can't see it" forever
+					// teaches the operator to ignore the line that matters.
+					if childGone && !detachSaid {
+						detachSaid = true
+						log.Println("orb-manager: browser detached with no watchable window yet; still looking - this hub exits when that window closes, or stop it now with Ctrl-C")
 					}
-				}
-				if childGone && endpointSeen {
-					return
 				}
 			}
 		}

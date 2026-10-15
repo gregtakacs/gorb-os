@@ -11,6 +11,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // Identity is opt-in and expensive: a probe reboots the orb to catch the
@@ -52,7 +53,12 @@ const identityTTL = 30 * time.Minute
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
-		fleet: orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+		cables: newCableCache(), live: newLiveCache(),
+		lonely: newLonelyMark(),
+		orb:    orbnet.NewClient(scanTimeout),
+		device: orbnet.NewClient(deviceTimeout),
+		ota:    orbnet.NewClient(otaTimeout),
+		fleet:  orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {
@@ -191,19 +197,65 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			"hint":       usbLabel(u),
 			"attributed": u.Known,
 			"probed":     false,
+			// "espressif" is the New Orb gate: a genuine Espressif chip (VID
+			// 303A) whatever it currently enumerates as. The page asks it of a
+			// board that may be blank, boot-looping, or in download mode, and
+			// only the host can answer without touching the chip. The product
+			// id decides nothing here: blank and flashed boards report
+			// differently, and a gate keyed on the product id would hide a
+			// board precisely when the operator most needs the door open.
+			"espressif": u.IsEspressif(),
+			// "orbSeen" is the other half of that gate, and the mirror of the
+			// row field of the same meaning: the hub has evidence this chip has
+			// been an orb, so the board belongs on a card and not in the New
+			// Orb picker. It is NOT row existence — the roster writes a row for
+			// a bare cable sighting, so existence would make every board that
+			// has ever been plugged in un-adoptable forever, which is the bug
+			// this field replaces. Always written, so a hub that cannot answer
+			// the question reads as a no rather than a hole.
+			"orbSeen": false,
 		}
 		// The MAC the host read off the descriptor, as opposed to the one a probe
 		// heard on the console. Kept separate so the client never has to unpick a
 		// display string to label a cable.
 		if u.IsOrbDevice() && u.Serial != "" {
 			e["usbMac"] = u.Serial
+			// A board this hub left lonely is a blank Espressif chip with a
+			// memory, not an orb: the entry says so, and the picker labels it
+			// "left lonely" instead of letting the descriptor silently re-orb it.
+			if s.lonely.has(macNorm(u.Serial)) {
+				e["lonely"] = true
+			} else {
+				// Two facts the page must not conflate, so they stay two fields:
+				// the address book holds this chip at all ("inFleet", what the
+				// add-by-IP door refuses on), and the book proves it has been an
+				// orb ("orbSeen", what hides it from the New Orb door). A row that
+				// only ever recorded a cable gives the first without the second.
+				if row, known := s.fleetKnown(macNorm(u.Serial)); known {
+					e["inFleet"] = true
+					if storeProvesOrb(row) {
+						e["orbSeen"] = true
+					}
+				}
+			}
 		}
+
 		if info, ok := cached[p]; ok {
 			e["probed"] = true
 			e["isOrb"] = info.IsOrb
+			// A chip that has answered for itself as an orb is the strongest
+			// proof the hub keeps, and it outranks the address book: a board
+			// identified after a wipe is known even before it has a name.
+			if info.IsOrb {
+				e["orbSeen"] = true
+			}
 			e["mac"] = info.MAC
+
 			e["project"] = info.Project
 			e["version"] = info.Version
+			// The same stamp as structure, so a card can print v1.0.0 without
+			// parsing the string. Legacy boards come back as legacy: true.
+			e["semver"] = semverPayload(info.Version)
 			e["compileTime"] = info.CompileTime
 			e["compiledAt"] = info.CompiledAt
 			e["elfSha256"] = info.ElfSHA256
@@ -295,6 +347,20 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		// hub can say about a board: it is the chip answering for itself, not a name
 		// claimed on the LAN. The fleet holds that sighting above every announcement.
 		s.markCable(info.MAC)
+		// And a console that answered the orb door ends any lonely mark on the
+		// chip, whoever re-flashed it. Without this the mark only ever cleared on
+		// this hub's own acts, so a board revived on another bench — or by the CLI —
+		// stayed suppressed here forever while probing back as an orb.
+		if info.IsOrb {
+			s.lonely.clear(info.MAC)
+			// The banner named itself, so the card can stop being blank. This is
+			// the only read path for a board with no lease: the console is open
+			// right now, and the serial door writes names without ever reading
+			// them back.
+			if s.foldBootName(info.MAC, info.Name) {
+				s.saveState()
+			}
+		}
 	}
 	info.Verdict = string(s.verdictFor(info))
 	s.jsonOK(w, info)

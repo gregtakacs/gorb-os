@@ -106,6 +106,29 @@ func AppOnlyPlan(appName string, appBin []byte, otaDataInitial []byte) FlashPlan
 	}
 }
 
+// LonelyPlan builds the whole-device set for the lonely image: the boot
+// machinery belongs to the bundle (one bootloader, one partition layout, so a
+// New Orb flash over a lonely board replaces every byte this plan wrote), and
+// only the app slot differs. The otadata is the bundle's initial one, pointing
+// at ota_0 — the slot this app lands in — so the lonely board boots it exactly
+// the way a fresh orb board boots the real firmware.
+func LonelyPlan(appBin, bootloader, partTable, otaDataInitial []byte) (FlashPlan, error) {
+	if len(appBin) == 0 || len(bootloader) == 0 || len(partTable) == 0 || len(otaDataInitial) == 0 {
+		return FlashPlan{}, fmt.Errorf("esprom: lonely plan needs an app, a bootloader, a partition table and initial otadata")
+	}
+	return FlashPlan{
+		Images: []Image{
+			{Offset: 0x0, Name: "bootloader.bin", Data: bootloader},
+			{Offset: 0x8000, Name: "partition-table.bin", Data: partTable},
+			{Offset: otaDataOffset, Name: "ota_data_initial.bin", Data: otaDataInitial},
+			{Offset: appOffset, Name: "lonely.bin", Data: appBin},
+		},
+		FlashSize: appFlashSize,
+		FlashMode: 2,    // dio, as every gorb-os plan is declared
+		FlashFreq: 0xFF, // keep what each image header declares
+	}, nil
+}
+
 var flashModeCode = map[string]byte{
 	"qout": 1, "dio": 2, "dout": 3, "qio": 0,
 }

@@ -170,3 +170,78 @@ func TestDoubleIdsAreTheFirmwaresHash(t *testing.T) {
 		}
 	}
 }
+
+// The mode door is the only exit from a state the page can put an orb into, so its accept
+// set has to be the firmware's and not merely plausible: net_mode_set takes "ap", and takes
+// "sta" and "" as the way back to the station default, and rejects everything else — the
+// case-variant "AP" and an over-long value included. A double that accepted "AP" would let
+// a hub test pass by storing a mode no orb can ever boot.
+func TestModeDoorMatchesNetModeSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		code       int
+		stored     string // "" means the absent key; -1 = do not assert
+	}{
+		{"ap", `{"mode":"ap"}`, 200, "ap"},
+		{"sta", `{"mode":"sta"}`, 200, ""},
+		{"empty is the default", `{"mode":""}`, 200, ""},
+		{"wrong case", `{"mode":"AP"}`, 400, "-"},
+		{"too long", `{"mode":"station"}`, 400, "-"},
+		{"no key", `{}`, 400, "-"},
+	} {
+		f := New()
+		code, body := post(t, f, "/api/v1/wifi/mode", []byte(tc.body))
+		if code != tc.code {
+			t.Errorf("%s: POST /wifi/mode %s -> %d, want %d (%s)", tc.name, tc.body, code, tc.code, body)
+		}
+		if tc.code != 200 {
+			continue
+		}
+		// The reply names the mode the orb will boot in, which is the hub's only
+		// confirmation that "sta" meant the default rather than a literal string.
+		if !strings.Contains(body, `"mode":"`+tc.stored+`"`) &&
+			!strings.Contains(body, `"mode":"sta"`) {
+			t.Errorf("%s: reply %s does not name the accepted mode", tc.name, body)
+		}
+		if got, n := f.ModeSet(); got != tc.stored || n != 1 {
+			t.Errorf("%s: stored %q after %d accepted writes, want %q after 1", tc.name, got, n, tc.stored)
+		}
+	}
+}
+
+// AP-isolation is a boot-time choice, so the door has to leave the radio looking the way the
+// next boot will find it: the SoftAP is the only address and there is no lease. A double
+// that kept a lease would let a hub test drive an orb out of an isolation it never entered.
+func TestModeApClearsTheLease(t *testing.T) {
+	f := New()
+	f.SetSTA(true)
+	if code, body := post(t, f, "/api/v1/wifi/mode", []byte(`{"mode":"ap"}`)); code != 200 {
+		t.Fatalf("mode ap -> %d (%s)", code, body)
+	}
+	code, body := get(t, f, "/api/v1/status")
+	if code != 200 {
+		t.Fatalf("status -> %d", code)
+	}
+	if strings.Contains(body, `"sta_up":true`) {
+		t.Errorf("an AP-isolated orb still reports a lease: %s", body)
+	}
+}
+
+// The mode refusals quote their own two values, so the firmware's C text carries three
+// backslashes where the wire carries one and the shared sentence scrape would call a real
+// message missing. Compared with the escapes stripped from both sides instead: word for
+// word still honest, and it fails on a reworded sentence rather than on its punctuation.
+func TestModeRefusalTextIsTheFirmwares(t *testing.T) {
+	net := glueC.ReplaceAllString(firmwareSrc(t, "net", "orb_net.c"), "")
+	strip := strings.NewReplacer(`\`, "", `"`, "")
+	hay := strip.Replace(net)
+	for _, body := range []string{noModeBody, badModeBody, modeOffBody} {
+		sentence := strings.TrimSuffix(strings.TrimPrefix(body, `{"error":"`), `"}`)
+		if sentence == body {
+			t.Fatalf("%s is not in the shape the doors send", body)
+		}
+		if !strings.Contains(hay, strip.Replace(sentence)) {
+			t.Errorf("double refuses mode with %q, which is not a sentence in orb_net.c", sentence)
+		}
+	}
+}

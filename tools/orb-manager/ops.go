@@ -33,12 +33,25 @@ import (
 type opKind string
 
 const (
-	opFlash     opKind = "flash"
+	opFlash opKind = "flash"
+	// opWipe is the whole-chip erase. It holds the port exactly like a flash:
+	// anything sharing the wire during a 16 MB erase corrupts it, and the
+	// operation needs its own cancel handle and its own line in /api/ops so the
+	// UI can say which cable is being emptied.
+	opWipe opKind = "wipe"
+	// opLonely is the lonely-image write. It is a flash wearing a different
+	// shirt — same port claim, same cancel path, same ROM conversation — and it
+	// earns its own kind because /api/ops should say what is ON the wire, not
+	// merely that something is.
+	opLonely    opKind = "lonely"
 	opProvision opKind = "provision"
 	opProbe     opKind = "identify"
 	// opConsole is a read, but it still HOLDS the port, so it claims the same slot a
 	// flash does: reading a console while a write is in flight is how a flash dies.
 	opConsole opKind = "console"
+	// opCmd is a generic serial command (NAME/SCAN/MODE/RESET/PING) on a configured
+	// orb. It writes, so it claims a full port slot exactly like a provision.
+	opCmd opKind = "cmd"
 )
 
 // op is one in-flight operation on one physical port.

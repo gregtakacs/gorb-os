@@ -264,12 +264,23 @@ func TestProvisioningOrbIsListedAndLabelled(t *testing.T) {
 // A query is not a thing a browser answers. The firmware answers questions and
 // announces; a hub that also answered would be a second orb on the LAN, and its
 // cache-flush records would overwrite the real one in every other browser's cache.
+// The packet is written out as bytes here rather than built: the hub's own query
+// encoder was deleted with the querier, and a test that re-implements one keeps its
+// honesty for free.
 func TestTheBrowserIgnoresQueries(t *testing.T) {
 	b, _ := hub(t)
-	b.Ingest(BrowseQuery(0xC0FE), from(goodIP))
+	b.Ingest(rawBrowseQuery(), from(goodIP))
 	if got := b.Candidates(); len(got) != 0 {
 		t.Fatalf("the hub answered a neighbour's question with a listing: %+v", got)
 	}
+}
+
+// rawBrowseQuery is a PTR question for _orb._tcp.local, by hand: header with
+// QDCOUNT=1, uncompressed labels, QTYPE=PTR, QCLASS=IN|QU.
+func rawBrowseQuery() []byte {
+	name := []byte{4, '_', 'o', 'r', 'b', 4, '_', 't', 'c', 'p', 5, 'l', 'o', 'c', 'a', 'l', 0}
+	hdr := []byte{0xC0, 0xFE, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	return append(append(hdr, name...), 0x00, 0x0C, 0x80, 0x01) // PTR, IN with QU
 }
 
 // Someone else's service table is not ours to list.
@@ -366,5 +377,149 @@ func TestTXTBytesAreNeverExpanded(t *testing.T) {
 	}
 	if got[0].FW != "\xc0'" {
 		t.Errorf("fw came back %q: something inside the TXT was expanded", got[0].FW)
+	}
+}
+
+// ---- the wake-up: OnChange -------------------------------------------------------
+//
+// The card is pushed, and this is the half of the push that decides when it moves. The
+// browser's rule is deliberately narrower than "a packet arrived" and deliberately wider than
+// "the card's text changed": it reports that the cache moved and leaves the hub to decide
+// whether that is worth a frame. A browser that tried to make that second decision would need
+// to know the fleet, the grants and the cable MACs, which is the layering this package keeps.
+
+// wakeRecorder counts wakes on a channel nobody blocks on, so a test can assert both that a
+// wake came and that no more than one came.
+func wakeRecorder() (*Browser, chan int) {
+	ch := make(chan int, 16)
+	n := 0
+	b := NewBrowser(Config{
+		Now:      func() time.Time { return time.Unix(1760000000, 0) },
+		OnChange: func() { n++; ch <- n },
+	})
+	return b, ch
+}
+
+func wokeRecently(ch chan int) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(120 * time.Millisecond):
+		return false
+	}
+}
+
+// One check-in is one wake, however many records it carries. The firmware bundles PTR, SRV,
+// TXT and A into every announcement, so a per-record wake would nudge the page four times for
+// one row and make the stream's coalescing load-bearing on the first day.
+func TestOneCheckInIsOneWake(t *testing.T) {
+	b, woke := wakeRecorder()
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	if !wokeRecently(woke) {
+		t.Fatal("a check-in that became a row woke nobody")
+	}
+	if wokeRecently(woke) {
+		t.Error("one check-in woke the card more than once: the wake is per datagram, not per record")
+	}
+}
+
+// Every mutation the card could render wakes it, including the two that are not a row arriving.
+// This is the test that keeps a seventh mutator from being added without one: a browser that
+// stopped reporting a goodbye would leave the row on the page until the grace ran out, silently,
+// which is the failure the callback exists to prevent.
+func TestEveryMutationWakes(t *testing.T) {
+	cases := []struct {
+		what string
+		pkt  []byte
+	}{
+		{"a row landing", answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80)},
+		{"a refusal", answerBytes(1, goodInst, "", goodFW, "normal", goodIP, 120, 80)},
+		{"an unparsable packet", []byte{0xc0, 0x1f, 0x00}},
+	}
+	for _, tc := range cases {
+		b, woke := wakeRecorder()
+		b.Ingest(tc.pkt, from(goodIP))
+		if !wokeRecently(woke) {
+			t.Errorf("%s changed what the card says and woke nobody", tc.what)
+		}
+	}
+
+	// A goodbye removes a row, and the wake has to come from the removal rather from the packet
+	// being interesting.
+	b, woke := wakeRecorder()
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	<-woke
+	b.Ingest(answerBytes(2, goodInst, goodMAC, goodFW, "normal", goodIP, 0, 80), from(goodIP))
+	if !wokeRecently(woke) {
+		t.Error("an orb saying goodbye left the card still showing it, with no wake to fix that")
+	}
+
+	// Expiry is the third, and the only path that prunes a row no packet mentioned. The clock is
+	// the test's, because nothing on a bench moves 20 minutes on its own.
+	clock := time.Unix(1760000000, 0)
+	woke4 := make(chan int, 4)
+	b4 := NewBrowser(Config{
+		Now:      func() time.Time { return clock },
+		OnChange: func() { woke4 <- 1 },
+	})
+	b4.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	<-woke4
+	clock = clock.Add(20 * time.Minute)
+	b4.Candidates()
+	if !wokeRecently(woke4) {
+		t.Error("pruning an expired row woke nobody, so the page would keep the ghost until the next resync")
+	}
+}
+
+// Nothing the card cannot see wakes it. A neighbour's query and an announcement about somebody
+// else's service are traffic, and a hub that woke its page for either would push a frame for
+// every packet on the LAN and call that live.
+func TestUninterestingTrafficDoesNotWake(t *testing.T) {
+	cases := []struct {
+		what string
+		pkt  []byte
+	}{
+		{"a query, which is ignored", rawBrowseQuery()},
+		{"a foreign service", answerBytesFor("_http._tcp", 1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80)},
+	}
+	for _, tc := range cases {
+		b, woke := wakeRecorder()
+		b.Ingest(tc.pkt, from(goodIP))
+		if wokeRecently(woke) {
+			t.Errorf("%s woke the card without changing what it says", tc.what)
+		}
+	}
+}
+
+// The callback runs with no browser lock held, and this is the only thing that proves it. The
+// hub's half is a non-blocking send today, so a wake fired under the lock would look harmless;
+// it becomes a deadlock the first time a callback reads the browser back, which is the shape an
+// obvious refactor takes. The call below would hang forever, so it is raced against a deadline.
+func TestWakeFiresOutsideTheBrowserLock(t *testing.T) {
+	done := make(chan struct{})
+	var b *Browser
+	b = NewBrowser(Config{
+		Now: func() time.Time { return time.Unix(1760000000, 0) },
+		OnChange: func() {
+			_ = b.Candidates() // re-enters through mu: only legal if the lock is already gone
+			_ = b.Refusals()
+			close(done)
+		},
+	})
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnChange ran while the browser lock was held: it re-entered Candidates and blocked")
+	}
+}
+
+// A hub with no callback is a complete browser, not a broken one: everything else is unchanged,
+// which is what lets a test feed this one packets with no page attached.
+func TestNilCallbackLeavesTheBrowserWhole(t *testing.T) {
+	b, _ := hub(t)
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	if got := b.Candidates(); len(got) != 1 {
+		t.Fatalf("a browser built without OnChange listed %d rows", len(got))
 	}
 }

@@ -100,6 +100,24 @@ func (b *Bundle) AppPlan() (esprom.FlashPlan, error) {
 // layout actually being flashed.
 func (b *Bundle) PartitionTable() []byte { return b.partTable }
 
+// LonelyPlan is the plan that turns any S3 into a lonely board: this bundle's
+// bootloader, partition table and initial otadata, with the lonely app in the
+// ota_0 slot. The boot images come from the bundle on purpose — a lonely board
+// then sits inside the exact geometry a New Orb flash overwrites, so the joke
+// is always reversible by the normal door.
+func (b *Bundle) LonelyPlan(lonelyBin []byte) (esprom.FlashPlan, error) {
+	boot := b.imageNamed("bootloader.bin")
+	pt := b.imageNamed("partition-table.bin")
+	var ota []byte
+	if im := b.imageNamed("ota_data_initial.bin"); im != nil {
+		ota = im.Data
+	}
+	if boot == nil || pt == nil {
+		return esprom.FlashPlan{}, fmt.Errorf("firmware %s has no bootloader or partition table to build a lonely plan", b.Source)
+	}
+	return esprom.LonelyPlan(lonelyBin, boot.Data, pt.Data, ota)
+}
+
 // Load parses bundle bytes — the zip a release step produces, or one the user
 // picked in a file dialog. Every image the manifest names must be present, so a
 // partial or hand-edited bundle fails here rather than half-way into a flash.
@@ -274,6 +292,22 @@ func (b *Bundle) imageNamed(name string) *esprom.Image {
 	return nil
 }
 
+// AppImage returns the app-bin payload — the single image an OTA takes. The
+// device's /api/v1/ota stages one app slot, so this is exactly one image's
+// bytes, found the same way AppPlan finds it: by name, with the partition
+// offset as the tiebreak for a manifest that renamed it.
+func (b *Bundle) AppImage() []byte {
+	if im := b.imageNamed("gorb-os.bin"); im != nil {
+		return im.Data
+	}
+	for _, im := range b.Images {
+		if im.Offset == 0x20000 { // the ota_0 slot from partitions.csv
+			return im.Data
+		}
+	}
+	return nil
+}
+
 // WriteBundle packs a build's manifest and the images it names into the bundle
 // format. It is the release step's whole job, and the only place in this program
 // that consults OS paths: once the bytes are in a bundle they are self-describing.
@@ -336,9 +370,11 @@ const DefaultName = "orb-firmware.zip"
 //go:embed bundle/orb-firmware.zip
 var embedded []byte
 
-// Release is the two facts about a firmware build that can be honestly compared:
-// when it was compiled and the digest of the ELF it came from. A git describe
-// like "8eb4bf0-dirty" carries no ordering, so it is never the basis for "newer".
+// Release is the three facts about a firmware build that can be honestly compared:
+// what release it declares, when it was compiled and the digest of the ELF it came
+// from. A declared version orders the releases; a git describe like "8eb4bf0-dirty"
+// carries no ordering, so a pre-scheme stamp is never the basis for "newer" and the
+// build timestamp decides instead.
 type Release struct {
 	Version    string
 	CompiledAt time.Time // zero when the build stamp was unparsable
@@ -396,7 +432,7 @@ const (
 	VerdictSame        Verdict = "same"         // same build; flashing changes nothing
 	VerdictUpgrade     Verdict = "upgrade"      // the selected firmware is newer
 	VerdictDowngrade   Verdict = "downgrade"    // the selected firmware is older
-	VerdictSameVersion Verdict = "same-version" // built at a different time, same describe
+	VerdictSameVersion Verdict = "same-version" // same declared release, different build
 )
 
 // Compare decides what flashing target at the orb that is running. The caller
@@ -405,10 +441,14 @@ const (
 //
 // The rules, in order, and why each is where it is:
 //   - Same ELF digest means the same bytes: nothing to do.
-//   - Both build stamps present: the later one wins. This is the only honest
-//     ordering a git describe can offer.
-//   - Equal describes but different stamps: report same-version rather than
-//     upgrade/downgrade, because a rebuild of one commit is not a new release.
+//   - Both sides carry a declared version: the triple orders them, and a
+//     pre-release sits below the release it precedes. This outranks the
+//     timestamp, which measures a clock rather than a release.
+//   - Either side predates the version scheme: the later build stamp wins, the
+//     only ordering an unnamed build can offer.
+//   - Equal versions, or equal describes with different stamps: report
+//     same-version rather than upgrade/downgrade, because a rebuild of one
+//     release is not a new release.
 //   - Anything missing: unknown. Guessing "newer" here would push a user into
 //     replacing a working orb on no evidence.
 func Compare(orb, target Release) Verdict {
@@ -419,6 +459,25 @@ func Compare(orb, target Release) Verdict {
 			return VerdictSame
 		}
 	}
+	// A declared version outranks a build timestamp, because a timestamp measures
+	// when someone's clock was, and a triple measures what the release was.
+	ov, ook := ParseVersion(orb.Version)
+	tv, tok := ParseVersion(target.Version)
+	if ook && tok {
+		switch c := ov.Compare(tv); {
+		case c < 0:
+			return VerdictUpgrade
+		case c > 0:
+			return VerdictDowngrade
+		default:
+			// One release, different bytes: a rebuild, a different commit, or a
+			// dirty tree. Not an upgrade, and not nothing — the orb still reboots.
+			return VerdictSameVersion
+		}
+	}
+	// At least one side predates the scheme, so fall through to the timestamp
+	// ladder. Declaring a named release newer than an unnamed build would push a
+	// user into replacing a working orb on an assumption.
 	if orb.CompiledAt.IsZero() || target.CompiledAt.IsZero() {
 		return VerdictUnknown
 	}
@@ -442,9 +501,16 @@ func normSha(s string) string {
 	return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), "."))
 }
 
-// sameVersion ignores a -dirty suffix: a tree rebuilt with local edits is the
-// same release for the purpose of telling a user what they are about to flash.
+// sameVersion reports two stamps naming one release. A parsed pair ignores commit
+// and -dirty, which is what a rebuild of one release means. A legacy pair keeps the
+// old rule of dropping -dirty and comparing the rest, because a bare git describe
+// carries no other structure to compare.
 func sameVersion(a, b string) bool {
+	av, aok := ParseVersion(a)
+	bv, bok := ParseVersion(b)
+	if aok && bok {
+		return av.Compare(bv) == 0
+	}
 	t := func(s string) string { return strings.TrimSuffix(strings.TrimSpace(s), "-dirty") }
 	return t(a) != "" && t(a) == t(b)
 }

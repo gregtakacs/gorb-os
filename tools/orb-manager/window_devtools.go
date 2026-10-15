@@ -33,7 +33,7 @@ var (
 	// Tunables are vars so the lifetime tests can drive them without sleeping
 	// for seconds at a time.
 	devtoolsPollEvery   = 500 * time.Millisecond
-	devtoolsFirstWindow = 6 * time.Second
+	devtoolsFirstWindow = 20 * time.Second
 	detachGrace         = 3 * time.Second
 )
 

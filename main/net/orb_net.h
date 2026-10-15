@@ -19,12 +19,26 @@
  * the credentials survive `nvs_flash_erase()`, which main.c still calls to
  * recover from a corrupt default NVS — with the driver's namespace and ours in
  * different partitions, that recovery can no longer cost the user their WiFi.
+ * The one thing that DOES erase both partitions on purpose is the serial
+ * `RESET ALL` (orb_net.c:net_factory_reset): a factory reset has to reach the
+ * driver's copy, or it leaves a passphrase on a board that is about to change
+ * hands. Surviving an accident is not the same as surviving a factory reset.
  *
  * The timezone lives in that same namespace under `tz`, for the same reason: it
  * is device config the owner set once, and reopening the case to recover a
  * corrupt partition must not quietly put the dial an hour out with nothing on
  * screen to explain it. Unset means UTC, and /api/v1/status says so rather than
  * letting a wrong-looking dial be the only symptom.
+ *
+ * The orb's NAME lives beside it under `name`, on the same argument and with the
+ * same durability requirement — and the DEVICE, not the hub, is the authority for
+ * it. The hub's fleet row keeps a copy so a card can render a fleet without
+ * dialing thirty boards, but that copy is a cache: a deleted hub store or a
+ * reflashed board used to cost the owner the word they typed while the device
+ * went on announcing its MAC. Set it with POST /api/v1/name, or in the join body
+ * during onboarding, and read it off /api/v1/status. Unset means unnamed, and the
+ * status field is the empty string rather than a placeholder, so a caller can
+ * still tell "never named" from "could not be asked".
  */
 #pragma once
 
@@ -52,6 +66,12 @@ bool orb_net_is_up(void);
  *  with no credentials, or a one-boot session requested by
  *  orb_net_request_provisioning(). */
 bool orb_net_is_provisioning(void);
+
+/** True when the orb is in the persistent AP-isolated mode: it serves its own open
+ *  SoftAP and web page and never associates with any Wi-Fi network, so the only way in
+ *  is that AP. The mode lives in NVS (orb.net "mode" = "ap") and survives reboot until
+ *  a MODE command (serial or page) changes it. */
+bool orb_net_ap_isolated(void);
 
 /**
  * D2: ask the NEXT boot to come up in provisioning even though credentials are
@@ -130,3 +150,31 @@ esp_err_t orb_net_tz_select(int i);
  * pass-through.
  */
 esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min);
+
+/* ---- the orb's own name -----------------------------------------------------
+ *
+ * Accessors over the ONE copy orb_net.c keeps in s_name, so a caller cannot get a
+ * stale second copy. The name is the device's, not the hub's: read it here, and
+ * POST /api/v1/status mirrors it.
+ */
+
+/** The stored name, or "" when the orb is unnamed. Never NULL, always NUL-terminated,
+ *  and safe from any task: the string is only ever replaced whole by net_name_set(). */
+const char *orb_net_name(void);
+
+/** The longest name this device accepts (orbfleet.MaxName, kept equal by test). */
+int orb_net_name_max(void);
+
+/**
+ * Validate and persist — the identical sequence POST /api/v1/name runs, and the
+ * only way to name the device from on-device code. ESP_ERR_INVALID_ARG for a NULL
+ * `name`; ESP_FAIL when the device refused the string or could not write it (the
+ * reason is logged, not returned); ESP_OK otherwise. `name` may be "" to clear,
+ * which is not an error. Nothing on the dial displays this today; it is the record
+ * the hub and any later UI read from.
+ *
+ * Call it after orb_net_start(). There is no not-yet-open state to report, because
+ * the tz setter beside it has none either and an unopened handle simply fails the
+ * write, which lands as ESP_FAIL — the same answer a refused string gives.
+ */
+esp_err_t orb_net_name_set(const char *name);

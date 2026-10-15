@@ -47,11 +47,195 @@ Two launch gotchas that burned time this session, both avoided by using a
   a fresh `-B` dir**, or any build after an `sdkconfig`/Kconfig change that
   drags in mbedtls/LWIP, exceeds 30 s. Run detached and grep the log for
   `Project build complete` / `binary size` / `warning:` / `error:`.
+- **A chip wipe, headless only — `orbflash -mode wipe`.** The hub's
+  `POST /api/wipe` door and its Wipe chip button are gone (2026-10-15: the page
+  offers lonely and nothing more destructive; a blank chip boot-loops and reads
+  as a broken cable). The 16 MB ROM erase itself is tens of
+  seconds, and the blank-check digest that follows costs about a minute more on
+  the wire, so the whole operation is a couple of minutes with nothing printed
+  during it. Run detached.
 - **`idf.py flash monitor`**, and any `monitor`/serial capture held open longer
   than ~25 s (e.g. watching the association ladder). Use the short bounded
   capture scripts (`tools/capf.py <secs> <log> [--no-reset]`,
   `tools/cap.py <secs> [reset]`) with a duration under ~12 s inline; longer
   captures go detached.
+
+## Wiping an orb: the ROM has no chip-erase opcode, and `FLASH_MD5` needs a preamble
+
+Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
+
+- **There is no ROM chip erase.** esptool marks both `erase_flash` (0xD0) and
+  `erase_region` (0xD1) `@stub_function_only`, so a bare S3 ROM rejects them and
+  this project uploads no stub. The ROM's genuine erase is `FLASH_BEGIN`, which
+  erases its whole range before accepting any data: `num_blocks=0` writes nothing,
+  so offset 0 with `erase_size` = capacity **is** the whole-chip erase. That is the
+  same request `EraseRegion` already sends for the factory reset, one bigger number.
+- **`FLASH_MD5` (0x13) is a ROM command, but only after `SPI_SET_PARAMS`.** Attach
+  and hash without configuring the geometry and the ROM answers status `[1,9]`,
+  which looks exactly like an unsupported opcode and is not. esptool's no-stub
+  `verify_flash` prints "Enabling default SPI flash mode" then "Configuring flash
+  size" for precisely this reason. The reply layout is unusual too: 32 hex chars
+  FIRST, status bytes after them, so `checkCommand` cannot parse this one response.
+- **An erase is proven, not believed.** An erased flash reads all `0xFF`, so the
+  check is `md5(0xFF × capacity)`; for the orb's 16 MB that is
+  `d5929b7a5ad99f511fc83d7d0b48b85f`. A wipe that cannot show that digest returns
+  an error rather than a success.
+- **A wiped orb is dark, not bricked.** `/api/ports` still lists the port (the host
+  reads the USB descriptors, and the `44:BD:8D:…` serial number is the burned eFuse
+  MAC) with `probed:false` and no identity. Nothing prints, no AP opens, nothing
+  announces. A hub-driven ending — the lonely write — also drops the hub's own
+  memory of that board — fleet row,
+  cached name, address grant — so **`/api/fleet` showing one board fewer is the
+  expected result, not a lost row.** (A CLI `-mode wipe` leaves the hub's memory
+  alone: it is a bench act, and the hub re-reads the port dark on its next sweep.)
+  A board with nothing on it reports
+  "no gorb-os firmware booted" and the `Upgrade needed` verdict. Flash it back.
+- **A blank flash makes an S3 boot-loop, and the flapping port is the expected post-wipe
+  state — not a fault.** Descriptors and the `44:BD:8D:…` eFuse serial come from ROM
+  silicon, so a blank chip is still visible; but with no valid image the ROM bootloader
+  reloads every boot, so the port comes and goes every few seconds. Measured on both
+  wiped orbs (2026-10-14): enumerated as `303a:1001`, `cdc_acm` bound the ACM device,
+  then `vhci_hcd: connection closed` about 1–3 s later, repeating forever. The symptom
+  mimics a bad link exactly, so stop here before blaming cable, hub, rail or usbip.
+- **Recover a blank board with the manual BOOT-to-download sequence.** Hold BOOT, tap
+  and release RESET, keep holding BOOT a second, then release. That drops the ROM into
+  the download mode instead of the boot loop, the port stops flapping, and the hub can
+  talk to it. A **wipe should warn the operator to expect this**; a freshly wiped board
+  is unreachable by software until someone presses the buttons.
+- **`/api/lonely` — "Leave it lonely" — is the button-press-free exit from that state,
+  and the standing answer to "what does a de-orbed board show?"** (requested verbally
+  2026-10-14, first written down here after a session lost it — if this entry ever
+  contradicts your memory of the design discussion, THIS was the decision.) An orb-manager
+  build embeds `tools/orb-manager/lonely/lonely.bin`, a standalone ESP-IDF app: it boots,
+  bounces a message block reading "I used to be an Orb, now I'm just lonely. Flash me!"
+  and an 8-ball around the round CO5300 panel, and does nothing else — no WiFi, no NVS,
+  no mDNS, no serial command door. `POST /api/lonely` (payload word `LONELY` — the page
+  asks for no typed confirmation, the hub still requires the field; same
+  streaming/registry/cancel contract the wipe door once had) writes it via
+  `esprom.LonelyPlan`:
+  the ACTIVE firmware bundle's bootloader @0x0, partition table @0x8000 and initial
+  otadata @0x11000, and the lonely app @0x20000 (ota_0) — deliberately the orb's own
+  geometry, so a New Orb flash over a lonely board replaces every byte this writes.
+  Works on a boot-looping blank board (`EnterDownloadMode`'s auto-reset wins the timing
+  race the same way a New Orb flash does) and on a still-running orb. On success it
+  forgets the board exactly like a wipe used to, **and marks the chip lonely** — the
+  lonely app still enumerates the eFuse MAC over the same USB-JTAG descriptor, so an
+  unmarked hub re-remembers the port on the next sweep and the row the operator ended
+  rebuilds itself (the 2026-10-15 complaint: "it still keeps reporting as an orb").
+  `endAsLonely` marks the chip **before** `forgetWipedOrb`, because that forget is what
+  saves the state file: a mark landing after it never reaches disk, and the next launch
+  lets the sweep rebuild the row the operator ended. `endaslonely_test.go` drives the pair
+  and reads the file; `lonely_test.go` pins the call order.
+  While a mark stands the board is invisible to the fleet, `fleetKnown` reports it
+  unknown (New Orb shows a blank to adopt), the port list labels it `left lonely`, and
+  the mark is cleared only by orb evidence: an orb flash's eFuse MAC, a serial-door ack,
+  or an announcement. Marks persist in state.json. The board then enumerates steadily as
+  `303a:1001` (USB-Serial/JTAG console, single enumeration, no reboot loop).
+  The write also **erases the owner's settings**: the same ROM session wipes the NVS and
+  storage regions read out of the ACTIVE bundle's own partition table (`esprom.NvsRegions`,
+  the factory-reset-flash rule — never constants), and the app itself re-erases both
+  partitions at every boot so a lonely board keeps nothing however it got there. The
+  animation is composited — each dirty band is rebuilt background+message+ball and
+  flushed once, never erase-then-draw — which is what the 2026-10-15 flicker complaint
+  bought. Rebuild it with `tools/orb-manager/lonely/build.sh`
+  (ESP-IDF v5.4 at `~/esp/esp-idf`; run it with bash, `export.sh` is not POSIX sh;
+  `main/CMakeLists.txt` carries `PRIV_REQUIRES nvs_flash esp_lcd espressif__esp_lcd_co5300`
+  — an explicit requirements list is exhaustive, so the display stack must be named).
+- **An address is the whole qualification for the fleet list and the state file
+  (2026-10-15).** The operator's words: "the only reason to keep an orb when it's not
+  actively connected is to be able to ping its IP address. One that is not pingable does
+  not matter, we can't manage it ever unless it connects to the serial port at which
+  point it will self discover anyway." So `Snapshot` and `Restore` in `internal/orbfleet`
+  carry only rows with `IP != ""`, and the roster's fleet tier skips address-less rows
+  and lonely-marked ones. The `Remembered` flag no longer buys a line in the file — it is
+  in-memory only, and `storeProvesOrb` still reads it to tell a known orb's cable from a
+  blank board awaiting New Orb. This retired the earlier "flashed or named persists
+  without an address" exception, which is what left an unplugged board and a
+  just-ended lonely one sitting on the card. `remembered_test.go` pins the two halves of
+  the rule — no address and no cable produces nothing, an address still holds its row —
+  and `endaslonely_test.go` pins that one lonely save carries both the forget and the
+  mark. A stale entry an older hub wrote dies on the
+  next launch rather than being migrated.
+- **Naming on the hub page is display-only, and a live Forget is a dialog, not a
+  dead button (2026-10-15).** The hub shows the name the board answers to; it edits
+  nothing — renames happen on the orb's own network page (`POST /api/v1/name`), over
+  the serial `NAME` door, or at flash time in New Orb. When the Forget gate refuses a
+  live row, `annotateForget` also sets `liveForget` + `livePort`, the card lights
+  Forget, and the dialog offers the two endings that actually reach a live board,
+  both over the USB lead: **full reset** (the `/api/lonely` write, `LONELY` payload
+  word) and **factory reset settings** (`/api/orb/cmd` `RESET ALL`; the
+  ack write-back renames the store's row to match during the gap before the board
+  answers again: on a clean erase the firmware seeds the default name **"The Orb"**
+  into the fresh NVS itself (net_factory_reset), so the device and the card agree
+  from the first poll; the next owner's word corrects it exactly like any device
+  name does). The whole-chip erase is not offered by the hub in any surface: the page
+  lost the Wipe chip button and the route lost `/api/wipe`; `orbflash -mode wipe`
+  remains the headless bench door. A test pins all of this (`ui_test.go`,
+  `TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly`).
+  Neither ending asks for a typed word (2026-10-15: "the type to confirm is super
+  annoying"): the button press is the confirmation, and reaching it already took
+  pressing Forget and naming the ending. The card's Lonely confirm button is enabled the
+  moment it is armed, and `#ob-lonely-word` is gone from the page. The hub's payload gate
+  stays, so a scripted or curl caller still has to send `LONELY` / `RESET ALL`.
+  `TestLonelyPageHasTheDoorAndNoTypedWord` pins the ceremony's absence both ways.
+- **One MAC, two spellings — key on the canonical form inside the collection.**
+  `orbmdns.CanonicalMAC` returns bare lowercase hex and is what the cable sweep, the
+  fleet store and the roster key on; `macNorm` returns colon-separated pairs, which is
+  also how the USB descriptor and the flash's eFuse read print it. The lonely set first
+  stored whatever its caller handed it, so a mark written in pairs answered only pair
+  queries: the port list called the chip lonely while the sweep rebuilt its fleet row
+  nameless beside it. Measured on the bench, 2026-10-15. Normalize at the collection
+  boundary, never at each call site, and load old state files through the same normalizer.
+- **The board owns its name, so the hub needs a read path — and the boot banner is
+  the only one.** The serial door writes `NAME` and never reads it, and the status fold
+  needs an address to dial, so a station board on a lead with no lease was unreadable:
+  a hub that had never seen it online showed a blank card for a board somebody had
+  already named. `orb_net_start` now prints `GorbOS-NAME <name>` after the state banner,
+  raw to end of line the way `PROVSCAN` prints an SSID (a name may hold a space, so a
+  `\S+` class drops it), and only when named — an unnamed board prints nothing, and the
+  hub must read silence as no news rather than as a cleared name, or it wipes the cache
+  of every board on older firmware. `esprom.ParseOrbName` is the parse; `foldBootName`
+  is the write, and it updates a row the hub already holds rather than creating one.
+  `bootname_test.go` pins the pair from both sides by rendering the firmware's own
+  format string and feeding the result to the parse. Measured on the bench, 2026-10-15.
+- **The join dialog opens LOCKED and unlocks only on a verdict — and its zone picker
+  is `/api/tz`'s rows, not strings.** The flash's boot window (default now 28 s, must
+  outlast `SCAN_TIMEOUT_US`) can close before the firmware's boot scan prints its
+  PROVSCAN rows; `/api/watch` then reports the AP with an empty list, and a form left
+  open there is the dead-empty picker this replaced. The dialog now carries a spinner
+  until a verdict lands, auto-drives one serial `SCAN` when the captured list is empty
+  (`/api/orb/cmd`, works in every state including provisioning), and keeps a manual
+  **Rescan** beside it. `loadZones` must unwrap the `{ok,data}` envelope and consume
+  rows as `{name,posix,iana,label}` objects — reading `d.zones` or treating a row as a
+  string renders a dead-empty picker with no error anywhere; "Use my location" scores
+  each row's January and July `Intl` offsets against the longitude's solar line.
+  `tools/orb-manager/webui_test.go` pins every `$("#id")` in `app.js` against the
+  markup, because a missing `#wj-lock` throws inside `joinLock` and locks the dialog
+- **An empty picker after a fresh flash was the argument trap, not the firmware.** The
+  same symptom had a second, likelier cause: `openJoinDialog(port, mac, skipAp)` took the
+  orb's NAME as its third argument at the New Orb call site (`web/app.js`), a truthy
+  string, so `/api/watch` ran with `skip_ap` set and Phase A — the only phase holding the
+  AP verdict and the boot scan — never ran. Fresh flashes answered `mode:"no_ip"` with an
+  empty picker and the dialog said the orb had come up with nothing. Pass flags as flags.
+  `TestJoinDialogIsNeverOpenedWithANameInTheSkipFlag` in `ui_test.go` pins every call site
+  (negative control run against the old call). A `no_ip`/`unknown` verdict with a cable
+  bound is not a dead end either: the serial door answers in every state, so that branch
+  now re-drives the scan instead of pointing the operator at an address nobody has. And a
+  locked dialog is never silent: `watchLog` mirrors the newest hub line onto the lock
+  sentence, and `/api/watch` Phase B emits one per poll tick, because a 45 s wait behind a
+  fixed "rebooting into its new firmware" sentence reads as a hang (bench, 2026-10-15).
+- **Never conclude "the page never called that door" from a hub log.** The access line is
+  written AFTER `ServeHTTP` returns, so an in-flight streaming call has no line yet; and a
+  hub started from a shell writes its lines to that terminal, not to whatever `/tmp/hub*.log`
+  an agent redirected earlier. Trust the log only after proving it is the live process's
+  stdout (`ps` the pid, check the file's mtime against the request). Counting routes in a
+  stale file sent one wrong diagnosis down this path (2026-10-15).
+  open forever.
+- **Idle presence is not a health test, and neither is a DTR/RTS drop.** A boot-looping
+  orb reads `present=True status=OK` on the host between reloads, and asserting DTR/RTS
+  drives the auto-reset circuit so the handle dies inside ~2 s on a good board. Clear a
+  board of hardware by forcing download mode and seeing it hold. `vhci_hcd: connection
+  closed` only says the host tore the session down; it names neither device nor cause.
 
 ### Known operations that are SAFE inline (under 30 s)
 - `python3 tools/host_tz_test.py` (~1 s), `python3 tools/host_sd_test.py` (~2 s),
@@ -59,6 +243,18 @@ Two launch gotchas that burned time this session, both avoided by using a
 - Steady-state `idf.py build` after editing a single source file (~10 s).
 - `esptool erase_region` / a status `curl` / `ping` / `nm`+`strings` on an elf.
 - Short serial captures (≤ ~12 s) like `tools/capf.py 8 /tmp/x.txt --no-reset`.
+
+## `version.txt` is tracked, `PROJECT_VER` is cached — a bump with no reconfigure stamps the old version
+
+`tools/orb_version.sh` composes the stamp (`v1.0.0+92424ff-dirty`) and root
+`CMakeLists.txt` runs it at **configure** time. `idf.py build` alone recompiles changed
+sources and keeps the cached stamp, so an image carrying new code can print an old
+version. The fix after any `version.txt` edit is `idf.py reconfigure && idf.py build`.
+`tools/serflash.sh` reads the stamp back out of `build/gorb-os.bin` and refuses the
+flash on a mismatch, so the failure is loud — but only at flash time. `idf.py
+set-version` does not help: it re-runs IDF's own finder, which never sees `version.txt`
+once `PROJECT_VER` is set. Run `tools/orb_version.sh --self-test` (~2 s, no toolchain)
+after touching the composer; the hub's Go suite does not run it.
 
 ## sdkconfig is local + untracked — a NEW Kconfig `default y` does NOT appear on a rebuild
 
@@ -872,3 +1068,62 @@ composer — repo folder, Downloads copy — reads and writes the same `wc.asset
 clearing it in one clears it everywhere. That sharing is also what makes redeploying safe:
 uploaded art survives the copy.
 
+## Orb Manager landing page: one orb-ness verdict, two doors (2026-10-14)
+
+The fleet list and the New Orb button are complements, and they stop being
+complements the moment each side derives "is this an orb?" on its own. The first
+version did: the list hid a row with no name/ip/fw/state, and the button hid any
+port whose MAC matched a fleet row (`inFleet`). A cable sighting alone writes that
+row — `Store.Confirm` runs on every attributed sweep — so a wiped board on a lead
+rendered no card and no New Orb button either. It vanished from the page while
+`/api/ports` listed it happily, which is what "two orbs plugged in, one shows up"
+looked like from the operator's side.
+
+The rule now lives server-side, stated once:
+
+- `orbRow.provesOrb` (discover.go) decides the row: a name, an address, a firmware
+  stamp, a reported state, a provisioning AP, a liveness verdict, a LAN sighting, or
+  an Identity of `confirmed`/`claimed`. `descriptor` — the host's USB serial number —
+  is deliberately NOT proof.
+- `storeProvesOrb` (fleet.go) is the same rule over the address book's fields, and it
+  is what `handlePorts` writes as `orbSeen` on each port entry, plus the `espressif`
+  and `inFleet` fields it already sent.
+- Both fields are non-omitempty on both endpoints, so an absent verdict reads as a no
+  and the page fails closed. The client reads `o.orb` (`isBlankRow`) and
+  `e.orbSeen` (`isBlankPort`) and never re-derives either.
+- A wipe calls `clearChipRead`, because the chip's word described a firmware that no
+  longer exists. Leaving it would keep a blank board `confirmed` and therefore
+  invisible to the one door that can refill it.
+
+Pinned by `TestCableOnlyBoardIsNotAnOrbAndStaysAdoptable` and
+`TestStoreProvesOrbNeedsMoreThanARow` (roster_test.go) and
+`TestClientReadsTheOrbVerdictAndNothingElse` (jscheck_test.go, which greps app.js for
+the banned field-by-field rules). Before changing either gate, re-read the comment on
+`orbRow.Orb`: the bug is silent on the wire and total on screen.
+
+Also on the bench: an Add-by-IP test against a real hub writes the operator's state
+file (`~/.config/orb-manager/state.json`), because a second hub shares it. Run test
+hubs with `-addr` on a scratch HOME, or clean the file after; a grant for 127.0.0.1
+there is a test artifact, not an orb.
+
+## Four bench-and-tool gotchas that cost time on 2026-10-15
+
+- **A killed streaming flash CANCELS the write.** The 30 s tool cap does not merely
+  abandon the `curl`: the hub sees the client context close and stops the session at its
+  next block boundary, so the board is left in its bootloader at 96 %. A verification
+  flash must go through a script file launched with the `setsid … & disown` idiom above,
+  with the stream redirected to a file you poll for the `"done"` event.
+- **`pkill -f <pattern>` matches the killing shell's own command line** and kills it, so
+  the restart you asked for never happens and the tool call returns SIGTERM. Kill by the
+  PID from `ss -ltnp`, or take `pgrep -n orb-manager` into a variable first.
+- **Each command in one tool call is its own shell starting at the workspace root.** A
+  `cd` in an earlier element does not carry to a later one, so a relative path in element
+  two reads a different file than element one wrote, or fails outright. Give every element
+  its own `cd` or an absolute path. Related trap: `~/docker/Projects/gorb-os-2` is a
+  **different clone on a different branch**, and a root-relative recursive grep sweeps
+  both and shows functions that do not exist in the tree you are editing.
+- **Build `firmware` BEFORE `manager`, then restart the hub.** The bundle is embedded at
+  compile time (`//go:embed`), so a rebuild order that compiles first and refreshes the
+  zip second leaves a running hub serving the previous image — and a flash driven by that
+  hub "verifies" a fix that is not in it. Check `grep 'orb-manager v' <log>` against the
+  binary's mtime when a firmware change appears not to take effect.

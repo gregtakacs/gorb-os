@@ -58,10 +58,19 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
+		// The flash panel's two status lines, pinned separately on purpose. The
+		// percentage and the hub's "flash running (12s)" report are written by two
+		// different timers, and sharing one element made them alternate on screen
+		// twice a second; the bar jumped because the row grew. If either id goes
+		// away the panel is back to flickering, so this is a contract and not
+		// decoration.
+		"ob-liveop", "ob-bar", "nf-liveop", "nf-op", "nf-bar",
 		// Item 5's LAN list. Pinned by id for the same reason as the rest: a
 		// one-sided rename leaves the browse card rendering an empty <ul> forever
-		// and nothing else in the suite notices.
-		"mn-findcard", "mn-find", "mn-find-state", "mn-find-go", "mn-find-note",
+		// and nothing else in the suite notices. There is no mn-find-go any more: the
+		// card is pushed, and TestTheDiscoveryCardIsPushedNotPolled fails the build if
+		// the button or the timer that replaced it come back.
+		"mn-findcard", "mn-find", "mn-find-state", "mn-find-note",
 	} {
 		if !strings.Contains(page, `id="`+id+`"`) {
 			t.Errorf("index.html is missing #%s", id)
@@ -71,16 +80,96 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
-		"/api/orbs", "/api/orbs/ask", "function readFound",
-		// Item 6's naming controls, pinned by the same rule as the rest: a card that
-		// stops posting to /api/fleet/set is a card whose name box does nothing, and
-		// nothing else in the suite would notice.
-		"/api/fleet", "/api/fleet/set", "/api/fleet/forget", "function foundRow",
+		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
+		// The fleet controls, pinned by the same rule as the rest. /api/fleet/set
+		// is deliberately NOT one of them: naming on this page is display-only,
+		// so a card that posts a rename is the bug now, not the feature. The live
+		// row's ending goes through the forget dialog instead.
+		"/api/fleet", "/api/fleet/forget", "function foundRow", "openForgetDialog",
 		"function startPolling", "function loadThemes", "function readConsole",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js never contains %q, so that part of the card is not wired", want)
 		}
+	}
+}
+
+// The chip erase is gone from this page and stays gone: a blank S3 boot-loops,
+// flaps its port, and reads as a broken cable to everyone but a bench script.
+// The lonely write is the only end of orb life the manager page offers, and the
+// name box is a display, not an input. Both halves are load-bearing: a restore
+// of the wipe button from an old tab would put the worst dead-end state back on
+// the bench, and a writable name box is a control that cannot save.
+func TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	src := readAppJS(t)
+	for _, gone := range []string{"ob-chipwipe", "/api/wipe", "mn-name-go", "wipeArm"} {
+		if strings.Contains(page, gone) || strings.Contains(src, gone) {
+			t.Errorf("%s is back on the manager page — the hub offers lonely, never a chip erase", gone)
+		}
+	}
+	if !strings.Contains(page, `id="mn-name"`) || !strings.Contains(page, `readonly`) {
+		t.Error("the manage page's name field lost its readonly — naming is display-only")
+	}
+	if strings.Contains(src, `"/api/fleet/set"`) {
+		t.Error("app.js posts /api/fleet/set again; the hub page does not rename orbs")
+	}
+}
+
+// The discovery card is pushed, not polled, and has no button. Both halves are load-bearing:
+// a hub that pushes nothing needs a timer, and a page with a timer and a button is the
+// previous design wearing this one's markup. A JavaScript engine is not on this machine, so
+// the check is over the source, in the direction that a later edit could realistically break.
+func TestTheDiscoveryCardIsPushedNotPolled(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	src := readAppJS(t)
+	for _, gone := range []string{"mn-find-go", "function readFound"} {
+		if strings.Contains(page, gone) || strings.Contains(src, gone) {
+			t.Errorf("%s is back: the card is pushed, so it has no refresh control and no reader of that name", gone)
+		}
+	}
+	for _, want := range []string{"/api/orbs/stream", "foundRows.get(", "document.activeElement !== li._name", "dataset.mac", "foundRows.clear()"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js no longer contains %q: the card stopped being live, patched in place, keyed by mac, or cleared when the listener died", want)
+		}
+	}
+	// No timer may re-read the card. The watchdog interval is allowed to exist and must not
+	// fetch: a card that re-reads on a clock is the design this replaced, and it fails closed
+	// as a stale card the moment the hub stops answering rather than as a dead connection.
+	for _, body := range setIntervalBodies(src) {
+		for _, banned := range []string{"pullFound", "applyFound", "watchOrbs"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("a setInterval re-reads the card through %s: the discovery stream is the only thing that moves this card\n%s", banned, body)
+			}
+		}
+	}
+}
+
+// setIntervalBodies returns the text of every setInterval(...) call in app.js. Hand-rolled and
+// bracket-counting, because there is no parser here: the point is to see what a timer does, not
+// to parse JavaScript.
+func setIntervalBodies(src string) []string {
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(src[i:], "setInterval(")
+		if j < 0 {
+			return out
+		}
+		start := i + j + len("setInterval(")
+		depth, k := 1, start
+		for ; k < len(src) && depth > 0; k++ {
+			switch src[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth != 0 {
+			return out
+		}
+		out = append(out, src[start:k-1])
+		i = k
 	}
 }
 
@@ -214,32 +303,123 @@ func blockOf(t *testing.T, src, marker string) string {
 // rules the theme card applies to device names apply here: build with DOM APIs, and let
 // the hub's own refusal be what the card shows.
 func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
-	row := blockOf(t, readAppJS(t), "function foundRow")
+	// The row is built in one function and written to in the other, because the card is pushed:
+	// foundRow makes the controls once and paintFound updates them on every frame. The pins below
+	// are about the row a person ends up looking at, so they read across both.
+	row := blockOf(t, readAppJS(t), "function foundRow") + blockOf(t, readAppJS(t), "function paintFound")
 	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "outerHTML"} {
 		if strings.Contains(row, bad) {
-			t.Errorf("foundRow uses %s; an announced instance name is device-supplied bytes", bad)
+			t.Errorf("the found row uses %s; an announced instance name is device-supplied bytes", bad)
 		}
 	}
 	for _, want := range []string{"document.createElement", "textContent"} {
 		if !strings.Contains(row, want) {
-			t.Errorf("foundRow no longer builds rows with %s", want)
+			t.Errorf("the found row no longer builds with %s", want)
 		}
 	}
 	// The refusal is the hub's sentence, not the card's guess: a row that says "no"
 	// without saying why is the row an operator clicks again and blames the orb for.
 	if !strings.Contains(row, "o.refusal") {
-		t.Error("foundRow drops the hub's refusal, so a row that cannot be dialed has no explanation")
+		t.Error("the found row drops the hub's refusal, so a row that cannot be dialed has no explanation")
 	}
-	// The identity is keyed on the MAC, and the only handle the row has to the board is
-	// o.mac. A rename that posted the address would rename whatever held the lease.
-	if !strings.Contains(row, "mac: o.mac") {
-		t.Error("foundRow does not post the MAC as the identity it is renaming")
+	// The identity is keyed on the MAC, and the row carries it as its own key rather than as
+	// whatever the last frame happened to say. A rename that posted the address would rename
+	// whatever held the lease tomorrow.
+	if !strings.Contains(row, "li.dataset.mac = o.mac") || !strings.Contains(row, "mac: li.dataset.mac") {
+		t.Error("the found row no longer posts the MAC as the identity it is renaming")
 	}
 	if strings.Contains(row, "ip: o.ip") {
-		t.Error("foundRow names a board by its address; the fleet keys on the MAC")
+		t.Error("the found row names a board by its address; the fleet keys on the MAC")
 	}
 	// Forgetting revokes the hub's willingness to dial, so it asks first.
 	if !strings.Contains(row, "confirm(") {
 		t.Error("Forget no longer asks before dropping a name and revoking an address")
+	}
+	// Forget is the hub's verdict, not the card's guess: the row carries whether the board
+	// can be reached, and the button is enabled or opened from that field. A card that
+	// decided this locally would offer a plain delete to an announcing orb, whose next
+	// check-in puts the row straight back — the failure this gate exists to prevent. A
+	// liveForget verdict opens the dialog instead of the delete.
+	if !strings.Contains(row, "o.forgettable === true") || !strings.Contains(row, "o.liveForget === true") {
+		t.Error("the found row no longer requires the hub's forget and live-forget verdicts before it lights Forget")
+	}
+	// The exact shape of those comparisons is the bug this pin keeps out. Written "=== false"
+	// it reads an ABSENT field as permission, and an absent field is what a hub that refuses
+	// sends if the bool carries an omitempty: every refusal, cable included, becomes a live
+	// button. The page must be able to tell "no" from "not told", and treat both as no.
+	if strings.Contains(row, "o.forgettable === false") || strings.Contains(row, "o.forgettable != true") {
+		t.Error("the Forget button treats a missing verdict as permission; only a literal true may enable it")
+	}
+	if !strings.Contains(row, "forget.disabled") {
+		t.Error("the Forget button is never disabled, so the verdict is read and ignored")
+	}
+	if !strings.Contains(row, "o.forgetWhy") {
+		t.Error("a disabled Forget carries no reason, so the button is a mystery to the operator")
+	}
+	// The reason is text on the row, not only a hover. A greyed button whose explanation is
+	// reachable only by pointing at it reads as a broken button, and an operator who cannot
+	// see which of the three facts refused cannot act on it.
+	if !strings.Contains(row, "_fwhy") {
+		t.Error("the Forget refusal is a tooltip only, so the row cannot explain itself")
+	}
+	// The door can still refuse a button the card drew a frame too early, and the card must
+	// show that rather than redraw as if the delete worked.
+	if !strings.Contains(row, "mn-find-note") {
+		t.Error("a refused forget is silent: the card repaints the row back with no explanation")
+	}
+}
+
+var joinCallRe = regexp.MustCompile(`openJoinDialog\(([^)]*)\)`)
+
+// The third parameter of openJoinDialog is the /api/watch skip_ap flag, and a
+// truthy value there drops Phase A: the boot verdict, the provisioning AP, and
+// the boot scan. On 2026-10-15 the New Orb path passed the orb's NAME into that
+// slot, so every fresh flash came back "the scan produced nothing — it came up
+// with nothing": a name is a truthy string, Phase A was skipped, and the picker
+// was never filled. A call site cannot be trusted to remember which positional
+// slot is which, so the call sites are pinned instead.
+func TestJoinDialogIsNeverOpenedWithANameInTheSkipFlag(t *testing.T) {
+	src := readWebFile(t, "app.js")
+	allowed := map[string]bool{`""`: true, "true": true, "false": true, "skipAp": true}
+	calls := 0
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "function openJoinDialog") {
+			continue
+		}
+		m := joinCallRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		calls++
+		args := strings.Split(m[1], ",")
+		if len(args) != 3 {
+			t.Errorf("openJoinDialog wants three arguments, skip flag last: %q", trimmed)
+			continue
+		}
+		if flag := strings.TrimSpace(args[2]); !allowed[flag] {
+			t.Errorf("the skip_ap slot got %q, which is not a flag; a name here silences the boot scan: %q",
+				flag, trimmed)
+		}
+	}
+	if calls < 2 {
+		t.Errorf("only %d join-dialog call sites found; the pin stopped seeing them", calls)
+	}
+}
+
+// Phase B dials one address for the whole watchLanBudget and used to emit
+// nothing at all while it did, behind a dialog whose only text is a fixed
+// sentence about rebooting. A wait that sends no news looks exactly like a hung
+// tool, and that is what got reported. The loop must speak before it can be
+// silent for a budget.
+func TestWatchReportsWhileItWaitsForTheOrb(t *testing.T) {
+	src := readWebFile(t, "../watch.go")
+	loop := src[strings.Index(src, "watchStart := time.Now()"):]
+	body := loop[:strings.Index(loop, "unknown\"")]
+	if !strings.Contains(body, `"log"`) {
+		t.Error("the Phase B poll loop emits no progress event; the join dialog sits on a static sentence for up to 45 s")
+	}
+	if !strings.Contains(body, "watchStart") {
+		t.Error("the Phase B progress event does not say how long it has been waiting")
 	}
 }

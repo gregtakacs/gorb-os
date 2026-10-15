@@ -32,6 +32,16 @@ func (u USBClass) IsOrbDevice() bool {
 	return u.Known && u.Vendor == orbUSBVendor && u.Product == orbUSBProduct
 }
 
+// IsEspressif reports the weaker fact: the host could attribute the port to a
+// genuine Espressif chip (VID 0x303A), whatever product it enumerates as right
+// now. The New Orb gate asks this question — only an Espressif chip can take the
+// ROM flash protocol at all — and it must be answerable of a board that is about
+// to be blank, mid boot-loop, or sitting in download mode, where a product id is
+// a detail of whatever is currently running rather than of the chip.
+func (u USBClass) IsEspressif() bool {
+	return u.Known && u.Vendor == orbUSBVendor
+}
+
 // classifyPort reports what device sits behind a serial port, without opening or
 // touching it. The hub uses it to label a port "orb-device" before anyone pays a
 // reboot for the full identity.

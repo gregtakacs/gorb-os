@@ -15,7 +15,7 @@ import (
 func main() {
 	port := flag.String("port", "", "serial device (e.g. /dev/ttyACM0 or a /dev/serial/by-id path)")
 	fwPath := flag.String("firmware", "", "a firmware bundle (.zip) to flash instead of the built-in one")
-	mode := flag.String("mode", "probe", "probe | app | full")
+	mode := flag.String("mode", "probe", "probe | md5 | app | full | wipe")
 	macStr := flag.String("mac", "", "require this bound MAC (aa:bb:cc:dd:ee:ff) before flashing")
 	flag.Parse()
 
@@ -57,6 +57,59 @@ func main() {
 	if *mode == "probe" {
 		fmt.Println("probe OK: download-mode entry, sync, chip id, and eFuse MAC all verified.")
 		_ = esprom.HardReset(pt) // boot it back into the app
+		return
+	}
+
+	// The read-only digest: what the flash holds right now, with nothing written
+	// and nothing erased. It is how a wipe is checked from the far side, and how a
+	// blank chip is told apart from a board running something, over the cable and
+	// with no mDNS or HTTP involved.
+	if *mode == "md5" {
+		// Same reason the flash and wipe paths do it: on USB-Serial/JTAG nothing
+		// feeds the watchdogs, and hashing 16 MB is long enough for them to bite
+		// mid-command (esptool _post_connect does exactly this for this transport).
+		if d.UsesUSBJTAGSerial() {
+			if err := d.DisableWatchdogs(); err != nil {
+				fmt.Fprintln(os.Stderr, "orbflash: disable watchdogs:", err)
+				os.Exit(1)
+			}
+		}
+		if err := d.SpiAttach(); err != nil {
+			fmt.Fprintln(os.Stderr, "orbflash: spi attach:", err)
+			os.Exit(1)
+		}
+		// The geometry first. The ROM answers FLASH_MD5 with status [1,9] unless
+		// SPI_SET_PARAMS has configured the chip — esptool's no-stub verify_flash
+		// prints "Enabling default SPI flash mode" then "Configuring flash size"
+		// for exactly this reason, and skipping the second step is what made the
+		// digest read look unsupported on the bench (2026-10-14).
+		if err := d.SpiSetParams(esprom.OrbFlashSize); err != nil {
+			fmt.Fprintln(os.Stderr, "orbflash: spi set params:", err)
+			os.Exit(1)
+		}
+		digest, err := d.FlashMD5(0, esprom.OrbFlashSize)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "orbflash: md5:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("md5 of the whole flash: %s\n", digest)
+		if blank := esprom.BlankMD5(esprom.OrbFlashSize); digest == blank {
+			fmt.Printf("the flash is blank (erased): that is the digest of all 0xFF, %s\n", blank)
+		}
+		_ = esprom.HardReset(pt)
+		return
+	}
+
+	// The erase writes nothing, so it needs no bundle: this is the mode that works
+	// on a bench with no firmware loaded, which is exactly when a board is most
+	// likely to be sent back to nothing. Wipe re-enters download mode itself, the
+	// same idempotent reset Session does after this same preamble.
+	if *mode == "wipe" {
+		if err := esprom.Wipe(pt, esprom.WipeOptions{OnEvent: logf}); err != nil {
+			fmt.Fprintln(os.Stderr, "orbflash: WIPE FAILED:", err)
+			os.Exit(1)
+		}
+		fmt.Println("chip erased: flash verified blank against the ROM digest. The orb will not boot until it is flashed.")
 		return
 	}
 

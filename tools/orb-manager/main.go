@@ -44,6 +44,11 @@ const (
 	// loop, so first byte can exceed the scan's aggressive 400 ms; the proxy
 	// must not fail a deliberate user click the way a sweep tolerates a miss.
 	deviceTimeout = 8 * time.Second
+	// otaTimeout is the budget for one whole app-image upload. The device
+	// erases and writes flash with the cache disabled (orb_net.c h_ota), and
+	// a ~2 MB image over LAN is minutes of patient streaming, not a call. The
+	// 8 s management budget would kill every honest update at the first flush.
+	otaTimeout = 180 * time.Second
 )
 
 // version is stamped at build time via -ldflags "-X main.version=..." (see the
@@ -53,9 +58,13 @@ var version = "dev"
 
 // Server holds the shared clients and the in-flight operation registry.
 type Server struct {
-	device  *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
-	orb     *orbnet.Client // status-probe tuned: short timeout for a single known IP
-	repoDir string         // the gorb-os clone root, for the Theme Editor only
+	device *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
+	orb    *orbnet.Client // status-probe tuned: short timeout for a single known IP
+	// ota is the upload-tuned client: one app image POSTed to /api/v1/ota is
+	// minutes of flash erase and write with the cache off, and reusing the 8 s
+	// management client would cancel every honest update mid-image.
+	ota     *orbnet.Client
+	repoDir string // the gorb-os clone root, for the Theme Editor only
 	// ops is the per-port operation registry: who holds which cable, doing what,
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.
@@ -77,7 +86,7 @@ type Server struct {
 	// grants are the orb addresses the proxy is willing to dial. Empty means the
 	// hub reaches nothing off the box.
 	grants *ipGrants
-	// fleet is who the hub believes is behind those addresses: {mac, name, room},
+	// fleet is the hub's address book: {mac, ip, port, cached name},
 	// keyed on the chip and never on the lease. It is consulted before a dial, not
 	// instead of one — the grant still decides whether an address may be reached at
 	// all, and the fleet only ever takes a dial away (see mayDial).
@@ -85,8 +94,23 @@ type Server struct {
 	// orbIP mirrors the address the onboarding flow last learned, so the status
 	// probe has a default target before the browser supplies one. It is a UI
 	// convenience: the proxy decides with grants, never with this field.
-	imu   sync.Mutex
-	orbIP string
+	imu sync.Mutex
+	// cmu guards read: the MACs this run has confirmed off a chip. See chipRead.
+	cmu  sync.Mutex
+	read map[string]bool
+	// kickMu guards lastPlug: the orb MACs the previous cable sweep attributed, which
+	// is what lets kickLostCables (liveness.go) tell an unplug from a steady bench and
+	// re-dial the unplugged board's remembered address the second the lead goes quiet.
+	kickMu   sync.Mutex
+	lastPlug map[string]bool
+	// lonely remembers the boards this hub personally left lonely. The cable
+	// sweep re-attributes a lonely board's descriptor MAC like any orb's, so
+	// without this mark the forgotten fleet row would rebuild itself from the
+	// sighting and the board would read as an orb again seconds after its
+	// lonely flash. Evidence of orb life — an orb flash, an announcement, a
+	// serial ack — clears the mark. See lonelyset.go.
+	lonely *lonelyMark
+	orbIP  string
 	// statePath is where learned orb addresses are remembered across launches
 	// (state.go). stateErr holds the last failure writing or reading it, so a hub
 	// that cannot persist says so once in the log instead of silently forgetting.
@@ -102,8 +126,27 @@ type Server struct {
 	dmu          sync.Mutex
 	browse       discovery
 	browseErr    string
-	browseAskErr string
 	browseIfaces []string
+
+	// cables is the USB half of the one list (roster.go). Like the browse, its source is
+	// wired by main and not by newHub, so a test hub does not pay for a sysfs read it did
+	// not ask for, and a test that wants cable rows injects the sweep rather than lying
+	// about the machine it runs on.
+	cables *cableCache
+
+	// live is the answer to "does the address this row remembers still answer as an
+	// orb", cached so the discovery card never dials on the path that draws it. It is
+	// what makes Forget an offer only for a board that cannot come straight back; see
+	// liveness.go. Its probe is wired by main, not by newHub, for the cables reason.
+	live *liveCache
+
+	// orbSubs are the open /api/orbs/stream connections, each with a one-slot wake-up
+	// channel. omu guards this map and nothing else: the browser fires the wake on its own
+	// reader goroutine while the handler that owns an entry is parked in a select, and the
+	// lock order across the two has to stay one-way — a handler may take dmu through
+	// orbCard, so the wake path must never take dmu to reach a subscriber.
+	omu     sync.Mutex
+	orbSubs map[chan struct{}]struct{}
 
 	// boots holds the verdicts the flash session read off the boot console while
 	// it held the port across its own HardReset, keyed by the chip MAC. /api/watch
@@ -160,6 +203,20 @@ func (s *Server) setBoot(mac, apSSID string, associated bool, ip string, network
 	}
 }
 
+// forgetBoot drops a recorded boot verdict. A wipe leaves nothing to have a
+// verdict about: the one-shot answer a flash captured describes a firmware that
+// is no longer on the chip, and /api/watch serving it would send onboarding down
+// a branch for an orb that just went blank.
+func (s *Server) forgetBoot(mac string) {
+	mac = macNorm(mac)
+	if mac == "" {
+		return
+	}
+	s.bmu.Lock()
+	defer s.bmu.Unlock()
+	delete(s.boots, mac)
+}
+
 // bootFor returns the recorded verdict for mac if it is recent enough to still
 // describe the boot this watch call is following.
 func (s *Server) bootFor(mac string) *bootVerdict {
@@ -190,6 +247,14 @@ func main() {
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.Parse()
 
+	// Windowed mode on Windows can start with no console (double-click on a
+	// -H windowsgui build), and log output must not die with it; a console
+	// launch prints on unchanged. See log_gui_windows.go. --no-window keeps
+	// stderr even console-less: its contract is the printed URL.
+	if !noWindow {
+		redirectLogsForGUI()
+	}
+
 	// Loopback is the whole of the hub's exposure story, so binding off it has to
 	// be a decision someone typed. See security.go: a page on the browser's own
 	// machine can already reach 127.0.0.1, so the address is not what makes the
@@ -218,6 +283,7 @@ func main() {
 	s := newHub()
 	s.orb = orbnet.NewClient(scanTimeout)
 	s.device = orbnet.NewClient(deviceTimeout)
+	s.ota = orbnet.NewClient(otaTimeout)
 	s.repoDir = repoDir
 
 	// The dial port is validated here rather than at first use, so a typo surfaces as
@@ -230,6 +296,7 @@ func main() {
 	}
 	s.orb.DevicePort = orbPort
 	s.device.DevicePort = orbPort
+	s.ota.DevicePort = orbPort
 	if orbPort != "80" {
 		log.Printf("orb-manager: dialing orbs on port %s (the device's own httpd uses 80; this is a bench setting)", orbPort)
 	}
@@ -247,9 +314,32 @@ func main() {
 	// something to show on the open-orb path and the operator never types an
 	// address the LAN already announced. A failure here is a line in the log and an
 	// empty list with a reason: the hub still flashes, still themes, still manages.
-	browseCtx, stopBrowse := context.WithCancel(context.Background())
-	defer stopBrowse()
-	s.startBrowse(browseCtx)
+	listenCtx, stopListen := context.WithCancel(context.Background())
+	defer stopListen()
+	s.startListening(listenCtx)
+
+	// The cable half of the one list (roster.go). Enabled here rather than in newHub so
+	// the suite never pays for a sysfs read, and watched on the same shutdown as
+	// discovery: a plug-in reaches an open stream inside half the sweep TTL instead of
+	// waiting for an mDNS packet that a cable-only board will never send.
+	s.enableCables(hostCableSweep, s.wakeOrbs)
+	cableCtx, stopCables := context.WithCancel(context.Background())
+	defer stopCables()
+	go s.watchCables(cableCtx)
+
+	// The liveness verdicts Forget is gated on (liveness.go). The probe is the same
+	// status fetch the post-flash watch uses — one GET, orb-shaped answer or nothing —
+	// and it is wired here rather than in newHub so the suite never dials a LAN. The
+	// sweeper shares the cable context's shutdown for the same reason the cable watcher
+	// does: both exist to keep an open card current, and both are pointless without one.
+	s.live.probe = func(ip string) bool {
+		_, err := s.orb.Status(ip)
+		return err == nil
+	}
+	go s.probeLiveness(cableCtx)
+	// Once at startup, before the first card is worth looking at: the file already says
+	// which boards the hub knows, and this turns those addresses into answers.
+	go s.probeNow(cableCtx)
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
@@ -452,18 +542,33 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
 	mux.HandleFunc("/api/ports", s.handlePorts) // cached identity rides along, never a probe
+	mux.HandleFunc("/api/tz", s.handleZones)    // the device's zone table, for the join dialog's picker
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
 	mux.Handle("/api/orb/forget", s.requireControl(http.HandlerFunc(s.handleForgetIP)))
+	// The typed-address door and the OTA door (adopt.go). Both mutate the hub's
+	// willingness to dial, so both stand behind the launch token like every
+	// other hand on the grant set.
+	mux.Handle("/api/orb/add", s.requireControl(http.HandlerFunc(s.handleOrbAdd)))
+	mux.Handle("/api/orb/update", s.requireControl(http.HandlerFunc(s.handleOrbUpdate)))
 	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
 
 	// Discovery. The list is a read of what the hub overheard, so it is unguarded
-	// like /api/ports; asking the LAN again is an outbound action, so it carries a
-	// token like everything else that sends something. Neither one dials: the
-	// candidate list is not a dial queue, and the proxy still decides with grants.
+	// like /api/ports; asking the LAN again is not an action this hub takes. The
+	// candidate list is a record of what arrived unasked, and the proxy still
+	// decides with grants: nothing here is a dial queue.
 	mux.HandleFunc("/api/orbs", s.handleDiscovered)
-	mux.Handle("/api/orbs/ask", s.requireControl(http.HandlerFunc(s.handleBrowseNow)))
+
+	// The same list, pushed: opened once by the page, held until the page goes, and
+	// answered again whenever a check-in changes what the card says. Unguarded like the
+	// read, and for the same reason — every frame is a byte for byte copy of what that
+	// read answers, so a token here would protect nothing the poll left open while
+	// costing the reconnect path its header. It costs a held goroutine per connection,
+	// which is why the bind stays loopback by default and the remote bind is opt-in
+	// behind a warning; a page that stops reading is dropped by the write failing, not
+	// by a queue growing.
+	mux.HandleFunc("/api/orbs/stream", s.handleOrbsStream)
 
 	// The fleet: who the hub thinks is behind the addresses it will dial. The read is
 	// unguarded like the candidate list; the writes change what a later credential is
@@ -493,12 +598,24 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/firmware", s.requireControl(http.HandlerFunc(s.handleFirmwareUpload)))
 	mux.Handle("/api/firmware/reset", s.requireControl(http.HandlerFunc(s.handleFirmwareReset)))
 	mux.Handle("/api/flash", s.requireControl(http.HandlerFunc(s.handleFlash))) // streaming, not s.json
+	// There is no /api/wipe on this hub. The page's one end-of-orb-life door is
+	// the lonely write below: it wipes the same settings a chip erase wiped, and
+	// leaves a board that boots and explains itself instead of a blank chip
+	// boot-looping its port. The ROM erase lives in the headless CLI.
+	// The lonely image — the one destructive write the page offers, and the
+	// same class of write: it ends a board's orb life and takes the fleet row,
+	// the name and every credential with it. Same guard, same streaming
+	// contract, its own typed word.
+	mux.Handle("/api/lonely", s.requireControl(http.HandlerFunc(s.handleLonely)))
 	// Cancellation and live-operation state. Cancel stops the flash at its next
 	// block boundary; /api/ops says which cable is busy with what, which a
 	// process-wide flag could never answer once two orbs shared a bench.
 	mux.Handle("/api/flash/cancel", s.requireControl(http.HandlerFunc(s.handleCancel)))
 	mux.Handle("/api/watch", s.requireControl(http.HandlerFunc(s.handleWatch)))         // streaming post-flash probe
 	mux.Handle("/api/provision", s.requireControl(http.HandlerFunc(s.handleProvision))) // streaming wired-provisioning round-trip
+	// Generic serial command door (name/scan/mode/reset/ping) on a configured orb:
+	// the wired twin of the fleet card's write, for a board with no reachable address.
+	mux.Handle("/api/orb/cmd", s.requireControl(http.HandlerFunc(s.handleOrbCmd)))
 	// Read-only USB console: a port operation, because holding the cable to read it
 	// must exclude a flash for the same reason writing one does.
 	mux.Handle("/api/console", s.requireControl(http.HandlerFunc(s.handleConsole)))

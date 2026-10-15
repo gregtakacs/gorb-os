@@ -11,15 +11,33 @@ main.hub{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));g
 .card p{margin:0;color:var(--mut);font-size:13px}
 .view{max-width:900px;padding:24px}
 .back{background:none;border:none;color:var(--focus);cursor:pointer;font-size:14px;padding:0;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin:12px 0}
+.grid>label{min-width:0}
 label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--mut)}
 label.inline{flex-direction:row;align-items:center;gap:8px}
 label.check{flex-direction:row;align-items:center;gap:8px}
-input,select{background:#0b0f14;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 9px;font-size:14px}
+input,select{background:#0b0f14;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 9px;font-size:14px;min-width:0;max-width:100%}
+select{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+textarea{min-width:0;max-width:100%}
+/* The join form's two companions on one line: the zone select takes the room,
+   the location button keeps its own, and the pair reads as one control. */
+.tzline{display:flex;gap:8px;min-width:0}
+.tzline select{flex:1 1 auto}
+.tzline button{flex:0 0 auto}
+/* Passphrase fields carry their own reveal; the input flexes, the button does not. */
+.passfield{display:flex;gap:6px;min-width:0}
+.passfield input{flex:1 1 auto}
+.passfield button{flex:0 0 auto;font-size:12px;padding:0 10px}
 button{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 14px;font-size:14px;cursor:pointer}
 button:hover{border-color:var(--focus)}
 button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
 button.ghost{background:none}
+/* The erase button wears the colour the theme already reserves for an error, and
+   keeps a visible border so it reads as a control and not as text that happens to
+   be red. It is never the default action and never inside the Tab-first path. */
+button.danger{background:none;border-color:var(--danger);color:var(--danger)}
+button.danger:hover{background:#3a1214}
+button.danger:disabled{opacity:.45;cursor:not-allowed}
 .row{display:flex;gap:10px;align-items:center;margin:12px 0}
 .log{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-height:64px;max-height:260px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;color:#c9d1d9}
 .buildlist{color:var(--mut);font-size:12px;font-family:ui-monospace,monospace;margin:6px 0}
@@ -59,3 +77,74 @@ button.ghost{background:none}
 .themelist .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid #6fbf73;color:#9adc9e}
 .themelist .tag.err{border-color:#c9525a;color:#f2a0a6}
 #mn-con-log{max-height:280px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px}
+
+/* The one list's access badge: LAN / cable / both, and how strongly the mac is known.
+   Muted and monospaced so it reads as the hub's evidence, not as a second label. */
+.found-via{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+
+/* A dead Forget has to look dead. Without this a disabled ghost button is pixel-identical
+   to a live one, which is how "the hub refused" reads as "the hub is slow". */
+button:disabled{opacity:.45;cursor:not-allowed}
+button:disabled:hover{border-color:var(--line)}
+
+/* Why the button next to it is dead, on the row. Muted and small: an explanation, not a
+   second heading, and never a thing the operator has to hover a control to discover. */
+.fwhy{color:var(--mut);font-size:11px}
+.fwhy[hidden]{display:none}
+
+/* The fleet grid: one card per orb, the only thing the page leads with. Rows keep
+   the .found class the paint code writes; the grid is what makes them cards. */
+header nav{display:flex;gap:10px;align-items:baseline}
+.orbgrid{list-style:none;margin:12px 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.orbgrid li.found{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.orbgrid li.found.refused{display:list-item;border-style:dashed;color:var(--mut);font-size:12px;background:none}
+.orbgrid .found-pick{background:none;border:none;color:var(--fg);font-size:15px;text-align:left;padding:0;cursor:pointer}
+.orbgrid .found-pick:disabled{cursor:default}
+.orbgrid .row{margin:0;flex-wrap:wrap}
+.orbgrid .tag.update{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--warn);color:var(--warn);margin-left:6px}
+.orbgrid .tag.update[hidden]{display:none}
+.orbgrid .fwhy{flex-basis:100%}
+
+/* The flash panel: one surface both flash doors use, anchored bottom so the bar
+   is visible wherever on the page the click happened. The log lives under a
+   details element: it is the evidence, not the experience.
+
+   The status row reserves its geometry instead of growing into it. The percentage
+   sits in a slot with a fixed minimum width and tabular figures, so "9%" and "100%"
+   cost the same pixels and the buttons beside it never slide; the seconds line has
+   its own reserved slot, so the two writers cannot shove each other. Both lines are
+   nowrap with an ellipsis: a long sentence about a cancel truncates in place rather
+   than wrapping the row to a second line and lifting the bar. */
+.flashpanel{position:fixed;right:18px;bottom:18px;width:min(460px,calc(100vw - 36px));background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 8px 30px #0009;z-index:40}
+.flashpanel[hidden]{display:none}
+.flashpanel .row{min-height:32px}
+.flashpanel .log{height:170px;min-height:170px;max-height:170px;font-size:11px}
+.fp-liveop{flex:1 1 auto;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fp-pct{flex:0 0 11ch;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* The Add-by-IP dialog. A decision that must not leave the page it belongs to:
+   a wrong address returns to the same box, Cancel returns to the fleet. */
+.mask{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:50}
+.mask[hidden]{display:none}
+.dialog{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;width:min(430px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto}
+.dialog.wide{width:min(640px,calc(100vw - 40px))}
+@media (max-width:640px){.grid{grid-template-columns:minmax(0,1fr)}}
+.dialog h3{margin:0 0 6px;font-size:16px}
+.dialog p{margin:6px 0}
+/* The join dialog carries a form and a console, so it gets the room the small
+   confirmations never needed. Logs inside any dialog stay shorter than the
+   dialog: a wall of boot output is a detail, and reads like one. */
+.dialog .log{max-height:150px;font-size:11px}
+/* The join dialog's boot phase: the form is not worth showing until the orb's
+   own scan is in, so a spinner carries the wait and the console stays foldable. */
+.wjlock{display:flex;flex-direction:column;align-items:center;gap:12px;padding:26px 0 14px}
+.wjlock p{margin:0;text-align:center;max-width:46ch}
+.spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--focus);animation:spin 0.9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2.4s}}
+/* A door in the middle of a sentence, for the one path that leaves this page
+   (the orb's own AP console): a link's shape, a button's honesty about opening
+   a window rather than navigating. */
+.linkish{background:none;border:none;padding:0;color:var(--acc);font:inherit;cursor:pointer;text-decoration:underline}
+

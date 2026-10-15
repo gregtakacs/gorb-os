@@ -5,6 +5,8 @@
 package orbnet
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,19 +30,28 @@ import (
 // a match, which is why the fleet store keys on it only after macNorm rejects
 // empty.
 type Status struct {
-	State      string `json:"state"`
-	IP         string `json:"ip"`
-	MAC        string `json:"mac"`
-	Rssi       int    `json:"rssi"`
-	FW         string `json:"fw"`
-	IDF        string `json:"idf"`
-	Slot       string `json:"slot"`
-	Img        string `json:"img"`
-	ArtReady   bool   `json:"art_ready"`
-	ArtBytes   uint32 `json:"art_bytes"`
-	Synced     bool   `json:"synced"`
-	TZ         string `json:"tz"`
-	TZOffset   int    `json:"tz_offset"`
+	State    string `json:"state"`
+	IP       string `json:"ip"`
+	MAC      string `json:"mac"`
+	Rssi     int    `json:"rssi"`
+	FW       string `json:"fw"`
+	IDF      string `json:"idf"`
+	Slot     string `json:"slot"`
+	Img      string `json:"img"`
+	ArtReady bool   `json:"art_ready"`
+	ArtBytes uint32 `json:"art_bytes"`
+	Synced   bool   `json:"synced"`
+	TZ       string `json:"tz"`
+	TZOffset int    `json:"tz_offset"`
+	// Name is the orb's own, read from the device rather than from the hub's
+	// fleet row. Empty means the device is unnamed, and that is a different fact
+	// from "the device could not be asked" — which arrives as a status error, not
+	// as an empty Name — so the hub's cache rule distinguishes the two: only a
+	// successful status read is allowed to clear a cached name.
+	//
+	// The DEVICE is the authority for this string. orbfleet.Orb.Name is a cache of
+	// it, kept so the card can render a fleet without dialing every board.
+	Name       string `json:"name"`
 	AP         bool   `json:"ap"`
 	AssocFails uint32 `json:"assoc_fails"`
 }
@@ -120,6 +131,19 @@ func (c *Client) PostConfig(ip, tz string) (json.RawMessage, error) {
 	return c.postJSON(ip, "/api/v1/config", map[string]string{"tz": tz})
 }
 
+// PostName posts {"name": v} to /api/v1/name and returns the effect body. An empty
+// v is a request to CLEAR the device's name, which is why this does not reject it:
+// every other writer in this package treats "" as a no-op, and here it is the most
+// meaningful thing you can send.
+//
+// The device validates before it stores, so a name the hub would have accepted
+// (a non-ASCII one, or 33 bytes) comes back as an error here. Callers that offer a
+// name field should run orbfleet.CheckNameASCII first and refuse before dialing,
+// so the operator reads one message instead of a 400 attributed to an IP.
+func (c *Client) PostName(ip, name string) (json.RawMessage, error) {
+	return c.postJSON(ip, "/api/v1/name", map[string]string{"name": name})
+}
+
 // PostAP opens (on=true) or closes (on=false) the provisioning SoftAP.
 func (c *Client) PostAP(ip string, on bool) (json.RawMessage, error) {
 	v := "on"
@@ -129,14 +153,21 @@ func (c *Client) PostAP(ip string, on bool) (json.RawMessage, error) {
 	return c.postJSON(ip, "/api/v1/wifi/ap", map[string]string{"on": v})
 }
 
-// PostJoin associates the orb to a LAN SSID with a passphrase and tz.
-func (c *Client) PostJoin(ip, ssid, pass, tz string) (json.RawMessage, error) {
+// PostJoin associates the orb to a LAN SSID with a passphrase, a tz and a name.
+// Empty tz and empty name each mean "leave what the device has alone"; the keys are
+// omitted from the body rather than sent empty, because an empty name IS a command
+// on this endpoint (it clears) and an onboarding call that passed "" meaning "no
+// opinion" must not erase a name the board already carried.
+func (c *Client) PostJoin(ip, ssid, pass, tz, name string) (json.RawMessage, error) {
 	body := map[string]string{"ssid": ssid}
 	if pass != "" {
 		body["pass"] = pass
 	}
 	if tz != "" {
 		body["tz"] = tz
+	}
+	if name != "" {
+		body["name"] = name
 	}
 	return c.postJSON(ip, "/api/v1/wifi/join", body)
 }
@@ -170,6 +201,31 @@ func (c *Client) postJSON(ip, path string, payload any) (json.RawMessage, error)
 		return nil, err
 	}
 	resp, err := c.h.Post(c.url(ip, path), "application/json", strings.NewReader(string(buf)))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode >= 400 {
+		return body, fmt.Errorf("orbnet: POST %s%s -> %s", ip, path, resp.Status)
+	}
+	return body, nil
+}
+
+// PostImage POSTs raw bytes — an app image — to one device route and returns the
+// reply. It exists for /api/v1/ota, which is the one orb endpoint whose body is
+// not JSON: the firmware stages the bytes it receives with Content-Length as the
+// declared size (orb_net.c h_ora), so this sends a real length rather than
+// streaming through a hub the size of the image. The caller owns the bytes;
+// nothing here reads a disk.
+func (c *Client) PostImage(ctx context.Context, ip, path string, contentType string, blob []byte) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(ip, path), bytes.NewReader(blob))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = int64(len(blob))
+	resp, err := c.h.Do(req)
 	if err != nil {
 		return nil, err
 	}

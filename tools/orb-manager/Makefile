@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release
+.PHONY: all build manager orbflash test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
 
 all: test build
 
@@ -132,6 +132,22 @@ run: manager
 ## desktop: alias for run, spelled for the app-window use case.
 desktop: run
 
+## cdp: evaluate JS inside the live app window, as the page. The control token is an
+## HttpOnly cookie inlined into the served HTML, so no curl can carry it and a screenshot
+## cannot prove a handler ran — this does. Pass EXPR, optionally HUB_PORT (default: the
+## single hub listening on loopback).
+##   make cdp EXPR="document.title"
+##   make cdp EXPR="ORB_TOKEN" HUB_PORT=44671
+cdp:
+	@test -n "$(EXPR)" || { echo "usage: make cdp EXPR='<js>' [HUB_PORT=3779]"; exit 2; }
+	@python3 scripts/orb_cdp.py "$(EXPR)" $(HUB_PORT)
+
+## reload: hard-reload the app window, bypassing the cache — the way to pick up a web/
+## edit after `make manager` without touching the mouse (Ctrl+Shift+R in the window does
+## the same thing by hand).
+reload:
+	@python3 scripts/orb_cdp.py reload $(HUB_PORT)
+
 ## flash: headless full flash of an explicit port, using the firmware compiled
 ## into the binary — the same bytes the hub flashes.
 ##   make flash PORT=/dev/ttyACM0   (or PORT=/dev/serial/by-id/...)
@@ -147,8 +163,15 @@ flash: orbflash
 ## other targets, and never ship a build that did not come from a clean tree: VERSION
 ## carries `git describe --dirty`, so an uncommitted change is visible in the artifact
 ## name the hub itself reports at /api/status.
+## The Windows hub ships -H windowsgui (PE subsystem 2): a double-click opens the
+## app window and nothing else, with the log redirected per log_gui_windows.go;
+## orbflash stays a console binary because its whole output is the flash log.
+## The flag rides in a make variable chosen per platform, never in a shell
+## variable inside the quoted arg list: the go tool parses $ as command
+## substitution inside -ldflags, so '$$guilf' there silently ate the flags.
 ## Consumes nothing from the network: the firmware bundle, the Theme Editor and the
 ## vendored composer assets are all committed and compiled in.
+LDFLAGS_GUI   := $(LDFLAGS) -H windowsgui
 RELEASE_DIR       ?= $(BIN_DIR)/release
 RELEASE_NAME      ?= orb-manager
 RELEASE_PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 windows/amd64
@@ -157,11 +180,11 @@ release:
 	@rm -rf $(RELEASE_DIR)
 	@for p in $(RELEASE_PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; \
-	  sfx=; [ $$os = windows ] && sfx=.exe; \
+	  sfx=; ld="$(LDFLAGS)"; [ $$os = windows ] && { sfx=.exe; ld="$(LDFLAGS_GUI)"; }; \
 	  d=$(RELEASE_DIR)/$(RELEASE_NAME)-$$os-$$arch; \
 	  mkdir -p $$d; \
 	  printf 'GOOS=%-8s GOARCH=%-7s' $$os $$arch; \
-	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/$(RELEASE_NAME)$$sfx . \
+	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$$ld" -o $$d/$(RELEASE_NAME)$$sfx . \
 	     && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/orbflash$$sfx ./cmd/orbflash; then \
 	    echo ' ok'; \
 	  else \
@@ -184,6 +207,19 @@ windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orb-manager.exe .
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orbflash.exe ./cmd/orbflash
 	@echo "built $(WIN_DIR)/orb-manager.exe and orbflash.exe $(VERSION)"
+
+## windows-gui: the one-window hub, exactly what `release` ships for Windows.
+## -H windowsgui makes the exe PE subsystem 2, so a double-click shows only the
+## app window and no console; the log redirects to %TEMP%\orb-manager.log when
+## no console is attached (log_gui_windows.go). Run from cmd.exe to watch it
+## print like the console build — the flag suppresses the allocated window,
+## not an inherited console. `make windows` stays console on purpose: it is
+## what win-test and the bench flows execute.
+WIN_GUI_DIR ?= $(BIN_DIR)/windows-gui
+windows-gui:
+	@mkdir -p $(WIN_GUI_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS_GUI)' -o $(WIN_GUI_DIR)/orb-manager.exe .
+	@echo "built $(WIN_GUI_DIR)/orb-manager.exe $(VERSION) (GUI subsystem: window only, no console)"
 
 ## crosscheck: prove every supported platform still compiles, sources AND tests.
 ## This exists because the port lock reached syscall.Flock, which has no Windows
@@ -229,6 +265,15 @@ win-test:
 	$(WIN_TEST_DIR)/firmware.test.exe $(TEST_ARGS)
 	@echo '--- orb-manager (Windows window, profile, API) ---'
 	$(WIN_TEST_DIR)/main.test.exe $(TEST_ARGS)
+
+## usb-doc-test: the pins on docs/wsl-usb-reattach.md and scripts/wsl-usb.sh. The
+## runbook records behaviour measured once, by hand, so it drifts: a path, a verb or an
+## exit code can go stale and nothing else here would notice. These are static checks, so
+## they pass with no Windows, no cable and no board. Deliberately not part of test or
+## check — those run on a Go toolchain alone, and win-test runs on Windows where python3
+## is not guaranteed.
+usb-doc-test:
+	python3 -m unittest discover -s scripts -p '*_test.py'
 
 clean:
 	rm -rf $(BIN_DIR)

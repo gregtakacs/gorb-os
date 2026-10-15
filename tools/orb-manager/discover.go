@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -20,11 +24,24 @@ import (
 // were before it went. The orb has announced itself over mDNS since item 4; this
 // file is the listening.
 //
-// Two rules hold it in place.
+// The hub listens only. It used to also ask: a startup burst, then a re-query on a
+// timer, on the theory that a device which announces once at its join leaves a
+// hub that starts later waiting on a rhythm it does not control. That theory is
+// retired — the firmware now re-announces every MDNS_ADV_REFRESH_S (60 s, under
+// half the record's 120 s TTL), so the orb owns its own freshness and the hub's
+// queries bought nothing but traffic and a class of failure ("this box cannot
+// originate multicast") that only existed because the hub was trying to originate
+// something. Cold discovery now costs up to one check-in interval. Everything the
+// querier was load-bearing for — row sustenance, late-hub startup, half-heard
+// instances — the check-in carries, because the firmware bundles PTR, SRV, TXT and
+// A in every one.
+//
+// Two rules hold this file in place.
 //
 //  1. A browse never dials. internal/orbmdns cannot import an HTTP client — its own
 //     suite parses its imports to prove it — so a listing is not a port scan with
-//     better wording.
+//     better wording. It cannot send anything at all: TestBrowserNeverSends fails the
+//     package if a write path reappears.
 //  2. A browse never grants. Discovery fills a candidate list. The proxy still dials
 //     only what ipGrants holds, which is an address the operator named or the USB
 //     console read. An orb appearing in the list does not make its address reachable
@@ -35,26 +52,36 @@ import (
 // an interface so a test can hand in a browser fed from memory. Production uses
 // *orbmdns.Browser, and its absence is reported rather than fatal: a hub that
 // cannot bind 5353 still flashes, still manages, and says why the list is empty.
+// There is no Ask on this interface: the only way a row appears is a packet the
+// orb sent on its own.
 type discovery interface {
-	Ask() error
 	Candidates() []orbmdns.Candidate
 	Refusals() []orbmdns.Refusal
 	Close() error
 }
 
-// browseInterval is how often the hub re-asks. A record's TTL is 120 s and the
-// firmware re-announces only when an interface changes, so an interval under half
-// the TTL keeps a row from ageing out while the hub is open without turning the LAN
-// into a query firehose.
-const browseInterval = 45 * time.Second
+// upkeepInterval is how often the hub tidies what it overheard: prune rows whose
+// TTL has run out, and renew the grant of a board the LAN is still producing. It
+// puts nothing on the wire — the orb's 60 s check-in is the only discovery traffic
+// this hub generates. The number only has to sit comfortably under the grant TTL
+// (ipGrantTTL, 6 h) and the record grace; 45 s keeps a dead row out of the list for
+// less than the time it takes to notice it is gone. A var so
+// TestUpkeepLoopTicksAndStops can drive a tick in test time; production never writes
+// it.
+var upkeepInterval = 45 * time.Second
 
-// startBrowse attaches the eligible interfaces and begins the read loop. main calls
+// checkinSeconds mirrors the firmware's MDNS_ADV_REFRESH_S: how often an orb
+// re-announces itself, which is the rhythm every row on the card runs on. It is
+// published to the UI so the copy can promise a real number, and
+// TestCheckinCadenceMatchesFirmware fails the build if the two spellings ever drift
+// apart — the hub has no authority to re-derive what the device decides.
+const checkinSeconds = 60
+
+// startListening attaches the eligible interfaces and begins the read loop. main calls
 // it, never newHub: the suite builds servers by the dozen, and one of them holding
 // 5353 makes the next one's bind a coin flip.
-func (s *Server) startBrowse(ctx context.Context) {
-	b := orbmdns.NewBrowser(orbmdns.Config{Logf: func(f string, a ...any) {
-		log.Printf("orb-manager: "+f, a...)
-	}})
+func (s *Server) startListening(ctx context.Context) {
+	b := s.newBrowser()
 	ifaces, err := orbmdns.EligibleInterfaces()
 	if err != nil {
 		s.setDiscovery(nil, "interfaces: "+err.Error())
@@ -84,29 +111,28 @@ func (s *Server) startBrowse(ctx context.Context) {
 	}
 	s.setDiscovery(b, "")
 	s.setBrowseIfaces(names)
-	log.Printf("orb-manager: browsing %s on %d interface(s): %s",
+	log.Printf("orb-manager: listening for %s check-ins on %d interface(s): %s",
 		orbmdns.ServiceName, len(names), strings.Join(names, ", "))
-	if err := b.Ask(); err != nil {
-		s.noteBrowseAskErr(err)
-	}
-	go func() {
-		t := time.NewTicker(browseInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				s.reconcileFleet()
-				// An unanswered query is normal here: this box may not originate
-				// multicast onto the LAN at all, and the answers that matter
-				// arrive unasked. Say it once, not every 45 s.
-				if err := b.Ask(); err != nil {
-					s.noteBrowseAskErr(err)
-				}
-			}
+	go s.upkeepLoop(ctx)
+}
+
+// upkeepLoop is the hub's own housekeeping tick, and it sends nothing. Candidates()
+// prunes what the clock has outlived, and reconcileFleet renews the grant of every
+// board still in the cache — a cache that only ever fills from a packet the orb sent
+// first, so renewal is the LAN continuing to produce the board, not the hub vouching
+// for it. The loop takes no browser argument and exists on the Server's own state so
+// a test can drive it with a fake in place of the socket set.
+func (s *Server) upkeepLoop(ctx context.Context) {
+	t := time.NewTicker(upkeepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.reconcileFleet()
 		}
-	}()
+	}
 }
 
 func (s *Server) setDiscovery(d discovery, why string) {
@@ -121,22 +147,12 @@ func (s *Server) setBrowseIfaces(names []string) {
 	s.dmu.Unlock()
 }
 
-// noteBrowseAskErr records the first query failure for the card to show. A hub on
-// the WSL box in mirrored networking cannot originate multicast at all, which is a
-// fact about the host and not a fault in the orb; the honest surface is a visible
-// line rather than a list that is quietly empty forever.
-func (s *Server) noteBrowseAskErr(err error) {
-	s.dmu.Lock()
-	if s.browseAskErr == "" {
-		s.browseAskErr = err.Error()
-	}
-	s.dmu.Unlock()
-}
-
 // orbRow is one candidate as the UI sees it. Age is reported rather than a
 // timestamp so a skewed hub clock cannot make an orb look immortal or vanished, and
 // the fields are exactly what a browse is allowed to know: what the orb claimed, not
-// what the hub confirmed by dialing it.
+// what the hub confirmed by dialing it. AgeS doubles as the check-in clock: a row at
+// age 200 s is an orb whose last announce is wearing out, not a row the hub forgot
+// to refresh.
 type orbRow struct {
 	Instance  string `json:"instance"`
 	MAC       string `json:"mac"`
@@ -145,7 +161,6 @@ type orbRow struct {
 	IP        string `json:"ip"`
 	Port      uint16 `json:"port"`
 	TTL       uint32 `json:"ttl"`
-	Solicited bool   `json:"solicited"`
 	AgeS      int    `json:"ageS"`
 	Provision bool   `json:"provisioning"`
 	Dialable  bool   `json:"dialable"`
@@ -154,10 +169,33 @@ type orbRow struct {
 	// words, so a row that has been named reads as the orb they already own instead of
 	// a hex tail they have to recognize twice.
 	Name string `json:"name,omitempty"`
-	Room string `json:"room,omitempty"`
-	// Cable says the hub has read this MAC off the chip over USB, which is the only
-	// proof in the system; without it the identity is what a packet asserted.
+	// Cable says the hub read this MAC off the chip over USB *during this run*. It is a
+	// session fact, never a stored one: the only proof in the system is a proof the hub
+	// has to have performed, and a file cannot carry it forward. Without it the identity
+	// is what a packet asserted, which is what Identity is for.
 	Cable bool `json:"cable"`
+	// OnCable is a different fact and must not be confused with Cable: the current port
+	// sweep found a cable carrying this MAC, which says nothing about whether anyone has
+	// ever read the chip. It arrives and goes away with the plug.
+	OnCable bool `json:"onCable"`
+	// Reachable is the address book's honesty field on a restored row: "unknown" from
+	// the first paint until the startup dial answers, then "alive" or "dead". Empty on a
+	// row the wire or the bench is producing, because those are not remembered — they
+	// are seen. A row whose address does not answer is the row Forget is for.
+	Reachable string `json:"reachable,omitempty"`
+	// Ports are the ttys the current sweep found this board behind, sorted. Two entries
+	// mean one board on two cables, not two boards.
+	Ports []string `json:"ports,omitempty"`
+	// Via names how the hub can reach this board right now: "lan", "usb", or both.
+	// Empty means the row is remembered rather than seen.
+	Via []string `json:"via,omitempty"`
+	// Identity is how strongly the hub knows the row is the board it names:
+	// "confirmed" (read off the chip), "descriptor" (host USB serial), "claimed" (an
+	// announcement said so), "unknown" (a cable with nothing to read).
+	Identity string `json:"identity,omitempty"`
+	// Key is the row's handle for the page: the MAC, or the tty path for a cable with no
+	// MAC yet. Two unknown cables must not collide on an empty mac.
+	Key string `json:"key,omitempty"`
 	// Contended: another live board announces this same address, so the hub will not
 	// dial it for anybody. Shared: another board derives this instance name from a
 	// different MAC, so the label alone cannot identify the row.
@@ -172,31 +210,126 @@ type orbRow struct {
 	// reason the proxy will answer with, not a paraphrase of it. A row that is simply
 	// not clickable with no explanation is a row the operator has to guess about.
 	Refusal string `json:"refusal,omitempty"`
+
+	// Forgettable says the hub will not rebuild this row if the operator deletes it, so
+	// the card may offer Forget; ForgetWhy is the reason it may not when that is false.
+	// Derived, never stored: it is a statement about what the hub can reach right now,
+	// and a row that carries it from a previous frame is a button that lies. See
+	// liveness.go for the three-part rule and for why the answer can lag a fact.
+	//
+	// NO omitempty on the bool, and this is the one field in the file where that is not a
+	// style choice. The refusal is the false, and omitempty deletes a false from the
+	// wire: every "do not offer Forget" — on a cable, announcing, answering HTTP — arrived
+	// at the page as a missing field, which is indistinguishable from "yes". The gate then
+	// guarded nothing on screen, and Forget stayed lit on boards plugged into the hub.
+	// The page reads this field as "enabled only if literally true", so an absent verdict
+	// stays a dead button. ForgetWhy keeps its omitempty: it is prose, and an empty one
+	// costs nothing.
+	Forgettable bool   `json:"forgettable"`
+	ForgetWhy   string `json:"forgetWhy,omitempty"`
+
+	// LiveForget is the hub's answer for the board the plain Forget refuses
+	// because it is alive: the page must not leave a dead button on a live
+	// board, because the operator's intent is exactly what the dialog serves —
+	// a full reset to the lonely image, or a factory reset of the settings.
+	// LivePort names the cable the actions drive; empty means the board is
+	// answering where no lead reaches, and the dialog says so. Non-omitempty
+	// like Forgettable: an absent verdict reads as a no, never as permission.
+	LiveForget bool   `json:"liveForget"`
+	LivePort   string `json:"livePort,omitempty"`
+
+	// Update says the firmware this hub carries is a decided upgrade over the
+	// stamp this row wears, by the same comparator the flash gate applies. It is
+	// the card's amber alert and the manage view's Update button, and it arrives
+	// as the hub's verdict for the same reason Forgettable does: the page does
+	// not parse version strings, and an absent field is a no.
+	Update bool `json:"update"`
+
+	// Orb says the hub has evidence this chip has been an orb — named, addressed,
+	// heard announcing, or read off a chip that answered as one. It is the ONE
+	// predicate the page reads to decide whether a board is a card, and the same
+	// fact the port entry carries as orbSeen to decide whether the same board is
+	// instead a New Orb candidate. Both fields are non-omitempty: an absent
+	// verdict must read as a no, and the pair is what keeps a board from
+	// falling through both floors at once — the bug that hid a wiped board on a
+	// cable from the fleet (blank, by the row rule) and from New Orb (inFleet,
+	// by a rule that took any cable sighting for an orb).
+	Orb bool `json:"orb"`
 }
 
-// handleDiscovered is the read side: the current candidate list. It sends nothing,
-// opens nothing and needs no token — what the hub overheard on its own subnet is the
-// same class of information as /api/ports, and the UI polls it on a timer.
+// provesOrb is that predicate, spelled once. A row naming nothing but a MAC from
+// a USB descriptor is a board on a lead, not an orb: the roster creates such a
+// row the moment a cable is attributed, so treating row-existence as orb-proof
+// made every board on this bench permanently un-adoptable. Evidence is a name
+// the device gave or the operator gave it, an address it answered at, a firmware
+// stamp or state it reported, an AP it opened for provisioning, a liveness
+// verdict the hub reached by dialing it, or a LAN announcement — and Identity
+// says which kind of proof the MAC rests on, where "confirmed" (read off a chip
+// that answered as an orb) and "claimed" (an _orb._tcp announce) count and
+// "descriptor" (a USB serial number) does not.
+func (r orbRow) provesOrb() bool {
+	switch {
+	case r.Name != "", r.IP != "", r.FW != "", r.State != "", r.Provision:
+		return true
+	case r.Reachable == "alive" || r.Reachable == "dead":
+		return true
+	case r.Identity == "confirmed" || r.Identity == "claimed":
+		return true
+	}
+	for _, v := range r.Via {
+		if v == "lan" {
+			return true
+		}
+	}
+	return false
+}
+
+// handleDiscovered is the read side: the current candidate list in one shot. It sends
+// nothing, opens nothing and needs no token — what the hub overheard on its own subnet
+// is the same class of information as /api/ports. The card no longer polls it: the page
+// holds /api/orbs/stream open and lets a check-in move it, and this stays the endpoint a
+// stranger, a probe or a curl hits. Both answers come from orbCard, which is the only
+// thing that decides what a row means.
 func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	body, _ := s.orbCard(time.Now())
+	s.jsonOK(w, body)
+}
+
+// orbCard builds the one list and its fingerprint: the mDNS cache, the fleet store, the
+// grants, and the live USB sweep, merged by MAC in roster.go. The payload is what GET
+// /api/orbs answers and what every /api/orbs/stream frame carries, byte for byte, so a
+// row cannot mean one thing on a poll and another on a push; the version is what the
+// stream compares to decide whether a frame is worth the wire. now is a parameter so
+// the tests can freeze the clock and age a row on purpose.
+func (s *Server) orbCard(now time.Time) (map[string]any, string) {
 	s.dmu.Lock()
-	b, listenErr, askErr := s.browse, s.browseErr, s.browseAskErr
+	b, listenErr := s.browse, s.browseErr
 	ifaces := append([]string(nil), s.browseIfaces...)
 	s.dmu.Unlock()
 	if b == nil {
-		s.jsonOK(w, map[string]any{
-			"orbs": []orbRow{}, "refused": []map[string]any{}, "interfaces": ifaces,
+		// Deaf on mDNS is not deaf on the bench. A board on a cable is listed with its
+		// MAC and its tty even when no socket bound — the old empty list here made a
+		// hub that could not multicast claim an empty bench, which is the lie this
+		// merge exists to kill. The failure still reads as the reason LAN rows are
+		// missing, and the version carries it, so a hub that recovers re-sends.
+		rows, cableErr := s.roster(nil, now)
+		s.annotateForget(rows, now)
+		body := map[string]any{
+			"orbs": rows, "refused": []map[string]any{}, "interfaces": ifaces,
 			"listening": false, "error": orElse(listenErr, "discovery is not running"),
-			"askError": askErr,
-		})
-		return
+			"cableError": cableErr,
+			"checkinS":   checkinSeconds,
+		}
+		// The version carries the reason (so a hub that binds later re-sends) and the
+		// rows themselves (so a plug change while deaf is still news to an open stream).
+		return body, "not-listening|" + listenErr + "|" + orbVersion(rows, nil, nil) + "|cable|" + cableErr
 	}
-	now := time.Now()
 	// Project the cache into the fleet before building rows, or the card would show a
-	// contention the proxy is already refusing over. No renewal: that is the timer's.
+	// contention the proxy is already refusing over. No renewal: that is the upkeep tick's.
 	s.foldCandidates(false)
 	rows := []orbRow{}
 	for _, c := range b.Candidates() {
@@ -204,8 +337,8 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 		// clicked, so the card cannot promise a dial the request would refuse.
 		may, why := s.mayDial(c.IP)
 		r := orbRow{
-			Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
-			IP: c.IP, Port: c.Port, TTL: c.TTL, Solicited: c.Solicited,
+			Key: c.MAC, Instance: c.Instance, MAC: c.MAC, FW: c.FW, State: c.State,
+			IP: c.IP, Port: c.Port, TTL: c.TTL, Via: []string{"lan"},
 			AgeS: int(now.Sub(c.LastSeen).Seconds()), Provision: c.Provisioning(),
 			// Dialable is a readout of the allowlist, not a request. The hub will
 			// not reach an address the operator has not committed to, and the card
@@ -216,13 +349,20 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.fleet != nil {
 			if row0, ok := s.fleet.ByMAC(c.MAC); ok {
-				r.Name, r.Room, r.Cable, r.Shared = row0.Name, row0.Room, row0.Cable, row0.Shared
+				r.Name, r.Shared = row0.Name, row0.Shared
+				r.Cable = s.chipRead(c.MAC)
 				r.Note = row0.Note
 				r.Contended = row0.Contended || len(s.fleet.ClaimedBy(c.IP)) > 1
 			}
 		}
 		rows = append(rows, r)
 	}
+	// The cable half, merged by MAC. It runs whether or not a single orb announced: a
+	// bench with one board on a lead and nothing on Wi-Fi is the normal state of a
+	// factory-fresh device, and the list that goes blank on it is the bug this merge
+	// was built to fix.
+	rows, cableErr := s.roster(rows, now)
+	s.annotateForget(rows, now)
 	refused := []map[string]any{}
 	for _, f := range b.Refusals() {
 		refused = append(refused, map[string]any{
@@ -230,27 +370,202 @@ func (s *Server) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 			"ageS": int(now.Sub(f.At).Seconds()),
 		})
 	}
-	s.jsonOK(w, map[string]any{
+	body := map[string]any{
 		"orbs": rows, "refused": refused, "interfaces": ifaces,
-		"listening": true, "error": "", "askError": askErr,
+		"listening": true, "error": "", "cableError": cableErr,
+		"checkinS": checkinSeconds,
+	}
+	return body, orbVersion(rows, refused, ifaces) + "|cable|" + cableErr
+}
+
+// orbVersion fingerprints the card minus the clock. Age is the field that moves on its
+// own: a row the orb refreshed on schedule says nothing new about the orb, so a stream
+// that counted age as content would repaint the page once a minute to change a number
+// nobody reads. Everything an operator would call a change is in the digest — address,
+// port, firmware, state, name, the cable/contended/shared/bound flags, the refusal
+// text, and which interfaces the hub joined. A row's ttl and first-seen are in too, so a
+// record about to expire and a row that just arrived are different answers even when every
+// word on them matches.
+func orbVersion(rows []orbRow, refused []map[string]any, ifaces []string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "ifaces %s\n", strings.Join(ifaces, ","))
+	for _, r := range rows {
+		a := r
+		a.AgeS = 0
+		// Forgettable is the verdict and belongs in the digest, so a board that goes
+		// quiet earns its button without a poll. ForgetWhy is that same verdict wearing
+		// an age ("announced itself 42s ago"), which moves on its own and would repaint
+		// the card every frame for a number nobody reads — AgeS's problem exactly.
+		a.ForgetWhy = ""
+		fmt.Fprintf(h, "row %v\n", a)
+	}
+	for _, f := range refused {
+		fmt.Fprintf(h, "refused %v|%v|%v\n", f["name"], f["from"], f["reason"])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ---- the live card: one wake-up, many listeners ---------------------------------
+
+// newBrowser builds the browser the hub runs. It is a method rather than a call site
+// because the one thing that must not be forgotten on it is the wake-up: a browser built
+// without OnChange works, ages its rows correctly, and leaves the page frozen on whatever
+// it loaded — a bug no test would catch if the wiring lived inline in startListening,
+// where the sockets live and so no test of the whole path goes.
+func (s *Server) newBrowser() *orbmdns.Browser {
+	return orbmdns.NewBrowser(orbmdns.Config{
+		Logf:     func(f string, a ...any) { log.Printf("orb-manager: "+f, a...) },
+		OnChange: s.wakeOrbs,
 	})
 }
 
-// handleBrowseNow is the deliberate "ask again". It is guarded like every route that
-// puts a packet on the wire: a page the operator never opened should not be able to
-// set the rhythm the hub multicasts on.
-func (s *Server) handleBrowseNow(w http.ResponseWriter, r *http.Request) {
-	s.dmu.Lock()
-	b, listenErr := s.browse, s.browseErr
-	s.dmu.Unlock()
-	if b == nil {
-		s.jsonErr(w, orElse(listenErr, "discovery is not running on this hub"))
+// subscribeOrbs hands one open /api/orbs/stream its own wake-up slot. The channel is
+// buffered to one and is closed by nobody but its owner, which is what lets wakeOrbs fire
+// without waiting on a page that has stopped reading.
+func (s *Server) subscribeOrbs() chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.omu.Lock()
+	if s.orbSubs == nil {
+		s.orbSubs = map[chan struct{}]struct{}{}
+	}
+	s.orbSubs[ch] = struct{}{}
+	s.omu.Unlock()
+	return ch
+}
+
+// unsubscribeOrbs drops the slot. It does not close the channel: a wake-up landing in a
+// channel whose owner just went is a value nobody reads, while a send racing a close is a
+// panic in a goroutine the page cannot see.
+func (s *Server) unsubscribeOrbs(ch chan struct{}) {
+	s.omu.Lock()
+	delete(s.orbSubs, ch)
+	s.omu.Unlock()
+}
+
+// wakeOrbs is orbmdns.Config.OnChange: the browser's cache moved, so every open stream
+// should re-answer. It runs on the goroutine that just read a UDP datagram, so the one
+// rule is that it never blocks — a subscriber whose slot is already full has a re-read
+// coming and needs no second nudge. Ten pages and an orb flooding the LAN cannot make this
+// loop cost more than ten non-blocking sends.
+func (s *Server) wakeOrbs() {
+	s.omu.Lock()
+	defer s.omu.Unlock()
+	for ch := range s.orbSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// orbStreamKeepalive is the heartbeat the page watches to tell a quiet LAN from a dead
+// pipe. It is not the freshness bound: that is orbStreamResync.
+var orbStreamKeepalive = 25 * time.Second
+
+// orbStreamResync re-answers the card on the timer even when no wake-up fired and the
+// version has not moved, because two things the stream gets no event about can still
+// change what the card says: upkeep pruning a row whose grace ran out while nobody was
+// looking, and a grant or a fleet edit arriving over USB. Two minutes means the worst case
+// is a stale row left on screen for the length of a coffee break, on a card whose row age
+// already moves every keepalive. It is the old poll, demoted to a backstop.
+var orbStreamResync = 2 * time.Minute
+
+// handleOrbsStream keeps the discovery card open as a stream: one frame the instant it is
+// asked for, then one per check-in that changes what the card says. The body of every frame
+// is the same envelope GET /api/orbs answers, so the page has one renderer and its first
+// paint is not a second code path.
+//
+// A plain GET, not EventSource and not a WebSocket: the page has one consumer and it is a
+// WebView the hub owns, so an abortable fetch beats a reconnect loop, and the hub's own
+// streaming precedent — the console and the flasher — is line-delimited JSON over a live
+// response body the client already knows how to read. What a GET gives up is the token, and
+// the trade is deliberate rather than forced: the frames carry exactly the bytes the
+// unguarded GET answers, so guarding the stream would protect no information the poll left
+// open. The bind stays loopback by default, and the remote bind is opt-in behind a warning.
+//
+// Nothing here dials, grants, or sends a query. The stream is the read endpoint wearing a
+// longer hat, and TestHubHasNoRouteThatAsks holds over it.
+func (s *Server) handleOrbsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := b.Ask(); err != nil {
-		s.noteBrowseAskErr(err)
-		s.jsonErr(w, err.Error())
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.jsonErr(w, "streaming unsupported on this listener")
 		return
 	}
-	s.jsonOK(w, map[string]any{"asked": true})
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	send := func(body map[string]any) bool {
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": body}); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	keep := func() bool {
+		if _, err := fmt.Fprint(w, ":keep\n"); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	wake := s.subscribeOrbs()
+	defer s.unsubscribeOrbs(wake)
+
+	// Seed before parking. A page opened seconds after a check-in would otherwise sit on
+	// "Loading…" until the next one, and removing the Refresh button is only honest if the
+	// stream answers the moment it opens.
+	body, version := s.orbCard(time.Now())
+	if !send(body) {
+		return
+	}
+	lastFrame := time.Now()
+	t := time.NewTicker(orbStreamKeepalive)
+	defer t.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-wake:
+			// Re-read the whole card rather than trusting what the browser thought it
+			// changed: the cache moving and the card moving are not the same question once
+			// a fleet rename, a cable MAC or an expiring grant is involved, and the browser
+			// can see none of those three.
+			body, v := s.orbCard(time.Now())
+			if v == version {
+				if !keep() {
+					return
+				}
+				continue
+			}
+			if !send(body) {
+				return
+			}
+			version, lastFrame = v, time.Now()
+
+		case <-t.C:
+			// Heartbeat and backstop in one tick: the comment stops anything between the
+			// page and the loopback port deciding an idle connection is dead, and every
+			// orbStreamResync the card gets re-answered whatever woke it or did not.
+			if !keep() {
+				return
+			}
+			if time.Since(lastFrame) < orbStreamResync {
+				continue
+			}
+			body, v := s.orbCard(time.Now())
+			if !send(body) {
+				return
+			}
+			version, lastFrame = v, time.Now()
+		}
+	}
 }

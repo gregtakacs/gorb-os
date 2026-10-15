@@ -14,12 +14,13 @@ package orbmdns
 //     sake: tools/bench/browse_mdns.py and cmd/orbfake both run on this machine, and
 //     a browser with the loop off hears neither. Setting it ON costs nothing real —
 //     Ingest drops a questions-only packet on the floor (browse.go's !m.Response
-//     guard), so the query the socket sends comes back and changes nothing.
+//     guard), so an announce looped back to us changes nothing beyond refreshing.
 //
 // The rule this package follows and orbfake does not: one interface per socket, so
-// IP_MULTICAST_IF pins each socket's Ask to the interface its candidate came from.
-// Asking out of the wrong interface is how a browse on a VPN box finds nothing and
-// cannot say why.
+// each socket's membership is pinned to the interface its candidate came from. The
+// browser sends nothing, but IP_MULTICAST_IF still names the interface the stack
+// associates with the socket — the same option spelled correctly here is what makes
+// the per-interface join mean something on a VPN box rather than coin-flip routing.
 
 import (
 	"context"

@@ -706,6 +706,7 @@ cannot become an open proxy or a path-traversal foothold.
 ```
 main.go              flag parsing, embeds web/, routes, app-window wiring, run log
 window.go            app-window mode: Chromium discovery, --app launch, window-lifetime shutdown
+scripts/orb_cdp.py   the DevTools client behind `make cdp` / `make reload`: reach the live window as the page
 window_devtools.go   DevTools page-target watch: shutdown follows the window through Chrome's single-instance hand-off
 api.go               the /api/* JSON handlers (status, ports)
 firmware.go          the active firmware bundle, its upload/reset handlers, and the firmware panel payload
@@ -798,6 +799,13 @@ make vendor-composer  # fetch React/Babel + font subsets into web/composer/vendo
 make vendor-check     # verify that committed tree against its manifest and SRI pins
 make run        # rebuild + open the app window against 127.0.0.1:3779
                 # add --no-window to serve without a window (SSH, CI, bench)
+make reload     # hard-reload that window from the CLI — how to pick up a web/ edit
+                # without reaching for the mouse (Ctrl+Shift+R by hand)
+make cdp EXPR="document.title"   # evaluate JS INSIDE the window, as the page. The
+                # control token is an HttpOnly cookie inlined into the served HTML, so no
+                # curl can carry it and a screenshot cannot prove a handler ran; this can.
+                # scripts/orb_cdp.py underneath, no pip install; HUB_PORT=… names the hub
+                # when more than one listens (ORB_DEVTOOLS_PORT_FILE overrides the profile)
 make flash PORT=/dev/ttyACM0   # headless full flash of that port
 make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe (console: prints to the terminal)
 make windows-gui # the one-window hub exe (PE subsystem 2: double-click shows only the app window)

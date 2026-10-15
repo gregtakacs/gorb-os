@@ -680,9 +680,8 @@ function lonelyArm() {
   $("#ob-lonely-hint").hidden = true;
   $("#ob-lonely-confirm").hidden = false;
   $("#ob-lonely-port").textContent = port;
-  $("#ob-lonely-go").disabled = true;
-  $("#ob-lonely-word").value = "";
-  $("#ob-lonely-word").focus();
+  $("#ob-lonely-go").disabled = false;
+  $("#ob-lonely-go").focus();
 }
 
 function lonelyDisarm() {
@@ -694,9 +693,6 @@ function lonelyDisarm() {
 
 $("#ob-lonely").onclick = lonelyArm;
 $("#ob-lonely-no").onclick = lonelyDisarm;
-$("#ob-lonely-word").oninput = () => {
-  $("#ob-lonely-go").disabled = $("#ob-lonely-word").value.trim() !== "LONELY";
-};
 
 $("#ob-lonely-go").onclick = async () => {
   const port = current.port;
@@ -753,7 +749,7 @@ function openForgetDialog(li) {
   const goL = $("#fj-lonely"), goR = $("#fj-reset");
   goL.disabled = goR.disabled = !port;
   note.textContent = port
-    ? "Both endings travel the USB lead at " + port + ". Each asks you to type its word."
+    ? "Both endings travel the USB lead at " + port + ". The press does it — this dialog is the confirmation."
     : "the hub cannot reach this board over a cable: put it on a lead of this machine to use these endings, or factory-reset it from its own network page";
   $("#fj-title").dataset.port = port;
   $("#fj-mask").hidden = false;
@@ -766,14 +762,16 @@ function closeForgetDialog() {
 }
 $("#fj-cancel").onclick = closeForgetDialog;
 
-// The buttons carry their own typed word, on the face: the dialog already
-// named the act, and a second confirmation on the click that starts a
-// destructive write is the same discipline /api/lonely asks by payload word.
+// The buttons act on the press. Reaching this dialog already took two deliberate
+// clicks — Forget, then the named ending — and a typed word after that punished the
+// operator for the care they had just shown (bench, 2026-10-15). The dialog's own note
+// names the port each press writes to, the buttons stay disabled until the hub reports
+// the board reachable on a lead, and one press cannot re-fire while a write is in
+// flight: that is where the confirmation lives now.
 $("#fj-lonely").onclick = async () => {
   if (fjBusy || !fjRow) return;
-  const word = prompt("Type LONELY to write the lonely image over " + $("#fj-title").dataset.port + " — the board stops being an orb and every setting on it goes:");
-  if (!word || word.trim() !== "LONELY") return;
   const port = $("#fj-title").dataset.port;
+  if (!port) return;
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
   const log = $("#fj-log"); log.hidden = false; log.textContent = "leaving it lonely over " + port + "\n";
@@ -799,9 +797,8 @@ $("#fj-lonely").onclick = async () => {
 
 $("#fj-reset").onclick = async () => {
   if (fjBusy || !fjRow) return;
-  const word = prompt("Type RESET ALL to factory-reset this orb's settings — the name, time zone and credentials go, and the board reboots as its own open provisioning AP:");
-  if (!word || word.trim() !== "RESET ALL") return;
   const port = $("#fj-title").dataset.port, mac = fjRow.dataset.mac || "";
+  if (!port) return;
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
   const log = $("#fj-log"); log.hidden = false; log.textContent = "sending RESET ALL over " + port + "\n";

@@ -123,14 +123,22 @@ func TestLonelyRefusesAPortMidFlash(t *testing.T) {
 	}
 }
 
-// TestLonelyPageHasTheDoorAndTheWord pins the UI against a rename that would
-// orphan the handler: button, word input, confirm on the face, and the stream
-// call the button makes.
-func TestLonelyPageHasTheDoorAndTheWord(t *testing.T) {
+// TestLonelyPageHasTheDoorAndNoTypedWord pins the UI against a rename that would
+// orphan the handler — button, armed go button, row wiring, the payload word the hub
+// still requires — and against the typed-word ceremony coming back. The operator ended
+// it on 2026-10-15: reaching the button already took pressing Forget and naming the
+// ending, and typing LONELY on top of that read as an insult rather than a safeguard.
+// The hub's payload gate stays; only the page's ceremony is gone.
+func TestLonelyPageHasTheDoorAndNoTypedWord(t *testing.T) {
 	page := hubIndexHTML(t)
-	for _, want := range []string{`id="ob-lonely"`, `id="ob-lonely-word"`, `id="ob-lonely-go"`, "<b>LONELY</b>"} {
+	for _, want := range []string{`id="ob-lonely"`, `id="ob-lonely-go"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index.html has no %s — the lonely door lost a part of itself", want)
+		}
+	}
+	for _, gone := range []string{`id="ob-lonely-word"`, "<b>LONELY</b>"} {
+		if strings.Contains(page, gone) {
+			t.Errorf("index.html still carries %s: the lonely door asks for a typed word again", gone)
 		}
 	}
 	app := readAppJS(t)
@@ -139,6 +147,9 @@ func TestLonelyPageHasTheDoorAndTheWord(t *testing.T) {
 	}
 	if !strings.Contains(app, `ob-lonelyrow`) {
 		t.Error("app.js never shows or hides #ob-lonelyrow, so the door sits on unwired orbs")
+	}
+	if strings.Contains(app, "ob-lonely-word") {
+		t.Error("app.js still wires #ob-lonely-word, an element the page no longer has")
 	}
 }
 

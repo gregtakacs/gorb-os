@@ -229,6 +229,20 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		})
 		if nerr == nil && nres != nil && nres.Ack && nres.Nak == "" {
 			send("log", "named \""+req.Name+"\" — the orb acknowledged it over the cable")
+			// The chip holds the word; the card must not wait on a LAN poll to say
+			// so. A flash-time name that lands only in NVS leaves the store row
+			// nameless, and a nameless cable-only row proves nothing to
+			// storeProvesOrb — which is how a board the operator has already set up
+			// stays offered on the New Orb picker as a blank to adopt. This is the
+			// same fold the /api/orb/cmd NAME ack performs; the flash dialog speaks
+			// to the chip directly, so it owes the store the write itself.
+			if flashedMAC != "" && s.fleet != nil {
+				if _, _, werr := s.fleet.NoteDeviceName(macNorm(flashedMAC), req.Name); werr != nil {
+					send("log", "note: the orb holds \""+req.Name+"\" but the card kept its old word: "+werr.Error())
+				} else {
+					s.saveState()
+				}
+			}
 		} else {
 			why := "no NAME-ACK inside 20 s"
 			if nerr != nil {

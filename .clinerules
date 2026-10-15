@@ -151,6 +151,14 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   lost the Wipe chip button and the route lost `/api/wipe`; `orbflash -mode wipe`
   remains the headless bench door. A test pins all of this (`ui_test.go`,
   `TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly`).
+- **One MAC, two spellings — key on the canonical form inside the collection.**
+  `orbmdns.CanonicalMAC` returns bare lowercase hex and is what the cable sweep, the
+  fleet store and the roster key on; `macNorm` returns colon-separated pairs, which is
+  also how the USB descriptor and the flash's eFuse read print it. The lonely set first
+  stored whatever its caller handed it, so a mark written in pairs answered only pair
+  queries: the port list called the chip lonely while the sweep rebuilt its fleet row
+  nameless beside it. Measured on the bench, 2026-10-15. Normalize at the collection
+  boundary, never at each call site, and load old state files through the same normalizer.
 - **The join dialog opens LOCKED and unlocks only on a verdict — and its zone picker
   is `/api/tz`'s rows, not strings.** The flash's boot window (default now 28 s, must
   outlast `SCAN_TIMEOUT_US`) can close before the firmware's boot scan prints its

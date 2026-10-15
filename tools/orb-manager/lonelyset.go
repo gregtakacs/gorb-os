@@ -4,6 +4,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 )
 
 // The lonely mark: the hub's memory that it personally ended a board's orb
@@ -33,6 +35,30 @@ func newLonelyMark() *lonelyMark {
 	return &lonelyMark{at: map[string]time.Time{}, now: time.Now}
 }
 
+// lonelyKey is the one form every entry point funnels through, and the reason it
+// exists is a MAC spelled two ways in this codebase: the cable sweep and the fleet
+// store key on the canonical bare twelve digits (orbmdns.CanonicalMAC), while the
+// lonely flash formats the eFuse read it just took as colon-separated pairs for the
+// console, which is also what the USB descriptor itself prints.
+//
+// A set keyed on the caller's spelling got the worst of both: the mark written at
+// the flash was invisible to every fleet-side query, so the row the operator had
+// just ended was rebuilt nameless by the next sweep while the port list still
+// labelled the chip lonely. Two surfaces, two answers, one board. Keying on
+// canonical digits inside the set — not at each call site, where the next new
+// caller gets it wrong again — makes the mark answer whoever asks, in whichever
+// form they arrived.
+//
+// Anything that is not a chip address keys to "" and is dropped: a phantom entry
+// under a malformed MAC would suppress every board that failed to read one.
+func lonelyKey(mac string) string {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return ""
+	}
+	return c
+}
+
 // defaultOrbName is the card's word for a board whose own name is gone: a
 // factory reset erased the NVS the device kept the word in. The firmware seeds
 // this same default into the fresh NVS on a clean erase (main/net/orb_net.c,
@@ -43,6 +69,7 @@ func newLonelyMark() *lonelyMark {
 const defaultOrbName = "The Orb"
 
 func (l *lonelyMark) mark(mac string) {
+	mac = lonelyKey(mac)
 	if mac == "" {
 		return
 	}
@@ -52,6 +79,7 @@ func (l *lonelyMark) mark(mac string) {
 }
 
 func (l *lonelyMark) clear(mac string) {
+	mac = lonelyKey(mac)
 	if mac == "" {
 		return
 	}
@@ -61,6 +89,7 @@ func (l *lonelyMark) clear(mac string) {
 }
 
 func (l *lonelyMark) has(mac string) bool {
+	mac = lonelyKey(mac)
 	if mac == "" {
 		return false
 	}
@@ -83,12 +112,14 @@ func (l *lonelyMark) list() []string {
 }
 
 // restore fills the set from the state file. It runs once at launch, before
-// any sweep can read it.
+// any sweep can read it. The file has carried this MAC in both spellings over
+// the life of the feature, so every entry is re-keyed here rather than trusted:
+// a v3 file written by the colon-keyed hub still suppresses the board it marked.
 func (l *lonelyMark) restore(macs []string) {
 	l.mu.Lock()
 	for _, m := range macs {
-		if m != "" {
-			l.at[m] = l.now().UTC()
+		if k := lonelyKey(m); k != "" {
+			l.at[k] = l.now().UTC()
 		}
 	}
 	l.mu.Unlock()

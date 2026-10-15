@@ -19,13 +19,26 @@
  * pass per frame: the dirty rows are rebuilt black-background + message + ball
  * inside an internal DMA band buffer and flushed once each, so the panel never
  * shows a mid-frame erase. The erase-then-redraw two-step this file used to run
- * is what the flicker was. */
+ * is what the flicker was.
+ *
+ * That rewrite shipped four panel rules unkept, and each one shows on the glass:
+ * pixels reached the CO5300 low-byte-first (the dark of the ball came up green),
+ * flush windows started and spanned odd counts on both axes (rows sheared, so
+ * the type read as noise and every sprite left its old pixels behind), the one
+ * band buffer was resubmitted while its previous DMA still read it (bands landed
+ * over each other), and the panel was never painted end to end, so the GRAM a
+ * board powers on with stayed on show around the two boxes. The rules kept below
+ * are the four that cost: wire order, even windows, one band in flight, and a
+ * whole-panel first paint behind a dark display. The flicker fix stands — the
+ * bands stay composited. */
 
 #include <math.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -67,15 +80,43 @@ static const char *MSG[MSG_LINES] = {
 #define BALL_R      26
 #define SPRITE_SIDE (2 * BALL_R + 2)
 
-#define BAND_ROWS   8
+#define BAND_ROWS   8     /* even: a band always starts and spans an even row count */
 #define RGB565_BLACK 0x0000
 #define RGB565_WHITE 0xFFFF
 #define RGB565_GRAY  0x7BEF  /* message body: not quite white, the ball owns white */
 #define RGB565_DARK  0x2104
 
+/* Rule WIRE: what goes into a flush buffer is wire order, not host order. The
+ * CO5300 reads each pixel big-endian and esp_lcd_panel_draw_bitmap is a verbatim
+ * tx_color, so the two tinted colors have to be byte-swapped here or the panel
+ * paints them as something else: 0x2104 arrived as 0x0421, a dark green — the
+ * ball's body. Black and white are byte palindromes, which is why the ring and
+ * the black between sprites still looked right. main/display/display.c does the
+ * same swap for the same panel for exactly this reason. */
+#define WIRE(v) ((uint16_t)(((uint16_t)(v) >> 8) | ((uint16_t)(v) << 8)))
+#define INK_BLACK WIRE(RGB565_BLACK)
+#define INK_WHITE WIRE(RGB565_WHITE)
+#define INK_GRAY  WIRE(RGB565_GRAY)
+#define INK_DARK  WIRE(RGB565_DARK)
+
 static esp_lcd_panel_handle_t panel;
 static uint16_t *band;              /* SCREEN_W * BAND_ROWS, one composited strip per flush */
 static uint16_t *ball_sprite;
+/* Rule ONE-IN-FLIGHT: esp_lcd_panel_draw_bitmap returns as soon as the transfer is
+ * queued (queue depth 10), so band is still under DMA when the next band is
+ * composed. One buffer plus a trans-done token serializes them. The main
+ * firmware pays this with a ping-pong tile ring (display.c, L1); this app has
+ * two sprites and no frame budget to protect, so it waits. */
+static SemaphoreHandle_t band_free;
+
+static bool IRAM_ATTR band_done(esp_lcd_panel_io_handle_t io,
+                                esp_lcd_panel_io_event_data_t *edata, void *ctx)
+{
+    (void)io; (void)edata; (void)ctx;
+    BaseType_t hi = pdFALSE;
+    xSemaphoreGiveFromISR(band_free, &hi);
+    return hi == pdTRUE;
+}
 
 /* Two floaty bodies: the message block and the ball, each bouncing inside its
  * own circular lane of the round panel. */
@@ -93,11 +134,20 @@ typedef struct { int x, y, w, h; } box_t;
 /* ---- Drawing ----------------------------------------------------------------
  * The scene is always black background + message + ball (ball on top), so any
  * rect can be rebuilt to its final state in one pass. Rendering straight into
- * the flush buffer — never a black rect first — is what ends the flicker. */
+ * the flush buffer — never a black rect first — is what ends the flicker.
+ *
+ * Rule EVEN: every flush window is full width and covers a whole number of even
+ * rows. The CO5300 clocks two pixels per cycle on each axis and the driver
+ * programs CASET/RASET verbatim, so an odd start or an odd span addresses the
+ * window one column/row off its data: rows come out sheared (the reason the type
+ * read as noise), and the pixels a sprite left on the glass land outside the next
+ * window that meant to erase them (the trail). x = 0..465 is even by construction
+ * and COL_GAP is 6, so the GRAM window stays even too; the row runs are snapped
+ * outward for the same reason display.c's DB_EVEN_BANDS does it. */
 
 /* One panel row of glyphs: the message's pixels inside band rows [y0, y0+rows)
- * of the band's columns [x0, x0+bw), drawn as they will be on the glass. */
-static void render_message(int x0, int bw, int y0, int rows)
+ * of the panel's full width, drawn as they will be on the glass. */
+static void render_message(int y0, int rows)
 {
     int bx = (int)lroundf(msg.x - msg.w / 2.0f);
     int by = (int)lroundf(msg.y - msg.h / 2.0f);
@@ -106,64 +156,92 @@ static void render_message(int x0, int bw, int y0, int rows)
         int lw = n * CELL_W - GLYPH_SCALE;      /* trailing inter-cell gap cut */
         int lx = bx + (msg.w - lw) / 2;         /* this line's left edge */
         int ly = by + line * CELL_H;            /* this line's glyph top */
-        int sx = (lx > x0) ? lx : x0;
-        int ex = (lx + lw < x0 + bw) ? lx + lw : x0 + bw;
+        int xa = (lx > 0) ? lx : 0;             /* never write past a band row */
+        int xb = (lx + lw < SCREEN_W) ? lx + lw : SCREEN_W;
         for (int r = ly - y0; r < ly + 7 * GLYPH_SCALE - y0; r++) {
             if (r < 0 || r >= rows) continue;
             int grow = (y0 + r - ly) / GLYPH_SCALE;
-            uint16_t *p = band + (size_t)r * bw;
-            for (int x = sx; x < ex; x++) {
+            uint16_t *p = band + (size_t)r * SCREEN_W;
+            for (int x = xa; x < xb; x++) {
                 int px = x - lx;
                 int cell = px / CELL_W;
                 int gc = (px % CELL_W) / GLYPH_SCALE;
                 char c = MSG[line][cell];
                 if (cell < n && gc < 5 && c >= ' ' && c <= '~' &&
                     (font5x7[c - ' '][gc] & (1 << grow)))
-                    p[x - x0] = RGB565_GRAY;
+                    p[x] = INK_GRAY;
             }
         }
     }
 }
 
 /* The ball's pixels inside the same band, drawn over anything already there. */
-static void render_ball(int x0, int bw, int y0, int rows)
+static void render_ball(int y0, int rows)
 {
     int bs = (int)lroundf(ball.x - ball.w / 2.0f);
     int by = (int)lroundf(ball.y - ball.h / 2.0f);
-    int sx = (bs > x0) ? bs : x0;
-    int ex = (bs + SPRITE_SIDE < x0 + bw) ? bs + SPRITE_SIDE : x0 + bw;
+    int xa = (bs > 0) ? bs : 0;                 /* never write past a band row */
+    int xb = (bs + SPRITE_SIDE < SCREEN_W) ? bs + SPRITE_SIDE : SCREEN_W;
     int sy = (by > y0) ? by : y0;
     int ey = (by + SPRITE_SIDE < y0 + rows) ? by + SPRITE_SIDE : y0 + rows;
     for (int y = sy; y < ey; y++) {
         const uint16_t *src = ball_sprite + (size_t)(y - by) * SPRITE_SIDE;
-        uint16_t *dst = band + (size_t)(y - y0) * bw;
-        for (int x = sx; x < ex; x++) dst[x - x0] = src[x - bs];
+        uint16_t *dst = band + (size_t)(y - y0) * SCREEN_W;
+        for (int x = xa; x < xb; x++) dst[x] = src[x - bs];
     }
 }
 
-/* Final scene for rows [y0, y0+rows) of columns [x0, x0+bw): black, then the
- * message, then the ball, then one flush. */
-static void render_and_flush(int x0, int y0, int w, int rows)
+/* Final scene for panel rows [y0, y0+rows) at full width: black, then the
+ * message, then the ball, then one flush into the one band buffer — which is
+ * handed back only when its DMA is off the wire. */
+static void render_and_flush(int y0, int rows)
 {
-    for (int i = 0; i < w * rows; i++) band[i] = RGB565_BLACK;
-    render_message(x0, w, y0, rows);
-    render_ball(x0, w, y0, rows);
-    esp_lcd_panel_draw_bitmap(panel, x0, y0, x0 + w, y0 + rows, band);
+    xSemaphoreTake(band_free, portMAX_DELAY);
+    for (int i = 0; i < SCREEN_W * rows; i++) band[i] = INK_BLACK;
+    render_message(y0, rows);
+    render_ball(y0, rows);
+    if (esp_lcd_panel_draw_bitmap(panel, 0, y0, SCREEN_W, y0 + rows, band) != ESP_OK)
+        xSemaphoreGive(band_free);   /* nothing queued, so nothing will give it back */
 }
 
-/* Repaint a rect band by band, clipped to the panel and the band buffer. */
-static void repaint(box_t r)
+/* Repaint rows [y0, y1) — snapped outward onto the panel's even row grid, then
+ * cut into bands of BAND_ROWS. Widening is free: each band is re-composited from
+ * the scene, so an extra row holds its real pixels and not a stale copy. */
+static void repaint_rows(int y0, int y1)
 {
-    if (r.x < 0) { r.w += r.x; r.x = 0; }
-    if (r.y < 0) { r.h += r.y; r.y = 0; }
-    if (r.x + r.w > SCREEN_W) r.w = SCREEN_W - r.x;
-    if (r.y + r.h > SCREEN_H) r.h = SCREEN_H - r.y;
-    if (r.w <= 0 || r.h <= 0) return;
-    for (int y = r.y; y < r.y + r.h; y += BAND_ROWS) {
-        int rows = r.y + r.h - y;
+    if (y0 < 0) y0 = 0;
+    if (y1 > SCREEN_H) y1 = SCREEN_H;
+    if (y0 >= y1) return;
+    y0 &= ~1;
+    if ((y1 - y0) & 1) y1++;
+    if (y1 > SCREEN_H) y1 = SCREEN_H;
+    for (int y = y0; y < y1; y += BAND_ROWS) {
+        int rows = y1 - y;
         if (rows > BAND_ROWS) rows = BAND_ROWS;
-        render_and_flush(r.x, y, r.w, rows);
+        render_and_flush(y, rows);
     }
+}
+
+/* Every row the two sprites owe a repaint to this frame, in as few runs as the
+ * glass allows: two bodies whose row runs come within ROW_FUSE of each other
+ * are painted as one. Rows outside every run keep what the last paint put there
+ * — which, after the first paint covers the whole panel, is the scene. */
+#define ROW_FUSE 16     /* bridge a gap this small rather than pay another run */
+static void repaint_frame(const box_t *a, const box_t *b)
+{
+    int r0a = a->y, r1a = a->y + a->h;
+    int r0b = b->y, r1b = b->y + b->h;
+    if (r0b < r0a) {                      /* order the runs by where they start */
+        int t0 = r0a, t1 = r1a;
+        r0a = r0b; r1a = r1b;
+        r0b = t0; r1b = t1;
+    }
+    if (r0b - r1a <= ROW_FUSE) {
+        repaint_rows(r0a, (r1b > r1a) ? r1b : r1a);
+        return;
+    }
+    repaint_rows(r0a, r1a);
+    repaint_rows(r0b, r1b);
 }
 
 static box_t body_box(const body_t *b)
@@ -171,12 +249,6 @@ static box_t body_box(const body_t *b)
     return (box_t){ .x = (int)lroundf(b->x - b->w / 2.0f),
                     .y = (int)lroundf(b->y - b->h / 2.0f),
                     .w = b->w, .h = b->h };
-}
-
-static bool box_overlaps(box_t a, box_t b)
-{
-    return a.x < b.x + b.w && b.x < a.x + a.w &&
-           a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 static box_t box_union(box_t a, box_t b)
@@ -188,7 +260,8 @@ static box_t box_union(box_t a, box_t b)
     return (box_t){ .x = x1, .y = y1, .w = x2 - x1, .h = y2 - y1 };
 }
 
-/* One 8-ball sprite: white ring, dark body, white number disc, black "8". */
+/* One 8-ball sprite: white ring, dark body, white number disc, black "8".
+ * Stored in wire order, so the band copy below is verbatim. */
 static void build_ball(void)
 {
     int c = SPRITE_SIDE / 2;
@@ -196,15 +269,15 @@ static void build_ball(void)
         for (int x = 0; x < SPRITE_SIDE; x++) {
             int dx = x - c, dy = y - c;
             int d2 = dx * dx + dy * dy;
-            uint16_t v = RGB565_BLACK;
+            uint16_t v = INK_BLACK;
             if (d2 <= (BALL_R + 1) * (BALL_R + 1)) {
-                v = RGB565_WHITE;
-                if (d2 <= (BALL_R - 2) * (BALL_R - 2)) v = RGB565_DARK;
-                if (d2 <= (BALL_R / 2) * (BALL_R / 2)) v = RGB565_WHITE;
+                v = INK_WHITE;
+                if (d2 <= (BALL_R - 2) * (BALL_R - 2)) v = INK_DARK;
+                if (d2 <= (BALL_R / 2) * (BALL_R / 2)) v = INK_WHITE;
                 int ax = x - (c - 5), ay = y - (c - 7);
                 if (ax >= 0 && ax < 10 && ay >= 0 && ay < 14 &&
                     (font5x7['8' - ' '][ax / 2] >> (ay / 2)) & 1)
-                    v = RGB565_DARK;
+                    v = INK_DARK;
             }
             ball_sprite[y * SPRITE_SIDE + x] = v;
         }
@@ -237,7 +310,7 @@ static void panel_init(void)
         SCREEN_W * BAND_ROWS * (int)sizeof(uint16_t));
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
 
-    esp_lcd_panel_io_spi_config_t io = CO5300_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, NULL, NULL);
+    esp_lcd_panel_io_spi_config_t io = CO5300_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, band_done, NULL);
     io.pclk_hz = 40 * 1000 * 1000;   /* vendor default; the firmware's 80 MHz is a
                                       * per-panel gamble, and this app has no frame
                                       * budget to chase */
@@ -255,7 +328,11 @@ static void panel_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel, COL_GAP, 0));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+    /* The display stays dark until the whole panel has been painted once: the
+     * CO5300 init sequence ends with DISPON and the GRAM it turns on with is
+     * whatever the previous image left — a board flashed lonely over an orb
+     * boots straight into that garbage around the two boxes. */
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, false));
 }
 
 /* ---- The settings wipe -------------------------------------------------------
@@ -296,6 +373,8 @@ void app_main(void)
     ball_sprite = heap_caps_malloc(SPRITE_SIDE * SPRITE_SIDE * sizeof(uint16_t),
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (!band || !ball_sprite) { ESP_LOGE(TAG, "DMA RAM OOM"); return; }
+    band_free = xSemaphoreCreateBinary();
+    xSemaphoreGive(band_free);          /* the first band may be composed at once */
 
     panel_init();
     build_ball();
@@ -312,13 +391,13 @@ void app_main(void)
                      .lane_r = SCREEN_W / 2.0f - BALL_R - 3,
                      .w = SPRITE_SIDE, .h = SPRITE_SIDE };
 
+    /* Rule DARK-FIRST: one paint end to end while the glass is still dark. This is
+     * the clear the erase-then-redraw version used to get for free, and the
+     * first frame the eye is allowed to see is already the scene. */
+    repaint_rows(0, SCREEN_H);
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+
     box_t msg_now = body_box(&msg), ball_now = body_box(&ball);
-    if (box_overlaps(msg_now, ball_now))
-        repaint(box_union(msg_now, ball_now));   /* one composited pass, ball on top */
-    else {
-        repaint(msg_now);
-        repaint(ball_now);
-    }
 
     TickType_t last = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(TICK_MS);
@@ -328,21 +407,19 @@ void app_main(void)
         box_t msg_prev = msg_now, ball_prev = ball_now;
         msg_now = body_box(&msg);
         ball_now = body_box(&ball);
-        if (msg_now.x == msg_prev.x && msg_now.y == msg_prev.y &&
-            ball_now.x == ball_prev.x && ball_now.y == ball_prev.y)
-            continue;
-        /* Each body repaints the union of where it was and where it is now —
-         * every flush carries the final scene, so nothing ever shows blacked
-         * out text or a ball mid-move. Where the two unions touch, one pass
-         * covers both, with the ball on top in its final place. */
-        box_t m = box_union(msg_prev, msg_now);
-        box_t b = box_union(ball_prev, ball_now);
-        if (box_overlaps(m, b))
-            repaint(box_union(m, b));
-        else {
-            repaint(m);
-            repaint(b);
+        if (!(msg_now.x == msg_prev.x && msg_now.y == msg_prev.y &&
+              ball_now.x == ball_prev.x && ball_now.y == ball_prev.y)) {
+            /* Each body repaints the rows between where it was and where it is
+             * now — every band carries the final scene, so nothing ever shows
+             * blacked out text or a ball mid-move. */
+            box_t m = box_union(msg_prev, msg_now);
+            box_t b = box_union(ball_prev, ball_now);
+            repaint_frame(&m, &b);
         }
+        /* The tick waits every time. The skip that used to sit here
+         * jumped over the delay whenever a bounce clamped a body still, and the
+         * loop ran the rest of the core at full tilt: that is the stall, and
+         * vTaskDelayUntil's own clock went stale with it. */
         vTaskDelayUntil(&last, period);
     }
 }

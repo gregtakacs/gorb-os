@@ -1023,6 +1023,15 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
     hdr[W_GEOM_SIZE] = _geom_size(len(geom_bytes), counts)
     hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(a_blob)
+    # The device's slot boundary is geom_off + geom_size (orb_app_install.c:62): the
+    # manifest, settings and asset table ahead of the blob are part of the bill.
+    # GEOM_BYTES_MAX alone caps the blob only, so a full-ceiling blob written here was
+    # refused pre-erase on the dial (§19.3's witness: "262320 B: a slot holds
+    # 262144 B"). Refuse it here, in the device's words, before a file exists.
+    if hdr[W_GEOM_OFF] + hdr[W_GEOM_SIZE] > GEOM_BYTES_MAX:
+        raise ValueError("its manifest and geometry are %d B: a slot holds %d B —"
+                         " re-bake the app smaller"
+                         % (hdr[W_GEOM_OFF] + hdr[W_GEOM_SIZE], GEOM_BYTES_MAX))
     hdr[W_ART_OFF]   = art_offset(hdr[W_GEOM_OFF], hdr[W_GEOM_SIZE])
     hdr[W_GEOM_CRC]  = zlib.crc32(geom_bytes) & 0xFFFFFFFF
     hdr[W_ART_CRC]   = 0

@@ -91,7 +91,7 @@ close the item; the work order is §13.
 |---|---|---|
 | D11 | The theme picker's commit path | **A theme pick installs and reboots, unconditionally.** The stage-then-ask flow is rejected: no pending NVS key, no "reboot now" / "keep this dial" rows, no boot-time card install. Press on a theme copies the container into the alternate slot on the worker task, verifies it from flash, marks that slot live, and asks the OS for the reboot — the pick IS the confirmation. Failure stays honest: the row answers with its reason and the device does not reboot. |
 | D12 | App option pages may nest | **Sub-menus, one level deep** (owner chose this ABI shape from the four offered). An app's option list can carry header rows that open one nested list; items live inside it, never inside each other. One ABI hook added (§1.4): `opt_kind` — `OPT_ROW` / `OPT_GROUP` / `OPT_ITEM`, contiguous-section convention, NULL hook = today's flat page. |
-| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** |
+| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** **AMENDMENT OWED (§20, D30, 2026-10-15): the hybrid makes both slots ping-pong install targets and moves the card-less fallback to the baked-in `clock_assets` mmap, so the "never an install target" clause stops being load-bearing — verify that fallback on a card-less boot before erasing A (§20.5(2)).** |
 
 ### 0.4 Owner's ruling, 2026-10-12 (third round) — the M3 overflow-mechanism choice
 
@@ -100,7 +100,7 @@ refusal-hunt finding stand there unchanged.
 
 | Ref | Decision | Ruling |
 |---|---|---|
-| D14 | Which mechanism serves the overflow bank | **A (flash re-map) is the mechanism — for the overflow bank as for the primary.** The measured 3.6 ms of switch and 5% of read cost an arena saves do not pay its 471 ms boot fill and 3.86 MB of PSRAM (of 7.95 free), and steady rotation is identical at the reporting resolution. **B (PSRAM arena) ships dark** (`ORB_ART_MECH_B 0`) as P4's escape hatch — the only way a third flagship can boot when the page budget says no — with its gate measured and its ABI promise host-pinned. Flipping B on is one byte (`art_bank.h:98`); if it ever ships lit, its carried-bank rule applies (§14.1: the release-for-free variant re-fills at 471 ms, so an arena app carries its parked bank — the §6/M-carrier decision is mandatory for B, not optional). |
+| D14 | Which mechanism serves the overflow bank | **A (flash re-map) is the mechanism — for the overflow bank as for the primary.** The measured 3.6 ms of switch and 5% of read cost an arena saves do not pay its 471 ms boot fill and 3.86 MB of PSRAM (of 7.95 free), and steady rotation is identical at the reporting resolution. **B (PSRAM arena) ships dark** (`ORB_ART_MECH_B 0`) as P4's escape hatch — the only way a third flagship can boot when the page budget says no — with its gate measured and its ABI promise host-pinned. Flipping B on is one byte (`art_bank.h:98`); if it ever ships lit, its carried-bank rule applies (§14.1: the release-for-free variant re-fills at 471 ms, so an arena app carries its parked bank — the §6/M-carrier decision is mandatory for B, not optional). **D30 (2026-10-15, §20) lights B for the installed-theme runtime path only; A stays boot's mechanism and this row's overflow ruling stands. Implementation trap: `tools/host_art_residency_test.py:72` pins `#define ORB_ART_MECH_B 0`, so flipping the byte lands together with an update to that pin.** |
 
 ### 0.5 Owner's ruling, 2026-10-12 (fourth round) — the behaviour vocabulary, closing P0
 The owner answered §9.2's question — which `CLK_KIND_*`/`CLK_SRC_*` become
@@ -180,17 +180,21 @@ wasm3 from an optional tier to a committed one. D3's "escape hatch" wording and 
 | D27 | The wasm3 memory bound | **Declared in the manifest and gated at install**, in the same shape as `caps` and `period_ms`: the owner sees the cost before consenting, and a module that cannot fit never writes a byte of flash. A trapping module bills a C2 fault, so two strikes mark the app failed and the dial boots to the clock. |
 | D28 | Who defines the format | **The firmware's resolver is the source of truth.** The theme editor adheres to it, never the reverse. |
 | D29 | The theme budget | **`ORB_THEME_SLOT_CAP`, 0x3F0000 (4,128,764 B) per bundle**, policed by the editor at build time and again by the installer at verify time. It is a 63-page ceiling at the measured 64 KB MMU page. |
-| D30 | Flipping among several card themes | **Unrationalised pending measurement.** D11's install-and-reboot costs seconds per flip. Card-resident lazy loading could answer instantly and is unbudgeted against the flush path. M5 measures it before either ships. **Measured 2026-10-15 (§19.2): Arm A flip 7.0–9.0 s all-in at 1.17 MB, copy 3.8–5.4 s of it; Arm B's floor is that copy with the dial starved to 4 fps during it and 1.17 MB of PSRAM permanently spent. The owner rules.** |
+| D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20 |
 | D31 | Content when a theme carries none | **The app supplies its own default.** Theme content wins wherever the bundle carries it. Where it does not, the app renders a default rather than showing nothing, and D21's two choices ("substitute an OS global or refuse to run") gain the third it left open. The default is code, not bytes: D22's five primitives draw it, so D21's "`.orbapp` never ships a byte of art" stands and D10's "the OS ships no art" stands. The selector is §4.1's `assets` flag, which that row already named "D21's fallback contract": `required` keeps D26's install refusal, `optional` means the app has a default to draw. App-carried *layout* for a silent theme reads from the container's own `geometry` region (§4.1: opaque to the OS, already size- and CRC-checked at `orb_app_manifest.c:319`) — the only reading those counts exist for. §9 item 3 is closed for the clock. |
 
 **What this retires.** The three-slot art re-slice of §3.2 (`art0`/`art1`/`art2`) is
 withdrawn: with no art in any container there is no per-app bank to place, and
 `partitions.csv` stays exactly as pushed on 2026-10-12. `orb_art_reserve()`'s per-app
 bank claim and D18's art-banking installer path are shelved rather than deleted,
-because D30's answer may still want a per-theme reserve. `CAP_ART`'s meaning moves
+D30's ruling (2026-10-15, §20) wants no per-theme reserve — one theme is resident at a time — so the shelf stands as dead code. `CAP_ART`'s meaning moves
 from "its own bank" to "the theme slot the registry resolved for this app".
 D13's A/B survives with changed content: A is the shipped default bundle, B is the
-installed bundle, and a pick flips which is live.
+installed bundle, and a pick flips which is live. **§20 (D30, 2026-10-15) supersedes
+that pairing for themes: both slots become ping-pong install targets, and the card-less
+fallback moves from slot A's pixels to the baked-in `clock_assets` mmap, which is why
+"A is never an install target" is no longer load-bearing. Verify the mmap fallback
+covers the card-less boot before erasing A — bench item §20.5(2).**
 
 **The capacity question D21 does not answer.** A theme covers every enabled app at
 once, so a bundle carries N flagship banks against one 4 MB ceiling. The clock's
@@ -274,7 +278,7 @@ A first implementation pass was written, found to rest on three wrong assumption
 5. **The frozen ABI's signatures settle two questions.** `layer_add` takes `(app, desc)` and returns one int (`§4.3`): no plane argument, so the plane is the module's to own (point 2); no z argument, so paint order IS table order, and reordering a layer means del and re-add. Both readings are forced, not chosen, which is worth writing down before someone rediscovers it as a limitation.
 6. **One trap the table must not reintroduce.** A `gen_prim` field left at 0 reads as `ORB_PRIM_RECT`. For a `HAND` slot that is a silent lie — the app asked for a hand and gets a rectangle. The descriptor's unset value must map to "whatever the class says", with `SPRITE`/`PLATE` the only classes that genuinely mean `RECT`.
 
-**Landed 2026-10-13 against all six.** Two of the constraints moved shape under implementation, and both moves are worth recording before the code is read as if the notes described it. Point 1: `gfx_prim_ctx_init()` lives in `orb_layers.c`, not `orb_gfx.c` as `orb_assets.h` originally said (the header's comment now says so too). The seam it is — bake output into paint input — needs no LVGL at all, and living in the LVGL-free TU is what lets `host_orblayers_test.py` drive it with vectors instead of leaving the promise build-checked only. Point 5's forced readings stand; a sixth forced reading surfaced in `orb_svc.c`: `CAP_UI` is a free cap (`orb_svc.h:79-83`), so the "revoke wipes the glass" door this section sketched cannot exist — `orb_svc_set_grant` refuses a free cap's toggle above the layer code. The wipe lives at the two doors a free cap actually has: `orb_svc_app_suspended` and `orb_svc_forget_row`. The commit is the layer table itself (`main/gfx/orb_layers.{h,c}`, ~600 lines with the comments the design cost), the four wired entries plus the live/refused ledger pair in `orb_svc.c`, the forward typedefs in `orb_svc.h` (a complete type there would drag `clock_assets.h` and `esp_err.h` across the app boundary — the P5b lesson applied), and `tools/host_orblayers_test.py`: 73 host vectors over the shipped table and the shipped registry, 10 source-rewrite mutants all caught, plus mirror lints pinning the harness's two copies of compositor maths (`gfx_paint_ctx_init`'s gate, the swept-box formula) against `orb_gfx.c`'s own text. The job list it builds (`orb_layers_jobs`) has no caller yet — the clock routes its own layers and stays that way until P6 — which is exactly the pass line the table row promised: reachable through the gate, refused for the documented reason, counted either way, on the host, before a single pixel of it is benched.
+**Landed 2026-10-13 against all six.** Two of the constraints moved shape under implementation, and both moves are worth recording before the code is read as if the notes described it. Point 1: `gfx_prim_ctx_init()` lives in `orb_layers.c`, not `orb_gfx.c` as `orb_assets.h` originally said (the header's comment now says so too). The seam it is — bake output into paint input — needs no LVGL at all, and living in the LVGL-free TU is what lets `host_orblayers_test.py` drive it with vectors instead of leaving the promise build-checked only. Point 5's forced readings stand; a sixth forced reading surfaced in `orb_svc.c`: `CAP_UI` is a free cap (`orb_svc.h:79-83`), so the "revoke wipes the glass" door this section sketched cannot exist — `orb_svc_set_grant` refuses a free cap's toggle above the layer code. The wipe lives at the two doors a free cap actually has: `orb_svc_app_suspended` and `orb_svc_forget_row`. The commit is the layer table itself (`main/gfx/orb_layers.{h,c}`, ~600 lines with the comments the design cost), the four wired entries plus the live/refused ledger pair in `orb_svc.c`, the forward typedefs in `orb_svc.h` (a complete type there would drag `clock_assets.h` and `esp_err.h` across the app boundary — the P5b lesson applied), and `tools/host_orblayers_test.py`: 73 host vectors over the shipped table and the shipped registry, 10 source-rewrite mutants all caught, plus mirror lints pinning the harness's two copies of compositor maths (`gfx_paint_ctx_init`'s gate, the swept-box formula) against `orb_gfx.c`'s own text. The job list it builds (`orb_layers_jobs`) has no caller yet — the clock routes its own layers and stays that way until P6 — which is exactly the pass line the table row promised: reachable through the gate, refused for the documented reason, counted either way, on the host, before a single pixel of it is benched. **D30's ruling (§20) lands on this seam for P6: the flip page owns the glass while one fused card pass fills both the PSRAM arena and the ping-pong slot, and boots refill that arena from flash — the card never re-enters the boot path.**
 
 ### 1.3 Also an app, and the cheaper proof the ABI works
 
@@ -652,6 +656,11 @@ WiFi radio and the antenna already cost this session its HTTP timeouts at rssi �
 **The decision is owed before P6 ships the flip UI, and either answer is allowed to be
 per-bundle-size.**
 
+**CLOSED 2026-10-15: §20 rules a third arm, not A or B as drafted here — lazy flip into
+the PSRAM arena via a default-first route, flash kept as the cross-reboot cache. The
+per-bundle-size allowance goes unused: one arena resident covers every bundle ≤ D29's
+cap.**
+
 ### M4 — the existing bench limits, from `.clinerules`
 
 - The bench has no WiFi radio (`.clinerules:153`), so an install over the browser is proven only by `tools/host_sd_test.py`-style lifts of the shipped functions (`.clinerules:333-345`), and the card path itself only by the measured table at `.clinerules:444-458`. Any claim about a live install of an app must name which of the two it rests on.
@@ -685,7 +694,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | P4b | the container sheds its art claim for good: `art_size`/`art_req`/`art_crc` stop being read by the installer, `art_req` with no payload inverts from refusal (`orb_app_manifest.c:317`) to a valid D21 declaration, and the gate-2 refusal text changes | no container can offer art to an installer that will not take it; the sentinel pins the inverted gate and the writer drops the field. **Landed 2026-10-13 (`e66c0f0`, fix `e74d500`). The refusal lives once, in the reader: `orbapp_check_header` refuses any container with `art_size` or `art_crc` non-zero ("carries a %u B art payload: no container ships art (D21) — re-package it"), mirrored in the same words in `orbapp.py`; `art_req` survives as D18's request-as-declaration, bounded only by the old slot cap as a mis-count guard, and `art_req>0, art_size==0` is now the ACCEPT vector (the inversion the pass line named). The installer lost gate 2 entirely (gates renumbered), the art CRC loop in `verify_payload`, the `h->art_size` fill into the registry row, the `art_crc` term from the upload dedup tuple, and `APPS_ART_SMALL_MAX` with the art term in `ORB_APP_UPLOAD_MAX` (now geometry + 128 KB slack: the largest legal file cannot carry pixels). Scan's truncation fact moved to the copied prefix (`geom_off+geom_size`) — the art claim can no longer extend it because no file the reader admits has one. Writer: `write_container`/`pack_header` have no art argument, `disclosure()` has no art line — the owner consents to no pixels because there are none. Sentinels: writer 147 checks / 24 mutants, reader 50 vectors / 9 mutants (two new: the D21 gate dropped, the bound doubled), install 25/25, scan 17 vectors / 13 mutants — all caught. The fold also righted two lies the P4a close had told itself: install's six "new" P4a mutants were dead tuples sitting OUTSIDE the `MUTATIONS` list (the count that read 16/16 never ran them — folded in, plus the stride mutant re-anchored to the uninstall site where the first-occurrence `_m` actually hits the install copy), and scan's caps mutant and terminator mutant lost their uniqueness to P4a's second caps emitter and the three shared handler closes — re-anchored, with the word-check and the terminator assert now scoped per-body, both green. Bench: §15 P4b record — the live D21 422 arrived verbatim, and it caught a third thing: both header validators had been returning their refusal from a frame-local buffer, so the door printed garbage where the sentence should be (the `#\x04\x06` the fix commit is named for) — `static char why[160]` in both, pinned by a new lint rule and its own mutant.** |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes, **and the `layer_*`/`bank`/`status` broker stubs get bodies** (§1.4 reserved them and `orb_svc.h:115` named P5 as their blocker) — **decomposed 2026-10-12 into five separable commits, and P5.1 is in.** **P5.1 (landed, `df87abc`): the three debt fixes of §7 item 7.** **P5.2 (landed, and benched 2026-10-13): the `menu_page_t` table** replaces `page_rows`/`row_text`/`activate`/`go_back` (§7 item 1; item 2's AP/TZ/DISPLAY/PERMISSIONS/apps/exit half — APPS and ABOUT join as `s_top` entries in P5.3). `host_menu_test.py` was rebuilt around the table: 131 checks including a press block that drives the lifted dispatcher the stub used to fake, 48 mutants all caught, six structural lints over the table's text. The lifted labels/titles/hints are the shipped ones, so identical rendered text is pinned by the suite rather than by eye. **P5.3 (landed 2026-10-13): APPS + ABOUT rows** (§7 items 2 and 4). Three pages — `PG_APPS`, its one-app `PG_APPACT`, and the inert `PG_ABOUT` — reusing `orb_app_enable()`/`orb_app_uninstall()`/`orb_app_activate()` as a second caller rather than new business logic. Bench: walked on the flashed P5.3 build — 49 checks, 0 failed, and the top page's app row derived as 6 where it had been 4, the two new OS rows accounted for exactly. The re-walk landed afterwards: the P5.4 image carries P5.3's pages and its walk log matched this one, so the pending line is closed. APPS/ABOUT's own rows are host-pinned until the walk grows checks for them. **P5.4 (landed 2026-10-13): the position readout** (§7 item 6). `title_line()` composes the armed header and gates on the window's own `rows > ROW_MAX`, so a page that scrolls counts itself and a page that fits says nothing — no per-page flag to forget. 10 new checks pin the exact text at the boundary in both directions, 6 new mutants, 73 of 73 caught, suite 179 checks. Costs 112 B: `0x17ad80` to `0x17adf0`. Bench: re-walked on the committed image — 49 checks, 0 failed, 229 cursor records, and the log is byte-identical to P5.3's once the boot stamp is normalized. The digits are host-pinned: the cursor log line keeps the bare title so the walk's `row N/M` stays the pair the header composes, and the bench has no framebuffer readback. **P5.5 (landed 2026-10-13): the `layer_*` bodies** (§1.4, shaped by §1.2b). The per-app table lives in `main/gfx/orb_layers.{h,c}` with generation-tagged handles, row-owned PSRAM planes behind an installed allocator hook, and a job builder that keeps table order as paint order; `orb_svc.c` grew the four gated bodies, the suspend/uninstall wipes, and the live/refused ledger pair the status endpoint now prints per row. `gfx_prim_ctx_init()` — the entry `orb_assets.h` had promised since P5b — is real, and it lives in `orb_layers.c` so the suite can drive it (see §1.2b's closing note). `tools/host_orblayers_test.py`: 73 vectors over the shipped table and registry with the shipped bake, 10 source-rewrite mutants all caught, mirror lints pinning the two stubbed compositor maths against `orb_gfx.c`'s text. Firmware builds clean: +2,944 B flash. **Bench-corrected 2026-10-14 (§16): the embedded tables died on the board — 14,720 B of .bss answered `httpd_start: ESP_ERR_HTTPD_TASK` and the config server stopped. `fix(svc)` moved each row's table to a lazy PSRAM calloc (16 x 920 B returned to the heap, +256 B flash), freed at row-forget, kept across suspend, with a per-row refusal word so the ledger counts refusals made before a table exists; 5 new host vectors pin the paths the embedded shape did not have.** No commit-hook caller yet — that is P6, as recorded. Bench state on `fix(svc)`'s image: heap region back to 136 KiB, `config server listening`, boot-to-dial 1.98 s; the status-body read of the `layers` pair awaits the radio fix in §16's checklist. No commit-hook caller yet — that is P6, as recorded. Item 3 needed no P5 work: `orb_jobs_post(fn, arg, arglen)` is already the generic payload carrier, and `menu_view.c` has called it that way since before P5 opened | `host_menu_test.py` rewritten for the table, all mutations red; the compositor primitives reachable through the gate and counted by the ledger |
 | P5b | **new (D22/D23):** the asset registry. The frozen class enum (`text`/`sprite`/`hand`/`plate`/`ring`/`bank`/`layer`/`status`) versioned through `abi_min`/`abi_max`; `<slug>/<name>` vs `global/<name>` resolution and its two fixed orders; the manifest's legible asset table; the five **generated** fallback primitives (no shipped pixels, D22); `orb_app_manifest.h/.c` and `tools/orbapp.py` gain the table together | a declared-optional asset resolves global-then-fallback and a declared-required one refuses at install (D26), all on the host; a card app draws a ring and a hand with zero theme bytes present. **D31 names the owner of that second clause:** the app supplies the default content and theme content wins wherever a bundle carries it. P5.5's `layer_*` bodies sit behind this row, because the descriptor's art reference is a registry handle and nothing else is legal |
-| P6 | **rewritten (D21/D24/D29):** `.orbtheme` FORMAT 3, the theme as a multi-app bundle. The app-to-slot binding map, the 0x3F0000 budget gate at both bake and install, several bundles listed on the card, the flip-on-orb over them, and the retirement of the clock's FORMAT 2 dialect. The compiled-in `clock_assets` pair stays the card-less fallback, and `bake_clock.py` gains the reverse path §0.2 still owes | the shipped av-kit source kit re-bakes to a FORMAT 3 bundle that boots, a FORMAT 2 file is refused at the format gate with no fallback reader, and a card-less board still tells the time |
+| P6 | **rewritten (D21/D24/D29):** `.orbtheme` FORMAT 3, the theme as a multi-app bundle. The app-to-slot binding map, the 0x3F0000 budget gate at both bake and install, several bundles listed on the card, the flip-on-orb over them (D30 ruled §20: default-first lazy copy into the PSRAM arena and the ping-pong slot in one fused card pass, progress bar on the glass, no reboot, Arm A kept only as the arena-full fallback), and the retirement of the clock's FORMAT 2 dialect. The compiled-in `clock_assets` pair stays the card-less fallback, and `bake_clock.py` gains the reverse path §0.2 still owes | the shipped av-kit source kit re-bakes to a FORMAT 3 bundle that boots, a FORMAT 2 file is refused at the format gate with no fallback reader, and a card-less board still tells the time |
 | P6b | **new (D28):** orb-manager's theme and app manager. Bundle editor over the firmware resolver's format, preview rendered from the manifest's asset table at real scale, the budget meter, upload of app files and bundles, and release packaging of the cross-product | an editor-built bundle installs on the first try, and the preview's pixels match the dial's at the same coordinates |
 | P7 | **promoted from optional (D20/D3):** the wasm3 tier over the same `orb_svc_t`, the module carried in the container's `code` range, and `wasm_mem_max` gated at install (D27) | a wasm app that traps twice is marked failed and the dial boots to the clock, exactly as C2 already specifies for a faulting compiled app |
 | Shelve | the three-slot `assets` re-slice, the per-app bank claim, D18's art-banking installer path, `apps/clock/` directory split | void under D20/D21 — do not build these |
@@ -2017,7 +2026,7 @@ the same file's PSRAM-calloc timed against free-PSRAM before/after; flush
 interference = an `orb_jobs_post` arena copy of the av-kit bank (1,173,563 B)
 running while `display_bench_phases_us()` samples the hook/dma/te phases before,
 during, after. (5) Only then does D30 get a ruling, and §1.2b's seam is where its
-consequences land.
+consequences land. *(Done 2026-10-15: M5 ran (§19), and §20 holds the ruling.)*
 
 ### 16.1 Correction, same night: the card is in; the wall is one 4 KB allocation
 
@@ -2415,7 +2424,8 @@ behind a reboot. A lazy arm would show it on the glass, every flip. D30's two nu
 are paid: Arm A costs 7.0–9.0 s all-in (copy 3.8–5.4 s, boot-to-mapped 0.9 s, the rest
 association); Arm B's honest floor is the copy alone with a visibly starving dial during
 it. Per-bundle-size stays allowed: at 1.17 MB the arms differ by ≈2× and share the same
-card-read bill — the reboot buys isolation, not speed. **The ruling remains the owner's.**
+card-read bill — the reboot buys isolation, not speed. **The owner ruled the same day:
+neither arm as drafted — see §20.**
 
 ### 19.3 The power cut mid-install — `tools/m5_powercut.sh`, M5_POWERCUT PASS, trial 1
 
@@ -2464,6 +2474,114 @@ doc-test pins wording, so it was not edited blind).
   byte offset and a mid-run edit corrupts the live interpreter. Run a frozen `/tmp` copy.
 - The bake's default output pair lands on the committed `assets/` files. Check
   `git status` after every re-bake.
+
+## 20 — D30 is ruled: the PSRAM hybrid, default-first (owner, 2026-10-15)
+
+### 20.1 The question, the corrected arithmetic, and how it resolved
+
+Two of the owner's questions settled the arm choice.
+
+*Must the old and new themes occupy PSRAM at once?* No — the default theme costs zero
+PSRAM (the baked-in mmap is already resident), so a flip routes through the default and
+every bundle fits with ONE arena resident. The /2 double-arena arithmetic and its
+per-bundle-size split die with that answer.
+
+*Does a card-resident theme run as fast as a flashed one during normal ticking?* No, on
+this bus. A dial reads art every tick: av-kit's 1,173,563 B bank over 15 base frames
+averages ≈78 KB per frame, which is ≈1.17 MB/s at 15 fps against a card ceiling of
+1.31 MB/s measured on the bench (`.clinerules:730` — the whole 3,867,066 B kit3 container
+read and CRC'd in 2952 ms, with the HTTP routes answering during the pass). That is 89 %
+of the ceiling on a single SPI bus whose mutex the menu scan and any upload also hold;
+worst case (a full 466×466 RGB565 frame, 434 KB) wants 6.5 MB/s, five times the ceiling.
+So map-in-place streaming off the card is struck: it cannot tick, and it would make
+every menu and upload wait behind the dial.
+
+One correction to §19.2's reading of its own table: its ≈217–307 KB/s is the
+read+erase+write+verify *ladder*, so the copy window is **flash-write-bound, not
+card-bound**. That works for the hybrid — the fused dual-sink pass pays one card read
+(≈0.9 s of the measured 3.8–5.4 s window) plus one slot write plus a nearly-free arena
+memcpy, so writing both sinks costs the same window as writing one.
+
+The ruled design is therefore Arm B's arena lit by D30 with Arm A demoted to fallback:
+lazy flip, flash as the cross-reboot cache, card touched exactly once per flip and never
+on the boot path.
+
+### 20.2 The ruled rule
+
+**Flip** (menu-driven; the clock does not paint during it, so the §19.2 flush
+interference is moot by context — a status page owns the glass):
+1. Select the baked-in default bank. Instant, free; it frees the live theme's arena.
+   The page now shows the default dial plus a progress row.
+2. Stream the new bundle once from the card, fanning each chunk to BOTH sinks: the PSRAM
+   arena and the inactive flash slot. CRC-verify both while reading (the streaming
+   verify already proven at §18). One window of ≈4 s at av-kit size — write-bound per
+   §20.1, and uncontended now that the clock stopped competing for the bus (unproven;
+   §20.5).
+3. Swap the live bank pointer at a tick boundary. The new dial draws.
+4. Mark `staged` in the ledger until the slot header lands; the header write is the
+   commit, last, unchanged from D9's order.
+
+**Boot:** read the slot header; if committed, refill the PSRAM arena from it, fused
+with the CRC verify — one pass, the same code as the flip's flash sink in read-only
+shape. Cost: D14's fill arithmetic on flash, 471 ms per 3.86 MB ⇒ ≈150 ms at av-kit
+(1.17 MB), ≈470 ms at the 4,128,764 B cap. No card dependency. An empty or corrupt slot
+follows today's ladder (other slot, baked-in fallback).
+
+**Failure story:** power loss between arena-swap and header-commit ⇒ glass showed the
+new theme; on reboot the flash holds the OLD commit and the boot draws it — flip
+rolls back, `/themes` says so with the `staged` word. The owner accepted a coarser
+version of this (rollback to default, not to the original, if the flip staged from
+default); the implementation should still offer the exact committed theme's flip-back
+when the arena allows, which costs nothing extra given step 2 already wrote the other
+slot.
+
+**Arm A fallback:** if the arena cannot allocate the new bundle at flip time
+(fragmented PSRAM, or a bundle larger than free), the picker says so and installs with
+the shipped copy+reboot path instead. No silent degrade.
+
+### 20.3 What this retires
+
+The /2 double-arena rule (only the default is live during a flip). The per-bundle-size
+split D30 pre-authorized — lazy now covers every bundle ≤ D29's cap. Arm A as the
+primary flip. Card-resident map-in-place (B2) — dead on arrival by §20.1's throughput
+math. D30's `Unrationalised pending measurement` label and its two-arms-in-flight
+wording, both superseded by this section and the amended row.
+
+### 20.4 Consequences at the seam (§1.2b) and the D13 amendment owed
+
+- **Mech B lit.** `ORB_ART_MECH_B` flips 0→1 (`art_bank.h:98`); D14's "ships dark"
+  note gets the D30 rider — B is now the runtime mechanism for installed themes, and
+  A is boot's mapping and Arm A's fallback. `tools/host_art_residency_test.py:72`
+  pins the `0`, so the byte and that pin move in the same commit.
+- **D13 amended, ping-pong.** The ratified "A = default, B = install" pairing is
+  superseded for themes: both slots become install targets in ping-pong (same model
+  apps already run), and the baked-in `assets/clock_assets` mmap becomes the sole
+  card-less fallback — the "A is never an install target" clause existed to protect
+  slot-A pixels the fallback read; the mmap fallback needs no such protection. The
+  flip is the selection, and the arena makes it instant (§1.2b's own table already
+  priced an mmap↔arena switch at 150–400 ms).
+- **D14's rejection stands, its target moved.** What D14 refused was *card-at-boot*
+  refill; D30 pays card reads once per flip instead and re-fills from flash at boot.
+- **D29's cap is now the arena's bill too**: one resident bundle ≤ 4,128,764 B of
+  ~7.4 MB PSRAM, permanent while installed.
+- **Ledger word:** `staged` joins the status row between arena-swap and header-commit
+  (§18's field-shape precedent).
+
+### 20.5 The bench gate before P6 ships it (M6)
+
+Four measurements, same rig as §19, before the flip UI relies on any of it:
+1. The uncontended fused-copy rate — clock dark, menu page up, worker streaming
+   av-kit to both sinks; the §19.2 copy numbers (3.8–5.4 s) are the contention-paid
+   comparison.
+2. Boot arena-refill from slot, at av-kit size and at cap — the predicted 150/470 ms
+   must be measured, not assumed, and it lands as a line in the boot log.
+3. A power cut inside the commit window (the `m5_powercut.sh` idiom, retargeted at the
+   header write): must roll back to the committed theme with the `staged` word set and
+   the dial alive.
+4. The fallback refusal path: pin PSRAM so the arena cannot allocate a cap-sized
+   bundle, and confirm the picker names the reason and offers Arm A.
+Arm B2 (map-in-place off the card) stays unbenched on purpose — §20.1 killed it on
+arithmetic, and re-opening it requires new numbers, not hope.
 
 
 

@@ -89,13 +89,16 @@ const (
 	askNoWire
 )
 
-// cableVerdict is one chip's answer to PING, and the name it volunteered while the
-// hub was listening. state is the firmware's own token: "b" waiting for a network,
-// "c-ap" configured with its AP isolated, "c-sta" configured as a station.
+// cableVerdict is one chip's answer to PING, and the name and running firmware it
+// volunteered while the hub was listening. state is the firmware's own token: "b"
+// waiting for a network, "c-ap" configured with its AP isolated, "c-sta" configured
+// as a station. fw is the stamp the ack carries since the PING reply grew one
+// token; a board on older firmware answers without it and the field stays empty.
 type cableVerdict struct {
 	ack   bool
 	sent  bool
 	state string
+	fw    string
 	name  string
 }
 
@@ -294,7 +297,7 @@ func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (askR
 	v, err := s.prover.ping(pctx, c.port)
 	switch {
 	case v.ack:
-		return askAck, s.recordCableProof(c.port, c.mac, v.state, v.name)
+		return askAck, s.recordCableProof(c.port, c.mac, v.state, v.fw, v.name)
 	case err != nil && !v.sent:
 		// The question never left the hub — the node is gone mid-ask, or the OS would not
 		// open the lead at all. Nothing was learned about the chip on the other end.
@@ -311,19 +314,20 @@ func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (askR
 }
 
 // recordCableProof files an ORB-PING answer where every other orb verdict lives: the
-// port identity cache, the lonely marks, and the fleet's cached name. orbcmd.go calls
-// it too, so a PING the operator sent by hand earns the same bookkeeping as one the
-// hub sent on its own.
-func (s *Server) recordCableProof(port, mac, state, name string) bool {
+// port identity cache, the lonely marks, and the fleet's cached name and running
+// firmware. orbcmd.go calls it too, so a PING the operator sent by hand earns the
+// same bookkeeping as one the hub sent on its own.
+func (s *Server) recordCableProof(port, mac, state, fw, name string) bool {
 	if s.identities == nil {
 		return false
 	}
 	s.identities.doneCable(port, esprom.OrbInfo{
-		Port:   port,
-		IsOrb:  true,
-		MAC:    mac,
-		State:  state,
-		Reason: "answered ORB-PING over the cable",
+		Port:    port,
+		IsOrb:   true,
+		MAC:     mac,
+		State:   state,
+		Version: fw,
+		Reason:  "answered ORB-PING over the cable",
 	})
 	// Said out loud once, because the alternative is a fleet row that appeared by
 	// itself and a log with no record of the hub ever having asked.
@@ -340,13 +344,27 @@ func (s *Server) recordCableProof(port, mac, state, name string) bool {
 	// has never met, and at launch the console can answer before any sweep has built a
 	// row to write onto.
 	s.seeCable(mac, port)
+	// The version the same ack carried. This is the only firmware stamp readable from
+	// a board with no address to be dialed at and no reboot paid for, and it folds
+	// state too, so a board that changed its mind since its last announce is
+	// corrected by the cheapest question it can be asked.
+	folded := false
+	if fw != "" || state != "" {
+		if _, changed, err := s.fleet.NoteAnswer(mac, fw, state); err == nil && changed {
+			folded = true
+		}
+	}
 	// The boot banner the same console flush carried. The board owns its name; this is
 	// the hub caching what it heard, and it is the only name readable from a board
 	// with no address to be dialed at.
 	if nm := strings.TrimSpace(name); nm != "" {
-		return s.foldBootName(mac, nm)
+		folded = s.foldBootName(mac, nm) || folded
 	}
-	return false
+	if folded {
+		s.saveState()
+		s.wakeOrbs()
+	}
+	return folded
 }
 
 // cableConsolePing is the production round trip: open the lead, ask, stop at the first
@@ -375,6 +393,9 @@ func cableConsolePing(ctx context.Context, port string) (cableVerdict, error) {
 		out.sent = res.Sent
 		if res.State != "" {
 			out.state = res.State
+		}
+		if res.FW != "" {
+			out.fw = res.FW
 		}
 	}
 	return out, err
@@ -421,7 +442,7 @@ func (s *Server) consoleProofs(seen []cableSighting) map[string]cableVerdict {
 	out := map[string]cableVerdict{}
 	for port, ent := range s.identities.all(ports...) {
 		if ent.proven == provenCable && ent.info.IsOrb {
-			out[port] = cableVerdict{ack: true, state: ent.info.State, name: ent.info.Name}
+			out[port] = cableVerdict{ack: true, state: ent.info.State, fw: ent.info.Version, name: ent.info.Name}
 		}
 	}
 	if len(out) == 0 {

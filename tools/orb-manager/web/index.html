@@ -18,24 +18,26 @@
 </header>
 
 <!-- The fleet is the page. It is what the hub already knows, rendered as the hub
-     said it: one card per board, the Forget button only where the hub's own
+     said it: one tile per board, the Forget button only where the hub's own
      verdict says the board cannot come straight back, and nothing at all for a
      cable with no orb on it — a blank chip is a candidate for New Orb, not an
-     orb. A blank port never renders here. -->
+     orb. A blank port never renders here. The list carries no frame: the tile is
+     the door, so the tile is what lights up under the cursor. -->
 <main id="manage" class="view">
-  <article class="card" id="mn-findcard">
+  <section id="mn-findcard" class="fleet">
     <h3>Orbs</h3>
     <p class="hint" id="mn-find-state">Loading…</p>
     <ul id="mn-find" class="orbgrid"></ul>
     <div class="row"><span class="hint" id="mn-find-note"></span></div>
-    <p class="hint">Every board the hub has met as an orb gets one card, keyed on its MAC and
+    <p class="hint">Every board the hub has met as an orb gets one tile, keyed on its MAC and
     followed through address changes. A board on a cable is asked what it is the moment the
-    hub notices it, over the same lead, at no cost to the board: one that answers is a card.
+    hub notices it, over the same lead, at no cost to the board: one that answers is a tile.
     A chip that answers nothing runs no orb and is not listed at all &mdash; it is the New Orb
-    button. A card turns amber when this hub carries newer firmware than that orb runs.
+    button. A tile turns amber when this hub carries newer firmware than that orb runs, and
+    opens that orb when you click it anywhere on the tile.
     Forget appears only on a board that is not answering, not announcing, and not on a
     cable; a board you can still reach will re-list itself.</p>
-  </article>
+  </section>
 
   <p class="hint" id="mn-empty" hidden>No orbs yet. A board on a cable that stayed silent
   when the hub asked it runs no orb: give it one with the New Orb button. Add an orb by its

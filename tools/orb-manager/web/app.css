@@ -5,8 +5,12 @@ header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;align-
 h1{font-size:20px;margin:0}
 .meta{color:var(--mut);font-size:13px}
 main.hub{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;padding:24px;max-width:960px}
-.card{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 18px 20px;text-decoration:none;color:inherit;transition:border-color .15s}
-.card:hover{border-color:var(--focus)}
+/* A card is a container here, not a door: every .card on both pages is an <article>.
+   The highlight belongs to a card that is actually a link, and nowhere else. A frame
+   that lights up around a box you cannot click teaches the operator to click it. */
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 18px 20px;text-decoration:none;color:inherit}
+a.card{display:block;transition:border-color .15s}
+a.card:hover{border-color:var(--focus)}
 .card h2{margin:0 0 6px;font-size:17px}
 .card p{margin:0;color:var(--mut);font-size:13px}
 .view{max-width:900px;padding:24px}
@@ -78,9 +82,13 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 .themelist .tag.err{border-color:#c9525a;color:#f2a0a6}
 #mn-con-log{max-height:280px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px}
 
-/* The one list's access badge: LAN / cable / both, and how strongly the mac is known.
-   Muted and monospaced so it reads as the hub's evidence, not as a second label. */
-.found-via{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+/* The tile's one status word: connected, disconnected, asking, or on a named
+   cable. Muted by default; the hub's yes and no take the same greens and reds
+   the rest of the page spends on a verdict. The word names the board's present
+   tense and nothing else — no provenance, no source, no identity claim. */
+.found-status{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+.found-status.ok{color:var(--acc)}
+.found-status.bad{color:var(--danger)}
 
 /* A dead Forget has to look dead. Without this a disabled ghost button is pixel-identical
    to a live one, which is how "the hub refused" reads as "the hub is slow". */
@@ -92,14 +100,27 @@ button:disabled:hover{border-color:var(--line)}
 .fwhy{color:var(--mut);font-size:11px}
 .fwhy[hidden]{display:none}
 
-/* The fleet grid: one card per orb, the only thing the page leads with. Rows keep
-   the .found class the paint code writes; the grid is what makes them cards. */
+/* The fleet list carries no frame: the tiles inside it are the cards, and a wall around a
+   wall of cards tells the eye the whole thing is one door. */
+.fleet{margin-top:14px}
+.fleet > h3{margin:0 0 6px;font-size:15px}
+
+/* The fleet grid: one tile per orb, the only thing the page leads with, and the tile is
+   the door. The tile takes the hover and the press; the title button inside it exists for
+   the keyboard, and a click that lands on a control of its own stays that control's. The
+   .found class the paint code writes is what makes a row a tile. */
 header nav{display:flex;gap:10px;align-items:baseline}
 .orbgrid{list-style:none;margin:12px 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.orbgrid li.found{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.orbgrid li.found{display:flex;flex-direction:column;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;transition:border-color .15s}
 .orbgrid li.found.refused{display:list-item;border-style:dashed;color:var(--mut);font-size:12px;background:none}
-.orbgrid .found-pick{background:none;border:none;color:var(--fg);font-size:15px;text-align:left;padding:0;cursor:pointer}
-.orbgrid .found-pick:disabled{cursor:default}
+/* .noclick is the paint's own verdict that no press opens this board, because two chips
+   claim one address. Such a tile neither points nor lights. */
+.orbgrid li.found:not(.refused):not(.noclick){cursor:pointer}
+.orbgrid li.found:not(.refused):not(.noclick):hover{border-color:var(--focus)}
+.orbgrid .found-pick{display:block;width:100%;text-align:left;background:none;border:none;padding:0;color:inherit;font:inherit;cursor:inherit}
+.orbgrid .found-pick:disabled{cursor:inherit}
+.orbgrid .found-name{font-size:16px;font-weight:600}
+.orbgrid .found-detail{display:block;font-family:ui-monospace,monospace;font-size:11px;font-weight:400;color:var(--mut)}
 .orbgrid .row{margin:0;flex-wrap:wrap}
 .orbgrid .tag.update{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--warn);color:var(--warn);margin-left:6px}
 .orbgrid .tag.update[hidden]{display:none}

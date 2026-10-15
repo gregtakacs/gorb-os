@@ -128,7 +128,7 @@ func TestTheDiscoveryCardIsPushedNotPolled(t *testing.T) {
 			t.Errorf("%s is back: the card is pushed, so it has no refresh control and no reader of that name", gone)
 		}
 	}
-	for _, want := range []string{"/api/orbs/stream", "foundRows.get(", "document.activeElement !== li._name", "dataset.mac", "foundRows.clear()"} {
+	for _, want := range []string{"/api/orbs/stream", "foundRows.get(", "if (li._shown !== shown)", "dataset.mac", "foundRows.clear()"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js no longer contains %q: the card stopped being live, patched in place, keyed by mac, or cleared when the listener died", want)
 		}
@@ -376,6 +376,53 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	// looking at, and it re-reads the row the refusal belongs to.
 	if !strings.Contains(asked, "refusal") || !strings.Contains(asked, "pullFound") {
 		t.Error("a refused forget is silent: the dialog leaves no word and the row is never re-read")
+	}
+}
+
+// The tile is the door on the fleet page. The redesign moved the press, the hover and the
+// cursor onto the row itself and deleted the read-only name box that only repeated the
+// title, so three things now carry the design and none of them is visible to a Go test
+// unless it is pinned: the container around the grid must not be a card, the hover must
+// belong to the row rather than to a box that opens nothing, and a row the hub will not
+// dial must neither point nor light. A later edit that re-frames the list or re-uses
+// .card:hover restores the page where every box looked clickable and two of them were not.
+func TestTheFleetTileIsTheDoorAndNothingAroundItIs(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	src := readAppJS(t)
+	css := readWebFile(t, "app.css")
+
+	if strings.Contains(page, `id="mn-findcard" class="card"`) || strings.Contains(page, `class="card" id="mn-findcard"`) {
+		t.Error("the fleet list is framed as a card again: the grid is a wall of doors, not one door")
+	}
+	// The only hovers in the stylesheet are a link-card's and a fleet row's. A bare
+	// .card:hover puts the highlight back onto containers that open nothing.
+	if strings.Contains(css, ".card:hover") && !strings.Contains(css, "a.card:hover") {
+		t.Error("app.css highlights a plain .card on hover again, and most .card elements are containers")
+	}
+	for _, want := range []string{
+		".orbgrid li.found:not(.refused):not(.noclick):hover",
+		".orbgrid li.found:not(.refused):not(.noclick){cursor:pointer}",
+		`li.classList.toggle("noclick", !!o.contended)`,
+		`if (e.target.closest("button")) return;`,
+		`if (sel && String(sel).length) return;`,
+	} {
+		if !strings.Contains(css, want) && !strings.Contains(src, want) {
+			t.Errorf("the fleet page no longer contains %q: a press anywhere on a tile, or its refusal, is no longer wired", want)
+		}
+	}
+	// The title button is the keyboard's way to the same door the tile opens, so it must
+	// inherit the tile's cursor rather than set its own, and must not draw a box inside
+	// the tile. A press on it goes through the row's own door, which is the same action.
+	pick := css[strings.Index(css, ".orbgrid .found-pick{"):strings.Index(css, ".orbgrid .found-pick:disabled")]
+	for _, banned := range []string{"background:var", "border:1px", "cursor:pointer"} {
+		if strings.Contains(pick, banned) {
+			t.Errorf("the row's title button carries %q: the tile is the button's frame, not the other way round", banned)
+		}
+	}
+	// The tile has no text field, so the row cannot be left showing one name while the
+	// operator is typing another.
+	if strings.Contains(blockOf(t, src, "function foundRow"), `document.createElement("input")`) {
+		t.Error("foundRow builds a text field again: a name box on a tile repeats the tile's own title")
 	}
 }
 

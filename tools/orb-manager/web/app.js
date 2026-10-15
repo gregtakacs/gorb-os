@@ -801,7 +801,7 @@ function paintForgetDialog() {
   const li = fjRow;
   if (!li || fjBusy) return;
   const mode = forgetMode(li);
-  const shown = li._name.value || li.dataset.mac || "this orb";
+  const shown = li._shown || li.dataset.mac || "this orb";
   const port = mode === "cable" ? li._livePort : "";
   const why = li._forgetWhy || "";
   const log = $("#fj-log"), note = $("#fj-note");
@@ -1640,29 +1640,55 @@ setInterval(() => {
 }, 10000);
 
 // foundRow builds one row's shell; paintFound writes onto it. The split is the point: the
-// controls are wired to the row's mac rather than to a snapshot of the packet, so a frame that
-// lands while the operator is mid-word cannot strand a handler on a stale address, and the
-// patch has somewhere to put a new age without rebuilding the row around their cursor.
+// controls are wired to the row's mac rather than to a snapshot of the packet, so a frame
+// that lands while the operator is reading the list cannot strand a handler on a stale
+// address, and the patch has somewhere to put a new age without rebuilding the row under
+// the eyes of whoever is on the page.
 function foundRow(o) {
   const li = document.createElement("li");
   li.className = "found";
   li.dataset.key = o.key || o.mac;
   li.dataset.mac = o.mac || "";
 
+  // The tile IS the door, so the tile carries the name and the hover. The button holds the
+  // title line and is what a keyboard reaches; the row's own click listener below is what
+  // makes a press anywhere on the tile open the orb.
   const label = document.createElement("button");
   label.className = "ghost found-pick";
-  const badge = document.createElement("span");
-  badge.className = "found-via";
+  const title = document.createElement("span");
+  title.className = "found-name";
+  const upd = document.createElement("span");
+  upd.className = "tag update"; upd.textContent = "update"; upd.hidden = true;
+  upd.title = "this hub carries newer firmware than this orb runs — open it to load";
+  label.append(title, upd);
 
-  const name = document.createElement("input");
-  name.placeholder = "name"; name.maxLength = 32;
-  // The name is display-only on this page. The board owns its word — a rename
-  // goes onto the device, and the hub only ever keeps a copy of what the device
-  // agreed to — so the editing door is the orb's own network page. The field
-  // here reads the current word (device's or, after a hub-commanded factory
-  // reset, the default "The Orb") and nothing more.
-  name.readOnly = true;
-  name.title = "the word this orb answers to; it lives on the board and is renamed on the board's own page";
+  // What the board is, in one muted line under the name: where to reach it, its mac,
+  // what it runs, how fresh the fact is, and the exceptions that change what a press
+  // does. Where the hub LEARNED each field is deliberately absent: the tile answers
+  // the operator's question, it does not audit itself.
+  const detail = document.createElement("span");
+  detail.className = "found-detail";
+
+  const badge = document.createElement("span");
+  badge.className = "found-status";
+
+  // There is no name field on a tile. The board owns its word: a rename goes onto the
+  // device, and the hub only keeps a copy of what the device agreed to. The editing door
+  // is the orb's own network page, and a box here could only repeat the title above it.
+
+  // The tile is the door, so the row takes the press wherever it lands inside it. A click
+  // on one of the row's own controls is that control's and does not open anything, and the
+  // title button above stays the keyboard handle for the same action. The paint writes
+  // li._open with the address of the frame that produced it, so a row that has not been
+  // painted yet has no door to open and says so by doing nothing.
+  li.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    // A drag that ends inside the tile arrives here as a click too, and an operator who
+    // just selected a MAC to copy it did not press the door.
+    const sel = document.getSelection && document.getSelection();
+    if (sel && String(sel).length) return;
+    if (li._open) li._open();
+  });
 
   const forget = document.createElement("button");
   forget.className = "ghost"; forget.textContent = "Forget";
@@ -1694,36 +1720,40 @@ function foundRow(o) {
   // rather than a mystery.
   const fwhy = document.createElement("span");
   fwhy.className = "fwhy"; fwhy.hidden = true;
-  ident.append(name, forget, identify, fwhy);
-  const upd = document.createElement("span");
-  upd.className = "tag update"; upd.textContent = "update"; upd.hidden = true;
-  upd.title = "this hub carries newer firmware than this orb runs — open it to load";
+  ident.append(forget, identify, fwhy);
+  li.append(label, detail, badge, ident);
+  li._label = label; li._badge = badge; li._title = title; li._detail = detail;
   li._update = upd;
-  label.append(upd);
-  li.append(label, badge, ident);
-  li._label = label; li._badge = badge; li._name = name;
   li._forget = forget; li._identify = identify; li._fwhy = fwhy;
   return li;
 }
 
-// viaBadge spells the access paths out in the words the hub means: how it could reach this
-// board if asked, right now. "on LAN" and "on cable" are not synonyms — one is a packet
-// from a network, the other is a fact about this machine's USB ports.
-function viaBadge(o) {
-  const via = Array.isArray(o.via) ? o.via : [];
-  const lan = via.indexOf("lan") >= 0, usb = via.indexOf("usb") >= 0;
-  const access = lan && usb ? "LAN + cable" : usb ? "on cable" : lan ? "on LAN" : "not seen now";
-  const where = usb && o.ports && o.ports.length ? " (" + o.ports.join(", ") + ")" : "";
-  const idn = o.identity === "confirmed" ? "mac confirmed"
-    : o.identity === "descriptor" ? "mac from USB descriptor"
-    : o.identity === "unknown" ? "mac unreadable: identify it"
-    : "mac announced by the orb";
-  return access + where + " \u00b7 " + idn;
+// statusBadge spells the one verdict the tile makes about the present tense: is
+// this board reachable right now, by the hub's own accounting. It deliberately says
+// nothing about WHERE the hub's facts came from — announce, dial, console or cable
+// descriptor are the hub's business, not the operator's, and the row that recited
+// them was the tile arguing its provenance instead of answering the one question a
+// fleet list is for. The port rides along on a lead row because it names where the
+// cable actions run, which is an action, not a source.
+function statusBadge(o) {
+  if (o.connected !== true) {
+    if (o.onCable) {
+      const where = o.ports && o.ports.length ? " (" + o.ports.join(", ") + ")" : "";
+      return "on cable" + where;
+    }
+    return o.reachable === "unknown" ? "asking" : "disconnected";
+  }
+  if (o.onCable && (!Array.isArray(o.via) || o.via.indexOf("lan") < 0)) {
+    const where = o.ports && o.ports.length ? " (" + o.ports.join(", ") + ")" : "";
+    return "on cable" + where;
+  }
+  return "connected";
 }
 
 // paintFound writes what the hub currently believes onto a row that already exists. It runs on
-// every frame, so the two boxes the operator types into are left alone while they hold the
-// caret, and a row whose address moved cannot leave a stale one behind in the confirm text.
+// every frame, so it patches text rather than rebuilding the row: a rebuild would drop the
+// focus of whoever has a tile's title button under the cursor, and a frame whose address moved
+// cannot be allowed to leave the old one behind in the confirm text.
 function paintFound(li, o) {
   const label = li._label;
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
@@ -1731,17 +1761,38 @@ function paintFound(li, o) {
   const addr = o.ip ? o.ip + ":" + o.port : "no address";
   li.dataset.mac = o.mac || "";
   li._port = (o.ports && o.ports.length) ? o.ports[0] : "";
-  label.textContent = [shown, addr, o.mac ? "mac " + o.mac : "no mac", o.fw ? "fw " + o.fw : "",
-    o.state === "provisioning" ? "PROVISIONING" : (o.state || ""),
-    o.contended ? "CONTESTED" : "",
-    o.shared ? "shared name" : "", o.bound ? "" : "unverified",
+  // Every text write on this row is conditional. The frame arrives on whichever packet
+  // moved, which for a fleet at rest means every row is repainted with the words it already
+  // carried, and a textContent assignment kills a text selection wherever it lands. An
+  // operator copying a MAC out of a tile to paste it somewhere should be able to finish the
+  // copy before the next advertisement wipes it.
+  if (li._shown !== shown) {
+    li._shown = shown;
+    li._title.textContent = shown;
+  }
+  const detailText = [addr, o.mac ? "mac " + o.mac : "no mac", o.fw ? "fw " + o.fw : "",
     typeof o.ageS === "number" ? o.ageS + "s" : "",
-    // A row with no via is an address-book entry: the hub has an address and no sighting
-    // this run. Say which of remembering it is, because the dial verdict is the only thing
-    // that distinguishes a board in a drawer from a board whose lease moved.
-    (!o.via || !o.via.length) ? ("remembered" + (o.reachable === "dead" ? ", not answering"
-      : o.reachable === "alive" ? ", answering" : ", asking now")) : ""].filter(Boolean).join("  \u00b7  ");
-  li._badge.textContent = viaBadge(o);
+    // Only the exceptions ride this line. The orb's own TXT state is "normal" whenever it
+    // is not provisioning (main/net/orb_mdns.c sends one or the other), so a token every
+    // row carries is noise; provisioning, a contested address and a shared name are the
+    // three that change what a press on this tile does. Whether the hub's word for the
+    // address came from a packet, a dial or a cable is not on this list at all and not
+    // on the tile anywhere: it is the hub's accounting, and the operator's one question
+    // is answered by the status badge above it.
+    o.state && o.state !== "normal" ? o.state.toUpperCase() : "",
+    o.contended ? "CONTESTED" : "",
+    o.shared ? "shared name" : ""].filter(Boolean).join("  \u00b7  ");
+  if (li._detailText !== detailText) {
+    li._detailText = detailText;
+    li._detail.textContent = detailText;
+  }
+  const statusText = statusBadge(o);
+  if (li._statusText !== statusText) {
+    li._statusText = statusText;
+    li._badge.textContent = statusText;
+    li._badge.classList.toggle("ok", o.connected === true);
+    li._badge.classList.toggle("bad", o.connected !== true && o.reachable !== "unknown");
+  }
   // The verdict is the hub’s, and read fail-closed like Forget’s: the field is
   // pinned non-omitempty server-side precisely so an absent one means no.
   li._update.hidden = o.update !== true;
@@ -1749,17 +1800,21 @@ function paintFound(li, o) {
   // than letting a click discover it: the board has no address at all, its address is a SoftAP
   // the hub cannot route to, two boards both claim it, or it was never allowed.
   label.disabled = !!o.contended;   // a cable row opens too: its cable doors are the manage state
+  // The tile is the click target, so the row itself carries whether a press does anything.
+  li.classList.toggle("noclick", !!o.contended);
   label.title = !o.ip ? (o.refusal || "opens over the cable it is on")
     : softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
     : o.contended ? "two boards both announce this address, so the hub will not dial either"
     : (o.refusal || (o.dialable ? "already an address this hub dials"
       : "fills the Orb IP box; the hub dials it only once you load it"));
-  label.onclick = () => { openOrbByIP(o.ip || "", o.mac, o); };
+  // The frame carries the address, so the row's door is rewritten with it: a handler left
+  // on the snapshot the row was built from dials whatever lease the board held then.
+  li._open = () => { openOrbByIP(o.ip || "", o.mac, o); };
+  label.onclick = () => { li._open(); };
   // Identity is what the naming controls key on. A cable with no mac has no row anywhere to
-  // write a name against — offering the box anyway would promise a save that cannot happen,
-  // so the controls go dark and the Identify button takes their place.
+  // write a name against, so the Forget control goes dark and the Identify button takes its
+  // place; the tile stays a tile.
   const nameable = !!o.mac;
-  li._name.disabled = !nameable;
   // Forget is disabled on its own axis: a row can have a mac and still be one the hub
   // will rebuild, and the reason has to be readable without a click that does nothing.
   //
@@ -1796,7 +1851,6 @@ function paintFound(li, o) {
     : (why || "the hub sent no Forget verdict: reload the page");
   li._identify.hidden = o.identity !== "unknown";
   li._ip = o.ip;
-  if (document.activeElement !== li._name) li._name.value = o.name || "";
   // The dialog reads its row, so the row's new verdict is the dialog's new body. This is
   // the whole of the unplug fix: a board that left the lead while its dialog was open
   // loses the cable endings on the frame that noticed, rather than keeping a promise

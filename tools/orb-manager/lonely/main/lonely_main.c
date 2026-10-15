@@ -15,11 +15,12 @@
  * other door keeps none of its owner's settings either. The app never writes
  * NVS, so an already-blank partition costs one idempotent pass.
  *
- * No burn-in on an AMOLED: nothing sits still. All drawing is composited one
- * pass per frame: the dirty rows are rebuilt black-background + message + ball
- * inside an internal DMA band buffer and flushed once each, so the panel never
- * shows a mid-frame erase. The erase-then-redraw two-step this file used to run
- * is what the flicker was.
+ * No burn-in on an AMOLED: the panel is repainted whole every refresh, so no
+ * pixel holds a lit dot across a refresh boundary. All drawing is composited one
+ * pass per band: the row is rebuilt black-background + message + ball inside an
+ * internal DMA band buffer and flushed once, so the panel never shows a mid-frame
+ * erase. The erase-then-redraw two-step this file used to run is what the first
+ * flicker was; the second came from writing only what moved, mid-scan.
  *
  * That rewrite shipped four panel rules unkept, and each one shows on the glass:
  * pixels reached the CO5300 low-byte-first (the dark of the ball came up green),
@@ -27,10 +28,16 @@
  * the type read as noise and every sprite left its old pixels behind), the one
  * band buffer was resubmitted while its previous DMA still read it (bands landed
  * over each other), and the panel was never painted end to end, so the GRAM a
- * board powers on with stayed on show around the two boxes. The rules kept below
- * are the four that cost: wire order, even windows, one band in flight, and a
- * whole-panel first paint behind a dark display. The flicker fix stands — the
- * bands stay composited. */
+ * board powers on with stayed on show around the two boxes. Keeping those four
+ * made it readable; the glass then reported two more, both from repainting only
+ * what moved. The panel scans GRAM on its own clock, so a mid-scan write shows
+ * the message moved and the ball not yet — the flicker. And a frame cost 2 to 15
+ * bands depending on where the sprites landed, so the hop rate varied with the
+ * drawing — the uneven speed. Six rules hold this image now, all six argued in
+ * the comments below and all six held by test/run.sh: wire order, even windows,
+ * one band in flight, a whole-panel first paint behind a dark display, the flush
+ * burst opened on the TE pulse, and the whole panel repainted at a fixed interval.
+ */
 
 #include <math.h>
 #include <string.h>
@@ -38,6 +45,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
@@ -45,6 +53,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_co5300.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 
@@ -60,6 +69,7 @@ static const char *TAG = "lonely";
 #define PIN_LCD_D1    5
 #define PIN_LCD_D2    6
 #define PIN_LCD_D3    7
+#define PIN_LCD_TE   13   /* panel TE out at vertical blanking (Waveshare J301 pin 11) */
 #define SCREEN_W    466   /* round panel: the visible window is the inscribed square */
 #define SCREEN_H    466
 #define COL_GAP       6   /* GRAM offset: visible cols map to 6..471 (vendor CASET) */
@@ -100,21 +110,45 @@ static const char *MSG[MSG_LINES] = {
 #define INK_DARK  WIRE(RGB565_DARK)
 
 static esp_lcd_panel_handle_t panel;
-static uint16_t *band;              /* SCREEN_W * BAND_ROWS, one composited strip per flush */
 static uint16_t *ball_sprite;
-/* Rule ONE-IN-FLIGHT: esp_lcd_panel_draw_bitmap returns as soon as the transfer is
- * queued (queue depth 10), so band is still under DMA when the next band is
- * composed. One buffer plus a trans-done token serializes them. The main
- * firmware pays this with a ping-pong tile ring (display.c, L1); this app has
- * two sprites and no frame budget to protect, so it waits. */
-static SemaphoreHandle_t band_free;
+
+/* Rule PIPELINED RING: esp_lcd_panel_draw_bitmap returns as soon as the transfer
+ * is queued (driver queue depth 10), so a buffer is spoken for until its
+ * trans-done fires. One buffer forces take, compose, submit, wait for the wire,
+ * every band: measured on the panel at 74 ms for the 22 ms of wire a whole
+ * panel costs, and that 3x gap is the window the panel can catch a half-written
+ * frame in. A ring of composited bands lets the next band be built while the
+ * wire still carries the last, so a refresh costs max(wire, compose) per band
+ * instead of their sum. display.c runs the same shape for the same reason
+ * (ping-pong tiles, L1); the difference is that every band here is the final
+ * scene for its rows, so a shallow ring is enough and no band is ever partial.
+ * The queue depth is the ceiling on this: 4 in flight leaves 6 slots of slack. */
+#define BAND_RING 4
+static uint16_t *ring[BAND_RING];
+static int ring_i;
+static uint16_t *band;   /* the ring slot being composed; what the render fns write */
+/* Counting: one token per buffer whose DMA is off the wire. */
+static SemaphoreHandle_t band_slot;
+
+/* The ring and its tokens, in one place so the host check allocates exactly what
+ * app_main does. */
+static bool bands_alloc(void)
+{
+    for (int i = 0; i < BAND_RING; i++) {
+        ring[i] = heap_caps_malloc(SCREEN_W * BAND_ROWS * sizeof(uint16_t),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (!ring[i]) return false;
+    }
+    band_slot = xSemaphoreCreateCounting(BAND_RING, BAND_RING);
+    return band_slot != NULL;
+}
 
 static bool IRAM_ATTR band_done(esp_lcd_panel_io_handle_t io,
                                 esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
     (void)io; (void)edata; (void)ctx;
     BaseType_t hi = pdFALSE;
-    xSemaphoreGiveFromISR(band_free, &hi);
+    xSemaphoreGiveFromISR(band_slot, &hi);
     return hi == pdTRUE;
 }
 
@@ -127,9 +161,8 @@ typedef struct {
     int w, h;        /* bounding box */
 } body_t;
 static body_t msg, ball;
-#define TICK_MS 33
-
-typedef struct { int x, y, w, h; } box_t;
+#define TICK_MS 33      /* the unit motion is expressed in; see REFRESH_MS */
+#define REFRESH_MS 125  /* 8 hops/s; one refresh costs 32 to 48 ms measured, 22 ms of it wire */
 
 /* ---- Drawing ----------------------------------------------------------------
  * The scene is always black background + message + ball (ball on top), so any
@@ -192,16 +225,19 @@ static void render_ball(int y0, int rows)
 }
 
 /* Final scene for panel rows [y0, y0+rows) at full width: black, then the
- * message, then the ball, then one flush into the one band buffer — which is
- * handed back only when its DMA is off the wire. */
+ * message, then the ball, then one flush into the ring slot this band owns. The
+ * take above it is what makes the slot ours: it returns only on a trans-done, so
+ * no DMA is reading the buffer we are about to overwrite. */
 static void render_and_flush(int y0, int rows)
 {
-    xSemaphoreTake(band_free, portMAX_DELAY);
+    xSemaphoreTake(band_slot, portMAX_DELAY);
+    band = ring[ring_i];
+    ring_i = (ring_i + 1) % BAND_RING;
     for (int i = 0; i < SCREEN_W * rows; i++) band[i] = INK_BLACK;
     render_message(y0, rows);
     render_ball(y0, rows);
     if (esp_lcd_panel_draw_bitmap(panel, 0, y0, SCREEN_W, y0 + rows, band) != ESP_OK)
-        xSemaphoreGive(band_free);   /* nothing queued, so nothing will give it back */
+        xSemaphoreGive(band_slot);   /* nothing queued, so nothing will give it back */
 }
 
 /* Repaint rows [y0, y1) — snapped outward onto the panel's even row grid, then
@@ -222,42 +258,21 @@ static void repaint_rows(int y0, int y1)
     }
 }
 
-/* Every row the two sprites owe a repaint to this frame, in as few runs as the
- * glass allows: two bodies whose row runs come within ROW_FUSE of each other
- * are painted as one. Rows outside every run keep what the last paint put there
- * — which, after the first paint covers the whole panel, is the scene. */
-#define ROW_FUSE 16     /* bridge a gap this small rather than pay another run */
-static void repaint_frame(const box_t *a, const box_t *b)
+/* Rule AT ONCE: the whole panel, every refresh, in 59 even bands. Repainting only
+ * what moved was the cheaper trick and the reason the two complaints showed up:
+ * the message and the ball landed in different passes with the panel scanning
+ * between them, so they did not change together, and the price of a frame swung
+ * with the sprites from 2 to 15 bands, so motion speed swung with it. One fixed
+ * price buys both — 59 flushes of the final scene every refresh, so the frame the
+ * eye is allowed to catch is always whole, and every refresh costs the same.
+ * A band is 7456 B and the QSPI link carries 20 MB/s, so 0.37 ms of wire each and
+ * 22 ms for the panel. Measured end to end with the ring below: 32 to 48 ms per
+ * refresh. REFRESH_MS spends that and gives the rest of the interval back idle,
+ * which is also what keeps an AMOLED off a long-stationary image. */
+#define BANDS_FULL  ((SCREEN_H + BAND_ROWS - 1) / BAND_ROWS)   /* 59 */
+static void flush_all(void)
 {
-    int r0a = a->y, r1a = a->y + a->h;
-    int r0b = b->y, r1b = b->y + b->h;
-    if (r0b < r0a) {                      /* order the runs by where they start */
-        int t0 = r0a, t1 = r1a;
-        r0a = r0b; r1a = r1b;
-        r0b = t0; r1b = t1;
-    }
-    if (r0b - r1a <= ROW_FUSE) {
-        repaint_rows(r0a, (r1b > r1a) ? r1b : r1a);
-        return;
-    }
-    repaint_rows(r0a, r1a);
-    repaint_rows(r0b, r1b);
-}
-
-static box_t body_box(const body_t *b)
-{
-    return (box_t){ .x = (int)lroundf(b->x - b->w / 2.0f),
-                    .y = (int)lroundf(b->y - b->h / 2.0f),
-                    .w = b->w, .h = b->h };
-}
-
-static box_t box_union(box_t a, box_t b)
-{
-    int x2 = (a.x + a.w > b.x + b.w) ? a.x + a.w : b.x + b.w;
-    int y2 = (a.y + a.h > b.y + b.h) ? a.y + a.h : b.y + b.h;
-    int x1 = (a.x < b.x) ? a.x : b.x;
-    int y1 = (a.y < b.y) ? a.y : b.y;
-    return (box_t){ .x = x1, .y = y1, .w = x2 - x1, .h = y2 - y1 };
+    repaint_rows(0, SCREEN_H);
 }
 
 /* One 8-ball sprite: white ring, dark body, white number disc, black "8".
@@ -284,10 +299,14 @@ static void build_ball(void)
     }
 }
 
-/* Reflect a center around its circular lane wall. */
-static void bounce(body_t *b)
+/* Reflect a center around its circular lane wall, advanced by dt ticks of
+ * velocity. The caller decides dt: the loop always passes the same constant, so
+ * a hop is the same distance and the same interval no matter what the wire cost
+ * on the way there. A per-tick step made speed track drawing cost — a long run
+ * through the middle ate wall-clock time and read as a slow patch. */
+static void bounce(body_t *b, float dt)
 {
-    b->x += b->vx; b->y += b->vy;
+    b->x += b->vx * dt; b->y += b->vy * dt;
     float cx = b->x - SCREEN_W / 2.0f, cy = b->y - SCREEN_H / 2.0f;
     float d = sqrtf(cx * cx + cy * cy);
     if (d > b->lane_r && d > 0.001f) {
@@ -303,6 +322,48 @@ static void bounce(body_t *b)
 }
 
 /* ---- Panel bring-up: the same QSPI conversation display.c has, minus LVGL ---- */
+
+/* Rule PHASE: the panel scans its GRAM out on its own clock, so a flush that
+ * lands mid-scan shows new pixels above the scan line and old ones below it at
+ * the same instant. With two sprites updating in one frame that reads exactly as
+ * the reported flicker: the message moves before the ball does, every frame, at
+ * whatever point of the scan the write happened to fall in. The CO5300 drives
+ * LCD_TE at vertical blanking (its default init already sent TEARON, 0x35), so
+ * waiting for the pulse and writing from there down holds the whole frame's
+ * updates behind the retrace and they appear together. display.c does the same
+ * on this panel; this is that wait_for_te, bounded the same way so a dead TE
+ * input costs a late frame rather than a hung app. */
+static volatile bool te_live;
+
+static void wait_for_te(void)
+{
+    if (!te_live) return;
+    const int64_t deadline = esp_timer_get_time() + 25000;   /* 25 ms ceiling */
+    while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() < deadline) {}
+    while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() < deadline) {}
+}
+
+/* Decide once, by watching the pin, whether TE is actually there. A stuck input
+ * would otherwise pay the full 25 ms bound on every single frame. */
+static void te_probe(void)
+{
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << PIN_LCD_TE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+    const int first = gpio_get_level(PIN_LCD_TE);
+    const int64_t t0 = esp_timer_get_time();
+    while (esp_timer_get_time() - t0 < 50000) {              /* 50 ms window */
+        if (gpio_get_level(PIN_LCD_TE) != first) { te_live = true; break; }
+    }
+    ESP_LOGI(TAG, "LCD_TE GPIO%d %s: band flushes %s to blanking",
+             PIN_LCD_TE, te_live ? "toggling" : "STUCK (no pulse in 50 ms)",
+             te_live ? "locked" : "free-running");
+}
 static void panel_init(void)
 {
     spi_bus_config_t bus = CO5300_PANEL_BUS_QSPI_CONFIG(
@@ -328,6 +389,7 @@ static void panel_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel, COL_GAP, 0));
+    te_probe();                       /* panel is scanning: TEARON was in its init */
     /* The display stays dark until the whole panel has been painted once: the
      * CO5300 init sequence ends with DISPON and the GRAM it turns on with is
      * whatever the previous image left — a board flashed lonely over an orb
@@ -368,13 +430,9 @@ void app_main(void)
     ESP_LOGI(TAG, "lonely: I used to be an Orb. Flash me when you're ready.");
     wipe_orb_settings();
 
-    band = heap_caps_malloc(SCREEN_W * BAND_ROWS * sizeof(uint16_t),
-                            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     ball_sprite = heap_caps_malloc(SPRITE_SIDE * SPRITE_SIDE * sizeof(uint16_t),
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!band || !ball_sprite) { ESP_LOGE(TAG, "DMA RAM OOM"); return; }
-    band_free = xSemaphoreCreateBinary();
-    xSemaphoreGive(band_free);          /* the first band may be composed at once */
+    if (!ball_sprite || !bands_alloc()) { ESP_LOGE(TAG, "DMA RAM OOM"); return; }
 
     panel_init();
     build_ball();
@@ -397,29 +455,32 @@ void app_main(void)
     repaint_rows(0, SCREEN_H);
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-    box_t msg_now = body_box(&msg), ball_now = body_box(&ball);
-
-    TickType_t last = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(TICK_MS);
+    /* One refresh, one price, one interval. Motion advances a fixed number of ticks
+     * per refresh (step, from the refresh interval — so the px/s the velocities
+     * describe is the same speed the per-tick version ran at), the panel is paid for
+     * in full by rule AT ONCE, and the sleep below gives back only what the refresh
+     * did not use. Interval, hop distance and cost therefore stop depending on how
+     * the sprites landed, which is what the uneven speed was. The lines under this
+     * loop are the evidence: cost min/max over 16 refreshes, so a REFRESH_MS tuned
+     * below what the wire can do shows up there before it shows up on the glass. */
+    const float step = REFRESH_MS / (float)TICK_MS;
+    uint32_t cost_min = 0xFFFFFFFFu, cost_max = 0, refreshes = 0;
     for (;;) {
-        bounce(&msg);
-        bounce(&ball);
-        box_t msg_prev = msg_now, ball_prev = ball_now;
-        msg_now = body_box(&msg);
-        ball_now = body_box(&ball);
-        if (!(msg_now.x == msg_prev.x && msg_now.y == msg_prev.y &&
-              ball_now.x == ball_prev.x && ball_now.y == ball_prev.y)) {
-            /* Each body repaints the rows between where it was and where it is
-             * now — every band carries the final scene, so nothing ever shows
-             * blacked out text or a ball mid-move. */
-            box_t m = box_union(msg_prev, msg_now);
-            box_t b = box_union(ball_prev, ball_now);
-            repaint_frame(&m, &b);
+        bounce(&msg, step);
+        bounce(&ball, step);
+        const int64_t t0 = esp_timer_get_time();
+        wait_for_te();                 /* rule PHASE: start behind the retrace */
+        flush_all();                   /* rule AT ONCE: the whole panel, 59 bands */
+        const uint32_t cost = (uint32_t)(esp_timer_get_time() - t0);
+        if (cost < cost_min) cost_min = cost;
+        if (cost > cost_max) cost_max = cost;
+        if (++refreshes % 16 == 0) {
+            ESP_LOGI(TAG, "refresh %lu us (min %lu max %lu of %d ms budget), TE %s",
+                     (unsigned long)cost, (unsigned long)cost_min,
+                     (unsigned long)cost_max, REFRESH_MS, te_live ? "locked" : "off");
+            cost_min = 0xFFFFFFFFu; cost_max = 0;
         }
-        /* The tick waits every time. The skip that used to sit here
-         * jumped over the delay whenever a bounce clamped a body still, and the
-         * loop ran the rest of the core at full tilt: that is the stall, and
-         * vTaskDelayUntil's own clock went stale with it. */
-        vTaskDelayUntil(&last, period);
+        int32_t idle_ms = REFRESH_MS - (int32_t)(cost / 1000u);
+        vTaskDelay(pdMS_TO_TICKS(idle_ms > 0 ? idle_ms : 1));
     }
 }

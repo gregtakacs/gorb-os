@@ -2866,12 +2866,18 @@ format question, and P6 has enough of those. **Neither freezes a row shape eithe
 manifest rides `abi_min`/`abi_max`, and an element table gains columns the way the class
 enum gains entries — append-only — so P8 can add what it needs without a format bump.
 
-### 23.6 What the owner still owes P6.1
+### 23.6 Where every open question landed, and what P6.1 still owes
 
 - **R2 — RULED with D26's amendment** (§23.9): a bundle whose index names an uninstalled app
-  installs, and the picker prints the intersection. **R3, R4, R5 — recommendation standing
-  at §23.8, awaiting the owner's word:** subsets legal, identity rule unchanged, and a sixth
-  top-level row named THEMES (the draft's "under SETTINGS" named a page that does not exist).
+  installs, and the picker prints the intersection. **R3, R4, R5 — RULED 2026-10-15 with the standing recommendation** (§23.8): subset
+  bundles are legal, the identity rule stands, and the flip lives in a sixth top-level row
+  named THEMES. All eight questions D32 raised are answered.
+- **P6.1 first commit LANDED 2026-10-15:** the element schema itself — `ELEMENT_FIELDS` with
+  its class/flag/bound vocabulary now lives in `theme_schema.py`, checked by
+  `tools/host_theme_elem_test.py` (46 checks, 14 mutants caught, class enum linted against
+  `orb_assets.h`). 17 fixed-width columns, so a later schema appends past `scale16` without
+  a format bump. Still owed by P6.1: the FORMAT 3 bundle writer, the `orb_theme.c` reader,
+  and the per-app section framing.
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.

@@ -214,6 +214,17 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		// that was just written is the board the hub has proof of, whatever a later
 		// announcement chooses to say about where it is.
 		s.markCable(flashedMAC)
+		// And a board this hub just wrote firmware into carries proof its chip has
+		// been an orb. storeProvesOrb reads that mark, and it is what tells this
+		// cable apart from a blank awaiting New Orb while the lead is in. The mark
+		// buys no line in state.json: only an address does (the rule, bench
+		// 2026-10-15), so a board left on provisioning with nothing to dial is off
+		// the card until it speaks again.
+		if s.fleet != nil {
+			if werr := s.fleet.MarkRemembered(macNorm(flashedMAC)); werr != nil {
+				log.Printf("orb-manager: %s was flashed but not remembered: %v", flashedMAC, werr)
+			}
+		}
 		// And an orb flash is the evidence that ends a lonely mark: the chip
 		// this hub left minding a display now runs an orb again.
 		s.lonely.clear(macNorm(flashedMAC))

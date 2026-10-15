@@ -50,11 +50,43 @@ const (
 	// that keeps sitting on the lead. Two an hour, for a chip that is answering.
 	cableProofEvery = 10 * time.Minute
 
-	// cableProofRetry is how long a silent or failed attempt buys the chip some peace.
-	// A blank Espressif board enumerates like an orb and stays enumerated; asking it
-	// every five seconds would put "cmd running on /dev/ttyACM0" in front of anyone
-	// with the flash panel open.
+	// cableProofRetry is how long a silent board buys the chip some peace once the hub
+	// has worn out its patience. A blank Espressif board enumerates like an orb and stays
+	// enumerated; asking it every five seconds would put "cmd running on /dev/ttyACM0" in
+	// front of anyone with the flash panel open.
 	cableProofRetry = 5 * time.Minute
+
+	// cableProofNudge is the short gap the hub keeps on a board it has only just met. A
+	// chip plugged a second ago is still in its bootloader: the wire is live, the PING
+	// goes down it, and the reader that answers is a task the app has not started yet. A
+	// silence that early says nothing about whether an orb lives there, and five minutes
+	// of "silent when asked" over a board that booted two seconds later is the same hole
+	// this file exists to close, one notch smaller.
+	cableProofNudge = 20 * time.Second
+
+	// cableProofNudges is how many short gaps the hub spends on one board before it
+	// settles on cableProofRetry. Three covers a minute of boot, which is longer than
+	// this firmware's console reader takes; a fourth buys a blank chip nothing.
+	cableProofNudges = 3
+)
+
+// askResult is what one attempt produced, and the only thing the throttle reads. The
+// three cases buy three different waits because they are three different answers, and
+// reporting the second and third as one number is what left a board that had never been
+// asked looking like a board that had been asked and had refused.
+type askResult int
+
+const (
+	// askAck: the app answered. The cable is proven, and the board may keep its answer
+	// for cableProofEvery.
+	askAck askResult = iota
+	// askSilent: PING went down a live wire and nothing answered it inside the budget.
+	// The honest answer to that is "not proven", so the retry clock applies.
+	askSilent
+	// askNoWire: the question never left the hub — no port to open, no lock to take, no
+	// registration to run under. Nothing was learned about the chip, so the hub asks
+	// again soon rather than charging a board for a question it never received.
+	askNoWire
 )
 
 // cableVerdict is one chip's answer to PING, and the name it volunteered while the
@@ -62,6 +94,7 @@ const (
 // "c-ap" configured with its AP isolated, "c-sta" configured as a station.
 type cableVerdict struct {
 	ack   bool
+	sent  bool
 	state string
 	name  string
 }
@@ -72,12 +105,15 @@ type cableVerdict struct {
 type cableProof struct {
 	mu       sync.Mutex
 	at       map[string]time.Time
+	gap      map[string]time.Duration
+	tries    map[string]int
 	inFlight map[string]bool
 	ping     func(ctx context.Context, port string) (cableVerdict, error)
 }
 
 func newCableProof() *cableProof {
-	return &cableProof{at: map[string]time.Time{}, inFlight: map[string]bool{}}
+	return &cableProof{at: map[string]time.Time{}, gap: map[string]time.Duration{},
+		tries: map[string]int{}, inFlight: map[string]bool{}}
 }
 
 // enableCableProof wires the real console round trip. main calls it beside
@@ -85,8 +121,9 @@ func newCableProof() *cableProof {
 func (s *Server) enableCableProof() { s.prover.ping = cableConsolePing }
 
 // due reports whether this port may be asked now, and takes the attempt slot when it
-// may: one caller per port, with the clock starting before the round trip so a
-// failure is throttled exactly like a silence.
+// may: one caller per port, with the clock starting before the round trip so a call that
+// never reaches a chip is throttled too — by the short gap settled assigns it, not by the
+// five minutes a real silence earns.
 func (p *cableProof) due(port string, now time.Time) bool {
 	if p == nil || p.ping == nil {
 		return false
@@ -96,27 +133,70 @@ func (p *cableProof) due(port string, now time.Time) bool {
 	if p.inFlight[port] {
 		return false
 	}
-	if last, seen := p.at[port]; seen && now.Sub(last) < cableProofRetry {
-		return false
+	if last, seen := p.at[port]; seen {
+		gap := p.gap[port]
+		if gap == 0 {
+			gap = cableProofRetry
+		}
+		if now.Sub(last) < gap {
+			return false
+		}
 	}
 	p.at[port] = now
 	p.inFlight[port] = true
 	return true
 }
 
-// settled releases the port and moves the clock. A good answer pushes the next
-// attempt out to cableProofEvery; a silence leaves the retry stamp due took, so a
-// board that replies is asked twice an hour and a board that does not once every
-// cableProofRetry.
-func (p *cableProof) settled(port string, ok bool, now time.Time) {
+// settled releases the port and moves the clock to whatever the answer deserves. A good
+// answer buys an hour of quiet and forgets the board's streak of failures. A silence
+// re-asks on the short gap for the first few attempts, on the long one after that: a
+// board the hub has just met may still be booting, and a board that has refused three
+// times is not going to change its mind in the fourth. A question that never left the
+// hub is charged the same short gap rather than cleared outright, because a port the OS
+// will not open at all would otherwise be opened at every tick forever.
+func (p *cableProof) settled(port string, r askResult, now time.Time) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.inFlight, port)
-	if ok {
-		p.at[port] = now.Add(cableProofEvery - cableProofRetry)
+	p.at[port] = now
+	if r == askAck {
+		p.gap[port] = cableProofEvery
+		delete(p.tries, port)
+		return
+	}
+	if p.tries[port] < cableProofNudges {
+		p.tries[port]++
+		p.gap[port] = cableProofNudge
+		return
+	}
+	p.gap[port] = cableProofRetry
+}
+
+// retain drops the throttle history of every cable that left the bench. The clock is
+// keyed by port name, and a port name outlives the board behind it: without this, the
+// five minutes one chip earned is a five minute silence the next chip inherits the
+// moment it takes the same lead. A port mid-round-trip keeps its history — the attempt
+// still holds the wire, and settled writes its verdict the moment it lets go.
+func (p *cableProof) retain(present []cableSighting) {
+	if p == nil {
+		return
+	}
+	keep := make(map[string]bool, len(present))
+	for _, c := range present {
+		keep[c.port] = true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for port := range p.at {
+		if keep[port] || p.inFlight[port] {
+			continue
+		}
+		delete(p.at, port)
+		delete(p.gap, port)
+		delete(p.tries, port)
 	}
 }
 
@@ -134,6 +214,9 @@ func (s *Server) proveCables(ctx context.Context) {
 	if cerr != "" {
 		return
 	}
+	// Whatever did leave the bench loses its clock, so the next board to take that lead
+	// is asked rather than held behind the last one's silence.
+	s.prover.retain(seen)
 	proven, storeChanged := false, false
 	for _, c := range seen {
 		if ctx.Err() != nil {
@@ -181,40 +264,50 @@ func (s *Server) proveCable(ctx context.Context, c cableSighting) (bool, bool) {
 	if !s.prover.due(c.port, time.Now()) {
 		return false, false
 	}
-	ok, changed := s.cableProofRoundTrip(ctx, c)
-	s.prover.settled(c.port, ok, time.Now())
-	return ok, changed
+	r, changed := s.cableProofRoundTrip(ctx, c)
+	s.prover.settled(c.port, r, time.Now())
+	return r == askAck, changed
 }
 
 // cableProofRoundTrip claims the cable the way a command does and asks the question.
 // The registry entry names it opCmd, so /api/ops says what is on the wire rather than
 // merely that something is, and a flash started one tick later waits instead of
 // colliding.
-func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (bool, bool) {
+//
+// The result separates the three ways an attempt ends, because the clock must not charge
+// a board for a question it never got: a refused registration, a refused lock and a port
+// the OS would not open all mean no PING went down the wire.
+func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (askResult, bool) {
 	job, octx, oerr := s.ops.start(ctx, c.port, opCmd, cableProofBudget)
 	if oerr != nil {
-		return false, false
+		return askNoWire, false
 	}
 	defer s.ops.finish(job)
 	lock, lerr := orbbind.LockPort(c.port)
 	if lerr != nil {
-		return false, false
+		return askNoWire, false
 	}
 	defer lock.Release()
 
 	pctx, cancel := context.WithTimeout(octx, cableProofBudget)
 	defer cancel()
 	v, err := s.prover.ping(pctx, c.port)
-	if err != nil && !v.ack {
-		// Silence is the normal answer from a blank chip, so it is a line in the log
-		// and nothing on screen. A port the OS would not open is the same story.
+	switch {
+	case v.ack:
+		return askAck, s.recordCableProof(c.port, c.mac, v.state, v.name)
+	case err != nil && !v.sent:
+		// The question never left the hub — the node is gone mid-ask, or the OS would not
+		// open the lead at all. Nothing was learned about the chip on the other end.
 		log.Printf("orb-manager: cable proof %s: %v", c.port, err)
-		return false, false
+		return askNoWire, false
+	case err != nil:
+		// PING went down a live wire that ran out of budget or broke answering it, which
+		// reads as a silence. Silence is the normal answer from a blank chip, so it is a
+		// line in the log and nothing on screen.
+		log.Printf("orb-manager: cable proof %s: %v", c.port, err)
+		return askSilent, false
 	}
-	if !v.ack {
-		return false, false
-	}
-	return true, s.recordCableProof(c.port, c.mac, v.state, v.name)
+	return askSilent, false
 }
 
 // recordCableProof files an ORB-PING answer where every other orb verdict lives: the
@@ -279,6 +372,7 @@ func cableConsolePing(ctx context.Context, port string) (cableVerdict, error) {
 		})
 	if res != nil {
 		out.ack = res.Ack
+		out.sent = res.Sent
 		if res.State != "" {
 			out.state = res.State
 		}

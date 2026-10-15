@@ -350,8 +350,11 @@ assumed:
   this hub's own lonely image stay silent; an answer files `isOrb` and the chip's
   state token, and never a firmware stamp. The port entry says so — `probed` stays
   false and `cableProof` is the true one — and the row is `consoleOrb`, which is
-  enough for the fleet card and not enough to confirm a MAC. A chip that says nothing
-  is asked again after five minutes rather than every sweep.
+  enough for the fleet card and not enough to confirm a MAC. A chip that says nothing is
+  re-asked after 20 s, three times — a board plugged seconds ago answers only once its app
+  has started — and after five minutes once those are spent; a lead that empties loses its
+  clock, so the next board to take it is asked rather than charged its predecessor's
+  silence. A chip that answers is asked again about every ten minutes.
   The identity is invalidated by a flash of that port, so a
   re-probe reports the new firmware rather than repeating the old.
   The cache is keyed on the **cable**, not the tty name: an answer records the USB

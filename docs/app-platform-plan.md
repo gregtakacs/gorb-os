@@ -2861,8 +2861,10 @@ enum gains entries — append-only — so P8 can add what it needs without a for
 
 ### 23.6 What the owner still owes P6.1
 
-- **R2–R5 stand as asked** (§22.6): uninstalled-app sections, subset bundles, identity
-  rule, the flip's entry point.
+- **R2–R5 — recommendation standing at §23.8, awaiting the owner's word:** install a bundle
+  whose index names uninstalled apps (R2), subsets legal (R3), identity unchanged (R4), and
+  a sixth top-level row named THEMES (R5 — the draft's "under SETTINGS" named a page that
+  does not exist).
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.
@@ -2904,6 +2906,31 @@ decides, on the bench, which stacks qualify.
 its frame is app state, and R6's OS-advance rule would march a date wheel on a clock the
 app wanted to own. The element row therefore carries an advance mode — OS-advanced or
 app-chosen — and R6's ruling is what forces the field to exist.
+
+### 23.8 A correction to R5, and the recommendation on R2-R4
+
+**R5 as drafted named a page that does not exist.** It offered "THEMES beside APPS, or
+under SETTINGS". `menu_view.c:512-525` gives the top page five fixed rows — TZ, DISPLAY,
+PERMISSIONS, APPS, ABOUT — and no SETTINGS among them; `PG_DISPLAY` holds the two idle-dim
+settings, and `PG_N` stops at `PG_ABOUT` (`menu_view.c:70-81`). The real choice is a
+**sixth fixed row** or a sub-page hung off DISPLAY. The recommendation is the row: D30 makes
+a flip a daily action, and a daily action two taps deep under display settings is a feature
+that stops being used. A sixth row costs one knob detent and one walk case.
+
+**R2/R3/R4, recommended together.** A bundle is a SET of per-app arrangements, each
+independently absent. An index naming an app that is not installed is not damage — it is a
+theme covering more than the board has, and `NO_SLOT` already describes that state without
+an error. So install it, resolve the intersection, and print "covers 3 apps, 2 installed"
+on the picker so the owner knows what the flip changes. Subset bundles are legal for the
+same reason: D31 lets a silent app fall to its own default, so a clock-only theme over
+three installed apps is a complete design, not a partial one. Keep the identity rule:
+`theme_id = hex(sha256(name))[:12]` (`orb_theme.c:329-342`) addresses the bundle, and the
+index addresses the app inside it, so no second identifier is needed.
+
+**What all eight answers point at.** A theme is a set of per-app arrangements, each
+independently absent, each with a declared advance mode, and the OS owns the one clock. That
+retires the last of the clock's privileges from the theme format, and it makes
+`theme_schema.py` the file that defines what a theme IS: one schema, every app, no dialect.
 
 
 

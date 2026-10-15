@@ -105,19 +105,24 @@ function route() {
 
 // ---- ports, and the blank gate ---------------------------------------------
 // The New Orb button is the only place a cable with no orb on it appears, and it
-// opens on facts the hub answers without touching the chip: "espressif" is the
-// host saying this tty sits behind a genuine Espressif device, "inFleet" is the
-// address book saying this MAC has been met as a board before, and a probed orb
-// identity is the chip having answered for itself. A port that is Espressif,
-// unknown to the fleet, and never answered as an orb is a blank candidate — and
-// it is a candidate only here, never on the fleet list.
+// opens on two verdicts the hub answers without touching the chip: "espressif"
+// says a genuine Espressif device sits behind this tty, and "orbSeen" says the
+// hub has evidence this MAC has been an orb — a name, an address, a stamp, an
+// announcement, a chip that answered. A port that is Espressif and has no orb
+// evidence is a blank candidate, and it is a candidate only here, never on the
+// fleet list. The fleet's own filter (isBlankRow) reads the row twin of this
+// same verdict, which is the point: the two floors are complements, so a board
+// is always visible through exactly one door. Reading row existence instead —
+// the inFleet field this gate first used — closed the door on any board ever
+// plugged in, because a cable sighting alone writes a row, and a wiped orb then
+// appeared nowhere on the page at all.
 let blanks = [];   // port entries a New Orb flash may target
 let allPorts = []; // the last /api/ports payload, for labels and cached verdicts
 
 function isBlankPort(e) {
   if (!e || typeof e !== "object") return false;
   if (!e.espressif) return false;
-  if (e.inFleet) return false;
+  if (e.orbSeen === true) return false;
   if (e.probed && e.isOrb) return false;
   return true;
 }
@@ -434,17 +439,16 @@ $("#ob-refresh").onclick = async () => { await refreshPorts(); renderBlankGate()
 // that trusted one would rename whoever holds it tomorrow.
 let current = { mac: "", ip: "", port: "", name: "", row: null };
 
-// isBlankRow is the fleet's doorkeeper. A board the hub has only ever seen as a
-// cable — no name it was given, no stamp it reported, no address it answered at,
-// no remembered row — has not yet been an orb to this hub. It renders nothing
-// here; it is the New Orb button. The rule reads the hub's fields, not labels.
+// isBlankRow is the fleet's doorkeeper, and it is the exact complement of the
+// New Orb gate: the hub's own `orb` verdict decides, so a board the hub cannot
+// yet call an orb is never a card here and is always a flash candidate over on
+// the cable side. Reading the verdict rather than re-deriving it from fields is
+// what keeps the two doors from disagreeing the way name/ip/fw/state-versus-
+// inFleet once did — that pair left a wiped board on a lead invisible in both
+// directions, which is how "plug in two orbs, see one" happened on this bench.
 function isBlankRow(o) {
   if (!o || typeof o !== "object") return true;
-  if (o.name || o.ip || o.fw || o.state) return false;
-  if (o.reachable === "alive" || o.reachable === "dead") return false; // remembered: it has been an orb
-  const via = Array.isArray(o.via) ? o.via : [];
-  if (via.indexOf("lan") >= 0) return false;
-  return true;
+  return o.orb !== true;
 }
 
 // openOrbByIP is the one door into the manage view. The ip may be empty — a

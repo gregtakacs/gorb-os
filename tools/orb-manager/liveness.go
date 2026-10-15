@@ -434,6 +434,18 @@ func (s *Server) annotateForget(rows []orbRow, now time.Time) {
 	}
 	s.annotateReachability(rows, now)
 	s.annotateUpdate(rows)
+	s.annotateOrb(rows)
+}
+
+// annotateOrb stamps the one fact the page's two gates read. It runs last so the
+// verdict sees the reachability the annotate above just settled, and it is a
+// plain read of the row rather than a new enquiry: no dial, no probe, nothing
+// that costs the board a reboot. See orbRow.Orb and provesOrb for why this
+// exists as one predicate instead of two rules that can drift apart.
+func (s *Server) annotateOrb(rows []orbRow) {
+	for i := range rows {
+		rows[i].Orb = rows[i].provesOrb()
+	}
 }
 
 // annotateUpdate stamps each row with whether the firmware this hub carries is a

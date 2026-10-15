@@ -368,3 +368,58 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 		t.Error("a refused forget is silent: the card repaints the row back with no explanation")
 	}
 }
+
+var joinCallRe = regexp.MustCompile(`openJoinDialog\(([^)]*)\)`)
+
+// The third parameter of openJoinDialog is the /api/watch skip_ap flag, and a
+// truthy value there drops Phase A: the boot verdict, the provisioning AP, and
+// the boot scan. On 2026-10-15 the New Orb path passed the orb's NAME into that
+// slot, so every fresh flash came back "the scan produced nothing — it came up
+// with nothing": a name is a truthy string, Phase A was skipped, and the picker
+// was never filled. A call site cannot be trusted to remember which positional
+// slot is which, so the call sites are pinned instead.
+func TestJoinDialogIsNeverOpenedWithANameInTheSkipFlag(t *testing.T) {
+	src := readWebFile(t, "app.js")
+	allowed := map[string]bool{`""`: true, "true": true, "false": true, "skipAp": true}
+	calls := 0
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "function openJoinDialog") {
+			continue
+		}
+		m := joinCallRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		calls++
+		args := strings.Split(m[1], ",")
+		if len(args) != 3 {
+			t.Errorf("openJoinDialog wants three arguments, skip flag last: %q", trimmed)
+			continue
+		}
+		if flag := strings.TrimSpace(args[2]); !allowed[flag] {
+			t.Errorf("the skip_ap slot got %q, which is not a flag; a name here silences the boot scan: %q",
+				flag, trimmed)
+		}
+	}
+	if calls < 2 {
+		t.Errorf("only %d join-dialog call sites found; the pin stopped seeing them", calls)
+	}
+}
+
+// Phase B dials one address for the whole watchLanBudget and used to emit
+// nothing at all while it did, behind a dialog whose only text is a fixed
+// sentence about rebooting. A wait that sends no news looks exactly like a hung
+// tool, and that is what got reported. The loop must speak before it can be
+// silent for a budget.
+func TestWatchReportsWhileItWaitsForTheOrb(t *testing.T) {
+	src := readWebFile(t, "../watch.go")
+	loop := src[strings.Index(src, "watchStart := time.Now()"):]
+	body := loop[:strings.Index(loop, "unknown\"")]
+	if !strings.Contains(body, `"log"`) {
+		t.Error("the Phase B poll loop emits no progress event; the join dialog sits on a static sentence for up to 45 s")
+	}
+	if !strings.Contains(body, "watchStart") {
+		t.Error("the Phase B progress event does not say how long it has been waiting")
+	}
+}

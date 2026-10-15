@@ -244,10 +244,11 @@ func TestLonelyMarksPersistRoundTrip(t *testing.T) {
 }
 
 // TestFactoryResetNamesTheCardTheOrb: the board a hub-commanded RESET ALL
-// leaves behind owns no word - its NVS name went with the credentials - so the
-// card takes the default the reset implies, and a store write (not a device
-// write) is the honest place for a word the device no longer carries. Pinned at
-// the ack site because a refactor of the write-back block drops it silently.
+// leaves behind answers to the default word — the firmware seeds "The Orb"
+// into the fresh NVS on a clean erase — and the hub writes the same word to
+// the card at the ack, so the row reads it even before the board answers a
+// poll again. Pinned at the ack site because a refactor of the write-back
+// block drops it silently.
 func TestFactoryResetNamesTheCardTheOrb(t *testing.T) {
 	if defaultOrbName != "The Orb" {
 		t.Errorf("defaultOrbName = %q; the sentence the operator asked for is The Orb", defaultOrbName)

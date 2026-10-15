@@ -34,10 +34,12 @@ func newLonelyMark() *lonelyMark {
 }
 
 // defaultOrbName is the card's word for a board whose own name is gone: a
-// factory reset erased the NVS the device kept the word in, and the hub's row
-// must read as something beside a MAC. Whoever claims the board next gives it
-// a word of their own, and the store's copy is corrected the same way any
-// device-named fact is — by the device.
+// factory reset erased the NVS the device kept the word in. The firmware seeds
+// this same default into the fresh NVS on a clean erase (main/net/orb_net.c,
+// net_factory_reset), so the hub's ack write-back only bridges the gap until the
+// board answers a poll again — device and card converge on the one word.
+// Whoever claims the board next gives it a word of their own, and the store's
+// copy is corrected the same way any device-named fact is — by the device.
 const defaultOrbName = "The Orb"
 
 func (l *lonelyMark) mark(mac string) {

@@ -128,7 +128,7 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		Plan:       plan,
 		Ctx:        ctx,
 		OnEvent:    func(m string) { send("log", m) },
-		OnProgress: flashProgressSender(send),
+		OnProgress: flashProgressSender(send, plan),
 		// A lonely board keeps nothing of its owner: the same ROM session that
 		// writes the image erases the NVS and storage regions the bundle's own
 		// partition table declares, so the time zone, the name and every Wi-Fi
@@ -170,10 +170,37 @@ func (s *Server) endAsLonely(port, mac string) {
 	s.forgetWipedOrb(port, mac)
 }
 
-// flashProgressSender is the progress-event encoder both writers share: the UI
-// parses one progress shape for every streaming door.
-func flashProgressSender(send func(kind, msg string)) func(img, n int, off uint32, wr, tot int) {
+// flashProgressSender is the progress-event encoder both writers share: the UI parses
+// one progress shape for every streaming door.
+//
+// The shape carries the ROM's per-image counts AND a byte-weighted percentage of the
+// whole plan, because the bar tells one story ("58% of this flash") instead of five
+// misleading ones: a 4 MB app at 90% is most of the wait and a 12 kB otadata at 100% is
+// none of it, which "3/5" cannot say. The weights come from the plan's own sizes, so the
+// figure needs no new fact from the chip, and the offset stays in the event for anyone
+// who wants the memory depth behind a percentage. Erasing and verifying are not bytes and
+// are not in the figure; the bar holds still through them, which is the truth.
+func flashProgressSender(send func(kind, msg string), p esprom.FlashPlan) func(img, n int, off uint32, wr, tot int) {
+	total := 0
+	before := make([]int, len(p.Images))
+	for i, img := range p.Images {
+		before[i] = total
+		n := len(img.Data)
+		total += (n + 3) / 4 * 4 // the writer pads to 4, and so do the weights
+	}
 	return func(img, n int, off uint32, wr, tot int) {
-		send("progress", fmt.Sprintf(`{"image":%d,"of":%d,"offset":"0x%X","written":%d,"total":%d}`, img, n, off, wr, tot))
+		done := wr
+		if img >= 0 && img < len(before) {
+			done = before[img] + wr
+		}
+		pct := 0
+		if total > 0 {
+			pct = done * 100 / total
+			if pct > 100 {
+				pct = 100
+			}
+		}
+		send("progress", fmt.Sprintf(`{"image":%d,"of":%d,"offset":"0x%X","written":%d,"total":%d,"pct":%d,"bytes":%d}`,
+			img, n, off, wr, tot, pct, total))
 	}
 }

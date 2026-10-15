@@ -65,7 +65,8 @@
     <div id="nf-run" hidden>
       <div class="row">
         <b id="nf-doing">flashing&#8230;</b>
-        <span id="nf-op" class="hint"></span>
+        <span id="nf-liveop" class="fp-liveop hint"></span>
+        <span id="nf-op" class="fp-pct hint"></span>
         <button id="nf-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
       </div>
       <div id="nf-bar" class="bar"><div></div></div>
@@ -225,7 +226,8 @@
 <div class="flashpanel" id="ob-flashpanel" hidden>
   <div class="row">
     <b id="ob-doing">working&#8230;</b>
-    <span id="ob-op" class="hint"></span>
+    <span id="ob-liveop" class="fp-liveop hint"></span>
+    <span id="ob-op" class="fp-pct hint"></span>
     <button id="ob-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
     <button id="fp-close" class="ghost" title="Hide this panel. A running flash keeps going; Cancel is what stops it.">Close</button>
   </div>

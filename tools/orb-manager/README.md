@@ -248,7 +248,16 @@ no Forget; that verdict is the hub's, not the card's guess.
   successful flash runs the post-flash onboarding probe; the boot verdict the
   flash captured picks the branch (AP card vs. connected panel), and a finished
   board opens straight in its manage state. Progress is a bar; the raw ROM
-  traffic sits collapsed one click below it. The flash converges on the **join
+  traffic sits collapsed one click below it. The bar is ONE bar for the WHOLE
+  flash: the hub weights the plan by the image sizes it already knows and sends
+  the running percentage (`pct`, of `bytes`), so a 4 MB app moves the bar and a
+  12 kB otadata does not, and the line beside it reads `58% · 2/5`. The memory
+  depth behind a percentage is in the bar's title rather than in a log line,
+  because the panel is anchored to the bottom of the screen and every appended
+  progress line pushed the bar itself upward. The panel's two status lines are
+  separate elements (`*-op` for the percentage, `*-liveop` for the hub's
+  seconds-elapsed report) and `ui_test.go` pins both ids: sharing one slot made
+  the two writers alternate twice a second. The flash converges on the **join
   dialog**, which opens locked — a spinner and a sentence while the orb reboots,
   opens its AP, and runs its first scan — because an empty network picker before
   that phase was the dead form this replaced; Later is live the whole wait. The

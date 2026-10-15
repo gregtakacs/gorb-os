@@ -380,6 +380,16 @@ async function streamPost(url, payload, onEvent) {
 // event — the caller only runs onboarding after a real success, so a refused or
 // mid-flash error never dumps the user into a Wi-Fi form for an orb that was
 // not actually rewritten.
+//
+// The bar is ONE bar for the WHOLE flash: the hub weights the plan by bytes and sends
+// the running percentage, so a 4 MB app moves the bar and a 12 kB otadata does not, and
+// the count of images rides beside it as detail rather than as the story. Two rules keep
+// the panel from twitching while it fills, both of them learned the hard way: nothing
+// that changes length writes to the element the seconds counter writes to (two writers on
+// one line alternated every two seconds), and nothing that grows the log writes to the
+// log at all (the panel is anchored to the bottom of the screen, so every appended
+// progress line pushed the bar itself upward). The depth behind a percentage lives in the
+// bar's title, where wanting it costs a hover and nothing costs the layout.
 // streamFlash drives one flash stream into WHATEVER ui is handed it, so the
 // New Orb dialog and the manage view's panel share one reader and two frames.
 // It returns the outcome rather than navigating anywhere: the caller decides
@@ -389,7 +399,8 @@ async function streamPost(url, payload, onEvent) {
 // exists to kill.
 async function streamFlash(url, payload, ui) {
   const log = ui.log, bar = ui.bar, opEl = ui.op, cancelBtn = ui.cancel;
-  log.textContent = ""; bar.style.width = "0%";
+  const liveEl = ui.live || opEl;
+  log.textContent = ""; bar.style.width = "0%"; bar.title = ""; opEl.textContent = "";
   let mac = null;
   let ok = false;
   const port = payload.port || "";
@@ -399,13 +410,13 @@ async function streamFlash(url, payload, ui) {
   cancelBtn.disabled = false;
   cancelBtn.onclick = async () => {
     cancelBtn.disabled = true;
-    opEl.textContent = "cancelling the write on " + port +
+    liveEl.textContent = "cancelling the write on " + port +
       " — it stops at the next block boundary; the chip stays in its bootloader, and one flash of either image finishes cleanly";
     try { await hubFetch("/api/flash/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port }) }); }
     catch (e) { /* the stream's own log line says what happened */ }
   };
-  const tick = setInterval(() => showLiveOp(port, opEl), 2000);
-  showLiveOp(port, opEl);
+  const tick = setInterval(() => showLiveOp(port, liveEl), 2000);
+  showLiveOp(port, liveEl);
   try {
     await streamPost(url, payload, (ev) => {
       if (ev.log) log.textContent += ev.log + "\n";
@@ -414,10 +425,12 @@ async function streamFlash(url, payload, ui) {
       else if (ev.mac) mac = ev.mac;
       else if (ev.progress) {
         const p = JSON.parse(ev.progress);
-        const pct = p.total ? Math.round((p.written / p.total) * 100) : 0;
+        const pct = Number.isFinite(p.pct) ? p.pct
+          : (p.total ? Math.round((p.written / p.total) * 100) : 0);
         bar.style.width = pct + "%";
-        opEl.textContent = (p.image + 1) + "/" + p.of + " \u00b7 " + pct + "%";
-        log.textContent += `\r[${p.image + 1}/${p.of}] ${p.offset} ${p.written}/${p.total} (${pct}%)`;
+        bar.title = "image " + (p.image + 1) + "/" + p.of + " at " + p.offset +
+          " \u00b7 " + p.written + "/" + p.total + " B \u00b7 " + pct + "% of " + p.bytes + " B";
+        opEl.textContent = pct + "% \u00b7 " + (p.image + 1) + "/" + p.of;
       }
       log.scrollTop = log.scrollHeight;
     });
@@ -432,7 +445,7 @@ async function streamFlash(url, payload, ui) {
 // the instant a door there is pressed; fpClose hides it once the work is over.
 function fpUI() {
   return { log: $("#ob-log"), bar: $("#ob-bar > div"), doing: $("#ob-doing"),
-           op: $("#ob-op"), cancel: $("#ob-cancel") };
+           op: $("#ob-op"), live: $("#ob-liveop"), cancel: $("#ob-cancel") };
 }
 function fpOpen() { $("#ob-flashpanel").hidden = false; }
 $("#fp-close").onclick = () => { $("#ob-flashpanel").hidden = true; };
@@ -642,7 +655,7 @@ $("#ob-go").onclick = async () => {
   go.disabled = true; close.disabled = true;
   let mac = null, ok = false;
   const ui = { log: $("#nf-log"), bar: $("#nf-bar > div"), doing: $("#nf-doing"),
-               op: $("#nf-op"), cancel: $("#nf-cancel") };
+               op: $("#nf-op"), live: $("#nf-liveop"), cancel: $("#nf-cancel") };
   try {
     const r = await streamFlash("/api/flash", { port, mode: "full", wipe: true, name, fresh: true }, ui);
     mac = r.mac; ok = r.ok;

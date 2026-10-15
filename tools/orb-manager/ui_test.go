@@ -58,6 +58,13 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
+		// The flash panel's two status lines, pinned separately on purpose. The
+		// percentage and the hub's "flash running (12s)" report are written by two
+		// different timers, and sharing one element made them alternate on screen
+		// twice a second; the bar jumped because the row grew. If either id goes
+		// away the panel is back to flickering, so this is a contract and not
+		// decoration.
+		"ob-liveop", "ob-bar", "nf-liveop", "nf-op", "nf-bar",
 		// Item 5's LAN list. Pinned by id for the same reason as the rest: a
 		// one-sided rename leaves the browse card rendering an empty <ul> forever
 		// and nothing else in the suite notices. There is no mn-find-go any more: the

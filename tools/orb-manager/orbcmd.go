@@ -177,6 +177,22 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 	// contradicted by the board itself.
 	if res.Ack {
 		s.lonely.clear(macNorm(req.MAC))
+		// A PING the operator sent is the same evidence as the one the hub sends
+		// itself, and it belongs in the same place: the chip answered the orb door,
+		// so its row is a card and its port is no longer a blank to flash. The MAC
+		// the caller named wins; the descriptor's is the fallback, because the
+		// forget dialog sends a port and not a chip.
+		if strings.EqualFold(req.Command, "ping") {
+			mac := macNorm(req.MAC)
+			if mac == "" {
+				mac = macNorm(hostUSBSerial(req.Port))
+			}
+			changed := s.recordCableProof(req.Port, mac, res.State, "")
+			if changed {
+				s.saveState()
+			}
+			s.wakeOrbs()
+		}
 	}
 	// A board this hub just factory-reset over the lead has lost its own word
 	// — its NVS name went with the credentials — so the card takes the default

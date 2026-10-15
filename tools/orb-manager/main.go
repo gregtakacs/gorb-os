@@ -134,6 +134,13 @@ type Server struct {
 	// about the machine it runs on.
 	cables *cableCache
 
+	// prover is the throttle and the seam behind the free cable read
+	// (cableproof.go): the PING the hub sends itself down a lead it already owns, so
+	// an orb on a cable becomes a card with no reboot, no packet and no dial. Its
+	// round trip is wired by main beside enableCables, for the cables reason: the
+	// suite must never open a serial device it did not ask to open.
+	prover *cableProof
+
 	// live is the answer to "does the address this row remembers still answer as an
 	// orb", cached so the discovery card never dials on the path that draws it. It is
 	// what makes Forget an offer only for a board that cannot come straight back; see
@@ -323,9 +330,16 @@ func main() {
 	// discovery: a plug-in reaches an open stream inside half the sweep TTL instead of
 	// waiting for an mDNS packet that a cable-only board will never send.
 	s.enableCables(hostCableSweep, s.wakeOrbs)
+	// The free cable read rides the same sweep and the same shutdown: a board on a
+	// lead becomes a card here rather than by waiting for a packet it will never send
+	// or paying for a reboot it does not need. cableproof.go is the whole argument.
+	s.enableCableProof()
 	cableCtx, stopCables := context.WithCancel(context.Background())
 	defer stopCables()
 	go s.watchCables(cableCtx)
+	// Once before the first tick, so a hub started with a cable already in it is not
+	// three minutes late to its own bench.
+	go s.proveCables(cableCtx)
 
 	// The liveness verdicts Forget is gated on (liveness.go). The probe is the same
 	// status fetch the post-flash watch uses — one GET, orb-shaped answer or nothing —

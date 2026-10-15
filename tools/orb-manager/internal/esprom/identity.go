@@ -33,6 +33,11 @@ type OrbInfo struct {
 	// elsewhere still arrives on the card — see ParseOrbName.
 	Name     string `json:"name,omitempty"`
 	ProbedAt string `json:"probedAt,omitempty"`
+	// State is the firmware's own token — "b", "c-ap" or "c-sta" — from a console
+	// line. A reboot-paid probe reads the boot banner and fills it; so does the free
+	// cable proof (cableproof.go), which is the only way a board with no lease ever
+	// says anything about itself. Empty means the chip never got round to saying.
+	State string `json:"state,omitempty"`
 	// Verdict is filled in by the hub, not the probe: it compares what was found
 	// against the firmware that would flash next, which the flasher has no
 	// business knowing.

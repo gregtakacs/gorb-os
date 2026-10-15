@@ -233,8 +233,10 @@ browser and the hub still works as a plain web app.
 
 The page opens on the fleet and nowhere else. One card per orb the hub has met:
 the name it answers to, the address the hub remembers, the MAC underneath both,
-and a badge saying how the hub could reach it right now. A cable with no orb on
-it is not a card — it is the **New Orb** button, which appears only while an
+and a badge saying how the hub could reach it right now. A chip on a lead is asked
+what it is before it is judged: the hub sends one free `PING` down the cable
+(`cableproof.go`), and only a board that stays silent is no orb. A silent cable is
+not a card — it is the **New Orb** button, which appears only while an
 Espressif chip the hub cannot yet prove was ever an orb sits on some tty, and
 asks for exactly two things: which cable, and a name. Both verdicts are the
 hub's: each `/api/orbs` row carries `orb`, each `/api/ports` entry `orbSeen`,
@@ -340,9 +342,17 @@ assumed:
   ROM. The 2nd-stage bootloader prints that same descriptor on the console
   roughly 0.7 s after a cold boot, which is where the answer comes from.
 - **So a probe costs a reboot.** The orb restarts, its screen blanks for a second
-  or two, and it re-joins Wi-Fi. Nothing here is automatic: the hub probes only on
-  that click, one port at a time, caches the answer, and takes the same per-port
-  lock a flash does. The identity is invalidated by a flash of that port, so a
+  or two, and it re-joins Wi-Fi. The hub probes only on that click, one port at a
+  time, caches the answer, and takes the same per-port lock a flash does. One thing
+  IS automatic and is not a probe: an attributed orb peripheral whose board nothing
+  else proves gets one `PING` down its own lead (`cableproof.go`). It opens no
+  download mode, resets nothing, and is answered only by the app, so a blank chip and
+  this hub's own lonely image stay silent; an answer files `isOrb` and the chip's
+  state token, and never a firmware stamp. The port entry says so — `probed` stays
+  false and `cableProof` is the true one — and the row is `consoleOrb`, which is
+  enough for the fleet card and not enough to confirm a MAC. A chip that says nothing
+  is asked again after five minutes rather than every sweep.
+  The identity is invalidated by a flash of that port, so a
   re-probe reports the new firmware rather than repeating the old.
   The cache is keyed on the **cable**, not the tty name: an answer records the USB
   serial the host could see behind the port when the probe ran, and it is only
@@ -533,7 +543,7 @@ headless; a mismatch aborts before erasing.
 | Route | Purpose |
 |---|---|
 | `GET  /api/status` | platform, hub stamp, firmware version and source |
-| `GET  /api/ports`  | ports as `{"ports":[{port,attributed,hint,usbMac?,probed,...}],"count":N}`, with each cached identity inlined |
+| `GET  /api/ports`  | ports as `{"ports":[{port,attributed,hint,usbMac?,probed,cableProof?,orbState?,...}],"count":N}`, with each cached identity inlined. `probed` means a reboot was paid for; `cableProof` means the chip answered the hub's own free `PING` and nothing else is known about it |
 | `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit. The answer carries `name` when the board announced one on its boot banner, and the hub folds it into the row (the only name read available to a board with no address) |
 | `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
@@ -544,7 +554,7 @@ headless; a mismatch aborts before erasing.
 | `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `wipe`, `lonely`, `console`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
-| `POST /api/orb/cmd` | one always-on serial console verb over a port (`ping` `name` `scan` `prov` `mode` `reset`), NDJSON; `name` is written to the board and the card re-reads it; the store keeps no copy |
+| `POST /api/orb/cmd` | one always-on serial console verb over a port (`ping` `name` `scan` `prov` `mode` `reset`), NDJSON; `name` is written to the board and the card re-reads it; the store keeps no copy. A `ping` ack is evidence and is filed as such: it clears the lonely mark, records the sighting, and files the cable identity the fleet row reads (`consoleOrb`) |
 | `GET/POST /orb/<ip>/api/v1/...` | same-origin proxy to an orb's device API, gated on a learned address and the device route allowlist |
 | `POST /api/orb/allow` | `{"ip", "mac"?}` — register the address the operator just committed to, which is what lets `/orb/` dial it; the optional MAC is the board the grant is then cross-locked to |
 | `POST /api/orb/add` | `{"ip"}` — the Add-by-IP dialog's door: dial one address, and only an orb answering its own status adopts it (bound grant plus fleet row); a no-answer gets a refusal and changes nothing; token-guarded |
@@ -723,6 +733,7 @@ wipe.go              the forget-everywhere a firmware-ending leaves behind (iden
 lonely.go            POST /api/lonely: the lonely image write, its NVS-region erase, and the mark that keeps the ended board off the fleet
 lonelyset.go         the lonely marks: evidence-cleared, state-persisted, the reason a lonely board reads as a blank to adopt
 roster.go            the one-list merge: TTL-cached USB sweep behind a seam, MAC-joined LAN+cable rows, plug-change digest
+cableproof.go        the free cable read: one PING per unproven attributed port, on the sweep's tick, filed as a cable identity and never as a probe
 liveness.go          the Forget gate: cached per-address liveness verdicts, the background sweeper that fills them,
                      and the one rule the card and the forget door both call
 ops.go               the per-port operation registry, /api/ops and /api/flash/cancel

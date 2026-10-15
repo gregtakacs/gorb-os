@@ -265,9 +265,13 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 		}
 	}
 	at := make(map[string]int, len(lan))
-	for i, r := range lan {
-		at[r.MAC] = i
+	for i := range lan {
+		at[lan[i].MAC] = i
 	}
+	// The console answers this hub paid for itself, so a row the descriptor alone
+	// would leave unproven can still be a card. One lookup for the whole sweep, so
+	// building a fleet never costs a sysfs read per port.
+	proofs := s.consoleProofs(seen)
 	for _, c := range seen {
 		if !c.isOrb {
 			// Not an orb, or an orb on a UART bridge the host cannot name. Either way
@@ -290,10 +294,19 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 			if r.Identity != "confirmed" {
 				r.Identity = "descriptor"
 			}
+			// The row already proves itself by its announcement, so the console
+			// answer changes its badge and not its existence. It is still recorded:
+			// the lead is where a reset goes, and a row with no address says why.
+			if pr, had := proofs[c.port]; had {
+				r.ConsoleOrb = true
+				if r.IP == "" {
+					r.Refusal = cableProofRefusal(c.port, pr.state)
+				}
+			}
 			continue
 		}
 		at[c.mac] = len(lan)
-		lan = append(lan, s.cableRow(c.mac, c.port, now))
+		lan = append(lan, s.cableRow(c.mac, c.port, now, proofs[c.port]))
 	}
 	// The address book's own tier: every saved board the wire and the bench are not
 	// producing this second. This is the half that makes the file worth having — a hub
@@ -342,12 +355,21 @@ func (s *Server) rememberedRow(row orbfleet.Orb, now time.Time) orbRow {
 }
 
 // cableRow is a board on a lead that has not announced: real MAC, no address, nothing
-// to dial, and the fleet's words for it if the operator ever gave it any.
-func (s *Server) cableRow(mac, port string, now time.Time) orbRow {
+// to dial, and the fleet's words for it if the operator ever gave it any. The proof is
+// what this hub's own console read heard on that lead, if it has read it; a zero
+// verdict means nobody has asked, and the row says so in the old words.
+func (s *Server) cableRow(mac, port string, now time.Time, proof cableVerdict) orbRow {
 	r := orbRow{
 		Key: mac, MAC: mac, Instance: instanceForMAC(mac), Identity: "descriptor",
 		OnCable: true, Via: []string{"usb"}, Ports: []string{port},
 		Refusal: "on a cable at " + port + " with no address yet: identify it or bring it onto Wi-Fi",
+	}
+	if proof.ack {
+		r.ConsoleOrb = true
+		// The hub just walked through the door this sentence points at, so pointing
+		// at it again would be the card arguing with itself. What is left to do is
+		// the thing the chip said it wanted.
+		r.Refusal = cableProofRefusal(port, proof.state)
 	}
 	if s.fleet == nil {
 		return r
@@ -508,6 +530,11 @@ func foldStoreName(r *orbRow, row orbfleet.Orb) {
 // tick pays a fresh enumeration rather than the cache, and refresh is what fires the
 // wake when the digest moved. It exits with the context; a hub shutting down is not an
 // orb unplugging.
+//
+// The tick also runs the free cable proof (cableproof.go), which is what makes a board
+// plugged into THIS machine a card without an announcement, a dial, or a reboot. It
+// rides this tick rather than its own because it is asked of the same enumeration, and
+// because the first thing a plug needs is a fresh one.
 func (s *Server) watchCables(ctx context.Context) {
 	t := time.NewTicker(cableSweepTTL / 2)
 	defer t.Stop()
@@ -517,6 +544,7 @@ func (s *Server) watchCables(ctx context.Context) {
 			return
 		case <-t.C:
 			s.cables.refresh(time.Now())
+			s.proveCables(ctx)
 		}
 	}
 }

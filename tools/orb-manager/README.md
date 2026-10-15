@@ -695,7 +695,7 @@ watch.go             POST /api/watch: boot verdict + confirm the USB-learned orb
 provision.go         POST /api/provision: wired (serial) provisioning round-trip
 theme.go             POST /api/theme/*: the Manage card's theme surface, gated on a learned address and a legal theme id
 console.go           POST /api/console: read-only USB console, registered as a port operation
-state.go             remembered orbs (state.json under the OS config dir: addresses, MAC bindings, cached names)
+state.go             remembered orbs (state.json under the OS config dir: addresses, MAC bindings, cached names, and the lonely set; an address is the whole qualification for a row)
 fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
 adopt.go             the typed-address door and the OTA door: POST /api/orb/{add,update} — verify-by-dial before any row, stage-then-reboot before any swap
 wipe.go              the forget-everywhere a firmware-ending leaves behind (identity, verdict, chip read, row, grants, state) — the erase door itself is CLI-only now
@@ -890,6 +890,14 @@ remembered by MAC from the moment it is seen, so `state.json` gains a row from a
 browse reply, a multicast announcement, a cable enumeration, a probe, a flash, or a
 console verdict, with nothing to press. What a descriptor-only sighting does NOT get is
 an address, so it shows while plugged and stays dialable-free after the plug.
+Persistence is narrower than remembering: an address is the whole qualification. Only a
+row with something to dial is ever written out, because a board the hub cannot reach is a
+board it cannot manage, and one on a lead re-discovers itself the moment it returns
+(the operator's rule, bench 2026-10-15). The retired `remembered` exception — persist
+whatever this hub flashed or named — is what left an unplugged board and a just-ended
+lonely one on the card. The mark survives in memory for the port list's question, and a
+file an older hub wrote is cleaned at load rather than migrated.
+`Forget` and a lonely mark take the row; nothing else clears the mark.
 `cable` (chip-confirmed,
 sticky) and `onCable` (in this sweep) stay distinct fields — an orb you flashed
 yesterday is not tethered today. A failed enumeration keeps the last good bench and

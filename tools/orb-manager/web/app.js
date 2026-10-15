@@ -664,7 +664,14 @@ $("#ob-go").onclick = async () => {
       pullFound();
       $("#no-mask").hidden = true;
       newOrbStep("form");
-      openJoinDialog(port, mac, name);
+      // The third argument is the /api/watch skip_ap flag, NOT the orb's name. A
+      // name here is truthy, and a truthy skip_ap drops Phase A — the only phase
+      // that returns the boot verdict and the boot scan — so a freshly flashed
+      // board answered with mode no_ip and an empty picker: "the scan produced
+      // nothing, it came up with nothing" (bench, 2026-10-15). A fresh flash is
+      // precisely the case that MUST run Phase A: its NVS is empty, so the
+      // provisioning AP and its scan are the whole story.
+      openJoinDialog(port, mac, "");
     } else {
       $("#ob-blankstate").textContent = "the flash stopped before its end — the log under the bar says why";
     }
@@ -861,7 +868,18 @@ function watchLog(text) {
   const el = $("#ob-console");
   el.textContent += text + "\n";
   el.scrollTop = el.scrollHeight;
+  // Mirror the newest line onto the lock while the lock is up. The locked page
+  // carries a spinner and one hardcoded sentence, and that sentence stays true
+  // for a minute at a time — so a live wait behind it looked like a hang. The
+  // newest hub line is the difference between "waiting" and "apparently stuck".
+  const lock = $("#wj-lock");
+  if (!lock.hidden) $("#wj-lock-msg").textContent = text;
 }
+
+// The sentence the markup ships with, taken once at load. watchLog mirrors each
+// hub line onto the lock, which replaces it, and the next join must not inherit
+// the last join's last word.
+const lockIntro = $("#wj-lock-msg").textContent;
 
 // openJoinDialog is the one destination for every converged flash path. SkipAp
 // carries the /api/watch skip flag: after a provision the boot already showed a
@@ -880,6 +898,7 @@ function openJoinDialog(port, mac, skipAp) {
   $("#sp-log").hidden = true;
   showTzRow(false);
   joinLock(true);
+  $("#wj-lock-msg").textContent = lockIntro;
   $("#wj-mask").hidden = false;
   loadZones();
   streamWatch(gen, port, mac, skipAp, "");
@@ -943,8 +962,20 @@ function onWatchResult(res) {
     watch.textContent = "orb opened its own provisioning AP — the hub can still write over the cable.";
     if (!(res.networks || []).length) serialRescan(true); // the flash missed the boot rows; drive a fresh scan now
   } else {
-    watch.textContent = "orb did not announce itself: " +
-      (res.reason || "it is flashed and holding — add it by address once you know where it lives") + ".";
+    // no_ip / unknown: the hub has no address for it. With a cable bound that is
+    // never a dead end — the serial door answers in every state, including
+    // joined-and-hidden — so re-drive the scan rather than leaving the picker
+    // showing whatever the last round happened to leave, and say what the cable
+    // can still do instead of pointing only at an address nobody has.
+    if (provPort) {
+      watch.textContent = "no address yet: " + (res.reason || "it has not announced itself") +
+        " — the cable is still a door; Rescan re-reads its network list and the form writes over the wire.";
+      populateSerialNetworks([]);
+      serialRescan(true);
+    } else {
+      watch.textContent = "orb did not announce itself: " +
+        (res.reason || "it is flashed and holding — add it by address once you know where it lives") + ".";
+    }
   }
 }
 

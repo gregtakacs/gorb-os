@@ -612,7 +612,14 @@ hub could read. The LAN case dials exactly the one address it learned over USB (
 was handed as `{"ip":...}` after a serial provision) and confirms it answers on
 `/api/v1/status`; it never consults the neighbour table or sweeps a range. Pass
 `"skip_ap":true` to jump straight to that confirm — used after a serial provision,
-where the AP verdict is already spent and the orb is joining.
+where the AP verdict is already spent and the orb is joining. Pass nothing falsy and
+explicitly, never a value that happens to be truthy: on 2026-10-15 the New Orb flash
+path passed the orb's NAME into that positional slot, so every fresh flash skipped
+Phase A, answered `mode:"no_ip"`, and showed an empty picker — "the scan produced
+nothing, it came up with nothing". `TestJoinDialogIsNeverOpenedWithANameInTheSkipFlag`
+in `ui_test.go` pins the call sites. Phase B also streams `{"log":...}` progress lines
+while it polls, because it can hold a spinner-only dialog for the whole budget; a wait
+that says nothing is indistinguishable from a hang.
 
 ## Provisioning: two doors
 

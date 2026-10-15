@@ -211,6 +211,25 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   each row's January and July `Intl` offsets against the longitude's solar line.
   `tools/orb-manager/webui_test.go` pins every `$("#id")` in `app.js` against the
   markup, because a missing `#wj-lock` throws inside `joinLock` and locks the dialog
+- **An empty picker after a fresh flash was the argument trap, not the firmware.** The
+  same symptom had a second, likelier cause: `openJoinDialog(port, mac, skipAp)` took the
+  orb's NAME as its third argument at the New Orb call site (`web/app.js`), a truthy
+  string, so `/api/watch` ran with `skip_ap` set and Phase A — the only phase holding the
+  AP verdict and the boot scan — never ran. Fresh flashes answered `mode:"no_ip"` with an
+  empty picker and the dialog said the orb had come up with nothing. Pass flags as flags.
+  `TestJoinDialogIsNeverOpenedWithANameInTheSkipFlag` in `ui_test.go` pins every call site
+  (negative control run against the old call). A `no_ip`/`unknown` verdict with a cable
+  bound is not a dead end either: the serial door answers in every state, so that branch
+  now re-drives the scan instead of pointing the operator at an address nobody has. And a
+  locked dialog is never silent: `watchLog` mirrors the newest hub line onto the lock
+  sentence, and `/api/watch` Phase B emits one per poll tick, because a 45 s wait behind a
+  fixed "rebooting into its new firmware" sentence reads as a hang (bench, 2026-10-15).
+- **Never conclude "the page never called that door" from a hub log.** The access line is
+  written AFTER `ServeHTTP` returns, so an in-flight streaming call has no line yet; and a
+  hub started from a shell writes its lines to that terminal, not to whatever `/tmp/hub*.log`
+  an agent redirected earlier. Trust the log only after proving it is the live process's
+  stdout (`ps` the pid, check the file's mtime against the request). Counting routes in a
+  stale file sent one wrong diagnosis down this path (2026-10-15).
   open forever.
 - **Idle presence is not a health test, and neither is a DTR/RTS drop.** A boot-looping
   orb reads `present=True status=OK` on the host between reloads, and asserting DTR/RTS

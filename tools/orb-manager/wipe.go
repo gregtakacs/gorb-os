@@ -136,6 +136,11 @@ func (s *Server) handleWipe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) forgetWipedOrb(port, mac string) {
 	s.identities.forget(port)
 	s.forgetBoot(mac)
+	// The chip's word went with the firmware, so the read goes with the chip's
+	// word. Without this the board keeps an in-memory "confirmed" identity that
+	// hides it from the New Orb door while its row shows nothing on the fleet —
+	// the one state an operator cannot click out of.
+	s.clearChipRead(mac)
 	if mac == "" || s.fleet == nil {
 		s.saveState()
 		return

@@ -234,6 +234,44 @@ type orbRow struct {
 	// as the hub's verdict for the same reason Forgettable does: the page does
 	// not parse version strings, and an absent field is a no.
 	Update bool `json:"update"`
+
+	// Orb says the hub has evidence this chip has been an orb — named, addressed,
+	// heard announcing, or read off a chip that answered as one. It is the ONE
+	// predicate the page reads to decide whether a board is a card, and the same
+	// fact the port entry carries as orbSeen to decide whether the same board is
+	// instead a New Orb candidate. Both fields are non-omitempty: an absent
+	// verdict must read as a no, and the pair is what keeps a board from
+	// falling through both floors at once — the bug that hid a wiped board on a
+	// cable from the fleet (blank, by the row rule) and from New Orb (inFleet,
+	// by a rule that took any cable sighting for an orb).
+	Orb bool `json:"orb"`
+}
+
+// provesOrb is that predicate, spelled once. A row naming nothing but a MAC from
+// a USB descriptor is a board on a lead, not an orb: the roster creates such a
+// row the moment a cable is attributed, so treating row-existence as orb-proof
+// made every board on this bench permanently un-adoptable. Evidence is a name
+// the device gave or the operator gave it, an address it answered at, a firmware
+// stamp or state it reported, an AP it opened for provisioning, a liveness
+// verdict the hub reached by dialing it, or a LAN announcement — and Identity
+// says which kind of proof the MAC rests on, where "confirmed" (read off a chip
+// that answered as an orb) and "claimed" (an _orb._tcp announce) count and
+// "descriptor" (a USB serial number) does not.
+func (r orbRow) provesOrb() bool {
+	switch {
+	case r.Name != "", r.IP != "", r.FW != "", r.State != "", r.Provision:
+		return true
+	case r.Reachable == "alive" || r.Reachable == "dead":
+		return true
+	case r.Identity == "confirmed" || r.Identity == "claimed":
+		return true
+	}
+	for _, v := range r.Via {
+		if v == "lan" {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDiscovered is the read side: the current candidate list in one shot. It sends

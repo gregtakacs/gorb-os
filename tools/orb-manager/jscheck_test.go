@@ -199,3 +199,33 @@ func TestIndexHTMLTagsBalance(t *testing.T) {
 		t.Errorf("index.html has only %d ids; the page looks truncated", n)
 	}
 }
+
+// The two floors of the landing page must be complements, or a board falls between
+// them and cannot be clicked at all. The page is not allowed to derive either verdict:
+// it reads the hub's word on the row (`orb`) and on the port (`orbSeen`). Pinning the
+// source text is what stops a future edit from quietly reintroducing the field-by-field
+// rule that hid a wiped board on this bench — and from mistaking `inFleet`, which says
+// only that the address book has a row, for proof a chip has ever run the firmware.
+func TestClientReadsTheOrbVerdictAndNothingElse(t *testing.T) {
+	src := readAppJS(t)
+	for _, want := range []string{
+		"function isBlankRow(o)", "return o.orb !== true;",
+		"function isBlankPort(e)", "if (e.orbSeen === true) return false;",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js no longer contains %q: the blank gate and the fleet filter must read the hub's verdict", want)
+		}
+	}
+	// The two rules the fix replaced. Their return is unconditional and does not
+	// mention the verdict, so they must be absent from any function that decides
+	// whether a board is a card or a candidate.
+	for _, banned := range []string{
+		"if (e.inFleet) return false",
+		"if (o.name || o.ip || o.fw || o.state) return false",
+		`if (o.reachable === "alive" || o.reachable === "dead") return false`,
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("app.js re-derives a blank from %q: read the hub's orb verdict instead", banned)
+		}
+	}
+}

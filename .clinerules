@@ -875,3 +875,41 @@ composer — repo folder, Downloads copy — reads and writes the same `wc.asset
 clearing it in one clears it everywhere. That sharing is also what makes redeploying safe:
 uploaded art survives the copy.
 
+## Orb Manager landing page: one orb-ness verdict, two doors (2026-10-14)
+
+The fleet list and the New Orb button are complements, and they stop being
+complements the moment each side derives "is this an orb?" on its own. The first
+version did: the list hid a row with no name/ip/fw/state, and the button hid any
+port whose MAC matched a fleet row (`inFleet`). A cable sighting alone writes that
+row — `Store.Confirm` runs on every attributed sweep — so a wiped board on a lead
+rendered no card and no New Orb button either. It vanished from the page while
+`/api/ports` listed it happily, which is what "two orbs plugged in, one shows up"
+looked like from the operator's side.
+
+The rule now lives server-side, stated once:
+
+- `orbRow.provesOrb` (discover.go) decides the row: a name, an address, a firmware
+  stamp, a reported state, a provisioning AP, a liveness verdict, a LAN sighting, or
+  an Identity of `confirmed`/`claimed`. `descriptor` — the host's USB serial number —
+  is deliberately NOT proof.
+- `storeProvesOrb` (fleet.go) is the same rule over the address book's fields, and it
+  is what `handlePorts` writes as `orbSeen` on each port entry, plus the `espressif`
+  and `inFleet` fields it already sent.
+- Both fields are non-omitempty on both endpoints, so an absent verdict reads as a no
+  and the page fails closed. The client reads `o.orb` (`isBlankRow`) and
+  `e.orbSeen` (`isBlankPort`) and never re-derives either.
+- A wipe calls `clearChipRead`, because the chip's word described a firmware that no
+  longer exists. Leaving it would keep a blank board `confirmed` and therefore
+  invisible to the one door that can refill it.
+
+Pinned by `TestCableOnlyBoardIsNotAnOrbAndStaysAdoptable` and
+`TestStoreProvesOrbNeedsMoreThanARow` (roster_test.go) and
+`TestClientReadsTheOrbVerdictAndNothingElse` (jscheck_test.go, which greps app.js for
+the banned field-by-field rules). Before changing either gate, re-read the comment on
+`orbRow.Orb`: the bug is silent on the wire and total on screen.
+
+Also on the bench: an Add-by-IP test against a real hub writes the operator's state
+file (`~/.config/orb-manager/state.json`), because a second hub shares it. Run test
+hubs with `-addr` on a scratch HOME, or clean the file after; a grant for 127.0.0.1
+there is a test artifact, not an orb.
+

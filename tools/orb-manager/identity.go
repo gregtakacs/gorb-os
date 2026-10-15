@@ -204,25 +204,45 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			// differently, and a gate keyed on the product id would hide a
 			// board precisely when the operator most needs the door open.
 			"espressif": u.IsEspressif(),
+			// "orbSeen" is the other half of that gate, and the mirror of the
+			// row field of the same meaning: the hub has evidence this chip has
+			// been an orb, so the board belongs on a card and not in the New
+			// Orb picker. It is NOT row existence — the roster writes a row for
+			// a bare cable sighting, so existence would make every board that
+			// has ever been plugged in un-adoptable forever, which is the bug
+			// this field replaces. Always written, so a hub that cannot answer
+			// the question reads as a no rather than a hole.
+			"orbSeen": false,
 		}
 		// The MAC the host read off the descriptor, as opposed to the one a probe
 		// heard on the console. Kept separate so the client never has to unpick a
 		// display string to label a cable.
 		if u.IsOrbDevice() && u.Serial != "" {
 			e["usbMac"] = u.Serial
-			// The fourth field the New Orb door reads: the descriptor MAC
-			// matched a fleet row, so this cable is a known orb wearing its
-			// USB clothes, not a blank to adopt. Computed here, where both
-			// facts live, so the client never re-derives the fleet from a
-			// display string.
-			if _, known := s.fleetKnown(macNorm(u.Serial)); known {
+			// Two facts the page must not conflate, so they stay two fields:
+			// the address book holds this chip at all ("inFleet", what the
+			// add-by-IP door refuses on), and the book proves it has been an
+			// orb ("orbSeen", what hides it from the New Orb door). A row that
+			// only ever recorded a cable gives the first without the second.
+			if row, known := s.fleetKnown(macNorm(u.Serial)); known {
 				e["inFleet"] = true
+				if storeProvesOrb(row) {
+					e["orbSeen"] = true
+				}
 			}
 		}
+
 		if info, ok := cached[p]; ok {
 			e["probed"] = true
 			e["isOrb"] = info.IsOrb
+			// A chip that has answered for itself as an orb is the strongest
+			// proof the hub keeps, and it outranks the address book: a board
+			// identified after a wipe is known even before it has a name.
+			if info.IsOrb {
+				e["orbSeen"] = true
+			}
 			e["mac"] = info.MAC
+
 			e["project"] = info.Project
 			e["version"] = info.Version
 			// The same stamp as structure, so a card can print v1.0.0 without

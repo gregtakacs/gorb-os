@@ -418,6 +418,19 @@ func (s *Server) markChipRead(mac string) {
 	s.read[mac] = true
 }
 
+// clearChipRead withdraws the claim. Only a wipe calls it: the chip's word was about a
+// firmware that no longer exists, so leaving the read on the record would keep a board
+// the hub just emptied looking like an orb — and the New Orb door hides exactly the
+// boards it has evidence about. The boot stamp goes with it, for the same reason.
+func (s *Server) clearChipRead(mac string) {
+	if mac == "" {
+		return
+	}
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	delete(s.read, mac)
+}
+
 // appendPort keeps a row's port list sorted and duplicate-free. Two ttys on one board
 // (native USB plus a JTAG link) is one row with two entries, and the order must not
 // depend on enumeration order.

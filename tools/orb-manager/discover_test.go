@@ -62,6 +62,7 @@ type discoveredBody struct {
 			Contended bool     `json:"contended"`
 			Shared    bool     `json:"shared"`
 			Bound     bool     `json:"bound"`
+			Orb       bool     `json:"orb"`
 		} `json:"orbs"`
 		Refused    []map[string]any `json:"refused"`
 		Listening  bool             `json:"listening"`

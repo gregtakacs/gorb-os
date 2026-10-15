@@ -391,3 +391,69 @@ func readUpFile(t *testing.T, parts ...string) string {
 	}
 	return string(b)
 }
+
+// The floor the page stands on: a board the hub has only ever seen on a lead is
+// not an orb, and the two doors the page opens must agree about it. The fleet
+// hides it (row orb=false) and the New Orb gate shows it (port orbSeen=false),
+// so the operator always has exactly one way to reach the chip. When the gates
+// disagreed — the row rule keyed on name/ip/fw/state while the port rule keyed
+// on row existence — a wiped board on a cable was a card that would not render
+// and a blank the picker would not list, which is "plug in two orbs, see one".
+func TestCableOnlyBoardIsNotAnOrbAndStaysAdoptable(t *testing.T) {
+	const mac = "44bd8d608088"
+	s := newHub()
+	s.browse = filled(t)
+	f := plugCables(s, nil)
+	f.set(orbAt("/dev/ttyACM0", mac))
+
+	got := getDiscovered(t, s)
+	if len(got.Data.Orbs) != 1 {
+		t.Fatalf("the cable-only board never reached the list: %+v", got.Data.Orbs)
+	}
+	r := got.Data.Orbs[0]
+	if r.Orb {
+		t.Error("a bare cable sighting was stamped orb: a card would hide the board from the only door that can flash it")
+	}
+	if r.Identity != "descriptor" {
+		t.Errorf("identity = %q, want descriptor", r.Identity)
+	}
+	// The same chip with the one thing a blank cannot have — a name it was given —
+	// must flip the verdict, or the fix is just a different way to lose a board.
+	if _, _, err := s.fleet.NoteDeviceName(mac, "Hall"); err != nil {
+		t.Fatal(err)
+	}
+	f.set(orbAt("/dev/ttyACM0", mac)) // forces the cable cache stale and re-sweeps
+	got = getDiscovered(t, s)
+	if len(got.Data.Orbs) != 1 {
+		t.Fatalf("the named board vanished: %+v", got.Data.Orbs)
+	}
+	if !got.Data.Orbs[0].Orb {
+		t.Error("a named board on a cable was still not an orb: it now appears on neither door")
+	}
+	if got.Data.Orbs[0].Name != "Hall" {
+		t.Errorf("name = %q, want Hall", got.Data.Orbs[0].Name)
+	}
+}
+
+// The port entry's half of the same rule, stated on the stored row rather than on
+// a live cable — what handlePorts writes as orbSeen, and the reason inFleet could
+// never serve as it: Confirm writes a row for any attributed cable, so existence
+// says only that a wire was plugged in.
+func TestStoreProvesOrbNeedsMoreThanARow(t *testing.T) {
+	cases := []struct {
+		name string
+		row  orbfleet.Orb
+		want bool
+	}{
+		{"cable sighting only", orbfleet.Orb{MAC: "44bd8d608088"}, false},
+		{"named", orbfleet.Orb{MAC: "44bd8d608088", Name: "Hall"}, true},
+		{"addressed", orbfleet.Orb{MAC: "44bd8d608088", IP: "192.168.2.31"}, true},
+		{"reported firmware", orbfleet.Orb{MAC: "44bd8d608088", FW: "gorb-os-main-abc-1"}, true},
+		{"reported state", orbfleet.Orb{MAC: "44bd8d608088", State: "idle"}, true},
+	}
+	for _, tc := range cases {
+		if got := storeProvesOrb(tc.row); got != tc.want {
+			t.Errorf("storeProvesOrb(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

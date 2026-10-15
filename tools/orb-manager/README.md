@@ -231,9 +231,15 @@ The page opens on the fleet and nowhere else. One card per orb the hub has met:
 the name it answers to, the address the hub remembers, the MAC underneath both,
 and a badge saying how the hub could reach it right now. A cable with no orb on
 it is not a card — it is the **New Orb** button, which appears only while an
-Espressif chip with no fleet row sits on some tty, and asks for exactly two
-things: which cable, and a name. A board the page should not offer to Forget
-shows no Forget; that verdict is the hub's, not the card's guess.
+Espressif chip the hub cannot yet prove was ever an orb sits on some tty, and
+asks for exactly two things: which cable, and a name. Both verdicts are the
+hub's: each `/api/orbs` row carries `orb`, each `/api/ports` entry `orbSeen`,
+and they are the same fact computed the same way, so a board is visible through
+exactly one door. A row written by a cable sighting alone is not proof — the
+roster creates it the moment a chip is attributed — so treating the row's
+existence as the gate hid every board that had ever been plugged in, and a wiped
+orb showed up nowhere at all. A board the page should not offer to Forget shows
+no Forget; that verdict is the hub's, not the card's guess.
 
 - **New Orb** — flash the built-in firmware onto a blank ESP32-S3 and name it.
   The hub always writes the whole `flasher_args.json` manifest and clears the

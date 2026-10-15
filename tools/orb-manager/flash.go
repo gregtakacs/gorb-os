@@ -152,9 +152,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		flashedMAC = fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 		send("mac", flashedMAC)
 	}
-	opts.OnProgress = func(img, n int, off uint32, wr, tot int) {
-		send("progress", fmt.Sprintf(`{"image":%d,"of":%d,"offset":"0x%X","written":%d,"total":%d}`, img, n, off, wr, tot))
-	}
+	opts.OnProgress = flashProgressSender(send, plan)
 	// Read the boot console on the port still held across the reset (Session
 	// calls this right after its HardReset). It yields the one-shot verdict the
 	// AP/provisioning UI needs — a later /api/watch cannot re-reset a booted orb

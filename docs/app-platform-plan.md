@@ -2321,5 +2321,42 @@ theme-side upload (same handlers, needs a re-baked FORMAT 2 file — §16.1's
 `m5_avkit.orbtheme` is gone from /tmp), M5's two timings, D30's two numbers, and
 the power-cut-mid-install pass line (§8's still-unbenched half).
 
+### 18.1 The upload is proven — orb-A, 2026-10-15, `fw v1.1.0+11076ca-dirty`, UPLOAD_PROOF PASS
+
+The owner flashed this session's bundle over the hub, and the ladder ran green on
+`/tmp/m5p_ser.txt` (verdict line at 14:17:19). §17.4 item 3's first clause —
+"the upload has never been proven on this board with a healthy DMA pool" — is
+closed for the app path, and the honest-error fix stood in the only witness that
+matters: a live upload answering `code=200` and no 413 anywhere.
+
+| Step | Result |
+|---|---|
+| Boot with the loan build | lease at uptime 6.9 s; `tile ring: 2 x 18,640 B` normal fund |
+| Heap at association (first boot of the session, same image) | `internal free=41,179 largest=14,336 dma_free=33,675` — the healthy pool §17.6 never had |
+| `POST /api/v1/sd/rescan` | 200, 53 B transferred: `SD32G SDHC 29.1GB @20000kHz` |
+| `POST /api/v1/sd/app` (4,096 B fixture, fresh from `orbapp.write_container`) | **`{"state":"stored","bytes":4096}` first try, t=2.3 s** |
+| Serial at the write | `tile ring borrowed by the card: 37280 B internal DMA RAM free (largest block 21,504 B)`, then `uploading an app to the card`, `app "hsb_color" uploaded to the card as hsb_color.orbapp` — 102 ms between begin and rename |
+| `esp_dma_capable_malloc` in the capture | absent, all 90 s |
+| `GET /api/v1/apps` | card tier lists `hsb_color` `ok:true`; installed tier empty at that instant |
+| `POST /api/v1/apps/install?id=hsb_color` | 200 `installing`; worker: `installed "HSB Colour" (hsb_color) into app slot 0 in 28 ms`, `job done, 540 B stack never used` |
+| Ledger after install | `installed:[{slot:0, enabled:false, walkable:true}]` — the installer's chunk ladder took the copy on a live boot, D9's no-reboot install confirmed live by design |
+| `POST /api/v1/apps/enable?id=hsb_color&on=1` | `{"state":"enabled"}` |
+| Dial through the whole ladder | held 12–15 fps (the stall the owner licensed was under one frame) |
+
+**Two script corrections found by the first run, both landed:** the lease window
+went 60→150 s (the radio re-associated at 85 s on that boot and the §15 "two HTTP
+timeouts" temperament is real — the retry booted in 6.9 s), and the install step's
+witness changed from an `rst:0x` reboot boundary to the worker's
+`into app slot` line plus the ledger read: **a card-app install is live by design**
+(`orb_app_install.c` contains no `esp_restart`; the reboot belongs to the theme
+path under D11). The first run burned its 120 s reboot wait against a promise the
+design never made, and still PASSed.
+
+**What item 1's closure does NOT cover:** the theme-side upload shares the now-honest
+handlers but has not re-run since `e3733a5` (needs a re-baked FORMAT 2 file), M5's
+flip timings are still unmeasured, D30 still owes its two numbers, and
+power-cut-mid-install still needs a reachable `failed` mark. §8's P4 pass lines
+keep their two unbenched halves.
+
 
 

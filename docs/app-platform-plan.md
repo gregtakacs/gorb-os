@@ -126,7 +126,7 @@ runs at 15/12/8/4 fps, so **the beat must be settable at runtime**.
 
 | Ref | Decision | Ruling |
 |---|---|---|
-| D16 | How an app gets its frame beat | **The `tick()` hook stays the only callback; the beat is a runtime `set_beat` entry on `orb_svc_t`, bounded by the manifest.** The app never hands the OS a function pointer: delivery runs through the registry's `tick(app, now_ms)`, visible apps only (§1.4). The manifest's `period_ms` (§4.1) is the **fastest** beat the app may ever run; `set_beat(period_ms)` may only slow from there (and off: `0` = no ticks until the next `resume`), never below it, so the owner sees the real cadence cost at install and an app cannot grab the shared beat the §6 cadence findings price. Budget policing stays as written: the OS measures each app's tick time against its declared budget and refuses/parks an overrun (§4.3, C2 discipline). One consequence recorded for P3: the shared beat runs at the fastest active `set_beat` — a 4 fps theme and a 15 fps theme on the glass at once (carousel transition) cost 15 fps until the swap settles; the §6 cadence-collapse guard is what measures that, before it ships. |
+| D16 | How an app gets its frame beat | **The `tick()` hook stays the only callback; the beat is a runtime `set_beat` entry on `orb_svc_t`, bounded by the manifest.** The app never hands the OS a function pointer: delivery runs through the registry's `tick(app, now_ms)`, visible apps only (§1.4). The manifest's `period_ms` (§4.1) becomes the **ask** — what the app wants right now, adjustable at runtime through `set_beat` as before — and the manifest additionally carries an **explicit set** of acceptable rates (D32, R7). The OS picks the highest rung it can achieve that is no faster than the ask, and falls back to the set's floor when the ask is not achievable at all, so the owner sees the whole reachable range at install and an app can neither grab a rate the set forbids nor invent one. `BEAT_MIN_MS` applies to the floor. Budget policing stays as written: the OS measures each app's tick time against its declared budget and refuses/parks an overrun (§4.3, C2 discipline). **Since D32 there is no shared per-app beat:** the OS owns one flush cadence, and each live stack advances frames on top of it at its own picked rung. The flush still runs at the fastest live requirement, so a thin watch under a thick one costs the thick one's rate until the swap settles, and the §6 cadence-collapse guard measures that before it ships. *Amended by D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is the OS's pick from a declared set.* |
 
 ### 0.7 Owner's rulings, 2026-10-12 (sixth round) — the tz offset and theme install join the surface (D17, D18)
 
@@ -173,16 +173,16 @@ wasm3 from an optional tier to a committed one. D3's "escape hatch" wording and 
 | D20 | What `.orbapp` carries | **Manifest, settings, asset declarations, and executable code. Never art.** The code is a wasm3 module (60-100 KB runtime, apps stay C, existing toolchain survives) run over the same frozen `orb_svc_t`. P7 stops being optional. Raw native machine code loading stays refused: ESP-IDF 5.4 ships no user-space loader, and §5 prices what unaudited pixel code costs the 123 ms commit. |
 | D21 | Where an app's art lives | **Nowhere in the app.** `.orbapp` never ships a byte of art. Art arrives only in a theme bundle. An app that cannot find an asset either substitutes an OS global or refuses to run, and the app decides which. D18's "an app's own art arrives in its `.orbapp` payload and is banked by the installer" is void. |
 | D22 | The fallback tier | **The OS ships renderers, not pixels.** The tier is five generated primitives: solid rect, rounded rect, stroked ring, rotated bar, and text in the compiled-in font. No fallback bitmap ships, so D10 ("the OS ships no art") stands: a filled rectangle the compositor draws is not artwork, a shipped fallback file is. Where a fallback would look wrong the layer is simply absent, which is D21's "the app decides" arriving by another route. The global-asset tier and the fallback tier are the same five routines. |
-| D23 | The asset registry | **Two halves with different growth rules.** The *class vocabulary* (text, sprite, hand, plate, ring, bank, layer, status) is a frozen C enum, versioned by the `abi_min`/`abi_max` the header already carries. The *named slots* live in the manifest's asset table, owner-scoped as `<slug>/<name>`, with `global/<name>` for the frozen set. Resolution picks between those two namespaces and nothing else, so one app's `bg` can never shadow another's. A PR promotes a **class**, never bytes: two apps wanting the same pixels is coincidence, two apps wanting the same kind of slot is a shared abstraction. |
+| D23 | The asset registry | **Two halves with different growth rules.** The *class vocabulary* (text, sprite, hand, plate, ring, bank, layer, status) is a frozen C enum, versioned by the `abi_min`/`abi_max` the header already carries. The *named slots* live in the manifest's asset table, owner-scoped as `<slug>/<name>`, with `global/<name>` for the frozen set, and that table is the app's **offer**: what it *can* paint. Since D32 the theme's per-app element table is the **declaration**: what is present, in what order, with what pixels. Offer and declaration are checked against each other at install in both directions, and every slot the theme does not name stays silent on the app's own default (D31). Resolution picks between those two namespaces and nothing else, so one app's `bg` can never shadow another's. A PR promotes a **class**, never bytes: two apps wanting the same pixels is coincidence, two apps wanting the same kind of slot is a shared abstraction. *Amended by D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is the OS's pick from a declared set.* |
 | D24 | Format compatibility | **FORMAT 3 only, no backward path.** `orbtheme.py` refuses FORMAT 2 at the format gate exactly as it already refuses FORMAT 1. The shipped kits get re-baked. No dual reader. |
 | D25 | Launch apps | **The two shipped apps run bare.** Clock and HSB use globals only and declare no app-specific art. The app-namespaced half of the registry ships dark. `global/` carries the first release. |
-| D26 | A missing required asset | **Refuse at install.** The owner learns on the page that already lists refusal reasons, not after an activation that shows nothing. |
+| D26 | A missing required asset | **Refuse at install, in both directions.** Content an app declares required and no theme supplies is a refusal, and so, since D32, is a theme whose element table names a class or element the installed app cannot paint: an app cannot promise to draw a thing it was given no instruction for. The owner learns both on the page that already lists refusal reasons, not after an activation that shows nothing. A theme section naming an app that is **not installed** is neither — it installs, and the intersection resolves (§23.8). *Amended by D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is the OS's pick from a declared set.* |
 | D27 | The wasm3 memory bound | **Declared in the manifest and gated at install**, in the same shape as `caps` and `period_ms`: the owner sees the cost before consenting, and a module that cannot fit never writes a byte of flash. A trapping module bills a C2 fault, so two strikes mark the app failed and the dial boots to the clock. |
 | D28 | Who defines the format | **The firmware's resolver is the source of truth.** The theme editor adheres to it, never the reverse. |
 | D29 | The theme budget | **`ORB_THEME_SLOT_CAP`, 0x3F0000 (4,128,768 B) per bundle**, policed by the editor at build time and again by the installer at verify time. It is a 63-page ceiling at the measured 64 KB MMU page. **The row read "(4,128,764 B)" from §0.9 until 2026-10-15; `orb_theme.h:372` says 0x3F0000 and 0x3F0000 is 4,128,768.** |
 | D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20 |
 | D31 | Content when a theme carries none | **The app supplies its own default.** Theme content wins wherever the bundle carries it. Where it does not, the app renders a default rather than showing nothing, and D21's two choices ("substitute an OS global or refuse to run") gain the third it left open. The default is code, not bytes: D22's five primitives draw it, so D21's "`.orbapp` never ships a byte of art" stands and D10's "the OS ships no art" stands. The selector is §4.1's `assets` flag, which that row already named "D21's fallback contract": `required` keeps D26's install refusal, `optional` means the app has a default to draw. App-carried *layout* for a silent theme reads from the container's own `geometry` region (§4.1: opaque to the OS, already size- and CRC-checked at `orb_app_manifest.c:319`) — the only reading those counts exist for. §9 item 3 is closed for the clock. |
-| D32 | Who declares a displayed element, and who sets the pace | **Ruled by the owner 2026-10-15.** The **theme** declares, per app, the elements it displays — identity, class, pixels, animation frames, opacity mask, and the **depth order** of the stack — in one legible schema the OS can read. The **app** says how and where each element it was given is painted, and when it needs repainting. Every element is bound to its theme, so a different theme re-composes the same app. The **OS** composites in the declared order and picks, per live app stack, the **highest frame rate it can afford** out of a declared acceptable set (a watch ladder like 4/8/12/15 fps; another app 1 fps to as-fast-as-possible), asks that app to repaint at that pace, and adjusts the pick dynamically. Recorded as heard in §23. It re-opens **D23**, **D26** and **D16** (§23.4) and voids §22.2's opaque per-section geometry (§23.3). Proposed split: the element table is **P6**, the scheduler is **P8** — ruled 2026-10-15, and numbered P8 because P7 is the ratified wasm3 tier (§23.5). |
+| D32 | Who declares a displayed element, and who sets the pace | **Ruled by the owner 2026-10-15.** The **theme** declares, per app, the elements it displays — identity, class, pixels, animation frames, opacity mask, and the **depth order** of the stack — in one legible schema the OS can read. The **app** says how and where each element it was given is painted, and when it needs repainting. Every element is bound to its theme, so a different theme re-composes the same app. The **OS** composites in the declared order and picks, per live app stack, the **highest frame rate it can afford** out of a declared acceptable set (a watch ladder like 4/8/12/15 fps; another app 1 fps to as-fast-as-possible), asks that app to repaint at that pace, and adjusts the pick dynamically. Recorded as heard in §23. It re-opens **D23**, **D26** and **D16**, with those amendments applied to §0 on 2026-10-15 (§23.4, wording at §23.9), and voids §22.2's opaque per-section geometry (§23.3). Split as ruled: the element table is **P6**, the scheduler is **P8** — numbered P8 because P7 is the ratified wasm3 tier (§23.5). R6 and R7 are ruled (§23.6, consequences at §23.7); R2 is ruled with D26; R3, R4 and R5 are open (§23.8). |
 
 **What this retires.** The three-slot art re-slice of §3.2 (`art0`/`art1`/`art2`) is
 withdrawn: with no art in any container there is no per-app bank to place, and
@@ -292,7 +292,7 @@ A first implementation pass was written, found to rest on three wrong assumption
 | `main/app/orb_app.c/h` | manifest reader, the `apps`-partition catalog, per-app state (installed / enabled / active / order / `failed`), install with reboot, uninstall from the OS page, the residency arena owner, the C2 fault counter |
 | `main/app/orb_svc.c/h` | the `orb_svc_t` table, the grant check, the per-app call counter, the NVS quota check |
 | `main/gfx/` | the compositor, delta bank and frame scheduler extracted from `clock_view.c`; P5 gives the `layer_*`/`bank`/`status` broker stubs their bodies |
-| `main/assets/orb_assets.c/h` | **new (D23, P5b):** the asset registry — the frozen class enum, `<slug>/<name>` vs `global/<name>` resolution and its two fixed orders, and the five generated fallback primitives (D22). Owns the answer `orb_theme_slot_bytes()` returns today, generalized from one clock bank per theme to a named slot per class, and `main/art/orb_theme.c` shrinks by its offset arithmetic. `main/app/orb_app_manifest.c` and `tools/orbapp.py` gain the manifest's asset table together, so resolver and writer cannot drift. |
+| `main/assets/orb_assets.c/h` | **new (D23, P5b):** the asset registry — the frozen class enum, `<slug>/<name>` vs `global/<name>` resolution and its two fixed orders, and the five generated fallback primitives (D22). Owns the answer `orb_theme_slot_bytes()` returns today, generalized from one clock bank per theme to a named slot per class, and `main/art/orb_theme.c` shrinks by its offset arithmetic. `main/app/orb_app_manifest.c` and `tools/orbapp.py` gain the manifest's asset table together, so resolver and writer cannot drift. **Since D32 the manifest's asset table is the app's offer and the theme's per-app element table is the declaration; the compositor reads the declaration.** |
 | `apps/clock/` | the clock app, built as one package plus a compiled-in fallback; under D25 it ships bare (globals only) and its art arrives in a FORMAT 3 theme bundle (D24, P6) |
 
 The ABI is a small struct of function pointers, all called on the LVGL task, which is what lets the wasm3 tier arrive later without touching apps:
@@ -463,7 +463,8 @@ One file per app, mirroring the `.orbtheme` discipline in `tools/orbtheme.py`: a
               slug[24], title[32], hdr_crc            <- whole words, disjoint ranges
     manifest  app_id, behaviour_kind,
               layer/comp/aux/bank counts,
-              period_ms (the app's FASTEST beat; set_beat may only slow — D16),
+              period_ms (the app's ASK under D32 — D16: set_beat may only move
+              within the declared rate set, which P8 adds, D16),
               capability bitmask,
               wasm_mem_max,                           <- D27: refuse at install if the
                                                         module cannot fit the bound
@@ -552,8 +553,9 @@ bypass it (D19):
       /* worker: never block the LVGL task, same rule as the menu's orb_menu */
       esp_err_t (*job_post)(orb_app_t *, orb_job_fn, void *arg, size_t arglen);
       /* beat: the only callback stays the iface's tick(); this SETS its rate
-       * (D16, §0.6). period_ms >= the manifest's (the app's fastest), or 0 =
-       * stop ticking until the next resume. Faster-than-manifest is refused
+       * (D16, §0.6). Under D32 this is the ASK, not the ceiling: the OS picks
+       * the rung. period_ms >= the declared floor, or 0 = stop ticking until
+       * the next resume. A rate outside the declared set is refused
        * with the number in the reason — the install is the cadence budget. */
       esp_err_t (*set_beat)(orb_app_t *, uint32_t period_ms);
       /* themes: enumerate and request (D18, §0.7). id-keyed through
@@ -2808,7 +2810,7 @@ ruling asks for is already in the tree wearing clock clothes.
   boundary would make the dial flicker between 8 and 12 fps; D9's "never starve the rest"
   already bans letting one app's ladder eat another's frames.
 
-### 23.4 Ratified rows this re-opens — amendment proposed, none applied yet
+### 23.4 Ratified rows this re-opens — amendments APPLIED 2026-10-15
 
 D32's row (§0.10) carries the pointer, so the table cannot be read without meeting it.
 **The paste-ready wording for all four edits is at §23.9, pending the owner's blessing.**
@@ -2832,8 +2834,12 @@ before it, so a row is never half-edited.
   re-argued** — D9's lesson that the model is not the measurement. §13.4's 8 fps ceiling
   for the current carriage is the honest starting number: 12 and 15 fps are only
   affordable on stacks thin enough to touch fewer rows.
-- **§1.2b's asset-table seam sentence** ("The manifest's asset table is that
-  selector…") moves with D23.
+- **§1.2b's asset-table seam** moves with D23. The sentence §23.4 first quoted as "the
+  manifest's asset table is that selector" was my paraphrase, not a verbatim line; the
+  sentence actually amended is §1.2b's `main/assets/orb_assets.c/h` row ("…gain the
+  manifest's asset table together, so resolver and writer cannot drift"), and it now carries
+  the offer/declaration clause. §4.1's `period_ms` listing and §5's `set_beat` comment gained
+  the same pointer so they cannot be read as the old ceiling rule.
 
 ### 23.5 Where it goes in the sequence — RULED 2026-10-15: split
 
@@ -2862,10 +2868,10 @@ enum gains entries — append-only — so P8 can add what it needs without a for
 
 ### 23.6 What the owner still owes P6.1
 
-- **R2–R5 — recommendation standing at §23.8, awaiting the owner's word:** install a bundle
-  whose index names uninstalled apps (R2), subsets legal (R3), identity unchanged (R4), and
-  a sixth top-level row named THEMES (R5 — the draft's "under SETTINGS" named a page that
-  does not exist).
+- **R2 — RULED with D26's amendment** (§23.9): a bundle whose index names an uninstalled app
+  installs, and the picker prints the intersection. **R3, R4, R5 — recommendation standing
+  at §23.8, awaiting the owner's word:** subsets legal, identity rule unchanged, and a sixth
+  top-level row named THEMES (the draft's "under SETTINGS" named a page that does not exist).
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.
@@ -2933,10 +2939,12 @@ independently absent, each with a declared advance mode, and the OS owns the one
 retires the last of the clock's privileges from the theme format, and it makes
 `theme_schema.py` the file that defines what a theme IS: one schema, every app, no dialect.
 
-### 23.9 The amendment wording, for review — not applied
+### 23.9 The amendment wording, as applied
 
-Paste-ready replacement cell text. §0's rows keep their current wording until the owner
-blesses these.
+The text below is what went into §0 on 2026-10-15, kept here so the diff is reviewable
+against the reasoning. The owner approved all four edits as written, **including the D26
+sentence that rules R2**: a theme section naming an uninstalled app installs, and the
+intersection resolves. **R3, R4 and R5 remain recommendations awaiting a word** (§23.8).
 
 **D23 — replace only the second sentence, "The *named slots* live in the manifest's asset
 table, owner-scoped as `<slug>/<name>`, with `global/<name>` for the frozen set.", with:**

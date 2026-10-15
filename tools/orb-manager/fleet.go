@@ -142,7 +142,12 @@ func (s *Server) foldCandidates(renew bool) {
 			// disagreement between two of our own checks. It stays on the refused
 			// list rather than becoming a row nobody explained.
 			log.Printf("orb-manager: fleet refused %s: %v", c.Instance, err)
+			continue
 		}
+		// An orb announcing itself is evidence of orb life no lonely mark can
+		// outweigh: the chip runs orb firmware again, whatever this hub wrote
+		// to it last.
+		s.lonely.clear(c.MAC)
 		if renew && c.IP != "" {
 			s.grants.renew(c.IP, c.MAC)
 		}
@@ -465,6 +470,12 @@ func (s *Server) fleetKnown(mac string) (orbfleet.Orb, bool) {
 	}
 	c, why := orbmdns.CanonicalMAC(mac)
 	if why != "" {
+		return orbfleet.Orb{}, false
+	}
+	// A board this hub left lonely is not a known orb even while its row is
+	// being rebuilt from a cable descriptor: the lonely flash forgot the row,
+	// and the mark says the sighting describes a chip running no orb.
+	if s.lonely.has(c) {
 		return orbfleet.Orb{}, false
 	}
 	// Every, not ByMAC: the question is whether the hub has ever met this chip,

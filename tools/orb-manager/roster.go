@@ -244,6 +244,14 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 			if !c.isOrb || c.mac == "" {
 				continue
 			}
+			// A lonely mark outranks the descriptor: the host reads the same
+			// MAC this hub just watched stop being an orb, and re-remembering
+			// it as one would put the row straight back where the operator
+			// just deleted it. The port still shows on the picker; the fleet
+			// does not carry a board running no orb.
+			if s.lonely.has(c.mac) {
+				continue
+			}
 			if _, ok := s.fleet.ByMAC(c.mac); !ok {
 				fresh = true
 			}
@@ -268,6 +276,11 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 		}
 		if c.mac == "" {
 			lan = append(lan, s.unknownCableRow(c.port))
+			continue
+		}
+		// Same rule as the remember loop above: a lonely mark says the descriptor
+		// is describing a board running no orb, and the fleet must not render it.
+		if s.lonely.has(c.mac) {
 			continue
 		}
 		if i, ok := at[c.mac]; ok {

@@ -215,7 +215,7 @@ func (s *Server) forgetGate(mac string, now time.Time, confirm bool) (bool, stri
 	}
 	if port := s.cableOf(mac, now); port != "" {
 		return false, "the orb is on a cable at " + port + ": a board the hub can reach over " +
-			"USB re-earns its row on the next sweep, so unplug it first"
+			"USB re-earns its row on the next sweep — open Forget for the reset choices over that lead"
 	}
 	if s.fleet == nil {
 		return true, ""
@@ -229,7 +229,8 @@ func (s *Server) forgetGate(mac string, now time.Time, confirm bool) (bool, stri
 	if !row.LastSeen.IsZero() {
 		if quiet := now.Sub(row.LastSeen); quiet <= liveAnnounceGrace {
 			return false, row.DisplayName() + " announced itself " + agoWords(quiet) +
-				" ago: an orb that is broadcasting rebuilds this row on its next check-in"
+				" ago: an orb that is broadcasting rebuilds this row on its next check-in" +
+				" — open Forget for the reset choices"
 		}
 	}
 	if row.IP != "" && !softAPAddr(row.IP) {
@@ -249,8 +250,8 @@ func (s *Server) forgetGate(mac string, now time.Time, confirm bool) (bool, stri
 		}
 		if alive {
 			return false, row.IP + " still answers as an orb, so it is connected and the next " +
-				"check-in puts the row back — factory-reset the board (RESET ALL over USB, or its " +
-				"own network page at " + row.IP + ") if you mean to clear it"
+				"check-in puts the row back — open Forget for the reset choices, both of which " +
+				"need the board on a lead of this hub"
 		}
 	}
 	return true, ""
@@ -307,6 +308,9 @@ func (s *Server) kickLostCables(seen []cableSighting) {
 // so as an unattributed row rather than borrowing an old socket path to refuse with.
 func (s *Server) cableOf(mac string, now time.Time) string {
 	if mac == "" {
+		return ""
+	}
+	if s.lonely.has(mac) {
 		return ""
 	}
 	for _, c := range s.cableSights(now) {
@@ -431,6 +435,14 @@ func (s *Server) annotateForget(rows []orbRow, now time.Time) {
 	for i := range rows {
 		ok, why := s.forgetGate(rows[i].MAC, now, false)
 		rows[i].Forgettable, rows[i].ForgetWhy = ok, why
+		// A live board whose plain Forget the gate refused is not a board the
+		// operator is stuck with: the page opens the forget dialog instead,
+		// which ends the board's orb life through the actions rather than by
+		// deleting a row that rebuilds itself. A row with no mac gets nothing:
+		// there is no chip to act on. LivePort carries the lead the actions
+		// need, and an empty one tells the dialog to say so plainly.
+		rows[i].LiveForget = !ok && rows[i].MAC != ""
+		rows[i].LivePort = s.cableOf(rows[i].MAC, now)
 	}
 	s.annotateReachability(rows, now)
 	s.annotateUpdate(rows)

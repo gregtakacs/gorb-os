@@ -13,7 +13,7 @@
   <nav>
     <a id="composer-link" href="/composer/">Theme Editor</a>
     <button id="ad-open" class="ghost" title="Add an orb the hub cannot hear: type its address, and the hub adopts it only if an orb answers there.">Add by IP…</button>
-    <button id="mn-add" class="primary" data-view="onboard" hidden title="A blank ESP32-S3 is on a cable: flash it and it becomes an orb.">+ New Orb</button>
+    <button id="mn-add" class="primary" hidden title="A blank ESP32-S3 is on a cable: flash it and it becomes an orb.">+ New Orb</button>
   </nav>
 </header>
 
@@ -39,32 +39,47 @@
   button, or add an orb by its address if the hub cannot hear it announce.</p>
 </main>
 
-<section id="onboard" class="view" hidden>
-  <button class="back" data-view="manage">← Orbs</button>
-  <h2>New orb</h2>
-  <div class="grid">
-    <label id="ob-blankpick" hidden>Which board
-      <select id="ob-port"></select>
-      <button id="ob-refresh" class="ghost">Refresh</button>
-    </label>
-    <p class="hint" id="ob-blankone" hidden>This board is blank: it is an ESP32-S3 on a cable
-    with no orb on it, and it is the only one. Give it a name and flash it.</p>
-    <label>Name the orb
-      <input id="ob-name" size="18" maxlength="32" placeholder="kitchen" autocomplete="off">
-    </label>
+<!-- The New Orb dialog: the one decision a blank chip gets, taken without
+     leaving the fleet list. One board on a cable is chosen for you — a dropdown
+     with one option is a click that asks nothing. Several boards, pick the
+     cable. The name is not optional and not pre-filled with the last orb's
+     word. Flashing happens inside this same dialog, with the bar live, so
+     progress is something you watch and not something you discover afterwards. -->
+<div id="no-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="no-title">
+    <h3 id="no-title">New orb</h3>
+    <div id="nf-form">
+      <div class="grid">
+        <p class="hint" id="ob-blankone" hidden></p>
+        <label id="ob-blankpick" hidden>Which board
+          <select id="ob-port"></select>
+          <button id="ob-refresh" class="ghost">Refresh</button>
+        </label>
+        <label>Name the orb
+          <input id="ob-name" size="18" maxlength="32" placeholder="kitchen" autocomplete="off">
+        </label>
+      </div>
+      <p class="hint" id="ob-blanknone" hidden>No blank board is on a cable right now. Plug one in
+      and the button comes back.</p>
+    </div>
+    <div id="nf-run" hidden>
+      <div class="row">
+        <b id="nf-doing">flashing&#8230;</b>
+        <span id="nf-op" class="hint"></span>
+        <button id="nf-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
+      </div>
+      <div id="nf-bar" class="bar"><div></div></div>
+      <details class="hint"><summary>the bytes behind the bar</summary>
+        <pre id="nf-log" class="log" aria-live="polite"></pre></details>
+    </div>
+    <p class="hint" id="ob-blankstate"></p>
+    <div class="row" id="no-foot">
+      <button id="ob-go" class="primary" disabled title="A name is required: the orb must be able to say who it is.">Flash this orb</button>
+      <button id="no-close" class="ghost">Cancel</button>
+    </div>
   </div>
-  <p class="hint" id="ob-blanknone" hidden>No blank board is on a cable right now. Plug one in
-  and the button comes back.</p>
-  <div class="row">
-    <button id="ob-go" class="primary">Flash this orb</button>
-    <span id="ob-blankstate" class="hint"></span>
-  </div>
+</div>
 
-  <!-- A fresh flash is the one flash with nothing to preserve, so it takes the
-       full manifest and clears the NVS the way a board leaving the factory does.
-       An existing orb's firmware is a different decision with different doors,
-       and it lives on that orb's own card, not here. -->
-</section>
 <section id="orb" class="view" hidden>
   <button class="back" data-view="manage">&#8592; Orbs</button>
   <h2 id="mn-orbname">Orb</h2>
@@ -96,23 +111,22 @@
       <span id="ob-idstate" class="hint">identify the board on this cable once; costs a reboot, about 10 seconds</span>
     </div>
     <div id="ob-idcard" class="idcard" hidden></div>
-    <div class="row" id="ob-chipwiperow">
-      <button id="ob-chipwipe" class="danger" title="ROM-erase the entire flash. The orb will not boot, print, or announce itself until it is flashed again, and the blank chip boot-loops so its port flaps until you hold BOOT and tap RESET.">Wipe chip&#8230;</button>
-      <span id="ob-chipwipe-confirm" class="hint" hidden>
-        Type <b>WIPE</b> <input id="ob-chipwipe-word" size="6" autocomplete="off" spellcheck="false" aria-label="Type WIPE to confirm the chip erase">
-        <button id="ob-chipwipe-go" class="danger" disabled>erase everything on <span id="ob-chipwipe-port">this orb</span></button>
-        <button id="ob-chipwipe-no" class="ghost">Cancel</button>
+    <div class="row" id="ob-lonelyrow">
+      <button id="ob-lonely" class="danger" title="Replace the firmware with the lonely image: the board stops being an orb, boots instead of boot-looping, and bounces a message asking to be reflashed. Takes the fleet row, the name, the time zone and every Wi-Fi credential with it.">Leave it lonely&#8230;</button>
+      <span id="ob-lonely-confirm" class="hint" hidden>
+        Type <b>LONELY</b> <input id="ob-lonely-word" size="8" autocomplete="off" spellcheck="false" aria-label="Type LONELY to confirm">
+        <button id="ob-lonely-go" class="danger" disabled>free this orb&#8217;s firmware on <span id="ob-lonely-port">this orb</span></button>
+        <button id="ob-lonely-no" class="ghost">Cancel</button>
       </span>
-      <span id="ob-chipwipe-hint" class="hint">Erase the chip back to factory blank &#8212; firmware, Wi-Fi credentials and name all go. No undo. The blank chip then boot-loops, so the port flaps until you hold BOOT and tap RESET.</span>
+      <span id="ob-lonely-hint" class="hint">The only end of orb life this page offers. The board boots, wipes its own settings, says why on its screen, and waits; New Orb flashes it into something else whenever you like. There is no whole-chip erase here on purpose: a blank chip boot-loops and reads as a broken cable.</span>
     </div>
   </article>
 
   <article class="card">
     <h3>Name</h3>
     <div class="row">
-      <label class="inline">Name <input id="mn-name" size="18" maxlength="32"></label>
-      <button id="mn-name-go" class="ghost">Save name</button>
-      <span class="hint" id="mn-name-note">the name lives on the board; the hub keeps the copy</span>
+      <label class="inline">Name <input id="mn-name" size="18" maxlength="32" readonly></label>
+      <span class="hint" id="mn-name-note">the name lives on the board — the hub page shows it; it is changed on the orb's own network page</span>
     </div>
   </article>
 
@@ -123,7 +137,12 @@
         <select id="j-ssid"></select>
         <button id="j-rescan" class="ghost">Rescan</button>
       </label>
-      <label>Password <input id="j-pass" type="password"></label>
+      <label class="passrow">Password
+        <span class="passfield">
+          <input id="j-pass" type="password" autocomplete="off">
+          <button id="j-pass-show" class="ghost pw-toggle" type="button" aria-label="Show the password">show</button>
+        </span>
+      </label>
       <label>Time zone <input id="j-tz" placeholder="America/New_York"></label>
     </div>
     <div class="row"><button id="j-go" class="primary">Join network</button></div>
@@ -174,17 +193,110 @@
   </article>
 </section>
 
+<!-- The forget dialog: the answer to pressing Forget on a board that is still
+     answering. Plain Forget is honest only for a board that cannot come back —
+     a row deleted from a live orb rebuilds itself on the next check-in, and a
+     dead button teaches that lesson the wrong way. A live row therefore opens
+     this choice: end the board's orb life completely (write the lonely image —
+     the board boots, wipes its own settings, and waits for whoever comes next),
+     or factory-reset its settings (the orb firmware stays, the owner data goes,
+     and the board comes back as the open provisioning AP it was the day it was
+     flashed, ready for the next owner to rename it). Both actions travel the
+     USB lead: the hub has no door onto a network it cannot command. A board
+     the hub cannot wire shows that refusal instead of a dead button. -->
+<div id="fj-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="fj-title">
+    <h3 id="fj-title">This orb is still answering</h3>
+    <p class="hint" id="fj-who"></p>
+    <p class="hint">Deleting the row of a live board only hides it until the next check-in. Choose an ending instead:</p>
+    <div class="row">
+      <button id="fj-lonely" class="danger" title="Write the lonely image over the USB lead: the board stops being an orb, wipes its name, time zone and credentials, boots, and asks to be reflashed.">Full reset — lonely firmware</button>
+      <button id="fj-reset" class="danger" title="Send RESET ALL over the USB lead: settings go, firmware stays, the board reboots as its own open provisioning AP for the next owner.">Factory reset settings</button>
+    </div>
+    <p class="hint" id="fj-note"></p>
+    <pre id="fj-log" class="log" aria-live="polite" hidden></pre>
+    <div class="row"><button id="fj-cancel" class="ghost">Cancel</button></div>
+  </div>
+</div>
+
+<!-- The flash progress for the doors that live on an orb's own card: a cable
+     reflash and a lonely write. It opens the moment either starts, so the wire's
+     progress is on screen while the wire is working, and closes when told. The
+     New Orb dialog owns its own progress bar; naming and picking happen there. -->
 <div class="flashpanel" id="ob-flashpanel" hidden>
   <div class="row">
     <b id="ob-doing">working&#8230;</b>
     <span id="ob-op" class="hint"></span>
     <button id="ob-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
+    <button id="fp-close" class="ghost" title="Hide this panel. A running flash keeps going; Cancel is what stops it.">Close</button>
   </div>
   <div id="ob-bar" class="bar"><div></div></div>
-  <div id="ob-join" class="join" hidden>
-    <h3>Bring it onto Wi-Fi</h3>
-    <div id="ob-watch" class="hint">waiting for the orb to boot…</div>
-    <pre id="ob-console" class="log" aria-live="polite"></pre>
+  <details id="ob-logdetails">
+    <summary class="hint">the bytes behind the bar</summary>
+    <pre id="ob-log" class="log" aria-live="polite"></pre>
+  </details>
+</div>
+
+<!-- The join dialog: the one form a freshly flashed board meets when its flash
+     ends. It opens LOCKED — spinner and message while the orb boots and runs
+     its first scan — because an empty picker on a board that has not come up
+     yet is the bug this frame exists to kill; Later is live through the whole
+     wait. Credentials, or an honest "AP mode only" — no third option, because
+     the firmware has no third state. The network list is a live read of the
+     orb's radio over the cable, and Rescan re-drives it at any time. The time
+     zone is a dropdown over the device's own list (the hub serves it; the orb
+     cannot mid-flash), beside "Use my location", which maps the browser's own
+     position onto that same list. Writes go down the cable the board already
+     lies on; success is the orb answering on the LAN, and an orb that refused
+     the credentials comes back to this same form rather than to a dead end. -->
+<div id="wj-mask" class="mask" hidden>
+  <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="wj-title">
+    <h3 id="wj-title">Bring it onto Wi-Fi</h3>
+    <div id="ob-watch" class="hint">waiting for the orb to boot&#8230;</div>
+
+    <div id="wj-lock" class="wjlock">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="hint" id="wj-lock-msg">The orb is rebooting into its new firmware. Its first
+        network scan starts when it comes up and takes a few seconds — the form opens
+        on its own the moment the scan is in.</p>
+    </div>
+
+    <div id="ob-join" hidden>
+      <p class="hint" id="wj-apnote" hidden>This orb opened its own provisioning
+        AP <b id="ob-ap-ssid">orb-????</b>. The hub writes over the cable — or you
+        can <button id="ob-ap-here" class="linkish" title="Open the orb's own config page. Your machine must be joined to that AP for it to answer.">use its AP page</button>
+        instead.</p>
+      <div class="grid">
+        <label id="wj-ssidpick" hidden>Network (SSID)
+          <select id="sp-ssid">
+            <option value="">&#8212; scan saw nothing; type it &#8212;</option>
+          </select>
+        </label>
+        <label>&#8230;or type SSID <input id="sp-manual" placeholder="hidden / not in list" autocomplete="off"></label>
+        <label class="passrow">Passphrase
+          <span class="passfield">
+            <input id="sp-pass" type="password" autocomplete="off">
+            <button id="sp-pass-show" class="ghost pw-toggle" type="button" aria-label="Show the passphrase">show</button>
+          </span>
+        </label>
+        <label id="sp-tzrow" hidden>Time zone
+          <span class="tzline">
+            <select id="sp-tz"><option value="UTC">UTC</option></select>
+            <button id="sp-geo" class="ghost" type="button" title="Ask the browser where you are, and pick the closest zone from the orb's own list.">Use my location</button>
+          </span>
+        </label>
+      </div>
+      <div class="row"><span id="sp-tzstate" class="hint"></span></div>
+      <div class="row">
+        <button id="sp-rescan" class="ghost" type="button" title="Ask the orb to scan its radio again over the cable. Takes a few seconds.">Rescan</button>
+        <button id="sp-go" class="primary">Connect</button>
+        <button id="sp-ap" class="ghost">No Wi-Fi &#8212; AP mode only</button>
+      </div>
+      <p class="hint" id="sp-hint">The list is the orb's own scan, read over the
+        cable — Rescan drives its radio again at any time. The passphrase travels
+        hex-encoded over your own USB cable: fine for a wired bench, not a public link.</p>
+      <pre id="sp-log" class="log" hidden aria-live="polite"></pre>
+    </div>
 
     <div id="ob-done" hidden>
       <p class="hint" id="ob-done-msg"></p>
@@ -194,42 +306,11 @@
       </div>
     </div>
 
-    <div id="ob-ap" hidden>
-      <p class="hint">This orb has no stored network, so it opened its own open
-        provisioning network <b id="ob-ap-ssid">orb-????</b>. Two doors lead in:
-        join that AP from a phone (or this laptop) and use the orb's built-in
-        config page, or — since this hub is already cabled to the orb — provision
-        it over the USB-Serial-JTAG link below without any network at all.</p>
-      <div class="row"><button id="ob-ap-here" class="primary">Continue via the orb's AP page</button></div>
+    <details class="hint" id="wj-consoledetails" hidden><summary>the orb's console</summary>
+      <pre id="ob-console" class="log" aria-live="polite"></pre></details>
 
-      <div id="ob-serial" class="grid" style="margin-top:0.6em">
-        <fieldset>
-          <legend>Provision over USB (wired)</legend>
-          <div class="grid">
-            <label>Network (SSID)
-              <select id="sp-ssid">
-                <option value="">— scan saw nothing; type it —</option>
-              </select>
-            </label>
-            <label>…or type SSID <input id="sp-manual" size="18" placeholder="hidden / not in list"></label>
-            <label>Passphrase <input id="sp-pass" type="password" autocomplete="off"></label>
-            <label>Time zone <input id="sp-tz" size="14" placeholder="America/New_York"></label>
-          </div>
-          <p class="hint" id="sp-hint">Networks come from the orb's boot scan,
-            read off the console during the flash. The passphrase travels in the
-            clear (hex, not encrypted) over your own USB cable — fine for a wired
-            bench, not a public link.</p>
-          <div class="row"><button id="sp-go" class="primary">Provision over USB</button></div>
-          <pre id="sp-log" class="log" aria-live="polite"></pre>
-        </fieldset>
-      </div>
-    </div>
-
+    <div class="row"><button id="wj-later" class="ghost">Later</button></div>
   </div>
-  <details id="ob-logdetails">
-    <summary class="hint">the bytes behind the bar</summary>
-    <pre id="ob-log" class="log" aria-live="polite"></pre>
-  </details>
 </div>
 
 <div id="ad-mask" class="mask" hidden>

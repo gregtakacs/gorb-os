@@ -228,6 +228,16 @@ type orbRow struct {
 	Forgettable bool   `json:"forgettable"`
 	ForgetWhy   string `json:"forgetWhy,omitempty"`
 
+	// LiveForget is the hub's answer for the board the plain Forget refuses
+	// because it is alive: the page must not leave a dead button on a live
+	// board, because the operator's intent is exactly what the dialog serves —
+	// a full reset to the lonely image, or a factory reset of the settings.
+	// LivePort names the cable the actions drive; empty means the board is
+	// answering where no lead reaches, and the dialog says so. Non-omitempty
+	// like Forgettable: an absent verdict reads as a no, never as permission.
+	LiveForget bool   `json:"liveForget"`
+	LivePort   string `json:"livePort,omitempty"`
+
 	// Update says the firmware this hub carries is a decided upgrade over the
 	// stamp this row wears, by the same comparator the flash gate applies. It is
 	// the card's amber alert and the manage view's Update button, and it arrives

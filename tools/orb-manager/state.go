@@ -45,6 +45,11 @@ import (
 //
 // Version 1 and 2 files still load. A v1 file has no MAC per grant, so those grants come
 // back unbound.
+//
+// The lonely set rides in a v3 file as an added field: a hub of the same version that
+// never saw it starts with no marks (safe — the marks only ever take orb evidence away),
+// and a file that carries it on a hub that lost the field loses only the memory, not a
+// credential.
 const stateVersion = 3
 
 type hubState struct {
@@ -53,6 +58,12 @@ type hubState struct {
 	Grants  map[string]int    `json:"grants"` // ip -> unix seconds it was learned
 	MACs    map[string]string `json:"macs,omitempty"`
 	Fleet   []orbfleet.Orb    `json:"fleet,omitempty"`
+	// Lonely carries the MACs this hub left lonely (lonelyset.go). It is a
+	// memory of an act the hub itself performed, so it is the one piece of hub
+	// state a cable descriptor must not overrule: without it a restart would
+	// let the next sweep rebuild from the MAC the lonely board still enumerates,
+	// and the row the operator ended would rise quietly on the first frame.
+	Lonely []string `json:"lonely,omitempty"`
 }
 
 // statePath is where the remembered addresses live. It follows the same convention as
@@ -87,6 +98,9 @@ func (s *Server) saveState() {
 	}
 	if s.fleet != nil {
 		st.Fleet = s.fleet.Snapshot()
+	}
+	if s.lonely != nil {
+		st.Lonely = s.lonely.list()
 	}
 	st.LastIP = s.currentOrbIP()
 	b, err := json.MarshalIndent(st, "", "  ")
@@ -142,6 +156,9 @@ func (s *Server) loadState() int {
 	}
 	if s.fleet != nil && len(st.Fleet) > 0 {
 		s.fleet.Restore(st.Fleet)
+	}
+	if len(st.Lonely) > 0 {
+		s.lonely.restore(st.Lonely)
 	}
 	if isV4Literal(strings.TrimSpace(st.LastIP)) {
 		s.setOrbIP(strings.TrimSpace(st.LastIP))

@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 )
 
 // flashRequest is the UI's flash job. Mode selects the image set; Port is the
@@ -22,6 +25,16 @@ type flashRequest struct {
 	// The app-only reflash is bench behaviour and lives on in orbflash -mode app.
 	Mode string `json:"mode"`
 	Wipe bool   `json:"wipe"` // also ROM-erase the NVS partitions (factory reset)
+	// Name is the word the operator chose for this board. The hub writes it onto
+	// the chip over the same cable that carried the firmware, before the flash
+	// reports done, so the orb is never loose with no name — not even while it
+	// is still on the provisioning AP. Empty means leave the name alone, which
+	// only a reflash of a board that already has one may do.
+	Name string `json:"name"`
+	// Fresh marks the New Orb flow's request: a blank board's first flash. The
+	// name is mandatory on exactly this request, and this is where that rule is
+	// enforced — a client-side gate alone is a gate a second tab walks around.
+	Fresh bool `json:"fresh"`
 }
 
 // handleFlash runs one flash, streaming newline-delimited JSON events so the UI
@@ -54,6 +67,28 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	if req.Port == "" {
 		send("error", "no serial port selected")
 		return
+	}
+
+	// A blank board's first flash must name it. Enforced here, before any lock
+	// is claimed or wire is touched, so the refusal costs nothing and cannot be
+	// bypassed by any client — the button on the page is courtesy, this is the
+	// rule. A name sent on any flash is checked against the DEVICE's rules
+	// first, so an orb never accepts a word the page then cannot display.
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Fresh && req.Name == "" {
+		send("error", "a new orb must be named before it is flashed")
+		return
+	}
+	if req.Name != "" {
+		clean, nerr := orbfleet.CleanName(req.Name)
+		if nerr == nil {
+			nerr = orbfleet.CheckNameASCII(clean)
+		}
+		if nerr != nil {
+			send("error", "the name was refused: "+nerr.Error())
+			return
+		}
+		req.Name = clean
 	}
 
 	// Claim the cable. This is the in-process belt to orbbind's cross-process
@@ -175,6 +210,34 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		// that was just written is the board the hub has proof of, whatever a later
 		// announcement chooses to say about where it is.
 		s.markCable(flashedMAC)
+		// And an orb flash is the evidence that ends a lonely mark: the chip
+		// this hub left minding a display now runs an orb again.
+		s.lonely.clear(macNorm(flashedMAC))
+	}
+	// Name the board over the same lead, now that the app it just wrote is
+	// booting. The serial command door (orb_net.c) is armed for the whole life
+	// of the app, so the line lands whether the board came up provisioning or
+	// station. This happens BEFORE the done event so a client that closes the
+	// dialog on done can never race the write out of existence, and a refused
+	// name is said in the stream rather than discovered by the fleet list.
+	if req.Name != "" {
+		nctx, ncancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ncancel()
+		nline := esprom.SerialLine("NAME", esprom.ProvField(req.Name))
+		nres, nerr := esprom.RunCommand(nctx, pt, nline, []string{"NAME-ACK"}, func(l string) {
+			send("log", "console: "+l)
+		})
+		if nerr == nil && nres != nil && nres.Ack && nres.Nak == "" {
+			send("log", "named \""+req.Name+"\" — the orb acknowledged it over the cable")
+		} else {
+			why := "no NAME-ACK inside 20 s"
+			if nerr != nil {
+				why = nerr.Error()
+			} else if nres != nil && nres.Nak != "" {
+				why = "the orb refused it: " + nres.Nak
+			}
+			send("log", "the name \""+req.Name+"\" did not reach the chip ("+why+"); the orb will name it again as soon as it has an address")
+		}
 	}
 	send("done", "flash complete - orb rebooting into the new firmware")
 }

@@ -40,6 +40,47 @@ func stubCables(s *Server, seen ...cableSighting) {
 	s.cables.ttl = time.Hour
 }
 
+// The row the gate refuses is the row the dialog is for: annotate carries both
+// halves of the answer — plain Forget is off, live endings are on — and the lead
+// the endings drive. A plain false without the dialog verdict is the dead button
+// this feature exists to remove.
+func TestARefusedLiveRowCarriesTheDialogVerdict(t *testing.T) {
+	now := time.Now()
+	s, _ := gateClock(now)
+	s.fleet.Observe(obsAt(macHall, "192.0.2.31", now.Add(-10*time.Second)))
+	stubCables(s, cableSighting{port: "/dev/ttyUSB0", isOrb: true, mac: macHall})
+	rows := []orbRow{{MAC: macHall}}
+	s.annotateForget(rows, now)
+	if rows[0].Forgettable {
+		t.Fatal("an announcing board on a lead was marked plain-forgettable")
+	}
+	if !rows[0].LiveForget {
+		t.Error("the refused live row carries no dialog verdict — its Forget button is decoration")
+	}
+	if rows[0].LivePort != "/dev/ttyUSB0" {
+		t.Errorf("LivePort = %q, want the lead the endings drive", rows[0].LivePort)
+	}
+
+	// A quiet row keeps the plain path and gets no dialog flag. The dead verdict
+	// is what makes the gate honest on the render path (no dial, no guessing).
+	s2, _ := gateClock(now)
+	quietRow(s2, macHall, "192.0.2.31", now)
+	s2.live.probe = func(string) bool { return false }
+	s2.live.check("192.0.2.31")
+	rows2 := []orbRow{{MAC: macHall}}
+	s2.annotateForget(rows2, now)
+	if !rows2[0].Forgettable || rows2[0].LiveForget {
+		t.Error("a quiet row lost its plain Forget or grew a dialog it does not need")
+	}
+
+	// A row with no mac is no chip to act on: neither verdict.
+	rows3 := []orbRow{{MAC: ""}}
+	s.annotateForget(rows3, now)
+	if rows3[0].LiveForget {
+		t.Error("a cable with no mac was marked live-forgettable")
+	}
+}
+
 func TestAQuietRowIsForgettable(t *testing.T) {
 	now := time.Now()
 	s, clock := gateClock(now)
@@ -63,8 +104,8 @@ func TestACabledOrbIsNotForgettable(t *testing.T) {
 	if !strings.Contains(why, "/dev/ttyUSB0") {
 		t.Errorf("the refusal does not name the port the cable is in: %q", why)
 	}
-	if !strings.Contains(strings.ToLower(why), "unplug") {
-		t.Errorf("the refusal does not say the action that would make Forget work: %q", why)
+	if !strings.Contains(why, "reset choices") {
+		t.Errorf("the refusal does not point at the Forget dialog's endings: %q", why)
 	}
 	// Someone else's cable must not hold this row hostage, or one board on a bench would
 	// disable Forget for every other board the hub remembers.
@@ -112,7 +153,7 @@ func TestAnAnsweringAddressIsNotForgettable(t *testing.T) {
 	if !strings.Contains(why, "192.168.2.31") {
 		t.Errorf("the refusal does not name the address that answered: %q", why)
 	}
-	if !strings.Contains(why, "RESET ALL") {
+	if !strings.Contains(why, "reset choices") {
 		t.Errorf("the refusal offers no way to actually clear a live board: %q", why)
 	}
 	if dials != 1 {

@@ -366,7 +366,14 @@ func Session(pt *Port, o Options) error {
 	if o.ObserveBoot != nil {
 		secs := o.BootSeconds
 		if secs <= 0 {
-			secs = 12
+			// The default has to outlast the firmware's own scan, not merely
+			// its AP banner: orb_net.c gives the radio task 20 s to close a
+			// scan (SCAN_TIMEOUT_US), and the boot scan is armed a beat after
+			// the AP comes up. A 12 s window regularly cut the PROVSCAN rows
+			// off mid-list and left the join dialog's picker empty — the hub
+			// stops early the moment it has a verdict, so a longer ceiling
+			// only costs time on a board that says nothing at all.
+			secs = 28
 		}
 		observeBootOn(o.Ctx, pt, secs, o.ObserveBoot)
 	}

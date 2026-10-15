@@ -54,6 +54,7 @@ func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), live: newLiveCache(),
+		lonely: newLonelyMark(),
 		orb:    orbnet.NewClient(scanTimeout),
 		device: orbnet.NewClient(deviceTimeout),
 		ota:    orbnet.NewClient(otaTimeout),
@@ -219,15 +220,22 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 		// display string to label a cable.
 		if u.IsOrbDevice() && u.Serial != "" {
 			e["usbMac"] = u.Serial
-			// Two facts the page must not conflate, so they stay two fields:
-			// the address book holds this chip at all ("inFleet", what the
-			// add-by-IP door refuses on), and the book proves it has been an
-			// orb ("orbSeen", what hides it from the New Orb door). A row that
-			// only ever recorded a cable gives the first without the second.
-			if row, known := s.fleetKnown(macNorm(u.Serial)); known {
-				e["inFleet"] = true
-				if storeProvesOrb(row) {
-					e["orbSeen"] = true
+			// A board this hub left lonely is a blank Espressif chip with a
+			// memory, not an orb: the entry says so, and the picker labels it
+			// "left lonely" instead of letting the descriptor silently re-orb it.
+			if s.lonely.has(macNorm(u.Serial)) {
+				e["lonely"] = true
+			} else {
+				// Two facts the page must not conflate, so they stay two fields:
+				// the address book holds this chip at all ("inFleet", what the
+				// add-by-IP door refuses on), and the book proves it has been an
+				// orb ("orbSeen", what hides it from the New Orb door). A row that
+				// only ever recorded a cable gives the first without the second.
+				if row, known := s.fleetKnown(macNorm(u.Serial)); known {
+					e["inFleet"] = true
+					if storeProvesOrb(row) {
+						e["orbSeen"] = true
+					}
 				}
 			}
 		}

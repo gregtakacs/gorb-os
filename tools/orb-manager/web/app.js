@@ -140,7 +140,7 @@ async function refreshPorts() {
   for (const entry of blanks) {
     const o = document.createElement("option");
     o.value = entry.port;
-    o.textContent = portLabel(entry.port, entry);
+    o.textContent = blankLabel(entry);
     sel.appendChild(o);
   }
   renderBlankGate();
@@ -149,18 +149,17 @@ async function refreshPorts() {
 }
 
 // renderBlankGate is the button and the three honest states of the New Orb
-// dialog: one blank (chosen for you, and a dropdown with one option is an
-// insult), several (pick a cable), none (plug one in). It does not narrate how
-// a board got here — the button only opens for a board that is blank, so the
-// story is implied. The button hides rather than lies.
+// dialog: one blank (a line of text — a dropdown with one option asks
+// nothing), several (pick a cable), none ("no orb is plugged in"). Ports
+// enumerate themselves on the hub's own poll, so no state offers a refresh
+// door and none needs one.
 function renderBlankGate() {
   $("#mn-add").hidden = blanks.length === 0;
   $("#ob-blankpick").hidden = blanks.length < 2;
   $("#ob-blankone").hidden = blanks.length !== 1;
   $("#ob-blanknone").hidden = blanks.length !== 0;
   if (blanks.length === 1) {
-    const e = blanks[0];
-    $("#ob-blankone").textContent = "On the cable: " + portLabel(e.port, e) + " — flash it.";
+    $("#ob-blankone").textContent = "Flashing the ESP32-S3 on " + blankLabel(blanks[0]);
   }
   gateFlashButton();
 }
@@ -206,6 +205,14 @@ function newOrbStep(step) {
   $("#no-foot .ghost").textContent = step === "run" ? "Close" : "Cancel";
 }
 
+// blankLabel is all the New Orb panel says about a candidate board: the port
+// it sits on and the MAC the host reads off the USB descriptor for free — the
+// whole of what a blank JTAG board reveals. Whether the chip once was an orb
+// changes nothing about the flash, so nothing says so here.
+function blankLabel(entry) {
+  return entry.usbMac ? entry.port + "  —  " + entry.usbMac : entry.port;
+}
+
 // portLabel spells a port out. The MAC is free — the host reads it off the USB
 // descriptor without opening the port — so two cables on the bench are tellable
 // apart before anyone pays for a probe. The version only appears once one has
@@ -217,7 +224,6 @@ function portLabel(p, entry) {
       ? p + "  —  " + (entry.mac || entry.usbMac || "orb") + "  ·  " + (entry.version || "version unknown")
       : p + "  —  " + (entry.reason || "not an orb");
   }
-  if (entry.lonely) { return p + "  —  left lonely; New Orb takes it back"; }
   if (entry.usbMac) { return p + "  —  " + entry.usbMac + "  ·  not identified"; }
   if (entry.hint) { return p + "  —  " + entry.hint + "  ·  not identified"; }
   return p;
@@ -493,7 +499,6 @@ async function probePort() {
 }
 
 $("#ob-probe").onclick = probePort;
-$("#ob-refresh").onclick = async () => { await refreshPorts(); renderBlankGate(); };
 
 
 // ---- the orb under management ----------------------------------------------
@@ -745,40 +750,90 @@ $("#ob-lonely-go").onclick = async () => {
 };
 
 
-// ---- the forget dialog: the two endings for a live orb ---------------------
-// The gate says a live row rebuilds itself if you only delete it; this dialog
-// is the answer for an operator who pressed Forget on a live board anyway.
-// Two real actions, both serial, both taking the typed word the same doors
-// demand on the Onboard card:
+// ---- the forget dialog: three bodies, one row's current verdict --------------
+// The dialog is what Forget opens, everywhere and always: no path on this card
+// answers with a native browser popup any more. The body it shows is the hub's verdict
+// on the row in the frame that just landed, never the frame that opened the
+// dialog, so an orb unplugged with the dialog already on screen loses its cable
+// endings on the next push instead of going on naming a lead the hub no longer
+// sees. The three bodies:
 //
-//   • Full reset — /api/lonely writes the lonely image. The board stops being
-//     an orb, wipes its name, time zone and credentials, and waits on its own
-//     screen. The hub forgets the row and marks the chip, so it reads as a
-//     blank Espressif board, adoptable from New Orb.
-//   • Factory reset — /api/orb/cmd drives RESET ALL. The firmware stays; every
-//     setting goes; the board comes back as its own open provisioning AP and
-//     the next owner renames it there. The hub's card takes the default name
-//     "The Orb" once the ack lands (the server writes it on the ack).
-//
-// Both need the board on a lead of this hub — the hub commands cables, not
-// the air — and the dialog says so when livePort is empty.
+//   • cable — the board sits on a lead of this hub, and deleting its row alone
+//     would only hide it until the next sweep. Two endings actually end it:
+//     /api/lonely writes the lonely image (the board stops being an orb, wipes
+//     its name, time zone and credentials, and waits on its own screen; the hub
+//     marks the chip, so it reads as a blank Espressif board adoptable from New
+//     Orb), or /api/orb/cmd drives RESET ALL (firmware stays, every setting
+//     goes, the board comes back as its own open provisioning AP, and the card
+//     takes the default name "The Orb" when the ack lands).
+//   • drop — no lead, and the hub will not rebuild this row. The press is the
+//     plain /api/fleet/forget the popup used to gate.
+//   • wait — the hub refused and has no lead to act over. The hub's own refusal
+//     is the body, and there is nothing to press.
 let fjRow = null;      // the <li> the dialog is acting on
 let fjBusy = false;    // one action at a time, and no closing mid-write
+let fjMode = "";       // the body on screen, so a repaint tells a mode change from a re-word
+
+// forgetMode reads the row as it stands now. livePort is the hub's answer to "is this
+// board on a lead of this machine at this instant", and it is the only port the cable
+// body may name: the row's own port list is deliberately not consulted, so a lead that
+// went quiet cannot reappear in the dialog as a stale string.
+function forgetMode(li) {
+  if (li._livePort) return "cable";
+  if (li._forgettable) return "drop";
+  return "wait";
+}
+
+// paintForgetDialog writes the whole dialog from the row's current verdicts. It runs on
+// open and from paintFound on every frame that touches the row the dialog is showing —
+// the reason an unplug moves an open dialog rather than leaving it as it was. A write in
+// flight owns the dialog, so the paint stands down while fjBusy holds.
+function paintForgetDialog() {
+  const li = fjRow;
+  if (!li || fjBusy) return;
+  const mode = forgetMode(li);
+  const shown = li._name.value || li.dataset.mac || "this orb";
+  const port = mode === "cable" ? li._livePort : "";
+  const why = li._forgetWhy || "";
+  const log = $("#fj-log"), note = $("#fj-note");
+  if (mode !== fjMode) { log.hidden = true; log.textContent = ""; }
+  fjMode = mode;
+  $("#fj-title").textContent = mode === "cable" ? "This orb is still answering"
+    : mode === "drop" ? "Forget this orb?" : "This row is not ready to forget";
+  $("#fj-cable").hidden = mode !== "cable";
+  $("#fj-gone").hidden = mode !== "drop";
+  $("#fj-wait").hidden = mode !== "wait";
+  $("#fj-lonely").disabled = $("#fj-reset").disabled = mode !== "cable";
+  $("#fj-forget").disabled = mode !== "drop";
+  $("#fj-cancel").disabled = false;
+  if (mode === "cable") {
+    $("#fj-who").textContent = shown + " answers the hub on the lead at " + port
+      + ", so deleting its row alone would only hide it until the next sweep.";
+    note.textContent = "Both endings travel the USB lead at " + port
+      + ". The press does it — this dialog is the confirmation.";
+    return;
+  }
+  if (mode === "drop") {
+    $("#fj-who").textContent = shown + " is on no lead of this hub and answers where it was"
+      + " last seen no more, so this row will not rebuild itself.";
+    $("#fj-gone-what").textContent = "The hub drops the fleet row for " + (li.dataset.mac || "this board")
+      + ", forgets the name it kept, and stops dialing the address it remembered"
+      + (li._ip ? " (" + li._ip + ")" : "") + ". Nothing is sent to the board: it keeps its"
+      + " firmware, its name and its settings.";
+    note.textContent = "Plug it back in or wait for it to announce, and it comes as a new sighting.";
+    return;
+  }
+  $("#fj-who").textContent = shown + " is the hub's call, not this page's.";
+  $("#fj-wait").textContent = why || "the hub sent no Forget verdict for this row — reload the page";
+  note.textContent = "No button, because a press now would only be refused. The card repaints"
+    + " itself, and Forget arms when the hub may drop the row.";
+}
 
 function openForgetDialog(li) {
-  if (fjBusy) return;
+  if (fjBusy || !li.dataset.mac) return;   // no chip to act on; the row's own line says why
   fjRow = li;
-  const shown = li._name.value || li.dataset.mac || "this orb";
-  $("#fj-who").textContent = shown + " is answering the hub, so deleting its row alone would only hide it until the next check-in.";
-  const port = li._livePort || (li._port || "");
-  const log = $("#fj-log"); log.hidden = true; log.textContent = "";
-  const note = $("#fj-note");
-  const goL = $("#fj-lonely"), goR = $("#fj-reset");
-  goL.disabled = goR.disabled = !port;
-  note.textContent = port
-    ? "Both endings travel the USB lead at " + port + ". The press does it — this dialog is the confirmation."
-    : "the hub cannot reach this board over a cable: put it on a lead of this machine to use these endings, or factory-reset it from its own network page";
-  $("#fj-title").dataset.port = port;
+  fjMode = "";                             // force the paint and clear the last row's log
+  paintForgetDialog();
   $("#fj-mask").hidden = false;
 }
 
@@ -786,19 +841,27 @@ function closeForgetDialog() {
   if (fjBusy) return;
   $("#fj-mask").hidden = true;
   fjRow = null;
+  fjMode = "";
 }
 $("#fj-cancel").onclick = closeForgetDialog;
+// The same three exits the join dialog answers to: the named button, the backdrop,
+// and Escape. All three stand down while a write is in flight, which is what
+// closeForgetDialog's own guard is for.
+$("#fj-mask").addEventListener("click", (e) => { if (e.target === $("#fj-mask")) closeForgetDialog(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#fj-mask").hidden) closeForgetDialog();
+});
 
 // The buttons act on the press. Reaching this dialog already took two deliberate
 // clicks — Forget, then the named ending — and a typed word after that punished the
-// operator for the care they had just shown (bench, 2026-10-15). The dialog's own note
-// names the port each press writes to, the buttons stay disabled until the hub reports
-// the board reachable on a lead, and one press cannot re-fire while a write is in
-// flight: that is where the confirmation lives now.
+// operator for the care they had just shown (bench, 2026-10-15). The port each press
+// writes to is read off the row at press time rather than from what the dialog said
+// when it opened: a board that left the lead mid-read gets a return, not a write to a
+// socket the hub no longer holds. One press cannot re-fire while a write is in flight.
 $("#fj-lonely").onclick = async () => {
   if (fjBusy || !fjRow) return;
-  const port = $("#fj-title").dataset.port;
-  if (!port) return;
+  const port = fjRow._livePort;
+  if (!port) { paintForgetDialog(); return; }   // the lead went quiet since the last frame
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
   const log = $("#fj-log"); log.hidden = false; log.textContent = "leaving it lonely over " + port + "\n";
@@ -817,15 +880,15 @@ $("#fj-lonely").onclick = async () => {
   if (ok) {
     await refreshPorts();
     pullFound();
-    $("#fj-mask").hidden = true; fjRow = null;
+    closeForgetDialog();
     $("#mn-find-note").textContent = "that board is lonely now — it boots, wiped its own settings, and waits. New Orb takes it back whenever you like.";
   }
 };
 
 $("#fj-reset").onclick = async () => {
   if (fjBusy || !fjRow) return;
-  const port = $("#fj-title").dataset.port, mac = fjRow.dataset.mac || "";
-  if (!port) return;
+  const port = fjRow._livePort, mac = fjRow.dataset.mac || "";
+  if (!port) { paintForgetDialog(); return; }   // the lead went quiet since the last frame
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
   const log = $("#fj-log"); log.hidden = false; log.textContent = "sending RESET ALL over " + port + "\n";
@@ -846,9 +909,43 @@ $("#fj-reset").onclick = async () => {
   }
   if (acked) {
     pullFound();
-    $("#fj-mask").hidden = true; fjRow = null;
+    closeForgetDialog();
     $("#mn-find-note").textContent = "factory reset — the board is unconfigured again, its AP is open for whoever claims it next, and the card reads \u201cThe Orb\u201d until they name it.";
   }
+};
+
+// The drop body: the row the hub will not rebuild, so the press is the plain fleet
+// delete. It still re-reads the port-free verdict at press time, and it still expects a
+// refusal — the door re-prices the gate on the way in, and a board that came back between
+// the frame and the click is exactly the case the rule is about. A refusal stays in the
+// dialog, which repaints from the row's new verdict on the way out; it does not close and
+// it does not pretend.
+$("#fj-forget").onclick = async () => {
+  if (fjBusy || !fjRow) return;
+  const li = fjRow, mac = li.dataset.mac || "";
+  if (!mac || li._livePort || !li._forgettable) { paintForgetDialog(); return; }
+  fjBusy = true;
+  const go = $("#fj-forget"); go.disabled = true;
+  const log = $("#fj-log"); log.hidden = false; log.textContent = "dropping the row for " + mac + "\n";
+  let dropped = false, refusal = "";
+  try {
+    const r = await hubFetch("/api/fleet/forget", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mac: li.dataset.mac }),
+    });
+    const j = await r.json().catch(() => ({}));
+    dropped = r.ok && j.ok !== false;
+    if (!dropped) refusal = j.error || ("the hub refused with HTTP " + r.status);
+  } catch (e) { refusal = e.message; }
+  finally { fjBusy = false; }
+  await pullFound();                       // the row leaves the list, and that closes this
+  if (dropped) {
+    if (fjRow === li) closeForgetDialog();
+    $("#mn-find-note").textContent = "forgotten — the hub dropped the row and the grant to dial it. The board itself was not touched.";
+    return;
+  }
+  log.textContent += "\n\u2717 " + refusal + "\n";
+  if (fjRow === li) { paintForgetDialog(); $("#fj-note").textContent = "\u2717 the hub refused this press"; }
 };
 
 
@@ -863,6 +960,7 @@ $("#fj-reset").onclick = async () => {
 let orbIP = "";
 let provPort = ""; // the serial port the wired-provision door writes to
 let provMac = "";  // the flashed orb's MAC, the key back to its boot verdict
+let provApSsid = ""; // the provisioning AP the boot verdict named, for the AP line
 let zoneList = null;
 // Watch is a read stream, so a closed dialog may drop its events but never the
 // hub's view of the port: a generation counter, not an aborted fetch (the one
@@ -899,7 +997,9 @@ function openJoinDialog(port, mac, skipAp) {
   $("#ob-watch").textContent = "waiting for the orb to boot…";
   $("#ob-console").textContent = "";
   $("#wj-consoledetails").hidden = false;
-  $("#wj-apnote").hidden = true;
+  provApSsid = "";
+  $("#sp-manual").value = "";
+  $("#wj-apmsg").hidden = true;
   $("#ob-done").hidden = true;
   $("#sp-log").textContent = "";
   $("#sp-log").hidden = true;
@@ -913,8 +1013,9 @@ function openJoinDialog(port, mac, skipAp) {
 
 // joinLock is the boot phase of the join dialog. Until the orb's own scan is in
 // there is nothing honest to show — an empty picker is the bug this replaces —
-// so the dialog carries a spinner instead of a form. Later stays live the whole
-// time: abandoning a slow boot is always allowed.
+// so the dialog carries a spinner instead of a form, and the spinner is gone
+// the moment the form has an answer. The wait keeps its exits: backdrop click
+// and Escape, since Cancel lives inside the form.
 function joinLock(on, msg) {
   $("#wj-lock").hidden = !on;
   $("#ob-join").hidden = on;
@@ -935,8 +1036,10 @@ async function streamWatch(gen, port, mac, skipAp, ip) {
     if (ev.log) watchLog(ev.log);
     else if (ev.error) {
       // A watch that cannot answer is still an answer: the orb is on its own
-      // AP or off the cable, and the typed form is the door that remains.
+      // AP or off the cable. The dropdown still carries its typed-name and
+      // AP-mode answers, so unlocking onto one never shows a dead picker.
       $("#ob-watch").textContent = ev.error;
+      populateSerialNetworks([]);
       joinLock(false);
     }
     else if (ev.result) onWatchResult(ev.result);
@@ -963,8 +1066,7 @@ function onWatchResult(res) {
       " network" + ((res.networks || []).length === 1 ? "" : "s") + " off the console — wired door, the form writes over the cable.";
     if (!(res.networks || []).length) serialRescan(true); // the boot window closed before the scan was read
   } else if (res.mode === "ap") {
-    $("#ob-ap-ssid").textContent = res.ap_ssid || "";
-    $("#wj-apnote").hidden = false;
+    provApSsid = res.ap_ssid || "";
     populateSerialNetworks(res.networks || []);
     watch.textContent = "orb opened its own provisioning AP — the hub can still write over the cable.";
     if (!(res.networks || []).length) serialRescan(true); // the flash missed the boot rows; drive a fresh scan now
@@ -997,9 +1099,10 @@ async function serialRescan(auto) {
   if (!provPort || provScanBusy) return;
   provScanBusy = true;
   const btn = $("#sp-rescan");
+  const spin = $("#sp-scanspin");
   const gen = watchGen;
   btn.disabled = true;
-  btn.textContent = "scanning…";
+  spin.hidden = false;
   try {
     await streamPost("/api/orb/cmd", { port: provPort, command: "scan" }, (ev) => {
       if (gen !== watchGen) return;
@@ -1020,7 +1123,7 @@ async function serialRescan(auto) {
   } finally {
     provScanBusy = false;
     btn.disabled = false;
-    btn.textContent = "Rescan";
+    spin.hidden = true;
   }
 }
 $("#sp-rescan").onclick = () => serialRescan(false);
@@ -1031,7 +1134,6 @@ function joinDone(ip, st) {
     "connected at " + ip + " — " + (st.rssi || "?") + " dBm, fw " + (st.fw || "?") +
     (st.tz ? ", " + st.tz : "") + ".";
   $("#ob-join").hidden = true;
-  $("#wj-apnote").hidden = true;
   $("#ob-done").hidden = false;
   pullFound();
 }
@@ -1042,30 +1144,50 @@ $("#ob-rejoin").onclick = () => {
   $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
 };
 $("#ob-manage").onclick = () => { closeJoinDialog(); $("#ob-flashpanel").hidden = true; openOrbByIP(orbIP, provMac, null); };
-$("#ob-ap-here").onclick = () => { window.open("http://192.168.4.1/", "_blank"); };
 
-// populateSerialNetworks fills the wired-provision door's scan list: the boot
-// scan the flash captured off the console. It is the ONLY network list
-// available when the hub is wired-only and cannot reach the AP's 192.168.4.1.
+// populateSerialNetworks fills the wired-provision door's scan list and the
+// two standing answers that ride beside it in the same dropdown: a typed name
+// and AP mode. A scan that saw nothing still offers both ways out, so the
+// picker is never the dead end it once was. Firmware sorts strong→weak, so the
+// first real network is the best one.
 function populateSerialNetworks(nets) {
   const sel = $("#sp-ssid");
+  const prev = sel.value;
   sel.innerHTML = "";
-  const manual = document.createElement("option");
-  manual.value = "";
-  manual.textContent = nets.length ? "— or type it below —" : "— scan saw nothing; type it below —";
-  sel.appendChild(manual);
   nets.forEach((n) => {
     const o = document.createElement("option");
     o.value = n.ssid;
     o.textContent = n.ssid + "  (ch " + n.ch + ", " + n.rssi + " dBm" + (n.open ? ", open" : "") + ")";
     sel.appendChild(o);
   });
-  if (nets.length) sel.selectedIndex = 1; // best (first, firmware sorts strong→weak)
-  // A select whose only option is the apologetic placeholder says "type it".
-  // The SSID row can hide; the zone row cannot — joinLock owns that lever, and
-  // a dead-looking picker was the bug this pass removed.
-  $("#wj-ssidpick").hidden = nets.length === 0;
+  const manual = document.createElement("option");
+  manual.value = "__manual__";
+  manual.textContent = "Other — type the network name";
+  sel.appendChild(manual);
+  const ap = document.createElement("option");
+  ap.value = "__ap__";
+  ap.textContent = "No Wi-Fi — run on the orb's own AP";
+  sel.appendChild(ap);
+  if (nets.some((n) => n.ssid === prev)) sel.value = prev;
+  else if (nets.length) sel.selectedIndex = 0;
+  else sel.value = "__manual__";
+  applySsidChoice();
 }
+
+// applySsidChoice draws the consequences of the dropdown's current answer:
+// the typed box only under "Other", the one-line AP door only under AP mode.
+function applySsidChoice() {
+  const v = $("#sp-ssid").value;
+  $("#sp-manual").hidden = v !== "__manual__";
+  const msg = $("#wj-apmsg");
+  msg.hidden = v !== "__ap__";
+  if (v === "__ap__") {
+    msg.textContent = "The orb answers on its own open access point" +
+      (provApSsid ? " " + provApSsid : "") +
+      " — connect to it with your phone and configure the orb there, at http://192.168.4.1/.";
+  }
+}
+$("#sp-ssid").onchange = applySsidChoice;
 
 // ---- the time zone the join form writes ---------------------------------------
 // The list is the firmware's OWN table, served by /api/tz from the same source
@@ -1142,11 +1264,15 @@ function zoneFromLocation(longitude) {
   return best;
 }
 
-// The join dialog's own doors, wired here rather than inline: Later abandons
-// this orb to its open AP — reachable at 192.168.4.1 and listed as such — and
-// the next flash reopens this same frame for it or for any other.
-$("#wj-later").onclick = closeJoinDialog;
+// The join dialog's own doors, wired here rather than inline: Cancel abandons
+// this orb to its open AP — reachable at 192.168.4.1 from any device that
+// joins it — and the next flash reopens this same frame for it or for any
+// other. The boot wait keeps its exits through the backdrop and Escape.
+$("#wj-cancel").onclick = closeJoinDialog;
 $("#wj-mask").addEventListener("click", (e) => { if (e.target === $("#wj-mask")) closeJoinDialog(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#wj-mask").hidden) closeJoinDialog();
+});
 
 // showTzRow is one lever, pulled by joinLock. The zone row is a join field
 // like the other two: a row that hid itself whenever the scan came back empty
@@ -1156,8 +1282,10 @@ function showTzRow(on) { $("#sp-tzrow").hidden = !on; }
 $("#sp-go").onclick = async () => {
   const jlog = $("#sp-log");
   jlog.hidden = false;
-  const ssid = ($("#sp-manual").value.trim() || $("#sp-ssid").value || "").trim();
-  if (!ssid) { jlog.textContent = "pick or type a network first"; return; }
+  const picked = $("#sp-ssid").value;
+  if (picked === "__ap__") { applySsidChoice(); return; } // the option's own line is the answer
+  const ssid = (picked === "__manual__" ? $("#sp-manual").value.trim() : picked).trim();
+  if (!ssid) { jlog.textContent = "pick a network or type its name first"; return; }
   if (!provPort) { jlog.textContent = "no bound serial port — flash first"; return; }
   const tz = $("#sp-tz").value.trim() || "UTC";
   const go = $("#sp-go");
@@ -1183,12 +1311,6 @@ $("#sp-go").onclick = async () => {
   } finally {
     go.disabled = false;
   }
-};
-
-$("#sp-ap").onclick = () => {
-  $("#sp-log").hidden = false;
-  $("#sp-log").textContent = "AP mode it is — the orb keeps answering on 192.168.4.1, and the hub lists it like any other orb.\n" +
-    "This dialog stays open; the join form stays ready for whenever it has a network to be given.";
 };
 
 $("#sp-geo").onclick = () => {
@@ -1225,8 +1347,6 @@ for (const pair of [["#sp-pass", "#sp-pass-show"], ["#j-pass", "#j-pass-show"]])
 }
 
 $("#j-rescan").onclick = () => loadNetworks(true);
-
-// populateSerialNetworks fills the wired-provision door's scan list: the boot
 
 let scanTimer = null;
 async function loadNetworks(fresh) {
@@ -1379,7 +1499,12 @@ function applyFound(d) {
     paintFound(li, o);
   }
   for (const entry of foundRows) {
-    if (!live.has(entry[0])) { entry[1].remove(); foundRows.delete(entry[0]); }
+    if (!live.has(entry[0])) {
+      // The row left the hub's view — forgotten, aged out, or never a board at all — so
+      // the dialog has no subject left to act on and closes with it.
+      if (entry[1] === fjRow) closeForgetDialog();
+      entry[1].remove(); foundRows.delete(entry[0]);
+    }
   }
   drawRefused(list, (d.refused || []).slice(-3).reverse());
 
@@ -1469,6 +1594,10 @@ async function watchOrbs() {
       // foundRows.clear() below guards.
       for (const entry of foundRows) entry[1].remove();
       foundRows.clear();
+      // Every fact this card renders came off that stream, including the one the forget
+      // dialog is acting on. A dialog over a fleet it can no longer see is a button with
+      // no hub behind it, so it goes with the rows.
+      closeForgetDialog();
       state.textContent = "\u2717 discovery stream lost: " + e.message;
     }
   }
@@ -1516,31 +1645,14 @@ function foundRow(o) {
   const forget = document.createElement("button");
   forget.className = "ghost"; forget.textContent = "Forget";
   // Forget is the one removal this list offers: the hub remembers every board it has
-  // seen and never needs a press to add one. The confirm is not ceremony — it drops the
-  // name the operator chose and revokes any address the hub was willing to dial.
-  //
-  // A live board gets a different answer, not a dead button. The hub can see the cable
-  // sweep, the last check-in and whether the remembered address still answers; when the
-  // verdict is "that row comes back", this opens the forget dialog and offers what
-  // actually ends a live board — a lonely write (full reset) or RESET ALL (factory
-  // reset of its settings). A row with no mac has no chip to act on, so it stays dark.
+  // seen and never needs a press to add one. The press never answers with a browser
+  // popup — it opens the page's own forget dialog, which says what the hub will accept
+  // for THIS row and carries the action. Dropping a row costs the name the operator
+  // chose and revokes any address the hub was willing to dial, so the dialog names both
+  // before the press, and a row the hub will rebuild says that instead of a button.
   forget.onclick = () => {
-    if (!li._forgettable && li._liveForget) { openForgetDialog(li); return; }
-    if (forget.disabled) return;   // the hub said no; the title says what to do instead
-    const where = li._ip ? "? The hub stops dialing " + li._ip + "." : "; the hub will stop listing it.";
-    if (!confirm("Forget " + (name.value || li.dataset.mac) + where)) return;
-    hubFetch("/api/fleet/forget", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mac: li.dataset.mac }),
-    }).then(async (r) => {
-      const j = await r.json().catch(() => ({}));
-      // The door can still refuse: the card's verdict is cached, and a board plugged
-      // back in or heard from between this frame and the click is exactly the case the
-      // rule is about. Say so on the card instead of redrawing it as if it worked.
-      if (!r.ok || j.ok === false) $("#mn-find-note").textContent = "\u2717 " + (j.error || "the hub refused");
-      else $("#mn-find-note").textContent = "";
-      pullFound();
-    });
+    if (forget.disabled) return;   // the hub said no; the row's own line says what to do
+    openForgetDialog(li);
   };
 
   // A cable the host cannot attribute is a row with a tty and nothing else, and the one
@@ -1641,13 +1753,16 @@ function paintFound(li, o) {
   li._forgettable = forgettable;
   li._liveForget = liveForget;
   li._livePort = typeof o.livePort === "string" ? o.livePort : "";
-  // A forgettable row deletes itself on confirm; a live-forget row opens the
-  // dialog instead of dying on the button. Only a row with neither — no mac,
-  // or a hub that sent no verdict at all — is a dead button, and it says why.
+  li._forgetWhy = why;
+  // A forgettable row drops itself from the dialog's drop body; a refused row opens the
+  // body that says why. Only a row with neither — no mac, or a hub that sent no verdict
+  // at all — is a dead button, and it says that too.
   forget.disabled = !(forgettable || liveForget);
   forget.title = !nameable ? "no mac yet, so there is no fleet entry to forget"
-    : forgettable ? "drop this board from the fleet and revoke the address the hub was dialing"
-    : liveForget ? "this board is live: Forget offers the endings — a lonely write (full reset) or RESET ALL (factory reset of its settings)"
+    : forgettable ? "forget this orb: the hub drops the row and stops dialing the address it kept"
+    : liveForget ? (li._livePort
+        ? "this board answers the hub over " + li._livePort + ": Forget offers the endings that travel that lead"
+        : "the hub will not drop this row yet: Forget shows what it said and why")
     : (why || "the hub sent no Forget verdict for this row");
   // The reason goes on the row as well as in the title. A greyed button with no text is a
   // fault to diagnose rather than a rule to learn, and the operator should not have to
@@ -1660,7 +1775,11 @@ function paintFound(li, o) {
   li._identify.hidden = o.identity !== "unknown";
   li._ip = o.ip;
   if (document.activeElement !== li._name) li._name.value = o.name || "";
-
+  // The dialog reads its row, so the row's new verdict is the dialog's new body. This is
+  // the whole of the unplug fix: a board that left the lead while its dialog was open
+  // loses the cable endings on the frame that noticed, rather than keeping a promise
+  // about a port the hub no longer holds.
+  if (fjRow === li && !fjBusy) paintForgetDialog();
 }
 
 

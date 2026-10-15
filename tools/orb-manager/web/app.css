@@ -137,10 +137,23 @@ header nav{display:flex;gap:10px;align-items:baseline}
    dialog: a wall of boot output is a detail, and reads like one. */
 .dialog .log{max-height:150px;font-size:11px}
 /* The join dialog's boot phase: the form is not worth showing until the orb's
-   own scan is in, so a spinner carries the wait and the console stays foldable. */
+   own scan is in, so a spinner carries the wait and the console stays foldable.
+   The [hidden] rule is not decoration: .wjlock's own display:flex beats the UA
+   rule for the attribute, so without this line the spinner outlives the wait
+   it stands for — the bug the bench caught on 2026-10-15. */
 .wjlock{display:flex;flex-direction:column;align-items:center;gap:12px;padding:26px 0 14px}
+.wjlock[hidden]{display:none}
 .wjlock p{margin:0;text-align:center;max-width:46ch}
 .spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--focus);animation:spin 0.9s linear infinite}
+/* The rescan wait rides beside the button that started it, small enough not
+   to shove the row around. */
+.spinner.mini{width:16px;height:16px;border-width:2px;flex:0 0 auto}
+/* The SSID row is one control: picker (or the typed name), scan spinner, rescan. */
+.ssidline{display:flex;gap:8px;align-items:center;min-width:0}
+.ssidline select,.ssidline input{flex:1 1 auto;min-width:0}
+.ssidline button{flex:0 0 auto}
+/* Time zone and its location button take the whole row, not half a grid cell. */
+#sp-tzrow{grid-column:1/-1}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spinner{animation-duration:2.4s}}
 /* A door in the middle of a sentence, for the one path that leaves this page

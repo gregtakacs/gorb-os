@@ -307,6 +307,9 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	// foundRow makes the controls once and paintFound updates them on every frame. The pins below
 	// are about the row a person ends up looking at, so they read across both.
 	row := blockOf(t, readAppJS(t), "function foundRow") + blockOf(t, readAppJS(t), "function paintFound")
+	// The Forget press lives in the dialog's drop body now, not in the row: the row is the
+	// question and the dialog is the asking. The pins that follow read the two together.
+	asked := row + blockOf(t, readAppJS(t), `$("#fj-forget").onclick`)
 	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "outerHTML"} {
 		if strings.Contains(row, bad) {
 			t.Errorf("the found row uses %s; an announced instance name is device-supplied bytes", bad)
@@ -325,15 +328,21 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	// The identity is keyed on the MAC, and the row carries it as its own key rather than as
 	// whatever the last frame happened to say. A rename that posted the address would rename
 	// whatever held the lease tomorrow.
-	if !strings.Contains(row, "li.dataset.mac = o.mac") || !strings.Contains(row, "mac: li.dataset.mac") {
+	if !strings.Contains(row, "li.dataset.mac = o.mac") || !strings.Contains(asked, "mac: li.dataset.mac") {
 		t.Error("the found row no longer posts the MAC as the identity it is renaming")
 	}
 	if strings.Contains(row, "ip: o.ip") {
 		t.Error("the found row names a board by its address; the fleet keys on the MAC")
 	}
-	// Forgetting revokes the hub's willingness to dial, so it asks first.
-	if !strings.Contains(row, "confirm(") {
-		t.Error("Forget no longer asks before dropping a name and revoking an address")
+	// Forgetting revokes the hub's willingness to dial, so it asks first — and the asking is
+	// the page's own dialog, never a browser popup. A popup cannot show which of the hub's
+	// three verdicts it is answering, and it kept offering a dead board's delete beside a
+	// live board's cable endings as if the page, not the hub, had decided the difference.
+	if !strings.Contains(row, "openForgetDialog(li)") {
+		t.Error("Forget no longer asks through the page's own dialog before dropping a name and revoking an address")
+	}
+	if strings.Contains(row, "confirm(") {
+		t.Error("the fleet row raises a browser popup; the forget dialog is the only ask this card has")
 	}
 	// Forget is the hub's verdict, not the card's guess: the row carries whether the board
 	// can be reached, and the button is enabled or opened from that field. A card that
@@ -362,10 +371,11 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 	if !strings.Contains(row, "_fwhy") {
 		t.Error("the Forget refusal is a tooltip only, so the row cannot explain itself")
 	}
-	// The door can still refuse a button the card drew a frame too early, and the card must
-	// show that rather than redraw as if the delete worked.
-	if !strings.Contains(row, "mn-find-note") {
-		t.Error("a refused forget is silent: the card repaints the row back with no explanation")
+	// The door can still refuse a button the card drew a frame too early, and the press must
+	// show that rather than redraw as if it worked. It answers in the dialog the operator is
+	// looking at, and it re-reads the row the refusal belongs to.
+	if !strings.Contains(asked, "refusal") || !strings.Contains(asked, "pullFound") {
+		t.Error("a refused forget is silent: the dialog leaves no word and the row is never re-read")
 	}
 }
 

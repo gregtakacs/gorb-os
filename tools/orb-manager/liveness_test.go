@@ -81,6 +81,35 @@ func TestARefusedLiveRowCarriesTheDialogVerdict(t *testing.T) {
 	}
 }
 
+// The unplug window, pinned as the row the page has to render. A board the hub just
+// watched leave the bench is refused by the announce clock, not by the cable: the row
+// carries no lead, and the refusal is the minute the operator can wait out. This is the
+// frame that once opened a dialog offering two serial endings for a board with no serial
+// — the reason forgetMode keys the cable body on livePort alone.
+func TestTheRowOfABoardThatJustLeftTheBenchNamesNoLead(t *testing.T) {
+	now := time.Now()
+	s, clock := gateClock(now)
+	// Heard from 20 seconds ago, and the unplug kick already dialled it dead.
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-20*time.Second)))
+	s.live.probe = func(string) bool { return false }
+	s.live.check("192.168.2.31")
+	stubCables(s) // the bench is empty: the sweep sees nothing, as after a real unplug
+	rows := []orbRow{{MAC: macHall}}
+	s.annotateForget(rows, clock())
+	if rows[0].Forgettable {
+		t.Error("a board quiet 20s was plain-forgettable: the minute is the promise")
+	}
+	if !rows[0].LiveForget {
+		t.Error("the refused row carries no dialog verdict")
+	}
+	if rows[0].LivePort != "" {
+		t.Errorf("LivePort = %q for a board off every lead: the dialog would name a cable the hub does not hold", rows[0].LivePort)
+	}
+	if !strings.Contains(rows[0].ForgetWhy, "announced") {
+		t.Errorf("the refusal is not the wait the operator can read: %q", rows[0].ForgetWhy)
+	}
+}
+
 func TestAQuietRowIsForgettable(t *testing.T) {
 	now := time.Now()
 	s, clock := gateClock(now)

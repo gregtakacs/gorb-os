@@ -353,6 +353,13 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		// stayed suppressed here forever while probing back as an orb.
 		if info.IsOrb {
 			s.lonely.clear(info.MAC)
+			// The banner named itself, so the card can stop being blank. This is
+			// the only read path for a board with no lease: the console is open
+			// right now, and the serial door writes names without ever reading
+			// them back.
+			if s.foldBootName(info.MAC, info.Name) {
+				s.saveState()
+			}
 		}
 	}
 	info.Verdict = string(s.verdictFor(info))

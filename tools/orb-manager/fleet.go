@@ -400,6 +400,38 @@ func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
 	s.saveState()
 }
 
+// foldBootName caches a name the board announced about itself on its boot console,
+// which is the only read path for a board with no address: the serial door writes
+// NAME and never reads it back, and the status fold needs an address to dial. So a
+// board named on another bench, by the CLI, or on its own page before its lease
+// moved, still arrives on the card by name the next time its console is open. The
+// word goes through the same gate every other name passes, and NoteDeviceName
+// updates a row the hub already holds — a boot banner is not how a new orb appears.
+// Returns whether the store changed, so the caller knows whether to persist.
+func (s *Server) foldBootName(mac, raw string) bool {
+	if s.fleet == nil || raw == "" {
+		return false
+	}
+	clean, err := orbfleet.CleanName(raw)
+	if err != nil {
+		log.Printf("orb-manager: boot banner name ignored (%s): %v", mac, err)
+		return false
+	}
+	if err := orbfleet.CheckNameASCII(clean); err != nil {
+		log.Printf("orb-manager: boot banner name ignored (%s): %v", mac, err)
+		return false
+	}
+	if clean == "" {
+		return false
+	}
+	_, changed, err := s.fleet.NoteDeviceName(mac, clean)
+	if err != nil {
+		log.Printf("orb-manager: boot banner name not stored (%s): %v", mac, err)
+		return false
+	}
+	return changed
+}
+
 // writeNameToDevice puts the name on the board itself. An empty name is a clear and
 // still goes over the wire: "unnamed" is a state the device stores, not just the
 // absence of one.

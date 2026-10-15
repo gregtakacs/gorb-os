@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
+.PHONY: all build manager orbflash test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
 
 all: test build
 
@@ -131,6 +131,22 @@ run: manager
 
 ## desktop: alias for run, spelled for the app-window use case.
 desktop: run
+
+## cdp: evaluate JS inside the live app window, as the page. The control token is an
+## HttpOnly cookie inlined into the served HTML, so no curl can carry it and a screenshot
+## cannot prove a handler ran — this does. Pass EXPR, optionally HUB_PORT (default: the
+## single hub listening on loopback).
+##   make cdp EXPR="document.title"
+##   make cdp EXPR="ORB_TOKEN" HUB_PORT=44671
+cdp:
+	@test -n "$(EXPR)" || { echo "usage: make cdp EXPR='<js>' [HUB_PORT=3779]"; exit 2; }
+	@python3 scripts/orb_cdp.py "$(EXPR)" $(HUB_PORT)
+
+## reload: hard-reload the app window, bypassing the cache — the way to pick up a web/
+## edit after `make manager` without touching the mouse (Ctrl+Shift+R in the window does
+## the same thing by hand).
+reload:
+	@python3 scripts/orb_cdp.py reload $(HUB_PORT)
 
 ## flash: headless full flash of an explicit port, using the firmware compiled
 ## into the binary — the same bytes the hub flashes.

@@ -161,8 +161,22 @@ typedef struct {
     int w, h;        /* bounding box */
 } body_t;
 static body_t msg, ball;
-#define TICK_MS 33      /* the unit motion is expressed in; see REFRESH_MS */
-#define REFRESH_MS 125  /* 8 hops/s; one refresh costs 32 to 48 ms measured, 22 ms of it wire */
+#define REFRESH_MS 125      /* one refresh; costs 32 to 48 ms measured, 22 ms of it wire */
+
+/* Speeds in pixels per second, the only honest unit now that the frame interval
+ * is fixed and the refresh rate follows from REFRESH_MS. The values keep both
+ * sprites' original directions: the ball holds its 4:3, the message its 5:4.
+ * Cut in half from the per-tick originals (-2.0/1.6 px per 33 ms and 4.0/3.0),
+ * which worked out at 61/49 px/s and 121/91 px/s and covered too much glass per
+ * refresh to read as a float. A hop at these figures is 3.5x2.8 px for the
+ * message and 7.8x5.8 for the ball: the ball crosses its 348 px lane in 4.5 s
+ * and the message its 210 px lane in 5.9 s, which is slow enough to read while
+ * moving and fast enough that no pixel holds a lit dot for long.
+ * One dial, both bodies: scale the four together to taste. */
+#define MSG_VX   (-28.0f)
+#define MSG_VY     22.0f
+#define BALL_VX   (62.0f)
+#define BALL_VY   (46.0f)
 
 /* ---- Drawing ----------------------------------------------------------------
  * The scene is always black background + message + ball (ball on top), so any
@@ -299,14 +313,14 @@ static void build_ball(void)
     }
 }
 
-/* Reflect a center around its circular lane wall, advanced by dt ticks of
- * velocity. The caller decides dt: the loop always passes the same constant, so
- * a hop is the same distance and the same interval no matter what the wire cost
- * on the way there. A per-tick step made speed track drawing cost — a long run
+/* Advance a center by dt seconds of its velocity, then reflect it around its
+ * circular lane wall. The caller passes one constant — the refresh interval —
+ * so a hop is the same distance and the same interval whatever the wire cost on
+ * the way there. A per-tick step made speed track drawing cost: a long run
  * through the middle ate wall-clock time and read as a slow patch. */
-static void bounce(body_t *b, float dt)
+static void bounce(body_t *b, float dt_s)
 {
-    b->x += b->vx * dt; b->y += b->vy * dt;
+    b->x += b->vx * dt_s; b->y += b->vy * dt_s;
     float cx = b->x - SCREEN_W / 2.0f, cy = b->y - SCREEN_H / 2.0f;
     float d = sqrtf(cx * cx + cy * cy);
     if (d > b->lane_r && d > 0.001f) {
@@ -441,11 +455,11 @@ void app_main(void)
     int half_diag = (int)sqrtf((MSG_W_MAX / 2.0f) * (MSG_W_MAX / 2.0f) +
                                (MSG_H / 2.0f) * (MSG_H / 2.0f));
     msg = (body_t){ .x = SCREEN_W / 2.0f, .y = SCREEN_H / 2.0f - 60,
-                    .vx = -2.0f, .vy = 1.6f,
+                    .vx = MSG_VX, .vy = MSG_VY,
                     .lane_r = SCREEN_W / 2.0f - half_diag - 8,
                     .w = MSG_W_MAX, .h = MSG_H };
     ball = (body_t){ .x = SCREEN_W / 2.0f + 90, .y = SCREEN_H / 2.0f + 80,
-                     .vx = 4.0f, .vy = 3.0f,
+                     .vx = BALL_VX, .vy = BALL_VY,
                      .lane_r = SCREEN_W / 2.0f - BALL_R - 3,
                      .w = SPRITE_SIDE, .h = SPRITE_SIDE };
 
@@ -455,19 +469,19 @@ void app_main(void)
     repaint_rows(0, SCREEN_H);
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-    /* One refresh, one price, one interval. Motion advances a fixed number of ticks
-     * per refresh (step, from the refresh interval — so the px/s the velocities
-     * describe is the same speed the per-tick version ran at), the panel is paid for
-     * in full by rule AT ONCE, and the sleep below gives back only what the refresh
-     * did not use. Interval, hop distance and cost therefore stop depending on how
-     * the sprites landed, which is what the uneven speed was. The lines under this
+    /* One refresh, one price, one interval. Motion advances by the refresh
+     * interval in seconds, so px/s in the defines above is the speed the panel
+     * actually shows; the panel is paid for in full by rule AT ONCE, and the
+     * sleep below gives back only what the refresh did not use. Interval, hop
+     * distance and cost therefore stop depending on how the sprites landed,
+     * which is what the uneven speed was. The lines under this
      * loop are the evidence: cost min/max over 16 refreshes, so a REFRESH_MS tuned
      * below what the wire can do shows up there before it shows up on the glass. */
-    const float step = REFRESH_MS / (float)TICK_MS;
+    const float dt_s = REFRESH_MS / 1000.0f;
     uint32_t cost_min = 0xFFFFFFFFu, cost_max = 0, refreshes = 0;
     for (;;) {
-        bounce(&msg, step);
-        bounce(&ball, step);
+        bounce(&msg, dt_s);
+        bounce(&ball, dt_s);
         const int64_t t0 = esp_timer_get_time();
         wait_for_te();                 /* rule PHASE: start behind the retrace */
         flush_all();                   /* rule AT ONCE: the whole panel, 59 bands */

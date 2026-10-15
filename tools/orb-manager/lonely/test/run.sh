@@ -22,6 +22,17 @@ cut=$(grep -n 'Panel bring-up' "$src" | cut -d: -f1)
 [ -n "$cut" ] || { echo "lonely_main.c no longer carries the Panel bring-up banner" >&2; exit 1; }
 sed "$((cut - 1))q" "$src" | sed '$d' | grep -v '^#include' > "$out/scene.inc"
 
+# Rule STEP's other half lives in app_main, which the extraction cannot compile:
+# motion must be stepped by the refresh interval alone. A dt read from a clock
+# (vTaskDelayUntil's, or a measured elapsed time) puts drawing cost straight back
+# into the hop distance, which is the uneven speed this file started with.
+grep -q 'const float dt_s = REFRESH_MS / 1000\.0f;' "$src" \
+  || { echo "lonely_main.c no longer derives dt_s from REFRESH_MS" >&2; exit 1; }
+grep -q 'bounce(&msg, dt_s);' "$src" \
+  || { echo "lonely_main.c no longer steps motion by the fixed dt_s" >&2; exit 1; }
+if grep -q 'vTaskDelayUntil\|xTaskGetTickCount' "$src"; then
+  echo "lonely_main.c stepped motion off a clock again" >&2; exit 1; fi
+
 # render_check.c declares the font table itself; the IDF surface it stubs.
 gcc -O1 -w -std=gnu11 -I "$here/../main" -I "$out" \
     -o "$out/render_check" "$here/render_check.c" "$here/../main/font5x7.c" -lm

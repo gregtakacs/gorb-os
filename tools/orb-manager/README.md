@@ -301,7 +301,10 @@ no Forget; that verdict is the hub's, not the card's guess.
   repainted whole every 125 ms: 59 even bands, each composited black-plus-message-
   plus-ball and flushed once, never erased-then-drawn, the burst opened on the
   panel's TE pulse, and four band buffers in flight so a band costs the larger of
-  wire and compose rather than their sum. Six CO5300 rules hold that scheme, and
+  wire and compose rather than their sum. Speed is declared in pixels per second —
+  message 28/22, ball 62/46, giving a 3.5x2.8 px and a 7.8x5.8 px hop — half the
+  per-tick velocities the first TE-locked build shipped with, which covered too
+  much glass per refresh to read as a float. Six CO5300 rules hold that scheme, and
   dropping any of them shows on the glass rather than at compile time: pixels go
   out in wire order (the panel reads each one big-endian, so an unswapped 0x2104
   ball body arrives as 0x0421 green); every flush window is even on both axes and

@@ -40,16 +40,14 @@ import (
 // rejected — a hub downgrading keeps every address it knew, loses no grant, and simply
 // asks the boards for their own words again. Nothing is migrated on disk: the next save
 // writes the smaller shape, because the file is a cache of what the hub can re-learn and
-// not the owner of any of it. Entries with no address are dropped at load: a cable-only
-// board is a fact about this launch's bench, not a remembered destination.
+// not the owner of any of it. Entries with no address are dropped at load, with no
+// exception: the book holds addresses, and a board with nothing to dial re-learns itself
+// the moment it sits on a lead (the rule, stated by the operator, bench 2026-10-15). The
+// lonely set rides in a v3 file as an added field, and so does the remembered mark: a hub
+// that never saw either starts without them and loses a memory, never a credential.
 //
 // Version 1 and 2 files still load. A v1 file has no MAC per grant, so those grants come
 // back unbound.
-//
-// The lonely set rides in a v3 file as an added field: a hub of the same version that
-// never saw it starts with no marks (safe — the marks only ever take orb evidence away),
-// and a file that carries it on a hub that lost the field loses only the memory, not a
-// credential.
 const stateVersion = 3
 
 type hubState struct {

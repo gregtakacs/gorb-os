@@ -434,6 +434,90 @@ func TestSnapshotKeepsAddressesAndNotBenches(t *testing.T) {
 
 func newStore() *Store { return New(Config{}) }
 
+// --- the address rule: what a row must carry to survive a restart ----------------
+//
+// The book holds addresses. A board this hub flashed, named, or merely confirmed on a
+// cable, with nothing to dial, is not a destination — it is unmanageable until it sits
+// on a lead again, and on a lead it self-discovers. The operator stated the rule on the
+// bench 2026-10-15, after an unplugged board and a just-ended lonely one both stayed
+// listed: "the only reason to keep an orb when it's not actively connected is to be able
+// to ping its IP address." The retired Remembered exception is exactly what kept them
+// there, so this test pins its absence in both directions of the file.
+func TestAddresslessRowNeverPersistsWhateverItsMark(t *testing.T) {
+	s := newStore()
+	if _, err := s.Confirm(macA); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Snapshot(); len(got) != 0 {
+		t.Fatalf("snapshot %+v: a row created by a cable sighting alone must not persist", got)
+	}
+	// The mark the flash used to earn, and the word the rename used to earn, are both
+	// on this row now. Neither buys a line in the file.
+	if err := s.MarkRemembered(macA); err != nil {
+		t.Fatal(err)
+	}
+	if err := nameBoard(t, s, macA, "Gold"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Snapshot(); len(got) != 0 {
+		t.Fatalf("snapshot %+v: a marked and named row with no address still must not persist", got)
+	}
+	// And a file an older hub wrote DOES carry that row: Restore must refuse it rather
+	// than resurrect it, which is how the stale entry on the bench dies on next launch.
+	cold := New(Config{Now: func() time.Time { return base.Add(time.Hour) }, Live: time.Minute})
+	n := cold.Restore([]Orb{{MAC: macA, Remembered: true, Name: "Gold"}})
+	if n != 0 {
+		t.Fatalf("Restore took %d address-less rows, wanted 0", n)
+	}
+	if _, ok := cold.Look(macA); ok {
+		t.Error("the address-less entry came back out of an old file")
+	}
+	// An address still persists, mark or no mark.
+	cold.Observe(Observation{MAC: macB, Instance: instanceFor(macB), IP: "192.168.2.44", Port: 80, At: base})
+	if got := cold.Snapshot(); len(got) != 1 || got[0].MAC != macB || got[0].IP != "192.168.2.44" {
+		t.Fatalf("the address that is there did not persist: %+v", got)
+	}
+}
+
+// The mark is not dead, only demoted: storeProvesOrb reads it to tell a known orb's
+// cable from a blank board awaiting New Orb, and a live row must keep earning it on a
+// flash or a name. What changed is that it no longer implies anything about the file.
+func TestNameStillProvesTheChipWithinTheRun(t *testing.T) {
+	s := newStore()
+	if _, err := s.Confirm(macA); err != nil {
+		t.Fatal(err)
+	}
+	if err := nameBoard(t, s, macA, "Bench"); err != nil {
+		t.Fatal(err)
+	}
+	row, ok := s.Look(macA)
+	if !ok || !row.Remembered {
+		t.Fatalf("the live row lost the proof the port list reads: %+v ok=%v", row, ok)
+	}
+	if _, _, err := s.NoteDeviceName(macA, ""); err != nil {
+		t.Fatal(err)
+	}
+	row, ok = s.Look(macA)
+	if !ok || !row.Remembered {
+		t.Error("a board reporting no name lost the proof it had already earned")
+	}
+}
+
+// Forget is the end of the story: no flag survives it, so a board the operator deleted
+// cannot ride back in on the strength of an earlier flash.
+func TestForgetTakesTheRememberedMarkWithIt(t *testing.T) {
+	s := newStore()
+	if err := s.MarkRemembered(macB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Forget(macB); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Snapshot(); len(got) != 0 {
+		t.Fatalf("a forgotten board is still in the book: %+v", got)
+	}
+}
+
 // The proxy's question: who says this address is theirs right now?
 func TestClaimedByAnswersForTheLiveRowsOnly(t *testing.T) {
 	now := base

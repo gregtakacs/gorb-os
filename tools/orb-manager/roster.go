@@ -298,17 +298,18 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 	// The address book's own tier: every saved board the wire and the bench are not
 	// producing this second. This is the half that makes the file worth having — a hub
 	// that shows nothing until a packet arrives spends the first minute of every launch
-	// looking empty at a fleet it already knows the addresses of.
+	// looking empty at a fleet it already knows the addresses of. Addresses are also the
+	// whole qualification: a row the hub cannot dial is a row it cannot manage, and an
+	// orb the operator unplugged is gone until it plugs in somewhere and self-discovers
+	// (the rule, stated by the operator, bench 2026-10-15). The lonely mark suppresses
+	// this tier exactly as it suppresses the two cable tiers above — the row a lonely
+	// board still describes must not survive the ending on the strength of the file.
 	if s.fleet != nil {
 		for _, row := range s.fleet.Every() {
 			if _, produced := at[row.MAC]; produced {
 				continue
 			}
-			// A board with no address is a fact about this launch's bench, not a
-			// destination: it lives on the cable tier while the lead is in, and it
-			// dies with the lead. A remembered row it is not — there is nothing to
-			// dial and nothing to dial fast for.
-			if row.IP == "" {
+			if row.IP == "" || s.lonely.has(row.MAC) {
 				continue
 			}
 			at[row.MAC] = len(lan)
@@ -329,14 +330,15 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 // startup dial answers, because the honest answer at first paint is that the hub has not
 // asked yet. The row is deliberately not clickable — loading it dials an address the hub
 // has not confirmed, and the refusal field says that in the card's own words.
+// The fleet tier that calls this admits only rows carrying an address, so every row here
+// has something to dial; a board with none is not on the card at all.
 func (s *Server) rememberedRow(row orbfleet.Orb, now time.Time) orbRow {
-	r := orbRow{
+	return orbRow{
 		Key: row.MAC, MAC: row.MAC, Instance: instanceForMAC(row.MAC),
 		IP: row.IP, Port: row.Port, Name: row.Name, Reachable: "unknown",
 		Refusal: "remembered from a previous run and not yet heard from: the hub is asking " +
 			"it now, and the row becomes clickable when it answers",
 	}
-	return r
 }
 
 // cableRow is a board on a lead that has not announced: real MAC, no address, nothing

@@ -63,6 +63,15 @@ type Orb struct {
 	IP   string `json:"ip,omitempty"`
 	Port uint16 `json:"port,omitempty"`
 
+	// Remembered marks a row this hub has proof about: it left a fresh flash, or it
+	// carries a word. It is NOT a persistence claim — Snapshot keeps an address and
+	// nothing else, since an unreachable row is unmanageable (the operator's rule,
+	// bench 2026-10-15). What the mark still answers is the narrower question the port
+	// list asks: has this chip been an orb as far as this hub personally knows, which
+	// is what storeProvesOrb reads to tell a known orb's cable from a blank to adopt.
+	// It lives for the run and rides no file.
+	Remembered bool `json:"remembered,omitempty"`
+
 	// Name is the last word the DEVICE gave for itself, folded in by NoteDeviceName.
 	// It persists so a remembered row reads "Hall" at first paint instead of a MAC the
 	// operator cannot read off a label; it is a cache and not an authority. Writing a
@@ -241,8 +250,8 @@ func (s *Store) Observe(o Observation) (*Orb, error) {
 // the hub's own fabrication.
 //
 // Creating the row here is what makes a cable-only board a row at all. It carries a MAC
-// and no address, so the address book gains nothing from it: Snapshot skips it, and the
-// row dies with the lead.
+// and no address, so the address book gains nothing from it: Snapshot writes only rows it
+// can dial, and this row dies with the lead.
 func (s *Store) Confirm(mac string) (*Orb, error) {
 	c, why := orbmdns.CanonicalMAC(mac)
 	if why != "" {
@@ -330,6 +339,14 @@ func (s *Store) NoteDeviceName(mac, name string) (Orb, bool, error) {
 	if changed {
 		out.Name = name
 		row.Name = name
+		// A board carrying a word is one this hub has a reason to find again, even
+		// with nothing to dial: a named board that never joined Wi-Fi is bench setup,
+		// not a cable phantom. An empty word does NOT clear the mark — a board that
+		// answers "no name yet" is still the board the operator flashed and named
+		// until it says otherwise. Only lonely and Forget end a row.
+		if name != "" {
+			row.Remembered = true
+		}
 	}
 	// Look for a collision only on a change that introduced one; re-reporting the
 	// same clash on every read would bury the refusal list in repeats of a fact the
@@ -351,6 +368,30 @@ func (s *Store) NoteDeviceName(mac, name string) (Orb, bool, error) {
 		s.noteRefusal("device-reported name collides: "+collision, c, "")
 	}
 	return out, changed, nil
+}
+
+// MarkRemembered records that this hub has proof this chip has been an orb: it just
+// wrote firmware into it. The mark buys no line in the state file — Snapshot keeps an
+// address and nothing else — and it is deliberately not set by a cable sighting, because
+// a hot port is a fact about this launch's bench while a flash is something the hub did
+// to a board. What the mark still answers is the port list's question, through
+// storeProvesOrb: has this chip been an orb as far as this hub personally knows. An
+// unknown MAC gets a row, because the flash that earned the mark is itself proof the
+// board exists.
+func (s *Store) MarkRemembered(mac string) error {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return errors.New(why)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, ok := s.byMAC[c]
+	if !ok {
+		row = &Orb{MAC: c}
+		s.byMAC[c] = row
+	}
+	row.Remembered = true
+	return nil
 }
 
 // Forget drops a board from the fleet. It returns the addresses the row held so the
@@ -508,9 +549,16 @@ func (s *Store) noteRefusal(why, mac, ip string) {
 }
 
 // Snapshot is the persisted form: the address book and the name tags, and nothing a
-// restart could only get wrong. Rows with no address are skipped deliberately — a
-// board the hub has only ever touched over USB cannot be dialed, and persisting it
-// would resurrect the cable as a phantom row long after the lead is gone.
+// restart could only get wrong. A row is kept ONLY when it carries an address. That is
+// the whole rule, and it comes from the operator's own words on the bench (2026-10-15):
+// the sole reason a board the hub is not currently connected to belongs on the list is
+// that the hub can reach out and manage it, which means dialling its address. A row
+// with no address can never be managed; the moment it sits on a lead again it is
+// self-discovering anyway, so persisting it bought a phantom row and nothing else.
+// This replaces the Remembered exception, which every orb flash earned at write time
+// and which kept exactly those unreachable rows alive across restarts — the board the
+// operator had unplugged, and the lonely board whose mark had not been saved yet, both
+// came back listed.
 func (s *Store) Snapshot() []Orb {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -527,9 +575,13 @@ func (s *Store) Snapshot() []Orb {
 }
 
 // Restore refills the store after a launch. Rows are revalidated rather than trusted:
-// a hand-edited or future-version file that named a non-hex MAC, an address that is
-// not an IPv4 literal, or no address at all is dropped rather than loaded — a book
-// entry with nothing to dial is the cable phantom this store exists to stop resurfacing.
+// a hand-edited or future-version file that named a non-hex MAC or an address that is
+// not an IPv4 literal is dropped rather than loaded. A row with no address is dropped,
+// the same test Snapshot applies — and dropping it HERE is what cleans up a file an
+// older hub wrote: entries that carry the retired Remembered mark and no address (the
+// unplugged board, the lonely board whose mark lost the save race) are refused at load
+// and disappear from the file at the next save, with no migration step and no operator
+// action.
 func (s *Store) Restore(rows []Orb) int {
 	n := 0
 	for _, r := range rows {

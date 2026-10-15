@@ -491,14 +491,14 @@ func (s *Server) serialName(port, mac, name string) error {
 }
 
 // storeProvesOrb is the address book's half of orbRow.provesOrb: of everything a
-// stored row can carry, these four fields are only ever there because a firmware
-// reported them or an operator named the board. A row created by Confirm — a MAC
-// read off a USB descriptor on a cable sweep — carries none of them, so a bare
-// sighting is not evidence the chip has ever been an orb. The port entry writes
-// orbSeen from this, and the page's New Orb door reads orbSeen, so the two gates
-// the page depends on come from one rule stated once, here and in provesOrb.
+// stored row can carry, these fields are only ever there because a firmware reported
+// them, an operator named the board, or this hub wrote firmware into the chip. A row
+// created by Confirm — a MAC read off a USB descriptor on a cable sweep — carries none
+// of them, so a bare sighting is not evidence the chip has ever been an orb. The port
+// entry writes orbSeen from this, and the page's New Orb door reads orbSeen, so the two
+// gates the page depends on come from one rule stated once, here and in provesOrb.
 func storeProvesOrb(o orbfleet.Orb) bool {
-	return o.Name != "" || o.IP != "" || o.FW != "" || o.State != ""
+	return o.Name != "" || o.IP != "" || o.FW != "" || o.State != "" || o.Remembered
 }
 
 // fleetKnown reports whether the address book already holds this chip, and the

@@ -1,17 +1,13 @@
 package orbmdns
 
 import (
-	"context"
-	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -103,73 +99,114 @@ func TestBrowserHasNoUnicastTargetField(t *testing.T) {
 	}
 }
 
-// TestAskOnlyWritesToTheGroup is the executable version of the same rule: it runs
-// Ask against a source that records every destination and fails if anything other
-// than the mDNS group was ever dialed.
-func TestAskOnlyWritesToTheGroup(t *testing.T) {
-	rec := &recordingSource{}
-	b := NewBrowser(Config{})
-	if err := b.Start(context.Background(), rec); err != nil {
-		t.Fatalf("start: %v", err)
+// TestBrowserNeverSends is the structural half of "discovery runs on check-ins
+// alone". The hub used to query on a timer, and the honest version of "the hub is a
+// listener now" is not a doc comment saying so — it is a test that fails the package
+// the moment a write call reappears anywhere in its non-test sources. Two checks,
+// both by parse rather than text match: no method call named Write* anywhere, and a
+// Source interface whose method set is exactly ReadFrom and Close, so there is no
+// write method to reach even if a call were smuggled in through an embedded type.
+func TestBrowserNeverSends(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no sources to inspect: %v", err)
 	}
-	defer b.Close()
-	// Seed one half-announced instance, so Ask emits the follow-ups as well as the
-	// browse: a PTR heard without its SRV/TXT/A is the ordinary case for a hub that
-	// started after the orb's one announce burst.
-	b.note(goodInst, goodIP, func(p *partial) {})
-	if err := b.Ask(); err != nil {
-		t.Fatalf("ask: %v", err)
+	checked := 0
+	sourceMethods := []string{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue // a test may hand in any double it likes; the shipped code may not
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, f, src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		checked++
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.CallExpr:
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
+					name := sel.Sel.Name
+					if strings.HasPrefix(name, "Write") || strings.HasPrefix(name, "Send") {
+						t.Errorf("%s calls %s: the browser listens; it does not put packets on the wire", f, name)
+					}
+				}
+			case *ast.TypeSpec:
+				if x.Name.Name != "Source" {
+					return true
+				}
+				iface, ok := x.Type.(*ast.InterfaceType)
+				if !ok {
+					t.Errorf("%s declares Source as something other than an interface", f)
+					return true
+				}
+				for _, m := range iface.Methods.List {
+					for _, n := range m.Names {
+						sourceMethods = append(sourceMethods, n.Name)
+					}
+				}
+			}
+			return true
+		})
 	}
-	sent := rec.snapshots()
-	if len(sent) < 4 {
-		t.Fatalf("Ask emitted %d packets; a browse plus the SRV/TXT/A follow-ups is 4", len(sent))
+	if checked == 0 {
+		t.Fatal("no non-test sources: this guard is inspecting nothing")
 	}
-	for _, s := range sent {
-		if s.to != GroupAddr {
-			t.Errorf("Ask wrote to %s: the browser must only ever address the group", s.to)
+	want := []string{"ReadFrom", "Close"}
+	if len(sourceMethods) != len(want) {
+		t.Fatalf("Source has methods %v: the browser's socket must expose exactly %v — no way to send exists by construction", sourceMethods, want)
+	}
+	for i, m := range want {
+		if sourceMethods[i] != m {
+			t.Errorf("Source method %d is %q, want %q", i, sourceMethods[i], m)
 		}
 	}
 }
 
-// recordingSource is the Source a test hands the browser: it records every
-// destination Ask aimed at, and delivers nothing, so the only packets on the wire
-// are the ones the browser chose to send.
-type recordingSource struct {
-	mu   sync.Mutex
-	sent []sentPacket
-}
-
-type sentPacket struct {
-	to string
-	n  int
-}
-
-func (r *recordingSource) ReadFrom(p []byte) (int, net.Addr, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.sent) > 0 {
-		return 0, nil, errIdle // let the pump exit once the test has its writes
+// TestWindowsSocketBindsWildcardNotGroup is the third structural half of the same
+// promise, aimed at the platform the Unix guards cannot see. A live orb answers a
+// browse with a UNICAST packet to whoever asked (orb_mdns.c replies to the query's
+// source, not the group), so a browser whose socket is bound to the group address
+// discards every answer to a query it sent itself and refreshes only on a reboot —
+// the symptom that reads as "mDNS is broken" to a Windows operator but never shows on
+// the Linux box the other guards were written on. net.ListenMulticastUDP binds exactly
+// that group address. This fails the moment mcastsock_windows.go reaches for it, so the
+// trap cannot silently return on the one platform most operators use.
+func TestWindowsSocketBindsWildcardNotGroup(t *testing.T) {
+	src, err := os.ReadFile("mcastsock_windows.go")
+	if err != nil {
+		t.Fatalf("read mcastsock_windows.go: %v", err)
 	}
-	return 0, nil, errIdle
-}
-
-func (r *recordingSource) WriteTo(p []byte, addr net.Addr) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	to := ""
-	if ua, ok := addr.(*net.UDPAddr); ok {
-		to = ua.IP.String()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mcastsock_windows.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse mcastsock_windows.go: %v", err)
 	}
-	r.sent = append(r.sent, sentPacket{to: to, n: len(p)})
-	return len(p), nil
+	// Walk the real code, not the comments: this file's own doc says it must not call
+	// ListenMulticastUDP, so a text match would fire on the explanation, not the fault.
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name == "ListenMulticastUDP" {
+			t.Error("mcastsock_windows.go calls net.ListenMulticastUDP: it binds the socket to the group, " +
+				"which discards the unicast answer an orb sends back and makes live discovery reboot-only")
+		}
+		return true
+	})
+	// The wildcard bind is what the AST cannot infer, so check for the literal once more.
+	if !strings.Contains(string(src), "0.0.0.0") {
+		t.Error("mcastsock_windows.go must bind the wildcard 0.0.0.0, the only address that receives " +
+			"an orb's unicast answer to the hub's own LAN IP")
+	}
 }
-
-func (r *recordingSource) Close() error { return nil }
-
-func (r *recordingSource) snapshots() []sentPacket {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]sentPacket(nil), r.sent...)
-}
-
-var errIdle = errors.New("orbmdns/test: no datagram")

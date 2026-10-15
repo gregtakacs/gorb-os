@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,7 +120,16 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	// address, not a discovery sweep, and dialing it here is what authorises the
 	// proxy to reach it afterwards — the Manage card's controls are otherwise
 	// refused until an address has been learned or entered.
-	deadline := time.Now().Add(watchLanBudget)
+	watchStart := time.Now()
+	deadline := watchStart.Add(watchLanBudget)
+	// Say so, then say it again on every tick. This loop can run the whole
+	// budget, and it runs behind a dialog whose only other content is a spinner
+	// and one fixed sentence about rebooting into new firmware. A wait that
+	// produces no news for 45 s is indistinguishable from a hung tool, which is
+	// what the operator reported (bench, 2026-10-15). Elapsed-and-still-looking
+	// is the cheapest proof there is that the hub is alive and still trying.
+	send(map[string]any{"log": "dialling " + ip + " for the orb's status (" + source + ")"})
+	attempt := 0
 	for {
 		if st, err := s.orb.Status(ip); err == nil {
 			// Bind the grant to the MAC the device itself reported at that address.
@@ -135,6 +145,15 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if !time.Now().Before(deadline) {
 			break
+		}
+		attempt++
+		// First tick immediately, then every other one: a line each two seconds
+		// turns the console into noise, and the point is proof of life, not a
+		// stopwatch.
+		if attempt == 1 || attempt%2 == 0 {
+			send(map[string]any{"log": "no answer from " + ip + " yet - waiting, " +
+				strconv.Itoa(int(time.Since(watchStart).Seconds())) + "s of the " +
+				strconv.Itoa(int(watchLanBudget.Seconds())) + "s allowed"})
 		}
 		// Abandon the poll the moment the panel goes away. This loop holds no port
 		// lock — it dials one known IP over the LAN — so it is not dangerous, just

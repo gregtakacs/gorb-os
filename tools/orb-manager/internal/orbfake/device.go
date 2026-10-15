@@ -20,14 +20,20 @@ import (
 
 // Device limits, copied from orb_net.c so a test can drive the fake into the same
 // corner the firmware enforces. NET_SSID_MAX/NET_PASS_MAX/NET_TZ_MAX are at
-// orb_net.c:79-81, JOIN_BODY_MAX at :2175, NET_CONFIG_BODY_MAX at :83,
-// SCAN_MAX_NETWORKS at :1790.
+// orb_net.c:92-95, NET_NAME_MAX at :109, JOIN_BODY_MAX at :2849,
+// NET_CONFIG_BODY_MAX and NET_NAME_BODY_MAX at :96 and :114, SCAN_MAX_NETWORKS at
+// :1790.
 const (
-	SSIDMax       = 32
-	PassMax       = 64
-	TZMax         = 64
-	JoinBodyMax   = 256
+	SSIDMax = 32
+	PassMax = 64
+	TZMax   = 64
+	// NameMax is NET_NAME_MAX, and it is the same number as orbfleet.MaxName on
+	// purpose: the card and the device must refuse the 33rd byte at the same point.
+	// device_contract_test.go pins all three.
+	NameMax       = 32
+	JoinBodyMax   = 320
 	ConfigBodyMax = 128
+	NameBodyMax   = 128
 	ScanMaxNets   = 12
 	// APManualS is CONFIG_ORB_NET_AP_MANUAL_S, the seconds a hand-opened AP stays up.
 	APManualS = 900
@@ -59,6 +65,12 @@ type device struct {
 	// TZOffset is what the device measured, not what was stored: h_config_post
 	// returns the EFFECT, so a zone newlib degraded to UTC cannot look like a win.
 	TZOffset int
+	// Name is the device's own, and the DEVICE is the authority for it — the
+	// hub's fleet row caches this value rather than owning it. Empty means
+	// unnamed, which the firmware reports as "" and never as a placeholder, so a
+	// hub test can tell "the owner has not named this board" from "no status read
+	// has landed yet".
+	Name string
 
 	// Networks is /api/v1/wifi/scan's answer once the scan has settled.
 	Networks []Net
@@ -91,6 +103,20 @@ type device struct {
 	// AP without one, and that refusal is the lockout guard worth having a double for.
 	StaUp  bool
 	APOpen bool
+	// Mode is the persistent reachability choice POST /api/v1/wifi/mode writes: "" is
+	// the station default, "ap" is the isolated mode. It is kept as the stored word
+	// rather than as a bool because that is what flash holds, and the firmware's
+	// reject list ("AP", "AP-isolated", a 4-byte value) is a statement about the
+	// STRING, not about a flag.
+	Mode string
+	// ModeSets counts accepted mode writes, the same way Rebooted counts reboots: a
+	// hub test that asserts the reply alone cannot tell "the orb accepted the mode"
+	// from "the hub parsed a 200 and the orb said nothing".
+	ModeSets int
+	// ModeRefused answers 409, standing in for a firmware built with
+	// CONFIG_ORB_NET_AP_ISOLATED=n, where the door exists and refuses by design
+	// rather than being absent.
+	ModeRefused bool
 	// ApIP is the SoftAP's own address while it is up. The firmware's responder
 	// hands a querier on 192.168.4.0/24 THAT address rather than the STA's
 	// (orb_mdns.c build_answer's subnet test), and it is the one half of item 4's
@@ -111,6 +137,22 @@ type device struct {
 
 	// Rebooted counts accepted /api/v1/reboot calls.
 	Rebooted int
+	// Staged and StagedBytes are h_ota's effect: the image a caller last pushed to
+	// /api/v1/ota, and its length. A reboot consumes them the way the bootloader
+	// consumes a staged slot — FW moves to the staged stamp and the stage clears —
+	// so a hub test can assert the two-request shape (stage, then reboot) rather
+	// than a double that lies about booting what it never accepted. OTANextFW is
+	// the stamp the reboot boots into: the double does not parse app-image bytes,
+	// and a test naming the version it staged is the honest way to get one.
+	Staged         []byte
+	StagedBytes    int
+	OTANextFW      string
+	RebootedViaOTA bool
+	// Reprov counts accepted /api/v1/reprov calls — the D2 intent request. Kept apart
+	// from Rebooted because the two mean different things to a caller: one says "come
+	// back as you were", the other says "come back in your AP", and a hub test that
+	// could not tell them apart could not tell a mis-wired button from a correct one.
+	Reprov int
 	// Screened records each accepted /api/v1/screen argument, in order.
 	Screened []string
 }
@@ -135,6 +177,27 @@ func (o *Orb) SetState(s string) { o.mu.Lock(); d := o.deviceLocked(); d.State =
 
 // SetSTA sets the lease bit that both h_wifi_ap's close path and h_status read.
 func (o *Orb) SetSTA(up bool) { o.mu.Lock(); d := o.deviceLocked(); d.StaUp = up; o.mu.Unlock() }
+
+// ModeSet reports the stored reachability word ("" = station, "ap" = isolated) and how
+// many accepted writes put it there. A hub test asserting only the reply body cannot
+// tell a mode the orb stored from a mode the orb refused.
+func (o *Orb) ModeSet() (string, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.dev == nil {
+		return "", 0
+	}
+	return o.dev.Mode, o.dev.ModeSets
+}
+
+// SetModeRefused makes POST /api/v1/wifi/mode answer 409, the CONFIG_ORB_NET_AP_ISOLATED=n
+// build: the door is registered and refuses on purpose.
+func (o *Orb) SetModeRefused(v bool) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.ModeRefused = v
+	o.mu.Unlock()
+}
 
 // SetAddress sets the MAC and the address /api/v1/status reports, and so the
 // instance name the mDNS announcement derives from the same two facts. A test that
@@ -225,6 +288,28 @@ func (o *Orb) Device() (state, mac, ip, tz string, offset int, staUp, apOpen, sc
 		[3]string{d.Joined.SSID, d.Joined.Pass, d.Joined.TZ}
 }
 
+// DeviceName snapshots what POST /api/v1/name and the join body left in the double's
+// NVS equivalent. A separate accessor rather than an eleventh slot on Device(): that
+// signature is already ten positional returns deep, and a caller who wants the name
+// should not have to count commas to get it.
+func (o *Orb) DeviceName() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.deviceLocked().Name
+}
+
+// SetDeviceName plants a name in the double's NVS equivalent WITHOUT going over the
+// wire — the one thing every other setter here avoids, and the reason it has a
+// comment. The hub's cache is now a cache of a fact the device owns, so a test has to
+// be able to move the device's copy out from under the hub: that is what the onboarding
+// flow, a curl on the bench, or a second hub does. Status and join both echo the same
+// single field, so no second copy here can disagree with the first.
+func (o *Orb) SetDeviceName(name string) {
+	o.mu.Lock()
+	o.deviceLocked().Name = name
+	o.mu.Unlock()
+}
+
 // ScreenCalls returns the /api/v1/screen arguments accepted so far, in order.
 func (o *Orb) ScreenCalls() []string {
 	o.mu.Lock()
@@ -311,6 +396,7 @@ func (o *Orb) serveWifiJoin(w http.ResponseWriter, r *http.Request) {
 		SSID *string `json:"ssid"`
 		Pass *string `json:"pass"`
 		TZ   *string `json:"tz"`
+		Name *string `json:"name"`
 	}
 	if json.Unmarshal(body, &req) != nil {
 		writeJSON(w, 400, `{"error":"ssid required or too long"}`)
@@ -331,10 +417,23 @@ func (o *Orb) serveWifiJoin(w http.ResponseWriter, r *http.Request) {
 	if why == "" && req.TZ != nil && (tzRejected(*req.TZ) || rawTzEscaped(body)) {
 		why = "tz rejected"
 	}
+	// The name's pair of guards, same reasoning: absent leaves the stored name
+	// alone, and an explicit "" clears it — which is why this branch distinguishes
+	// a nil pointer from a pointer to an empty string rather than calling the
+	// value truthy.
+	if why == "" && req.Name != nil && (nameRejected(*req.Name) || rawNameEscaped(body)) {
+		why = "name rejected"
+	}
 	if why == "" {
 		d.Joined.SSID, d.Joined.Pass = ssid, pass
 		if req.TZ != nil {
 			d.Joined.TZ, d.TZ = *req.TZ, *req.TZ
+		}
+		if req.Name != nil {
+			// Readable through DeviceName(), and deliberately NOT added to the
+			// Joined tuple: that is a [3]string at five call sites, and a fourth
+			// slot there buys nothing a getter cannot do.
+			d.Name = *req.Name
 		}
 		d.State = "joining"
 		d.AssocFails = 0 // a human just said "try these": the back-off ladder restarts
@@ -394,6 +493,74 @@ func (o *Orb) serveWifiAP(w http.ResponseWriter, r *http.Request) {
 	// standing at a wall with a phone asks (orb_net.c:2381).
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"ap_opening","ap_ssid":"orb-%s","seconds":%d}`,
 		suffix, APManualS))
+}
+
+// The mode door's three refusals, named so the scrape in door_bodies_test.go can hold
+// them against h_wifi_mode's own text. A hand-typed refusal here is a sentence no orb
+// has ever sent, which is the exact rot that test exists to catch.
+const (
+	noModeBody  = `{"error":"mode required (\"ap\" or \"sta\")"}`
+	badModeBody = `{"error":"mode must be \"ap\" or \"sta\""}`
+	modeOffBody = `{"error":"AP-isolated mode is not in this build"}`
+)
+
+// --- wifi/mode (h_wifi_mode) -----------------------------------------------------
+//
+// The persistent reachability choice, and the only HTTP door out of an isolation the
+// page can itself put an orb into. Body is {"mode":"ap"|"sta"}; the reply names the
+// mode that was stored rather than echoing the request, so a hub test can tell a
+// device that normalised "sta" to the empty default from one that parroted a string.
+// It reboots as its last act, exactly like /api/v1/reboot, so the double counts the
+// accepted write and leaves the radio state as the new boot would find it: AP-isolated
+// means the SoftAP is the only address, and the STA lease is gone.
+func (o *Orb) serveWifiMode(w http.ResponseWriter, r *http.Request) {
+	// h_wifi_mode's own char body[64]: it refuses content_len > 63 with 413, so the
+	// bound is the buffer minus its NUL, not the buffer size.
+	body, ok := readBoundedBody(w, r, 63)
+	if !ok {
+		return
+	}
+	var req struct {
+		Mode *string `json:"mode"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Mode == nil {
+		writeJSON(w, 400, noModeBody)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	if d.ModeRefused {
+		o.mu.Unlock()
+		writeJSON(w, 409, modeOffBody)
+		return
+	}
+	o.mu.Unlock()
+	// net_mode_set's own accept set: "ap", or "sta"/"" for the station default.
+	// Anything else — "AP", "station", 4 bytes — is refused with the firmware's
+	// wording, because the exact strings are what the hub's card shows a person.
+	mode := *req.Mode
+	switch mode {
+	case "ap":
+	case "sta", "":
+		mode = "sta"
+	default:
+		writeJSON(w, 400, badModeBody)
+		return
+	}
+	o.mu.Lock()
+	d = o.deviceLocked()
+	d.Mode = "" // "sta" is the absent key, the station default
+	if mode == "ap" {
+		d.Mode = "ap"
+	}
+	d.ModeSets++
+	if mode == "ap" {
+		d.APOpen, d.StaUp, d.ApIP = true, false, "192.168.4.1"
+	}
+	o.mu.Unlock()
+	// 750 ms of reboot grace, then the CDC-less equivalent of dropping the client:
+	// the reply is the last thing this boot says on the old mode.
+	writeJSON(w, 200, `{"state":"rebooting","mode":"`+mode+`"}`)
 }
 
 // spelledOff accepts the two spellings one intent has, matching the firmware's
@@ -469,13 +636,48 @@ func tzRejected(tz string) bool {
 	return false
 }
 
-// rawTzEscaped is the guard that only the undecoded bytes can give: json_str drops
-// the backslash and keeps the character after it, so {"tz":"EST5EDT\t"} reaches the
-// device's own guard as the printable EST5EDTt and gets stored. tz_body_value
-// refuses the escape outright for that reason (orb_net.c, the "may not contain an
-// escape" branch), and a double built on encoding/json would decode and accept it.
-func rawTzEscaped(body []byte) bool {
-	i := bytes.Index(body, []byte(`"tz"`))
+// nameRejected mirrors name_reject_reason (orb_net.c) including the two checks
+// tzRejected has no reason to make: angle brackets, which orbfleet.cleanWord already
+// refuses, and the whitespace form. The whitespace rules are here because the hub
+// normalizes with strings.Fields BEFORE it dials, and a double that accepted
+// "  Hall  " would let a hub test pass against an orb that stores a different
+// string than the card displayed — the exact drift the feature exists to remove.
+//
+// Empty is NOT rejected here, because on POST /api/v1/name an empty value is a
+// clear rather than a malformed one; the caller decides which of the two it sent.
+func nameRejected(name string) bool {
+	if len(name) > NameMax {
+		return true
+	}
+	if name == "" {
+		return false
+	}
+	prev := byte(' ')
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c > 0x7e || c == '"' || c == '\\' || c == '<' || c == '>' {
+			return true
+		}
+		if c == ' ' && prev == ' ' {
+			return true
+		}
+		prev = c
+	}
+	return name[0] == ' ' || name[len(name)-1] == ' '
+}
+
+// rawNameEscaped is nameRejected's undecoded-bytes half, for the same reason
+// rawTzEscaped exists: encoding/json erases the escape by decoding it, so the only
+// way to see {"name":"Hall\u0000Clock"} is to look at the bytes.
+func rawNameEscaped(body []byte) bool {
+	return rawKeyEscaped(body, "name")
+}
+
+// rawKeyEscaped scans the raw value for one key. Shared with tz so the two cannot
+// drift apart in the one respect that matters — both must look at the bytes the JSON
+// decoder would have laundered.
+func rawKeyEscaped(body []byte, key string) bool {
+	i := bytes.Index(body, []byte(`"`+key+`"`))
 	if i < 0 {
 		return false
 	}
@@ -490,6 +692,15 @@ func rawTzEscaped(body []byte) bool {
 		end = len(inner)
 	}
 	return bytes.IndexByte(inner[:end], '\\') >= 0
+}
+
+// rawTzEscaped is the guard that only the undecoded bytes can give: json_str drops
+// the backslash and keeps the character after it, so {"tz":"EST5EDT\t"} reaches the
+// device's own guard as the printable EST5EDTt and gets stored. tz_body_value
+// refuses the escape outright for that reason (orb_net.c, the "may not contain an
+// escape" branch), and a double built on encoding/json would decode and accept it.
+func rawTzEscaped(body []byte) bool {
+	return rawKeyEscaped(body, "tz")
 }
 
 func (o *Orb) serveConfigGet(w http.ResponseWriter) {
@@ -562,6 +773,40 @@ func (o *Orb) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 		shown, posixFor(shown), offset))
 }
 
+// serveNamePost mirrors h_name_post (orb_net.c), including the one place its
+// contract deliberately differs from the config handler above: a body WITHOUT the
+// "name" key answers 200 with the name unchanged, because name is one field of
+// several a client may be setting, while tz is the only thing /api/v1/config owns
+// and a body missing it can only be a broken client. A test that conflates the two
+// would pass against a firmware that rejects a request the real device accepts.
+func (o *Orb) serveNamePost(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBoundedBody(w, r, NameBodyMax)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name *string `json:"name"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		writeJSON(w, 400, `{"error":"name rejected"}`)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	if req.Name != nil {
+		name := *req.Name
+		if name != "" && (nameRejected(name) || rawNameEscaped(body)) {
+			o.mu.Unlock()
+			writeJSON(w, 400, `{"error":"name rejected"}`)
+			return
+		}
+		d.Name = name
+	}
+	out := d.Name
+	o.mu.Unlock()
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"named","name":%q}`, out))
+}
+
 // offsetFor is the fake's stand-in for tz_offset_min: the hub needs a number that
 // changes with the zone, which is the only way to test that a page reports the
 // effect rather than an echo of what it sent.
@@ -581,6 +826,50 @@ func offsetFor(tz string) int {
 	return 0
 }
 
+// --- ota (h_ota, orb_net.c:3522) -------------------------------------------------
+//
+// The firmware's rules, mirrored rather than invented: Content-Length is
+// mandatory (411 without it), 96 bytes is the floor below which the body is not
+// an image (400), and the success body names the slot and points at the reboot
+// that activates it. The double stages bytes and waits; it does not apply them
+// until serveReboot says so.
+func (o *Orb) serveOTA(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength <= 0 {
+		writeJSON(w, 411, `{"error":"Content-Length required"}`)
+		return
+	}
+	blob, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength+1))
+	if err != nil || int64(len(blob)) != r.ContentLength {
+		writeJSON(w, 400, `{"error":"upload aborted by client"}`)
+		return
+	}
+	if len(blob) < 96 {
+		writeJSON(w, 400, `{"error":"body too small to be an image"}`)
+		return
+	}
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.Staged, d.StagedBytes = blob, len(blob)
+	o.mu.Unlock()
+	writeJSON(w, 200, `{"state":"staged","slot":"b","bytes":`+strconv.Itoa(len(blob))+
+		`,"reboot":"POST /api/v1/reboot"}`)
+}
+
+// OTAState reports what /api/v1/ota last staged and whether a reboot consumed
+// it, for the hub-side test that wants the two-request shape rather than its
+// own call log.
+func (o *Orb) OTAState() (stagedBytes int, bootedStaged bool, fw string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	d := o.deviceLocked()
+	return d.StagedBytes, d.RebootedViaOTA, d.FW
+}
+
+// SetOTANextFW names the stamp the next staged-and-rebooted image will report,
+// the double's honest stand-in for a device that reads the version out of the
+// app image it just validated.
+func (o *Orb) SetOTANextFW(fw string) { o.mu.Lock(); o.deviceLocked().OTANextFW = fw; o.mu.Unlock() }
+
 // --- reboot (h_reboot, orb_net.c:2552) ------------------------------------------
 //
 // The device arms a one-shot esp_timer for 750 ms and answers before it fires, so
@@ -590,8 +879,59 @@ func (o *Orb) serveReboot(w http.ResponseWriter) {
 	o.mu.Lock()
 	d := o.deviceLocked()
 	d.Rebooted++
+	// h_ota staged a slot and h_reboot is the request that activates it: the
+	// running stamp moves to what the caller declared, once. A double that moved
+	// FW on the upload would let a hub test pass on a client that never learns
+	// the reboot is a second request (orb_net.c says so in the body it echoes).
+	if d.StagedBytes > 0 {
+		d.RebootedViaOTA = true
+		if d.OTANextFW != "" {
+			d.FW = d.OTANextFW
+		}
+		d.Staged, d.StagedBytes = nil, 0
+	}
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"rebooting"}`)
+}
+
+// serveReprov mirrors h_reprov: both refusals come before any action, and the accepted
+// answer is the same body the firmware sends from in front of a 750 ms timer.
+//
+// The double performs the boot transition in the call, because it has no boot to wait
+// for. That is the same compromise serveReboot made from the start, and it is the useful
+// one: a hub test that had to poll its way through a fake reboot would be asserting on
+// the double's theatre rather than on the hub's handling.
+func (o *Orb) serveReprov(w http.ResponseWriter) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	switch {
+	case d.Provisioning || d.State == "provisioning":
+		// The firmware's guard is orb_net_is_provisioning(), which is the boot branch's
+		// flag and not merely "the AP is up": an orb whose owner opened the AP from the
+		// config page is connected, reachable and still worth rebooting into recovery.
+		// Refusing on APOpen here would make the double disagree with the device.
+		o.mu.Unlock()
+		writeJSON(w, 409, `{"error":"already provisioning"}`)
+		return
+	case o.NoAPFallback:
+		o.mu.Unlock()
+		writeJSON(w, 409, `{"error":"no AP fallback in this build"}`)
+		return
+	}
+	d.Reprov++
+	d.State, d.Provisioning = "provisioning", true
+	d.APOpen, d.ApIP, d.StaUp = true, "192.168.4.1", false
+	o.mu.Unlock()
+	writeJSON(w, 200, `{"state":"rebooting","into":"provisioning"}`)
+}
+
+// Reprovisioned reports how many /api/v1/reprov requests the double accepted. Separate
+// from Device() rather than another slot in its tuple: that signature has callers across
+// the hub's tests, and a reprov counter does not belong with the radio fields.
+func (o *Orb) Reprovisioned() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.deviceLocked().Reprov
 }
 
 // --- screen (h_screen, orb_net.c:2657) -------------------------------------------
@@ -653,6 +993,10 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	state, mac, ip := d.State, d.MAC, d.IP
 	rssi, tz, offset := d.RSSI, d.TZ, d.TZOffset
 	reason, fails, ap := d.WifiReasonName, d.AssocFails, d.APOpen
+	// The device's own name, echoed in the firmware's position — after tz_offset,
+	// before ap. jsonSafe because a test steers an odd string into the double
+	// directly, which the real device's own guard would have refused on the way in.
+	name := jsonSafe(d.Name)
 	fw := d.FW
 	if fw == "" {
 		fw = "orbfake"
@@ -660,6 +1004,10 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	if tz == "" {
 		tz, reason = "UTC", "OK"
 	}
+	// h_status's "apps" array is the broker's pass line, so it is computed under the
+	// lock like everything else here and interpolated after: a double that always said
+	// "[]" would let a hub test pass against an orb that has apps on it.
+	ledger := o.ledgerJSONLocked()
 	o.mu.Unlock()
 	writeJSON(w, 200, `{"state":"`+state+`","ip":"`+ip+`","mac":"`+mac+
 		`","rssi":`+strconv.Itoa(rssi)+`,"fw":"`+fw+`","idf":"v5.4",`+
@@ -667,12 +1015,13 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 		`"art_ready":true,"art_bytes":8388608,"art_pages":2048,"art_banks":8,"art_refusals":0,`+
 		`"slot":"a","img":"valid","synced":`+fmt.Sprint(state == "connected")+
 		`,"epoch":1760000000,"tz":"`+tz+`","tz_offset":`+strconv.Itoa(offset)+
+		`,"name":"`+name+`"`+
 		`,"ap":`+fmt.Sprint(ap)+`,"assoc_fails":`+strconv.FormatUint(uint64(fails), 10)+
 		`,"wifi_reason":0,"wifi_reason_name":"`+jsonSafe(reason)+`",`+
 		`"knob":{"raw":4000,"det":100,"spd10":40,"span":9,"valley":2,"ab":3,"vhits":90,"shits":10},`+
 		`"idle":{"on":true,"dimmed":false,"since_s":12,"timeout_s":60,"lit_pct":80,`+
 		`"dim_pct":20,"wakes":3,"worst_mg":44,"worst_dark_mg":12,"stamps":6,"writes_failed":0},`+
-		`"apps":[]}`)
+		`"apps":`+ledger+`}`)
 }
 
 // --- shared helpers --------------------------------------------------------------

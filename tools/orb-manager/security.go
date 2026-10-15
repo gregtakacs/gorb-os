@@ -318,21 +318,54 @@ func (g *ipGrants) list() []string {
 //     /connect/test.php): the UI never asks for them, and an allowlist that admits
 //     routes nobody uses is a denylist with extra steps.
 var deviceRoutes = map[string][]string{
-	"/api/v1/status":     {http.MethodGet},
-	"/api/v1/screen":     {http.MethodGet},
-	"/api/v1/sd":         {http.MethodGet},
-	"/themes":            {http.MethodGet},
-	"/timezone":          {http.MethodGet},
-	"/api/v1/config":     {http.MethodGet, http.MethodPost},
-	"/api/v1/reboot":     {http.MethodPost},
-	"/api/v1/wifi/scan":  {http.MethodGet},
-	"/api/v1/wifi/join":  {http.MethodPost},
-	"/api/v1/wifi/ap":    {http.MethodPost},
+	"/api/v1/status": {http.MethodGet},
+	"/api/v1/screen": {http.MethodGet},
+	"/api/v1/sd":     {http.MethodGet},
+	"/themes":        {http.MethodGet},
+	"/timezone":      {http.MethodGet},
+	"/api/v1/config": {http.MethodGet, http.MethodPost},
+	// The device owns its name, so the hub's rename button has to be able to put it
+	// there. POST only: the value is already on /api/v1/status, and a GET door on this
+	// path would be a second answer to the same question that could disagree with the
+	// first. Refused before it is ever dialed if the name will not pass the device's
+	// own rules — see orbfleet.CheckNameASCII.
+	"/api/v1/name":   {http.MethodPost},
+	"/api/v1/reboot": {http.MethodPost},
+	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
+	// the stored credential intact. Allowlisted because the hub's Manage card has to be
+	// able to reach an orb it can no longer configure any other way — a wrong SSID or a
+	// dead router leaves a credentialed orb connected to nothing, and every other verb on
+	// this list needs that connection. It is one boot's worth of damage at worst: the D4
+	// sojourn bounds the session and the boot branch consumes the flag on read.
+	"/api/v1/reprov":    {http.MethodPost},
+	"/api/v1/wifi/scan": {http.MethodGet},
+	"/api/v1/wifi/join": {http.MethodPost},
+	"/api/v1/wifi/ap":   {http.MethodPost},
+	// The mode door, allowlisted because it is the ONLY exit from a state the hub can
+	// put an orb into. AP-isolation is persistent: the orb never associates, so it has
+	// no lease, no LAN address and no mDNS announcement — the single address that
+	// answers is its own 192.168.4.1. A hub that could drive /wifi/ap but not /wifi/mode
+	// could open an isolation it could never close, which is a trap and not a feature.
+	// POST only; the current mode already reads off /api/v1/status.
+	"/api/v1/wifi/mode":  {http.MethodPost},
 	"/api/v1/sd/install": {http.MethodPost},
 	"/api/v1/sd/default": {http.MethodPost},
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},
 	"/api/v1/sd/rescan":  {http.MethodPost},
+	// P4's card-app verbs, added because the merge that landed them in firmware left
+	// them out of this map: a device feature the hub cannot dial is a feature nobody
+	// can manage. None of the five reboots, so none inherits the arm/disarm gate that
+	// /api/v1/menu will need (plan 5.1 decision 1) — install, enable and uninstall all
+	// answer for the running image and leave the next boot to settle it on its own.
+	// sd/app is the upload half (browser -> /sd staging) and apps/install is the
+	// commit half, the same two-step the theme upload uses, so the hub never streams a
+	// container straight into the apps partition.
+	"/api/v1/apps":           {http.MethodGet},
+	"/api/v1/apps/install":   {http.MethodPost},
+	"/api/v1/apps/enable":    {http.MethodPost},
+	"/api/v1/apps/uninstall": {http.MethodPost},
+	"/api/v1/sd/app":         {http.MethodPost},
 }
 
 // Byte caps for one proxied exchange. The orb's httpd is real and sometimes slow, so

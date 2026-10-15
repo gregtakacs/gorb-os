@@ -500,6 +500,17 @@ static orb_mdns_id_t  s_id;
 #define POLL_US          250000                  /* 4 Hz                             */
 #define POLLS_PER_SEC    (1000000 / POLL_US)
 
+/* Steady self-refresh cadence, in seconds. The join burst announces once per
+ * boot, so a hub's cache of this orb expires at MDNS_TTL and the orb drops off
+ * a fleet list until re-queried or rebooted. A querier-hostile network (a host
+ * firewall that drops the unicast answer to the hub's query while still
+ * accepting our unsolicited multicast) makes that gap permanent. Re-advertise
+ * one announce per up interface every MDNS_ADV_REFRESH_S, half of MDNS_TTL and
+ * no faster than RFC 6762 §8.3's one-per-60s steady floor, so the row is self-
+ * sustaining over the multicast path a hub always hears. This is what the
+ * manager's README calls mdns_adv_s; the symbol had no code behind it. */
+#define MDNS_ADV_REFRESH_S  60
+
 static void mdns_join(int fd, uint32_t iface_ip, const char *whence)
 {
     if (iface_ip == 0) return;
@@ -593,6 +604,27 @@ static void mdns_task_loop(void *arg)
             }
         }
 
+        /* Steady self-refresh. Without this the orb announces once per boot and
+         * a hub's cache of it expires at MDNS_TTL, so the row blinks out of a
+         * fleet list until re-queried — and on a network that drops the unicast
+         * answer to a hub's query, re-querying never revives it. Re-arm ONE
+         * announce per up interface every MDNS_ADV_REFRESH_S so the row stays
+         * alive over the multicast path a hub always hears. One copy, not the
+         * ANNOUNCE_REPEAT burst: the boot burst covers the lost-packet case;
+         * this only has to outrun the TTL, and one per interval is gentle on a
+         * shared 5353. The burst drain just below sends it on this same tick
+         * (240 % POLLS_PER_SEC == 0) and skips any interface mid-burst. */
+        if (ticks > 0 && (ticks % (MDNS_ADV_REFRESH_S * POLLS_PER_SEC)) == 0) {
+            if (joined_sta && burst_sta == 0) burst_sta = 1;
+            if (joined_ap  && burst_ap  == 0) burst_ap  = 1;
+            /* Proven on the wire, not assumed: the announce itself stays quiet
+             * (sendto only logs on failure), so without this tick line an
+             * absent hub row cannot be split into "never armed" and "armed but
+             * dropped downstream". Prints only at the refresh boundary. */
+            ESP_LOGI(M_TAG, "self-refresh re-armed at tick %d (sta=%d ap=%d)",
+                     ticks, burst_sta, burst_ap);
+        }
+
         if ((burst_sta > 0 || burst_ap > 0) && (ticks % POLLS_PER_SEC) == 0) {
             if (burst_sta > 0) { mdns_announce(s_mdns_fd, joined_sta, false, tx); burst_sta--; }
             if (burst_ap  > 0) { mdns_announce(s_mdns_fd, joined_ap,  false, tx); burst_ap--;  }
@@ -626,6 +658,28 @@ static void mdns_task_loop(void *arg)
         const int len = orb_mdns_build_answer(&s_id, s_sta_ip, s_ap_ip,
                                               from.sin_addr.s_addr, rx, n,
                                               tx, MDNS_BUF);
+        /* Query ingress, proven on the console rather than inferred from a hub row.
+         * A hub row that stays `unasked` has two opposite causes — the query died
+         * on the way in, or the unicast answer died on the way back — and only
+         * this line tells them apart. Capped at 24 answers: a browsed LAN is not
+         * quiet, and a flood here would bury the boot log this exists to be read
+         * alongside. QU is the RFC 6762 unicast-request bit as the query arrived. */
+        if (len > 0) {
+            static int s_answer_logged = 0;
+            if (s_answer_logged < 24) {
+                /* The question's class high byte sits right after its labels and
+                 * TYPE, found the same way classify_query found it: an end-of-packet
+                 * offset would be wrong for a hub query, which carries known
+                 * answers after the question. */
+                const int qa = name_skip(MDNS_HDRLEN, rx, n);
+                const int qu = (qa >= 0 && qa + 4 <= n) ? ((rx[qa + 2] & 0x80) ? 1 : 0) : -1;
+                const unsigned src = (unsigned)from.sin_addr.s_addr;
+                s_answer_logged++;
+                ESP_LOGI(M_TAG, "query answered from %u.%u.%u.%u QU=%d (%d B out, %d/%d)",
+                         src & 255u, (src >> 8) & 255u, (src >> 16) & 255u,
+                         (src >> 24) & 255u, qu, len, s_answer_logged, 24);
+            }
+        }
         if (len > 0)
             sendto(s_mdns_fd, tx, (size_t)len, 0, (struct sockaddr *)&from, fl);
     }

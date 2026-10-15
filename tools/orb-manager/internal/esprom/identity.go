@@ -28,7 +28,11 @@ type OrbInfo struct {
 	ElfSHA256   string `json:"elfSha256,omitempty"`
 	IDF         string `json:"idf,omitempty"`
 	IP          string `json:"ip,omitempty"` // the lease the console reported, if it joined
-	ProbedAt    string `json:"probedAt,omitempty"`
+	// Name is what the board calls itself, read off its boot banner. The board owns
+	// this fact and the hub only caches it, so a cable-only board that was named
+	// elsewhere still arrives on the card — see ParseOrbName.
+	Name     string `json:"name,omitempty"`
+	ProbedAt string `json:"probedAt,omitempty"`
 	// Verdict is filled in by the hub, not the probe: it compares what was found
 	// against the firmware that would flash next, which the flasher has no
 	// business knowing.
@@ -72,6 +76,9 @@ func ParseAppInfo(lines []string) (info OrbInfo, found bool) {
 		}
 		if ip, ok := ParseOrbIP(line); ok {
 			info.IP = ip
+		}
+		if nm, ok := ParseOrbName(line); ok {
+			info.Name = nm
 		}
 	}
 	if info.CompileTime != "" {

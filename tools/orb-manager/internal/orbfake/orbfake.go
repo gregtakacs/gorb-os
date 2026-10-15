@@ -60,16 +60,50 @@ type Orb struct {
 	// the hub's client has no way to send one, and a double you cannot drive into the
 	// awkward state from the caller's side is a double that never tests that state.
 	Busy bool
+	// NoAPFallback stands in for CONFIG_ORB_NET_AP_FALLBACK=n: /api/v1/reprov refuses
+	// instead of arming. Same reason as Busy — no caller on the LAN can ask for that
+	// build, and "the hub handles a refusal gracefully" is exactly the test a fleet of
+	// ordinary orbs would never exercise on its own.
+	NoAPFallback bool
 
 	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
 	dev *device
+
+	// apps is the P4 card-app store, keyed by slug, with appsOrder holding the
+	// registration order so the installed tier's slot field is positional like the
+	// device's. New seeds the inside-the-firmware rows into it, so a fresh double already
+	// reports a three-row ledger the way a fresh device does.
+	apps      map[string]*CardApp
+	appsOrder []string
+
+	// JobBusy mirrors orb_jobs_busy: with a card job in flight every door on an installed
+	// app answers 409 about the job, ahead of any lookup. Seed it to exercise the ordering.
+	JobBusy bool
+
+	// ReviveFails makes the fault-record clear on a failed app's ON refuse, which is the
+	// only path where ESP_FAIL reaches the client and door_http_status's default arm sends
+	// 500 rather than 409. UninstallSticks is its twin on the uninstall door, where the slot
+	// erased but the registry kept the row.
+	ReviveFails     bool
+	UninstallSticks bool
 }
 
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
 // so a caller cannot seed a row whose id disagrees with its name.
 func New(themes ...Theme) *Orb {
-	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default"}
+	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default",
+		apps: map[string]*CardApp{}}
+	// Seed the inside-the-firmware rows first, in device order. h_status walks the registry
+	// from row zero, so a double that omits them answers a status request with "apps":[]
+	// where every real orb names clock, color_picker and menu — and the hub's Manage card
+	// cannot tell "no apps installed" from "the device reported nothing".
+	for _, slug := range builtInSlugs {
+		o.apps[slug] = &CardApp{Stem: slug, Slug: slug, Title: slug,
+			Installed: true, Enabled: true, Builtin: true}
+		o.appsOrder = append(o.appsOrder, slug)
+	}
 	for i := range themes {
+
 		t := themes[i]
 		t.ID = themeID(t.Name)
 		o.themes = append(o.themes, &t)
@@ -148,12 +182,20 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveWifiJoin(w, r)
 	case r.URL.Path == "/api/v1/wifi/ap" && r.Method == http.MethodPost:
 		o.serveWifiAP(w, r)
+	case r.URL.Path == "/api/v1/wifi/mode" && r.Method == http.MethodPost:
+		o.serveWifiMode(w, r)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodGet:
 		o.serveConfigGet(w)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodPost:
 		o.serveConfigPost(w, r)
+	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
+		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
+	case r.URL.Path == "/api/v1/ota" && r.Method == http.MethodPost:
+		o.serveOTA(w, r)
+	case r.URL.Path == "/api/v1/reprov" && r.Method == http.MethodPost:
+		o.serveReprov(w)
 	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:
 		o.serveScreen(w, r)
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
@@ -168,6 +210,19 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/rescan" && r.Method == http.MethodPost:
 		writeJSON(w, 200, fmt.Sprintf(`{"mounted":true,"card":%q}`, o.Card))
+	// The P4 card-app verbs. Registered here in the same order orb_net.c's uri table
+	// lists them, so a route the firmware grows and this switch does not fails the
+	// contract test rather than quietly answering 404 like a made-up path.
+	case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
+		o.serveApps(w)
+	case r.URL.Path == "/api/v1/apps/install" && r.Method == http.MethodPost:
+		o.serveAppInstall(w, r)
+	case r.URL.Path == "/api/v1/apps/enable" && r.Method == http.MethodPost:
+		o.serveAppEnable(w, r)
+	case r.URL.Path == "/api/v1/apps/uninstall" && r.Method == http.MethodPost:
+		o.serveAppUninstall(w, r)
+	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:
+		o.serveAppUpload(w, r)
 	default:
 		writeJSON(w, 404, `{"error":"no such route on this orb"}`)
 	}

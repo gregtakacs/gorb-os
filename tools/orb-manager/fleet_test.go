@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
@@ -44,6 +45,59 @@ func fleetHub(t *testing.T, pairs ...string) *Server {
 	return s
 }
 
+// dialableFleetHub is fleetHub for the case where the hub has to reach the board:
+// naming writes through to the device now, so a test that expects a rename to land
+// needs an orb on the end of the wire, a grant for its address, and a device client
+// aimed at the port the double is listening on. The returned fake is what the test
+// reads the stored name back off — the assertion that matters is the device's, not
+// the hub's.
+//
+// The rows go in through Store.Observe rather than through a browse announcement, and
+// that is not a shortcut: orbmdns refuses a loopback address on purpose (names.go:63,
+// "a packet that says the orb lives at 127.0.0.1 is a bug or an attack"), so a
+// httptest backend cannot be announced at all. Observe is the same fold the browser's
+// promotion feeds, one step earlier in the pipeline — which is exactly where a real
+// USB-detected address lands too.
+//
+// Any address after the first pair is a row the hub can see but must never dial, which
+// is the shape of a cross-lock refusal.
+func dialableFleetHub(t *testing.T, mac, ip string, more ...string) (*orbfake.Orb, *Server) {
+	t.Helper()
+	f := orbfake.New()
+	// The MAC the fleet carries and the MAC the device reports have to agree, or the
+	// fold keys a row nobody asked for and the test passes for the wrong reason.
+	f.SetAddress(mac, ip)
+	backend := httptest.NewServer(f)
+	t.Cleanup(backend.Close)
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	if err != nil {
+		t.Fatalf("backend URL %q: %v", backend.URL, err)
+	}
+	s := newHub()
+	now := time.Now()
+	if _, err := s.fleet.Observe(orbfleet.Observation{
+		MAC: mac, Instance: inst(mac), IP: ip, Port: 80, FW: "094fa22",
+		State: "associated", At: now,
+	}); err != nil {
+		t.Fatalf("fold of the dialable board: %v", err)
+	}
+	for i := 0; i+1 < len(more); i += 2 {
+		if _, err := s.fleet.Observe(orbfleet.Observation{
+			MAC: more[i], Instance: inst(more[i]), IP: more[i+1], Port: 80, FW: "094fa22",
+			State: "associated", At: now,
+		}); err != nil {
+			t.Fatalf("fold of %s: %v", more[i], err)
+		}
+	}
+	c := orbnet.NewClient(2 * time.Second)
+	c.DevicePort = port
+	s.device = c
+	// The grant is what makes the address dialable at all; the fold only says who is
+	// standing there.
+	s.grants.learnAs(ip, mac)
+	return f, s
+}
+
 func postFleet(t *testing.T, s *Server, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -68,7 +122,11 @@ func postFleet(t *testing.T, s *Server, path string, body any, headers map[strin
 // The card must refuse exactly what the proxy refuses. A row that looks clickable and
 // then 403s is the bug that makes an operator click twice and blame the orb.
 func TestTheCardRefusesWhatTheProxyRefuses(t *testing.T) {
-	now := time.Now()
+	// The same fixed instant the browse in filled() runs on. The store now stamps a
+	// folded row with the time the BROWSER heard the packet, so a test that ran the
+	// browser on one clock and the fleet on another would watch its own rows age out —
+	// correctly, which is the point; two clocks in one test was the latent bug.
+	now := time.Unix(1760000000, 0)
 	s := newHub()
 	s.fleet = orbfleet.New(orbfleet.Config{Now: func() time.Time { return now }})
 	s.browse = filled(t,
@@ -231,9 +289,11 @@ func TestAGrantTheFleetCannotCheckIsStillHonoured(t *testing.T) {
 	}
 }
 
-// The cable outranks the wire: the address the hub read off the chip is not moved by
-// an announcement, and the refusal says why instead of silently preferring one.
-func TestACableConfirmedBoardIsNotMovedByAPacket(t *testing.T) {
+// The address book follows the board. A chip read says WHICH mac a board is, not which
+// address it keeps, so a rebind moves even a board the hub read off the chip — the case
+// that used to be refused is the ordinary one of a bench board brought onto the LAN, and
+// refusing it forced the operator to delete and re-add an entry the hub should update.
+func TestAnAnnounceRelocatesEvenAChipReadBoard(t *testing.T) {
 	s := newHub()
 	s.markCable(macHall)
 	if _, err := s.fleet.Observe(obs(macHall, "192.168.2.31")); err != nil {
@@ -241,16 +301,15 @@ func TestACableConfirmedBoardIsNotMovedByAPacket(t *testing.T) {
 	}
 	s.grants.learnAs("192.168.2.31", macHall)
 
-	// An announcement putting this same board at a new address.
-	if _, err := s.fleet.Observe(obs(macHall, "192.168.9.9")); err == nil {
-		t.Error("a packet relocated a board the hub had read over USB")
-	}
-	if ok, why := s.mayDial("192.168.2.31"); !ok {
-		t.Errorf("the cable-verified address lost its dial to a claim: %s", why)
+	if _, err := s.fleet.Observe(obs(macHall, "192.168.9.9")); err != nil {
+		t.Fatalf("the hub refused to follow its own board to a new address: %v", err)
 	}
 	row, ok := s.fleet.ByMAC(macHall)
-	if !ok || row.IP != "192.168.2.31" {
-		t.Errorf("the row moved: %+v", row)
+	if !ok || row.IP != "192.168.9.9" {
+		t.Errorf("the announced address did not win: %+v", row)
+	}
+	if !strings.Contains(row.Note, "moved") {
+		t.Errorf("the move is not recorded on the row: %q", row.Note)
 	}
 }
 
@@ -313,8 +372,8 @@ func TestRenewalCannotStretchAGrantForever(t *testing.T) {
 }
 
 func TestFleetNamingWritesAreGuarded(t *testing.T) {
-	s := fleetHub(t, macHall, "192.168.2.31")
-	body := map[string]string{"mac": macHall, "name": "Hall", "room": "Upstairs"}
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1")
+	body := map[string]string{"mac": macHall, "name": "Hall"}
 
 	rec := postFleet(t, s, "/api/fleet/set", body, nil)
 	if rec.Code != http.StatusForbidden {
@@ -326,23 +385,44 @@ func TestFleetNamingWritesAreGuarded(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("a cross-origin rename carried by a stolen token was accepted: %d", rec.Code)
 	}
+	// Neither refusal above may have reached the board. A guard that rejects the
+	// request on the way in and names the orb on the way out is not a guard.
+	if got := f.DeviceName(); got != "" {
+		t.Errorf("a refused rename still reached the device: %q", got)
+	}
 	rec = postFleet(t, s, "/api/fleet/set", body, map[string]string{"X-Orb-Token": s.token})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the operator's own rename was refused: %d %s", rec.Code, rec.Body.String())
 	}
 	row, ok := s.fleet.ByMAC(macHall)
-	if !ok || row.Name != "Hall" || row.Room != "Upstairs" {
-		t.Errorf("the name did not land: %+v", row)
+	if !ok || row.Name != "Hall" {
+		t.Errorf("the name did not land on the cache: %+v ok=%v", row, ok)
+	}
+	// The device, not just the hub file: the orb owns this string and the row is a
+	// cache of it, so a rename that updated only the cache is the bug this feature
+	// was built to remove.
+	if got := f.DeviceName(); got != "Hall" {
+		t.Errorf("the hub recorded %q but the orb holds %q", row.Name, got)
 	}
 }
 
 // Two boards, one word: the fleet would not be able to say which orb a later
 // credential belongs to, so the second claim is refused where it is made.
+//
+// This test also pins the ORDER, and that is the sharper half of it since naming
+// went over the wire. Hall has a board listening on loopback; Bed does not exist on
+// the wire at all. If the cross-lock ran after the write-through, Bed's rename would
+// fail with a dial error instead of the "already the name" refusal asserted below —
+// and Bed would have been branded with the word first, which is the drift the order
+// exists to prevent.
 func TestNamingTwoBoardsTheSameWordIsRefused(t *testing.T) {
-	s := fleetHub(t, macHall, "192.168.2.31", macBed, "192.168.2.32")
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1", macBed, "192.168.2.32")
 	h := map[string]string{"X-Orb-Token": s.token}
 	if rec := postFleet(t, s, "/api/fleet/set", map[string]string{"mac": macHall, "name": "Hall"}, h); rec.Code != http.StatusOK {
 		t.Fatalf("first name: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := f.DeviceName(); got != "Hall" {
+		t.Errorf("the first rename never reached its orb: %q", got)
 	}
 	rec := postFleet(t, s, "/api/fleet/set", map[string]string{"mac": macBed, "name": "Hall"}, h)
 	if rec.Code == http.StatusOK {
@@ -363,9 +443,15 @@ func TestNamingABoardNobodyHasMetIsRefused(t *testing.T) {
 }
 
 // Forgetting is the whole operation: the row goes, and so does the hub's willingness
-// to dial the address it held.
+// to dial the address it held. The board is two minutes quiet — still a live row the hub
+// would dial, but outside the announce grace, because a board that announced itself a
+// moment ago is a board Forget cannot remove (see liveness.go).
 func TestForgettingAnOrbRevokesItsAddress(t *testing.T) {
-	s := fleetHub(t, macHall, "192.168.2.31")
+	s := newHub()
+	quiet := time.Now().Add(-2 * time.Minute)
+	if _, err := s.fleet.Observe(obsAt(macHall, "192.168.2.31", quiet)); err != nil {
+		t.Fatal(err)
+	}
 	s.grants.learnAs("192.168.2.31", macHall)
 	if ok, _ := s.mayDial("192.168.2.31"); !ok {
 		t.Fatal("setup: the address was not dialable to begin with")
@@ -408,15 +494,17 @@ func TestAVersionOneStateFileStillLoadsItsGrants(t *testing.T) {
 
 // What survives a restart is the identity, and the commitment made while the operator
 // was looking at it.
-func TestNamesAndBindingsSurviveARestart(t *testing.T) {
+// What the file carries across a restart is the address book, the commitment made
+// against it, and the last name the hub read off the board: which MAC, at which
+// address, that the operator agreed to let the hub dial it, and what they call it. The
+// name is a cache — the device owns the word and the next read settles the copy — but
+// the card must be able to say "Hall" before the board has been dialed once.
+func TestAddressNameAndBindingSurviveARestart(t *testing.T) {
 	path := t.TempDir() + "/state.json"
 	first := fleetHub(t, macHall, "192.168.2.31")
 	first.statePath = path
 	first.grants.learnAs("192.168.2.31", macHall)
-	if err := first.fleet.SetName(macHall, "Hall"); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.fleet.SetRoom(macHall, "Upstairs"); err != nil {
+	if _, _, err := first.fleet.NoteDeviceName(macHall, "Hall"); err != nil {
 		t.Fatal(err)
 	}
 	first.saveState()
@@ -432,16 +520,25 @@ func TestNamesAndBindingsSurviveARestart(t *testing.T) {
 	if cold.grants.bound("192.168.2.31") != macHall {
 		t.Errorf("the MAC binding did not survive: %q", cold.grants.bound("192.168.2.31"))
 	}
-	// The row is back and still named, and it is not presented as present until it
-	// speaks again on this launch.
 	saved := cold.fleet.Snapshot()
-	if len(saved) != 1 || saved[0].Name != "Hall" || saved[0].Room != "Upstairs" {
-		t.Fatalf("the fleet identity did not survive: %+v", saved)
+	if len(saved) != 1 || saved[0].IP != "192.168.2.31" {
+		t.Fatalf("the address-book entry did not survive: %+v", saved)
 	}
-	cold.reconcileFleet()
-	rows := cold.fleet.All()
-	if len(rows) != 1 || rows[0].Name != "Hall" {
-		t.Fatalf("the announced board came back nameless: %+v", rows)
+	if saved[0].Name != "Hall" {
+		t.Errorf("the cached name did not survive the restart: %q", saved[0].Name)
+	}
+	// The restored row is in the address book (Every) but not live (All): presence is
+	// earned this launch, never inherited from the file — a name is a label, not a
+	// claim the board is out there. NoteDeviceName still folds the board's own word in,
+	// overwriting the cache, as soon as the hub reads it, live or not.
+	if len(cold.fleet.All()) != 0 {
+		t.Errorf("a restored row claimed presence on the strength of a file: %+v", cold.fleet.All())
+	}
+	if _, _, err := cold.fleet.NoteDeviceName(macHall, "Hall"); err != nil {
+		t.Fatalf("the device word would not fold into a restored-but-not-yet-live row: %v", err)
+	}
+	if r, _ := cold.fleet.Look(macHall); r.Name != "Hall" {
+		t.Errorf("the name did not return from a device read: %+v", r)
 	}
 }
 
@@ -541,6 +638,16 @@ func TestReadingTheCardDoesNotExtendAGrant(t *testing.T) {
 	if aged() != before {
 		t.Error("GET /api/orbs extended a grant's life")
 	}
+	// The pushed card goes through the same builder, and gets asserted at that seam rather
+	// than over a socket: the security property is about what building a card does, and both
+	// transports call orbCard. A stream that renewed on read would let any same-origin page hold
+	// a dial open forever by leaving one tab pointed at the hub.
+	if _, v := s.orbCard(time.Now()); v == "" {
+		t.Error("orbCard returned no version, so the stream has nothing to dedupe frames with")
+	}
+	if aged() != before {
+		t.Error("building the card for the stream extended a grant's life")
+	}
 	// And the timer does, or the previous two assertions prove nothing.
 	s.reconcileFleet()
 	if aged() == before {
@@ -550,13 +657,14 @@ func TestReadingTheCardDoesNotExtendAGrant(t *testing.T) {
 
 // Two boards announced one address and the operator had committed to the first. Forgetting
 // the second must not revoke a grant the first one still needs: the hub would otherwise be
-// destroying a commitment on behalf of a board that was never named in it.
+// destroying a commitment on behalf of a board that was never named in it. Both are two
+// minutes quiet — still live rows, past the announce grace that makes Forget pointless.
 func TestForgettingOneBoardLeavesTheOthersGrantAlone(t *testing.T) {
 	now := time.Now()
 	s := newHub()
 	s.fleet = orbfleet.New(orbfleet.Config{Now: func() time.Time { return now }})
-	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now))
-	s.fleet.Observe(obsAt(macBed, "192.168.2.31", now))
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-2*time.Minute)))
+	s.fleet.Observe(obsAt(macBed, "192.168.2.31", now.Add(-2*time.Minute)))
 	s.grants.learnAs("192.168.2.31", macHall)
 
 	rec := postFleet(t, s, "/api/fleet/forget", map[string]string{"mac": macBed},
@@ -569,5 +677,143 @@ func TestForgettingOneBoardLeavesTheOthersGrantAlone(t *testing.T) {
 	}
 	if ok, why := s.mayDial("192.168.2.31"); !ok {
 		t.Errorf("the surviving board cannot be dialed after its co-claimant was forgotten: %s", why)
+	}
+}
+
+// The whole arrangement on one board, in the order a person would meet it: the card
+// renames the orb and the orb ends up holding the word; the orb is then renamed by
+// something that is not this hub, which is the case the cache exists for; and the next
+// ordinary status poll — the one the Manage panel issues every few seconds, not a
+// button — pulls the new word back off the wire. The last step is what makes the device
+// the owner rather than a place the hub also writes: without it, authority lasts only
+// as long as nobody renames the orb somewhere the hub was not watching.
+func TestNamingWritesThroughAndAPollRefoldsWhatAnotherRenamed(t *testing.T) {
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1")
+	s.statePath = t.TempDir() + "/state.json"
+	h := map[string]string{"X-Orb-Token": s.token}
+
+	if rec := postFleet(t, s, "/api/fleet/set", map[string]string{"mac": macHall, "name": "Hall"}, h); rec.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := f.DeviceName(); got != "Hall" {
+		t.Fatalf("the hub recorded a name it never put on the board: the orb says %q", got)
+	}
+
+	// Something else renames it. Deliberately not a POST through the proxy: that path
+	// is exercised by the contract tests, and what matters here is that the hub did
+	// not ask for this.
+	f.SetDeviceName("Nursery")
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Fatalf("the hub already knew the new name without being polled, so the poll below tests nothing: %q", row.Name)
+	}
+
+	rec := httptest.NewRecorder()
+	s.proxyOrb(rec, httptest.NewRequest(http.MethodGet, "/orb/127.0.0.1/api/v1/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status poll: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `"name":"Nursery"`) {
+		t.Fatalf("the poll did not carry the device's own name to the browser: %s", got)
+	}
+	row, _ := s.fleet.ByMAC(macHall)
+	if row.Name != "Nursery" {
+		t.Errorf("the orb says %q and the card still says %q", f.DeviceName(), row.Name)
+	}
+
+	// The name is in memory AND on disk, as a cache. A cold hub loads the address, the
+	// binding and the word, so the remembered row reads by name at first paint; the
+	// next status read settles the copy against the board, which remains the authority.
+	fresh := newHub()
+	fresh.statePath = s.statePath
+	fresh.loadState()
+	frow, _ := fresh.fleet.Look(macHall)
+	if frow.IP != "127.0.0.1" {
+		t.Errorf("the address did not survive the restart: %+v", frow)
+	}
+	if frow.Name != f.DeviceName() {
+		t.Errorf("the cached name did not survive the restart: %q, want %q", frow.Name, f.DeviceName())
+	}
+}
+
+// The regression the Forget gate was born from. The card's rebuild re-folds the whole
+// browse cache, and a re-fold must NOT count as hearing the board: an unplugged orb
+// sits in the browser for its full TTL+grace, and a store clock wound by re-folds kept
+// the gate refusing Forget long after the board went quiet — the button never arrived.
+// LastSeen is now the time the browser last HEARD a packet, whatever the fold's clock.
+func TestAReFoldedCacheDoesNotWindThePresenceClock(t *testing.T) {
+	heard := time.Unix(1760000000, 0)
+	later := heard.Add(10 * time.Minute)
+	s := newHub()
+	s.fleet = orbfleet.New(orbfleet.Config{Now: func() time.Time { return later }})
+	s.browse = filled(t, orbmdns.Candidate{
+		MAC: macHall, Instance: inst(macHall), IP: "192.168.2.31", Port: 80,
+		State: "associated", From: "192.168.2.31", Expires: heard.Add(2 * time.Minute),
+	})
+	s.foldCandidates(false)
+	row, ok := s.fleet.Look(macHall)
+	if !ok {
+		t.Fatal("the fold produced no row")
+	}
+	if !row.LastSeen.Equal(heard) {
+		t.Fatalf("a folded row carries %v, want the browser's heard-time %v", row.LastSeen, heard)
+	}
+	// Ten minutes of hub rebuilds and not one packet from the board: the clock must
+	// not have moved, and presence must have aged out with it.
+	s.foldCandidates(false)
+	s.foldCandidates(false)
+	row, _ = s.fleet.Look(macHall)
+	if !row.LastSeen.Equal(heard) {
+		t.Errorf("a rebuild refreshed LastSeen to %v: the cache is not a packet", row.LastSeen)
+	}
+	if len(s.fleet.All()) != 0 {
+		t.Error("a board last heard ten minutes ago is still listed as live; the fold is " +
+			"inflating presence from the hub's own memory")
+	}
+}
+
+// A poll that returns no name must not cost an orb its name. This is the difference
+// between a cache refresh and a wipe: an unreachable board, a firmware that predates the
+// field, and a body truncated by the proxy's own cap are all ordinary events, and none
+// of them is an owner asking for the orb to be unnamed.
+func TestAnAnswerlessPollDoesNotUnnameAnOrb(t *testing.T) {
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1")
+	h := map[string]string{"X-Orb-Token": s.token}
+	if rec := postFleet(t, s, "/api/fleet/set", map[string]string{"mac": macHall, "name": "Hall"}, h); rec.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A body with no "name" key at all: an orb running firmware from before the field
+	// existed. Absent must mean "unknown", never "none".
+	s.foldDeviceName("127.0.0.1", []byte(`{"state":"associated","mac":"`+macHall+`","tz":"UTC"}`), true)
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a status reply with no name key cleared the name: %q", row.Name)
+	}
+	// Half a body, which is what the proxy's cap leaves behind on a large reply. A fold
+	// that parsed what it could and inferred from the rest would un-name the orb here.
+	s.foldDeviceName("127.0.0.1", []byte(`{"state":"associated","mac":"`+macHall+`","na`), true)
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a truncated status body cleared the name: %q", row.Name)
+	}
+	// A body naming a DIFFERENT board must not move this row. The fold keys on the MAC
+	// inside the payload, and that is the right key only while a body cannot be filed
+	// under somebody else's row.
+	s.foldDeviceName("127.0.0.1", []byte(`{"mac":"aabbcc112233","name":"Squatter"}`), true)
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a reply about another board renamed this one: %q", row.Name)
+	}
+	if _, ok := s.fleet.ByMAC(macBed); ok {
+		t.Error("a status body folded itself into a row the fleet never met")
+	}
+	// Empty is not absent, and this is the one payload that may clear the cache.
+	s.foldDeviceName("127.0.0.1", []byte(`{"mac":"`+macHall+`","name":""}`), true)
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "" {
+		t.Errorf("an explicit empty name from the orb left the cache at %q", row.Name)
+	}
+	// The fold is read-only. It moved a cache in response to a body it was handed and
+	// must not have dialed anything to argue about it: a status reader that wrote back
+	// would make the poll the owner after all, and one that wrote back the WRONG value
+	// would turn a stray packet into a rename.
+	if got := f.DeviceName(); got != "Hall" {
+		t.Errorf("folding a status body wrote %q back to the device; the fold reads and never writes", got)
 	}
 }

@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 )
 
 // flashRequest is the UI's flash job. Mode selects the image set; Port is the
@@ -22,6 +25,16 @@ type flashRequest struct {
 	// The app-only reflash is bench behaviour and lives on in orbflash -mode app.
 	Mode string `json:"mode"`
 	Wipe bool   `json:"wipe"` // also ROM-erase the NVS partitions (factory reset)
+	// Name is the word the operator chose for this board. The hub writes it onto
+	// the chip over the same cable that carried the firmware, before the flash
+	// reports done, so the orb is never loose with no name — not even while it
+	// is still on the provisioning AP. Empty means leave the name alone, which
+	// only a reflash of a board that already has one may do.
+	Name string `json:"name"`
+	// Fresh marks the New Orb flow's request: a blank board's first flash. The
+	// name is mandatory on exactly this request, and this is where that rule is
+	// enforced — a client-side gate alone is a gate a second tab walks around.
+	Fresh bool `json:"fresh"`
 }
 
 // handleFlash runs one flash, streaming newline-delimited JSON events so the UI
@@ -54,6 +67,28 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	if req.Port == "" {
 		send("error", "no serial port selected")
 		return
+	}
+
+	// A blank board's first flash must name it. Enforced here, before any lock
+	// is claimed or wire is touched, so the refusal costs nothing and cannot be
+	// bypassed by any client — the button on the page is courtesy, this is the
+	// rule. A name sent on any flash is checked against the DEVICE's rules
+	// first, so an orb never accepts a word the page then cannot display.
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Fresh && req.Name == "" {
+		send("error", "a new orb must be named before it is flashed")
+		return
+	}
+	if req.Name != "" {
+		clean, nerr := orbfleet.CleanName(req.Name)
+		if nerr == nil {
+			nerr = orbfleet.CheckNameASCII(clean)
+		}
+		if nerr != nil {
+			send("error", "the name was refused: "+nerr.Error())
+			return
+		}
+		req.Name = clean
 	}
 
 	// Claim the cable. This is the in-process belt to orbbind's cross-process
@@ -117,9 +152,7 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		flashedMAC = fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 		send("mac", flashedMAC)
 	}
-	opts.OnProgress = func(img, n int, off uint32, wr, tot int) {
-		send("progress", fmt.Sprintf(`{"image":%d,"of":%d,"offset":"0x%X","written":%d,"total":%d}`, img, n, off, wr, tot))
-	}
+	opts.OnProgress = flashProgressSender(send, plan)
 	// Read the boot console on the port still held across the reset (Session
 	// calls this right after its HardReset). It yields the one-shot verdict the
 	// AP/provisioning UI needs — a later /api/watch cannot re-reset a booted orb
@@ -127,12 +160,18 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	var bootAP string
 	var bootAssocSeen bool
 	var bootIP string
+	var bootName string
 	var bootNetworks []esprom.ScanNet
 	var provscanEnd bool
 	opts.ObserveBoot = func(line string) bool {
 		send("log", "console: "+line)
 		if bootAP == "" {
 			bootAP = provisioningSSID(line)
+		}
+		if bootName == "" {
+			if nm, ok := esprom.ParseOrbName(line); ok {
+				bootName = nm
+			}
 		}
 		if !bootAssocSeen && stationJoinedLine(line) {
 			bootAssocSeen = true
@@ -175,6 +214,71 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		// that was just written is the board the hub has proof of, whatever a later
 		// announcement chooses to say about where it is.
 		s.markCable(flashedMAC)
+		// And a board this hub just wrote firmware into carries proof its chip has
+		// been an orb. storeProvesOrb reads that mark, and it is what tells this
+		// cable apart from a blank awaiting New Orb while the lead is in. The mark
+		// buys no line in state.json: only an address does (the rule, bench
+		// 2026-10-15), so a board left on provisioning with nothing to dial is off
+		// the card until it speaks again.
+		if s.fleet != nil {
+			if werr := s.fleet.MarkRemembered(macNorm(flashedMAC)); werr != nil {
+				log.Printf("orb-manager: %s was flashed but not remembered: %v", flashedMAC, werr)
+			}
+		}
+		// And an orb flash is the evidence that ends a lonely mark: the chip
+		// this hub left minding a display now runs an orb again.
+		s.lonely.clear(macNorm(flashedMAC))
+	}
+	// Name the board over the same lead, now that the app it just wrote is
+	// booting. The serial command door (orb_net.c) is armed for the whole life
+	// of the app, so the line lands whether the board came up provisioning or
+	// station. This happens BEFORE the done event so a client that closes the
+	// dialog on done can never race the write out of existence, and a refused
+	// name is said in the stream rather than discovered by the fleet list.
+	if req.Name != "" {
+		nctx, ncancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ncancel()
+		nline := esprom.SerialLine("NAME", esprom.ProvField(req.Name))
+		nres, nerr := esprom.RunCommand(nctx, pt, nline, []string{"NAME-ACK"}, func(l string) {
+			send("log", "console: "+l)
+		})
+		if nerr == nil && nres != nil && nres.Ack && nres.Nak == "" {
+			send("log", "named \""+req.Name+"\" — the orb acknowledged it over the cable")
+			// The chip holds the word; the card must not wait on a LAN poll to say
+			// so. A flash-time name that lands only in NVS leaves the store row
+			// nameless, and a nameless cable-only row proves nothing to
+			// storeProvesOrb — which is how a board the operator has already set up
+			// stays offered on the New Orb picker as a blank to adopt. This is the
+			// same fold the /api/orb/cmd NAME ack performs; the flash dialog speaks
+			// to the chip directly, so it owes the store the write itself.
+			if flashedMAC != "" && s.fleet != nil {
+				if _, _, werr := s.fleet.NoteDeviceName(macNorm(flashedMAC), req.Name); werr != nil {
+					send("log", "note: the orb holds \""+req.Name+"\" but the card kept its old word: "+werr.Error())
+				} else {
+					s.saveState()
+				}
+			}
+		} else {
+			why := "no NAME-ACK inside 20 s"
+			if nerr != nil {
+				why = nerr.Error()
+			} else if nres != nil && nres.Nak != "" {
+				why = "the orb refused it: " + nres.Nak
+			}
+			send("log", "the name \""+req.Name+"\" did not reach the chip ("+why+"); the orb will name it again as soon as it has an address")
+		}
+	}
+	// A re-flash preserves NVS, so a board that already had a name says it again on
+	// its boot banner a moment after the reset. When the operator typed nothing, that
+	// banner is the word the card was missing — the case the blank card came from: a
+	// board named on one bench, plugged into another, and shown as unnamed forever
+	// because nothing read the chip. A name the operator typed in this dialog already
+	// went to the chip and was folded above, so the banner only speaks when they did not.
+	if req.Name == "" && bootName != "" && flashedMAC != "" {
+		if s.foldBootName(flashedMAC, bootName) {
+			s.saveState()
+			send("log", "the orb introduced itself as \""+bootName+"\" — the card now says so")
+		}
 	}
 	send("done", "flash complete - orb rebooting into the new firmware")
 }

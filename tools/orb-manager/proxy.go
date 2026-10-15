@@ -105,6 +105,16 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	// the client looking complete.
 	buf := make([]byte, 8192)
 	var n int64
+	// One status reply a poll is worth a copy of. The card's Manage panel polls
+	// /api/v1/status through here and nothing else in the hub sees that reply, so
+	// without this fold the device's authority over its own name would be real only
+	// when somebody happened to press a button. Accumulated for this one route and
+	// method, under the same cap the copy already enforces; every other proxied
+	// reply streams through untouched, because a theme list is 40 KiB of SD-card
+	// filenames and copying it to refresh one string is a bad trade.
+	var statusBody []byte
+	foldStatus := route == "/api/v1/status" && r.Method == http.MethodGet &&
+		resp.StatusCode == http.StatusOK
 	for {
 		if n >= proxyResponseCap {
 			log.Printf("orb-manager: proxy reply from %s hit the %d B cap; the browser got a truncated body", host, proxyResponseCap)
@@ -116,12 +126,16 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 		}
 		rn, rerr := resp.Body.Read(buf[:lim])
 		if rn > 0 {
+			if foldStatus && n+int64(rn) <= proxyResponseCap {
+				statusBody = append(statusBody, buf[:rn]...)
+			}
 			if _, werr := w.Write(buf[:rn]); werr != nil {
 				return // the browser went away; nothing left to report to
 			}
 			n += int64(rn)
 		}
 		if rerr == io.EOF {
+			s.foldDeviceName(host, statusBody, foldStatus)
 			return
 		}
 		if rerr != nil {

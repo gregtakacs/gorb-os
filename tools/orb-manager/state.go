@@ -15,25 +15,40 @@ import (
 // an address every launch, and the proxy will not dial an address it has not learned —
 // so the learned set has to outlive the process that learned it.
 //
-// What is persisted is an ADDRESS, the MAC it was committed for, and the two words the
-// operator chose for it. None of that is a credential. The launch token stays
+// What is persisted is an ADDRESS, the MAC it was committed for, and the last name the
+// hub read off that board. None of that is a credential. The launch token stays
 // per-process and is never written, and the Wi-Fi passphrase a join used is not stored
 // either, because the orb owns that secret (orb_net.c keeps it in NVS) and a second
-// copy in a config dir is a second place it leaks. Item 9 rewrites this paragraph on
-// purpose: display pairing hands the hub a PERMANENT device token, and the first real
-// credential in this file must be written with the same 0600, never logged, never
-// echoed to a page, and never copied into a firmware bundle.
+// copy in a config dir is a second place it leaks. The stored name is a CACHE and not
+// an authority: the device owns the word, every status read corrects the copy, and a
+// board that answers with an empty name empties it here too. Item 9 rewrites this
+// paragraph on purpose: display pairing hands the hub a PERMANENT device token, and the
+// first real credential in this file must be written with the same 0600, never logged,
+// never echoed to a page, and never copied into a firmware bundle.
 //
 // The file lives under the OS config dir beside the app-window profile, and holds one
 // timestamp per address so an old list can expire on its own rather than accreting
 // every orb the machine has ever touched.
 
 // stateVersion is written into the file so a future format change can read old ones
-// instead of mistaking them for corruption. Version 2 added the fleet: the MAC each
-// grant was committed for, and the operator's own name and room for the board.
-// Version 1 files still load — they simply have no MAC to cross-check, and those
-// grants come back unbound rather than being dropped on the floor.
-const stateVersion = 2
+// instead of mistaking them for corruption.
+//
+// Version 3 is the address book: MAC, IP and Port, plus the last name the hub read off
+// the board (a cache, restored as such and corrected by the next device read). Version
+// 2 files carry name, room, tty, cable, firstSeen and announces as well; the name is
+// read back as the cache it always eventually was, and the rest are dropped rather than
+// rejected — a hub downgrading keeps every address it knew, loses no grant, and simply
+// asks the boards for their own words again. Nothing is migrated on disk: the next save
+// writes the smaller shape, because the file is a cache of what the hub can re-learn and
+// not the owner of any of it. Entries with no address are dropped at load, with no
+// exception: the book holds addresses, and a board with nothing to dial re-learns itself
+// the moment it sits on a lead (the rule, stated by the operator, bench 2026-10-15). The
+// lonely set rides in a v3 file as an added field, and so does the remembered mark: a hub
+// that never saw either starts without them and loses a memory, never a credential.
+//
+// Version 1 and 2 files still load. A v1 file has no MAC per grant, so those grants come
+// back unbound.
+const stateVersion = 3
 
 type hubState struct {
 	Version int               `json:"version"`
@@ -41,6 +56,12 @@ type hubState struct {
 	Grants  map[string]int    `json:"grants"` // ip -> unix seconds it was learned
 	MACs    map[string]string `json:"macs,omitempty"`
 	Fleet   []orbfleet.Orb    `json:"fleet,omitempty"`
+	// Lonely carries the MACs this hub left lonely (lonelyset.go). It is a
+	// memory of an act the hub itself performed, so it is the one piece of hub
+	// state a cable descriptor must not overrule: without it a restart would
+	// let the next sweep rebuild from the MAC the lonely board still enumerates,
+	// and the row the operator ended would rise quietly on the first frame.
+	Lonely []string `json:"lonely,omitempty"`
 }
 
 // statePath is where the remembered addresses live. It follows the same convention as
@@ -75,6 +96,9 @@ func (s *Server) saveState() {
 	}
 	if s.fleet != nil {
 		st.Fleet = s.fleet.Snapshot()
+	}
+	if s.lonely != nil {
+		st.Lonely = s.lonely.list()
 	}
 	st.LastIP = s.currentOrbIP()
 	b, err := json.MarshalIndent(st, "", "  ")
@@ -130,6 +154,9 @@ func (s *Server) loadState() int {
 	}
 	if s.fleet != nil && len(st.Fleet) > 0 {
 		s.fleet.Restore(st.Fleet)
+	}
+	if len(st.Lonely) > 0 {
+		s.lonely.restore(st.Lonely)
 	}
 	if isV4Literal(strings.TrimSpace(st.LastIP)) {
 		s.setOrbIP(strings.TrimSpace(st.LastIP))

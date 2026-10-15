@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,13 @@ type fakeRom struct {
 	respQ       [][]byte
 	seenData    [][]byte // raw FLASH_DATA bodies (post-header), for checksum checks
 	beginBodies [][]byte // raw FLASH_BEGIN bodies, for framing assertions
+	// erased models the flash itself: the ROM erases inside FLASH_BEGIN, so a
+	// num_blocks=0 request blanks the model and a FLASH_BEGIN that plans to take
+	// data does not. FLASH_MD5 then answers from this state, which is what lets
+	// the wipe's verification step be tested against a chip that can be wrong.
+	erased  bool
+	md5Bad  bool // answer MD5 with a digest that is not the blank one
+	opsSeen []uint8
 }
 
 func newFake(t *testing.T) *fakeRom {
@@ -112,19 +120,63 @@ func (f *fakeRom) answer(req []byte) {
 	}
 	op := req[1]
 	body := req[8:]
+	f.opsSeen = append(f.opsSeen, op)
 	switch op {
 	case opReadReg:
 		addr := binary.LittleEndian.Uint32(body[0:])
 		f.respQ = append(f.respQ, romResp(op, f.reg[addr]))
 	case opFlashData:
 		f.seenData = append(f.seenData, append([]byte(nil), body...))
+		f.erased = false // data is landing, so the flash is no longer blank
 		f.respQ = append(f.respQ, romResp(op, 0))
 	case opFlashBegin:
 		f.beginBodies = append(f.beginBodies, append([]byte(nil), body...))
+		// The ROM erases inside FLASH_BEGIN, and only the num_blocks=0 form is an
+		// erase-on-its-own: a begin that expects blocks overwrites as it goes.
+		if len(body) >= 8 && binary.LittleEndian.Uint32(body[4:]) == 0 {
+			f.erased = true
+		} else {
+			f.erased = false
+		}
 		f.respQ = append(f.respQ, romResp(op, 0))
+	case opSpiFlashMD5:
+		size := binary.LittleEndian.Uint32(body[4:])
+		digest := blankMD5(size)
+		if f.md5Bad {
+			digest = strings.Repeat("aa", md5ReplyLen/2)
+		} else if !f.erased {
+			digest = strings.Repeat("55", md5ReplyLen/2)
+		}
+		// ROM layout, not the ordinary one: the digest comes first and the two
+		// status bytes trail it, which is why Device.FlashMD5 cannot reuse
+		// checkCommand.
+		f.respQ = append(f.respQ, romRespBody(op, 0, append([]byte(digest), 0, 0)))
 	default:
 		f.respQ = append(f.respQ, romResp(op, 0))
 	}
+}
+
+// romRespBody builds a ROM response carrying an arbitrary body, for the commands
+// whose answer is longer than the 8-byte default (FLASH_MD5's is 34).
+func romRespBody(op uint8, value uint32, body []byte) []byte {
+	b := make([]byte, 8+len(body))
+	b[0] = 0x01
+	b[1] = op
+	binary.LittleEndian.PutUint16(b[2:], uint16(len(body)))
+	binary.LittleEndian.PutUint32(b[4:], value)
+	copy(b[8:], body)
+	return slipEncode(b)
+}
+
+// sawOp reports whether the fake ever received an op — the check that a chip
+// erase goes out as FLASH_BEGIN and never as the stub-only 0xD0.
+func (f *fakeRom) sawOp(op uint8) bool {
+	for _, o := range f.opsSeen {
+		if o == op {
+			return true
+		}
+	}
+	return false
 }
 
 func sha256Of(b []byte) []byte {

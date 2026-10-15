@@ -95,6 +95,33 @@ static const char *TAG = "orb_net";
 #define NET_TZ_KEY       "tz"   /* NVS: a table name OR a raw POSIX string */
 #define NET_CONFIG_BODY_MAX 128 /* POST /api/v1/config is {"tz":"…"} and nothing else */
 
+/* The orb's own name. The DEVICE is the authority for this string and the hub's
+ * fleet row is a cache of it, which is the opposite way round from how the hub
+ * first stored names (§ orbfleet). The reason is durability: the hub's store is
+ * one JSON file, so a deleted file or a reflashed board used to cost the word an
+ * owner typed, while the device went on announcing orb-44bd8d782618. A name that
+ * lives in the `storage` partition beside the credentials survives both.
+ *
+ * 32 is not a free choice — it is orbfleet.MaxName, and the two must agree. The
+ * card enforces 32 before it sends, and the device refuses 33 after that; a name
+ * accepted by one and clipped by the other reads as two different orbs depending
+ * on which surface you looked at last. */
+#define NET_NAME_MAX     32     /* == orbfleet.MaxName; keep them equal */
+#define NET_NAME_KEY     "name" /* NVS; absent means "unnamed" */
+#define NET_NAME_DEFAULT "The Orb" /* the word a factory reset leaves behind; see net_factory_reset */
+/* {"name":"…"} for 32 printable bytes is 41 B. Same 128 B frame as config: this
+ * endpoint carries one key and nothing else, so the sizing argument from
+ * NET_CONFIG_BODY_MAX applies unchanged. */
+#define NET_NAME_BODY_MAX 128
+/* Radio mode: the owner's choice of how this orb is reachable. Absent ("" ) means
+ * the station default — join the stored network, AP only as a transient door.
+ * "ap" means the isolated mode: come up as the orb's own open AP and web page, and
+ * never associate, so the ONLY way in is that AP. It is persistent, not a session:
+ * it survives reboot until a MODE command (serial or the page) changes it back.
+ * A third value the station branch shares, "sta", is the explicit default. */
+#define NET_MODE_KEY     "mode" /* NVS; absent means station */
+#define NET_MODE_MAX     3      /* "ap" or "sta", NUL-terminated */
+
 /* Everything that MUTATES THE RADIO runs on its own task, not on the default
  * event loop and not on an esp_timer callback. esp_wifi_set_mode() is explicitly
  * off-limits from inside a WiFi/IP event handler — the callback is executed in
@@ -114,7 +141,7 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
        NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
-       NET_CMD_SCAN_BOOT,     /* first-boot scan armed by AP_START, logged as PROVSCAN */
+       NET_CMD_SCAN_BOOT,     /* the ARMED console scan: first-boot, or a serial SCAN */
        NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
        NET_CMD_STORE_CREDS,   /* a lease verified the pending pair: write it to NVS now  */
        NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
@@ -183,6 +210,14 @@ static bool prov_intent_consume(void)
     const bool armed = prov_intent_armed(s_prov_intent);
     s_prov_intent = 0;
     return armed;
+}
+
+/* Roll a just-armed request back. Only the armed-then-could-not-reboot path needs it:
+ * leaving the word set would boot the next power cycle into a provisioning session
+ * nobody asked for, and the caller just got a 500 telling it nothing happened. */
+static void prov_intent_disarm(void)
+{
+    s_prov_intent = 0;
 }
 static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
 /* Set only when a human asked for the AP (the config page / POST /wifi/ap).
@@ -427,6 +462,27 @@ static const tz_entry_t s_tz_tbl[] = {
  * the serial httpd task, so no lock is needed. */
 static char s_tz[NET_TZ_MAX + 1];
 
+/* The name exactly as NVS holds it ("" = unnamed), mirrored in RAM for the same
+ * reason s_tz is: /api/v1/status is polled at a few Hz and must not touch flash
+ * to say what it is called. Same writer rule — orb_net_start() and the serial
+ * httpd task — so no lock. */
+static char s_name[NET_NAME_MAX + 1];
+
+/* The radio mode as NVS holds it ("" = station, "ap" = isolated AP-only), mirrored
+ * in RAM for the same reason as s_name: the boot branch and /api/v1/status both read
+ * it, and neither should touch flash to say how the device is configured to behave.
+ * Only net_mode_load() at boot and net_mode_set() write it. */
+static char s_mode[NET_MODE_MAX + 1];
+
+/* One-shot flag set by a serial SCAN command on a configured orb (state c), telling
+ * scan_collect() to also mirror the results to the console as PROVSCAN lines exactly
+ * as the provisioning boot does. The page scan stays quiet; a hub that asked over the
+ * wire gets the list it could not fetch over a LAN it deliberately has no route to.
+ * Cleared after one emission so an ordinary later scan is not echoed too. */
+static volatile bool s_serial_scan_wanted;
+
+
+
 /* Days since 1970-01-01 for a broken-down date (Howard Hinnant's civil-days
  * algorithm; exact across the whole Gregorian range this device can hold).
  * Hand-rolled because this newlib has NO timegm(): its libc.a exports tzset,
@@ -480,6 +536,72 @@ static const char *tz_reject_reason(const char *tz)
     }
     if (n == 0) return "tz empty (send \"UTC\")";
     if (n > NET_TZ_MAX) return "tz too long";
+    return NULL;
+}
+
+/* NULL when acceptable, else the reason to hand back in the 400.
+ *
+ * Printable ASCII only, no quote and no backslash, for the same reason and by the
+ * same argument as tz_reject_reason: the value is echoed straight into JSON with
+ * %s by /api/v1/status, and json_str() DROPS the backslash of an escape and keeps
+ * the character after it — so an accepted escape sequence becomes a stored quote
+ * one hop later, and a stored quote lets the client forge keys inside the
+ * device's own replies.
+ *
+ * Two checks tz does not have, and both exist because a SECOND component now
+ * enforces this string. orbfleet.cleanWord collapses runs of whitespace with
+ * strings.Fields and rejects < and >. A device that accepted "  Hall  " would
+ * store a string the hub would have cleaned before sending, so the operator's
+ * own card and the orb's own status line would disagree by invisible bytes —
+ * precisely the drift this change sets out to remove. Refusing an unnormalized
+ * value is cheaper than normalizing it here and then disagreeing about who did
+ * the normalizing: the hub has already collapsed the spaces before it dials, so
+ * anything arriving here that still needs collapsing came from a client that did
+ * not go through the card.
+ *
+ * The visible consequence of putting the rules on the device rather than trusting
+ * the card: a non-Latin name the hub used to store ("Café") is now refused here,
+ * and the card surfaces that refusal rather than storing a word the orb will
+ * never answer to. The hub rejects it before dialing — see the ASCII guard in
+ * orbfleet.cleanNameASCII — so the operator sees one message, not a 400 from an
+ * IP. */
+static const char *name_reject_reason(const char *name)
+{
+    size_t n = 0;
+    char prev = ' ';
+    for (const char *p = name; *p; p++, n++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c > 0x7e)  return "name must be printable ASCII";
+        if (c == '"' || c == '\\') return "name may not contain quotes";
+        if (c == '<' || c == '>')  return "name may not contain angle brackets";
+        if (c == ' ' && prev == ' ') return "name may not contain a double space";
+        prev = c;
+    }
+    if (n == 0) return "name empty (send \"\" to clear)";
+    if (n > NET_NAME_MAX) return "name too long";
+    if (name[0] == ' ' || name[n - 1] == ' ') return "name may not start or end with a space";
+    return NULL;
+}
+
+/* Pull the "name" out of a request body, same contract and same reasoning as
+ * tz_body_value: *present distinguishes an absent key from {"name":""}, and the
+ * escape scan runs BEFORE json_str() because that helper would hand back the
+ * collapsed form of an escape and the guard above would then wave through what it
+ * cannot see. Empty is a legitimate CLEAR here, not an error the way an empty tz
+ * would be meaningless. */
+static const char *name_body_value(const char *body, size_t len, char *out, size_t out_sz,
+                                   bool *present)
+{
+    out[0] = '\0';
+    *present = false;
+    const char *v = json_find(body, len, NET_NAME_KEY);
+    if (!v) return NULL;
+    *present = true;
+    if (v[0] == '"' && v[1] == '"') return NULL;                 /* clear it */
+    for (const char *p = v + 1; p < body + len && *p != '"'; p++) {
+        if (*p == '\\') return "name may not contain an escape";
+    }
+    if (!json_str(body, len, NET_NAME_KEY, out, out_sz)) return "name not a string, or too long";
     return NULL;
 }
 
@@ -593,6 +715,92 @@ static const char *net_tz_set(const char *tz)
     return NULL;
 }
 
+/* Load during bring-up, right beside net_tz_load(). A stored value that no longer
+ * validates (a hand-written NVS, or firmware that has since tightened
+ * name_reject_reason) degrades to unnamed rather than being echoed: status would
+ * otherwise put bytes into a JSON string that the device's own guard says do not
+ * belong there. Degrading is safe here in a way it is not for tz — an unnamed orb
+ * still announces itself by MAC and still works. */
+static void net_name_load(void)
+{
+    s_name[0] = '\0';
+    size_t sz = sizeof(s_name);
+    if (nvs_get_str(s_nvs, NET_NAME_KEY, s_name, &sz) != ESP_OK) s_name[0] = '\0';
+    const char *why = s_name[0] ? name_reject_reason(s_name) : NULL;
+    if (why) {
+        ESP_LOGW(TAG, "stored name rejected (%s); leaving unnamed", why);
+        s_name[0] = '\0';
+    }
+}
+
+/* Validate, then persist, then mirror in RAM — the order net_tz_set() uses and for
+ * the same reason: a value the device will not echo must never reach flash.
+ *
+ * "" is an explicit CLEAR and erases the key rather than writing it empty, so
+ * status reads the same "" from a cleared orb and from a factory one, with no
+ * special case around a stored empty string.
+ *
+ * Nothing applies. A zone changes what the dial shows the instant it lands; a name
+ * changes nothing the device displays today, so the only effect worth reporting is
+ * the one the caller already has — the value it just sent. */
+static const char *net_name_set(const char *name)
+{
+    if (!name[0]) {
+        nvs_erase_key(s_nvs, NET_NAME_KEY);
+        nvs_commit(s_nvs);
+        s_name[0] = '\0';
+        return NULL;
+    }
+    const char *why = name_reject_reason(name);
+    if (why) return why;
+    if (nvs_set_str(s_nvs, NET_NAME_KEY, name) != ESP_OK) return "name not stored (nvs)";
+    /* Same rule as the tz commit below: the value is in flash and in s_name
+     * either way, so a failed commit costs durability across a reboot, not the
+     * correctness of the reply the caller is about to see. */
+    if (nvs_commit(s_nvs) != ESP_OK) ESP_LOGW(TAG, "name: commit failed (kept until reboot)");
+    snprintf(s_name, sizeof(s_name), "%s", name);
+    return NULL;
+}
+
+/* Load the mode once at boot, before the branch that reads it. Anything other than
+ * the exact "ap" string — absent, corrupt, "AP" — reads as the station default, so a
+ * half-written value never strands an orb unreachable from its own network. */
+static void net_mode_load(void)
+{
+    s_mode[0] = '\0';
+    size_t sz = sizeof(s_mode);
+    if (nvs_get_str(s_nvs, NET_MODE_KEY, s_mode, &sz) != ESP_OK) s_mode[0] = '\0';
+    if (strcmp(s_mode, "ap") != 0) s_mode[0] = '\0';   /* only "ap" is a distinct mode */
+}
+
+bool orb_net_ap_isolated(void)
+{
+#if CONFIG_ORB_NET_AP_ISOLATED
+    return s_mode[0] == 'a';   /* "ap" */
+#else
+    return false;              /* mode feature compiled out; never report isolation */
+#endif
+}
+
+/* Validate, persist, mirror — the net_tz_set()/net_name_set() order, and it changes
+ * NOTHING live: the mode is a boot-time choice, so the caller reboots to make it real
+ * (see the MODE serial command and POST /api/v1/wifi/mode). Returns NULL on success. */
+static const char *net_mode_set(const char *mode)
+{
+    bool to_ap = false;
+    if (!strcmp(mode, "ap")) to_ap = true;
+    else if (!strcmp(mode, "sta") || !mode[0]) to_ap = false;
+    else return "mode must be 'ap' or 'sta'";
+    if (to_ap) {
+        if (nvs_set_str(s_nvs, NET_MODE_KEY, "ap") != ESP_OK) return "mode not stored (nvs)";
+    } else {
+        nvs_erase_key(s_nvs, NET_MODE_KEY);   /* absent is the station default */
+    }
+    if (nvs_commit(s_nvs) != ESP_OK) ESP_LOGW(TAG, "mode: commit failed (kept until reboot)");
+    snprintf(s_mode, sizeof(s_mode), "%s", to_ap ? "ap" : "");
+    return NULL;
+}
+
 /* ---- the zone table, as the on-dial menu sees it (see orb_net.h) -------------
  *
  * Thin accessors over the one table this file already serves, each reaching the
@@ -666,6 +874,33 @@ esp_err_t orb_net_tz_select(int i)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "menu tz: set to \"%s\"", s_tz_tbl[i].name);
+    return ESP_OK;
+}
+
+const char *orb_net_name(void)
+{
+    return s_name;
+}
+
+int orb_net_name_max(void)
+{
+    return NET_NAME_MAX;
+}
+
+esp_err_t orb_net_name_set(const char *name)
+{
+    if (!name) return ESP_ERR_INVALID_ARG;
+    /* net_name_set() and nothing else, which is the whole point of the accessor:
+     * the dial, the page and the hub cannot end up with three different rules
+     * about what a name may contain. The reason string is logged rather than
+     * returned because the caller gets the useful half of it in ESP_FAIL — the
+     * prose is device-side and about a value the caller already holds. */
+    const char *why = net_name_set(name);
+    if (why) {
+        ESP_LOGW(TAG, "name: refused (%s)", why);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "name: set to \"%s\"", s_name);
     return ESP_OK;
 }
 
@@ -800,6 +1035,94 @@ static void creds_commit(const char *ssid, const char *pass)
     else
         ESP_LOGW(TAG, "credentials for \"%s\" accepted by the network and now "
                       "stored (the pair the orb will boot with)", ssid);
+}
+
+/* Erase the whole application store, then let the caller reboot into the
+ * first-boot branch. This is a FACTORY reset: the literal `ALL` in the verb is the
+ * scope, so the theme choice, the grant and enable words, every per-app setting, the
+ * fault ledger and the idle-dim timeout die with the credentials. `storage` carries
+ * all of those as separate namespaces (orb.net, orb.settings, orb.apps, orb.grants,
+ * orb.fault, orb.idle, orb.app<slot>), and erasing the partition rather than a list
+ * of names is what keeps this honest when a new namespace lands.
+ * One thing is deliberately written back after the erase: the default name
+ * "The Orb" (see the tail of this function), so a reset board introduces itself
+ * instead of arriving silent.
+ *
+ * The default `nvs` partition goes too, which is the part an `orb.net`-only erase
+ * used to miss: esp_wifi runs with CONFIG_ESP_WIFI_NVS_ENABLED=y and never gets
+ * WIFI_STORAGE_RAM, so `nvs.net80211` holds the driver's own copy of the SSID and
+ * passphrase. A factory reset that leaves a passphrase behind is not one. The PHY
+ * calibration in that namespace is collateral and re-derives on the next boot.
+ *
+ * Both erases force-close every handle open on the partition and leave it
+ * de-initialised (nvs_api.cpp:close_handles_and_deinit), so s_nvs here and the
+ * handles orb_theme.c and idle_dim.c hold are all dead on return. Nothing
+ * re-initialises them: a reopened `storage` would let the next lease or the next dim
+ * change write a credential back into the store the operator just erased. A dead
+ * handle fails closed — the lookup is by list membership, so it answers
+ * ESP_ERR_NVS_INVALID_HANDLE and cannot land in someone else's namespace. The reboot
+ * is the only recovery, and the caller must not skip it.
+ *
+ * The RAM mirrors go in the same breath, so a status read between here and the reset
+ * reports the truth. s_provisioning deliberately does NOT flip: the radio task reads
+ * it through prov_ap_idle() and would open the provisioning AP in the ~300 ms left
+ * before esp_restart(), for a state the reboot re-derives from flash anyway. RTC
+ * never holds a credential, so nothing to scrub there either.
+ *
+ * The limit of "every namespace": NVS is everything an owner can set, and it is all
+ * gone, but installed apps resolve their rows from the `apps` partition headers
+ * (orb_app_install_resolve_boot), not from NVS. A reset orb therefore still carries
+ * its app blobs and still lists them on the dial — with their grants, enables and
+ * per-app settings erased, so each one comes back defaulted and unarmed. Clearing
+ * those headers is uninstall, one app at a time, and that asymmetry is worth knowing
+ * before this verb is advertised as "erases the device". */
+static esp_err_t net_factory_reset(void)
+{
+    /* Before the erase: a join in flight would otherwise commit its pair into the
+     * namespace this call just emptied, on the first lease after it. */
+    pend_clear();
+
+    /* Both erases are attempted even after one fails. Stopping at the first error
+     * would leave the driver's passphrase on a board whose owner data is already
+     * gone — the worst of both, and the one shape of failure a caller could only
+     * report as "partly wiped", which is what RESET-PART exists to say. */
+    esp_err_t e = nvs_flash_erase_partition(NET_NVS_PARTITION);   /* every orb.* namespace */
+    if (e != ESP_OK) ESP_LOGE(TAG, "reset: %s NOT erased (%s)", NET_NVS_PARTITION, esp_err_to_name(e));
+    const esp_err_t e_def = nvs_flash_erase();                    /* default nvs: the driver's copy */
+    if (e_def != ESP_OK) ESP_LOGE(TAG, "reset: default nvs NOT erased (%s)", esp_err_to_name(e_def));
+
+    /* Scrubbed whether or not the erases worked: if `storage` went, the mirrors are
+     * already a lie; if nothing went, the reboot below restores them from flash. */
+    s_nvs = 0;                          /* closed by the erase; never used again */
+    s_joining = false;
+    s_prov_recovery_session = false;    /* there is no fallback config to recover from now */
+    s_name[0] = '\0';
+    s_tz[0] = '\0';
+    s_mode[0] = '\0';
+    const esp_err_t wiped = (e != ESP_OK) ? e : e_def;
+
+    /* A board that comes back from a full reset is unnamed no longer: it answers to
+     * the default word. Storing it in NVS (not just in the RAM mirror) is the point
+     * — every surface that reads the name afterwards (status, the settings page, the
+     * hub's next poll) says the same thing without a special case, and the word
+     * survives until the next owner's NAME write replaces it or clears it to "".
+     * Provisioning is gated on credentials, never on the name, so this cannot keep
+     * the AP door shut. Only on a clean wipe: after a partial erase the board is
+     * reporting RESET-PART and boots whatever survived — seeding one key into that
+     * half-state would claim more cleanliness than the ack admitted. */
+    if (wiped == ESP_OK &&
+        nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE,
+                                NVS_READWRITE, &s_nvs) == ESP_OK) {
+        if (nvs_set_str(s_nvs, NET_NAME_KEY, NET_NAME_DEFAULT) == ESP_OK &&
+            nvs_commit(s_nvs) == ESP_OK) {
+            snprintf(s_name, sizeof(s_name), "%s", NET_NAME_DEFAULT);
+        } else {
+            ESP_LOGW(TAG, "reset: default name not stored (board boots unnamed)");
+        }
+        nvs_close(s_nvs);
+        s_nvs = 0;
+    }
+    return wiped;
 }
 
 /* Timer callbacks may only post: the esp_timer task is shared and must not
@@ -1778,6 +2101,23 @@ static esp_err_t h_status(httpd_req_t *req)
      * 512 through 640 and 960 as fields joined it, and every addition was
      * re-measured with `curl -s ORB/api/v1/status | wc -c`, never added up here.
      *
+     * The "name" field is the one whose width a measurement cannot pin, because
+     * the operator chooses it: the field costs 10 B unnamed and 42 B at the
+     * 32-byte ceiling orbfleet and NET_NAME_MAX both enforce. Measured on orb-B
+     * on 2026-10-14 at the ceiling, eight identical requests read 1159 B and five
+     * after the clear read 1127 B, so the field costs its full 32 B and nothing
+     * else moved. Worst case is therefore 1159 B in a 1536 B buffer — 377 B of
+     * headroom, and 36 B below the ~1165 B this comment estimated before the bench
+     * run. Re-measure the same way when a field joins the frame: set a 32-character
+     * name with `curl -X POST -d '{"name":"nnn…"}' ORB/api/v1/name`, then count
+     * `curl -s ORB/api/v1/status | wc -c`, and quote a range rather than one number
+     * because the width still tracks uptime and recent drops.
+     *
+     * The fw field grew when the image began carrying a declared version rather than
+     * a bare git describe: it now reads v1.0.0+e1a2b3c-dirty at 20 B, and 25 B with
+     * an -rc.N in front of the metadata. That is inside the 377 B of headroom just
+     * measured, and the re-measure above is what settles it against hardware.
+     *
      * The ledger binds before this frame does. apps_json holds the whole array in
      * 768 B, and the three compiled-in rows filled 440 B of it; two more rows fit
      * at the observed 146 B per row. The ~110 B per row this comment carried was
@@ -1980,7 +2320,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
-        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"ap\":%s,"
+        "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
         /* What the encoder actually did, not what the driver chose to believe. raw is
          * the quadrature count and det the stream the UI sees, so the pair separates
@@ -2036,6 +2376,15 @@ static esp_err_t h_status(httpd_req_t *req)
         (slot ? slot->label : "?"), img_str,
         s_time_synced ? "true" : "false", (long long)now,
         s_tz[0] ? s_tz : "UTC", tz_offset_min(now),
+        /* Unescaped, and safe for exactly the reason s_tz is: name_reject_reason
+         * ran over this string before net_name_set() let it into flash, so it
+         * holds no quote and no backslash, and net_name_load() re-checks anything
+         * read back out of NVS at boot. An unnamed orb reports the empty string
+         * rather than a placeholder, so a card can tell "the owner has not named
+         * this" from "the device could not say" — which is the distinction that
+         * makes the hub's cache rule below implementable at all. Costs 10 B of
+         * key plus up to 32 B of value at the widest name either surface allows. */
+        s_name,
         /* The AP's real state, from the driver's own events. Without this the
          * whole lifecycle added here is invisible from the LAN — you could not
          * tell a closed AP from a firmware that never closes it, which is
@@ -2194,6 +2543,82 @@ static esp_err_t h_config_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, resp);
 }
 
+/* POST /api/v1/name {"name":"Hall Clock"} — {"name":""} clears it.
+ *
+ * A separate endpoint rather than a second key on /api/v1/config, and the reason
+ * is the contract that endpoint documents: NET_CONFIG_BODY_MAX is 128 sized for
+ * {"tz":"…"} and nothing else, and the handler answers 400 "no tz in body" when
+ * the key is absent, because silently accepting a tz-less body would turn a
+ * client bug into a no-op the page then reports as saved. Adding a second key
+ * means reworking that rule — a name-only body is valid, so the handler would
+ * have to demand "at least one of the two" and the frame would have to grow for
+ * both values at once. That is a larger change to a handler whose sizing is
+ * already tight, to buy a request that saves a round trip nobody needs: setting
+ * a name and a zone together happens once, during onboarding, and the join body
+ * already carries both.
+ *
+ * Read-until-content_len for the reason h_wifi_join documents in full: a body
+ * that arrived in two segments would otherwise parse as truncated, and here the
+ * cost of that is storing half a name or clearing one that was meant to be kept. */
+static esp_err_t h_name_post(httpd_req_t *req)
+{
+    static char body[NET_NAME_BODY_MAX + 1];
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    const int clen = (int)req->content_len;
+    if (clen < 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_NAME_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    /* Unlike config's tz, a body WITHOUT the key is a real request that means
+     * nothing: name is one field of several a client may be setting, and an
+     * absent key is "leave the name alone". {} therefore answers 200 with the
+     * name it already had. That is the opposite of h_config_post's rule, and the
+     * two disagree on purpose — there, tz is the only setting the endpoint owns,
+     * so a body missing it can only be a broken client. */
+    char name[NET_NAME_MAX + 1];
+    bool present = false;
+    const char *why = name_body_value(body, len, name, sizeof(name), &present);
+    if (!why && present) why = net_name_set(name);
+    if (why) {
+        /* The reason stays in the log, as config does: it is device-side prose
+         * about a value the client controls, and putting it in the reply invites a
+         * caller to render attacker-chosen text. The 400 is the contract. */
+        ESP_LOGW(TAG, "name: rejected (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name rejected\"}");
+    }
+
+    /* Reports the EFFECT rather than the request, by the same rule as
+     * h_config_post: s_name is what net_name_set() left in RAM after validation
+     * and after the clear branch, so a request the device silently degraded comes
+     * back degraded instead of echoing what was sent. s_name needs no escaping
+     * for the reason given at its /api/v1/status echo. */
+    static char resp[80];
+    const int n = snprintf(resp, sizeof(resp), "{\"state\":\"named\",\"name\":\"%s\"}", s_name);
+    if (n < 0 || (size_t)n >= sizeof(resp))
+        return httpd_resp_sendstr(req, "{\"state\":\"named\"}");
+    return httpd_resp_sendstr(req, resp);
+}
+
 /* Scan is ASYNC, and this state machine is why it has to be. The original
  * called esp_wifi_scan_start(..., block=true) inside the handler, and httpd
  * has ONE worker task: a full-channel scan holds that worker 5-10 s, and while
@@ -2285,6 +2710,125 @@ static int prov_hex(const char *src, size_t n, char *out, size_t cap)
     return (int)len;
 }
 
+/* Classify this orb's serial state for the hub: (b) unconfigured — the provisioning
+ * branch, no usable credential; (c-ap) configured but AP-isolated; (c-sta) configured
+ * and a station. (a) — a bare ESP32-S3 running no gorb-os — is not this device's to
+ * report: the hub infers it from a chip that answers the ROM and then prints no gorb-os
+ * boot banner (see esprom.ParseAppInfo). */
+static const char *orb_state_token(void)
+{
+    if (orb_net_ap_isolated()) return "c-ap";
+    if (s_provisioning)         return "b";
+    return "c-sta";
+}
+
+/* One serial line, dispatched. Returns true when the verb is owned here (handled,
+ * caller reads the next line) and false only for PROV, whose operand is a credential
+ * pair that belongs with net_post_join in the reader itself. The verb ends at the
+ * first space; the operand, if any, is the text after it. Hex operands match PROV's
+ * convention exactly (see prov_hex): "-" is empty, any odd length or bad nibble is a
+ * rejected line, never a truncated value. */
+static bool dispatch_serial_cmd(char *line, size_t vlen)
+{
+    /* One space-separated verb, then either a hex operand or a literal guard. */
+    char *operand = (vlen < strlen(line)) ? line + vlen + 1 : line + vlen;
+
+    if (vlen == 4 && !memcmp(line, "NAME", 4)) {
+        char name[NET_NAME_MAX + 1];
+        if (prov_hex(operand, strlen(operand), name, sizeof(name)) < 0) {
+            ESP_LOGW(TAG, "name: rejected (bad hex)");
+            ESP_LOGI(TAG, "NAME-NAK bad-hex");
+            return true;
+        }
+        const char *why = net_name_set(name);   /* net_name_set validates first */
+        if (why) {
+            ESP_LOGW(TAG, "name: refused (%s)", why);
+            ESP_LOGI(TAG, "NAME-NAK %s", why);
+        } else {
+            ESP_LOGI(TAG, "NAME-ACK %s", s_name[0] ? s_name : "(cleared)");
+        }
+        return true;
+    }
+
+    if (vlen == 4 && !memcmp(line, "SCAN", 4)) {
+        s_serial_scan_wanted = true;            /* scan_collect mirrors once, then clears */
+        /* Post the ARMED scan, not the bare one. scan_begin() starts the driver
+         * scan and leaves s_scan_state alone, because both of its other callers
+         * (the page handler and the boot scan) arm SCAN_SCANNING first — and
+         * scan_collect() drops the results of a scan nobody armed. So a SCAN on
+         * the serial door started a real radio scan, threw the AP list away at
+         * the done event, and printed no PROVSCAN-END: the hub re-pushed for its
+         * whole budget and reported no ack (bench, 2026-10-15: eight
+         * SCAN-ARMED lines, zero PROVSCAN lines, ack:false). scan_boot_begin()
+         * is the one starter that arms and starts, and it leaves an in-flight
+         * scan alone, so an eager click cannot stack scans. */
+        net_post(NET_CMD_SCAN_BOOT, 0);
+        ESP_LOGI(TAG, "SCAN-ARMED");
+        return true;
+    }
+
+    if (vlen == 4 && !memcmp(line, "MODE", 4)) {
+        char mode[NET_MODE_MAX + 1];
+        if (prov_hex(operand, strlen(operand), mode, sizeof(mode)) < 0) {
+            ESP_LOGW(TAG, "mode: rejected (bad hex)");
+            ESP_LOGI(TAG, "MODE-NAK bad-hex");
+            return true;
+        }
+        const char *why = net_mode_set(mode);
+        if (why) {
+            ESP_LOGW(TAG, "mode: refused (%s)", why);
+            ESP_LOGI(TAG, "MODE-NAK %s", why);
+            return true;
+        }
+        ESP_LOGI(TAG, "MODE-ACK rebooting into %s", s_mode[0] ? "AP-isolated" : "station");
+        orb_svc_note_clean_reboot();            /* a commanded reboot, not a crash */
+        vTaskDelay(pdMS_TO_TICKS(300));         /* let the ack reach the host first */
+        esp_restart();
+        return true;                            /* unreachable */
+    }
+
+    /* Factory-reset, the whole device. The literal ALL guard is deliberate: a stray
+     * line on an open console must never wipe a working device, so the destructive
+     * verb is un-shoutable-by-accident — and ALL is the scope it earns. Everything in
+     * both NVS partitions goes (see net_factory_reset): credentials, tz, name, mode,
+     * the theme choice, the app grants and enables, every per-app setting, the fault
+     * ledger and the idle-dim timeout. The ack is therefore final — no door reopens
+     * this state, because the orb comes back as the unconfigured provisioning AP it
+     * was the day it was flashed — named only by the default word the reset itself
+     * writes back, "The Orb", until a new owner says otherwise. */
+    if (vlen == 5 && !memcmp(line, "RESET", 5)) {
+        if (strcmp(operand, "ALL") != 0) {
+            ESP_LOGW(TAG, "reset: refused (say 'RESET ALL' to erase)");
+            ESP_LOGI(TAG, "RESET-NAK need-ALL");
+            return true;
+        }
+        const esp_err_t reset_e = net_factory_reset();
+        /* Reboot on a partial failure as well: one partition erased and one intact is
+         * neither configured nor clean, and the next boot is the only state that means
+         * anything — it re-derives every mirror from whatever survived. The token says
+         * which case the operator is in, so a hub that waits for RESET-ACK fails loudly
+         * on an incomplete wipe instead of reporting a clean reset. */
+        if (reset_e != ESP_OK)
+            ESP_LOGE(TAG, "reset: incomplete (%s) — rebooting anyway", esp_err_to_name(reset_e));
+        ESP_LOGI(TAG, "%s", reset_e == ESP_OK ? "RESET-ACK rebooting unconfigured"
+                                              : "RESET-PART rebooting unconfigured");
+        orb_svc_note_clean_reboot();
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+        return true;                            /* unreachable */
+    }
+
+    if (vlen == 4 && !memcmp(line, "PING", 4)) {
+        ESP_LOGI(TAG, "ORB-PING %s", orb_state_token());
+        return true;
+    }
+
+    if (vlen == 4 && !memcmp(line, "PROV", 4)) return false;   /* handled in the reader */
+
+    ESP_LOGI(TAG, "serial cmd: unknown verb \"%.*s\"", (int)vlen, line);
+    return true;
+}
+
 static void prov_reader_task(void *arg)
 {
     (void)arg;
@@ -2328,21 +2872,34 @@ static void prov_reader_task(void *arg)
                 use_select = false;
                 continue;
             }
-            if (sel == 0) {                       /* timeout tick */
-                if (!s_provisioning) break;       /* joined / AP gone: leave */
-                continue;
-            }
+            if (sel == 0) continue;                 /* timeout tick: door stays armed */
         }
         errno = 0;
         if (fgets(line, sizeof(line), stdin) == NULL) {
-            if (!s_provisioning) break;
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
         size_t n = strlen(line);
         while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-        if (n < 5 || memcmp(line, "PROV ", 5) != 0) continue;   /* not our token */
+        if (n == 0) continue;
 
+        /* The door is open for the whole life of the app now, not only during a
+         * first-boot provisioning: the same stdin that takes a PROV credential takes
+         * NAME, SCAN, MODE and RESET on a configured orb, so a wire-only hub can rename,
+         * rescan, flip AP<->station, or factory-reset a board it cannot reach over the
+         * LAN. The task parks in select() until a line arrives, so an untouched console
+         * costs nothing. dispatch_serial_cmd returns true for every verb it owns; PROV
+         * returns false and is handled inline below, where it can reach the join helpers.
+         * A mistyped verb is logged there and the loop stays alive — the console is
+         * shared with the human debug log. */
+        size_t vlen = strcspn(line, " ");
+        if (dispatch_serial_cmd(line, vlen)) continue;
+        if (n < 5 || memcmp(line, "PROV ", 5) != 0) continue;   /* not our token */
+        if (orb_net_ap_isolated()) {                              /* refuse a silent no-op */
+            ESP_LOGW(TAG, "prov: refused while AP-isolated (send MODE sta first)");
+            ESP_LOGI(TAG, "PROV-NAK ap-isolated");
+            continue;
+        }
         char *save = NULL;
         char *f_ssid = strtok_r(line + 5, " ", &save);
         char *f_pass = strtok_r(NULL, " ", &save);
@@ -2542,9 +3099,10 @@ static void scan_collect(void)
      * The SSID is deliberately the rest of the line (it may contain spaces);
      * ssid_sanitize() already removed control chars, so no line can break the
      * framing. PROVSCAN-END closes the list so the hub knows a zero-result scan
-     * is complete, not still arriving. Emitted only while s_provisioning — an
-     * ordinary page scan stays quiet on the console. */
-    if (s_provisioning) {
+     * is complete, not still arriving. Emitted while s_provisioning OR when a serial
+     * SCAN armed the one-shot flag — an ordinary page scan stays quiet on the console. */
+    if (s_provisioning || s_serial_scan_wanted) {
+        s_serial_scan_wanted = false;
         ESP_LOGI(TAG, "PROVSCAN-BEGIN %d", s_scan_n);
         for (int i = 0; i < s_scan_n; i++)
             ESP_LOGI(TAG, "PROVSCAN %d %d %u %d %s", i, s_scan_tbl[i].rssi,
@@ -2603,7 +3161,11 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
     }
 }
 
-#define JOIN_BODY_MAX 256
+/* 256 was sized for ssid(32) + pass(64) + tz(64) plus keys and braces. The name
+ * field costs a further 42 B at its 32-byte ceiling ("name" key, two quotes, a
+ * comma and the braces), so 320 covers the worst case of all four keys present
+ * and full without any of them clipping. Refuse rather than clip, as below. */
+#define JOIN_BODY_MAX 320
 
 static esp_err_t h_wifi_join(httpd_req_t *req)
 {
@@ -2670,8 +3232,30 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"tz rejected\"}");
     }
 
-    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
-             tz_present ? " tz=" : "", tz_present ? tz : "");
+    /* Same rule as the zone directly above it, and the reason to name an orb
+     * during the join is the reason to zone it there: this is the one moment a
+     * fresh board can leave provisioning already called "Hall Clock" instead of
+     * orb-44bd8d782618, which is the difference between a card that reads as a
+     * room and a card that reads as a hex string. Absent means leave the stored
+     * name alone; {"name":""} clears it. Validated here, before the credentials
+     * wait for a lease, so a bad name cannot half-apply. */
+    static char name[NET_NAME_MAX + 1];
+    bool name_present = false;
+    const char *name_why = name_body_value(body, len, name, sizeof(name), &name_present);
+    if (!name_why && name_present && name[0]) name_why = name_reject_reason(name);
+    if (name_why) {
+        ESP_LOGW(TAG, "join: name rejected (%s)", name_why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"name rejected\"}");
+    }
+
+    /* One line, so an operator watching the console during onboarding sees the
+     * whole request the orb refused or accepted — including the name, which is the
+     * field most likely to be typed by hand and the one with nothing on screen to
+     * read back at this moment. */
+    ESP_LOGI(TAG, "join request: ssid=\"%s\" pass=%s%s%s%s%s", ssid, pass[0] ? "(set)" : "(none)",
+             tz_present ? " tz=" : "", tz_present ? tz : "",
+             name_present ? " name=" : "", name_present ? name : "");
 
     /* NOT persisted here: the submitted pair waits in the radio task's pending
      * buffer until this join earns a lease, and only then reaches NVS (see
@@ -2689,6 +3273,17 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     if (tz_present) {
         const char *why = net_tz_set(tz);
         if (why) ESP_LOGW(TAG, "join: tz \"%s\" not applied (%s)", tz, why);
+    }
+
+    /* Same door as POST /api/v1/name, same one-behaviour-two-roads argument the
+     * tz line above makes: this cannot fail on validation (checked before the
+     * credentials were touched), so the only reason it returns is NVS, and a name
+     * that did not persist is worth a log line rather than a failed join. A board
+     * that joined the LAN unnamed is a naming problem; a board that did not join
+     * is the actual failure, and the two must not be conflated in one reply. */
+    if (name_present) {
+        const char *why = net_name_set(name);
+        if (why) ESP_LOGW(TAG, "join: name \"%s\" not applied (%s)", name, why);
     }
 
     /* A human just said "try these", so start the back-off ladder over — the
@@ -2722,6 +3317,13 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
      * there is no radio task to hold the pair or commit it on a lease, so this
      * degenerate path keeps the old write-first behaviour and does the radio work
      * here rather than not do it at all. */
+    /* An orb sitting in AP-isolated mode that has just been handed credentials from
+     * its own page is being told, by the one person who can, to become a station
+     * again. Clear the mode BEFORE the join so a reboot after this lands on the
+     * network the page just chose instead of back in isolation, which would read as
+     * the join having been ignored. An empty/same mode is a no-op here. */
+    if (orb_net_ap_isolated()) net_mode_set("sta");
+
     if (!net_post_join(ssid, pass)) {
         ESP_LOGW(TAG, "join: no radio queue — applying from the httpd task");
         creds_commit(ssid, pass);
@@ -2729,6 +3331,90 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
         if (e != ESP_OK) ESP_LOGE(TAG, "join(%s) failed: %s", ssid, esp_err_to_name(e));
     }
     return sent;
+}
+
+/* POST /api/v1/wifi/mode — commit to the station branch or to AP isolation, and reboot.
+ *
+ * The HTTP twin of the serial MODE verb, and the ONLY page exit from a persistent
+ * isolation. That matters more here than anywhere: a board in AP-isolated mode is
+ * reachable at exactly one address, its own 192.168.4.1, so if the page could only get
+ * INTO the mode the mode would be a trap with one key. Joining a network from the page
+ * also clears it (h_wifi_join), but an owner who wants their saved credentials back
+ * without retyping them has to be able to say "station" and nothing else.
+ *
+ * Body: {"mode":"ap"} or {"mode":"sta"}. The mode is a boot-time choice — see
+ * net_mode_set, which writes NVS and changes nothing live — so this answers, waits the
+ * 750 ms h_reprov measured, and reboots. Refusals are complete: no partial mode, no
+ * reboot on a rejected operand. */
+static void mode_timer_cb(void *arg)
+{
+    (void)arg;
+    /* A commanded reboot, not a crash — the same courtesy h_reprov and h_reprov pay, so
+     * the boot after an owner's MODE does not bill an app for the restart. */
+    orb_svc_note_clean_reboot();
+    ESP_LOGW(TAG, "rebooting into the %s branch on request (POST /api/v1/wifi/mode)",
+             s_mode[0] ? "AP-isolated" : "station");
+    esp_restart();
+}
+
+static esp_err_t h_wifi_mode(httpd_req_t *req)
+{
+    char body[64];
+    if (req->content_len > (unsigned)sizeof(body) - 1) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < (int)req->content_len) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(int)req->content_len - got);
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+
+    char mode[NET_MODE_MAX + 1];
+    if (!json_str(body, (size_t)got, "mode", mode, sizeof(mode))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"mode required (\\\"ap\\\" or \\\"sta\\\")\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+#if !CONFIG_ORB_NET_AP_ISOLATED
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"AP-isolated mode is not in this build\"}");
+#else
+    const char *why = net_mode_set(mode);
+    if (why) {
+        /* The reason is one of net_mode_set's own fixed strings — no user text reaches
+         * the body, so this needs no escaping and cannot be made to close the object
+         * early. */
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"mode must be \\\"ap\\\" or \\\"sta\\\"\"}");
+    }
+    static esp_timer_handle_t s_mode_timer;
+    if (!s_mode_timer) {
+        const esp_timer_create_args_t ta = { .callback = mode_timer_cb };
+        if (esp_timer_create(&ta, &s_mode_timer) != ESP_OK) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
+        }
+    }
+    if (esp_timer_start_once(s_mode_timer, 750 * 1000) != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
+    }
+    ESP_LOGW(TAG, "mode: now %s, rebooting in 750 ms (POST /api/v1/wifi/mode)",
+             s_mode[0] ? "AP-isolated" : "station");
+    char out[80];
+    const int n = snprintf(out, sizeof out, "{\"state\":\"rebooting\",\"mode\":\"%s\"}",
+                           s_mode[0] ? "ap" : "sta");
+    return httpd_resp_sendstr(req, n > 0 ? out : "{\"state\":\"rebooting\"}");
+#endif
 }
 
 /* POST /api/v1/wifi/ap — raise or lower the provisioning AP by request.
@@ -3005,6 +3691,69 @@ static esp_err_t h_reboot(httpd_req_t *req)
     ESP_LOGW(TAG, "ota: rebooting in 750 ms");
     return httpd_resp_sendstr(req, "{\"state\":\"rebooting\"}");
 }
+/* POST /api/v1/reprov — reboot into the provisioning branch, credentials intact.
+ *
+ * D2's remote writer and the HTTP sibling of D5's knob hold. The flag write and the
+ * reboot stay two separate steps on purpose: orb_net_request_provisioning() only sets
+ * the RTC word, and the deferral below is what lets this response reach the caller
+ * before the connection dies — the same 750 ms h_reboot measured.
+ *
+ * Every branch here is a refusal or a deferral, never a partial action. Nothing is
+ * written to flash: an intent that loses power before it boots disappears with the
+ * power, which is why the cancel path is unplug-the-orb and not a button (plan D2's
+ * retention note). And the D4 sojourn needs no mention here — the boot branch arms it
+ * whenever it forces the provisioning path, so a hub-triggered reprovision expires on
+ * the same clock as a knob-triggered one and no caller can forget to arm it.
+ */
+static void reprov_timer_cb(void *arg)
+{
+    (void)arg;
+    /* Same C2 courtesy as h_reboot: this reboot is the owner talking, so the next boot
+     * bills no app for it. */
+    orb_svc_note_clean_reboot();
+    ESP_LOGW(TAG, "rebooting into provisioning on request (POST /api/v1/reprov)");
+    esp_restart();
+}
+
+static esp_err_t h_reprov(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    if (orb_net_is_provisioning()) {
+        /* Already there. Rebooting a device that is mid-provisioning would restart the
+         * sojourn clock for no reason and drop the very page the operator is using. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"already provisioning\"}");
+    }
+    if (!orb_net_request_provisioning()) {
+        /* CONFIG_ORB_NET_AP_FALLBACK=n leaves no SoftAP behind, so "provisioning" would
+         * be a state with no way in and no way out. Refuse rather than take someone's
+         * wall clock down to a dead end. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"no AP fallback in this build\"}");
+    }
+
+    static esp_timer_handle_t s_reprov_timer;
+    if (!s_reprov_timer) {
+        const esp_timer_create_args_t ta = { .callback = reprov_timer_cb };
+        if (esp_timer_create(&ta, &s_reprov_timer) != ESP_OK) {
+            prov_intent_disarm();
+            ESP_LOGE(TAG, "reprov: could not create reboot timer");
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
+        }
+    }
+    if (esp_timer_start_once(s_reprov_timer, 750 * 1000) != ESP_OK) {
+        prov_intent_disarm();
+        ESP_LOGE(TAG, "reprov: could not arm reboot timer");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
+    }
+    ESP_LOGW(TAG, "reprov: provisioning boot armed, rebooting in 750 ms");
+    return httpd_resp_sendstr(req, "{\"state\":\"rebooting\",\"into\":\"provisioning\"}");
+}
+
 
 /* Landing page for the first-boot SoftAP, when there is no PWA loaded yet (the
  * `www` partition is Phase 4). This is the whole provisioning UX, so it has to
@@ -4529,10 +5278,20 @@ static esp_err_t net_start_httpd(void)
      * below rather than trusting the count. The /timezone page brings the table
      * to 15 registered routes; the /apps pair brought it to 25, the /apps install
      * POST is the 26th, the /api/v1/sd/app upload POST is the 27th, and P4a's
-     * enable and uninstall doors make 29 registered — exactly the old ceiling,
-     * so 32 keeps the headroom the plan's route budget (P5's APPS-page mirror
-     * and the theme pair) was priced against touching this line again. */
-    cfg.max_uri_handlers  = 32;
+     * enable and uninstall doors make 29 registered, and the /api/v1/name door
+     * makes 30 — one over the old ceiling of 29 that line records, still inside
+     * the 32 that keeps the headroom the plan's route budget (P5's APPS-page mirror
+     * and the theme pair) was priced against touching this line again. The
+     * /api/v1/wifi/mode door is the 31st and the /api/v1/reprov door the 32nd, so
+     * the ceiling moves to 36: still one quiet 404 away from a mystery, and a route
+     * that fails to register logs the line above rather than vanishing.
+     *
+     * The merge with the app-platform line makes one of those 32 conditional:
+     * /api/v1/screen registers only under CONFIG_ORB_DEBUG_HTTP, default y on the
+     * bench and off for a build that leaves for a shelf. Count is therefore 32 with
+     * the door on and 31 with it off, and host_tz_test.py counts the table textually,
+     * so it sees 32 either way. Both fit 36; the guard never pushes the count up. */
+    cfg.max_uri_handlers  = 36;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -4571,10 +5330,20 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },
         { .uri = "/api/v1/wifi/ap",  .method = HTTP_POST, .handler = h_wifi_ap },
+        /* The persistent reachability mode, and the page's only exit from an isolation
+         * it can also be entered from. Reboots the orb, like the serial MODE verb. */
+        { .uri = "/api/v1/wifi/mode", .method = HTTP_POST, .handler = h_wifi_mode },
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
+        { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
+        /* One-shot: reboot into the provisioning branch with the stored credential
+         * intact. Deliberately not folded into /api/v1/reboot — a caller has to be able
+         * to say "I want this orb back in its AP" without wiping anything, and a route
+         * that reboots a wall clock already needs the arm/disarm care plan 5.1 decision
+         * 1 pins for /api/v1/menu. */
+        { .uri = "/api/v1/reprov",  .method = HTTP_POST, .handler = h_reprov },
 #if CONFIG_ORB_DEBUG_HTTP
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
 #endif
@@ -4638,6 +5407,16 @@ esp_err_t orb_net_start(void)
      * what makes the very first render local instead of UTC-for-two-seconds. It
      * only reads NVS — nothing here touches the network. */
     net_tz_load();
+    /* Same moment and same reason as the zone: the card reads a name off
+     * /api/v1/status the first time it folds this board, and a name that only
+     * appeared after the association completed would show as blank during the
+     * one window an operator is watching most closely — a board that just joined.
+     * NVS read only, no radio. */
+    net_name_load();
+    /* Mode after tz and name and before the branch that reads it: like those two it
+     * is an NVS-only read that decides a boot behaviour, and reading it here is what
+     * lets the AP-isolated choice survive a reboot without a radio ever having run. */
+    net_mode_load();
 
     stage_probe("pre-sntp_init");
 
@@ -4705,6 +5484,7 @@ esp_err_t orb_net_start(void)
      * intent flag forces the provisioning branch anyway, and is by definition a
      * recovery session with a network to go back to, so it gets the deadline. */
     const bool creds_in_flash = (ssid[0] != '\0');
+    const bool ap_isolated = orb_net_ap_isolated();
 #if CONFIG_ORB_NET_AP_FALLBACK
     const bool prov_forced = prov_intent_consume();
 #else
@@ -4717,7 +5497,20 @@ esp_err_t orb_net_start(void)
         ESP_LOGE(TAG, "provisioning requested but ORB_NET_AP_FALLBACK is disabled; "
                       "booting into the stored network instead");
 #endif
-    if (creds_in_flash && !prov_forced) {
+    /* An AP-isolated boot needs the SoftAP, which this build may have compiled out.
+     * Refuse the mode loudly rather than boot a station-only orb that believes it is
+     * reachable by its own AP: a mode the firmware cannot honour is worse than one it
+     * rejects. The key stays set, so re-enabling the fallback brings the device back. */
+#if !CONFIG_ORB_NET_AP_FALLBACK
+    if (ap_isolated) {
+        ESP_LOGE(TAG, "AP-isolated mode set but ORB_NET_AP_FALLBACK is disabled; "
+                      "ignoring the mode and booting the stored network");
+    }
+    const bool take_ap = (!creds_in_flash || prov_forced);
+#else
+    const bool take_ap = (!creds_in_flash || prov_forced || ap_isolated);
+#endif
+    if (creds_in_flash && !take_ap) {
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     } else {
 #if CONFIG_ORB_NET_AP_FALLBACK
@@ -4731,7 +5524,7 @@ esp_err_t orb_net_start(void)
          * branch precisely because creds_in_flash is false, so it stays as it has
          * always been: AP open with no deadline, because there is nothing to fall
          * back to and rebooting would return here. */
-        s_prov_recovery_session = creds_in_flash;
+        s_prov_recovery_session = creds_in_flash && !ap_isolated;
 #if CONFIG_ORB_NET_MDNS
         /* Set before the AP comes up, so the very first announcement this boot
          * can make already says "provisioning" rather than making item 5's
@@ -4755,7 +5548,13 @@ esp_err_t orb_net_start(void)
          * the credentials stays attached while the association proceeds. */
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "mode");
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "ap config");
-        if (prov_forced)
+        if (ap_isolated)
+            /* The owner asked for isolation: this AP has no deadline and no stored
+             * network behind it, and the device will not associate this boot. */
+            ESP_LOGW(TAG, "AP-isolated mode — orb reachable ONLY at \"http://192.168.4.1/\" "
+                          "on its own AP \"%s\"; send MODE sta to rejoin Wi-Fi",
+                     (const char *)ap.ap.ssid);
+        else if (prov_forced)
             /* Deliberately not the factory wording: credentials ARE stored, and
              * saying otherwise would send an operator hunting for a pairing they
              * never lost. The request is good for this boot only. */
@@ -4839,16 +5638,32 @@ esp_err_t orb_net_start(void)
 
     ESP_LOGI(TAG, "config server listening on port %d", CONFIG_ORB_NET_HTTPD_PORT);
 
-    /* Wired-provisioning door: on a first boot with no credentials, also open
-     * the serial door. The reader blocks on stdin and only ever starts a join
-     * while s_provisioning; a device that already has credentials never starts
-     * it, so its console is untouched. Low priority, modest stack — it is idle
-     * until a hub writes a PROV line. */
-    if (s_provisioning) {
-        if (xTaskCreate(prov_reader_task, "provserial", 4096, NULL, 3, NULL) != pdPASS)
-            ESP_LOGE(TAG, "prov reader: out of memory — serial provisioning disabled");
-        else
-            ESP_LOGI(TAG, "serial provisioning armed: send 'PROV <hex-ssid> <hex-pass> <hex-tz>' on the console");
+    /* The serial command door is open for the whole life of the app, on every boot and
+     * in every state — not only a first-boot provisioning. A configured orb is exactly
+     * the case that needs it: a hub with only a USB lead can still NAME it, SCAN the
+     * air around it, switch it AP<->station, or factory-reset it, none of which reach it
+     * over a LAN it may not be on. The reader blocks in select() until a line arrives, so
+     * an orb whose console nobody touches pays nothing. Low priority, modest stack. */
+    if (xTaskCreate(prov_reader_task, "orbserial", 4096, NULL, 3, NULL) != pdPASS)
+        ESP_LOGE(TAG, "serial reader: out of memory — the serial command door is disabled");
+    else
+        ESP_LOGI(TAG, "serial door armed: PROV|NAME|SCAN|MODE|RESET|PING on the console");
+
+    /* One line the hub greps to classify this board over the wire without a
+     * reboot-probe. It is the same token PING returns, so a hub that missed boot can ask
+     * for it later. State (a), a bare ESP32-S3, prints no such line because no gorb-os
+     * app is running to print it — the hub infers (a) from a ROM that answers and a boot
+     * banner that never comes. */
+    ESP_LOGI(TAG, "GorbOS-STATE %s", orb_state_token());
+
+    /* The same argument for the name. A board on a lead with no lease has no door the
+     * hub can dial, and the serial command door only writes — so the name it holds was
+     * unreadable from the cable, and a hub that never saw it online kept a blank card
+     * for a board somebody had already named. The boot console is the one channel that
+     * always runs. Printed only when named: an unnamed board prints nothing, which the
+     * hub reads as no news rather than as a cleared name. */
+    if (s_name[0] != '\0') {
+        ESP_LOGI(TAG, "GorbOS-NAME %s", s_name);
     }
     return ESP_OK;
 }
@@ -4904,6 +5719,14 @@ bool orb_net_is_up(void) { return false; }
 
 bool orb_net_is_provisioning(void) { return false; }
 
+bool orb_net_ap_isolated(void) { return false; }   /* no SoftAP in a disabled build */
+
+/* D2's setter, disabled build: there is no SoftAP to force, so this refuses the way
+ * the enabled build refuses when ORB_NET_AP_FALLBACK=n. Without the stub any caller
+ * fails to link the moment ORB_NET_ENABLE flips off, which is the one configuration
+ * this file's own guards are written to survive. */
+bool orb_net_request_provisioning(void) { return false; }
+
 const char *orb_net_ip_str(void) { return ""; }
 
 bool orb_net_time_synced(void) { return false; }
@@ -4926,5 +5749,15 @@ esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)
     *offset_min = 0;
     return ESP_OK;
 }
+
+/* Name accessors, disabled build: "" is the honest answer. The limit is a literal
+ * 32 because NET_NAME_MAX is defined inside the enabled half of this file, so it
+ * is not visible here — the one place in this feature where the two builds state
+ * the same number twice. device_contract_test.go pins it against orbfleet.MaxName
+ * and against the string in the enabled half, which is what keeps the duplication
+ * from drifting. */
+const char *orb_net_name(void) { return ""; }
+int orb_net_name_max(void) { return 32; }
+esp_err_t orb_net_name_set(const char *name) { return name ? ESP_ERR_NOT_SUPPORTED : ESP_ERR_INVALID_ARG; }
 
 #endif /* CONFIG_ORB_NET_ENABLE */

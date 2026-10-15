@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -35,6 +37,7 @@ var deviceHandlers = map[string]string{
 	"ap":    "h_wifi_ap",
 	"confG": "h_config_get",
 	"confP": "h_config_post",
+	"nameP": "h_name_post",
 	"boot":  "h_reboot",
 	"scr":   "h_screen",
 	"stat":  "h_status",
@@ -61,6 +64,13 @@ func TestDeviceVerbBodiesAreTheFirmwaresOwnWords(t *testing.T) {
 		{"join", []string{`{"state":"joining"}`, `{"error":"ssid required or too long"}`, `{"error":"body too large"}`, `{"error":"content-length required"}`, `{"error":"tz rejected"}`}},
 		{"ap", []string{`{"state":"ap_closing"}`, `{"error":"no lease — the AP is the only way in"}`, `"state\":\"ap_opening\"`, `"ap_ssid\"`, `"seconds"`}},
 		{"confP", []string{`{"state":"zoned"`, `"tz\"`, `"posix\"`, `"tz_offset\"`, `{"error":"tz rejected"}`}},
+		// The name door's four bodies, including the two rejections that are identical
+		// to config's because they come from the same read-bounded-body preamble, and
+		// deliberately NOT including a "no name in body" refusal: this endpoint accepts
+		// a body without the key, which is the one place its contract splits from
+		// /api/v1/config, and a pin that did not name that would let the two drift
+		// toward whichever behaviour a later edit found convenient.
+		{"nameP", []string{`{"state":"named"`, `"name\"`, `{"error":"name rejected"}`, `{"error":"body too large"}`, `{"error":"content-length required"}`}},
 		{"boot", []string{`{"state":"rebooting"}`}},
 		{"scr", []string{`{"state":"accepted"}`, `{"error":"to, turn, push or hold required"}`, `"unknown app"`}},
 	}
@@ -116,7 +126,11 @@ func fakeBodies(t *testing.T, which string) []string {
 		post("/api/v1/wifi/join", `{}`)
 		post("/api/v1/wifi/join", `{"ssid":"`+strings.Repeat("s", 40)+`"}`)
 		post("/api/v1/wifi/join", `{"ssid":"lab-2g","tz":"bad\\\\zone"}`)
-		post("/api/v1/wifi/join", `{"ssid":"`+strings.Repeat("t", 300)+`"}`)
+		// Over JOIN_BODY_MAX, whatever that is today: derived from the constant rather
+		// than written as a literal, because this probe was a hand-picked 300 against a
+		// 256 B frame and went silently inert the day the frame grew to admit a name.
+		// An inert probe reads as a pass while testing nothing.
+		post("/api/v1/wifi/join", `{"ssid":"`+strings.Repeat("t", orbfake.JoinBodyMax)+`"}`)
 		// content-length required: only an unknown-length body gets ContentLength
 		// -1 past Go, which is what httpd reports when the header is absent.
 		out = append(out, httpChunked(t, srv.URL+"/api/v1/wifi/join"))
@@ -130,6 +144,13 @@ func fakeBodies(t *testing.T, which string) []string {
 		post("/api/v1/config", `{"tz":"US/Eastern"}`)
 		post("/api/v1/config", `{}`)
 		post("/api/v1/config", `{"tz":"bad\\\\zone"}`)
+	case "nameP":
+		post("/api/v1/name", `{"name":"Hall Clock"}`)
+		post("/api/v1/name", `{"name":"`+strings.Repeat("n", orbfake.NameBodyMax)+`"}`)
+		post("/api/v1/name", `{"name":"bad\\\\name"}`)
+		// content-length required, by the same route the join case uses: chunked is
+		// the only way past Go to get a request with no Content-Length at all.
+		out = append(out, httpChunked(t, srv.URL+"/api/v1/name"))
 	case "boot":
 		post("/api/v1/reboot", `{}`)
 	case "scr":
@@ -330,13 +351,13 @@ func TestJoinRejectsWhatTheFirmwareRejects(t *testing.T) {
 	c := orbnet.NewClient(2 * time.Second)
 	ip := strings.TrimPrefix(srv.URL, "http://")
 
-	if b, err := c.PostJoin(ip, strings.Repeat("s", orbfake.SSIDMax+1), "hunter2", ""); err == nil {
+	if b, err := c.PostJoin(ip, strings.Repeat("s", orbfake.SSIDMax+1), "hunter2", "", ""); err == nil {
 		t.Errorf("overlong SSID accepted, body = %s; the firmware rejects rather than clips", b)
 	}
-	if _, err := c.PostJoin(ip, "lab-2g", strings.Repeat("p", orbfake.PassMax+1), ""); err == nil {
+	if _, err := c.PostJoin(ip, "lab-2g", strings.Repeat("p", orbfake.PassMax+1), "", ""); err == nil {
 		t.Error("overlong passphrase accepted where json_str would reject it")
 	}
-	if _, err := c.PostJoin(ip, "", "", ""); err == nil {
+	if _, err := c.PostJoin(ip, "", "", "", ""); err == nil {
 		t.Error("empty SSID accepted where the device answers ssid required or too long")
 	}
 	// A zone the table does not hold is NOT a rejection: tz_reject_reason (orb_net.c
@@ -347,17 +368,17 @@ func TestJoinRejectsWhatTheFirmwareRejects(t *testing.T) {
 	// stored, and be applied as a TZ nobody typed. A double built on encoding/json
 	// alone decodes that escape and accepts the request, which is the exact drift
 	// this file exists to catch, so it is asserted here rather than assumed.
-	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "EST5EDT\\t"); err == nil {
+	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "EST5EDT\\t", ""); err == nil {
 		t.Error("join accepted an escaped tz; the device 400s it before anything is stored")
 	}
-	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", strings.Repeat("Z", orbfake.TZMax+1)); err == nil {
+	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", strings.Repeat("Z", orbfake.TZMax+1), ""); err == nil {
 		t.Error("overlong tz accepted where tz_reject_reason answers tz too long")
 	}
 	// An unknown-but-well-formed zone must be accepted and reported by its EFFECT.
-	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "Mars/Olympus_Mons"); err != nil {
+	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "Mars/Olympus_Mons", ""); err != nil {
 		t.Errorf("well-formed raw POSIX rule rejected: %v", err)
 	}
-	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "US/Eastern"); err != nil {
+	if _, err := c.PostJoin(ip, "lab-2g", "hunter2", "US/Eastern", ""); err != nil {
 		t.Fatalf("PostJoin: %v", err)
 	}
 	state, _, _, _, _, _, _, _, _, joined := f.Device()
@@ -622,4 +643,125 @@ func TestRebootIsAcceptedOnceAndReportedAsRebooting(t *testing.T) {
 	if _, _, _, _, _, _, _, _, rebooted, _ := f.Device(); rebooted != 1 {
 		t.Errorf("reboot accepted %d times, want exactly one", rebooted)
 	}
+}
+
+// The 32 in orb_net.c, the 32 in orbfleet, and the 32 in the double are one number
+// written down three times, and the firmware comment that pairs the first two says
+// "keep them equal" in prose. Prose is not a pin. A name one surface accepts and the
+// other clips reads as two different orbs depending on which you looked at last, so
+// the equality is asserted.
+func TestNameLengthIsOneNumberSpelledThreeTimes(t *testing.T) {
+	src := firmwareFile(t, orbNet)
+	m := regexp.MustCompile(`#define\s+NET_NAME_MAX\s+(\d+)`).FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("orb_net.c no longer spells NET_NAME_MAX as a plain number; this pin is blind")
+	}
+	fw, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("NET_NAME_MAX %q: %v", m[1], err)
+	}
+	if orbfleet.MaxName != fw {
+		t.Errorf("orbfleet.MaxName is %d and the orb stores %d", orbfleet.MaxName, fw)
+	}
+	if orbfake.NameMax != fw {
+		t.Errorf("the double accepts %d where the orb stores %d, so hub tests exercise a device that does not exist",
+			orbfake.NameMax, fw)
+	}
+	// The request-body cap, same reasoning: the double has to refuse an over-long
+	// body at the size the firmware does, or the "body too large" pin above is a
+	// string match on two different rules.
+	bm := regexp.MustCompile(`#define\s+NET_NAME_BODY_MAX\s+(\d+)`).FindStringSubmatch(src)
+	if bm == nil {
+		t.Fatal("orb_net.c no longer spells NET_NAME_BODY_MAX as a plain number")
+	}
+	body, err := strconv.Atoi(bm[1])
+	if err != nil {
+		t.Fatalf("NET_NAME_BODY_MAX %q: %v", bm[1], err)
+	}
+	if orbfake.NameBodyMax != body {
+		t.Errorf("the double caps a name body at %d B where the orb caps it at %d B", orbfake.NameBodyMax, body)
+	}
+}
+
+// Three copies of one validator: name_reject_reason in the firmware, CheckNameASCII
+// in the store, nameRejected in the double. The firmware's is the one that has to be
+// right — it stores the string and echoes it into JSON with %s and no escaper — so
+// the corpus is run against the double over HTTP and against the hub's pre-check, and
+// any pair that disagrees fails.
+//
+// The accepted cases are all values that survive cleanWord UNCHANGED, because the hub
+// checks the cleaned name and the device checks the name it was sent: comparing a
+// cleaner-rewritten string against what the orb received would report a false drift.
+// The two refused space cases are the exception and are labelled as such — the hub
+// trims them before dialing, so the device never sees them, and both surfaces still
+// say no. The last two lines are the interesting ones: names cleanWord has accepted
+// since the day it was written and the orb cannot store at all.
+func TestNameRuleAgreesBetweenTheOrbAndTheHub(t *testing.T) {
+	cases := []struct {
+		name string
+		ok   bool
+	}{
+		{"Hall", true},
+		{"Living Room Clock", true},
+		{"Nursery-2", true},
+		{"clock.tv", true},
+		{"Ben's Shelf", true},
+		{"Auberon Hall", true},
+		{"x=1", true}, // an equals sign and a colon are displayable and inert
+		{strings.Repeat("n", orbfleet.MaxName), true},
+		{"Hall ", false},       // the card trims it; the device would never see it. Both refuse, which is parity.
+		{"Hall  Clock", false}, // same: normalization is the hub's job, and the orb declines to guess at it
+		{`Say "Hall"`, false},  // the reason the field is validated at all
+		{"back\\slash", false},
+		{"<b>Hall</b>", false},
+		{"tab\there", false},
+		{"del\x7fhere", false},
+		{"Café", false}, // cleanWord likes this one; the orb has no byte for it
+		{"日本語", false},  // and this one
+	}
+	f := orbfake.New()
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	for _, c := range cases {
+		if c.ok {
+			if clean, err := orbfleet.CleanName(c.name); err != nil || clean != c.name {
+				t.Errorf("accepted case %q does not survive the hub's cleaner unchanged (got %q, err %v); "+
+					"this corpus compares the device's rule with the hub's, not the cleaner's", c.name, clean, err)
+			}
+		}
+		code, body := httpFetch(t, http.MethodPost, srv.URL+"/api/v1/name", `{"name":`+rawJSONString(c.name)+`}`)
+		if got := code == http.StatusOK; got != c.ok {
+			t.Errorf("the orb answered %d (%s) for %q; the corpus says accept=%v", code, body, c.name, c.ok)
+		}
+		if err := orbfleet.CheckNameASCII(c.name); (err == nil) != c.ok {
+			t.Errorf("the hub's pre-check says accept=%v for %q (err %v), but the orb just said the opposite",
+				c.ok, c.name, err)
+		}
+	}
+
+	// A quote can only reach a device inside valid JSON as an escape, and the
+	// firmware scans the RAW bytes before decoding for exactly that reason. So the
+	// escaped form has to be refused too, on both sides, or a client that escapes
+	// properly smuggles the one byte the %s echo cannot survive.
+	code, body := httpFetch(t, http.MethodPost, srv.URL+"/api/v1/name", `{"name":"Say \u0022Hall\u0022"}`)
+	if code == http.StatusOK {
+		t.Errorf(`the orb accepted an escaped quote (%d %s); the raw-byte guard in name_body_value is not doing its job`,
+			code, body)
+	}
+	if err := orbfleet.CheckNameASCII(`Say "Hall"`); err == nil {
+		t.Error(`the hub's pre-check waved through the decoded form of the escape the orb refused`)
+	}
+}
+
+// rawJSONString quotes a name for a request body the slow way. json.Marshal would do
+// it and doing it the slow way is the point: Marshal collapses a control byte or a
+// quote into an escape, and the firmware rejects an escape before it decodes, so a
+// corpus encoded with Marshal would ask a different question than the one being asked.
+func rawJSONString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	b.WriteString(s)
+	b.WriteByte('"')
+	return b.String()
 }

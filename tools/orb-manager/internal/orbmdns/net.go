@@ -77,12 +77,10 @@ type MulticastConn struct {
 // Iface names the interface this socket hears on, for a candidate's provenance.
 func (m *MulticastConn) Iface() string { return m.iface }
 
-// ReadFrom reads one datagram.
+// ReadFrom reads one datagram. There is no WriteTo on this type: the socket underneath
+// is a UDP socket and could send, and the browser is given no way to make it. The
+// TestBrowserNeverSends guard fails the package if a write path is added back.
 func (m *MulticastConn) ReadFrom(p []byte) (int, net.Addr, error) { return m.c.ReadFrom(p) }
-
-// WriteTo sends one query. The destination is always the group: this socket has no
-// way to aim a query at a single host, which is the point.
-func (m *MulticastConn) WriteTo(p []byte, addr net.Addr) (int, error) { return m.c.WriteTo(p, addr) }
 
 // Close releases the socket.
 func (m *MulticastConn) Close() error { return m.c.Close() }

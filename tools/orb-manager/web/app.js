@@ -1,5 +1,15 @@
 // Orb Manager front-end. Talks only to same-origin endpoints (/api/*, /orb/*).
 // The server is the only thing that reaches an orb; CORS never enters into it.
+//
+// The page is three views over one truth. Manage is the landing and the whole
+// first screen: one card per board the hub has met as an orb, Forget only where
+// the hub's own verdict says the board cannot come straight back, and nothing
+// at all for a cable with no orb on it — a blank ESP32-S3 is a New Orb
+// candidate, not an orb card, and it never reaches this list. Onboard is the
+// single decision a blank chip gets: a name, and the firmware this app already
+// carries. Orb is one board's manage state: firmware, name, Wi-Fi, time zone.
+// A newly flashed board lands there the moment its firmware boots, which is the
+// one place the two flash doors converge.
 "use strict";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -46,14 +56,22 @@ async function readDeviceJSON(r) {
   return d;
 }
 
+// esc keeps a server or device string from closing the markup it is interpolated
+// into. Rows built with createElement/textContent do not need it and must not
+// reach for innerHTML at all; this is for the panel templates that remain.
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// ---- views ---------------------------------------------------------------
+// The fleet is the landing. #onboard is reached only through the New Orb button,
+// #orb only by opening one of the fleet's cards (or by the New Orb flow
+// arriving at its manage state on its own). A pasted hash with no board loaded
+// returns to the fleet rather than guessing at which board the visitor meant.
 function show(view) {
-  // A card can name a view that is not in this document: the Theme Editor is a
-  // separate page. With nothing to reveal, switching only hides the hub and
-  // re-shows it a hash-change later, so the click looks dead. Refuse instead and
-  // let the caller follow the card's href.
   if (view && !document.getElementById(view)) return false;
   $$(".view").forEach((v) => (v.hidden = v.id !== view));
-  $("#hub").hidden = view !== null;
   if (view) location.hash = view;
   return true;
 }
@@ -61,19 +79,22 @@ function show(view) {
 document.addEventListener("click", (e) => {
   const card = e.target.closest("[data-view]");
   if (card) {
-    // Intercept only a card naming a real in-page view. The Theme Editor card
-    // has an href to /composer/, a separate page: preventDefault there used to
-    // cancel that navigation, and the click did nothing at all.
+    // Intercept only a control naming a real in-page view. The Theme Editor link
+    // is a separate page: cancelling its navigation is the bug this guard exists
+    // for, so an unknown view name lets the click through untouched.
     if (show(card.dataset.view)) e.preventDefault();
     return;
   }
-  if (e.target.closest("[data-back]")) { show(null); location.hash = ""; }
+  if (e.target.closest("[data-back]")) { show("manage"); location.hash = ""; }
 });
 window.addEventListener("hashchange", route);
 function route() {
   const v = location.hash.replace("#", "");
-  if (v === "onboard" || v === "manage") show(v);
-  else show(null);
+  // #onboard is a dialog over the fleet, not a view: an old bookmark lands on
+  // the list with the dialog open, which is where it belongs.
+  if (v === "onboard") { show("manage"); openNewOrbDialog(); return; }
+  if (v === "orb" && current.mac) { show("orb"); return; }
+  show("manage");
 }
 
 // ---- meta ------------------------------------------------------------------
@@ -84,25 +105,105 @@ function route() {
   } catch (e) { $("#meta").textContent = e.message; }
 })();
 
-// ---- onboarding ------------------------------------------------------------
+// ---- ports, and the blank gate ---------------------------------------------
+// The New Orb button is the only place a cable with no orb on it appears, and it
+// opens on two verdicts the hub answers without touching the chip: "espressif"
+// says a genuine Espressif device sits behind this tty, and "orbSeen" says the
+// hub has evidence this MAC has been an orb — a name, an address, a stamp, an
+// announcement, a chip that answered. A port that is Espressif and has no orb
+// evidence is a blank candidate, and it is a candidate only here, never on the
+// fleet list. The fleet's own filter (isBlankRow) reads the row twin of this
+// same verdict, which is the point: the two floors are complements, so a board
+// is always visible through exactly one door. Reading row existence instead —
+// the inFleet field this gate first used — closed the door on any board ever
+// plugged in, because a cable sighting alone writes a row, and a wiped orb then
+// appeared nowhere on the page at all.
+let blanks = [];   // port entries a New Orb flash may target
+let allPorts = []; // the last /api/ports payload, for labels and cached verdicts
+
+function isBlankPort(e) {
+  if (!e || typeof e !== "object") return false;
+  if (!e.espressif) return false;
+  if (e.orbSeen === true) return false;
+  if (e.probed && e.isOrb) return false;
+  return true;
+}
+
 async function refreshPorts() {
-  const sel = $("#ob-port");
-  sel.innerHTML = "";
   try {
     const { ports } = await getJSON("/api/ports");
-    // Never trust the payload to be an array: taking .length on undefined threw
-    // here once and the picker blamed the browser instead of saying "no ports".
-    const list = Array.isArray(ports) ? ports : [];
-    if (!list.length) { sel.innerHTML = "<option>(no serial ports found)</option>"; return; }
-    for (const entry of list) {
-      const o = document.createElement("option");
-      const p = typeof entry === "string" ? entry : entry.port;
-      o.value = p;
-      o.textContent = portLabel(p, entry);
-      sel.appendChild(o);
-    }
-    renderIdentity(list);
-  } catch (e) { sel.innerHTML = `<option>(${esc(e.message)})</option>`; }
+    allPorts = Array.isArray(ports) ? ports : [];
+  } catch (e) { allPorts = []; }
+  blanks = allPorts.filter(isBlankPort);
+  const sel = $("#ob-port");
+  sel.innerHTML = "";
+  for (const entry of blanks) {
+    const o = document.createElement("option");
+    o.value = entry.port;
+    o.textContent = portLabel(entry.port, entry);
+    sel.appendChild(o);
+  }
+  renderBlankGate();
+  renderIdentity(allPorts);
+  fillConsolePorts();
+}
+
+// renderBlankGate is the button and the three honest states of the New Orb
+// dialog: one blank (chosen for you, and a dropdown with one option is an
+// insult), several (pick a cable), none (plug one in). It does not narrate how
+// a board got here — the button only opens for a board that is blank, so the
+// story is implied. The button hides rather than lies.
+function renderBlankGate() {
+  $("#mn-add").hidden = blanks.length === 0;
+  $("#ob-blankpick").hidden = blanks.length < 2;
+  $("#ob-blankone").hidden = blanks.length !== 1;
+  $("#ob-blanknone").hidden = blanks.length !== 0;
+  if (blanks.length === 1) {
+    const e = blanks[0];
+    $("#ob-blankone").textContent = "On the cable: " + portLabel(e.port, e) + " — flash it.";
+  }
+  gateFlashButton();
+}
+
+// gateFlashButton is the name requirement made physical: no word, no flash.
+// The hub enforces the same rule server-side; this is the same truth at zero
+// cost, and the button's title says so.
+function gateFlashButton() {
+  $("#ob-go").disabled = blanks.length === 0 || !($("#ob-name").value || "").trim();
+}
+$("#ob-name").addEventListener("input", gateFlashButton);
+
+// openNewOrbDialog is the whole New Orb flow now: a frame on the page that is
+// already showing the fleet, not a second page about the same bench. The name
+// box is always empty on open — the last orb's name is a fact about the last
+// orb, and pre-filling it is how two boards end up called "Gold".
+function openNewOrbDialog() {
+  renderBlankGate();
+  $("#ob-name").value = "";
+  $("#ob-blankstate").textContent = "";
+  newOrbStep("form");
+  $("#no-mask").hidden = false;
+  $("#ob-name").focus();
+}
+$("#mn-add").onclick = (e) => { e.preventDefault(); openNewOrbDialog(); };
+$("#no-close").onclick = closeNewOrbDialog;
+$("#no-mask").addEventListener("click", (e) => { if (e.target === $("#no-mask")) closeNewOrbDialog(); });
+function closeNewOrbDialog() {
+  // A running flash keeps going even when the dialog closes — the hub owns the
+  // wire, not this frame — but Cancel is the door that stops it. Closing while
+  // one runs is allowed and says so below the bar.
+  $("#no-mask").hidden = true;
+  newOrbStep("form");
+}
+
+// newOrbStep moves the dialog between its form (choose, name) and its progress
+// (watch). The dialog never swaps out for another page mid-flash: this is the
+// frame the button opened, still open, with the bar in it.
+function newOrbStep(step) {
+  $("#nf-form").hidden = step !== "form";
+  $("#nf-run").hidden = step !== "run";
+  $("#ob-go").hidden = step !== "form";
+  $("#no-foot .ghost").textContent = step === "run" ? "Close" : "Cancel";
 }
 
 // portLabel spells a port out. The MAC is free — the host reads it off the USB
@@ -113,35 +214,35 @@ function portLabel(p, entry) {
   if (typeof entry === "string" || !entry) { return p; }
   if (entry.probed) {
     return entry.isOrb
-      ? `${p}  —  ${(entry.mac || entry.usbMac || "orb")}  ·  ${entry.version || "version unknown"}`
-      : `${p}  —  ${entry.reason || "not an orb"}`;
+      ? p + "  —  " + (entry.mac || entry.usbMac || "orb") + "  ·  " + (entry.version || "version unknown")
+      : p + "  —  " + (entry.reason || "not an orb");
   }
-  if (entry.usbMac) { return `${p}  —  ${entry.usbMac}  ·  not identified`; }
-  if (entry.hint) { return `${p}  —  ${entry.hint}  ·  not identified`; }
+  if (entry.lonely) { return p + "  —  left lonely; New Orb takes it back"; }
+  if (entry.usbMac) { return p + "  —  " + entry.usbMac + "  ·  not identified"; }
+  if (entry.hint) { return p + "  —  " + entry.hint + "  ·  not identified"; }
   return p;
 }
 
-// renderIdentity shows the cached verdict for the selected port. It never probes:
-// the whole point of the cache is that identifying an orb costs a reboot and the
-// user decides when to pay it.
+// renderIdentity shows the cached verdict for the cable the manage view is
+// looking at. It never probes: the whole point of the cache is that
+// identifying an orb costs a reboot and the operator decides when to pay it.
 function renderIdentity(list) {
   const card = $("#ob-idcard"), state = $("#ob-idstate");
-  const sel = $("#ob-port");
-  const chosen = list.find((e) => e && e.port === sel.value);
+  const chosen = (list || allPorts).find((e) => e && e.port === (current.port || ""));
   if (!chosen || !chosen.probed) { card.hidden = true; return; }
   card.hidden = false;
   const rows = [];
   if (chosen.isOrb) {
-    rows.push(`<b>Orb ${esc(chosen.mac || "MAC unknown")}</b>`);
-    rows.push(`running ${esc(chosen.project || "gorb-os")} ${esc(chosen.version || "?")}` +
-      (chosen.compileTime ? ` <span class="hint">built ${esc(chosen.compileTime)}</span>` : ""));
-    if (chosen.ip) rows.push(`on the LAN at <code>${esc(chosen.ip)}</code>`);
-    rows.push(`<span class="verdict v-${esc(chosen.verdict || "unknown")}">${verdictText(chosen.verdict)}</span>`);
+    rows.push("<b>Orb " + esc(chosen.mac || "MAC unknown") + "</b>");
+    rows.push("running " + esc(chosen.project || "gorb-os") + " " + esc(chosen.version || "?") +
+      (chosen.compileTime ? ' <span class="hint">built ' + esc(chosen.compileTime) + "</span>" : ""));
+    if (chosen.ip) rows.push('on the LAN at <code>' + esc(chosen.ip) + "</code>");
+    rows.push('<span class="verdict v-' + esc(chosen.verdict || "unknown") + '">' + verdictText(chosen.verdict) + "</span>");
   } else {
-    rows.push(`<b>Not an orb</b> — ${esc(chosen.reason || "could not identify")}`);
+    rows.push("<b>Not an orb</b> — " + esc(chosen.reason || "could not identify"));
   }
   card.innerHTML = rows.join("<br>");
-  state.textContent = chosen.probedAt ? `identified ${esc(chosen.probedAt)}` : "";
+  state.textContent = chosen.probedAt ? "identified " + esc(chosen.probedAt) : "";
 }
 
 // verdictText words the comparison for someone who did not build either image.
@@ -157,6 +258,11 @@ function verdictText(v) {
   }
 }
 
+// ---- the firmware this hub carries ------------------------------------------
+// One line on every card that could flash: what the bundle is, where it came
+// from, and the door to replace it with a file. The New Orb flow and the cable
+// Update button both flash what this panel describes, so it belongs to the hub,
+// not to either button.
 async function refreshBuild() {
   const el = $("#ob-build");
   try {
@@ -172,9 +278,9 @@ async function refreshBuild() {
     // next field added here is not added raw.
     const who = b.version ? esc((b.project || "gorb-os") + " " + b.version) : esc(b.source || "unknown firmware");
     if (!imgs.length) { el.textContent = "firmware " + who + " lists no images"; return; }
-    el.innerHTML = `<b>Firmware ${who}</b> — ${b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)}<br>` +
-      imgs.map((i) => `${esc(i.offset)}  ${esc(i.name)}  (${Number(i.bytes) || 0} B)`).join("<br>") +
-      (b.sha256 ? `<br><span class="hint">sha256 ${esc(String(b.sha256).slice(0, 16))}… · ${imgs.length} image(s)</span>` : "");
+    el.innerHTML = "<b>Firmware " + who + "</b> — " + (b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)) + "<br>" +
+      imgs.map((i) => esc(i.offset) + "  " + esc(i.name) + "  (" + (Number(i.bytes) || 0) + " B)").join("<br>") +
+      (b.sha256 ? '<br><span class="hint">sha256 ' + esc(String(b.sha256).slice(0, 16)) + "… · " + imgs.length + " image(s)</span>" : "");
     const reset = $("#ob-fwreset"), pick = $("#ob-fwpick");
     const custom = b.source && b.source !== "built-in";
     reset.hidden = !custom;
@@ -182,15 +288,9 @@ async function refreshBuild() {
   } catch (e) { el.textContent = e.message; }
 }
 
-// esc keeps a filename the user chose from closing the panel's markup: it arrives
-// from an upload and is written into innerHTML.
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
 // pickFirmware uploads the chosen bundle. The hub validates it and only then makes
 // it active, so a wrong pick leaves the built-in firmware in place rather than
-// leaving the Flash button broken.
+// leaving the Update buttons pointing at a file that was never accepted.
 async function pickFirmware(file) {
   const state = $("#ob-fwstate");
   state.textContent = "checking " + file.name + "…";
@@ -203,7 +303,7 @@ async function pickFirmware(file) {
       state.textContent = (j.error || ("HTTP " + res.status)) + " — still flashing the built-in firmware";
       return;
     }
-    state.textContent = "flashing " + file.name;
+    state.textContent = "this hub now carries " + file.name;
     await refreshBuild();
   } catch (e) {
     state.textContent = e.message + " — still flashing the built-in firmware";
@@ -227,6 +327,7 @@ $("#ob-fwreset").onclick = async () => {
   await refreshBuild();
 };
 
+// ---- the streaming core ------------------------------------------------------
 // streamPost POSTs payload to url and feeds each newline-delimited JSON event
 // to onEvent. Its whole reason for existing is to keep a transport failure from
 // surfacing as a bare "TypeError: Failed to fetch": fetch() rejecting (the
@@ -270,35 +371,52 @@ async function streamPost(url, payload, onEvent) {
   return true;
 }
 
-// streamFlash drives one POST /api/flash and renders its NDJSON events into the
-// log/bar. It returns {mac, ok}: mac is the eFuse MAC the ROM reported (null if
-// the flash died before the MAC read), ok is whether the flash reached its
-// "done" event — the caller only runs onboarding after a real success, so a
-// refused or mid-flash error never dumps the user into a Wi-Fi form for an orb
-// that was not actually rewritten.
-async function streamFlash(url, payload, log, bar) {
-  log.textContent = ""; bar.style.width = "0%";
+
+
+// streamFlash drives one POST /api/flash or /api/lonely and renders its NDJSON
+// events into the shared flash panel: the bar is the story, the log is the
+// detail, and the same Cancel door reaches both. It returns {mac, ok}: mac is
+// the eFuse MAC the ROM reported, ok is whether the run reached its "done"
+// event — the caller only runs onboarding after a real success, so a refused or
+// mid-flash error never dumps the user into a Wi-Fi form for an orb that was
+// not actually rewritten.
+//
+// The bar is ONE bar for the WHOLE flash: the hub weights the plan by bytes and sends
+// the running percentage, so a 4 MB app moves the bar and a 12 kB otadata does not, and
+// the count of images rides beside it as detail rather than as the story. Two rules keep
+// the panel from twitching while it fills, both of them learned the hard way: nothing
+// that changes length writes to the element the seconds counter writes to (two writers on
+// one line alternated every two seconds), and nothing that grows the log writes to the
+// log at all (the panel is anchored to the bottom of the screen, so every appended
+// progress line pushed the bar itself upward). The depth behind a percentage lives in the
+// bar's title, where wanting it costs a hover and nothing costs the layout.
+// streamFlash drives one flash stream into WHATEVER ui is handed it, so the
+// New Orb dialog and the manage view's panel share one reader and two frames.
+// It returns the outcome rather than navigating anywhere: the caller decides
+// what opening a dialog next means, and this function must never yank the page
+// out from under a bar someone is watching. The panel the bar lives in must be
+// visible BEFORE the call — a progress bar nobody sees is the bug this rewrite
+// exists to kill.
+async function streamFlash(url, payload, ui) {
+  const log = ui.log, bar = ui.bar, opEl = ui.op, cancelBtn = ui.cancel;
+  const liveEl = ui.live || opEl;
+  log.textContent = ""; bar.style.width = "0%"; bar.title = ""; opEl.textContent = "";
   let mac = null;
   let ok = false;
-
-  // Offer the way out, and take it through the hub rather than by dropping this
-  // fetch. Abandoning the connection leaves the ROM mid-write with no one to
-  // notice; /api/flash/cancel asks the flasher to stop at its next block boundary,
-  // which is the only place a stop leaves the flash in a state the next flash
-  // overwrites cleanly.
-  const opEl = $("#ob-op"), cancelBtn = $("#ob-cancel");
   const port = payload.port || "";
+  const loneling = url === "/api/lonely";
+  ui.doing.textContent = loneling ? "freeing " + port : "flashing " + port;
   cancelBtn.hidden = false;
   cancelBtn.disabled = false;
   cancelBtn.onclick = async () => {
     cancelBtn.disabled = true;
-    opEl.textContent = "cancelling the flash on " + port +
-      " — it stops at the next block boundary, and the orb stays in its bootloader";
+    liveEl.textContent = "cancelling the write on " + port +
+      " — it stops at the next block boundary; the chip stays in its bootloader, and one flash of either image finishes cleanly";
     try { await hubFetch("/api/flash/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port }) }); }
     catch (e) { /* the stream's own log line says what happened */ }
   };
-  const tick = setInterval(() => showLiveOp(port, opEl), 2000);
-  showLiveOp(port, opEl);
+  const tick = setInterval(() => showLiveOp(port, liveEl), 2000);
+  showLiveOp(port, liveEl);
   try {
     await streamPost(url, payload, (ev) => {
       if (ev.log) log.textContent += ev.log + "\n";
@@ -307,23 +425,35 @@ async function streamFlash(url, payload, log, bar) {
       else if (ev.mac) mac = ev.mac;
       else if (ev.progress) {
         const p = JSON.parse(ev.progress);
-        const pct = p.total ? Math.round((p.written / p.total) * 100) : 0;
+        const pct = Number.isFinite(p.pct) ? p.pct
+          : (p.total ? Math.round((p.written / p.total) * 100) : 0);
         bar.style.width = pct + "%";
-        log.textContent += `\r[${p.image + 1}/${p.of}] ${p.offset} ${p.written}/${p.total} (${pct}%)`;
+        bar.title = "image " + (p.image + 1) + "/" + p.of + " at " + p.offset +
+          " \u00b7 " + p.written + "/" + p.total + " B \u00b7 " + pct + "% of " + p.bytes + " B";
+        opEl.textContent = pct + "% \u00b7 " + (p.image + 1) + "/" + p.of;
       }
       log.scrollTop = log.scrollHeight;
     });
   } finally {
     clearInterval(tick);
     cancelBtn.hidden = true;
-    opEl.textContent = "";
   }
   return { mac, ok };
 }
 
-// showLiveOp reports what the hub says is running on this port, so the row states
-// the truth about the cable rather than the client's guess about its own request —
-// and a flash started in a second tab or by orbflash on the bench shows up too.
+// The manage view's own flash frame — the fixed bottom panel. fpOpen shows it
+// the instant a door there is pressed; fpClose hides it once the work is over.
+function fpUI() {
+  return { log: $("#ob-log"), bar: $("#ob-bar > div"), doing: $("#ob-doing"),
+           op: $("#ob-op"), live: $("#ob-liveop"), cancel: $("#ob-cancel") };
+}
+function fpOpen() { $("#ob-flashpanel").hidden = false; }
+$("#fp-close").onclick = () => { $("#ob-flashpanel").hidden = true; };
+
+// showLiveOp reports what the hub says is running on this port, so the panel
+// states the truth about the cable rather than the client's guess about its own
+// request — and a flash started in a second tab or by orbflash on the bench
+// shows up too.
 async function showLiveOp(port, el) {
   try {
     const { ops } = await getJSON("/api/ops");
@@ -331,22 +461,19 @@ async function showLiveOp(port, el) {
     el.textContent = mine.length
       ? mine.map((o) => o.kind + " running on " + o.port + " (" + o.seconds + "s)").join("; ")
       : "";
-  } catch (e) { /* the flash log is the primary voice here */ }
+  } catch (e) { /* the flash bar is the primary voice here */ }
 }
 
-$("#ob-refresh").onclick = refreshPorts;
-$("#ob-port").onchange = () => refreshIdentityFromCache();
-
-// probePort asks the hub to identify the selected port. It reboots the orb, so it
-// only ever happens on this click, and the button is disabled while one runs so a
-// double-click cannot queue a second reset of the same chip.
+// probePort asks the hub to identify the cable the manage view stands on. It
+// reboots the orb, so it only ever happens on this click, and the button is
+// disabled while one runs so a double-click cannot queue a second reset.
 async function probePort() {
-  const port = $("#ob-port").value;
+  const port = current.port;
   const state = $("#ob-idstate"), btn = $("#ob-probe"), card = $("#ob-idcard");
-  if (!port || port.startsWith("(")) { state.textContent = "no port selected"; return; }
+  if (!port) { state.textContent = "this orb is not on a cable right now"; return; }
   btn.disabled = true;
   card.hidden = true;
-  state.textContent = "restarting the orb to read its identity — about 10 seconds";
+  state.textContent = "restarting the orb to read what it runs — about 10 seconds";
   try {
     const res = await hubFetch("/api/ports/probe", {
       method: "POST",
@@ -366,143 +493,560 @@ async function probePort() {
 }
 
 $("#ob-probe").onclick = probePort;
+$("#ob-refresh").onclick = async () => { await refreshPorts(); renderBlankGate(); };
 
-// refreshIdentityFromCache repaints from the last /api/ports answer without
-// asking the hub for anything, so switching ports in the dropdown is free.
-async function refreshIdentityFromCache() {
-  try {
-    const { ports } = await getJSON("/api/ports");
-    renderIdentity(Array.isArray(ports) ? ports : []);
-  } catch (e) { $("#ob-idstate").textContent = e.message; }
+
+// ---- the orb under management ----------------------------------------------
+// One board at a time lives in view: its row from the pushed card, the cable it
+// is on if any, the address the hub dials if it has one. Everything the manage
+// view writes is keyed on the MAC — the address is a lease, and a name write
+// that trusted one would rename whoever holds it tomorrow.
+let current = { mac: "", ip: "", port: "", name: "", row: null };
+
+// isBlankRow is the fleet's doorkeeper, and it is the exact complement of the
+// New Orb gate: the hub's own `orb` verdict decides, so a board the hub cannot
+// yet call an orb is never a card here and is always a flash candidate over on
+// the cable side. Reading the verdict rather than re-deriving it from fields is
+// what keeps the two doors from disagreeing the way name/ip/fw/state-versus-
+// inFleet once did — that pair left a wiped board on a lead invisible in both
+// directions, which is how "plug in two orbs, see one" happened on this bench.
+function isBlankRow(o) {
+  if (!o || typeof o !== "object") return true;
+  return o.orb !== true;
 }
 
-$("#ob-go").onclick = async () => {
-  const port = $("#ob-port").value;
-  // Always the full manifest: this is an end-user tool, and which halves to
-  // write is bench knowledge. The server fixes it regardless of what is sent.
-  const mode = "full";
-  const wipe = $("#ob-wipe").checked;
-  const log = $("#ob-log");
-  const bar = $("#ob-bar > div");
-  const go = $("#ob-go");
-  go.disabled = true;
+// openOrbByIP is the one door into the manage view. The ip may be empty — a
+// board on a cable with no address is still openable, and its card is exactly
+// where the cable-only truth earns its buttons.
+function openOrbByIP(ip, mac, row) {
+  current = {
+    mac: mac || "", ip: ip || "", name: (row && row.name) || "", row: row || null,
+    port: (row && Array.isArray(row.ports) && row.ports[0]) || "",
+  };
+  orbIP = current.ip;                       // the scan/join doors dial this, one source
+  $("#mn-orbname").textContent = current.name || (row && row.instance) || current.mac || current.ip || "orb";
+  $("#mn-orbident").textContent = [current.mac && ("mac " + current.mac), current.ip && ("at " + current.ip),
+    current.port && ("on cable " + current.port)].filter(Boolean).join("  \u00b7  ");
+  $("#mn-name").value = current.name;
+  $("#mn-cablerow").hidden = !current.port;
+  $("#ob-identify").hidden = !current.port;
+  $("#ob-lonelyrow").hidden = !current.port;
+  $("#mn-wificard").hidden = !current.ip;
+  $("#mn-curfw").textContent = "loading\u2026";
+  $("#mn-verdict").textContent = "";
+  $("#ob-idcard").hidden = true;
+  renderIdentity(allPorts);
+  show("orb");
+  loadOrb();
+  if (current.ip) loadNetworks(false);
+}
+
+// loadOrb asks the board who it is. The reply is the manage view's headline and
+// the input to the version gate; a board that answers nothing is said so on the
+// firmware card, and the cable doors stay lit, because a cable answers to
+// nothing on a DHCP lease.
+async function loadOrb() {
+  if (!current.ip) {
+    $("#mn-curfw").textContent = "not on the LAN: the doors that work over the cable stay lit";
+    return;
+  }
   try {
-    // Onboarding runs after ANY successful flash, not just full: an app-mode
-    // flash of an unprovisioned/wiped orb still opens the provisioning AP, and
-    // the boot console the flash already captured decides AP vs connected — the
-    // firmware, not the flash mode, picks the branch. A flash that errored
-    // (ok=false) never opens the Wi-Fi form for an orb that wasn't rewritten.
-    const { mac, ok } = await streamFlash("/api/flash", { port, mode, wipe }, log, bar);
-    if (ok) startJoin(port, mac);
-    else $("#ob-join").hidden = true;
-  } finally {
-    go.disabled = false;
+    await hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: current.ip }) });
+  } catch (e) { /* the status read below reports the real failure */ }
+  try {
+    const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/status"));
+    current.name = st.name || current.name;
+    $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
+      " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "") + (st.tz ? " \u00b7 " + st.tz : "");
+    $("#mn-tz").value = st.tz || "";
+    $("#j-tz").value = st.tz || "";
+    if (st.name) $("#mn-name").value = st.name;
+    setUpdateGate(st.fw);
+    loadThemes(current.ip);
+    startPolling(current.ip);
+  } catch (e) {
+    $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message;
+    setUpdateGate("");
+  }
+}
+
+
+// setUpdateGate is the amber alert's other half: the OTA button lights only when
+// the hub's compare says upgrade — the row flag from the pushed card, or the
+// fresh status read, which outranks a stale flag the moment a board updates out
+// from under the page.
+let buildVersion = "";
+function setUpdateGate(statusFw) {
+  const rowUp = !!(current.row && current.row.update === true);
+  const can = (rowUp || !!statusFw) && !!current.ip;
+  $("#mn-update").disabled = !can;
+  $("#mn-updatenote").textContent = can
+    ? "this hub carries " + (buildVersion || "newer firmware") + " — the orb stages it, verifies it, and reboots once"
+    : (statusFw ? "this orb runs the firmware this hub carries: nothing to load"
+                : "no address to update over — the cable doors work without one");
+}
+
+// The OTA door. One POST does the whole staging: the hub reads its own bundle,
+// the device validates the image in the spare slot, and the reboot is the hub's
+// second request inside the same handler, so nobody is left holding a staged
+// slot they forgot about. The reply names both stamps.
+$("#mn-update").onclick = async () => {
+  if (!current.ip) return;
+  const btn = $("#mn-update"), note = $("#mn-updatenote");
+  btn.disabled = true;
+  note.textContent = "uploading to " + current.ip + " — the orb writes the spare slot with its cache off; this takes a minute";
+  try {
+    const r = await hubFetch("/api/orb/update", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: current.ip }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    const d = j.data || {};
+    note.textContent = "staged and rebooting: " + d.from + " → " + d.to + " — the card will show the new stamp in a moment";
+    $("#mn-curfw").textContent = "off the wire for one boot; the next check-in carries the new stamp";
+    pullFound();
+  } catch (e) {
+    note.textContent = "update refused: " + e.message;
+    btn.disabled = false;
   }
 };
 
-// ---- post-flash onboarding ---------------------------------------------------
+// The cable door for an orb that has been an orb for a while: the firmware this
+// hub carries, full manifest, NVS preserved unless the factory-reset box says
+// otherwise. It reuses the flash machinery because below the button it is the
+// same ROM conversation — the difference is only what it starts after: the same
+// join dialog a fresh flash converges on, so the two paths say the same words.
+$("#mn-cable").onclick = async () => {
+  if (!current.port) return;
+  const go = $("#mn-cable");
+  go.disabled = true;
+  fpOpen();
+  try {
+    const { mac, ok } = await streamFlash("/api/flash",
+      { port: current.port, mode: "full", wipe: $("#ob-wipe").checked }, fpUI());
+    if (ok) {
+      await refreshPorts();
+      if (!current.mac && mac) current.mac = mac;
+      openJoinDialog(current.port, mac || current.mac, "");
+    }
+  } finally { go.disabled = false; }
+};
+
+// ---- New Orb: the one flash a blank board gets -------------------------------
+// A fresh flash is the one flash with nothing to preserve: full manifest, NVS
+// cleared, exactly as a board leaves the factory. The name is mandatory — the
+// hub refuses a nameless fresh flash in the request itself, so no client is
+// trusted with that rule — and the hub writes it over the cable the moment the
+// app boots, before the stream reports done. The dialog stays open with its
+// bar live through the whole write; when done lands, the dialog closes and the
+// join dialog opens. The converged path for every flash door runs through
+// openJoinDialog, and nothing else navigates.
+$("#ob-go").onclick = async () => {
+  const port = blanks.length === 1 ? blanks[0].port : $("#ob-port").value;
+  if (!port || !blanks.some((b) => b.port === port)) {
+    $("#ob-blankstate").textContent = "that cable no longer reads as a blank board — the list follows the physical ports";
+    return;
+  }
+  const name = ($("#ob-name").value || "").trim();
+  if (!name) { $("#ob-blankstate").textContent = "the orb needs a name before it can be flashed"; return; }
+  newOrbStep("run");
+  $("#ob-blankstate").textContent = "";
+  const go = $("#ob-go"), close = $("#no-close");
+  go.disabled = true; close.disabled = true;
+  let mac = null, ok = false;
+  const ui = { log: $("#nf-log"), bar: $("#nf-bar > div"), doing: $("#nf-doing"),
+               op: $("#nf-op"), live: $("#nf-liveop"), cancel: $("#nf-cancel") };
+  try {
+    const r = await streamFlash("/api/flash", { port, mode: "full", wipe: true, name, fresh: true }, ui);
+    mac = r.mac; ok = r.ok;
+    if (ok) {
+      await refreshPorts();
+      pullFound();
+      $("#no-mask").hidden = true;
+      newOrbStep("form");
+      // The third argument is the /api/watch skip_ap flag, NOT the orb's name. A
+      // name here is truthy, and a truthy skip_ap drops Phase A — the only phase
+      // that returns the boot verdict and the boot scan — so a freshly flashed
+      // board answered with mode no_ip and an empty picker: "the scan produced
+      // nothing, it came up with nothing" (bench, 2026-10-15). A fresh flash is
+      // precisely the case that MUST run Phase A: its NVS is empty, so the
+      // provisioning AP and its scan are the whole story.
+      openJoinDialog(port, mac, "");
+    } else {
+      $("#ob-blankstate").textContent = "the flash stopped before its end — the log under the bar says why";
+    }
+  } finally {
+    go.disabled = false; close.disabled = false;
+    gateFlashButton();
+  }
+};
+
+
+// ---- Leave it lonely: the only end of orb life this page offers ------------
+// One class of act lives here: the board stops being an orb. There is no
+// whole-chip erase on this page — a blank S3 boot-loops, flaps its port, and
+// reads as a broken cable. The lonely image does the same ending honestly:
+// the board boots once, holds enumeration, wipes its own name, time zone and
+// credentials, and animates the one sentence that explains itself. The hub
+// forgets the board on success and remembers the act, so the cable's
+// MAC-shaped descriptor cannot rebuild the row (New Orb is the door back).
+// lonelyArm moves the card's Lonely button to its one-step confirm: the press that
+// armed it already named the act and the port, and the operator reads which board is
+// about to stop being an orb on the button's own face. The typed word is gone (the
+// operator's call, bench 2026-10-15: "don't do the whole are-you-sure-type-text-in-here
+// thing, super annoying — the user already went through hitting forget and hitting the
+// full reset button"). The hub's payload word stays: it is the gate for every scripted
+// and hand-crafted caller, and costs this page nothing.
+function lonelyArm() {
+  const port = current.port;
+  if (!port) {
+    $("#ob-lonely-hint").textContent = "this orb is not on a cable right now — the lonely image takes exactly the board on that lead";
+    return;
+  }
+  $("#ob-lonely").hidden = true;
+  $("#ob-lonely-hint").hidden = true;
+  $("#ob-lonely-confirm").hidden = false;
+  $("#ob-lonely-port").textContent = port;
+  $("#ob-lonely-go").disabled = false;
+  $("#ob-lonely-go").focus();
+}
+
+function lonelyDisarm() {
+  $("#ob-lonely-confirm").hidden = true;
+  $("#ob-lonely").hidden = false;
+  $("#ob-lonely-hint").hidden = false;
+  $("#ob-lonely-hint").textContent = "The kinder wipe: same end of orb life, but the board boots and says why on its own screen. New Orb flashes it into something else whenever you like.";
+}
+
+$("#ob-lonely").onclick = lonelyArm;
+$("#ob-lonely-no").onclick = lonelyDisarm;
+
+$("#ob-lonely-go").onclick = async () => {
+  const port = current.port;
+  if (!port || $("#ob-lonely-go").disabled) return;
+  $("#mn-cable").disabled = true;
+  $("#ob-lonely-go").disabled = true;
+  fpOpen();
+  let done = false;
+  try {
+    const { ok } = await streamFlash("/api/lonely", { port, confirm: "LONELY" }, fpUI());
+    done = ok;
+    if (ok) {
+      await refreshPorts();
+      pullFound();
+      show("manage"); location.hash = "";
+      $("#mn-find-note").textContent = "that board is lonely now — it boots, wiped its own settings, says so on its screen, and waits. New Orb takes it back whenever you like.";
+    }
+  } finally {
+    $("#mn-cable").disabled = false;
+    lonelyDisarm();
+    if (!done) $("#ob-lonely-go").disabled = false;
+  }
+};
+
+
+// ---- the forget dialog: the two endings for a live orb ---------------------
+// The gate says a live row rebuilds itself if you only delete it; this dialog
+// is the answer for an operator who pressed Forget on a live board anyway.
+// Two real actions, both serial, both taking the typed word the same doors
+// demand on the Onboard card:
+//
+//   • Full reset — /api/lonely writes the lonely image. The board stops being
+//     an orb, wipes its name, time zone and credentials, and waits on its own
+//     screen. The hub forgets the row and marks the chip, so it reads as a
+//     blank Espressif board, adoptable from New Orb.
+//   • Factory reset — /api/orb/cmd drives RESET ALL. The firmware stays; every
+//     setting goes; the board comes back as its own open provisioning AP and
+//     the next owner renames it there. The hub's card takes the default name
+//     "The Orb" once the ack lands (the server writes it on the ack).
+//
+// Both need the board on a lead of this hub — the hub commands cables, not
+// the air — and the dialog says so when livePort is empty.
+let fjRow = null;      // the <li> the dialog is acting on
+let fjBusy = false;    // one action at a time, and no closing mid-write
+
+function openForgetDialog(li) {
+  if (fjBusy) return;
+  fjRow = li;
+  const shown = li._name.value || li.dataset.mac || "this orb";
+  $("#fj-who").textContent = shown + " is answering the hub, so deleting its row alone would only hide it until the next check-in.";
+  const port = li._livePort || (li._port || "");
+  const log = $("#fj-log"); log.hidden = true; log.textContent = "";
+  const note = $("#fj-note");
+  const goL = $("#fj-lonely"), goR = $("#fj-reset");
+  goL.disabled = goR.disabled = !port;
+  note.textContent = port
+    ? "Both endings travel the USB lead at " + port + ". The press does it — this dialog is the confirmation."
+    : "the hub cannot reach this board over a cable: put it on a lead of this machine to use these endings, or factory-reset it from its own network page";
+  $("#fj-title").dataset.port = port;
+  $("#fj-mask").hidden = false;
+}
+
+function closeForgetDialog() {
+  if (fjBusy) return;
+  $("#fj-mask").hidden = true;
+  fjRow = null;
+}
+$("#fj-cancel").onclick = closeForgetDialog;
+
+// The buttons act on the press. Reaching this dialog already took two deliberate
+// clicks — Forget, then the named ending — and a typed word after that punished the
+// operator for the care they had just shown (bench, 2026-10-15). The dialog's own note
+// names the port each press writes to, the buttons stay disabled until the hub reports
+// the board reachable on a lead, and one press cannot re-fire while a write is in
+// flight: that is where the confirmation lives now.
+$("#fj-lonely").onclick = async () => {
+  if (fjBusy || !fjRow) return;
+  const port = $("#fj-title").dataset.port;
+  if (!port) return;
+  fjBusy = true;
+  $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
+  const log = $("#fj-log"); log.hidden = false; log.textContent = "leaving it lonely over " + port + "\n";
+  let ok = false;
+  try {
+    await streamPost("/api/lonely", { port, confirm: "LONELY" }, (ev) => {
+      if (ev.log) log.textContent += ev.log + "\n";
+      else if (ev.error) log.textContent += "\n\u2717 " + ev.error + "\n";
+      else if (ev.done) { log.textContent += "\n\u2713 " + ev.done + "\n"; ok = true; }
+      log.scrollTop = log.scrollHeight;
+    });
+  } finally {
+    fjBusy = false;
+    $("#fj-cancel").disabled = false;
+  }
+  if (ok) {
+    await refreshPorts();
+    pullFound();
+    $("#fj-mask").hidden = true; fjRow = null;
+    $("#mn-find-note").textContent = "that board is lonely now — it boots, wiped its own settings, and waits. New Orb takes it back whenever you like.";
+  }
+};
+
+$("#fj-reset").onclick = async () => {
+  if (fjBusy || !fjRow) return;
+  const port = $("#fj-title").dataset.port, mac = fjRow.dataset.mac || "";
+  if (!port) return;
+  fjBusy = true;
+  $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
+  const log = $("#fj-log"); log.hidden = false; log.textContent = "sending RESET ALL over " + port + "\n";
+  let acked = false;
+  try {
+    await streamPost("/api/orb/cmd", { port, mac, command: "reset", operand: "ALL" }, (ev) => {
+      if (ev.log) log.textContent += ev.log + "\n";
+      else if (ev.error) log.textContent += "\n\u2717 " + ev.error + "\n";
+      else if (ev.result) {
+        acked = ev.result.ack === true;
+        log.textContent += (acked ? "\n\u2713 reset acknowledged — the board reboots unconfigured\n"
+                                  : "\n\u2717 the orb refused the reset\n");
+      }
+      log.scrollTop = log.scrollHeight;
+    });
+  } finally {
+    fjBusy = false;
+  }
+  if (acked) {
+    pullFound();
+    $("#fj-mask").hidden = true; fjRow = null;
+    $("#mn-find-note").textContent = "factory reset — the board is unconfigured again, its AP is open for whoever claims it next, and the card reads \u201cThe Orb\u201d until they name it.";
+  }
+};
+
+
+// ---- post-flash onboarding: the join dialog ----------------------------------
 // The firmware decides the branch, not the UI and not the flash mode: a flash
 // that leaves stored NVS lets the orb self-join in ~2.5 s, while a fresh or
-// wiped orb opens its own open provisioning AP the moment boot finds NVS empty
-// — regardless of whether the flash was full or app-only. The flash session
-// reads the boot console while it still owns the port and records that verdict;
-// /api/watch consumes it. A connected orb's address is known only from what the
-// hub read over USB — the boot banner the flash logged, or the lease the serial
-// door read after PROV-ACK — never from an ARP table or a subnet sweep.
-// Credentials always travel over HTTP — scan + join through the same-origin
-// proxy, the same pair the orb's own config page uses.
+// wiped orb opens its own open provisioning AP the moment boot finds NVS empty.
+// The flash session reads the boot console while it still owns the port and
+// records that verdict; /api/watch consumes it. One dialog, one set of outcomes
+// — the name already reached the hub inside the flash, so the converged path
+// after ANY flash (fresh or reflash) is this frame.
 let orbIP = "";
 let provPort = ""; // the serial port the wired-provision door writes to
 let provMac = "";  // the flashed orb's MAC, the key back to its boot verdict
+let zoneList = null;
+// Watch is a read stream, so a closed dialog may drop its events but never the
+// hub's view of the port: a generation counter, not an aborted fetch (the one
+// abort allowed in this file belongs to the discovery watchdog). Stale events
+// land on a frame the hub can no longer answer, and the guard drops them at
+// the door — the hub-side tail ends on its own once the boot verdict lands.
+let watchGen = 0;
 
-function startJoin(port, mac) {
-  const join = $("#ob-join");
-  join.hidden = false;
-  $("#ob-watch").textContent = "waiting for the orb to boot…";
-  $("#ob-console").textContent = "";
-  $("#ob-ap").hidden = true;
-  $("#ob-pick").hidden = true;
-  $("#ob-done").hidden = true;
-  $("#j-log").textContent = "";
-  $("#sp-log").textContent = "";
-  orbIP = "";
-  provPort = port;
-  provMac = mac;
-  streamWatch(port, mac);
+function watchLog(text) {
+  const el = $("#ob-console");
+  el.textContent += text + "\n";
+  el.scrollTop = el.scrollHeight;
+  // Mirror the newest line onto the lock while the lock is up. The locked page
+  // carries a spinner and one hardcoded sentence, and that sentence stays true
+  // for a minute at a time — so a live wait behind it looked like a hang. The
+  // newest hub line is the difference between "waiting" and "apparently stuck".
+  const lock = $("#wj-lock");
+  if (!lock.hidden) $("#wj-lock-msg").textContent = text;
 }
 
-async function streamWatch(port, mac, skipAp, ip) {
+// The sentence the markup ships with, taken once at load. watchLog mirrors each
+// hub line onto the lock, which replaces it, and the next join must not inherit
+// the last join's last word.
+const lockIntro = $("#wj-lock-msg").textContent;
+
+// openJoinDialog is the one destination for every converged flash path. SkipAp
+// carries the /api/watch skip flag: after a provision the boot already showed a
+// PROV-ACK, and re-announcing that open AP to a joining orb wastes the wait.
+function openJoinDialog(port, mac, skipAp) {
+  provPort = port;
+  provMac = mac || "";
+  orbIP = "";
+  const gen = ++watchGen;
+  $("#ob-watch").textContent = "waiting for the orb to boot…";
+  $("#ob-console").textContent = "";
+  $("#wj-consoledetails").hidden = false;
+  $("#wj-apnote").hidden = true;
+  $("#ob-done").hidden = true;
+  $("#sp-log").textContent = "";
+  $("#sp-log").hidden = true;
+  showTzRow(false);
+  joinLock(true);
+  $("#wj-lock-msg").textContent = lockIntro;
+  $("#wj-mask").hidden = false;
+  loadZones();
+  streamWatch(gen, port, mac, skipAp, "");
+}
+
+// joinLock is the boot phase of the join dialog. Until the orb's own scan is in
+// there is nothing honest to show — an empty picker is the bug this replaces —
+// so the dialog carries a spinner instead of a form. Later stays live the whole
+// time: abandoning a slow boot is always allowed.
+function joinLock(on, msg) {
+  $("#wj-lock").hidden = !on;
+  $("#ob-join").hidden = on;
+  if (!on) showTzRow(true);
+  if (on && msg) $("#wj-lock-msg").textContent = msg;
+}
+
+function closeJoinDialog() {
+  // Invalidate first: an answer arriving after the close belongs to a frame
+  // nobody is looking at, and the orb keeps booting without an audience.
+  watchGen++;
+  $("#wj-mask").hidden = true;
+}
+
+async function streamWatch(gen, port, mac, skipAp, ip) {
   await streamPost("/api/watch", { port, mac, skip_ap: !!skipAp, ip: ip || "" }, (ev) => {
-    if (ev.log) {
-      const el = $("#ob-console");
-      el.textContent += ev.log + "\n";
-      el.scrollTop = el.scrollHeight;
-    } else if (ev.error) {
-      // A transport fault (manager restarted mid-probe, etc.) — say so on the
-      // watch line instead of leaving it stuck on "waiting for the orb to boot".
+    if (gen !== watchGen) return;
+    if (ev.log) watchLog(ev.log);
+    else if (ev.error) {
+      // A watch that cannot answer is still an answer: the orb is on its own
+      // AP or off the cable, and the typed form is the door that remains.
       $("#ob-watch").textContent = ev.error;
-    } else if (ev.result) onWatchResult(ev.result);
+      joinLock(false);
+    }
+    else if (ev.result) onWatchResult(ev.result);
   });
 }
 
 function onWatchResult(res) {
+  joinLock(false);
   const watch = $("#ob-watch");
   if (res.mode === "lan") {
-    // A full flash preserves NVS, so a provisioned orb returns to its network
-    // on its own — pushing a scan/join form at a connected orb is noise.
-    // The picker is for the orb that is reachable but NOT connected (wrong
-    // passphrase after a router change), which is the case that needs it.
     if (res.status && res.status.state === "connected") {
       watch.textContent = "orb is on the LAN at " + res.ip + ", already connected.";
-      doneWithOrb(res.ip, res.status);
+      joinDone(res.ip, res.status);
     } else {
-      const st = res.status ? res.status.state : "unknown state";
-      watch.textContent = "orb is reachable at " + res.ip + " but its state is \"" + st + "\".";
-      showPicker(res.ip);
+      // Reachable but NOT connected — wrong passphrase after a router change —
+      // is the case the form is for: wired door, boot-scan list, no AP hop.
+      populateSerialNetworks(res.networks || []);
+      watch.textContent = "orb answered at " + res.ip +
+        " but is not on Wi-Fi (state: " + (res.status ? res.status.state : "unknown") + ") — the form writes over the cable.";
     }
-  } else if (res.mode === "ap") {
-    watch.textContent = "orb has no stored network — it opened its own provisioning AP.";
-    $("#ob-ap-ssid").textContent = res.ap_ssid;
+  } else if (res.mode === "serial") {
     populateSerialNetworks(res.networks || []);
-    $("#ob-ap").hidden = false;
+    watch.textContent = "the boot scan read " + (res.networks || []).length +
+      " network" + ((res.networks || []).length === 1 ? "" : "s") + " off the console — wired door, the form writes over the cable.";
+    if (!(res.networks || []).length) serialRescan(true); // the boot window closed before the scan was read
+  } else if (res.mode === "ap") {
+    $("#ob-ap-ssid").textContent = res.ap_ssid || "";
+    $("#wj-apnote").hidden = false;
+    populateSerialNetworks(res.networks || []);
+    watch.textContent = "orb opened its own provisioning AP — the hub can still write over the cable.";
+    if (!(res.networks || []).length) serialRescan(true); // the flash missed the boot rows; drive a fresh scan now
   } else {
-    watch.textContent = "orb did not announce itself: " +
-      (res.reason || "enter its IP or join its AP and continue here") + ".";
-    showPicker("");
+    // no_ip / unknown: the hub has no address for it. With a cable bound that is
+    // never a dead end — the serial door answers in every state, including
+    // joined-and-hidden — so re-drive the scan rather than leaving the picker
+    // showing whatever the last round happened to leave, and say what the cable
+    // can still do instead of pointing only at an address nobody has.
+    if (provPort) {
+      watch.textContent = "no address yet: " + (res.reason || "it has not announced itself") +
+        " — the cable is still a door; Rescan re-reads its network list and the form writes over the wire.";
+      populateSerialNetworks([]);
+      serialRescan(true);
+    } else {
+      watch.textContent = "orb did not announce itself: " +
+        (res.reason || "it is flashed and holding — add it by address once you know where it lives") + ".";
+    }
   }
 }
 
-function showPicker(ip) {
-  $("#ob-pick").hidden = false;
-  $("#ob-ap").hidden = true;
-  $("#ob-done").hidden = true;
-  if (ip) { orbIP = ip; $("#j-ip").value = ip; loadNetworks(); }
+// serialRescan drives the firmware's serial SCAN verb over the bound cable: the
+// orb runs its radio again, mirrors PROVSCAN rows to the console, and closes
+// with PROVSCAN-END (the hub's own wait). It works in every state — fresh
+// provisioning or joined-and-hidden — because the command door is armed for the
+// life of the app. `auto` marks the silent retry the boot phase triggers when
+// the flash captured no rows; a manual press always reports out loud.
+let provScanBusy = false;
+async function serialRescan(auto) {
+  if (!provPort || provScanBusy) return;
+  provScanBusy = true;
+  const btn = $("#sp-rescan");
+  const gen = watchGen;
+  btn.disabled = true;
+  btn.textContent = "scanning…";
+  try {
+    await streamPost("/api/orb/cmd", { port: provPort, command: "scan" }, (ev) => {
+      if (gen !== watchGen) return;
+      if (ev.log) watchLog(ev.log);
+      else if (ev.error) {
+        const jlog = $("#sp-log");
+        jlog.hidden = false;
+        jlog.textContent += "rescan: " + ev.error + "\n";
+        if (!auto) $("#ob-watch").textContent = "the rescan did not complete — the console says why below; the typed SSID still works.";
+      }
+      else if (ev.result) {
+        const nets = ev.result.networks || [];
+        populateSerialNetworks(nets);
+        $("#ob-watch").textContent = "the orb's own scan read " + nets.length +
+          " network" + (nets.length === 1 ? "" : "s") + " over the cable.";
+      }
+    });
+  } finally {
+    provScanBusy = false;
+    btn.disabled = false;
+    btn.textContent = "Rescan";
+  }
 }
+$("#sp-rescan").onclick = () => serialRescan(false);
 
-function doneWithOrb(ip, st) {
+function joinDone(ip, st) {
   orbIP = ip;
   $("#ob-done-msg").textContent =
-    "orb is connected at " + ip +
-    " (" + st.rssi + " dBm, fw " + st.fw +
-    (st.tz ? ", " + st.tz : "") + "). Nothing left to configure.";
+    "connected at " + ip + " — " + (st.rssi || "?") + " dBm, fw " + (st.fw || "?") +
+    (st.tz ? ", " + st.tz : "") + ".";
+  $("#ob-join").hidden = true;
+  $("#wj-apnote").hidden = true;
   $("#ob-done").hidden = false;
-  $("#ob-pick").hidden = true;
-  $("#ob-ap").hidden = true;
+  pullFound();
 }
 
-$("#ob-rejoin").onclick = () => { $("#ob-done").hidden = true; showPicker(orbIP); };
-$("#ob-manage").onclick = () => { show("manage"); $("#mn-ip").value = orbIP; scan(); };
+$("#ob-rejoin").onclick = () => {
+  $("#ob-done").hidden = true;
+  $("#ob-join").hidden = false;
+  $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
+};
+$("#ob-manage").onclick = () => { closeJoinDialog(); $("#ob-flashpanel").hidden = true; openOrbByIP(orbIP, provMac, null); };
+$("#ob-ap-here").onclick = () => { window.open("http://192.168.4.1/", "_blank"); };
 
-$("#ob-ap-here").onclick = () => showPicker($("#j-ip").value.trim() || "192.168.4.1");
-$("#j-rescan").onclick = () => loadNetworks(true);
-
-// ---- wired (serial) provisioning door ---------------------------------------
-// The boot scan the flash captured off the console arrives here as res.networks;
-// it is the ONLY network list available when the hub is wired-only and cannot
-// reach the AP's 192.168.4.1. "Provision over USB" reboots the orb into its app
-// and writes one PROV line on the held console (server-side /api/provision); the
-// firmware writes its own NVS keys and joins. The orb then comes up as a station
-// and the normal LAN phase takes over.
+// populateSerialNetworks fills the wired-provision door's scan list: the boot
+// scan the flash captured off the console. It is the ONLY network list
+// available when the hub is wired-only and cannot reach the AP's 192.168.4.1.
 function populateSerialNetworks(nets) {
   const sel = $("#sp-ssid");
   sel.innerHTML = "";
@@ -513,47 +1057,177 @@ function populateSerialNetworks(nets) {
   nets.forEach((n) => {
     const o = document.createElement("option");
     o.value = n.ssid;
-    o.textContent = `${n.ssid}  (ch ${n.ch}, ${n.rssi} dBm${n.open ? ", open" : ""})`;
+    o.textContent = n.ssid + "  (ch " + n.ch + ", " + n.rssi + " dBm" + (n.open ? ", open" : "") + ")";
     sel.appendChild(o);
   });
   if (nets.length) sel.selectedIndex = 1; // best (first, firmware sorts strong→weak)
+  // A select whose only option is the apologetic placeholder says "type it".
+  // The SSID row can hide; the zone row cannot — joinLock owns that lever, and
+  // a dead-looking picker was the bug this pass removed.
+  $("#wj-ssidpick").hidden = nets.length === 0;
 }
+
+// ---- the time zone the join form writes ---------------------------------------
+// The list is the firmware's OWN table, served by /api/tz from the same source
+// the parity test pins: an orb that knows every name it can be given cannot be
+// told a name it will reject. Each row arrives as {name, posix, iana, label};
+// the picker shows the city, posts the device key, and hands the IANA name to
+// the browser when it is asked where it is. UTC is not a guess at home; the
+// browser may know better, and when it does the form says so in one line.
+async function loadZones() {
+  const sel = $("#sp-tz");
+  const keep = sel.value;
+  try {
+    const r = await hubFetch("/api/tz");
+    const d = await readDeviceJSON(r);
+    const rows = (d && d.ok && d.data && d.data.zones) || [];
+    if (!rows.length) throw new Error("empty zone table");
+    zoneList = rows;
+    sel.innerHTML = "";
+    for (const z of zoneList) {
+      const o = document.createElement("option");
+      o.value = z.name;
+      o.textContent = (z.label && z.label !== z.name) ? z.label + "  (" + z.name + ")" : z.name;
+      sel.appendChild(o);
+    }
+    sel.value = zoneList.some((z) => z.name === keep) ? keep : "UTC";
+    $("#sp-tzstate").textContent = "";
+  } catch (e) {
+    zoneList = null;
+    sel.innerHTML = "<option>UTC</option>";
+    $("#sp-tzstate").textContent = "the orb's own zone list did not load — UTC and a typed name are all this form trusts";
+  }
+}
+
+// zoneOffsetMin asks the browser's own IANA data what a zone's UTC offset is,
+// in minutes, at the given instant (default now). longOffset gives
+// "GMT+05:30"; plain "GMT" is zero.
+function zoneOffsetMin(iana, at) {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: iana, timeZoneName: "longOffset" })
+      .formatToParts(at || new Date()).find((p) => p.type === "timeZoneName");
+    if (!part) return null;
+    const m = /^GMT(?:([+-])(\d{2})(?::(\d{2}))?)?$/.exec(part.value);
+    if (!m) return null;
+    if (!m[1]) return 0;
+    return (m[1] === "-" ? -1 : 1) * (parseInt(m[2], 10) * 60 + (m[3] ? parseInt(m[3], 10) : 0));
+  } catch (e) {
+    return null; // a browser without that zone (rare; these are all real ones)
+  }
+}
+
+// zoneFromLocation names the orb-table row that best covers a longitude. The
+// target is the solar offset (longitude over 15, snapped to the 15-minute
+// grid); a row's score is the smaller of its distance at the January offset
+// and at the July offset — the browser's own IANA data, read in both
+// hemispheres' calm, so a daylight line and its winter twin compete on the
+// zone's own rule and not on the accident of today's date. Within 90 minutes
+// it is a match; beyond that the form would be naming a stranger's clock, and
+// it says so instead.
+function zoneFromLocation(longitude) {
+  if (!zoneList) return null;
+  const solarMin = Math.round(longitude / 3.75) * 15; // minutes east of UTC, on the 15-minute grid
+  const jan = new Date(Date.UTC(2026, 0, 15));
+  const jul = new Date(Date.UTC(2026, 6, 15));
+  let best = null, bestD = 91;
+  for (const z of zoneList) {
+    if (!z.iana) continue;
+    const oJan = zoneOffsetMin(z.iana, jan);
+    const oJul = zoneOffsetMin(z.iana, jul);
+    if (oJan === null && oJul === null) continue;
+    const ds = [oJan, oJul].filter((o) => o !== null)
+      .map((o) => Math.abs(o - solarMin)).sort((a, b) => a - b);
+    if (ds[0] < bestD) { bestD = ds[0]; best = z; }
+  }
+  return best;
+}
+
+// The join dialog's own doors, wired here rather than inline: Later abandons
+// this orb to its open AP — reachable at 192.168.4.1 and listed as such — and
+// the next flash reopens this same frame for it or for any other.
+$("#wj-later").onclick = closeJoinDialog;
+$("#wj-mask").addEventListener("click", (e) => { if (e.target === $("#wj-mask")) closeJoinDialog(); });
+
+// showTzRow is one lever, pulled by joinLock. The zone row is a join field
+// like the other two: a row that hid itself whenever the scan came back empty
+// is how this form once read as "the picker is dead".
+function showTzRow(on) { $("#sp-tzrow").hidden = !on; }
 
 $("#sp-go").onclick = async () => {
   const jlog = $("#sp-log");
+  jlog.hidden = false;
   const ssid = ($("#sp-manual").value.trim() || $("#sp-ssid").value || "").trim();
   if (!ssid) { jlog.textContent = "pick or type a network first"; return; }
   if (!provPort) { jlog.textContent = "no bound serial port — flash first"; return; }
-  const pass = $("#sp-pass").value;
-  const tz = $("#sp-tz").value.trim();
+  const tz = $("#sp-tz").value.trim() || "UTC";
   const go = $("#sp-go");
   go.disabled = true;
   jlog.textContent = "";
   try {
-    await streamPost("/api/provision", { port: provPort, ssid, pass, tz }, (ev) => {
-      if (ev.log) { jlog.textContent += ev.log + "\n"; jlog.scrollTop = jlog.scrollHeight; }
-      else if (ev.error) { jlog.textContent += "error: " + ev.error + "\n"; }
+    await streamPost("/api/provision", { port: provPort, ssid, pass: $("#sp-pass").value, tz }, (ev) => {
+      if (ev.log) watchLog(ev.log);
+      else if (ev.error) jlog.textContent += "error: " + ev.error + "\n";
       else if (ev.result) {
         const n = ev.result;
         if (n.ack && n.ip) {
-          jlog.textContent += `accepted "${ssid}" — orb joined and took lease ${n.ip} over USB.\n`;
+          jlog.textContent += `accepted "${ssid}" — joined, lease ${n.ip} read over USB.\n`;
         } else {
           jlog.textContent += (n.ack
             ? `accepted "${ssid}" — the orb is joining; watch for it on the LAN.`
             : `no PROV-ACK for "${ssid}" — check the passphrase, or the orb may already be configured (use its AP page).`) + "\n";
         }
-        if (n.ack) streamWatch(provPort, provMac, true, n.ip || ""); // confirm the USB lease, else re-probe the LAN
+        if (n.ack) streamWatch(watchGen, provPort, provMac, true, n.ip || ""); // confirm the USB lease, else re-probe the LAN
       }
+      jlog.scrollTop = jlog.scrollHeight;
     });
   } finally {
     go.disabled = false;
   }
 };
 
-// showPicker revealed the SSID/password form; the AP list comes from the
-// orb's own radio through the proxy. The polling shape mirrors the orb's
-// built-in config page: /wifi/scan answers {"status":"scanning"} until the
-// radio task has drained the driver, then the ready list.
+$("#sp-ap").onclick = () => {
+  $("#sp-log").hidden = false;
+  $("#sp-log").textContent = "AP mode it is — the orb keeps answering on 192.168.4.1, and the hub lists it like any other orb.\n" +
+    "This dialog stays open; the join form stays ready for whenever it has a network to be given.";
+};
+
+$("#sp-geo").onclick = () => {
+  const state = $("#sp-tzstate");
+  if (!navigator.geolocation) { state.textContent = "this browser does not do location — pick the zone"; return; }
+  state.textContent = "asking the browser for your location…";
+  navigator.geolocation.getCurrentPosition((p) => {
+    const z = zoneFromLocation(p.coords.longitude);
+    if (z) {
+      $("#sp-tz").value = z.name;
+      state.textContent = "location says " + (z.label || z.name) + " (" + z.name + ") — fix it if that is wrong";
+    } else {
+      state.textContent = "no zone in the orb's own list covers that position — pick one";
+    }
+  }, (e) => {
+    state.textContent = "no location (" + (e.code === 1 ? "not allowed" : "no fix") + ") — pick the zone";
+  }, { timeout: 8000, maximumAge: 600000 });
+};
+
+// ---- passphrase reveal ---------------------------------------------------------
+// Every password field on this page gets a show/hide: the join form's whole
+// failure mode is one mistyped character, and the one that costs a re-provision
+// is the one nobody can see. Shared wiring, identical behaviour on both fields.
+for (const pair of [["#sp-pass", "#sp-pass-show"], ["#j-pass", "#j-pass-show"]]) {
+  const inp = $(pair[0]), btn = $(pair[1]);
+  if (!inp || !btn) continue;
+  btn.onclick = () => {
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    btn.textContent = show ? "hide" : "show";
+    btn.setAttribute("aria-label", (show ? "Hide" : "Show") + " the passphrase");
+    inp.focus();
+  };
+}
+
+$("#j-rescan").onclick = () => loadNetworks(true);
+
+// populateSerialNetworks fills the wired-provision door's scan list: the boot
+
 let scanTimer = null;
 async function loadNetworks(fresh) {
   const jlog = $("#j-log");
@@ -592,9 +1266,10 @@ async function loadNetworks(fresh) {
   }
 }
 
+
 $("#j-go").onclick = async () => {
   const log = $("#j-log");
-  const ip = $("#j-ip").value.trim() || orbIP;
+  const ip = orbIP;   // the Wi-Fi card belongs to the orb under management; there is no other target
   const ssid = $("#j-ssid").value;
   if (!ip) { log.textContent = "enter the orb's LAN IP"; return; }
   if (!ssid) { log.textContent = "pick a network first (Rescan if the list is empty)"; return; }
@@ -622,7 +1297,12 @@ $("#j-go").onclick = async () => {
       const s = await r.json();
       if (s.state === "connected") {
         log.textContent += "\n\u2713 connected — the orb is on " + ssid + " at " + ip + ".";
-        doneWithOrb(ip, s);
+        // This door serves the join dialog when it is the one that knocked, and
+        // the orb view's own card otherwise; the branch reads the open frame,
+        // not the caller, so both roads land on the same sentence.
+        if (!$("#wj-mask").hidden) joinDone(ip, s);
+        orbIP = ip;
+        pullFound();
         return;
       }
       log.textContent += "\n" + s.state + (s.wifi_reason_name ? " (" + s.wifi_reason_name + ")" : "");
@@ -632,75 +1312,8 @@ $("#j-go").onclick = async () => {
       }
     } catch (e) { /* the join drops requests mid-flight; the next tick recovers */ }
   }
-  log.textContent += "\nstill not connected after 30 s — check Manage in a moment.";
+  log.textContent += "\nstill not connected after 30 s — check the Orbs list in a moment.";
 };
-
-// ---- manage ----------------------------------------------------------------
-// The browse lists and this card dials: the two are separate on purpose. The
-// operator commits to one orb — by the IP the Find card offered, the one USB
-// provisioning reported, or one they look up on their router — and we dial that
-// single address through the same-origin proxy. A listing grants nothing; the
-// allow POST below is what does. No ARP table, no sweep.
-async function scan() {
-  const list = $("#mn-list");
-  const ip = $("#mn-ip").value.trim();
-  if (!ip) { list.innerHTML = "<div class='hint'>enter an orb IP, then Load</div>"; return; }
-  list.innerHTML = "<div class='hint'>loading " + esc(ip) + "\u2026</div>";
-  // Register the address with the hub before dialing it. The proxy refuses any
-  // address this hub did not learn over USB or receive here, so that the box in
-  // front of the operator cannot be pointed at a router, a neighbour, or a cloud
-  // metadata address and used as a pivot.
-  try { await hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) }); }
-  catch (e) { /* the status read below reports the real failure */ }
-  try {
-    const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
-    list.innerHTML = "";
-    list.appendChild(renderOrb({ ip: ip, status: st }));
-    // The orb answered, so this is the address worth remembering for next launch,
-    // and the theme card and the status poll belong to it.
-    loadThemes(ip);
-    startPolling(ip);
-    hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) }).catch(() => {});
-  } catch (e) {
-    list.innerHTML = "<div class='hint err'>no orb answering at " + esc(ip) + " \u2014 " + esc(e.message) + "</div>";
-  }
-}
-
-function renderOrb(o) {
-  const node = $("#orb-tpl").content.cloneNode(true);
-  const set = (sel, txt) => { const el = $(sel, node); el.textContent = txt; return el; };
-  set(".ip", o.ip);
-  set(".state", o.status.state);
-  const st = o.status;
-  const kv = $(".kv", node);
-  const rows = [["fw", st.fw], ["idf", st.idf], ["slot", st.slot], ["img", st.img],
-    ["rssi", st.rssi], ["tz", st.tz + " (" + st.tz_offset + "m)"], ["ap", st.ap],
-    ["art", st.art_ready], ["synced", st.synced]];
-  for (const [k, v] of rows) {
-    if (v === undefined || v === null || v === "") continue;
-    const dt = document.createElement("dt"); dt.textContent = k;
-    const dd = document.createElement("dd"); dd.textContent = String(v);
-    kv.append(dt, dd);
-  }
-  const out = $(".out", node);
-  const ipEl = $(".ip", node).textContent;
-  $(".tz", node).value = st.tz || "";
-
-  $(".set-tz", node).onclick = () => postOrb(ipEl, "/api/v1/config", { tz: $(".tz", node).value }, out);
-  $(".ap", node).onclick = () => postOrb(ipEl, "/api/v1/wifi/ap", { on: st.ap ? "off" : "on" }, out);
-  $(".reboot", node).onclick = () => postOrb(ipEl, "/api/v1/reboot", {}, out);
-  // The /orb proxy returns the device API's raw JSON (no hub {ok,data}
-  // envelope), so it goes through readDeviceJSON, not getJSON — getJSON would
-  // treat a valid status object as a failure for lacking an "ok" field.
-  $(".refresh", node).onclick = async () => {
-    try {
-      const s = await readDeviceJSON(await hubFetch("/orb/" + ipEl + "/api/v1/status"));
-      out.hidden = false; out.textContent = JSON.stringify(s, null, 2);
-    } catch (e) { out.hidden = false; out.textContent = "\u2717 " + e.message; }
-  };
-
-  return node;
-}
 
 async function postOrb(ip, path, body, out) {
   out.hidden = false; out.textContent = "\u2192 POST " + path;
@@ -714,45 +1327,88 @@ async function postOrb(ip, path, body, out) {
 
 // ---- discovered orbs --------------------------------------------------------------
 //
-// The hub browses _orb._tcp and the hub alone: the page reads a server-side list and
-// never touches 5353, because a browser cannot and a page must not pick its own
-// targets. What that list may contain is what an orb announced — the instance name,
-// the TXT mac/fw/state and an A record. What it may not do is make any of them
-// reachable. Choosing a row fills the IP box the operator then loads, so the click
-// that authorises a dial stays a human one, exactly as it was when the only way to
-// get an address was to type it.
+// The hub listens for _orb._tcp check-ins and the hub alone: the page reads a server-side
+// list and never touches 5353, because a browser cannot and a page must not pick its own
+// targets. The list arrives pushed. /api/orbs/stream answers the moment the page opens and
+// again whenever a check-in changes what the card says, so a row lands within a round-trip of
+// the orb announcing itself instead of at the next tick of a timer, and there is no button to
+// press for a fact the hub already has. A frame body is the same envelope GET /api/orbs
+// answers, and applyFound renders either one: nothing on this card renders a row by a second
+// path.
 //
-// Rows are built with createElement/textContent, never interpolated markup: an
-// instance name and a fw stamp arrive over UDP from a device on the LAN, which is the
-// same trust level as a theme name off an SD card, and the same rule applies.
-async function readFound() {
-  const list = $("#mn-find"), state = $("#mn-find-state"), note = $("#mn-find-note");
-  let d;
-  try {
-    const r = await fetch("/api/orbs");
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || ("HTTP " + r.status));
-    d = j.data;
-  } catch (e) {
-    state.textContent = "\u2717 browse unavailable: " + e.message;
-    return;
+// What the list may not do is make any of them reachable. Choosing a row fills the IP box the
+// operator then loads, so the click that authorises a dial stays a human one, exactly as it
+// was when the only way to get an address was to type it.
+//
+// Rows are built with createElement/textContent, never interpolated markup: an instance name
+// and a fw stamp arrive over UDP from a device on the LAN, which is the same trust level as a
+// theme name off an SD card, and the same rule applies.
+
+// foundRows keys the DOM by mac, which is the row's identity in the hub's own terms: an orb
+// that took a new lease patches the same <li> rather than trading places with itself, and a
+// row nobody announced any more is removed rather than left to age on screen.
+const foundRows = new Map();
+let refusedTail = "";
+let orbAbort = null;
+let orbBytesAt = 0;
+
+// applyFound renders one snapshot of the card, from a stream frame or from the GET pull
+// underneath it. Rows already on screen are patched in place, so a check-in cannot steal
+// focus, wipe a half-typed name, or scroll a list the operator is reading.
+function applyFound(d) {
+  const list = $("#mn-find"), state = $("#mn-find-state");
+  const orbs = (Array.isArray(d.orbs) ? d.orbs : []).filter((o) => !isBlankRow(o));
+  $("#mn-empty").hidden = orbs.length !== 0;
+  const fresh = orbs.filter((o) => o.update === true).length;
+  if (fresh) $("#mn-find-note").textContent = fresh + " orb(s) carry older firmware than this hub; the amber tag names them.";
+  const live = new Set();
+  for (const o of orbs) {
+    // Keyed on the roster key, not the mac: a cable the host cannot attribute has no
+    // mac, and two of them must not fight over one <li>.
+    const k = o.key || o.mac;
+    live.add(k);
+    let li = foundRows.get(k);
+    if (!li) {
+      li = foundRow(o);
+      foundRows.set(k, li);
+      // Above the refusal tail, which is not a row and is rebuilt wholesale; below the
+      // rows already there, which stay exactly where the operator left them.
+      const tail = list.querySelector("li.refused");
+      if (tail) list.insertBefore(li, tail); else list.appendChild(li);
+    }
+    paintFound(li, o);
   }
-  if (!d.listening) {
-    state.textContent = "no browse running here: " + (d.error || "unknown reason");
-    if (d.askError) note.textContent = "query: " + d.askError;
-    return;
+  for (const entry of foundRows) {
+    if (!live.has(entry[0])) { entry[1].remove(); foundRows.delete(entry[0]); }
   }
-  list.textContent = "";
-  const orbs = d.orbs || [];
-  if (!orbs.length) {
-    state.textContent = d.askError
-      ? "nothing heard yet \u2014 this hub cannot originate multicast (" + d.askError + ")"
-      : "nothing heard in the last few seconds; reboot an orb or press Browse again";
-  } else {
-    state.textContent = orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " announced";
-  }
-  for (const o of orbs) list.appendChild(foundRow(o));
-  for (const f of (d.refused || []).slice(-3).reverse()) {
+  drawRefused(list, (d.refused || []).slice(-3).reverse());
+
+  // The header describes what the list is a view of. A deaf mDNS listener no longer
+  // empties it: rows on cables are as real as rows from packets, and the old card that
+  // cleared itself on a bind failure is the bug the merge exists to fix.
+  const beat = "check-ins every " + (d.checkinS || 60) + " s";
+  const onCable = orbs.filter((o) => o.onCable).length;
+  const lanN = orbs.filter((o) => (o.via || []).indexOf("lan") >= 0).length;
+  const parts = [];
+  if (lanN) parts.push(lanN + " by LAN");
+  if (onCable) parts.push(onCable + " on cable");
+  state.textContent = (!d.listening
+    ? "\u2717 no LAN listener: " + (d.error || "unknown reason")
+    : orbs.length
+      ? orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " \u2014 " + parts.join(" + ") + " (" + beat + ")"
+      : "no orb seen: none announced, and none on a cable")
+    + (d.cableError ? "  \u00b7  port list failed: " + d.cableError : "");
+}
+
+// drawRefused replaces the refused tail, and only when its content moved. Those lines are the
+// hub explaining why a packet did not become a row, and rebuilding them under an operator who
+// was reading one is the mistake the old timer made to the rows.
+function drawRefused(list, tail) {
+  const sig = tail.map((f) => (f.name || "") + "|" + f.reason).join(";");
+  if (sig === refusedTail) return;
+  refusedTail = sig;
+  for (const li of Array.prototype.slice.call(list.querySelectorAll("li.refused"))) li.remove();
+  for (const f of tail) {
     const li = document.createElement("li");
     li.className = "found refused";
     li.textContent = "refused " + (f.name || "a packet") + ": " + f.reason;
@@ -760,74 +1416,253 @@ async function readFound() {
   }
 }
 
-// foundRow builds one row of the LAN list. Everything on it is createElement/textContent:
-// the instance name and the mac arrive over UDP from a device on the LAN, and the name and
-// room come back out of a file the hub wrote, so neither is content this page may interpolate.
+// pullFound is the one place this card asks, and it asks once: after a rename lands or a
+// Forget, where the change came from the page itself and the hub has no reason to announce
+// it. It is not a poll and it is not a button coming back — it is a write reading its result.
+async function pullFound() {
+  const state = $("#mn-find-state");
+  try {
+    applyFound(await getJSON("/api/orbs"));
+  } catch (e) {
+    state.textContent = "\u2717 discovery unread: " + e.message;
+  }
+}
+
+
+// watchOrbs holds the pushed card open, and reconnects: on loss after a beat, and on silence
+// through the watchdog below. Silence matters because a hub that went away mid-connection —
+// upgraded, rebooted, a laptop asleep — can leave the socket open with nothing ever arriving,
+// and a card that keeps showing last night's fleet is worse than one that admits it stopped
+// talking to the hub.
+async function watchOrbs() {
+  const ctrl = new AbortController();
+  orbAbort = ctrl;
+  const state = $("#mn-find-state");
+  try {
+    const r = await fetch("/api/orbs/stream", {
+      signal: ctrl.signal, headers: { Accept: "application/x-ndjson" },
+    });
+    if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const got = await rd.read();
+      if (got.done) break;
+      orbBytesAt = Date.now();
+      buf += dec.decode(got.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line || line.charAt(0) === ":") continue;
+        let j;
+        try { j = JSON.parse(line); } catch (e) { continue; }
+        if (!j.ok) { state.textContent = "\u2717 " + (j.error || "the hub refused the stream"); continue; }
+        applyFound(j.data);
+      }
+    }
+  } catch (e) {
+    if (!ctrl.signal.aborted) {
+      // A lost stream is not a quiet LAN: the hub itself went away, and with it every
+      // fact this card renders — packets and cable sightings alike. Clear the rows
+      // rather than leaving last night's bench on screen, which is what the pin on
+      // foundRows.clear() below guards.
+      for (const entry of foundRows) entry[1].remove();
+      foundRows.clear();
+      state.textContent = "\u2717 discovery stream lost: " + e.message;
+    }
+  }
+  if (orbAbort === ctrl) {
+    orbAbort = null;
+    setTimeout(watchOrbs, 3000);
+  }
+}
+
+// The watchdog. The hub's keepalive is 25 s, so three beats of no bytes at all is a dead pipe
+// rather than a quiet LAN. Aborting is the reconnect: the read above rejects, the catch stays
+// quiet because this side asked for it, and the tail reopens the stream.
+setInterval(() => {
+  if (!orbAbort || !orbBytesAt) return;
+  if (Date.now() - orbBytesAt < 90000) return;
+  $("#mn-find-state").textContent = "\u2717 discovery stream went quiet \u2014 reopening";
+  orbAbort.abort();
+}, 10000);
+
+// foundRow builds one row's shell; paintFound writes onto it. The split is the point: the
+// controls are wired to the row's mac rather than to a snapshot of the packet, so a frame that
+// lands while the operator is mid-word cannot strand a handler on a stale address, and the
+// patch has somewhere to put a new age without rebuilding the row around their cursor.
 function foundRow(o) {
   const li = document.createElement("li");
   li.className = "found";
+  li.dataset.key = o.key || o.mac;
+  li.dataset.mac = o.mac || "";
 
   const label = document.createElement("button");
   label.className = "ghost found-pick";
-  const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
-  label.textContent = [o.name || o.instance, o.ip + ":" + o.port, "mac " + o.mac, "fw " + o.fw,
-    o.state === "provisioning" ? "PROVISIONING" : o.state,
-    o.cable ? "on usb" : "announced", o.contended ? "CONTESTED" : "",
-    o.shared ? "shared name" : "", o.bound ? "" : "unverified",
-    o.solicited ? "" : "unasked", o.ageS + "s"].filter(Boolean).join("  \u00b7  ");
-  // Three separate reasons a row cannot be dialed, and the button says which one it is
-  // rather than leaving the operator to discover it by clicking: the address belongs to
-  // nobody on the wired LAN, two boards both claim it, or it was never allowed at all.
-  label.disabled = !o.ip || softAP || !!o.contended;
-  label.title = softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
-    : o.contended ? "two boards both announce this address, so the hub will not dial either"
-    : (o.refusal || (o.dialable ? "already an address this hub dials"
-      : "fills the Orb IP box; the hub dials it only once you load it"));
-  label.onclick = () => { $("#mn-ip").value = o.ip; scan(); };
-  li.appendChild(label);
+  const badge = document.createElement("span");
+  badge.className = "found-via";
 
-  // Naming is keyed on the mac and never on the address, so the label the operator
-  // chooses survives the lease the router hands out tomorrow.
-  const ident = document.createElement("span");
-  ident.className = "row";
   const name = document.createElement("input");
-  name.placeholder = "name"; name.maxLength = 32; name.value = o.name || "";
-  name.title = "the word you use for this orb; the hub keys it on the mac";
-  const room = document.createElement("input");
-  room.placeholder = "room"; room.maxLength = 32; room.value = o.room || "";
-  const save = document.createElement("button");
-  save.className = "ghost"; save.textContent = "Remember";
-  save.onclick = () => hubFetch("/api/fleet/set", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mac: o.mac, name: name.value, room: room.value }),
-  }).then(async (r) => {
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok) { $("#mn-find-note").textContent = "\u2717 " + (j.error || "rename refused"); return; }
-    readFound();
-  });
+  name.placeholder = "name"; name.maxLength = 32;
+  // The name is display-only on this page. The board owns its word — a rename
+  // goes onto the device, and the hub only ever keeps a copy of what the device
+  // agreed to — so the editing door is the orb's own network page. The field
+  // here reads the current word (device's or, after a hub-commanded factory
+  // reset, the default "The Orb") and nothing more.
+  name.readOnly = true;
+  name.title = "the word this orb answers to; it lives on the board and is renamed on the board's own page";
+
   const forget = document.createElement("button");
   forget.className = "ghost"; forget.textContent = "Forget";
-  // The confirm is not ceremony: forgetting drops the name the operator chose and
-  // revokes the address the hub was willing to dial.
+  // Forget is the one removal this list offers: the hub remembers every board it has
+  // seen and never needs a press to add one. The confirm is not ceremony — it drops the
+  // name the operator chose and revokes any address the hub was willing to dial.
+  //
+  // A live board gets a different answer, not a dead button. The hub can see the cable
+  // sweep, the last check-in and whether the remembered address still answers; when the
+  // verdict is "that row comes back", this opens the forget dialog and offers what
+  // actually ends a live board — a lonely write (full reset) or RESET ALL (factory
+  // reset of its settings). A row with no mac has no chip to act on, so it stays dark.
   forget.onclick = () => {
-    if (!confirm("Forget " + (o.name || o.instance) + "? The hub stops dialing " + o.ip + ".")) return;
+    if (!li._forgettable && li._liveForget) { openForgetDialog(li); return; }
+    if (forget.disabled) return;   // the hub said no; the title says what to do instead
+    const where = li._ip ? "? The hub stops dialing " + li._ip + "." : "; the hub will stop listing it.";
+    if (!confirm("Forget " + (name.value || li.dataset.mac) + where)) return;
     hubFetch("/api/fleet/forget", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mac: o.mac }),
-    }).then(readFound);
+      body: JSON.stringify({ mac: li.dataset.mac }),
+    }).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      // The door can still refuse: the card's verdict is cached, and a board plugged
+      // back in or heard from between this frame and the click is exactly the case the
+      // rule is about. Say so on the card instead of redrawing it as if it worked.
+      if (!r.ok || j.ok === false) $("#mn-find-note").textContent = "\u2717 " + (j.error || "the hub refused");
+      else $("#mn-find-note").textContent = "";
+      pullFound();
+    });
   };
-  ident.append(name, room, save, forget);
-  li.appendChild(ident);
+
+  // A cable the host cannot attribute is a row with a tty and nothing else, and the one
+  // action that changes that is the probe: it costs a reboot, so the hub offers it here
+  // and pays for it on the Onboard card, where the port is already the thing under test.
+  const identify = document.createElement("button");
+  identify.className = "ghost"; identify.textContent = "Identify"; identify.hidden = true;
+  identify.title = "open this board and read the chip once; costs a reboot";
+  identify.onclick = () => {
+    openOrbByIP(o.ip || "", o.mac, o);
+  };
+
+  const ident = document.createElement("span");
+  ident.className = "row";
+  // The Forget refusal, spelled out on the row whenever the button is dead. Created here
+  // and filled by the paint, so a row that has not been annotated yet shows the reason
+  // rather than a mystery.
+  const fwhy = document.createElement("span");
+  fwhy.className = "fwhy"; fwhy.hidden = true;
+  ident.append(name, forget, identify, fwhy);
+  const upd = document.createElement("span");
+  upd.className = "tag update"; upd.textContent = "update"; upd.hidden = true;
+  upd.title = "this hub carries newer firmware than this orb runs — open it to load";
+  li._update = upd;
+  label.append(upd);
+  li.append(label, badge, ident);
+  li._label = label; li._badge = badge; li._name = name;
+  li._forget = forget; li._identify = identify; li._fwhy = fwhy;
   return li;
 }
 
-$("#mn-scan").onclick = scan;
-$("#mn-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
-$("#mn-find-go").onclick = () =>
-  hubFetch("/api/orbs/ask", { method: "POST" }).then(readFound).catch((e) => {
-    $("#mn-find-state").textContent = "\u2717 " + e.message;
-  });
-readFound();
+// viaBadge spells the access paths out in the words the hub means: how it could reach this
+// board if asked, right now. "on LAN" and "on cable" are not synonyms — one is a packet
+// from a network, the other is a fact about this machine's USB ports.
+function viaBadge(o) {
+  const via = Array.isArray(o.via) ? o.via : [];
+  const lan = via.indexOf("lan") >= 0, usb = via.indexOf("usb") >= 0;
+  const access = lan && usb ? "LAN + cable" : usb ? "on cable" : lan ? "on LAN" : "not seen now";
+  const where = usb && o.ports && o.ports.length ? " (" + o.ports.join(", ") + ")" : "";
+  const idn = o.identity === "confirmed" ? "mac confirmed"
+    : o.identity === "descriptor" ? "mac from USB descriptor"
+    : o.identity === "unknown" ? "mac unreadable: identify it"
+    : "mac announced by the orb";
+  return access + where + " \u00b7 " + idn;
+}
+
+// paintFound writes what the hub currently believes onto a row that already exists. It runs on
+// every frame, so the two boxes the operator types into are left alone while they hold the
+// caret, and a row whose address moved cannot leave a stale one behind in the confirm text.
+function paintFound(li, o) {
+  const label = li._label;
+  const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
+  const shown = o.name || o.instance || o.mac || o.key || "?";
+  const addr = o.ip ? o.ip + ":" + o.port : "no address";
+  li.dataset.mac = o.mac || "";
+  li._port = (o.ports && o.ports.length) ? o.ports[0] : "";
+  label.textContent = [shown, addr, o.mac ? "mac " + o.mac : "no mac", o.fw ? "fw " + o.fw : "",
+    o.state === "provisioning" ? "PROVISIONING" : (o.state || ""),
+    o.contended ? "CONTESTED" : "",
+    o.shared ? "shared name" : "", o.bound ? "" : "unverified",
+    typeof o.ageS === "number" ? o.ageS + "s" : "",
+    // A row with no via is an address-book entry: the hub has an address and no sighting
+    // this run. Say which of remembering it is, because the dial verdict is the only thing
+    // that distinguishes a board in a drawer from a board whose lease moved.
+    (!o.via || !o.via.length) ? ("remembered" + (o.reachable === "dead" ? ", not answering"
+      : o.reachable === "alive" ? ", answering" : ", asking now")) : ""].filter(Boolean).join("  \u00b7  ");
+  li._badge.textContent = viaBadge(o);
+  // The verdict is the hub’s, and read fail-closed like Forget’s: the field is
+  // pinned non-omitempty server-side precisely so an absent one means no.
+  li._update.hidden = o.update !== true;
+  // Four separate reasons a row cannot be dialed, and the button says which one it is rather
+  // than letting a click discover it: the board has no address at all, its address is a SoftAP
+  // the hub cannot route to, two boards both claim it, or it was never allowed.
+  label.disabled = !!o.contended;   // a cable row opens too: its cable doors are the manage state
+  label.title = !o.ip ? (o.refusal || "opens over the cable it is on")
+    : softAP ? "reachable only from its own network; the hub cannot dial a SoftAP address"
+    : o.contended ? "two boards both announce this address, so the hub will not dial either"
+    : (o.refusal || (o.dialable ? "already an address this hub dials"
+      : "fills the Orb IP box; the hub dials it only once you load it"));
+  label.onclick = () => { openOrbByIP(o.ip || "", o.mac, o); };
+  // Identity is what the naming controls key on. A cable with no mac has no row anywhere to
+  // write a name against — offering the box anyway would promise a save that cannot happen,
+  // so the controls go dark and the Identify button takes their place.
+  const nameable = !!o.mac;
+  li._name.disabled = !nameable;
+  // Forget is disabled on its own axis: a row can have a mac and still be one the hub
+  // will rebuild, and the reason has to be readable without a click that does nothing.
+  //
+  // The test is "literally true", not "not false". The verdict is the hub's answer, and a
+  // hub that did not answer is not a hub that said yes: an old build, a truncated frame or
+  // a row shape this page has never seen all read as an absent field, and reading those as
+  // permission is how a gate ends up guarding nothing. Fail closed, and say that is what
+  // happened, so a silent field is a visible state rather than a live button.
+  const forget = li._forget;
+  const why = typeof o.forgetWhy === "string" ? o.forgetWhy : "";
+  const forgettable = nameable && o.forgettable === true;
+  const liveForget = nameable && o.liveForget === true;
+  li._forgettable = forgettable;
+  li._liveForget = liveForget;
+  li._livePort = typeof o.livePort === "string" ? o.livePort : "";
+  // A forgettable row deletes itself on confirm; a live-forget row opens the
+  // dialog instead of dying on the button. Only a row with neither — no mac,
+  // or a hub that sent no verdict at all — is a dead button, and it says why.
+  forget.disabled = !(forgettable || liveForget);
+  forget.title = !nameable ? "no mac yet, so there is no fleet entry to forget"
+    : forgettable ? "drop this board from the fleet and revoke the address the hub was dialing"
+    : liveForget ? "this board is live: Forget offers the endings — a lonely write (full reset) or RESET ALL (factory reset of its settings)"
+    : (why || "the hub sent no Forget verdict for this row");
+  // The reason goes on the row as well as in the title. A greyed button with no text is a
+  // fault to diagnose rather than a rule to learn, and the operator should not have to
+  // hover every row to find out which of the three facts is holding the button back.
+  const fwhy = li._fwhy;
+  fwhy.hidden = forgettable || liveForget || !nameable;
+  fwhy.textContent = !nameable ? "no mac yet, so there is no fleet entry to forget"
+    : (forgettable || liveForget) ? ""
+    : (why || "the hub sent no Forget verdict: reload the page");
+  li._identify.hidden = o.identity !== "unknown";
+  li._ip = o.ip;
+  if (document.activeElement !== li._name) li._name.value = o.name || "";
+
+}
+
 
 // ---- themes -----------------------------------------------------------------
 // Everything here posts to a /api/theme/* endpoint; none of it builds a device URL.
@@ -1045,6 +1880,8 @@ async function prefillOrbIP() {
   try {
     const d = await getJSON("/api/orb/known");
     if (d && d.ip && !el.value.trim()) el.value = d.ip;
+    const ad = $("#ad-ip");
+    if (ad && d && d.ip && !ad.value.trim()) ad.value = d.ip;
   } catch (e) { /* a hub with no history is the normal first run */ }
 }
 
@@ -1059,11 +1896,11 @@ let pollDelay = 15000;
 function startPolling(ip) {
   clearTimeout(pollTimer);
   const tick = async () => {
-    const row = $("#mn-list .state");
+    const row = $("#mn-curfw");
     if (!row) return; // the card was cleared; stop rather than dial unbidden
     try {
       const st = await readDeviceJSON(await hubFetch("/orb/" + ip + "/api/v1/status"));
-      row.textContent = st.state || "?";
+      row.textContent = "running " + (st.fw || "?") + " \u00b7 state " + (st.state || "?");
       pollDelay = 15000;
     } catch (e) {
       pollDelay = Math.min(pollDelay * 2, 240000);
@@ -1129,11 +1966,68 @@ async function fillConsolePorts() {
   } catch (e) { sel.innerHTML = `<option>(${esc(e.message)})</option>`; }
 }
 
-// ---- boot ------------------------------------------------------------------
+
+$("#mn-tz-go").onclick = () => {
+  if (!current.ip) { $("#mn-tz-note").textContent = "no address to write to"; return; }
+  postOrb(current.ip, "/api/v1/config", { tz: $("#mn-tz").value.trim() }, $("#mn-tz-note"));
+};
+
+// ---- the Add-by-IP dialog -------------------------------------------------------
+// For the orb the hub cannot hear: a network that blocks its broadcasts, a board
+// that took a new lease. One POST asks the address who it is; only an orb
+// answering earns a row, and the dialog keeps its own counsel until then — a
+// wrong typing costs one sentence, Cancel costs nothing, and the fleet is
+// untouched either way because the hub learns the grant only from the answer.
+function openDialog() {
+  $("#ad-err").hidden = true;
+  $("#ad-mask").hidden = false;
+  $("#ad-ip").focus();
+}
+function closeDialog() { $("#ad-mask").hidden = true; }
+$("#ad-open").onclick = openDialog;
+$("#ad-cancel").onclick = closeDialog;
+$("#ad-mask").addEventListener("click", (e) => { if (e.target === $("#ad-mask")) closeDialog(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#ad-mask").hidden) closeDialog();
+});
+$("#ad-check").onclick = async () => {
+  const ip = $("#ad-ip").value.trim(), err = $("#ad-err"), go = $("#ad-check");
+  if (!ip) { err.textContent = "type the address the orb is answering at"; err.hidden = false; return; }
+  go.disabled = true;
+  err.hidden = true;
+  err.textContent = "";
+  try {
+    const r = await hubFetch("/api/orb/add", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    const d = j.data || {};
+    closeDialog();
+    $("#mn-find-note").textContent = "added " + (d.name || d.mac || "") + " at " + ip + " — the hub dials it as an orb.";
+    await pullFound();
+    openOrbByIP(ip, d.mac, null);
+  } catch (e) {
+    // The refusal stays in the dialog, which is where the typing happened: the
+    // operator either corrects the address or cancels. Nothing else moved.
+    err.textContent = (e.message || String(e)) + " — nothing was added. Try another address, or Cancel.";
+    err.hidden = false;
+    go.disabled = false;
+    return;
+  }
+  go.disabled = false;
+};
+$("#ad-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ad-check").click(); });
+
+// ---- boot -----------------------------------------------------------------------
+// The stream is the card; the ports poll follows the physical bench, and the
+// watchdog below reopens the stream, never the card. A blank board appearing on
+// a cable is a port fact, and port facts only change because someone reached
+// for a cable, which is exactly what a five-second poll is for.
 route();
 prefillOrbIP();
 fillConsolePorts();
-
 refreshPorts();
 refreshBuild();
-
+watchOrbs();
+setInterval(() => { refreshPorts(); }, 5000);

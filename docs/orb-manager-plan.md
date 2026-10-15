@@ -434,7 +434,8 @@ Updated at each commit.
 
 Onboard and Manage are one surface. Manage lists named orbs; Onboard's
 serial flow becomes "Add an orb" inside it. Discovery moves from the deleted
-/24 sweep to mDNS: the firmware advertises `_orb._tcp` and the hub browses.
+/24 sweep to mDNS: the firmware advertises `_orb._tcp` on its own check-in rhythm and
+the hub only listens.
 The owner types nothing.
 
 ### 5.1 Decisions taken
@@ -537,6 +538,31 @@ The owner types nothing.
   so the hand-rolled advertiser's multicast joins work in this build.
 - **Socket budget is 10** (`sdkconfig.defaults:68`): one mDNS socket with two
   `IP_ADD_MEMBERSHIP` calls, not per-interface sockets.
+
+- **The hub listens; it does not ask (changed 2026-10-14).** The ledger entries above
+  and in the item-5 record describe the querier as it stood: a startup burst, a 45 s
+  re-ask ticker, `POST /api/orbs/ask`, and the `askError` / `solicited=false` card
+  surface that admitted this bench cannot originate multicast. The firmware
+  self-refresh (`MDNS_ADV_REFRESH_S` 60 s, half of `MDNS_TTL`) made all of it redundant,
+  and `47a77f5` removed it: `orbmdns.Source` is read-only, `MulticastConn` has no
+  `WriteTo`, `query.go` is now `names.go`, and `TestBrowserNeverSends` fails the package
+  if a send reappears. The load the querier carried is now the device's: cold discovery
+  costs up to one check-in interval, and `TestCheckinCadenceMatchesFirmware` pins the
+  cadence the card promises to the firmware constant rather than to a comment.
+
+- **The card is pushed off the check-in, not polled (changed 2026-10-14, same item).** The
+  page holds `GET /api/orbs/stream` (NDJSON, frame body identical to `GET /api/orbs`) and the
+  hub answers it when `orbmdns` fires `Config.OnChange` and the card's fingerprint actually
+  moved. The Refresh button is gone, and so is the 20 s timer that supplemented it: with the
+  hub originating nothing, both only re-read a cache the hub was about to push anyway. Two
+  properties are load-bearing and pinned. A refresh the orb sends on schedule pushes nothing
+  (`TestQuietCheckInPushesNoFrame`), because the fingerprint excludes row age — otherwise the
+  page repaints once a minute forever and the push is a poll with a handshake. And reading
+  the card in any transport still cannot renew a dial (`TestReadingTheCardDoesNotExtendAGrant`),
+  so a long-lived connection is not a long-lived permission. The backstop is
+  `orbStreamResync` (2 min): upkeep pruning and USB-side fleet edits change the card without
+  a packet, so a re-answer on a timer stays, demoted to a safety net rather than the design.
+
 
 ### 5.3 The ladder
 
@@ -878,10 +904,12 @@ recovery action, and recovery actions restart things.
 
 **Design points to settle before any code:**
 
-1. **A boot-intent flag, not a credential wipe.** Needs a one-shot key in
+1. **A boot-intent flag, not a credential wipe.** Needed a one-shot key in
    `orb.net` (e.g. `reprov`) that forces the provisioning branch even when
-   credentials exist. The branch to force is the `else` at `orb_net.c:3904` — its
-   real condition is `ssid[0] != '\0'`, not a `have_prov_creds` helper.
+   credentials exist — **built: `POST /api/v1/reprov`, see D2's as-built note.** The
+   branch to force was the `else` at `orb_net.c:3904` — its
+   real condition is `ssid[0] != '\0'`, not a `have_prov_creds` helper. The line moved
+   with the merge; in the current file it is `if (creds_in_flash && !prov_forced)`.
    Tonight's bench build proved the mechanism works: one forced condition on a
    credentialed orb entered the full provisioning path, served the menu and the
    live scan list, and erased nothing.
@@ -1492,13 +1520,20 @@ carrying `PROV_INTENT_MAGIC` `0x4F524250` ("ORBP"), plus a pure `prov_intent_arm
 and a `prov_intent_consume()` that the boot branch calls exactly once. The consume
 zeroes on EVERY read, not only on a hit: that is what stops a cold boot's garbage
 from surviving to be misread later, and it is what makes one request equal one boot.
-`orb_net_request_provisioning()` is the only writer; it sets the word and returns,
+`orb_net_request_provisioning()` is the only arming writer; it sets the word and returns,
 deliberately not rebooting, because a knob handler and an HTTP handler owe the user
 different courtesies before the connection dies. It returns false without touching
 anything when `ORB_NET_AP_FALLBACK` is off, and the boot branch logs the dropped
 request rather than swallowing it. The branch condition is now
 `if (creds_in_flash && !prov_forced)`; D4's latch stays `= creds_in_flash`, which is
 what makes a forced boot a recovery session and gets it the deadline.
+
+**Corrected again (`reprov`, below):** "the only writer" needs one qualifier.
+`prov_intent_disarm()` is a second, rollback-only writer, added for the path where the
+setter succeeded and the reboot could not be scheduled. It clears and never sets, so the
+arming invariant — nothing forces a provisioning boot that a human did not ask for —
+still holds. Six lifecycle rows in `tools/host_tz_test.py` now pin consume-once and the
+rollback against the shipped functions rather than against the predicate alone.
 
 **Two corrections to this section as written.** (a) The magic is not a stylistic
 preference: `.rtc_noinit` is `(NOLOAD)` and nothing zeroes it, so at cold power-on
@@ -1615,9 +1650,65 @@ decide whether the case needs a hole. Do not describe it as existing until it is
 credential-present guard — **done, bench-proved**. (3+4) D2 RTC flag AND the
 boot-branch check of it — **done together in `b913dbe`**, because a flag with no
 reader is untestable and step (4) is one line. Writers so far: none —
-`orb_net_request_provisioning()` has no in-tree caller yet, so the feature is inert
-in a ship build exactly as D4 was. (5) D5 knob sample, the first real writer.
-(6) hub-side intent state. Ship nothing before (1).
+`orb_net_request_provisioning()` had no in-tree caller as of `b913dbe`, so the feature
+was inert in a ship build exactly as D4 was. (5a) **done: `POST /api/v1/reprov`**, the
+HTTP writer — **bench-proven end to end on orb-B**, see the proof below it. It is also the
+first in-tree caller of `orb_net_request_provisioning()`, so the feature stopped being inert
+in a ship build the moment the route landed. (5b) D5 knob sample, still net-new. (6) hub-side
+intent state — **unblocked and hardware-backed**: the route exists and a real orb performed,
+so the Manage card can hold an "Ask this orb to re-provision" action against a verb that has
+been observed on a device rather than only on the double. Ship nothing before (1).
+
+**D2's first writer: `POST /api/v1/reprov`.** The design point above asked for "a one-shot
+`orb.net` verb (e.g. `reprov`)"; this is it, registered in the uri table beside
+`/api/v1/reboot` rather than folded into it, because "come back as you were" and "come
+back in your AP" are different instructions to a wall clock. It refuses with 409 before it
+arms anything, on two counts: already provisioning (restarting would only reset the D4
+clock and drop the page the operator is standing on), and no AP fallback in this build
+(provisioning with no SoftAP is a state with no way in and no way out). On a timer failure
+after the setter wrote the word, it rolls the word back and answers 500, so a refusal
+never leaves an orb that will come up in AP mode an hour later at someone's house. It
+does not touch the D4 latch or write flash: the boot branch forces the branch, the boot
+branch arms the sojourn, and the cancel path stays what D2 measured it to be — remove
+VDD, because a chip reset keeps the RTC domain powered.
+Hub side: allowlisted in `deviceRoutes`, answered by the double (which transitions to
+`provisioning` / `192.168.4.1` in the call, since it has no boot to wait for, and takes a
+`NoAPFallback` knob to exercise the refusal no LAN caller can ask for).
+
+**Bench-proven on orb-B (2026-10-13, `9224bd7`, console on `/dev/ttyACM1`).** Flashed with
+`orbflash -port /dev/ttyACM1 -mode full -mac 44:bd:8d:78:26:18`; the MAC gate is what makes
+flashing two identical boards on one bench safe. Every claim in the paragraph above was then
+observed rather than reasoned about:
+
+| Step | Measured |
+|---|---|
+| POST `/api/v1/reprov` | `200 {"state":"rebooting","into":"provisioning"}` |
+| Handler warn | `reprov: provisioning boot armed, rebooting in 750 ms` at t=35390 |
+| Timer callback | `rebooting into provisioning on request` at t=36140 — 750 ms later, exactly |
+| Clean leave | `disassociated: assoc-leave (reason 8) — self-initiated, not counted` |
+| Reset cause | `rst:0xc (RTC_SW_CPU_RST),boot:0x2b` — planned, no watchdog |
+| Boot branch | `provisioning requested — coming up as "orb-2619" (open) for ONE boot` |
+| D4 sojourn | `RECOVERY provisioning: … the AP gives up in 600 s` — the ship duration, not D2's 40 s probe value |
+| Route exists | `GET /api/v1/reprov` → `405`, where an unknown URI → `404` |
+
+Consume-once was proven by resetting mid-sojourn rather than waiting the 600 s out: the next
+boot printed **no** `provisioning requested` line, took the stored network, and reported
+`state connected / ap false` on the LAN within about a minute. The one-arm that stays
+unproven on hardware is the 409 `already provisioning` refusal — reaching it needs a client
+joined to the orb's open AP, and this bench box has no radio (`ip neigh` and
+`/sys/class/net` confirm wired and docker bridges only). It is covered by the double and by
+`host_tz_test.py`, and the guard it checks, `orb_net_is_provisioning()`, is the same one the
+console showed true on the forced boot.
+
+Two bench facts worth keeping. A `-mode full` flash writes bootloader, partition table,
+otadata, app and assets — **no NVS** — so stored credentials survive a reflash and the orb
+self-joins; the recovery-provisioning path is not how a reflash lands. And during the ~90 s
+outage the bench router handed `.34` to the *other* board: the first post-flash `status` came
+back `mac 44bd8d608088 fw 36f21a4`, which is orb-A, and it briefly looked like the bundle had
+flashed a stale build. Identify an orb by MAC, never by address. The `no lease 15 s after
+associating; dropping the association` retry cost this run about a minute at rssi −72 on a
+second radio; that is bench RF, and it is the behaviour to expect from the drop-and-retry
+path, not a `reprov` defect.
 
 **Corrected while building D2.** This line previously said the D4 expiry path would
 set the flag. It must NOT. D4's whole exit is "give up here and retry the stored
@@ -1631,3 +1722,141 @@ are a human: D5's knob, or the hub on a person's say-so.
 promotion; `lv_*` in `/api/v1/status` stays open; the fleet's untracked
 `sdkconfig` overrides stay the top OTA risk.
 
+## SPEC — the orb owns its name (2026-10-14)
+
+The fleet row's `name` stopped being the record and became a cache of one. Item 6
+keyed the name on the MAC, which fixed the DHCP case: a rebind keeps the label. It did
+not fix the storage case. The hub's whole state is one JSON file, so a deleted file, a
+machine move, or a reflash cost the owner the word they had typed, and the board went on
+announcing `orb-44bd8d782618` to a card that could only call it a hex suffix. The name
+now lives in the device's `storage` partition beside the credentials, under NVS key
+`name`, and the hub keeps its copy because a fleet view that dialed thirty boards to
+render thirty labels is not a view.
+
+**The write order is the feature.** `handleFleetSet` cleans the input, refuses anything
+the orb cannot store, checks the cross-lock, dials, and only then writes its own file.
+Each step's position is load-bearing:
+
+- Cleaning and `orbfleet.CheckNameASCII` run before the dial so an operator typing
+  "Café" gets one sentence from the hub instead of a bare 400 attributed to an IP.
+  `cleanWord` accepted that name for as long as the hub owned the string; the firmware
+  cannot store a byte above `0x7e`, so the hub's tolerance became a lie it told the
+  card.
+- The cross-lock runs before the dial, not after. Put the word on the board first and
+  let the fleet refuse it second, and the orb now carries a name the hub will not
+  record — the drift this change exists to remove, arrived at because the operator
+  clicked. `CheckNameFree` is `SetName`'s own helper extracted for exactly this, so the
+  pre-check cannot drift from the rule it predicts.
+- The device write precedes `SetName`. A hub that stored first and dialed second leaves
+  a file claiming a name no orb carries, and every later credential lookup keys on that
+  word.
+- `handleFleetSet` always dials, even when the cleaned value matches the cache. A
+  comparison shortcut would skip the request precisely when the cache is the thing that
+  is wrong, and the sharpest case is a clear: an empty cache and a board holding a name
+  look identical from the hub.
+
+**The read half is a poll, not a button.** The Manage panel already GETs
+`/api/v1/status` through the proxy, and that reply used to be delivered and forgotten.
+`proxy.go` now accumulates that one route's body under the cap the copy already
+enforces, and `foldDeviceName` refolds the row on EOF. The fold keys on the MAC inside
+the payload rather than the address it was fetched from, because an address is something
+an orb has at a moment. It decodes `name` as a `*string`: an absent key is not an answer
+and must not clear anything, while `""` is an answer and does. Board firmware from
+before this field, a body truncated by the proxy cap, and an unreachable orb are all
+ordinary events, and a fold that read any of them as "no name" would un-name an orb for
+answering slowly. The fold is read-only and writes the state file only on a change, so
+a poll every few seconds does not rewrite disk on a loop.
+
+**Two endpoints disagree about a missing key, on purpose.** `POST /api/v1/name` with no
+`name` in the body answers 200 with the name unchanged; `POST /api/v1/config` with no
+`tz` answers 400. Name is one field of several a client may be setting, so an absent key
+means "leave it alone". Timezone is the only thing config owns, so an absent key can only
+mean a broken client. `device_contract_test.go` pins that split by omitting the config
+endpoint's refusal string from the name endpoint's list.
+
+**The device validator is stricter than `cleanWord`,** and rejects `<`, `>`, double
+spaces, and leading or trailing spaces on top of quote, backslash, and non-printables.
+Those four are `cleanWord`'s own normalization restated as a refusal, which keeps the
+card and the orb from disagreeing by invisible bytes. Non-ASCII is the one case where
+the hub must refuse what it used to store, and `CheckNameASCII` is where it does.
+
+**Measured, orb-B, 2026-10-14:** `/api/v1/status` is 1127 B unnamed and 1159 B at the
+32-byte ceiling, in a 1536 B frame. The field costs its full 32 B and nothing else moved.
+Persistence verified three ways: survives an HTTP reboot, survives the port-open reset
+of a boot capture, and survives the fresh-key case where the first write allocates the
+entry. One earlier attempt lost a name set seconds before a reboot; NVS commit is
+synchronous and the sequence did not reproduce in three repeats, so it is recorded as
+the documented commit-failure window rather than a defect, and the log line beside it
+says the same thing.
+
+**Not changed by this:** serial provisioning (`PROV` line) still carries ssid/pass/tz
+and no name — an unprovisioned board gets named after it joins, from the card, and the
+join body accepts `name` so an onboarding flow can do it in one request. The D4/D5
+recovery paths keep the name exactly as they keep the credential: recovery is not a
+reason to lose what a person typed.
+
+## SPEC (built 2026-10-14) — one list, both doors
+
+**The problem.** The hub learned about a board two ways that did not overlap: mDNS
+told it about orbs that had joined a network, and the USB enumeration told it about
+orbs plugged into that machine. Each had its own endpoint — `/api/orbs` and
+`/api/ports` — so the operator was the merge. A board on a cable and on the LAN
+showed twice, once without its address and once without its port. A board only on a
+cable did not appear in the list at all, and a hub that failed to bind UDP 5353
+answered "no orbs" while one sat in the machine. The second is the bug; the rest is
+the shape that prevents it coming back.
+
+**The design.** `roster.go` composes one list keyed on the canonical base MAC — the
+same key the fleet store uses and for the same reason (§5.3): an address is something
+an orb has at a moment, a MAC is something an orb is. `orbCard` builds the LAN rows
+and hands them to `roster`, which folds in a TTL-cached port sweep. `/api/orbs` and
+`/api/orbs/stream` serve the union; `/api/ports` stays raw because the Onboard picker
+needs the non-orb ports too.
+
+**Two cable facts, kept apart.** `cable` still means a hub (or Onboard) read the MAC
+off the chip — the only proof in the system, and the reason it is store-backed and
+sticky. The new `onCable` means the current sweep saw a cable carrying this MAC — a
+fact about this machine's sockets that arrives and goes with the plug. A row can hold
+both, and collapsing them would make every flashed orb claim a phantom tether forever.
+New row fields: `ports` (sorted ttys; two entries are one board on two leads), `via`
+(`lan`, `usb`, or both), `identity` (`confirmed` > `descriptor` > `claimed`; a cable
+outranks a packet, and an unattributed port is `unknown`), and `key` (the MAC, or the
+tty path — two unknown cables must not collide on an empty mac).
+
+**Hybrid persistence, decided.** The roster is wider than the store. A descriptor
+sighting is ephemeral: shown while the plug is in, gone after, and never written to
+`state.json`. The store still gains a row for a MAC only from a probe, a flash, a
+console verdict, or an announcement — otherwise the file fills with an entry for every
+ESP32 that ever touched this machine's sockets, each one carrying a ghost of the
+operator's naming. `handleFleetSet` says the refusal in the same terms: a board on a
+lead with no address is refused by name of its cable ("on a cable at /dev/ttyACM0 with
+no address yet"), not by the old "never announced", which a cable makes false.
+
+**What a cable may not do.** It never invents an address: a cable row's `ip` comes from
+the store, and the row stays undialable until `mayDial` says otherwise on the store's
+address. The announcement and the sweep meet only at the MAC; an IP that disagrees with
+a confirmed row is still the store's problem (§5.3), and the fold still refuses it.
+
+**The stream had to learn a second trigger.** Nothing in the mDNS path notices a board
+being plugged in, so `watchCables` re-sweeps every half-TTL (5 s) and `refresh` fires
+`wakeOrbs` when the plug digest moves — after the first sweep only, so a hub coming up
+with a cable in it does not push a frame for free. A failed enumeration keeps the last
+good set and reports `cableError` on the envelope rather than reporting an empty bench,
+and the version digest carries the rows even when the listener is deaf: a plug-in while
+deaf is still news. `/api/ports` keeps its raw shape and its hint strings for Onboard.
+
+**As built and verified.** `roster.go` (sweep seam + TTL cache + merge + digest),
+`orbCard` rewired through it, the no-listener early-return fixed to answer cable rows,
+`handleFleetSet`'s refusal reworded, and the UI: the card is "Orbs", each row wears a
+badge of its access path and identity ("on cable (/dev/ttyACM0) · mac from USB
+descriptor"), naming controls go dark on a row with no mac, and an unattributed cable
+row offers "Identify", which jumps to the Onboard card with that port selected. The UI
+keys rows on `key` rather than `mac` so two unknown cables cannot fight over one `<li>`;
+a lost stream still clears the whole card. Tests in `roster_test.go` cover: merged both-
+doors row; cable-only row with no address and no store write; cables listed while deaf;
+two ttys one board; unattributed ports kept apart; store-address fold; digest moves on
+plug and returns on unplug; a real plug-in pushing to an open stream through the watch
+loop; sweep failure keeping the bench; and the refusal-by-cable-name. Live bench 2026-
+10-14: two S31 cores cabled, `/api/orbs` listed both by descriptor MAC with per-port
+attribution and `/api/ports` stayed raw; the row that also announced on LAN will fold
+`via: [lan, usb]` on its next check-in (orb-B, previously verified reachable).

@@ -53,6 +53,14 @@ func timeoutFor(op string, bytes int) time.Duration {
 	switch op {
 	case "erase":
 		return time.Duration(mb) * 50 * time.Second
+	case "md5":
+		// esptool's md5_timeout_per_mb is 8 s; the ROM hashes the range itself, so
+		// the whole 16 MB takes tens of seconds with nothing on the wire.
+		d := time.Duration(mb) * 15 * time.Second
+		if d < 10*time.Second {
+			d = 10 * time.Second
+		}
+		return d
 	default:
 		d := time.Duration(mb) * 20 * time.Second
 		if d < 3*time.Second {

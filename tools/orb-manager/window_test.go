@@ -555,3 +555,48 @@ func writeStubBrowserNoIsolate(t *testing.T, scriptlet string) string {
 	}
 	return p
 }
+
+// The lost-prompt regression (bench, 2026-10-15). The window appeared LATE, and a watcher
+// that had already given up on its first probe never noticed. The hub kept serving a window
+// it could not see close, so closing that window left an orphan holding the terminal. An
+// empty first round is one round, not a verdict: a window that shows up afterwards must
+// still be watched, and must still be able to shut the hub down.
+func TestLaunchAppWindowFollowsAWindowThatAppearsLate(t *testing.T) {
+	isolateBrowserEnv(t)
+	var open atomic.Bool // no page target yet: chrome is up, the window is not
+	srv := stubDevTools(t, open.Load)
+
+	cfg, _ := os.UserConfigDir()
+	profile := filepath.Join(cfg, filepath.FromSlash(browserProfileRel))
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	port := strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
+
+	// Launch with the endpoint unpublished: the first rounds come up empty, and the
+	// launcher exits at once (a hand-off), so only a later round can save this hub.
+	done, err := launchAppWindow("http://127.0.0.1:3779", writeStubBrowserNoIsolate(t, "true"))
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("the hub shut down while it had only failed to find the window")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Chrome finally publishes the endpoint, and the window appears.
+	if err := os.WriteFile(filepath.Join(profile, devtoolsPortFile), []byte(port+"\n"), 0o600); err != nil {
+		t.Fatalf("plant late port file: %v", err)
+	}
+	open.Store(true)
+	time.Sleep(200 * time.Millisecond) // let a round attach
+
+	// The operator closes that window. Only an attached watcher can now close the hub.
+	open.Store(false)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a late window was never watched: the hub outlived it and orphaned the terminal")
+	}
+}

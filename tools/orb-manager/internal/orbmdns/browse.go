@@ -23,14 +23,16 @@ type Candidate struct {
 	// separators — the field h_status reports and the USB serial descriptor
 	// carries. It is the row's key. An orb that changes address is still the same
 	// orb; an orb that changes MAC is a different board.
-	MAC       string
-	FW        string
-	State     string
-	IP        string
-	Port      uint16
-	From      string // who sent it, kept for the log line and nothing else
-	Solicited bool   // false when the orb announced itself unasked
-	TTL       uint32
+	MAC   string
+	FW    string
+	State string
+	IP    string
+	Port  uint16
+	// From is who sent the packet, kept for the log line. It is not part of the
+	// row's identity and never has been: neither it nor the A record is anything
+	// but a claim, and only the TXT mac has a hardware fact behind it.
+	From string
+	TTL  uint32
 
 	FirstSeen time.Time
 	LastSeen  time.Time
@@ -52,31 +54,34 @@ type Refusal struct {
 	At     time.Time
 }
 
-// Source carries mDNS traffic between the browser and the LAN: it delivers
-// datagrams in and takes queries out. Production is one net.PacketConn per
-// eligible interface; a test hands in a loopback pair. That is the reason for the
-// interface rather than a *net.UDPConn — this bench cannot originate multicast
-// onto the LAN, so a browser testable only through a live group join is a browser
-// that was never tested. The browser always writes to the group address and has no
-// field that aims a query at one host: the bench's unicast workaround stays in the
-// bench script that needs it.
+// Source carries mDNS traffic between the LAN and the browser, in one direction
+// only: it delivers datagrams in, and that is all that exists. The browser has no
+// write method to reach — it sends nothing, ever. Discovery rides the orb's own
+// check-ins: the firmware re-announces every MDNS_ADV_REFRESH_S (60 s, under half
+// the record TTL), so a hub that joined late waits one interval, not a reboot.
+// Production is one read-only view of a multicast socket per eligible interface;
+// a test hands in a loopback pair or a memory feed.
+//
+// The interface is ReadFrom-and-Close by decision, not by omission. The hub used
+// to query on a timer and answer its own traffic's absence with retries; that
+// whole path — burst, ticker, known-answer suppression, follow-ups for half-heard
+// instances — is gone, and a Source that cannot be written through means the
+// querier cannot come back by accident. The one boundary that held then still
+// holds: no field, argument, or option here can aim traffic at a single host.
 type Source interface {
 	ReadFrom(p []byte) (int, net.Addr, error)
-	WriteTo(p []byte, addr net.Addr) (int, error)
 	Close() error
 }
 
-// groupEndpoint is the only destination the browser will ever send to.
-var groupEndpoint = &net.UDPAddr{IP: net.ParseIP(GroupAddr), Port: Port}
-
 // partial is an instance heard in a PTR whose SRV, TXT or A has not landed yet. It
 // is keyed by instance name because there is no MAC to key by until the TXT
-// arrives; the provable rows are keyed by MAC, and only by MAC.
+// arrives; the provable rows are keyed by MAC, and only by MAC. A partial is not a
+// problem to chase: the firmware bundles all four records in every check-in, so
+// whatever is missing arrives with the next one.
 type partial struct {
 	instance    string
 	srv, txt, a *Record
 	from        string
-	solicited   bool
 	seen        time.Time
 }
 
@@ -98,10 +103,30 @@ type Config struct {
 	// misses one refresh window under a busy radio task does not blink out of the
 	// list. Zero means the default.
 	Grace time.Duration
+	// OnChange is told that the cache moved, in words of one syllable and with no
+	// payload: the hub's half re-reads Candidates and decides whether the answer
+	// actually differs. It exists so the card follows the orb's check-in instead of
+	// asking about it on a timer, which is the same decision the hub made when it
+	// stopped querying — the device owns the rhythm, so the hub follows it rather
+	// than sampling it.
+	//
+	// It fires from the goroutine that read the datagram, at most once per datagram
+	// however many records that datagram carried, and never with the browser's lock
+	// held. It must not block and must not call back into the Browser: a hub that
+	// wants to stop a stream unsubscribes rather than stalling this one. The hub's
+	// implementation is a non-blocking send on a one-slot channel.
+	//
+	// Nil is the default and is complete: Candidates stays the source of truth, and
+	// a hub built without a callback simply re-reads on its own clock.
+	OnChange func()
 }
 
 const (
-	defaultGrace   = 30 * time.Second
+	// DefaultGrace is exported because the hub's card promises a row's life in
+	// seconds, and that promise is TTL + this. TestCheckinCadenceMatchesFirmware
+	// reads it from out here so the firmware, the browser and the copy cannot each
+	// keep their own idea of how long an orb may stay listed.
+	DefaultGrace   = 30 * time.Second
 	maxRefusalTail = 32
 )
 
@@ -114,16 +139,25 @@ type Browser struct {
 	hosts    map[string]*AHost
 	refusals []Refusal
 	sources  []Source
-	txid     uint16
 
 	now   func() time.Time
 	logf  func(string, ...any)
 	grace time.Duration
+
+	// rev counts the cache mutations that could change what Candidates or Refusals
+	// answer. The wake-up path compares it across one datagram instead of threading
+	// a flag through the six places a record can land, which is what makes the two
+	// properties that matter fall out: a packet that half-parsed and changed nothing
+	// wakes nobody, and a check-in that carries all four records wakes the card once.
+	rev     uint64
+	onEvent func()
 }
 
 // NewBrowser returns an empty browser. A browser with no sockets still answers
 // Ingest and Candidates, which is how the wire behaviour gets tested with no
-// network under it.
+// network under it. The browser takes traffic in and puts none out: check
+// BrowserNeverSends in the suite, which fails the package if a write path ever
+// reappears in it.
 func NewBrowser(cfg Config) *Browser {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -132,7 +166,7 @@ func NewBrowser(cfg Config) *Browser {
 		cfg.Logf = func(string, ...any) {}
 	}
 	if cfg.Grace <= 0 {
-		cfg.Grace = defaultGrace
+		cfg.Grace = DefaultGrace
 	}
 	return &Browser{
 		byMAC:   map[string]*Candidate{},
@@ -141,9 +175,36 @@ func NewBrowser(cfg Config) *Browser {
 		now:     cfg.Now,
 		logf:    cfg.Logf,
 		grace:   cfg.Grace,
-		txid:    0xC0FE,
+		onEvent: cfg.OnChange,
 	}
 }
+
+// revision reads the mutation counter, and is separate from wokeUp because the
+// reading sites take it before the work and the firing sites compare it after.
+func (b *Browser) revision() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rev
+}
+
+// wokeUp fires OnChange when the cache moved since `before`. It takes no lock of
+// its own around the callback: every caller runs it after dropping the browser lock,
+// which is the whole reason a hub that stopped draining a wake-up cannot wedge the
+// reader goroutine that produces one.
+func (b *Browser) wokeUp(before uint64) {
+	if b.onEvent == nil || b.revision() == before {
+		return
+	}
+	b.onEvent()
+}
+
+// mark says the card's answer moved. Call it with b.mu held, at the mutation and
+// not at the callback: the counter is what lets a caller decide once per datagram
+// whether anything reached the page, and the six mutators below are the whole list
+// of what can. Adding a seventh without marking it costs one stale frame, which is
+// the failure mode OnChange was chosen to avoid, so TestEveryMutationWakes pins it
+// from the other side instead of trusting this comment.
+func (b *Browser) mark() { b.rev++ }
 
 // Start attaches sockets and reads them until ctx is cancelled. It owns what it is
 // handed: a socket that comes in here is closed on shutdown, because a hub that
@@ -194,49 +255,6 @@ func (b *Browser) pump(s Source) {
 	}
 }
 
-// Ask puts the browse question on the group from every socket, and follows up on
-// any instance still missing its SRV, TXT or A. Listening alone is not enough: an
-// announcement comes once, at the orb's join, so a hub started after that would be
-// waiting on a rhythm it does not control.
-func (b *Browser) Ask() error {
-	b.mu.Lock()
-	srcs := append([]Source(nil), b.sources...)
-	b.txid++
-	txid := b.txid
-	waiting := make([]string, 0, len(b.pending))
-	for k, p := range b.pending {
-		if p.srv == nil || p.txt == nil || p.a == nil {
-			waiting = append(waiting, k)
-		}
-	}
-	b.mu.Unlock()
-	if len(srcs) == 0 {
-		return fmt.Errorf("orbmdns: no sockets attached")
-	}
-	pkts := [][]byte{BrowseQuery(txid)}
-	for _, inst := range waiting {
-		if inst == "" {
-			continue
-		}
-		pkts = append(pkts,
-			InstanceQuery(txid, inst, typeSRV),
-			InstanceQuery(txid, inst, typeTXT),
-			HostQuery(txid, HostnameFor(inst)))
-	}
-	var firstErr error
-	for _, s := range srcs {
-		for _, p := range pkts {
-			if _, err := s.WriteTo(p, groupEndpoint); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	if firstErr != nil {
-		return fmt.Errorf("orbmdns: query: %w", firstErr)
-	}
-	return nil
-}
-
 // Ingest folds one received datagram into the discovered set. from is the packet's
 // source address, kept for the log line: it says who announced, not what was
 // announced, and it is not an identity. Neither is the A record — both are claims
@@ -246,6 +264,13 @@ func (b *Browser) Ask() error {
 // query would be a second, lazier orb on the LAN, and its cache-flush records
 // would overwrite the real one's in every browser's cache.
 func (b *Browser) Ingest(pkt []byte, from net.Addr) {
+	// One wake-up per datagram, taken before any of it lands and fired on the way
+	// out. Every mutator below does its own locking, so this deferred comparison is
+	// the only place the whole packet is judged, and it is what stops a check-in
+	// bundling PTR/SRV/TXT/A from nudging the card four times for one row.
+	before := b.revision()
+	defer func() { b.wokeUp(before) }()
+
 	src := ""
 	if from != nil {
 		src = from.String()
@@ -360,10 +385,15 @@ func (b *Browser) cacheHost(rec *Record, from string) {
 	// definition, and a record that arrived with the address before the TXT would
 	// otherwise have a promote() run pull the stale one out of that cache.
 	b.mu.Lock()
+	moved := false
 	for _, c := range b.byMAC {
 		if strings.EqualFold(HostnameFor(c.Instance), name) && c.IP != ip {
 			c.IP = ip
+			moved = true
 		}
+	}
+	if moved {
+		b.mark()
 	}
 	b.mu.Unlock()
 }
@@ -427,9 +457,10 @@ func (b *Browser) promote(instance string) {
 		c.State = "normal"
 	}
 	c.IP, c.Port, c.TTL = ip, p.srv.SRVPort, p.txt.TTL
-	c.From, c.Solicited = p.from, p.solicited
+	c.From = p.from
 	c.LastSeen, c.Expires = now, now.Add(time.Duration(p.txt.TTL)*time.Second+b.grace)
 	delete(b.pending, instance)
+	b.mark()
 }
 
 // rejectLocked drops an instance that failed a check and keeps its reason.
@@ -439,6 +470,7 @@ func (b *Browser) rejectLocked(instance string, p *partial, why string) {
 	if len(b.refusals) > maxRefusalTail {
 		b.refusals = b.refusals[len(b.refusals)-maxRefusalTail:]
 	}
+	b.mark()
 	b.logf("orbmdns: refused %s: %s", instance, why)
 }
 
@@ -452,6 +484,7 @@ func (b *Browser) drop(instance string) {
 	for mac, c := range b.byMAC {
 		if c.Instance == instance {
 			delete(b.byMAC, mac)
+			b.mark()
 			b.logf("orbmdns: %s said goodbye", instance)
 		}
 	}
@@ -461,12 +494,19 @@ func (b *Browser) drop(instance string) {
 // already outlived. It dials nothing: answering "what orbs are on this network"
 // without opening a socket to any of them is the item.
 func (b *Browser) Candidates() []Candidate {
+	before := b.revision()
+	// Registered before the unlock defer, so LIFO ordering runs it after the lock is
+	// gone: a card built from this call is what fires the stream, and firing under the
+	// lock would let the hub's HTTP goroutine block the reader that holds it.
+	defer func() { b.wokeUp(before) }()
+
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for mac, c := range b.byMAC {
 		if now.After(c.Expires) {
 			delete(b.byMAC, mac)
+			b.mark()
 			b.logf("orbmdns: %s expired unheard", c.Instance)
 		}
 	}
@@ -507,5 +547,6 @@ func (b *Browser) refuse(name, from, reason string) {
 	if len(b.refusals) > maxRefusalTail {
 		b.refusals = b.refusals[len(b.refusals)-maxRefusalTail:]
 	}
+	b.mark()
 	b.logf("orbmdns: refused %q from %s: %s", name, from, reason)
 }

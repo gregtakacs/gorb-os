@@ -1,48 +1,17 @@
 package orbmdns
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
 )
 
-// BuildQuery encodes the one question a browse starts with: PTR for
-// _orb._tcp.local, asked with the RFC 6762 unicast-request bit set so a responder
-// answers to us directly instead of flooding the group back at every host on the
-// LAN. Names are written as full labels and never compressed: a question section
-// has nothing earlier in the message to point at.
-func BuildQuery(txid uint16, name string, qtype uint16) []byte {
-	b := make([]byte, headerLen, 512)
-	binary.BigEndian.PutUint16(b[0:], txid)
-	binary.BigEndian.PutUint16(b[4:], 1) // QDCOUNT
-	for _, part := range strings.Split(strings.TrimSuffix(name, "."), ".") {
-		if part == "" {
-			continue
-		}
-		b = append(b, byte(len(part)))
-		b = append(b, part...)
-	}
-	b = append(b, 0)
-	b = binary.BigEndian.AppendUint16(b, qtype)
-	return binary.BigEndian.AppendUint16(b, classIN|classQU)
-}
-
-// BrowseQuery is the question that finds every orb on the LAN. The A/SRV/TXT
-// lookups a browse also needs ride along in the answer's own additional section —
-// the firmware sends all four in one reply — so the hub asks this and, only when
-// an instance arrived without its records, those.
-func BrowseQuery(txid uint16) []byte { return BuildQuery(txid, ServiceName, typePTR) }
-
-// InstanceQuery asks one instance for its SRV and TXT; HostQuery asks a hostname
-// for its A record. Both exist because a browser that only ever asks the group
-// question has to answer "which address" from a record it may not have heard yet.
-func InstanceQuery(txid uint16, instance string, qtype uint16) []byte {
-	return BuildQuery(txid, instance+"."+ServiceName, qtype)
-}
-
-// HostQuery asks for a hostname's address.
-func HostQuery(txid uint16, hostname string) []byte { return BuildQuery(txid, hostname, typeA) }
+// The names an orb's records are made of, and the two checks that turn a name into
+// a claim about a chip. This file used to be query.go and built the browse
+// question, the RFC 6762 §7.1 known-answer list, and the SRV/TXT/A follow-ups. The
+// hub does not ask anything anymore: discovery runs entirely on the firmware's
+// self-refresh check-ins, so the browser listens and these helpers are all that
+// survive of the querier. Nothing here encodes a packet.
 
 // ServiceInstance splits "<instance>._orb._tcp.local" into its leftmost label.
 // Anything that is not shaped like that is refused rather than guessed at, since

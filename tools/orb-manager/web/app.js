@@ -746,7 +746,10 @@ $("#ob-lonely-go").onclick = async () => {
       await refreshPorts();
       pullFound();
       show("manage"); location.hash = "";
-      $("#mn-find-note").textContent = "that board is lonely now — it boots, wiped its own settings, says so on its screen, and waits. New Orb takes it back whenever you like.";
+      // The row is gone and the picker calls the lead blank, which is the whole true
+      // answer; the card re-rendered itself, so the note is cleared rather than left
+      // holding the previous action's words.
+      $("#mn-find-note").textContent = "";
     }
   } finally {
     $("#mn-cable").disabled = false;
@@ -887,7 +890,10 @@ $("#fj-lonely").onclick = async () => {
     await refreshPorts();
     pullFound();
     closeForgetDialog();
-    $("#mn-find-note").textContent = "that board is lonely now — it boots, wiped its own settings, and waits. New Orb takes it back whenever you like.";
+    // Nothing to add: this dialog's own log just showed the write land, and the card
+    // it re-renders onto lost the row. A sentence narrating the board's screen after
+    // that only repeats a fact the list already states by being empty.
+    $("#mn-find-note").textContent = "";
   }
 };
 

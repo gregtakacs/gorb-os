@@ -2811,6 +2811,7 @@ ruling asks for is already in the tree wearing clock clothes.
 ### 23.4 Ratified rows this re-opens — amendment proposed, none applied yet
 
 D32's row (§0.10) carries the pointer, so the table cannot be read without meeting it.
+**The paste-ready wording for all four edits is at §23.9, pending the owner's blessing.**
 The in-row pointer clauses on D23/D26/D16 ship **with** the confirmed amendment, not
 before it, so a row is never half-edited.
 
@@ -2931,6 +2932,62 @@ index addresses the app inside it, so no second identifier is needed.
 independently absent, each with a declared advance mode, and the OS owns the one clock. That
 retires the last of the clock's privileges from the theme format, and it makes
 `theme_schema.py` the file that defines what a theme IS: one schema, every app, no dialect.
+
+### 23.9 The amendment wording, for review — not applied
+
+Paste-ready replacement cell text. §0's rows keep their current wording until the owner
+blesses these.
+
+**D23 — replace only the second sentence, "The *named slots* live in the manifest's asset
+table, owner-scoped as `<slug>/<name>`, with `global/<name>` for the frozen set.", with:**
+
+> The *named slots* live in the manifest's asset table, owner-scoped as `<slug>/<name>`,
+> with `global/<name>` for the frozen set, and that table is the app's **offer**: what it
+> *can* paint. Since D32 the theme's per-app element table is the **declaration**: what is
+> present, in what order, with what pixels. Offer and declaration are checked against each
+> other at install in both directions, and every slot the theme does not name stays silent
+> on the app's own default (D31).
+
+*D23's rest survives untouched, including "A PR promotes a class, never bytes" — and the
+append-only rule now covers element columns as well as class enum entries.*
+
+**D26 — replace the whole cell with:**
+
+> **Refuse at install, in both directions.** Content an app declares required and no theme
+> supplies is a refusal, and so, since D32, is a theme whose element table names a class or
+> element the installed app cannot paint: an app cannot promise to draw a thing it was given
+> no instruction for. The owner learns both on the page that already lists refusal reasons,
+> not after an activation that shows nothing. A theme section naming an app that is **not
+> installed** is neither — it installs, and the intersection resolves (§23.8, pending R2).
+
+**D16 — replace the cell's third sentence, "The manifest's `period_ms` (§4.1) is the
+**fastest** beat the app may ever run; `set_beat(period_ms)` may only slow from there (and
+off: `0` = no ticks until the next `resume`), never below it, so the owner sees the real
+cadence cost at install and an app cannot grab the shared beat the §6 cadence findings
+price.", with:**
+
+> The manifest's `period_ms` (§4.1) becomes the **ask** — what the app wants right now,
+> adjustable at runtime through `set_beat` as before — and the manifest additionally carries
+> an **explicit set** of acceptable rates (D32, R7). The OS picks the highest rung it can
+> achieve that is no faster than the ask, and falls back to the set's floor when the ask is
+> not achievable at all, so the owner sees the whole reachable range at install and an app
+> can neither grab a rate the set forbids nor invent one. `BEAT_MIN_MS` applies to the floor.
+
+**And D16's carousel paragraph is now wrong, and this is the one substantive correction.**
+It reads "the shared beat runs at the fastest active `set_beat` — a 4 fps theme and a 15 fps
+theme on the glass at once (carousel transition) cost 15 fps until the swap settles". Under
+D32 there is no per-app beat to share: the OS owns one flush cadence, and each stack gets its
+own frame *advance* on top of it. The cost the paragraph priced survives in a different form
+— the flush still runs at the fastest live requirement, so the §6 cadence-collapse guard
+still measures exactly what it was written to measure — but the mechanism it describes is
+gone, and the row must say so or the next reader will look for a shared per-app beat that
+will never exist.
+
+**§1.2b, and the three in-row pointers.** The seam sentence gains "…the manifest's asset
+table is the offer; since D32 the theme's element table is the declaration, and the
+compositor reads the declaration." D16, D23 and D26 each gain a trailing clause: *"Amended by
+D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is
+the OS's pick from a declared set."*
 
 
 

@@ -148,6 +148,46 @@ func TestTheFleetHeaderSaysWhatHappenedOnTheCable(t *testing.T) {
 	}
 }
 
+// The lonely door says goodbye once, in the dialog's own log, and never again on the
+// card. The sentence removed here (bench, 2026-10-15: "it is stupid and doesn't mean
+// anything") narrated a screen the hub cannot see, and the same words existed to say it:
+// the row left the list, and the lead went blank on the picker. Pin the endings clear the
+// note rather than leaving last action's sentence on screen.
+func TestALonelyEndingLeavesNoStoryOnTheFleetCard(t *testing.T) {
+	src := readAppJS(t)
+	for _, gone := range []string{"that board is lonely now", "wiped its own settings, and waits",
+		"New Orb takes it back"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("app.js is telling the lonely story on the card again: %q", gone)
+		}
+	}
+	for _, marker := range []string{`$("#ob-lonely-go").onclick`, `$("#fj-lonely").onclick`} {
+		i := strings.Index(src, marker)
+		if i < 0 {
+			t.Fatalf("app.js has no %s — the lonely door's press handler was renamed", marker)
+		}
+		// The handler, not the handler and everything after it: these are assigned
+		// arrow functions ending in "};" rather than a block-closing "}", so the
+		// block helper other pins use would carry the segment into the next door.
+		body := src[i:]
+		if j := strings.Index(body[1:], "\n$(\""); j >= 0 {
+			body = body[:j+1]
+		}
+		if !strings.Contains(body, `$("#mn-find-note").textContent = "";`) {
+			t.Errorf("%s leaves the note holding whatever the last action wrote", marker)
+		}
+	}
+	// The hub's own line, read once in the log the operator watched the write through, is
+	// the other half of this and stays.
+	hub, err := os.ReadFile("lonely.go")
+	if err != nil {
+		t.Fatalf("lonely.go: %v", err)
+	}
+	if !strings.Contains(string(hub), `"the orb is lonely now: its settings, name and credentials went with it`) {
+		t.Error("the lonely door no longer reports what it did in the log it streams")
+	}
+}
+
 // A cable answer is not a probe. The port label may say the chip is an orb, may not say
 // anything about the firmware it never read, and may not claim a reboot.
 func TestACableAnswerIsLabelledAsWhatItCost(t *testing.T) {

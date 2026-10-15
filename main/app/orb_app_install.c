@@ -182,13 +182,26 @@ static void try_note(const char *stem, const char *why)
  * driver's own DMA and (on the card side) the SDMMC one — the exact reason
  * orb_theme.c:742 reserves it internal and not in PSRAM. */
 static uint8_t *s_chunk;
-#define APPS_CHUNK_BYTES 4096
+#define APPS_CHUNK_BYTES 4096            /* the ask */
+#define APPS_CHUNK_MIN   1024            /* below this the copy is mostly command overhead */
+static uint32_t  s_chunk_bytes;          /* what the heap granted; every clamp site reads THIS */
 
+/* The size is a ladder, not a constant, because the board's real budget does not
+ * contain 4 KB contiguous after association: the measured steady state is
+ * `internal free=8,139 largest=3,328` (orb_net's own heap line), and this module's
+ * flat 4 KB ask refused the install on exactly the wall orb_theme.c records at
+ * §16.1. Granting 2 KB costs four extra round trips per 8 KB copied; the SPI clock,
+ * not the chunk, is the floor. Below 1 KB the command overhead leads the data, so
+ * the ladder stops — the same three rungs and the same reasoning as
+ * orb_theme.c's ensure_chunk(). */
 static esp_err_t ensure_chunk(void)
 {
     if (s_chunk) return ESP_OK;
-    s_chunk = heap_caps_malloc(APPS_CHUNK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    return s_chunk ? ESP_OK : ESP_ERR_NO_MEM;
+    for (uint32_t n = APPS_CHUNK_BYTES; n >= APPS_CHUNK_MIN; n /= 2) {
+        s_chunk = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (s_chunk) { s_chunk_bytes = n; return ESP_OK; }
+    }
+    return ESP_ERR_NO_MEM;
 }
 
 /* The apps partition found by label — the sibling of art_bank_partition(), but
@@ -287,7 +300,7 @@ static const char *verify_payload(int fd, const orbapp_hdr_t *h)
     uint32_t crc = 0;
     size_t pos = h->geom_off, left = h->geom_size;
     while (left) {
-        const size_t want = left > APPS_CHUNK_BYTES ? APPS_CHUNK_BYTES : left;
+        const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
             return "the file is shorter than its geometry claims — re-copy it";
         crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
@@ -435,7 +448,7 @@ static esp_err_t copy_prefix(const esp_partition_t *p, int fd, const orbapp_hdr_
 
     size_t pos = 0;
     for (uint32_t done = 0; done < blob; ) {
-        const uint32_t want = (blob - done > APPS_CHUNK_BYTES) ? APPS_CHUNK_BYTES : (blob - done);
+        const uint32_t want = (blob - done > s_chunk_bytes) ? s_chunk_bytes : (blob - done);
         if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want) {
             *why = "the app file ended before its declared geometry — re-copy it";
             return ESP_ERR_INVALID_SIZE;
@@ -457,7 +470,7 @@ static esp_err_t verify_slot_geom(const esp_partition_t *p, const orbapp_hdr_t *
     const uint32_t base = slot_base(slot) + APPS_SLOT_HDR_BYTES;
     uint32_t crc = 0;
     for (uint32_t off = 0; off < h->geom_size; ) {
-        const uint32_t want = (h->geom_size - off > APPS_CHUNK_BYTES) ? APPS_CHUNK_BYTES
+        const uint32_t want = (h->geom_size - off > s_chunk_bytes) ? s_chunk_bytes
                                                                        : (h->geom_size - off);
         if (esp_partition_read(p, base + h->geom_off + off, s_chunk, want) != ESP_OK) {
             *why = "could not read the geometry back"; return ESP_FAIL;
@@ -1054,7 +1067,15 @@ esp_err_t orb_app_upload_data(orb_app_up_t *u, const void *buf, size_t n)
     const uint8_t *p = buf;
     while (n) {
         const ssize_t w = write(u->fd, p, n);
-        if (w <= 0) return ESP_FAIL;          /* ENOSPC and friends: caller reports it */
+        if (w <= 0) {
+            const int e = errno;
+            ESP_LOGW(TAG, "app upload: card write failed (%s)", strerror(e));
+            /* ENOMEM is FatFS's FR_NOT_ENOUGH_CORE: the sdmmc driver could not get
+             * its own internal scratch. A capacity verdict, never a size one —
+             * §17.6's evidence is a 125 B ask refused by a fragmented pool. */
+            if (e == ENOMEM) return ESP_ERR_NO_MEM;
+            return ESP_FAIL;              /* ENOSPC and friends: caller reports it */
+        }
         p += w; n -= (size_t)w; u->got += (uint32_t)w;
     }
     return ESP_OK;

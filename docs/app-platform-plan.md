@@ -2271,4 +2271,55 @@ usable and the named failure is on the bench rather than papered over.
 boot with a healthy DMA pool; the 413 mis-map on `esp_dma_capable_malloc` failure is
 still open; and D30 stays unrationalised, still owed its two timings.
 
+---
+
+## 18. §17.4's two owed code fixes land; the upload proof runs against the owner's flash — 2026-10-15
+
+§17.4 item 3 named the last two code debts of the upload path, and §17.5/§17.6
+selected the fix (free the tile ring for the length of the copy) but left it
+undocumented between `99f1fc3` and this section. The loan itself shipped the night
+of Oct 14 (`829d8ca`, corrected by `f7481db` after the first boot proved the loan
+and died on the two-buffer refund); what follows records the rest.
+
+**The 413 mis-map is closed.** `h_app_upload` and `h_theme_upload` answered
+`413 Payload Too Large` for ANY failure of `orb_*_upload_data()`, which made the
+DMA starvation §17.6 measured — 125 B refused with 4,315 B free, a capacity
+failure — report itself as a size verdict. Both handlers now branch on the
+returned `esp_err_t`: `ESP_ERR_INVALID_SIZE` → 413 (the body outgrew the declared
+cap, and that is the ONLY thing 413 now means on this device),
+`ESP_ERR_INVALID_STATE` → 409, `ESP_ERR_NO_MEM` → 507, everything else → 500
+"the card refused the write". Both `orb_*_upload_data()`s read `errno` at the
+failed `write()` and map `ENOMEM` (FatFS's `FR_NOT_ENOUGH_CORE`) to
+`ESP_ERR_NO_MEM` instead of the flat `ESP_FAIL`, and log the errno — §17.6's own
+diagnosis was "the same internal-DMA squeeze this project keeps billing," and the
+serial line that names it now always accompanies the refusal.
+
+**The installer's chunk buffer got the ladder.** `orb_theme.c:751` has granted the
+read buffer in three rungs (4096→2048→1024) since `e3733a5`; `orb_app_install.c`
+kept asking a flat 4 KB on the same board §16.1 measured at `largest=3,328`. P4's
+install copies card→flash through that buffer on the worker, so a post-association
+boot with a fragmented pool could never install an app while it could install a
+theme. The module now mirrors the theme ladder verbatim (`s_chunk_bytes`, every
+clamp site reads the grant, `APPS_CHUNK_MIN 1024` stops where the command overhead
+leads the data), and the theme file's remaining `CHUNK_BYTES` reads at
+`slot_parse_geom`/`card_check_geom` were checked by hand: they clamp into their own
+`geom_size` blob allocation, never into `s_chunk`, so they stay constants.
+
+**Host suites:** `host_sd_test.py` green, `--mutations` all caught (`EXIT=0`
+14:07); `host_orbapp_install_test.py` green. Neither pinned the old 413 block or
+the flat ask. `idf.py reconfigure && idf.py build` clean; the bundle re-packed via
+`make firmware` at `v1.1.0+11076ca-dirty` (5 images, 1,330,907 B), and the
+`BuiltInBundle` disagreement test passes against `build/`.
+
+**The bench run is owed to this session's flash — by the owner, through the hub.**
+`tools/m5_upload_proof.sh` is the ladder: writer-regenerated `hsb_color` fixture,
+open-reset serial capture, lease→rescan→upload→list→install→reboot→enable, with
+the 413-still-alive check and the loan witnesses (`tile ring borrowed`,
+`esp_dma_capable_malloc`) read off the capture. Run it detached (its own header
+carries the command). The pass lines this leaves open after a green run: the
+theme-side upload (same handlers, needs a re-baked FORMAT 2 file — §16.1's
+`m5_avkit.orbtheme` is gone from /tmp), M5's two timings, D30's two numbers, and
+the power-cut-mid-install pass line (§8's still-unbenched half).
+
+
 

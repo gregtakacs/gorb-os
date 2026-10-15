@@ -108,6 +108,7 @@ static const char *TAG = "orb_net";
  * on which surface you looked at last. */
 #define NET_NAME_MAX     32     /* == orbfleet.MaxName; keep them equal */
 #define NET_NAME_KEY     "name" /* NVS; absent means "unnamed" */
+#define NET_NAME_DEFAULT "The Orb" /* the word a factory reset leaves behind; see net_factory_reset */
 /* {"name":"…"} for 32 printable bytes is 41 B. Same 128 B frame as config: this
  * endpoint carries one key and nothing else, so the sizing argument from
  * NET_CONFIG_BODY_MAX applies unchanged. */
@@ -1043,6 +1044,9 @@ static void creds_commit(const char *ssid, const char *pass)
  * all of those as separate namespaces (orb.net, orb.settings, orb.apps, orb.grants,
  * orb.fault, orb.idle, orb.app<slot>), and erasing the partition rather than a list
  * of names is what keeps this honest when a new namespace lands.
+ * One thing is deliberately written back after the erase: the default name
+ * "The Orb" (see the tail of this function), so a reset board introduces itself
+ * instead of arriving silent.
  *
  * The default `nvs` partition goes too, which is the part an `orb.net`-only erase
  * used to miss: esp_wifi runs with CONFIG_ESP_WIFI_NVS_ENABLED=y and never gets
@@ -1095,7 +1099,30 @@ static esp_err_t net_factory_reset(void)
     s_name[0] = '\0';
     s_tz[0] = '\0';
     s_mode[0] = '\0';
-    return (e != ESP_OK) ? e : e_def;
+    const esp_err_t wiped = (e != ESP_OK) ? e : e_def;
+
+    /* A board that comes back from a full reset is unnamed no longer: it answers to
+     * the default word. Storing it in NVS (not just in the RAM mirror) is the point
+     * — every surface that reads the name afterwards (status, the settings page, the
+     * hub's next poll) says the same thing without a special case, and the word
+     * survives until the next owner's NAME write replaces it or clears it to "".
+     * Provisioning is gated on credentials, never on the name, so this cannot keep
+     * the AP door shut. Only on a clean wipe: after a partial erase the board is
+     * reporting RESET-PART and boots whatever survived — seeding one key into that
+     * half-state would claim more cleanliness than the ack admitted. */
+    if (wiped == ESP_OK &&
+        nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE,
+                                NVS_READWRITE, &s_nvs) == ESP_OK) {
+        if (nvs_set_str(s_nvs, NET_NAME_KEY, NET_NAME_DEFAULT) == ESP_OK &&
+            nvs_commit(s_nvs) == ESP_OK) {
+            snprintf(s_name, sizeof(s_name), "%s", NET_NAME_DEFAULT);
+        } else {
+            ESP_LOGW(TAG, "reset: default name not stored (board boots unnamed)");
+        }
+        nvs_close(s_nvs);
+        s_nvs = 0;
+    }
+    return wiped;
 }
 
 /* Timer callbacks may only post: the esp_timer task is shared and must not
@@ -2756,7 +2783,8 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
      * the theme choice, the app grants and enables, every per-app setting, the fault
      * ledger and the idle-dim timeout. The ack is therefore final — no door reopens
      * this state, because the orb comes back as the unconfigured provisioning AP it
-     * was the day it was flashed. */
+     * was the day it was flashed — named only by the default word the reset itself
+     * writes back, "The Orb", until a new owner says otherwise. */
     if (vlen == 5 && !memcmp(line, "RESET", 5)) {
         if (strcmp(operand, "ALL") != 0) {
             ESP_LOGW(TAG, "reset: refused (say 'RESET ALL' to erase)");

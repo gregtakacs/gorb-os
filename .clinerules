@@ -143,9 +143,11 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   Forget, and the dialog offers the two endings that actually reach a live board,
   both over the USB lead: **full reset** (the `/api/lonely` write, `LONELY` word
   still required) and **factory reset settings** (`/api/orb/cmd` `RESET ALL`; the
-  ack write-back renames the store's row to **"The Orb"** — a hub-side default, not
-  a device write; the next owner's word corrects it exactly like any device name
-  does). The whole-chip erase is not offered by the hub in any surface: the page
+  ack write-back renames the store's row to match during the gap before the board
+  answers again: on a clean erase the firmware seeds the default name **"The Orb"**
+  into the fresh NVS itself (net_factory_reset), so the device and the card agree
+  from the first poll; the next owner's word corrects it exactly like any device
+  name does). The whole-chip erase is not offered by the hub in any surface: the page
   lost the Wipe chip button and the route lost `/api/wipe`; `orbflash -mode wipe`
   remains the headless bench door. A test pins all of this (`ui_test.go`,
   `TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly`).

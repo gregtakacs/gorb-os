@@ -1047,3 +1047,24 @@ file (`~/.config/orb-manager/state.json`), because a second hub shares it. Run t
 hubs with `-addr` on a scratch HOME, or clean the file after; a grant for 127.0.0.1
 there is a test artifact, not an orb.
 
+## Four bench-and-tool gotchas that cost time on 2026-10-15
+
+- **A killed streaming flash CANCELS the write.** The 30 s tool cap does not merely
+  abandon the `curl`: the hub sees the client context close and stops the session at its
+  next block boundary, so the board is left in its bootloader at 96 %. A verification
+  flash must go through a script file launched with the `setsid … & disown` idiom above,
+  with the stream redirected to a file you poll for the `"done"` event.
+- **`pkill -f <pattern>` matches the killing shell's own command line** and kills it, so
+  the restart you asked for never happens and the tool call returns SIGTERM. Kill by the
+  PID from `ss -ltnp`, or take `pgrep -n orb-manager` into a variable first.
+- **Each command in one tool call is its own shell starting at the workspace root.** A
+  `cd` in an earlier element does not carry to a later one, so a relative path in element
+  two reads a different file than element one wrote, or fails outright. Give every element
+  its own `cd` or an absolute path. Related trap: `~/docker/Projects/gorb-os-2` is a
+  **different clone on a different branch**, and a root-relative recursive grep sweeps
+  both and shows functions that do not exist in the tree you are editing.
+- **Build `firmware` BEFORE `manager`, then restart the hub.** The bundle is embedded at
+  compile time (`//go:embed`), so a rebuild order that compiles first and refreshes the
+  zip second leaves a running hub serving the previous image — and a flash driven by that
+  hub "verifies" a fix that is not in it. Check `grep 'orb-manager v' <log>` against the
+  binary's mtime when a firmware change appears not to take effect.

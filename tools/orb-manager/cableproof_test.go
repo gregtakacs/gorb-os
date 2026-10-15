@@ -319,3 +319,128 @@ func TestAnUnprovenCableRowStillArrivesWithItsVerdict(t *testing.T) {
 	}
 	_ = rows
 }
+
+// The clock belongs to the board on the lead, not to the name the OS gave the lead. A chip
+// unplugged mid-ask leaves no answer and must leave no penalty either: the board that takes
+// that lead seconds later is a board nobody has asked.
+func TestABoardNewToALeadIsNotHeldBehindTheLastBoardsSilence(t *testing.T) {
+	s := newHub()
+	s.fleet = orbfleet.New(orbfleet.Config{})
+	s.statePath = filepath.Join(t.TempDir(), "state.json")
+	s.browse = filled(t)
+	s.cables.ttl = 0
+	var bench []cableSighting
+	var answer func() (cableVerdict, error)
+	s.cables.list = func() ([]cableSighting, error) { return bench, nil }
+	calls := 0
+	s.prover.ping = func(context.Context, string) (cableVerdict, error) {
+		calls++
+		return answer()
+	}
+
+	// Four refusals, which is what it takes the hub to settle on the long gap. The clock
+	// is driven rather than waited on: this test is about which gap is armed.
+	bench = []cableSighting{orbOnACable()}
+	answer = func() (cableVerdict, error) {
+		return cableVerdict{sent: true}, errors.New("esprom: console read: i/o timeout")
+	}
+	for i := 0; i <= cableProofNudges; i++ {
+		s.prover.at["/dev/ttyACM0"] = time.Now().Add(-cableProofRetry - time.Second)
+		s.proveCables(context.Background())
+	}
+	if calls != cableProofNudges+1 {
+		t.Fatalf("%d asks to arm the long gap, want %d", calls, cableProofNudges+1)
+	}
+	if got := s.prover.gap["/dev/ttyACM0"]; got != cableProofRetry {
+		t.Fatalf("gap = %v after %d refusals, want the long quiet", got, calls)
+	}
+
+	// The lead empties, then carries an orb that answers. Not one second of the last
+	// board's clock survives, so the very next sweep asks it and the row lands proven.
+	bench = nil
+	s.proveCables(context.Background())
+	if len(s.prover.at) != 0 {
+		t.Fatalf("the vanished lead kept its clock: %v", s.prover.at)
+	}
+	bench = []cableSighting{orbOnACable()}
+	answer = func() (cableVerdict, error) { return cableVerdict{ack: true, state: "b"}, nil }
+	s.proveCables(context.Background())
+	if calls != cableProofNudges+2 {
+		t.Fatalf("%d asks after the replug, want the new board asked at once", calls)
+	}
+	rows, _ := s.roster(nil, time.Now())
+	s.annotateOrb(rows)
+	if len(rows) != 1 || !rows[0].ConsoleOrb {
+		t.Errorf("the board that replaced it was left unproven: %+v", rows)
+	}
+}
+
+// The ladder itself, at the seam rather than through a sweep: which gap each kind of answer
+// arms, and how long the hub then keeps its hands off the wire.
+func TestTheGapAnAnswerArms(t *testing.T) {
+	p := newCableProof()
+	p.ping = func(context.Context, string) (cableVerdict, error) { return cableVerdict{}, nil }
+	now := time.Now()
+	const port = "/dev/ttyACM0"
+
+	// A silence on a board this hub has only just met may be a board still booting, so it
+	// is re-asked on the short gap until the hub's patience is spent.
+	for i := 1; i <= cableProofNudges+1; i++ {
+		if !p.due(port, now) {
+			t.Fatalf("attempt %d refused: a fresh lead is asked", i)
+		}
+		p.settled(port, askSilent, now)
+		want := cableProofNudge
+		if i > cableProofNudges {
+			want = cableProofRetry
+		}
+		if got := p.gap[port]; got != want {
+			t.Errorf("after silence %d the gap is %v, want %v", i, got, want)
+		}
+		if p.due(port, now.Add(want-time.Second)) {
+			t.Errorf("asked %v early, inside the %v that answer armed", want-time.Second, want)
+		}
+		now = now.Add(want + time.Second)
+	}
+
+	// An answer outranks the silences before it, buys the long quiet, and forgets the
+	// streak that came before it.
+	if !p.due(port, now) {
+		t.Fatal("a board out of its gap is asked again")
+	}
+	p.settled(port, askAck, now)
+	if got := p.gap[port]; got != cableProofEvery {
+		t.Errorf("gap = %v after an answer, want %v", got, cableProofEvery)
+	}
+	if len(p.tries) != 0 {
+		t.Errorf("tries = %v after an answer, want the failures forgotten", p.tries)
+	}
+	if p.due(port, now.Add(cableProofEvery-time.Minute)) {
+		t.Error("a board that answered was re-asked inside the hour")
+	}
+
+	// A question that never left the hub learned nothing, and the lead it meant is gone.
+	p.retain([]cableSighting{{port: "/dev/ttyACM1", isOrb: true, mac: "aabbccddeeff"}})
+	if len(p.at) != 0 || len(p.gap) != 0 {
+		t.Errorf("the abandoned lead kept history: at=%v gap=%v", p.at, p.gap)
+	}
+	if !p.due(port, now.Add(time.Minute)) {
+		t.Error("a port with no history was refused")
+	}
+	p.settled(port, askNoWire, now.Add(time.Minute))
+	if got := p.gap[port]; got != cableProofNudge {
+		t.Errorf("gap = %v after a port that would not open, want the short gap", got)
+	}
+	// Mid-round-trip is the one time a vanished lead keeps its clock: settled has not run,
+	// and dropping the stamp would let a replug double-ping a wire still held.
+	p.at["/dev/ttyACM1"] = now
+	p.inFlight["/dev/ttyACM1"] = true
+	p.retain(nil)
+	if p.at["/dev/ttyACM1"].IsZero() || !p.inFlight["/dev/ttyACM1"] {
+		t.Error("a round trip still on the wire had its history dropped")
+	}
+	p.retain([]cableSighting{{port: "/dev/ttyACM1", isOrb: true, mac: "aabbccddeeff"}})
+	if p.at["/dev/ttyACM1"].IsZero() {
+		t.Error("a lead still on the bench lost its clock")
+	}
+}

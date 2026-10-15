@@ -2819,7 +2819,12 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
     }
 
     if (vlen == 4 && !memcmp(line, "PING", 4)) {
-        ESP_LOGI(TAG, "ORB-PING %s", orb_state_token());
+        /* The stamp travels with the ack so a hub with only a lead learns the
+         * running version without a reboot-probe: esp_app_get_description is the
+         * same RAM read h_status answers from. fw= keys it so an older parser
+         * that only grep'd the state token keeps working. */
+        ESP_LOGI(TAG, "ORB-PING %s fw=%s", orb_state_token(),
+                 esp_app_get_description()->version);
         return true;
     }
 

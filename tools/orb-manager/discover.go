@@ -131,6 +131,15 @@ func (s *Server) upkeepLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			s.reconcileFleet()
+			// The tick doubles as the card's metronome. Candidates() prunes expired
+			// rows as a side effect of being read, and a prune is exactly the news
+			// nobody sends: a board that powered off quietly produces no packet, no
+			// OnChange and — once its dead verdict has already been filed — no
+			// sweep flip either. A stream that only wakes on those three lets the
+			// row on screen keep its on-LAN claim past its own expiry. Waking here
+			// costs a re-read and a digest compare; the stream's version check is
+			// what keeps a fleet at rest from ever putting a frame on the wire.
+			s.wakeOrbs()
 		}
 	}
 }
@@ -178,16 +187,22 @@ type orbRow struct {
 	// sweep found a cable carrying this MAC, which says nothing about whether anyone has
 	// ever read the chip. It arrives and goes away with the plug.
 	OnCable bool `json:"onCable"`
-	// Reachable is the address book's honesty field on a restored row: "unknown" from
-	// the first paint until the startup dial answers, then "alive" or "dead". Empty on a
-	// row the wire or the bench is producing, because those are not remembered — they
-	// are seen. A row whose address does not answer is the row Forget is for.
+	// Reachable is the dial's word for the row's address: "unknown" on a restored
+	// row from the first paint until the startup dial answers, then "alive" or
+	// "dead". It is also stamped onto announced rows once the sweep has paid for
+	// an answer for their address — a dead verdict there is the present-tense fix
+	// in annotateReachability: the tile must read disconnected the minute the
+	// sweep knows, not when the cached announce ages out. Empty means the hub has
+	// no verdict for this row's address and the row's claim stands on the packet
+	// or the lead that produced it. A row whose address does not answer is the row
+	// Forget is for.
 	Reachable string `json:"reachable,omitempty"`
 	// Ports are the ttys the current sweep found this board behind, sorted. Two entries
 	// mean one board on two cables, not two boards.
 	Ports []string `json:"ports,omitempty"`
 	// Via names how the hub can reach this board right now: "lan", "usb", or both.
-	// Empty means the row is remembered rather than seen.
+	// Empty means no present-tense claim the hub can pay for: the row is remembered,
+	// or its address carries a dead verdict that stripped the lan half.
 	Via []string `json:"via,omitempty"`
 	// Identity is how strongly the hub knows the row is the board it names:
 	// "confirmed" (read off the chip), "descriptor" (host USB serial), "claimed" (an
@@ -264,6 +279,42 @@ type orbRow struct {
 	// through for free. Non-omitempty like every other verdict: an absent answer is a
 	// no, never a maybe. See cableproof.go for who fills it and what it costs.
 	ConsoleOrb bool `json:"consoleOrb"`
+
+	// Connected is the tile's one status word, derived once per card by
+	// annotateReachability from the fields above rather than guessed at by the
+	// page: a lead into this hub, a dial that answered, or an announce the hub
+	// heard inside its TTL is a yes; a fresh dead verdict is a no; nothing else
+	// is a yes. It exists because the page must say disconnected the minute the
+	// sweep knows, not when the cached announce ages out — the tile that kept
+	// claiming on-LAN through that gap was the bug. Non-omitempty like every
+	// other verdict: an absent answer is a no, never a maybe.
+	Connected bool `json:"connected"`
+}
+
+// addVia folds one reachability claim into the row's via list without duplicating
+// one it already carries. The dead half of the pair is dropVia; together they are
+// why annotateReachability does not paste over a cable row's ["usb","lan"] with a
+// bare ["lan"] when a remembered address starts answering again.
+func (r *orbRow) addVia(v string) {
+	for _, have := range r.Via {
+		if have == v {
+			return
+		}
+	}
+	r.Via = append(r.Via, v)
+}
+
+// dropVia removes one claim the hub can no longer pay for. A board whose address
+// stopped answering is not reachable over LAN whatever its cached record still
+// says; a lead it is sitting on stays claimed until the sweep notices the plug.
+func (r *orbRow) dropVia(v string) {
+	out := r.Via[:0]
+	for _, have := range r.Via {
+		if have != v {
+			out = append(out, have)
+		}
+	}
+	r.Via = out
 }
 
 // provesOrb is that predicate, spelled once. A row naming nothing but a MAC from

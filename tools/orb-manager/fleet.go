@@ -12,6 +12,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // Who the hub believes is behind the addresses it is willing to dial.
@@ -398,6 +399,51 @@ func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
 	// not rewrite the state file on a loop. This is the same rule reconcileFleet
 	// follows about not writing on no news.
 	s.saveState()
+}
+
+// foldProbeStatus files what one liveness dial learned about a board into the
+// fleet row, keyed by the MAC the body itself named. This is the fast path for
+// fw and state on a LAN board: the sweep asks every remembered address every ten
+// seconds and once at launch, and until now it kept only the yes/no out of a
+// body that carried the running version, the state token and the board's name.
+// A dial does not renew presence — NoteAnswer is the store call that refuses to
+// touch LastSeen, for the reasons orbmdnsToObservation states — it renews facts.
+//
+// The cross-lock still applies: the fold lands only when the body's MAC names a
+// row the store holds AND that row's own address is the one the hub dialed. A
+// board whose lease moved answers at the old address with a stranger's face or
+// not at all, and an answer from a board at an address its row does not carry is
+// the announce's job — the next check-in moves the row's IP and the next dial
+// after that folds its facts. A stranger's answer at a known address folds onto
+// no row: introducing boards is what Adopt and the browse are for.
+//
+// The name folds only when the body carried a word. orbnet.Status is a typed read
+// and cannot tell an absent key from an empty one, and the rule that only a
+// successful status read may CLEAR a cached name belongs to the proxy fold, which
+// reads the raw body and can tell. Here absence is old firmware, which is no news.
+func (s *Server) foldProbeStatus(dialIP string, st *orbnet.Status) {
+	if s.fleet == nil || st == nil || st.MAC == "" {
+		return
+	}
+	row, known := s.fleet.Look(st.MAC)
+	if !known || (row.IP != "" && row.IP != dialIP) {
+		return
+	}
+	changed := false
+	if _, ch, err := s.fleet.NoteAnswer(st.MAC, st.FW, st.State); err == nil && ch {
+		changed = true
+	}
+	if st.Name != "" {
+		if _, ch, err := s.fleet.NoteDeviceName(st.MAC, st.Name); err == nil && ch {
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	log.Printf("orb-manager: %s answers %s as fw %q, state %q", st.MAC, dialIP, st.FW, st.State)
+	s.saveState()
+	s.wakeOrbs()
 }
 
 // foldBootName caches a name the board announced about itself on its boot console,

@@ -690,6 +690,13 @@ $("#ob-go").onclick = async () => {
 // credentials, and animates the one sentence that explains itself. The hub
 // forgets the board on success and remembers the act, so the cable's
 // MAC-shaped descriptor cannot rebuild the row (New Orb is the door back).
+// lonelyArm moves the card's Lonely button to its one-step confirm: the press that
+// armed it already named the act and the port, and the operator reads which board is
+// about to stop being an orb on the button's own face. The typed word is gone (the
+// operator's call, bench 2026-10-15: "don't do the whole are-you-sure-type-text-in-here
+// thing, super annoying — the user already went through hitting forget and hitting the
+// full reset button"). The hub's payload word stays: it is the gate for every scripted
+// and hand-crafted caller, and costs this page nothing.
 function lonelyArm() {
   const port = current.port;
   if (!port) {

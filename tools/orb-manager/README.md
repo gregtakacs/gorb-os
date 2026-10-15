@@ -300,7 +300,18 @@ no Forget; that verdict is the hub's, not the card's guess.
   8-ball, and holds its USB enumeration instead of boot-looping. The drawing is
   composited — each dirty band is rebuilt black-plus-message-plus-ball and
   flushed once, never erased-then-drawn — which is what the flicker complaint
-  bought. It speaks no orb protocol and announces nothing. On success the hub
+  bought. Four CO5300 rules hold that band scheme, and dropping any of them is
+  visible on the glass rather than at compile time: pixels go out in wire order
+  (the panel reads each one big-endian, so an unswapped 0x2104 ball body arrives
+  as 0x0421 green); every flush window is even on both axes and full width,
+  because the panel clocks two pixels per cycle and programs CASET/RASET verbatim
+  (odd windows shear the rows and leave a sprite's old pixels outside the window
+  that meant to erase them); the one band buffer is never resubmitted before its
+  trans-done ISR hands it back; and the whole panel is painted once while the
+  display is still dark, so the GRAM a board powers on with never shows. That set
+  is why the screen once came up green, unreadable and trailing. `lonely/test/run.sh`
+  runs the shipped drawing code against a fake panel on the host and fails on the
+  first violation. It speaks no orb protocol and announces nothing. On success the hub
   forgets the board completely (fleet row, name, address grant, port identity,
   on-disk state) and **marks the chip lonely**, because the cable sweep will
   re-read the same eFuse MAC off the lonely app's descriptor a moment later:
@@ -310,7 +321,12 @@ no Forget; that verdict is the hub's, not the card's guess.
   time — an orb flash, a serial ack, an announcement. This is also the recovery
   path from a wiped board's flap — it needs no BOOT-button press, because
   entering download mode is the same auto-reset dance a flash uses. Rebuild the
-  image with `lonely/build.sh` (ESP-IDF v5.4, run with bash).
+  image with `lonely/build.sh` (ESP-IDF v5.4, run with bash). Rebuilding alone changes
+  no running hub: `go:embed` freezes `lonely.bin` into the hub binary, so a fix needs a
+  rebuilt `orb-manager` and a hub restart both. Measured on the bench 2026-10-15 — a
+  lonely write from a hub older than the fix wrote the broken image and the same green
+  ball came back up. `app_init: Compile time` on the board's own console is the one
+  read that says which image actually landed.
 - **No whole-chip erase on this hub.** The page and the HTTP surface offer
   lonely and nothing more destructive: a blank S3 retries its nonexistent
   image every boot, re-enumerating its USB port every few seconds, which reads
@@ -792,7 +808,9 @@ cmd/orbfake/         runs that double as a listening server for a human driving 
                      than with this repo's listener: see "Listening for an orb" under Development.
 web/                 the embedded hub UI (index.html, app.css, app.js)
 lonely/              the standalone ESP-IDF "I used to be an Orb" app, its build.sh,
-                     and the staged lonely.bin the hub embeds and writes at 0x20000
+                     the staged lonely.bin the hub embeds and writes at 0x20000, and
+                     test/run.sh — a host check that runs the app's own drawing code
+                     against a fake CO5300 and holds it to the four panel rules
 ```
 
 ## Development

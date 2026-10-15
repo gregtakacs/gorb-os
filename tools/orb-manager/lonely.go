@@ -151,13 +151,23 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.forgetWipedOrb(req.Port, lonelyMAC)
-	// The mark is what keeps the row gone: the cable sweep re-attributes the
-	// same descriptor MAC a moment later, and a hub with no memory of leaving
-	// this board lonely would rebuild the fleet row from that sighting. The
-	// next orb flash, announcement or serial ack clears it.
-	s.lonely.mark(lonelyMAC)
+	s.endAsLonely(req.Port, lonelyMAC)
 	send("done", "the orb is lonely now: its settings, name and credentials went with it, and it bounces its message until you flash it into something else")
+}
+
+// endAsLonely is the pair the lonely door performs on success: mark the chip, then
+// un-make the orb. The order is the point. forgetWipedOrb ends in saveState, and
+// saveState is what writes the lonely set into the file; marking afterwards recorded
+// the forgetting without the memory of why. Proven on the bench 2026-10-15: a real
+// lonely write left a state file with the row gone and no lonely field at all, so the
+// next launch had nothing to stop the cable sweep from Confirm-ing the descriptor back
+// into a fleet row — the board the operator had just ended, listed as an orb again. One
+// save must carry both facts. The mark is also what keeps the row gone while the board
+// still enumerates the same descriptor MAC: the next orb flash, announcement or serial
+// ack clears it.
+func (s *Server) endAsLonely(port, mac string) {
+	s.lonely.mark(mac)
+	s.forgetWipedOrb(port, mac)
 }
 
 // flashProgressSender is the progress-event encoder both writers share: the UI

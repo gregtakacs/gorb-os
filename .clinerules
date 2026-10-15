@@ -109,8 +109,10 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   build embeds `tools/orb-manager/lonely/lonely.bin`, a standalone ESP-IDF app: it boots,
   bounces a message block reading "I used to be an Orb, now I'm just lonely. Flash me!"
   and an 8-ball around the round CO5300 panel, and does nothing else — no WiFi, no NVS,
-  no mDNS, no serial command door. `POST /api/lonely` (typed confirm `LONELY`, same
-  streaming/registry/cancel contract the wipe door once had) writes it via `esprom.LonelyPlan`:
+  no mDNS, no serial command door. `POST /api/lonely` (payload word `LONELY` — the page
+  asks for no typed confirmation, the hub still requires the field; same
+  streaming/registry/cancel contract the wipe door once had) writes it via
+  `esprom.LonelyPlan`:
   the ACTIVE firmware bundle's bootloader @0x0, partition table @0x8000 and initial
   otadata @0x11000, and the lonely app @0x20000 (ota_0) — deliberately the orb's own
   geometry, so a New Orb flash over a lonely board replaces every byte this writes.
@@ -120,6 +122,10 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   lonely app still enumerates the eFuse MAC over the same USB-JTAG descriptor, so an
   unmarked hub re-remembers the port on the next sweep and the row the operator ended
   rebuilds itself (the 2026-10-15 complaint: "it still keeps reporting as an orb").
+  `endAsLonely` marks the chip **before** `forgetWipedOrb`, because that forget is what
+  saves the state file: a mark landing after it never reaches disk, and the next launch
+  lets the sweep rebuild the row the operator ended. `endaslonely_test.go` drives the pair
+  and reads the file; `lonely_test.go` pins the call order.
   While a mark stands the board is invisible to the fleet, `fleetKnown` reports it
   unknown (New Orb shows a blank to adopt), the port list labels it `left lonely`, and
   the mark is cleared only by orb evidence: an orb flash's eFuse MAC, a serial-door ack,
@@ -135,14 +141,29 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   (ESP-IDF v5.4 at `~/esp/esp-idf`; run it with bash, `export.sh` is not POSIX sh;
   `main/CMakeLists.txt` carries `PRIV_REQUIRES nvs_flash esp_lcd espressif__esp_lcd_co5300`
   — an explicit requirements list is exhaustive, so the display stack must be named).
+- **An address is the whole qualification for the fleet list and the state file
+  (2026-10-15).** The operator's words: "the only reason to keep an orb when it's not
+  actively connected is to be able to ping its IP address. One that is not pingable does
+  not matter, we can't manage it ever unless it connects to the serial port at which
+  point it will self discover anyway." So `Snapshot` and `Restore` in `internal/orbfleet`
+  carry only rows with `IP != ""`, and the roster's fleet tier skips address-less rows
+  and lonely-marked ones. The `Remembered` flag no longer buys a line in the file — it is
+  in-memory only, and `storeProvesOrb` still reads it to tell a known orb's cable from a
+  blank board awaiting New Orb. This retired the earlier "flashed or named persists
+  without an address" exception, which is what left an unplugged board and a
+  just-ended lonely one sitting on the card. `remembered_test.go` pins the two halves of
+  the rule — no address and no cable produces nothing, an address still holds its row —
+  and `endaslonely_test.go` pins that one lonely save carries both the forget and the
+  mark. A stale entry an older hub wrote dies on the
+  next launch rather than being migrated.
 - **Naming on the hub page is display-only, and a live Forget is a dialog, not a
   dead button (2026-10-15).** The hub shows the name the board answers to; it edits
   nothing — renames happen on the orb's own network page (`POST /api/v1/name`), over
   the serial `NAME` door, or at flash time in New Orb. When the Forget gate refuses a
   live row, `annotateForget` also sets `liveForget` + `livePort`, the card lights
   Forget, and the dialog offers the two endings that actually reach a live board,
-  both over the USB lead: **full reset** (the `/api/lonely` write, `LONELY` word
-  still required) and **factory reset settings** (`/api/orb/cmd` `RESET ALL`; the
+  both over the USB lead: **full reset** (the `/api/lonely` write, `LONELY` payload
+  word) and **factory reset settings** (`/api/orb/cmd` `RESET ALL`; the
   ack write-back renames the store's row to match during the gap before the board
   answers again: on a clean erase the firmware seeds the default name **"The Orb"**
   into the fresh NVS itself (net_factory_reset), so the device and the card agree
@@ -151,6 +172,12 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   lost the Wipe chip button and the route lost `/api/wipe`; `orbflash -mode wipe`
   remains the headless bench door. A test pins all of this (`ui_test.go`,
   `TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly`).
+  Neither ending asks for a typed word (2026-10-15: "the type to confirm is super
+  annoying"): the button press is the confirmation, and reaching it already took
+  pressing Forget and naming the ending. The card's Lonely confirm button is enabled the
+  moment it is armed, and `#ob-lonely-word` is gone from the page. The hub's payload gate
+  stays, so a scripted or curl caller still has to send `LONELY` / `RESET ALL`.
+  `TestLonelyPageHasTheDoorAndNoTypedWord` pins the ceremony's absence both ways.
 - **One MAC, two spellings — key on the canonical form inside the collection.**
   `orbmdns.CanonicalMAC` returns bare lowercase hex and is what the cable sweep, the
   fleet store and the roster key on; `macNorm` returns colon-separated pairs, which is

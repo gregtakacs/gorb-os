@@ -255,6 +255,15 @@ type orbRow struct {
 	// cable from the fleet (blank, by the row rule) and from New Orb (inFleet,
 	// by a rule that took any cable sighting for an orb).
 	Orb bool `json:"orb"`
+	// ConsoleOrb is the one provesOrb case that costs no reboot, no packet and no
+	// dial: this hub opened the lead the chip is sitting on, sent PING, and the app
+	// answered ORB-PING. Only gorb-os answers that door, so the chip runs an orb even
+	// though its MAC still rests on a USB descriptor and the row still has no address.
+	// The badge does not change — the descriptor did not stop being a descriptor — and
+	// the refusal sentence does, because "identify it" is a door the hub just walked
+	// through for free. Non-omitempty like every other verdict: an absent answer is a
+	// no, never a maybe. See cableproof.go for who fills it and what it costs.
+	ConsoleOrb bool `json:"consoleOrb"`
 }
 
 // provesOrb is that predicate, spelled once. A row naming nothing but a MAC from
@@ -266,10 +275,16 @@ type orbRow struct {
 // verdict the hub reached by dialing it, or a LAN announcement — and Identity
 // says which kind of proof the MAC rests on, where "confirmed" (read off a chip
 // that answered as an orb) and "claimed" (an _orb._tcp announce) count and
-// "descriptor" (a USB serial number) does not.
+// "descriptor" (a USB serial number) does not. The one exception to that last rule
+// is ConsoleOrb: a descriptor is worthless on its own, and worthless in exactly the
+// same way whatever the chip says about itself next door. So the row that carries
+// this hub's own console answer needs no second opinion — the chip spoke, on the
+// lead, into the port this hub was holding.
 func (r orbRow) provesOrb() bool {
 	switch {
 	case r.Name != "", r.IP != "", r.FW != "", r.State != "", r.Provision:
+		return true
+	case r.ConsoleOrb:
 		return true
 	case r.Reachable == "alive" || r.Reachable == "dead":
 		return true

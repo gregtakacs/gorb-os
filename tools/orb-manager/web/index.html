@@ -29,14 +29,17 @@
     <ul id="mn-find" class="orbgrid"></ul>
     <div class="row"><span class="hint" id="mn-find-note"></span></div>
     <p class="hint">Every board the hub has met as an orb gets one card, keyed on its MAC and
-    followed through address changes. A card turns amber when this hub carries newer firmware
-    than that orb runs. Forget appears only on a board that is not answering, not announcing,
-    and not on a cable — a board you can still reach will re-list itself. A chip on a cable with
-    no orb on it is not listed at all: it is the New Orb button.</p>
+    followed through address changes. A board on a cable is asked what it is the moment the
+    hub notices it, over the same lead, at no cost to the board: one that answers is a card.
+    A chip that answers nothing runs no orb and is not listed at all &mdash; it is the New Orb
+    button. A card turns amber when this hub carries newer firmware than that orb runs.
+    Forget appears only on a board that is not answering, not announcing, and not on a
+    cable; a board you can still reach will re-list itself.</p>
   </article>
 
-  <p class="hint" id="mn-empty" hidden>No orbs yet. Flash a blank ESP32-S3 with the New Orb
-  button, or add an orb by its address if the hub cannot hear it announce.</p>
+  <p class="hint" id="mn-empty" hidden>No orbs yet. A board on a cable that stayed silent
+  when the hub asked it runs no orb: give it one with the New Orb button. Add an orb by its
+  address if the hub cannot hear it announce.</p>
 </main>
 
 <!-- The New Orb dialog: the one decision a blank chip gets, taken without

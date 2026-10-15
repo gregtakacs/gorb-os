@@ -224,6 +224,12 @@ function portLabel(p, entry) {
       ? p + "  —  " + (entry.mac || entry.usbMac || "orb") + "  ·  " + (entry.version || "version unknown")
       : p + "  —  " + (entry.reason || "not an orb");
   }
+  // The free cable answer, filed and never paid for with a reboot. It says the chip is
+  // an orb and nothing else, so the label stops there: no version, no verdict, and not
+  // the "not identified" a bare descriptor still earns.
+  if (entry.cableProof && entry.isOrb) {
+    return p + "  \u2014  " + (entry.usbMac || entry.mac || "orb") + "  \u00b7  an orb, answered over the cable";
+  }
   if (entry.usbMac) { return p + "  —  " + entry.usbMac + "  ·  not identified"; }
   if (entry.hint) { return p + "  —  " + entry.hint + "  ·  not identified"; }
   return p;
@@ -1477,7 +1483,12 @@ let orbBytesAt = 0;
 // focus, wipe a half-typed name, or scroll a list the operator is reading.
 function applyFound(d) {
   const list = $("#mn-find"), state = $("#mn-find-state");
-  const orbs = (Array.isArray(d.orbs) ? d.orbs : []).filter((o) => !isBlankRow(o));
+  const raw = Array.isArray(d.orbs) ? d.orbs : [];
+  const orbs = raw.filter((o) => !isBlankRow(o));
+  // A board the hub can see on a lead and cannot prove is an orb is not a card, and
+  // it is not nothing either. "None on a cable" while one sits there is the sentence
+  // that sends an operator to wiggle the wire instead of reading the row's refusal.
+  const unproven = raw.filter((o) => isBlankRow(o) && o && o.onCable).length;
   $("#mn-empty").hidden = orbs.length !== 0;
   const fresh = orbs.filter((o) => o.update === true).length;
   if (fresh) $("#mn-find-note").textContent = fresh + " orb(s) carry older firmware than this hub; the amber tag names them.";
@@ -1521,7 +1532,12 @@ function applyFound(d) {
     ? "\u2717 no LAN listener: " + (d.error || "unknown reason")
     : orbs.length
       ? orbs.length + " orb" + (orbs.length === 1 ? "" : "s") + " \u2014 " + parts.join(" + ") + " (" + beat + ")"
-      : "no orb seen: none announced, and none on a cable")
+      : unproven
+        // On the lead and silent, so not a card: the chip did not answer the one
+        // question that costs it nothing. The line under the empty list names the
+        // door that fits a board running no orb, which is the New Orb flash.
+        ? unproven + " board" + (unproven === 1 ? "" : "s") + " on a cable, silent when asked: none announced, and none proven an orb"
+        : "no orb seen: none announced, and none on a cable")
     + (d.cableError ? "  \u00b7  port list failed: " + d.cableError : "");
 }
 

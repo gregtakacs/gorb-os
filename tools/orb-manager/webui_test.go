@@ -116,3 +116,55 @@ func TestForgetDialogFollowsTheRowItCameFrom(t *testing.T) {
 		t.Error("the forget section raises a browser popup; the dialog is the only ask it has")
 	}
 }
+
+// The hub asks a board on a lead the free question, and the page is the half that has to
+// say the result honestly in both directions: an answer is a card, and a silence is a
+// named silence rather than the old "none on a cable" that sent an operator to check a
+// wire that was fine.
+func TestTheFleetHeaderSaysWhatHappenedOnTheCable(t *testing.T) {
+	src := readAppJS(t)
+	for _, want := range []string{
+		// The count of rows the hub could not prove, taken before the filter drops them.
+		`const unproven = raw.filter((o) => isBlankRow(o) && o && o.onCable).length;`,
+		`silent when asked`, // a lead with a silent chip on it
+		`"no orb seen: none announced, and none on a cable"`, // and a bench with no lead at all
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lost %q — the empty fleet list can lie about the cable again", want)
+		}
+	}
+	// The two sentences must stay in the order that chooses them: the silent-board line is
+	// picked on `unproven`, ahead of the no-cable-at-all fallback.
+	if strings.Index(src, "? unproven +") > strings.Index(src, `"no orb seen: none announced`) {
+		t.Error("the silent-cable sentence is no longer chosen before the no-cable fallback")
+	}
+	// The promise the card makes in prose has to match the code above it.
+	page, err := os.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("index.html: %v", err)
+	}
+	if !strings.Contains(string(page), "asked what it is the moment the") {
+		t.Error("index.html no longer tells the operator the hub asks a board on a lead")
+	}
+}
+
+// A cable answer is not a probe. The port label may say the chip is an orb, may not say
+// anything about the firmware it never read, and may not claim a reboot.
+func TestACableAnswerIsLabelledAsWhatItCost(t *testing.T) {
+	src := readAppJS(t)
+	label := blockContaining(t, src, "function portLabel")
+	atProbed := strings.Index(label, "entry.probed")
+	atProof := strings.Index(label, "entry.cableProof")
+	if atProbed < 0 || atProof < 0 {
+		t.Fatal("portLabel lost one of its two identification branches")
+	}
+	if atProof < atProbed {
+		t.Error("portLabel reads cableProof ahead of probed, so a probe's version string loses to a PING")
+	}
+	if !strings.Contains(label, "an orb, answered over the cable") {
+		t.Error("portLabel has no words for a console answer, so the picker calls it unidentified")
+	}
+	if proof := label[atProof:]; strings.Contains(proof, "entry.version") || strings.Contains(proof, "entry.verdict") {
+		t.Error("portLabel prints a firmware stamp for a chip that was only ever pinged")
+	}
+}

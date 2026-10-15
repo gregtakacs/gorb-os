@@ -19,6 +19,12 @@ import (
 // the Onboard card offers one button per port, and the answer is cached here so a
 // reload of the page does not cost another reboot.
 //
+// One thing IS automatic, and it is not a probe: the hub asks an unproven board on
+// a lead the free question, PING, and files the answer here marked proven=cable
+// (cableproof.go). That entry says only what the chip said — an orb app is running,
+// and here is its state token. It says nothing about the firmware, so it does not
+// earn the `probed` field, which reports a reboot this hub paid for.
+//
 // The cache key is the CABLE, not the tty name: the entry remembers the USB serial
 // the host could see when the probe ran, and an answer is only handed back while
 // that serial is still what is behind the port. Keying on the path alone was wrong
@@ -30,7 +36,20 @@ type identityEntry struct {
 	info esprom.OrbInfo
 	who  string    // the USB serial seen when this was recorded, "" if the host could not attribute the cable
 	at   time.Time // when it was recorded, for the TTL
+	// proven records HOW the answer was got, because the page must not present a
+	// free console read as a reboot it never paid for. "probe" is the answer to a
+	// click; "cable" is the hub's own PING (cableproof.go). Empty means "probe", so
+	// every hand-built entry in the suite keeps reporting the way it always did.
+	proven string
 }
+
+// The two ways an entry gets into this cache. They are strings rather than a bool so
+// a third door — a flash's boot verdict, say — can name itself instead of borrowing
+// one of these two words.
+const (
+	provenProbe = "probe"
+	provenCable = "cable"
+)
 
 type identityCache struct {
 	mu       sync.Mutex
@@ -53,7 +72,7 @@ const identityTTL = 30 * time.Minute
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
-		cables: newCableCache(), live: newLiveCache(),
+		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
 		lonely: newLonelyMark(),
 		orb:    orbnet.NewClient(scanTimeout),
 		device: orbnet.NewClient(deviceTimeout),
@@ -128,27 +147,43 @@ func (c *identityCache) begin(port string) bool {
 	return true
 }
 
-// done records an answer, tagged with who the host believes is behind the port at
-// the moment the probe finished — the same instant that produced the answer, so a
-// cable swapped between those two events is caught rather than inherited.
+// done records an answer a reboot paid for, tagged with who the host believes is
+// behind the port at the moment the probe finished — the same instant that produced
+// the answer, so a cable swapped between those two events is caught rather than
+// inherited.
 func (c *identityCache) done(port string, info esprom.OrbInfo) {
+	c.record(port, info, provenProbe)
+}
+
+// doneCable records the answer to the free question: the hub opened the lead, sent
+// PING, and the app answered. It carries the state token and no firmware stamp, and
+// the port entry reports it as a cable proof rather than a probe (handlePorts), so
+// the picker can say what is known and what was merely heard.
+func (c *identityCache) doneCable(port string, info esprom.OrbInfo) {
+	c.record(port, info, provenCable)
+}
+
+func (c *identityCache) record(port string, info esprom.OrbInfo, proven string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.inFlight, port)
-	c.byPort[port] = identityEntry{info: info, who: c.serialOf(port), at: time.Now()}
+	c.byPort[port] = identityEntry{info: info, who: c.serialOf(port), at: time.Now(), proven: proven}
 }
 
-// all returns the still-true answers, keyed by port, and drops what is no longer
-// true: entries whose port vanished from the enumeration (unplugged, so the next
-// device to take that name starts clean) and entries whose cable is a different orb.
-func (c *identityCache) all(present ...string) map[string]esprom.OrbInfo {
+// all returns the still-true answers with their provenance, keyed by port, and drops
+// what is no longer true: entries whose port vanished from the enumeration
+// (unplugged, so the next device to take that name starts clean) and entries whose
+// cable is a different orb. It returns the whole entry rather than the OrbInfo
+// because two of its readers must tell a reboot-paid probe from a free cable read:
+// the port list, and the roster deciding whether a descriptor row is a card.
+func (c *identityCache) all(present ...string) map[string]identityEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	seen := make(map[string]bool, len(present))
 	for _, p := range present {
 		seen[p] = true
 	}
-	out := make(map[string]esprom.OrbInfo, len(c.byPort))
+	out := make(map[string]identityEntry, len(c.byPort))
 	for port, e := range c.byPort {
 		if len(present) > 0 && !seen[port] {
 			delete(c.byPort, port)
@@ -158,7 +193,7 @@ func (c *identityCache) all(present ...string) map[string]esprom.OrbInfo {
 			delete(c.byPort, port)
 			continue
 		}
-		out[port] = e.info
+		out[port] = e
 	}
 	return out
 }
@@ -240,30 +275,47 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if info, ok := cached[p]; ok {
-			e["probed"] = true
+		if ent, ok := cached[p]; ok {
+			info := ent.info
+			// "probed" keeps one meaning: a reboot this hub paid for, and a firmware
+			// stamp read off the bootloader in the window that follows. The free
+			// cable answer is a different fact and gets its own field, because a
+			// picker that called a PING a probe would report a reboot nobody asked
+			// for and would hide the Identify button that settles the version.
+			rebootPaid := ent.proven != provenCable
+			e["probed"] = rebootPaid
+			if !rebootPaid {
+				e["cableProof"] = info.IsOrb
+			}
 			e["isOrb"] = info.IsOrb
 			// A chip that has answered for itself as an orb is the strongest
 			// proof the hub keeps, and it outranks the address book: a board
-			// identified after a wipe is known even before it has a name.
+			// identified after a wipe is known even before it has a name. The
+			// console answer counts here whatever it cost, which is the point of
+			// asking it: an orb on a lead stops reading as a blank to flash.
 			if info.IsOrb {
 				e["orbSeen"] = true
 			}
 			e["mac"] = info.MAC
-
-			e["project"] = info.Project
-			e["version"] = info.Version
-			// The same stamp as structure, so a card can print v1.0.0 without
-			// parsing the string. Legacy boards come back as legacy: true.
-			e["semver"] = semverPayload(info.Version)
-			e["compileTime"] = info.CompileTime
-			e["compiledAt"] = info.CompiledAt
-			e["elfSha256"] = info.ElfSHA256
-			e["idf"] = info.IDF
-			e["ip"] = info.IP
 			e["reason"] = info.Reason
-			e["probedAt"] = info.ProbedAt
-			e["verdict"] = string(s.verdictFor(info))
+			// The chip's own state token ("b", "c-ap", "c-sta"), which is the whole
+			// news a board with no lease can give and the reason its row says
+			// "waiting for a network" rather than "no address yet".
+			e["orbState"] = info.State
+			if rebootPaid {
+				e["project"] = info.Project
+				e["version"] = info.Version
+				// The same stamp as structure, so a card can print v1.0.0 without
+				// parsing the string. Legacy boards come back as legacy: true.
+				e["semver"] = semverPayload(info.Version)
+				e["compileTime"] = info.CompileTime
+				e["compiledAt"] = info.CompiledAt
+				e["elfSha256"] = info.ElfSHA256
+				e["idf"] = info.IDF
+				e["ip"] = info.IP
+				e["probedAt"] = info.ProbedAt
+				e["verdict"] = string(s.verdictFor(info))
+			}
 		}
 		entries = append(entries, e)
 	}

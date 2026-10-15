@@ -141,7 +141,7 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
        NET_CMD_SCAN_DONE,     /* drain the results once the driver says done     */
-       NET_CMD_SCAN_BOOT,     /* first-boot scan armed by AP_START, logged as PROVSCAN */
+       NET_CMD_SCAN_BOOT,     /* the ARMED console scan: first-boot, or a serial SCAN */
        NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
        NET_CMD_STORE_CREDS,   /* a lease verified the pending pair: write it to NVS now  */
        NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
@@ -2751,7 +2751,17 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
 
     if (vlen == 4 && !memcmp(line, "SCAN", 4)) {
         s_serial_scan_wanted = true;            /* scan_collect mirrors once, then clears */
-        net_post(NET_CMD_SCAN, 0);              /* the radio task owns the scan state */
+        /* Post the ARMED scan, not the bare one. scan_begin() starts the driver
+         * scan and leaves s_scan_state alone, because both of its other callers
+         * (the page handler and the boot scan) arm SCAN_SCANNING first — and
+         * scan_collect() drops the results of a scan nobody armed. So a SCAN on
+         * the serial door started a real radio scan, threw the AP list away at
+         * the done event, and printed no PROVSCAN-END: the hub re-pushed for its
+         * whole budget and reported no ack (bench, 2026-10-15: eight
+         * SCAN-ARMED lines, zero PROVSCAN lines, ack:false). scan_boot_begin()
+         * is the one starter that arms and starts, and it leaves an in-flight
+         * scan alone, so an eager click cannot stack scans. */
+        net_post(NET_CMD_SCAN_BOOT, 0);
         ESP_LOGI(TAG, "SCAN-ARMED");
         return true;
     }

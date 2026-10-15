@@ -2852,16 +2852,46 @@ being one milestone. Proposed split:
 
 - **R2–R5 stand as asked** (§22.6): uninstalled-app sections, subset bundles, identity
   rule, the flip's entry point.
-- **R6 (new) — does an element's animation state belong to the theme or the app?**
-  `bank` carries frames as an indexed run "one per value", so an element whose frame is
-  chosen by a *value* (a date wheel) is app state wearing animation clothing. A row needs
-  to say which it is, or the compositor advances frames on a clock that the app wanted to
-  own.
-- **R7 (new) — the ladder's shape.** A set of allowed rates per app (`{4,8,12,15}`), a
-  min/max plus a "prefer stepped" flag, or a named ladder the OS ships? The manifest has
-  one u32 today; a set costs a word and a bound.
-- **R8 (new) — the split at §23.5, yes or no.** If the owner wants the ladder inside P6,
-  P6 inherits D16's delivery work and its bench gate grows accordingly.
+- **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
+  per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
+  advances one frame. Consequences at §23.7.
+- **R7 — RULED 2026-10-15.** The manifest carries an **explicit set** of acceptable rates.
+  The OS attempts the highest rung it can achieve that is no greater than what the app
+  asks for; if the ask cannot be fulfilled at all, it runs at the set's nominal minimum.
+  Consequences at §23.7.
+- **R8 — still owed:** the P6/P7 split at §23.5.
+
+### 23.7 The consequences of R6 and R7, as ruled
+
+**R6 retires every rate field the kit carries today.** `gif_delays` (the per-frame delay
+table), `bg_fps`, `bg_every`, `tourbillon_fps` and the sweep/`tick_rate` pair that
+`orbtheme.py`'s `THEME_FIELDS` carries all stop meaning anything: frames are data, and the
+stack's picked rate is the only clock. The element row keeps `n_frames` and the loop rule;
+it loses the delays. av-kit re-baked to FORMAT 3 therefore loses its per-element timing,
+which is the sharpest thing this ruling costs, and it shows up as a question at P6's
+re-bake: a watch whose hands want 1 Hz and whose seconds carriage wants 8 fps cannot get
+both, because one app stack gets one rate. A theme wanting both needs either two apps or a
+rate exception, and the advance-mode field below is where an exception would be recorded if
+the owner ever wants one.
+
+**R7 needs two manifest numbers, not one.** The declared **set** bounds the rungs the OS
+may pick (`{4,8,12,15}` is four u32s or one bitmask), and the app's **ask** — the runtime
+request `set_beat` already carries — names what it wants right now. The pick rule is then
+mechanical: highest rung that is achievable and not faster than the ask, else the set's
+lowest rung. D16's install-time price reads off the set's top, so the ladder the owner
+consents to is the whole reachable range and not one number.
+
+**The set's floor and D16's floor disagree, and that is a measurement P7 takes.** D16's
+3000 ms floor was priced against a whole-dial commit pass at 185 ms; a 12 fps rung is
+83 ms, which the shipped carriage cannot flush at all (§13.4: mean flush 138 ms, and the
+carriage alone force-marks ~255 rows). So 12 and 15 fps are reachable only on thin stacks
+or on repaints that stay inside a damage rect — and the row-counting pick at §23.2 is what
+decides, on the bench, which stacks qualify.
+
+**`bank` is not an animation.** It is indexed "one plate per value" (`orb_assets.h:75`), so
+its frame is app state, and R6's OS-advance rule would march a date wheel on a clock the
+app wanted to own. The element row therefore carries an advance mode — OS-advanced or
+app-chosen — and R6's ruling is what forces the field to exist.
 
 
 

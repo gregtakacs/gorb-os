@@ -38,7 +38,12 @@ const (
 	// anything sharing the wire during a 16 MB erase corrupts it, and the
 	// operation needs its own cancel handle and its own line in /api/ops so the
 	// UI can say which cable is being emptied.
-	opWipe      opKind = "wipe"
+	opWipe opKind = "wipe"
+	// opLonely is the lonely-image write. It is a flash wearing a different
+	// shirt — same port claim, same cancel path, same ROM conversation — and it
+	// earns its own kind because /api/ops should say what is ON the wire, not
+	// merely that something is.
+	opLonely    opKind = "lonely"
 	opProvision opKind = "provision"
 	opProbe     opKind = "identify"
 	// opConsole is a read, but it still HOLDS the port, so it claims the same slot a

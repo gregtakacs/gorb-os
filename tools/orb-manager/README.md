@@ -248,7 +248,15 @@ no Forget; that verdict is the hub's, not the card's guess.
   successful flash runs the post-flash onboarding probe; the boot verdict the
   flash captured picks the branch (AP card vs. connected panel), and a finished
   board opens straight in its manage state. Progress is a bar; the raw ROM
-  traffic sits collapsed one click below it.
+  traffic sits collapsed one click below it. The flash converges on the **join
+  dialog**, which opens locked — a spinner and a sentence while the orb reboots,
+  opens its AP, and runs its first scan — because an empty network picker before
+  that phase was the dead form this replaced; Later is live the whole wait. The
+  network list is the orb's own scan read over the cable, **Rescan** re-drives
+  the firmware's serial `SCAN` verb at any point (the boot window can close
+  before a slow scan finishes, and radios change), the time zone picker is the
+  device's own table served by `/api/tz` with **Use my location** beside it,
+  and every passphrase field carries a show/hide.
 
 - **Add by IP…** — for the orb whose broadcasts the network swallows. The dialog
   dials the typed address once; only an orb answering `/api/v1/status` earns a
@@ -263,27 +271,37 @@ no Forget; that verdict is the hub's, not the card's guess.
   bundle goes through the ROM instead, with a factory-reset box that stays
   unchecked.
 
-- **Wipe chip** — inside an orb's firmware card, only when that orb is on a
-  cable, in its own colour, and it does not act until you type `WIPE`. It
-  ROM-erases the whole flash: firmware, partition table, NVS credentials, the
-  name and the factory config all go together, and the chip is left holding
-  nothing, so it prints nothing, opens no AP and announces nothing until it is
-  flashed again. This is the operation that makes a used orb a fresh one for
-  testing the whole flow, and it is what `erase-flash` means with no esptool and no
-  stub loader: the ROM erases inside `FLASH_BEGIN`, so the erase is `FLASH_BEGIN`
-  over the whole capacity with no blocks to follow. The wipe is then **verified** —
-  the ROM hashes the chip and the digest must equal the hash of that many `0xFF`
-  bytes, so "blank" is a measurement rather than a hope. The hub forgets the board
-  along with erasing it (fleet row, name, address grant, on-disk state file),
-  because a card describing
-  a firmware that is gone is a lie. The eFuse MAC cannot be erased; the port stays
-  listed, unidentified. That listing comes from ROM silicon, not from anything the
-  image used to provide — so if the port disappears from the list entirely, the
-  erase is not the cause. Check the cable and the host's view of the port first
-  (`usbipd list` on Windows tells you whether the host sees it at all). And a
-  blank S3 boot-loops: its USB port re-enumerates every few seconds, which is
-  expected, not a bad link. Hold BOOT, tap RESET, release BOOT to force download
-  mode, then flash it again.
+- **Leave it lonely** — the only end of orb life this page offers, inside an
+  orb's firmware card, only when that orb is on a cable, in its own colour, and
+  it does not act until you type `LONELY`. It writes the lonely image: the
+  loaded firmware bundle's bootloader, partition table and initial otadata at
+  their usual offsets, a small embedded app in the ota_0 slot, and — in the
+  same ROM session, after the images land — a region erase of the NVS and
+  storage partitions the bundle's own partition table declares, so the time
+  zone, the name and every Wi-Fi credential go with the orb life. The app
+  boots, wipes any owner settings it can still find at every start (so a board
+  that became lonely by any door keeps nothing), bounces a message across the
+  panel reading "I used to be an Orb, now I'm just lonely. Flash me!" with an
+  8-ball, and holds its USB enumeration instead of boot-looping. The drawing is
+  composited — each dirty band is rebuilt black-plus-message-plus-ball and
+  flushed once, never erased-then-drawn — which is what the flicker complaint
+  bought. It speaks no orb protocol and announces nothing. On success the hub
+  forgets the board completely (fleet row, name, address grant, port identity,
+  on-disk state) and **marks the chip lonely**, because the cable sweep will
+  re-read the same eFuse MAC off the lonely app's descriptor a moment later:
+  while the mark stands the board shows no fleet row, the New Orb door reads it
+  as a blank Espressif chip to adopt, and the port list labels it
+  `left lonely`. The mark is cleared by evidence of orb life, never by
+  time — an orb flash, a serial ack, an announcement. This is also the recovery
+  path from a wiped board's flap — it needs no BOOT-button press, because
+  entering download mode is the same auto-reset dance a flash uses. Rebuild the
+  image with `lonely/build.sh` (ESP-IDF v5.4, run with bash).
+- **No whole-chip erase on this hub.** The page and the HTTP surface offer
+  lonely and nothing more destructive: a blank S3 retries its nonexistent
+  image every boot, re-enumerating its USB port every few seconds, which reads
+  as a bad cable and needs a BOOT-button press to stop. The ROM erase itself
+  survives only in the headless CLI (`orbflash -mode wipe`, verified blank and
+  all) for a bench script that means it.
 
 
 ### Identifying an orb
@@ -404,10 +422,14 @@ so a deliberate downgrade stays possible.
     name}`. It exists so a launch can show and dial boards it already knows without
     waiting out a full announce interval (up to 60 s) for each to think of announcing,
     and so a remembered row reads "Hall" at first paint instead of a MAC the operator
-    cannot pronounce. The board still owns its name: the card's name field writes through
-    to the board (`/api/v1/name`, or the serial `NAME` verb over the cable), the hub
+    cannot pronounce. The board still owns its name, and the hub page now shows it
+    instead of editing it: the card's name field is read-only, and the rename doors
+    are the orb's own network page (`POST /api/v1/name`) and the serial `NAME` verb
+    over the cable — the flash-time naming inside New Orb still writes through,
+    because a board is born needing a word. The hub
     stores the word it read back as a cache, and every status read corrects or clears
-    the copy. There is no room or location field: a word the hub kept about where a
+    the copy; a board the hub just factory-reset reads **The Orb** on the card until
+    its next owner renames it. There is no room or location field: a word the hub kept about where a
     board sits could disagree with the board, so the book stores the address it was last
     reachable at and the name the board last reported. A restored address shows as
     `remembered` and becomes clickable once the startup dial or a real announce says it
@@ -439,7 +461,18 @@ so a deliberate downgrade stays possible.
     rather than hiding it in a tooltip. The page enables the button only on a literal
     `forgettable: true`: an absent field is a hub that did not answer, and is read as a
     refusal. Dropping a board revokes the address it held, unless another live board
-    still claims that address. The gate lives in `liveness.go`.
+    still claims that address. A live board the gate refuses is not left with a dead
+    button: the same annotation carries `liveForget: true` plus `livePort` — the lead
+    the hub can act on — and the button opens the **forget dialog** with the two real
+    endings. *Full reset* writes the lonely image over that lead (the same
+    `/api/lonely` door, word and all): the board stops being an orb, every setting on
+    it goes, and the row ends with the lonely mark keeping it off the fleet. *Factory
+    reset settings* sends the serial `RESET ALL` (the same `/api/orb/cmd` door): the
+    firmware stays, the owner data goes, the board reboots as its own open provisioning
+    AP for whoever claims it next, and the hub renames its card **The Orb** on the ack
+    — a store-side default only, until the next owner's word replaces it. A live board
+    with no lead shows the refusal instead of dead buttons: the hub commands cables,
+    not the air. The gate lives in `liveness.go`.
   - **Remembered orb.** The address the hub last had an orb at — learned over
     USB or typed in — comes back on the next launch with the MAC it was committed for
     and the last name read off the board, so the address is typed once rather than every
@@ -469,7 +502,8 @@ make orbflash
 ./bin/orbflash -mode md5  -port /dev/ttyACM0   # read-only: the digest the flash holds now
 ```
 
-`-mode wipe` is the same `esprom.Wipe` the hub's **Wipe chip** button calls: it
+`-mode wipe` is the same `esprom.Wipe` the hub used to serve at `/api/wipe`
+(before the page settled on lonely as its only end of orb life): it
 writes nothing, so it needs no bundle and works on a bench with no firmware
 loaded. It ends by asking the ROM to hash the whole chip and refuses to report
 success unless the digest is the one an erased flash must have. Takes a couple of
@@ -492,9 +526,9 @@ headless; a mismatch aborts before erasing.
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events |
-| `POST /api/wipe`   | `{"port","confirm":"WIPE"}` — ROM-erase that port's **whole flash** to blank, NDJSON like `/api/flash`. Irreversible in the ordinary sense: firmware, NVS credentials, the name and the partition table all go, and the orb cannot boot or answer anything until it is flashed again. `confirm` must be exactly `WIPE`; the typed-confirmation UI will not arm the button until it matches. On success the hub also drops every trace of that board — the port identity, the boot verdict, the fleet row with its name, and the address grant (unless another live board still claims it). Erase span comes from the active bundle's declared geometry, defaulting to the orb's 16 MB |
+| `POST /api/lonely` | `{"port","confirm":"LONELY"}` — write the lonely image (the bundle's bootloader, partition table and initial otadata, plus the embedded app at `0x20000`) and **erase the NVS and storage regions** the bundle's partition table declares, NDJSON like `/api/flash`. The board stops being an orb, boots, wipes its own settings at every start, and waits. `confirm` must be exactly `LONELY`. On success the hub drops every trace of the board — port identity, boot verdict, chip gate, fleet row with its name, address grant unless another live board claims it — and marks the chip lonely so the cable descriptor cannot rebuild the row (the mark clears on orb evidence; persisted in the state file). There is no `/api/wipe`: a whole-chip erase is not offered by this hub, in the page or in the surface — it lives only in `orbflash -mode wipe` |
 | `POST /api/flash/cancel` | `{"port"}` — ask the flash on that port to stop. It ends at the next 1 KB block boundary, never mid-block, and leaves the orb in its bootloader rather than running a partial image |
-| `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `wipe`, `provision` or `identify` |
+| `GET  /api/ops`    | the port operations live now: `{"ops":[{port,asked,kind,started,seconds}]}`, where kind is `flash`, `wipe`, `lonely`, `console`, `provision` or `identify` |
 | `POST /api/watch`  | post-flash onboarding probe: boot verdict, then confirm the USB-learned IP, NDJSON |
 | `POST /api/provision` | wired (serial) provisioning round-trip: boot scan + one PROV line + PROV-ACK, NDJSON |
 | `POST /api/orb/cmd` | one always-on serial console verb over a port (`ping` `name` `scan` `prov` `mode` `reset`), NDJSON; `name` is written to the board and the card re-reads it; the store keeps no copy |
@@ -650,7 +684,9 @@ console.go           POST /api/console: read-only USB console, registered as a p
 state.go             remembered orbs (state.json under the OS config dir: addresses, MAC bindings, cached names)
 fleet.go             the fleet surface: mayDial's cross-lock, the browse fold, GET /api/fleet, POST /api/fleet/{set,forget}
 adopt.go             the typed-address door and the OTA door: POST /api/orb/{add,update} — verify-by-dial before any row, stage-then-reboot before any swap
-wipe.go              POST /api/wipe: the whole-chip ROM erase, the verified blank, and the forget-everywhere that follows it
+wipe.go              the forget-everywhere a firmware-ending leaves behind (identity, verdict, chip read, row, grants, state) — the erase door itself is CLI-only now
+lonely.go            POST /api/lonely: the lonely image write, its NVS-region erase, and the mark that keeps the ended board off the fleet
+lonelyset.go         the lonely marks: evidence-cleared, state-persisted, the reason a lonely board reads as a blank to adopt
 roster.go            the one-list merge: TTL-cached USB sweep behind a seam, MAC-joined LAN+cable rows, plug-change digest
 liveness.go          the Forget gate: cached per-address liveness verdicts, the background sweeper that fills them,
                      and the one rule the card and the forget door both call
@@ -706,6 +742,8 @@ cmd/orbfake/         runs that double as a listening server for a human driving 
                      tools/bench/browse_mdns.py, which browses with python-zeroconf rather
                      than with this repo's listener: see "Listening for an orb" under Development.
 web/                 the embedded hub UI (index.html, app.css, app.js)
+lonely/              the standalone ESP-IDF "I used to be an Orb" app, its build.sh,
+                     and the staged lonely.bin the hub embeds and writes at 0x20000
 ```
 
 ## Development

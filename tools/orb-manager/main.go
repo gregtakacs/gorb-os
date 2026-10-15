@@ -103,7 +103,14 @@ type Server struct {
 	// re-dial the unplugged board's remembered address the second the lead goes quiet.
 	kickMu   sync.Mutex
 	lastPlug map[string]bool
-	orbIP    string
+	// lonely remembers the boards this hub personally left lonely. The cable
+	// sweep re-attributes a lonely board's descriptor MAC like any orb's, so
+	// without this mark the forgotten fleet row would rebuild itself from the
+	// sighting and the board would read as an orb again seconds after its
+	// lonely flash. Evidence of orb life — an orb flash, an announcement, a
+	// serial ack — clears the mark. See lonelyset.go.
+	lonely *lonelyMark
+	orbIP  string
 	// statePath is where learned orb addresses are remembered across launches
 	// (state.go). stateErr holds the last failure writing or reading it, so a hub
 	// that cannot persist says so once in the log instead of silently forgetting.
@@ -535,6 +542,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
 	mux.HandleFunc("/api/ports", s.handlePorts) // cached identity rides along, never a probe
+	mux.HandleFunc("/api/tz", s.handleZones)    // the device's zone table, for the join dialog's picker
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))
@@ -590,10 +598,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/firmware", s.requireControl(http.HandlerFunc(s.handleFirmwareUpload)))
 	mux.Handle("/api/firmware/reset", s.requireControl(http.HandlerFunc(s.handleFirmwareReset)))
 	mux.Handle("/api/flash", s.requireControl(http.HandlerFunc(s.handleFlash))) // streaming, not s.json
-	// The whole-chip erase: same token, same origin check, same port lock, and
-	// the same NDJSON stream, because it is the same kind of long-running write
-	// to the wire with the one difference that what it writes is nothing.
-	mux.Handle("/api/wipe", s.requireControl(http.HandlerFunc(s.handleWipe)))
+	// There is no /api/wipe on this hub. The page's one end-of-orb-life door is
+	// the lonely write below: it wipes the same settings a chip erase wiped, and
+	// leaves a board that boots and explains itself instead of a blank chip
+	// boot-looping its port. The ROM erase lives in the headless CLI.
+	// The lonely image — the one destructive write the page offers, and the
+	// same class of write: it ends a board's orb life and takes the fleet row,
+	// the name and every credential with it. Same guard, same streaming
+	// contract, its own typed word.
+	mux.Handle("/api/lonely", s.requireControl(http.HandlerFunc(s.handleLonely)))
 	// Cancellation and live-operation state. Cancel stops the flash at its next
 	// block boundary; /api/ops says which cable is busy with what, which a
 	// process-wide flag could never answer once two orbs shared a bench.

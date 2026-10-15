@@ -127,10 +127,16 @@ func TestEveryMutatingRouteRefusesAnUncredentialedPOST(t *testing.T) {
 	routes := []string{
 		"/api/ports/probe", "/api/firmware", "/api/firmware/reset", "/api/flash",
 		"/api/flash/cancel", "/api/watch", "/api/provision", "/api/orb/allow",
-		// The chip erase belongs in this list more than anywhere else: it is the
-		// one route that destroys the thing it operates on, and a cross-origin
-		// POST that reached it would blank a board with nobody able to undo it.
-		"/api/wipe",
+		// The join dialog's Rescan rides this door, so it claims a cable and
+		// writes to the console: same guard class as provision.
+		"/api/orb/cmd",
+		// There is no /api/wipe to list: the hub's HTTP surface ends orb life
+		// only through the lonely write below, and the whole-chip erase lives
+		// in the headless CLI. A 404 here is checked by the same loop — the
+		// route must not exist at all, and this list is where that is pinned.
+		// The lonely write destroys the same firmware a wipe used to destroy —
+		// it just leaves a bouncing epitaph instead of silence. Same door class.
+		"/api/lonely",
 		// The by-IP door and the OTA door both reach off the box on a typed
 		// address — one learns a grant, the other pushes an image. Refused
 		// before the handler, they dial nothing; the assertion below that no

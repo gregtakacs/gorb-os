@@ -47,8 +47,10 @@ Two launch gotchas that burned time this session, both avoided by using a
   a fresh `-B` dir**, or any build after an `sdkconfig`/Kconfig change that
   drags in mbedtls/LWIP, exceeds 30 s. Run detached and grep the log for
   `Project build complete` / `binary size` / `warning:` / `error:`.
-- **A chip wipe — `orb-manager` `POST /api/wipe`, an orb card's Wipe chip
-  button, or `orbflash -mode wipe`.** The 16 MB ROM erase itself is tens of
+- **A chip wipe, headless only — `orbflash -mode wipe`.** The hub's
+  `POST /api/wipe` door and its Wipe chip button are gone (2026-10-15: the page
+  offers lonely and nothing more destructive; a blank chip boot-loops and reads
+  as a broken cable). The 16 MB ROM erase itself is tens of
   seconds, and the blank-check digest that follows costs about a minute more on
   the wire, so the whole operation is a couple of minutes with nothing printed
   during it. Run detached.
@@ -81,9 +83,12 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
 - **A wiped orb is dark, not bricked.** `/api/ports` still lists the port (the host
   reads the USB descriptors, and the `44:BD:8D:…` serial number is the burned eFuse
   MAC) with `probed:false` and no identity. Nothing prints, no AP opens, nothing
-  announces. The wipe also drops the hub's own memory of that board — fleet row,
+  announces. A hub-driven ending — the lonely write — also drops the hub's own
+  memory of that board — fleet row,
   cached name, address grant — so **`/api/fleet` showing one board fewer is the
-  expected result, not a lost row.** A board with nothing on it reports
+  expected result, not a lost row.** (A CLI `-mode wipe` leaves the hub's memory
+  alone: it is a bench act, and the hub re-reads the port dark on its next sweep.)
+  A board with nothing on it reports
   "no gorb-os firmware booted" and the `Upgrade needed` verdict. Flash it back.
 - **A blank flash makes an S3 boot-loop, and the flapping port is the expected post-wipe
   state — not a fault.** Descriptors and the `44:BD:8D:…` eFuse serial come from ROM
@@ -97,6 +102,67 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   the download mode instead of the boot loop, the port stops flapping, and the hub can
   talk to it. A **wipe should warn the operator to expect this**; a freshly wiped board
   is unreachable by software until someone presses the buttons.
+- **`/api/lonely` — "Leave it lonely" — is the button-press-free exit from that state,
+  and the standing answer to "what does a de-orbed board show?"** (requested verbally
+  2026-10-14, first written down here after a session lost it — if this entry ever
+  contradicts your memory of the design discussion, THIS was the decision.) An orb-manager
+  build embeds `tools/orb-manager/lonely/lonely.bin`, a standalone ESP-IDF app: it boots,
+  bounces a message block reading "I used to be an Orb, now I'm just lonely. Flash me!"
+  and an 8-ball around the round CO5300 panel, and does nothing else — no WiFi, no NVS,
+  no mDNS, no serial command door. `POST /api/lonely` (typed confirm `LONELY`, same
+  streaming/registry/cancel contract the wipe door once had) writes it via `esprom.LonelyPlan`:
+  the ACTIVE firmware bundle's bootloader @0x0, partition table @0x8000 and initial
+  otadata @0x11000, and the lonely app @0x20000 (ota_0) — deliberately the orb's own
+  geometry, so a New Orb flash over a lonely board replaces every byte this writes.
+  Works on a boot-looping blank board (`EnterDownloadMode`'s auto-reset wins the timing
+  race the same way a New Orb flash does) and on a still-running orb. On success it
+  forgets the board exactly like a wipe used to, **and marks the chip lonely** — the
+  lonely app still enumerates the eFuse MAC over the same USB-JTAG descriptor, so an
+  unmarked hub re-remembers the port on the next sweep and the row the operator ended
+  rebuilds itself (the 2026-10-15 complaint: "it still keeps reporting as an orb").
+  While a mark stands the board is invisible to the fleet, `fleetKnown` reports it
+  unknown (New Orb shows a blank to adopt), the port list labels it `left lonely`, and
+  the mark is cleared only by orb evidence: an orb flash's eFuse MAC, a serial-door ack,
+  or an announcement. Marks persist in state.json. The board then enumerates steadily as
+  `303a:1001` (USB-Serial/JTAG console, single enumeration, no reboot loop).
+  The write also **erases the owner's settings**: the same ROM session wipes the NVS and
+  storage regions read out of the ACTIVE bundle's own partition table (`esprom.NvsRegions`,
+  the factory-reset-flash rule — never constants), and the app itself re-erases both
+  partitions at every boot so a lonely board keeps nothing however it got there. The
+  animation is composited — each dirty band is rebuilt background+message+ball and
+  flushed once, never erase-then-draw — which is what the 2026-10-15 flicker complaint
+  bought. Rebuild it with `tools/orb-manager/lonely/build.sh`
+  (ESP-IDF v5.4 at `~/esp/esp-idf`; run it with bash, `export.sh` is not POSIX sh;
+  `main/CMakeLists.txt` carries `PRIV_REQUIRES nvs_flash esp_lcd espressif__esp_lcd_co5300`
+  — an explicit requirements list is exhaustive, so the display stack must be named).
+- **Naming on the hub page is display-only, and a live Forget is a dialog, not a
+  dead button (2026-10-15).** The hub shows the name the board answers to; it edits
+  nothing — renames happen on the orb's own network page (`POST /api/v1/name`), over
+  the serial `NAME` door, or at flash time in New Orb. When the Forget gate refuses a
+  live row, `annotateForget` also sets `liveForget` + `livePort`, the card lights
+  Forget, and the dialog offers the two endings that actually reach a live board,
+  both over the USB lead: **full reset** (the `/api/lonely` write, `LONELY` word
+  still required) and **factory reset settings** (`/api/orb/cmd` `RESET ALL`; the
+  ack write-back renames the store's row to **"The Orb"** — a hub-side default, not
+  a device write; the next owner's word corrects it exactly like any device name
+  does). The whole-chip erase is not offered by the hub in any surface: the page
+  lost the Wipe chip button and the route lost `/api/wipe`; `orbflash -mode wipe`
+  remains the headless bench door. A test pins all of this (`ui_test.go`,
+  `TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly`).
+- **The join dialog opens LOCKED and unlocks only on a verdict — and its zone picker
+  is `/api/tz`'s rows, not strings.** The flash's boot window (default now 28 s, must
+  outlast `SCAN_TIMEOUT_US`) can close before the firmware's boot scan prints its
+  PROVSCAN rows; `/api/watch` then reports the AP with an empty list, and a form left
+  open there is the dead-empty picker this replaced. The dialog now carries a spinner
+  until a verdict lands, auto-drives one serial `SCAN` when the captured list is empty
+  (`/api/orb/cmd`, works in every state including provisioning), and keeps a manual
+  **Rescan** beside it. `loadZones` must unwrap the `{ok,data}` envelope and consume
+  rows as `{name,posix,iana,label}` objects — reading `d.zones` or treating a row as a
+  string renders a dead-empty picker with no error anywhere; "Use my location" scores
+  each row's January and July `Intl` offsets against the longitude's solar line.
+  `tools/orb-manager/webui_test.go` pins every `$("#id")` in `app.js` against the
+  markup, because a missing `#wj-lock` throws inside `joinLock` and locks the dialog
+  open forever.
 - **Idle presence is not a health test, and neither is a DTR/RTS drop.** A boot-looping
   orb reads `present=True status=OK` on the host between reloads, and asserting DTR/RTS
   drives the auto-reset circuit so the handle dies inside ~2 s on a good board. Clear a

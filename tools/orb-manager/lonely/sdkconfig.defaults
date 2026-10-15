@@ -1,0 +1,22 @@
+# The board: Waveshare ESP32-S3-Touch-AMOLED-1.75 (S3R8, 16 MB flash).
+CONFIG_IDF_TARGET="esp32s3"
+
+# Match the orb bundle's flash geometry so one bootloader serves both images.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# The app never restarts, so the USB-Serial/JTAG console enumerates once and
+# holds — the post-wipe flap ends the moment this image boots. Logs land there
+# for anyone watching; no UART wiring exists on the orb cradle anyway.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# No PSRAM use: the whole scene fits in internal DMA RAM by construction, and
+# a smaller image reflashes faster.
+CONFIG_SPIRAM=n
+
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# No WiFi/BLE stacks are referenced; keep the binary honest about it.
+CONFIG_BT=n
+CONFIG_ESP_WIFI_ENABLED=n

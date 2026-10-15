@@ -100,6 +100,24 @@ func (b *Bundle) AppPlan() (esprom.FlashPlan, error) {
 // layout actually being flashed.
 func (b *Bundle) PartitionTable() []byte { return b.partTable }
 
+// LonelyPlan is the plan that turns any S3 into a lonely board: this bundle's
+// bootloader, partition table and initial otadata, with the lonely app in the
+// ota_0 slot. The boot images come from the bundle on purpose — a lonely board
+// then sits inside the exact geometry a New Orb flash overwrites, so the joke
+// is always reversible by the normal door.
+func (b *Bundle) LonelyPlan(lonelyBin []byte) (esprom.FlashPlan, error) {
+	boot := b.imageNamed("bootloader.bin")
+	pt := b.imageNamed("partition-table.bin")
+	var ota []byte
+	if im := b.imageNamed("ota_data_initial.bin"); im != nil {
+		ota = im.Data
+	}
+	if boot == nil || pt == nil {
+		return esprom.FlashPlan{}, fmt.Errorf("firmware %s has no bootloader or partition table to build a lonely plan", b.Source)
+	}
+	return esprom.LonelyPlan(lonelyBin, boot.Data, pt.Data, ota)
+}
+
 // Load parses bundle bytes — the zip a release step produces, or one the user
 // picked in a file dialog. Every image the manifest names must be present, so a
 // partial or hand-edited bundle fails here rather than half-way into a flash.

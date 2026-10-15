@@ -74,15 +74,38 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
 		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
-		// Item 6's naming controls, pinned by the same rule as the rest: a card that
-		// stops posting to /api/fleet/set is a card whose name box does nothing, and
-		// nothing else in the suite would notice.
-		"/api/fleet", "/api/fleet/set", "/api/fleet/forget", "function foundRow",
+		// The fleet controls, pinned by the same rule as the rest. /api/fleet/set
+		// is deliberately NOT one of them: naming on this page is display-only,
+		// so a card that posts a rename is the bug now, not the feature. The live
+		// row's ending goes through the forget dialog instead.
+		"/api/fleet", "/api/fleet/forget", "function foundRow", "openForgetDialog",
 		"function startPolling", "function loadThemes", "function readConsole",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js never contains %q, so that part of the card is not wired", want)
 		}
+	}
+}
+
+// The chip erase is gone from this page and stays gone: a blank S3 boot-loops,
+// flaps its port, and reads as a broken cable to everyone but a bench script.
+// The lonely write is the only end of orb life the manager page offers, and the
+// name box is a display, not an input. Both halves are load-bearing: a restore
+// of the wipe button from an old tab would put the worst dead-end state back on
+// the bench, and a writable name box is a control that cannot save.
+func TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	src := readAppJS(t)
+	for _, gone := range []string{"ob-chipwipe", "/api/wipe", "mn-name-go", "wipeArm"} {
+		if strings.Contains(page, gone) || strings.Contains(src, gone) {
+			t.Errorf("%s is back on the manager page — the hub offers lonely, never a chip erase", gone)
+		}
+	}
+	if !strings.Contains(page, `id="mn-name"`) || !strings.Contains(page, `readonly`) {
+		t.Error("the manage page's name field lost its readonly — naming is display-only")
+	}
+	if strings.Contains(src, `"/api/fleet/set"`) {
+		t.Error("app.js posts /api/fleet/set again; the hub page does not rename orbs")
 	}
 }
 
@@ -306,13 +329,14 @@ func TestFleetRowsAreBuiltWithoutMarkupInterpolation(t *testing.T) {
 		t.Error("Forget no longer asks before dropping a name and revoking an address")
 	}
 	// Forget is the hub's verdict, not the card's guess: the row carries whether the board
-	// can be reached, and the button is disabled from that field. A card that decided this
-	// locally would offer the button to an announcing orb, whose next check-in puts the row
-	// straight back — the failure this gate exists to prevent.
-	if !strings.Contains(row, "o.forgettable !== true") {
-		t.Error("the found row no longer requires the hub's forgettable verdict before it enables Forget")
+	// can be reached, and the button is enabled or opened from that field. A card that
+	// decided this locally would offer a plain delete to an announcing orb, whose next
+	// check-in puts the row straight back — the failure this gate exists to prevent. A
+	// liveForget verdict opens the dialog instead of the delete.
+	if !strings.Contains(row, "o.forgettable === true") || !strings.Contains(row, "o.liveForget === true") {
+		t.Error("the found row no longer requires the hub's forget and live-forget verdicts before it lights Forget")
 	}
-	// The exact shape of that comparison is the bug this pin keeps out. Written "=== false"
+	// The exact shape of those comparisons is the bug this pin keeps out. Written "=== false"
 	// it reads an ABSENT field as permission, and an absent field is what a hub that refuses
 	// sends if the bool carries an omitempty: every refusal, cable included, becomes a live
 	// button. The page must be able to tell "no" from "not told", and treat both as no.

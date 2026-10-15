@@ -172,6 +172,24 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 			s.saveState()
 		}
 	}
+	// Any ack proves the chip answers the orb serial door, which an orb-only
+	// door: whatever this hub remembered about the board being lonely is now
+	// contradicted by the board itself.
+	if res.Ack {
+		s.lonely.clear(macNorm(req.MAC))
+	}
+	// A board this hub just factory-reset over the lead has lost its own word
+	// — its NVS name went with the credentials — so the card takes the default
+	// name the reset implies. It is a store-cache write only: the next name the
+	// device gives (the next owner's word) corrects it on the next fold.
+	if strings.EqualFold(req.Command, "reset") && res.Ack && req.MAC != "" && s.fleet != nil {
+		if _, _, werr := s.fleet.NoteDeviceName(macNorm(req.MAC), defaultOrbName); werr != nil {
+			send(map[string]any{"log": "note: reset landed but the card kept its word: " + werr.Error()})
+		} else {
+			s.saveState()
+			s.wakeOrbs()
+		}
+	}
 	if strings.EqualFold(req.Command, "prov") && res.IP != "" {
 		s.grants.learn(res.IP)
 		s.setOrbIP(res.IP)

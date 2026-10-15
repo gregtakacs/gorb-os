@@ -42,6 +42,29 @@ func ParseState(line string) (string, bool) {
 	return m[1], true
 }
 
+// nameRe matches the firmware's one-line name banner (orb_net.c):
+//
+//	GorbOS-NAME <name>
+//
+// A named board prints it once, after the state banner; an unnamed board prints
+// nothing, so absence is "no news" and never "cleared".
+var nameRe = regexp.MustCompile(`GorbOS-NAME\s+(.+?)\s*$`)
+
+// ParseOrbName returns the name a board announced about itself on its boot
+// console, or ("", false) for any other line. It is the read half of the rule
+// that the board owns its name: the serial door writes NAME, and this is how a
+// hub with only a USB lead finds out what a board is already called. The value
+// is whatever the board had in NVS, so it arrives as the firmware stored it —
+// this function does not sanitize, and callers must fold it through the same
+// gate every other name passes.
+func ParseOrbName(line string) (string, bool) {
+	m := nameRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // pingRe matches the answer to a PING: "ORB-PING <state>".
 var pingRe = regexp.MustCompile(`ORB-PING\s+(\S+)`)
 

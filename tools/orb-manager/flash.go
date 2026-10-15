@@ -162,12 +162,18 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	var bootAP string
 	var bootAssocSeen bool
 	var bootIP string
+	var bootName string
 	var bootNetworks []esprom.ScanNet
 	var provscanEnd bool
 	opts.ObserveBoot = func(line string) bool {
 		send("log", "console: "+line)
 		if bootAP == "" {
 			bootAP = provisioningSSID(line)
+		}
+		if bootName == "" {
+			if nm, ok := esprom.ParseOrbName(line); ok {
+				bootName = nm
+			}
 		}
 		if !bootAssocSeen && stationJoinedLine(line) {
 			bootAssocSeen = true
@@ -251,6 +257,18 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 				why = "the orb refused it: " + nres.Nak
 			}
 			send("log", "the name \""+req.Name+"\" did not reach the chip ("+why+"); the orb will name it again as soon as it has an address")
+		}
+	}
+	// A re-flash preserves NVS, so a board that already had a name says it again on
+	// its boot banner a moment after the reset. When the operator typed nothing, that
+	// banner is the word the card was missing — the case the blank card came from: a
+	// board named on one bench, plugged into another, and shown as unnamed forever
+	// because nothing read the chip. A name the operator typed in this dialog already
+	// went to the chip and was folded above, so the banner only speaks when they did not.
+	if req.Name == "" && bootName != "" && flashedMAC != "" {
+		if s.foldBootName(flashedMAC, bootName) {
+			s.saveState()
+			send("log", "the orb introduced itself as \""+bootName+"\" — the card now says so")
 		}
 	}
 	send("done", "flash complete - orb rebooting into the new firmware")

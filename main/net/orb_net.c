@@ -5616,6 +5616,16 @@ esp_err_t orb_net_start(void)
      * app is running to print it — the hub infers (a) from a ROM that answers and a boot
      * banner that never comes. */
     ESP_LOGI(TAG, "GorbOS-STATE %s", orb_state_token());
+
+    /* The same argument for the name. A board on a lead with no lease has no door the
+     * hub can dial, and the serial command door only writes — so the name it holds was
+     * unreadable from the cable, and a hub that never saw it online kept a blank card
+     * for a board somebody had already named. The boot console is the one channel that
+     * always runs. Printed only when named: an unnamed board prints nothing, which the
+     * hub reads as no news rather than as a cleared name. */
+    if (s_name[0] != '\0') {
+        ESP_LOGI(TAG, "GorbOS-NAME %s", s_name);
+    }
     return ESP_OK;
 }
 

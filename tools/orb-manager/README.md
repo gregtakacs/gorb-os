@@ -521,7 +521,7 @@ headless; a mismatch aborts before erasing.
 |---|---|
 | `GET  /api/status` | platform, hub stamp, firmware version and source |
 | `GET  /api/ports`  | ports as `{"ports":[{port,attributed,hint,usbMac?,probed,...}],"count":N}`, with each cached identity inlined |
-| `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit |
+| `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit. The answer carries `name` when the board announced one on its boot banner, and the hub folds it into the row (the only name read available to a board with no address) |
 | `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
 | `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
@@ -658,6 +658,20 @@ A board boots with one `GorbOS-STATE <b|c-ap|c-sta>` line so the hub can classif
 without a reboot-probe. State (a) — a bare ESP32-S3 with no gorb-os — is the absence of
 that line on a chip that answers the ROM, which is what `ProbeOrb` already reports as
 "an ESP32-S3 at …, but no gorb-os firmware booted".
+
+A *named* board follows it with one `GorbOS-NAME <name>` line, and that line is the
+door's read half. `NAME` writes a name and no verb reads one back, so a station board
+on a lead with no lease was unreadable: the hub could not dial it, and a hub that had
+never seen it online showed a blank card for a board somebody had already named. The
+name rides raw to end of line, the way `PROVSCAN` prints an SSID, because a name may
+contain a space. An unnamed board prints nothing at all, which the hub reads as *no
+news* rather than as a cleared name — guessing cleared would wipe the cached name of
+every board still running firmware that prints no such line. `/api/ports/probe` folds
+the word into the row, as does a flash whose boot window caught the line and whose
+dialog typed no name of its own; `esprom.ParseOrbName` is the parse and `foldBootName`
+the write, which updates a row the hub already holds and never creates one. The pair is
+pinned from both ends by `bootname_test.go`, which renders the firmware's own format
+string and feeds the result to the parse.
 
 `POST /api/orb/cmd {"port","command","operand"|"ssid/pass/tz"}` drives one such verb
 over a port, streaming the console as NDJSON like `/api/provision` does, and lands a

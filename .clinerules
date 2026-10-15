@@ -159,6 +159,18 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   queries: the port list called the chip lonely while the sweep rebuilt its fleet row
   nameless beside it. Measured on the bench, 2026-10-15. Normalize at the collection
   boundary, never at each call site, and load old state files through the same normalizer.
+- **The board owns its name, so the hub needs a read path — and the boot banner is
+  the only one.** The serial door writes `NAME` and never reads it, and the status fold
+  needs an address to dial, so a station board on a lead with no lease was unreadable:
+  a hub that had never seen it online showed a blank card for a board somebody had
+  already named. `orb_net_start` now prints `GorbOS-NAME <name>` after the state banner,
+  raw to end of line the way `PROVSCAN` prints an SSID (a name may hold a space, so a
+  `\S+` class drops it), and only when named — an unnamed board prints nothing, and the
+  hub must read silence as no news rather than as a cleared name, or it wipes the cache
+  of every board on older firmware. `esprom.ParseOrbName` is the parse; `foldBootName`
+  is the write, and it updates a row the hub already holds rather than creating one.
+  `bootname_test.go` pins the pair from both sides by rendering the firmware's own
+  format string and feeding the result to the parse. Measured on the bench, 2026-10-15.
 - **The join dialog opens LOCKED and unlocks only on a verdict — and its zone picker
   is `/api/tz`'s rows, not strings.** The flash's boot window (default now 28 s, must
   outlast `SCAN_TIMEOUT_US`) can close before the firmware's boot scan prints its

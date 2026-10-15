@@ -122,18 +122,18 @@ int main(void)
     int half_diag = (int)sqrtf((MSG_W_MAX / 2.0f) * (MSG_W_MAX / 2.0f) +
                                (MSG_H / 2.0f) * (MSG_H / 2.0f));
     msg = (body_t){ .x = SCREEN_W / 2.0f, .y = SCREEN_H / 2.0f - 60,
-                    .vx = -2.0f, .vy = 1.6f,
+                    .vx = MSG_VX, .vy = MSG_VY,
                     .lane_r = SCREEN_W / 2.0f - half_diag - 8,
                     .w = MSG_W_MAX, .h = MSG_H };
     ball = (body_t){ .x = SCREEN_W / 2.0f + 90, .y = SCREEN_H / 2.0f + 80,
-                     .vx = 4.0f, .vy = 3.0f,
+                     .vx = BALL_VX, .vy = BALL_VY,
                      .lane_r = SCREEN_W / 2.0f - BALL_R - 3,
                      .w = SPRITE_SIDE, .h = SPRITE_SIDE };
 
     flush_all();                        /* the dark-glass first paint */
 
     if (FAKE_RING != BAND_RING) { printf("FAIL: fake ring %d vs shipped %d\n", FAKE_RING, BAND_RING); return 1; }
-    const float step = REFRESH_MS / (float)TICK_MS;   /* the loop's own step */
+    const float step = REFRESH_MS / 1000.0f;   /* the loop's own dt, in seconds */
     const int FRAMES = 2000;
     int stale = 0, stale_frame = -1, first_r = -1, first_c = -1;
     float jump_min = 1e9f, jump_max = -1e9f, jump_bad = 0;
@@ -202,7 +202,7 @@ int main(void)
     printf("flushes per refresh  %d (wants %d)  offenders %d\n",
            per_flush_min, BANDS_FULL, per_flush_bad);
     printf("off-step hops        %.0f (worst error %.3f px, step %.2f)\n",
-           jump_bad, jump_max < -1e8f ? 0.0f : jump_max, REFRESH_MS / (double)TICK_MS);
+           jump_bad, jump_max < -1e8f ? 0.0f : jump_max, REFRESH_MS / 1000.0);
     if (stale) printf("  first at frame %d row %d col %d\n", stale_frame, first_r, first_c);
     if (shown != 0x2104 || gray == 0 || dark == 0 || white == 0 || other != 0) {
         printf("FAIL: the palette did not reach the glass as drawn\n");

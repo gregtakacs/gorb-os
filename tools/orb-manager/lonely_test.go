@@ -179,9 +179,21 @@ func TestLonelyErasesWhatTheOwnerStored(t *testing.T) {
 // the handler must mark the chip, and the doors that prove orb life again (an
 // orb flash, a serial ack, an announcement) must clear it. Pinned at each call
 // site because each is a one-line wiring a refactor can drop silently.
+// The order inside endAsLonely is pinned too: forgetWipedOrb saves the state file,
+// so a mark that lands after it never reaches the file, and the next launch lets the
+// sweep rebuild the row the operator just ended (the bench, 2026-10-15).
 func TestLonelyMarksTheBoardAndEvidenceClearsIt(t *testing.T) {
-	if !strings.Contains(readFile(t, "lonely.go"), "s.lonely.mark(lonelyMAC)") {
-		t.Error("handleLonely no longer marks the board it left lonely")
+	src := readFile(t, "lonely.go")
+	mark := strings.Index(src, "s.lonely.mark(mac)")
+	forget := strings.Index(src, "s.forgetWipedOrb(port, mac)")
+	if mark < 0 {
+		t.Error("the lonely door no longer marks the board it left lonely")
+	}
+	if forget < 0 {
+		t.Error("the lonely door no longer forgets the board it left lonely")
+	}
+	if mark >= 0 && forget >= 0 && mark > forget {
+		t.Error("endAsLonely marks the chip after the save: the restart loses the mark and the row comes back")
 	}
 	if !strings.Contains(readFile(t, "flash.go"), "s.lonely.clear(macNorm(flashedMAC))") {
 		t.Error("a successful orb flash no longer clears the lonely mark")

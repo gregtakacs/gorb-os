@@ -297,21 +297,30 @@ no Forget; that verdict is the hub's, not the card's guess.
   boots, wipes any owner settings it can still find at every start (so a board
   that became lonely by any door keeps nothing), bounces a message across the
   panel reading "I used to be an Orb, now I'm just lonely. Flash me!" with an
-  8-ball, and holds its USB enumeration instead of boot-looping. The drawing is
-  composited — each dirty band is rebuilt black-plus-message-plus-ball and
-  flushed once, never erased-then-drawn — which is what the flicker complaint
-  bought. Four CO5300 rules hold that band scheme, and dropping any of them is
-  visible on the glass rather than at compile time: pixels go out in wire order
-  (the panel reads each one big-endian, so an unswapped 0x2104 ball body arrives
-  as 0x0421 green); every flush window is even on both axes and full width,
-  because the panel clocks two pixels per cycle and programs CASET/RASET verbatim
-  (odd windows shear the rows and leave a sprite's old pixels outside the window
-  that meant to erase them); the one band buffer is never resubmitted before its
-  trans-done ISR hands it back; and the whole panel is painted once while the
-  display is still dark, so the GRAM a board powers on with never shows. That set
-  is why the screen once came up green, unreadable and trailing. `lonely/test/run.sh`
-  runs the shipped drawing code against a fake panel on the host and fails on the
-  first violation. It speaks no orb protocol and announces nothing. On success the hub
+  8-ball, and holds its USB enumeration instead of boot-looping. The panel is
+  repainted whole every 125 ms: 59 even bands, each composited black-plus-message-
+  plus-ball and flushed once, never erased-then-drawn, the burst opened on the
+  panel's TE pulse, and four band buffers in flight so a band costs the larger of
+  wire and compose rather than their sum. Six CO5300 rules hold that scheme, and
+  dropping any of them shows on the glass rather than at compile time: pixels go
+  out in wire order (the panel reads each one big-endian, so an unswapped 0x2104
+  ball body arrives as 0x0421 green); every flush window is even on both axes and
+  full width, because the panel clocks two pixels per cycle and programs
+  CASET/RASET verbatim (odd windows shear the rows and leave a sprite's old pixels
+  outside the window that meant to erase them); no band buffer is resubmitted
+  before its trans-done ISR hands it back, and never more than four are outstanding;
+  the whole panel is painted once while the display is still dark, so the GRAM a
+  board powers on with never shows; the sweep opens on TE, because the panel scans
+  GRAM on its own clock and a mid-scan write shows the message moved and the ball
+  not yet, which is the flicker; and every refresh pays for the whole panel and
+  advances motion by one fixed step, because a repaint-only-what-moved frame cost 2
+  to 15 bands depending on where the sprites landed, and the hop rate varied with
+  it. Measured on the panel 2026-10-15: TE toggles on GPIO13, and a refresh costs
+  32 to 48 ms of the 125 ms interval, against 60 to 79 ms when one band buffer
+  serialized every band behind its own 22 ms of wire. `lonely/test/run.sh` runs the
+  shipped drawing code against a fake panel with a modelled ring and fails on the
+  first violation, including a refresh that flushes other than 59 bands or a hop
+  other than the fixed step. It speaks no orb protocol and announces nothing. On success the hub
   forgets the board completely (fleet row, name, address grant, port identity,
   on-disk state) and **marks the chip lonely**, because the cable sweep will
   re-read the same eFuse MAC off the lonely app's descriptor a moment later:

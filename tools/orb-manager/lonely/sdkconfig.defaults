@@ -20,3 +20,6 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 # No WiFi/BLE stacks are referenced; keep the binary honest about it.
 CONFIG_BT=n
 CONFIG_ESP_WIFI_ENABLED=n
+# One millisecond tick: the refresh interval is the animation, and a 10 ms sleep
+# grid puts 8% jitter on a 125 ms hop. The main firmware runs at 1000 Hz too.
+CONFIG_FREERTOS_HZ=1000

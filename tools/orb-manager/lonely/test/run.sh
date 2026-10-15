@@ -2,8 +2,9 @@
 # Host check of the lonely image's drawing code — no board, no ESP-IDF.
 #
 # The CO5300 takes a flush window that starts and spans even counts on both axes,
-# big-endian pixels, one band buffer in flight at a time, and a full-panel first
-# paint before the glass lights up. A build that misses any of those still
+# big-endian pixels, one band buffer in flight at a time, a full-panel first
+# paint before the glass lights up, the burst opened on the TE pulse, and the
+# whole panel repainted every refresh at a fixed step. A build that misses any of those still
 # compiles and still flashes; it just comes out green, smeared and unreadable.
 # This runs the SHIPPED drawing functions against a fake panel and fails on the
 # first violation.
@@ -25,4 +26,4 @@ sed "$((cut - 1))q" "$src" | sed '$d' | grep -v '^#include' > "$out/scene.inc"
 gcc -O1 -w -std=gnu11 -I "$here/../main" -I "$out" \
     -o "$out/render_check" "$here/render_check.c" "$here/../main/font5x7.c" -lm
 "$out/render_check"
-echo "lonely render check: the four CO5300 rules hold"
+echo "lonely render check: the six CO5300 rules hold"

@@ -2458,7 +2458,8 @@ The bench also caught a sentinel gap on the way: `orbapp.write_container` accept
 `geom_off + geom_size` (the 176 B manifest header counts), so that boundary container
 is refused pre-erase with an honest why. The writer should clamp geometry to
 `CEILING − geom_off`; owed as a one-liner in `orbapp.write_container` with its
-sentinel boundary updated in the same pass (§19.4's recovery commands belong beside
+sentinel boundary updated in the same pass **(PAID 2026-10-15: §21)**. (§19.4's recovery
+commands belong beside
 the verbs in `docs/wsl-usb-reattach.md` when that doc is next touched — its
 doc-test pins wording, so it was not edited blind).
 
@@ -2582,6 +2583,42 @@ Four measurements, same rig as §19, before the flip UI relies on any of it:
    bundle, and confirm the picker names the reason and offers Arm A.
 Arm B2 (map-in-place off the card) stays unbenched on purpose — §20.1 killed it on
 arithmetic, and re-opening it requires new numbers, not hope.
+
+## 21 — The writer clamp: the slot boundary is a sum — orb-A host, 2026-10-15
+
+§19.3's owed one-liner is paid. `orbapp.write_container` now refuses a container whose
+`geom_off + geom_size` passes `GEOM_BYTES_MAX` (0x40000), in the device's own words —
+`its manifest and geometry are 262320 B: a slot holds 262144 B — re-bake the app
+smaller` — the sentence `install_decide`'s gate 1 (`orb_app_install.c:62-68`) prints
+pre-erase. A writer that emits what the dial refuses spends an upload and an erase to
+teach the owner what the host already knew, which is the rule D26 states for refusals.
+Host-only change: no firmware touched, no rebuild, no reflash.
+
+**The correction to §19.3's wording:** the boundary is not `CEILING − 176`. `geom_off`
+is derived from the header plus the settings table plus the asset table, so it moves —
+measured on the writer: **0xB0 bare, 0xF0 with one setting, 0xC8 with one asset row**
+(`SETTINGS_WORDS` is 16 words = 64 B; an asset row is 24 B). A hard-coded
+`CEILING − HDR_BYTES` would repeat the bug one row larger, so the clamp reads
+`hdr[W_GEOM_OFF] + hdr[W_GEOM_SIZE]` after both are derived. `== cap` stays ACCEPTED,
+matching the device's "the last word before the header sector" rule.
+
+**Sentinels** (`tools/host_orbapp_test.py`): four vectors — the sum refusal pinned by
+`wants="a slot holds"` so the blob-only cap next door cannot pass for it; the exact
+boundary accepted at `== cap` (file lands on 262,144 B); the same blob refused once one
+setting moves `geom_off` 64 B; and the moved boundary accepted to the byte. One mutant
+("the slot-sum gate is gone") is caught by the first. Suite: **178 checks, 0 failed;
+25 mutants, all caught.** `tools/m5_powercut.sh`'s fixture comment is corrected the same
+pass — its 0x3FE00 pad is still admissible (blob `0x3FEB0`), so the bench lever survives
+the clamp.
+
+**The same class of gap found on the theme side, and deliberately left:**
+`orbtheme.write_container` imposes NO geometry bound — `pack_header` takes
+`len(geom_bytes)` and writes it. The device refuses `geom_size > SLOT_GEOM_CAP`
+(60 KB) at `orb_theme.c:287` and again pre-erase at `:1337`, so a bake with an oversized
+geometry blob uploads and dies on the dial. It is not patched here: theme geometry sits
+at a fixed `SLOT_GEOM_OFF` (no sum term), the FORMAT 2 dialect retires at P6, and D29's
+budget gate already owns the bake-time bound for FORMAT 3. P6's budget-gate pass takes
+this with it.
 
 
 

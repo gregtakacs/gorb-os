@@ -489,6 +489,34 @@ expect_refuse("a ragged geometry blob is refused (the format is words)",
               lambda: A._geom_size(6, (0, 0, 0, 0)))
 expect_refuse("an oversized geometry blob is refused",
               lambda: A._geom_size(A.GEOM_BYTES_MAX + 4, (0, 0, 0, 0)))
+# The slot boundary is the SUM (orb_app_install.c:62), so the writer refuses what the
+# dial would refuse pre-erase — the §19.3 witness. `wants` pins the sum rule, not the
+# blob-only cap next door: both say "refused", and only one of them moved.
+expect_refuse("a full-ceiling blob is refused when a header precedes it (the SUM rule)",
+              lambda: A.write_container(os.path.join(D, "sum1.orbapp"), "sum1", "Sum1",
+                                        geometry=b"\xa5" * A.GEOM_BYTES_MAX),
+              wants="a slot holds")
+# Boundary accepted to the byte: the device takes `== cap` (the last word before the
+# header sector), so the writer must take it too — at THIS container's geom_off, not at
+# the fixed 0x3FE00 m5_powercut.sh's comment assumes.
+_h_b = A.HDR_BYTES
+_set_b = A.SETTINGS_WORDS * 4                     # one settings row, 64 B
+check("the exact slot boundary is accepted, blob == cap",
+      A.write_container(os.path.join(D, "sum2.orbapp"), "sum2", "Sum2",
+                        geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b))
+      == A.GEOM_BYTES_MAX, "file is not the cap")
+expect_refuse("the boundary MOVES with the header: one setting costs the blob %d B"
+              % _set_b,
+              lambda: A.write_container(
+                  os.path.join(D, "sum3.orbapp"), "sum3", "Sum3",
+                  settings=[dict(id="mode", type="enum", min=0, max=3, default=1)],
+                  geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b)),
+              wants="a slot holds")
+check("and a blob measured against the MOVED boundary is accepted at == cap",
+      A.write_container(os.path.join(D, "sum4.orbapp"), "sum4", "Sum4",
+                        settings=[dict(id="mode", type="enum", min=0, max=3, default=1)],
+                        geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b - _set_b))
+      == A.GEOM_BYTES_MAX, "file is not the cap")
 expect_refuse("a title over the field is refused, never truncated",
               lambda: A.pack_header(A.app_id_of("pin"), "pin", "T" * A.TITLE_MAX,
                                     0, 0, 0, (0, 0, 0, 0), b"", 0))
@@ -672,6 +700,8 @@ MUTATIONS = [
     ("pack_header ships art bytes again",
      "hdr[W_ART_SIZE]   = 0", "hdr[W_ART_SIZE]   = 8"),
     ("the counts no longer price the blob", "if geom_size < need:", "if 0:"),
+    ("the slot-sum gate is gone (writer emits what the dial refuses)",
+     "if hdr[W_GEOM_OFF] + hdr[W_GEOM_SIZE] > GEOM_BYTES_MAX:", "if 0:"),
     ("the slug charset check is gone",
      "if not isinstance(slug, str) or not SLUG_RE.match(slug):", "if 0:"),
     ("dupe setting ids allowed", "if sid in seen:", "if 0:"),

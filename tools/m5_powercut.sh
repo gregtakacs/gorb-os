@@ -34,13 +34,14 @@ fail(){ say "FAIL: $*"; verdict=FAIL; }
 
 # [0] two fixtures from the one sanctioned writer: the 4 KB canonical hsb_color
 # (recovery copy) and a pad-geometry sibling — same slug, geometry at the
-# DEVICE's slot ceiling. The writer's GEOM cap (0x40000) counts the manifest
-# header's 176 B against itself, so the biggest accepted blob is
-# geometry 0x3FE00 (blob == cap, the accepted boundary — orb_app_install.c:61).
-# A pad at 0x40000 was refused pre-erase with "262320 B: a slot holds 262144 B"
-# — D9's verify-before-touch rule, witnessed by accident. The accepted pad
-# widens erase→header from ~200 ms to a few seconds so the 750 ms fuse lands
-# inside it.
+# DEVICE's slot boundary. The device's rule is the SUM geom_off + geom_size ≤
+# 0x40000 (orb_app_install.c:61; == cap accepted), and hsb_color's bare header
+# puts geom_off at 0xB0, so geometry 0x3FE00 lands the blob at 0x3FEB0 — inside
+# it. `orbapp.write_container` now enforces that sum itself (2026-10-15, plan
+# §21), so the 0x40000 pad that §19.3 saw the dial refuse pre-erase ("262320 B:
+# a slot holds 262144 B") is now refused on the host, in the same words. The
+# accepted pad widens erase→header from ~200 ms to a few seconds so the 750 ms
+# fuse lands inside it.
 mkdir -p /tmp/m5p/small /tmp/m5p/pad
 python3 - <<'PY' || exit 1
 import sys; sys.path.insert(0, "tools")

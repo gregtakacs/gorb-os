@@ -1933,7 +1933,15 @@ esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n)
     const uint8_t *p = buf;
     while (n) {
         const ssize_t w = write(u->fd, p, n);
-        if (w <= 0) return ESP_FAIL;          /* ENOSPC and friends: caller reports it */
+        if (w <= 0) {
+            const int e = errno;
+            ESP_LOGW(TAG, "upload: card write failed (%s)", strerror(e));
+            /* ENOMEM is FatFS's FR_NOT_ENOUGH_CORE: the sdmmc driver could not get
+             * its own internal scratch. A capacity verdict, never a size one —
+             * §17.6's evidence is a 125 B ask refused by a fragmented pool. */
+            if (e == ENOMEM) return ESP_ERR_NO_MEM;
+            return ESP_FAIL;              /* ENOSPC and friends: caller reports it */
+        }
         p += w; n -= (size_t)w; u->got += (uint32_t)w;
     }
     return ESP_OK;

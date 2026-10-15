@@ -4533,10 +4533,28 @@ static esp_err_t h_app_upload(httpd_req_t *req)
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
-        if (orb_app_upload_data(up, rx, (size_t)r) != ESP_OK) {
+        const esp_err_t de = orb_app_upload_data(up, rx, (size_t)r);
+        if (de != ESP_OK) {
             orb_app_upload_cancel(&up);
-            httpd_resp_set_status(req, "413 Payload Too Large");
-            return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+            if (de == ESP_ERR_INVALID_SIZE) {
+                httpd_resp_set_status(req, "413 Payload Too Large");
+                return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+            }
+            if (de == ESP_ERR_INVALID_STATE) {
+                httpd_resp_set_status(req, "409 Conflict");
+                return httpd_resp_sendstr(req, "{\"error\":\"this upload is no longer current\"}");
+            }
+            /* The write FAILED — the card driver refused bytes, not the size gate.
+             * §17.6 measured the exact shape: esp_dma_capable_malloc(125) refused on
+             * a fragmented pool while the upload answered 413 with a live dial. A
+             * size verdict was a lie that sent the next session down the wrong path
+             * (plan §17.4 owed this mapping). 413 now means the body outgrew the
+             * declared cap, and nothing else. */
+            httpd_resp_set_status(req, de == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+                                                            : "500 Internal Server Error");
+            return httpd_resp_sendstr(req, de == ESP_ERR_NO_MEM
+                ? "{\"error\":\"out of memory for the card write buffer\"}"
+                : "{\"error\":\"the card refused the write\"}");
         }
         got += r;
     }
@@ -4641,10 +4659,25 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
-        if (orb_theme_upload_data(up, rx, (size_t)r) != ESP_OK) {
+        const esp_err_t de = orb_theme_upload_data(up, rx, (size_t)r);
+        if (de != ESP_OK) {
             orb_theme_upload_cancel(&up);
-            httpd_resp_set_status(req, "413 Payload Too Large");
-            return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+            if (de == ESP_ERR_INVALID_SIZE) {
+                httpd_resp_set_status(req, "413 Payload Too Large");
+                return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
+            }
+            if (de == ESP_ERR_INVALID_STATE) {
+                httpd_resp_set_status(req, "409 Conflict");
+                return httpd_resp_sendstr(req, "{\"error\":\"this upload is no longer current\"}");
+            }
+            /* Same rule as the app upload above: a refused write is not a size
+             * verdict. §17.6 reproduced this exact mis-map live — the dma_utils
+             * refusal and a 413 body in the same second. */
+            httpd_resp_set_status(req, de == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+                                                            : "500 Internal Server Error");
+            return httpd_resp_sendstr(req, de == ESP_ERR_NO_MEM
+                ? "{\"error\":\"out of memory for the card write buffer\"}"
+                : "{\"error\":\"the card refused the write\"}");
         }
         got += r;
     }

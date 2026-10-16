@@ -158,6 +158,27 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
                                     * dies at the index's own sentence below or
                                     * at the header-vs-index match, on this side
                                     * and the writer's alike. */
+
+    /* The D29 budget gate, install end (P6.2, §22.3), in copy_into's sums and
+     * words (orb_theme.c:1349-1350): geometry installs at SLOT_GEOM_OFF and its
+     * sector-aligned erase must not overrun the banks, and the payload must
+     * live inside SLOT_CAP less SLOT_ART_OFF — ORB_THEME_SLOT_CAP on the header,
+     * 4,128,768 B. == cap is ACCEPTED both ways: each cap is the aligned sum
+     * landing exactly on the next boundary, the same rule the writer and
+     * check_budget() state. A header over either is refused HERE, before the
+     * name or any streamed byte, so the door never prices an install that
+     * cannot happen. Sentences byte-identical to orbbundle.check_budget(). */
+    if (o->geom_size > ORB_BUNDLE_GEOM_CAP)
+        return reject("geometry region is %lu B; the dial's table area holds "
+                      "%lu B — geometry would overrun the pixels",
+                      (unsigned long)o->geom_size,
+                      (unsigned long)ORB_BUNDLE_GEOM_CAP);
+    if (o->art_size > ORB_BUNDLE_ART_CAP)
+        return reject("pixel payload is %lu B; a theme slot holds %lu B — "
+                      "theme is larger than a slot",
+                      (unsigned long)o->art_size,
+                      (unsigned long)ORB_BUNDLE_ART_CAP);
+
     int i = 0;
     for (; i < 56; i++) {
         const char c = (char)((w[W_NAME + i / 4] >> (8 * (i % 4))) & 0xFF);
@@ -215,12 +236,15 @@ static const char *blob_check(const uint8_t *blob, uint32_t len,
                                                  * and this reader stores them
                                                  * as such; orbbundle.py's
                                                  * unpack_blob refuses the same
-                                                 * rule in the same words. The
-                                                 * sentinel file showing it on
-                                                 * both sides is just over a
-                                                 * megabyte and cannot reach a
-                                                 * device at all — the door's
-                                                 * budget ends at the slot cap */
+                                                 * rule in the same words. Since
+                                                 * P6.2 no file can reach this
+                                                 * line as its first refusal —
+                                                 * the budget gate above bounds
+                                                 * the region at 60 KB and a
+                                                 * u16-outgrown blob cannot fit
+                                                 * one — the check stands as the
+                                                 * backstop, and parity vector
+                                                 * 5 pins the order */
     *n_elem = ne; *n_spr = ns;
     *slug_off = (uint32_t)body; *slug_len = nl;
     return NULL;

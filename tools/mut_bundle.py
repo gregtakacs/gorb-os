@@ -14,8 +14,16 @@ KEEP = "/tmp/ob3.keep"
 src = open(KEEP).read()
 
 MUT = [
-    ("drop region cap", 'if _ot.HDR_WORDS * 4 + run > GEOM_CAP:', 'if False:'),
-    ("drop slot cap", 'if art_off + art_size > SLOT_CAP:', 'if False:'),
+    ("drop region cap", 'if region_len > GEOM_CAP:', 'if False:'),
+    ("drop payload cap", 'if art_len > SLOT_ART_CAP:', 'if False:'),
+    ("refuse the region at == cap", 'if region_len > GEOM_CAP:',
+     'if region_len >= GEOM_CAP:'),
+    ("refuse the payload at == cap", 'if art_len > SLOT_ART_CAP:',
+     'if art_len >= SLOT_ART_CAP:'),
+    ("drop the writer's budget call",
+     'check_budget(run, art_size)     #', 'pass     #'),
+    ("drop the reader's budget pass",
+     '    check_budget(hdr[5], hdr[7])', '    pass'),
     ("drop dup-slug refusal", 'if slug in seen:', 'if False:'),
     ("loosen slug charset", "or any(not ((\"a\" <= c <= \"z\")", "or any(not ((\"A\" <= c <= \"z\")"),
     ("drop geom_off walk", 'if r["geom_off"] != walk:', 'if False:'),

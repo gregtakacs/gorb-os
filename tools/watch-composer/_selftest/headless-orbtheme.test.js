@@ -185,6 +185,12 @@ throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(128), name: 'x
        /shorter than one full plate/, 'a payload that cannot hold a plate is refused');
 throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), name: 'x' }),
        /over the/, 'a payload bigger than a theme slot is refused before it is ever offered');
+throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), name: 'x' }),
+       /larger than a slot/, 'the payload refusal ends in the sentence the dial prints pre-erase (D26)');
+throws(() => B.writeContainer({ geom: new Uint8Array(B.GEOM_BUDGET + 1), art: art, name: 'x' }),
+       /overrun the pixels/, 'geometry past the table area is refused at the bake, not after an erase (P6.2)');
+ok(B.writeContainer({ geom: new Uint8Array(B.GEOM_BUDGET), art: art, name: 'x' }).length > 0,
+   'geometry exactly at the cap is accepted: == cap installs to the byte');
 throws(() => B.writeContainer({ geom: jsGeom, art: art, scrW: M.scrW, scrH: M.scrH, title: 'no name' }),
        /no name/, 'a container holding only FORMAT 1 title field is refused: the name is what the card files under');
 // A name is free text under FORMAT 2 — the card filename is the hash, so the charset

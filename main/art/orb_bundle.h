@@ -47,6 +47,10 @@ extern "C" {
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
 #define ORB_BUNDLE_ELEM_WORDS 17u      /* theme_schema.ELEMENT_FIELDS */
 #define ORB_BUNDLE_SLUG_MAX  23u       /* ORBAPP_SLUG_MAX - 1: the NUL's room */
+#define ORB_BUNDLE_GEOM_CAP  0xF000u   /* orb_theme.c SLOT_GEOM_CAP: 60 KB of tables */
+#define ORB_BUNDLE_ART_CAP   0x3F0000u /* SLOT_CAP less SLOT_ART_OFF: the
+                                        * orb_theme.h ORB_THEME_SLOT_CAP,
+                                        * 4,128,768 B of banks per slot */
 
 
 /* One parsed index record, plus pointers INTO the caller's region for the
@@ -80,7 +84,11 @@ typedef struct {
 } orb_bundle_t;
 
 /* The header half of FORMAT 3: the same 128 bytes as FORMAT 2 with the format
- * and abi stamps swapped and the section count riding scr_w. NULL on success
+ * and abi stamps swapped and the section count riding scr_w. Two D29 budget
+ * sums ride it too (P6.2): geom_size against ORB_BUNDLE_GEOM_CAP and art_size
+ * against ORB_BUNDLE_ART_CAP, == cap accepted — the same refusal check_budget()
+ * makes at write time, so a header that names a slot it cannot fit is refused
+ * before its name is read or a byte streams. NULL on success
  * (the file IS a format-3 bundle — whether this build may INSTALL one is the
  * caller's rule, stated at the install door), otherwise the refusal sentence,
  * in words, byte-identical to parse_header3() in tools/orbbundle.py except

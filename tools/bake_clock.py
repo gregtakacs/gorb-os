@@ -2403,9 +2403,14 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                               list(tourb_recs or []), rects, first, delays, frames,
                               comps=comps, aux=auxs, bank=banks)
         os.makedirs(os.path.dirname(args.orbtheme) or ".", exist_ok=True)
-        n = _ot.write_container(args.orbtheme, name, geom, bytes(blob.buf),
-                                SCREEN_W, SCREEN_H,
-                                baked_ms=int(time.time() * 1000) & 0xFFFFFFFF)
+        # The budget gate's refusals are sentences (D26), and a traceback is a poor
+        # way to show one: the writer's ValueErrors exit as the words themselves.
+        try:
+            n = _ot.write_container(args.orbtheme, name, geom, bytes(blob.buf),
+                                    SCREEN_W, SCREEN_H,
+                                    baked_ms=int(time.time() * 1000) & 0xFFFFFFFF)
+        except ValueError as _e:
+            sys.exit("--orbtheme refused: {}".format(_e))
         print("wrote {} ({} B, {} B of pixels + {} B of geometry)".format(
             args.orbtheme, n, len(blob.buf), len(geom)))
         # FORMAT 2 makes the card filename a pure function of the name baked inside the

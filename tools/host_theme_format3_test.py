@@ -5,8 +5,9 @@ Four things this proves and nothing else.
 
 1. A bundle round-trips: two sections written, read back byte-identical, in slug
    order, with negative scalars intact and the resolver answering a miss with None.
-2. The budget gate bites at the writer (D29): a region past the dial's table area
-   and a file past the slot are refused in the sentences the composer shows.
+2. The budget gate bites at BOTH ends (D29, P6.2): a region past the dial's table
+   area and a payload past the slot's art budget are refused in the sentences the
+   device prints, at the writer and at the reader alike, and == cap is accepted.
 3. Every refusal names what it refuses. The sentinel rows carry the word their own
    rule must produce — a refusal "for some other rule" passes the file's check and
    fails the suite, the lesson mut_element.py taught the element suite.
@@ -95,7 +96,10 @@ check(all(r["rec"]["art_off"] % ot.SECTOR == 0 for r in secs),
 check(size == len(raw), "write_bundle reported a size the file does not have")
 
 # ---------------------------------------------------------------------------
-# 2. The budget gate, bake end (D29). Temporarily tiny caps, restored after.
+# 2. The budget gate, both ends (D29, P6.2). Bake end: temporary caps, restored
+#    after — they prove the gate SUMS, not the constants. Read end: a forged
+#    header (word re-stamped, crc refreshed) proves the reader refuses a bundle
+#    the slot cannot hold, in the same sentences, and that == cap passes.
 # ---------------------------------------------------------------------------
 SENT = []
 
@@ -104,11 +108,11 @@ def sent(name, must, fn):
     SENT.append((name, must, fn))
 
 
-_real_geom, _real_slot = ob.GEOM_CAP, ob.SLOT_CAP
+_real_geom, _real_slot = ob.GEOM_CAP, ob.SLOT_ART_CAP
 
 
 def _gate(name, must, fn):
-    """Sentinel shape for the two budget rows, run NOW rather than queued: their
+    """Sentinel shape for the budget rows, run NOW rather than queued: their
     trigger is a temporary cap, and a queue would run them after it is restored."""
     try:
         fn()
@@ -120,16 +124,84 @@ def _gate(name, must, fn):
         failures.append("%s: ACCEPTED, and a card would have been handed it" % name)
 
 
+def _patch_hdr(raw, word, val):
+    """One forged header word on the golden file, crc refreshed: every other
+    promise the header made still holds, so only the gate under test can refuse."""
+    b = bytearray(raw)
+    struct.pack_into("<I", b, word * 4, val)
+    words = list(struct.unpack("<32I", bytes(b[:128])))
+    words[28] = 0
+    words[28] = zlib.crc32(struct.pack("<32I", *words)) & 0xFFFFFFFF
+    struct.pack_into("<I", b, 28 * 4, words[28])
+    return bytes(b)
+
+
+def _read_forged(word, val, suffix):
+    p = tmp + suffix
+    with open(p, "wb") as f:
+        f.write(_patch_hdr(raw, word, val))
+    ob.read_bundle(p)
+
+
 try:
-    ob.GEOM_CAP = 400
+    # SECTIONS[1] alone: region 328 B (48 index + 280 blob), one 4096 B bank.
+    ob.GEOM_CAP = 259
     _gate("region past the table area", "table area",
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
-    ob.GEOM_CAP = _real_geom
-    ob.SLOT_CAP = 8191                  # == cap is legal (§22.3), so refuse at cap-1
-    _gate("file past the slot", "theme slot",
+    _gate("the refusal is the device's pre-erase sentence", "overrun the pixels",
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
+    ob.GEOM_CAP = _real_geom
+    ob.SLOT_ART_CAP = 4095
+    _gate("payload past the art budget", "larger than a slot",
+          lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
+    # The moved boundary, §21's lesson stated for themes: == cap is legal.
+    ob.SLOT_ART_CAP = 4096
+    ob.GEOM_CAP = 328
+    try:
+        ob.write_bundle(tmp + ".x", "Edge", [SECTIONS[1]])
+        _h, _s = ob.read_bundle(tmp + ".x")
+        check(_h["art_size"] == 4096 and _s[0]["blob"]["slug"] == "clock",
+              "the == cap file wrote and read but not intact")
+    except ValueError as _e:
+        failures.append("== cap refused (%s): the gate is one byte too strict" % _e)
 finally:
-    ob.GEOM_CAP, ob.SLOT_CAP = _real_geom, _real_slot
+    ob.GEOM_CAP, ob.SLOT_ART_CAP = _real_geom, _real_slot
+
+# The reader half, at the real caps: over refuses with the budget sentence
+# BEFORE the name or the bounds get a turn; == cap passes the gate and dies at
+# the file bounds — proof the gate accepted it.
+sent("reader: region over the real cap", "table area",
+     lambda: _read_forged(5, ob.GEOM_CAP + 1, ".f1"))
+sent("reader: region refusal is the device's sentence", "overrun the pixels",
+     lambda: _read_forged(5, ob.GEOM_CAP + 1, ".f1b"))
+sent("reader: payload over the real cap", "larger than a slot",
+     lambda: _read_forged(7, ob.SLOT_ART_CAP + 1, ".f2"))
+sent("reader: region == cap passes the gate", "runs past",
+     lambda: _read_forged(5, ob.GEOM_CAP, ".f3"))
+sent("reader: payload == cap passes the gate", "runs past",
+     lambda: _read_forged(7, ob.SLOT_ART_CAP, ".f4"))
+
+# §21's deferred bound, paid: the FORMAT 2 writer takes the same two device
+# sums, in copy_into's verbatim sentences. bake_clock.py --orbtheme reaches
+# this function, and so does every host-side emitter of a legacy container.
+sent("format 2 writer: oversized geometry", "geometry would overrun the pixels",
+     lambda: ot.write_container(tmp + ".v2g", "BigGeom",
+                                b"\x00" * (ot.GEOM_BUDGET + 1),
+                                b"\x00" * 4096, 464, 464))
+sent("format 2 writer: oversized payload", "theme is larger than a slot",
+     lambda: ot.write_container(tmp + ".v2a", "BigArt",
+                                b"\x00" * 64,
+                                b"\x00" * (ot.ART_BUDGET + 1), 464, 464))
+try:                                     # == cap ACCEPTED at both sums, for real
+    n_g = ot.write_container(tmp + ".v2eg", "EdgeGeom", b"\x00" * ot.GEOM_BUDGET,
+                             b"\x00" * 4096, 464, 464)
+    n_a = ot.write_container(tmp + ".v2ea", "EdgeArt", b"\x00" * 64,
+                             b"\x00" * ot.ART_BUDGET, 464, 464)
+    check(n_g == ot.art_offset(ot.GEOM_BUDGET) + 4096
+          and n_a == ot.art_offset(64) + ot.ART_BUDGET,
+          "a == cap FORMAT 2 container wrote the wrong length")
+except ValueError as _e:
+    failures.append("format 2 == cap refused (%s): the bound is a byte too strict" % _e)
 
 # ---------------------------------------------------------------------------
 # 3. Refusals, each isolated by the word its own rule must produce.
@@ -280,14 +352,16 @@ except ValueError as _e:
     check("blob checksum" in str(_e),
           "per-blob tamper refused for the wrong reason: %s" % _e)
 
-for f in (tmp, v2, tornpath, rtpath, btpath, offpath, blobpath):
+for f in (tmp, v2, tornpath, rtpath, btpath, offpath, blobpath,
+          tmp + ".x", tmp + ".f1", tmp + ".f1b", tmp + ".f2", tmp + ".f3",
+          tmp + ".f4", tmp + ".v2g", tmp + ".v2a", tmp + ".v2eg", tmp + ".v2ea"):
     try:
         os.unlink(f)
     except OSError:
         pass
 
 print("== FORMAT 3 BUNDLE SUITE: %d checks, %d refusal(s), %d failure(s)"
-      % (28 + len(SENT) + 2, len(SENT) + 2, len(failures)))
+      % (30 + len(SENT) + 2, len(SENT) + 2, len(failures)))
 for _f in failures:
     print("  FAIL " + _f)
 sys.exit(1 if failures else 0)

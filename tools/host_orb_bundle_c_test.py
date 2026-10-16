@@ -398,8 +398,13 @@ VECTORS = [
      "same", None, "torn file"),
     (4, 0, NO_ROW, [], build(specs=[dict(SOLO, raw_blob=solo_blob[:116])]),
      "same", None, "shorter than"),
+    # The cap file: a 65536-sprite blob whose lengths are consistent so the u16
+    # count line is what STANDS — but since P6.2 the budget gate is what SPEAKS,
+    # at both readers, before the blob check is reached. The claim is now that
+    # order itself: over-cap geometry hears the table-area sentence, not the
+    # count sentence, on either side of the parity line.
     (5, 0, NO_ROW, [], _cap_file(),
-     "same", None, "u16 counts"),
+     "same", None, "table area"),
     (6, 0, NO_ROW, [], build(specs=[dict(SOLO, rec={"n_elem": 5})]),
      "same", None, "index counts"),
     (7, 0, NO_ROW, [], build(specs=[dict(SOLO, rec={"slug_off": 12})]),
@@ -460,6 +465,23 @@ VECTORS = [
      build(specs=[{"slug": "solo", "elements": [SENT], "raw_blob": SEXT_BLOB,
                    "sprites": [], "art": b""}]),
      "dump", None, None),
+    # P6.2's budget gate on the header: word 5 (geom_size) and word 7 (art_size)
+    # forged past the caps refuse with the writer's own sentences; == cap PASSES
+    # the gate and dies one line later at the file bounds — the refusal word
+    # proves which guard spoke. Both caps forged over dies at geometry first:
+    # the pair's order is the device's, and a swap hears the wrong sentence.
+    (60, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={5: ob.GEOM_CAP + 1}),
+     "same", None, "table area"),
+    (61, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={5: ob.GEOM_CAP}),
+     "same", None, "runs past"),
+    (62, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={7: ob.SLOT_ART_CAP + 1}),
+     "same", None, "larger than a slot"),
+    (63, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={7: ob.SLOT_ART_CAP}),
+     "same", None, "art region runs past"),
+    (64, 0, NO_ROW, [], build(specs=[SOLO],
+                              hdr_words={5: ob.GEOM_CAP + 1,
+                                         7: ob.SLOT_ART_CAP + 1}),
+     "same", None, "table area"),
 ]
 
 
@@ -624,9 +646,10 @@ MUTANTS = [
      "if (want != len) {", "if (want > len) {", 3),
     ("ignore the scalar dialect word",
      "if (nsc != ORB_BUNDLE_SCALARS_N)", "if (0 && nsc != ORB_BUNDLE_SCALARS_N)", 2),
-    ("drop the u16 count cap",
-     "if (ne > 0xFFFFu || ns > 0xFFFFu)",
-     "if (0 && (ne > 0xFFFFu || ns > 0xFFFFu))", 5),
+    # ("drop the u16 count cap" RETIRED at P6.2: the budget gate speaks first on
+    # every file whose blob could outgrow a u16 — case 5 now pins that order —
+    # so breaking the line below shows no reachable difference. The check stays
+    # as the defense-in-depth backstop its own comment names.)
     ("refuse the slug check with the wrong sentence",
      "the index's slug and the blob's disagree",
      "mut: slug line mangled", 7),
@@ -663,6 +686,18 @@ MUTANTS = [
      "if (0 && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI)", 23),
     ("compute the header crc over the stored crc",
      "zeroed[W_HDR_CRC] = 0;", ";", 0),
+    ("drop the geometry budget refusal",
+     "if (o->geom_size > ORB_BUNDLE_GEOM_CAP)",
+     "if (0 && o->geom_size > ORB_BUNDLE_GEOM_CAP)", 60),
+    ("drop the art budget refusal",
+     "if (o->art_size > ORB_BUNDLE_ART_CAP)",
+     "if (0 && o->art_size > ORB_BUNDLE_ART_CAP)", 62),
+    ("refuse the geometry budget at == cap",
+     "o->geom_size > ORB_BUNDLE_GEOM_CAP)",
+     "o->geom_size >= ORB_BUNDLE_GEOM_CAP)", 61),
+    ("refuse the art budget at == cap",
+     "o->art_size > ORB_BUNDLE_ART_CAP)",
+     "o->art_size >= ORB_BUNDLE_ART_CAP)", 63),
 ]
 
 

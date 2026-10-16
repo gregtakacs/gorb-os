@@ -337,6 +337,21 @@ def art_offset(geom_size):
     return (HDR_WORDS * 4 + geom_size + SECTOR - 1) & ~(SECTOR - 1)
 
 
+# The slot's shape on the device (orb_theme.c:90-96): geometry installs at
+# SLOT_GEOM_OFF and banks at SLOT_ART_OFF inside a SLOT_CAP-sized slot. The
+# write_container bound below is the device's own PRE-ERASE sum (orb_theme.c's
+# copy_into, :1349-1350), quoted in its exact sentences — §21's deferred line,
+# paid at P6.2 so no bake can upload a file the dial refuses after an erase.
+# Both caps are sector-aligned, so the aligned erase covers them exactly: a
+# blob of GEOM_BUDGET or an art of ART_BUDGET installs to the byte, == cap
+# ACCEPTED, and one more byte overruns.
+SLOT_GEOM_OFF = 0x00001000
+SLOT_ART_OFF  = 0x00010000
+SLOT_CAP      = 0x00400000
+GEOM_BUDGET   = SLOT_ART_OFF - SLOT_GEOM_OFF   # 61,440 B: orb_theme.c SLOT_GEOM_CAP
+ART_BUDGET    = SLOT_CAP - SLOT_ART_OFF        # 4,128,768 B: ORB_THEME_SLOT_CAP
+
+
 def theme_id(name):
     """The card identity of a theme name: sha256(name)[:12], lowercase hex.
 
@@ -385,7 +400,16 @@ def write_container(path, name, geom_bytes, art_bytes, scr_w, scr_h,
                     serial=0, baked_ms=0):
     """Emit one `.orbtheme`. The checksums are zlib CRC-32 — the same polynomial
     as esp_rom_crc32_le on the device — so a value computed here is checkable
-    there without a second implementation free to drift."""
+    there without a second implementation free to drift.
+
+    The budget bound is the device's, in the device's words (P6.2, §21's deferred
+    bound): a bake that emits what the dial refuses spends an upload and an erase
+    to teach what the host already knew, so the refusal happens HERE, before one
+    byte is written, in copy_into's exact sentences."""
+    if len(geom_bytes) > GEOM_BUDGET:
+        raise ValueError("geometry would overrun the pixels")
+    if len(art_bytes) > ART_BUDGET:
+        raise ValueError("theme is larger than a slot")
     hdr = pack_header(name, len(geom_bytes), len(art_bytes),
                       zlib.crc32(geom_bytes) & 0xFFFFFFFF,
                       zlib.crc32(art_bytes) & 0xFFFFFFFF,

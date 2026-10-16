@@ -26,10 +26,18 @@ check could read them as sizes.
            DERIVE from a sequential walk; a stored art offset free to disagree with
            the bytes is a bug waiting for its first torn install, so none is stored.
 
-The D29 budget gate opens HERE, at the writer: geometry region under the 60 KB the
-slot reserves for tables, whole file under the 4 MB slot. The installer repeats
-both before it erases. A section with no art is D31's silent-default question at
-resolve time, not corruption; a duplicate slug is corruption, and refused.
+The D29 budget gate opens HERE, at the writer, and closes again at the reader
+(P6.2, §22.3): geometry region under the 60 KB the slot reserves for tables,
+pixel payload under the ORB_THEME_SLOT_CAP the banks have left in the slot. The
+boundaries are the INSTALL sums, not the file's shape — §21's lesson, learned on
+the app container: geometry lands at slot +0x1000 and its erase covers it
+sector-aligned, so 61440 B lands exactly on +0x10000 and == cap is legal; banks
+land at +0x10000, so the payload has SLOT_CAP - SLOT_ART_OFF to live in and the
+trailing pad (excluded from art_size by the walk) is never installed. check_budget()
+carries both sums in the sentences the device prints, reads the caps as module
+attributes, and answers to orb_bundle3_hdr_parse() on the device — the three-way
+rule in force. A section with no art is D31's silent-default question at resolve
+time, not corruption; a duplicate slug is corruption, and refused.
 """
 import struct
 import zlib
@@ -45,7 +53,9 @@ SCALARS_N    = len(_ot.THEME_FIELDS)   # 26 today; the clock dialect, carried op
 SPR_WORDS    = 4                    # off, size, w, h — a bank entry's byte range
 BLOB_HEAD    = 4 + SCALARS_N        # counts + scalars, before the element table
 SLOT_CAP     = 0x00400000           # orb_theme.c SLOT_CAP: 4 MB per slot
+SLOT_ART_OFF = 0x00010000           # orb_theme.c SLOT_ART_OFF: banks install here
 GEOM_CAP     = 0xF000               # orb_theme.c SLOT_GEOM_CAP: 60 KB of tables
+SLOT_ART_CAP = SLOT_CAP - SLOT_ART_OFF   # orb_theme.h ORB_THEME_SLOT_CAP: banks' room
 SLUG_MAX     = 23                   # ORBAPP_SLUG_MAX - 1: the NUL's room
 _SLUG_OK     = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")
                                     # check_slug's charset, on bytes: read_bundle
@@ -75,6 +85,30 @@ def check_slug(slug):
     return slug
 
 
+def check_budget(region_len, art_len):
+    """The D29 budget gate, in the device's own sums (P6.2, §22.3).
+
+    The boundary is what the INSTALL asks for, not the file's shape — §21's
+    lesson, learned the hard way on the app container. Geometry installs at slot
+    +0x1000 and its erase covers it sector-aligned, so a 61440 B region lands
+    exactly on the banks at +0x10000: == cap ACCEPTED. Banks install at +0x10000,
+    so the payload has SLOT_CAP - SLOT_ART_OFF = ORB_THEME_SLOT_CAP of room; the
+    trailing pad never installs (the walk excludes it from art_size), and the cap
+    is sector-aligned, so == cap is legal there too. The sentences end in
+    orb_theme.c's copy_into words — D26: the owner learns a cost where they
+    already see refusals. The caps are module attributes on purpose: the suite
+    moves them to prove the gate sums, not merely the strings. Byte-identical
+    refusals belong to orb_bundle3_hdr_parse() in main/art/orb_bundle.c."""
+    if region_len > GEOM_CAP:
+        raise ValueError("geometry region is %d B; the dial's table area holds "
+                         "%d B — geometry would overrun the pixels"
+                         % (region_len, GEOM_CAP))
+    if art_len > SLOT_ART_CAP:
+        raise ValueError("pixel payload is %d B; a theme slot holds %d B — "
+                         "theme is larger than a slot"
+                         % (art_len, SLOT_ART_CAP))
+
+
 def parse_header3(raw):
     """FORMAT 2's discipline on FORMAT 3's stamps: same 128 bytes, same crc span,
     refusal sentences the page shows verbatim. The FORMAT word is checked before
@@ -94,6 +128,11 @@ def parse_header3(raw):
     if hdr[_ot.W_HDR_CRC] != _ot._hdr_crc(hdr):
         raise ValueError("container header checksum mismatch — re-copy the file "
                          "onto the card")
+    # The budget gate closes at the reader too (P6.2, §22.3): a header that
+    # claims more than a slot can hold is refused HERE, before any streaming
+    # begins — the same sums, the same sentences as the writer and as
+    # orb_bundle3_hdr_parse(), before the name or the bounds get a turn.
+    check_budget(hdr[5], hdr[7])
     name = _ot._wordstr(hdr, _ot.W_NAME, _ot.NAME_MAX)
     if not name:
         raise ValueError("theme has no name in its header — re-bake it")
@@ -238,9 +277,10 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
     normalised here — a person reading --inspect should not have to know the
     bake's build order, and the reader must find a slug the same way twice.
 
-    The budget gate, bake end (D29): geometry region under GEOM_CAP, whole file
-    under SLOT_CAP, banks sector after sector. Refusals are sentences, because the
-    composer shows them and the installer repeats them verbatim (D26)."""
+    The budget gate, bake end (D29, P6.2): check_budget(run, art_size) — the two
+    INSTALL sums, geometry region against GEOM_CAP and pixel payload against
+    SLOT_CAP - SLOT_ART_OFF, == cap accepted. Refusals are the sentences the
+    composer shows and the reader and device repeat verbatim (D26)."""
     if not name:
         raise ValueError("a bundle needs a name: it is the theme_id input (R4)")
     seen = set()
@@ -276,10 +316,6 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
     for b in blobs:
         offs.append(run)
         run += len(b)
-    if _ot.HDR_WORDS * 4 + run > GEOM_CAP:
-        raise ValueError("geometry region is %d B; the dial's table area holds %d B "
-                         "— drop elements or re-bake smaller"
-                         % (run, GEOM_CAP - _ot.HDR_WORDS * 4))
 
     art_off = _ot.art_offset(run)          # sector-aligned after header + region
     recs, art_blobs, at = [], [], art_off
@@ -311,9 +347,7 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
     art_size = (max(e for e, a in zip(ends, art_blobs) if len(a))
                 - art_off) if any_art else 0
     art_crc_all = zlib.crc32(b"".join(art_blobs)) & 0xFFFFFFFF if any_art else 0
-    if art_off + art_size > SLOT_CAP:
-        raise ValueError("bundle is %d B; a theme slot holds %d B — re-bake smaller"
-                         % (art_off + art_size, SLOT_CAP))
+    check_budget(run, art_size)     # the same sums the reader and the device check
 
     region = bytearray(pack_index(recs))
     for b in blobs:

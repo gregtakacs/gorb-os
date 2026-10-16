@@ -695,6 +695,18 @@ f_name_ok  = f_name_ok.replace("strlcpy", "host_strlcpy").replace("strlcat", "ho
 f_theme_pt = f_theme_pt.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 pure_theme = pure_theme.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 
+# P6.1's door calls the bundle reader from inside hdr_parse; this suite never
+# hands the lifted reader a FORMAT 3 header (every row here is v2), so the type,
+# the stamp, and the symbol need only LINK. The stub says what it is if some
+# future row ever does call it — silence would be the crime.
+BUNDLE_STUB = """
+#define ORB_BUNDLE3_FORMAT 3u
+typedef struct { char name[57]; } orb_bundle3_hdr_t;
+static const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
+{ (void)w; (void)o; return "harness stub: the bundle reader is not lifted here"; }
+"""
+pure_theme = BUNDLE_STUB + pure_theme
+
 # ---------------------------------------------------------------------------
 # THE GEOMETRY ARENA — the one function in the theme layer whose mistake draws
 # garbage on the glass instead of refusing a file. geom_validate_blob() mallocs

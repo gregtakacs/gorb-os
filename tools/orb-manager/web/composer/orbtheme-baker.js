@@ -75,9 +75,15 @@
   var AUX_FIELDS = BANK_FIELDS.concat(AUX_EXTRA_FIELDS);
 
   /* The caps main/art/orb_theme.c refuses over, restated here so the composer refuses on
-   * the bench rather than handing out a file the dial then rejects when it stages it. */
+   * the bench rather than handing out a file the dial then rejects when it stages it.
+   * P6.2's budget gate names them as the device's PRE-ERASE sums (orb_theme.c's
+   * copy_into): geometry installs at slot +0x1000 under the banks at +0x10000
+   * (SLOT_GEOM_CAP), banks install at +0x10000 inside SLOT_CAP — the payload budget
+   * below, 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
+   * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
   var RECTS_MAX = 2048, GIFS_MAX = 32, BG_FRAMES_MAX = 8, TOURB_MAX = 16;
   var SLOT_CAP = 0x003f0000;
+  var GEOM_BUDGET = 0xf000;
 
   var RANGES = {
     i8: [-128, 127], u8: [0, 255], i16: [-32768, 32767],
@@ -295,9 +301,13 @@
     var geom = o.geom, art = o.art;
     var off = artOffset(geom.length);
     if (art.length < SCREEN_W * SCREEN_H * 2) throw new Error('payload is shorter than one full plate');
+    if (geom.length > GEOM_BUDGET) {
+      throw new Error('geometry is ' + geom.length + ' B, over the ' + GEOM_BUDGET +
+        ' B of tables a slot holds — geometry would overrun the pixels');
+    }
     if (art.length > SLOT_CAP) {
       throw new Error('payload is ' + art.length + ' B, over the ' + SLOT_CAP +
-        ' B a theme slot holds — cut bank frames or sprite size');
+        ' B a theme slot holds — theme is larger than a slot; cut bank frames or sprite size');
     }
     var hdr = packHeader({
       geomSize: geom.length, artSize: art.length,
@@ -1620,6 +1630,7 @@
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
     HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, SLOT_CAP: SLOT_CAP,
+    GEOM_BUDGET: GEOM_BUDGET,
     // The header layout is exported so a reader can check a finished container instead of
     // trusting the writer: the selftest re-CRCs the geometry and the pixel payload it read
     // back off a real Chrome canvas, exactly as orb_theme.c does before it accepts a theme.

@@ -458,15 +458,31 @@ def read_container(path):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 2 and sys.argv[1] == "--inspect":
-        h, geom, art = read_container(sys.argv[2])
-        g = unpack_geom(geom)
-        print("%-12s '%s'  %dx%d  geom %d B  art %d B  serial %d"
-              % (theme_id(h["name"]), h["name"], h["scr_w"], h["scr_h"],
-                 h["geom_size"], h["art_size"], h["serial"]))
-        print("  hands show=%s  tourbillon_n=%d  gif_frames=%d  rects=%d  bg_frames=%d"
-              % ([x["show"] for x in g["hands"]], g["scalars"]["tourbillon_n"],
-                 g["scalars"]["gif_frames"], len(g["rects"]) // 5,
-                 len(g["bg_frames"])))
+        head = open(sys.argv[2], "rb").read(8)
+        # 3 is orbbundle.FORMAT3: the dispatcher cannot import the constant without
+        # importing the module, and the module imports this file.
+        if len(head) == 8 and struct.unpack("<I", head[:4])[0] == MAGIC \
+                and struct.unpack("<I", head[4:8])[0] == 3:
+            import orbbundle                      # local: orbbundle imports this file
+            h, secs = orbbundle.read_bundle(sys.argv[2])
+            print("%-12s '%s'  FORMAT 3  %d section(s)  geom %d B  art %d B  serial %d"
+                  % (theme_id(h["name"]), h["name"], h["n_sections"],
+                     h["geom_size"], h["art_size"], h["serial"]))
+            for x in secs:
+                b, r = x["blob"], x["rec"]
+                print("  %-16s %2d elem  bank %6d B @0x%06x  %dx%d  abi %d..%d"
+                      % (b["slug"], len(b["elements"]), r["art_size"], r["art_off"],
+                         r["scr_w"], r["scr_h"], r["abi_min"], r["abi_max"]))
+        else:
+            h, geom, art = read_container(sys.argv[2])
+            g = unpack_geom(geom)
+            print("%-12s '%s'  %dx%d  geom %d B  art %d B  serial %d"
+                  % (theme_id(h["name"]), h["name"], h["scr_w"], h["scr_h"],
+                     h["geom_size"], h["art_size"], h["serial"]))
+            print("  hands show=%s  tourbillon_n=%d  gif_frames=%d  rects=%d  bg_frames=%d"
+                  % ([x["show"] for x in g["hands"]], g["scalars"]["tourbillon_n"],
+                     g["scalars"]["gif_frames"], len(g["rects"]) // 5,
+                     len(g["bg_frames"])))
     else:
         print("usage: python3 tools/orbtheme.py --inspect <file.orbtheme>")
 

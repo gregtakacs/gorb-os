@@ -2622,7 +2622,8 @@ the clamp.
 geometry blob uploads and dies on the dial. It is not patched here: theme geometry sits
 at a fixed `SLOT_GEOM_OFF` (no sum term), the FORMAT 2 dialect retires at P6, and D29's
 budget gate already owns the bake-time bound for FORMAT 3. P6's budget-gate pass takes
-this with it.
+this with it. **PAID at P6.2 (2026-10-15, §23.6): `write_container` now refuses both
+device sums, in `copy_into`'s verbatim sentences.**
 
 ## 22 — P6 design draft: FORMAT 3, the gate, the flip, the reverse path (DRAFT)
 
@@ -2897,6 +2898,21 @@ enum gains entries — append-only — so P8 can add what it needs without a for
   host_orbapp_reader_test.py discipline. What P6.1 still owes is P6.3's streaming install
   (banks verified as they arrive, the same `bank_check` rule), and the door itself flips
   with THEMES (P6.4).
+- **P6.2 LANDED 2026-10-15:** the budget gate at both ends, plus §21's deferred bound.
+  `orbbundle.check_budget()` states the two INSTALL sums once — region against `GEOM_CAP`
+  (61,440 B, the tables between slot `+0x1000` and `+0x10000`) and pixel payload against
+  `SLOT_ART_CAP` (4,128,768 B, `ORB_THEME_SLOT_CAP`) — `== cap` accepted, refusals ending
+  in `copy_into`'s own sentences. It replaces the writer's two file-shape checks: the old
+  geometry line refused a legal `== cap` region by the 128-byte header's worth, and the
+  old file-sum line accepted a bundle whose installed art overran — the §21 bug, caught on
+  themes before it could ship. `parse_header3` and `orb_bundle3_hdr_parse` call the pair
+  at the header, before the name or a streamed byte, so forged sizes meet the same words
+  on both readers. `orbtheme.write_container` and the composer's `writeContainer` take the
+  FORMAT 2 bound (§21, paid), and `host_sd_test.py` gained the bundle-reader link stub its
+  lifted door has needed since P6.1. Suites: format3 **52 checks, 22 refusals, 0 failed**;
+  parity **167 checks, 37 vectors, 24/24 mutants**; `mut_bundle.py` **16/16**; the C u16
+  mutant retired — the gate speaks first now, and vector 5 pins that order. av-kit
+  untouched; bench items owed by P6.3 unchanged.
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.

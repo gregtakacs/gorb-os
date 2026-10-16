@@ -2885,8 +2885,18 @@ enum gains entries — append-only — so P8 can add what it needs without a for
   gate opens here (region under 60 KB, file under 4 MB, refusals in the sentences the
   installer will repeat). `tools/host_theme_format3_test.py`: 43 checks, 15 sentinels,
   the two inner guards pinned by re-stamped-region rows; mutation harness catches 12/12.
-  Still owed by P6.1, under §4.1's three-way rule and moving in one commit with the C
-  reader: `orb_bundle.c`'s parse mirror and `orb_theme.c`'s format gate taking FORMAT 3.
+- **P6.1 third commit LANDED 2026-10-15:** the firmware's parse mirror. `main/art/orb_bundle.c`
+  checks header, region, index, blobs, banks and sortedness in `read_bundle()`'s order, its
+  refusal sentences byte-identical except the two labeled header-wording pairs the suite
+  pins. The u16 count cap and the check_slug rule now bind at read time on both sides;
+  equal neighbouring slugs die like a shuffle does. `orb_theme.c`'s format gate names a
+  FORMAT 3 bundle for what it is — a valid header gets the bundle sentence, a broken one
+  the bundle reader's own reason, and the 128-byte torn-header check stays one rule for
+  both formats. `tools/host_orb_bundle_c_test.py` compiles the shipped C file with host
+  gcc against the writer's own bytes: 147 checks, 29 vectors, 21/21 mutants caught, the
+  host_orbapp_reader_test.py discipline. What P6.1 still owes is P6.3's streaming install
+  (banks verified as they arrive, the same `bank_check` rule), and the door itself flips
+  with THEMES (P6.4).
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.

@@ -2876,8 +2876,17 @@ enum gains entries — append-only — so P8 can add what it needs without a for
   its class/flag/bound vocabulary now lives in `theme_schema.py`, checked by
   `tools/host_theme_elem_test.py` (46 checks, 14 mutants caught, class enum linted against
   `orb_assets.h`). 17 fixed-width columns, so a later schema appends past `scale16` without
-  a format bump. Still owed by P6.1: the FORMAT 3 bundle writer, the `orb_theme.c` reader,
-  and the per-app section framing.
+  a format bump.
+- **P6.1 second commit LANDED 2026-10-15 (`76bd1cd`):** the FORMAT 3 bundle writer and its
+  host reader — `tools/orbbundle.py`. FORMAT 2's 128-byte header with FORMAT/ABI stamps
+  swapped and nothing widened; a slug-sorted index of 13-field records and one
+  self-describing legible blob per app in the geometry region; sector-aligned banks
+  byte-identical to FORMAT 2 payloads, offsets derived by walk and never stored. D29's
+  gate opens here (region under 60 KB, file under 4 MB, refusals in the sentences the
+  installer will repeat). `tools/host_theme_format3_test.py`: 43 checks, 15 sentinels,
+  the two inner guards pinned by re-stamped-region rows; mutation harness catches 12/12.
+  Still owed by P6.1, under §4.1's three-way rule and moving in one commit with the C
+  reader: `orb_bundle.c`'s parse mirror and `orb_theme.c`'s format gate taking FORMAT 3.
 - **R6 — RULED 2026-10-15.** An animation carries its frames and **no rate**: no fps, no
   per-frame delay. Playback rate IS the rate the OS picks for that stack, so one tick
   advances one frame. Consequences at §23.7.

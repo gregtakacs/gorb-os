@@ -74,8 +74,8 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.Confirm) != lonelyConfirmWord {
-		send("error", "lonely refused: the request must confirm with the word "+lonelyConfirmWord+
-			" — this writes over the orb's firmware, and it takes the fleet row and the name with it")
+		send("error", "erase refused: the request must confirm with the word "+lonelyConfirmWord+
+			" — this erases the flash and writes over the orb's firmware, and it takes the fleet row and the name with it")
 		return
 	}
 	job, ctx, oerr := s.ops.start(r.Context(), req.Port, opLonely, 0)
@@ -90,7 +90,7 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 	// bundle still frees the port it took the moment this returns.
 	bundle := s.firmwareBundle()
 	if bundle == nil {
-		send("error", "no firmware bundle loaded — the lonely image borrows its bootloader and partition table from one")
+		send("error", "no firmware bundle loaded — the full erase borrows its bootloader and partition table from one")
 		return
 	}
 	plan, err := bundle.LonelyPlan(lonelyImage)
@@ -141,10 +141,10 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	send("log", fmt.Sprintf("leaving %s lonely — it will stop being an orb, keep no settings, and start minding the display", req.Port))
+	send("log", fmt.Sprintf("erasing the flash of %s completely — it will stop being an orb, keep no settings, and boot a base image that holds its port", req.Port))
 	if err := esprom.Session(pt, opts); err != nil {
 		if esprom.IsCancelled(err) {
-			send("error", "lonely cancelled - the board is still in its bootloader with a partial image. Flash it, lonely or orb, and one of them finishes cleanly.")
+			send("error", "erase cancelled - the board is still in its bootloader with a partial image. Flash it, base image or orb, and one of them finishes cleanly.")
 			return
 		}
 		send("error", err.Error())
@@ -152,7 +152,7 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.endAsLonely(req.Port, lonelyMAC)
-	send("done", "the orb is lonely now: its settings, name and credentials went with it, and it bounces its message until you flash it into something else")
+	send("done", "the flash is erased: its settings, name and credentials went with it, and it boots a base image that holds its port until you flash it into something else")
 }
 
 // endAsLonely is the pair the lonely door performs on success: mark the chip, then

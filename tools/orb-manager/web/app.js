@@ -693,31 +693,32 @@ $("#ob-go").onclick = async () => {
 };
 
 
-// ---- Leave it lonely: the only end of orb life this page offers ------------
-// One class of act lives here: the board stops being an orb. There is no
-// whole-chip erase on this page — a blank S3 boot-loops, flaps its port, and
-// reads as a broken cable. The lonely image does the same ending honestly:
-// the board boots once, holds enumeration, wipes its own name, time zone and
-// credentials, and animates the one sentence that explains itself. The hub
-// forgets the board on success and remembers the act, so the cable's
-// MAC-shaped descriptor cannot rebuild the row (New Orb is the door back).
-// lonelyArm moves the card's Lonely button to its one-step confirm: the press that
+// ---- Erase flash completely: the full end of orb life this page offers ------
+// One class of act lives here: the board stops being an orb. A plain chip erase
+// is not offered — a blank S3 boot-loops, flaps its port, and reads as a broken
+// cable. The base-image write does the same ending honestly: the board boots
+// once, holds enumeration, wipes its own name, time zone and credentials, and
+// shows it is waiting to be reflashed. The hub forgets the board on success and
+// remembers the act, so the cable's MAC-shaped descriptor cannot rebuild the row
+// (New Orb is the door back). The door is still served by /api/lonely under the
+// hood; that name is internal and the page never shows it.
+// lonelyArm moves the card's Erase button to its one-step confirm: the press that
 // armed it already named the act and the port, and the operator reads which board is
 // about to stop being an orb on the button's own face. The typed word is gone (the
 // operator's call, bench 2026-10-15: "don't do the whole are-you-sure-type-text-in-here
 // thing, super annoying — the user already went through hitting forget and hitting the
-// full reset button"). The hub's payload word stays: it is the gate for every scripted
+// erase button"). The hub's payload word stays: it is the gate for every scripted
 // and hand-crafted caller, and costs this page nothing.
 function lonelyArm() {
   const port = current.port;
   if (!port) {
-    $("#ob-lonely-hint").textContent = "this orb is not on a cable right now — the lonely image takes exactly the board on that lead";
+    $("#ob-lonely-hint").textContent = "Plug this orb into this computer with a USB cable to erase it.";
     return;
   }
   $("#ob-lonely").hidden = true;
   $("#ob-lonely-hint").hidden = true;
   $("#ob-lonely-confirm").hidden = false;
-  $("#ob-lonely-port").textContent = port;
+  $("#ob-lonely-port").textContent = "this orb";
   $("#ob-lonely-go").disabled = false;
   $("#ob-lonely-go").focus();
 }
@@ -726,7 +727,7 @@ function lonelyDisarm() {
   $("#ob-lonely-confirm").hidden = true;
   $("#ob-lonely").hidden = false;
   $("#ob-lonely-hint").hidden = false;
-  $("#ob-lonely-hint").textContent = "The kinder wipe: same end of orb life, but the board boots and says why on its own screen. New Orb flashes it into something else whenever you like.";
+  $("#ob-lonely-hint").textContent = "This wipes everything on the orb, including its software. You can set it up again later.";
 }
 
 $("#ob-lonely").onclick = lonelyArm;
@@ -769,12 +770,14 @@ $("#ob-lonely-go").onclick = async () => {
 //
 //   • cable — the board sits on a lead of this hub, and deleting its row alone
 //     would only hide it until the next sweep. Two endings actually end it:
-//     /api/lonely writes the lonely image (the board stops being an orb, wipes
-//     its name, time zone and credentials, and waits on its own screen; the hub
-//     marks the chip, so it reads as a blank Espressif board adoptable from New
-//     Orb), or /api/orb/cmd drives RESET ALL (firmware stays, every setting
-//     goes, the board comes back as its own open provisioning AP, and the card
-//     takes the default name "The Orb" when the ack lands).
+//     /api/orb/cmd drives RESET ALL (firmware stays, every setting goes, the
+//     board comes back as its own open provisioning AP, and the card takes the
+//     default name "The Orb" when the ack lands — the dialog calls this Reset
+//     settings), or /api/lonely writes the base image (the board stops being an
+//     orb, wipes its name, time zone and credentials, boots, and holds its port
+//     for an easy reflash later; the hub marks the chip, so it reads as a blank
+//     Espressif board adoptable from New Orb — the dialog calls this Erase flash
+//     completely). The /api/lonely name is internal and never surfaces in the UI.
 //   • drop — no lead, and the hub will not rebuild this row. The press is the
 //     plain /api/fleet/forget the popup used to gate.
 //   • wait — the hub refused and has no lead to act over. The hub's own refusal
@@ -802,13 +805,12 @@ function paintForgetDialog() {
   if (!li || fjBusy) return;
   const mode = forgetMode(li);
   const shown = li._shown || li.dataset.mac || "this orb";
-  const port = mode === "cable" ? li._livePort : "";
   const why = li._forgetWhy || "";
   const log = $("#fj-log"), note = $("#fj-note");
   if (mode !== fjMode) { log.hidden = true; log.textContent = ""; }
   fjMode = mode;
-  $("#fj-title").textContent = mode === "cable" ? "This orb is still answering"
-    : mode === "drop" ? "Forget this orb?" : "This row is not ready to forget";
+  $("#fj-title").textContent = mode === "cable" ? "What do you want to do?"
+    : mode === "drop" ? "Remove this orb?" : "This orb can't be removed yet";
   $("#fj-cable").hidden = mode !== "cable";
   $("#fj-gone").hidden = mode !== "drop";
   $("#fj-wait").hidden = mode !== "wait";
@@ -816,26 +818,19 @@ function paintForgetDialog() {
   $("#fj-forget").disabled = mode !== "drop";
   $("#fj-cancel").disabled = false;
   if (mode === "cable") {
-    $("#fj-who").textContent = shown + " answers the hub on the lead at " + port
-      + ", so deleting its row alone would only hide it until the next sweep.";
-    note.textContent = "Both endings travel the USB lead at " + port
-      + ". The press does it — this dialog is the confirmation.";
+    $("#fj-who").textContent = "This orb is plugged in and still yours to use, so hiding it from the list won't stick. Pick what to do with it instead.";
+    note.textContent = "Your choice happens right away.";
     return;
   }
   if (mode === "drop") {
-    $("#fj-who").textContent = shown + " is on no lead of this hub and answers where it was"
-      + " last seen no more, so this row will not rebuild itself.";
-    $("#fj-gone-what").textContent = "The hub drops the fleet row for " + (li.dataset.mac || "this board")
-      + ", forgets the name it kept, and stops dialing the address it remembered"
-      + (li._ip ? " (" + li._ip + ")" : "") + ". Nothing is sent to the board: it keeps its"
-      + " firmware, its name and its settings.";
-    note.textContent = "Plug it back in or wait for it to announce, and it comes as a new sighting.";
+    $("#fj-who").textContent = shown + " isn't plugged in and hasn't been seen for a while, so this just removes it from your list.";
+    $("#fj-gone-what").textContent = "Nothing is sent to the orb. It keeps its software, name and settings, and appears again the next time you plug it in or it comes online.";
+    note.textContent = "You can add it back later if you change your mind.";
     return;
   }
-  $("#fj-who").textContent = shown + " is the hub's call, not this page's.";
-  $("#fj-wait").textContent = why || "the hub sent no Forget verdict for this row — reload the page";
-  note.textContent = "No button, because a press now would only be refused. The card repaints"
-    + " itself, and Forget arms when the hub may drop the row.";
+  $("#fj-who").textContent = shown + " is connected right now, so this page waits for your next move.";
+  $("#fj-wait").textContent = why || "The orb is still connected somewhere. Unplug it first, then try again.";
+  note.textContent = "There's nothing to click yet. This card updates on its own, and Remove lights up when it's safe.";
 }
 
 function openForgetDialog(li) {
@@ -873,7 +868,7 @@ $("#fj-lonely").onclick = async () => {
   if (!port) { paintForgetDialog(); return; }   // the lead went quiet since the last frame
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
-  const log = $("#fj-log"); log.hidden = false; log.textContent = "leaving it lonely over " + port + "\n";
+  const log = $("#fj-log"); log.hidden = false; log.textContent = "Erasing this orb completely…\n";
   let ok = false;
   try {
     await streamPost("/api/lonely", { port, confirm: "LONELY" }, (ev) => {
@@ -903,7 +898,7 @@ $("#fj-reset").onclick = async () => {
   if (!port) { paintForgetDialog(); return; }   // the lead went quiet since the last frame
   fjBusy = true;
   $("#fj-lonely").disabled = true; $("#fj-reset").disabled = true;
-  const log = $("#fj-log"); log.hidden = false; log.textContent = "sending RESET ALL over " + port + "\n";
+  const log = $("#fj-log"); log.hidden = false; log.textContent = "Clearing the orb's settings…\n";
   let acked = false;
   try {
     await streamPost("/api/orb/cmd", { port, mac, command: "reset", operand: "ALL" }, (ev) => {
@@ -911,8 +906,8 @@ $("#fj-reset").onclick = async () => {
       else if (ev.error) log.textContent += "\n\u2717 " + ev.error + "\n";
       else if (ev.result) {
         acked = ev.result.ack === true;
-        log.textContent += (acked ? "\n\u2713 reset acknowledged — the board reboots unconfigured\n"
-                                  : "\n\u2717 the orb refused the reset\n");
+        log.textContent += (acked ? "\n\u2713 Done — the orb is ready to set up again\n"
+                                  : "\n\u2717 The orb didn't accept the reset\n");
       }
       log.scrollTop = log.scrollHeight;
     });
@@ -922,7 +917,7 @@ $("#fj-reset").onclick = async () => {
   if (acked) {
     pullFound();
     closeForgetDialog();
-    $("#mn-find-note").textContent = "factory reset — the board is unconfigured again, its AP is open for whoever claims it next, and the card reads \u201cThe Orb\u201d until they name it.";
+    $("#mn-find-note").textContent = "Settings cleared — this orb is ready to set up again.";
   }
 };
 
@@ -953,7 +948,7 @@ $("#fj-forget").onclick = async () => {
   await pullFound();                       // the row leaves the list, and that closes this
   if (dropped) {
     if (fjRow === li) closeForgetDialog();
-    $("#mn-find-note").textContent = "forgotten — the hub dropped the row and the grant to dial it. The board itself was not touched.";
+    $("#mn-find-note").textContent = "Removed from your list. The orb itself wasn't changed.";
     return;
   }
   log.textContent += "\n\u2717 " + refusal + "\n";
@@ -1835,20 +1830,20 @@ function paintFound(li, o) {
   // body that says why. Only a row with neither — no mac, or a hub that sent no verdict
   // at all — is a dead button, and it says that too.
   forget.disabled = !(forgettable || liveForget);
-  forget.title = !nameable ? "no mac yet, so there is no fleet entry to forget"
-    : forgettable ? "forget this orb: the hub drops the row and stops dialing the address it kept"
+  forget.title = !nameable ? "Nothing to remove yet — this orb hasn't finished setting up."
+    : forgettable ? "Remove this orb from the list. Nothing is sent to it."
     : liveForget ? (li._livePort
-        ? "this board answers the hub over " + li._livePort + ": Forget offers the endings that travel that lead"
-        : "the hub will not drop this row yet: Forget shows what it said and why")
-    : (why || "the hub sent no Forget verdict for this row");
+        ? "This orb is plugged in, so choose Reset settings or Erase flash completely."
+        : "This orb is still connected, so it can't be removed yet. Open Forget to see why.")
+    : (why || "This orb can't be removed right now.");
   // The reason goes on the row as well as in the title. A greyed button with no text is a
   // fault to diagnose rather than a rule to learn, and the operator should not have to
   // hover every row to find out which of the three facts is holding the button back.
   const fwhy = li._fwhy;
   fwhy.hidden = forgettable || liveForget || !nameable;
-  fwhy.textContent = !nameable ? "no mac yet, so there is no fleet entry to forget"
+  fwhy.textContent = !nameable ? "Nothing to remove yet — this orb hasn't finished setting up."
     : (forgettable || liveForget) ? ""
-    : (why || "the hub sent no Forget verdict: reload the page");
+    : (why || "This orb can't be removed right now. Reload the page.");
   li._identify.hidden = o.identity !== "unknown";
   li._ip = o.ip;
   // The dialog reads its row, so the row's new verdict is the dialog's new body. This is

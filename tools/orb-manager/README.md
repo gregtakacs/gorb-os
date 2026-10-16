@@ -298,18 +298,22 @@ no Forget; that verdict is the hub's, not the card's guess.
   bundle goes through the ROM instead, with a factory-reset box that stays
   unchecked.
 
-- **Leave it lonely** — the only end of orb life this page offers, inside an
-  orb's firmware card, only when that orb is on a cable, in its own colour, and
-  it does not act until you type `LONELY`. It writes the lonely image: the
+- **Erase flash completely** — the full end of orb life this page offers, inside
+  an orb's firmware card, only when that orb is on a cable, in its own colour.
+  The button press is the confirmation; the page asks for no typed word, though
+  the hub's HTTP door still requires the payload word `LONELY`. The card button
+  and the Forget dialog both name this act "Erase flash completely"; the internal
+  door is `/api/lonely` and the embedded base image is `lonely.bin`, neither of
+  which the page shows. It writes the base image: the
   loaded firmware bundle's bootloader, partition table and initial otadata at
   their usual offsets, a small embedded app in the ota_0 slot, and — in the
   same ROM session, after the images land — a region erase of the NVS and
   storage partitions the bundle's own partition table declares, so the time
   zone, the name and every Wi-Fi credential go with the orb life. The app
   boots, wipes any owner settings it can still find at every start (so a board
-  that became lonely by any door keeps nothing), bounces a message across the
-  panel reading "I used to be an Orb, now I'm just lonely. Flash me!" with an
-  8-ball, and holds its USB enumeration instead of boot-looping. The panel is
+  that lost its orb life by any door keeps nothing), shows a placeholder
+  message and 8-ball on the panel, and holds its USB enumeration instead of
+  boot-looping. The panel is
   repainted whole every 125 ms: 59 even bands, each composited black-plus-message-
   plus-ball and flushed once, never erased-then-drawn, the burst opened on the
   panel's TE pulse, and four band buffers in flight so a band costs the larger of
@@ -535,13 +539,16 @@ so a deliberate downgrade stays possible.
     still claims that address. A live board the gate refuses is not left with a dead
     button: the same annotation carries `liveForget: true` plus `livePort` — the lead
     the hub can act on — and the button opens the **forget dialog** with the two real
-    endings. *Full reset* writes the lonely image over that lead (the same
-    `/api/lonely` door, word and all): the board stops being an orb, every setting on
-    it goes, and the row ends with the lonely mark keeping it off the fleet. *Factory
-    reset settings* sends the serial `RESET ALL` (the same `/api/orb/cmd` door): the
+    endings, offered in this order. *Reset settings* sends the serial `RESET ALL`
+    (the same `/api/orb/cmd` door): the
     firmware stays, the owner data goes, the board reboots as its own open provisioning
-    AP for whoever claims it next, and the hub renames its card **The Orb** on the ack
-    — a store-side default only, until the next owner's word replaces it. A live board
+    AP so you can reconfigure its Wi-Fi, time zone and name, and the hub renames its
+    card **The Orb** on the ack
+    — a store-side default only, until the next owner's word replaces it. *Erase
+    flash completely* writes the base image over that lead (the same
+    internal `/api/lonely` door and payload word): the board stops being an orb, every
+    setting on it goes, and the row ends with the internal lonely mark keeping it off
+    the fleet. A live board
     with no lead shows the refusal instead of dead buttons: the hub commands cables,
     not the air. The gate lives in `liveness.go`.
   - **Remembered orb.** The address the hub last had an orb at — learned over

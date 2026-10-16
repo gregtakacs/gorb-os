@@ -33,6 +33,7 @@
 #include "nvs_flash.h"
 
 #include "orb_theme.h"
+#include "orb_bundle.h"
 #include "orb_sd.h"
 #include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
@@ -259,7 +260,18 @@ static void rd_wordstr(const uint32_t *w, int base, char *dst, int cap)
 static const char *hdr_parse(const uint32_t *w, orb_thdr_t *o)
 {
     if (w[W_MAGIC]    != THEME_MAGIC)     return "not an .orbtheme file";
-    if (w[W_FORMAT]   != THEME_FORMAT)    return "theme format this firmware cannot read";
+    if (w[W_FORMAT]   != THEME_FORMAT) {
+        /* FORMAT 3 is not unreadable-by-accident: it is a bundle this build
+         * cannot install YET, and a damaged one must hear the bundle reader's
+         * own reason, not the generic line. Only words already loaded; the
+         * door stays shut either way. */
+        orb_bundle3_hdr_t b3;
+        if (w[W_FORMAT] == ORB_BUNDLE3_FORMAT &&
+            orb_bundle3_hdr_parse(w, &b3) == NULL)
+            return "that is a FORMAT 3 app bundle; this firmware installs "
+                   "single-app themes only — update the dial to load it";
+        return "theme format this firmware cannot read";
+    }
     if (w[W_GEOM_ABI] != THEME_GEOM_ABI)  return "baked for a different dial — re-bake it";
 
     /* The self-checksum first: it covers 128 bytes, so it costs nothing, and a

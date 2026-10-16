@@ -47,6 +47,10 @@ BLOB_HEAD    = 4 + SCALARS_N        # counts + scalars, before the element table
 SLOT_CAP     = 0x00400000           # orb_theme.c SLOT_CAP: 4 MB per slot
 GEOM_CAP     = 0xF000               # orb_theme.c SLOT_GEOM_CAP: 60 KB of tables
 SLUG_MAX     = 23                   # ORBAPP_SLUG_MAX - 1: the NUL's room
+_SLUG_OK     = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")
+                                    # check_slug's charset, on bytes: read_bundle
+                                    # and orb_bundle.c's slug rule both apply it
+                                    # to forged names without decoding them
 
 # The index record's field order on the wire. geom_off is stored although the walk
 # derives it: the reader requires stored == derived, so a blob moved by a repack
@@ -147,8 +151,9 @@ def pack_blob(slug, elements, scalars=None, sprites=()):
 
 def unpack_blob(blob):
     """The device-side reading, mirrored: the counts decide every later offset, and
-    a blob whose length the counts cannot produce is refused, never truncated-read —
-    the discipline geom_counts() enforces on FORMAT 2."""
+    a blob whose length the counts cannot produce is refused, never truncated-read
+    — the discipline geom_counts() enforces on FORMAT 2. The refusal sentences
+    here are orb_bundle.c's blob_check() sentences; the refusal order is too."""
     if len(blob) < BLOB_HEAD * 4:
         raise ValueError("section blob is shorter than its counts and scalars")
     n_elem, n_spr, n_scal, n_slug = struct.unpack_from("<4I", blob, 0)
@@ -160,6 +165,12 @@ def unpack_blob(blob):
     if want != len(blob):
         raise ValueError("blob is %d bytes; its counts say %d — a torn file, not a "
                          "short one" % (len(blob), want))
+    if n_elem > 0xFFFF or n_spr > 0xFFFF:
+        # The record's counts are u16 and the device reader stores them as
+        # such; orb_bundle.c's blob_check refuses the same rule in the same
+        # words. A file big enough to show this cannot reach a device at all
+        # — the door's budget ends at the slot cap.
+        raise ValueError("blob outgrew its u16 counts")
     scal = struct.unpack_from("<%dI" % n_scal, blob, 16)
     off = BLOB_HEAD * 4
     elems = _ts.unpack_elements(list(struct.unpack_from(
@@ -170,8 +181,13 @@ def unpack_blob(blob):
         o, sz, w, h = struct.unpack_from("<4I", blob, off + i * 16)
         sprs.append({"off": o, "size": sz, "w": w, "h": h})
     off += n_spr * SPR_WORDS * 4
-    return {"slug": blob[off:off + n_slug].decode("utf-8"), "elements": elems,
-            "sprites": sprs,
+    # The slug travels as BYTES, and read_bundle() compares it as bytes: a
+    # forged blob can carry anything at all, and the device reader memcpys
+    # those bytes without decoding. surrogateescape keeps the display form
+    # lossless and byte-reversible either way; the C mirror never decodes.
+    sb = blob[off:off + n_slug]
+    return {"slug": sb.decode("utf-8", "surrogateescape"), "slug_b": sb,
+            "elements": elems, "sprites": sprs,
             "scalars": {n: _ot._sext(scal[i], _ot.THEME_FIELDS[i][1])
                         for i, (n, _t) in enumerate(_ot.THEME_FIELDS)}}
 
@@ -321,8 +337,10 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
 def read_bundle(path):
     """Whole-file read and every checksum, for the host suite and the bench; the
     device streams instead. The mirror of the writer's promises: header crc, region
-    crc, per-section blob crc and length, per-bank crc, the geom_off the index
-    stores against the one the walk derives, and the slug each blob answers to."""
+    crc, per-section blob crc and length, per-bank crc, the geom_off and art_off
+    the index stores against the ones the walks derive, and the slug each blob
+    answers to. The refusal order below is the C reader's refusal order —
+    tools/orb_bundle.c and its sentinel suite move with any change here."""
     with open(path, "rb") as f:
         raw = f.read()
     h = parse_header3(raw)
@@ -331,6 +349,11 @@ def read_bundle(path):
     region = raw[h["geom_off"]:h["geom_off"] + h["geom_size"]]
     if zlib.crc32(region) & 0xFFFFFFFF != h["geom_crc"]:
         raise ValueError("geometry checksum mismatch — the copy on the card is damaged")
+    if len(region) < 8:
+        # unpack_index() cannot even read its head; the header's own count is
+        # the honest number to name, which is the sentence C reads back.
+        raise ValueError("index claims %d sections in %d region bytes — torn file"
+                         % (h["n_sections"], len(region)))
     n, recs = unpack_index(region)
     if n != h["n_sections"]:
         raise ValueError("header names %d sections, the index holds %d"
@@ -338,6 +361,7 @@ def read_bundle(path):
     if h["art_off"] + h["art_size"] > len(raw):
         raise ValueError("art region runs past the end of the file")
     walk = 8 + IDX_WORDS * 4 * n           # the sequential truth, record by record
+    aoff = h["art_off"]                    # the bank walk, sector after sector
     out = []
     for i, r in enumerate(recs):
         if r["geom_off"] != walk:
@@ -351,20 +375,39 @@ def read_bundle(path):
         if zlib.crc32(blob) & 0xFFFFFFFF != r["geom_crc"]:
             raise ValueError("section %d blob checksum mismatch" % i)
         b = unpack_blob(blob)
-        want = raw[h["geom_off"] + r["slug_off"]:
-                   h["geom_off"] + r["slug_off"] + r["slug_len"]].decode("utf-8")
-        if b["slug"] != want:
+        if r["slug_off"] + r["slug_len"] > h["geom_size"]:
+            # the index's own name does not fit the region it lives in
             raise ValueError("section %d: the index's slug and the blob's disagree" % i)
+        want = raw[h["geom_off"] + r["slug_off"]:
+                   h["geom_off"] + r["slug_off"] + r["slug_len"]]
+        if b["slug_b"] != want:   # bytes, not text: see unpack_blob
+            raise ValueError("section %d: the index's slug and the blob's disagree" % i)
+        # The blob's own name must be one an app could later claim — the same
+        # rule check_slug gates at write time, now on the read side, on BYTES
+        # (orb_bundle.c's orb_bundle_slug_rule) so a forged non-UTF-8 slug
+        # hears this sentence rather than a codec error.
+        sb = b["slug_b"]
+        if not (1 <= len(sb) <= SLUG_MAX) or any(c not in _SLUG_OK for c in sb):
+            raise ValueError("bundle slug %r is not lowercase a-z 0-9 _ of 1..%d chars"
+                             % (b["slug"], SLUG_MAX))
         if r["n_elem"] != len(b["elements"]):
-            raise ValueError("section %r: the index counts %d elements, the blob "
+            raise ValueError("section '%s': the index counts %d elements, the blob "
                              "carries %d" % (b["slug"], r["n_elem"], len(b["elements"])))
+        if r["art_off"] != aoff:
+            raise ValueError("section %d stores art_off %d where the art walk says "
+                             "%d — the index and the bytes contradict"
+                             % (i, r["art_off"], aoff))
         a = raw[r["art_off"]:r["art_off"] + r["art_size"]]
         if zlib.crc32(a) & 0xFFFFFFFF != r["art_crc"]:
-            raise ValueError("section %r bank checksum mismatch — the copy on the "
+            raise ValueError("section '%s' bank checksum mismatch — the copy on the "
                              "card is damaged" % b["slug"])
+        aoff += (r["art_size"] + _ot.SECTOR - 1) & ~(_ot.SECTOR - 1)
         out.append({"rec": r, "blob": b, "art": a})
     slugs = [x["blob"]["slug"] for x in out]
-    if slugs != sorted(slugs):
+    # Adjacent pairs, STRICT inequality: equal neighbors are a duplicate, and
+    # the C reader's strcmp >= 0 refuses them too. Two records for one slug is
+    # exactly the ambiguity a sorted index exists to make impossible.
+    if any(b <= a for a, b in zip(slugs, slugs[1:])):
         raise ValueError("index is not slug-sorted; the resolver and --inspect both "
                          "walk it in order, and a shuffled one hides a lost section")
     return h, out

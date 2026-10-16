@@ -26,6 +26,7 @@ idf_component_register(
         "power/idle_dim.c"
         "art/art_bank.c"
         "art/orb_theme.c"
+        "art/orb_bundle.c"
         # P5b: the asset registry. Its own directory because it is the one file in
         # the tree that knows what a slot IS, and it compiles without LVGL on
         # purpose — tools/host_orbapp_reader_test.py links it straight into the

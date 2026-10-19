@@ -3159,9 +3159,31 @@ the new default is this bench.
    prediction is confirmed as a band and not retrofitted to the measurement. The fused
    pass is what the number is for: verify-and-draw in one read of the slot, and `0 of 234
    art pages` says the MMU path stayed untouched to get there.
-2. **§20.5(3) power cut mid-flip — owed, and the word is now readable.**
-   `m5_powercut.sh`'s `/api/v1/config` check grows a `staged` read: an interrupted flip
-   must show the word and draw the OLD commit.
+2. **§20.5(3) power cut mid-flip — RUN 2026-10-19: the word is proven, and the pass
+   line's second half is wrong about the design it is testing.** The cut was a real one:
+   `/api/v1/reboot`'s 750 ms one-shot armed, and `POST /api/v1/sd/install?id=c38cd33b1c35`
+   answered `{"state":"installing"}` 350 ms later, so rst landed inside the copy. The boot
+   that followed answered `staged_id: "c38cd33b1c35"`,
+   `staged_why: "pixels staged, never committed — the dial shows the previous theme"`,
+   `damage_id: ""` — the witness is there, it is readable over the same route as the list,
+   and it is not the damage word. **What it does not do is show the previous theme.**
+   `source` read `"baked-in"`, `active` read `""`, `refill_ms` read 0, and the boot line
+   was `no installed theme — drawing the baked-in bank`. The why's own sentence is
+   therefore inaccurate on this firmware, and the reason is D13's single slot, not a bug in
+   the staging word: `orb_theme_install()` erases slot-B to write the new commit into it,
+   so an interrupted flip destroys the commit it was supposed to fall back to. Half of
+   §20.4's amendment is now measured rather than argued — D30's flip is not a ping-pong, and
+   the cost is that an interrupted flip is a fall-back-to-default rather than a
+   keep-the-old-dial. P6.4's flip page owns that sentence: it must warn the owner that the
+   dial can come back showing the factory clock, and `staged_why`'s text should say so.
+   Recovery is proven in the same run: a clean re-install took 4406 ms, the automatic reboot
+   crossed, and the next boot read `source: "slot-B"`, `active: "av-kit"`,
+   `refill_ms: 182`, `staged_id: ""`.
+   Scope note: this door is the FORMAT 2 `orb_theme_install()`, because it is the only theme
+   install with a route. `orb_theme_install_bundle()` marks the same word at its own
+   `staged_mark()` and remains uncut-able until P6.4 posts it, so the bundle half of this
+   item stays owed. The FORMAT 2 dialect itself installed and drew fine on the P6.3 build —
+   the strict bundle gate is at the bundle door, and P6.5 is still what retires the old one.
 3. **§20.5(4) arena pin and refusal — the pin half needs board 2.** The refusal arm is
    host-covered (REFILL at bank+margin−1). Measured here against the live figure: av-kit
    at 1,173,563 B leaves 6,324,893 B free after the copy and the 2 MB margin.

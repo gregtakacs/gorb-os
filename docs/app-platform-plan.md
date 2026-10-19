@@ -3149,11 +3149,16 @@ http://192.168.2.34}` as of this commit, where they had `192.168.2.32` hardcoded
 §19; the leases are static and the address moved anyway, so the override is the fix and
 the new default is this bench.
 
-1. **§20.5(2) refill timing — owed, and now measurable.** `adopt()` prints `theme "%s"
-   from slot-B (chosen): %u B refilled to the arena in %u ms`, and `/api/v1/sd` answers
-   the same figure as `refill_ms`. Taking it needs a card with a theme installed and
-   chosen. Board 1 boots clean on the default and reports `heap_psram: 7,498,456` free,
-   so the av-kit refill is unobstructed.
+1. **§20.5(2) refill timing — PAID 2026-10-19, on orb-A with the card in it: 182 ms.**
+   `adopt()` printed `theme "av-kit" from slot-B (chosen): 1173563 B refilled to the
+   arena in 182 ms`, and its neighbour line carries the same pass's own accounting:
+   `1173563 B refilled to the PSRAM arena in 182 ms, checksum verified (7206536 B free
+   after, 0 of 234 art pages)`. `/api/v1/sd` mirrors it exactly — `refill_ms: 182`,
+   `refill_bytes: 1173563`, `source: "slot-B"`, `active: "av-kit"`. The figure lands
+   inside §20.5(2)'s predicted 150–250 ms band rather than at its bottom edge, so the
+   prediction is confirmed as a band and not retrofitted to the measurement. The fused
+   pass is what the number is for: verify-and-draw in one read of the slot, and `0 of 234
+   art pages` says the MMU path stayed untouched to get there.
 2. **§20.5(3) power cut mid-flip — owed, and the word is now readable.**
    `m5_powercut.sh`'s `/api/v1/config` check grows a `staged` read: an interrupted flip
    must show the word and draw the OLD commit.

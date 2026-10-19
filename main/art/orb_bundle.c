@@ -455,16 +455,26 @@ const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *re
      * (b32(r + 24) above): the field order theme_schema pins and the sentinel
      * suite dumps. Editing it in place is honest only because the caller holds a
      * buffer this module already parsed, and the region's own checksum is
-     * recomputed here so what the header claims covers what is now in it. */
+     * recomputed here so what the header claims covers what is now in it.
+     *
+     * TWO PASSES. The bounds of every section are settled before a single byte is
+     * written, because a refusal hands the caller back the region it already parsed
+     * and the installer's error path reports the refusal while that buffer is still
+     * live. A check-then-write loop would leave section 0 moved and section 3 not,
+     * which is the half-state the header-last rule exists to make impossible. */
     const int32_t delta = (int32_t)new_art_off - (int32_t)h->art_off;
     if (out_file_art_off) *out_file_art_off = h->art_off;
     for (uint32_t i = 0; i < b->n_sections; i++) {
-        orb_bundle_sec_t *s = &b->sec[i];
+        const orb_bundle_sec_t *s = &b->sec[i];
         const uint32_t moved = (uint32_t)((int64_t)s->art_off + (int64_t)delta);
         if (delta < 0 && (uint32_t)-delta > s->art_off)
             return "section bank offset would run below the region's start";
         if (moved > slot_cap || s->art_size > slot_cap - moved)
             return "section bank would run past the end of the slot";
+    }
+    for (uint32_t i = 0; i < b->n_sections; i++) {
+        orb_bundle_sec_t *s = &b->sec[i];
+        const uint32_t moved = (uint32_t)((int64_t)s->art_off + (int64_t)delta);
         s->art_off = moved;
         uint8_t *rec = region + IDX_HEAD_BYTES + i * IDX_BYTES;
         rec[24] = (uint8_t)(moved & 0xffu);         rec[25] = (uint8_t)((moved >> 8) & 0xffu);

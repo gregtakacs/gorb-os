@@ -18,7 +18,7 @@
 # nothing else holding the port (capf.py opens it, and the open resets the board
 # — that reset IS the clean boot this bench wants, plan §17.6).
 set -u
-ORB=http://192.168.2.32
+ORB=${ORB:-http://192.168.2.34}
 REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5p_ser.txt
 BODY=/tmp/m5p_body.json

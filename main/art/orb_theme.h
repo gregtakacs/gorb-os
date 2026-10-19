@@ -283,6 +283,33 @@ bool orb_theme_id_ok(const char *id);
 const char *orb_theme_damage_id(void);
 const char *orb_theme_damage_why(void);
 
+/** D30's `staged` word (§20.4): the 12-hex id of an install whose pixels reached
+ *  the slot and whose header never did, and the sentence for its row. ""/"" when
+ *  nothing is staged. Read-only — the word never selects a theme (§20.2's flip
+ *  rolls back on its own, because boot draws the slot that is committed). */
+const char *orb_theme_staged_id(void);
+const char *orb_theme_staged_why(void);
+
+/** The boot arena refill §20.5(2) measured: whole milliseconds of the fused
+ *  read-and-CRC pass over the chosen slot, and the bytes it moved. Both 0 on a
+ *  boot that drew the default, which maps instead of refilling (D13). */
+uint32_t orb_theme_refill_ms(void);
+uint32_t orb_theme_refill_bytes(void);
+
+/** Put a FORMAT 3 app bundle in the target slot: streaming ingest (§22.3, P6.3).
+ *  Each section's bank is checksummed as its bytes cross from the card, the region
+ *  is verified before the first erase, and the installed bytes are read back and
+ *  checksummed from the partition before the header makes them live.
+ *
+ *  Unlike orb_theme_install() this does NOT choose the theme and does not ask for a
+ *  reboot: the firmware that can draw a bundle arrives with the flip page (P6.4) and
+ *  the FORMAT 3 compositor, so the row reports the install as stored. Boot says the
+ *  same thing from the slot — "an app bundle this dial cannot draw yet" — rather
+ *  than calling installed bytes missing (D26).
+ *
+ *  Returns the same esp_err_t/`why` pair shape as orb_theme_install(). */
+esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
+
 /**
  * Queue an install on the shell's one worker, and ask for the reboot that draws
  * it if it lands. These are the ONLY way anything below main/ triggers a theme

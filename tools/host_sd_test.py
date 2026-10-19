@@ -1568,6 +1568,10 @@ def themes_page_js():
             rc = 1
     # And the refusals: the pending concept is gone (ruling D13), so a page that still
     # names it is a page that will offer a button for a state nothing can be in.
+    # D30's `staged` word is NOT this concept and does not live here: it is a field on
+    # /api/v1/sd that reports a flip that rolled back, it selects nothing, and no
+    # button on this page acts on it. The two rules are one sentence apart and must not
+    # be merged by a reader who stops at the word.
     for gone, why in (("/api/v1/sd/unstage", "the staged load has no undo any more"),
                       ("staged", "no row may promise an install that waits for a reboot")):
         if gone in page:
@@ -2327,9 +2331,73 @@ def install_lint():
         print("FAIL orb_theme_install(): names slot A — the factory default's pixels "
               "live there, and an install aimed at it erases the fallback with it")
         rc = 1
+
+    # ---- P6.3: the `staged` witness, and the bundle ingest's equivalent ordering ----
+    # Same rule as FORMAT 2's, one function over: nothing may make a slot live before
+    # the check that proves it drawable, and the ledger word must bracket the window
+    # the erase opens (§20.2 step 4). A staged marker that outlives a refused install
+    # would put two stories on one row, so both exits clear it.
+    for fn, why_call in (("orb_theme_install", "staged_mark("),
+                         ("orb_theme_install_bundle", "staged_mark(")):
+        if fn not in spans:
+            if fn == "orb_theme_install_bundle":
+                print("FAIL main/art/orb_theme.c has no orb_theme_install_bundle() — the "
+                      "P6.3 streaming ingest (§22.3) is gone, and the ledger still says it "
+                      "shipped"); rc = 1
+            continue
+        fb = "\n".join(lines[spans[fn][0]:spans[fn][1] + 1])
+        mk, cl, er = fb.find(why_call), fb.find("staged_clear("), fb.find("esp_partition_erase_range")
+        if mk < 0 or cl < 0:
+            print("FAIL %s(): does not bracket the copy with staged_mark()/staged_clear() "
+                  "— a power cut inside it would leave the row silent (§20.4's word)" % fn)
+            rc = 1
+        elif er >= 0 and mk > er:
+            print("FAIL %s(): marks staged AFTER the first erase — the window the word "
+                  "testifies to was already open when it was written" % fn)
+            rc = 1
+
+    if "orb_theme_install_bundle" in spans:
+        ba, bb_end = spans["orb_theme_install_bundle"]
+        bb = "\n".join(lines[ba:bb_end + 1])
+        # The bundle path verifies by a different door, and the door has to be the
+        # same rules: region parse before the copy, bank rule settled inside the
+        # streaming loop, and rebase (which edits offsets) before the erase.
+        for need in ("orb_bundle_parse_region(", "orb_bundle_rebase(", "copy_bundle3("):
+            at = bb.find(need)
+            if at < 0:
+                print("FAIL orb_theme_install_bundle(): never calls %s — it would commit "
+                      "bytes nothing proved, which is the hole D13 and C8 both named" % need)
+                rc = 1
+        # P6.3 under option A: the ingest stores, and does not choose. A set_live here
+        # would flip the dial to a bundle no compositor can draw yet, and the owner's
+        # dial would come up default with an installed theme they never pressed.
+        if "orb_theme_set_live" in bb:
+            print("FAIL orb_theme_install_bundle(): calls orb_theme_set_live — a FORMAT 3 "
+                  "slot is stored, not chosen, until the flip page (P6.4) can draw it")
+            rc = 1
+        # Slot A stays out of the bundle path too, for the D13 reason above.
+        if "SLOT_A_HDR" in bb or "SLOT_A_ART" in bb:
+            print("FAIL orb_theme_install_bundle(): names slot A — the D13 rule is not "
+                  "format-specific")
+            rc = 1
+
+    if "staged_mark" not in th_src or "THEME_NVS_STAGED" not in th_src:
+        print("FAIL main/art/orb_theme.c lost the staged witness"); rc = 1
+    # The wire pair, and the shape it has to keep: an id and a sentence, like the
+    # damage pair above it, so the page can put the word on the right row. Searched
+    # bare, because in the handler's format string both are inside an escaped quote.
+    for need in ("staged_id", "staged_why", "orb_theme_staged_id()", "orb_theme_staged_why()"):
+        if need not in net_src:
+            print("FAIL /api/v1/sd does not carry %s — the word exists in NVS and reaches "
+                  "nobody, which is the log-line failure §20.4 exists to end" % need)
+            rc = 1
+
     if not rc:
         print("ok    install verifies off-card, on-partition and geometrically before "
               "the header erase, and never names slot A")
+        print("ok    both install paths bracket the copy with the staged word, the bundle "
+              "path parses-rebases-copies in that order, stores without choosing, and the "
+              "sd body carries the word")
     return rc
 
 

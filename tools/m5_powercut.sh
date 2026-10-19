@@ -24,7 +24,7 @@
 #   cd /home/greg/docker/Projects/gorb-os-2
 #   setsid tools/m5_powercut.sh > /tmp/m5p_run.log 2>&1 < /dev/null &
 set -u
-ORB=http://192.168.2.32
+ORB=${ORB:-http://192.168.2.34}
 REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5p_ser.txt
 cd "$REPO" || exit 1

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -u
-ORB=http://192.168.2.32
+ORB=${ORB:-http://192.168.2.34}
 SER=/tmp/m5_armA2_ser.txt
 REPO=/home/greg/docker/Projects/gorb-os-2
 ID=5eb1ed3ae931

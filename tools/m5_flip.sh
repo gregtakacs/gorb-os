@@ -23,7 +23,7 @@
 #   cd /home/greg/docker/Projects/gorb-os-2
 #   setsid tools/m5_flip.sh > /tmp/m5f_run.log 2>&1 < /dev/null &
 set -u
-ORB=http://192.168.2.32
+ORB=${ORB:-http://192.168.2.34}
 REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5f_ser.txt
 BODY=/tmp/m5f_body.json

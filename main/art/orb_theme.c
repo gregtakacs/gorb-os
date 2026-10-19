@@ -54,6 +54,14 @@ static const char *TAG = "orb_theme";
  * because a staged install that survives into a boot is a theme change the owner
  * can no longer cancel and a failure the owner cannot see coming. */
 #define THEME_NVS_LIVE      "theme_live"
+/* D30's §20.4 ledger word, and NOT the key D13 deleted. This one changes nothing
+ * about what the glass draws: boot resolves the choice key as ever, commits only
+ * on a valid header, and then reports here whether a flip that had already swapped
+ * its pixels never got its header written. A witness, not a pending operation —
+ * which is the distinction that lets it exist under D13's own reasoning. The value
+ * is the staging theme's 12-hex id, so the word lands on that theme's row and not
+ * on the row of whatever the dial is actually showing. */
+#define THEME_NVS_STAGED    "theme_staged"
 
 /* Container header words. Mirrors tools/orbtheme.py's W_* map; the sentinel test
  * is what keeps the two lists in step. FORMAT 2 collapses the old slug+title pair
@@ -670,6 +678,21 @@ static char          s_damage_id[ORB_THEME_ID_HEX + 1];
 static char          s_damage_why[56];
 static const char   *s_source = "baked-in";
 
+/* §20.4's `staged` word: the 12-hex id of the theme whose flip wrote its pixels
+ * and never wrote its header, read back out of NVS at boot and kept until a boot
+ * finds the commit landed. "" is the clean state. It is a witness and never a
+ * request — see THEME_NVS_STAGED for why that distinction survives D13. */
+static char          s_staged_id[ORB_THEME_ID_HEX + 1];
+#define STAGED_WHY "pixels staged, never committed — the dial shows the previous theme"
+
+/* D30's boot refill, as the ledger reports it: the milliseconds of the fused
+ * read-and-CRC pass and the bytes it moved. Both stay 0 on a boot that drew the
+ * default, so `refill_ms` beside `source:"slot-B"` is the pair that tells the
+ * page a refill happened, and a 0 with a slot source is a build that mapped
+ * (Arm A, or MECH_B 0) rather than a measurement that failed. */
+static uint32_t      s_refill_ms;
+static uint32_t      s_refill_bytes;
+
 /* The fallback pair, straight out of the generated header. Naming those objects
  * works in THIS file only, and only because orb_theme_geo.h is not included here:
  * its macros shadow exactly these names, and they are what clock_view.c reads. */
@@ -706,6 +729,13 @@ const char *orb_theme_active_name(void)    { return s_active_name; }
 const char *orb_theme_live(void)           { return s_live; }
 const char *orb_theme_damage_id(void)      { return s_damage_id; }
 const char *orb_theme_damage_why(void)     { return s_damage_why; }
+
+/* §20.4's word and the two refill figures. All four are read-only answers for the
+ * status surfaces: nothing here changes which dial the glass draws. */
+const char *orb_theme_staged_id(void)      { return s_staged_id; }
+const char *orb_theme_staged_why(void)     { return s_staged_id[0] ? STAGED_WHY : ""; }
+uint32_t    orb_theme_refill_ms(void)      { return s_refill_ms; }
+uint32_t    orb_theme_refill_bytes(void)   { return s_refill_bytes; }
 
 /* ---- the two decisions D13 pinned, kept free of every syscall ---------------
  *
@@ -1296,6 +1326,33 @@ static bool nvs_get(const char *key, char *out, size_t outsz)
     return nvs_get_str(h, key, out, &sz) == ESP_OK;
 }
 
+/* ---- the `staged` witness (§20.2 step 4, §20.4's ledger word) --------------
+ *
+ * Marked BEFORE the copy starts and cleared AFTER the slot header lands, which is
+ * the same window the header-write-last rule already protects. A cut anywhere in
+ * that window leaves the marker set and the header unwritten, so the next boot
+ * draws the theme that was committed and the row says why — the failure story
+ * §20.2 asks for, told by the ledger instead of by a log line nobody is watching.
+ *
+ * A failed write clears it, because a refused install has nothing left in flight:
+ * the row then carries try_why, and a stale witness would name two things at once.
+ * An NVS write that fails is not worth failing an install over — the witness is
+ * diagnostics, and the safety property is the header ordering, not this key. So
+ * these return void and log. */
+static void staged_mark(const char *id)
+{
+    if (nvs_put(THEME_NVS_STAGED, id) != ESP_OK)
+        ESP_LOGW(TAG, "could not record the staged word for %s", id);
+    strlcpy(s_staged_id, id, sizeof s_staged_id);
+}
+
+static void staged_clear(void)
+{
+    if (nvs_put(THEME_NVS_STAGED, NULL) != ESP_OK)
+        ESP_LOGW(TAG, "could not clear the staged word");
+    s_staged_id[0] = '\0';
+}
+
 /* Build the header that makes a slot live. Built here rather than copied from the
  * file: same magic and the same two checksums (the bytes they cover are copied
  * verbatim), but the offsets describe the SLOT layout and the serial is a boot-time
@@ -1380,15 +1437,340 @@ static esp_err_t copy_into(int fd, const orb_thdr_t *h, const esp_partition_t *p
 
 
 
+/* ---- FORMAT 3 ingest (P6.3, §22.3) ----------------------------------------
+ *
+ * A bundle is not a bigger FORMAT 2 file. It carries N per-app sections whose
+ * records name banks by address, and it can be 4 MB while this board keeps a 2 MB
+ * arena margin in reserve. So the ingest never holds the container: it reads the
+ * 128-byte header, then the geometry region (at most ORB_BUNDLE_GEOM_CAP, 60 KB),
+ * validates both, and streams each bank chunk by chunk — internal-RAM chunk in,
+ * partition write out, crc32 accumulated as it crosses — settling each section
+ * against orb_bundle_bank_rule() before it touches the next. §22.3's "banks CRC'd
+ * as they arrive" is literally that loop.
+ *
+ * THE SLOT IS NOT THE FILE. FORMAT 2 already moved its blob from file offset 128
+ * to SLOT_GEOM_OFF and rewrote the header's geom_off to say so; a bundle's banks
+ * move the same way, to SLOT_ART_OFF, and because a record's art_off is an address
+ * rather than a length the records are edited and the region re-checksummed
+ * (orb_bundle_rebase). After that the slot is self-describing: every offset in it
+ * reads slot-relative, which is what §22.1's third rule needs in order to answer
+ * --inspect with installed bytes.
+ *
+ * Nothing here selects the bundle. The install leaves the choice key alone and the
+ * dial keeps drawing what it drew; the flip page (P6.4) is the first thing with a
+ * multi-app door to press. D26 is honoured on the way — boot says plainly that a
+ * bundle in the slot is not drawable yet. */
+
+static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t whysz);
+
+/* The v3 twin of card_check(). Same fd discipline, same sentences, and the file's
+ * own layout rule: a bundle puts its region where a container puts its blob, and
+ * also reports the container's length, which the region-only parse needs to bound
+ * an art span it is not going to read. */
+static const char *card_check3(int fd, orb_bundle3_hdr_t *o, uint32_t *file_size)
+{
+    if (ensure_chunk() != ESP_OK) return "out of memory";
+    uint32_t hdr[W_WORDS];
+    size_t pos = 0;
+    if (rd_at(fd, &pos, (uint8_t *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
+        return "file is too short to be a theme";
+    const long len = lseek(fd, 0, SEEK_END);
+    if (len < (long)sizeof hdr) return "file is too short to be a theme";
+    if (lseek(fd, 0, SEEK_SET) < 0) return "the card could not be re-read";
+    *file_size = (uint32_t)len;
+    const char *r = orb_bundle3_hdr_parse(hdr, o);
+    if (r) return r;
+    if (o->geom_off != W_WORDS * 4u || o->art_off < o->geom_off + o->geom_size ||
+        o->art_off % THEME_SECTOR)
+        return "container parts are not where this format puts them";
+    if (o->art_off > *file_size || o->art_size > *file_size - o->art_off)
+        return "art region runs past the end of the file";
+    return NULL;
+}
+
+/* card_open_locked()'s v3 twin. Same mutex rule (never taken in here) and the same
+ * orb_sd_mounted() rather than ensure_mounted() — calling the mounting version from
+ * inside the locked core is §11's deadlock, dead worker, dial still ticking. */
+static int card_open_locked3(const char *id, orb_bundle3_hdr_t *o, uint32_t *file_size,
+                             const char **why)
+{
+    char path[ORB_SD_PATH_MAX];
+    *why = NULL;
+    if (!theme_file(id, path, sizeof path)) { *why = "not a usable theme name"; return -1; }
+    if (!orb_sd_mounted())                  { *why = "no card in the socket"; return -1; }
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        *why = errno == ENOENT ? "no such theme on the card" : "cannot open the theme file";
+        return -1;
+    }
+    *why = card_check3(fd, o, file_size);
+    if (*why) { close(fd); return -1; }
+    return fd;
+}
+
+/* The v3 twin of card_open_verified_id(). Twin rather than shared because the name
+ * this one hashes lives in a different header shape; the refusal words are the same
+ * strings, so one damaged file cannot get two different reasons depending on which
+ * door it rang (R4's identity rule is format-independent by ruling). */
+typedef struct {
+    const char *want;
+    bool        found;
+    bool        verified;
+} resolve3_t;
+
+static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
+{
+    resolve3_t *r = arg;
+    if (strcmp(rec->name, r->want) != 0) return false;
+    r->found = true;
+    orb_bundle3_hdr_t h;
+    uint32_t fsz = 0;
+    if (card_check3(fd, &h, &fsz)) return false;
+    char id[THEME_ID_HEX + 1];
+    theme_id(h.name, id);
+    r->verified = (strcmp(id, r->want) == 0);
+    return r->verified;
+}
+
+static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t *file_size,
+                                  const char **why)
+{
+    *why = NULL;
+    if (!theme_id_ok(id)) { *why = "that theme id is not one this device issued"; return -1; }
+    const orb_file_src_t *src = orb_files_src("clock", "themes");
+    if (!src) { *why = "no \"themes\" file source declared"; return -1; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
+
+    resolve3_t r = { .want = id, .found = false, .verified = false };
+    if (orb_files_walk(src, resolve3_entry, &r) < 0) { *why = "no card in the socket"; return -1; }
+    if (!r.found)    { *why = "no such theme on the card";                        return -1; }
+    if (!r.verified) { *why = "that file's name does not match its id — refused"; return -1; }
+
+    const int fd = card_open_locked3(id, o, file_size, why);
+    if (fd < 0) return -1;
+    char id2[THEME_ID_HEX + 1];
+    theme_id(o->name, id2);
+    if (strcmp(id2, id) != 0) {
+        card_close(fd);
+        *why = "that file's name does not match its id — refused";
+        return -1;
+    }
+    return fd;
+}
+
+/* Erase, write, and read back — the FORMAT 2 discipline in copy_into(), applied to
+ * a region and N banks. The header is written LAST by the caller, so an interrupt
+ * anywhere in here leaves the target slot headerless and the boot drawing what it
+ * drew before. Banks are checksummed twice on purpose: once accumulated as the
+ * bytes cross off the card, which is what lets a damaged section be refused before
+ * the next one is touched, and once from the partition afterwards, which proves the
+ * flash wrote what it was given and produces the installed art region's own
+ * checksum for the header. */
+static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *region,
+                              uint32_t file_art_base, const esp_partition_t *p,
+                              uint32_t hdr_base, uint32_t *out_art_crc,
+                              const char **why)
+{
+    if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
+
+    uint32_t art_end = SLOT_ART_OFF;
+    for (uint32_t i = 0; i < b->n_sections; i++) {
+        const uint32_t end = b->sec[i].art_off + b->sec[i].art_size;
+        if (end > art_end) art_end = end;
+    }
+    const uint32_t geom_len = (b->region_size + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+    const uint32_t art_len  = (art_end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+    if (SLOT_GEOM_OFF + geom_len > SLOT_ART_OFF) { *why = "geometry would overrun the pixels"; return ESP_ERR_INVALID_SIZE; }
+    if (art_len > SLOT_CAP - SLOT_ART_OFF)       { *why = "bundle is larger than a slot — re-bake it"; return ESP_ERR_INVALID_SIZE; }
+
+    esp_err_t e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
+    if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
+    if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+
+    for (uint32_t done = 0; done < b->region_size; ) {
+        const uint32_t want = (b->region_size - done > s_chunk_bytes) ? s_chunk_bytes
+                                                                      : (b->region_size - done);
+        e = esp_partition_write(p, hdr_base + SLOT_GEOM_OFF + done, region + done, want);
+        if (e != ESP_OK) { *why = "flash write failed on the geometry"; return e; }
+        done += want;
+    }
+
+    for (uint32_t i = 0; i < b->n_sections; i++) {
+        const orb_bundle_sec_t *s = &b->sec[i];
+        size_t   pos = file_art_base + (s->art_off - SLOT_ART_OFF);
+        uint32_t crc = 0, done = 0;
+        while (done < s->art_size) {
+            const uint32_t want = (s->art_size - done > s_chunk_bytes) ? s_chunk_bytes
+                                                                       : (s->art_size - done);
+            if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want) {
+                *why = "bundle ended before its declared pixels"; return ESP_ERR_INVALID_SIZE;
+            }
+            crc = esp_rom_crc32_le(crc, s_chunk, want);
+            e = esp_partition_write(p, hdr_base + s->art_off + done, s_chunk, want);
+            if (e != ESP_OK) { *why = "flash write failed on the pixels"; return e; }
+            done += want;
+        }
+        const char *rw = orb_bundle_bank_rule(s, done, crc);
+        if (rw) { *why = rw; return ESP_ERR_INVALID_CRC; }
+    }
+
+    uint32_t acrc = 0;
+    for (uint32_t done = 0; done < art_len; ) {
+        const uint32_t want = (art_len - done > s_chunk_bytes) ? s_chunk_bytes : (art_len - done);
+        if (esp_partition_read(p, hdr_base + SLOT_ART_OFF + done, s_chunk, want) != ESP_OK) {
+            *why = "could not read the installed pixels back"; return ESP_FAIL;
+        }
+        acrc = esp_rom_crc32_le(acrc, s_chunk, want);
+        done += want;
+    }
+    *out_art_crc = acrc;
+    return ESP_OK;
+}
+
+/* The slot header for an installed bundle: the same 128 bytes and the same torn-
+ * header self-check as a container, with the slot's offsets, this install's serial,
+ * and the checksums of the bytes as they now sit in the partition. Word 9 carries
+ * the section count where FORMAT 2 carried a panel width, and word 10 is zero: an
+ * installed bundle does not claim a panel size it never had. */
+static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
+                            uint32_t art_crc, uint32_t serial)
+{
+    memset(hdr, 0, W_WORDS * 4);
+    hdr[0] = THEME_MAGIC;     hdr[1] = ORB_BUNDLE3_FORMAT;
+    hdr[2] = ORB_BUNDLE3_ABI; hdr[3] = W_WORDS * 4;
+    hdr[4] = SLOT_GEOM_OFF;   hdr[5] = h->geom_size;  hdr[6] = h->geom_crc;
+    hdr[7] = h->art_size;     hdr[8] = art_crc;
+    hdr[9] = h->n_sections;   hdr[11] = serial;       hdr[13] = SLOT_ART_OFF;
+    for (int i = 0; h->name[i] && i < (int)sizeof(h->name) - 1; i++)
+        hdr[W_NAME + i / 4] |= (uint8_t)h->name[i] << (8 * (i % 4));
+    hdr[W_HDR_CRC] = esp_rom_crc32_le(0, (const uint8_t *)hdr, W_WORDS * 4);
+}
+
+/* The one implementation of "put this bundle on the wall". Worker task, like every
+ * other theme operation. It does NOT change what the dial draws: the bundle is
+ * stored, not chosen, and the flip page (P6.4) is the first thing with a multi-app
+ * door to press. D26 still applies — the page reports the install as waiting, in
+ * these words, because "it installed and nothing happened" is a sentence an owner
+ * reads as a broken button. */
+esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    const esp_partition_t *p = art_bank_partition();
+    if (!p)
+        return install_failed(ESP_ERR_NOT_FOUND, "this board has no theme storage", why, whysz);
+
+    const char *w = NULL;
+    uint32_t fsz = 0;
+    orb_bundle3_hdr_t h;
+    const int64_t t0 = esp_timer_get_time();
+    const int fd = card_open_verified_id3(id, &h, &fsz, &w);
+    if (fd < 0) return install_failed(ESP_FAIL, w, why, whysz);
+
+    /* The region alone, in PSRAM. Internal RAM cannot hold 60 KB, and the header
+     * parse already bounded the claim at ORB_BUNDLE_GEOM_CAP before this size was
+     * trusted with a malloc. */
+    uint8_t *region = heap_caps_malloc(h.geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) {
+        card_close(fd);
+        return install_failed(ESP_ERR_NO_MEM, "not enough memory for the bundle's tables",
+                              why, whysz);
+    }
+    size_t pos = h.geom_off;
+    if (rd_at(fd, &pos, region, h.geom_size) != (ssize_t)h.geom_size) {
+        heap_caps_free(region); card_close(fd);
+        return install_failed(ESP_ERR_INVALID_SIZE,
+                              "bundle ended before its declared geometry", why, whysz);
+    }
+
+    orb_bundle_t b;
+    const char *pv = orb_bundle_parse_region(&h, region, h.geom_size, fsz, &b);
+    if (pv) {
+        heap_caps_free(region); card_close(fd);
+        return install_failed(ESP_ERR_INVALID_CRC, pv, why, whysz);
+    }
+
+    /* Banks to SLOT_ART_OFF, records and region checksum following. The file's base
+     * comes back for the stream's seeks: after this the records describe the slot. */
+    uint32_t file_art_base = 0;
+    const char *rv = orb_bundle_rebase(&b, &h, region, SLOT_ART_OFF, SLOT_CAP,
+                                       &file_art_base);
+    if (rv) {
+        heap_caps_free(region); card_close(fd);
+        return install_failed(ESP_ERR_INVALID_SIZE, rv, why, whysz);
+    }
+    h.geom_off = SLOT_GEOM_OFF;
+
+    /* The serial counts up over whatever the slot held, in either format; a header
+     * that cannot be read restarts the count, safe for FORMAT 2's stated reason —
+     * one slot is in play and nothing compares two of them. */
+    uint32_t raw[W_WORDS];
+    uint32_t serial = 1;
+    if (esp_partition_read(p, install_target(), raw, sizeof raw) == ESP_OK) {
+        orb_thdr_t o2;
+        orb_bundle3_hdr_t o3;
+        if (hdr_parse(raw, &o2) == NULL)                    serial = o2.serial + 1;
+        else if (orb_bundle3_hdr_parse(raw, &o3) == NULL)   serial = o3.serial + 1;
+    }
+
+    staged_mark(id);
+    uint32_t art_crc = 0;
+    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, install_target(),
+                               &art_crc, &w);
+    card_close(fd);
+    heap_caps_free(region);
+    if (e != ESP_OK) {
+        staged_clear();
+        return install_failed(e, w, why, whysz);
+    }
+
+    const esp_err_t ee = esp_partition_erase_range(p, install_target(), THEME_SECTOR);
+    if (ee == ESP_OK) {
+        uint32_t hdr[W_WORDS];
+        build_slot_hdr3(hdr, &h, art_crc, serial);
+        e = esp_partition_write(p, install_target(), hdr, sizeof(hdr));
+        if (e != ESP_OK) w = "could not make the new slot live";
+    } else {
+        e = ee;
+        w = "could not clear the old slot header";
+    }
+    if (e != ESP_OK) {
+        staged_clear();
+        return install_failed(e, w, why, whysz);
+    }
+    staged_clear();
+    ESP_LOGI(TAG, "bundle \"%s\" (%s) in slot-B in %lld ms — stored, and not yet chosen",
+             h.name, id, (long long)((esp_timer_get_time() - t0) / 1000));
+    return ESP_OK;
+}
+
 /* Make the resolved theme the one the dial draws: geometry into s_geo, pixels
- * mapped by art_bank. On any failure the caller gets the baked-in pair, which is
- * the only state in which the clock is guaranteed to come up. */
+
+
+ * refilled into the PSRAM arena by one pass that checksums them as it reads them
+ * (D30, §20.2's boot rule). On any failure the caller gets the baked-in pair,
+ * which is the only state in which the clock is guaranteed to come up.
+ *
+ * The checksum is fused, not sequential. The pre-D30 shape here was
+ * slot_verify_pixels() and then a map — one pass over the slot to prove it and a
+ * second, on the paint path, to read it. art_bank_fill() proves each chunk in the
+ * same loop that lands it, so the boot that verifies and the boot that draws are
+ * one pass, and `*out_ms` is the number §20.5(2) owed: printed on the line below
+ * it rather than predicted at 150 ms.
+ *
+ * An arena refusal (ESP_ERR_NO_MEM: PSRAM under art_size + ORB_ART_ARENA_MARGIN)
+ * takes the same fall-through as a corrupt slot — the default draws, the row
+ * carries the damage sentence — and §20.2's Arm A retry of the *map* is P6.4's
+ * flip-time question, because a boot that fell back has no arena to argue with. */
 static esp_err_t adopt(const esp_partition_t *p, slot_t *s, const char *src_name)
 {
-    if (slot_verify_pixels(s, p) != ESP_OK) return ESP_FAIL;
-    if (slot_load_geom(s, p) != ESP_OK)     return ESP_FAIL;
+    uint32_t ms = 0;
+    const esp_err_t fe = art_bank_fill(s->art_base, s->h.art_size, true, s->h.art_crc, &ms);
+    if (fe != ESP_OK) return fe;
+    if (slot_load_geom(s, p) != ESP_OK) return ESP_FAIL;
     s_source = src_name;
-    return art_bank_init(s->art_base, s->h.art_size);
+    s_refill_ms = ms;
+    s_refill_bytes = (uint32_t)s->h.art_size;
+    return ESP_OK;
 }
 
 /* Resolve the owner's choice and verify the slot it names. Called from app_main
@@ -1422,10 +1804,50 @@ esp_err_t orb_theme_boot(void)
     slot_init(&b, SLOT_B_HDR, SLOT_B_ART);
     slot_read(&b, p);
 
+    /* The `staged` witness, and the one rule that lets it expire. It testifies to a
+     * flip whose pixels landed and whose header never did, so it clears on the first
+     * boot that finds the header it was waiting for — identified by hashing the
+     * committed slot's own name back to the id the marker carries. A valid slot
+     * naming a DIFFERENT theme is not that commit: the staged install died before
+     * its header, and the slot belongs to an older pick. The convergence is one NVS
+     * write at boot, and the word it removes is diagnostics rather than a choice,
+     * so D13's no-NVS-write-in-the-fallback-path rule is not what this touches. */
+    s_staged_id[0] = '\0';
+    char staged[ORB_THEME_ID_HEX + 1];
+    if (nvs_get(THEME_NVS_STAGED, staged, sizeof staged) && theme_id_ok(staged)) {
+        bool landed = false;
+        if (b.valid) {
+            char cid[ORB_THEME_ID_HEX + 1];
+            theme_id(b.h.name, cid);
+            landed = (strcmp(cid, staged) == 0);
+        }
+        if (landed) staged_clear();
+        else        strlcpy(s_staged_id, staged, sizeof s_staged_id);
+    }
+
+    /* A FORMAT 3 bundle in the slot is installed bytes this dial cannot draw yet.
+     * slot_read() above parses FORMAT 2, so it calls a bundle's header invalid — and
+     * "no installed theme" would be a lie about bytes that are plainly there. Read
+     * the header once through the bundle door and let the row say what is true
+     * (D26's rule that a refusal names the reason, on the path that has no press to
+     * answer). P6.4's flip page and P6.5's FORMAT 3 reader are what change this. */
+    orb_bundle3_hdr_t b3;
+    bool slot_is_bundle = false;
+    uint32_t raw3[W_WORDS];
+    if (!b.valid && esp_partition_read(p, SLOT_B_HDR, raw3, sizeof raw3) == ESP_OK &&
+        raw3[W_MAGIC] == THEME_MAGIC && raw3[W_FORMAT] == ORB_BUNDLE3_FORMAT &&
+        orb_bundle3_hdr_parse(raw3, &b3) == NULL)
+        slot_is_bundle = true;
+
     if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD) {
-        if (adopt(p, &b, "slot-B") == ESP_OK) {
-            ESP_LOGI(TAG, "theme \"%s\" from slot-B (chosen), %u B of pixels",
-                     s_active_name, (unsigned)b.h.art_size);
+        const esp_err_t ae = adopt(p, &b, "slot-B");
+        if (ae == ESP_OK) {
+            /* The §20.5(2) line: the measured milliseconds of the fused refill, on
+             * the boot log, beside the byte count that produced it. §20.2 predicted
+             * 150 ms at av-kit size from D14's flash-read arithmetic; this is the
+             * number that replaces the prediction, and the ledger cites it. */
+            ESP_LOGI(TAG, "theme \"%s\" from slot-B (chosen): %u B refilled to the arena in %u ms",
+                     s_active_name, (unsigned)b.h.art_size, (unsigned)s_refill_ms);
             return ESP_OK;
         }
         /* The choice named a slot that will not load. Its bytes were read back and
@@ -1443,10 +1865,24 @@ esp_err_t orb_theme_boot(void)
         } else {
             s_damage_id[0] = '\0';
         }
-        strlcpy(s_damage_why, "the installed copy did not verify — re-install it",
+        /* Two refusals, two sentences: a slot that checksums wrong is damage the
+         * owner can only fix by re-installing, and an arena that is too small is a
+         * capacity answer that names itself (§20.2's Arm A question, D26's rule that
+         * a refusal says why). */
+        strlcpy(s_damage_why, ae == ESP_ERR_NO_MEM
+                    ? "not enough memory for its pixels — the default is drawn"
+                    : "the installed copy did not verify — re-install it",
                 sizeof s_damage_why);
-        ESP_LOGE(TAG, "the chosen theme \"%s\" would not load — drawing the default",
-                 b.h.name);
+        ESP_LOGE(TAG, "the chosen theme \"%s\" would not load (%s) — drawing the default",
+                 b.h.name, esp_err_to_name(ae));
+    } else if (slot_is_bundle) {
+        char did[THEME_ID_HEX + 1];
+        theme_id(b3.name, did);
+        strlcpy(s_damage_id, did, sizeof s_damage_id);
+        strlcpy(s_damage_why, "an app bundle this dial cannot draw yet",
+                sizeof s_damage_why);
+        ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not drawable by this dial yet",
+                 b3.name);
     } else if (b.valid) {
         /* B holds an install the owner walked away from. It is not drawn and not
          * erased: it is theirs, and the default costs nothing to keep. */
@@ -1456,10 +1892,12 @@ esp_err_t orb_theme_boot(void)
         ESP_LOGI(TAG, "no installed theme — drawing the baked-in bank");
     }
     use_baked_in();
-    /* The same init the slot path runs, on partition offset 0: the baked-in bank is
-     * the pixels `idf.py flash` wrote, and they were checksummed by tools at build
+    /* The default ALWAYS maps, whatever ORB_ART_MECH_B says (D13 as ruled option A
+     * stands: the flashed bytes at partition offset 0 are the only copy of the
+     * factory pixels on the board, and an arena copy of them would be made from
+     * the very region an install erases). They were checksummed by tools at build
      * time, so there is nothing left to verify here. */
-    return art_bank_init(0, s_geo.art_size);
+    return art_bank_map_at_0(s_geo.art_size);
 }
 
 /** One place to fail: the row shows `why`, the log shows the same sentence, the
@@ -1513,6 +1951,10 @@ esp_err_t orb_theme_install(const char *id, char *why, size_t whysz)
     slot_read(&old, p);
     const uint32_t serial = old.valid ? old.h.serial + 1 : 1;
 
+    /* §20.2 step 4, in the shape this path can actually honour: the marker goes up
+     * before the first erase and comes down after the header lands, so every window
+     * between "the owner pressed" and "the slot is committed" is witnessed. */
+    staged_mark(id);
     esp_err_t e = copy_into(fd, &h, p, install_target(), &w);
     if (e == ESP_OK) {
         /* Verify from the PARTITION, then make the slot live. Reversing those two
@@ -1563,7 +2005,17 @@ esp_err_t orb_theme_install(const char *id, char *why, size_t whysz)
         }
     }
     card_close(fd);
-    if (e != ESP_OK) return install_failed(e, w, why, whysz);
+    if (e != ESP_OK) {
+        /* Refused, so nothing is in flight: the row carries try_why, and a witness
+         * left standing would name two events on one theme at once. */
+        staged_clear();
+        return install_failed(e, w, why, whysz);
+    }
+    /* The header landed, so the flip is committed and the witness has nothing left to
+     * testify to. Cleared here rather than after set_live below: a choice key that
+     * fails to write does not un-commit the slot, and the sentence right after this
+     * one is already the honest report of that. */
+    staged_clear();
 
     /* The commit is last and is the ONLY thing that makes the new bytes the dial's:
      * B is verified by here, so a set that fails leaves a correct-but-unused install

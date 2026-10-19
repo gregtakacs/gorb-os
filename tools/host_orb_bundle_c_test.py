@@ -17,6 +17,15 @@ is the one under test. Two refusal pairs are labeled wording differences by
 decision (orb_bundle.c's header comment states both); everything else must be
 byte-identical.
 
+The STREAM family (P6.3) pins the second door, the one the installer uses: the
+geometry region on its own, each bank as bytes across a wire, and the rebase
+that turns a container's offsets into a slot's. Its claim is one rule — every
+check the whole-buffer reader makes before a bank's bytes says the same thing
+through orb_bundle_parse_region(), and the bank check moves onto
+orb_bundle_bank_rule(). Probes name the installer's calls, so a vector can ask
+for the wire before the region and the door must say so. Cases 70-85. Expectations
+come from the writer's own parse of the same bytes, never from the C.
+
     python3 tools/host_orb_bundle_c_test.py             # parity vectors
     python3 tools/host_orb_bundle_c_test.py --mutations # and the C mutants
 
@@ -33,6 +42,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import orbbundle as ob            # noqa: E402  (the writer, the oracle)
+import orbtheme as _OT            # noqa: E402  (the header's own word map)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 READER_C = os.path.join(ROOT, "main", "art", "orb_bundle.c")
@@ -52,12 +62,16 @@ HARNESS_C = r"""
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_rom_crc.h"
 #include "orb_bundle.h"
 
 #define F_LAYOUT 1u
 #define F_FIND   2u
+#define F_STREAM 4u
 #define NO_ROW   0xFFFFFFFFu
 #define BLOB_HEAD_B ((4u + ORB_BUNDLE_SCALARS_N) * 4u)
+#define STR_ART    0x00010000u   /* orb_theme.c SLOT_ART_OFF: where banks install */
+#define STR_CAP    0x00400000u   /* orb_theme.c SLOT_CAP: the slot that holds them */
 
 static uint32_t rd32(const uint8_t *p)
 {
@@ -107,8 +121,9 @@ int main(int argc, char **argv)
         memcpy(fc, file, nfile);
         orb_bundle3_hdr_t h;
         orb_bundle_t b;
-        const char *why = orb_bundle3_hdr_parse((const uint32_t *)(const void *)fc,
-                                                &h);
+        const char *hw = orb_bundle3_hdr_parse((const uint32_t *)(const void *)fc,
+                                               &h);
+        const char *why = hw;
         if (!why) why = orb_bundle_parse(&h, fc, nfile, &b);
         if (why) {
             printf("case%u refuse %s\n", id, why);
@@ -154,6 +169,110 @@ int main(int argc, char **argv)
                 }
             }
         }
+        /* ---- the streaming door (P6.3): region alone, then banks on a wire ----
+         * Mirrors orb_theme.c's copy_bundle3() call order: parse the region the
+         * card gave us, rebase the records onto the slot, then stream each bank
+         * in chunks and settle it with orb_bundle_bank_rule(). The header is
+         * parsed a second time here on purpose: the whole-buffer verdict above is
+         * already on the books, and the region door owes the SAME sentence. */
+        if ((flags & F_STREAM) && !hw) {
+            orb_bundle3_hdr_t w = h;
+            orb_bundle_t b2;
+            memset(&b2, 0, sizeof b2);
+            uint8_t *rb = NULL, ch[1009];
+            uint32_t rbsz = 0, fbase = h.art_off, rbase = h.art_off;
+            uint32_t bound = nfile;
+            int have = 0;
+            for (uint32_t j = 0; j < nq; j++) {
+                const char *qq = query[j];
+                if (!strcmp(qq, "region")) {
+                    uint32_t av = (w.geom_off <= nfile) ? (nfile - w.geom_off) : 0u;
+                    uint32_t cp = (w.geom_size < av) ? w.geom_size : av;
+                    uint8_t *t = malloc(w.geom_size ? w.geom_size : 1u);
+                    if (!t) { free(rb); return 2; }
+                    memset(t, 0, w.geom_size ? w.geom_size : 1u);
+                    memcpy(t, fc + w.geom_off, cp);   /* a truncated file stays truncated */
+                    free(rb);
+                    rb = t; rbsz = w.geom_size; have = 0;
+                    const char *r = orb_bundle_parse_region(&w, rb, rbsz, nfile, &b2);
+                    if (r) printf("case%u R refuse %s\n", id, r);
+                    else {
+                        have = 1;
+                        printf("case%u R ok %u %u %u %u\n", id, b2.n_sections,
+                               rbsz, w.geom_crc, w.art_off);
+                    }
+                } else if (!strncmp(qq, "bank:", 5)) {
+                    unsigned si = 0; char md[8] = {0};
+                    if (!have || sscanf(qq, "bank:%u:%7s", &si, md) != 2 ||
+                        si >= b2.n_sections) {
+                        printf("case%u B skip\n", id);
+                        continue;
+                    }
+                    const orb_bundle_sec_t *s = &b2.sec[si];
+                    uint32_t want = s->art_size, done = 0, crc = 0;
+                    if (strcmp(md, "SHORT") && strcmp(md, "LYE") && strcmp(md, "LYEC")) {
+                        want = s->art_size;
+                    } else if (s->art_size) {
+                        want = s->art_size - 1u;      /* the wire stopped early */
+                    }
+                    size_t pos = (size_t)fbase + (s->art_off - rbase);
+                    while (done < want) {
+                        uint32_t n = (want - done > sizeof ch) ? (uint32_t)sizeof ch
+                                                               : want - done;
+                        if (pos + n > (size_t)nfile)
+                            n = (pos < (size_t)nfile)
+                                ? (uint32_t)((size_t)nfile - pos) : 0u;
+                        if (!n) break;
+                        memcpy(ch, fc + pos, n);
+                        crc = esp_rom_crc32_le(crc, ch, n);
+                        pos += n; done += n;
+                    }
+                    if (!strcmp(md, "BAD")) crc ^= 0x80808080u;
+                    if (!strcmp(md, "LYE")) crc = s->art_crc ^ 0x80808080u;
+                    if (!strcmp(md, "LYEC")) crc = s->art_crc;
+                    const char *r = orb_bundle_bank_rule(s, done, crc);
+                    if (r) printf("case%u B refuse %u %s %u %u | %s\n", id, si,
+                                  s->slug, done, crc, r);
+                    else printf("case%u B ok %u %s %u %u\n", id, si, s->slug, done, crc);
+                } else if (!strncmp(qq, "rebase", 6)) {
+                    uint32_t off = STR_ART, cp = STR_CAP, old = 0;
+                    if (sscanf(qq, "rebasecap:%u:%u", &off, &cp) != 2 &&
+                        sscanf(qq, "rebase:%u", &off) != 1 &&
+                        strcmp(qq, "rebase") != 0) {
+                        printf("case%u X skip\n", id);
+                        continue;
+                    }
+                    if (!have) { printf("case%u X skip\n", id); continue; }
+                    orb_bundle3_hdr_t w2 = w;
+                    orb_bundle_t b3 = b2;
+                    const char *r = orb_bundle_rebase(&b3, &w2, rb, off, cp, &old);
+                    if (r) {
+                        printf("case%u X refuse %s\n", id, r);
+                        continue;
+                    }
+                    printf("case%u X ok %u %u %u %u", id, old, w2.art_off,
+                           w2.geom_crc, b3.n_sections);
+                    for (uint32_t i = 0; i < b3.n_sections; i++)
+                        printf(" %u", b3.sec[i].art_off);
+                    printf("\n");
+                    w = w2; b2 = b3; fbase = old; rbase = off; bound = cp;
+                } else if (!strcmp(qq, "secdump")) {
+                    for (uint32_t i = 0; have && i < b2.n_sections; i++)
+                        printf("case%u S %u %s %u %u\n", id, i, b2.sec[i].slug,
+                               b2.sec[i].art_off, b2.sec[i].art_size);
+                } else if (!strcmp(qq, "recheck")) {
+                    const char *r = have ? orb_bundle_parse_region(&w, rb, rbsz,
+                                                                   bound, &b2)
+                                         : "rechecked with no region parsed";
+                    if (r) printf("case%u C refuse %s\n", id, r);
+                    else printf("case%u C ok %u\n", id, b2.n_sections);
+                } else {
+                    printf("case%u probe unknown\n", id);
+                }
+            }
+            free(rb);
+        }
+
         for (uint32_t j = 0; j < nq; j++) free(query[j]);
         free(fc);
     }
@@ -509,12 +628,256 @@ _aoff = struct.unpack_from("<I", _geo, 13 * 4)[0]
 BANK_CRC_FLIP = _flip_bank(_geo, _aoff + 10)     # art byte; banks ride no
                                                  # region crc, so only the
                                                  # bank's own line disagrees
+
+
 VECTORS += [
     (40, 0, NO_ROW, [], GEOM_CRC_FLIP, "same", None, "geometry checksum"),
     (41, 0, NO_ROW, [], BANK_CRC_FLIP, "same", None, "bank checksum"),
 ]
 
+# ---------------------------------------------------------------------------
+# The streaming family (P6.3): the region door, the wire, and the rebase.
+#
+# One claim, stated once: every check the whole-buffer reader makes BEFORE a
+# bank's bytes says the same thing through orb_bundle_parse_region(), and the
+# bank check itself moves onto the wire as orb_bundle_bank_rule(). Expectations
+# are computed from the writer's own parse of the same bytes, so the C cannot
+# define its own pass. Probes are the installer's calls in the installer's order;
+# out of order, the door says so.
+# ---------------------------------------------------------------------------
 
+F_STREAM      = 4
+SLOT_ART_PY   = 0x00010000          # orb_theme.c SLOT_ART_OFF
+SLOT_CAP_PY   = 0x00400000          # orb_theme.c SLOT_CAP
+IDX_HEAD_PY   = 8                   # orb_bundle.c IDX_HEAD_BYTES
+IDX_BYTES_PY  = 40                  # orb_bundle.c IDX_BYTES (4H + 7I + 2H)
+REC_ART_OFF_PY = 24                 # word 7: the byte the rebase edits
+
+TWIN = build(name="Twin Banks",
+             specs=[dict(SOLO, slug="clock"),
+                    dict(SOLO, slug="paint",
+                         art=bytes((i * 7 + 3) & 0xFF for i in range(3000)))],
+             serial=9)
+_AO = struct.unpack_from("<I", SOLO_RAW, 13 * 4)[0]
+TRUNC = SOLO_RAW[:_AO + 900]        # the card gave fewer bank bytes than declared
+
+
+def _pytable(raw):
+    """Header, index, region — the writer's own reading, available even for a file
+    whose BANK is torn (only its bytes are, and unpack_index never looks)."""
+    try:
+        h = ob.parse_header3(raw)
+    except ValueError:
+        return None, None, None
+    region = raw[h["geom_off"]:h["geom_off"] + h["geom_size"]]
+    try:
+        _n, recs = ob.unpack_index(region)
+    except ValueError:
+        recs = None
+    return h, recs, region
+
+
+def _slugs(raw, recs, region):
+    return [region[r["slug_off"]:r["slug_off"] + r["slug_len"]].decode()
+            for r in recs]
+
+
+def _moves(recs, base, new_base, cap):
+    """orb_bundle_rebase()'s sums, computed here so the C's arithmetic is under
+    test rather than the thing defining its own pass."""
+    delta = new_base - base
+    moved = []
+    for r in recs:
+        m = r["art_off"] + delta
+        if delta < 0 and -delta > r["art_off"]:
+            return None, "section bank offset would run below the region's start"
+        if m > cap or r["art_size"] > cap - m:
+            return None, "section bank would run past the end of the slot"
+        moved.append(m)
+    return moved, None
+
+
+def _edited_region(region, recs, moved):
+    """The bytes a rebased slot holds: the region with every record's art_off
+    rewritten. This is what orb_bundle_rebase() leaves in the caller's buffer, and
+    what copy_bundle3() writes to flash — the crc alone is not the claim."""
+    ed = bytearray(region)
+    for i, m in enumerate(moved):
+        struct.pack_into("<I", ed, IDX_HEAD_PY + i * IDX_BYTES_PY + REC_ART_OFF_PY, m)
+    return bytes(ed)
+
+
+def _edited_crc(region, recs, moved):
+    return zlib.crc32(_edited_region(region, recs, moved)) & 0xFFFFFFFF
+
+
+def _bank_sent(slug):
+    return ("section '%s' bank checksum mismatch — the copy on the card is "
+            "damaged" % slug)
+
+
+
+def _slot_image(raw, h, recs, region, cur):
+    """Rebuild the SLOT the installer would have written and read it back through
+    ob.read_bundle. A bundle the writer cannot read after an install is a slot no
+    --inspect can answer with — §22.1's third rule, checked on bytes and not on
+    the promise that the offsets were carried across faithfully."""
+    new_base = cur[0]
+    end = max([c + r["art_size"] for r, c in zip(recs, cur)] + [new_base])
+    img = bytearray(end)
+    hdr = bytearray(ob.pack_header3(h["name"], len(recs), len(region),
+                                    _edited_crc(region, recs, cur), new_base,
+                                    end - new_base, 0, h["serial"]))
+    # The writer stamps the FILE layout, where a bundle's region sits at 128. The
+    # slot puts it at SLOT_GEOM_OFF, and the installer rewrites the header for
+    # exactly that reason (build_slot_hdr3); a slot image that claimed geom_off
+    # 128 while holding its tables at 0x1000 would test nothing.
+    words = list(struct.unpack("<%dI" % _OT.HDR_WORDS, bytes(hdr)))
+    words[_OT.W_GEOM_OFF] = 0x1000
+    words[_OT.W_HDR_CRC] = _OT._hdr_crc(words)
+    hdr = bytearray(struct.pack("<%dI" % _OT.HDR_WORDS, *words))
+    img[0:len(hdr)] = hdr
+    img[0x1000:0x1000 + len(region)] = _edited_region(region, recs, cur)
+    for r, c in zip(recs, cur):
+        img[c:c + r["art_size"]] = raw[r["art_off"]:r["art_off"] + r["art_size"]]
+    p = os.path.join(tmpdir, "slot.orbtheme")
+    with open(p, "wb") as f:
+        f.write(bytes(img))
+    try:
+        return ob.read_bundle(p), None
+    except ValueError as e:
+        return None, str(e)
+
+def stream_expect(raw, qs):
+    """The lines the streaming door must print, probe by probe, or [] when the
+    header itself refuses: the door sits behind it on both readers."""
+    pyv = read_verdict(raw)
+    h, recs, region = _pytable(raw)
+    if h is None or recs is None:
+        return [], None
+    bank_ref = pyv if (isinstance(pyv, str) and "bank checksum" in pyv) else None
+    refuse = pyv if (isinstance(pyv, str) and not bank_ref) else None
+    names = _slugs(raw, recs, region)
+    cur = [r["art_off"] for r in recs]
+    fpos = list(cur)
+    have, base, bound = False, h["art_off"], len(raw)
+    out = []
+    for q in qs:
+        if q == "region":
+            if refuse:
+                out.append("R refuse " + refuse)   # what the whole door says
+                have = False
+                continue
+            out.append("R ok %u %u %u %u" % (h["n_sections"], h["geom_size"],
+                                             h["geom_crc"], h["art_off"]))
+            have = True
+        elif q.startswith("bank:"):
+            if not have:
+                out.append("B skip")               # no region parsed, nothing to settle
+                continue
+            si, md = int(q[5:].split(":")[0]), q[5:].split(":")[1]
+            if si >= len(recs):
+                out.append("B skip")
+                continue
+            r = recs[si]
+            whole = zlib.crc32(raw[fpos[si]:fpos[si] + r["art_size"]]) & 0xFFFFFFFF
+            want, crc = r["art_size"], whole
+            if md in ("SHORT", "LYE", "LYEC") and r["art_size"]:
+                want = r["art_size"] - 1
+                crc = zlib.crc32(raw[fpos[si]:fpos[si] + want]) & 0xFFFFFFFF
+            if md == "BAD":
+                crc = whole ^ 0x80808080
+            if md == "LYE":
+                crc = r["art_crc"] ^ 0x80808080
+            if md == "LYEC":
+                crc = r["art_crc"]
+            if want == r["art_size"] and crc == r["art_crc"]:
+                out.append("B ok %u %s %u %u" % (si, names[si], want, crc))
+            else:
+                sent = bank_ref if (md == "FULL" and bank_ref) else _bank_sent(names[si])
+                out.append("B refuse %u %s %u %u | %s"
+                           % (si, names[si], want, crc, sent))
+        elif q.startswith("rebase"):
+            if not have:
+                out.append("X skip")
+                continue
+            new_base, cap = SLOT_ART_PY, SLOT_CAP_PY
+            if q.startswith("rebasecap:"):
+                new_base, cap = (int(v) for v in q[10:].split(":"))
+            elif q != "rebase":
+                new_base = int(q[7:])
+            moved, why = _moves(recs, base, new_base, cap)
+            if why:
+                out.append("X refuse " + why)
+                continue
+            out.append("X ok %u %u %u %u %s"
+                       % (base, new_base, _edited_crc(region, recs, moved), len(recs),
+                          " ".join(str(m) for m in moved)))
+            cur, base, bound = moved, new_base, cap
+        elif q == "secdump":
+            for i in range(len(recs) if have else 0):
+                out.append("S %u %s %u %u" % (i, names[i], cur[i], recs[i]["art_size"]))
+        elif q == "recheck":
+            if not have:
+                out.append("C refuse rechecked with no region parsed")
+                continue
+            out.append("C ok %u" % h["n_sections"])
+        else:
+            out.append("probe unknown")
+    return out, (cur, fpos, bound, names)
+
+_h2, _r2, _g2 = _pytable(TWIN)
+TWIN_FLIP = _flip_bank(TWIN, _r2[1]["art_off"] + 10)   # the SECOND bank torn
+
+VECTORS += [
+    # The door accepts what the whole-buffer reader accepts, and says its words.
+    (70, F_STREAM, NO_ROW, ["region", "bank:0:FULL", "bank:1:FULL"], GOLDEN,
+     "stream", None, None),
+    (71, F_STREAM, NO_ROW, ["region", "bank:0:FULL"], SOLO_RAW,
+     "stream", None, None),
+    # Out of order: the region is parsed first. Nothing else may come before it.
+    (72, F_STREAM, NO_ROW, ["bank:0:FULL", "rebase", "recheck"], GOLDEN,
+     "stream", None, None),
+    # The wire's refusals, each isolated by the one parameter that lies.
+    (73, F_STREAM, NO_ROW, ["region", "bank:0:SHORT"], GOLDEN,
+     "stream", None, None),
+    (74, F_STREAM, NO_ROW, ["region", "bank:0:BAD"], GOLDEN,
+     "stream", None, None),
+    (75, F_STREAM, NO_ROW, ["region", "bank:0:LYE"], GOLDEN,
+     "stream", None, None),
+    # A count short of art_size is refused even when the crc is the record's own.
+    (76, F_STREAM, NO_ROW, ["region", "bank:0:LYEC"], GOLDEN,
+     "stream", None, None),
+    # The pairing: a torn BANK no longer condemns the region. These very bytes
+    # pass the region door, and the wire is what refuses, in the same words.
+    (77, F_STREAM, NO_ROW, ["region", "bank:0:FULL"], BANK_CRC_FLIP,
+     "same", None, "bank checksum"),
+    # And the section order is the settle order: a clean bank closes before the
+    # torn one speaks. No half-installed bundle is a claim this pair makes.
+    (78, F_STREAM, NO_ROW, ["region", "bank:0:FULL", "bank:1:FULL"], TWIN_FLIP,
+     "same", None, "bank checksum"),
+    # A check that needs no bank bytes still bites, same order, same sentence.
+    (79, F_STREAM, NO_ROW, ["region"], GEOM_CRC_FLIP,
+     "same", None, "geometry checksum"),
+    (80, F_STREAM, NO_ROW, ["region"],
+     build(specs=[dict(SOLO, rec={"art_off": solo_aoff + SECTOR})]),
+     "same", None, "art walk"),
+    (81, F_STREAM, NO_ROW, ["region"], TRUNC,
+     "same", None, "art region runs past"),
+    # The slot move, the device's own call, and the records it leaves behind.
+    (82, F_STREAM, NO_ROW, ["region", "rebase", "secdump", "recheck",
+                            "bank:0:FULL", "bank:1:FULL"], GOLDEN,
+     "stream", None, None),
+    # Two real banks, so the cap pair is about bytes and not about padding.
+    (83, F_STREAM, NO_ROW, ["region", "rebasecap:65536:72632", "secdump",
+                            "recheck", "bank:0:FULL", "bank:1:FULL"], TWIN,
+     "stream", None, None),
+    (84, F_STREAM, NO_ROW, ["region", "rebasecap:65536:72631", "secdump"], TWIN,
+     "stream", None, None),
+    # A refused rebase moves nothing: the dump still reads as the file did.
+    (85, F_STREAM, NO_ROW, ["region", "rebasecap:65536:69631", "secdump"], GOLDEN,
+     "stream", None, None),
+]
 
 # ---------------------------------------------------------------------------
 # run: one compile, one batch, then compare every case against the oracle
@@ -538,6 +901,34 @@ def check(cond, msg):
     nchecks[0] += 1
     if not cond:
         failures.append(msg)
+
+
+def check_stream(cid, raw, qs, cl):
+    """One streaming vector: the door's lines, in probe order, against the
+    writer's numbers — and, after a move, the slot rebuilt from those numbers read
+    back through the host reader."""
+    sl = [l for l in cl if l[:2] in ("R ", "B ", "X ", "S ", "C ")
+          or l.startswith("probe ") or l == "B skip" or l == "X skip"]
+    exp, state = stream_expect(raw, qs)
+    check(len(sl) == len(exp), "case %d: stream lines %r, expected %r"
+          % (cid, sl, exp))
+    for got, want in zip(sl, exp):
+        check(got == want, "case %d: stream drift\n  C:  %s\n  py: %s"
+              % (cid, got, want))
+    if not state or not any(e.startswith("C ok") for e in exp):
+        return
+    cur, _fpos, _bound, _names = state
+    h, recs, region = _pytable(raw)
+    got, why = _slot_image(raw, h, recs, region, cur)
+    check(got is not None, "case %d: the slot the rebase describes refuses the host "
+          "reader: %s" % (cid, why))
+    if got:
+        hh, secs = got
+        check([s["rec"]["art_off"] for s in secs] == cur,
+              "case %d: the installed slot's banks are not where the records say: %r"
+              % (cid, secs and [s["rec"]["art_off"] for s in secs]))
+        check(hh["art_off"] == cur[0] and hh["n_sections"] == len(cur),
+              "case %d: the installed slot's header disagrees: %r" % (cid, hh))
 
 
 def check_case(cid, flags, row, queries, raw, kind, expect, rule, cl):
@@ -666,7 +1057,7 @@ MUTANTS = [
     ("drop the art walk check",
      "if (s->art_off != aoff)", "if (0 && s->art_off != aoff)", 15),
     ("accept a stale bank crc",
-     "!= s->art_crc) {", "== s->art_crc) {", 41),
+     "have) != s->art_crc) {", "have) == s->art_crc) {", 41),
     ("drop the art region bound",
      "if (h->art_off > file_size || h->art_size > file_size - h->art_off)",
      "if (0 && (h->art_off > file_size || h->art_size > file_size - h->art_off))",
@@ -698,6 +1089,44 @@ MUTANTS = [
     ("refuse the art budget at == cap",
      "o->art_size > ORB_BUNDLE_ART_CAP)",
      "o->art_size >= ORB_BUNDLE_ART_CAP)", 63),
+    # P6.3's streaming door: the region alone, the wire, and the slot move.
+    ("stream the region at its file offset instead of at 0",
+     "local.geom_off  = 0;", "local.geom_off = h->geom_off;", 70),
+    ("hash bank bytes the streaming caller never sent",
+     "if (banks_present) {", "if (banks_present || !banks_present) {", 70),
+    ("let a short count pass on the record's own crc",
+     "if (got_bytes != s->art_size || got_crc != s->art_crc) {",
+     "if (got_crc != s->art_crc + (got_bytes - got_bytes)) {", 76),
+    ("settle nothing on the wire",
+     "if (got_bytes != s->art_size || got_crc != s->art_crc) {",
+     "if (0 && (got_bytes != s->art_size || got_crc != s->art_crc)) {", 73),
+    ("rebase without a slot bound",
+     "if (moved > slot_cap || s->art_size > slot_cap - moved)",
+     "if (0 && (moved > slot_cap || s->art_size > slot_cap - moved))", 84),
+    ("rebase and leave the region checksum stale",
+     "h->geom_crc = esp_rom_crc32_le(0, region, h->geom_size);",
+     "h->geom_crc = h->geom_crc ^ 1u;", 82),
+    ("edit the wrong record when rebasing",
+     "uint8_t *rec = region + IDX_HEAD_BYTES + i * IDX_BYTES;",
+     "uint8_t *rec = region + IDX_HEAD_BYTES +"
+     " (i + 1u) % b->n_sections * IDX_BYTES;", 82),
+    ("move a bank before its bounds are known",
+     """    for (uint32_t i = 0; i < b->n_sections; i++) {
+        const orb_bundle_sec_t *s = &b->sec[i];
+        const uint32_t moved = (uint32_t)((int64_t)s->art_off + (int64_t)delta);
+        if (delta < 0 && (uint32_t)-delta > s->art_off)
+            return "section bank offset would run below the region's start";
+        if (moved > slot_cap || s->art_size > slot_cap - moved)
+            return "section bank would run past the end of the slot";
+    }""",
+     """    for (uint32_t i = 0; i < b->n_sections; i++) {
+        orb_bundle_sec_t *s = &b->sec[i];
+        const uint32_t moved = (uint32_t)((int64_t)s->art_off + (int64_t)delta);
+        s->art_off = moved;
+        memcpy(region + IDX_HEAD_BYTES + i * IDX_BYTES + 24, &moved, 4);
+        if (moved > slot_cap || s->art_size > slot_cap - moved)
+            return "section bank would run past the end of the slot";
+    }""", 85),
 ]
 
 
@@ -740,6 +1169,8 @@ if __name__ == "__main__":
     for vec in VECTORS:
         check_case(vec[0], vec[1], vec[2], vec[3], vec[4], vec[5], vec[6],
                    vec[7], got.get(vec[0], []))
+        if vec[1] & F_STREAM:
+            check_stream(vec[0], vec[4], vec[3], got.get(vec[0], []))
     print("== orb_bundle_c parity: %d checks, %d failure(s)"
           % (nchecks[0], len(failures)))
     for m in failures:

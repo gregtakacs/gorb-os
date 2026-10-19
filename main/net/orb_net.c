@@ -3971,13 +3971,15 @@ static esp_err_t h_sd(httpd_req_t *req)
 
     /* The bound is the point, not the number: 12 rows whose owner name can each run
      * to ORB_THEME_NAME_MAX characters (JSON-escaped to twice that) plus a 115-char
-     * why and the two refused-install sentences. Worst case arithmetic, from the
-     * format strings below: ~102 B of fixed row text and digits + 113 (name) + 12 (id)
-     * + 115 (why) = ~340 B a row, ~4.2 kB for 12 of them plus ~700 B of base fields.
-     * Measured against the live device at 192.168.2.32: the same route answers 653 B
-     * today with four short-named themes, and a truncated body would look exactly
-     * like the empty list "no card" prints — which is why an overflow is an error
-     * string, not a partial body. Same reason h_status carries its own bound. */
+     * why and the refused-install, damage, and staged sentences. Worst case
+     * arithmetic, from the format strings below: ~102 B of fixed row text and digits
+     * + 113 (name) + 12 (id) + 115 (why) = ~340 B a row, ~4.2 kB for 12 of them, plus
+     * ~700 B of the original base fields and ~190 B more for the staged pair at its
+     * full-width why and two 10-digit refill figures = ~890 B. Measured against the
+     * live device at 192.168.2.34: the same route answers 653 B today with four
+     * short-named themes and every new field empty, and a truncated body would look
+     * exactly like the empty list "no card" prints — which is why an overflow is an
+     * error string, not a partial body. Same reason h_status carries its own bound. */
     static char json[6144];
     /* The last install refused, if any, travels with the list: the dial's row and
      * this page read the same two strings out of orb_theme, so a pick the firmware
@@ -3995,6 +3997,14 @@ static esp_err_t h_sd(httpd_req_t *req)
     char d_id[ORB_THEME_ID_HEX * 2 + 3], d_why[128];
     json_put(d_id, sizeof d_id, orb_theme_damage_id());
     json_put(d_why, sizeof d_why, orb_theme_damage_why());
+    /* And the `staged` witness (§20.4): a flip that staged and never committed
+     * rolls back on its own, so the owner needs the word on the row to know the
+     * dial is not showing what they pressed. Same id-pair shape as damage above,
+     * and a different event: damage says the committed bytes are broken, staged
+     * says the commit never happened. */
+    char stg_id[ORB_THEME_ID_HEX * 2 + 3], stg_why[128];
+    json_put(stg_id, sizeof stg_id, orb_theme_staged_id());
+    json_put(stg_why, sizeof stg_why, orb_theme_staged_why());
     /* The installed slot's owner name, escaped for the base "active" field the page
      * shows beside the source. */
     char active_name[ORB_THEME_NAME_MAX * 2 + 3];
@@ -4003,13 +4013,15 @@ static esp_err_t h_sd(httpd_req_t *req)
         "{\"mounted\":%s,\"card\":\"%.40s\",\"uploading\":%s,\"total_mb\":%u,\"free_mb\":%u,"
         "\"source\":\"%s\",\"active\":\"%s\",\"live\":\"%s\",\"card_count\":%d,"
         "\"try_id\":\"%s\",\"try_why\":\"%s\",\"damage_id\":\"%s\",\"damage_why\":\"%s\","
+        "\"staged_id\":\"%s\",\"staged_why\":\"%s\",\"refill_ms\":%u,\"refill_bytes\":%u,"
         "\"themes\":[",
         orb_sd_mounted() ? "true" : "false",
         orb_sd_mounted() ? orb_sd_card_id() : "",
         orb_theme_upload_busy() ? "true" : "false",
         (unsigned)(total / (1024 * 1024)), (unsigned)(freeb / (1024 * 1024)),
         orb_theme_source(), active_name, orb_theme_live(), n > 0 ? n : 0,
-        t_id, t_why, d_id, d_why);
+        t_id, t_why, d_id, d_why, stg_id, stg_why,
+        (unsigned)orb_theme_refill_ms(), (unsigned)orb_theme_refill_bytes());
 
     bool too_big = false;
     for (int i = 0; n > 0 && i < n; i++) {

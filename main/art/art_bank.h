@@ -94,8 +94,17 @@ void art_bank_lat_probe(void);
  *
  * Deliberately compile-time, not a per-bank flag: a mixed regime is P4's
  * installer question (per-theme residency flags), and a runtime switch today
- * would be a second residency table the host mirror cannot pin. Ships 0. */
-#define ORB_ART_MECH_B 0
+ * would be a second residency table the host mirror cannot pin.
+ *
+ * D30 (docs/app-platform-plan.md §20.4) lights it: an installed theme's pixels
+ * are arena pixels from boot onward, refilled from its slot by one fused
+ * read-and-CRC pass. Mechanism A keeps two jobs and loses none of them — it is
+ * how the card-less default maps its bank (art_bank_map_at_0(), which ignores
+ * this define on purpose, D13 as ruled option A), and it is Arm A, the fallback
+ * an install takes when the arena cannot hold the bundle it was handed (§20.2).
+ * The two M3 probe builds this define priced are still exactly this define at 0
+ * and at 1; lighting it for shipping does not retire the measurement. */
+#define ORB_ART_MECH_B 1
 
 /* PSRAM the arena gate keeps off the table on top of the bank itself. */
 #define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)
@@ -171,11 +180,51 @@ bool art_bank_m3_is_psram(void);
  */
 esp_err_t art_bank_init(size_t offset, size_t need_bytes);
 
-/** The traditional layout: the bank at partition offset 0, as esptool writes it. */
+/** The traditional layout: the bank at partition offset 0, by whichever
+ *  mechanism ORB_ART_MECH_B lights. */
 static inline esp_err_t art_bank_init_at_0(size_t need_bytes)
 {
     return art_bank_init(0, need_bytes);
 }
+
+/** Map the bank at partition offset 0 and ALWAYS map it, mechanism B lit or not.
+ *  The card-less fallback calls this, and only this, because the pixels it draws
+ *  are the ones `idf.py flash` wrote and nothing else on the board holds a copy
+ *  of them (D13, and the reason it survives as a rule: an arena copy of them
+ *  would have to be made from the same bytes an install erases). */
+esp_err_t art_bank_map_at_0(size_t need_bytes);
+
+/** The primary bank as a PSRAM arena copy, optionally CRC-verified DURING the
+ *  one read pass that fills it — D30's boot refill in its fused shape, the
+ *  read-only twin of the flip's dual-sink write (§20.2).
+ *
+ *  `verify` asks for the checksum: the chunk is read from the partition, CRCed
+ *  into `expect_crc`, and copied into the arena in the same loop, so a slot is
+ *  proven and resident for one pass over its bytes. A mismatch frees the arena,
+ *  leaves the bank unresident, and returns ESP_ERR_INVALID_CRC — a corrupt slot
+ *  never reaches the paint path. verify=false is the same copy unchecked, for a
+ *  caller that verified elsewhere or has nothing to verify against.
+ *
+ *  Gates, in order, each refusing with a reason the caller can put on a page:
+ *  ESP_ERR_INVALID_ARG on a zero size, ESP_ERR_NOT_FOUND when the `assets`
+ *  partition is absent, ESP_ERR_INVALID_SIZE when the request runs past its end,
+ *  ESP_ERR_NO_MEM when free PSRAM is under need_bytes + ORB_ART_ARENA_MARGIN or
+ *  the allocation itself fails (both name the free figure in the log, and both
+ *  bump orb_art_refusals() like a page-budget refusal does). `*out_ms`, when
+ *  given, receives the elapsed whole milliseconds of the pass: §20.5(2)'s boot
+ *  line reads this number instead of a predicted one.
+ *
+ *  A previous primary is released first, by whichever mechanism holds it, and
+ *  the same caller promise art_bank_init() makes applies — every cached LVGL
+ *  descriptor into the old base must be rebuilt before the next paint. */
+esp_err_t art_bank_fill(size_t offset, size_t need_bytes, bool verify,
+                        uint32_t expect_crc, uint32_t *out_ms);
+
+/** The primary bank by mechanism A whatever ORB_ART_MECH_B says: the mmap form
+ *  art_bank_init() had before D30, kept addressable because Arm A is a real
+ *  path (§20.2) and because the residency probe measures one arm per build.
+ *  Same arguments, same release-and-remap behaviour, same failure codes. */
+esp_err_t art_bank_map(size_t offset, size_t need_bytes);
 
 /** Mapped base pointer, or NULL if art_bank_init() has not succeeded. */
 const uint8_t *art_bank_ptr(void);
@@ -183,8 +232,17 @@ const uint8_t *art_bank_ptr(void);
 /** Bytes currently mapped; 0 until art_bank_init() succeeds. */
 size_t art_bank_bytes(void);
 
-/** True when the bank is mapped and safe to read. */
+/** True when the bank is resident and safe to read, by either mechanism. */
 bool art_bank_ready(void);
+
+/** Whole milliseconds of the last art_bank_fill() pass; 0 before the first one.
+ *  Only a fused refill sets it, so a nonzero figure beside art_bank_is_arena()
+ *  true is a boot that refilled from a slot, not a boot that mapped. D30's
+ *  §20.5(2) number reaches the ledger through this, not through a prediction. */
+uint32_t art_bank_fill_ms(void);
+
+/** True when the dial's pixels are the PSRAM arena rather than a flash map. */
+bool art_bank_is_arena(void);
 
 /** ---- residency: the page budget and secondary banks (P2, §3.3 mechanism A) ----
  *

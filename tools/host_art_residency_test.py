@@ -8,6 +8,12 @@ lifted and compiled the way idle_dim.c is -- the reserve/map path calls
 esp_partition_mmap(), ESP_LOGE, and SOC_MMU_PAGE_SIZE -- so this is a mirror, as
 host_app_registry_test.py and host_files_test.py mirror their sources.
 
+P6.3 (D30, §20.4/§20.5) added the third arm the mirror now carries: the primary
+bank's arena refill (REFILL: checks). Mechanism B lit for shipping in that commit,
+and the "#define ORB_ART_MECH_B" pin below moved with it -- §20.4's rule that the
+light and the residency suite change in one commit, so a dark-by-default file
+cannot come back quietly.
+
 What makes a mirror honest is the lint below: it reads the SHIPPING art_bank.c and
 asserts every constant and guard the mirror depends on is still present verbatim.
 If someone edits the budget, page size, alignment reject, or the refusal-counter
@@ -65,11 +71,23 @@ def lint_shipped_source():
         "if (s_extra[i].bytes >= need_bytes) {",
         "art_consume_reservation(art_round_pages(need_bytes));",
         "if (s_res_bytes[i] == bytes) {",
-        "return (s_map != NULL ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();",
+        "return (art_bank_ready() ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();",
         # ---- mechanism B (docs/app-platform-plan.md §3.3/§6 M3): the arena rules.
         # Same contract as above — if any of these stops matching the shipping
         # source, the mirror below describes dead code and must be re-read.
-        "#define ORB_ART_MECH_B 0",          # ships off: the measurement, not a default
+        # D30 lit the define (§20.4, P6.3): B is the runtime mechanism for an
+        # installed theme's pixels. This pin moved in the same commit that flipped
+        # the byte, which is the §20.4 rule written down so it repeats.
+        "#define ORB_ART_MECH_B 1",          # lit for shipping: D30, §20.4
+        # ---- D30's boot refill of the PRIMARY bank (§20.2's boot rule).
+        "return s_map != NULL || s_psram;",                     # primary liveness: both kinds
+        "return s_psram ? s_plane : s_map;",                    # one primary ptr, two sources
+        "size_t pages = s_map ? art_bank_pages_for(s_bytes) : 0;",  # arena primary bills ZERO
+        "if (free_p < need_bytes + ORB_ART_ARENA_MARGIN) {",   # the refill's own PSRAM gate
+        "if (verify) crc = esp_rom_crc32_le(crc, arena + done, chunk);",  # fused, one pass
+        "if (verify && crc != expect_crc) {",                  # corrupt slot never reaches paint
+        "art_bank_primary_release();",                         # release is by mechanism
+        "esp_err_t art_bank_map_at_0(size_t need_bytes) { return art_bank_map(0, need_bytes); }",
         "#define ORB_ART_M3_PROBE 0",        # ditto the probe that prices it
         "#define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)",
         "return e->map != NULL || e->psram;",                       # liveness: both kinds
@@ -91,12 +109,12 @@ def lint_shipped_source():
     for tok in must:
         ok(tok in src, "lint: shipping art_bank.c contains %r" % tok[:52])
     # The refusal-counter placement is subtle: the two budget rejects, the
-    # reservation-slot-full reject and the TWO arena capacity gates (free-PSRAM
-    # margin and the arena malloc itself) bump it; the secondary-slot-full map
-    # reject does NOT. Pin the exact count so a wrong placement fails the lint,
-    # not the mirror.
-    ok(src.count("s_reserve_refusals++;") == 5,
-       "lint: exactly 5 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
+    # reservation-slot-full reject, the TWO arena capacity gates on a secondary map
+    # (free-PSRAM margin and the arena malloc itself) and the SAME two gates on
+    # D30's primary refill bump it; the secondary-slot-full map reject does NOT.
+    # Pin the exact count so a wrong placement fails the lint, not the mirror.
+    ok(src.count("s_reserve_refusals++;") == 7,
+       "lint: exactly 7 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
     ok("all %u reservation slots are booked" in src and "all %u secondary slots hold banks" in src,
        "lint: both exhaustion reasons present (reservation-full counts, secondary-full does not)")
 
@@ -114,6 +132,9 @@ def art_round_pages(b):
 class ArtResidency:
     def __init__(self, mech_b=False, psram_free=16 * 1024 * 1024):
         self.primary = 0                 # s_bytes (the dial's own bank)
+        self.primary_kind = "map"        # "map" = mechanism A, "arena" = D30's refill
+        self.fill_ms = 0                 # the last fused pass, timed
+
         self.extra = [None] * EXTRA_MAX  # each entry: (bytes, offset, is_psram) once mapped
         self.res = [0] * RESERVE_MAX     # s_res_bytes (booked, not yet mapped)
         self.refusals = 0
@@ -125,7 +146,11 @@ class ArtResidency:
         # Each region rounds up on its own -- never a rounded sum of the bytes.
         # An arena bank is skipped: mechanism B never occupies the MMU window,
         # so it bills it nothing (the mirror of art_extra_live(...) && !psram).
-        pages = art_bank_pages_for(self.primary) if self.primary else 0
+        # D30 made the same rule true of the PRIMARY bank: a refilled dial sits in
+        # PSRAM and costs the window nothing, which is the mirror's line below.
+        pages = (art_bank_pages_for(self.primary)
+                 if self.primary and self.primary_kind == "map" else 0)
+
         for e in self.extra:
             if e is not None and not e[2]:
                 pages += art_bank_pages_for(e[0])
@@ -209,6 +234,37 @@ class ArtResidency:
             return ERR_INVALID_SIZE
         self.extra[slot] = None
         return ESP_OK
+
+    def primary_fill(self, offset, need_bytes, verify, expect_crc, actual_crc, ms=0):
+        # art_bank_fill(): D30's boot refill of the dial's own bank. The gate order
+        # is the C order -- zero size, free PSRAM, allocation, partition bounds,
+        # then the one fused read+crc pass -- and every reject from the allocation
+        # on frees the arena it just took (the C does that with heap_caps_free on
+        # each early return; a leaked 1.17 MB at boot is a bug no check catches).
+        # A checksum mismatch is NOT a capacity refusal, so it does not count.
+        if need_bytes == 0:
+            return ERR_INVALID_ARG
+        if self.psram_free < need_bytes + ARENA_MARGIN:
+            self.refusals += 1
+            return ERR_NO_MEM
+        if offset + need_bytes > self.part_size:
+            return ERR_INVALID_SIZE
+        if verify and actual_crc != expect_crc:
+            return ERR_INVALID_CRC
+        self.primary = need_bytes
+        self.primary_kind = "arena"
+        self.fill_ms = ms
+        self._consume(art_round_pages(need_bytes))
+        return ESP_OK
+
+    def primary_map(self, offset, need_bytes):
+        # art_bank_map(): the form the card-less default and Arm A always take.
+        if need_bytes == 0:
+            return ERR_INVALID_ARG
+        self.primary = need_bytes
+        self.primary_kind = "map"
+        self._consume(art_round_pages(need_bytes))
+        return ESP_OK
 '''
 
 
@@ -224,7 +280,8 @@ def model(mutations=()):
     ns = dict(PAGE_SIZE=PAGE_SIZE, PAGE_BUDGET=PAGE_BUDGET,
               RESERVE_MAX=RESERVE_MAX, EXTRA_MAX=EXTRA_MAX,
               ARENA_MARGIN=ARENA_MARGIN,
-              ESP_OK=0, ERR_INVALID_SIZE=1, ERR_NOT_FOUND=2, ERR_NO_MEM=3)
+              ESP_OK=0, ERR_INVALID_SIZE=1, ERR_NOT_FOUND=2, ERR_NO_MEM=3,
+              ERR_INVALID_ARG=4, ERR_INVALID_CRC=5)
     exec(compile(text, "art_residency_mirror", "exec"), ns)
     return ns
 
@@ -238,6 +295,7 @@ def new_model(mutations=(), **kw):
 # ---- the checks, run against a new_model() instance (mutations may replace it) ----
 def run_checks(mutations=()):
     E_OK, E_ISZ, E_NF, E_NM = 0, 1, 2, 3
+    E_ARG, E_CRC = 4, 5
 
     # 1. page rounding matches the real bank sizes the firmware reports as art_pages.
     p = model(mutations)["art_bank_pages_for"]
@@ -384,6 +442,57 @@ def run_checks(mutations=()):
     e6c, s6c = mB6.map_extra(16 * PAGE_SIZE, 59 * PAGE_SIZE)
     ok(e6c == E_OK and s6c == s6, "MECH_B: an emptied arena slot refills at the same index")
 
+    # ---- D30's boot refill of the PRIMARY bank (§20.2, §20.4, §20.5(2)/(4)) ----
+    # av-kit's real bank size, because D30 sized its gate against exactly this
+    # bundle, and the board's live free-PSRAM figure from /api/v1/status on
+    # 2026-10-19 (7,498,456 B) is what makes the gate checks below real rather
+    # than symbolic: KIT + MARGIN leaves 5.1 MB of the 8 MB bank still standing.
+    KIT = 1173563
+
+    m7 = new_model(mutations, mech_b=True, psram_free=8 * 1024 * 1024)
+    ok(m7.primary_fill(0x410000, 0, False, 0, 0) == E_ARG,
+       "REFILL: a zero-length ask is refused as an argument, not a capacity miss")
+    ok(m7.refusals == 0, "REFILL: the argument reject is NOT a capacity refusal")
+
+    m8 = new_model(mutations, mech_b=True, psram_free=KIT + ARENA_MARGIN - 1)
+    b8 = m8.refusals
+    ok(m8.primary_fill(0x410000, KIT, True, 0, 0) == E_NM,
+       "REFILL: bank+margin-1 free PSRAM is refused (the §20.5(4) refusal arm)")
+    ok(m8.refusals == b8 + 1, "REFILL: the arena refusal is counted, like a page-budget miss")
+    ok(m8.primary == 0 and m8.primary_kind == "map",
+       "REFILL: a refused refill leaves the primary untouched -- nothing half-landed")
+
+    m9 = new_model(mutations, mech_b=True, psram_free=KIT + ARENA_MARGIN)
+    ok(m9.primary_fill(0x410000, KIT, True, 0xABCD, 0xABCD, ms=143) == E_OK,
+       "REFILL: exactly bank+margin free PSRAM is granted (the gate is >=, not >)")
+    ok(m9.primary == KIT and m9.primary_kind == "arena",
+       "REFILL: the granted bank is recorded as the arena, not as a map")
+    ok(m9.mmu_pages() == 0,
+       "REFILL: a refilled primary bills the DROM window NOTHING (D30's whole point)")
+    ok(m9.resident_count() == 1,
+       "REFILL: unbilled is not unresident -- an arena primary is resident art")
+    ok(m9.fill_ms == 143, "REFILL: the timed pass reaches the caller (§20.5(2)'s figure)")
+
+    m10 = new_model(mutations, mech_b=True, psram_free=8 * 1024 * 1024)
+    m10.primary = KIT
+    b10 = m10.refusals
+    ok(m10.primary_fill(0x410000, KIT, True, 0x1111, 0x2222) == E_CRC,
+       "REFILL: a checksummed slot that does not match is refused")
+    ok(m10.refusals == b10, "REFILL: a checksum miss is NOT a capacity refusal")
+    ok(m10.primary == KIT, "REFILL: the corrupt bank was freed, not installed")
+
+    m11 = new_model(mutations, mech_b=True, psram_free=8 * 1024 * 1024)
+    m11.primary_map(0, 59 * PAGE_SIZE)
+    ok(m11.mmu_pages() == 59, "REFILL: the card-less default still maps, and still bills (§20.4)")
+    ok(m11.primary_fill(0x410000, KIT, True, 7, 7) == E_OK and m11.mmu_pages() == 0,
+       "REFILL: taking over a mapped primary releases the map -- no page left billed")
+    ok(m11.primary_kind == "arena", "REFILL: the handoff records the mechanism it used")
+
+    m12 = new_model(mutations, mech_b=True, psram_free=8 * 1024 * 1024)
+    ok(m12.primary_fill(0x7FF000, 64 * 1024, False, 0, 0) == E_ISZ,
+       "REFILL: a bank past the end of \"assets\" is refused on size, after the allocation")
+    ok(m12.primary == 0, "REFILL: the out-of-range ask installed nothing")
+
 
 MUTATIONS = [
     ("def art_bank_pages_for(b):\n    return (b + PAGE_SIZE - 1) // PAGE_SIZE",
@@ -400,11 +509,23 @@ MUTATIONS = [
      "                pass\n                return"),                        # consume dropped -> double-bill
     # ---- mechanism B mutations: the arena rules must have bite too ----
     ("if e is not None and not e[2]:", "if e is not None:"),         # arena billed as a map
-    ("if self.psram_free < need_bytes + ARENA_MARGIN:", "if False:"),  # arena gate gone
+    ("if self.psram_free < need_bytes + ARENA_MARGIN:\n                self.refusals += 1\n                return (ERR_NO_MEM, -1)",
+     "if False:\n                self.refusals += 1\n                return (ERR_NO_MEM, -1)"),  # arena gate gone
     ("self.extra[slot] = (need_bytes, offset, True)",
      "self.extra[slot] = (need_bytes, offset, False)"),              # 'arena' silently an MMU map
     ("self._consume(art_round_pages(need_bytes))\n            return (ESP_OK, slot)",
      "pass\n            return (ESP_OK, slot)"),                     # arena fill drops the booking
+    # ---- D30's primary refill: the arena rules applied to the dial's own bank ----
+    ("if self.primary and self.primary_kind == \"map\" else 0",
+     "if self.primary else 0"),                                       # arena primary billed
+    ("self.primary_kind = \"arena\"",
+     "self.primary_kind = \"map\""),                                  # refill logged as a map
+    ("            return ERR_INVALID_ARG\n        if self.psram_free < need_bytes + ARENA_MARGIN:",
+     "            return ERR_INVALID_ARG\n        if False:"),        # refill gate gone
+    ("        if verify and actual_crc != expect_crc:\n            return ERR_INVALID_CRC",
+     "        if False:\n            return ERR_INVALID_CRC"),        # corrupt bank installed
+    ("        if offset + need_bytes > self.part_size:\n            return ERR_INVALID_SIZE",
+     "        if False:\n            return ERR_INVALID_SIZE"),       # unbounded refill accepted
 ]
 
 

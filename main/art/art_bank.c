@@ -7,6 +7,9 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "soc/soc_caps.h"   /* SOC_MMU_PAGE_SIZE: what a resident bank costs the DROM window */
+#include <string.h>         /* memcpy: the arena refill copies through its read buffer */
+#include "esp_rom_crc.h"    /* the refill's checksum, and the probes' bank crcs */
+#include "esp_timer.h"      /* esp_timer_get_time(): the µs clock every timing here reads */
 
 #if ORB_ART_M2_PROBE || ORB_ART_M3_PROBE
 #include "esp_rom_crc.h"    /* crc of a bank through the mapping vs through the read path */
@@ -30,6 +33,60 @@ static size_t                      s_bytes;
 static size_t                      s_off;      /* partition offset s_map points at */
 static esp_partition_mmap_handle_t s_handle;
 static const esp_partition_t      *s_part;
+
+/* The primary bank's second form (D30): a PSRAM arena copy made by
+ * art_bank_fill() instead of a flash map. Exactly one of s_map / s_plane is set
+ * at a time, so art_bank_ptr() stays the one accessor every reader uses and the
+ * §3.3 promise that an app never learns which mechanism feeds its pixels holds
+ * for the dial's own bank too, not only for a secondary's.
+ *
+ * s_fill_ms is the elapsed milliseconds of the last fused refill, and nothing
+ * else: §20.5(2) is a boot-log line, and the line reads the number out of the
+ * pass rather than out of the prediction that sized it. */
+static uint8_t                    *s_plane;
+static bool                        s_psram;
+static uint32_t                    s_fill_ms;
+
+/* Is the dial's bank resident, by either mechanism? The one liveness test, for
+ * the same reason art_extra_live() is the only one the secondary table has: a
+ * walk that keyed on .map alone would ignore the arena the moment D30 lit it. */
+static bool art_bank_primary_live(void)
+{
+    return s_map != NULL || s_psram;
+}
+
+/* Release the primary, by whichever mechanism holds it. A re-map and a failed
+ * refill's cleanup are the same operation, and two copies of it is how an arena
+ * leaks 1.17 MB of PSRAM on a path that only runs at boot. */
+static void art_bank_primary_release(void)
+{
+    if (s_psram) {
+        heap_caps_free(s_plane);
+        s_psram = false;
+        s_plane = NULL;
+    }
+    if (s_map) {
+        esp_partition_munmap(s_handle);
+        s_map    = NULL;
+        s_handle = 0;
+    }
+    s_bytes = 0;
+    s_off   = 0;
+}
+
+/* The partition lookup both entry points need, in one place: a second copy of
+ * the find is how the boot path and the install path disagree about which
+ * partition holds the dial's pixels. art_bank_partition() below is the same
+ * lookup, exposed. */
+static const esp_partition_t *bank_partition(void)
+{
+    if (!s_part) {
+        s_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                          ESP_PARTITION_SUBTYPE_ANY,
+                                          ART_BANK_PARTITION_NAME);
+    }
+    return s_part;
+}
 
 /* Secondary banks (P2, §3.3 mechanism A): one entry per mapped bank, stable
  * slot indices, resident until art_bank_unmap_extra() empties one. Index i
@@ -87,7 +144,33 @@ static void art_consume_reservation(size_t bytes)
         }
 }
 
-esp_err_t art_bank_init(size_t offset, size_t need_bytes)
+/* ---- residency: the page window, the arena margin, and what a refusal costs ----
+ *
+ * These sit here, ahead of both primary entry points, because D30 put an arena
+ * gate in art_bank_fill() and an MMU gate in art_bank_map_extra(), and a refusal
+ * from either has to land in the same counter for orb_art_refusals() to keep its
+ * meaning. The budget is arithmetic, not a reading of the live MMU table. */
+
+#define ORB_ART_PAGE_SIZE   SOC_MMU_PAGE_SIZE      /* 64 KB on the S3 default */
+#define ORB_ART_PAGE_ALIGN  ORB_ART_PAGE_SIZE      /* what mmap rounds each end to */
+
+/* The DROM window is 256 pages wide (docs/app-platform-plan.md §3.1), and art does not
+ * have it to itself: the image's own flash segments are mapped through it too. Re-read
+ * from `idf.py size` on 2026-10-11 — Flash Code .text 1,049,060 B = 17 pages, Flash Data
+ * .rodata + .appdesc 305,640 B = 5 pages — so 22 pages are spent before a bank is
+ * requested. §3.1 counted only .rodata's 5 and so understated the fixed cost by 17; the
+ * conclusion is unchanged because the headroom is enormous either way. Re-derive this
+ * whenever the image grows — and believe it only once the M2 probe (bottom of this
+ * file) has watched the flash MMU refuse at the total it predicts: it is arithmetic
+ * from a size report, not a reading of the live MMU table, until that line matches.
+ * A D30 arena bank is not in it at all: the refill takes no pages. */
+#define ORB_ART_DROM_PAGES       256u
+#define ORB_ART_IMAGE_PAGES      22u   /* .text 17 + .rodata/.appdesc 5, per idf.py size */
+#define ORB_ART_PAGE_BUDGET      (ORB_ART_DROM_PAGES - ORB_ART_IMAGE_PAGES)
+
+static unsigned s_reserve_refusals;
+
+esp_err_t art_bank_map(size_t offset, size_t need_bytes)
 {
     if (need_bytes == 0)
         return ESP_ERR_INVALID_ARG;
@@ -95,27 +178,23 @@ esp_err_t art_bank_init(size_t offset, size_t need_bytes)
     if (s_map && s_bytes >= need_bytes && s_off == offset)
         return ESP_OK;                    /* already mapped big enough */
 
-    if (s_map) {
-        /* A different theme than the one we mapped: drop the old map and redo
-         * it. Rare (only a load from the card changes it, and that reboots
+    if (art_bank_primary_live()) {
+        /* A different theme than the one we made resident: drop the old bank and
+         * redo it. Rare (only a load from the card changes it, and that reboots
          * first), and callers must rebuild every cached LVGL descriptor
          * afterwards — which is exactly why orb_theme installs before
-         * clock_view_init() rather than while the dial is running. */
+         * clock_view_init() rather than while the dial is running. The release is
+         * by mechanism, so an arena bank from art_bank_fill() is freed here and
+         * not munmap'd as a map it never was. */
         ESP_LOGI(TAG, "re-mapping @0x%x %u B -> %u B",
                  (unsigned)offset, (unsigned)s_bytes, (unsigned)need_bytes);
-        esp_partition_munmap(s_handle);
-        s_map   = NULL;
-        s_bytes = 0;
-        s_off   = 0;
-        s_handle = 0;
+        art_bank_primary_release();
     }
 
     /* By LABEL, never by index/subtype: the label is the stable identity, and
      * `assets` is a subtype-less data partition (gen_esp32part.py defaults an
      * empty subtype to `undefined` 0x06, the same value `www` carries). */
-    s_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-                                      ESP_PARTITION_SUBTYPE_ANY,
-                                      ART_BANK_PARTITION_NAME);
+    s_part = bank_partition();
     if (!s_part) {
         ESP_LOGE(TAG, "partition \"%s\" not found — is the partition table flashed?",
                  ART_BANK_PARTITION_NAME);
@@ -155,6 +234,124 @@ esp_err_t art_bank_init(size_t offset, size_t need_bytes)
     return ESP_OK;
 }
 
+esp_err_t art_bank_fill(size_t offset, size_t need_bytes, bool verify,
+                        uint32_t expect_crc, uint32_t *out_ms)
+{
+    if (need_bytes == 0)
+        return ESP_ERR_INVALID_ARG;
+
+    /* The gate leads the allocation and the allocation leads the read, so a board
+     * that cannot hold this bank refuses with the free figure in its sentence
+     * before spending a second and a quarter on pixels it will free. §20.2's Arm A
+     * handoff reads this refusal, not a bare NULL. */
+    const size_t free_p = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    if (free_p < need_bytes + ORB_ART_ARENA_MARGIN) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "arena fill %u B @0x%x refused: %u B PSRAM free, %u B bank + %u B "
+                      "margin needed — Arm A takes this install.",
+                 (unsigned)need_bytes, (unsigned)offset, (unsigned)free_p,
+                 (unsigned)need_bytes, (unsigned)ORB_ART_ARENA_MARGIN);
+        return ESP_ERR_NO_MEM;
+    }
+    uint8_t *arena = (uint8_t *)heap_caps_malloc(need_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!arena) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "arena fill %u B @0x%x refused: heap_caps_malloc failed with %u B free",
+                 (unsigned)need_bytes, (unsigned)offset, (unsigned)free_p);
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_part = bank_partition();
+    if (!s_part) {
+        heap_caps_free(arena);
+        ESP_LOGE(TAG, "partition \"%s\" not found — is the partition table flashed?",
+                 ART_BANK_PARTITION_NAME);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (offset + need_bytes > s_part->size) {
+        heap_caps_free(arena);
+        ESP_LOGE(TAG, "theme needs %u B at 0x%x but \"%s\" holds only %u B",
+                 (unsigned)need_bytes, (unsigned)offset, ART_BANK_PARTITION_NAME,
+                 (unsigned)s_part->size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    /* ONE pass, and it is the point of the function: each chunk comes off the
+     * partition, lands in the arena, and is CRCed from the arena in the same loop,
+     * so a verified refill costs the same bytes over the SPI as an unchecked one.
+     * The pre-D30 boot read the slot once to checksum it and mapped it for a second
+     * pass to draw from; this replaces that second pass (§20.2's "the same code as
+     * the flip's flash sink in read-only shape").
+     *
+     * 4 KB static, never on the stack: this runs on main_task before the display
+     * exists, and the buffer is the destination of an SPI flash read. */
+    static uint8_t s_fill_chunk[4096];
+    const int64_t  t0 = esp_timer_get_time();
+    uint32_t       crc = 0;
+    esp_err_t      err = ESP_OK;
+    for (size_t done = 0; done < need_bytes; ) {
+        size_t chunk = need_bytes - done;
+        if (chunk > sizeof s_fill_chunk) chunk = sizeof s_fill_chunk;
+        if (esp_partition_read(s_part, offset + done, s_fill_chunk, chunk) != ESP_OK) {
+            err = ESP_FAIL;
+            break;
+        }
+        memcpy(arena + done, s_fill_chunk, chunk);
+        if (verify) crc = esp_rom_crc32_le(crc, arena + done, chunk);
+        done += chunk;
+    }
+    if (err != ESP_OK) {
+        heap_caps_free(arena);
+        ESP_LOGE(TAG, "arena fill %u B from \"%s\" @0x%x failed to read — bank left empty",
+                 (unsigned)need_bytes, s_part->label, (unsigned)(s_part->address + offset));
+        return err;
+    }
+    if (verify && crc != expect_crc) {
+        heap_caps_free(arena);
+        ESP_LOGE(TAG, "arena fill %u B from \"%s\" @0x%x: checksum %08lx is not the header's "
+                      "%08lx — the slot is corrupt, and it does not reach the glass",
+                 (unsigned)need_bytes, s_part->label, (unsigned)(s_part->address + offset),
+                 (unsigned long)crc, (unsigned long)expect_crc);
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    const uint32_t ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+    art_bank_primary_release();          /* a default-path map, or an older arena */
+    s_plane   = arena;
+    s_psram   = true;
+    s_bytes   = need_bytes;
+    s_off     = offset;
+    s_fill_ms = ms;
+    art_consume_reservation(art_round_pages(need_bytes));
+
+    ESP_LOGI(TAG, "bank \"%s\" @0x%x, %u B refilled to the PSRAM arena in %u ms%s "
+                  "(%u B free after, %u of %u art pages)",
+             s_part->label, (unsigned)(s_part->address + offset), (unsigned)need_bytes,
+             (unsigned)ms, verify ? ", checksum verified" : "",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)art_bank_mmu_pages(), (unsigned)ORB_ART_PAGE_BUDGET);
+    if (out_ms) *out_ms = ms;
+    return ESP_OK;
+}
+
+esp_err_t art_bank_init(size_t offset, size_t need_bytes)
+{
+    /* One entry point, two mechanisms, chosen by the define rather than by the
+     * caller — §3.3's rule applied to the dial's own bank for the first time by
+     * D30. A caller that must have the map whatever the build says (the card-less
+     * fallback, or Arm A) calls art_bank_map() directly. */
+#if ORB_ART_MECH_B
+    return art_bank_fill(offset, need_bytes, false, 0, NULL);
+#else
+    return art_bank_map(offset, need_bytes);
+#endif
+}
+
+esp_err_t art_bank_map_at_0(size_t need_bytes) { return art_bank_map(0, need_bytes); }
+
+uint32_t art_bank_fill_ms(void)  { return s_fill_ms; }
+bool     art_bank_is_arena(void) { return s_psram; }
+
 const esp_partition_t *art_bank_partition(void)
 {
     /* Same label-based lookup art_bank_init() uses, exposed so orb_theme.c does
@@ -171,7 +368,11 @@ const esp_partition_t *art_bank_partition(void)
 
 const uint8_t *art_bank_ptr(void)
 {
-    return s_map;
+    /* One accessor, two sources: the arena base and the flash map are the same
+     * readable pixels to whoever reads them. This is §3.3's promise, and D30 made
+     * the dial's own bank a second bank rather than the one special case — a
+     * reader that behaved differently by mechanism would be two paint paths. */
+    return s_psram ? s_plane : s_map;
 }
 
 size_t art_bank_bytes(void)
@@ -181,7 +382,7 @@ size_t art_bank_bytes(void)
 
 bool art_bank_ready(void)
 {
-    return s_map != NULL;
+    return art_bank_primary_live();
 }
 
 /* ---- residency: the page budget, secondary banks, and the M2 probe -------
@@ -195,23 +396,8 @@ bool art_bank_ready(void)
  * set of MMU entries, because the window bills the virtual, not the physical.
  */
 
-#define ORB_ART_PAGE_SIZE   SOC_MMU_PAGE_SIZE      /* 64 KB on the S3 default */
-#define ORB_ART_PAGE_ALIGN  ORB_ART_PAGE_SIZE      /* what mmap rounds each end to */
-
-/* The DROM window is 256 pages wide (docs/app-platform-plan.md §3.1), and art does not
- * have it to itself: the image's own flash segments are mapped through it too. Re-read
- * from `idf.py size` on 2026-10-11 — Flash Code .text 1,049,060 B = 17 pages, Flash Data
- * .rodata + .appdesc 305,640 B = 5 pages — so 22 pages are spent before a bank is
- * requested. §3.1 counted only .rodata's 5 and so understated the fixed cost by 17; the
- * conclusion is unchanged because the headroom is enormous either way. Re-derive this
- * whenever the image grows — and believe it only once the M2 probe (bottom of this
- * file) has watched the flash MMU refuse at the total it predicts: it is arithmetic
- * from a size report, not a reading of the live MMU table, until that line matches. */
-#define ORB_ART_DROM_PAGES       256u
-#define ORB_ART_IMAGE_PAGES      22u   /* .text 17 + .rodata/.appdesc 5, per idf.py size */
-#define ORB_ART_PAGE_BUDGET      (ORB_ART_DROM_PAGES - ORB_ART_IMAGE_PAGES)
-
-static unsigned s_reserve_refusals;
+/* The page-size, window-budget and refusal-counter declarations these rules need
+ * sit above art_bank_map(), where the primary bank's own gates read them (D30). */
 
 /* Liveness goes through art_extra_live(): an arena bank is resident art too,
  * so it counts here even though it bills no MMU pages below. */
@@ -246,7 +432,10 @@ static size_t art_reserved_total(void)
  * from this sum (MECH_B): it never occupies the window, so it cannot cost it. */
 static size_t art_pages_accounted(void)
 {
-    size_t pages = art_bank_pages_for(s_bytes);
+    /* The primary bills pages only when it IS a map: a D30 refill puts the dial's
+     * own bank in PSRAM, and pages it never touches are not its cost — the same
+     * rule the arena secondaries follow one line below. */
+    size_t pages = s_map ? art_bank_pages_for(s_bytes) : 0;
     for (unsigned i = 0; i < ART_BANK_EXTRA_MAX; i++)
         if (art_extra_live(&s_extra[i]) && !s_extra[i].psram)
             pages += art_bank_pages_for(s_extra[i].bytes);
@@ -323,7 +512,9 @@ size_t art_bank_mmu_pages(void)
 
 size_t orb_art_resident_count(void)
 {
-    return (s_map != NULL ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();
+    /* Liveness, not mechanism: an arena primary is a resident bank exactly as a
+     * mapped one is, and D30 made the primary's arena a reachable state. */
+    return (art_bank_ready() ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();
 }
 
 size_t orb_art_reserved_bytes(void)

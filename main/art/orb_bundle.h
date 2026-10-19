@@ -114,6 +114,46 @@ const char *orb_bundle_parse(const orb_bundle3_hdr_t *h, const uint8_t *file,
                              uint32_t file_size, orb_bundle_t *b);
 
 
+/* The streaming installer's door (P6.3, §22.3). `region` is the geometry region
+ * ALONE — a caller-sized buffer, at most ORB_BUNDLE_GEOM_CAP, which the caller
+ * read out of the container — and `file_size` is the whole container's size as
+ * the card reports it. Every check orb_bundle_parse() makes still runs here in
+ * the same order except each bank's content checksum, because a bank's bytes are
+ * not in this buffer; the caller checksums each one as it crosses the wire and
+ * settles the debt with orb_bundle_bank_rule() below, or the install is not done.
+ * Refusal sentences are identical to orb_bundle_parse()'s, byte for byte, so the
+ * same damaged container says the same thing through either door.
+ *
+ * This is the shape the device uses: an internal-RAM chunk of 1-4 KB, a PSRAM
+ * region buffer of at most 60 KB, and no path in which 4 MB of a card file sits in
+ * memory waiting to be hashed. */
+const char *orb_bundle_parse_region(const orb_bundle3_hdr_t *h, const uint8_t *region,
+                                    uint32_t region_size, uint32_t file_size,
+                                    orb_bundle_t *b);
+
+/* The rule bank_check() applies, for a bank whose bytes arrived incrementally:
+ * feed it the byte count and running crc32 of exactly the section's art_size
+ * bytes, and it returns NULL or the same mismatch sentence the in-buffer path
+ * returns. A count short of art_size is refused even if the crc happens to
+ * match, because a truncated copy of the right prefix is not the bank. */
+const char *orb_bundle_bank_rule(const orb_bundle_sec_t *s, uint32_t got_bytes,
+                                 uint32_t got_crc);
+
+
+/* Move a parsed bundle's banks to a new art base, in place: each record's
+ * art_off shifts by the same delta, the region's checksum is recomputed over the
+ * edited records, and h->art_off becomes new_art_off. `out_file_art_off` receives
+ * the base the records carried BEFORE the move, which is what a caller streaming
+ * from the container needs to seek — after the move the records describe the slot,
+ * not the file. Rejects any bank the move would push past `slot_cap` (or below
+ * zero), in a sentence; a refused rebase leaves nothing half-moved because the
+ * checks precede the first write. The caller stamps geom_off itself: this
+ * function knows about banks. */
+const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *region,
+                              uint32_t new_art_off, uint32_t slot_cap,
+                              uint32_t *out_file_art_off);
+
+
 /* The resolver's one lookup (D31's question stays a question here): exact
  * slug, or NULL. Hitting one is the app's own default question to answer. */
 const orb_bundle_sec_t *orb_bundle_find(const orb_bundle_t *b,

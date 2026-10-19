@@ -276,10 +276,20 @@ static const char *bank_check(const orb_bundle_sec_t *s, const uint8_t *file,
  * art walk and per-bank checksums in section order, and the sortedness check
  * last. The device's streaming installer (§22.3) verifies each bank as its
  * bytes arrive instead of over the buffer; the rule it applies there is
- * bank_check()'s here. NULL on success, refusal sentence otherwise, with
- * orbbundle.py's order of first refusal preserved line for line. */
-const char *orb_bundle_parse(const orb_bundle3_hdr_t *h, const uint8_t *file,
-                             uint32_t file_size, orb_bundle_t *b)
+ * bank_check()'s here, exported as orb_bundle_bank_rule(). NULL on success,
+ * refusal sentence otherwise, with orbbundle.py's order of first refusal
+ * preserved line for line.
+ *
+ * banks_present=false is the streaming shape: `file` points at the GEOMETRY
+ * REGION (so h->geom_off is forced to 0 by the caller below) and `file_size` is
+ * the whole container's size, which the caller knows from the card. Every check
+ * that does not need a bank's bytes still runs and still bites in that order —
+ * the art walk's bounds and the per-record art_off-vs-walk lie check included —
+ * and only bank_check()'s dereference is skipped. A caller cannot use it to
+ * install a bank it never checksummed: orb_bundle_bank_rule() is the other half
+ * of the deal, and the installer that skips it has no way to say it is done. */
+static const char *parse_core(const orb_bundle3_hdr_t *h, const uint8_t *file,
+                              uint32_t file_size, orb_bundle_t *b, bool banks_present)
 {
     if (h->geom_off > file_size || h->geom_size > file_size - h->geom_off)
         return "geometry region runs past the end of the file";
@@ -380,8 +390,10 @@ const char *orb_bundle_parse(const orb_bundle3_hdr_t *h, const uint8_t *file,
             return reject("section %lu stores art_off %lu where the art walk "
                           "says %lu — the index and the bytes contradict",
                           (unsigned long)i, (unsigned long)s->art_off, (unsigned long)aoff);
-        why = bank_check(s, file, file_size);
-        if (why) return why;
+        if (banks_present) {
+            why = bank_check(s, file, file_size);
+            if (why) return why;
+        }
         aoff += (s->art_size + B3_SECTOR - 1) & ~(B3_SECTOR - 1);
         walk += s->geom_size;
     }
@@ -396,6 +408,70 @@ const char *orb_bundle_parse(const orb_bundle3_hdr_t *h, const uint8_t *file,
         if (strcmp(b->sec[i - 1].slug, b->sec[i].slug) >= 0)
             return "index is not slug-sorted; the resolver and --inspect both "
                    "walk it in order, and a shuffled one hides a lost section";
+    return NULL;
+}
+
+const char *orb_bundle_parse(const orb_bundle3_hdr_t *h, const uint8_t *file,
+                             uint32_t file_size, orb_bundle_t *b)
+{
+    return parse_core(h, file, file_size, b, true);
+}
+
+const char *orb_bundle_parse_region(const orb_bundle3_hdr_t *h, const uint8_t *region,
+                                    uint32_t region_size, uint32_t file_size,
+                                    orb_bundle_t *b)
+{
+    /* The streaming installer's first door (P6.3, §22.3): the region is a buffer of
+     * its own, so the header's file-relative geom_off is not an offset into it. The
+     * copy forces 0 and carries the buffer's real length, and the region checksum
+     * inside parse_core is what proves that length against the header's claim — a
+     * short read fails there, before a single index record is believed. */
+    orb_bundle3_hdr_t local = *h;
+    local.geom_off  = 0;
+    local.geom_size = region_size;
+    return parse_core(&local, region, file_size, b, false);
+}
+
+const char *orb_bundle_bank_rule(const orb_bundle_sec_t *s, uint32_t got_bytes,
+                                 uint32_t got_crc)
+{
+    /* bank_check()'s sentence, for bytes that arrived across a wire instead of
+     * sitting in a buffer: short is wrong first, and equal-but-not-matching is
+     * wrong second, so a truncated copy can never land on the checksum clause. */
+    if (got_bytes != s->art_size || got_crc != s->art_crc) {
+        snprintf(s_msg, sizeof s_msg,
+                 "section '%s' bank checksum mismatch — the copy on the card is "
+                 "damaged", s->slug);
+        return s_msg;
+    }
+    return NULL;
+}
+
+const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *region,
+                              uint32_t new_art_off, uint32_t slot_cap,
+                              uint32_t *out_file_art_off)
+{
+    /* The record's art_off is the 7th word of its 40-byte entry, at byte 24
+     * (b32(r + 24) above): the field order theme_schema pins and the sentinel
+     * suite dumps. Editing it in place is honest only because the caller holds a
+     * buffer this module already parsed, and the region's own checksum is
+     * recomputed here so what the header claims covers what is now in it. */
+    const int32_t delta = (int32_t)new_art_off - (int32_t)h->art_off;
+    if (out_file_art_off) *out_file_art_off = h->art_off;
+    for (uint32_t i = 0; i < b->n_sections; i++) {
+        orb_bundle_sec_t *s = &b->sec[i];
+        const uint32_t moved = (uint32_t)((int64_t)s->art_off + (int64_t)delta);
+        if (delta < 0 && (uint32_t)-delta > s->art_off)
+            return "section bank offset would run below the region's start";
+        if (moved > slot_cap || s->art_size > slot_cap - moved)
+            return "section bank would run past the end of the slot";
+        s->art_off = moved;
+        uint8_t *rec = region + IDX_HEAD_BYTES + i * IDX_BYTES;
+        rec[24] = (uint8_t)(moved & 0xffu);         rec[25] = (uint8_t)((moved >> 8) & 0xffu);
+        rec[26] = (uint8_t)((moved >> 16) & 0xffu); rec[27] = (uint8_t)((moved >> 24) & 0xffu);
+    }
+    h->art_off  = new_art_off;
+    h->geom_crc = esp_rom_crc32_le(0, region, h->geom_size);
     return NULL;
 }
 

@@ -3165,12 +3165,29 @@ the new default is this bench.
    the two slots, and §24.1's table says that home is not `assets`, not `apps`, and not
    the card. If it ever is the app image, the compressed bake is the shape and the OTA
    headroom is the price.
-5. **The flashing that gates all four.** The P6.3 build is on no board: `serflash.sh`
-   refuses this clone's image against the attached board's MAC (`44:BD:8D:78:26:18`)
-   because the project is bound to `44:BD:8D:60:80:88`. Either the bound board comes back
-   or `tools/orb_bind.sh` re-binds this one — an owner's decision, since the guard exists
-   to stop one clone writing its own build number onto another owner's orb. Items 1 to 3
-   are unread until one of those happens.
+5. **The flashing that gates all four — PAID 2026-10-19, and it moved the blocker
+   rather than clearing it.** The owner's call came: the attached board is the bench
+   board, so `.orb-target` re-binds to it. The clone is now `orb-B`
+   (`44:BD:8D:78:26:18`, `/dev/serial/by-id/…78:26:18-if00`, `192.168.2.34`); orb-A's old
+   binding is saved at `/tmp/orb-target.orb-A.bak` for whoever drives that board. The
+   gates ran in order and said so: `orb-B confirmed as orb-B (MAC 44:bd:8d:78:26:18)`,
+   then `AUDIT OK`, after `--check` had first refused the stale image (`have=
+   v1.1.0+bbaa036 want=v1.1.0+9e1fc27`) exactly as §18's note about configure-time stamps
+   predicts. The image the audit accepted is 1,568,912 B, so §24.4's corrected figure is
+   now the stamp-audited number and not merely a `build/` listing. `EXIT=0` at 16:50:07,
+   and the boot log on the new firmware says `no installed theme — drawing the baked-in
+   bank`, `art bank mapped: 1173563 B … from baked-in`, `art_refusals: 0`,
+   `heap_psram 7,498,456`. Item 3's live half is paid by that pair: 1,173,563 resident
+   inside 7,498,456 free is the sum §24.5(3) quoted.
+   **The gate that remains is a card, not a MAC.** Board-B's socket is empty —
+   `orb_sd: no usable card on /sd (tried 20000/10/4 kHz): ESP_ERR_TIMEOUT` at every
+   clock, which is an empty socket rather than a bad card. Items 1 and 2 are unread
+   until a card is in this board: item 1's line does not fire at all without a chosen
+   theme (`refill_ms: 0`, `source: "baked-in"`), and item 2's flip needs an install door.
+   The one card on the bench is in board 2's socket, where `/api/v1/sd` answers
+   `SD32G SDHC 29.1GB`, `card_count: 2`, `source: "slot-B"`, `active: "av-kit"` — and
+   board 2 has no serial attached here, so it is driven by moving the card, not by moving
+   the cable.
 
 ### 24.6 The streaming door, under test — 2026-10-19
 

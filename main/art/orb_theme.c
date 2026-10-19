@@ -270,9 +270,15 @@ static const char *hdr_parse(const uint32_t *w, orb_thdr_t *o)
     if (w[W_MAGIC]    != THEME_MAGIC)     return "not an .orbtheme file";
     if (w[W_FORMAT]   != THEME_FORMAT) {
         /* FORMAT 3 is not unreadable-by-accident: it is a bundle this build
-         * cannot install YET, and a damaged one must hear the bundle reader's
-         * own reason, not the generic line. Only words already loaded; the
-         * door stays shut either way. */
+         * cannot install YET, so a well-formed one names itself and names the
+         * fix. A bundle with a header this build cannot check falls to the
+         * generic line WITH ITS FORMAT WORD UNVERIFIED — measured on hardware
+         * 2026-10-19 (§24.7): the torn-header upload answers "theme format this
+         * firmware cannot read", not the bundle reader's own reason, because
+         * orb_bundle3_hdr_parse()'s reason is discarded HERE. That is the safe
+         * direction: the bundle sentence promises "update the dial to load it",
+         * and no sentence may promise that about bytes whose checksum failed.
+         * Only words already loaded; the door stays shut either way. */
         orb_bundle3_hdr_t b3;
         if (w[W_FORMAT] == ORB_BUNDLE3_FORMAT &&
             orb_bundle3_hdr_parse(w, &b3) == NULL)

@@ -3206,15 +3206,18 @@ the new default is this bench.
    bank`, `art bank mapped: 1173563 B … from baked-in`, `art_refusals: 0`,
    `heap_psram 7,498,456`. Item 3's live half is paid by that pair: 1,173,563 resident
    inside 7,498,456 free is the sum §24.5(3) quoted.
-   **The gate that remains is a card, not a MAC.** Board-B's socket is empty —
-   `orb_sd: no usable card on /sd (tried 20000/10/4 kHz): ESP_ERR_TIMEOUT` at every
-   clock, which is an empty socket rather than a bad card. Items 1 and 2 are unread
-   until a card is in this board: item 1's line does not fire at all without a chosen
-   theme (`refill_ms: 0`, `source: "baked-in"`), and item 2's flip needs an install door.
-   The one card on the bench is in board 2's socket, where `/api/v1/sd` answers
-   `SD32G SDHC 29.1GB`, `card_count: 2`, `source: "slot-B"`, `active: "av-kit"` — and
-   board 2 has no serial attached here, so it is driven by moving the card, not by moving
-   the cable.
+   **Amended the same afternoon, twice.** First correction: this paragraph said the gate
+   that remained was a card, not a MAC, and that held for about an hour. The owner attached
+   the second board — Windows busid 1-8, COM4, `usbipd attach --wsl` — and it resolved to
+   the bound MAC `44:BD:8D:60:80:88`: that is orb-A, and the SD card was already in its
+   socket. The clone is bound to orb-A again (`/dev/ttyACM1`), and orb-A carries the audited
+   image as `v1.1.0+3bb3799`. orb-B's stamp is `v1.1.0+9e1fc27`. The two app images are
+   byte-identical — every commit between those stamps is docs-only — but the boards do not
+   carry the same stamp, and a bench note must say which board said what. Second
+   correction: orb-B's socket is no longer empty either. It now mounts the same SD32G part
+   blank (`card_count: 0`, 29,807 of 29,808 MB free, rescan answers at the full 20 MHz), so
+   the bench has two card sockets, and orb-B is the writable one for a bundle door that has
+   no door yet.
 
 ### 24.6 The streaming door, under test — 2026-10-19
 
@@ -3269,6 +3272,90 @@ caught by, which is the plainest way to say why the loop changed.
 it, so the door has never run on flash: the 60 KB PSRAM region buffer's failure path, the
 chunk loop against a real card's read speed, and the `staged` witness that a cut power is
 supposed to leave behind are all §24.5's, unchanged.
+
+### 24.7 The bundle door's refusal, on hardware — orb-B, 2026-10-19
+
+The bench work §24.5(5) unblocked turned out to be smaller than the paragraph above
+promised, and the ledger needs that said plainly. Three things I had offered as available
+are not:
+
+- **No route posts `orb_theme_install_bundle()`.** Grep is unambiguous: the function has no
+  caller outside its own definition, and `orb_bundle3_hdr_parse()` has exactly four call
+  sites, all inside `orb_theme.c` — `hdr_parse()` (the upload door's refusal, measured
+  below), `card_check3()` and the serial read inside `orb_theme_install_bundle()` itself,
+  and `orb_theme_boot()`'s "installed but not drawable" detection. The streaming ingest
+  cannot run on flash until P6.4, card or no card.
+- **No FORMAT 3 fixture exists, and inventing one is P6.5's job.** `write_bundle()` has no
+  production caller — `bake_clock.py` calls `orbtheme.write_container()`, and the only
+  Python that calls `write_bundle()` is the two host suites and `mut_bundle.py`. av-kit's
+  facts are all present in the FORMAT 2 blob (3 hands with pivots and radii, 5 tourbillon
+  entries, 15 bg frames, 2 complications, 185 bank rects, the sweep scalars), but the class
+  assignment, the bank-span arithmetic and the tourbillon fan-out are the reverse path's
+  design decisions, ruled as **P6.5**. A hand-written fixture would be an undocumented
+  convention inside a ruled slice, so the right output here is the open decision, not a file.
+- **No MSC path.** `docs/usb-sd-msc-plan.md` is a plan and `main/` has one comment
+  mentioning it, so the card is not reachable from a host except through the upload door —
+  which refuses FORMAT 3. The two blockers are the same door, which is why item 1 below
+  replaces the streaming run rather than preceding it.
+
+**What the door does answer, measured.** Four files at `POST /api/v1/sd/theme` on orb-B
+(`v1.1.0+9e1fc27`, blank card), each refusal read twice for reproducibility:
+
+| File | Body | HTTP | The sentence |
+|---|---|---|---|
+| `orbbundle.write_bundle()` output, untouched | 8,192 B | 422 | "that is a FORMAT 3 app bundle; this firmware installs single-app themes only — update the dial to load it" |
+| same, one byte torn inside the geometry region | 8,192 B | 422 | the same named sentence — the header is what the door reads, so region damage is invisible to it |
+| same, one byte torn inside the 128-byte header | 8,192 B | 422 | "theme format this firmware cannot read" |
+| `orbtheme.write_container()` output, a real FORMAT 2 file | 1,177,659 B | 200 | stored — the dialect is not retired until P6.5 |
+| `assets/clock_assets.bin`, a headerless bank blob | 1,173,563 B | 422 | "not an .orbtheme file" |
+
+Three things worth keeping from that table. The card is **unchanged after every refusal**
+(`card_count`, `free_mb`, `uploading` identical before and after; the scratch file is
+deleted). The refusal is honest in D26's sense — the owner's next action is in the sentence,
+in all three arms. And a refusal costs **the transfer and nothing else**: the door's own read
+is 128 bytes, so the 8 KB probes came back in 0.09–0.22 s, and the 1,173,563 B headerless
+bank took 8.5 s — the whole radio time, and not one byte of install work. httpd has received
+the body before the door looks at it, so a page that could know the format first should say
+so; that is P6.4's question in the open decision below.
+
+**A comment that said the opposite, now corrected.** `orb_theme.c`'s gate carried "a damaged
+one must hear the bundle reader's own reason, not the generic line". Row 3 above is the
+refutation: `orb_bundle3_hdr_parse()`'s reason is computed and discarded, so a torn bundle
+header gets the generic sentence. This is the second comment in three days that overstated
+what its code does (§24.6's was `orb_bundle_rebase()`'s). The comment now states the measured
+behavior and the reason it is the safe direction: the named sentence promises "update the
+dial to load it", and that promise must not be made about bytes whose checksum failed. **No
+code changed.** The rebuild is the same 1,568,912 B, and the only differing bytes are the two
+places a rebuild always moves — the descriptor's build timestamp (`0xb0`–`0xcf`) and the
+trailing image hash (`0x17f06f`–`0x17f08f`), 65 bytes in all. My first draft of this paragraph
+said "byte-identical", which the `cmp` refuted; the claim that survives is the one measured.
+
+**The open decision this leaves, for P6.4 to answer.** §24.6's claim is that the install door
+refuses a bad bundle *before erasing slot B* — the `try_id`/`try_why` path, D11's way of
+keeping a refusal honest — and that claim still has no vector on either side of the wire,
+because there is no door to post it through and no FORMAT 3 file to send once there is. It
+splits into two, and both belong to whoever builds P6.4's page: does the page read the format
+word before uploading, and does the upload door's refusal path leave an install-shaped `try`
+witness at all? The second half is already answerable on the host (the refusal path never
+calls `try_note()` — that lives on the install side), and if a page relies on the sentence
+appearing on the row it presses, that is wrong today. P6.4 must decide which door owns the
+format check, not inherit this one by silence.
+
+**Bench state after this run, so the next entry starts from facts.** orb-A: bound, flashed,
+`v1.1.0+3bb3799`, card mounted with FORMAT 2 av-kit and av-kit-b chosen (`source: "slot-B"`,
+2,976 pages). orb-B: `/dev/ttyACM0`, `v1.1.0+9e1fc27`, card mounted with one FORMAT 2 theme
+(av-kit, stored by this run's accepted upload; **nothing chosen** — `live: default`, slot B
+unwritten, so it stays the clean board for a first real flip). RSSI −78, and its WiFi OTA
+reaches `final 100%` with no reboot while orb-A's reboots; orb-B is on the older stamp, which
+is the one difference between them that could explain it. Note the asymmetry before anyone
+blames the radio: the OTA that would fix orb-B's stamp cannot be trusted on orb-B, and the
+board the radio can be trusted on already has the stamp. Serial is the way.
+
+**Still owed by §24.5, restated.** Item 3's pin half is owed because it needs board 2 on
+*internal* heap with no arena — orb-B now has a card, so it is no longer that board, and
+neither attached board is uncarded any more. That leaves: the streaming ingest's real traffic
+(P6.4), the cut through `install_bundle()` (P6.4), and the fixtures (P6.5). Nothing left in
+§24.5 is bench-available.
 
 
 

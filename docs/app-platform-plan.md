@@ -91,7 +91,7 @@ close the item; the work order is §13.
 |---|---|---|
 | D11 | The theme picker's commit path | **A theme pick installs and reboots, unconditionally.** The stage-then-ask flow is rejected: no pending NVS key, no "reboot now" / "keep this dial" rows, no boot-time card install. Press on a theme copies the container into the alternate slot on the worker task, verifies it from flash, marks that slot live, and asks the OS for the reboot — the pick IS the confirmation. Failure stays honest: the row answers with its reason and the device does not reboot. |
 | D12 | App option pages may nest | **Sub-menus, one level deep** (owner chose this ABI shape from the four offered). An app's option list can carry header rows that open one nested list; items live inside it, never inside each other. One ABI hook added (§1.4): `opt_kind` — `OPT_ROW` / `OPT_GROUP` / `OPT_ITEM`, contiguous-section convention, NULL hook = today's flat page. |
-| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** **AMENDMENT OWED (§20, D30, 2026-10-15): the hybrid makes both slots ping-pong install targets and moves the card-less fallback to the baked-in `clock_assets` mmap, so the "never an install target" clause stops being load-bearing — verify that fallback on a card-less boot before erasing A (§20.5(2)).** |
+| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** **AMENDMENT DECLINED (option A, ruled 2026-10-19, §24): the ping-pong that would have made both slots install targets is deferred, because the card-less fallback reads its pixels from partition offset 0 and offset 0 is inside slot A. The clause stays load-bearing. D30 ships its refill, its `staged` word and its light on the single target slot; §24.1 records the four homes the default could move to and the number that rules each out.** |
 
 ### 0.4 Owner's ruling, 2026-10-12 (third round) — the M3 overflow-mechanism choice
 
@@ -180,7 +180,7 @@ wasm3 from an optional tier to a committed one. D3's "escape hatch" wording and 
 | D27 | The wasm3 memory bound | **Declared in the manifest and gated at install**, in the same shape as `caps` and `period_ms`: the owner sees the cost before consenting, and a module that cannot fit never writes a byte of flash. A trapping module bills a C2 fault, so two strikes mark the app failed and the dial boots to the clock. |
 | D28 | Who defines the format | **The firmware's resolver is the source of truth.** The theme editor adheres to it, never the reverse. |
 | D29 | The theme budget | **`ORB_THEME_SLOT_CAP`, 0x3F0000 (4,128,768 B) per bundle**, policed by the editor at build time and again by the installer at verify time. It is a 63-page ceiling at the measured 64 KB MMU page. **The row read "(4,128,764 B)" from §0.9 until 2026-10-15; `orb_theme.h:372` says 0x3F0000 and 0x3F0000 is 4,128,768.** |
-| D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20 |
+| D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20. **P6.3 as shipped (2026-10-19, §24): the fused boot refill, the lit mechanism B and the `staged` word landed; the ping-pong half did not, because D13's amendment was declined and the default has no home that does not consume a slot (§24.1). The flip is single-slot-B until it does |
 | D31 | Content when a theme carries none | **The app supplies its own default.** Theme content wins wherever the bundle carries it. Where it does not, the app renders a default rather than showing nothing, and D21's two choices ("substitute an OS global or refuse to run") gain the third it left open. The default is code, not bytes: D22's five primitives draw it, so D21's "`.orbapp` never ships a byte of art" stands and D10's "the OS ships no art" stands. The selector is §4.1's `assets` flag, which that row already named "D21's fallback contract": `required` keeps D26's install refusal, `optional` means the app has a default to draw. App-carried *layout* for a silent theme reads from the container's own `geometry` region (§4.1: opaque to the OS, already size- and CRC-checked at `orb_app_manifest.c:319`) — the only reading those counts exist for. §9 item 3 is closed for the clock. |
 | D32 | Who declares a displayed element, and who sets the pace | **Ruled by the owner 2026-10-15.** The **theme** declares, per app, the elements it displays — identity, class, pixels, animation frames, opacity mask, and the **depth order** of the stack — in one legible schema the OS can read. The **app** says how and where each element it was given is painted, and when it needs repainting. Every element is bound to its theme, so a different theme re-composes the same app. The **OS** composites in the declared order and picks, per live app stack, the **highest frame rate it can afford** out of a declared acceptable set (a watch ladder like 4/8/12/15 fps; another app 1 fps to as-fast-as-possible), asks that app to repaint at that pace, and adjusts the pick dynamically. Recorded as heard in §23. It re-opens **D23**, **D26** and **D16**, with those amendments applied to §0 on 2026-10-15 (§23.4, wording at §23.9), and voids §22.2's opaque per-section geometry (§23.3). Split as ruled: the element table is **P6**, the scheduler is **P8** — numbered P8 because P7 is the ratified wasm3 tier (§23.5). R6 and R7 are ruled (§23.6, consequences at §23.7); R2 is ruled with D26; R3, R4 and R5 are open (§23.8). |
 
@@ -3037,6 +3037,124 @@ table is the offer; since D32 the theme's element table is the declaration, and 
 compositor reads the declaration." D16, D23 and D26 each gain a trailing clause: *"Amended by
 D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is
 the OS's pick from a declared set."*
+
+## 24 — P6.3 as ruled option A: the refill, the light, the word, the stream — 2026-10-19
+
+The owner's ruling closed §20.4's blocking question before a line of ping-pong was
+written. **Option A: keep the default where the flash puts it, defer the ping-pong, and
+land the rest of P6.3.** What follows is what that bought, what it cost, and what it left
+owed.
+
+### 24.1 Why the ruling was needed: the hole §20.4's own sentence papers over
+
+§20.4 line 2569 asserts "the mmap fallback needs no such protection" and leaves the
+mechanism out. `orb_theme.c`'s `use_baked_in()` names it: the card-less default reads
+geometry from the compiled `clock_assets.h` and **pixels from partition offset 0**.
+`CMakeLists.txt:76-101` flashes `clock_assets.bin` at that same offset 0, and
+`SLOT_A_HDR` is 0x0 — offset 0 is inside slot A's region. Making both slots ping-pong
+install targets erases the only copy of the factory pixels the board holds, and the
+card-less fallback dies in the commit that enables the second install.
+`tools/host_tz_test.py:1164` pins D13's sentence and `install_target()`'s hardcode today
+precisely because the bench found the first version of this bug for real.
+
+The four homes considered, with numbers measured on 2026-10-19 rather than argued:
+
+| Home | Verdict | The number that decides it |
+|---|---|---|
+| App image DROM, compressed | Fits; declined | `gorb-os.bin` 1,565,728 B in a 2,097,152 B slot = 531,424 B free. The default bank is 1,173,563 B raw and **250,968 B at DEFLATE-9 (21.4%)**. Price: 280 KB of OTA headroom and a decoder IDF v5.4 does not ship (no `esp_zip`, `zlib` or `miniz` among its 106 components). |
+| `assets`, as a permanent region | Does not fit | Default plus two 4 MB slots is 9,175,040 B against an 8,388,608 B partition. Shrinking the slots drags D29's cap through writer, reader, `orbbundle.py` and this ledger. |
+| `apps`, as an app container | Refused twice | P4's format rejects art bytes (`orb_app_install.c:291`), and `APPS_SLOT_STRIDE` is 266,240 B — 4.4× too small. |
+| The card | Circular | A card-resident default cannot guard a card-less boot. D14 refused card-at-boot; §20.1 measured the card path at 217–307 KB/s against the 6.5 MB/s a frame at tempo needs. |
+
+So the default stays at offset 0, the ping-pong waits for a home for the default that
+does not steal a slot, and §20.4's sentence is corrected rather than left standing.
+
+### 24.2 What landed
+
+- **Mechanism B lit.** `art_bank.h`'s `ORB_ART_MECH_B` is 1, and §20.4's rule that the
+  define and `tools/host_art_residency_test.py`'s pin move together held: the pin moved
+  in this commit, and the mirror gained a REFILL family that could not exist while the
+  define was dark.
+- **The boot refill, fused.** `art_bank_fill(offset, bytes, verify, expect_crc, &ms)`
+  gates on free PSRAM, allocates, and reads, copies and CRCs in one loop. A corrupt slot
+  returns `ESP_ERR_INVALID_CRC` with the arena freed, so damage cannot reach the paint
+  path. `adopt()` calls it, and `slot_verify_pixels()` left the boot path: the pre-D30
+  boot passed over the slot twice, once to prove it and once through the map to draw it.
+- **The primary bank has two forms.** `art_bank_ptr()` hands out either base, which is
+  §3.3's one-accessor promise extended to the dial's own pixels. An arena primary bills
+  the DROM window nothing (`art_pages_accounted()` gates on `s_map`), and
+  `orb_art_resident_count()` still counts it. The card-less default calls
+  `art_bank_map_at_0()`, which ignores the define on purpose — that is D13 as ruled.
+- **The `staged` word.** NVS key `theme_staged`, marked before the first erase and
+  cleared when the header lands, on both install paths. Boot clears it the first time it
+  finds the header the marker was waiting for, by hashing the committed slot's own name
+  back to the id it holds. `/api/v1/sd` answers `staged_id`/`staged_why` beside the
+  damage pair, with the refill figures as `refill_ms`/`refill_bytes`. It is a witness and
+  never a pending operation — the distinction that lets it exist under D13's own
+  reasoning about the key D13 deleted.
+- **Streaming FORMAT 3 ingest.** `orb_theme_install_bundle(id, why, whysz)` reads the
+  128-byte header, then the region alone (≤60 KB, PSRAM), validates it through
+  `orb_bundle_parse_region()`, moves the banks with `orb_bundle_rebase()`, and streams
+  each bank chunk-to-partition with its CRC accumulated on the wire and settled against
+  `orb_bundle_bank_rule()` before the next section starts. Installed pixels are read back
+  and checksummed from the partition, and that figure is the header's. Header last, slot A
+  never named, `install_target()` untouched.
+- **It stores, and does not choose.** The ingest never calls `orb_theme_set_live()`,
+  because no compositor can draw a bundle yet. Boot answers `an app bundle this dial
+  cannot draw yet` on the bundle's row instead of calling installed bytes missing (D26).
+  `host_sd_test.py`'s `install_lint()` pins both halves.
+
+### 24.3 The byte-layout ruling the ingest had to make
+
+`tools/orbbundle.py` puts the region at file offset 128 and the banks at
+`align4096(128 + geom_size)` — a base that moves with the table size, which is why the
+writer's "+0x10000 + art_off" line is prose and not a formula. The slot puts both at
+fixed offsets, so a record's `art_off` is an address that must be edited rather than a
+length that can be re-based at read time. `orb_bundle_rebase()` shifts every record by
+one delta, recomputes the region CRC over the edited bytes, and returns the file's old
+base so the stream can seek by it. After the rebase the slot is self-describing: every
+offset inside it reads slot-relative, which is what §22.1's third rule needs before
+`--inspect` can answer with installed bytes.
+
+### 24.4 Verification, and what it did not cover
+
+`idf.py build` clean with no new warnings; `gorb-os.bin` 1,569,936 B, 25% of the slot
+free, 4,208 B larger than the P6.2 build. `host_art_residency_test.py` green with the
+moved pin and 16 of 16 mutations caught. `host_sd_test.py` green with its new lifecycle
+pins, `host_tz_test.py` green (D13's table unchanged, as option A requires), and
+`host_orb_bundle_c_test.py` green at 167 checks.
+
+Named so green is not read as done: `orb_bundle_parse_region()`, `orb_bundle_bank_rule()`
+and `orb_bundle_rebase()` have no parity case in `host_orb_bundle_c_test.py` yet. That
+suite still feeds the shipped reader whole buffers only, so the streaming door is pinned
+by `install_lint()`'s call order and not yet by a shared refusal sentence. §22.6's
+three-way rule wants the case before P6.4 depends on the door.
+`orb_theme_install_bundle()` has no route — the flip page (P6.4) is what posts it.
+
+### 24.5 Owed, with the bench status that makes each one owed
+
+The bench came up on **board 1 at 192.168.2.34** (`/dev/ttyACM0`, `44:BD:8D:78:26:18`);
+board 2 was not reattached. The four `tools/m5_*.sh` runners read `ORB=${ORB:-
+http://192.168.2.34}` as of this commit, where they had `192.168.2.32` hardcoded since
+§19; the leases are static and the address moved anyway, so the override is the fix and
+the new default is this bench.
+
+1. **§20.5(2) refill timing — owed, and now measurable.** `adopt()` prints `theme "%s"
+   from slot-B (chosen): %u B refilled to the arena in %u ms`, and `/api/v1/sd` answers
+   the same figure as `refill_ms`. Taking it needs a card with a theme installed and
+   chosen. Board 1 boots clean on the default and reports `heap_psram: 7,498,456` free,
+   so the av-kit refill is unobstructed.
+2. **§20.5(3) power cut mid-flip — owed, and the word is now readable.**
+   `m5_powercut.sh`'s `/api/v1/config` check grows a `staged` read: an interrupted flip
+   must show the word and draw the OLD commit.
+3. **§20.5(4) arena pin and refusal — the pin half needs board 2.** The refusal arm is
+   host-covered (REFILL at bank+margin−1). Measured here against the live figure: av-kit
+   at 1,173,563 B leaves 6,324,893 B free after the copy and the 2 MB margin.
+4. **The ping-pong, and with it the amendment §20.4 asked for.** D13 stands as written.
+   D30's flip is single-slot-B until the default has a home that does not consume one of
+   the two slots, and §24.1's table says that home is not `assets`, not `apps`, and not
+   the card. If it ever is the app image, the compressed bake is the shape and the OTA
+   headroom is the price.
 
 
 

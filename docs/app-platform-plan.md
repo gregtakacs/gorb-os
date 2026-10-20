@@ -3663,7 +3663,12 @@ C parity 320/0, element suite 46/0. Firmware untouched.
 2. **PAID 2026-10-19** — the device reader: `main/art/orb_clock3.{h,c}`, the boot adopt
    that draws it, and the `active` answer for bundle rows. §25.7.
 3. **The retirement**: FORMAT 2's dialect out of the firmware's reader; §19/§24's
-   FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it.
+   FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it. **Its
+   precondition is met** — §25.7's reader draws a bundle on orb-A, so retiring FORMAT 2
+   no longer bricks the default clock's only boot path. The ORDER still binds: the
+   deletion lands after the flip press exists, because until a press can choose a
+   stored bundle the FORMAT 2 pair is the only thing that puts a dial on a board that
+   has just been reflashed.
 4. **PAID 2026-10-19** — `tools/mut_rebake.py`, 17/17 (see §25.4).
 
 ### 25.7 §25.5(2) PAID 2026-10-19 — the FORMAT 3 device reader
@@ -3768,13 +3773,48 @@ board's wording in each commit message. What stands after them:
 - The device was returned to FORMAT 2 av-kit through its own door and reads
   `active: av-kit`, 182 ms, clean ledger.
 
-**Still owed to M6.** A cap-sized fixture (§25.5(2)'s at-cap case), the PSRAM pin for
-§20.5(4), the glass's own visual check against the kit-rendered reference, and the
-press that CHOOSES a stored bundle: Store deliberately does not choose, Load is the
-FORMAT 2 door, so today a bundle reaches the dial only via a reboot after a Store that
-took a slot already chosen. That lever is §24.5(4)'s flip press, which is step 3's
-work and is blocked on the owner's ruling about the default's new home — not on this
-reader, which is now the thing the flip will press onto.
+**Step 2's artefacts, built — and two assumptions the bench corrected.**
+
+`mk_bundle_fix.py --pad-to N` yields the cap fixture: av-kit's real bytes, one declared
+plane on the end, **4,128,731 B of the 4,128,768 B cap — 37 B under**. Exact sizing is
+impossible, not merely inconvenient: the reader requires the catalogue to account for the
+bank byte-for-byte and every plane to equal its own `w*h*3`, and that product does not
+divide an arbitrary remainder. So the flag names a ceiling and reports the largest legal
+bank under it. The padded build carries ONE section, because the writer's budget gate sums
+banks rather than spans — a cap clock plus a second section is over budget by construction,
+and that refusal is the gate being right. The first fixture failed at both ends of the
+mapping with the same sentence (`a plate at extent (0,0,464,464)`), which is the mirror
+doing its job: the old synthetic table guessed a 464 panel, and the reader refuses a plate
+that is not the panel.
+
+`ORB_ART_ARENA_MARGIN_KB` is §20.5(4)'s pin, and it must exist because the gate as shipped
+is not a lever: free PSRAM measured **7,206,536 B after** a 1,173,563 B refill, so a cap
+bank needs 6,176,704 + 2,097,152 = 8,273,856 B against roughly 9.3 MB gross. **At cap the
+arena cannot hold bank and margin on this board, so §20.5(2)'s predicted at-cap 470 ms is
+not measurable here today** — the refusal happens first, honestly, naming both byte counts
+and handing off to Arm A. Raised to the option's ceiling of 6144 KiB the pin left the
+av-kit refill inside the gate by 21 KB, which is how close this board comes to a forced
+refusal at the size that matters, and exactly the size-dependent flakiness that made a
+compile-time knob necessary rather than optional. The `range 0 6144` clamped a 6400 ask
+back to the default on reconfigure, so the bound holds and a typo cannot widen the
+experiment by accident. Shipping stays 2048, now pinned from `main/Kconfig`'s default by
+`host_art_residency_test.py`: a Kconfig default is the value a build that never mentions
+the option gets, so pinning it keeps the guarantee the old literal gave instead of turning
+the check into a tautology.
+
+Two bench notes that will bite the next person. `serflash.sh`'s stamp guard compares the
+COMMIT, so a 6144-KiB image and a shipping image carry the same `v1.1.0+<sha>` and only the
+log line tells them apart — a pinned build is a different measurement wearing the same
+label. And `pkill -f orb_watch_ser.py` matches the shell that runs it; the tools' own
+refusal to double-open the port is the safer guard.
+
+**Still owed to M6.** The glass's own visual comparison against the kit-rendered reference,
+and the press that CHOOSES a stored bundle: Store deliberately does not choose and Load is
+FORMAT 2's door, so a bundle reaches the dial today only via a reboot after a Store into a
+slot already chosen. That lever is §24.5(4)'s flip press, blocked on the owner's ruling
+about the default's home — not on this reader, which is now the thing the flip will press
+onto. The at-cap refill needs a board with more free PSRAM than orb-A has, or §20.5(2)'s
+cap figure is not merely unmeasured but unmeasurable on this rig.
 
 ### 25.6 §25.5(1) PAID 2026-10-19 — the bundle→pair reverse path
 

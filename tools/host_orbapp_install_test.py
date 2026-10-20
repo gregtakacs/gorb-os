@@ -186,6 +186,7 @@ def compile_harness(tmp, quota, mutate=None):
                          # vocabulary an asset row's first word carries.
                          "-I", tmp, "-I", os.path.join(ROOT, "main"),
                          "-I", os.path.join(ROOT, "main", "assets"),
+"-I", os.path.join(ROOT, "main", "art"),
                          "-I", os.path.join(ROOT, "assets"),
                          "-I", shim, "-o", binp, hac],
                         capture_output=True, text=True)

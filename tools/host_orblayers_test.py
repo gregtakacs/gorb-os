@@ -442,6 +442,7 @@ def build(tmp, layers_text=None, assets_text=None):
         ["cc", "-std=gnu17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
          "-Werror", "-I", shim, "-I", tmp, "-I", P("gfx"), "-I", P("assets"),
          "-I", P("app"), "-I", ROOT, "-I", P(""), "-I", os.path.join(ROOT, "assets"),
+"-I", os.path.join(ROOT, "main", "art"),
          "-o", exe, hac, lsrc, asrc, "-lm"],
         capture_output=True, text=True)
     if cc.returncode:

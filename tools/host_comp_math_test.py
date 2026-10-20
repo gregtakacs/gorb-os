@@ -445,7 +445,7 @@ def lifted_c(mutations=()):
     # than restated here: a field renamed on one side and not the other is the
     # drift this bench exists to catch, and a copy would hide it.
     spr = re.search(r"typedef struct \{[^{}]*\} clk_sprite_t;",
-                    open(os.path.join(ROOT, "assets", "clock_assets.h")).read())
+                    open(os.path.join(ROOT, "tests", "fixtures", "avkit-pair.h")).read())
     auxt = re.search(r"typedef struct \{[^{}]*clk_sprite_t spr;[^{}]*\} clk_aux_t;",
                      cheader)
     flags = re.search(r"enum \{[^{}]*CLK_FLAG_UNDER_DIAL[^{}]*\};", cheader)

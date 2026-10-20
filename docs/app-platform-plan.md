@@ -188,6 +188,7 @@ wasm3 from an optional tier to a committed one. D3's "escape hatch" wording and 
 | D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20. **P6.3 as shipped (2026-10-19, §24): the fused boot refill, the lit mechanism B and the `staged` word landed; the ping-pong half did not, because D13's amendment was declined and the default has no home that does not consume a slot (§24.1). The flip is single-slot-B until it does. **P6.4 (2026-10-19, §24.8) built the flip page's store half: /api/v1/sd/bundle is the ingest's first live caller, /api/v1/sd/theme stores a verified bundle, and the page's store button warns the owner that a cut mid-copy returns the factory clock — the sentence §24.5(2) assigned to this slice. The glass half (progress bar, arena swap at a tick boundary, ping-pong) waits on the default's new home and on P6.5's reader. **§26 settled the first half of that on 2026-10-19: the reader landed (§25.7) and the default's new home is that it has none, so the glass half is unblocked — with this ruling's "a torn flip lands on the default" restated as "lands on the base render, with the last good theme still in the other slot", which is the same promise and a version-matched floor under it.** |
 | D31 | Content when a theme carries none | **The app supplies its own default.** Theme content wins wherever the bundle carries it. Where it does not, the app renders a default rather than showing nothing, and D21's two choices ("substitute an OS global or refuse to run") gain the third it left open. The default is code, not bytes: D22's five primitives draw it, so D21's "`.orbapp` never ships a byte of art" stands and D10's "the OS ships no art" stands. The selector is §4.1's `assets` flag, which that row already named "D21's fallback contract": `required` keeps D26's install refusal, `optional` means the app has a default to draw. App-carried *layout* for a silent theme reads from the container's own `geometry` region (§4.1: opaque to the OS, already size- and CRC-checked at `orb_app_manifest.c:319`) — the only reading those counts exist for. §9 item 3 is closed for the clock. |
 | D32 | Who declares a displayed element, and who sets the pace | **Ruled by the owner 2026-10-15.** The **theme** declares, per app, the elements it displays — identity, class, pixels, animation frames, opacity mask, and the **depth order** of the stack — in one legible schema the OS can read. The **app** says how and where each element it was given is painted, and when it needs repainting. Every element is bound to its theme, so a different theme re-composes the same app. The **OS** composites in the declared order and picks, per live app stack, the **highest frame rate it can afford** out of a declared acceptable set (a watch ladder like 4/8/12/15 fps; another app 1 fps to as-fast-as-possible), asks that app to repaint at that pace, and adjusts the pick dynamically. Recorded as heard in §23. It re-opens **D23**, **D26** and **D16**, with those amendments applied to §0 on 2026-10-15 (§23.4, wording at §23.9), and voids §22.2's opaque per-section geometry (§23.3). Split as ruled: the element table is **P6**, the scheduler is **P8** — numbered P8 because P7 is the ratified wasm3 tier (§23.5). R6 and R7 are ruled (§23.6, consequences at §23.7); R2 is ruled with D26; R3, R4 and R5 are open (§23.8). |
+| D33 | Where the product logic runs | **The browser holds it. Go is a thin same-origin shim.** RULED by the owner 2026-10-20, ahead of P6b's editor work. The next orb-manager release is served from a server and flashes over Web Serial, the browser ESP Writer flow ESPHome Web uses, so no Go process may hold product logic. Every FORMAT 3 rule (the writer, the two budget sums, the element table, the preview, the release pack) lives in browser JS and must run with no hub present. Go keeps three jobs: serve the page, forward device calls same origin, and the serial plus fleet machinery the desktop build still needs. `orbnet.ContainerName` stays a pre-gate and never becomes the authority on a bundle. No new Go format package enters the tree. The derivation, the three verified facts behind it, and the P6b decisions it changes are §29. |
 
 **What this retires.** The three-slot art re-slice of §3.2 (`art0`/`art1`/`art2`) is
 withdrawn: with no art in any container there is no per-app bank to place, and
@@ -4168,3 +4169,111 @@ ahead-commits already in `origin/main` by patch-id) is deleted locally and on `o
 the hub-side theme **editor/preview** §27 named — and the larger FORMAT 3 threads (P6.5's
 glass/flip, P7 wasm3 code tier, P8 OS-scheduled repaint, and the open §26 first-boot
 decision) are still open and unrelated to the ingest dialect.
+
+## 29 — D33: the web release decides P6b's shape (RULED 2026-10-20, owner)
+
+**The requirement, as heard.** The next orb-manager release is served from a server and
+flashes over the browser's ESP Writer plugin — the Web Serial flow the ESPHome website
+uses. The Go module must stay lightweight, must exist only to replace the one thing a
+browser cannot do, and the rest of the code must be portable without it. D33 drives the
+P6b editor decisions rather than following them.
+
+**Three facts measured on this tree, which set what "lightweight" can mean.**
+
+1. **The device answers no CORS header.** `main/` sets `Cache-Control` and
+   `Content-Type` and never `Access-Control-Allow-*`, and the hub strips that header on
+   the way back (`proxy.go:182`, pinned by `proxy_test.go:213`). A page hosted on a
+   server cannot read an orb's API cross-origin, so the same-origin forwarder at
+   `/orb/<ip>/api/v1/...` is not a convenience — it is what lets a web release reach a
+   dial at all. The firmware's own provisioning page escapes this only because the orb
+   serves that page and its single write runs `mode:'no-cors'` (`orb_net.c:4981`).
+2. **The forwarder already carries a full-size theme.** `proxyRequestCap` is `4 << 20`
+   (`security.go:383`). The largest legal FORMAT 3 bundle is its `art_off` at cap plus
+   `ORB_THEME_SLOT_CAP`: the 128 B header and a region at `ORB_BUNDLE_GEOM_CAP` (0xF000)
+   pushed to the 4 KiB sector line make 65,536, plus 4,128,768 — **exactly 4,194,304 B**.
+   A theme that fills a slot fits the generic forwarder with no headroom and no Go
+   assembly step.
+3. **`orbnet.ContainerName` refused FORMAT 3 until this slice.** `themecontainer.go` required
+   `f == themeFormat2` and `internal/orbfake` agreed with it. Since `7c0fd4b` the
+   firmware refuses FORMAT 2. The hub rejected every file its devices accepted and
+   forwarded every file they rejected. **Fixed 2026-10-20:** the reader now admits FORMAT 3
+   at `ORB_BUNDLE3_ABI`, verifies the header's own CRC and both D29 install sums, walks the
+   40-byte index records for the slug list, and refuses FORMAT 1 and 2 in the firmware's
+   words; the double writes and gates FORMAT 3 on its own copy of the layout. The four
+   readers are pinned against one committed file —
+   `tests/fixtures/format3-pair.orbtheme`, a 603,392-byte two-section bundle written by
+   `tools/make_bundle_fixture.py` with an animated sprite and a four-plate bank, beside a
+   `.json` of the authority's own read-back. `--verify-c` re-runs the shipped C reader over
+   it; `internal/orbnet/themecontainer_test.go` re-runs the hub's. The JS writer matches the
+   same file, which is what makes the D33 parity claim checkable instead of asserted.
+
+
+**What D33 decides for P6b.**
+
+- **The browser owns the FORMAT 3 writer AND the FORMAT 3 read-back check.** D28 makes
+  the firmware resolver the truth; D33 makes the browser the place the product has to
+  reach. A Go writer leaves the web build unable to bake, and a Go-only verifier leaves it
+  unable to gate. `tools/watch-composer/orbtheme-baker.js` (its FORMAT 3 section, copied
+  into the hub's `web/composer/` by `make composer`) mirrors `tools/orbbundle.py`
+  (`pack_blob` → `packBlob3`, `pack_index` → `packIndex3`, `pack_header3` → `packHeader3`,
+  `write_bundle` → `writeBundle3`, `check_budget` → `checkBudget3`, plus `theme_schema`'s
+  `check_element`/`check_table` as `checkElement`/`checkTable`) and mirrors
+  `orb_bundle3_hdr_parse`'s refusal order in `verifyBundle3` when it re-reads what it wrote.
+  The proof is the mirror test `_selftest/headless-bundle3.test.js`:
+  `python3 tools/make_bundle_fixture.py --vectors <dir>` emits the reference bundle and its
+  input model with the Python that defines the format, and the suite requires the browser's
+  bytes to match the committed `tests/fixtures/format3-pair.orbtheme` byte for byte, then
+  hands those bytes back to `read_bundle` so the authority vouches for them rather than the
+  fixture vouching for itself. It needs no pillow and no numpy: the writer takes encoded
+  pixels, and the encoders stay pinned by `headless-orbtheme.test.js`.
+- **No new Go format package enters the tree.** §22.3's install-end gate closes on the
+  device, where it already landed (`orb_bundle.c:171-180`). Go's theme work shrinks to
+  retargeting the identity read's dialect (fact 3) and forwarding bytes.
+- **The budget meter is browser-side, and it is D29's authoring gate.** Both install sums
+  shown before the bake and after, `== cap` accepted, refusal in the writer's own
+  sentences.
+- **The preview reads the element table, in JS.** D32's table is its only source. Pass
+  line (b) is host-pinned: each preview row's rect and rotation centre equal the shipped
+  pair's `clk_sprite_t` fields in `tests/fixtures/avkit-pair.h` — the same reference
+  `tools/host_clock3_test.py` holds the C projection to. On-glass parity stays owed to
+  P6.5's compositor, read back through `GET /api/v1/fb`.
+- **The animated sprite is the animation carrier, and only four of the eight classes may
+  carry one.** The sprite catalogue row is `{off, size, w, h}` and an element's `frame0`
+  indexes it, so a bank of separately-stored keyframes is a FORMAT 3 fact today
+  (`orb_bundle.h:184-193`, `ORB_BUNDLE_SPR_WORDS 4`, `ELEM_FRAMES_MAX 360` — av-kit's
+  busiest bank uses 208). What the clock adapter refuses is the GIF **delta** mechanism
+  specifically: `orb_clock3.c:238` rejects `plate.n_frames > 1` because FORMAT 2 stored
+  the next frame's delta rects in the sprite row's `diffx/diffy/diffw/diffh`, four fields
+  FORMAT 3's four-word catalogue row does not carry. `theme_schema.check_element` then
+  narrows the choice further, and the editor has to honour it rather than discover it at
+  bake time: **`sprite` and `hand` carry `n_frames` planes the OS advances** (`EF_OS_ADV`
+  allowed); **`text` and `bank` carry `n_frames` planes the app advances** and refuse
+  `EF_OS_ADV` outright ("holds app state, so the OS must not advance its frames"); **`layer`
+  and `status` refuse `n_frames > 1`** ("is composited, not animated — it carries one
+  frame, not N"), and `status` refuses the advance flag as well. `plate` and `ring` take
+  both at the schema, and the compiled clock then refuses an animated plate in its own
+  words. So an editor region that animates on the OS clock bakes to **one `sprite` row with
+  `n_frames` planes**,
+  size-gated by the 4,128,768 B cap — D29's measurement, not a guess. The plate behind it
+  stays one keyframe. Animate anything on a compiled-dial clock section and the refusal is
+  `orb_clock3.c`'s: that adapter maps `plate` slots 0-1, `hand` slots 0-4 and `sprite`
+  slots 0-4 (its shadows) and names no field for a multi-frame sprite — it is the shipped
+  compiled clock's reader, not the platform's compositor, and §25.3 rules that shape in
+  "when a kit that needs them is on the bench". Pass line (a), installs and lists `OK:
+  true`, is reachable today; pass line (b), it moves on glass, is P6.5's.
+- **The app-offer reader moves to JS.** The bake-time intersection (Decision D) reads the
+  `.orbapp` offer from the file the operator picks, so it needs a JS reader for
+  `orbapp.py`'s manifest rather than a new Go client. D26's install-time refusal on the
+  device stays the authority.
+- **The cross-product release pack is a browser artifact.** `Watch Composer.dc.html:1584`
+  already writes a STORE-method zip in JS. A theme×apps set is that zip with a manifest
+  and the FORMAT 3 bundle inside, and installing one is the existing forwarder carrying
+  the members in order through doors already allowlisted (`sd/app`, `apps/install`,
+  `sd/theme`, `sd/bundle`). No `cmd/orbset`, and no firmware-adjacent Go.
+
+**What stays in Go, and why each piece is irreducible:** the page host, the same-origin
+forwarder with its route allowlist and address grant, the fleet store and serial console
+the desktop build uses, and the embedded firmware bundle. Flashing moves to the browser
+plugin. The desktop binary keeps its own flasher, because a person on a cable with no
+server still needs one.
+

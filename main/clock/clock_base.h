@@ -1,7 +1,11 @@
 /* clock_base.h — what the dial shows when there is no theme.
  *
- * §26, ruled 2026-10-19: a freshly-flashed orb carries no theme at all, and the app
- * falls back to its base form drawn from OS primitives. The owner's face for the clock
+ * §26, ruled 2026-10-19 and re-ruled on the bench for slice 2: the base form is what
+ * the dial falls back to when no art bank is resident — a theme lost to corruption, or
+ * a shelf board whose assets partition is empty. A freshly-flashed orb is NOT in that
+ * state: slice 2 leaves the flashed default in place, so a board with no installed
+ * theme still draws the dial, and this face appears only once there is no bank at all.
+ * The owner's face for the clock
  * is the digital one — large time, date beneath, one status line — chosen as the
  * cheapest thing that is unambiguously legible at arm's length, and as the base form
  * that asks least of a theme it has not been given.

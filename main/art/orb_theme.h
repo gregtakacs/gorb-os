@@ -46,7 +46,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "clock_assets.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
+#include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
 
 #define ORB_THEME_EXT      ".orbtheme"
 #define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */

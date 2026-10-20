@@ -738,34 +738,32 @@ static uint32_t      s_refill_bytes;
 static uint32_t      s_bundle_ms;
 static uint32_t      s_bundle_bytes;
 
-/* The fallback pair, straight out of the generated header. Naming those objects
- * works in THIS file only, and only because orb_theme_geo.h is not included here:
- * its macros shadow exactly these names, and they are what clock_view.c reads. */
-static void use_baked_in(void)
+/* The no-resident-art fallback (§26 P6.5). The compiled FORMAT 2 pair is retired, so
+ * there is no baked-in dial to fall back to: a board whose default bundle and installed
+ * slot both fail to draw clears the geometry so clock_view's residency gate fails and it
+ * paints the base digital face, which still tells the time. s_geo.theme stays NULL and is
+ * only ever dereferenced on the themed leg, which the residency gate has already fenced
+ * off by the time anything reads it. */
+static void use_no_art(void)
 {
-    /* Geometry from clock_assets.h, pixels from partition offset 0 — the
-     * arrangement `idf.py flash` puts there, and the reason a board with no
-     * installed theme still boots the dial it always showed. */
-    s_geo.theme      = (clk_theme_t *)&clk_theme;
-    s_geo.rects      = (clk_bg_rect_t *)clk_bg_rects;
-    s_geo.rect_first = (uint16_t *)clk_bg_rect_first;
-    s_geo.gif_delays = (uint16_t *)clk_gif_delays;
-    s_geo.bg_frames  = (uint32_t *)clk_bg_frames;
-    /* The baked-in dial is the four-count blob: it has no complication tables, so
-     * clearing these is what stops a theme switch that lands here from leaving the
-     * paint path drawing windows out of an arena that has been freed. */
+    s_geo.theme      = NULL;
+    s_geo.rects      = NULL;
+    s_geo.rect_first = NULL;
+    s_geo.gif_delays = NULL;
+    s_geo.bg_frames  = NULL;
     s_geo.comps      = NULL;
     s_geo.aux        = NULL;
     s_geo.bank       = NULL;
     s_geo.n_comps    = 0;
     s_geo.n_aux      = 0;
     s_geo.n_bank     = 0;
-    s_geo.art_size   = (size_t)CLK_BLOB_BYTES;
+    s_geo.art_size   = 0;
+    s_geo.blob_off   = 0;
     s_geo.from_container = false;
     s_geo.name[0] = '\0';
     s_active_name[0] = '\0';
     s_active_valid = false;
-    s_source = "baked-in";
+    s_source = "none";
 }
 
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
@@ -800,16 +798,15 @@ typedef enum { BOOT_ART_DEFAULT = 0, BOOT_ART_CARD = 1 } boot_art_t;
  * verifies the pixels separately: this predicate decides where to look, not
  * whether it loaded. */
 /* What the owner's choice and the slot's contents agree on. Pure, so the host suite
- * drives every case with vectors, and so the dial's answer cannot drift from the
- * page's. `b_valid` is FORMAT 2's verdict; `b_is_bundle` is FORMAT 3's, and P6.5
- * §25.5(2) is why both are needed: a chosen slot holding a bundle is no longer an
- * absence, it is a theme the reader can draw. A choice of "card" that names nothing
- * drawable is still the default — D13's rule that the fallback never installs. */
-static boot_art_t boot_resolve(const char *live, const bool b_valid,
-                               const bool b_is_bundle)
+ * drives every case with vectors, and so the dial's answer cannot drift from the page's.
+ * §26 (P6.5) retired FORMAT 2, so a bundle is the only drawable thing a slot can hold:
+ * `b_is_bundle` is boot's evidence. A choice of "card" that names no drawable bundle is
+ * still the default — D13's rule that the fallback never installs, unchanged; only the
+ * FORMAT 2 verdict it also consulted is gone. */
+static boot_art_t boot_resolve(const char *live, const bool b_is_bundle)
 {
     if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;
-    return (b_valid || b_is_bundle) ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
+    return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
 }
 
 /* Slot B, always. Slot A is what `idf.py flash` wrote and what the factory dial
@@ -1936,11 +1933,12 @@ static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
 
 static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t *h,
-                               const uint32_t *raw, const char *src_name)
+                               const uint32_t *raw, const char *src_name,
+                               uint32_t slot_hdr_base, bool resident_map)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) return ESP_ERR_NO_MEM;
-    if (esp_partition_read(p, SLOT_B_HDR + SLOT_GEOM_OFF, region, h->geom_size) != ESP_OK) {
+    if (esp_partition_read(p, slot_hdr_base + SLOT_GEOM_OFF, region, h->geom_size) != ESP_OK) {
         heap_caps_free(region);
         return ESP_FAIL;
     }
@@ -1952,7 +1950,7 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * refill hashes the span they sit in. */
     const char *why = orb_bundle_parse_region(h, region, h->geom_size, SLOT_CAP, &b);
     if (why) {
-        ESP_LOGE(TAG, "bundle in slot-B would not parse: %s", why);
+        ESP_LOGE(TAG, "bundle in %s would not parse: %s", src_name, why);
         heap_caps_free(region);
         return ESP_ERR_INVALID_CRC;
     }
@@ -1961,13 +1959,13 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
         /* Not damage — a bundle that carries other apps and no clock. The row's
          * sentence says which, because "the file I stored is not on the wall" without
          * a reason is what an owner reads as a broken button. */
-        ESP_LOGI(TAG, "bundle in slot-B carries no %s section", ORB_CLOCK3_SLUG);
+        ESP_LOGI(TAG, "bundle in %s carries no %s section", src_name, ORB_CLOCK3_SLUG);
         heap_caps_free(region);
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* The span to refill: the installed art region runs to the end of the LAST bank,
-     * sector-rounded, which is what copy_bundle3 erased, wrote and read back. */
+    /* The span to make resident: the installed art region runs to the end of the LAST
+     * bank, sector-rounded, which is what copy_bundle3 erased, wrote and read back. */
     uint32_t end = SLOT_ART_OFF;
     for (uint32_t i = 0; i < b.n_sections; i++) {
         const uint32_t e2 = b.sec[i].art_off + b.sec[i].art_size;
@@ -1976,7 +1974,17 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     const uint32_t span = (end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
 
     uint32_t ms = 0;
-    const esp_err_t fe = art_bank_fill(SLOT_B_ART, span, true, raw[W_ART_CRC], &ms);
+    esp_err_t fe;
+    if (resident_map) {
+        /* The default maps its own pixels rather than copying them to the arena
+         * (D13's "the default ALWAYS maps"): the flashed slot-A bank is the only copy
+         * of these pixels on the board, and it is version-matched to this firmware.
+         * mmap is not content-verified here — the bytes were written whole by
+         * esptool, and clock_view proves residency on the mapped span. */
+        fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
+    } else {
+        fe = art_bank_fill(slot_hdr_base + SLOT_ART_OFF, span, true, raw[W_ART_CRC], &ms);
+    }
     if (fe != ESP_OK) {
         heap_caps_free(region);
         return fe;
@@ -2003,6 +2011,7 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     s_geo.art_size = io.out_art_size;
     s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;
     s_geo.from_container = true;
+
     strlcpy(s_geo.name, h->name, sizeof(s_geo.name));
     strlcpy(s_active_name, h->name, sizeof(s_active_name));
     s_active_geom_crc = s_bundle_file_geom = raw[W_BAKED_MS];
@@ -2051,6 +2060,26 @@ static esp_err_t adopt(const esp_partition_t *p, slot_t *s, const char *src_name
     return ESP_OK;
 }
 
+/* The flashed default, FORMAT 3 (§26 P6.5): slot A's bank now ships as a bundle, so
+ * boot reads its header through the bundle door and, if it is one with a clock
+ * section, adopts it MAPPED (not arena-filled) exactly as the FORMAT 2 default was
+ * mapped. A slot-A header that is not a FORMAT 3 bundle returns non-OK and the caller
+ * falls back. This is the only read that turns the flashed pixels into a dial; it
+ * does not install or erase anything (D13's no-NVS-write-in-the-fallback rule holds).
+ */
+static esp_err_t adopt_default_bundle(const esp_partition_t *p)
+{
+    uint32_t raw[W_WORDS];
+    if (esp_partition_read(p, SLOT_A_HDR, raw, sizeof raw) != ESP_OK)
+        return ESP_FAIL;
+    if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT)
+        return ESP_ERR_NOT_FOUND;           /* not a bundle: erased, or a FORMAT 2 blob */
+    orb_bundle3_hdr_t h;
+    if (orb_bundle3_hdr_parse(raw, &h) != NULL)
+        return ESP_ERR_INVALID_CRC;         /* claims 3, header will not check */
+    return adopt_bundle3(p, &h, raw, "slot-A", SLOT_A_HDR, true);
+}
+
 /* Resolve the owner's choice and verify the slot it names. Called from app_main
  * BEFORE display_init(), so nothing has mapped the bank yet — the pixels boot
  * verifies are the ones the paint path is about to read.
@@ -2066,7 +2095,7 @@ esp_err_t orb_theme_boot(void)
     const esp_partition_t *p = art_bank_partition();
     if (!p) {
         ESP_LOGE(TAG, "no \"%s\" partition — theme storage is off", ART_BANK_PARTITION_NAME);
-        use_baked_in();
+        use_no_art();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -2076,60 +2105,45 @@ esp_err_t orb_theme_boot(void)
     s_damage_id[0] = '\0';
     s_damage_why[0] = '\0';
 
-    /* Slot B is the only thing worth reading: A is the flashed bank, carries no
-     * header at all, and is what the fallback path below draws anyway. */
-    slot_t b;
-    slot_init(&b, SLOT_B_HDR, SLOT_B_ART);
-    slot_read(&b, p);
+    /* Slot B is the only installed theme there is to read. A carries no header and is
+     * the flashed default the leg at the bottom reads anyway. §26 (P6.5): a slot now
+     * holds a FORMAT 3 bundle or nothing — the FORMAT 2 reader is retired — so the
+     * header is sniffed once and parsed through the bundle door. A slot that claims
+     * FORMAT 3 but whose header will not check is neither drawable nor empty; it gets
+     * its own damage sentence (§24.7's lesson that a FORMAT 3 file is never described
+     * by a generic "no theme"). */
+    orb_bundle3_hdr_t b3;
+    bool slot_is_bundle = false;
+    bool slot_claims3 = false;
+    uint32_t raw3[W_WORDS];
+    if (esp_partition_read(p, SLOT_B_HDR, raw3, sizeof raw3) == ESP_OK &&
+        raw3[W_MAGIC] == THEME_MAGIC && raw3[W_FORMAT] == ORB_BUNDLE3_FORMAT) {
+        slot_claims3 = true;
+        if (orb_bundle3_hdr_parse(raw3, &b3) == NULL) slot_is_bundle = true;
+    }
 
-    /* The `staged` witness, and the one rule that lets it expire. It testifies to a
-     * flip whose pixels landed and whose header never did, so it clears on the first
-     * boot that finds the header it was waiting for — identified by hashing the
-     * committed slot's own name back to the id the marker carries. A valid slot
-     * naming a DIFFERENT theme is not that commit: the staged install died before
-     * its header, and the slot belongs to an older pick. The convergence is one NVS
-     * write at boot, and the word it removes is diagnostics rather than a choice,
-     * so D13's no-NVS-write-in-the-fallback-path rule is not what this touches. */
+    /* The `staged` witness expires on the boot that finds the header it waited for,
+     * identified by hashing the committed slot's own name back to the marker's id. The
+     * committed slot holds a bundle now, so the name is b3.name. A slot naming a
+     * DIFFERENT theme is not that commit. One NVS write at boot, and the word it removes
+     * is diagnostics, so D13's no-NVS-write-in-the-fallback rule is untouched. */
     s_staged_id[0] = '\0';
     char staged[ORB_THEME_ID_HEX + 1];
     if (nvs_get(THEME_NVS_STAGED, staged, sizeof staged) && theme_id_ok(staged)) {
         bool landed = false;
-        if (b.valid) {
+        if (slot_is_bundle) {
             char cid[ORB_THEME_ID_HEX + 1];
-            theme_id(b.h.name, cid);
+            theme_id(b3.name, cid);
             landed = (strcmp(cid, staged) == 0);
         }
         if (landed) staged_clear();
         else        strlcpy(s_staged_id, staged, sizeof s_staged_id);
     }
 
-    /* A FORMAT 3 bundle in the slot is installed bytes this dial cannot draw yet.
-     * slot_read() above parses FORMAT 2, so it calls a bundle's header invalid — and
-     * "no installed theme" would be a lie about bytes that are plainly there. Read
-     * the header once through the bundle door and let the row say what is true
-     * (D26's rule that a refusal names the reason, on the path that has no press to
-     * answer). P6.4's flip page and P6.5's FORMAT 3 reader are what change this. */
-    orb_bundle3_hdr_t b3;
-    bool slot_is_bundle = false;
-    /* The magic and format word WITHOUT the rest of the parse. A slot that claims
-     * FORMAT 3 and whose header will not check is neither drawable nor empty, and the
-     * §24.7 lesson is that an unreadable bundle must not be described by FORMAT 2's
-     * generic line: it gets its own sentence, which needs to know it was a bundle. */
-    bool slot_claims3 = false;
-    uint32_t raw3[W_WORDS];
-    if (!b.valid && esp_partition_read(p, SLOT_B_HDR, raw3, sizeof raw3) == ESP_OK &&
-        raw3[W_MAGIC] == THEME_MAGIC && raw3[W_FORMAT] == ORB_BUNDLE3_FORMAT) {
-        slot_claims3 = true;
-        if (orb_bundle3_hdr_parse(raw3, &b3) == NULL) slot_is_bundle = true;
-    }
-
-    if (boot_resolve(s_live, b.valid, slot_is_bundle) == BOOT_ART_CARD && !b.valid) {
-        /* The chosen slot holds a bundle (P6.5 §25.5(2)). Its clock section, if it has
-         * one, is now the dial; anything else falls through to the default with the
-         * bundle's own sentence on its row. !b.valid is what makes it this branch and
-         * not adopt()'s: the same slot cannot answer both formats, and a header that
-         * parses as FORMAT 2 is read as FORMAT 2 whatever the sniff saw. */
-        const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B");
+    if (boot_resolve(s_live, slot_is_bundle) == BOOT_ART_CARD) {
+        /* The chosen slot holds a bundle: its clock section is the dial, and a refusal
+         * names itself on the row rather than silently landing on the default. */
+        const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B", SLOT_B_HDR, false);
         if (be == ESP_OK) {
             ESP_LOGI(TAG, "bundle \"%s\" from slot-B (chosen): %u B refilled to the "
                           "arena in %u ms", s_active_name,
@@ -2147,72 +2161,40 @@ esp_err_t orb_theme_boot(void)
                 sizeof s_damage_why);
         ESP_LOGE(TAG, "the chosen bundle \"%s\" would not load (%s) — drawing the default",
                  b3.name, esp_err_to_name(be));
-    } else if (boot_resolve(s_live, b.valid, slot_is_bundle) == BOOT_ART_CARD) {
-        const esp_err_t ae = adopt(p, &b, "slot-B");
-        if (ae == ESP_OK) {
-            /* The §20.5(2) line: the measured milliseconds of the fused refill, on
-             * the boot log, beside the byte count that produced it. §20.2 predicted
-             * 150 ms at av-kit size from D14's flash-read arithmetic; this is the
-             * number that replaces the prediction, and the ledger cites it. */
-            ESP_LOGI(TAG, "theme \"%s\" from slot-B (chosen): %u B refilled to the arena in %u ms",
-                     s_active_name, (unsigned)b.h.art_size, (unsigned)s_refill_ms);
-            return ESP_OK;
-        }
-        /* The choice named a slot that will not load. Its bytes were read back and
-         * checksummed when the install wrote them, so anything that fails now is
-         * corruption and not a job still running: say so on that theme's row, draw
-         * the default, and leave the choice WRITTEN. Clearing it here would erase
-         * what the owner asked for, would be an NVS write during boot, and would
-         * make the dial quietly forget a theme they can still re-install. The picker
-         * matches a row by id, so the damaged slot is named by the id its header name
-         * hashes to (a headerless slot hashes to nothing → empty, no row). */
-        if (b.h.name[0]) {
-            char did[THEME_ID_HEX + 1];
-            theme_id(b.h.name, did);
-            strlcpy(s_damage_id, did, sizeof s_damage_id);
-        } else {
-            s_damage_id[0] = '\0';
-        }
-        /* Two refusals, two sentences: a slot that checksums wrong is damage the
-         * owner can only fix by re-installing, and an arena that is too small is a
-         * capacity answer that names itself (§20.2's Arm A question, D26's rule that
-         * a refusal says why). */
-        strlcpy(s_damage_why, ae == ESP_ERR_NO_MEM
-                    ? "not enough memory for its pixels — the default is drawn"
-                    : "the installed copy did not verify — re-install it",
-                sizeof s_damage_why);
-        ESP_LOGE(TAG, "the chosen theme \"%s\" would not load (%s) — drawing the default",
-                 b.h.name, esp_err_to_name(ae));
     } else if (slot_is_bundle) {
-        /* Stored, not chosen: the same resting state as a FORMAT 2 install the owner
-         * walked away from. Nothing is damaged and no row needs a reason. */
+        /* Stored, not chosen: nothing is damaged and no row needs a reason. */
         ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not chosen", b3.name);
     } else if (slot_claims3) {
-        /* The choice is "card", the slot claims FORMAT 3, and its header will not
-         * parse. The ledger names it as damage the owner can act on — re-store — with
-         * no id to hang it on, because the id is a hash of a name this header cannot
-         * be trusted to carry. FORMAT 2's twin two lines up does the same thing with a
-         * blank id, and the row for the file on the card is where the truth lands. */
+        /* Chosen as "card", the slot claims FORMAT 3, and its header will not parse:
+         * damage the owner can act on (re-store), with no id to hang it on because the
+         * id hashes a name this header cannot be trusted to carry. */
         s_damage_id[0] = '\0';
         strlcpy(s_damage_why, "the stored bundle's header is damaged — re-store it",
                 sizeof s_damage_why);
         ESP_LOGE(TAG, "slot-B claims FORMAT 3 and its header would not parse — "
                       "drawing the default");
-    } else if (b.valid) {
-        /* B holds an install the owner walked away from. It is not drawn and not
-         * erased: it is theirs, and the default costs nothing to keep. */
-        ESP_LOGI(TAG, "slot-B holds \"%s\" but the dial is on the factory default",
-                 b.h.name);
     } else {
-        ESP_LOGI(TAG, "no installed theme — drawing the baked-in bank");
+        ESP_LOGI(TAG, "no installed theme — reading the flashed default");
     }
-    use_baked_in();
-    /* The default ALWAYS maps, whatever ORB_ART_MECH_B says (D13 as ruled option A
-     * stands: the flashed bytes at partition offset 0 are the only copy of the
-     * factory pixels on the board, and an arena copy of them would be made from
-     * the very region an install erases). They were checksummed by tools at build
-     * time, so there is nothing left to verify here. */
-    return art_bank_map_at_0(s_geo.art_size);
+    /* The default leg (D13 as ruled option A stands): slot A is the flashed bank, the
+     * only copy of the factory pixels on the board, and it is mapped — never arena-
+     * filled. §26 P6.5: those pixels now ship as a FORMAT 3 bundle, so boot reads slot
+     * A through the bundle door first. A bundle with a clock section is drawn; a
+     * board whose slot A is not a drawable bundle falls through to the base render. */
+    const esp_err_t de = adopt_default_bundle(p);
+    if (de == ESP_OK) {
+        ESP_LOGI(TAG, "default bundle \"%s\" from slot-A: mapped, %u B resident",
+                 s_active_name, (unsigned)s_refill_bytes);
+        return ESP_OK;
+    }
+    /* No drawable default and no chosen card that loads: the compiled FORMAT 2 pair is
+     * retired, so there is no second copy of the factory pixels to fall back to. The
+     * board still boots — clock_view's residency gate fails and it paints the base
+     * digital face — and the reason is on the serial log for whoever reflashes it. */
+    use_no_art();
+    ESP_LOGE(TAG, "no drawable theme (default slot-A refused: %s) — base digital face",
+             esp_err_to_name(de));
+    return ESP_OK;
 }
 
 /** One place to fail: the row shows `why`, the log shows the same sentence, the

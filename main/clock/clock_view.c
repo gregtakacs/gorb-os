@@ -82,7 +82,7 @@
 #include "clock_base.h"  /* §26: the face shown when no theme is resident */
 #include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
 
-#include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
+#include "clk_types.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
 /* Second, deliberately: this header #defines the names clock_assets.h just defined
  * as objects, so including it before would expand a macro inside the generated
  * struct definition. Everything below this line reads the theme through
@@ -1768,7 +1768,8 @@ esp_err_t clock_view_init(void)
      * before art is demanded so a bankless board is never failed at an art gate and
      * left on the panel's reset black. */
     const bool art_resident = art_bank_ready()
-                    && art_bank_bytes() >= orb_theme_geo()->blob_off + CLK_BLOB_BYTES;
+                    && art_bank_bytes() >= orb_theme_geo()->blob_off
+                                            + orb_theme_geo()->art_size;
 
     s_scr = lv_obj_create(NULL);
 
@@ -1800,7 +1801,8 @@ esp_err_t clock_view_init(void)
     s_art = art_bank_ptr() + orb_theme_geo()->blob_off;
     orb_bg_init(s_art);   /* the delta bank reads the same mapping, through the app */
     ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B) from %s",
-             (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES, orb_theme_source());
+             (unsigned)art_bank_bytes(), (unsigned)orb_theme_geo()->art_size,
+             orb_theme_source());
 
     /* Screen bg stays TRANSPARENT: the plate covers the full 466x466 opaquely,
      * so a black cover fill here would be rendered (and re-rendered per dirty

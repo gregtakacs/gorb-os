@@ -166,7 +166,9 @@ d13_lift = "\n".join([
     lift_theme(theme_src, THEME_SRC,
                r"static boot_art_t boot_resolve\(const char \*live, const bool b_is_bundle\)"
                r"\n\{[\s\S]*?\n\}"),
-    lift_theme(theme_src, THEME_SRC, r"static uint32_t install_target\(void\)[^\n]*\}"),
+    lift_theme(theme_src, THEME_SRC,
+               r"static uint32_t install_target\(boot_art_t live\)\n"
+               r"\{[\s\S]*?\n\}"),
 ])
 
 wifi_reasons = """
@@ -494,16 +496,21 @@ static void boot_case(const char *what, const char *live, bool b_bundle, int wan
            (int)got == BOOT_ART_CARD ? "card" : "default",
            want == BOOT_ART_CARD ? "card" : "default");
 }}
-static void install_target_case(void){{
-    /* Slot A is partition offset 0, which is where `idf.py flash` wrote the factory
-     * bank and where use_baked_in() reads its pixels from. One install aimed there
-     * erases the default and the fallback together — the defect ruling D13 exists
-     * to kill, so the target is pinned to B and pinned AWAY from 0. */
-    const uint32_t t = install_target();
-    const int pass = (t == SLOT_B_HDR) && (t != SLOT_A_HDR) && (t != 0u);
+static void install_target_case(const char *what, boot_art_t drawn, uint32_t want){{
+    /* §26 slice 3's ping-pong. Under ruling D13 the answer was a constant (slot B) and
+     * the test pinned that constant, because slot A held the one copy of the factory
+     * pixels. D13 is retired and the owner ruled the default expendable, so A is a legal
+     * target and the constant is no longer the property worth defending. What is still
+     * load-bearing — and the reason a power cut during a store is survivable at all — is
+     * that the target is never the slot on the glass. Both directions are tabled, and
+     * each row checks the invariant as well as the answer, so a predicate that simply
+     * returned the other constant could not pass half the table. */
+    const uint32_t drawn_slot = (drawn == BOOT_ART_CARD) ? SLOT_B_HDR : SLOT_A_HDR;
+    const uint32_t t = install_target(drawn);
+    const int pass = (t == want) && (t != drawn_slot) && (t == SLOT_A_HDR || t == SLOT_B_HDR);
     if (!pass) fails++;
-    printf("%-5s install_target() -> 0x%08X (want slot B 0x%08X; A is 0x%08X)\\n",
-           pass ? "ok" : "FAIL", (unsigned)t, (unsigned)SLOT_B_HDR, (unsigned)SLOT_A_HDR);
+    printf("%-5s install_target(%-14s) -> 0x%08X (want 0x%08X, never the drawn 0x%08X)\\n",
+           pass ? "ok" : "FAIL", what, (unsigned)t, (unsigned)want, (unsigned)drawn_slot);
 }}
 static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
@@ -727,7 +734,11 @@ int main(void)
     boot_case("junk in the key, B is a bundle", " Card ", true, BOOT_ART_DEFAULT);
     boot_case("no key at all, B is a bundle", "", true, BOOT_ART_DEFAULT);
     boot_case("NVS unreadable, B is a bundle", NULL, true, BOOT_ART_DEFAULT);
-    install_target_case();
+    /* The ping-pong tabled in both directions: the default leg sends the store to B,
+     * the card leg sends it to A, and the A row is the ruling that spends the flashed
+     * default — the case D13 existed to forbid, now pinned as required behaviour. */
+    install_target_case("drawing default", BOOT_ART_DEFAULT, SLOT_B_HDR);
+    install_target_case("drawing card", BOOT_ART_CARD, SLOT_A_HDR);
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();

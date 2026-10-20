@@ -27,7 +27,7 @@
 #include <stdint.h>
 
 #include "lvgl.h"
-#include "clock_assets.h"   /* clk_sprite_t, CLK_SCR_W/H — P6 replaces both */
+#include "clk_types.h"   /* clk_sprite_t, CLK_SCR_W/H — P6 replaces both */
 
 #ifdef __cplusplus
 extern "C" {

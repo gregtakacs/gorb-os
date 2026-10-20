@@ -24,7 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "clock_assets.h"          /* clk_theme_t, clk_sprite_t, clk_bg_rect_t */
+#include "clk_types.h"          /* clk_theme_t, clk_sprite_t, clk_bg_rect_t */
 #include "orb_bundle.h"            /* orb_bundle_sec_t, orb_bundle_elem_t      */
 
 #ifdef __cplusplus

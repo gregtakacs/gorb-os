@@ -55,7 +55,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "clock_assets.h"    /* clk_sprite_t: plain structs, generated, no LVGL */
+#include "clk_types.h"    /* clk_sprite_t: plain structs, generated, no LVGL */
 
 #ifdef __cplusplus
 extern "C" {

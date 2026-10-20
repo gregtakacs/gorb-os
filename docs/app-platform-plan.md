@@ -4053,8 +4053,11 @@ their own slices (§24's bar, §29's ledger — the flip door is the seam that u
 (1) `target_slot()` derives the store target from which slot the dial draws, so the second
 store overwrites slot A's flashed pixels — the owner's sanctioned cost, reflash or re-store
 the recovery. (2) The flip: `boot_resolve` reads a slot designator (`"default"`, `"slot-A"`,
-`"slot-B"`; the legacy `"card"` reads forever as an alias for `"slot-B"` and is never written
-again), the boot block probes BOTH slots through one `slot_probe3` helper, and the `staged`
+`"slot-B"`); the legacy `"card"` word is DELETED outright, not aliased — owner ruling
+2026-10-20, new infra owes no backwards compatibility — so a board whose NVS still holds it
+boots the default leg like any other unknown word until one press rewrites it (orb-A's
+NVS is exactly such a board: the post-flash expectation there is the default leg plus
+re-store, and that is the whole migration story), the boot block probes BOTH slots through one `slot_probe3` helper, and the `staged`
 witness expires against either header so a store-then-flip order cannot strand the word. A
 chosen slot that cannot honour the choice gets its own damage sentence naming the slot and
 re-store as the recovery, asked before any unchosen-slot branch. `POST /api/v1/sd/flip?id=X`

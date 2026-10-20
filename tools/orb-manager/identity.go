@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
-	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -43,12 +41,24 @@ type identityEntry struct {
 	proven string
 }
 
-// The two ways an entry gets into this cache. They are strings rather than a bool so
+// The three ways an entry gets into this cache. They are strings rather than a bool so
 // a third door — a flash's boot verdict, say — can name itself instead of borrowing
 // one of these two words.
 const (
 	provenProbe = "probe"
 	provenCable = "cable"
+	// provenFailed is a probe that never reached a chip: a lock held by another
+	// process, a budget that ran out, a console that wedged. It is recorded so the card
+	// can say why the port is unknown, and it must never be read as a verdict. The old
+	// code filed these as provenProbe, which made a flaky USB hub strip the cable off a
+	// healthy orb — the exact failure the cable-proof refusal above exists to prevent,
+	// arriving by a different door.
+	provenFailed = "probe-failed"
+	// provenFlash records what this hub just wrote into the chip, which it knows
+	// without a reboot because it chose the bytes. It is the strongest present-tense
+	// evidence the hub holds: a probe reads what the bootloader volunteered after a
+	// reset the hub paid for, and a flash record states what the hub itself installed.
+	provenFlash = "flash"
 )
 
 type identityCache struct {
@@ -71,7 +81,8 @@ const identityTTL = 30 * time.Minute
 // accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
 	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
-		token: newLaunchToken(), grants: newIPGrants(ipGrantTTL),
+		probeOrb: esprom.ProbeOrb,
+		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
 		lonely: newLonelyMark(),
 		orb:    orbnet.NewClient(scanTimeout),
@@ -123,10 +134,63 @@ func (c *identityCache) get(port string) (esprom.OrbInfo, bool) {
 
 // freshLocked is the staleness rule, stated once for get and for the listing path.
 func (c *identityCache) freshLocked(port string, e identityEntry) bool {
-	if c.ttl > 0 && time.Since(e.at) > c.ttl {
+	// A paid NOT-an-orb verdict does not age out. The TTL exists to stop a card printing
+	// a firmware version nobody quoted, and an entry saying "this chip runs something
+	// else" makes no such claim to go stale. Expiring one is not a neutral loss either:
+	// the descriptor's claim is then the only fact left about the lead, so a board the
+	// operator watched stop being an orb is drawn onto a cable again, silently, at the
+	// 30-minute mark. The re-ask pass (launchprobe.go) re-pays these inside the window
+	// they are trusted for, which is what keeps the exemption from hardening into a
+	// verdict a later reflash cannot undo. A positive answer still ages normally: the
+	// free facts corroborate it continuously, and its version must be allowed to go
+	// stale rather than freeze on the row.
+	if c.ttl > 0 && time.Since(e.at) > c.ttl && !e.paidNegative() {
 		return false
 	}
 	return e.who == c.serialOf(port)
+}
+
+// paidNegative is the one cached answer that gets stronger with age rather than weaker:
+// an orb or a flash the hub itself wrote, both saying the chip does not run gorb-os.
+func (e identityEntry) paidNegative() bool {
+	if e.proven != provenProbe && e.proven != provenFlash {
+		return false
+	}
+	// A negative verdict must name the chip it is about. A bootloader that answered the
+	// orb door and printed no MAC is a stranger, not a verdict, and a stranger must not
+	// cost a known board its cable.
+	return !e.info.IsOrb && e.info.MAC != ""
+}
+
+// drop voids any answer on file for a port that has physically left the bench, and
+// reports whether the hub had a not-an-orb verdict to lose.
+//
+// The serial gate in freshLocked cannot do this job, and the reason is the whole point of
+// this method: that gate compares the chip behind a port against the chip an answer was
+// filed about, so it clears a verdict when a DIFFERENT board is plugged in and silently
+// restores it when the SAME board comes back. A cable pulled and re-seated is the
+// operator saying "ask again", and the answer on file is exactly what that question tests
+// — the board may have been reflashed while it sat unplugged, which no cached verdict and
+// no MAC can reveal. So a departure deletes rather than distrusts, and the next answer is
+// priced as the fresh question it is.
+// release gives a port back to the bench after a probe that will never report: the cable
+// was pulled out from under it. Without this the port's in-flight slot is held against
+// the next board to arrive until the probe's own budget runs out.
+func (c *identityCache) release(port string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.inFlight, port)
+}
+
+func (c *identityCache) drop(port string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.byPort[port]
+	if !ok {
+		return false
+	}
+	delete(c.byPort, port)
+	return e.paidNegative()
 }
 
 func (c *identityCache) serialOf(port string) string {
@@ -155,6 +219,24 @@ func (c *identityCache) done(port string, info esprom.OrbInfo) {
 	c.record(port, info, provenProbe)
 }
 
+// doneFailed records that a probe was asked and never answered, which is an absence of
+// evidence and not a piece of it. It exists so the seven failure paths can tell the
+// operator what went wrong on the port without that explanation being mistaken for a
+// statement about the board: nothing reached a chip, so nothing is known about one.
+func (c *identityCache) doneFailed(port string, reason string) {
+	c.mu.Lock()
+	e, ok := c.byPort[port]
+	c.mu.Unlock()
+	// A failure keeps whatever an earlier success proved. Overwriting a paid verdict
+	// because the door would not open a moment later is the same error the provenFailed
+	// tag exists to prevent, one level down: the hub would trade a fact for nothing, and
+	// the trade is always a board losing its cable.
+	if ok && (e.paidNegative() || (e.proven == provenProbe && e.info.IsOrb)) {
+		return
+	}
+	c.record(port, esprom.OrbInfo{Port: port, Reason: reason}, provenFailed)
+}
+
 // doneCable records the answer to the free question: the hub opened the lead, sent
 // PING, and the app answered. It carries the state token and no firmware stamp, and
 // the port entry reports it as a cable proof rather than a probe (handlePorts), so
@@ -163,6 +245,87 @@ func (c *identityCache) doneCable(port string, info esprom.OrbInfo) {
 	c.record(port, info, provenCable)
 }
 
+// doneFlash records what this hub just wrote into the chip at this port. It is the
+// only entry that can carry a NEGATIVE verdict, and that is the whole reason it
+// exists: a board reflashed with firmware that is not gorb-os keeps the same eFuse
+// MAC and often the same USB descriptor, so every free fact the host can read about
+// the cable keeps asserting "orb" after the orb is gone. Only the act of writing the
+// chip knows the truth, and it knows it without paying a reboot.
+func (c *identityCache) doneFlash(port string, info esprom.OrbInfo) {
+	c.record(port, info, provenFlash)
+}
+
+// contradicts reports the hub's present-tense answer to "is an orb running on this
+// lead", returning false only when the hub holds fresh evidence that something else
+// is running. It is the mirror of the rule already stated in handlePorts — a chip that
+// has answered for itself outranks the address book — applied in the direction nobody
+// had implemented: a chip that has answered for itself as NOT an orb outranks it too.
+//
+// Two evidence sources qualify, and everything else is refused by construction:
+//
+//   - a paid probe (provenProbe): the bootloader banner read after a reset this hub
+//     caused, which is the only free-standing way to learn a chip runs foreign code;
+//   - a flash record (provenFlash): what this hub itself just installed.
+//
+// A cable proof (provenCable) never qualifies. It is the answer to PING, and a PING
+// that returns nothing is filed as no entry at all rather than as a miss — so an
+// absence there means "we did not hear it", which is also true of an orb that is
+// asleep, boot-looping, or sitting in its downloader. Treating that silence as
+// "not an orb" would strip a cable from a healthy board.
+//
+// The cache already enforces the freshness and the cable-swap rules (identityTTL, and
+// the USB serial an entry must still match), so a verdict about a board that has since
+// left the lead cannot linger here and contradict whatever took its place.
+func (s *Server) contradicts(port string) (esprom.OrbInfo, bool) {
+	if s.identities == nil || port == "" {
+		return esprom.OrbInfo{}, false
+	}
+	info, ok := s.identities.get(port)
+	if !ok || info.IsOrb {
+		return esprom.OrbInfo{}, false
+	}
+	proven := s.identities.provenOf(port)
+	if proven == provenCable || proven == provenFailed {
+		return esprom.OrbInfo{}, false
+	}
+	if info.MAC == "" {
+		return esprom.OrbInfo{}, false
+	}
+	return info, true
+}
+
+// provenOf reports how the still-valid answer for port was obtained, and "" when
+// there is none. The listing path gets provenance free from all(); callers that ask
+// about one port (roster, liveness) need this rather than the whole map.
+func (c *identityCache) provenOf(port string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.byPort[port]
+	if !ok || !c.freshLocked(port, e) {
+		return ""
+	}
+	return e.proven
+}
+
+// cachedVerdict is the raw state of the one answer on file for a port: what the hub
+// learned, when it learned it, how, and whether anything is there at all.
+//
+// The last field is the one that cannot be recovered from the others, and the launch and
+// re-plug sweep keys on it. "No answer" and "an answer that is no longer fresh" look the
+// same to a caller asking only whether the answer holds, but they are opposite questions:
+// an answer that went stale is one the free facts keep corroborating, so re-paying it on a
+// clock would reboot a healthy orb forever; an answer that was never filed, or that a
+// physical departure voided, is the one case a reset is unambiguously owed. Policy lives in
+// cableNeedsProbe; this reports facts.
+func (c *identityCache) cachedVerdict(port string) (info esprom.OrbInfo, at time.Time, proven string, present bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.byPort[port]
+	if !ok {
+		return esprom.OrbInfo{}, time.Time{}, "", false
+	}
+	return e.info, e.at, e.proven, true
+}
 func (c *identityCache) record(port string, info esprom.OrbInfo, proven string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -296,6 +459,22 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			if info.IsOrb {
 				e["orbSeen"] = true
 			}
+			// The same authority read the other way. A paid verdict that this is
+			// NOT an orb is present-tense fact, and it outranks every historical
+			// record the address book holds about this chip — which matters
+			// because the descriptor that attributed the chip to the address book
+			// is an eFuse MAC that survives any reflash. Without this the board
+			// falls between the two floors: the row still calls it "on cable" so
+			// the fleet keeps it, and orbSeen still says "been an orb" so the New
+			// Orb door keeps it. The board is then neither manageable nor
+			// flashable, which is the bug this field ends.
+			if !info.IsOrb && ent.proven != provenCable {
+				e["orbSeen"] = false
+				e["inFleet"] = false
+				e["notOrb"] = true
+				e["project"] = info.Project
+				e["version"] = info.Version
+			}
 			e["mac"] = info.MAC
 			e["reason"] = info.Reason
 			// The chip's own state token ("b", "c-ap", "c-sta"), which is the whole
@@ -342,89 +521,41 @@ func usbLabel(u esprom.USBClass) string {
 	}
 }
 
-// handleProbe identifies one port on explicit request. It takes the same per-port
-// lock a flash does, because an identity probe resets the chip and a concurrent
-// write on that wire would be corrupted by it.
-func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+// foldProbeIdentity files what a reboot-paid probe learned. Every probe the hub runs
+// — launch, re-plug, expiry, the silence escalation — lands here, so no caller gets to
+// decide on its own what an answer means.
+//
+// A bootloader descriptor read down the USB lead is the strongest thing the hub can
+// say about a board: it is the chip answering for itself, not a name claimed on the
+// LAN, so the fleet holds that sighting above every announcement.
+func (s *Server) foldProbeIdentity(info esprom.OrbInfo) {
+	if info.MAC == "" {
 		return
 	}
-	var req struct {
-		Port string `json:"port"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Port == "" {
-		s.jsonErr(w, "no serial port named")
+	s.markCable(info.MAC)
+	// A console that answered the orb door ends any lonely mark on the chip, whoever
+	// re-flashed it. Without this the mark only ever cleared on this hub's own acts,
+	// so a board revived on another bench — or by the CLI — stayed suppressed here
+	// forever while probing back as an orb.
+	if !info.IsOrb {
 		return
 	}
-	if !s.identities.begin(req.Port) {
-		s.jsonErr(w, "already identifying that port")
-		return
-	}
-	// A probe resets the chip, so it may not share one cable with an operation
-	// that is writing it. The claim is PER PORT, which is the whole change from
-	// the old process-wide flag: a flash on /dev/ttyACM0 no longer blocks
-	// Identify on /dev/ttyACM1, and the registry entry is held for the probe's
-	// whole run rather than being a mutex that is only borrowed to set a bool.
-	if kind, busy := s.ops.busy(req.Port); busy {
-		reason := fmt.Sprintf("a %s is running on that port - an identity probe resets the chip, so it will not share the wire with it", kind)
-		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: reason})
-		s.jsonErr(w, reason)
-		return
-	}
-	job, ctx, oerr := s.ops.start(r.Context(), req.Port, opProbe, probeBudget)
-	if oerr != nil {
-		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: oerr.Error()})
-		s.jsonErr(w, oerr.Error())
-		return
-	}
-	defer s.ops.finish(job)
-
-	lock, lerr := orbbind.LockPort(req.Port)
-	if lerr != nil {
-		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: "port busy: " + lerr.Error()})
-		s.jsonErr(w, "port busy: "+lerr.Error())
-		return
-	}
-	info, err := esprom.ProbeOrb(ctx, req.Port)
-	lock.Release()
-	if err != nil {
-		s.identities.done(req.Port, esprom.OrbInfo{Port: req.Port, Reason: err.Error()})
-		s.jsonErr(w, err.Error())
-		return
-	}
-	s.identities.done(req.Port, info)
-	if info.MAC != "" {
-		// A bootloader descriptor read down the USB lead is the strongest thing the
-		// hub can say about a board: it is the chip answering for itself, not a name
-		// claimed on the LAN. The fleet holds that sighting above every announcement.
-		s.markCable(info.MAC)
-		// And a console that answered the orb door ends any lonely mark on the
-		// chip, whoever re-flashed it. Without this the mark only ever cleared on
-		// this hub's own acts, so a board revived on another bench — or by the CLI —
-		// stayed suppressed here forever while probing back as an orb.
-		if info.IsOrb {
-			s.lonely.clear(info.MAC)
-			// The descriptor answered for itself, so the running version it
-			// printed belongs on the row: this is the firmware stamp for a board
-			// with no lease, read at the price of one reboot the operator paid.
-			if s.fleet != nil && (info.Version != "" || info.State != "") {
-				if _, changed, err := s.fleet.NoteAnswer(info.MAC, info.Version, info.State); err == nil && changed {
-					s.saveState()
-					s.wakeOrbs()
-				}
-			}
-			// The banner named itself, so the card can stop being blank. This is
-			// the only read path for a board with no lease: the console is open
-			// right now, and the serial door writes names without ever reading
-			// them back.
-			if s.foldBootName(info.MAC, info.Name) {
-				s.saveState()
-			}
+	s.lonely.clear(info.MAC)
+	// The descriptor answered for itself, so the running version it printed belongs
+	// on the row: this is the firmware stamp for a board with no lease, read at the
+	// price of one reboot the hub paid.
+	if s.fleet != nil && (info.Version != "" || info.State != "") {
+		if _, changed, err := s.fleet.NoteAnswer(info.MAC, info.Version, info.State); err == nil && changed {
+			s.saveState()
+			s.wakeOrbs()
 		}
 	}
-	info.Verdict = string(s.verdictFor(info))
-	s.jsonOK(w, info)
+	// The banner named itself, so the card can stop being blank. This is the only
+	// read path for a board with no lease: the console is open right now, and the
+	// serial door writes names without ever reading them back.
+	if s.foldBootName(info.MAC, info.Name) {
+		s.saveState()
+	}
 }
 
 // probeBudget bounds one identity probe. The probe itself reads a 9 s boot window

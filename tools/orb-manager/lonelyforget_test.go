@@ -126,14 +126,27 @@ func TestPageIDsAreUnique(t *testing.T) {
 func TestEndDidNotStealTheNVSCheckbox(t *testing.T) {
 	page := readFile(t, "web/index.html")
 	js := readAppJS(t)
-	if !strings.Contains(page, `type="checkbox" id="ob-wipe"`) {
-		t.Error("the NVS factory-reset checkbox lost its #ob-wipe id")
+	// The checkbox moved into the flash modal with the rest of the flash choices and
+	// kept its meaning: clear NVS as part of a re-flash, board still an orb after.
+	if !strings.Contains(page, `type="checkbox" id="ff-wipe"`) {
+		t.Error("the NVS factory-reset checkbox lost its #ff-wipe id")
 	}
-	if strings.Contains(page, `id="ob-wipe" class="danger"`) {
-		t.Error("something reused the NVS checkbox id #ob-wipe as a button")
+	if strings.Contains(page, `id="ob-wipe"`) {
+		t.Error("the retired #ob-wipe id is back, unwired")
 	}
-	if !strings.Contains(js, `$("#ob-wipe").checked`) {
+	// It must be read at the moment the flash is issued, not remembered from a
+	// previous open, and it must reach the wire as the wipe field the handler takes.
+	goBlock := blockContaining(t, js, `$("#ff-go").onclick`)
+	if !strings.Contains(goBlock, `cableFlash($("#ff-wipe").checked)`) {
 		t.Error("app.js no longer reads the NVS factory-reset checkbox when flashing")
+	}
+	if !strings.Contains(js, `wipe: !!wipe`) {
+		t.Error("cableFlash does not pass the wipe flag through to /api/flash")
+	}
+	// It is a cable-only control: there is no NVS erase on the wireless path.
+	modal := blockOf(t, js, "function openFlashModal")
+	if !strings.Contains(modal, `$("#ff-wipe-row").hidden = !port`) {
+		t.Error("the NVS checkbox is offered on a wireless-only orb, where nothing can honour it")
 	}
 }
 

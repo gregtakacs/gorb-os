@@ -118,6 +118,13 @@ function route() {
 // the inFleet field this gate first used — closed the door on any board ever
 // plugged in, because a cable sighting alone writes a row, and a wiped orb then
 // appeared nowhere on the page at all.
+//
+// The third field here, "notOrb", keeps those two verdicts honest about a board
+// that has been reflashed out of gorb-os. orbSeen is built from history, and the
+// history is keyed on a MAC the reflash cannot change, so left alone it holds a
+// board shut in both doors at once. The hub clears it wherever it holds a paid
+// verdict that the chip is running something else, and says so with notOrb so the
+// label below can name what is actually on the lead.
 let blanks = [];   // port entries a New Orb flash may target
 let allPorts = []; // the last /api/ports payload, for labels and cached verdicts
 
@@ -209,8 +216,19 @@ function newOrbStep(step) {
 // it sits on and the MAC the host reads off the USB descriptor for free — the
 // whole of what a blank JTAG board reveals. Whether the chip once was an orb
 // changes nothing about the flash, so nothing says so here.
+//
+// One thing DOES change the flash, and it gets a word: a board the hub has proof
+// is running firmware that is not gorb-os. The flash erases it either way, but the
+// operator choosing this lead is choosing to overwrite something specific, and a
+// picker that called it blank beside a genuinely blank board was describing the
+// bench rather than what is on it.
 function blankLabel(entry) {
-  return entry.usbMac ? entry.port + "  —  " + entry.usbMac : entry.port;
+  const who = entry.usbMac ? entry.port + "  —  " + entry.usbMac : entry.port;
+  if (entry.notOrb === true) {
+    return who + "  ·  runs " + (entry.project || "other firmware") + ", not gorb-os";
+  }
+  if (entry.lonely === true) return who + "  ·  left lonely";
+  return who;
 }
 
 // portLabel spells a port out. The MAC is free — the host reads it off the USB
@@ -237,7 +255,8 @@ function portLabel(p, entry) {
 
 // renderIdentity shows the cached verdict for the cable the manage view is
 // looking at. It never probes: the whole point of the cache is that
-// identifying an orb costs a reboot and the operator decides when to pay it.
+// identifying an orb costs a reboot, and the hub is the one that decides when to pay
+// it. This renders what that reboot already bought.
 function renderIdentity(list) {
   const card = $("#ob-idcard"), state = $("#ob-idstate");
   const chosen = (list || allPorts).find((e) => e && e.port === (current.port || ""));
@@ -254,7 +273,11 @@ function renderIdentity(list) {
     rows.push("<b>Not an orb</b> — " + esc(chosen.reason || "could not identify"));
   }
   card.innerHTML = rows.join("<br>");
-  state.textContent = chosen.probedAt ? "identified " + esc(chosen.probedAt) : "";
+  // The cost belongs on the card in every state, not only before the first answer: the
+  // hub reboots this board on its own schedule, so "identified 20:31" without that
+  // context reads like a fact the hub simply knew.
+  state.textContent = (chosen.probedAt ? "identified " + esc(chosen.probedAt) + " \u2014 " : "")
+    + "the hub reboots this board to read it, about 10 seconds";
 }
 
 // verdictText words the comparison for someone who did not build either image.
@@ -290,54 +313,197 @@ async function refreshBuild() {
     // next field added here is not added raw.
     const who = b.version ? esc((b.project || "gorb-os") + " " + b.version) : esc(b.source || "unknown firmware");
     if (!imgs.length) { el.textContent = "firmware " + who + " lists no images"; return; }
-    el.innerHTML = "<b>Firmware " + who + "</b> — " + (b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)) + "<br>" +
-      imgs.map((i) => esc(i.offset) + "  " + esc(i.name) + "  (" + (Number(i.bytes) || 0) + " B)").join("<br>") +
-      (b.sha256 ? '<br><span class="hint">sha256 ' + esc(String(b.sha256).slice(0, 16)) + "… · " + imgs.length + " image(s)</span>" : "");
-    const reset = $("#ob-fwreset"), pick = $("#ob-fwpick");
-    const custom = b.source && b.source !== "built-in";
-    reset.hidden = !custom;
-    pick.textContent = custom ? "Pick a different firmware…" : "Use my own firmware…";
+    el.innerHTML = "<b>Firmware " + who + "</b> - " + (b.source === "built-in" ? "built into this app" : "your file: " + esc(b.source)) +
+      (b.foreign ? ' <span class="tag err">not gorb-os</span>' : "") +
+      (b.merged ? ' <span class="tag err">whole-flash</span>' : "") +
+      '<br><span class="hint">' + imgs.length + " image(s) - " +
+      imgs.map((i) => esc(i.offset) + " " + esc(i.name) + " (" + (Number(i.bytes) || 0) + " B)").join(" - ") +
+      (b.sha256 ? " - sha256 " + esc(String(b.sha256).slice(0, 16)) + "\u2026" : "") + "</span>";
+    hubFirmware = b;
+    gateFwButtons();
   } catch (e) { el.textContent = e.message; }
 }
 
-// pickFirmware uploads the chosen bundle. The hub validates it and only then makes
-// it active, so a wrong pick leaves the built-in firmware in place rather than
-// leaving the Update buttons pointing at a file that was never accepted.
-async function pickFirmware(file) {
-  const state = $("#ob-fwstate");
-  state.textContent = "checking " + file.name + "…";
-  const form = new FormData();
-  form.append("firmware", file, file.name);
-  try {
-    const res = await hubFetch("/api/firmware", { method: "POST", body: form });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j.ok === false) {
-      state.textContent = (j.error || ("HTTP " + res.status)) + " — still flashing the built-in firmware";
-      return;
-    }
-    state.textContent = "this hub now carries " + file.name;
-    await refreshBuild();
-  } catch (e) {
-    state.textContent = e.message + " — still flashing the built-in firmware";
+// hubFirmware is the last /api/build payload, kept so the flash modal can label its
+// own first choice without asking again on every open. It is a cache of a server
+// answer, never a substitute for one: refreshBuild is what runs after any change to
+// what the hub carries.
+let hubFirmware = null;
+
+// ---- the flash modal ---------------------------------------------------------
+// One dialog answers "what should this board be running", and it offers only what
+// the connection supports. The split is not a preference. A cable writes the whole
+// manifest whatever the board ran before, so every direction is safe and every file
+// is eligible; Wi-Fi can only push this hub's app slot into the spare partition. A
+// foreign blob appears on the cable branch alone, which is what lets it exist with
+// no warning paragraph attached to it.
+let ffPicked = null;   // the probed file on the disk branch, cleared on every open
+
+function openFlashModal() {
+  const port = current.port, ip = current.ip;
+  const sub = [];
+  if (port) sub.push("on cable " + port);
+  if (ip) sub.push("at " + ip);
+  $("#ff-sub").textContent = sub.length ? sub.join(" \u00b7 ") : "not reachable from here";
+  $("#ff-none").hidden = !!(port || ip);
+  $("#ff-choices").hidden = !(port || ip);
+  if (!port && !ip) {
+    $("#ff-none-msg").textContent = "This orb is neither on a cable of this computer nor answering on the LAN. Plug a cable in to flash it.";
   }
+  // Disk is a cable-only choice. It could be pushed over Wi-Fi in principle, and
+  // there it would mean an unverified blob through a door the orb's rollback guards,
+  // for nothing the hub's own bundle does not already supply.
+  $("#ff-disk-row").hidden = !port;
+  $("#ff-wipe-row").hidden = !port;
+  $("#ff-filebox").hidden = true;
+  $("#ff-file").textContent = "";
+  $("#ff-wipe").checked = false;
+  ffPicked = null;
+  ffForced = false;
+  document.querySelectorAll('input[name="ff-src"]').forEach((r) => { r.checked = r.value === "hub"; });
+  $("#ff-hub-label").textContent = "This hub \u2014 " + (hubFirmware && hubFirmware.version
+    ? hubFirmware.project + " " + hubFirmware.version : (hubFirmware && hubFirmware.source) || "loading\u2026");
+  $("#ff-state").textContent = "";
+  ffNote();
+  $("#ff-mask").hidden = false;
+  ffGate();
 }
 
-$("#ob-fwpick").onclick = () => $("#ob-fwfile").click();
+function ffSource() {
+  const r = document.querySelector('input[name="ff-src"]:checked');
+  return r ? r.value : "hub";
+}
+
+// ffNote states what the write costs, once, in the tense of the choice actually
+// made. It is the only sentence in the dialog, because it is the only fact an
+// operator cannot read off the row they just clicked.
+function ffNote() {
+  const src = ffSource(), el = $("#ff-note");
+  if (src === "disk") {
+    el.textContent = ffPicked
+      ? "Written over the cable. This replaces the bootloader, the partition table and both app slots."
+      : "Pick a .zip release bundle or a whole-flash .bin.";
+    return;
+  }
+  if (current.port) { el.textContent = "Written over the cable: bootloader, partition table and app slots."; return; }
+  el.textContent = "Pushed to the spare slot over Wi-Fi. The bootloader rolls back if the new image never marks itself valid.";
+}
+
+// ffProbe asks the hub what a file is before anything is adopted, and the answer
+// comes back as fields rather than as a sentence to parse. The button then names
+// the project, which is the only warning shape that tells an operator something
+// they can act on: a label that says brookesia is a decision made with information.
+async function ffProbe(file) {
+  const form = new FormData();
+  form.append("firmware", file, file.name);
+  form.append("allow_foreign", "1");
+  form.append("probe", "1");
+  const res = await hubFetch("/api/firmware", { method: "POST", body: form });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.ok === false) {
+    return { error: j.error || ("HTTP " + res.status) };
+  }
+  const d = j.data || {};
+  return { file, name: file.name, project: d.project || "", version: d.version || "",
+           foreign: !!d.foreign, merged: !!d.merged };
+}
+
+function ffGate() {
+  const go = $("#ff-go");
+  go.disabled = $("#ff-choices").hidden || (ffSource() === "disk" && !ffPicked);
+  go.textContent = ffForced ? "Flash anyway" : "Flash";
+}
+
+// gateFwButtons lights the card's single Flash button. It is reachable whenever the
+// board can be flashed at all: a cable, or an address to push to. The amber badge is
+// the hub's own verdict from the pushed row, never a version comparison run here, so
+// the badge and the flash gate cannot disagree about what "newer" means.
+function gateFwButtons() {
+  const btn = $("#mn-flashbtn");
+  if (!btn) return;
+  const reachable = !!(current.port || current.ip);
+  btn.disabled = !reachable || !hubFirmware || !hubFirmware.present;
+  const reset = $("#mn-resetbtn");
+  if (reset) reset.disabled = !current.port;
+  const badge = $("#mn-updatebadge");
+  if (badge) badge.hidden = !(current.row && current.row.update === true);
+}
+
+$("#mn-flashbtn").onclick = openFlashModal;
+$("#ff-cancel").onclick = () => { $("#ff-mask").hidden = true; };
+$("#ff-mask").addEventListener("click", (e) => { if (e.target === $("#ff-mask")) $("#ff-mask").hidden = true; });
+$("#ff-pick").onclick = () => $("#ob-fwfile").click();
+document.querySelectorAll('input[name="ff-src"]').forEach((r) => {
+  r.onchange = () => {
+    $("#ff-filebox").hidden = ffSource() !== "disk";
+    ffNote(); ffGate();
+  };
+});
 $("#ob-fwfile").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];
-  if (f) await pickFirmware(f);
-  e.target.value = ""; // let the same file be picked again after a reset
+  e.target.value = "";            // let the same file be picked again
+  if (!f) return;
+  $("#ff-file").textContent = "reading " + f.name + "\u2026";
+  const r = await ffProbe(f);
+  if (r.error) {
+    ffPicked = null;
+    $("#ff-file").textContent = "";
+    $("#ff-state").textContent = r.error;
+    ffNote(); ffGate();
+    return;
+  }
+  ffPicked = r;
+  $("#ff-filebox").hidden = false;
+  // The row names the project the hub read, which is the one thing an operator
+  // needs to spot a wrong file before pressing Flash rather than after.
+  $("#ff-file").textContent = r.name + (r.foreign ? " \u2014 " + r.project + ", not gorb-os"
+    : (r.version ? " \u2014 " + r.version : ""));
+  $("#ff-state").textContent = "";
+  ffNote(); ffGate();
 };
-$("#ob-fwreset").onclick = async () => {
-  const state = $("#ob-fwstate");
-  state.textContent = "restoring the built-in firmware…";
+
+// ffGo commits. A disk pick was already parsed and rejected-or-accepted by the hub
+// during ffProbe, so the second upload adopts bytes the hub has already read once;
+// it is the same file, and the hub is still the thing that decides.
+$("#ff-go").onclick = async () => {
+  const go = $("#ff-go"), state = $("#ff-state");
+  if (go.disabled) return;
+  const src = ffSource();
+  go.disabled = true;
   try {
-    const res = await hubFetch("/api/firmware/reset", { method: "POST" });
-    const j = await res.json().catch(() => ({}));
-    state.textContent = (res.ok && j.ok) ? "using the firmware built into this app" : (j.error || "HTTP " + res.status);
-  } catch (e) { state.textContent = e.message; }
-  await refreshBuild();
+    if (src === "disk") {
+      state.textContent = "loading " + ffPicked.name + "\u2026";
+      const form = new FormData();
+      form.append("firmware", ffPicked.file, ffPicked.name);
+      form.append("allow_foreign", "1");
+      const res = await hubFetch("/api/firmware", { method: "POST", body: form });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.ok === false) throw new Error(j.error || ("HTTP " + res.status));
+      await refreshBuild();
+    } else if (hubFirmware && hubFirmware.source && hubFirmware.source !== "built-in") {
+      // Choosing "this hub" while the hub still carries a previous disk pick means
+      // the operator asked for the shipped release, not for whatever is loaded.
+      await hubFetch("/api/firmware/reset", { method: "POST" });
+      await refreshBuild();
+    }
+    if (current.port) {
+      // The cable hands off to the progress panel and then the join dialog, so the
+      // modal steps out of the way before either appears.
+      $("#ff-mask").hidden = true;
+      await cableFlash($("#ff-wipe").checked);
+    } else {
+      // The wireless path keeps the dialog open. A downgrade comes back asking for a
+      // second press, and a confirm written into a hidden dialog is the dead end this
+      // whole rewrite exists to remove. wifiUpdate closes it on success.
+      await wifiUpdate();
+    }
+  } catch (e) {
+    state.textContent = e.message;
+  } finally {
+    ffGate();
+  }
 };
+
 
 // ---- the streaming core ------------------------------------------------------
 // streamPost POSTs payload to url and feeds each newline-delimited JSON event
@@ -476,35 +642,6 @@ async function showLiveOp(port, el) {
   } catch (e) { /* the flash bar is the primary voice here */ }
 }
 
-// probePort asks the hub to identify the cable the manage view stands on. It
-// reboots the orb, so it only ever happens on this click, and the button is
-// disabled while one runs so a double-click cannot queue a second reset.
-async function probePort() {
-  const port = current.port;
-  const state = $("#ob-idstate"), btn = $("#ob-probe"), card = $("#ob-idcard");
-  if (!port) { state.textContent = "this orb is not on a cable right now"; return; }
-  btn.disabled = true;
-  card.hidden = true;
-  state.textContent = "restarting the orb to read what it runs — about 10 seconds";
-  try {
-    const res = await hubFetch("/api/ports/probe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port }),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j.ok === false) {
-      state.textContent = (j.error || ("HTTP " + res.status)) + " — nothing was changed on the orb";
-    } else {
-      state.textContent = j.data.isOrb ? "identified" : (j.data.reason || "not an orb");
-      await refreshPorts();
-    }
-  } catch (e) {
-    state.textContent = e.message + " — nothing was changed on the orb";
-  } finally { btn.disabled = false; }
-}
-
-$("#ob-probe").onclick = probePort;
 
 
 // ---- the orb under management ----------------------------------------------
@@ -539,9 +676,8 @@ function openOrbByIP(ip, mac, row) {
   $("#mn-orbident").textContent = [current.mac && ("mac " + current.mac), current.ip && ("at " + current.ip),
     current.port && ("on cable " + current.port)].filter(Boolean).join("  \u00b7  ");
   $("#mn-name").value = current.name;
-  $("#mn-cablerow").hidden = !current.port;
-  $("#ob-identify").hidden = !current.port;
-  $("#ob-lonelyrow").hidden = !current.port;
+  $('#ob-identify').hidden = !current.port;
+  gateFwButtons();
   $("#mn-wificard").hidden = !current.ip;
   $("#mn-curfw").textContent = "loading\u2026";
   $("#mn-verdict").textContent = "";
@@ -572,76 +708,81 @@ async function loadOrb() {
     $("#mn-tz").value = st.tz || "";
     $("#j-tz").value = st.tz || "";
     if (st.name) $("#mn-name").value = st.name;
-    setUpdateGate(st.fw);
+    gateFwButtons();
     loadThemes(current.ip);
     startPolling(current.ip);
   } catch (e) {
     $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message;
-    setUpdateGate("");
+    gateFwButtons();
   }
 }
 
 
-// setUpdateGate is the amber alert's other half: the OTA button lights only when
-// the hub's compare says upgrade — the row flag from the pushed card, or the
-// fresh status read, which outranks a stale flag the moment a board updates out
-// from under the page.
-let buildVersion = "";
-function setUpdateGate(statusFw) {
-  const rowUp = !!(current.row && current.row.update === true);
-  const can = (rowUp || !!statusFw) && !!current.ip;
-  $("#mn-update").disabled = !can;
-  $("#mn-updatenote").textContent = can
-    ? "this hub carries " + (buildVersion || "newer firmware") + " — the orb stages it, verifies it, and reboots once"
-    : (statusFw ? "this orb runs the firmware this hub carries: nothing to load"
-                : "no address to update over — the cable doors work without one");
+// cableFlash is the one cable write, for the hub's own firmware and for a file from
+// disk alike. The ROM conversation does not care which bytes it is carrying, and the
+// UI should not either: both converge on the join dialog a fresh flash converges on,
+// so every successful flash ends the same way. It writes the whole manifest, which is
+// why no version comparison is consulted here: bootloader, partition table, otadata
+// and both app slots are rewritten whatever the board ran before, so a downgrade over
+// a cable is not a special case and needs no confirmation of its own.
+async function cableFlash(wipe) {
+  const port = current.port;
+  if (!port) return;
+  fpOpen();
+  const { mac, ok } = await streamFlash("/api/flash",
+    { port, mode: "full", wipe: !!wipe }, fpUI());
+  if (ok) {
+    await refreshPorts();
+    if (!current.mac && mac) current.mac = mac;
+    openJoinDialog(port, mac || current.mac, "");
+  }
 }
 
-// The OTA door. One POST does the whole staging: the hub reads its own bundle,
-// the device validates the image in the spare slot, and the reboot is the hub's
-// second request inside the same handler, so nobody is left holding a staged
-// slot they forgot about. The reply names both stamps.
-$("#mn-update").onclick = async () => {
+// wifiUpdate is the OTA door, and the one place a version verdict is acted on.
+// A downgrade is offered rather than refused: CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+// means the bootloader reverts an image that never marks itself valid, so the
+// hardware holds the safety a page cannot infer from a stamp. The confirm exists so
+// stepping backwards is a deliberate press rather than a second click on an upgrade.
+// ffForced is set only by a downgrade refusal from the hub, and cleared every
+// time the modal opens, so a press that forces an upgrade can never leak into the
+// next board opened in the same page.
+let ffForced = false;
+async function wifiUpdate() {
   if (!current.ip) return;
-  const btn = $("#mn-update"), note = $("#mn-updatenote");
-  btn.disabled = true;
-  note.textContent = "uploading to " + current.ip + " — the orb writes the spare slot with its cache off; this takes a minute";
+  const state = $("#ff-state"), go = $("#ff-go");
+  state.textContent = "uploading to " + current.ip + "\u2026";
   try {
     const r = await hubFetch("/api/orb/update", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: current.ip }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: current.ip, force: ffForced }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    if (!r.ok || j.ok === false) {
+      // A downgrade refusal is not an error to display, it is a second click
+      // waiting to happen. The hub named the verdict, so the button changes and
+      // says what the extra press costs; the rollback flag in the bootloader is
+      // what makes the press recoverable rather than hopeful.
+      if (j.overridable && j.verdict === "downgrade" && !ffForced) {
+        ffForced = true;
+        go.textContent = "Flash anyway";
+        go.disabled = false;
+        state.textContent = j.error + " The bootloader rolls back if the new image never boots.";
+        return;
+      }
+      throw new Error(j.error || ("HTTP " + r.status));
+    }
     const d = j.data || {};
-    note.textContent = "staged and rebooting: " + d.from + " → " + d.to + " — the card will show the new stamp in a moment";
-    $("#mn-curfw").textContent = "off the wire for one boot; the next check-in carries the new stamp";
+    $("#mn-curfw").textContent = "staged and rebooting: " + d.from + " \u2192 " + d.to;
+    $("#mn-verdict").textContent = "";
+    $("#ff-mask").hidden = true;   // the card carries the rest; it is not a dead end
     pullFound();
   } catch (e) {
-    note.textContent = "update refused: " + e.message;
-    btn.disabled = false;
+    state.textContent = e.message;
+    go.disabled = false;
   }
-};
+}
 
-// The cable door for an orb that has been an orb for a while: the firmware this
-// hub carries, full manifest, NVS preserved unless the factory-reset box says
-// otherwise. It reuses the flash machinery because below the button it is the
-// same ROM conversation — the difference is only what it starts after: the same
-// join dialog a fresh flash converges on, so the two paths say the same words.
-$("#mn-cable").onclick = async () => {
-  if (!current.port) return;
-  const go = $("#mn-cable");
-  go.disabled = true;
-  fpOpen();
-  try {
-    const { mac, ok } = await streamFlash("/api/flash",
-      { port: current.port, mode: "full", wipe: $("#ob-wipe").checked }, fpUI());
-    if (ok) {
-      await refreshPorts();
-      if (!current.mac && mac) current.mac = mac;
-      openJoinDialog(current.port, mac || current.mac, "");
-    }
-  } finally { go.disabled = false; }
-};
+
 
 // ---- New Orb: the one flash a blank board gets -------------------------------
 // A fresh flash is the one flash with nothing to preserve: full manifest, NVS
@@ -702,62 +843,83 @@ $("#ob-go").onclick = async () => {
 // remembers the act, so the cable's MAC-shaped descriptor cannot rebuild the row
 // (New Orb is the door back). The door is still served by /api/lonely under the
 // hood; that name is internal and the page never shows it.
-// lonelyArm moves the card's Erase button to its one-step confirm: the press that
-// armed it already named the act and the port, and the operator reads which board is
-// about to stop being an orb on the button's own face. The typed word is gone (the
-// operator's call, bench 2026-10-15: "don't do the whole are-you-sure-type-text-in-here
-// thing, super annoying — the user already went through hitting forget and hitting the
-// erase button"). The hub's payload word stays: it is the gate for every scripted
-// and hand-crafted caller, and costs this page nothing.
-function lonelyArm() {
+// ---- the reset modal ---------------------------------------------------------
+// Two scopes, chosen independently, because "reset" named two different acts and the
+// old card only offered the destructive one. Settings alone keeps the firmware and
+// returns the board to its provisioning AP; firmware alone also happens to clear
+// settings, because the base image is what re-provisions, so the two boxes are not
+// four states and the modal says so rather than pretending they are.
+function openResetModal() {
   const port = current.port;
-  if (!port) {
-    $("#ob-lonely-hint").textContent = "Plug this orb into this computer with a USB cable to erase it.";
-    return;
-  }
-  $("#ob-lonely").hidden = true;
-  $("#ob-lonely-hint").hidden = true;
-  $("#ob-lonely-confirm").hidden = false;
-  $("#ob-lonely-port").textContent = "this orb";
-  $("#ob-lonely-go").disabled = false;
-  $("#ob-lonely-go").focus();
+  $("#rt-sub").textContent = port ? "on cable " + port : "not on a cable of this computer";
+  $("#rt-choices").hidden = !port;
+  $("#rt-settings").checked = true;
+  $("#rt-firmware").checked = false;
+  $("#rt-state").textContent = "";
+  rtGate();
+  $("#rt-mask").hidden = false;
 }
 
-function lonelyDisarm() {
-  $("#ob-lonely-confirm").hidden = true;
-  $("#ob-lonely").hidden = false;
-  $("#ob-lonely-hint").hidden = false;
-  $("#ob-lonely-hint").textContent = "This wipes everything on the orb, including its software. You can set it up again later.";
+function rtGate() {
+  const go = $("#rt-go");
+  go.disabled = $("#rt-choices").hidden ||
+    (!$("#rt-settings").checked && !$("#rt-firmware").checked);
 }
 
-$("#ob-lonely").onclick = lonelyArm;
-$("#ob-lonely-no").onclick = lonelyDisarm;
+$("#mn-resetbtn").onclick = openResetModal;
+$("#rt-cancel").onclick = () => { $("#rt-mask").hidden = true; };
+$("#rt-mask").addEventListener("click", (e) => { if (e.target === $("#rt-mask")) $("#rt-mask").hidden = true; });
+$("#rt-settings").onchange = () => {
+  // Erasing the firmware takes the settings with it, so the settings box is implied
+  // rather than independently uncheckable while firmware is selected.
+  if ($("#rt-firmware").checked) $("#rt-settings").checked = true;
+  $("#rt-settings").disabled = $("#rt-firmware").checked;
+  rtGate();
+};
+$("#rt-firmware").onchange = () => {
+  if ($("#rt-firmware").checked) $("#rt-settings").checked = true;
+  $("#rt-settings").disabled = $("#rt-firmware").checked;
+  rtGate();
+};
 
-$("#ob-lonely-go").onclick = async () => {
-  const port = current.port;
-  if (!port || $("#ob-lonely-go").disabled) return;
-  $("#mn-cable").disabled = true;
-  $("#ob-lonely-go").disabled = true;
-  fpOpen();
-  let done = false;
+$("#rt-go").onclick = async () => {
+  const port = current.port, state = $("#rt-state"), go = $("#rt-go");
+  if (!port || go.disabled) return;
+  go.disabled = true;
   try {
-    const { ok } = await streamFlash("/api/lonely", { port, confirm: "LONELY" }, fpUI());
-    done = ok;
-    if (ok) {
-      await refreshPorts();
+    if ($("#rt-firmware").checked) {
+      fpOpen();
+      const { ok } = await streamFlash("/api/lonely", { port, confirm: "LONELY" }, fpUI());
+      if (ok) {
+        await refreshPorts();
+        pullFound();
+        $("#rt-mask").hidden = true;
+        show("manage"); location.hash = "";
+        // The row is gone and the picker calls the lead blank, which is the whole
+        // true answer. The card re-rendered itself, so the note is cleared rather
+        // than left holding the previous action's words.
+        $("#mn-find-note").textContent = "";
+      }
+    } else {
+      state.textContent = "clearing settings\u2026";
+      const r = await hubFetch("/api/orb/cmd", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port, mac: current.mac, command: "reset", operand: "ALL" }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+      state.textContent = "settings cleared — the orb is ready to set up again";
       pullFound();
-      show("manage"); location.hash = "";
-      // The row is gone and the picker calls the lead blank, which is the whole true
-      // answer; the card re-rendered itself, so the note is cleared rather than left
-      // holding the previous action's words.
-      $("#mn-find-note").textContent = "";
     }
+  } catch (e) {
+    state.textContent = e.message;
   } finally {
-    $("#mn-cable").disabled = false;
-    lonelyDisarm();
-    if (!done) $("#ob-lonely-go").disabled = false;
+    go.disabled = false;
+    rtGate();
   }
 };
+
+
 
 
 // ---- the forget dialog: three bodies, one row's current verdict --------------
@@ -1151,6 +1313,12 @@ $("#ob-rejoin").onclick = () => {
   $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
 };
 $("#ob-manage").onclick = () => { closeJoinDialog(); $("#ob-flashpanel").hidden = true; openOrbByIP(orbIP, provMac, null); };
+// The third answer on a finished flash: stay here. A cable flash that worked and
+// joined is a completed job, and the two buttons beside this one both move the
+// operator somewhere — onto the orb's page, or back into the network form. The
+// wait and the form keep their backdrop and Escape exits; the done panel covered
+// the whole dialog in buttons, so closing it had to be one of them.
+$("#ob-close").onclick = () => { closeJoinDialog(); $("#ob-flashpanel").hidden = true; pullFound(); };
 
 // populateSerialNetworks fills the wired-provision door's scan list and the
 // two standing answers that ride beside it in the same dropdown: a typed name

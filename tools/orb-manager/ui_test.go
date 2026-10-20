@@ -298,6 +298,20 @@ func blockOf(t *testing.T, src, marker string) string {
 	return ""
 }
 
+// blockOfLine returns the one source line that mentions marker. An HTML attribute
+// has no brace block to lift, and pinning against the whole page lets a claim about
+// one element pass on text that lives in another.
+func blockOfLine(t *testing.T, src, marker string) string {
+	t.Helper()
+	for _, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no line mentions %q — the control was renamed or removed and this pin is now meaningless", marker)
+	return ""
+}
+
 // Naming a board is the one part of the fleet the operator types into, and the row is
 // built from bytes that arrived over UDP plus a file the hub wrote. So the same two
 // rules the theme card applies to device names apply here: build with DOM APIs, and let
@@ -478,5 +492,162 @@ func TestWatchReportsWhileItWaitsForTheOrb(t *testing.T) {
 	}
 	if !strings.Contains(body, "watchStart") {
 		t.Error("the Phase B progress event does not say how long it has been waiting")
+	}
+}
+
+// The hub takes two firmware shapes, and the picker is the only place an operator
+// finds that out. A file input that lists .zip alone hides the .bin sitting on the
+// desktop, and a panel that reports "1 image(s) @0x0" without saying what that write
+// costs is a warning nobody reads.
+// The hub takes two firmware shapes, and the modal is the only place an operator
+// finds that out. A file input that lists .zip alone hides the .bin sitting on the
+// desktop, and a row that reports a filename without naming the project inside it
+// leaves the wrong-file catch to happen after the write.
+func TestFirmwarePickerAcceptsBothShapes(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	input := blockOfLine(t, page, `id="ob-fwfile"`)
+	for _, want := range []string{".zip", ".bin"} {
+		if !strings.Contains(input, want) {
+			t.Errorf("the firmware input does not accept %s, so the dialog hides half of what the hub takes", want)
+		}
+	}
+	// Both shapes live behind one choice. The hub decides which it got by reading
+	// the file, so the modal must not ask the operator to declare it up front.
+	for _, want := range []string{`id="ff-pick"`, `id="ff-file"`, `id="ff-go"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the flash modal is missing %s", want)
+		}
+	}
+
+	src := readAppJS(t)
+	// The probe reply drives the file row, so the project name the hub read is what
+	// the operator sees. A row that showed only the filename would let a mislabelled
+	// vendor download look exactly like the release it was saved next to.
+	picked := blockContaining(t, src, `$("#ob-fwfile").onchange`)
+	for _, want := range []string{"r.foreign", "r.project", "r.version"} {
+		if !strings.Contains(picked, want) {
+			t.Errorf("the file row ignores %s, so a picked file is not identified before it is flashed", want)
+		}
+	}
+	// The build panel still says what the hub carries, in two tags rather than two
+	// paragraphs, and still guards the array it takes .map on.
+	panel := blockOf(t, src, "async function refreshBuild")
+	for _, want := range []string{"b.merged", "b.foreign", "whole-flash", "not gorb-os", "Array.isArray(b.images)"} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("the firmware panel ignores %s", want)
+		}
+	}
+}
+
+// A foreign blob is a cable-only choice. The gate that used to refuse it existed to
+// stop a silent wireless push of a blob nobody owned; over a lead an operator picked
+// up, choosing the file and pressing Flash is the confirmation, so the modal sends
+// the flag on the first request instead of refusing and offering a retry. These pins
+// hold that arrangement: it stays cable-only, and it stays explicit.
+func TestForeignBlobIsACableOnlyChoice(t *testing.T) {
+	src := readAppJS(t)
+	modal := blockOf(t, src, "function openFlashModal")
+	// The disk row is hidden unless a cable is in. This is the whole gate now.
+	if !strings.Contains(modal, `$("#ff-disk-row").hidden = !port`) {
+		t.Error("the disk choice is not gated on a cable, so a foreign blob could reach the wireless path")
+	}
+	probe := blockOf(t, src, "async function ffProbe")
+	if !strings.Contains(probe, `form.append("allow_foreign", "1")`) {
+		t.Error("the cable probe does not carry the flag, so a vendor .bin would be refused before it could be shown")
+	}
+	// The hub still owns the decision: the page never inspects the bytes itself.
+	if !strings.Contains(probe, "/api/firmware") {
+		t.Error("the file is not handed to the hub, so its shape would be guessed from the suffix")
+	}
+	commit := blockContaining(t, src, `$("#ff-go").onclick`)
+	if !strings.Contains(commit, `form.append("allow_foreign", "1")`) {
+		t.Error("the committing upload drops the flag, so the flash the modal promised would be refused")
+	}
+	// A blob the hub could not identify stays refused: no project name means no
+	// label, and an unlabelled confirmation asks for trust rather than attention.
+	hub := readFile(t, "firmware.go")
+	if !strings.Contains(hub, "func foreignProjectName") {
+		t.Error("the hub lost the typed refusal that names a foreign project")
+	}
+}
+func TestFlashDonePanelCanDismissItself(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	start := strings.Index(page, `id="ob-done"`)
+	if start < 0 {
+		t.Fatal("the flash-done panel is gone, and with it every exit from a finished flash")
+	}
+	// The panel spans several lines, so read its element rather than one line.
+	end := strings.Index(page[start:], "</div>")
+	if end < 0 {
+		t.Fatal("the flash-done panel does not close")
+	}
+	done := page[start : start+end]
+	if !strings.Contains(done, `id="ob-close"`) {
+		t.Fatal("the flash-done panel offers no way to acknowledge a finished flash and stay on the hub")
+	}
+	if !strings.Contains(done, "Done") {
+		t.Error("the done control is not labelled as finishing the job")
+	}
+	src := readAppJS(t)
+	handler := blockOfLine(t, src, `$("#ob-close").onclick`)
+	// It must actually close the dialog, and must not navigate anywhere.
+	if !strings.Contains(handler, "closeJoinDialog()") {
+		t.Error("Done does not close the join dialog")
+	}
+	if strings.Contains(handler, "openOrbByIP") {
+		t.Error("Done navigates to the orb, which is what the other button already does")
+	}
+}
+
+// A control whose class matches no rule renders as unstyled text: it is present, it
+// works, and it reads as broken. Nothing else in this suite looks at the stylesheet for
+// a class the markup invented, which is how the flash modal's two shape tags and the
+// card's update badge nearly shipped invisible.
+func TestFlashModalClassesAreStyled(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	css := readWebFile(t, "app.css")
+	// Only the two dialogs this change added, and the card row that opens them.
+	var markup strings.Builder
+	// Only the two dialogs. Each closes at column zero, which is what makes the
+	// boundary below exact; an indented element would sweep the region past itself
+	// into whichever dialog happens to close next, and accuse this change of classes
+	// it never introduced.
+	for _, id := range []string{`id="ff-mask"`, `id="rt-mask"`} {
+		start := strings.Index(page, id)
+		if start < 0 {
+			t.Fatalf("%s is gone from the page", id)
+		}
+		// The dialog's own closing tag is the boundary: the outer one sits alone on its
+		// line, so an inner div cannot end the region early and the scan cannot run on
+		// into the next dialog's controls, which this change did not add.
+		end := strings.Index(page[start:], "\n</div>")
+		if end < 0 {
+			t.Fatalf("%s does not close", id)
+		}
+		markup.WriteString(page[start : start+end])
+		markup.WriteString("\n")
+	}
+	used := map[string]bool{}
+	for _, m := range regexp.MustCompile(`class="([^"]+)"`).FindAllStringSubmatch(markup.String(), -1) {
+		for _, c := range strings.Fields(m[1]) {
+			used[c] = true
+		}
+	}
+	if len(used) == 0 {
+		t.Fatal("no classes found in the new dialogs, so this test asserts nothing")
+	}
+	for class := range used {
+		// .mask and .dialog are the page's existing shell; .hint and .check the
+		// existing form idioms. Each must still have a rule somewhere.
+		if !strings.Contains(css, "."+class) {
+			t.Errorf("class %q is used by the new dialogs and matched by no rule in app.css", class)
+		}
+	}
+	// The card row's badge and the build panel's shape tags are carried by id
+	// selectors, named rather than left to the loop, because an id is not a class.
+	for _, sel := range []string{"#ob-build .tag", "#mn-updatebadge"} {
+		if !strings.Contains(css, sel) {
+			t.Errorf("app.css has no %s rule, so that control renders unstyled", sel)
+		}
 	}
 }

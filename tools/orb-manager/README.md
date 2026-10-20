@@ -142,15 +142,19 @@ hub needs no ESP-IDF, no `build/` directory, no `git`, and no clone to flash an
 orb. It reads one file: the firmware bundle it ships with.
 
 To flash a different firmware — a downgrade, or a build newer than this binary —
-click **Use my own firmware…** in the firmware panel (the same bar both flash
-doors read from) and pick a `*.zip` bundle.
-**Restore built-in firmware** returns to the shipped one. `--firmware <bundle.zip>`
-starts on one from the command line.
+open **Flash firmware** on an orb's card and choose **A file from this computer** (the same bar both flash
+doors read from) and pick either shape the hub takes: a `*.zip` release bundle, or a
+`*.bin` whole-flash image. **Restore built-in firmware** returns to the shipped one.
+`--firmware <file>` starts on one from the command line and takes either shape too.
+
+The hub dispatches on the file's first bytes, never on its name: `PK` is a bundle,
+`0xE9` is an image. Renaming a bundle to `.bin` does not make it one, and the refusal
+says which magic it found.
 
 A bundle is a zip of `flasher_args.json` plus the images it names, under
-`images/`. A picked bundle is a file from wherever the operator's browser was
-last pointing, so `firmware.Load` treats it as untrusted input and refuses it
-before anything reaches a port:
+`images/`. A picked file comes from wherever the operator's browser was last
+pointing, so `firmware.Load` treats it as untrusted input and refuses it before
+anything reaches a port:
 
 - **Size, in two places.** The compressed archive is capped at 32 MB, and the
   DECOMPRESSED total at 48 MB. The second number is the one a zip bomb is built
@@ -162,7 +166,8 @@ before anything reaches a port:
   project, and a bundle announcing anything but `gorb-os` is refused — the usual
   cause being a stray ESP-IDF build picked out of a Downloads folder. An image with
   no descriptor at all is still accepted, and the card says "unknown firmware"
-  rather than inventing a version.
+  rather than inventing a version. The refusal is overridable: see
+  [Flashing firmware that is not gorb-os](#flashing-firmware-that-is-not-gorb-os).
 - **Descriptor hygiene.** `project`, `version`, `idf` and the build stamp are bytes
   the file controls and they are rendered in the browser, so non-printable
   characters are dropped where they are parsed. The client escapes them again:
@@ -171,6 +176,51 @@ before anything reaches a port:
   interpolation of a server-supplied field that skips it — because the original bug
   was exactly one field (`who`, built from project and version) interpolated raw
   while its neighbours were escaped.
+
+A whole-flash image is one `0xE9` blob, the output of `esptool merge_bin` over those
+same files: bootloader at 0x0, then partition table, otadata, app and art bank, each
+padded to its manifest offset with `0xFF`. It carries no manifest, so it makes the
+hub's promises differently:
+
+- **One write, and it is the whole device as far as the file reaches.** The plan is
+  a single image at 0x0, so the ROM's `FLASH_BEGIN` erases and replaces everything
+  from the bootloader to the end of the blob — nvs, otadata and phy_init included,
+  and both app slots with them. The shipped bundle merges to 5,498,939 bytes ending
+  at 0x53E83B, partway through the art bank: `www`, `storage` and `apps` sit past it
+  and survive, which is how WiFi credentials can outlive the write while a blob made
+  with `--omit-partition storage` erases nothing there either. The panel says the
+  cost out loud rather than leaving `1 image(s)` to be read as a small update.
+- **Size, both ways.** Under 0x9000 is a bootloader extract, not a device. Over the
+  16 MB flash cannot be written.
+- **Project identity is mandatory, and overridable once named.** A bundle with no
+  descriptor is accepted as "unknown" because its manifest is a second claim about
+  what the file is; a blob has no manifest, so it must prove its own provenance or be
+  refused. `scanDescriptors` weighs every `esp_app_desc_t` in the blob and takes the
+  one that says `gorb-os` — the first magic match is not the app, since a headerless
+  segment can carry those four bytes by chance. A blob that names a project which is
+  not `gorb-os` is refused with the name it read, and that name is what makes the
+  refusal answerable; a blob naming nothing stays refused whatever is asked, because
+  there is no name for a confirmation to repeat back.
+- **The partition table is read structurally.** With no manifest naming it, it comes
+  from the 0x8000 the layout dictates, walked row by row. The walk accepts the `0xEBEB`
+  MD5 row as well as the `0xAA50` entries, and stops at the first all-`0xFF` row. A
+  table `esprom.NvsRegions` cannot resolve is refused at pick time, so the factory
+  reset cannot fail later on a file the hub already accepted. Under
+  `--allow-foreign` this one gate is dropped rather than enforced: the layout belongs
+  to somebody else, the write is verbatim, and the wipe refuses itself with a reason
+  when it has no table to aim with.
+- **The write is verbatim.** `esprom.Image.Verbatim` skips the offset-0 flash
+  parameter rewrite. That rewrite locates an appended SHA256 at the END of the bytes
+  it holds, which is right for a lone bootloader and wrong for a merged blob: it would
+  digest the whole device and overwrite the last 32 bytes of the art bank.
+  `TestVerbatimImageSurvivesTheOffsetZeroRewrite` pins those bytes.
+- **No app slot, so no wireless update.** `AppImage()` returns nil and `AppPlan()`
+  refuses, because slicing an OTA image out by guessing at the layout is worse than
+  an honest refusal. `Bundle.Ready()` is what `--firmware` and the upload handler
+  both run, and it asks a bundle for its app slot and a merged image for its layout —
+  deliberately different proofs, because the two shapes make different promises. The
+  same distinction already governs `orbpack`: a zip is rejected at pack time for
+  exactly the app-slot test `Ready` applies to a bundle.
 
 `make firmware` produces one from a build dir on the machine that has
 the toolchain:
@@ -188,6 +238,67 @@ present — so a stale bundle now fails the ordinary suite instead of skipping.
 Offsets are still never hardcoded: the manifest travels inside the bundle beside
 the exact bytes it describes, so a plan cannot mix one build's offsets with
 another build's images.
+
+### Flashing firmware that is not gorb-os
+
+The project gate refuses a foreign image by default, and that is the right default:
+the ordinary reason a `.bin` that is not ours reaches the picker is that somebody
+grabbed the wrong file out of a Downloads folder. It is wrong as an absolute. DFRobot
+ships a factory demo for this exact panel, and putting it back — to prove the
+hardware, or to hand a board on — is a thing a person holding the board has a real
+reason to want. So the gate takes an explicit yes rather than being loosened.
+
+**Flash firmware** is the one door, on an orb's own card. The button carries an
+amber **update available** badge when the hub's comparison says so — the hub's verdict
+from the pushed row, never a version comparison run in the page, so a badge can never
+promise an update the flash gate would refuse. The modal it opens lists only the
+sources the connection supports:
+
+| Connection | Offered |
+|---|---|
+| Cable | this hub's firmware, or a file from disk, in any direction |
+| Wi-Fi only | this hub's firmware, pushed to the spare slot |
+| Neither | nothing; the modal says the board is unreachable and stops |
+
+A file from disk is a cable-only choice. Picking it hands the bytes to
+`POST /api/firmware` with `probe=1`, which validates and reports without adopting:
+the file row then names what the hub read — `esp32-s3-touch-amoled-brookesia, not
+gorb-os` — before anything changes. Pressing **Flash** re-sends the same file without
+the probe flag to adopt it, and flashes over the cable. The hub is still the thing
+that decides; the page never inspects the bytes or the suffix.
+
+The cable branch asks no separate permission for a foreign image, because
+`planFor` always writes the full manifest: bootloader, partition table, otadata and
+both app slots are rewritten whatever the board ran before. A cable flash is therefore
+correct from any starting version in any direction, and a version comparison on that
+path would be a gate with nothing behind it. Deliberately picking a file and pressing
+Flash is the confirmation.
+
+The Wi-Fi branch is where a version verdict is acted on, and a downgrade is offered
+rather than refused. `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` means the bootloader
+reverts an image that never marks itself valid, so the hardware holds the safety the
+page cannot infer from a stamp. The hub answers a downgrade with `overridable: true`
+and `verdict: "downgrade"`, the button relabels to **Flash anyway**, and the retry
+sends `force: true`.
+
+What stays refused on every path, because these decide whether a write is survivable
+rather than whose it is: the 16 MB flash ceiling and the 0x9000 floor, the `0xE9`
+header, the chip ID, and the zip-bomb caps. A file whose descriptors name no project
+is refused with no label and no second press offered, on the cable path too — a
+confirmation with no name to quote back asks for trust instead of attention.
+
+On the command line the same decision is one flag, for the door where naming the file
+already was the deliberate act:
+
+```
+orb-manager --firmware FactoryOnly.bin --allow-foreign
+orbflash -mode full -port /dev/ttyACM0 -firmware FactoryOnly.bin -allow-foreign
+```
+
+While foreign firmware is loaded, the hub's firmware-derived doors are closed: the
+Wi-Fi update (a whole-flash image has no app slot to push), the bench app-only
+reflash, themes and the lonely door. The cable flash itself is unaffected — that is
+the point.
 
 By default the hub opens in a **chromeless Chromium window** (`window.go`) — no
 tabs, no address bar, taskbar entry named "Orb Manager" — instead of a browser
@@ -220,10 +331,13 @@ Three switches cover the exceptions:
 | `--no-window` | serve only and print the URL — the bench, SSH, and CI path |
 | `--browser=browser` | old behaviour: a normal tab in the default browser |
 | `--browser=/path/to/chrome` | name the binary instead of autodetecting |
-| `--firmware=<bundle.zip>` | flash a firmware bundle instead of the one built into the binary |
+| `--firmware=<file>` | flash a firmware bundle (`.zip`) or whole-flash image (`.bin`) instead of the one built into the binary |
+| `--allow-foreign` | accept a firmware whose descriptor names a project other than gorb-os; with `--firmware` it applies to that file. The browser's flash modal always sends the flag, because its disk branch is cable-only |
 | `--repo=<clone root>` | serve the Theme Editor from the live clone instead of the copy built in |
 | `--addr=host:port` | bind somewhere other than `127.0.0.1:3779`; needs `--allow-remote` |
 | `--allow-remote` | permit `--addr` to name a non-loopback host, which the hub otherwise refuses at startup |
+| `--probe-cables=false` | never identify wired boards by itself. On by default: the hub resets every board on an attributable USB lead and reads its bootloader, at start, on every re-plug, when a cached answer expires, and when a wired board stops answering its HTTP door. This is the only identification trigger there is — no card offers a button to force one — so turning it off means a board on a lead you cannot name. Replaces the button that was removed on 2026-10-19; `orbprobe -port=...` is the explicit path left. Costs each wired board one reboot per hub start |
+
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
 dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
@@ -240,7 +354,7 @@ console banner and USB descriptor are the hub's accounting, and a card that
 recited its provenance was the tile auditing itself instead of answering the
 question. `fw` and `state` are folded from every answer that carries them — the
 60 s announce, the ten-second liveness dial's status body, the free serial `PING`
-(`cableproof.go`), an Identify probe, and Adopt — and a remembered row wears the
+(`cableproof.go`), a paid probe, and Adopt — and a remembered row wears the
 last stamp the file holds at first paint, so no field waits out a channel nobody
 uses. A board that loses power reads `disconnected` within one sweep: the dead
 verdict outranks the cached announce, the row keeps its address as where it was
@@ -298,13 +412,15 @@ no Forget; that verdict is the hub's, not the card's guess.
   bundle goes through the ROM instead, with a factory-reset box that stays
   unchecked.
 
-- **Erase flash completely** — the full end of orb life this page offers, inside
-  an orb's firmware card, only when that orb is on a cable, in its own colour.
-  The button press is the confirmation; the page asks for no typed word, though
-  the hub's HTTP door still requires the payload word `LONELY`. The card button
-  and the Forget dialog both name this act "Erase flash completely"; the internal
-  door is `/api/lonely` and the embedded base image is `lonely.bin`, neither of
-  which the page shows. It writes the base image: the
+- **Reset this orb → Firmware** — the full end of orb life this page offers. It is
+  one checkbox inside the reset modal, beside **Settings**, and the modal is offered
+  only when the orb is on a cable. Checking Firmware forces Settings along with it,
+  because the base image re-provisions the board either way; the two boxes are not
+  four states. The button press is the confirmation; the page asks for no typed word,
+  though the hub's HTTP door still requires the payload word `LONELY`. The Forget
+  dialog offers the same two acts under the same two names. The internal door is
+  `/api/lonely` and the embedded base image is `lonely.bin`, neither of which the
+  page shows. It writes the base image: the
   loaded firmware bundle's bootloader, partition table and initial otadata at
   their usual offsets, a small embedded app in the ota_0 slot, and — in the
   same ROM session, after the images land — a region erase of the NVS and
@@ -363,10 +479,82 @@ no Forget; that verdict is the hub's, not the card's guess.
   all) for a bench script that means it.
 
 
+### A reflashed board, and why the hub asks again at launch
+
+A board that stopped running gorb-os keeps its identity cable. The serial a USB
+descriptor offers *is* the eFuse base MAC, so it reads the same with gorb-os, with a
+vendor demo, and with nothing on it, and the product id is whatever USB function the
+running image exposes — which a stock Espressif CDC sample matches by accident. So the
+host's claim that an orb sits on a lead survives any reflash, and every door that reads
+that claim as fact keeps insisting: the row says `on cable`, Forget refuses, and the New
+Orb picker refuses to offer the board.
+
+Only a paid answer contradicts it, and the hub files one in exactly two places: a probe
+the sweep runs, and a flash the hub itself completed. A free cable proof never does. The free read is a `PING` through an orb-console door, and that goes
+unanswered by an orb that is provisioned-but-asleep, busy with an OTA, or wedged, so an
+answer-free console is not evidence of anything.
+
+A paid answer used to live only in memory, which made the fix feel broken: an explicit
+probe correctly dropped the board off its cable, and restarting the hub brought the cable
+badge back, because the only fact still on file was a MAC. The hub now refuses to
+reason from that at all. At launch, before any door is allowed to trust a descriptor, it
+pays one probe for every board on an attributable lead and files the answer
+(`launchprobe.go`). A not-an-orb verdict is re-paid inside its own expiry window rather
+than left to age out of `identityTTL` and silently hand the lead back to the guess, so
+the same board cannot reappear on a cable half an hour after it stopped being one. It
+never touches a lead it cannot attribute, a lead a flash holds, or a board it left alone
+on purpose; pass `--probe-cables=false` to skip the whole sweep, and nothing identifies a
+board any more except the CLI.
+
+**Re-plugging always asks again.** Pulling a cable and putting it back voids whatever the
+hub believed about that lead, including the TTL-exempt not-an-orb verdict, and the board is
+re-identified within one sweep tick of going back in (five seconds). The serial gate cannot
+do this instead: it compares the chip on the lead against the chip a verdict was filed
+about, so it fires when a *different* board arrives and quietly restores the old answer when
+the *same* board returns. A departure is the operator saying "look again", and the board may
+have been reflashed while it sat off the bench, which no cache and no MAC can reveal.
+`portsGone` keys on the port and is computed only from a sweep that actually enumerated, so
+a host whose sysfs read blips does not fake an unplug and throw a paid verdict away, and the
+first sweep lays a baseline rather than reporting an empty bench as a departure.
+
+**What does not count as an answer.** Three things the hub notices are not verdicts, and
+each was a way for a healthy orb to lose its cable badge:
+
+- a probe that never reached a chip — lock held elsewhere, budget expired, console wedged.
+  Filed as `probe-failed` so the card can say why the port is unknown, and refused as
+  evidence. It also may not overwrite a verdict an earlier success already earned;
+- a cable proof, which is an overheard `PING`. It proves the board answers to an orb and is
+  the evidence most likely to survive a botched reflash, so it never excuses the paid
+  question;
+- a negative verdict naming no MAC, which describes nobody.
+
+A board reflashed outside the hub is corrected at the next re-plug, the next hub start, the
+next sweep tick after its cached answer expires, or the next liveness dial that fails on a
+board the hub can see sitting on a lead — whichever comes first. That last trigger is what
+covers a reflash that never disturbs the cable: gorb-os owns `/api/v1/status`, firmware that
+is not gorb-os does not answer it, and a wired board that stops answering is worth one
+reboot to ask properly. Silence alone buys no claim, only the question; a board that was
+merely blipping comes back as an orb and the flag is spent, so a loose network lead cannot
+reboot a board on the dial clock. The
+two verdicts expire differently, on purpose: a not-an-orb answer is trusted for
+`contradictedReprobe` (ten minutes) and then re-asked, because nothing else in the hub would
+ever give it up; an orb answer expires with `identityTTL` (thirty minutes) and is then
+re-asked, since an answer too old to print is not an answer. What the hub will not do is
+re-pay a *fresh* positive on a timer, which would reset a healthy orb for a version string
+the free facts already corroborate.
+
 ### Identifying an orb
 
-**Identify this orb** answers the two questions that make two cables
-distinguishable: which orb is this, and what is it running.
+There is no button for this, and there has not been one since 2026-10-19. The hub asks on
+its own: at launch, on every plug-in and re-plug, when a cached answer expires, and the
+moment a board on a lead stops answering the HTTP door it used to answer. The card shows
+what the last answer said and when it was paid for.
+
+What the answer is, and why the read is worth a reboot: the ESP32-S3 ROM refuses `MEM_READ`
+and `SPI_READ` with the `[1,5]` no-stub failure, so flash bytes — and the running app's
+`esp_app_desc_t` with them — cannot be read over the lead at all. The 2nd-stage bootloader
+prints that same descriptor on the console roughly 0.7 s after a cold boot, which is where
+the version comes from. The hub has to restart the board to find out what it runs.
 
 ```
 /dev/ttyACM1: gorb-os 8eb4bf0-dirty
@@ -377,6 +565,33 @@ distinguishable: which orb is this, and what is it running.
   lan        192.168.2.34
 ```
 
+**Why the button was deleted rather than kept for the odd case.** It was never a fallback
+for the odd case; it was a way to step around the gate that protects the bench. The probe
+pulses DTR/RTS to enter download mode, so an explicit port override resets whatever sits on
+that wire, and the same reasoning that stops the sweep from touching an unattributable port
+stops applying the moment a click or a POST can name one. The failure mode of the gate is a
+board you cannot name; the failure mode of the button was rebooting a stranger's Arduino.
+
+- A re-plug does the job the button used to do, and better. Unplugging and replugging is
+  exactly the fresh-plug-in event the sweep re-probes, and a board cannot be reflashed and
+  put back without being unplugged.
+- A port the host cannot attribute is refused, not offered. If the host will not say the
+  device behind a port is an Espressif chip — VID `0x303A`, read from the USB device path on
+  Linux, Windows and macOS alike — then it is not an orb, the hub never claims it, and no
+  door should pulse it. Attribution reads the hardware ID, not a driver's friendly name, so
+  a Windows host is not blind here.
+- **`--probe-cables=false`** means not wanting unattended resets. The hub then identifies
+  nothing on its own and still offers no button, because that flag is a statement about
+  unattended resets, not a request for a manual one.
+- The explicit path that remains is `cmd/orbprobe`. It takes the port as an argument,
+  prints the same verdict, and files nothing: naming a device on a command line is the
+  operator taking responsibility for its reset, which is a heavier act than a button press
+  and a better record of it.
+
+A probe that reaches no chip is filed as a failure with its cause and shown on the card,
+never as a not-an-orb verdict, so a stuck lock or a wedged board cannot cost an orb its
+cable badge.
+
 Two design facts worth knowing, both measured against live hardware rather than
 assumed:
 
@@ -386,8 +601,9 @@ assumed:
   ROM. The 2nd-stage bootloader prints that same descriptor on the console
   roughly 0.7 s after a cold boot, which is where the answer comes from.
 - **So a probe costs a reboot.** The orb restarts, its screen blanks for a second
-  or two, and it re-joins Wi-Fi. The hub probes only on that click, one port at a
-  time, caches the answer, and takes the same per-port lock a flash does. One thing
+  or two, and it re-joins Wi-Fi. The hub probes one port at a time, caches the answer,
+  and takes the same per-port lock a flash does, so a sweep can never share a wire with
+  a write in progress. One thing
   IS automatic and is not a probe: an attributed orb peripheral whose board nothing
   else proves gets one `PING` down its own lead (`cableproof.go`). It opens no
   download mode, resets nothing, and is answered only by the app, so a blank chip and
@@ -465,7 +681,7 @@ so a deliberate downgrade stays possible.
   `MANIFEST.json`; `make vendor-check` re-verifies both and runs as part of
   `make check`, so a hand-edited React fails the build instead of blanking the page.
 - **Manage** — the card a fleet tile opens: the tile is the door, so a press anywhere on
-  it opens this, and only the tile's own Forget and Identify take a press for themselves.
+  it opens this, and only the tile's own Forget takes a press for itself.
   It dials that board's single address
   through the same-origin proxy for status, and the actions on the card — Update
   firmware (OTA, staged-then-verified), the cable flash when the board is on a
@@ -525,7 +741,19 @@ so a deliberate downgrade stays possible.
     that MAC, not announcing inside the last minute (the clock is the time the browser
     last HEARD a packet, never the time a card rebuild re-folded its cache — a clock the
     hub winds itself is a gate that never opens), and no fresh verdict of alive at the
-    address the row still holds. That verdict is re-priced by a bounded concurrent sweep
+    address the row still holds. The first clause reads the USB descriptor, and the
+    descriptor lies in exactly one case: a board reflashed with firmware that is not
+    gorb-os keeps its eFuse MAC and often its product id, so it still presents as an orb
+    on a lead forever. A paid verdict to the contrary — an Identify that read a foreign
+    bootloader banner, or a flash that wrote an image the hub marked foreign — therefore
+    overrides the sighting: the row keeps its name, its address and its card, loses the
+    cable badge, and the plain Forget arms. The port and its MAC stay on the Onboard
+    picker, labelled with the project that is actually on the chip, so the same lead that
+    got it out of gorb-os is the lead that puts it back. A PING that got no answer is NOT
+    such a verdict, because silence is also what an asleep, boot-looping or
+    downloader-resident orb produces, and reading it as "not an orb" would strip the
+    cable off a healthy board.
+    That verdict is re-priced by a bounded concurrent sweep
     every ten seconds over every remembered address, once at launch and again the second
     a cable goes quiet — so a board unplugged everywhere has an armed button at 60 s,
     not at the browser's expiry plus a grace. A row whose address has no verdict yet is
@@ -600,8 +828,8 @@ headless; a mismatch aborts before erasing.
 | `GET  /api/status` | platform, hub stamp, firmware version and source |
 | `GET  /api/ports`  | ports as `{"ports":[{port,attributed,hint,usbMac?,probed,cableProof?,orbState?,...}],"count":N}`, with each cached identity inlined. `probed` means a reboot was paid for; `cableProof` means the chip answered the hub's own free `PING` and nothing else is known about it |
 | `POST /api/ports/probe` | identify one named port — reboots the orb; explicit, never implicit. The answer carries `name` when the board announced one on its boot banner, and the hub folds it into the row (the only name read available to a board with no address) |
-| `GET  /api/build`  | the active firmware: source, version, sha256, and its resolved image list |
-| `POST /api/firmware` | upload a bundle (multipart field `firmware`); validates it, then makes it active |
+| `GET  /api/build`  | the active firmware: source, version, sha256, its resolved image list, and `merged` — whether it is one whole-flash image with no app slot to push |
+| `POST /api/firmware` | upload a firmware (multipart field `firmware`) — a `.zip` bundle or a `.bin` whole-flash image; validates it, then makes it active. Add `allow_foreign=1` to accept a file whose descriptor names another project — the modal always sends it, since its disk branch is cable-only, and the flag is what a scripted caller must set. Add `probe=1` to validate and report without adopting. A refusal that a flag could answer carries `overridable: true`, plus `foreign_project` or `verdict` |
 | `POST /api/firmware/reset` | return to the firmware compiled into the binary |
 | `POST /api/flash`  | flash the selected port, streamed as newline-delimited JSON events. A `name` in the request goes to the chip over the serial `NAME` door **and** into the fleet row on the ack — a name that reached only the chip left the row nameless, and a nameless cable-only row is no evidence of orb life, so the port stayed offered to New Orb after the board had been set up |
 | `POST /api/lonely` | `{"port","confirm":"LONELY"}` — write the lonely image (the bundle's bootloader, partition table and initial otadata, plus the embedded app at `0x20000`) and **erase the NVS and storage regions** the bundle's partition table declares, NDJSON like `/api/flash`. The board stops being an orb, boots, wipes its own settings at every start, and waits. `confirm` must be exactly `LONELY`. On success the hub drops every trace of the board — port identity, boot verdict, chip gate, fleet row with its name, address grant unless another live board claims it — and marks the chip lonely so the cable descriptor cannot rebuild the row. Marks are keyed on the store's canonical MAC digits inside the set, whatever spelling a caller arrives with — the flash reports the eFuse read colon-separated, exactly as the USB descriptor prints it, and a set keyed on the caller's spelling suppressed nothing while the port list still called the chip lonely. The mark clears on orb evidence of any origin: this hub's flash, a serial ack, an announcement, a console probe that answered as an orb, or a status poll that returned the board's own name; persisted in the state file, and an older file's colon spelling still restores as the same mark. There is no `/api/wipe`: a whole-chip erase is not offered by this hub, in the page or in the surface — it lives only in `orbflash -mode wipe` |
@@ -1164,8 +1392,9 @@ mangled path it tried. Go reads the WSL filesystem over UNC fine:
 .\orb-manager.exe -repo '\\wsl.localhost\Ubuntu\home\<you>\Projects\gorb-os'
 ```
 
-To flash a firmware that is not the one built in, click **Use my own firmware…**
-and pick a bundle zip. It is validated before it becomes active, and the card
+To flash a firmware that is not the one built in, open **Flash firmware** and choose **A file from this computer**
+and pick a bundle zip or a whole-flash `.bin`. It is validated before it becomes
+active, and the card
 names the file, the version read out of the image, and its sha256, so you can see
 what will actually land on the orb. **Use built-in firmware** undoes it.
 

@@ -5,7 +5,7 @@
 
 bake_clock.bake_complications() is the ONE place a kit's complications/ folder and
 manifest layout become theme_schema records; pack_geom then lays them down and the
-firmware's orb_theme_geom_parse() reads them back. This test drives that whole
+firmware's orb_clock3_parse() reads them back. This test drives that whole
 Python span — bake, pack, unpack — against a synthetic kit it builds itself, so it
 needs neither the microSD harness nor a vendor kit on disk. It pins the parts a
 mistake would silently get wrong:

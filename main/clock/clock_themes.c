@@ -70,8 +70,8 @@ static void publish(const cui_t *src)
 
 /* Runs on the worker. Nothing in here touches a widget, and nothing in here may
  * start to: this is the task that holds the card while a directory the size of
- * the framebuffer is walked. Installing is NOT here — orb_theme_post_install()
- * owns that job, so the dial's picker and the browser's Load button queue the
+ * the framebuffer is walked. Storing is NOT here — orb_theme_post_bundle()
+ * owns that job, so the dial's picker and the browser's Store button queue the
  * same worker function and cannot disagree about what a pick does. */
 static void job_run(void *arg)
 {
@@ -156,14 +156,14 @@ void clock_themes_pick(int idx)
         snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->name);
         return;
     }
-    const esp_err_t q = orb_theme_post_install(e->id);
+    const esp_err_t q = orb_theme_post_bundle(e->id);
     if (q == ESP_ERR_INVALID_STATE)
         strlcpy(s_ui.status, "one theme is already being installed", sizeof s_ui.status);
     else if (q != ESP_OK)
         snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" could not start: %s",
                  e->name, esp_err_to_name(q));
     else
-        snprintf(s_ui.status, sizeof s_ui.status, "installing \"%s\" …", e->name);
+        snprintf(s_ui.status, sizeof s_ui.status, "storing \"%s\" …", e->name);
 }
 
 /* The "Factory default" row: the other half of ruling D13's promise that there is

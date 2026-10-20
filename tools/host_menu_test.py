@@ -1352,7 +1352,7 @@ def _code_only(src):
     return "".join(out)
 
 
-BLOCKING = ("orb_theme_scan(", "orb_theme_install(")
+BLOCKING = ("orb_theme_scan(", "orb_theme_install_bundle(")
 THEME_C = P("main","art","orb_theme.c")
 CT_C = P("main","clock","clock_themes.c")
 JOBS_C = P("main","app","orb_jobs.c")
@@ -1456,11 +1456,11 @@ def worker_lint(menu_src, ct=None):
         bad.append("clock_themes.c never posts to the shell worker")
     # Ruling D11: the picker answers with a post, never with the install itself. A
     # direct call here would run a multi-second SD-to-flash copy on the LVGL task.
-    if re.search(r"\borb_theme_install\s*\(", code):
-        bad.append("clock_themes.c calls orb_theme_install() directly instead of "
+    if re.search(r"\borb_theme_install(_bundle)?\s*\(", code):
+        bad.append("clock_themes.c calls the install door directly instead of "
                    "posting it — the copy would run on the task that paints the dial")
-    if "orb_theme_post_install(" not in code:
-        bad.append("clock_themes.c does not post the one install entry the page uses either")
+    if "orb_theme_post_bundle(" not in code:
+        bad.append("clock_themes.c does not post the one store entry the page uses either")
     # A widget call inside a job would paint from the worker task.
     if re.search(WIDGET, body):
         bad.append("a card job in clock_themes.c touches a widget")
@@ -1470,10 +1470,10 @@ def worker_lint(menu_src, ct=None):
     if not tj:
         bad.append("orb_theme.c has no job function — nothing runs the install off the caller")
     tjb = "".join(b for _, b in tj)
-    if "orb_theme_install(" not in tjb:
-        bad.append("orb_theme.c's job does not call orb_theme_install() — the copy has no worker")
+    if "orb_theme_install_bundle(" not in tjb:
+        bad.append("orb_theme.c's job does not call orb_theme_install_bundle() — the store has no worker")
     if "orb_jobs_reboot_soon(" not in tjb:
-        bad.append("orb_theme.c's install job never asks for the reboot that draws it (D11)")
+        bad.append("orb_theme.c's default job never asks for the reboot that draws the factory dial (D13)")
     if "orb_jobs_post(" not in th:
         bad.append("orb_theme.c never posts to the shell worker")
     # The menu must not have grown a private task back.

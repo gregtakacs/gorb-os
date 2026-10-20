@@ -4262,54 +4262,8 @@ static esp_err_t h_sd(httpd_req_t *req)
     return httpd_resp_sendstr(req, json);
 }
 
-/* POST /api/v1/sd/install?id=X — the browser's half of ruling D11: a theme pick
- * installs and the device reboots to draw it, with no staged state in between.
- *
- * The client names a theme by its device-issued id (the 12-hex filename stem the list
- * gave it), never by a name it typed: orb_theme resolves the id by walking the card
- * and re-verifying the header, so a crafted id can only ever select a real file.
- *
- * It calls orb_theme_post_install(), the same entry the dial's picker posts, so the
- * page and the knob cannot disagree about what loading a theme means. The response
- * only says the job was queued: the work is a multi-second SD-to-flash copy and the
- * httpd worker has no business waiting on the card lock, which is the reason the
- * shell has one worker task at all.
- *
- * Two-stage on purpose, exactly like /api/v1/ota: a device showing the time to a
- * household must not restart because a fetch completed. Here the second stage is the
- * firmware's own — the job asks for the reboot once the copy has verified — and the
- * page never has to trigger it. */
-static esp_err_t h_theme_install(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_THEME_ID_HEX + 1] = "";
-    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
-    }
-    const esp_err_t e = orb_theme_post_install(id);
-    if (e == ESP_ERR_INVALID_STATE) {
-        /* Another job is on the worker. 409, not 422: the theme may be perfectly
-         * loadable and the page just pressed twice, and the answer is to wait. */
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
-    }
-    if (e != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        char b[96];
-        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
-        return httpd_resp_sendstr(req, b);
-    }
-    char b[192];
-    const int n = snprintf(b, sizeof b,
-        "{\"state\":\"installing\",\"id\":\"%s\",\"reboot\":\"automatic\"}", id);
-    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
-    return httpd_resp_sendstr(req, b);
-}
-
 /* POST /api/v1/sd/bundle?id=X — the flip page's store door (P6.4): the same press
- * shape as /api/v1/sd/install, through the same queue, and it is the ONLY route to
+ * shape the FORMAT 2 Load door had, through the same queue, and it is now the ONLY store route to
  * orb_theme_install_bundle(): the FORMAT 2 door above refuses a bundle by identity
  * check and the picker never sees one. One field differs on purpose — reboot:none.
  * The store does not change what the dial draws (there is no FORMAT 3 compositor
@@ -5324,24 +5278,17 @@ static const char HTML_THEMES[] =
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
 "h=h+'<div class=row><div class=nm>'+esc(nm)"
-"+(t.fmt==3?' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>':"
-"(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since install</span>':'')))+'</div>';"
+"+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
 "h=h+'<div class=sub>'+esc(t.id)+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
 "if(data.damage_id==t.id&&data.damage_why){h=h+'<div class=sub>THE DIAL WOULD NOT LOAD IT: '+esc(data.damage_why)+'</div>';}"
-"if(t.ok&&t.fmt==3){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
-"else if(t.ok){h=h+'<button'+(t.active?' class=cur':'')+' onclick=\"load(\\''+t.id+'\\')\">'+(t.active?'On the dial':(t.changed?'Re-install':'Load and reboot'))+'</button>';}"
+"if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
 "else{h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why)+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
 "L.innerHTML=h;}"
 
 
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
-"function load(id){var nm=ROWS[id]||id;if(!confirm('Install '+nm+' and reboot the orb? A power cut during the copy brings back the factory clock, and installing again recovers it.')){return;}"
-"say('installing '+nm+'...','');"
-"j('/api/v1/sd/install?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('could not install '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('installed '+nm+' - the orb is rebooting to draw it','ok');refresh();});}"
 "function store(id){var nm=ROWS[id]||id;"
 "if(!confirm('Copy '+nm+' into the dial? This dial cannot draw an app bundle yet — it stores it for the update that can. A power cut during the copy brings back the factory clock, and storing again recovers it.')){return;}"
 "say('storing '+nm+'...','');"
@@ -5662,7 +5609,6 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
-        { .uri = "/api/v1/sd/install",  .method = HTTP_POST, .handler = h_theme_install },
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
         { .uri = "/api/v1/sd/default",   .method = HTTP_POST, .handler = h_theme_default },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },

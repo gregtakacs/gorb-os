@@ -892,7 +892,7 @@ def check_header(h, app_id=None, stem=None):
     Split from parse_header because the installer reads a header out of a
     partition slot where the offsets mean something else: the shape checks below
     are the ones that hold anywhere, and the file-layout rule is the caller's —
-    exactly the division orb_theme.c draws between hdr_parse() and its caller.
+    exactly the division orb_bundle3_hdr_parse() draws against its caller.
     """
     abi = h["abi"]
     if not (h["abi_min"] <= abi <= h["abi_max"]):

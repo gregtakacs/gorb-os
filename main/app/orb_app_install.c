@@ -13,7 +13,7 @@
  *   orb_app_install() is the ladder — resolve by walk, re-verify identity inside
  *   the card lock, checksum the whole payload OFF the card, then and only then
  *   erase, copy the geometry, read it back and CRC it FROM the partition, and
- *   write the slot header last. It mirrors orb_theme_install() (orb_theme.c:1456)
+ *   write the slot header last. It mirrors orb_theme_install_bundle() (orb_theme.c:1456)
  *   and inherits that function's card-lock discipline whole: this runs on the
  *   worker task (posted through orb_jobs), never on the LVGL task or the httpd
  *   task, and it never takes the mutex a lock holder is already holding. The
@@ -138,7 +138,7 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
 
 /* =========================================================================== *
  * The device half. Nothing below install_decide() is lifted by the host suite —
- * it is the ladder that mirrors orb_theme_install() (orb_theme.c:1456), reached
+ * it is the ladder that mirrors orb_theme_install_bundle() (orb_theme.c:1456), reached
  * only from the worker task. It keeps that function's three card rules whole:
  * every path that opens a file on /sd takes the one card lock itself, never
  * through a helper that already holds it; the WHOLE payload checksums off the
@@ -289,8 +289,8 @@ static const char *read_and_check_header(int fd, orbapp_hdr_t *h, const char *st
  * crc32 starting at 0 the way zlib.crc32 / esp_rom_crc32_le compose them
  * (orbapp.py's order). The ART CRC is not read — D21 (§0.9): the reader has
  * already refused any container that ships art bytes or carries a non-empty art
- * crc before this runs, so there is no second payload left to check. Mirrors
- * verify_container() (orb_theme.c:805) minus the geometry COUNT check — that belongs
+ * crc before this runs, so there is no second payload left to check. Mirrors the
+ * theme door's verify_bundle3() (orb_theme.c) minus the geometry COUNT check — that belongs
  * to the painter and lands with P5's compositor, not the byte-for-byte checksum the
  * copy needs. */
 static const char *verify_payload(int fd, const orbapp_hdr_t *h)
@@ -392,7 +392,7 @@ static void install_close(int fd)
 /* ---- the slot ledger read + the flash copy --------------------------------- *
  * Every function here runs with the card lock already held (the caller opened
  * through open_verified_stem), and touches flash — never the card mutex again.
- * esp_partition_read on the header block mirrors slot_read (orb_theme.c:1040):
+ * esp_partition_read on the header block mirrors card_open_verified_id3 (orb_theme.c):
  * read, not mmap; 148 bytes do not justify an MMU entry and the header is not
  * mapped. The apps slots hold no pixels in P4, so there is no pixels read-back —
  * only the geometry region, CRCed FROM the partition before the header goes live,

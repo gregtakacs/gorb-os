@@ -355,7 +355,7 @@ bool orb_theme_id_ok(const char *id)
     return true;
 }
 int g_pinst_calls; char g_pinst_id[16]; esp_err_t g_pinst_rc;
-esp_err_t orb_theme_post_install(const char *id)
+esp_err_t orb_theme_post_bundle(const char *id)
 {
     g_pinst_calls++;
     snprintf(g_pinst_id, sizeof g_pinst_id, "%s", id);

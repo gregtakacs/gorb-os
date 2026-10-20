@@ -5,7 +5,7 @@
  * orb_jobs posting from the /apps page's install button, so the page and any
  * later dial picker cannot disagree about whether the multi-second card-to-flash
  * copy runs on a task allowed to take the card lock. It mirrors
- * orb_theme_install() (orb_theme.c:1456): resolve, re-verify identity inside the
+ * orb_theme_install_bundle() (orb_theme.c:1456): resolve, re-verify identity inside the
  * card lock, checksum the WHOLE payload OFF the card before the first flash
  * write, copy the geometry into the app's slot, read it back and CRC it THERE,
  * and only then write the slot header — the single thing that makes a slot live

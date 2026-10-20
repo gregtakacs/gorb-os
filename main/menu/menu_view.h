@@ -26,7 +26,7 @@
  * Threading: every widget call in this file runs on the LVGL task, reached only
  * through menu_view_apply_input()/menu_view_service() from the router's poll.
  * Nothing in here may block: the two operations that take seconds — the card walk
- * behind orb_theme_scan() and the SD-to-flash copy behind orb_theme_install() —
+ * behind orb_theme_scan() and the SD-to-flash copy behind orb_theme_install_bundle() —
  * are the clock app's and orb_theme's own jobs on the shell's one worker
  * (main/app/orb_jobs.c). input_router's poll IS the dial's animation and the only
  * input reader, so blocking it for the 38-48 s an SD upload can hold the card

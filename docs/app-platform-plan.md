@@ -3567,3 +3567,98 @@ door's M6 half is closed.
 
 
 
+## 25 — P6.5a: the re-bake mapping ruled, and `rebake_bundle.py` — 2026-10-19
+
+### 25.1 What this half decides
+
+P6.5's pass line (§22.7 step 5) is av-kit re-baked to a FORMAT 3 bundle, the reverse
+path proven, and the FORMAT 2 dialect retired. The blocking decision was inherited the
+moment R1 made the theme's content an element table: every §19/§24 FORMAT 2 fixture and
+every shipped `.orbtheme` speaks the geometry-blob dialect, and nothing could produce a
+REAL bundle until someone ruled the mapping. This section rules it and ships the tool
+that applies it — `tools/rebake_bundle.py` — the first product FORMAT 3 bundle:
+av-kit's own art, verbatim, under a legible 8-row clock table. §24.8's owed product
+re-bake is paid; `mk_bundle_fix.py`'s synthetic element rows retire with the FORMAT 2
+suite once the reader lands.
+
+### 25.2 The mapping, as ruled
+
+Source: a FORMAT 2 container read by `orbtheme.read_container` (both checksums, or the
+tool refuses at the door). The clock section it emits:
+
+- **scalars** — all 26 clock-dialect fields ride verbatim (D31: the app's own dialect,
+  opaque to every other app). `scr_w`/`scr_h` move into the index record, §22.2's
+  "the scalars MOVE into the section" honored for the one shipped file that has them.
+- **plate** (scalar `plate_off`, `scr_w×scr_h×2`, colour-only) → class `plate`, slot 0,
+  `order 0`, frame 0.
+- **hands 0..4** (`show`-filtered) → class `hand`, slot = the FORMAT 2 array index —
+  the offer's own vocabulary, so (class, slot) identity needs no new namespace.
+  `order = 2·order_N + 1`, `x, y = offx, offy` (the drawn top-left),
+  `pivot_x, pivot_y = centerx − offx, centery − offy`. The rule that makes six columns
+  out of FORMAT 2's placement five: **element pivot is the rotation center relative to
+  the draw point**, and every shipped sprite satisfies
+  `draw point = center − crop pivot`, so `center` and `pivot` both rebuild and the
+  `.h`'s `pivotx/pivoty` (crop-relative) is recoverable as `center − off`. The hand's
+  own crop pivot and the shadow's (which differ by the light offset the source baked)
+  rebuild from the same pair — no column invented, nothing lost for the kits that exist.
+- **shadows 0..4** → class `sprite`, slot = index, `order = 2·order_N`, same placement
+  rule — each shadow lands exactly one rung under its hand.
+- **overlay** → class `plate`, slot 1 (the crystal is a second plate),
+  `order 63` — the table states what `clock_view.c` already draws: last, over all.
+- **show=0 hands carry NO row** — the offer's slot exists and the theme says nothing
+  draws there; D31's default is the honest answer. An `EF_HIDDEN` row would claim a
+  bank range the art does not hold, which `check_element` rightly refuses. The flag
+  belongs to a theme that HIDES an element the bank carries, not to one that never
+  had it.
+
+The sprite catalogue (the blob's `sprites`) carries the planes in byte order —
+`plate, overlay, hand0, shadow0, hand1, shadow1, hand2, shadow2` for av-kit — and
+every row's `frame0` indexes that list, which is FORMAT 3's frame window doing its
+named job.
+
+### 25.3 What refuses, and why each refusal is the honest one
+
+The tool exits with the sentence, never a partial table:
+
+- a **tourbillon** the source shows: the fan-out mapping is not ruled, and av-kit
+  carries none — guessing what a fan would draw is exactly the wrongly-painted
+  element D26's direction refuses.
+- a **gif bank with real delta rects** (`rects[i].off` nonzero, or a plate-frame
+  table): the extra frames ride rect planes whose byte sizes this cut cannot prove
+  contiguous. A source that merely NAMES gif frames (av-kit: `gif_frames: 15` under
+  `--no-bg`) is not a bank — the bank itself is the guard, and the scalars ride as
+  the source truth they are.
+- **complication/aux/bank tables**: the text and bank rows ride the complication
+  mapping, which lands with the kit that carries them.
+- **any plane the catalogue cannot account for byte-for-byte**: `sum(plane sizes)
+  == art_size` and contiguity from offset 0 are the mapping's own checksum — a bank
+  this catalogue does not explain whole is a bank this mapping does not understand.
+
+### 25.4 Verification
+
+`rebake_bundle.py` verifies its own output on every run (the mapping's contract is
+round-trip, and a tool that only writes cannot tell you it lost something):
+`read_bundle` the file, assert the art byte-identical, the catalogue against the byte
+walk, every element field against the source geometry, all 26 scalars verbatim, the
+screen pair in the record. av-kit's re-bake: **0 failures, 1,177,659 B, 8 elements,
+art 1,173,563 B identical**. The shipped C reader — `main/art/orb_bundle.c`, compiled
+by the P6.1 harness's own `compile_reader` — parsed the same bytes and dumped
+`ok sec 0 clock … 8 8 4096 1173563 466 466`: the device's reader, not the writer's
+mirror, accepted the product bundle. Suites re-run green unchanged: format3 52/0,
+C parity 320/0, element suite 46/0. Firmware untouched.
+
+### 25.5 What the rest of P6.5 owes
+
+1. **The bundle→pair half** (§22.5's exact clause): `bake_clock.py --from-bundle` —
+   read a FORMAT 3 bundle, take the `clock` section, rebuild
+   `assets/clock_assets.{bin,h}` byte-for-byte and prove it against the shipped pair.
+   The mapping's center − off identity makes this mechanical; the proof is that the
+   rebuilt `.h` matches the one the kit path baked.
+2. **The device reader**: the resolver's FORMAT 3 path — element rows → the draw
+   list, the `active: true` question for bundles, scalars as the default's home.
+3. **The retirement**: FORMAT 2's dialect out of the firmware's reader; §19/§24's
+   FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it.
+4. **The mutation harness** for the tool itself — the repo discipline every shipped
+   tool meets, owed before the pair half so a broken mapping cannot pass silently.
+
+

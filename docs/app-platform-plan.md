@@ -3660,11 +3660,87 @@ C parity 320/0, element suite 46/0. Firmware untouched.
 
 1. **PAID 2026-10-19** — the bundle→pair half. `bake_clock.py --from-bundle`; the
    proof is §25.6.
-2. **The device reader**: the resolver's FORMAT 3 path — element rows → the draw
-   list, the `active: true` question for bundles, scalars as the default's home.
+2. **PAID 2026-10-19** — the device reader: `main/art/orb_clock3.{h,c}`, the boot adopt
+   that draws it, and the `active` answer for bundle rows. §25.7.
 3. **The retirement**: FORMAT 2's dialect out of the firmware's reader; §19/§24's
    FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it.
 4. **PAID 2026-10-19** — `tools/mut_rebake.py`, 17/17 (see §25.4).
+
+### 25.7 §25.5(2) PAID 2026-10-19 — the FORMAT 3 device reader
+
+The M6 root blocker is gone: a bundle in a slot is now a picture, not a sentence about
+a picture. `main/art/orb_clock3.c` is the projection, `orb_theme.c`'s `adopt_bundle3()`
+is the door, and `tools/host_clock3_test.py` is the proof. §25.2 and §25.6 own the
+mapping; what follows is only the reader's side of it.
+
+**A new TU, on purpose.** `orb_bundle.c` is the format mirror of `orbbundle.py` and
+carries no dialect knowledge. The clock's reading of a table *is* dialect, so it lives
+beside it, and it stays pure the way `orb_theme_geom_parse` is pure: no allocator, no
+card, no partition, caller-owned tables with caller-declared caps. That is also what
+lets the suite compile the shipped file with host gcc — the same reason §22.6's harness
+exists.
+
+**Four rulings, none of which invents a column.**
+
+- **Placement is §25.2's identity run backwards.** `centre = (x + pivot_x, y + pivot_y)`;
+  for a hand and the overlay the crop pivot *is* `(pivot_x, pivot_y)`. A shadow's crop
+  pivot is its **hand's centre minus its own draw point** — the light offset, recoverable
+  and never carried — so a shadow row with no hand at its slot refuses rather than draws
+  with the wrong pivot. `show = 0` when `EF_HIDDEN`; `blend = 0`, the dialect carrying no
+  blend column.
+- **An absent row is a blank layer at the plate's centre, `show = 0`** — the record a kit
+  bake writes for an unused slot, so the pair and the picture stay one definition rather
+  than two. The tourbillon array is all-blank because a non-zero `tourbillon_n` names a
+  bank the art cannot hold: a contradiction between the scalars and the table.
+- **The bank is proved before any offset is trusted**: contiguous from 0, each plane's
+  size equal to its own extent (colour-only for the plate row, colour + alpha for the
+  rest), the sum equal to the record's `art_size`. §25.3's last bullet from the device
+  end. Every row's `frame0` must seat in the catalogue and match it on size, because a
+  table and a catalogue describing different layers draw a torn sprite.
+- **The blob base is the section's, not the region's.** `orb_theme_geo_t` gains
+  `blob_off`: 0 for FORMAT 2 and the compiled pair, whose payload starts at the region's
+  first byte; for a bundle, wherever its record's bank sits. `clock_view.c` adds one line
+  and its 85 read sites do not move.
+
+**Boot, and one fused pass.** `adopt_bundle3()` reads the region first — a bundle's art
+lives at addresses only its records name — computes the installed span to the last bank's
+sector-rounded end, and hands `art_bank_fill()` that span with the slot header's own art
+figure. One pass verifies and lands the pixels, FORMAT 2's D30 rule untouched; it is not
+§24.9's bug because the slot really does hold that span, pads and all, exactly as
+`copy_bundle3` wrote and read it back. A refusal leaves the default drawn and puts its
+sentence on the bundle's row, with one distinction: **a bundle with no `clock` section is
+`ESP_ERR_NOT_FOUND`, not damage** — those bytes are whole and honest, they simply are not
+a clock, and "re-install it" would send the owner to fix nothing.
+
+**The row's identity needed a word.** `orb_bundle_rebase()` restamps the region checksum
+when it moves banks, so a slot's `geom_crc` can never equal a card file's, and an
+`active`/`changed` rule built on it would call every stored bundle `changed` forever.
+`build_slot_hdr3` now keeps the **container's** checksum in header word 10 — FORMAT 2's
+bake-duration word, always 0 for a bundle — and the scan answers a bundle row through the
+same `theme_state` the FORMAT 2 rows use. §24.9's flag-lies-by-omission note is closed.
+
+**Proof, third leg.** `tools/host_clock3_test.py` builds the shipped C with the shipped
+bundle reader and drives it with the writer's own bytes. The oracle is the pair the
+firmware compiles with: **231 checks, 0 failures** — every scalar, all five hands, all
+five shadows, the overlay, sixteen blanks, the derived gif block, and the bank's bytes —
+run against **two independently written tables**: one forged from the shipped pair (so
+byte-identity is construction, not lineage) and §25.4's product bundle. Nine forgeries
+draw the same sentence at both ends of the mapping, C and `--from-bundle` — the pair
+§25.6's suite pinned from the other side. `--mutations` is **14/14**, each guard asked
+about the lie only it refuses: a clean golden table satisfies every guard, so breaking
+one and re-running the golden proves nothing, which is §25.4's lesson about a name check
+that compared itself, applied here before it could bite. Two guards turned out to be
+backstops rather than doors — `theme_schema.check_table` refuses an unknown class and a
+repeated `(class, slot)` at the writer's door, so no bundle exists that carries either,
+and they are driven as post-write byte tampers with all three checksums restamped.
+
+**Two findings the battery cost, both worth the price.** The suite's first cut compared
+the forged bundle against `clock_assets.bin` while reading `sec` from the *other*
+fixture's loop binding — a green-looking run reporting a lineage failure that was really
+a stale variable; and §25.4's product bundle is a re-bake of a FORMAT 2 container whose
+plate differs from the shipped `.bin` by 59 bytes in its flat border, which is the kit
+bake's own history and not the reader's claim. Hence the pair-forged golden: it makes the
+byte check something the suite controls.
 
 ### 25.6 §25.5(1) PAID 2026-10-19 — the bundle→pair reverse path
 

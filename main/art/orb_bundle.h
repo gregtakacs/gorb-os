@@ -182,6 +182,19 @@ typedef struct {
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
                         orb_bundle_elem_t *e);
 
+/* One row of the section's sprite catalogue — the planes its bank holds, in byte
+ * order, each named by the element that draws it. `orb_bundle_elem_at()` gives a
+ * row's frame0, and frame0 indexes THIS list: the catalogue is why a compositor
+ * never has to guess whether a bank is contiguous or what a plane costs. Read
+ * through the same blob_check() bounds as the element table, so an index the
+ * record's n_spr did not vouch for is the caller's bug, not the file's. */
+typedef struct {
+    uint32_t off, size, w, h;
+} orb_bundle_spr_t;
+
+void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
+                       orb_bundle_spr_t *sp);
+
 /* The scalars, opaque here (D31): the raw word by index, and the sign
  * extension for the two i8 fields (shadow_dx/dy, words 3/4) and the one i16
  * (bg_fps, word 10) that the clock dialect's readers need. */

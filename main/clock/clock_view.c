@@ -1763,16 +1763,18 @@ esp_err_t clock_view_init(void)
      * is that the mapping exists and covers what the geometry says it must: a stale
      * bin/partition pair, or a theme that would not load, fails loudly at this line
      * rather than as a wild read past the end of the mapping. */
-    const esp_err_t art_err = art_bank_ready() && art_bank_bytes() >= CLK_BLOB_BYTES
+    const esp_err_t art_err = art_bank_ready()
+                    && art_bank_bytes() >= orb_theme_geo()->blob_off + CLK_BLOB_BYTES
                             ? ESP_OK : ESP_ERR_INVALID_SIZE;
     if (art_err != ESP_OK) {
         ESP_LOGE(TAG, "clock art bank unavailable (%s, %u B mapped for %u B) — "
                       "re-flash the \"%s\" partition or load another theme?",
                  esp_err_to_name(art_err), (unsigned)art_bank_bytes(),
-                 (unsigned)CLK_BLOB_BYTES, ART_BANK_PARTITION_NAME);
+                 (unsigned)(orb_theme_geo()->blob_off + CLK_BLOB_BYTES),
+                 ART_BANK_PARTITION_NAME);
         return art_err;
     }
-    s_art = art_bank_ptr();
+    s_art = art_bank_ptr() + orb_theme_geo()->blob_off;
     orb_bg_init(s_art);   /* the delta bank reads the same mapping, through the app */
     ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B) from %s",
              (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES, orb_theme_source());

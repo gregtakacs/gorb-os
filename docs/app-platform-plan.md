@@ -1,9 +1,10 @@
 # gorb-os app platform — OS/app split, storage model, measurement protocol
 
-Status: **P1–P3 landed 2026-10-12; P4 and P6 landed through 2026-10-20 — the broker
-(`main/app/orb_svc.c/h`) is the app surface, the grant table is live, the app platform
-is on card, and the theme platform is FORMAT 3-only end to end (P6 CLOSED 2026-10-20,
-§27). The phase table below carries the evidence per row.** Written 2026-10-11 at commit
+Status: **P1–P3 landed 2026-10-12; P4 and P6 landed through 2026-10-20; P6b landed
+2026-10-20 (§28) — the broker (`main/app/orb_svc.c/h`) is the app surface, the grant table
+is live, the app platform is on card, and the theme platform is FORMAT 3-only end to end
+(P6 CLOSED 2026-10-20, §27). The orb-manager hub speaks the FORMAT 3 store door (§28). The
+phase table below carries the evidence per row.** Written 2026-10-11 at commit
 `a911468`; the owner ruled on
 every open point the same day (§0.1). P4 may start. Two of the three bench
 re-checks on the P3 row passed on orb-A 2026-10-12. The third — the PERMISSIONS
@@ -11,11 +12,13 @@ ladder under a real ask — was closed by ruling D19 (§0.8) rather than by the
 bench: declare-at-install replaced the ask-prompt, so no shipped caller can
 produce one.
 
-Working copy: **`/home/greg/docker/Projects/gorb-os-2`, branch `dev2`** (owner's
-call, 2026-10-11). The sibling `../gorb-os` clone stays on `main` and is two
-tooling commits ahead (`c32244a`, `4dc371a`), both confined to
-`tools/watch-composer/` and an appended `.clinerules` section, so every firmware
-line citation in this file resolves the same in both trees. `/tmp/serflash.sh` now
+Working copy: **`/home/greg/docker/Projects/gorb-os-2`, branch `main`** (owner's
+call, 2026-10-11; reconciled onto `main` 2026-10-20, §28). The sibling `../gorb-os`
+clone is on the same `main` at the same commit; the two divergent lines — this tree's
+FORMAT 2 rip and the sibling's orb-manager hub work — merged clean (file-disjoint) and
+`origin/main` was fast-forwarded over both, so every firmware and hub line citation in
+this file resolves the same in both trees. The old `dev2` branch, whose five ahead-commits
+were already in `origin/main` by patch-id, is deleted (§28). `/tmp/serflash.sh` now
 builds from this tree's `build/`.
 
 It answers the three questions the owner asked:
@@ -4080,3 +4083,52 @@ to `orb_bundle3_hdr_parse` / `verify_bundle3` / `card_open_verified_id3`.
 What remains on the roadmap is unrelated to the theme dialect: P6b (orb-manager's
 editor/preview), P7 (the wasm3 code tier), P8 (OS-scheduled repaint), and the one open §26
 decision — what the glass shows before a first theme ever lands.
+
+## 28 — P6b lands: the hub speaks the FORMAT 3 store door; both clones trued to `origin/main` — 2026-10-20, `f3e31d7`
+
+**Why this existed.** §27 retired the FORMAT 2 ingest door in the firmware. The
+orb-manager hub lives in a sibling clone that branched ~20 firmware commits earlier,
+so its device client still dialed the now-deleted `POST /api/v1/sd/install` and pinned
+`h_theme_install`. The two `main` lines had diverged (firmware/this tree vs
+`tools/orb-manager/**` + `.clinerules`/the sibling), and merging them made three
+firmware-reading contract tests go red — the hub was describing a firmware it no longer
+sat on top of.
+
+**The merge.** The sibling's three orb-manager commits (hub auto-probe, the merged `.bin`
+bench verdict, the esprom probe-doc fix) merged into this tree clean and file-disjoint
+(`ee94eae`): no firmware, host-suite, or tool file outside `tools/orb-manager/` and
+`.clinerules` moved, so every §27 host-suite result still holds byte-for-byte.
+
+**The P6b hub change (`f3e31d7`).** The broken install client is gone; the hub now speaks
+FORMAT 3:
+- `security.go`: dropped the dead `/api/v1/sd/install` allowlist entry; added the missing
+  `GET /api/v1/fb` (`h_fb`, the frame-capture read that reached firmware while the hub was
+  behind — same gate as `/api/v1/screen`).
+- `internal/orbnet/themes.go`: renamed the device verb `ThemeInstall` → `ThemeStore` so the
+  method name matches FORMAT 3 truth — it dials `POST /api/v1/sd/bundle?id=`
+  (`h_bundle_install` → `orb_theme_post_bundle`) and answers `reboot:none` with no dial flip
+  until the P6.5 compositor.
+- `theme.go`: the server route `/api/theme/install` and the flip-page button keep their
+  names; only the device wire the handler dials moved to the store door.
+- `internal/orbfake/`: dropped the FORMAT 2 `serveInstall`, added `serveFb`, corrected the
+  `serveBundle` docs to the sole-store-door contract.
+- Contract and behavior tests repointed to `h_bundle_install` / `ThemeStore`, and the
+  live-double store test now asserts the FORMAT 3 promise (ack `storing`/`reboot:none`,
+  dial unchanged) rather than the old install-flips-active claim.
+
+**Verification.** `go test ./...` green in both clones. The three previously-failing
+contract tests (`TestDeviceRouteAllowlistMatchesTheFirmwaresUriTable`,
+`TestEveryFirmwareDeviceRouteIsAllowedAndFakeable`, `TestFirmwareAddressesThemeVerbsByID`)
+pass. All eight firmware host suites still pass — firmware sources are identical to the
+§27-closed tree. `go vet ./...` clean.
+
+**The two clones, trued.** `origin/main` fast-forwarded `9c92162 → f3e31d7` (no force: this
+tree was a linear descendant; the sibling's commits arrived via the merge). The sibling
+`../gorb-os` fast-forwarded `--ff-only` onto the same `f3e31d7`. Both clones now sit at one
+identical `main`, clean, `0/0` against `origin/main`. The stale `dev2` branch (its five
+ahead-commits already in `origin/main` by patch-id) is deleted locally and on `origin`.
+
+**Consequence for the plan.** P6b's client half is DONE. The roadmap's remaining P6b item —
+the hub-side theme **editor/preview** §27 named — and the larger FORMAT 3 threads (P6.5's
+glass/flip, P7 wasm3 code tier, P8 OS-scheduled repaint, and the open §26 first-boot
+decision) are still open and unrelated to the ingest dialect.

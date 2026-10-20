@@ -478,6 +478,84 @@ EF_HIDDEN = 1 << 3   # declared and bound, not drawn — a theme's own off switc
 EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN
 
 ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
+
+# ---- the clock's slot vocabulary (D32's join, ruled by the app that declares) ----
+# A theme's element row carries (class, slot) and never a name: slot is "which
+# declaration of this class this row fulfils" (ELEMENT_FIELDS). Names therefore
+# belong to the APP, and this table is the one place the clock's names, classes and
+# slots are written down. Three readers depend on it and none may paraphrase it:
+# `main/clock/clock_slots.c` mirrors it for the compiled app,
+# `tools/watch-composer/orbtheme-baker.js` mirrors it for the bake that fills the
+# slots, and `tools/host_orbelems_test.py` fails the build if a word drifts.
+#
+# A name is a manifest reference's `<name>` half, so it obeys the wire's own bound:
+# [a-z0-9_], 1..ORB_ASSET_NAME_MAX-1 == 11 characters. "counterweight" is 13, which
+# is why the row is named "counterw" and not more honestly — the field is 12 bytes
+# with the NUL and nothing about the layout is negotiable at this end.
+#
+# What is NOT here is deliberate: which value drives a BANK slot (moon_age, date,
+# weekday ...) is the app's own rule, because an element row carries no source column
+# and §25.6 forbids inventing a column the shipped dialect does not prove. The clock
+# binds a comp slot to a source in its own table; a theme supplies the pixels, the
+# placement, the depth and the frame count, and never the meaning.
+CLOCK_SLOTS = (
+    # name           class     slot   what the dial draws with it
+    ("bg",            "plate",  0,    "the one static background, full panel"),
+    ("glass",         "plate",  1,    "the crystal, over everything"),
+    ("hour",          "hand",   0,    "the hour hand"),
+    ("minute",        "hand",   1,    "the minute hand"),
+    ("second",        "hand",   2,    "the seconds hand, or the carriage it rides"),
+    ("dial",          "hand",   3,    "a rotating dial disc"),
+    ("counterw",      "hand",   4,    "the counterweight on that disc"),
+    ("carriage",      "hand",   5,    "an animated tourbillon: n_frames frames, OS-advanced"),
+    ("sh_hour",       "sprite", 0,    "the hour hand's cast shadow"),
+    ("sh_minute",     "sprite", 1,    "the minute hand's cast shadow"),
+    ("sh_second",     "sprite", 2,    "the seconds hand's cast shadow"),
+    ("sh_dial",       "sprite", 3,    "the rotating disc's cast shadow"),
+    ("sh_counterw",   "sprite", 4,    "the counterweight's cast shadow"),
+    ("comp0",         "bank",   0,    "complication 0: one plate per value"),
+    ("comp1",         "bank",   1,    "complication 1: one plate per value"),
+    ("comp2",         "bank",   2,    "complication 2: one plate per value"),
+    ("comp3",         "bank",   3,    "complication 3: one plate per value"),
+    ("comp4",         "bank",   4,    "complication 4: one plate per value"),
+    ("comp5",         "bank",   5,    "complication 5: one plate per value"),
+    ("comp6",         "bank",   6,    "complication 6: one plate per value"),
+    ("comp7",         "bank",   7,    "complication 7: one plate per value"),
+    ("comp8",         "bank",   8,    "complication 8: one plate per value"),
+    ("comp9",         "bank",   9,    "complication 9: one plate per value"),
+    ("comp10",        "bank",   10,   "complication 10: one plate per value"),
+    ("comp11",        "bank",   11,   "complication 11: one plate per value"),
+    ("comp12",        "bank",   12,   "complication 12: one plate per value"),
+    ("comp13",        "bank",   13,   "complication 13: one plate per value"),
+    ("comp14",        "bank",   14,   "complication 14: one plate per value"),
+    ("comp15",        "bank",   15,   "complication 15: one plate per value"),
+)
+
+# The slots the shipped dial draws today, and the only ones a bundle may fill and
+# boot. The comp rows above are declared so a theme can CARRY them and be refused in
+# words rather than drawn wrong — D26's direction — until the clock's own comp
+# binding lands and gives a bank slot a value to index by.
+CLOCK_SLOTS_DRAWN = ("bg", "glass", "hour", "minute", "second", "dial", "counterw",
+                     "carriage", "sh_hour", "sh_minute", "sh_second", "sh_dial",
+                     "sh_counterw")
+
+
+def clock_slot(name):
+    """The (class, slot) a clock slot name denotes, or None."""
+    for n, cls, slot, _why in CLOCK_SLOTS:
+        if n == name:
+            return cls, slot
+    return None
+
+
+def clock_slot_name(cls, slot):
+    """The name a (class, slot) pair answers to, or None if the clock declares no
+    such slot — which is the refusal a reader needs, not a silent zero."""
+    for n, c, s, _why in CLOCK_SLOTS:
+        if c == cls and s == slot:
+            return n
+    return None
+
 ELEM_MAX        = 32   # rows one app's table may carry
 ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 208)
 
@@ -696,3 +774,26 @@ if __name__ == "__main__":
           "bank %d words, elem %d words x %d rows"
           % (len(SOURCES), len(KINDS), words_of("comp"), words_of("aux"),
              words_of("bank"), ELEMENT_WORDS, ELEM_MAX))
+    # The clock's slot vocabulary is the join three readers copy, so it checks itself
+    # the way the field tables do: a name too long for the wire, a class the enum has
+    # no word for, a doubled (class, slot) or a doubled name all die here at import of
+    # the module that owns them rather than in a bake or a draw.
+    seen_name, seen_pair = set(), set()
+    for _n, _c, _s, _why in CLOCK_SLOTS:
+        assert _n and len(_n) <= 11, "clock slot %r is over the 11-char name field" % (_n,)
+        assert all(ch.islower() or ch.isdigit() or ch == "_" for ch in _n), \
+            "clock slot %r is not [a-z0-9_]" % (_n,)
+        assert _n not in seen_name, "duplicate clock slot name %r" % (_n,)
+        assert _c in CLASS_NAMES, "clock slot %r names class %r the enum lacks" % (_n, _c)
+        assert (_c, _s) not in seen_pair, "clock slot %r reuses (%s, %d)" % (_n, _c, _s)
+        seen_name.add(_n); seen_pair.add((_c, _s))
+        assert clock_slot(_n) == (_c, _s), "clock_slot disagrees with CLOCK_SLOTS"
+        assert clock_slot_name(_c, _s) == _n, "clock_slot_name is not the inverse"
+    for _n in CLOCK_SLOTS_DRAWN:
+        assert _n in seen_name, "CLOCK_SLOTS_DRAWN names %r, which is not a slot" % (_n,)
+    # A slot the dial draws with must be one the shipped reader can seat, or the
+    # vocabulary is promising a picture the projection refuses.
+    assert clock_slot("bg") == ("plate", 0) and clock_slot("glass") == ("plate", 1)
+    assert clock_slot("carriage") == ("hand", 5)
+    print("             %d clock slots, %d drawn, names within %d chars"
+          % (len(CLOCK_SLOTS), len(CLOCK_SLOTS_DRAWN), 11))

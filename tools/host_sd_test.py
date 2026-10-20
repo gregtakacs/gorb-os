@@ -627,6 +627,11 @@ def themes_page_js():
             ("x.upload.onprogress", "the upload reports real progress (fetch cannot)"),
             ("/api/v1/sd/bundle?id='+encodeURIComponent(id)",
              "Store posts the streaming ingest by the url-encoded id, not by name"),
+            ("/api/v1/sd/flip?id='+encodeURIComponent(id)",
+             "the flip posts by the url-encoded id too — the page never names a slot"),
+            ("function flip(id){var nm=ROWS[id]||id;",
+             "a flip press names the theme it is about to put on the glass"),
+            ("if(!confirm('Put ", "the flip asks before trading the owner a reboot"),
             ("/api/v1/sd/delete?id='+encodeURIComponent(id)",
              "delete addresses the row by the url-encoded id, the only handle that resolves"),
             ("/api/v1/sd/default", "the factory dial is one press away without the card"),
@@ -639,7 +644,7 @@ def themes_page_js():
             print("FAIL /themes: missing %r — %s" % (want, why)); rc = 1
     # No row label may reach a handler as markup: names cover the full printable range
     # including apostrophes, so the id is the only value a row hands to a function.
-    for fn, args in re.findall(r'onclick="(store|del)\((.*?)"', page):
+    for fn, args in re.findall(r'onclick="(store|del|flip)\((.*?)"', page):
         if "nm" in args or "name" in args:
             print("FAIL /themes: the %s handler interpolates a name into markup (%s) — "
                   "pass the id alone" % (fn, args[:60])); rc = 1
@@ -880,8 +885,10 @@ def install_lint():
     reads it, and may not choose the theme it stores. A source check, not a call: the
     paths it orders touch FatFs and the flash driver. The ordering it pins:
     card_open_verified_id3 -> region parse -> rebase -> copy_bundle3 -> the header erase
-    that makes the slot live, bracketed by staged_mark()/staged_clear(). Ruling D13: slot
-    A is never a store target. D26: a stored FORMAT 3 slot is not chosen.
+    that makes the slot live, bracketed by staged_mark()/staged_clear(). The target is
+    install_target()'s derivation and nothing else (§26 slice 3 — D13's slot-B constant
+    is retired, the invariant is tabled in host_tz_test.py); a store never chooses
+    (D26 as amended — the flip door is the only chooser).
     """
     lines = _code_only(th_src).split("\n")
     spans = {}
@@ -912,11 +919,11 @@ def install_lint():
         print("FAIL orb_theme_install_bundle(): rebases AFTER copying — the slot would hold "
               "the card file's own offsets, not the slot's"); rc = 1
     if "orb_theme_set_live" in body:
-        print("FAIL orb_theme_install_bundle(): calls orb_theme_set_live — a FORMAT 3 slot "
-              "is stored, not chosen, until the compositor can draw it (D26)"); rc = 1
+        print("FAIL orb_theme_install_bundle(): calls orb_theme_set_live — a store never "
+              "chooses; the flip door (orb_theme_post_flip) owns the glass (§26 slice 3)"); rc = 1
     if "SLOT_A_HDR" in body or "SLOT_A_ART" in body:
-        print("FAIL orb_theme_install_bundle(): names slot A — the factory default's pixels "
-              "live there, and a store aimed at it erases the fallback with it"); rc = 1
+        print("FAIL orb_theme_install_bundle(): names a slot by constant — the target is "
+              "install_target()'s answer to what the glass draws, and only its"); rc = 1
     mk, cl = body.find("staged_mark("), body.find("staged_clear(")
     if mk < 0 or cl < 0:
         print("FAIL orb_theme_install_bundle(): does not bracket the copy with "
@@ -940,13 +947,38 @@ def install_lint():
     else:
         print("FAIL main/art/orb_theme.c has no orb_theme_post_bundle() — the route has "
               "nothing to post"); rc = 1
+    # §26 slice 3's flip door: the store's twin, and the pair of rules that makes them
+    # twins-with-a-difference — flip reboots where store must not, and flip resolves
+    # against the slots rather than the card.
+    if "flip_job" in spans:
+        fbody = "\n".join(lines[spans["flip_job"][0]:spans["flip_job"][1] + 1])
+        if "orb_jobs_reboot_soon" not in fbody:
+            print("FAIL flip_job() does not ask for the reboot — the choice without the "
+                  "reboot is a dial that keeps drawing the old theme forever"); rc = 1
+        if "orb_theme_install_bundle(" in fbody or "card_open" in fbody:
+            print("FAIL flip_job() reaches for the card — a flip chooses what is already "
+                  "stored, and must answer with the socket empty"); rc = 1
+        if "slot_probe3(" not in fbody or "THEME_LIVE_SLOT_B" not in fbody:
+            print("FAIL flip_job() does not resolve the pressed id against both slot "
+                  "headers — writing a choice it never saw is the silent no-op D11 bans"); rc = 1
+    else:
+        print("FAIL main/art/orb_theme.c has no flip_job() — the flip door has no worker"); rc = 1
+    if "orb_theme_post_flip" in spans:
+        fpost = "\n".join(lines[spans["orb_theme_post_flip"][0]:spans["orb_theme_post_flip"][1] + 1])
+        if "orb_jobs_post(flip_job" not in fpost:
+            print("FAIL orb_theme_post_flip() does not queue flip_job — a flip run off the "
+                  "worker loses the busy gate"); rc = 1
+    else:
+        print("FAIL main/art/orb_theme.c has no orb_theme_post_flip()"); rc = 1
     if th_src.count("orb_theme_install_bundle(r->id") != 1:
         print("FAIL orb_theme_install_bundle() is not called from exactly one place"); rc = 1
     rc = _install_upload_check(rc)
     for need in ('{ .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install }',
-                 "orb_theme_post_bundle(id)", "h_bundle_install(httpd_req_t"):
+                 "orb_theme_post_bundle(id)", "h_bundle_install(httpd_req_t",
+                 '{ .uri = "/api/v1/sd/flip",     .method = HTTP_POST, .handler = h_bundle_flip }',
+                 "orb_theme_post_flip(id)", "h_bundle_flip(httpd_req_t"):
         if need not in net_src:
-            print("FAIL the flip door is missing %s from orb_net.c" % need); rc = 1
+            print("FAIL a theme door is missing %s from orb_net.c" % need); rc = 1
     if not rc:
         print("ok    the FORMAT 3 store verifies identity, region and banks before the "
               "header erase, stores without choosing, brackets the copy with the staged word")
@@ -1197,9 +1229,22 @@ MUTATIONS = [
      "    if (!r) r = verify_bundle3(fd, &b3, fsz);", "    (void)verify_bundle3;"),
     ("upload duplicate check drops the owner name",  "th",
      "oh3.serial == b3.serial && strcmp(oh3.name, b3.name) == 0) {", "oh3.serial == b3.serial) {"),
-    # The net route the flip page depends on.
-    ("the flip route vanishes from the table",       "net",
+    # The net routes the flip page depends on.
+    ("the store route vanishes from the table",       "net",
      "        { .uri = \"/api/v1/sd/bundle\",   .method = HTTP_POST, .handler = h_bundle_install },\n", ""),
+    ("the flip route vanishes from the table",        "net",
+     "        { .uri = \"/api/v1/sd/flip\",     .method = HTTP_POST, .handler = h_bundle_flip },\n", ""),
+    # §26 slice 3's flip door: it must reboot, and it must resolve before it writes.
+    ("flip chooses a word it never saw in a slot",    "th",
+     "    if (slot_probe3(p, SLOT_B_HDR, &b3, raw, &claims) && theme_id_matches(b3.name, r->id))\n"
+     "        word = THEME_LIVE_SLOT_B;\n"
+     "    else if (slot_probe3(p, SLOT_A_HDR, &b3, raw, &claims) && theme_id_matches(b3.name, r->id))\n"
+     "        word = THEME_LIVE_SLOT_A;",
+     "    word = THEME_LIVE_SLOT_B;"),
+    ("flip takes the choice write but not the reboot", "th",
+     "    if (orb_jobs_reboot_soon(\"theme: the flip\") != ESP_OK)\n"
+     "        ESP_LOGE(TAG, \"flip chosen but the reboot could not be armed\");",
+     "    (void)0;"),
     # The FORMAT 3 reader's own word map — the door reads FORMAT from this word.
     ("reader reads FORMAT from the wrong word",      "b3",
      "    if (w[W_FORMAT] != ORB_BUNDLE3_FORMAT)", "    if (w[W_GEOM_ABI] != ORB_BUNDLE3_FORMAT)"),

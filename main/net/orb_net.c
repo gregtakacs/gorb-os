@@ -4172,8 +4172,8 @@ static esp_err_t h_sd(httpd_req_t *req)
      * to ORB_THEME_NAME_MAX characters (JSON-escaped to twice that) plus a 115-char
      * why and the refused-install, damage, and staged sentences. Worst case
      * arithmetic, from the format strings below: ~102 B of fixed row text and digits
-     * + 113 (name) + 12 (id) + 115 (why) + ~22 B of the P6.4 fmt/sects pair = ~362 B
-     * a row, ~4.4 kB for 12 of them, plus ~700 B of the original base fields, ~190 B
+     * + 113 (name) + 12 (id) + 115 (why) + ~22 B of the P6.4 fmt/sects pair
+     * + ~12 B of §26 slice 3's slot letter = ~374 B a row, ~4.4 kB for 12 of them, plus ~700 B of the original base fields, ~190 B
      * more for the staged pair at its full-width why and two 10-digit refill figures,
      * and ~50 B for the bundle pair at two 10-digit figures = ~940 B. Measured against
      * the live device at 192.168.2.34: the same route answers 653 B today with four
@@ -4243,15 +4243,21 @@ static esp_err_t h_sd(httpd_req_t *req)
         json_put(e_name, sizeof e_name, ent[i].name);
         json_put(e_id,   sizeof e_id,   ent[i].id);
         json_put(e_why,  sizeof e_why,  ent[i].why);
+        /* slot is which physical slot holds this file's stored copy ("A"/"B", ""
+         * when nothing stored it): the flip button belongs on a row that has one
+         * and is not already on the glass. The door takes the id, never this
+         * letter — the letter is advice from a header read, the worker re-derives
+         * it before it writes anything. */
+        const char *e_slot = ent[i].slot == 'A' ? "A" : ent[i].slot == 'B' ? "B" : "";
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"id\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u}",
+            "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"slot\":\"%s\"}",
             i ? "," : "", e_name, e_id, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
             ent[i].err == ESP_OK ? "true" : "false",
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false",
-            (unsigned)ent[i].fmt, (unsigned)ent[i].n_sections);
+            (unsigned)ent[i].fmt, (unsigned)ent[i].n_sections, e_slot);
     }
     if (!too_big)
         off += snprintf(json + off, sizeof json - (size_t)off, "]}");
@@ -4302,12 +4308,50 @@ static esp_err_t h_bundle_install(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
-/* POST /api/v1/sd/default — back to the dial the box shipped with (ruling D13's
- * other half). No card, no container, no copy: the default is the bank `idf.py
- * flash` wrote at partition offset 0, and the only work is the NVS write that says
- * to draw it and the reboot that follows. It lives or dies on that choice, not on
- * whether a card is in the socket — which is exactly why it is its own endpoint
- * and not another value on the install one. */
+/* POST /api/v1/sd/flip?id=X — §26 slice 3's flip door, the second press of the
+ * two-stage form. The store put the bundle in a slot and the glass never moved;
+ * the flip names that slot's word to the choice key and reboots onto it. It takes
+ * the same id the list handed out and resolves it against the SLOT headers on the
+ * worker — never against a path — so it answers with no card in the socket, and a
+ * press naming a bundle no slot holds refuses with a sentence on its row instead
+ * of booting into a dial that would not load. reboot:"automatic" the way
+ * sd/default answers: the flip IS the glass-changing event, and the owner who
+ * stored it two seconds ago knows exactly what they pressed. */
+static esp_err_t h_bundle_flip(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_THEME_ID_HEX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
+    }
+    const esp_err_t e = orb_theme_post_flip(id);
+    if (e == ESP_ERR_INVALID_STATE) {
+        /* Same 409 discipline as the store route: a double press is a wait, not a
+         * defect in the theme. */
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[192];
+    const int n = snprintf(b, sizeof b,
+        "{\"state\":\"flipping\",\"id\":\"%s\",\"reboot\":\"automatic\"}", id);
+    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/sd/default — back to the dial drawn from slot A: the flashed bank
+ * while nothing has overwritten it, and since the ping-pong, the word the flip door
+ * itself writes when the pressed bundle sits in A. No card, no container, no copy:
+ * the only work is the NVS write that says to draw it and the reboot that follows.
+ * It lives or dies on that choice, not on whether a card is in the socket — which is
+ * exactly why it is its own endpoint and not another value on the store one. */
 static esp_err_t h_theme_default(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -5270,9 +5314,9 @@ static const char HTML_THEMES[] =
 "if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
 "C.textContent=data.card+' \\u2014 '+data.free_mb+' MB free of '+data.total_mb+' MB; dial is on '+data.source+' ('+(data.active||'baked-in')+')';"
 "var h='';"
-"h=h+'<div class=row><b>dial: '+(data.live=='default'?'the factory default'"
-":'the card theme')+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
-"if(data.live!='default'){h=h+' <button onclick=tofactory()>Use the factory dial</button>';}"
+"h=h+'<div class=row><b>dial: '+(data.live=='slot-B'||data.live=='card'?'the stored copy in slot B'"
+":(data.live=='slot-A'?'the copy in slot A':'the factory default'))+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
+"if(data.live=='slot-B'||data.live=='card'){h=h+' <button onclick=tofactory()>Use the factory dial</button>';}"
 "h=h+'</div>';"
 "if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
@@ -5283,6 +5327,7 @@ static const char HTML_THEMES[] =
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
 "if(data.damage_id==t.id&&data.damage_why){h=h+'<div class=sub>THE DIAL WOULD NOT LOAD IT: '+esc(data.damage_why)+'</div>';}"
 "if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
+"if(t.ok&&t.slot&&!t.active){h=h+' <button onclick=\"flip(\\''+t.id+'\\')\">Put it on the dial</button>';}"
 "else{h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why)+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
 "L.innerHTML=h;}"
@@ -5290,11 +5335,17 @@ static const char HTML_THEMES[] =
 
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "function store(id){var nm=ROWS[id]||id;"
-"if(!confirm('Copy '+nm+' into the dial? This dial cannot draw an app bundle yet — it stores it for the update that can. A power cut during the copy brings back the factory clock, and storing again recovers it.')){return;}"
+"if(!confirm('Copy '+nm+' into the dial? It goes into the slot the dial is not drawing. A power cut during the copy leaves the dial drawing what it draws, and storing again recovers it.')){return;}"
 "say('storing '+nm+'...','');"
 "j('/api/v1/sd/bundle?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('could not store '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
 "say('storing '+nm+' - the dial keeps drawing what it draws','ok');setTimeout(refresh,1500);});}"
+"function flip(id){var nm=ROWS[id]||id;"
+"if(!confirm('Put '+nm+' on the dial? The orb reboots onto the stored copy.')){return;}"
+"say('flipping '+nm+'...','');"
+"j('/api/v1/sd/flip?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
+"if(!r.ok){say('could not flip '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
+"say('flipping '+nm+' - the orb is rebooting','ok');setTimeout(refresh,1500);});}"
 "function tofactory(){if(!confirm('Go back to the factory dial? The orb reboots.')){return;}"
 "say('choosing the factory dial...','');"
 "j('/api/v1/sd/default',{method:'POST'}).then(function(r){"
@@ -5610,6 +5661,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
+        { .uri = "/api/v1/sd/flip",     .method = HTTP_POST, .handler = h_bundle_flip },
         { .uri = "/api/v1/sd/default",   .method = HTTP_POST, .handler = h_theme_default },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
         { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },

@@ -166,13 +166,15 @@ void clock_themes_pick(int idx)
         snprintf(s_ui.status, sizeof s_ui.status, "storing \"%s\" …", e->name);
 }
 
-/* The "Factory default" row: the other half of ruling D13's promise that there is
- * always a way back to the dial the box shipped with. Nothing here goes near the
- * card — the default is the bank `idf.py flash` wrote at partition offset 0, and
- * choosing it is one NVS write and a reboot. */
+/* The "Factory default" row: the promise that there is always a way back to the
+ * dial drawn from slot A holds. Nothing here goes near the card — slot A is the
+ * bank `idf.py flash` wrote at partition offset 0 (and, since §26 slice 3's
+ * ping-pong, possibly the copy a store wrote over it), and choosing it is one NVS
+ * write and a reboot. */
 static void pick_default(void)
 {
-    if (strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) == 0) {
+    const char *const lv = orb_theme_live();
+    if (strcmp(lv, THEME_LIVE_DEFAULT) == 0 || strcmp(lv, THEME_LIVE_SLOT_A) == 0) {
         strlcpy(s_ui.status, "the factory dial is what is on the wall",
                 sizeof s_ui.status);
         return;
@@ -255,8 +257,11 @@ const char *clock_opt_value(orb_app_t *app, int idx)
      * what boot found damaged in the slot. None of them touches the card, NVS or
      * the network, which is the rule these answers live under — the same callback
      * is the dial's animation. */
-    if (idx == ROW_DEFAULT)
-        return strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) == 0 ? "on the dial" : "";
+    if (idx == ROW_DEFAULT) {
+        const char *const lv = orb_theme_live();
+        return (strcmp(lv, THEME_LIVE_DEFAULT) == 0 ||
+                strcmp(lv, THEME_LIVE_SLOT_A) == 0) ? "on the dial" : "";
+    }
     if (idx == ROW_GROUP) {
         /* What is on the wall, named, so a closed group still answers the question
          * a knock on the door asks. The shell overwrites this with "open" while the
@@ -268,8 +273,12 @@ const char *clock_opt_value(orb_app_t *app, int idx)
                      s_ui.e[i].name[0] ? s_ui.e[i].name : s_ui.e[i].id);
             return v;
         }
-        return strcmp(orb_theme_live(), THEME_LIVE_CARD) == 0 ? "the card copy did not load"
-                                                             : "none chosen";
+        /* Nothing active with a choice in force: the named slot did not load, and
+         * the damage pair on h_sd says why. "default" with nothing active is not
+         * damage — it is a board whose slot A holds no bundle and no card was ever
+         * picked. */
+        return strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) != 0
+                   ? "the stored copy did not load" : "none chosen";
     }
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";

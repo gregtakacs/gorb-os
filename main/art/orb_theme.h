@@ -35,12 +35,14 @@
  * follows draws what it drew before. That guarantee is what alternation buys, and it is
  * independent of which slot is which.
  *
- * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as "default" or
- * "card". It is not a pending operation: nothing installs at boot. Boot reads
- * the choice, verifies the slot it names, and falls back to the default with the
- * damage recorded when B's bytes do not match what the install checked — B was
- * verified when it was written, so anything else is corruption, not a state a
- * user is waiting on.
+ * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as a slot
+ * designator: "default", "slot-A" or "slot-B" (§26 slice 3). The legacy "card"
+ * still reads — it was always exactly "slot-B" — but is never written again.
+ * It is not a pending operation: nothing installs at boot. Boot reads the
+ * choice, verifies the slot it names, and falls back to the default with the
+ * damage recorded when the named slot's bytes do not match what the store
+ * checked — a slot was verified when it was written, so anything else is
+ * corruption, not a state a user is waiting on.
  *
  * A board that has never installed anything reports source "slot-A" and draws the
  * flashed bundle, or the base digital face if slot A holds nothing drawable.
@@ -257,9 +259,14 @@ const char *orb_theme_source(void);
 /** The owner name of the theme currently on the wall, "" for the factory dial. */
 const char *orb_theme_active_name(void);
 
-/** The owner's choice, as resolved at boot: "default" or "card". */
+/** The owner's choice, as resolved at boot. §26 slice 3 made it a slot designator;
+ *  "card" is the legacy spelling of "slot-B" that older NVS still holds and that
+ *  orb_theme_live() passes through unchanged. The lifted-line pair below is pinned
+ *  by tools/host_tz_test.py's lift regex — keep the four defines adjacent. */
 #define THEME_LIVE_DEFAULT "default"
 #define THEME_LIVE_CARD    "card"
+#define THEME_LIVE_SLOT_A  "slot-A"
+#define THEME_LIVE_SLOT_B  "slot-B"
 const char *orb_theme_live(void);
 
 /**
@@ -330,6 +337,18 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
 esp_err_t orb_theme_post_bundle(const char *id);
 esp_err_t orb_theme_post_default(void);
 
+/**
+ * §26 slice 3's flip door: POST /api/v1/sd/flip?id=X. The second half of the
+ * two-stage press (§24.5(4)): the store put the bundle into a slot and the glass
+ * never moved; the flip finds which slot holds that id, writes the choice to
+ * name it, and asks for the reboot that draws it. No card is needed — it resolves
+ * against the SLOT headers, which is what makes a flipped theme survive the card
+ * going back in the drawer. Same queue discipline as the store door: returns
+ * immediately, ESP_ERR_INVALID_STATE when a job is already running, and the
+ * refusal lands on the pressed row's try witness exactly as the store's does.
+ */
+esp_err_t orb_theme_post_flip(const char *id);
+
 /** What the last pick could not do: the id it was asked for and the sentence
  *  the ladder answered with. Both "" after a success, and the picker puts them on
  *  the row that was pressed rather than in a status line nothing can reach. */
@@ -351,6 +370,11 @@ typedef struct {
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;           /* this file is what the dial is drawing */
     bool      changed;          /* the installed copy of this name has different bytes */
+    char      slot;             /* 'A' / 'B': stored in that slot; 0 when in neither.
+                                 * §26 slice 3: this is what makes a row flippable —
+                                 * the flip door takes the id, not the slot, and the
+                                 * page shows the button when this is set and active
+                                 * is not. */
 } orb_theme_entry_t;
 
 /**

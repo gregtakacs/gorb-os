@@ -3146,7 +3146,17 @@ twelve-plate month window at bucket 0 — and the shipped projection parses it f
 the host before the radio carries it. `host_clock3_test.py` 239 checks + 3 new mutants,
 `bake_clock.py` refusal vectors 18, `host_comp_math_test.py` 5933 vectors, orbelems 560,
 orb_bundle parity 333, the schema's own selftest, and the firmware build all green on this
-commit; the heap delta and the glass are the bench run, next.
+commit. The bench ran R-H on orb-B (`tools/bench_d32.sh`, 2026-10-20): the store door took
+the bundle and answered `reboot:none`; the flip landed it — press to reboot boundary 1 s —
+and the boot log printed the projection verbatim, `bundle "d32-bench" projected into a dial:
+1 complication row, tourbillon_n 8 @ 12 fps start 4500`, over a 304 ms refill of the same
+1,961,984 B the lazy arena had just checksummed. PSRAM free moved 7,915,084 → 5,501,436
+across the flip: the refill the flip is supposed to make, plus the face's LVGL objects —
+the store before it moved nothing. The dial ticked a minimum 6 fps for 30 s on the carriage
+face (flush-bound, as the base av-kit face is: the 12 fps frame swaps drop frames, they do
+not stall), and `sd/default` put the board back. The month window and the carriage turned on
+the glass; `sd/flip` refused a never-stored id in its own words when the first bench draft
+skipped the store press, which is the refusal the script now asserts.
 
 ## 24 — P6.3 as ruled option A: the refill, the light, the word, the stream — 2026-10-19
 

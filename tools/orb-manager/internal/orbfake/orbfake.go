@@ -210,6 +210,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/bundle" && r.Method == http.MethodPost:
 		o.serveBundle(w, r)
+	case r.URL.Path == "/api/v1/sd/flip" && r.Method == http.MethodPost:
+		o.serveFlip(w, r)
 	case r.URL.Path == "/api/v1/sd/rescan" && r.Method == http.MethodPost:
 		writeJSON(w, 200, fmt.Sprintf(`{"mounted":true,"card":%q}`, o.Card))
 	// The P4 card-app verbs. Registered here in the same order orb_net.c's uri table
@@ -302,6 +304,40 @@ func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"none"}`, id))
+}
+
+// serveFlip is h_bundle_flip (§26 slice 3): the flip door. The firmware's ack is 200
+// flipping for any syntactically valid id — a press naming a bundle no slot holds is
+// refused later, on the row's try witness, not at the HTTP layer — so the fake mirrors
+// that gate-for-gate: 400 on a malformed id, 409 while a job runs, then the ack. When
+// the id names a theme the fake does hold it moves the live word to slot-B and marks
+// that row active, because a flip is exactly the press that moves the glass; the sd/
+// default constant reply predates the fake tracking its own default, and this stays
+// within what the firmware's own ack claims.
+func (o *Orb) serveFlip(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if !idOK(id) {
+		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)
+		return
+	}
+	if o.takeBusy() {
+		writeJSON(w, 409, `{"error":"a theme job is already running"}`)
+		return
+	}
+	o.mu.Lock()
+	for _, t := range o.themes { // find() takes the same mutex; the walk is inline like serveDelete's
+		if t.ID == id && t.OK {
+			for _, x := range o.themes {
+				x.Active = false
+			}
+			t.Active = true
+			o.active = t.Name
+			o.live = "slot-B"
+			break
+		}
+	}
+	o.mu.Unlock()
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"flipping","id":%q,"reboot":"automatic"}`, id))
 }
 
 // serveDelete is h_theme_del: same id gate, same 404 wording.

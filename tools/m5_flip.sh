@@ -1,21 +1,24 @@
 #!/bin/bash
-# m5_flip.sh — M5 Arm A measured at the board; Arm B's halves priced on existing
-# doors (plan §16 checklist steps 1-4, §6 M5). D30's ruling stays the owner's:
-# this script pays its two timings and states no verdict.
+# m5_flip.sh — the FORMAT 3 store door + the theme upload, on the board.
+#   MIGRATED from the M5 Arm-A/Arm-B flip comparison (D11/D30). D30 (2026-10-15)
+#   retired the reboot-on-every-pick rule and §27 deleted the FORMAT 2 ingest door,
+#   so this script no longer times a flip — the store door answers reboot:none and
+#   swaps nothing onto the glass until §26's ping-pong compositor lands. What it
+#   still proves, on the same card bundles:
+#     (1) the FORMAT 3 theme UPLOAD lands ("state":"stored" off the /api/v1/sd/theme
+#         door, the §16.1 rule that a 200 header is not a response);
+#     (2) the STORE door (POST /api/v1/sd/bundle?id=X) answers reboot:none and the
+#         dial does NOT flip (no rst:0x boundary after the store);
+#     (3) the store's ingest cost, read back off the device's bundle_ms/bundle_bytes;
+#     (4) PSRAM is UNCHANGED across a store — residency is the ping-pong slice's job,
+#         so a store that moved the heap would be the bug this now catches.
 #
-# Arms, same bundles on the card:
-#   Arm A (today's rule, D11): POST /api/v1/sd/install?id=X copies card->inactive
-#     slot, verifies from flash, marks live, reboots. Timed request -> first dial
-#     line after the reboot boundary, plus association-to-page-answers after.
-#   Arm B (lazy, unshipped): boot cost = PSRAM footprint of the same payload read
-#     off the status heap line before/after an install; flush interference = the
-#     fps floor of the `clock:` lines that fall INSIDE Arm A's copy window (the
-#     worker copy IS the arena copy's card-read half; §14's M3 arena number
-#     carries the memcpy half). Both halves are read, not simulated.
+#   Arms retired: the old "Arm A copy+reboot timed to first dial" and "Arm B PSRAM
+#   footprint of a resident flip" both measured a mechanism the board no longer runs.
 #
 # Preconditions: /tmp/m5_avkit.orbtheme (name av-kit) and /tmp/m5_avkit_b.orbtheme
-# (name av-kit-b, same payload re-packed by the sanctioned writer) exist and pass
-# orbtheme.py --inspect; the card is in; the port is free. Every response body
+# (name av-kit-b) are FORMAT 3 bundles (rebake_bundle.py), and pass
+# orbbundle.read_bundle; the card is in; the port is free. Every response body
 # goes to a freshly deleted file and is only believed if size_download > 0 — the
 # §16.1 rule: a 200 header is not a response.
 #
@@ -41,14 +44,14 @@ dial(){ # dial: print min fps seen since epoch E from the clock lines
   awk -v e="$1" '$1+0>e && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); f=substr($0,RSTART+6,RLENGTH-5)+0; if(m==0||f<m)m=f} END{print m+0}' "$SER"
 }
 
-# [1] fixtures, host-verified before the radio carries anything
+# [1] fixtures, host-verified before the radio carries anything (FORMAT 3 gate)
 python3 - <<'PY' || exit 1
 import sys; sys.path.insert(0, "tools")
-import orbtheme
+import orbtheme, orbbundle
 for p in ("/tmp/m5_avkit.orbtheme", "/tmp/m5_avkit_b.orbtheme"):
-    h, geom, art = orbtheme.read_container(p)
+    h, _secs = orbbundle.read_bundle(p)   # (header, sections); raises on any FORMAT != 3
     print(p, "name", repr(h["name"]), "id", orbtheme.theme_id(h["name"]),
-          "art", h["art_size"], "fmt", h.get("format", 2))
+          "art", h["art_size"], "fmt", h.get("fmt", 3))
 PY
 IDB=$(python3 -c "import sys; sys.path.insert(0,'tools'); import orbtheme; print(orbtheme.theme_id('av-kit'))")
 IDC=$(python3 -c "import sys; sys.path.insert(0,'tools'); import orbtheme; print(orbtheme.theme_id('av-kit-b'))")
@@ -84,48 +87,45 @@ done
 sleep 2
 fetch GET "$ORB/api/v1/sd" && say "GET /api/v1/sd: $(head -c 300 "$BODY")"
 
-flip(){ # flip ID LABEL — one Arm A flip, fully timed
+store(){ # store ID LABEL — one store-door press: reboot:none, NO flip, cost off bundle_ms
   local id=$1 label=$2
   local t0=$(date +%s.%N)
-  fetch POST "$ORB/api/v1/sd/install?id=$id" || { fail "install $label: no body"; return; }
-  say "install($label): $CODE -> $(cat "$BODY")"
-  grep -q '"state":"installing"' "$BODY" || { fail "install $label refused: $(cat "$BODY")"; return; }
+  fetch POST "$ORB/api/v1/sd/bundle?id=$id" || { fail "store $label: no body"; return; }
   local t1=$(date +%s.%N)
-  local E=$(grep -E 'rst:0x' "$SER" | tail -1 | cut -d' ' -f1)
+  say "store($label): $CODE -> $(cat "$BODY")"
+  grep -q '"state":"storing"' "$BODY" || { fail "store $label refused: $(cat "$BODY")"; return; }
+  grep -q '"reboot":"none"' "$BODY" || { fail "store $label did NOT answer reboot:none: $(cat "$BODY")"; return; }
+  local E=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
+  # The dial must NOT flip: assert NO new rst:0x boundary after the store press.
+  # (A flip would reboot; the store door must not. Its ABSENCE is the pass here.)
   local R=""
-  # (a) the boundary: a NEW rst:0x after the pre-install boot's own (open-reset) one
-  for j in $(seq 1 90); do
+  for j in $(seq 1 40); do
     sleep 1
     R=$(awk -v e="$E" '$1+0>e+3 && /rst:0x/ {print $1; exit}' "$SER")
-    [ -n "$R" ] && break
+    [ -n "$R" ] && { fail "store $label: the dial FLIPPED (rst:0x after a reboot:none store)"; return; }
   done
-  [ -n "$R" ] || { fail "flip $label: no reboot boundary within 90 s"; return; }
-  # (b) first dial line AFTER that boundary — pre-reboot clock lines must not count
-  for j in $(seq 1 60); do
-    sleep 1
-    awk -v e="$R" '$1+0>e && /clock: clock [0-9]+ fps/ {f=1} END{exit !f}' "$SER" && break
+  # Read the ingest cost the store worker recorded, beside the refill figures.
+  local BM="?" BB="?"
+  for k in $(seq 1 20); do
+    fetch GET "$ORB/api/v1/sd" && {
+      BM=$(python3 -c "import json;print(json.load(open('$BODY')).get('bundle_ms'))" 2>/dev/null)
+      BB=$(python3 -c "import json;print(json.load(open('$BODY')).get('bundle_bytes'))" 2>/dev/null)
+      [ "$BM" != "None" ] && [ -n "$BM" ] && break; }
+    sleep 2
   done
-  local t2=$(date +%s.%N)
-  # (c) the config page answering again after that boundary
-  for k in $(seq 1 90); do
-    sleep 1
-    awk -v e="$R" '$1+0>e && /config server listening/ {f=1} END{exit !f}' "$SER" && break
-  done
-  local t3=$(date +%s.%N)
-  say "--- flip $label ---"
-  awk -v e="$E" '$1+0>e-8' "$SER" | grep -E 'install of|slot-|art bank|rst:0x|sta ip|config server|clock: clock [0-9]+ fps' | head -24
-  say "flip $label: post-to-first-dial $(echo "$t2-$t1" | bc)s  post-to-page-answers $(echo "$t3-$t1" | bc)s"
-  say "flip $label: min dial fps in the copy window (Arm B flush interference): $(dial "${E%.*}")"
+  say "--- store $label ---"
+  awk -v e="$E" '$1+0>e-8' "$SER" | grep -E 'bundle|store|rst:0x|sta ip|config server|clock: clock [0-9]+ fps' | head -24
+  say "store $label: ack wall $(echo "$t1-$t0" | bc)s  device bundle_ms=$BM bundle_bytes=$BB"
 }
 
-# [5] Arm A, both directions: to av-kit-b, back to av-kit (a flip, not an install)
-flip "$IDC" "to-avkit-b"
-sleep 5
-flip "$IDB" "back-to-avkit"
+# [5] store both bundles: no flip either way (reboot:none, and PSRAM must not move)
+store "$IDC" "avkit-b"
+sleep 3
+store "$IDB" "avkit"
 
-# [6] Arm B's PSRAM half: footprint after the copy, off the same status line
+# [6] PSRAM half, inverted: a store makes nothing resident, so the heap must be UNCHANGED.
 fetch GET "$ORB/api/v1/status" && PSRAM1=$(python3 -c "import json;print(json.load(open('$BODY'))['heap_psram'])")
-say "psram after flips: ${PSRAM1:-?} (baseline ${PSRAM0:-?}) — lazy residency would cost the payload's page bytes here, and §14's M3 arena number (per-byte copy) prices the rest"
+say "psram after stores: ${PSRAM1:-?} (baseline ${PSRAM0:-?}) — a store moves no pages; a drop here means the store wrongly made the bundle resident (§26 ping-pong's job, not P6.4's)"
 
 kill $CAP 2>/dev/null
 say "=== M5_FLIP $verdict ==="

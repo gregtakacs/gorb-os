@@ -3994,6 +3994,37 @@ what the glass holds — ink fraction, mean luma and a thumbnail, plus `--diff` 
 capture taken before the change. That is what slice 1 could not do and why its status above
 reads "runs, unseen".
 
+**Slice 2 landed (owner decision 2026-10-20, Option B): the base face is the fallback, not
+the default.** The plan's original teeth — "stop flashing the default, delete `use_baked_in()`
+and `art_bank_map_at_0()`" — are NOT what shipped, because the owner kept the flashed default
+preferred (a board with no theme installed should show the good baked-in dial, not a bare
+digital face). What shipped instead, in three commits: (1) `refactor(clock)` decides art
+residency and creates the screen **before** the art gate, so the gate and the themed leg read
+one flag instead of recomputing it — behaviour-neutral, orb-A's dial moves only the digits
+(6.82% pixels, mean delta 5.7 vs the pre-slice capture); (2) `feat(clock)` keys the base render
+on `!art_resident` (Option B: default preferred, base is the no-resident-art fallback) and
+deletes `ORB_BASE_RENDER_FORCE` and every reference to it; (3) `docs(clock_base)` restates the
+header premise to match. The base face is now proven with pixels, not a log line. Grabbed on
+orb-A, mean luma and ink: base face **0.99% ink / luma 1.9** (seq 2, commit-fresh), menu
+reference **1.12% / 2.3**; the base face differs from the dial by **97.4%** (mean delta 55),
+base-vs-menu by **2.1%** — two near-black faces that are each ~97% off the ~97%-ink dial, which
+rules out a stale frame. All four host suites (tz, art-residency, sd, mdns) pass under
+`--mutations`.
+
+**One empirical premise this slice disproved.** The capture plan said to erase the assets
+partition to force the base face. It does not work, and the reason is load-bearing:
+`esp_partition_mmap` validates only that the requested range lies inside the partition, not the
+bytes there, so it succeeds on erased `0xFF` flash; `art_bank_ready()` keys on that map pointer,
+so residency stays true after an erase and the board takes the *themed* leg and draws garbage —
+never `clock_base_show()`. A card-less board boots the flashed default by design (that is
+Option B), so no reversible on-bench state (erase, `sd/default`, ledger fallback) reaches the
+base face while an assets partition exists in the table. The capture above was therefore taken
+with a throwaway forced-base build, reverted before commit; the shipped code has no bench
+override. **Consequence, open:** under Option B the base face is a software fallback reachable
+only when `esp_partition_mmap` genuinely fails — a board with no assets partition in its table,
+a blob larger than the partition, or an exhausted DROM window. Whether a shipping SKU should
+carry such a table is a §26 decision still on the table, not something this slice assumed.
+
 
 **Two things this section will not guess.** Both are visible to a person holding the device,
 and a wrong answer looks like a broken product rather than a wrong field. **The base clock's

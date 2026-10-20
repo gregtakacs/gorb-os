@@ -50,8 +50,8 @@ def ck(cond, msg):
 # The geometry under test is read out of the SHIPPED .h. A suite written against a
 # hand-typed copy of the pair tests the copy.
 # ---------------------------------------------------------------------------
-HDR = open(os.path.join(ROOT, "assets", "clock_assets.h")).read()
-ART = open(os.path.join(ROOT, "assets", "clock_assets.bin"), "rb").read()
+HDR = open(os.path.join(ROOT, "tests", "fixtures", "avkit-pair.h")).read()
+ART = open(os.path.join(ROOT, "tests", "fixtures", "avkit-pair.bin"), "rb").read()
 SPRITE_RE = re.compile(
     r"\{\s*(\d+),\s*(\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),"
     r"\s*(-?\d+),\s*(-?\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),"

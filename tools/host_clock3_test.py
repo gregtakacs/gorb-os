@@ -40,8 +40,8 @@ import struct as _st              # noqa: E402  (the forged words)
 
 READER_C = os.path.join(ROOT, "main", "art", "orb_clock3.c")
 BUNDLE_C = os.path.join(ROOT, "main", "art", "orb_bundle.c")
-HDR_H = os.path.join(ROOT, "assets", "clock_assets.h")
-BIN_H = os.path.join(ROOT, "assets", "clock_assets.bin")
+HDR_H = os.path.join(ROOT, "tests", "fixtures", "avkit-pair.h")
+BIN_H = os.path.join(ROOT, "tests", "fixtures", "avkit-pair.bin")
 REBAKED = "/tmp/b3/avkit.rebake.orbtheme"
 
 failures, checks = [], [0]

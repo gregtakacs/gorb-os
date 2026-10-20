@@ -164,7 +164,7 @@ d13_lift = "\n".join([
     lift_theme(theme_src, THEME_SRC, r"typedef enum \{ BOOT_ART_DEFAULT = 0,"
                                      r" BOOT_ART_CARD = 1 \} boot_art_t;"),
     lift_theme(theme_src, THEME_SRC,
-               r"static boot_art_t boot_resolve\(const char \*live, const bool b_valid,\s*const bool b_is_bundle\)"
+               r"static boot_art_t boot_resolve\(const char \*live, const bool b_is_bundle\)"
                r"\n\{[\s\S]*?\n\}"),
     lift_theme(theme_src, THEME_SRC, r"static uint32_t install_target\(void\)[^\n]*\}"),
 ])
@@ -486,9 +486,8 @@ static void rollback_case(const char *why){{
  * install may write are the two numbers a wrong answer about costs a device its
  * dial, and neither is observable on a bench with one card and no second slot to
  * corrupt: the shipped predicates are lifted and run instead of watched. */
-static void boot_case(const char *what, const char *live, bool b_valid,
-                      bool b_bundle, int want){{
-    const boot_art_t got = boot_resolve(live, b_valid, b_bundle);
+static void boot_case(const char *what, const char *live, bool b_bundle, int want){{
+    const boot_art_t got = boot_resolve(live, b_bundle);
     const int pass = ((int)got == want);
     if (!pass) fails++;
     printf("%-5s boot_resolve %-34s -> %-7s (want %s)\\n", pass ? "ok" : "FAIL", what,
@@ -717,30 +716,17 @@ int main(void)
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);
     drop_case(1, 1, 1, 0); drop_case(0, 1, 1, 0);
     puts("== ruling D13: the slot the dial draws, and the one an install may write ==");
-    /* Every row that can be asked of the resolve predicate: the choice, whether B
-     * verified, and what comes out. "card" with a B that will not load is the
-     * corruption case, and the answer must be the default with the choice left
-     * written — a boot that quietly cleared it would forget what the owner asked
-     * for, and a boot that drew the corrupt slot would show half a theme. */
-    boot_case("card chosen, B verifies", THEME_LIVE_CARD, true, false, BOOT_ART_CARD);
-    boot_case("card chosen, B corrupt", THEME_LIVE_CARD, false, false, BOOT_ART_DEFAULT);
-    boot_case("default chosen, B verifies", THEME_LIVE_DEFAULT, true, false, BOOT_ART_DEFAULT);
-    boot_case("default chosen, B corrupt", THEME_LIVE_DEFAULT, false, false, BOOT_ART_DEFAULT);
-    boot_case("no key at all, B verifies", "", true, false, BOOT_ART_DEFAULT);
-    boot_case("no key at all, B corrupt", "", false, false, BOOT_ART_DEFAULT);
-    boot_case("junk in the key, B verifies", " Card ", true, false, BOOT_ART_DEFAULT);
-    boot_case("NVS unreadable (NULL), B verifies", NULL, true, false, BOOT_ART_DEFAULT);
-    boot_case("NVS unreadable (NULL), B corrupt", NULL, false, false, BOOT_ART_DEFAULT);
-    /* P6.5 §25.5(2) added a third input, and these are the rows it exists for. A
-     * chosen slot holding a FORMAT 3 bundle is now a theme to draw rather than an
-     * absence — orb-A found the first draft skipping exactly this. FORMAT 2's answer
-     * is unchanged either way: a bundle in the slot alongside a header that parses is
-     * still read as FORMAT 2, because one slot cannot answer both formats. */
-    boot_case("card chosen, B is a bundle", THEME_LIVE_CARD, false, true, BOOT_ART_CARD);
-    boot_case("bundle + a parsing v2 header", THEME_LIVE_CARD, true, true, BOOT_ART_CARD);
-    boot_case("default chosen, B is a bundle", THEME_LIVE_DEFAULT, false, true, BOOT_ART_DEFAULT);
-    boot_case("no key at all, B is a bundle", "", false, true, BOOT_ART_DEFAULT);
-    boot_case("NVS unreadable, B is a bundle", NULL, false, true, BOOT_ART_DEFAULT);
+    /* P6.5 retired FORMAT 2, so the resolve predicate has one input that matters:
+     * the choice, and whether the slot it points at holds a drawable FORMAT 3
+     * bundle. A choice of "card" that names no drawable bundle is an absence, and
+     * the answer is the default with the choice left written — a boot that quietly
+     * cleared it would forget what the owner asked for. */
+    boot_case("card chosen, B is a bundle", THEME_LIVE_CARD, true, BOOT_ART_CARD);
+    boot_case("card chosen, no bundle", THEME_LIVE_CARD, false, BOOT_ART_DEFAULT);
+    boot_case("default chosen, B is a bundle", THEME_LIVE_DEFAULT, true, BOOT_ART_DEFAULT);
+    boot_case("junk in the key, B is a bundle", " Card ", true, BOOT_ART_DEFAULT);
+    boot_case("no key at all, B is a bundle", "", true, BOOT_ART_DEFAULT);
+    boot_case("NVS unreadable, B is a bundle", NULL, true, BOOT_ART_DEFAULT);
     install_target_case();
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
@@ -1206,9 +1192,9 @@ MUTATIONS = [
     ('an install aims at the factory bank',
      'static uint32_t install_target(void) { return SLOT_B_HDR; }',
      'static uint32_t install_target(void) { return SLOT_A_HDR; }', 1, 'theme'),
-    ('boot draws a slot it never verified',
-     'return (b_valid || b_is_bundle) ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
-     '(void)b_valid; (void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
+    ('boot draws the card slot with no bundle in it',
+     'return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
+     '(void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
     ('the owner\'s choice stops mattering',
      'if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;',
      'if (!live) return BOOT_ART_DEFAULT;', 1, 'theme'),

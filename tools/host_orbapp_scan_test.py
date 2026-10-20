@@ -263,6 +263,7 @@ def compile_harness(tmp, rowdecide_text, ext_define, entry_text):
                          "-I", tmp, "-I", os.path.join(ROOT, "main"),
                          "-I", os.path.join(ROOT, "main", "assets"),
                          "-I", os.path.join(ROOT, "assets"),
+"-I", os.path.join(ROOT, "main", "art"),
                          "-I", shim, "-o", binp, src,
                          # P5b: orb_app_manifest.c's asset unpack calls the shipped
                          # registry (orb_asset_ref_ok / class_known / resolve_all /

@@ -52,7 +52,7 @@ SD_C, SD_H = P("main", "sd", "orb_sd.c"),   P("main", "sd", "orb_sd.h")
 TH_C, TH_H = P("main", "art", "orb_theme.c"), P("main", "art", "orb_theme.h")
 B3_C, B3_H = P("main", "art", "orb_bundle.c"), P("main", "art", "orb_bundle.h")
 NET_C      = P("main", "net", "orb_net.c")
-GEN_H      = P("assets", "clock_assets.h")
+GEN_H      = P("tests", "fixtures", "avkit-pair.h")
 for p in (SD_C, SD_H, TH_C, TH_H, B3_C, B3_H, NET_C, GEN_H):
     if not os.path.exists(p):
         sys.exit("missing " + p + " — the lifts below have no fallback")

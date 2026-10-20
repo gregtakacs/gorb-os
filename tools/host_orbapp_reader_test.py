@@ -819,6 +819,7 @@ def compile_harness(tmp, reader_c_text, reader_h_text, assets_c_text=None,
                          # registry needs no shim: it reaches nothing but libc.
                          "-I", ainc,
                          "-I", os.path.join(ROOT, "assets"),
+"-I", os.path.join(ROOT, "main", "art"),
                          "-I", shim, "-o", binp, src, asrc, hac],
                         capture_output=True, text=True)
     if cc.returncode:

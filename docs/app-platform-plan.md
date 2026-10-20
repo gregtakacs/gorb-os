@@ -4312,3 +4312,43 @@ the desktop build uses, and the embedded firmware bundle. Flashing moves to the 
 plugin. The desktop binary keeps its own flasher, because a person on a cable with no
 server still needs one.
 
+## 30 — The sibling fork is merged: the hub's FORMAT 2 gate was a real bug; both clones trued again — 2026-10-20, `8ecc8d3`
+
+**Why this existed.** §28 trued both clones at `f3e31d7`. The sibling `../gorb-os`
+then drifted again: 4 new commits, 7 behind. Two threads, different verdicts.
+
+**The hub commit (`0aaaabc`, KEPT as `e891544`).** §28's `f3e31d7` renamed the device
+verb and fixed the allowlist, but it left `themecontainer.go` gating `format == 2` —
+this tree's hub rejected every FORMAT 3 bundle the firmware accepted since `7c0fd4b`.
+The sibling found and fixed that real bug, not a duplicate of §28's work: FORMAT 3 at
+ABI v3, the firmware's own refusal words, header-CRC re-check, both D29 install sums,
+the 40-byte index walk, one fixture (`tests/fixtures/format3-pair.orbtheme`) pinning
+all four readers, and `orbfake` gating FORMAT 3 from its own layout copy so a test
+cannot read its fixture through the implementation under test. Dropping it would have
+restored the broken gate.
+
+**The composer thread (3 commits, KEPT as `e7d0c8e`/`568f018`/`8ecc8d3`).** The
+browser FORMAT 3 baker: `orbtheme-baker.js` `writeBundle3`, the mirror suite
+`headless-bundle3.test.js`, `bake3-test.html`, the fixture generator and
+`verify_js_bake.py`, and the §29 ruling they carry. Genuinely new work on §25's
+re-bake thread; nothing in this tree duplicated it.
+
+**The merge.** `git rebase origin/main` onto `7f30bbb` replayed all four clean —
+zero conflicts, because the two orbfake changes (the sibling's FORMAT 3 gate, our
+`serveFlip` from `7d57f2f`) touch disjoint regions, and the docs additions land in
+disjoint file sections. Pre-rebase state tagged `sibling-backup-56dffd3`.
+
+**Verification.** `go vet` clean and 10/10 hub packages pass on BOTH clones — the
+contract battery runs against this tree's flip-door firmware. `host_sd_test` and
+`host_tz_test` green. `make_bundle_fixture.py --verify-c` reads the fixture as the
+authority wrote it (2 sections, 832 B region, 599,296 B art). The node mirror suite:
+RESULT PASS, 72 checks, including the shipped `orb_clock3.c` projecting the browser
+bake — the byte-identical-to-authority claim §25 ruled holds across the merge.
+`main/` is untouched by all four commits (`git diff origin/main..HEAD -- main/`
+empty), so every firmware result on this tree still stands.
+
+**The two clones, trued.** `origin/main` fast-forwarded `7f30bbb → 8ecc8d3` (no
+force). `../gorb-os` pushed from; this tree `--ff-only` onto the same `8ecc8d3`.
+Both clean, `0/0` against `origin/main` — §28's invariant restored.
+
+

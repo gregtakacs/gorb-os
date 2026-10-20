@@ -139,9 +139,9 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
         return reject("bundle geometry v%lu; this build reads v%lu — re-bake it",
                       (unsigned long)w[W_GEOM_ABI], (unsigned long)ORB_BUNDLE3_ABI);
 
-    /* The self-checksum first, exactly as orb_theme.c's hdr_parse does: same
-     * 128 bytes, same zeroed word 28 — the torn-header check is one rule for
-     * both formats because the header's SHAPE is one rule for both formats. */
+    /* The self-checksum first, on the header's SHAPE — one rule for every
+     * .orbtheme the door admits: same 128 bytes, same zeroed word 28 — the
+     * torn-header check does not vary with the dialect inside the header. */
     uint32_t zeroed[W_WORDS];
     memcpy(zeroed, w, sizeof zeroed);
     zeroed[W_HDR_CRC] = 0;

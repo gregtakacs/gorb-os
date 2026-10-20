@@ -396,7 +396,7 @@ static void install_close(int fd)
  * read, not mmap; 148 bytes do not justify an MMU entry and the header is not
  * mapped. The apps slots hold no pixels in P4, so there is no pixels read-back —
  * only the geometry region, CRCed FROM the partition before the header goes live,
- * exactly as orb_theme_install does for its blob (orb_theme.c:1501).            */
+ * exactly as card_open_verified_id3 does for its bundle (orb_theme.c).           */
 
 static uint32_t slot_base(int slot) { return (uint32_t)slot * APPS_SLOT_STRIDE; }
 
@@ -506,7 +506,7 @@ static esp_err_t write_slot_header(const esp_partition_t *p, int slot,
  * task): the copy holds the one card lock for seconds. Everything before the first
  * erase can fail as often as it likes; the flash is touched only after the whole
  * payload has checksummed off the card, which is why a damaged file costs a
- * sentence and not a slot (orb_theme_install's rule, orb_theme.c:1450). */
+ * sentence and not a slot (card_open_verified_id3's rule, orb_theme.c). */
 esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';

@@ -8,8 +8,10 @@ against av-kit's size, not a token blob. The element tables are SYNTHETIC (one
 plate, one hand); the clock-geometry-to-app mapping is P6.5's ruled work and
 nothing here claims it. read_bundle() proves the file round-trips; it does NOT
 prove it draws, because nothing on this build draws a bundle yet (D30 behind
-P6.5). Output is refused by the FORMAT 2 install door and stored by the FORMAT 3
-one - the same split the device enforces.
+P6.5). FORMAT 2 is retired (§25.5(3)): the device admits one door, and that door
+refuses a FORMAT 2 file at the format gate, so this tool's bundle output is the only
+thing that stores. The FORMAT 2 file --from reads is the retirement's source material,
+not a dialect the device still takes.
 
   --from FILE --out F   FORMAT 2 in, FORMAT 3 bench bundle out (art byte-identical)
   --probe --dir D       the §24.7 sentence set for the door's four behaviours
@@ -113,8 +115,9 @@ def probes(d):
     hv = list(struct.unpack("<32I", raw[:128])); hv[ot.W_NAME + 1] ^= 0x20
     out["header"] = os.path.join(d, "b3_header.orbtheme")
     open(out["header"], "wb").write(struct.pack("<32I", *hv) + bytes(raw[128:]))
-    # A FORMAT 2 file: still a theme, must store as one. The real av-kit container
-    # when it is on disk (the bench fixture): a hand-stuffed zero-geometry blob
+    # A FORMAT 2 file: now the door's refusal arm. FORMAT 2 is retired (§25.5(3)), so a
+    # real container must be REFUSED at the format gate, not stored. The real av-kit
+    # container when it is on disk (the bench fixture): a hand-stuffed zero-geometry blob
     # trips the panel/plausibility gates for reasons that have nothing to do with
     # the dialect split this arm is proving, and a refused probe proves nothing.
     src23 = "/tmp/m5_avkit.orbtheme"

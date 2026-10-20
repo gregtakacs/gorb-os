@@ -199,11 +199,28 @@ def unpack_blob(blob):
     if n_scal != SCALARS_N:
         raise ValueError("blob carries %d scalars; this dialect has %d"
                          % (n_scal, SCALARS_N))
-    want = (4 + n_scal + n_elem * _ts.ELEMENT_WORDS + n_spr * SPR_WORDS) * 4
-    want += n_slug + (-n_slug % 4)
-    if want != len(blob):
-        raise ValueError("blob is %d bytes; its counts say %d — a torn file, not a "
-                         "short one" % (len(blob), want))
+    want_min = (4 + n_scal + n_spr * SPR_WORDS) * 4 + n_slug + (-n_slug % 4)
+    # §23.5's append-only rule: the element row width is carried by the blob's own
+    # length, not assumed by the reader. The fixed head/scalars/sprites/slug bytes
+    # come off first; what is left over must divide into whole n_elem rows of a
+    # width this dialect has ever written. orb_bundle.c's blob_check mirrors this
+    # arithmetic and its refusal sentences word for word.
+    if len(blob) < want_min:
+        raise ValueError("blob is %d bytes; its counts say at least %d — a torn "
+                         "file, not a short one" % (len(blob), want_min))
+    eb = len(blob) - want_min
+    elem_words = _ts.ELEMENT_WORDS
+    if (eb % (n_elem * 4)) if n_elem else eb:
+        raise ValueError("blob is %d bytes; its %d rows leave %d B, no whole number "
+                         "of words — a torn file, not a short one"
+                         % (len(blob), n_elem, eb))
+    if n_elem:
+        elem_words = eb // (n_elem * 4)
+        if elem_words < _ts.ELEMENT_WORDS_MIN or elem_words > 0xFFFF:
+            raise ValueError("element rows are %d words; this dialect has written %d "
+                             "at the narrowest and %d at the widest a reader may skip "
+                             "whole columns in"
+                             % (elem_words, _ts.ELEMENT_WORDS_MIN, 0xFFFF))
     if n_elem > 0xFFFF or n_spr > 0xFFFF:
         # The record's counts are u16 and the device reader stores them as
         # such; orb_bundle.c's blob_check refuses the same rule in the same
@@ -213,8 +230,9 @@ def unpack_blob(blob):
     scal = struct.unpack_from("<%dI" % n_scal, blob, 16)
     off = BLOB_HEAD * 4
     elems = _ts.unpack_elements(list(struct.unpack_from(
-        "<%dI" % (n_elem * _ts.ELEMENT_WORDS), blob, off)), n_elem) if n_elem else []
-    off += n_elem * _ts.ELEMENT_WORDS * 4
+        "<%dI" % (n_elem * elem_words), blob, off)), n_elem,
+        stride=elem_words) if n_elem else []
+    off += n_elem * elem_words * 4
     sprs = []
     for i in range(n_spr):
         o, sz, w, h = struct.unpack_from("<4I", blob, off + i * 16)

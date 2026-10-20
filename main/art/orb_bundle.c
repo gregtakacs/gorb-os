@@ -94,17 +94,25 @@ uint32_t orb_bundle_scalar(const orb_bundle_sec_t *s, uint32_t idx)
     return b32(s->blob + BLOB_COUNT_WORDS * 4u + idx * 4u);
 }
 
-/* unpack_record()'s device-side twin: one fixed 17-word row, narrow fields
- * masked from their word, the i16s sign-extended. blob_check() proved the
- * table's length against the blob before any row index reaches here, and the
- * compositor iterates exactly n_elem rows — the zero-copy rule, so a table
- * wider than any firmware array is still fully addressable and the bake, not
- * this file, owns the cap refusal (unpack_elements' own discipline). */
+/* unpack_record()'s device-side twin: one row of the blob's own stride (see
+ * orb_bundle_elem_stride — 19 words from the current schema, 17 from one baked
+ * before D32's append), narrow fields masked from their word, the i16s
+ * sign-extended. blob_check() proved the table's length against the blob before
+ * any row index reaches here, and the compositor iterates exactly n_elem rows —
+ * the zero-copy rule, so a table wider than any firmware array is still fully
+ * addressable and the bake, not this file, owns the cap refusal (unpack_elements'
+ * own discipline). A row narrower than this schema decodes kind and src as the
+ * zeros those columns were written after: window/NONE, nothing to draw by them. */
+uint32_t orb_bundle_elem_stride(const orb_bundle_sec_t *s)
+{
+    return s->elem_words ? s->elem_words : ORB_BUNDLE_ELEM_WORDS;
+}
+
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
                         orb_bundle_elem_t *e)
 {
     const uint8_t *r = s->blob + BLOB_HEAD_BYTES +
-                       i * (ORB_BUNDLE_ELEM_WORDS * 4u);
+                       i * (orb_bundle_elem_stride(s) * 4u);
     e->n        = (uint16_t)b32(r +  0);
     e->cls      = (uint8_t)b32(r +  4);
     e->flags    = (uint8_t)b32(r +  8);
@@ -122,6 +130,9 @@ void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
     e->radius   = (uint16_t)b32(r + 56);
     e->degrees  = (uint16_t)b32(r + 60);
     e->scale16  = (uint16_t)b32(r + 64);
+    /* The two D32 columns, read only from a row wide enough to hold them. */
+    e->kind     = orb_bundle_elem_stride(s) >= 18u ? (uint8_t)b32(r + 68) : 0u;
+    e->src      = orb_bundle_elem_stride(s) >= 19u ? (uint8_t)b32(r + 72) : 0u;
 }
 
 /* ---- the FORMAT 3 header -------------------------------------------------- */
@@ -212,7 +223,7 @@ void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
                        orb_bundle_spr_t *sp)
 {
     const uint8_t *r = s->blob + BLOB_HEAD_BYTES +
-                       (uint64_t)s->n_elem * (ORB_BUNDLE_ELEM_WORDS * 4u) +
+                       (uint64_t)s->n_elem * (orb_bundle_elem_stride(s) * 4u) +
                        (uint64_t)i * SPR_BYTES;
     sp->off  = b32(r +  0);
     sp->size = b32(r +  4);
@@ -228,7 +239,8 @@ void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
  * bounded by the length equality proven here. */
 static const char *blob_check(const uint8_t *blob, uint32_t len,
                               uint32_t *n_elem, uint32_t *n_spr,
-                              uint32_t *slug_off, uint32_t *slug_len)
+                              uint32_t *slug_off, uint32_t *slug_len,
+                              uint32_t *elem_words)
 {
     if (len < BLOB_HEAD_BYTES)
         return "section blob is shorter than its counts and scalars";
@@ -237,15 +249,40 @@ static const char *blob_check(const uint8_t *blob, uint32_t len,
     if (nsc != ORB_BUNDLE_SCALARS_N)
         return reject("blob carries %lu scalars; this dialect has %lu",
                       (unsigned long)nsc, (unsigned long)ORB_BUNDLE_SCALARS_N);
-    const uint64_t body = (uint64_t)(BLOB_COUNT_WORDS + nsc) * 4u
-                        + (uint64_t)ne * (ORB_BUNDLE_ELEM_WORDS * 4u)
-                        + (uint64_t)ns * SPR_BYTES;
-    const uint64_t want = body + nl + (4u - (nl % 4u)) % 4u;
-    if (want != len) {
+    /* §23.5's append-only rule, made true: the element row's width is a number
+     * the blob CARRIES (its own length) rather than one the reader assumes.
+     * The length equality below is that statement; an old row of the floor
+     * width decodes with the columns appended since read as the zeros they
+     * were written after. A width this schema has never had is a torn file. */
+    const uint32_t pad = nl + (4u - (nl % 4u)) % 4u;
+    const uint64_t fixed = (uint64_t)(BLOB_COUNT_WORDS + nsc) * 4u
+                         + (uint64_t)ns * SPR_BYTES + pad;
+    uint64_t eb = 0;
+    *elem_words = ORB_BUNDLE_ELEM_WORDS;   /* the width a table with no rows
+                                            * could not contradict */
+    if (len >= fixed) eb = (uint64_t)len - fixed;
+    else {
         snprintf(s_msg, sizeof s_msg,
-                 "blob is %lu bytes; its counts say %llu — a torn file, not a "
-                 "short one", (unsigned long)len, (unsigned long long)want);
+                 "blob is %lu bytes; its counts say at least %llu — a torn file, "
+                 "not a short one", (unsigned long)len,
+                 (unsigned long long)fixed);
         return s_msg;
+    }
+    if (ne == 0 ? eb != 0 : eb % ((uint64_t)ne * 4u) != 0)
+        return reject("blob is %lu bytes; its %lu rows leave %llu B, no whole "
+                      "number of words — a torn file, not a short one",
+                      (unsigned long)len, (unsigned long)ne,
+                      (unsigned long long)eb);
+    if (ne) {
+        const uint64_t st = eb / ((uint64_t)ne * 4u);
+        if (st < ORB_BUNDLE_ELEM_WORDS_MIN || st > 0xFFFFu)
+            return reject("element rows are %llu words; this dialect has written "
+                          "%u at the narrowest and %u at the widest a reader may "
+                          "skip whole columns in",
+                          (unsigned long long)st,
+                          (unsigned)ORB_BUNDLE_ELEM_WORDS_MIN,
+                          (unsigned)0xFFFFu);
+        *elem_words = (uint32_t)st;
     }
     if (ne > 0xFFFFu || ns > 0xFFFFu)
         return "blob outgrew its u16 counts";   /* the record's counts are u16
@@ -262,7 +299,7 @@ static const char *blob_check(const uint8_t *blob, uint32_t len,
                                                  * backstop, and parity vector
                                                  * 5 pins the order */
     *n_elem = ne; *n_spr = ns;
-    *slug_off = (uint32_t)body; *slug_len = nl;
+    *slug_off = (uint32_t)(len - pad); *slug_len = nl;
     return NULL;
 }
 
@@ -369,11 +406,14 @@ static const char *parse_core(const orb_bundle3_hdr_t *h, const uint8_t *file,
         if (esp_rom_crc32_le(0, s->blob, s->geom_size) != geom_crc)
             return reject("section %lu blob checksum mismatch", (unsigned long)i);
 
-        uint32_t ne = 0, ns = 0, so = 0, sl = 0;   /* zeroed to answer gcc's
+        uint32_t ne = 0, ns = 0, so = 0, sl = 0, ew = ORB_BUNDLE_ELEM_WORDS;
+                                                    /* zeroed to answer gcc's
                                                    * uninit warning: blob_check
                                                    * fills all four on success */
-        const char *why = blob_check(s->blob, s->geom_size, &ne, &ns, &so, &sl);
+        const char *why = blob_check(s->blob, s->geom_size, &ne, &ns, &so, &sl,
+                                     &ew);
         if (why) return why;
+        s->elem_words = (uint16_t)ew;
         /* The record's window first — sized, not summed, so no u32 wrap can
          * walk memcmp out of the region — and the lengths before the bytes:
          * memcmp runs only when sl == rec_slen inside proven bounds, exactly

@@ -3053,6 +3053,53 @@ compositor reads the declaration." D16, D23 and D26 each gain a trailing clause:
 D32 (§23.4): the manifest table is an offer, the theme names what is present, and the beat is
 the OS's pick from a declared set."*
 
+### 23.10 The element-table rulings, as given 2026-10-20 — A through H, all closed
+
+D31's seam (`orb_elems.c/h`, 981a8ad) made the resolver real; the eight open questions about
+what it answers were put to the owner and all eight came back. Recorded here as the authority
+the following commits implement.
+
+- **R-A (kind/src columns): ruled append.** The element row grows `kind` and `src` after
+  `scale16` — 19 words, one u32 per column, exactly the append §23.5's header comment
+  promises. Both belong to a BANK row; `check_element` refuses a non-zero one on any other
+  class, in the same shape as the radius-on-a-text-row rule.
+- **R-B (the frame-to-value map): ruled as the source's domain, not a carried figure.** No
+  `value_min` column: `theme_schema.CLOCK_WINDOW_DOMAIN` names each fixed calendar source's
+  (min, count), a window row driven by one must carry exactly that many plates, and the
+  device re-checks the same table at adopt (`orb_clock3.c` mirrors it, suite-pinned). The
+  §25.6 refusal to trust a carried minimum stands: a month window is twelve plates because
+  a year has twelve months.
+- **R-C (carriage and second hand): ruled two objects, both drawn.** The owner's model: the
+  tourbillon is a second hand with a per-second rotational delta, a start orientation and a
+  pivot; the escapement inside is the frame animation. A theme may carry `hand/2` and
+  `hand/5` at once; the carriage's own row geometry (`x/y/pivot/degrees`) places it, and
+  its frames animate at the carried `tourbillon_fps`. The capacity refusal stands: more
+  frames than `CLK_TOURB_MAX` names a bank the dial holds no room for, and names it in words.
+- **R-D (order for complications): ruled a z-bucket, the window's `first` semantics.**
+  0–4, lower paints first — the row's `order` lands in the existing bucket, not a free sort.
+- **R-E (scope): ruled everything in scope.** The dial draws every class it offers; the
+  offered set is the app's manifest, so what a given app cannot draw is its own refusal,
+  not a hole in the schema.
+- **R-F (the failure strategy): ruled refuse-whole.** Any element that cannot be drawn —
+  a missing asset, a refused class, a contradicted table — refuses the whole flip, and the
+  app draws its default: for the clock, the digits. A half-drawn theme is wrong pixels,
+  which is what D26's direction exists to refuse.
+- **R-G (the tourbillon tempo): ruled to keep the wall sampler.** The frame swap rides the
+  OS beat the carriage already had; the row's `degrees` is the start orientation. No new
+  column, no new timer.
+- **R-H (verification): ruled bench-verified.** A host suite proves the logic; the proof of
+  the drawing is a boot log on orb-B (heap delta quoted, the §16 rule) and the owner's eye
+  on the glass. The bench theme is hand-built with `tools/orbbundle.py` — the seam is not
+  allowed to pass only on synthetic goldens.
+
+The one consequence the rulings do not state but force: §23.5's append-with-no-format-bump
+promise only holds if the reader learns the row stride from the blob itself, so `blob_check`
+(orbbundle.py, orb_bundle.c, the JS baker's reader leg) now derives the element row width
+from the blob's own length equality. A stride of 17 — every bundle baked before this commit —
+reads with `kind` and `src` as the zeros those columns were written after; a stride below the
+dialect's floor refuses as the torn file it is; the GEOM_ABI word stays 3, as §23.5 said it
+should, because the length equality is the guard the format word no longer has to be.
+
 ## 24 — P6.3 as ruled option A: the refill, the light, the word, the stream — 2026-10-19
 
 The owner's ruling closed §20.4's blocking question before a line of ping-pong was

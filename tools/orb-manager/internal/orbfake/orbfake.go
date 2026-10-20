@@ -442,9 +442,11 @@ func Container(name string) []byte {
 	// The clock dialect's 26 scalars, every one at the app's own default: the fixture
 	// themes nothing, and D31 keeps those words the app's rather than the theme's.
 	blob = appendWords(blob, make([]uint32, 26)...)
-	// One plate row: n, class, slot, frame0, n_frames, x, y, w, h, order, flags,
-	// colour, border, radius, text_off, text_len, reserved — theme_schema's order.
-	blob = appendWords(blob, 1, 3, 0, 0, 1, 0, 0, 466, 466, 0, 0, 0, 0, 0, 0, 0, 0)
+	// One plate row: n, class, flags, order, alpha, slot, frame0, n_frames, x, y,
+	// w, h, pivot_x, pivot_y, radius, degrees, scale16 — and now, appended, kind
+	// and src (theme_schema.ELEMENT_FIELDS, D32's ruling A), both zero because a
+	// plate answers with its slot. The two trailing zeros are the whole append.
+	blob = appendWords(blob, 1, 3, 0, 0, 1, 0, 0, 466, 466, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	blob = append(blob, slug...)
 	for len(blob)%4 != 0 {
 		blob = append(blob, 0)

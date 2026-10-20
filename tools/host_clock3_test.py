@@ -664,7 +664,7 @@ def sprite_forgery(base, how):
 from orbtheme import W_GEOM_OFF, W_GEOM_SIZE, W_GEOM_CRC, W_HDR_CRC
 IDX_N_ELEM, IDX_GEOM_OFF, IDX_GEOM_SIZE, IDX_GEOM_CRC = 8, 12, 16, 20
 IDX_SCR = 36
-ELEM_WORDS_BYTES = 17 * 4
+ELEM_WORDS_BYTES = ob._ts.ELEMENT_WORDS * 4   # the stride the writer lays rows at today: 19
 BLOB_HEAD_BYTES = (4 + 26) * 4
 
 

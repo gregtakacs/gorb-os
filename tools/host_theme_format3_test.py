@@ -144,8 +144,9 @@ def _read_forged(word, val, suffix):
 
 
 try:
-    # SECTIONS[1] alone: region 328 B (48 index + 280 blob), one 4096 B bank.
-    ob.GEOM_CAP = 259
+    # SECTIONS[1] alone: region 48 + (4+26+2*ts.ELEMENT_WORDS+4) words, one 4096 B
+    # bank. The figure moves with the schema, because a budget gate pinned to one width would test the width and not the rule (D32 ruled append-only).
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 4) * 4 + 8 - 1
     _gate("region past the table area", "table area",
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
     _gate("the refusal is the device's pre-erase sentence", "overrun the pixels",
@@ -156,7 +157,7 @@ try:
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
     # The moved boundary, §21's lesson stated for themes: == cap is legal.
     ob.SLOT_ART_CAP = 4096
-    ob.GEOM_CAP = 328
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 4) * 4 + 8
     try:
         ob.write_bundle(tmp + ".x", "Edge", [SECTIONS[1]])
         _h, _s = ob.read_bundle(tmp + ".x")
@@ -231,7 +232,7 @@ sent("index head count 9", "1..8",
 sent("index longer than region", "torn file",
      lambda: ob.unpack_index(struct.pack("<2I", 1, 0) + b"\0" * 8))
 sent("blob length contradicts counts", "torn file",
-     lambda: ob.unpack_blob(ob.pack_blob("clock", [elem(0, 1, 0, 0)]) + b"\0\0\0\0"))
+     lambda: ob.unpack_blob(ob.pack_blob("clock", [elem(0, 1, 0, 0)]) + b"\0\0"))
 
 for _name, _must, _fn in SENT:
     try:

@@ -79,6 +79,8 @@ typedef struct {
     int16_t  pivot_x, pivot_y;    /* rotation origin, relative to (x, y)            */
     uint16_t degrees;             /* fixed-point 100ths, 0..35999                   */
     uint16_t radius, scale16;     /* RING's circle, and the comp maths' scale       */
+    uint8_t  kind, src;           /* BANK only: the CLK_KIND_ and CLK_SRC_ columns
+                                   * D32 appended, zero on every other class        */
     uint32_t off, size;           /* THIS frame's plane, inside the section's bank  */
     uint32_t plane_w, plane_h;    /* what the catalogue says the plane is            */
     bool     masked;              /* size == w*h*3: an alpha plane follows the colour */

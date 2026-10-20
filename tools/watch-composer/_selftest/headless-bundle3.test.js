@@ -304,9 +304,9 @@ ok(walk.blob.elements.length === 3 && walk.blob.sprites.length === 3 &&
    'the bake walks back as three rows seated on three planes, each pointing at its own');
 ok(walk.rec.art_size === baked.meter.artSize && walk.rec.scr_w === 466 && walk.rec.scr_h === 466,
    'the index record the dial reads carries the bank it names and the panel it was baked for');
-// counts(16) + scalars(104) + rows(204) + catalogue(48) + 'clock' padded to words(8),
-// behind the index head(8) and its one record(40).
-ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 204 + 48 + 8,
+// counts(16) + scalars(104) + rows(228: three of D32's 19-word rows) + catalogue(48)
+// + 'clock' padded to words(8), behind the index head(8) and its one record(40).
+ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 228 + 48 + 8,
    'the region is the index over one self-describing blob', baked.meter.geomSize + ' B');
 ok(baked.meter.geomCap === 61440 && baked.meter.artCap === 4128768,
    'the meter names both D29 install caps, not the file shape');

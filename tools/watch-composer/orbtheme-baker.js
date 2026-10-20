@@ -57,6 +57,16 @@
                  'moon_age', 'battery', 'power_reserve', 'text', 'ampm', 'week', 'day_of_year',
                  'quarter', 'value'];
   var COMP_KINDS = ['window', 'strip', 'ring', 'flare'];
+  /* D32 ruling B, mirrored from theme_schema.CLOCK_WINDOW_DOMAIN: a WINDOW whose
+   * source has a fixed calendar domain carries exactly that many plates, and the
+   * value frame 0 stands for is the domain's own minimum. The suite pins the
+   * mirror; a drift fails the bake, not the glass. */
+  var CLOCK_WINDOW_DOMAIN = {
+    weekday: [0, 7],    month: [0, 12],       date: [1, 31],
+    hour12: [0, 12],    hour24: [0, 24],      minute: [0, 60],
+    second: [0, 60],    moon_age: [0, 30],    ampm: [0, 2],
+    week: [1, 53],      day_of_year: [1, 366], quarter: [1, 4]
+  };
   var FLAG_JUMP = 1 << 3, FLAG_24H = 1 << 4, FLAG_AUX_SHADOW = 1 << 8;
   var BANK_FIELDS = [['w', 'u16'], ['h', 'u16'], ['offx', 'i16'], ['offy', 'i16'],
                      ['pivotx', 'i16'], ['pivoty', 'i16'], ['centerx', 'i16'], ['centery', 'i16'],
@@ -1650,7 +1660,11 @@
    * where a v2 container kept scr_w it keeps n_sections, since each section names its own
    * panel. One container themes several apps, and the element table — not a dialect's
    * field list — is how a theme says what it paints (D32, R1). */
-  var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;
+  var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;   // Ruling A: the
+  // element row APPENDED kind and src without a bump — the blob's derived row
+  // stride (see unpackBlob3) is what makes a narrower old row and a wider new
+  // one the same readable file. A stamped 3 on a 19-word row is the promise,
+  // and an old reader's fixed 17-word walk refuses the new bytes at its door.
   var SCALARS_N = THEME_FIELDS.length;   // 26: the clock dialect, carried opaque (D31)
   var SPR_WORDS = 4;                     // off, size, w, h — one bank entry's byte range
   var BLOB_HEAD = 4 + SCALARS_N;         // counts + scalars, before the element table
@@ -1669,9 +1683,13 @@
     ['slot', 'u16'], ['frame0', 'u16'], ['n_frames', 'u16'],
     ['x', 'i16'], ['y', 'i16'], ['w', 'u16'], ['h', 'u16'],
     ['pivot_x', 'i16'], ['pivot_y', 'i16'], ['radius', 'u16'],
-    ['degrees', 'u16'], ['scale16', 'u16']
+    ['degrees', 'u16'], ['scale16', 'u16'],
+    ['kind', 'u8'], ['src', 'u8']   // D32's ruling A: a BANK row's how and what
   ];
-  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 17 words, 68 bytes a row
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 19 words, 76 bytes a row
+  // The pre-D32 width, the floor a derived row stride is refused below
+  // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
+  var ELEMENT_WORDS_MIN = 17;
   var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN;
@@ -1755,6 +1773,37 @@
     if (s16 && s16 < 16) {
       throw new Error(where + '.scale16: ' + s16 + ' scales the element below one sixteenth ' +
         'of its art, which no bake produces by intent');
+    }
+    /* ---- D32 ruling A: the two complication columns ----
+     * They belong to a BANK row and to nothing else, and a BANK row's kind/src
+     * must be real ids; a window on a fixed calendar domain carries exactly
+     * the domain's own count of plates. Rules and sentences mirror
+     * theme_schema.check_element rule for rule. */
+    var kind = Math.trunc(rec.kind | 0), src = Math.trunc(rec.src | 0);
+    if (kind && cls !== CLASS_BANK) {
+      throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how plates ' +
+        'are drawn is a complication\u2019s question, and this class answers it with its slot');
+    }
+    if (src && cls !== CLASS_BANK) {
+      throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what indexes ' +
+        'plates is a complication\u2019s question, and this class answers it with its slot');
+    }
+    if (cls === CLASS_BANK) {
+      if (!(kind >= 0 && kind < COMP_KINDS.length)) {
+        throw new Error(where + '.kind: ' + kind + ' is not a way to draw plates (0..' +
+          (COMP_KINDS.length - 1) + ')');
+      }
+      if (!(src >= 0 && src < SOURCES.length)) {
+        throw new Error(where + '.src: ' + src + ' is not a value this dial can read (0..' +
+          (SOURCES.length - 1) + ')');
+      }
+      if (kind === 0 && CLOCK_WINDOW_DOMAIN.hasOwnProperty(SOURCES[src])) {
+        var dom = CLOCK_WINDOW_DOMAIN[SOURCES[src]];
+        if (nf !== dom[1]) {
+          throw new Error(where + ': a window driven by ' + q(SOURCES[src]) + ' indexes ' + dom[1] +
+            ' plates, and the row carries ' + nf);
+        }
+      }
     }
     return rec;
   }
@@ -1902,17 +1951,34 @@
     if (nScal !== SCALARS_N) {
       throw new Error('blob carries ' + nScal + ' scalars; this dialect has ' + SCALARS_N);
     }
-    var want = (4 + nScal + nElem * ELEMENT_WORDS + nSpr * SPR_WORDS) * 4 + nSlug + ((-nSlug) & 3);
-    if (want !== blob.length) {
-      throw new Error('blob is ' + blob.length + ' bytes; its counts say ' + want +
-        ' — a torn file, not a short one');
+    var wantMin = (4 + nScal + nSpr * SPR_WORDS) * 4 + nSlug + ((-nSlug) & 3);
+    // §23.5's append-only rule, mirrored from orbbundle.unpack_blob and
+    // orb_bundle.c's blob_check in the same order and the same words: the row
+    // width is the blob's own number, so the leftover bytes after the fixed
+    // regions must divide into whole nElem rows of a width this dialect wrote.
+    if (blob.length < wantMin) {
+      throw new Error('blob is ' + blob.length + ' bytes; its counts say at least ' +
+        wantMin + ' — a torn file, not a short one');
+    }
+    var eb = blob.length - wantMin, elemWords = ELEMENT_WORDS;
+    if (nElem === 0 ? eb !== 0 : eb % (nElem * 4) !== 0) {
+      throw new Error('blob is ' + blob.length + ' bytes; its ' + nElem + ' rows leave ' +
+        eb + ' B, no whole number of words — a torn file, not a short one');
+    }
+    if (nElem) {
+      elemWords = eb / (nElem * 4);
+      if (elemWords < ELEMENT_WORDS_MIN || elemWords > 0xFFFF) {
+        throw new Error('element rows are ' + elemWords + ' words; this dialect has written ' +
+          ELEMENT_WORDS_MIN + ' at the narrowest and 65535 at the widest a reader may skip ' +
+          'whole columns in');
+      }
     }
     if (nElem > 0xFFFF || nSpr > 0xFFFF) throw new Error('blob outgrew its u16 counts');
     var scal = [], words = [], i;
     for (i = 0; i < nScal; i++) scal.push(v.getUint32(16 + i * 4, true));
-    for (i = 0; i < nElem * ELEMENT_WORDS; i++) words.push(v.getUint32(BLOB_HEAD * 4 + i * 4, true));
-    var elems = nElem ? unpackElements(words, nElem) : [];
-    var off = (BLOB_HEAD + nElem * ELEMENT_WORDS) * 4, sprs = [];
+    for (i = 0; i < nElem * elemWords; i++) words.push(v.getUint32(BLOB_HEAD * 4 + i * 4, true));
+    var elems = nElem ? unpackElements(words, nElem, elemWords) : [];
+    var off = (BLOB_HEAD + nElem * elemWords) * 4, sprs = [];
     for (i = 0; i < nSpr; i++) {
       sprs.push({ off: v.getUint32(off + i * 16, true), size: v.getUint32(off + i * 16 + 4, true),
                   w: v.getUint32(off + i * 16 + 8, true), h: v.getUint32(off + i * 16 + 12, true) });

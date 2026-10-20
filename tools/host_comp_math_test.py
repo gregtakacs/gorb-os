@@ -17,7 +17,9 @@ import datetime, os, re, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CLOCK = os.path.join(ROOT, "main", "clock", "clock_view.c")
-HEADER = os.path.join(ROOT, "main", "art", "orb_theme.h")
+HEADER = os.path.join(ROOT, "main", "art", "clk_types.h")   # D32: the comp
+# vocabulary and clk_comp_t moved out of orb_theme.h with the projection, so the
+# mirror greps the header the firmware actually compiles now.
 sys.path.insert(0, HERE)
 import theme_schema as ts
 import bake_clock as bc
@@ -177,6 +179,14 @@ static void chk_novalue(uint8_t src)
         printf("FAIL src %u claimed an input it has no source for\\n",
                (unsigned)src); }
 }
+/* D32 R-B moved CLK_SRC_NONE into this list's opposite: a static FORMAT 3
+ * window is one plate indexed by zero, so none VALUES zero now, honestly. */
+static void chk_none_zero(void)
+{
+    int32_t out = -999;
+    if (!comp_value(CLK_SRC_NONE, (const struct tm *)0, 0, &out) || out != 0) {
+        fails++; printf("FAIL static window: none did not give frame 0\\n"); }
+}
 /* The aux driver, pinned the same way: value words from a tm the vector owns,
  * angle from the shipped record's own zero/span/domain. chk_aux_deg is the
  * independent expectation — the angle the ring's own geometry says that value
@@ -327,9 +337,11 @@ def build_body():
                                      (h * 3600) // 86400))
 
     # Sources with no input on this hardware refuse, so the render hides them.
-    for s in ("CLK_SRC_NONE", "CLK_SRC_TEXT", "CLK_SRC_VALUE",
+    # D32 R-B took CLK_SRC_NONE off this list: a static window values zero.
+    for s in ("CLK_SRC_TEXT", "CLK_SRC_VALUE",
               "CLK_SRC_BATTERY", "CLK_SRC_POWER_RESERVE"):
         chk("chk_novalue(%s);" % s)
+    chk("chk_none_zero();")
 
     # ---- aux pointers: the sub-dial driver, value words and angle -------------
     # Same contract as the windows, one story further: the value comes from the

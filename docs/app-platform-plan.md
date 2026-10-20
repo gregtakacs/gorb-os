@@ -3100,6 +3100,54 @@ reads with `kind` and `src` as the zeros those columns were written after; a str
 dialect's floor refuses as the torn file it is; the GEOM_ABI word stays 3, as §23.5 said it
 should, because the length equality is the guard the format word no longer has to be.
 
+### 23.11 Slice 2: the drawing projection — carriage, windows, and the two doors' shared words
+
+The rulings A–H above are now code on every leg. `orb_clock3.c` stops refusing hand slot 5 and
+class bank and projects both: a carriage row fans out into the theme's `tourbillon[]` (one
+record per plane, the ROW's geometry shared, so any frame rotates about one pivot and dirties
+one box), and a BANK row on a fixed calendar domain projects into a `clk_comp_t` whose count
+and `value_min` come from the C mirror of `CLOCK_WINDOW_DOMAIN`, never from the row. R-D lands
+as written: the row's `order` IS the window's z bucket, refused past the dial's five layers.
+R-G keeps the wall sampler; the row's `degrees` rides a new final field on `clk_theme_t`,
+`tourbillon_start`, appended last so every positional `.h` initializer ever printed still
+lands field for field. `clk_comp_t`/`clk_aux_t` and the `CLK_*` vocabularies moved from
+`orb_theme.h` to `clk_types.h` — the projection fills them and must compile on a host.
+`main/CMakeLists.txt` registers the seam, `art/orb_elems.c`.
+
+The ruling's runtime consequence: R-C's two drawn objects replaced the tourbillon's
+pixel-swap of the second-hand layer. `clock_view.c` gives the bank its own image object
+(`s_car`), created under the complications, turned by the seconds angle plus the start
+orientation; the chord model keeps its own case (carriage alone) and degrades to the box
+union whenever a needle or shadow shares the angle. A FORMAT 2 tourbillon kit would read
+differently (its .h's comment said the swap) — no shipped or installed theme carries one:
+the av-kit pair is `tourbillon_n 0`, and the kit3 carriage source was never flashed.
+
+The two doors keep their shared sentences and gain one honest split: `--from-bundle` rebuilds
+a carriage into the .h it can carry and refuses a non-zero `degrees` and any BANK row in words
+that name the PAIR's limits, not the theme's; the device projects both. The suite battery for
+it forges the pair bundle plus three carriage planes and twelve month plates and pins the
+projected record field for field; the mutation battery grows three guards (slot bound,
+capacity, scalar-pair) and the domain mirror is pinned against `theme_schema.py` itself.
+
+Refusals this slice adds at the device door: hand slot 6 and beyond; carriage scalar and row
+disagreeing; more frames than `CLK_TOURB_MAX`; a frame window running off the catalogue; kind
+other than window ("the element row carries plates and a box"); src the dial cannot drive
+(battery, reserve, text, value — R-F refuses the flip rather than ship a comp that draws
+nothing); a static window naming more than one plate; a domain count lie; an order past the
+buckets; a caller with no comp table; more comps than the table holds. `CLK_FLAG_UNDER_DIAL`
+stays 0 by construction: the bank gate costs every plane past the plate at w*h*3, so a FORMAT
+3 tile is always the runtime-composited kind. R-B's other edge: `comp_value` now gives
+`CLK_SRC_NONE` the value zero — a static window is one plate at frame 0 — where it once refused
+the source; `host_comp_math_test.py` pins both halves of that move. The loader prints the
+projection it installed ("projected into a dial: N complication rows, tourbillon_n N @ N fps
+start N"), the line the bench reads off the boot capture. `tools/bench_d32_bundle.py` builds
+R-H's bench theme — av-kit's own art plus an eight-frame openwork carriage at 45 degrees and a
+twelve-plate month window at bucket 0 — and the shipped projection parses it field for field on
+the host before the radio carries it. `host_clock3_test.py` 239 checks + 3 new mutants,
+`bake_clock.py` refusal vectors 18, `host_comp_math_test.py` 5933 vectors, orbelems 560,
+orb_bundle parity 333, the schema's own selftest, and the firmware build all green on this
+commit; the heap delta and the glass are the bench run, next.
+
 ## 24 — P6.3 as ruled option A: the refill, the light, the word, the stream — 2026-10-19
 
 The owner's ruling closed §20.4's blocking question before a line of ping-pong was

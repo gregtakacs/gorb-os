@@ -32,7 +32,31 @@ static const char *const CLASS_NAMES[8] = {
 #define CLS_SPRITE 1
 #define CLS_HAND   2
 #define CLS_PLATE  3
+#define CLS_BANK   5
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+
+/* theme_schema.CLOCK_WINDOW_DOMAIN, mirrored for the device's re-check of a
+ * hostile bundle (D32 ruling B: the frame-to-value map is the clock's calendar,
+ * not a carried figure, and a month window is twelve plates because a year has
+ * twelve months). An entry of count 0 is a source with no fixed domain here:
+ * `none` gets its own sentence below, and a source the dial cannot drive at all
+ * is refused as one. The suite pins this mirror against the Python table — the
+ * same discipline CLASS_NAMES above uses. */
+typedef struct { int16_t value_min; uint16_t count; } clk_domain_t;
+static const clk_domain_t WINDOW_DOMAIN[CLK_SRC__MAX] = {
+    [CLK_SRC_WEEKDAY]     = { 0,   7 },
+    [CLK_SRC_MONTH]       = { 0,  12 },
+    [CLK_SRC_DATE]        = { 1,  31 },
+    [CLK_SRC_HOUR12]      = { 0,  12 },
+    [CLK_SRC_HOUR24]      = { 0,  24 },
+    [CLK_SRC_MINUTE]      = { 0,  60 },
+    [CLK_SRC_SECOND]      = { 0,  60 },
+    [CLK_SRC_MOON_AGE]    = { 0,  30 },
+    [CLK_SRC_AMPM]        = { 0,   2 },
+    [CLK_SRC_WEEK]        = { 1,  53 },
+    [CLK_SRC_DAY_OF_YEAR] = { 1, 366 },
+    [CLK_SRC_QUARTER]     = { 1,   4 },
+};
 
 #define PLATE_BYTES_T(w, h) ((uint64_t)(w) * (uint64_t)(h) * 2u)
 #define SPRITE_BYTES_T(s)   ((uint64_t)(s)->w * (uint64_t)(s)->h * 3u)
@@ -138,8 +162,10 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         return "a format-3 clock section made for a different panel";
 
     /* ---- the table, indexed by (class, slot): the identity §25.2 ruled ---- */
-    int16_t at_plate[2] = { -1, -1 }, at_hand[5] = { -1,-1,-1,-1,-1 };
+    int16_t at_plate[2] = { -1, -1 }, at_hand[6] = { -1,-1,-1,-1,-1,-1 };
     int16_t at_shadow[5] = { -1,-1,-1,-1,-1 };
+    int16_t at_bank[CLK_COMP_MAX] = { -1,-1,-1,-1,-1,-1,-1,-1,
+                                      -1,-1,-1,-1,-1,-1,-1,-1 };
     for (uint32_t i = 0; i < ne; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
@@ -153,11 +179,28 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                 cell = &at_plate[e.slot];
                 break;
             case CLS_HAND:
-                if (e.slot >= 5)
-                    return reject("a tourbillon (hand slot %u): the fan-out mapping is "
-                                  "not ruled, and the .h's diff-rect fields ride no "
-                                  "bundle column", (unsigned)e.slot);
+                /* D32 ruling C: slot 5 is the carriage — a hand-shaped layer
+                 * whose frames animate the escapement while the seconds angle
+                 * still turns it. Its row geometry places it and its start
+                 * orientation rides its `degrees`. Slots past it are no slot
+                 * this dial declares; the scalar pair and the frame capacity
+                 * are checked with the scalars, where both halves can disagree. */
+                if (e.slot >= 6)
+                    return reject("a hand at slot %u: the clock declares six hand slots "
+                                  "— three live hands, a rotating disc, its "
+                                  "counterweight, and the carriage — and no more",
+                                  (unsigned)e.slot);
                 cell = &at_hand[e.slot];
+                break;
+            case CLS_BANK:
+                /* D32 ruling A/E: a bank row names a complication slot, and its
+                 * kind/src columns say how its plates draw and what indexes
+                 * them. The projection below owns what they become. */
+                if (e.slot >= CLK_COMP_MAX)
+                    return reject("a bank at slot %u: the clock declares %u complication "
+                                  "slots and the manifest of any app may not invent one",
+                                  (unsigned)e.slot, (unsigned)CLK_COMP_MAX);
+                cell = &at_bank[e.slot];
                 break;
             case CLS_SPRITE:
                 if (e.slot >= 5)
@@ -204,7 +247,30 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     t->tourbillon_fps = (uint16_t)U(sec, W_TOURBILLON_FPS);
 
     if (t->order_n > 5)              return "layer order longer than 5";
-    if (t->tourbillon_n)
+    /* The tourbillon pair (D32 ruling C): the scalar and the row must name one
+     * bank. R-G keeps the wall sampler and the carried tempo, so word 25 is
+     * already the animation's speed and the row's `degrees` its start. The diff
+     * rects the FORMAT 2 .h carried are DERIVED here and not carried: frame 0
+     * differs from no predecessor, and every later frame's changed rect is the
+     * bank's own business — the clock3 io has no rect list, and the dial's
+     * chord-marking path already rebuilds them from the planes it is shown. */
+    if (at_hand[5] >= 0) {
+        orb_bundle_elem_t car;
+        orb_bundle_elem_at(sec, (uint32_t)at_hand[5], &car);
+        if (!t->tourbillon_n)
+            return reject("a carriage row with tourbillon_n 0: the scalars and the "
+                          "table disagree, and the pair would name a bank the art "
+                          "does not hold");
+        if (t->tourbillon_n != car.n_frames)
+            return reject("a carriage row naming %u frames while the scalars name %u: "
+                          "the row's plane is the animation's length",
+                          (unsigned)car.n_frames, (unsigned)t->tourbillon_n);
+        if (car.n_frames > CLK_TOURB_MAX)
+            return reject("a carriage naming %u frames: the dial holds %u, and the "
+                          "rest is a bank it has no room for",
+                          (unsigned)car.n_frames, (unsigned)CLK_TOURB_MAX);
+    }
+    if (t->tourbillon_n && at_hand[5] < 0)
         return reject("tourbillon_n %u with no tourbillon row: the scalars and the "
                       "table disagree, and the pair would name a bank the art does "
                       "not hold", (unsigned)t->tourbillon_n);
@@ -270,20 +336,30 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
 
     /* Every row's plane: seated in the catalogue, and the size the row claims. A
      * table and a catalogue describing different layers would draw a torn sprite,
-     * and wrong pixels on a wall clock is what D26's direction refuses. */
+     * and wrong pixels on a wall clock is what D26's direction refuses. A
+     * multi-frame row (the carriage, a bank window) is checked frame by frame:
+     * the frames are consecutive catalogue rows, and one plane at frame0 is only
+     * the first of what the row animates through. */
     for (uint32_t i = 0; i < ne; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
         if (e.frame0 >= ns)
             return reject("element %u points at sprite row %u of a table with %u rows",
                           (unsigned)e.n, (unsigned)e.frame0, (unsigned)ns);
-        orb_bundle_spr_t sp;
-        orb_bundle_spr_at(sec, e.frame0, &sp);
-        if (sp.w != e.w || sp.h != e.h)
-            return reject("element %u is %ux%u while its plane is %lux%lu: the table "
-                          "and the catalogue describe different layers",
-                          (unsigned)e.n, (unsigned)e.w, (unsigned)e.h,
-                          (unsigned long)sp.w, (unsigned long)sp.h);
+        if ((uint64_t)e.frame0 + e.n_frames > ns)
+            return reject("element %u names %u frames from row %u of a table with %u "
+                          "rows: the animation runs off the end of the catalogue",
+                          (unsigned)e.n, (unsigned)e.n_frames, (unsigned)e.frame0,
+                          (unsigned)ns);
+        for (uint32_t f = 0; f < e.n_frames; f++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, e.frame0 + f, &sp);
+            if (sp.w != e.w || sp.h != e.h)
+                return reject("element %u is %ux%u while its plane is %lux%lu: the "
+                              "table and the catalogue describe different layers",
+                              (unsigned)e.n, (unsigned)e.w, (unsigned)e.h,
+                              (unsigned long)sp.w, (unsigned long)sp.h);
+        }
     }
 
     /* ---- the layers, in the dialect's own vocabulary ---- */
@@ -325,6 +401,119 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         fill_sprite(&t->shadow[i], &e, &sp, crop);
     }
 
+    /* ---- the carriage (D32 ruling C): one row, a bank of frames ----
+     * Every plane of the row's frame window is one record of the bank. The
+     * geometry — draw point, pivot, centre — is the ROW's and shared by every
+     * frame, which is what lets the dial rotate any frame about one pivot and
+     * dirty one box: the same one-bbox rule a kit bake enforced by cropping a
+     * whole cycle to one ink box, arrived at from the other end. The diff
+     * rects a FORMAT 2 .h pre-computed are zero here by proof, not by luck:
+     * the chord-marking path rebuilds the changed ink from the plane it is
+     * shown, and the diff-box path degrades to the swept box it already
+     * carries for a frame with no rect. The row's `degrees` is the start
+     * orientation (R-G): the wall sampler stays, the dial adds this. */
+    if (at_hand[5] >= 0) {
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_hand[5], &e);
+        t->tourbillon_start = e.degrees;
+        for (uint32_t f = 0; f < e.n_frames; f++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, e.frame0 + f, &sp);
+            fill_sprite(&t->tourbillon[f], &e, &sp, NULL);
+        }
+    }
+
+    /* ---- the complications (D32 rulings A, B, D) ----
+     * A BANK row is one comp: the box, kind and src are the row's, the tile
+     * base and stride the catalogue's, and the frame-to-value domain the
+     * clock's (R-B: a month window is twelve plates because a year has twelve
+     * months, so the row's count is CHECKED against the table, never invented
+     * by it). The row's `order` is the window's z bucket, verbatim (R-D), and
+     * the dialect's bound on it is the dial's five live layers. A kind no
+     * FORMAT 3 row carries the fields to draw is refused here and now, in
+     * words the owner can read at either end of the wire (R-E, R-F). */
+    io->out_n_comps = 0;
+    for (int slot = 0; slot < CLK_COMP_MAX; slot++) {
+        if (at_bank[slot] < 0) continue;
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_bank[slot], &e);
+        if (e.kind >= CLK_KIND__MAX)
+            return reject("a bank at slot %u drawn as kind %u: the dialect names %u "
+                          "ways to plate a value and this names another",
+                          (unsigned)slot, (unsigned)e.kind, (unsigned)CLK_KIND__MAX);
+        if (e.kind != CLK_KIND_WINDOW)
+            return reject("a bank at slot %u drawn as kind %u: the element row carries "
+                          "plates and a box, and a %s needs the glyph, circle or blend "
+                          "fields no row holds",
+                          (unsigned)slot, (unsigned)e.kind,
+                          e.kind == CLK_KIND_STRIP ? "strip"
+                          : e.kind == CLK_KIND_RING ? "ring" : "flare");
+        if (e.src >= CLK_SRC__MAX)
+            return reject("a bank at slot %u driven by source %u: this dial reads %u "
+                          "values and none of them is that",
+                          (unsigned)slot, (unsigned)e.src, (unsigned)CLK_SRC__MAX);
+        if (e.src == CLK_SRC_BATTERY || e.src == CLK_SRC_POWER_RESERVE ||
+            e.src == CLK_SRC_TEXT || e.src == CLK_SRC_VALUE)
+            return reject("a bank at slot %u driven by source %u: this dial has no "
+                          "such input, and D32's ruling refuses the flip rather than "
+                          "ship a comp that would draw nothing",
+                          (unsigned)slot, (unsigned)e.src);
+        uint16_t count;
+        int16_t  value_min = 0;
+        if (e.src == CLK_SRC_NONE) {
+            if (e.n_frames != 1)
+                return reject("a static window at bank slot %u names %u plates: a value "
+                              "that never changes indexes one",
+                              (unsigned)slot, (unsigned)e.n_frames);
+            count = 1;
+        } else if (WINDOW_DOMAIN[e.src].count) {
+            if (e.n_frames != WINDOW_DOMAIN[e.src].count)
+                return reject("a window at bank slot %u driven by source %u indexes %u "
+                              "plates, and the row carries %u",
+                              (unsigned)slot, (unsigned)e.src,
+                              (unsigned)WINDOW_DOMAIN[e.src].count,
+                              (unsigned)e.n_frames);
+            count     = WINDOW_DOMAIN[e.src].count;
+            value_min = WINDOW_DOMAIN[e.src].value_min;
+        } else {
+            count = e.n_frames;       /* a source with no fixed domain indexes by
+                                       * its own packed range, and the row is the
+                                       * authority on that many plates. */
+        }
+        if (e.order > 4)
+            return reject("a bank row at slot %u ordered at rung %u: a window's depth "
+                          "is a bucket under one of the dial's five live layers",
+                          (unsigned)slot, (unsigned)e.order);
+        if (!io->comps || !io->comp_cap)
+            return reject("a bank row at slot %u, and this dial was built without a "
+                          "complication table to project it into", (unsigned)slot);
+        if (io->out_n_comps >= io->comp_cap)
+            return reject("more complications than this dial's table holds (%lu)",
+                          (unsigned long)io->comp_cap);
+        orb_bundle_spr_t sp;
+        orb_bundle_spr_at(sec, e.frame0, &sp);
+        clk_comp_t *c = &io->comps[io->out_n_comps++];
+        memset(c, 0, sizeof *c);
+        c->tag         = (uint16_t)slot;
+        c->kind        = e.kind;
+        c->src         = e.src;
+        c->x           = e.x;
+        c->y           = e.y;
+        c->w           = e.w;
+        c->h           = e.h;
+        c->count       = count;
+        c->first       = e.order;             /* R-D: the z bucket */
+        c->off         = sp.off;
+        c->frame_bytes = (uint32_t)e.w * (uint32_t)e.h * 3u;
+        c->value_min   = value_min;
+        c->scale       = e.scale16;           /* 0 reads as 16 in comp maths */
+        c->show        = (uint8_t)(e.flags & EF_HIDDEN ? 0 : 1);
+        /* flags stays 0: the bank gate costs every row past the plate at
+         * w*h*3, so a FORMAT 3 tile is always the runtime-composited kind. The
+         * under-dial case is one a FORMAT 2 bake could produce and a FORMAT 3
+         * catalogue cannot describe. */
+    }
+
     /* Extents, layer by layer, in FORMAT 2's own words: the same lie at either door
      * gets the same sentence. A layer the dial will not look at is not checked, for
      * the reason orb_clock3_parse gives. The plate and the keyframe are checked
@@ -346,6 +535,18 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     if (t->overlay.w && t->overlay.h &&
         (uint64_t)t->overlay.color_off + SPRITE_BYTES_T(&t->overlay) > art)
         return "overlay pixels lie outside the declared payload";
+    for (uint32_t f = 0; f < t->tourbillon_n; f++) {
+        const clk_sprite_t *b = &t->tourbillon[f];
+        if (b->show && b->w && b->h &&
+            (uint64_t)b->color_off + SPRITE_BYTES_T(b) > art)
+            return "carriage pixels lie outside the declared payload";
+    }
+    for (uint32_t k = 0; k < io->out_n_comps; k++) {
+        const clk_comp_t *c = &io->comps[k];
+        if (c->w && c->h &&
+            (uint64_t)c->off + (uint64_t)c->count * c->frame_bytes > art)
+            return "complication pixels lie outside the declared payload";
+    }
     if (t->bg_mode == 1 &&
         (t->bg_key_off % 2u ||
          (uint64_t)t->bg_key_off + PLATE_BYTES_T(scr_w, scr_h) > (uint64_t)art))

@@ -793,14 +793,25 @@ if __name__ == "__main__":
     import os
     import re
     hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                       "main", "art", "orb_theme.h")
+                       "main", "art", "clk_types.h")
     cflags = {n.lower(): 1 << int(v) for n, v in
               re.findall(r"\bCLK_FLAG_(\w+)\s*=\s*1\s*<<\s*(\d+)", open(hdr).read())}
     pyflags = {n[len("FLAG_"):].lower(): v for n, v in globals().items()
                if n.startswith("FLAG_")}
-    assert cflags == pyflags, ("flag bits diverged from main/art/orb_theme.h: "
+    assert cflags == pyflags, ("flag bits diverged from main/art/clk_types.h: "
                                "python %s vs C %s" % (pyflags, cflags))
-    assert len(SOURCES) == 17, "SOURCES grew; orb_theme.h's CLK_SRC__MAX assert must agree"
+    assert len(SOURCES) == 17, "SOURCES grew; clk_types.h's CLK_SRC__MAX assert must agree"
+    # D32's ruling B mirror: CLOCK_WINDOW_DOMAIN here and the WINDOW_DOMAIN
+    # table of main/art/orb_clock3.c are one calendar, and a drift would have
+    # the device check a window against a year of some other length. Parse the
+    # C designated initializers and compare the (min, count) pairs by source.
+    ctext = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                              "main", "art", "orb_clock3.c")).read()
+    cdom = {name.lower(): (int(vmin), int(cnt)) for name, vmin, cnt in
+            re.findall(r"\[CLK_SRC_(\w+)\]\s*=\s*\{\s*(-?\d+)\s*,\s*(\d+)\s*\}", ctext)}
+    assert cdom == CLOCK_WINDOW_DOMAIN, ("CLOCK_WINDOW_DOMAIN diverged from "
+                                         "orb_clock3.c: python %s vs C %s"
+                                         % (CLOCK_WINDOW_DOMAIN, cdom))
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.

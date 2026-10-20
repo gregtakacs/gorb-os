@@ -49,6 +49,18 @@ typedef struct {
     uint32_t        first_cap;
     uint32_t        delays_cap;
 
+    /* D32 slice 2: the complication table. A caller with no room for comps
+     *  passes NULL/0 and the projection refuses a bundle that names one — the
+     *  same refuse-whole a refused class is, never a half-drawn dial. Rows land
+     *  in record order by BANK slot, so comp0 is s_geo.comps[0] whether or not
+     *  comp1 exists; the count written out is the number of rows projected.
+     *  The tourbillon needs no surface of its own: its frames land in the
+     *  theme struct the caller already handed over, at
+     *  theme->tourbillon[]/tourbillon_n/tourbillon_fps/tourbillon_start. */
+    clk_comp_t      *comps;
+    uint32_t         comp_cap;
+    uint32_t         out_n_comps;
+
     /* Out: where the section's bank sits inside a mapped art region, so a
      *  multi-section bundle's clock pixels are found by adding this to the
      *  region base, and how long that bank is. clock_view's bounds check reads

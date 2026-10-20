@@ -347,7 +347,10 @@ esp_err_t art_bank_init(size_t offset, size_t need_bytes)
 #endif
 }
 
-esp_err_t art_bank_map_at_0(size_t need_bytes) { return art_bank_map(0, need_bytes); }
+/* art_bank_map_at_0() retired with §26 slice 2: the default now maps through
+ * orb_theme's verified slot-A door, which reads the header before it maps and
+ * so can refuse. The always-map wrapper was what D13's rule needed; nothing
+ * ships that rule any more, and no caller remains. */
 
 uint32_t art_bank_fill_ms(void)  { return s_fill_ms; }
 bool     art_bank_is_arena(void) { return s_psram; }

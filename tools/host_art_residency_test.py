@@ -92,7 +92,9 @@ def lint_shipped_source():
         "if (verify) crc = esp_rom_crc32_le(crc, arena + done, chunk);",  # fused, one pass
         "if (verify && crc != expect_crc) {",                  # corrupt slot never reaches paint
         "art_bank_primary_release();",                         # release is by mechanism
-        "esp_err_t art_bank_map_at_0(size_t need_bytes) { return art_bank_map(0, need_bytes); }",
+        # art_bank_map_at_0 retired with §26 slice 2 (ruled 2026-10-20): the default
+        # leg maps through orb_theme's verified slot-A door, which can refuse. The
+        # always-map rule this wrapper carried died with D13's baked-in fallback.
         "#define ORB_ART_M3_PROBE 0",        # ditto the probe that prices it
         # The margin is §20.5(4)'s bench pin, so the header reads it from Kconfig rather
         # than a literal. The SHIPPING figure is still pinned — it just lives in the

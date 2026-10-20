@@ -3,60 +3,117 @@ package orbnet
 import (
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 )
 
-// Reading the identity OUT of a .orbtheme container, so the hub ingests the name the
-// owner actually baked instead of asking for one it would throw away.
+// Reading a .orbtheme container's identity and its two budgets, so the hub ingests the
+// name the owner actually baked instead of asking for one it would throw away.
 //
-// FORMAT 2 makes the header's name field the theme's one and only identifier: main/
-// art/orb_theme.c files the card under theme_id(name) and refuses a container whose
-// name is empty. Under FORMAT 1 a theme carried a slug + title pair and the filename
-// was the slug, so a name typed at upload time chose the destination. That is the
-// fragmentation this module exists to keep out: an upload whose bytes still say
-// FORMAT 1 cannot be filed at all, and the operator has to hear that here, from the
-// hub holding the file, rather than from a 422 two hops away after the whole payload
-// crossed the room.
+// FORMAT 3 is the only dialect any current orb reads. The firmware's FORMAT 2 reader
+// island is gone (7c0fd4b), and every surviving door — card_check3, verify_bundle3, the
+// store door and the upload door — refuses on the FORMAT word. Before this file moved,
+// the hub refused FORMAT 3 just as hard, which made it reject every file its own devices
+// would install and forward every file they would not.
 //
-// The layout is defined once, in tools/orbtheme.py, and mirrored in main/art/orb_theme.c
-// — this reads the same four words and must move with them. Only the fields needed to
-// speak about identity are parsed; the payload is the device's business.
+// D33 keeps the fix small: the hub reads the 128-byte header, the index of 40-byte
+// records that header's count implies, and the name — and no art. The pixels stay the
+// device's door's business and the browser that wrote them; a Go re-implementor of
+// either would be a fourth dialect of one format, and §4.1's mirror rule already pays
+// for three.
+//
+// The layout is defined once, in tools/orbbundle.py, and mirrored in
+// main/art/orb_bundle.c. This reads the same words, in the same order, and refuses with
+// the same sentences — D26: the owner learns a cost where they already see refusals.
+// The refusal ORDER is the firmware's too: shape, magic, format, ABI, the header's own
+// checksum, the two budget sums, then the name.
 
-// Header word positions, matching W_MAGIC/W_FORMAT/W_NAME/NAME_MAX in
-// tools/orbtheme.py. The name is a byte array spread over whole words.
+// Header word positions, matching orb_bundle.c's W_* table and tools/orbtheme.py's.
+// FORMAT 3 keeps FORMAT 2's header shape exactly and changes the two stamps plus the
+// meaning of word 9, which is why a v2 reader refuses on the FORMAT word long before it
+// could misread a panel pair as a size.
 const (
 	themeHdrWords  = 32
 	themeHdrBytes  = themeHdrWords * 4 // 128
 	wMagic         = 0
 	wFormat        = 1
-	themeMagic     = 0x474F5254 // 'T','R','O','G' little-endian on the wire
-	themeFormat2   = 2
-	themeNameBytes = 56 // ORB_THEME_NAME_MAX: 55 usable + the NUL
+	wGeomABI       = 2
+	wGeomOff       = 4
+	wGeomSize      = 5
+	wArtSize       = 7
+	wNSections     = 9 // FORMAT 2 read this word as scr_w; FORMAT 3 counts sections here
+	wSerial        = 11
+	wArtOff        = 13
 	wName          = 14
+	wHdrCRC        = 28
+	themeMagic     = 0x474F5254 // 'T','R','O','G' little-endian on the wire
+	themeFormat3   = 3          // ORB_BUNDLE3_FORMAT
+	themeABI3      = 3          // ORB_BUNDLE3_ABI
+	themeNameBytes = 56         // ORB_THEME_NAME_MAX: 55 usable + the NUL
+	bundleSectMax  = 8          // ORB_BUNDLE_SECT_MAX: the index's width
+	bundleIdxWords = 10         // ORB_BUNDLE_IDX_WORDS: a 40-byte record
+	bundleIdxHead  = 8          // n_sections + reserved
+	// bundleGeomCap is ORB_BUNDLE_GEOM_CAP (orb_theme.c's SLOT_GEOM_CAP) and
+	// bundleArtCap is ORB_BUNDLE_ART_CAP (ORB_THEME_SLOT_CAP). Both are INSTALL sums, not
+	// file shapes: geometry lands at slot +0x1000 and its erase covers it sector-aligned,
+	// so 61,440 B ends exactly on the banks at +0x10000, and the banks have SLOT_CAP less
+	// SLOT_ART_OFF to live in. `== cap` is ACCEPTED at both — the same boundary
+	// check_budget() and orb_bundle3_hdr_parse() apply (D29, §22.3).
+	bundleGeomCap = 0xF000
+	bundleArtCap  = 0x3F0000 // 4,128,768 B
+	// themeSector is _ot.SECTOR and the flash erase granularity: the art bank starts on a
+	// sector boundary after the region, which is what makes a max-size bundle land on the
+	// hub's forwarding cap to the byte.
+	themeSectorBytes = 4096
 )
 
 // ThemeContainer is what the hub needs to know about a file before it pushes it.
 type ThemeContainer struct {
-	Name   string // the embedded identity, exactly as the device will read it
-	ID     string // theme_id(name) — the card stem these bytes will be filed under
-	Format uint32
-	Bytes  int
+	Name      string // the embedded identity, exactly as the device will read it
+	ID        string // theme_id(name) — the card stem these bytes will be filed under
+	Format    uint32
+	ABI       uint32
+	Bytes     int
+	GeomSize  uint32
+	ArtSize   uint32
+	Serial    uint32
+	NSections uint32
+	Sections  []string // the slugs the index names, in index order; nil if unreadable
 }
 
-// ContainerName reads the identity out of a .orbtheme payload. It refuses an
-// under-length or wrongly-magic file, and it refuses FORMAT 1 outright: the firmware
-// has no legacy path (orb_theme.c:262 rejects any format but 2), so a FORMAT-1 pair
-// would cross the radio and die at the door.
+// ContainerName reads the identity and the two budgets out of a .orbtheme payload, and
+// reports the slugs its index names. It refuses an under-length or wrongly-magic file,
+// the retired FORMAT 2, an ABI this build does not speak, a damaged header, a bundle over
+// either D29 cap, and a container with no name — in the device's own words, before any
+// byte crosses the room.
 func ContainerName(body []byte) (*ThemeContainer, error) {
 	if len(body) < themeHdrBytes {
 		return nil, fmt.Errorf("orbnet: that file is %d B, shorter than the %d B header a .orbtheme starts with", len(body), themeHdrBytes)
 	}
-	w := binary.LittleEndian.Uint32(body[wMagic*4:])
-	if w != themeMagic {
-		return nil, fmt.Errorf("orbnet: not a .orbtheme container: magic is 0x%08X, want 0x%08X", w, themeMagic)
+	w := func(i int) uint32 { return binary.LittleEndian.Uint32(body[i*4:]) }
+	if w(wMagic) != themeMagic {
+		return nil, fmt.Errorf("orbnet: not an .orbtheme file: magic is 0x%08X", w(wMagic))
 	}
-	f := binary.LittleEndian.Uint32(body[wFormat*4:])
-	if f != themeFormat2 {
-		return nil, fmt.Errorf("orbnet: that is a FORMAT %d theme container and the orb reads FORMAT 2 only — its name lives in the filename, which the device no longer trusts; re-export it from the Theme Editor", f)
+	f := w(wFormat)
+	if f != themeFormat3 {
+		return nil, fmt.Errorf("orbnet: that is a FORMAT %d theme container and the orb reads FORMAT 3 only — the FORMAT 2 reader is out of the firmware, so re-export it from the Theme Editor", f)
+	}
+	if w(wGeomABI) != themeABI3 {
+		return nil, fmt.Errorf("orbnet: bundle geometry v%d; this build reads v%d — re-bake it", w(wGeomABI), themeABI3)
+	}
+	// The header's own checksum, over the header's SHAPE: the same 128 bytes with word 28
+	// zeroed. That is the torn-copy check, and it does not vary with the dialect inside the
+	// header — orb_bundle3_hdr_parse's rule, restated as §22.2 promised.
+	if sum := crc32.ChecksumIEEE(headerForCRC(body)); w(wHdrCRC) != sum {
+		return nil, fmt.Errorf("orbnet: container header is damaged — re-copy the file onto the card (checksum is 0x%08X, the header's bytes say 0x%08X)", w(wHdrCRC), sum)
+	}
+	// The D29 budget gate, install end, in the firmware's sums and words. A header over
+	// either is refused here, before the name and before a streamed byte.
+	geomSize, artSize := w(wGeomSize), w(wArtSize)
+	if geomSize > bundleGeomCap {
+		return nil, fmt.Errorf("orbnet: geometry region is %d B; the dial's table area holds %d B — geometry would overrun the pixels", geomSize, bundleGeomCap)
+	}
+	if artSize > bundleArtCap {
+		return nil, fmt.Errorf("orbnet: pixel payload is %d B; a theme slot holds %d B — theme is larger than a slot", artSize, bundleArtCap)
 	}
 	// NUL-terminated inside the NAME_MAX-byte field, the same cut _wordstr in
 	// tools/orbtheme.py and the C reader both make.
@@ -76,5 +133,104 @@ func ContainerName(body []byte) (*ThemeContainer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ThemeContainer{Name: name, ID: id, Format: f, Bytes: len(body)}, nil
+	c := &ThemeContainer{Name: name, ID: id, Format: f, ABI: w(wGeomABI),
+		Bytes: len(body), GeomSize: geomSize, ArtSize: artSize,
+		Serial: w(wSerial), NSections: w(wNSections)}
+	// The index is where a multi-section bundle says WHICH apps it themes. Read it only as
+	// far as the region's own length agrees, exactly as unpack_index does — and never fail
+	// a container over it. A section list this reader cannot parse is still a theme the
+	// device's door may accept, and the door is the authority; the sentences indexSlugs
+	// returns are the firmware's own, for whoever asks what the region said.
+	if slugs, err := indexSlugs(body, c.NSections, geomSize); err == nil {
+		c.Sections = slugs
+	}
+	return c, nil
+}
+
+// headerForCRC returns the 128 header bytes with the checksum word zeroed — the span both
+// _hdr_crc() and orb_bundle3_hdr_parse() sum over.
+func headerForCRC(body []byte) []byte {
+	out := append([]byte(nil), body[:themeHdrBytes]...)
+	for i := wHdrCRC * 4; i < wHdrCRC*4+4; i++ {
+		out[i] = 0
+	}
+	return out
+}
+
+// indexSlugs walks the geometry region's index and returns each section's slug, in index
+// order. It checks the four things a header can lie about — the count, the region's
+// length, the stored offset against the sequential walk, and the slug's own shape — and
+// returns the firmware's sentence when one of them does. Blob contents, per-section CRCs
+// and the art itself are the device's door, not this reader's.
+func indexSlugs(body []byte, n, geomSize uint32) ([]string, error) {
+	if n < 1 || n > bundleSectMax {
+		return nil, fmt.Errorf("orbnet: index claims %d sections; a bundle holds 1..%d", n, bundleSectMax)
+	}
+	geomOff := binary.LittleEndian.Uint32(body[wGeomOff*4:])
+	if geomOff != themeHdrBytes {
+		return nil, fmt.Errorf("orbnet: container parts are not where this format puts them (geometry at %d)", geomOff)
+	}
+	if int(geomOff)+int(geomSize) > len(body) {
+		return nil, fmt.Errorf("orbnet: geometry region runs past the end of the file")
+	}
+	// card_check3's layout rule: the art starts sector-aligned, at or after the region it
+	// follows. A file that breaks it cannot be written to the slot at all, so the hub hears
+	// it here rather than after the payload crossed the room.
+	artOff := binary.LittleEndian.Uint32(body[wArtOff*4:])
+	if artOff%themeSectorBytes != 0 || artOff < geomOff+geomSize || int64(artOff)+int64(binary.LittleEndian.Uint32(body[wArtSize*4:])) > int64(len(body)) {
+		return nil, fmt.Errorf("orbnet: container parts are not where this format puts them (art at %d, region ends at %d, file is %d B)", artOff, geomOff+geomSize, len(body))
+	}
+	region := body[geomOff : geomOff+geomSize]
+	if len(region) < bundleIdxHead+int(n)*bundleIdxWords*4 {
+		return nil, fmt.Errorf("orbnet: index claims %d sections in %d region bytes — torn file", n, len(region))
+	}
+	if head := binary.LittleEndian.Uint32(region); head != n {
+		return nil, fmt.Errorf("orbnet: header names %d sections, the index holds %d", n, head)
+	}
+	out := make([]string, 0, n)
+	walk := uint32(bundleIdxHead + int(n)*bundleIdxWords*4)
+	for i := 0; i < int(n); i++ {
+		r := region[bundleIdxHead+i*bundleIdxWords*4:]
+		// The record's shape, byte for byte (orb_bundle.c's IDX_BYTES comment, and
+		// orbbundle.py's IDX_PACK): four u16s at 0,2,4,6 — slug_off, slug_len, abi_min,
+		// abi_max — then seven u32s at 8,12,16,20,24,28,32 — n_elem, geom_off, geom_size,
+		// geom_crc, art_off, art_size, art_crc — then two u16s at 36,38 for the section's
+		// own panel pair. n_elem sits where a reader written from the field names alone
+		// would put geom_off, which is why this comment and the fixture both exist.
+		slugOff, slugLen := binary.LittleEndian.Uint16(r), binary.LittleEndian.Uint16(r[2:])
+		blobOff, blobSize := binary.LittleEndian.Uint32(r[12:]), binary.LittleEndian.Uint32(r[16:])
+
+		if blobOff != walk {
+			return nil, fmt.Errorf("orbnet: section %d stores geom_off %d where the walk says %d — the index and the bytes contradict", i, blobOff, walk)
+		}
+		if int(blobOff)+int(blobSize) > len(region) {
+			return nil, fmt.Errorf("orbnet: section %d's blob range is outside the region", i)
+		}
+		if int(slugOff)+int(slugLen) > len(region) {
+			return nil, fmt.Errorf("orbnet: section %d: the index's slug does not fit the region it lives in", i)
+		}
+		sb := region[slugOff : slugOff+slugLen]
+		if err := checkSlug(sb); err != nil {
+			return nil, err
+		}
+		out = append(out, string(sb))
+		walk += blobSize
+	}
+	return out, nil
+}
+
+// checkSlug is orb_bundle_slug_rule, orbapp.check_slug and orbbundle.check_slug — one
+// rule for the whole family, stated in §9: lowercase a-z 0-9 _, 1..23 bytes, and a
+// FORMAT 3 slug names the app it themes. A slug no app could ever claim is a section no
+// app will ever be asked to paint, so it is refused before the bytes are forwarded.
+func checkSlug(b []byte) error {
+	if len(b) < 1 || len(b) > 23 {
+		return fmt.Errorf("orbnet: bundle slug %q is %d bytes, outside 1..23", string(b), len(b))
+	}
+	for _, c := range b {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			return fmt.Errorf("orbnet: bundle slug %q is not lowercase a-z 0-9 _", string(b))
+		}
+	}
+	return nil
 }

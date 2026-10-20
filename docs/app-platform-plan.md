@@ -4046,6 +4046,30 @@ for the second — the unconfigured-network case already has an on-screen ask �
 probably reuses it, but it is a decision and not an inference. Recorded here so whoever writes
 slice 2 decides it deliberately rather than discovering it in the pixels.
 
+**Slice 3 landed 2026-10-20 as the flip/choose door — two commits, ping-pong first.** The
+plan's slice 3 read "Ping-pong… §20.5(3)'s progress bar and arena swap land"; what shipped
+keeps the ping-pong and the choose halves and defers the progress bar and lazy arena swap to
+their own slices (§24's bar, §29's ledger — the flip door is the seam that unblocks both).
+(1) `target_slot()` derives the store target from which slot the dial draws, so the second
+store overwrites slot A's flashed pixels — the owner's sanctioned cost, reflash or re-store
+the recovery. (2) The flip: `boot_resolve` reads a slot designator (`"default"`, `"slot-A"`,
+`"slot-B"`; the legacy `"card"` reads forever as an alias for `"slot-B"` and is never written
+again), the boot block probes BOTH slots through one `slot_probe3` helper, and the `staged`
+witness expires against either header so a store-then-flip order cannot strand the word. A
+chosen slot that cannot honour the choice gets its own damage sentence naming the slot and
+re-store as the recovery, asked before any unchosen-slot branch. `POST /api/v1/sd/flip?id=X`
+is the door: the worker resolves the id against the slot headers (slot B preferred when both
+hold it — B is the newer copy on a both-holds board), writes the choice, and arms the reboot;
+`reboot:"automatic"` answers, and an id nowhere stored refuses on the row rather than booting
+to a dial that would not load. The scan carries a live slot probe, so a row's
+**"Put it on the dial"** appears for stored-not-live bundles with no card in the socket — the
+slots outlive the card, and the door re-verifies the headers itself, so the scan only ever
+over-suggests. The clock's `pick_default` and its active-row label treat slot A as the
+default leg. `host_tz_test.py` (23 batteries) pins the slot vocabulary and the chosen-A
+failure order; `host_sd_test.py` (22 batteries) pins the route, the flip worker's
+choice-before-reboot order, and the JS anchors. On-device bench is owed: `tools/m5_flip.sh`
+drives the store half and gains its flip assertions on the next flash cycle.
+
 
 ## 27 — P6.5(3) lands: the FORMAT 2 ingest door is gone, and P6 closes — 2026-10-20, `7c0fd4b`
 

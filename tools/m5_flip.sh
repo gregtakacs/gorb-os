@@ -1,17 +1,24 @@
 #!/bin/bash
-# m5_flip.sh — the FORMAT 3 store door + the theme upload, on the board.
+# m5_flip.sh — the FORMAT 3 store door + the theme upload + the flip door, on the board.
 #   MIGRATED from the M5 Arm-A/Arm-B flip comparison (D11/D30). D30 (2026-10-15)
-#   retired the reboot-on-every-pick rule and §27 deleted the FORMAT 2 ingest door,
-#   so this script no longer times a flip — the store door answers reboot:none and
-#   swaps nothing onto the glass until §26's ping-pong compositor lands. What it
-#   still proves, on the same card bundles:
+#   retired the reboot-on-every-pick rule and §27 deleted the FORMAT 2 ingest door.
+#   §26 slice 3's flip door landed (2026-10-20), so this drives BOTH stages of the
+#   two-stage press: what it proves on the same card bundles:
 #     (1) the FORMAT 3 theme UPLOAD lands ("state":"stored" off the /api/v1/sd/theme
 #         door, the §16.1 rule that a 200 header is not a response);
 #     (2) the STORE door (POST /api/v1/sd/bundle?id=X) answers reboot:none and the
 #         dial does NOT flip (no rst:0x boundary after the store);
 #     (3) the store's ingest cost, read back off the device's bundle_ms/bundle_bytes;
-#     (4) PSRAM is UNCHANGED across a store — residency is the ping-pong slice's job,
-#         so a store that moved the heap would be the bug this now catches.
+#     (4) PSRAM is UNCHANGED across a store — residency is the lazy arena's job (§20),
+#         so a store that moved the heap would be the bug this now catches;
+#     (5) the FLIP door (POST /api/v1/sd/flip?id=X) answers reboot:automatic, the
+#         worker logs its own "flipped to" line, a reboot boundary FOLLOWS (its
+#         presence is now the pass), and the re-leased board reports
+#         live=slot-B and the bundle's name active — then sd/default puts the board
+#         back and the live word returns to default.
+#   The slot-A leg is deliberately NOT benched here: flipping onto A requires a
+#   store aimed at A, which overwrites the flashed default — sanctioned by §26 but
+#   a change no unattended bench run should make to a shared board.
 #
 #   Arms retired: the old "Arm A copy+reboot timed to first dial" and "Arm B PSRAM
 #   footprint of a resident flip" both measured a mechanism the board no longer runs.
@@ -126,6 +133,54 @@ store "$IDB" "avkit"
 # [6] PSRAM half, inverted: a store makes nothing resident, so the heap must be UNCHANGED.
 fetch GET "$ORB/api/v1/status" && PSRAM1=$(python3 -c "import json;print(json.load(open('$BODY'))['heap_psram'])")
 say "psram after stores: ${PSRAM1:-?} (baseline ${PSRAM0:-?}) — a store moves no pages; a drop here means the store wrongly made the bundle resident (§26 ping-pong's job, not P6.4's)"
+
+# [7] the FLIP door, §26 slice 3: the second press of the two-stage form. Both stores
+# landed while the dial drew A, so both aimed at B and avkit is the one B holds (the
+# avkit-b store was overwritten by the ping-pong — as designed, D13's asymmetry is
+# retired). The flip must find that id, log its own sentence, and the reboot boundary
+# its answer promised must APPEAR — the inverse of the store's absence-assertion.
+flip(){ # flip ID LABEL EXPECT_NAME — press, expect the boundary, verify the re-leased dial
+  local id=$1 label=$2 want=$3
+  local E=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
+  fetch POST "$ORB/api/v1/sd/flip?id=$id" || { fail "flip $label: no body"; return; }
+  say "flip($label): $CODE -> $(cat "$BODY")"
+  grep -q '"state":"flipping"' "$BODY" || { fail "flip $label refused: $(cat "$BODY")"; return; }
+  grep -q '"reboot":"automatic"' "$BODY" || { fail "flip $label did NOT answer reboot:automatic"; return; }
+  local R=""
+  for j in $(seq 1 45); do
+    sleep 1
+    R=$(awk -v e="$E" '$1+0>e+3 && /rst:0x/ {print $1; exit}' "$SER")
+    [ -n "$R" ] && break
+  done
+  [ -n "$R" ] || { fail "flip $label: reboot:automatic promised a boundary and none came"; return; }
+  say "flip $label: reboot boundary at $R — the promise was kept"
+  for i in $(seq 1 90); do sleep 1; awk -v r="$R" '$1+0>r && /sta ip/ {f=1} END{exit !f}' "$SER" && break; done
+  sleep 3
+  fetch GET "$ORB/api/v1/sd" || { fail "flip $label: no body after re-lease"; return; }
+  say "after flip: $(head -c 300 "$BODY")"
+  grep -q '"live":"slot-B"' "$BODY" || fail "flip $label: live is not slot-B — $(cat "$BODY")"
+  grep -q "\"active\":\"$want\"" "$BODY" || fail "flip $label: active is not $want — $(cat "$BODY")"
+  grep -q "\"name\":\"$want\",\"id\":\"$id\"" "$BODY" \
+    && grep -q '"ok":true,"active":true' "$BODY" \
+    || fail "flip $label: no row is name=$want id=$id and active:true"
+  say "flip $label: dial on slot-B, active \"$want\", row true — press to boundary ${j}s"
+  awk -v e="$E" '$1+0>e-8' "$SER" | grep -E 'flipped to|from slot|refilled|rst:0x|sta ip' | head -10
+}
+flip "$IDB" "avkit" "av-kit"
+
+# [8] put the board back: sd/default answers reboot:automatic too, and the flip-back
+# must land the live word on "default" — the flip is one press from where it started.
+E3=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
+fetch POST "$ORB/api/v1/sd/default" || fail 'sd/default returned no body'
+grep -q '"reboot":"automatic"' "$BODY" || fail 'sd/default did NOT answer reboot:automatic'
+for j in $(seq 1 45); do
+  sleep 1
+  awk -v e="$E3" '$1+0>e+3 && /rst:0x/ {f=1} END{exit !f}' "$SER" && break
+done
+for i in $(seq 1 90); do sleep 1; awk -v e="$E3" '$1+0>e+3 && /sta ip/ {f=1} END{exit !f}' "$SER" && break; done
+sleep 3
+fetch GET "$ORB/api/v1/sd" && say "after default: $(head -c 300 "$BODY")"
+grep -q '"live":"default"' "$BODY" || fail 'flip-back did not land on live=default'
 
 kill $CAP 2>/dev/null
 say "=== M5_FLIP $verdict ==="

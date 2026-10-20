@@ -159,7 +159,9 @@ def lift_theme(text, where, pattern):
 
 d13_lift = "\n".join([
     lift_theme(theme_hdr, THEME_HDR, r"#define THEME_LIVE_DEFAULT[^\n]*\n"
-                                     r"#define THEME_LIVE_CARD[^\n]*"),
+                                     r"#define THEME_LIVE_CARD[^\n]*\n"
+                                     r"#define THEME_LIVE_SLOT_A[^\n]*\n"
+                                     r"#define THEME_LIVE_SLOT_B[^\n]*"),
     lift_theme(theme_src, THEME_SRC, r"#define SLOT_A_HDR[^\n]*\n#define SLOT_B_HDR[^\n]*"),
     lift_theme(theme_src, THEME_SRC, r"typedef enum \{ BOOT_ART_DEFAULT = 0,"
                                      r" BOOT_ART_CARD = 1 \} boot_art_t;"),
@@ -730,6 +732,12 @@ int main(void)
      * cleared it would forget what the owner asked for. */
     boot_case("card chosen, B is a bundle", THEME_LIVE_CARD, true, BOOT_ART_CARD);
     boot_case("card chosen, no bundle", THEME_LIVE_CARD, false, BOOT_ART_DEFAULT);
+    /* §26 slice 3: the slot designators. "slot-B" is the same leg the legacy "card"
+     * always named; "slot-A" names the default leg whatever B holds, because A draws
+     * mapped from its own header and B's state cannot move it. */
+    boot_case("slot-B chosen, B is a bundle", THEME_LIVE_SLOT_B, true, BOOT_ART_CARD);
+    boot_case("slot-B chosen, no bundle", THEME_LIVE_SLOT_B, false, BOOT_ART_DEFAULT);
+    boot_case("slot-A chosen, B is a bundle", THEME_LIVE_SLOT_A, true, BOOT_ART_DEFAULT);
     boot_case("default chosen, B is a bundle", THEME_LIVE_DEFAULT, true, BOOT_ART_DEFAULT);
     boot_case("junk in the key, B is a bundle", " Card ", true, BOOT_ART_DEFAULT);
     boot_case("no key at all, B is a bundle", "", true, BOOT_ART_DEFAULT);
@@ -1196,19 +1204,26 @@ MUTATIONS = [
      'cfg.max_uri_handlers  = %s;' % re.search(r'max_uri_handlers\s*=\s*(\d+)',
                                                src).group(1),
      'cfg.max_uri_handlers  = 12;'),
-    # Ruling D13's two predicates, mutated in the file that ships them. Each is the
-    # failure the ruling was written to remove, and each must turn a row of the
-    # table above red: an install aimed at the factory bank, a boot that draws a
-    # slot it never verified, and a boot that ignores the choice it was given.
-    ('an install aims at the factory bank',
-     'static uint32_t install_target(void) { return SLOT_B_HDR; }',
-     'static uint32_t install_target(void) { return SLOT_A_HDR; }', 1, 'theme'),
+    # The ping-pong's two predicates, mutated in the file that ships them. Each is
+    # the failure the pair was written to remove, and each must turn a row of the
+    # table above red: an install aimed at either slot regardless of the glass, a
+    # boot that draws a slot it never verified, and a boot that stops honouring
+    # either spelling of the B choice.
+    ('an install aims at slot B whatever the glass',
+     'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
+     'return SLOT_B_HDR;', 1, 'theme'),
+    ('an install aims at slot A whatever the glass',
+     'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
+     'return SLOT_A_HDR;', 1, 'theme'),
     ('boot draws the card slot with no bundle in it',
      'return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
      '(void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
-    ('the owner\'s choice stops mattering',
-     'if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;',
-     'if (!live) return BOOT_ART_DEFAULT;', 1, 'theme'),
+    ('the legacy card word stops being honoured',
+     'if (strcmp(live, THEME_LIVE_CARD) == 0 || strcmp(live, THEME_LIVE_SLOT_B) == 0)',
+     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)', 1, 'theme'),
+    ('the slot designator stops being honoured',
+     'if (strcmp(live, THEME_LIVE_CARD) == 0 || strcmp(live, THEME_LIVE_SLOT_B) == 0)',
+     'if (strcmp(live, THEME_LIVE_CARD) == 0)', 1, 'theme'),
 ]
 
 def run_mutations():

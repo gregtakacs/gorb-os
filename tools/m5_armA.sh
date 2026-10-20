@@ -41,11 +41,12 @@ curl -s -m 60 -X POST -o /tmp/m5_store.json -w 'store: code=%{http_code} size=%{
 T1=$(date +%s.%N)
 say "store body: $(cat /tmp/m5_store.json 2>/dev/null)"
 grep -q '"reboot":"none"' /tmp/m5_store.json && say 'store answered reboot:none (as the FORMAT 3 contract demands)' || say 'FAIL: store did NOT answer reboot:none'
-# Poll the ledger for the ingest cost the store worker recorded.
+# Poll the ledger for the ingest cost the store worker recorded (nonzero bundle_ms).
 for k in $(seq 1 30); do
   nap 3
   curl -s -m 15 -o /tmp/m5_sd.json "$ORB/api/v1/sd"
-  grep -q '"bundle_ms"' /tmp/m5_sd.json && break
+  BM=$(python3 -c "import json;print(json.load(open('/tmp/m5_sd.json')).get('bundle_ms',0))" 2>/dev/null)
+  [ "${BM:-0}" != "0" ] && break
 done
 say '=== store door: request to bundle_ms recorded (host wall: '"$(echo "$T1-$T0" | bc)"'s to ack) ==='
 python3 -c "import json;d=json.load(open('/tmp/m5_sd.json'));print('bundle_ms=%s bundle_bytes=%s active=%s' % (d.get('bundle_ms'),d.get('bundle_bytes'),d.get('active')))"

@@ -104,13 +104,13 @@ store(){ # store ID LABEL — one store-door press: reboot:none, NO flip, cost o
     R=$(awk -v e="$E" '$1+0>e+3 && /rst:0x/ {print $1; exit}' "$SER")
     [ -n "$R" ] && { fail "store $label: the dial FLIPPED (rst:0x after a reboot:none store)"; return; }
   done
-  # Read the ingest cost the store worker recorded, beside the refill figures.
+  # Read the ingest cost the store worker recorded, beside the refill figures (nonzero).
   local BM="?" BB="?"
   for k in $(seq 1 20); do
     fetch GET "$ORB/api/v1/sd" && {
       BM=$(python3 -c "import json;print(json.load(open('$BODY')).get('bundle_ms'))" 2>/dev/null)
       BB=$(python3 -c "import json;print(json.load(open('$BODY')).get('bundle_bytes'))" 2>/dev/null)
-      [ "$BM" != "None" ] && [ -n "$BM" ] && break; }
+      [ "${BM:-0}" != "0" ] && [ "$BM" != "None" ] && [ -n "$BM" ] && break; }
     sleep 2
   done
   say "--- store $label ---"

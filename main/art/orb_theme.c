@@ -271,10 +271,17 @@ static void rd_wordstr(const uint32_t *w, int base, char *dst, int cap)
  * Callers that can install a bundle compare the returned POINTER rather than
  * rephrasing what a caller that cannot should show, so the wording lives once
  * and the rule cannot drift (the method R4 set for the identity refusal).
- * The pointer is the fact; the text only rides it. */
+ * The pointer is the fact; the text only rides it. The old text — "update the
+ * dial to load it" — was written when no dial loaded bundles at all, and the
+ * hardware found it at the wrong door: orb-A's FORMAT 2 install press on a
+ * bundle id put this sentence's older shape on the row through the identity
+ * rule, which is a lie about a file whose name matches its id perfectly
+ * (§24.8's bench). The sentence names the file's format and the button that
+ * answers it, and it fits the try witness's 56-byte buffer whole (§24.8). */
 static const char THEME3_REFUSAL[] =
-    "that is a FORMAT 3 app bundle; this firmware installs "
-    "single-app themes only — update the dial to load it";
+    "that is a FORMAT 3 app bundle — press Store, not Load";
+_Static_assert(sizeof THEME3_REFUSAL <= 56,
+               "the bundle refusal must fit the try witness (s_try_why)");
 
 /* NULL on success, otherwise the reason this file is not a theme this device can
  * load — in words, because every one of them is what the page shows next to the
@@ -1068,6 +1075,12 @@ typedef struct {
     const char *want;         /* the id being resolved */
     bool        found;        /* an entry with that stem appeared */
     bool        verified;     /* its header name hashed back to that id */
+    const char *why;          /* the header's own refusal, P6.4: a FORMAT 3 file
+                               * pressed at the FORMAT 2 door is not a name/hash
+                               * mismatch (its name matches perfectly), and R4's
+                               * identity sentence spoken about it is D26's exact
+                               * failure — a next action that cannot work. The
+                               * walk keeps the first refusal it saw. */
 } resolve_t;
 
 static bool resolve_entry(void *arg, const orb_file_rec_t *rec, int fd)
@@ -1076,7 +1089,8 @@ static bool resolve_entry(void *arg, const orb_file_rec_t *rec, int fd)
     if (strcmp(rec->name, r->want) != 0) return false;   /* not this one; keep looking */
     r->found = true;
     orb_thdr_t h;
-    if (card_check(fd, &h)) return false;                 /* damaged: found, not verified */
+    const char *cr = card_check(fd, &h);
+    if (cr) { r->why = cr; return false; }                /* damaged or foreign format */
     char id[THEME_ID_HEX + 1];
     theme_id(h.name, id);
     r->verified = (strcmp(id, r->want) == 0);             /* the walk's identity check */
@@ -1095,6 +1109,7 @@ static int card_open_verified_id(const char *id, orb_thdr_t *o, const char **why
     resolve_t r = { .want = id, .found = false, .verified = false };
     if (orb_files_walk(src, resolve_entry, &r) < 0) { *why = "no card in the socket"; return -1; }
     if (!r.found)    { *why = "no such theme on the card";                          return -1; }
+    if (!r.verified && r.why) { *why = r.why;                                       return -1; }
     if (!r.verified) { *why = "that file's name does not match its id — refused";   return -1; }
 
     /* Pass two: open by the validated-id path and re-verify the header under the
@@ -1556,14 +1571,18 @@ static const char *hdr_at_any(int fd, orb_thdr_t *h, orb_bundle3_hdr_t *b3, uint
 /* FORMAT 3's container check at the door, the twin of verify_container() and
  * nothing else: the region alone verified through the shipped reader (bounds,
  * region checksum, index, walk, blob lengths/crcs/slugs, art bounds,
- * sortedness), then the art region streamed and checksummed against the
- * header's own. Per-bank rules are NOT checked here — the install settles them
- * on the wire (orb_bundle_bank_rule), and the streamed whole-art checksum here
- * is the same figure read_bundle()'s art walk settles against at the far end,
- * so a bank tampered between this door and the install still dies at the
- * install, not on the wall. The region buffer is install_bundle()'s size and
- * cap: geom_size is already clamped to ORB_BUNDLE_GEOM_CAP by the header gate
- * before it reaches this malloc. */
+ * sortedness), then EACH BANK streamed and settled against its record's own
+ * crc with orb_bundle_bank_rule() — the rule bank_check() applies in the one
+ * pass, in the one order. A whole-window art crc is NOT that rule: the writer
+ * computes the header's art figure over the banks concatenated WITHOUT the
+ * sector-alignment pads the file puts between them (write_bundle's own line),
+ * so a multi-bundle door that checksums art_off..art_size hashes padding it
+ * should not see and misses banks it should. The pads and the header's sum
+ * figure belong to the install's readback, which settles them as the slot's
+ * numbers (P6.3's copy path); at the door the bank records are the contract.
+ * The region buffer is install_bundle()'s size and cap: geom_size is already
+ * clamped to ORB_BUNDLE_GEOM_CAP by the header gate before it reaches this
+ * malloc. */
 static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1578,18 +1597,22 @@ static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t f
     heap_caps_free(region);
     if (r) return r;
     if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";
-    uint32_t crc = 0;
-    pos = h->art_off;
-    uint32_t left = h->art_size;
-    while (left) {
-        const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
-        if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
-            return "pixel data is shorter than its header claims — re-copy it";
-        crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
-        left -= (uint32_t)want;
+    for (uint32_t i = 0; i < b.n_sections; i++) {
+        const orb_bundle_sec_t *s = &b.sec[i];
+        if (!s->art_size) continue;                       /* a section with no art */
+        uint32_t crc = 0;
+        pos = s->art_off;
+        uint32_t left = s->art_size;
+        while (left) {
+            const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
+            if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
+                return "pixel data is shorter than its header claims — re-copy it";
+            crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
+            left -= (uint32_t)want;
+        }
+        r = orb_bundle_bank_rule(s, s->art_size, crc);
+        if (r) return r;
     }
-    if (crc != h->art_crc)
-        return "pixels do not match their checksum — re-copy the file onto the card";
     return NULL;
 }
 
@@ -1621,6 +1644,10 @@ typedef struct {
     const char *want;
     bool        found;
     bool        verified;
+    const char *why;          /* resolve_t's twin (P6.4): a FORMAT 2 file at this
+                               * door is refused by the reader's format line, and
+                               * that is the truth the row must carry — not R4's
+                               * identity claim about a file that names itself well */
 } resolve3_t;
 
 static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
@@ -1630,7 +1657,8 @@ static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
     r->found = true;
     orb_bundle3_hdr_t h;
     uint32_t fsz = 0;
-    if (card_check3(fd, &h, &fsz)) return false;
+    const char *cr = card_check3(fd, &h, &fsz);
+    if (cr) { r->why = cr; return false; }
     char id[THEME_ID_HEX + 1];
     theme_id(h.name, id);
     r->verified = (strcmp(id, r->want) == 0);
@@ -1649,6 +1677,7 @@ static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t
     resolve3_t r = { .want = id, .found = false, .verified = false };
     if (orb_files_walk(src, resolve3_entry, &r) < 0) { *why = "no card in the socket"; return -1; }
     if (!r.found)    { *why = "no such theme on the card";                        return -1; }
+    if (!r.verified && r.why) { *why = r.why;                                     return -1; }
     if (!r.verified) { *why = "that file's name does not match its id — refused"; return -1; }
 
     const int fd = card_open_locked3(id, o, file_size, why);

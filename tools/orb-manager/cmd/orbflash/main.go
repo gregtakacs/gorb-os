@@ -14,9 +14,10 @@ import (
 
 func main() {
 	port := flag.String("port", "", "serial device (e.g. /dev/ttyACM0 or a /dev/serial/by-id path)")
-	fwPath := flag.String("firmware", "", "a firmware bundle (.zip) to flash instead of the built-in one")
+	fwPath := flag.String("firmware", "", "a firmware bundle (.zip) or whole-flash image (.bin) to flash instead of the built-in one")
 	mode := flag.String("mode", "probe", "probe | md5 | app | full | wipe")
 	macStr := flag.String("mac", "", "require this bound MAC (aa:bb:cc:dd:ee:ff) before flashing")
+	allowForeign := flag.Bool("allow-foreign", false, "with -firmware, accept an image whose descriptor names a project other than gorb-os")
 	flag.Parse()
 
 	if *port == "" {
@@ -118,7 +119,7 @@ func main() {
 	// Firmware comes from the bundle compiled into this binary, or from one named
 	// with -firmware. There is no --build: the flasher is a standalone tool, and a
 	// person flashing an orb has no ESP-IDF installed.
-	b, err := loadFlasherFirmware(*fwPath)
+	b, err := loadFlasherFirmware(*fwPath, *allowForeign)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orbflash:", err)
 		os.Exit(1)
@@ -175,7 +176,7 @@ func parseMAC(s string) ([6]byte, error) {
 }
 
 // loadFlasherFirmware returns the built-in bundle, or the one -firmware names.
-func loadFlasherFirmware(path string) (*firmware.Bundle, error) {
+func loadFlasherFirmware(path string, allowForeign bool) (*firmware.Bundle, error) {
 	if path == "" {
 		return firmware.BuiltIn()
 	}
@@ -183,5 +184,5 @@ func loadFlasherFirmware(path string) (*firmware.Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read firmware file %s: %w", path, err)
 	}
-	return firmware.Load(raw, path)
+	return firmware.LoadWithOptions(raw, path, firmware.Options{AllowForeign: allowForeign})
 }

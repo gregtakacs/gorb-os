@@ -78,6 +78,10 @@ type Server struct {
 	// identities caches what each port turned out to be, because a probe reboots
 	// the orb and the answer must not be paid for twice.
 	identities *identityCache
+	// probeOrb is the reboot itself, held as a field so the launch sweep (launchprobe.go)
+	// is testable without a chip on the wire. main leaves it at esprom.ProbeOrb; a test
+	// scripts the answers the bench would give.
+	probeOrb func(ctx context.Context, port string) (esprom.OrbInfo, error)
 
 	// token is this launch's control secret: minted once in main, handed to the
 	// page it serves, and required on every request that changes something. See
@@ -103,6 +107,15 @@ type Server struct {
 	// re-dial the unplugged board's remembered address the second the lead goes quiet.
 	kickMu   sync.Mutex
 	lastPlug map[string]bool
+	// suspicious guards the MACs whose wired dial went quiet, pending one paid probe. See
+	// noteWiredSilence (launchprobe.go): silence is grounds to ask, never grounds to claim.
+	suspMu     sync.Mutex
+	suspicious map[string]bool
+	// owed is the silence escalation for the identity pass currently running: MACs whose
+	// wired dial went quiet and whose question is therefore due regardless of how fresh the
+	// cached answer looks. Set and cleared inside one identifyCables pass, so it needs no
+	// lock and lives only as long as that pass.
+	owed map[string]bool
 	// lonely remembers the boards this hub personally left lonely. The cable
 	// sweep re-attributes a lonely board's descriptor MAC like any orb's, so
 	// without this mark the forgotten fleet row would rebuild itself from the
@@ -244,14 +257,17 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 
 func main() {
 	var addr, browser, repo, fwPath, orbPort string
-	var noWindow, allowRemote bool
+	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch bool
+
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
-	flag.StringVar(&fwPath, "firmware", "", "a firmware bundle (.zip) to flash instead of the one built into this binary")
+	flag.StringVar(&fwPath, "firmware", "", "a firmware bundle (.zip) or whole-flash image (.bin) to flash instead of the one built into this binary")
+	flag.BoolVar(&allowForeignFirmware, "allow-foreign", false, "accept a firmware whose image descriptor names a project other than gorb-os; with -firmware it applies to that file, and picked files still need the confirm on the card")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
+	flag.BoolVar(&probeCablesOnLaunch, "probe-cables", true, "at launch, identify every board on an attributable USB lead by resetting it and reading its bootloader, so the hub never decides from a MAC which firmware a cable carries; costs each wired board one reboot per hub start, and a board with no orb on it is otherwise drawn as one forever")
 	flag.Parse()
 
 	// Windowed mode on Windows can start with no console (double-click on a
@@ -340,6 +356,14 @@ func main() {
 	// Once before the first tick, so a hub started with a cable already in it is not
 	// three minutes late to its own bench.
 	go s.proveCables(cableCtx)
+	// And the paid question, once, before the card is believed (launchprobe.go). The
+	// free read above can only ever say a board IS an orb: it is a PING, and a PING
+	// that says nothing is indistinguishable from an asleep orb. Only a reboot reads
+	// the bootloader and can say a board on this lead is running something else, which
+	// is the fact the descriptor cannot supply and the one a reflash invalidates.
+	if probeCablesOnLaunch {
+		go s.probeCablesAtLaunch(cableCtx)
+	}
 
 	// The liveness verdicts Forget is gated on (liveness.go). The probe is the same
 	// status fetch the post-flash watch uses — one GET, orb-shaped answer or nothing —
@@ -356,6 +380,13 @@ func main() {
 	s.live.probe = func(ip string) bool {
 		st, err := s.orb.Status(ip)
 		if err != nil {
+			// A board on a lead that stops answering the door it used to answer is the
+			// only free sign that something was written to it without the hub's
+			// knowledge. Silence is not a verdict — a boot-loop and a loose cable look
+			// identical to a reflash — so it buys no claim about the board. It buys one
+			// question, and that question is what makes the button unnecessary for a
+			// plugged-in board reflashed by ESP-IDF. See noteWiredSilence.
+			s.noteWiredSilence(ip)
 			return false
 		}
 		s.foldProbeStatus(ip, st)
@@ -368,7 +399,7 @@ func main() {
 
 	// Firmware is settled before anything is served: an Onboard card that would
 	// flash nothing is worse than a hub that refuses to start.
-	if err := s.startFirmware(strings.TrimSpace(fwPath)); err != nil {
+	if err := s.startFirmware(strings.TrimSpace(fwPath), allowForeignFirmware); err != nil {
 		log.Fatalf("orb-manager: %v", err)
 	}
 
@@ -619,7 +650,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// the device, or puts a file in the repo. requireControl is the whole reason a
 	// page the operator never opened cannot do those things from a browser that
 	// can already reach this port. See security.go.
-	mux.Handle("/api/ports/probe", s.requireControl(http.HandlerFunc(s.handleProbe))) // explicit, one port, reboots it
 	mux.Handle("/api/firmware", s.requireControl(http.HandlerFunc(s.handleFirmwareUpload)))
 	mux.Handle("/api/firmware/reset", s.requireControl(http.HandlerFunc(s.handleFirmwareReset)))
 	mux.Handle("/api/flash", s.requireControl(http.HandlerFunc(s.handleFlash))) // streaming, not s.json

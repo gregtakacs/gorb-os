@@ -97,7 +97,7 @@ func TestBootBannerNameIsFoldedAtProbeAndFlash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(id), "s.foldBootName(info.MAC, info.Name)") {
-		t.Error("/api/ports/probe no longer folds the banner name; a cable-only card stays blank")
+		t.Error("a paid probe no longer folds the banner name; a cable-only card stays blank")
 	}
 
 	fl, err := os.ReadFile("flash.go")

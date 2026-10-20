@@ -361,12 +361,60 @@ func (s *Server) cableOf(mac string, now time.Time) string {
 // no objection. That is the fail-open direction, and it is a deliberate trade: a hub whose
 // USB enumeration is broken still has to be able to forget the dead board on the shelf, and
 // the door re-asks on the press. The rule below is where that choice is recorded.
+//
+// Every caller gets the contradicted view, because that is the whole point of routing the
+// read through here: a sighting is the descriptor's claim, and the claim must not survive
+// as an orb wherever the hub holds better evidence about the same lead.
 func (s *Server) cableSights(now time.Time) []cableSighting {
-	if s.cables == nil {
-		return nil
-	}
-	seen, _ := s.cables.refresh(now)
+	seen, _ := s.cableSightsErr(now)
 	return seen
+}
+
+// cableSightsErr is cableSights with the enumeration failure left intact, for the roster,
+// which must not conclude "no cables" from a sweep that failed.
+func (s *Server) cableSightsErr(now time.Time) ([]cableSighting, string) {
+	if s.cables == nil {
+		return nil, ""
+	}
+	seen, err := s.cables.refresh(now)
+	return s.contradict(seen), err
+}
+
+// contradict clears the orb claim off any sighting that fresh present-tense firmware
+// evidence contradicts, and leaves the port and its MAC standing so the Onboard picker
+// still offers the lead to reflash.
+//
+// It exists because a cable sighting is a USB descriptor read, and the two fields it
+// decides on — the product id and the serial — are not firmware facts in the way the
+// gate needs them to be. The serial IS the eFuse base MAC, so it is the same whatever
+// image is running, and the product id is whatever USB function the running image
+// exposes, which a stock Espressif CDC demo matches by accident. So a board reflashed
+// out of gorb-os keeps producing a sighting that says, in the hub's own words, "an orb
+// with this MAC sits on this lead", and every door downstream — the fleet row, the
+// Forget gate, the New Orb picker — inherits that sentence as truth. The board then
+// falls between the floors: still on a cable so the card will not forget it, still an
+// orb so the picker will not take it.
+//
+// This returns a copy whenever anything changes, because cableCache hands out its
+// stored slice rather than a clone and the verdict must not rewrite what the next
+// sweep compares plug-digests against.
+func (s *Server) contradict(seen []cableSighting) []cableSighting {
+	out := seen
+	copied := false
+	for i, c := range seen {
+		if !c.isOrb {
+			continue
+		}
+		if _, ok := s.contradicts(c.port); !ok {
+			continue
+		}
+		if !copied {
+			out = append([]cableSighting(nil), seen...)
+			copied = true
+		}
+		out[i].isOrb = false
+	}
+	return out
 }
 
 // livenessTargets are the addresses worth dialing: every IP a fleet row still points

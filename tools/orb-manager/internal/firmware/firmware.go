@@ -9,6 +9,12 @@
 // flash size are still derived from the build and never hardcoded; they simply
 // arrive with the firmware they describe, so a plan cannot mix one build's
 // offsets with another build's bytes.
+//
+// The second shape a user can pick is a whole-flash image: the single 0xE9 blob
+// `esptool merge_bin` lays out from those same files, written at 0x0. It carries
+// no manifest, so it gets no manifest-derived promises back — one write, no app
+// slot to OTA, no per-image progress — and Load proves its provenance out of the
+// bytes instead. Both shapes are Load's to parse; callers just get a Bundle.
 package firmware
 
 import (
@@ -22,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +77,18 @@ type Bundle struct {
 	// SHA256 fingerprints the whole bundle — the thing to quote when a build
 	// behaves differently than expected.
 	SHA256 string
+	// Merged marks a whole-flash image: one blob written at 0x0, with no manifest
+	// beside it. Everything the hub derives from a manifest's names — the app slot
+	// an OTA pushes, the image list a per-image progress bar walks — is absent on
+	// this shape, so the doors that need those things say so instead of failing
+	// with a missing-file error that describes none of it.
+	Merged bool
+	// Foreign marks firmware the hub accepted only because the operator named it:
+	// its esp_app_desc_t announces a project that is not gorb-os. It is a record of
+	// a decision already taken, not a second gate — the panel says so out loud, and
+	// the doors that reason from "this is gorb-os" (the OTA version comparison, the
+	// theme id the device derives) close on it rather than guessing.
+	Foreign bool
 	// Images is the full-device image set, ordered low offset to high.
 	Images []esprom.Image
 
@@ -84,6 +103,9 @@ func (b *Bundle) Plan() esprom.FlashPlan { return b.plan }
 // bootloader at it — drawn from the same bundle, so both modes share one
 // provenance and one set of bytes.
 func (b *Bundle) AppPlan() (esprom.FlashPlan, error) {
+	if b.Merged {
+		return esprom.FlashPlan{}, b.errNoAppSlot()
+	}
 	app := b.imageNamed("gorb-os.bin")
 	if app == nil {
 		return esprom.FlashPlan{}, fmt.Errorf("firmware %s has no gorb-os.bin to flash", b.Source)
@@ -93,6 +115,42 @@ func (b *Bundle) AppPlan() (esprom.FlashPlan, error) {
 		ota = im.Data
 	}
 	return esprom.AppOnlyPlan("gorb-os.bin", app.Data, ota), nil
+}
+
+// errNoAppSlot says why a whole-flash image cannot serve the two doors that need
+// one app image pulled out of the set: the WiFi update and the bench app-only
+// reflash. It is a shape fact, not a damage report — the blob is flashable, it is
+// simply already the whole device, so there is no half of it to address by name.
+func (b *Bundle) errNoAppSlot() error {
+	return fmt.Errorf("firmware %s is one whole-flash image written at 0x0, so it has no separately addressable app slot: flash it over the cable, or load a .zip bundle to update an orb over WiFi", b.Source)
+}
+
+// Ready is the gate a picked file passes before it becomes the firmware the hub
+// flashes. The two shapes are proved differently on purpose. A bundle's
+// whole-device plan is settled by its manifest, so what Ready asks of it is the
+// one thing a cable flash does not need and every other door does: a named app
+// slot. A merged image is already the whole device, so its proof is the set of
+// gates loadMerged ran — size, header, chip, project, partition table — and
+// demanding an app slot from it would ask for a manifest the shape cannot have.
+func (b *Bundle) Ready() error {
+	if !b.Merged {
+		_, err := b.AppPlan()
+		return err
+	}
+	if len(b.plan.Images) != 1 || b.plan.Images[0].Offset != mergedOffset {
+		return fmt.Errorf("firmware %s is not a one-image plan at 0x0", b.Source)
+	}
+	// A foreign blob may legitimately carry a layout this hub cannot read, and
+	// loadMerged kept the table only if it parsed. Demanding one here would
+	// re-impose the gate the operator overrode, two calls after the override was
+	// honoured; the wipe door refuses on its own when it has no table to aim with.
+	if b.Foreign && len(b.partTable) == 0 {
+		return nil
+	}
+	if _, err := esprom.NvsRegions(b.partTable); err != nil {
+		return fmt.Errorf("firmware %s: %w", b.Source, err)
+	}
+	return nil
 }
 
 // PartitionTable returns the bytes the plan writes at 0x8000. The factory reset
@@ -106,6 +164,13 @@ func (b *Bundle) PartitionTable() []byte { return b.partTable }
 // then sits inside the exact geometry a New Orb flash overwrites, so the joke
 // is always reversible by the normal door.
 func (b *Bundle) LonelyPlan(lonelyBin []byte) (esprom.FlashPlan, error) {
+	// The lonely image is three files from the ACTIVE firmware plus one the hub
+	// embeds, assembled at the orb's own offsets. A whole-flash blob is those first
+	// three fused into one span with no manifest naming them, so say the shape and
+	// the way out rather than reporting a missing bootloader the file does contain.
+	if b.Merged {
+		return esprom.FlashPlan{}, fmt.Errorf("firmware %s is one whole-flash image written at 0x0, so it has no separate bootloader and partition table for a lonely plan: load a .zip bundle to send this orb lonely, or flash the lonely image with orbflash", b.Source)
+	}
 	boot := b.imageNamed("bootloader.bin")
 	pt := b.imageNamed("partition-table.bin")
 	var ota []byte
@@ -118,13 +183,64 @@ func (b *Bundle) LonelyPlan(lonelyBin []byte) (esprom.FlashPlan, error) {
 	return esprom.LonelyPlan(lonelyBin, boot.Data, pt.Data, ota)
 }
 
-// Load parses bundle bytes — the zip a release step produces, or one the user
-// picked in a file dialog. Every image the manifest names must be present, so a
-// partial or hand-edited bundle fails here rather than half-way into a flash.
+// NotGorbOS is the refusal every project gate returns, wrapped in the source and
+// the sentence that explains it. It exists so the one caller that has been handed
+// the operator's yes — the upload handler, and the card behind it — can tell this
+// refusal from every other and offer the second send, rather than string-matching
+// an error message that was written to be read by a person.
+type NotGorbOS struct{ Project string }
+
+func (e *NotGorbOS) Error() string {
+	return fmt.Sprintf("is the project %q, not gorb-os", e.Project)
+}
+
+// Options relaxes the provenance gates for one deliberate pick. The zero value is
+// the strict default every door uses: an uploaded file, a --firmware file at
+// startup, an orbflash -firmware file. Only the operator's own second click on a
+// named refusal sets AllowForeign, so the gate can never be off by accident.
+type Options struct {
+	// AllowForeign accepts an image whose esp_app_desc_t names a project other
+	// than gorb-os. It is not "accept anything": size, the 0xE9 header, the chip
+	// ID and the descriptor's own hygiene are all still enforced, because those
+	// decide whether the write is survivable, not whether it is ours. What it does
+	// change is the partition-table gate — see loadMerged — because a vendor
+	// factory image lays out its own flash, and the hub has no business grading
+	// somebody else's layout once it has been told to write it.
+	AllowForeign bool
+}
+
+// Load parses the firmware bytes a user picked, in either shape the hub accepts:
+// a release bundle (the zip a release step produces: flasher_args.json plus the
+// images it names) or a whole-flash image (the 0xE9 blob `esptool merge_bin`
+// lays out from those same images, written at 0x0). The shape comes from the
+// bytes, never from the filename, so renaming a bundle to .bin cannot change how
+// it is parsed and a mislabeled file is refused with what was actually found.
+//
+// Every image a manifest names must be present, so a partial or hand-edited
+// bundle fails here rather than half-way into a flash.
 func Load(raw []byte, source string) (*Bundle, error) {
+	return LoadWithOptions(raw, source, Options{})
+}
+
+// LoadWithOptions is Load with the provenance gates opened by one explicit
+// operator decision. Callers that have not been given that decision call Load.
+func LoadWithOptions(raw []byte, source string, o Options) (*Bundle, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%s is empty", source)
+	}
 	if len(raw) > maxBundle {
 		return nil, fmt.Errorf("firmware file too large (%d MB; the limit is %d MB)", len(raw)>>20, maxBundle>>20)
 	}
+	if bytes.HasPrefix(raw, []byte("PK\x03\x04")) {
+		return loadBundle(raw, source, o)
+	}
+	if esprom.IsESPImage(raw) {
+		return loadMerged(raw, source, o)
+	}
+	return nil, fmt.Errorf("%s is neither a firmware bundle nor an ESP image: it starts with 0x%02X, where a bundle starts with PK and an image with 0xE9", source, raw[0])
+}
+
+func loadBundle(raw []byte, source string, o Options) (*Bundle, error) {
 	blob, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		return nil, fmt.Errorf("not a firmware bundle (%s): %w", source, err)
@@ -190,7 +306,14 @@ func Load(raw []byte, source string) (*Bundle, error) {
 	// refused: synthetic and third-party-packaged images legitimately have none, and
 	// the UI says "unknown firmware" rather than inventing a project.
 	if b.Project != "" && !strings.EqualFold(b.Project, "gorb-os") {
-		return nil, fmt.Errorf("firmware bundle %s is the project %q, not gorb-os; the hub only flashes gorb-os releases", source, b.Project)
+		if !o.AllowForeign {
+			return nil, fmt.Errorf("firmware bundle %s %w; the hub only flashes gorb-os releases", source, &NotGorbOS{b.Project})
+		}
+		// Recorded rather than refused: the panel has to say the true thing about
+		// what this hub now carries, and the doors that depend on this being
+		// gorb-os — the OTA stamp gate, the theme id the device derives — would
+		// otherwise reason from a project name the bundle contradicts.
+		b.Foreign = true
 	}
 	// Same gate the flasher applies, applied here: a bundle holding an image for
 	// another Espressif chip should disable the Flash button, not start a flash
@@ -245,6 +368,199 @@ func readZipFile(f *zip.File, budget int64) ([]byte, error) {
 	return raw, nil
 }
 
+// ---- whole-flash images ------------------------------------------------------
+//
+// A whole-flash image is what `esptool merge_bin` builds from the same files a
+// bundle carries: bootloader at 0x0, then partition table, otadata, app and art
+// bank, each padded to its manifest offset with 0xFF, in one contiguous blob. It
+// is the shape a person reaches for when they hold a build dir and no bundle. It
+// carries no manifest, so the hub cannot ask it which image goes where and can
+// only write the whole thing at 0x0 — one FLASH_BEGIN that erases and replaces
+// everything from the bootloader to the end of the blob, nvs, otadata and phy_init
+// included and both app slots with them. The gates below exist because the
+// file gives up its own structure, so provenance is the only thing left to check,
+// and it has to be read out of the bytes rather than off the filename.
+
+const (
+	// MergedName is the fallback name for a whole-flash image, used when the
+	// source carries no basename of its own. Normally the image is named after the
+	// file it came from, the same way a manifest's basename names a bundle's
+	// images — so the flash log and a refusal both point at the file on disk.
+	MergedName = "merged.bin"
+	// mergedOffset is where the blob goes: the ROM's reset vector.
+	mergedOffset = 0x0
+	// ptOffset and ptEntrySize are gen_esp32part's fixed geometry — the table
+	// lives at 0x8000 in 32-byte rows.
+	ptOffset    = 0x8000
+	ptEntrySize = 32
+	// mergedMax is the orb's flash: every gorb-os build declares 16MB. A blob
+	// past it cannot be written without running off the end of the chip.
+	mergedMax = 16 << 20
+	// mergedMin is the end of the nvs row the layout opens with. No whole-flash
+	// gorb-os image is anywhere near this small; one that is has no app in it.
+	mergedMin = 0x9000
+)
+
+func loadMerged(raw []byte, source string, o Options) (*Bundle, error) {
+	if len(raw) < mergedMin {
+		return nil, fmt.Errorf("%s is %d B: too small to be a whole-flash image, which must carry a bootloader at 0x0 and a partition table at 0x%X", source, len(raw), ptOffset)
+	}
+	if len(raw) > mergedMax {
+		return nil, fmt.Errorf("%s is %d MB, larger than the %d MB flash this orb has, so a whole-flash image cannot fit", source, len(raw)>>20, mergedMax>>20)
+	}
+	img := esprom.Image{Offset: mergedOffset, Name: mergedName(source), Data: raw, Verbatim: true}
+	// The chip gate, reused from the flasher so a build for another Espressif chip
+	// gets the one refusal wording that already names the chip found. The blob's
+	// own header sits at 0x0, which is where the gate reads it.
+	if err := esprom.CheckPlanChipIDs(esprom.FlashPlan{Images: []esprom.Image{img}}); err != nil {
+		// Returned as the gate worded it: the name inside that message is already
+		// this file's own (see mergedName), and prefixing the source again would
+		// read "orb-merged.bin: orb-merged.bin is built for ESP32-C6".
+		return nil, err
+	}
+	// The project gate, inverted from the bundle's rule. A bundle with no
+	// descriptor is accepted and reported as unknown, because its manifest named
+	// the app image and the hub flashes those bytes faithfully whatever they
+	// announce. A merged blob promises no such thing: it overwrites the running
+	// firmware with everything in the file, so the file has to say what it is.
+	best, ours, seen := scanDescriptors(raw)
+	if seen == 0 {
+		return nil, fmt.Errorf("%s holds no esp_app_desc_t that names a project, so nothing in it says what it is; a whole-flash image must be built from gorb-os, where a descriptor-less image is only accepted inside a .zip bundle", source)
+	}
+	if !ours {
+		// The one gate AllowForeign answers, and the refusal it quotes is the
+		// sentence the operator then confirms. A file that names no project at all
+		// stays refused whatever the flags say, because there is no name for a
+		// confirmation to repeat back.
+		if !o.AllowForeign {
+			return nil, fmt.Errorf("%s %w; the hub only flashes gorb-os releases", source, &NotGorbOS{best.Project})
+		}
+	}
+	b := &Bundle{
+		Source: source, Merged: true, Foreign: !ours,
+		Project: best.Project, Version: best.Version, IDFVersion: best.IDF, Built: best.Built,
+		SHA256: digestOf(raw), Images: []esprom.Image{img},
+		// The header in the blob is authoritative, because Verbatim stops the
+		// flasher rewriting it and merge_bin already stamped dio/16MB into it.
+		// These fields still describe the write for SpiSetParams and for the
+		// plan a bench tool prints.
+		plan: esprom.FlashPlan{Images: []esprom.Image{img}, FlashSize: mergedMax, FlashMode: 2, FlashFreq: 0xFF},
+	}
+	// The partition table is read structurally, because the factory reset takes
+	// its erase targets from these bytes. On a gorb-os image a table the wipe
+	// cannot resolve is refused here rather than failing later at the moment an
+	// operator asks to send an orb back to provisioning.
+	//
+	// On a foreign image it is kept if it parses and dropped if it does not. Its
+	// layout is the vendor's, not ours, and the write is verbatim at 0x0: the ROM
+	// does not care what the hub's wipe bookkeeping makes of it. The wipe door
+	// then refuses itself, with the reason, if the table is unreadable.
+	table, err := mergedPartitionTable(raw)
+	if err != nil {
+		if !o.AllowForeign {
+			return nil, fmt.Errorf("%s: %w", source, err)
+		}
+		return b, nil
+	}
+	if _, err := esprom.NvsRegions(table); err != nil && !o.AllowForeign {
+		return nil, fmt.Errorf("%s: %w", source, err)
+	}
+	b.partTable = table
+	return b, nil
+}
+
+// appDescMagicBytes is the esp_app_desc_t magic as it appears in an image, least
+// significant byte first — the same spelling findAppDesc builds.
+var appDescMagicBytes = func() []byte {
+	b := make([]byte, 4)
+	binary.LittleEndian.PutUint32(b, appDescMagic)
+	return b
+}()
+
+// appDescFields is one esp_app_desc_t read out of raw bytes, with the hygiene
+// applied at the source — see descriptorAt.
+type appDescFields struct{ Project, Version, IDF, Built string }
+
+// scanDescriptors weighs every esp_app_desc_t in a blob, not just the first, and
+// counts only the ones that name a project. A bundle names its app image in its
+// manifest, so the first magic inside that one file is the descriptor; a merged
+// blob is five images concatenated, and any headerless part of it can hold the four
+// magic bytes by chance or carry a descriptor whose project_name was never
+// stamped. The candidate that announces gorb-os is the app. best names one
+// project-naming candidate for a refusal to quote when none matches, and seen
+// counts those, so "nothing here names a project" and "the project named is not
+// ours" stay two different answers.
+func scanDescriptors(blob []byte) (best appDescFields, ours bool, seen int) {
+	for from := 0; ; {
+		j := bytes.Index(blob[from:], appDescMagicBytes)
+		if j < 0 {
+			return best, false, seen
+		}
+		at := from + j
+		from = at + len(appDescMagicBytes)
+		if at+appDescShaOff+32 > len(blob) {
+			continue // a truncated candidate is not a descriptor
+		}
+		f := descriptorAt(blob, at)
+		if f.Project == "" {
+			continue // a descriptor with no project in it vouches for nothing
+		}
+		seen++
+		if best.Project == "" {
+			best = f
+		}
+		if strings.EqualFold(f.Project, "gorb-os") {
+			return f, true, seen
+		}
+	}
+}
+
+// mergedName is the plan's name for a whole-flash image. A bundle takes its image
+// names from the manifest's basenames; a merged blob has one image and one name
+// available, which is the file the operator picked. Refusals and the flash log both
+// read this, so "orb-merged.bin is built for ESP32-C6" names the thing to go back
+// and look at.
+func mergedName(source string) string {
+	if n := strings.TrimSpace(filepath.Base(source)); n != "" && n != "." && n != string(filepath.Separator) {
+		return n
+	}
+	return MergedName
+}
+
+// mergedPartitionTable lifts the partition table out of a whole-flash image. The
+// bundle path gets these bytes from the manifest, which names the file; the blob
+// carries no manifest, so the table comes from the one address the layout puts it
+// at, copied row by row until the rows stop. A real table is the declared
+// partitions, then gen_esp32part's MD5 row — magic 0xEBEB, not 0xAA50 — then 0xFF
+// padding to the end of its 3 KB image, so the walk ends at the first all-blank
+// row. Anything else means the blob is not laid out the way a gorb-os image is.
+func mergedPartitionTable(raw []byte) ([]byte, error) {
+	for i := ptOffset; i+ptEntrySize <= len(raw); i += ptEntrySize {
+		e := raw[i : i+ptEntrySize]
+		if (e[0] == 0xAA && e[1] == 0x50) || (e[0] == 0xEB && e[1] == 0xEB) {
+			continue
+		}
+		if allFF(e) {
+			if i == ptOffset {
+				return nil, fmt.Errorf("no partition table at 0x%X: the image is blank flash there", ptOffset)
+			}
+			return raw[ptOffset:i], nil
+		}
+		return nil, fmt.Errorf("the partition table at 0x%X stops being one %d rows in (a row starts %02X %02X): this is not a gorb-os whole-flash image",
+			ptOffset, (i-ptOffset)/ptEntrySize, e[0], e[1])
+	}
+	return nil, fmt.Errorf("the partition table at 0x%X runs off the end of the image", ptOffset)
+}
+
+func allFF(b []byte) bool {
+	for _, c := range b {
+		if c != 0xFF {
+			return false
+		}
+	}
+	return true
+}
+
 func digestOf(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -265,12 +581,18 @@ func appDescriptor(app []byte) (project, version, idf, built string) {
 	if !ok {
 		return "", "", "", ""
 	}
-	d := app[i:]
-	// Every field is bytes a hand-edited or attacker-supplied image controls, and
-	// they end up rendered in the browser. Keep printable ASCII and drop the rest,
-	// NUL and newline included: the client escapes markup, but escaping is one line
-	// a future field can be added without, and no orb's version string needs a
-	// control character to be legible.
+	f := descriptorAt(app, i)
+	return f.Project, f.Version, f.IDF, f.Built
+}
+
+// descriptorAt reads the four fields of the esp_app_desc_t starting at index i of
+// a blob. Every one is bytes a hand-edited or attacker-supplied image controls,
+// and they end up rendered in the browser. Keep printable ASCII and drop the rest,
+// NUL and newline included: the client escapes markup, but escaping is one line
+// a future field can be added without, and no orb's version string needs a
+// control character to be legible.
+func descriptorAt(blob []byte, i int) appDescFields {
+	d := blob[i:]
 	field := func(off, n int) string {
 		return strings.Map(func(r rune) rune {
 			if r >= 0x20 && r < 0x7f {
@@ -279,8 +601,10 @@ func appDescriptor(app []byte) (project, version, idf, built string) {
 			return -1
 		}, string(d[off:off+n]))
 	}
-	built = strings.TrimSpace(field(96, 16) + " " + field(80, 16))
-	return field(48, 32), field(16, 32), field(112, 32), built
+	return appDescFields{
+		Project: field(48, 32), Version: field(16, 32), IDF: field(112, 32),
+		Built: strings.TrimSpace(field(96, 16) + " " + field(80, 16)),
+	}
 }
 
 func (b *Bundle) imageNamed(name string) *esprom.Image {
@@ -297,6 +621,13 @@ func (b *Bundle) imageNamed(name string) *esprom.Image {
 // bytes, found the same way AppPlan finds it: by name, with the partition
 // offset as the tiebreak for a manifest that renamed it.
 func (b *Bundle) AppImage() []byte {
+	// A whole-flash blob carries an app somewhere inside it, at 0x20000 of its own
+	// body. This returns nil for it on purpose: slicing the app out would mean
+	// trusting the layout rather than a manifest that names it, and an OTA image
+	// the hub assembled by guesswork is worse than an honest refusal. See Ready.
+	if b.Merged {
+		return nil
+	}
 	if im := b.imageNamed("gorb-os.bin"); im != nil {
 		return im.Data
 	}

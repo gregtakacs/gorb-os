@@ -161,7 +161,7 @@ func TestALonelyEndingLeavesNoStoryOnTheFleetCard(t *testing.T) {
 			t.Errorf("app.js is telling the lonely story on the card again: %q", gone)
 		}
 	}
-	for _, marker := range []string{`$("#ob-lonely-go").onclick`, `$("#fj-lonely").onclick`} {
+	for _, marker := range []string{`$("#rt-go").onclick`, `$("#fj-lonely").onclick`} {
 		i := strings.Index(src, marker)
 		if i < 0 {
 			t.Fatalf("app.js has no %s — the lonely door's press handler was renamed", marker)

@@ -99,33 +99,25 @@
       <span class="verdict" id="mn-verdict"></span>
     </div>
     <div id="ob-build" class="buildlist"></div>
-    <div class="row" id="mn-updaterow">
-      <button id="mn-update" class="primary" disabled title="Push the firmware this hub carries up over the LAN. The orb stages it, verifies it, and reboots once - a bad upload never costs the running image.">Update over Wi-Fi</button>
-      <span class="hint" id="mn-updatenote">load an orb to compare versions</span>
+    <!-- One door, not six rows. Everything about changing what this board runs
+         lives inside the modal this button opens, where the choices can be
+         filtered by how the board is actually connected. The badge is the only
+         thing allowed to advertise itself out here. -->
+    <div class="row" id="mn-fwrow">
+      <button id="mn-flashbtn" class="primary" disabled title="Flash this orb">Flash firmware</button>
+      <span class="tag update" id="mn-updatebadge" hidden>update available</span>
+      <button id="mn-resetbtn" class="ghost" disabled title="Reset firmware or settings">Reset this orb&#8230;</button>
     </div>
-    <div class="row" id="mn-cablerow" hidden>
-      <button id="mn-cable" title="Flash the firmware this hub carries over the USB cable. Slower to reach for, and it works with no network at all.">Flash over cable</button>
-      <label class="check"><input type="checkbox" id="ob-wipe"> Factory reset: also erase the NVS config (Wi-Fi credentials, time zone). A full flash normally preserves them - check this to send the orb to its provisioning AP.</label>
-    </div>
-    <div class="row" id="ob-fwrow">
-      <input type="file" id="ob-fwfile" accept=".zip,application/zip" hidden>
-      <button id="ob-fwpick" class="ghost" title="Flash a firmware bundle (.zip) from disk instead of the one built into this app. Needs the cable.">Use my own firmware&#8230;</button>
-      <button id="ob-fwreset" class="ghost" hidden>Use built-in firmware</button>
-      <span id="ob-fwstate" class="hint"></span>
-    </div>
-    <div class="row" id="ob-identify">
-      <button id="ob-probe" class="ghost" title="Restart this orb and read what it is running">Identify this orb</button>
-      <span id="ob-idstate" class="hint">identify the board on this cable once; costs a reboot, about 10 seconds</span>
+    <!-- No button here, and deliberately so. The hub pays for this answer itself, at
+         launch, on every re-plug, when the cached answer expires, and the moment a board
+         on a lead stops answering the door it used to answer. All that is left to show is
+         when it last asked, so a card can be read as current or merely recent. -->
+    <div class="row" id="ob-identify" hidden>
+      <span id="ob-idstate" class="hint">the hub reboots this board to read what it runs, about 10 seconds, and asks again on its own</span>
     </div>
     <div id="ob-idcard" class="idcard" hidden></div>
-    <div class="row" id="ob-lonelyrow">
-      <button id="ob-lonely" class="danger" title="Wipe this orb clean, including its software. You can set it up again later.">Erase flash completely&#8230;</button>
-      <span id="ob-lonely-confirm" class="hint" hidden>
-        <button id="ob-lonely-go" class="danger">Erase <span id="ob-lonely-port">this orb</span> completely</button>
-        <button id="ob-lonely-no" class="ghost">Cancel</button>
-      </span>
-      <span id="ob-lonely-hint" class="hint">Wipes everything on this orb, including its software, so you can start over. Only do this if you mean to reset the orb for good.</span>
-    </div>
+    <input type="file" id="ob-fwfile" accept=".zip,.bin,application/zip,application/octet-stream" hidden>
+    <span id="ob-fwstate" class="hint" hidden></span>
   </article>
 
   <article class="card">
@@ -243,6 +235,74 @@
   </div>
 </div>
 
+<!-- The flash modal: the one place that decides what this board runs. It shows
+     only the doors the connection actually supports, because a button that
+     cannot work on the board in front of you teaches the wrong lesson.
+
+       cable   every firmware, from any source, in any direction. The ROM writes
+               the whole manifest (flash.go planFor), so a version comparison is
+               meaningless here: bootloader, table, otadata and both slots are
+               rewritten whatever the board ran before. A foreign .bin needs no
+               special permission beyond being a .bin on a cable you chose.
+       wifi    only the hub's own app slot, pushed to the spare partition. A
+               downgrade is offered, not refused: CONFIG_APP_ROLLBACK_ENABLE=y
+               means the bootloader reverts an image that never validates
+               itself, so the hardware holds the safety the modal used to try to
+               infer from a version number.
+       neither nothing. The card says so in one line.
+
+    The file row keeps the .zip/.bin distinction invisible: both are "a file from
+    disk", and the hub decides what it is by reading it, not by its suffix. -->
+<div id="ff-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ff-title">
+    <h3 id="ff-title">Flash firmware</h3>
+    <p class="hint" id="ff-sub"></p>
+    <div id="ff-none" hidden>
+      <p class="hint" id="ff-none-msg"></p>
+    </div>
+    <div id="ff-choices" hidden>
+      <label class="check"><input type="radio" name="ff-src" value="hub" checked>
+        <span id="ff-hub-label">This hub&#8217;s firmware</span></label>
+      <label class="check" id="ff-disk-row"><input type="radio" name="ff-src" value="disk">
+        <span id="ff-disk-label">A file from this computer</span></label>
+      <div class="row" id="ff-filebox" hidden>
+        <button id="ff-pick" class="ghost">Choose file&#8230;</button>
+        <span class="hint" id="ff-file"></span>
+      </div>
+      <p class="hint" id="ff-note"></p>
+      <label class="check" id="ff-wipe-row"><input type="checkbox" id="ff-wipe">
+        <span>Factory reset: forget this orb&#8217;s Wi-Fi password and time zone too</span></label>
+    </div>
+    <p class="hint" id="ff-state"></p>
+    <div class="row">
+      <button id="ff-go" class="primary" disabled>Flash</button>
+      <button id="ff-cancel" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- The reset modal. One button, two independent scopes, because "reset" meant
+     two different acts to two different operators and the old card guessed. It
+     names the port it will travel, the same rule the erase door always followed:
+     with no lead the hub has no way to reach a board it cannot command. -->
+<div id="rt-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rt-title">
+    <h3 id="rt-title">Reset this orb</h3>
+    <p class="hint" id="rt-sub"></p>
+    <div id="rt-choices">
+      <label class="check"><input type="checkbox" id="rt-settings" checked>
+        <span>Settings — Wi-Fi password, time zone, name. The orb keeps its firmware.</span></label>
+      <label class="check"><input type="checkbox" id="rt-firmware">
+        <span>Firmware — erase the software as well. The orb stops being an orb and waits to be set up again.</span></label>
+    </div>
+    <p class="hint" id="rt-state"></p>
+    <div class="row">
+      <button id="rt-go" class="danger" disabled>Reset</button>
+      <button id="rt-cancel" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- The flash progress for the doors that live on an orb's own card: a cable
      reflash and a full erase. It opens the moment either starts, so the wire's
      progress is on screen while the wire is working, and closes when told. The
@@ -322,6 +382,7 @@
       <div class="row">
         <button id="ob-manage" class="primary">Open this orb</button>
         <button id="ob-rejoin" class="ghost">Change network</button>
+        <button id="ob-close" class="ghost" title="Finish here and stay on the hub. The orb keeps the firmware and the network it just got.">Done</button>
       </div>
     </div>
 

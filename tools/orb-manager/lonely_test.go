@@ -123,33 +123,43 @@ func TestLonelyRefusesAPortMidFlash(t *testing.T) {
 	}
 }
 
-// TestLonelyPageHasTheDoorAndNoTypedWord pins the UI against a rename that would
-// orphan the handler — button, armed go button, row wiring, the payload word the hub
-// still requires — and against the typed-word ceremony coming back. The operator ended
-// it on 2026-10-15: reaching the button already took pressing Forget and naming the
-// ending, and typing LONELY on top of that read as an insult rather than a safeguard.
-// The hub's payload gate stays; only the page's ceremony is gone.
-func TestLonelyPageHasTheDoorAndNoTypedWord(t *testing.T) {
+// TestResetModalOwnsTheEraseVerb pins the UI against a rename that would orphan the
+// handler. Erasing the software moved into the Reset modal as one of two scopes, so
+// the page no longer has an Erase button of its own: it has a firmware checkbox that
+// reaches the same endpoint. The typed-word ceremony stays gone (the operator ended it
+// on 2026-10-15, bench) and the hub's payload gate stays, because that gate protects
+// every caller that is not this page.
+func TestResetModalOwnsTheEraseVerb(t *testing.T) {
 	page := hubIndexHTML(t)
-	for _, want := range []string{`id="ob-lonely"`, `id="ob-lonely-go"`} {
+	for _, want := range []string{`id="rt-mask"`, `id="rt-firmware"`, `id="rt-settings"`, `id="rt-go"`} {
 		if !strings.Contains(page, want) {
-			t.Errorf("index.html has no %s — the lonely door lost a part of itself", want)
+			t.Errorf("index.html has no %s — the reset modal lost a part of itself", want)
 		}
 	}
-	for _, gone := range []string{`id="ob-lonely-word"`, "<b>LONELY</b>"} {
+	// The erased door's old controls must not linger unwired: a hidden button that
+	// nothing shows is a bug waiting for a CSS change to make it visible.
+	for _, gone := range []string{`id="ob-lonely"`, `id="ob-lonely-go"`, `id="ob-lonely-word"`} {
 		if strings.Contains(page, gone) {
-			t.Errorf("index.html still carries %s: the lonely door asks for a typed word again", gone)
+			t.Errorf("index.html still carries %s, a control app.js no longer wires", gone)
+		}
+	}
+	for _, gone := range []string{"<b>LONELY</b>", `id="ff-lonely-word"`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("index.html still carries %s: the erase door asks for a typed word again", gone)
 		}
 	}
 	app := readAppJS(t)
 	if !strings.Contains(app, `"/api/lonely"`) || !strings.Contains(app, `confirm: "LONELY"`) {
 		t.Error(`app.js never posts /api/lonely with confirm: "LONELY"`)
 	}
-	if !strings.Contains(app, `ob-lonelyrow`) {
-		t.Error("app.js never shows or hides #ob-lonelyrow, so the door sits on unwired orbs")
+	// Firmware erase is the checkbox that reaches the handler, and it implies the
+	// settings scope rather than sitting beside it independently.
+	go2 := blockContaining(t, app, `$("#rt-go").onclick`)
+	if !strings.Contains(go2, `$("#rt-firmware").checked`) {
+		t.Error("the reset modal never reads the firmware checkbox, so the erase verb is unreachable")
 	}
-	if strings.Contains(app, "ob-lonely-word") {
-		t.Error("app.js still wires #ob-lonely-word, an element the page no longer has")
+	if strings.Contains(app, "ob-lonelyrow") {
+		t.Error("app.js still wires the retired #ob-lonelyrow")
 	}
 }
 

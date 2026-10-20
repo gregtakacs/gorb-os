@@ -22,7 +22,7 @@ import (
 //     walking the directory and re-verifying the header name, so a crafted id can
 //     select nothing that is not a real, loadable file.
 //
-// So install and delete carry ?id=, exactly as h_theme_install and h_theme_del read
+// So store and delete carry ?id=, exactly as h_bundle_install and h_theme_del read
 // them, and an upload carries no name at all: the bytes carry it and
 // orb_theme_upload_end() decides where they land. The only client-controlled upload
 // decision is ?overwrite=1, which governs whether a verified file may replace a
@@ -150,16 +150,18 @@ func (c *Client) ThemeList(ip string) (*ThemeList, error) {
 	return &l, nil
 }
 
-// ThemeInstall queues POST /api/v1/sd/install?id=. The id is the one that row came
-// back with: a caller cannot name a card file, and h_theme_install answers 400 before
-// the card is touched if it is not 12 lowercase hex. The device replies as soon as the
-// job is queued and reboots itself once the copy verifies, so a nil error means
-// "accepted", never "the glass changed".
-func (c *Client) ThemeInstall(ip, id string) (json.RawMessage, error) {
+// ThemeStore queues POST /api/v1/sd/bundle?id= — the FORMAT 3 store door
+// (orb_theme_post_bundle), the only route to a card theme now the FORMAT 2 install door
+// is gone. The id is the one that row came back with: a caller cannot name a card file,
+// and h_bundle_install answers 400 before the card is touched if it is not 12 lowercase
+// hex. A nil error means the store job was queued; it does NOT mean the glass changed —
+// the store door answers reboot:none on purpose, because there is no FORMAT 3 compositor
+// to draw a stored bundle until P6.5. The try witness on the row is where the outcome lands.
+func (c *Client) ThemeStore(ip, id string) (json.RawMessage, error) {
 	if err := CheckThemeID(id); err != nil {
 		return nil, err
 	}
-	return c.devicePost(ip, "/api/v1/sd/install?id="+url.QueryEscape(id), nil, "")
+	return c.devicePost(ip, "/api/v1/sd/bundle?id="+url.QueryEscape(id), nil, "")
 }
 
 // ThemeDefault queues the same job for the built-in fallback face. It takes no

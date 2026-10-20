@@ -2132,7 +2132,7 @@ function themeRow(t, state, list) {
   use.disabled = !t.ok || t.active;
   use.onclick = async () => {
     use.disabled = true;
-    state.textContent = "installing " + t.name + " — the orb copies it and restarts itself";
+    state.textContent = "storing " + t.name + " — the orb copies it to the card; the dial updates when P6.5 lands";
     try { await themePost("/api/theme/install", { ip: themeIP, id: t.id }); }
     catch (e) { state.textContent = "install refused: " + e.message; }
     use.disabled = false;

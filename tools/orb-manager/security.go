@@ -347,8 +347,11 @@ var deviceRoutes = map[string][]string{
 	// answers is its own 192.168.4.1. A hub that could drive /wifi/ap but not /wifi/mode
 	// could open an isolation it could never close, which is a trap and not a feature.
 	// POST only; the current mode already reads off /api/v1/status.
-	"/api/v1/wifi/mode":  {http.MethodPost},
-	"/api/v1/sd/install": {http.MethodPost},
+	"/api/v1/wifi/mode": {http.MethodPost},
+	// h_fb: the one-shot frame capture over the PSRAM mirror, same gate as /api/v1/screen.
+	// It reads pixels and changes nothing. P6 removed the FORMAT 2 install door; the
+	// store route below is now the only way to commit a card theme.
+	"/api/v1/fb":         {http.MethodGet},
 	"/api/v1/sd/default": {http.MethodPost},
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},

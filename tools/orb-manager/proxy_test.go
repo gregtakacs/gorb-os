@@ -182,7 +182,7 @@ func TestProxyRouteAndMethodAllowlist(t *testing.T) {
 		{http.MethodGet, "/api/v1/status", http.StatusOK},
 		{http.MethodGet, "/api/v1/sd", http.StatusOK},
 		{http.MethodGet, "/api/v1/wifi/scan", http.StatusOK},
-		{http.MethodPost, "/api/v1/sd/install", http.StatusOK},
+		{http.MethodPost, "/api/v1/sd/bundle", http.StatusOK},
 		{http.MethodPost, "/api/v1/reboot", http.StatusOK},
 		{http.MethodPost, "/api/v1/config", http.StatusOK},
 		// The device's raw-image OTA endpoint. The hub's rule is that firmware comes
@@ -190,7 +190,7 @@ func TestProxyRouteAndMethodAllowlist(t *testing.T) {
 		{http.MethodPost, "/api/v1/ota", http.StatusForbidden},
 		// Not a route the firmware registers, in any spelling.
 		{http.MethodGet, "/api/v1/secrets", http.StatusForbidden},
-		{http.MethodGet, "/api/v1/sd/install", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/sd/bundle", http.StatusForbidden},
 		// Methods the firmware registers for none of these.
 		{http.MethodDelete, "/api/v1/status", http.StatusForbidden},
 		{http.MethodPut, "/api/v1/config", http.StatusForbidden},

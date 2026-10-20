@@ -53,15 +53,18 @@ func (s *Server) handleThemeList(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, list)
 }
 
-// handleThemeInstall queues an install on the orb. The device answers when the job is
-// queued and reboots itself once the copy verifies, so the reply is not a claim that
-// the glass changed; the caller re-reads the list and the orb's status for that.
+// handleThemeInstall queues a FORMAT 3 store on the orb (POST /api/v1/sd/bundle). The
+// store door answers as soon as the job is queued and does NOT reboot or flip the dial —
+// there is no FORMAT 3 compositor until P6.5 — so the reply is never a claim that the
+// glass changed; the caller re-reads the row's try witness for the outcome. The route keeps
+// its /api/theme/install name so the flip page's button needs no change; only the device
+// verb it dials moved with the FORMAT 2 door.
 func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.themeTarget(w, r, true)
 	if !ok {
 		return
 	}
-	raw, err := s.device.ThemeInstall(t.IP, t.ID)
+	raw, err := s.device.ThemeStore(t.IP, t.ID)
 	s.themeReply(w, raw, err)
 }
 

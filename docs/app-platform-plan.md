@@ -4083,6 +4083,26 @@ anchoring windows on the last clock line reads the capture's own open-reset as a
 m5_flip.sh now anchors on the press's host wall time with a -2 s grace — a +3 s one
 swallowed a real boundary that landed +0.86 s after the ack.
 
+**§26 CLOSED 2026-10-20 — the first-boot ruling, and the flip benched on orb-A.** The
+owner ruled the last open §26 question: an orb with no theme ever arriving displays the
+themeless default with the digital clock — the shelf state stands; no code change, because
+that is exactly the default leg slice 3 ships (draw slot A; the flashed bank carries the
+av-kit re-bake as the fifth home; `clock_themes` draws the dial over it either way). The
+`"card"` migration question died obsolescent with the alias deletion (`7f30bbb`): orb-A's
+NVS was read on the bench and already says `"default"` — the §24.9 restore wrote it back —
+so no board on this bench holds the word, and the host table's two dead-word vectors plus
+the revived-word mutation are the whole remaining proof. **Bench PAID on orb-A (`.32`, fw
+`v1.1.0+1dbad79`): `bench_flip.sh` M5_FLIP PASS** — boot ledger `live:"default"` drawing
+`source:"slot-A"` (the ruled first-boot state observed live), two stores `reboot:none`
+with no boundary (bundle_ms 4587/4787, PSRAM unchanged), the flip logged `flipped to
+"av-kit" (slot-B)`, `rst:0xc` 1 s after the ack, re-lease reported `live:"slot-B"` with
+the av-kit row active, `sd/default` restored `live:"default"`. The bench scripts that run
+this gate are now clone-bound and renamed (`1dbad79`): `tools/m5_*.sh` → `tools/bench_*.sh`,
+`ORB` defaults from `.orb-target`'s `ORB_IP` with a loud refuse on any override naming
+another host, and `bench_store.sh` carries the same wall-time anchor fix `bench_flip.sh`
+demanded — its clock-line anchor read empty on the base face and the empty anchor turned
+the capture's own open-reset into a false flip FAIL.
+
 
 ## 27 — P6.5(3) lands: the FORMAT 2 ingest door is gone, and P6 closes — 2026-10-20, `7c0fd4b`
 

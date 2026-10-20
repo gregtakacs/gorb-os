@@ -358,6 +358,13 @@ uint32_t    orb_theme_bundle_bytes(void)   { return s_bundle_bytes; }
 
 typedef enum { BOOT_ART_DEFAULT = 0, BOOT_ART_CARD = 1 } boot_art_t;
 
+/* Which slot the dial is actually drawing, resolved once by orb_theme_boot(). This is
+ * the only honest answer to "which slot must an install never erase", so it is what
+ * install_target() alternates against. It starts on the default because a board that
+ * has not resolved yet is drawing nothing, and the target that follows from that —
+ * slot B — is the one that can never damage what is on the glass. */
+static boot_art_t s_art = BOOT_ART_DEFAULT;
+
 /* Which slot the dial draws. Anything that is not the card choice — "default",
  * junk, a key NVS cannot read — is the default, which is the answer that is
  * correct when the owner never chose and the answer that keeps the dial working
@@ -376,11 +383,30 @@ static boot_art_t boot_resolve(const char *live, const bool b_is_bundle)
     return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
 }
 
-/* Slot B, always. Slot A is what `idf.py flash` wrote and what the factory dial
- * reads its pixels from, and the bug this replaces (install into whichever slot
- * is not live) aimed the second install at A and erased the default with it. The
- * serial that goes in the new header still comes from whatever B last held. */
-static uint32_t install_target(void) { return SLOT_B_HDR; }
+/* The ping-pong (§26 slice 3, owner ruling 2026-10-20): install into whichever slot
+ * the dial is NOT drawing. This is the rule ruling D13 deleted, correct again now that
+ * D13 is retired — the flashed default is no longer sacred, so slot A is a legal target
+ * and the second install destroys it, with reflash as the sanctioned recovery.
+ *
+ * What survives D13 is the invariant underneath it, which was always the real point:
+ * a store never touches the slot being drawn, so a copy interrupted at any moment leaves
+ * the live header intact and the dial drawing what it drew before. Slot A's protection
+ * was one consequence of that; it is not the rule itself.
+ *
+ * Callers latch this once and pass the same value to the serial read, the erase, the
+ * copy and the header write. Recomputing it per call would let a flip between two of
+ * those steps aim the write at a slot the erase emptied. */
+static uint32_t install_target(boot_art_t live)
+{
+    return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;
+}
+
+/* The slot's name for the log, derived from the same base the copy used — so the
+ * sentence a store prints cannot disagree with the slot it wrote. */
+static const char *slot_name(uint32_t hdr_base)
+{
+    return (hdr_base == SLOT_A_HDR) ? "slot-A" : "slot-B";
+}
 
 
 /* ------------------------------------------------------------------------- *
@@ -888,19 +914,25 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     }
     h.geom_off = SLOT_GEOM_OFF;
 
-    /* The serial counts up over whatever the slot held; a header that cannot be read
-     * restarts the count — one slot is in play and nothing compares two of them.
-     * FORMAT 3 only: FORMAT 2 is retired. */
+    /* One target for the whole store. Latched here, before the first read, so the
+     * serial probe, the copy, the header erase and the header write cannot be driven by
+     * four separate answers even if the live choice were to change underneath us.
+     *
+     * The serial counts up over whatever THIS slot held; a header that cannot be read
+     * restarts the count. Under the ping-pong the slot may hold the flashed default
+     * rather than a previous install, which is exactly the case D13 protected and this
+     * slice spends: the count is per-slot and nothing compares the two of them. */
+    const uint32_t tgt = install_target(s_art);
     uint32_t raw[W_WORDS];
     uint32_t serial = 1;
-    if (esp_partition_read(p, install_target(), raw, sizeof raw) == ESP_OK) {
+    if (esp_partition_read(p, tgt, raw, sizeof raw) == ESP_OK) {
         orb_bundle3_hdr_t o3;
         if (orb_bundle3_hdr_parse(raw, &o3) == NULL)   serial = o3.serial + 1;
     }
 
     staged_mark(id);
     uint32_t art_crc = 0;
-    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, install_target(),
+    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
                                &art_crc, &w);
     card_close(fd);
     heap_caps_free(region);
@@ -909,11 +941,11 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         return install_failed(e, w, why, whysz);
     }
 
-    const esp_err_t ee = esp_partition_erase_range(p, install_target(), THEME_SECTOR);
+    const esp_err_t ee = esp_partition_erase_range(p, tgt, THEME_SECTOR);
     if (ee == ESP_OK) {
         uint32_t hdr[W_WORDS];
         build_slot_hdr3(hdr, &h, art_crc, serial, file_geom_crc);
-        e = esp_partition_write(p, install_target(), hdr, sizeof(hdr));
+        e = esp_partition_write(p, tgt, hdr, sizeof(hdr));
         if (e != ESP_OK) w = "could not make the new slot live";
     } else {
         e = ee;
@@ -926,8 +958,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     staged_clear();
     s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     s_bundle_bytes = h.art_size;
-    ESP_LOGI(TAG, "bundle \"%s\" (%s) in slot-B in %u ms — stored, and not yet chosen",
-             h.name, id, (unsigned)s_bundle_ms);
+    ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, and not yet chosen",
+             h.name, id, slot_name(tgt), (unsigned)s_bundle_ms);
     return ESP_OK;
 }
 
@@ -1107,13 +1139,20 @@ esp_err_t orb_theme_boot(void)
     s_damage_id[0] = '\0';
     s_damage_why[0] = '\0';
 
-    /* Slot B is the only installed theme there is to read. A carries no header and is
-     * the flashed default the leg at the bottom reads anyway. §26 (P6.5): a slot now
-     * holds a FORMAT 3 bundle or nothing — the FORMAT 2 reader is retired — so the
-     * header is sniffed once and parsed through the bundle door. A slot that claims
-     * FORMAT 3 but whose header will not check is neither drawable nor empty; it gets
-     * its own damage sentence (§24.7's lesson that a FORMAT 3 file is never described
-     * by a generic "no theme"). */
+    /* Slot B is the only installed theme there is to read TODAY, and the reason is the
+     * missing flip door rather than the layout: nothing can yet set the choice to "card",
+     * so nothing can ever draw an A-installed bundle, so alternation stays inert and the
+     * store's target remains B. §26 (P6.5): a slot holds a FORMAT 3 bundle or nothing —
+     * the FORMAT 2 reader is retired — so the header is sniffed once and parsed through
+     * the bundle door. A slot that claims FORMAT 3 but whose header will not check is
+     * neither drawable nor empty; it gets its own damage sentence (§24.7's lesson that a
+     * FORMAT 3 file is never described by a generic "no theme").
+     *
+     * WHEN THE FLIP DOOR LANDS this sniff and the choice beside it have to become
+     * slot-general together: "card" names a slot, boot reads the header of the slot the
+     * choice points at, and the other slot becomes the default leg. Shipping a choose
+     * door on top of this B-only read is the mistake to avoid — it would let an owner
+     * pick a bundle boot then refuses to look for. */
     orb_bundle3_hdr_t b3;
     bool slot_is_bundle = false;
     bool slot_claims3 = false;
@@ -1142,7 +1181,8 @@ esp_err_t orb_theme_boot(void)
         else        strlcpy(s_staged_id, staged, sizeof s_staged_id);
     }
 
-    if (boot_resolve(s_live, slot_is_bundle) == BOOT_ART_CARD) {
+    s_art = boot_resolve(s_live, slot_is_bundle);
+    if (s_art == BOOT_ART_CARD) {
         /* The chosen slot holds a bundle: its clock section is the dial, and a refusal
          * names itself on the row rather than silently landing on the default. */
         const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B", SLOT_B_HDR, false);
@@ -1178,6 +1218,14 @@ esp_err_t orb_theme_boot(void)
     } else {
         ESP_LOGI(TAG, "no installed theme — reading the flashed default");
     }
+    /* Every path from here draws the default, so the card answer above is void for
+     * targeting purposes even when it was the owner's choice: a card that would not
+     * load is not on the glass, and the ping-pong keys on what IS. Leaving s_art on
+     * CARD here would aim the next store's erase at the slot being drawn — the one
+     * failure the invariant exists to prevent. It is corrected at the source rather
+     * than at each install, so the two can never disagree. */
+    s_art = BOOT_ART_DEFAULT;
+
     /* The default leg (D13 as ruled option A stands): slot A is the flashed bank, the
      * only copy of the factory pixels on the board, and it is mapped — never arena-
      * filled. §26 P6.5: those pixels now ship as a FORMAT 3 bundle, so boot reads slot

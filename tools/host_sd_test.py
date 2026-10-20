@@ -1184,8 +1184,11 @@ MUTATIONS = [
     ("§6 marks another theme's file changed",        "th",
      "    *changed = same_name && (geom_diff || art_diff);", "    *changed = (geom_diff || art_diff);"),
     # The FORMAT 3 store door's ordering, and its no-choose / slot-A rules.
+    # The target is latched once (§26 slice 3), so the anchor names the latch rather than
+    # a call: a store that re-derived the slot per step could erase one slot and write the
+    # other, which is the regression this line exists to catch.
     ("store commits without copying through the streaming writer", "th",
-     "    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, install_target(),",
+     "    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,",
      "    esp_err_t e = ESP_OK; (void)file_art_base;"),
     ("store reboots to show a bundle nobody can draw", "th",
      "esp_err_t orb_theme_post_bundle(const char *id)\n{",

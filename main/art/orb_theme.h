@@ -13,21 +13,27 @@
  * pair left in place as the fallback, which is what keeps `idf.py flash` and the
  * shipped dial working exactly as they did.
  *
- * INSTALL IS ONE SLOT, INSIDE THE `assets` PARTITION (ruling D13, 2026-10-12).
+ * INSTALL ALTERNATES BETWEEN TWO SLOTS INSIDE THE `assets` PARTITION
+ * (§26 slice 3, owner ruling 2026-10-20; superseding ruling D13, 2026-10-12).
  * Two slots exist on the partition, each a 4 KB header followed by a
  * 64 KB-aligned payload:
  *
- *     slot A  header @ 0x000000   payload @ 0x00010000   <- the default, always
- *     slot B  header @ 0x00400000 payload @ 0x00410000   <- the only install target
+ *     slot A  header @ 0x000000   payload @ 0x00010000
+ *     slot B  header @ 0x00400000 payload @ 0x00410000
  *
- * Slot A is the raw bank `idf.py flash` writes and the bank use_baked_in() draws
- * the factory dial from. It is NOT an install target any more, and that is the
- * whole of D13: choosing whichever slot is not currently live used to aim the
- * second install at A, and the second pick on a real device erased the factory
- * default and its fallback with it. Payload and geometry are still written and
- * read back verified BEFORE the header, so an install interrupted at any point —
- * power cut, card pulled, crash — leaves B headerless and invalid, and the boot
- * that follows draws the default. A is the reason that is survivable at all.
+ * A store writes whichever slot the dial is NOT drawing, so the live theme is never
+ * the one being erased. Slot A normally holds what `idf.py flash` wrote — the shipped
+ * av-kit bundle — and it is now a legal target: on the second store the flashed
+ * default is overwritten, and reflashing is the sanctioned recovery. D13 forbade that
+ * because slot A was then the only copy of the factory pixels and the card-less fallback
+ * read from the same region; FORMAT 3 retired both halves of that premise, and the owner
+ * ruled the default expendable rather than finding it a third home.
+ *
+ * Payload and geometry are written and read back verified BEFORE the header, so a store
+ * interrupted at any point — power cut, card pulled, crash — leaves the target slot
+ * headerless and invalid while the slot on the glass keeps its own header. The boot that
+ * follows draws what it drew before. That guarantee is what alternation buys, and it is
+ * independent of which slot is which.
  *
  * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as "default" or
  * "card". It is not a pending operation: nothing installs at boot. Boot reads
@@ -36,8 +42,8 @@
  * verified when it was written, so anything else is corruption, not a state a
  * user is waiting on.
  *
- * A board that has never installed anything reports source "baked-in" and reads
- * its geometry from clock_assets.h.
+ * A board that has never installed anything reports source "slot-A" and draws the
+ * flashed bundle, or the base digital face if slot A holds nothing drawable.
  */
 #pragma once
 

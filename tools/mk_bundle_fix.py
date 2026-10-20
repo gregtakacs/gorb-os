@@ -60,8 +60,16 @@ def probes(d):
     hv = list(struct.unpack("<32I", raw[:128])); hv[ot.W_NAME + 1] ^= 0x20
     out["header"] = os.path.join(d, "b3_header.orbtheme")
     open(out["header"], "wb").write(struct.pack("<32I", *hv) + bytes(raw[128:]))
+    # A FORMAT 2 file: still a theme, must store as one. The real av-kit container
+    # when it is on disk (the bench fixture): a hand-stuffed zero-geometry blob
+    # trips the panel/plausibility gates for reasons that have nothing to do with
+    # the dialect split this arm is proving, and a refused probe proves nothing.
+    src23 = "/tmp/m5_avkit.orbtheme"
     out["format"] = os.path.join(d, "b3_format2.orbtheme")
-    ot.write_container(out["format"], "av-kit", b"\x00" * 260, b"\xA5" * 4096, 464, 464)
+    if os.path.exists(src23):
+        open(out["format"], "wb").write(open(src23, "rb").read())
+    else:
+        ot.write_container(out["format"], "av-kit", b"\x00" * 260, b"\xA5" * 4096, 466, 466)
     out["blob"] = os.path.join(d, "b3_blob.orbtheme")
     open(out["blob"], "wb").write(bytes((i * 9 + 1) & 0xFF for i in range(8192)))
     for k, v in out.items():

@@ -682,6 +682,9 @@ if not _m3:
     sys.exit("THEME3_REFUSAL is gone from orb_theme.c — the accept signal has no "
              "single definition to compare against any more")
 T3_SENT = "".join(re.findall(r'"([^"]*)"', _m3.group(1)))
+if len(T3_SENT.encode("utf-8")) > 56:
+    sys.exit("THEME3_REFUSAL is %d bytes; the try witness holds 56 and the sentence "
+             "would arrive on the row truncated" % len(T3_SENT.encode("utf-8")))
 if th_src.count('"that is a FORMAT 3 app bundle') != 1:
     sys.exit("the FORMAT 3 sentence is defined more than once in orb_theme.c — the "
              "one-definition rule this whole gate rests on is gone")
@@ -1952,6 +1955,12 @@ MUTATIONS = [
     ("the bundle timing never reaches the page", "net",
      "\\\"bundle_ms\\\":%u,\\\"bundle_bytes\\\":%u,",
      "/* P6.4's timing pair removed */"),
+    ("the resolver swallows the header's own refusal", "th",
+     "if (cr) { r->why = cr; return false; }                /* damaged or foreign format */",
+     "if (cr) return false;"),
+    ("the door speaks R4's identity line over the real reason", "th",
+     "    if (!r.verified && r.why) { *why = r.why;                                       return -1; }\n",
+     ""),
 ]
 
 def run_mutations():
@@ -2447,6 +2456,7 @@ def install_lint():
     from and no slot to erase.
     """
     lines = _code_only(th_src).split("\n")
+    raw_lines = th_src.split("\n")
     spans = {}
     for n, a, b in _defs(lines):
         spans.setdefault(n, (a, b))
@@ -2607,6 +2617,37 @@ def install_lint():
             print("FAIL orb_theme_upload_end() verifies after the rename — the window "
                   "where a half-checked file carries a loadable name is the C8 bug")
             rc = 1
+    # P6.4's second hardware lesson: a resolver that swallows the header's own
+    # refusal makes R4's identity sentence the door's only words, and those words
+    # are a lie about a well-named file of another format. Both ends pinned.
+    if "resolve_entry" in spans:
+        ra, rb = spans["resolve_entry"]
+        rbody = chr(10).join(lines[ra:rb + 1])
+        if "r->why = cr" not in rbody:
+            print("FAIL resolve_entry() drops the header's refusal — the door can only "
+                  "answer R4's identity line about a file whose real problem is format")
+            rc = 1
+    else:
+        print("FAIL no resolve_entry() — the walk's refusal propagation has nothing to "
+              "propagate from"); rc = 1
+    if "card_open_verified_id" in spans:
+        # _code_only blanks string contents, so the identity line is found by its
+        # guard alone; the strings themselves must be read from the raw lines.
+        va, vb = spans["card_open_verified_id"]
+        prop = ident = -1
+        for k in range(va, vb + 1):
+            if prop < 0 and "if (!r.verified && r.why)" in raw_lines[k]:
+                prop = k
+            if ident < 0 and "does not match its id" in raw_lines[k]:
+                ident = k
+        if prop < 0 or ident < 0 or prop > ident:
+            print("FAIL card_open_verified_id() does not speak the propagated reason "
+                  "BEFORE the identity line — order is the whole fix")
+            rc = 1
+    c3 = spans.get("card_open_verified_id3")
+    if not c3 or "*why = r.why" not in chr(10).join(lines[c3[0]:c3[1] + 1]):
+        print("FAIL the FORMAT 3 door lost its twin propagation — the same D26 lie "
+              "would speak at the bundle door about a FORMAT 2 file"); rc = 1
     # The staged sentence is the measured one, in the firmware and on the page.
     if "the dial shows the factory clock" not in th_src:
         print("FAIL STAGED_WHY lost the measured fallback sentence — §24.5(2) proved the "

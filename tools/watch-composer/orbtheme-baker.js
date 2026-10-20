@@ -234,7 +234,16 @@
 
   function setWord(hdr, base, text, nbytes) {
     var enc = new TextEncoder().encode(text);
-    for (var i = 0; i < Math.min(nbytes - 1, enc.length); i++) {
+    // Refuse, never truncate, exactly as orbtheme.py's _setword does: the name inside the
+    // header IS the theme's identity, since the card filename is theme_id of these bytes,
+    // so cutting an over-long one in half would file the theme under the hash of a string
+    // its owner never typed. The studio's nameOk applies the same cap before the bake runs;
+    // this is the backstop for a caller that skipped it. A truncating writer and a refusing
+    // authority are the drift the mirror suite exists to catch.
+    if (enc.length > nbytes - 1) {
+      throw new Error('name is ' + enc.length + ' UTF-8 bytes; the header holds at most ' + (nbytes - 1));
+    }
+    for (var i = 0; i < enc.length; i++) {
       hdr[base + (i / 4 | 0)] |= enc[i] << (8 * (i % 4));
       hdr[base + (i / 4 | 0)] >>>= 0;
     }
@@ -1626,6 +1635,570 @@
     return out;
   }
 
+  /* ---- FORMAT 3: the bundle ------------------------------------------------
+   *
+   * tools/orbbundle.py defines this layout; main/art/orb_bundle.c reads it on the
+   * device; internal/orbnet/themecontainer.go pre-gates it at the hub. This is the
+   * fourth implementation, and the only one a person without a bench or a Go binary can
+   * run — Decision D33 puts the format logic in the browser because the release is a web
+   * page that flashes over Web Serial, so nothing on this path may require a server.
+   * _selftest/headless-bundle3.test.js holds these bytes against the Python's, and the
+   * file both reproduce is the committed tests/fixtures/format3-pair.orbtheme, which the
+   * C door verifies with `make_bundle_fixture.py --verify-c`.
+   *
+   * FORMAT 3 is FORMAT 2's header with two stamps swapped and word 9's meaning changed:
+   * where a v2 container kept scr_w it keeps n_sections, since each section names its own
+   * panel. One container themes several apps, and the element table — not a dialect's
+   * field list — is how a theme says what it paints (D32, R1). */
+  var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;
+  var SCALARS_N = THEME_FIELDS.length;   // 26: the clock dialect, carried opaque (D31)
+  var SPR_WORDS = 4;                     // off, size, w, h — one bank entry's byte range
+  var BLOB_HEAD = 4 + SCALARS_N;         // counts + scalars, before the element table
+  var GEOM_CAP3 = 0xF000;                // orb_theme.c SLOT_GEOM_CAP
+  var SLOT_CAP3 = 0x00400000, SLOT_ART_OFF3 = 0x00010000;
+  var SLOT_ART_CAP3 = SLOT_CAP3 - SLOT_ART_OFF3;   // ORB_THEME_SLOT_CAP: banks' room
+  var SLUG_MAX = 23;                     // ORBAPP_SLUG_MAX - 1: the NUL's room
+
+  /* tools/theme_schema.py's element table. Identity is (class, slot), not a string: the
+   * app's manifest declares slots by class and ordinal, a row names the slot it fills,
+   * and the check in both directions is an integer compare. Fixed width means one u32 per
+   * column, so a later schema appends past scale16 and a shorter reader reads what it
+   * knows — the append-only rule that keeps a column from costing a format bump (D24). */
+  var ELEMENT_FIELDS = [
+    ['n', 'u16'], ['class', 'u8'], ['flags', 'u8'], ['order', 'u8'], ['alpha', 'u8'],
+    ['slot', 'u16'], ['frame0', 'u16'], ['n_frames', 'u16'],
+    ['x', 'i16'], ['y', 'i16'], ['w', 'u16'], ['h', 'u16'],
+    ['pivot_x', 'i16'], ['pivot_y', 'i16'], ['radius', 'u16'],
+    ['degrees', 'u16'], ['scale16', 'u16']
+  ];
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 17 words, 68 bytes a row
+  var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
+  var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
+  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN;
+  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status'];
+  var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
+  var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
+  // R6: whose frames the OS may advance, and which classes cannot animate at all. This
+  // decides the editor's element class for an animated region: an OS-paced region is a
+  // SPRITE row, because a bank or a text row holds app state and a layer is composited.
+  var CLASS_APP_ADV = [CLASS_BANK, CLASS_TEXT, CLASS_STATUS];
+  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS];
+
+  function blankElement() {
+    var r = {};
+    for (var i = 0; i < ELEMENT_FIELDS.length; i++) r[ELEMENT_FIELDS[i][0]] = 0;
+    return r;
+  }
+  function classId(name) {
+    var i = CLASS_NAMES.indexOf(name);
+    return i < 0 ? null : i;
+  }
+  function pad2hex(v) { var s = (v >>> 0).toString(16); while (s.length < 2) s = '0' + s; return s; }
+  function q(s) { return "\x27" + s + "\x27"; }
+  function utf8(s) { return new TextEncoder().encode(String(s)); }
+
+  /* check_element, rule for rule and in its order. Each of these is a thing a reader
+   * would otherwise get wrong quietly: an unknown class id, an order past the depth rungs,
+   * a frame window off the end of the art, an animation on a class that cannot be one.
+   * The editor refuses at the form rather than shipping a table the device paints wrongly
+   * — the refusal direction D26's amendment exists for. */
+  function checkElement(rec, where) {
+    where = where || 'elem';
+    var cls = Math.trunc(rec.class | 0), flags = Math.trunc(rec.flags | 0);
+    var nf = Math.trunc(rec.n_frames | 0), f0 = Math.trunc(rec.frame0 | 0);
+    if (!(cls >= 0 && cls < CLASS_NAMES.length)) {
+      throw new Error(where + '.class: ' + cls + ' is not a class this build knows (0..' +
+        (CLASS_NAMES.length - 1) + ')');
+    }
+    if (flags & ~EF_ALL) {
+      throw new Error(where + '.flags: unknown flag bits 0x' + pad2hex(flags & ~EF_ALL) +
+        ' — a schema this build does not know, refused rather than drawn wrong');
+    }
+    var ord = Math.trunc(rec.order | 0);
+    if (!(ord >= 0 && ord < ELEM_ORDER_N)) {
+      throw new Error(where + '.order: ' + ord + ' is past the dial\u2019s ' + ELEM_ORDER_N + ' depth rungs');
+    }
+    if (nf < 1) {
+      throw new Error(where + '.n_frames: 0 draws nothing, and a declared element that ' +
+        'draws nothing is a row nobody meant to write');
+    }
+    if (f0 + nf > ELEM_FRAMES_MAX) {
+      throw new Error(where + ': frames ' + f0 + '..' + (f0 + nf - 1) +
+        ' run past the art region\u2019s bound of ' + ELEM_FRAMES_MAX);
+    }
+    if (Math.trunc(rec.degrees | 0) >= 36000) {
+      throw new Error(where + '.degrees: ' + rec.degrees + ' is not a direction (0..35999, 100ths)');
+    }
+    if ((flags & EF_OS_ADV) && CLASS_APP_ADV.indexOf(cls) >= 0) {
+      throw new Error(where + ': class ' + q(CLASS_NAMES[cls]) + ' holds app state, so the ' +
+        'OS must not advance its frames — clear the OS_ADV flag and let the app pick');
+    }
+    if (CLASS_NO_ANIM.indexOf(cls) >= 0 && nf !== 1) {
+      throw new Error(where + ': class ' + q(CLASS_NAMES[cls]) + ' is composited, not ' +
+        'animated — it carries one frame, not ' + nf);
+    }
+    // A hand turns about a point inside itself — orbapp.py asks its offer the same
+    // question, so the two directions cannot disagree about one hand.
+    if (cls === CLASS_HAND && rec.w && rec.h) {
+      var px = Math.trunc(rec.pivot_x | 0), py = Math.trunc(rec.pivot_y | 0);
+      var w = Math.trunc(rec.w | 0), h = Math.trunc(rec.h | 0);
+      if (!(px >= 0 && px < w && py >= 0 && py < h)) {
+        throw new Error(where + ': a HAND\u2019s pivot (' + px + ',' + py + ') sits outside ' +
+          'its own ' + w + 'x' + h + ' plate, so it would turn about a point off the glass');
+      }
+    }
+    if ((cls === CLASS_TEXT || cls === CLASS_STATUS) && (rec.radius | 0)) {
+      throw new Error(where + ': class ' + q(CLASS_NAMES[cls]) + ' places glyphs and has no ' +
+        'radius to give it; a non-zero one means a row written for another class');
+    }
+    var s16 = Math.trunc(rec.scale16 | 0);
+    if (s16 && s16 < 16) {
+      throw new Error(where + '.scale16: ' + s16 + ' scales the element below one sixteenth ' +
+        'of its art, which no bake produces by intent');
+    }
+    return rec;
+  }
+
+  /* Whole-table rules: the ones needing two rows to state. An app resolves an element by
+   * (class, slot), so two rows claiming one slot leave it painting one on a coin flip. */
+  function checkTable(recs) {
+    if (recs.length > ELEM_MAX) {
+      throw new Error('element table holds ' + recs.length + ' rows, past the bound of ' + ELEM_MAX);
+    }
+    var seenN = {}, seenSlot = {};
+    for (var i = 0; i < recs.length; i++) {
+      checkElement(recs[i], 'elem[' + i + ']');
+      var n = Math.trunc(recs[i].n | 0);
+      var key = Math.trunc(recs[i].class | 0) + ':' + Math.trunc(recs[i].slot | 0);
+      if (seenN.hasOwnProperty(n)) {
+        throw new Error('elem[' + i + ']: row identity ' + n + ' repeats the row at index ' + seenN[n]);
+      }
+      if (seenSlot.hasOwnProperty(key)) {
+        throw new Error('elem[' + i + ']: two rows claim class ' + q(CLASS_NAMES[Math.trunc(recs[i].class | 0)]) +
+          ' slot ' + Math.trunc(recs[i].slot | 0) + ' (rows ' + seenSlot[key] + ' and ' + i +
+          '), and the app cannot paint both');
+      }
+      seenN[n] = i; seenSlot[key] = i;
+    }
+    return recs;
+  }
+
+  /* Checked pack of a whole table: real rows only, no padding to the cap, and a missing
+   * key is the bake's bug rather than a zero — theme_schema.pack_elements' order. */
+  function packElements(recs, cap) {
+    cap = (cap === undefined) ? ELEM_MAX : cap;
+    checkTable(recs);
+    if (recs.length > cap) {
+      throw new Error('element table: ' + recs.length + ' rows exceed the cap of ' + cap);
+    }
+    var out = [];
+    for (var i = 0; i < recs.length; i++) {
+      for (var k = 0; k < ELEMENT_WORDS; k++) {
+        var name = ELEMENT_FIELDS[k][0], t = ELEMENT_FIELDS[k][1];
+        if (!(name in recs[i])) throw new Error('elem[' + i + '].' + name + ' is missing from the record');
+        out.push(val('elem[' + i + '].' + name, t, recs[i][name]));
+      }
+    }
+    return out;
+  }
+  function unpackElements(words, n) {
+    if (words.length < n * ELEMENT_WORDS) {
+      throw new Error('elem: blob holds ' + words.length + ' words, too few for ' + n +
+        ' records of ' + ELEMENT_WORDS);
+    }
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var r = {};
+      for (var k = 0; k < ELEMENT_WORDS; k++) {
+        r[ELEMENT_FIELDS[k][0]] = sext(words[i * ELEMENT_WORDS + k] >>> 0, ELEMENT_FIELDS[k][1]);
+      }
+      out.push(r);
+    }
+    return out;
+  }
+
+  /* check_slug, and the D29 budget gate in the device's own sums: the boundary is what
+   * the INSTALL asks for, not the file's shape (§21's lesson). Geometry installs at slot
+   * +0x1000 with a sector-aligned erase, so 61440 B ends exactly on the banks at
+   * +0x00010000 and == cap is legal; the payload has SLOT_CAP - SLOT_ART_OFF and the
+   * trailing pad never installs, so == cap is legal there too. The sentences are
+   * orb_theme.c's copy_into words, which the composer shows and the reader and the device
+   * repeat verbatim (D26): a bake that emits what the dial refuses spends an upload and an
+   * erase to teach what the host already knew. */
+  var SLUG_RE = /^[a-z0-9_]+$/;   // the same rule on bytes: read it before decoding it
+  function checkSlug(slug) {
+    // Length and charset share one sentence, as they do in check_slug: a slug of the wrong
+    // LENGTH is the same mistake to the caller as one of the wrong characters, and the
+    // byte-length check below is pack_blob's separate, later promise about the wire.
+    if (typeof slug !== 'string' || slug.length < 1 || slug.length > SLUG_MAX || !SLUG_RE.test(slug)) {
+      throw new Error('bundle slug ' + q(slug) + ' is not lowercase a-z 0-9 _ of 1..' +
+        SLUG_MAX + ' chars');
+    }
+    var n = utf8(slug).length;
+    if (n < 1 || n > SLUG_MAX) {
+      throw new Error('bundle slug ' + q(slug) + ' is ' + n + ' bytes, outside 1..' + SLUG_MAX);
+    }
+    return slug;
+  }
+  function checkBudget3(regionLen, artLen) {
+    if (regionLen > GEOM_CAP3) {
+      throw new Error('geometry region is ' + regionLen + ' B; the dial\u2019s table area ' +
+        'holds ' + GEOM_CAP3 + ' B — geometry would overrun the pixels');
+    }
+    if (artLen > SLOT_ART_CAP3) {
+      throw new Error('pixel payload is ' + artLen + ' B; a theme slot holds ' + SLOT_ART_CAP3 +
+        ' B — theme is larger than a slot');
+    }
+  }
+
+  /* One section's geometry blob, self-describing from its count head, exactly as
+   * orbbundle.pack_blob lays it out: 4 count words, the 26 scalars (the clock dialect,
+   * absent ones zero — D31), the element table, the sprite catalogue, then the slug bytes
+   * and their NUL pad. The elements pass check_table HERE, so an element a theme cannot
+   * even name never reaches a card. */
+  function packBlob3(slug, elements, scalars, sprites) {
+    var elems = (elements || []).slice();
+    checkTable(elems);
+    var sb = utf8(slug);
+    if (sb.length < 1 || sb.length > SLUG_MAX) {
+      throw new Error('bundle slug ' + q(slug) + ' is ' + sb.length + ' bytes, outside 1..' + SLUG_MAX);
+    }
+    var scal = new Array(SCALARS_N).fill(0), name, i, k, hit;
+    for (name in (scalars || {})) {
+      hit = -1;
+      for (i = 0; i < THEME_FIELDS.length; i++) if (THEME_FIELDS[i][0] === name) { hit = i; break; }
+      if (hit < 0) {
+        throw new Error('blob ' + q(slug) + ' names scalar ' + q(name) + ' the dialect does not carry');
+      }
+      scal[hit] = val(slug + '.scalars.' + name, THEME_FIELDS[hit][1], scalars[name]);
+    }
+    var sprWords = [], s = sprites || [];
+    for (i = 0; i < s.length; i++) {
+      for (k = 0; k < 4; k++) {
+        var f = ['off', 'size', 'w', 'h'][k];
+        if (!(f in s[i])) throw new Error('blob ' + q(slug) + ' sprite[' + i + '] is missing ' + q(f));
+        sprWords.push(val(slug + '.sprite[' + i + '].' + f, 'u32', s[i][f]));
+      }
+    }
+    if (elems.length > 0xFFFF || sprWords.length / SPR_WORDS > 0xFFFF) {
+      throw new Error('blob ' + q(slug) + ' outgrew its u16 counts');
+    }
+    var words = [elems.length, sprWords.length / SPR_WORDS, SCALARS_N, sb.length].concat(scal);
+    if (elems.length) words = words.concat(packElements(elems));
+    words = words.concat(sprWords);
+    var out = wordsToBytes(words), pad = (-sb.length) & 3;
+    var all = new Uint8Array(out.length + sb.length + pad);
+    all.set(out, 0);
+    all.set(sb, out.length);
+    return all;
+  }
+  function unpackBlob3(blob) {
+    if (blob.length < BLOB_HEAD * 4) {
+      throw new Error('section blob is shorter than its counts and scalars');
+    }
+    var v = new DataView(blob.buffer, blob.byteOffset, blob.length);
+    var nElem = v.getUint32(0, true), nSpr = v.getUint32(4, true);
+    var nScal = v.getUint32(8, true), nSlug = v.getUint32(12, true);
+    if (nScal !== SCALARS_N) {
+      throw new Error('blob carries ' + nScal + ' scalars; this dialect has ' + SCALARS_N);
+    }
+    var want = (4 + nScal + nElem * ELEMENT_WORDS + nSpr * SPR_WORDS) * 4 + nSlug + ((-nSlug) & 3);
+    if (want !== blob.length) {
+      throw new Error('blob is ' + blob.length + ' bytes; its counts say ' + want +
+        ' — a torn file, not a short one');
+    }
+    if (nElem > 0xFFFF || nSpr > 0xFFFF) throw new Error('blob outgrew its u16 counts');
+    var scal = [], words = [], i;
+    for (i = 0; i < nScal; i++) scal.push(v.getUint32(16 + i * 4, true));
+    for (i = 0; i < nElem * ELEMENT_WORDS; i++) words.push(v.getUint32(BLOB_HEAD * 4 + i * 4, true));
+    var elems = nElem ? unpackElements(words, nElem) : [];
+    var off = (BLOB_HEAD + nElem * ELEMENT_WORDS) * 4, sprs = [];
+    for (i = 0; i < nSpr; i++) {
+      sprs.push({ off: v.getUint32(off + i * 16, true), size: v.getUint32(off + i * 16 + 4, true),
+                  w: v.getUint32(off + i * 16 + 8, true), h: v.getUint32(off + i * 16 + 12, true) });
+    }
+    off += nSpr * SPR_WORDS * 4;
+    // The slug travels as BYTES, because the device reader memcpys them without decoding
+    // and a forged blob can hold anything at all. Latin-1 keeps the round trip lossless
+    // and byte-reversible, which is the reader's only promise here.
+    var sb = blob.subarray(off, off + nSlug), s = '';
+    for (i = 0; i < sb.length; i++) s += String.fromCharCode(sb[i]);
+    var sc = {};
+    for (i = 0; i < SCALARS_N; i++) sc[THEME_FIELDS[i][0]] = sext(scal[i], THEME_FIELDS[i][1]);
+    return { slug: s, slug_b: sb, elements: elems, sprites: sprs, scalars: sc };
+  }
+
+  /* The index region: a two-word head, then one fixed 40-byte record per section.
+   * IDX_ORDER / IDX_OFF / IDX_TYPES are orbbundle.IDX_ORDER and its "<4H7I2H" wire,
+   * spelled out as offsets because this record is where an assumed alignment bites: the
+   * record leads with FOUR u16s (slug_off, slug_len, abi_min, abi_max), so n_elem sits at
+   * 8 and not at 4, and a reader that assumes a u32 first reads every later field eight
+   * bytes early. The Go gate shipped that bug and the Python fixture caught it.
+   *
+   * geom_off is stored although the walk derives it: the reader requires stored ==
+   * derived, so a blob moved by a repack tool says where to look and a torn file
+   * contradicts itself out loud. */
+  var IDX_ORDER = ['slug_off', 'slug_len', 'abi_min', 'abi_max', 'n_elem', 'geom_off',
+                   'geom_size', 'geom_crc', 'art_off', 'art_size', 'art_crc', 'scr_w', 'scr_h'];
+  var IDX_OFF   = [0, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32, 36, 38];
+  var IDX_TYPES = ['u16', 'u16', 'u16', 'u16', 'u32', 'u32', 'u32', 'u32',
+                   'u32', 'u32', 'u32', 'u16', 'u16'];
+  function packIndex3(recs) {
+    var words = [recs.length, 0];
+    for (var i = 0; i < recs.length; i++) {
+      var row = new Array(IDX_WORDS).fill(0);
+      for (var k = 0; k < IDX_ORDER.length; k++) {
+        var f = IDX_ORDER[k];
+        if (!(f in recs[i])) throw new Error('index[' + i + '].' + f + ' is missing from the record');
+        var w = val('index[' + i + '].' + f, IDX_TYPES[k], recs[i][f]);
+        row[IDX_OFF[k] >> 2] = (IDX_OFF[k] & 2) ? (row[IDX_OFF[k] >> 2] | (w << 16))
+                                                : (row[IDX_OFF[k] >> 2] | w);
+      }
+      words = words.concat(row);
+    }
+    return wordsToBytes(words);
+  }
+  function unpackIndex3(region) {
+    var v = new DataView(region.buffer, region.byteOffset, region.length);
+    var n = v.getUint32(0, true);
+    if (!(n >= 1 && n <= SECT_MAX)) {
+      throw new Error('index claims ' + n + ' sections; a bundle holds 1..' + SECT_MAX);
+    }
+    if (region.length < 8 + n * IDX_WORDS * 4) {
+      throw new Error('index claims ' + n + ' sections in ' + region.length + ' region bytes — torn file');
+    }
+    var recs = [];
+    for (var i = 0; i < n; i++) {
+      var o = 8 + i * IDX_WORDS * 4, r = {};
+      for (var k = 0; k < IDX_ORDER.length; k++) {
+        r[IDX_ORDER[k]] = (IDX_TYPES[k] === 'u16') ? v.getUint16(o + IDX_OFF[k], true)
+                                                   : v.getUint32(o + IDX_OFF[k], true);
+      }
+      recs.push(r);
+    }
+    return { n: n, recs: recs };
+  }
+
+  /* FORMAT 2's header stamped FORMAT 3: the same 128 bytes and the same crc span, with
+   * word 9 carrying n_sections where a v2 container kept scr_w. */
+  function packHeader3(o) {
+    var hdr = new Array(HDR_WORDS).fill(0);
+    hdr[0] = MAGIC >>> 0; hdr[1] = FORMAT3; hdr[2] = GEOM_ABI3; hdr[3] = HDR_WORDS * 4;
+    hdr[4] = HDR_WORDS * 4;
+    // geom_size/geom_crc/art_size/art_crc/n_sections come out of the writer's own sums and
+    // are u32 by construction; serial and baked_ms are the caller's, and pack_header3 stamps
+    // them with _u(), which WRAPS. A wall-clock stamp (Date.now() is past 1.7e12 in 2026)
+    // must wrap here exactly as it does in Python, so this masks rather than refusing.
+    hdr[5] = (o.geomSize >>> 0); hdr[6] = (o.geomCrc >>> 0);
+    hdr[7] = (o.artSize >>> 0);  hdr[8] = (o.artCrc >>> 0);
+    hdr[9] = (o.nSections >>> 0); hdr[10] = 0;
+    hdr[11] = (o.serial >>> 0);
+    hdr[12] = (o.bakedMs >>> 0);
+    hdr[13] = (o.artOff >>> 0);
+    setWord(hdr, W_NAME, o.name, NAME_MAX);
+    hdr[W_HDR_CRC] = hdrCrc(hdr);
+    return wordsToBytes(hdr);
+  }
+
+  /* Emit one FORMAT 3 bundle, byte for byte what tools/orbbundle.py's write_bundle
+   * writes. Slug order is normalised here: a person reading an inspector should not have
+   * to know the bake's build order, and the reader must find a slug the same way twice.
+   *
+   * Pass 1 sizes the region; pass 2 stamps the records once every offset exists, because
+   * a record's blob offset is where its own name lives. The budget gate is the INSTALL
+   * sum and not the file's shape, and it fires before a byte of art is encoded.
+   *
+   * o = {name, sections: [{slug, elements, scalars, sprites, art, abi_min, abi_max,
+   * scr_w, scr_h}], serial, bakedMs}. Section keys are orbbundle.write_bundle's own names,
+   * so the vectors a mirror test feeds this function are the vectors it feeds the Python
+   * with no translation layer to drift. `art` is a Uint8Array of already-encoded pixels:
+   * the baker's plane encoders fill it, and this function looks inside it no further than
+   * the sprite ranges. */
+  function writeBundle3(o) {
+    var sections = (o.sections || []).slice();
+    if (!o.name) throw new Error('a bundle needs a name: it is the theme_id input (R4)');
+    var seen = {}, s, i;
+    for (i = 0; i < sections.length; i++) {
+      var slug = checkSlug(sections[i].slug);
+      if (seen.hasOwnProperty(slug)) {
+        throw new Error('bundle lists app ' + q(slug) + ' twice; one slug resolves to one ' +
+          'section and cannot hold two answers');
+      }
+      seen[slug] = 1;
+    }
+    if (!(sections.length >= 1 && sections.length <= SECT_MAX)) {
+      throw new Error('a bundle holds 1..' + SECT_MAX + ' app sections, not ' + sections.length);
+    }
+    sections.sort(function (a, b) { return a.slug < b.slug ? -1 : (a.slug > b.slug ? 1 : 0); });
+
+    var blobs = [], arts = [];
+    for (i = 0; i < sections.length; i++) {
+      s = sections[i];
+      var art = s.art && s.art.length ? s.art : new Uint8Array(0);
+      var sprs = s.sprites || [];
+      for (var k = 0; k < sprs.length; k++) {
+        if ((sprs[k].off >>> 0) + (sprs[k].size >>> 0) > art.length) {
+          throw new Error('section ' + q(s.slug) + ' sprite[' + k + '] runs past its own bank (' +
+            sprs[k].off + '+' + sprs[k].size + ' of ' + art.length + ')');
+        }
+      }
+      if (!(s.elements && s.elements.length) && !art.length) {
+        throw new Error('section ' + q(s.slug) + ' carries neither elements nor art');
+      }
+      blobs.push(packBlob3(s.slug, s.elements, s.scalars, sprs));
+      arts.push(art);
+    }
+
+    var head = 8 + IDX_WORDS * 4 * sections.length, offs = [], run = head;
+    for (i = 0; i < blobs.length; i++) { offs.push(run); run += blobs[i].length; }
+    var artOff = artOffset(run);
+    var recs = [], at = artOff, ends = [], anyArt = false, artJoin = [];
+    for (i = 0; i < sections.length; i++) {
+      s = sections[i];
+      var sb = utf8(s.slug), a = arts[i], blob = blobs[i];
+      recs.push({
+        slug_off: offs[i] + blob.length - ((sb.length + 3) & ~3), slug_len: sb.length,
+        abi_min: s.abi_min === undefined ? GEOM_ABI3 : s.abi_min,
+        abi_max: s.abi_max === undefined ? GEOM_ABI3 : s.abi_max,
+        n_elem: (s.elements || []).length,
+        geom_off: offs[i], geom_size: blob.length, geom_crc: crc32(blob),
+        art_off: at, art_size: a.length, art_crc: a.length ? crc32(a) : 0,
+        scr_w: s.scr_w === undefined ? 0 : s.scr_w, scr_h: s.scr_h === undefined ? 0 : s.scr_h
+      });
+      at += a.length;
+      ends.push(at);
+      at = (at + SECTOR - 1) & ~(SECTOR - 1);
+      if (a.length) { anyArt = true; artJoin.push(a); }
+    }
+    // art_size EXCLUDES the final bank's alignment pad: the installed slot reads art_size
+    // bytes and pads nothing. Inter-bank pad is inside, because the walk that finds each
+    // bank's start has to cross it.
+    var artEnd = 0;
+    for (i = 0; i < ends.length; i++) if (arts[i].length && ends[i] > artEnd) artEnd = ends[i];
+    var artSize = anyArt ? (artEnd - artOff) : 0;
+    var artCrcAll = anyArt ? crc32(concat(artJoin)) : 0;
+    checkBudget3(run, artSize);
+
+    var region = concat([packIndex3(recs)].concat(blobs));
+    var hdr = packHeader3({ geomSize: region.length, geomCrc: crc32(region), artOff: artOff,
+                           artSize: artSize, artCrc: artCrcAll, nSections: sections.length,
+                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name });
+    var out = new Uint8Array(artOff + artSize), p = HDR_WORDS * 4;
+    out.set(hdr, 0);
+    out.set(region, p); p += region.length;
+    for (i = 0; i < arts.length; i++) out.set(arts[i], recs[i].art_off);
+    // The shape is the container plus what the writer had to compute to place it: a caller
+    // filling a progress bar or naming a download wants the sums without re-parsing.
+    return { bytes: out, records: recs, region: region, geomSize: region.length,
+             artOff: artOff, artSize: artSize, geomCrc: crc32(region), artCrc: artCrcAll };
+  }
+
+  /* Re-read a bundle in the device's refusal order — orb_bundle3_hdr_parse's exact
+   * sequence, because a browser that validates in its own order reports a different
+   * reason than the dial will, and the owner then chases a problem the card never had:
+   * magic, format, ABI, header CRC, the D29 caps, the name. The writer calls it on its own
+   * output so a bake cannot ship a file the door would refuse. */
+  function parseBundle3(raw) {
+    if (raw.length < HDR_WORDS * 4) throw new Error('too short to hold a theme header');
+    var v = new DataView(raw.buffer, raw.byteOffset, raw.length);
+    var w = new Array(HDR_WORDS);
+    for (var i = 0; i < HDR_WORDS; i++) w[i] = v.getUint32(i * 4, true);
+    if (w[0] !== (MAGIC >>> 0)) throw new Error('not an .orbtheme file');
+    if (w[1] !== FORMAT3) {
+      throw new Error('theme format ' + w[1] + '; this reader takes format ' + FORMAT3);
+    }
+    if (w[2] !== GEOM_ABI3) {
+      throw new Error('bundle geometry v' + w[2] + '; this build reads v' + GEOM_ABI3 + ' — re-bake it');
+    }
+    var z = w.slice(); z[W_HDR_CRC] = 0;
+    if (w[W_HDR_CRC] !== crc32(wordsToBytes(z))) {
+      throw new Error('container header checksum mismatch — re-copy the file onto the card');
+    }
+    checkBudget3(w[5], w[7]);
+    var len = 0;
+    while (len < NAME_MAX && w[W_NAME + (len >> 2)] !== undefined) {
+      if (((w[W_NAME + (len >> 2)] >>> ((len & 3) * 8)) & 0xFF) === 0) break;
+      len++;
+    }
+    var bytes = new Uint8Array(len);
+    for (i = 0; i < len; i++) bytes[i] = (w[W_NAME + (i >> 2)] >>> ((i & 3) * 8)) & 0xFF;
+    var name = new TextDecoder('utf-8', { fatal: true }).decode(bytes);   // D28: invalid UTF-8 is damage
+    if (!name) throw new Error('theme has no name in its header — re-bake it');
+    return { fmt: w[1], abi: w[2], hdrSize: w[3], geomOff: w[4], geomSize: w[5], geomCrc: w[6],
+             artSize: w[7], artCrc: w[8], nSections: w[9], serial: w[11], bakedMs: w[12],
+             artOff: w[13], name: name };
+  }
+
+  /* The full walk: read_bundle's promises, in read_bundle's order — region bounds, region
+   * CRC, the index head against the header's count, then per section the derived geom_off,
+   * the blob's CRC and length, the slug the index names against the slug the blob answers
+   * to, the ABI pair, the derived art_off, the bank CRC, and finally that the slugs are
+   * strictly sorted. An editor that just wrote a file checks it here, and an editor
+   * loading one gets the same sentence the device would print. */
+  function verifyBundle3(raw) {
+    var h = parseBundle3(raw);
+    if (h.geomOff + h.geomSize > raw.length) throw new Error('geometry region runs past the end of the file');
+    var region = raw.subarray(h.geomOff, h.geomOff + h.geomSize);
+    if (crc32(region) !== h.geomCrc) throw new Error('geometry checksum mismatch — the copy on the card is damaged');
+    if (region.length < 8) {
+      throw new Error('index claims ' + h.nSections + ' sections in ' + region.length + ' region bytes — torn file');
+    }
+    var idx = unpackIndex3(region);
+    if (idx.n !== h.nSections) throw new Error('header names ' + h.nSections + ' sections, the index holds ' + idx.n);
+    if (h.artOff + h.artSize > raw.length) throw new Error('art region runs past the end of the file');
+    var walk = 8 + IDX_WORDS * 4 * idx.n, aoff = h.artOff, out = [], prev = null;
+    for (var i = 0; i < idx.recs.length; i++) {
+      var r = idx.recs[i];
+      if (r.geom_off !== walk) {
+        throw new Error('section ' + i + ' stores geom_off ' + r.geom_off + ' where the walk says ' +
+          walk + ' — the index and the bytes contradict');
+      }
+      walk += r.geom_size;
+      if (walk > region.length) throw new Error('section ' + i + '\u2019s blob range is outside the region');
+      var blob = region.subarray(r.geom_off, r.geom_off + r.geom_size);
+      if (crc32(blob) !== r.geom_crc) throw new Error('section ' + i + ' blob checksum mismatch');
+      var b = unpackBlob3(blob);
+      if (r.slug_off + r.slug_len > h.geomSize) throw new Error('section ' + i + ': the index\u2019s slug and the blob\u2019s disagree');
+      var want = region.subarray(r.slug_off, r.slug_off + r.slug_len);
+      if (want.length !== b.slug_b.length) throw new Error('section ' + i + ': the index\u2019s slug and the blob\u2019s disagree');
+      for (var k = 0; k < want.length; k++) {
+        if (want[k] !== b.slug_b[k]) throw new Error('section ' + i + ': the index\u2019s slug and the blob\u2019s disagree');
+      }
+      if (!(b.slug_b.length >= 1 && b.slug_b.length <= SLUG_MAX) || !SLUG_RE.test(b.slug)) {
+        throw new Error('bundle slug ' + q(b.slug) + ' is not lowercase a-z 0-9 _ of 1..' + SLUG_MAX + ' chars');
+      }
+      if (r.n_elem !== b.elements.length) {
+        throw new Error('section ' + q(b.slug) + ': the index counts ' + r.n_elem + ' elements, the blob carries ' + b.elements.length);
+      }
+      if (r.art_off !== aoff) {
+        throw new Error('section ' + i + ' stores art_off ' + r.art_off + ' where the art walk says ' +
+          aoff + ' — the index and the bytes contradict');
+      }
+      var a = raw.subarray(r.art_off, r.art_off + r.art_size);
+      if (crc32(a) !== r.art_crc) {
+        throw new Error('section ' + q(b.slug) + ' bank checksum mismatch — the copy on the card is damaged');
+      }
+      aoff += (r.art_size + SECTOR - 1) & ~(SECTOR - 1);
+      if (prev !== null && !(prev < b.slug)) {
+        throw new Error('index is not slug-sorted; the resolver and the inspector both walk it in order, and a shuffled one hides a lost section');
+      }
+      prev = b.slug;
+      out.push({ rec: r, blob: b, art: a });
+    }
+    return { header: h, sections: out };
+  }
+
+  /* The resolver's per-section ABI test, which is NOT part of the walk above: the
+   * authority opens a bundle whose sections a given build cannot use, because one container
+   * themes several apps and a current build still resolves the others. The interval form is
+   * what lets one bundle carry a section for a future build, so [3,4] straddles v3 and is
+   * usable, while [1,2] is a section this build has no business painting. D24's
+   * no-backward-path rule bites inside the refusal, not the range. */
+  function sectionAbiOk(rec) {
+    return rec.abi_min >= 1 && rec.abi_min <= rec.abi_max &&
+           rec.abi_max >= GEOM_ABI3 && rec.abi_min <= GEOM_ABI3;
+  }
+
   root.GorbBake = {
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
@@ -1659,7 +2232,27 @@
     // in UTF-8 bytes because that is the unit the header cuts in, and an embedded NUL
     // is refused because the C reader stops at it and the rest of the name would be
     // silently gone — from the list, from the id, and from the card filename.
-    nameOk: nameOk, nameBytes: nameBytes, themeIdFromDigest: themeIdFromDigest
+    nameOk: nameOk, nameBytes: nameBytes, themeIdFromDigest: themeIdFromDigest,
+    // FORMAT 3 (D32/D33): the multi-section bundle, the element table, and the D29 gate.
+    // The browser owns the whole dialect, caps and refusal order included, so the release
+    // ships as a web page that flashes over Web Serial; internal/orbnet's reader is the
+    // hub's pre-flight mirror of these same rules, checked against the same committed
+    // fixture. packElements refuses through the same check_element / check_table rules the
+    // device door applies, so an element a theme cannot name never reaches a card.
+    FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
+    SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
+    CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
+    EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,
+    ELEM_MAX: ELEM_MAX, ELEM_FRAMES_MAX: ELEM_FRAMES_MAX,
+    GEOM_CAP: GEOM_CAP3, ART_CAP: SLOT_ART_CAP3, SLUG_MAX: SLUG_MAX,
+    IDX_ORDER: IDX_ORDER, IDX_OFF: IDX_OFF, IDX_TYPES: IDX_TYPES,
+    blankElement: blankElement, classId: classId, checkElement: checkElement,
+    checkTable: checkTable, packElements: packElements, unpackElements: unpackElements,
+    checkSlug: checkSlug, checkBudget3: checkBudget3,
+    packBlob3: packBlob3, unpackBlob3: unpackBlob3,
+    packIndex3: packIndex3, unpackIndex3: unpackIndex3, packHeader3: packHeader3,
+    parseBundle3: parseBundle3, verifyBundle3: verifyBundle3, writeBundle3: writeBundle3,
+    sectionAbiOk: sectionAbiOk
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

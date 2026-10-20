@@ -254,6 +254,20 @@ python3 -m pip install --user --break-system-packages nodeenv \
 | `headless-ui.test.js` | the control row offers each field, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, a complication already picked on the tab wins the pixel through the hand painted over it (and the same-spot cycle still reaches that hand), a pointer-down on the stage surround deselects while a bubbled canvas click does not, the ghost's picture turns with its facing while the read ray stands at the time angle, the frame-metal row appears only on styles that strike a ring, the guide draws what it claims |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
 | `headless-orbtheme.test.js` | the in-browser `.orbtheme` baker held against the Python that defines the format: the geometry blob, the pixel bank and keyframe, the container bytes, PIL's `alpha_composite` integer maths on 14k sampled texels, the device caps and size rule, PNG decode, and the whole shipped kit baked both ways (bench `prep_watch_kit.py` + `bake_clock.py --orbtheme` versus `GorbBake.bakeKit`), byte for byte apart from the bake stamp |
+| `headless-bundle3.test.js` | the browser's FORMAT 3 bundle writer held against the Python that defines the format: `writeBundle3` reproducing `tests/fixtures/format3-pair.orbtheme` byte for byte, the reference `read_bundle` opening the JS bytes, the element table refusing every row the device door refuses (an animated LAYER or STATUS, a BANK carrying `EF_OS_ADV`, a duplicate class/slot, an unknown flag bit — §29's animated-region rule among them), the D29 install caps probed at the boundary rather than near it, the read-side gates in the device's refusal order, and the index record's four-leading-`uint16` layout that shifts every field eight bytes if a reader assumes a `uint32` first |
+
+`headless-bundle3.test.js` needs only node and a `python3` that can import the repo's own
+`tools/` — no pillow, no numpy — because the writer takes encoded pixels and the vectors
+arrive as files:
+
+```sh
+B3_VEC=/tmp/bundle3_vectors /tmp/nodeenv/bin/node headless-bundle3.test.js
+```
+
+It runs `python3 tools/make_bundle_fixture.py --vectors $B3_VEC` for its reference, so the
+model it checks against is the same one the device's C door (`--verify-c`) and the hub's Go
+gate (`go test ./internal/orbnet/`) read. Re-baking the fixture is one command, and four
+readers move with it.
 
 `headless-orbtheme.test.js` needs the bake venv as well as node, because its reference
 side runs the real Python (`pillow` + `numpy`) and compiles nothing:

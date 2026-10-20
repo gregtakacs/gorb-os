@@ -200,7 +200,7 @@ func TestThemeCallsRefuseBadIDs(t *testing.T) {
 func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
 	cases := []struct{ path, id, wantMethod, wantPath, wantQuery string }{
 		{"/api/theme/list", "", http.MethodGet, "/api/v1/sd", ""},
-		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/install", "id=" + auroraID},
+		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/bundle", "id=" + auroraID},
 		{"/api/theme/default", "", http.MethodPost, "/api/v1/sd/default", ""},
 		{"/api/theme/delete", "7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=7565e4480e56"},
 		{"/api/theme/rescan", "", http.MethodPost, "/api/v1/sd/rescan", ""},
@@ -393,7 +393,7 @@ func TestThemeDeviceCallsLiveInOneModule(t *testing.T) {
 		t.Error("theme.go re-implements a device-side rule; the gates belong in internal/orbnet")
 	}
 	mod := readFile(t, "internal/orbnet/themes.go")
-	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/install?id=`, `"/api/v1/sd/default`, `"/api/v1/sd/delete?id=`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
+	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/bundle?id=`, `"/api/v1/sd/default`, `"/api/v1/sd/delete?id=`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
 		if !strings.Contains(mod, route) {
 			t.Errorf("internal/orbnet/themes.go never dials %s, so the device sees a route it does not register", route)
 		}

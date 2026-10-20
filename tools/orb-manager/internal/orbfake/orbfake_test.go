@@ -48,16 +48,16 @@ func get(t *testing.T, f *Orb, path string) (int, string) {
 func TestDoubleRefusesEveryNameAddressedVerb(t *testing.T) {
 	f := New(Theme{Name: "aurora", Bytes: 100, Serial: 1, OK: true, Active: true})
 	for _, route := range []string{
-		"/api/v1/sd/install?name=aurora",
+		"/api/v1/sd/bundle?name=aurora",
 		"/api/v1/sd/delete?name=aurora",
-		"/api/v1/sd/install?slug=aurora",
-		"/api/v1/sd/install?title=Aurora",
-		"/api/v1/sd/install",
+		"/api/v1/sd/bundle?slug=aurora",
+		"/api/v1/sd/bundle?title=Aurora",
+		"/api/v1/sd/bundle",
 		"/api/v1/sd/delete",
 	} {
 		code, body := post(t, f, route, nil)
 		if code != http.StatusBadRequest || !strings.Contains(body, "not a theme id") {
-			t.Errorf("%s answered %d %s, want 400 \"id is missing or not a theme id\" (h_theme_install)", route, code, body)
+			t.Errorf("%s answered %d %s, want 400 \"id is missing or not a theme id\" (h_bundle_install)", route, code, body)
 		}
 	}
 }
@@ -67,7 +67,7 @@ func TestDoubleHoldsTheFirmwaresExactIdRule(t *testing.T) {
 	f := New(Theme{Name: "aurora", Bytes: 100, Serial: 1, OK: true})
 	for _, id := range []string{"9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f", "gb89025ce7a6",
 		"../etc", "aurora", "", "00000000000 "} {
-		code, body := post(t, f, "/api/v1/sd/install?id="+id, nil)
+		code, body := post(t, f, "/api/v1/sd/bundle?id="+id, nil)
 		if code != http.StatusBadRequest {
 			t.Errorf("id %q accepted with %d %s, want 400", id, code, body)
 		}

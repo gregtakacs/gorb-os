@@ -18,7 +18,7 @@ func TestThemeErrorsCarryTheFirmwaresOwnWords(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"error":"a theme job is already running"}`))
 	})
-	_, err := NewClient(2*time.Second).ThemeInstall(fakeIP(srv), "9b89025ce7a6")
+	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6")
 	if err == nil {
 		t.Fatal("a 409 was reported as success")
 	}
@@ -30,15 +30,15 @@ func TestThemeErrorsCarryTheFirmwaresOwnWords(t *testing.T) {
 	}
 }
 
-// h_theme_install's 400 is the sound the pre-merge contract made on real hardware: a
-// client that named a theme by name hit it every time. Surfacing the firmware's words
-// here is what turns "the button does nothing" into "the hub is speaking FORMAT 1".
-func TestThemeInstallReportsTheFirmwaresIdRefusal(t *testing.T) {
+// h_bundle_install's 400 is the sound the store door makes when a client names a theme by
+// anything but an id. Surfacing the firmware's words here is what turns "the button does
+// nothing" into "the hub is speaking the wrong format".
+func TestThemeStoreReportsTheFirmwaresIdRefusal(t *testing.T) {
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"id is missing or not a theme id"}`))
 	})
-	_, err := NewClient(2*time.Second).ThemeInstall(fakeIP(srv), "9b89025ce7a6")
+	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6")
 	if err == nil || !strings.Contains(err.Error(), "not a theme id") {
 		t.Errorf("err = %v, want the firmware's id refusal carried through", err)
 	}

@@ -113,7 +113,7 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	uploadable := fakeContainer(t, "aurora")
 	steps := []func() error{
 		func() error { _, err := c.ThemeList(ip); return err },
-		func() error { _, err := c.ThemeInstall(ip, "9b89025ce7a6"); return err },
+		func() error { _, err := c.ThemeStore(ip, "9b89025ce7a6"); return err },
 		func() error { _, err := c.ThemeDefault(ip); return err },
 		func() error { _, err := c.ThemeDelete(ip, "f893c0d634b3"); return err },
 		func() error { _, err := c.ThemeRescan(ip); return err },
@@ -127,7 +127,7 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	}
 	want := []string{
 		"GET /api/v1/sd",
-		"POST /api/v1/sd/install?id=9b89025ce7a6",
+		"POST /api/v1/sd/bundle?id=9b89025ce7a6",
 		"POST /api/v1/sd/default",
 		"POST /api/v1/sd/delete?id=f893c0d634b3",
 		"POST /api/v1/sd/rescan",
@@ -184,16 +184,16 @@ func TestThemeIDsAreCheckedBeforeDialing(t *testing.T) {
 		"gb89025ce7a6", "../etc", "a/b/c/d/e/f", "9b8902 5ce7a6", "aurora",
 		"9b89025ce7a6/", "-b89025ce7a6", "_b89025ce7a6"}
 	for _, id := range bad {
-		if _, err := c.ThemeInstall(ip, id); err == nil {
-			t.Errorf("install(%q) was accepted", id)
+		if _, err := c.ThemeStore(ip, id); err == nil {
+			t.Errorf("store(%q) was accepted", id)
 		}
 		if _, err := c.ThemeDelete(ip, id); err == nil {
 			t.Errorf("delete(%q) was accepted", id)
 		}
 	}
 	for _, id := range []string{"9b89025ce7a6", "000000000000", "ffffffffffff"} {
-		if _, err := c.ThemeInstall(ip, id); err != nil {
-			t.Errorf("install(%q) was refused: %v", id, err)
+		if _, err := c.ThemeStore(ip, id); err != nil {
+			t.Errorf("store(%q) was refused: %v", id, err)
 		}
 	}
 	if !dialed {

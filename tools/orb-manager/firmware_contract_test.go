@@ -111,11 +111,12 @@ func TestDeviceRouteAllowlistMatchesTheFirmwaresUriTable(t *testing.T) {
 	}
 }
 
-// install and delete are addressed by id, in the firmware's own words, and the client
-// must match that rather than the description of it in a plan.
+// store and delete are addressed by id, in the firmware's own words, and the client
+// must match that rather than the description of it in a plan. P6 removed the FORMAT 2
+// install door, so the store door h_bundle_install is now the id-addressed write verb.
 func TestFirmwareAddressesThemeVerbsByID(t *testing.T) {
 	src := firmwareFile(t, filepath.Join("main", "net", "orb_net.c"))
-	for _, h := range []string{"h_theme_install", "h_theme_del"} {
+	for _, h := range []string{"h_bundle_install", "h_theme_del"} {
 		body := cFunction(t, src, h)
 		if !strings.Contains(body, `q_param(req, "id"`) {
 			t.Errorf("%s does not read ?id=; check what the client is expected to send", h)
@@ -204,7 +205,7 @@ func TestThemeIdRuleMatchesTheFirmware(t *testing.T) {
 	// The 12-hex gate, spelled the firmware's way and the client's way.
 	h := firmwareFile(t, filepath.Join("main", "net", "orb_net.c"))
 	if !strings.Contains(h, "ORB_THEME_ID_HEX + 1") {
-		t.Error("h_theme_install no longer sizes an id buffer from ORB_THEME_ID_HEX; re-check CheckThemeID")
+		t.Error("h_bundle_install no longer sizes an id buffer from ORB_THEME_ID_HEX; re-check CheckThemeID")
 	}
 	for _, bad := range []string{"", "A", "9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f"} {
 		if err := orbnet.CheckThemeID(bad); err == nil {

@@ -5,7 +5,7 @@
 // sending ?name=, and the pair agreed with each other while every real orb answered
 // 400. A mock that mirrors the code under test proves the code agrees with itself.
 //
-// So this file quotes orb_net.c's h_sd / h_theme_install / h_theme_del / h_theme_upload
+// So this file quotes orb_net.c's h_sd / h_bundle_install / h_theme_del / h_theme_upload
 // and keeps its OWN copy of the 12-hex identity rule (idOK, themeID) rather than
 // importing orbnet's. When the two copies drift, the contract test fails, which is the
 // only arrangement that can catch client-and-double agreeing on the wrong thing.
@@ -198,10 +198,10 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveReprov(w)
 	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:
 		o.serveScreen(w, r)
+	case r.URL.Path == "/api/v1/fb" && r.Method == http.MethodGet:
+		o.serveFb(w, r)
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
 		o.serveSD(w)
-	case r.URL.Path == "/api/v1/sd/install" && r.Method == http.MethodPost:
-		o.serveInstall(w, r)
 	case r.URL.Path == "/api/v1/sd/default" && r.Method == http.MethodPost:
 		writeJSON(w, 200, `{"state":"default","live":"default","reboot":"automatic"}`)
 	case r.URL.Path == "/api/v1/sd/delete" && r.Method == http.MethodPost:
@@ -266,43 +266,22 @@ func (o *Orb) sourceLocked() string {
 	return "default"
 }
 
-// serveInstall is h_theme_install: ?id= is required and must pass orb_theme_id_ok,
-// or the answer is the firmware's 400 and the card is never touched.
-func (o *Orb) serveInstall(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if !idOK(id) {
-		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)
-		return
-	}
-	if o.takeBusy() {
-		writeJSON(w, 409, `{"error":"a theme job is already running"}`)
-		return
-	}
-	t := o.find(id)
-	if t == nil {
-		writeJSON(w, 404, `{"error":"no such theme on the card"}`)
-		return
-	}
-	if !t.OK {
-		writeJSON(w, 422, fmt.Sprintf(`{"error":"job refused: %s"}`, jsonSafe(t.Why)))
-		return
-	}
-	o.mu.Lock()
-	for _, x := range o.themes {
-		x.Active = false
-	}
-	t.Active = true
-	o.active = t.Name
-	o.live = "sd"
-	o.mu.Unlock()
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"installing","id":%q,"reboot":"automatic"}`, id))
+// serveFb is h_fb: the one-shot frame capture over the PSRAM mirror. It reads pixels and
+// changes nothing, so the double answers a small placeholder body rather than 652 KB of
+// BMP — enough for the contract test to see the route is fakeable (not a 404) without
+// shipping a whole frame. The real device gates it exactly like /api/v1/screen.
+func (o *Orb) serveFb(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/bmp")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(200)
+	_, _ = io.WriteString(w, "BM")
 }
 
-// serveBundle is h_bundle_install (P6.4): the store door's press shape, same id gate
-// and 409 discipline as serveInstall, and the ack differs in one field on purpose —
-// reboot:none. Storing does not flip the dial (no FORMAT 3 compositor until P6.5), so
-// the fake changes no theme state either: the answer is that a job was queued, not
-// that the glass changed.
+// serveBundle is h_bundle_install (P6.4), now the only store door: ?id= must pass
+// orb_theme_id_ok or the answer is the firmware's 400, a second job while one runs is a
+// 409, and the ack carries reboot:none on purpose. Storing does not flip the dial (no
+// FORMAT 3 compositor until P6.5), so the fake changes no theme state either: the answer
+// is that a job was queued, not that the glass changed.
 func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if !idOK(id) {

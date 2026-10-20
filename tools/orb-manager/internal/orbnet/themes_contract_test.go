@@ -80,23 +80,28 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 		t.Errorf("load state lost: %+v", l.Themes)
 	}
 
-	// Install the listed id, then confirm from a fresh read that the orb drew it.
-	if _, err := c.ThemeInstall(ip, byName["carousel"].ID); err != nil {
-		t.Fatalf("install carousel: %v", err)
+	// Store the listed id. The FORMAT 3 store door copies the bundle and answers
+	// reboot:none without flipping the dial — there is no compositor to draw it until
+	// P6.5 — so the ack says a job was queued, and a fresh read shows the SAME active
+	// face as before. An install that silently flipped here would be the old FORMAT 2
+	// door, which P6 deleted.
+	ack, err := c.ThemeStore(ip, byName["carousel"].ID)
+	if err != nil {
+		t.Fatalf("store carousel: %v", err)
+	}
+	if !strings.Contains(string(ack), `"state":"storing"`) || !strings.Contains(string(ack), `"reboot":"none"`) {
+		t.Errorf("store door ack = %s, want state:storing reboot:none", ack)
 	}
 	l2, err := c.ThemeList(ip)
 	if err != nil {
 		t.Fatalf("re-list: %v", err)
 	}
-	if l2.Active != "carousel" {
-		t.Errorf("active = %q after installing carousel, want the install to have taken", l2.Active)
+	if l2.Active != "aurora" {
+		t.Errorf("active = %q after storing carousel, want the store door to leave the dial alone (no flip until P6.5)", l2.Active)
 	}
 	for _, e := range l2.Themes {
-		if e.Name == "carousel" && !e.Active {
-			t.Error("carousel not marked active on its own row")
-		}
-		if e.Name == "aurora" && e.Active {
-			t.Error("two rows claim to be drawn")
+		if e.Name == "carousel" && e.Active {
+			t.Error("storing a theme flipped the dial; the store door must not until P6.5")
 		}
 	}
 
@@ -149,9 +154,9 @@ func TestThemeUploadFilesByTheEmbeddedName(t *testing.T) {
 		t.Errorf("filed under %q, want theme_id(name) = %q", row.ID, want)
 	}
 	// ...and the id the hub computed is the id the orb accepts, which is the loop that
-	// has to close for a push-then-install to work without a re-list.
-	if _, err := c.ThemeInstall(ip, row.ID); err != nil {
-		t.Errorf("installing the id the hub derived for its own upload: %v", err)
+	// has to close for a push-then-store to work without a re-list.
+	if _, err := c.ThemeStore(ip, row.ID); err != nil {
+		t.Errorf("storing the id the hub derived for its own upload: %v", err)
 	}
 }
 
@@ -223,21 +228,21 @@ func TestThemeUploadRefusesAnUnnamedContainer(t *testing.T) {
 	}
 }
 
-// The install refusal that real hardware gave for the whole life of the bug: the orb
-// wants an id, and everything else is a 400 with a reason.
-func TestThemeInstallRejectsANameWhereItWantsAnID(t *testing.T) {
+// The store refusal a real orb gives when the handle is not a theme id: the door wants an
+// id, and everything else is a 400 with a reason.
+func TestThemeStoreRejectsANameWhereItWantsAnID(t *testing.T) {
 	c, ip, _ := liveOrb(t)
 
 	for _, want := range []string{"aurora", "../etc", "9B89025CE7A6"} {
-		if _, err := c.ThemeInstall(ip, want); err == nil {
-			t.Errorf("install(%q) should never have left the hub", want)
+		if _, err := c.ThemeStore(ip, want); err == nil {
+			t.Errorf("store(%q) should never have left the hub", want)
 		}
 	}
 	// Passing the gate locally and reaching a device that knows the id is the happy path;
 	// this proves the double is really the one answering.
-	_, err := c.ThemeInstall(ip, "000000000000")
+	_, err := c.ThemeStore(ip, "000000000000")
 	if err == nil {
-		t.Fatal("install of an id the card does not hold succeeded")
+		t.Fatal("store of an id the card does not hold succeeded")
 	}
 	if !strings.Contains(err.Error(), "no such theme") {
 		t.Errorf("err = %v, want the firmware's 404 sentence", err)

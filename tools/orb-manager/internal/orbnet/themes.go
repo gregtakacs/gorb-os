@@ -11,7 +11,7 @@ import (
 
 // The device-side THEME API, in one place: what main/net/orb_net.c registers, and
 // nothing invented. FORMAT 2 (docs/theme-identity-plan.md) settled what identifies a
-// theme, and it has two halves that must never be confused again:
+// theme, and FORMAT 3 carries those two halves unchanged:
 //
 //   - the NAME is the theme's one identifier. It lives inside the container's
 //     header, the owner set it when they baked the file, and it is what a human

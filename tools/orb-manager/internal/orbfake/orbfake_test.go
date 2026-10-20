@@ -146,15 +146,10 @@ func TestDoubleDemandsContentLength(t *testing.T) {
 	}
 }
 
-// container writes a minimal FORMAT-2 header carrying name, matching tools/orbtheme.py's
-// pack_header for the fields the identity gates read.
-func container(name string) []byte {
-	b := make([]byte, 512)
-	b[0], b[1], b[2], b[3] = 0x54, 0x52, 0x4f, 0x47
-	b[4] = 2
-	copy(b[14*4:], name)
-	return b
-}
+// container is the package's own FORMAT 3 writer. The test file used to keep a second,
+// header-only copy, which is how it came to be filing a container no orb would mount: a
+// fixture written from the layout has one place to be wrong.
+func container(name string) []byte { return Container(name) }
 
 // The id rule and the firmware's must agree on the same answer, or the double is addressing
 // files its own list is not naming.

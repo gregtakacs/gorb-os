@@ -1761,37 +1761,24 @@ esp_err_t clock_view_init(void)
     /* The bank was already found and mapped by orb_theme_boot(), which ran BEFORE
      * display_init() — a theme install must complete before anything reads pixels,
      * and only orb_theme knows which A/B slot the bank is in. §26: residency is
-     * decided HERE, before art is demanded, and the screen is created here too — it
-     * is the one object the base leg and the themed leg share before they diverge.
-     * The themed leg's own art demand (the gate below the base branch) reads this
-     * flag: a board with no resident bank has nothing to demand, and a rule that
-     * demands art before the base render gets a chance would fail such a board at
-     * the gate and leave a blank panel on the shelf — the failure this gate's own
-     * comment warned about. */
+     * decided HERE, before either leg, and it is the one thing the two legs diverge
+     * on. A resident bank — the flashed default at offset 0, or a slot-B container —
+     * draws the dial on the themed leg below. No resident bank draws the base digital
+     * face, the fallback for a board that has lost its theme. Residency is checked
+     * before art is demanded so a bankless board is never failed at an art gate and
+     * left on the panel's reset black. */
     const bool art_resident = art_bank_ready()
                     && art_bank_bytes() >= orb_theme_geo()->blob_off + CLK_BLOB_BYTES;
 
     s_scr = lv_obj_create(NULL);
 
-    /* The bench override, as a compile-time 0/1 so the branch reads as one condition.
- * CONFIG_ symbols for a disabled bool are UNDEFINED rather than 0, which is why this is
- * #if-defined rather than a bare reference to CONFIG_ORB_BASE_RENDER_FORCE — the same
- * reason main/sd/orb_sd.c tests #if CONFIG_ORB_SD_ENABLE. */
-#if CONFIG_ORB_BASE_RENDER_FORCE
-#define ORB_BASE_RENDER_FORCE 1
-#else
-#define ORB_BASE_RENDER_FORCE 0
-#endif
-
-/* §26: the base render, when there is no theme to draw. Placed BEFORE the themed
-     * leg's art demand because it needs no bank: it paints three labels. A board with
-     * no resident art has nothing to demand, so it takes this branch and the gate below
-     * — which is only for the leg that IS about to read pixels — never runs against it.
-     * Until slice 2 stops flashing the default the no-theme state cannot arise by
-     * itself, so the bench override forces it: the flag exists to make the renderer
-     * runnable at all, and an unrunnable renderer is a file that compiles rather than a
-     * feature. It is deleted by slice 2, not defaulted. */
-    if (ORB_BASE_RENDER_FORCE || !orb_theme_geo()->from_container) {
+    /* §26: the base render, the no-resident-art fallback. Placed before the themed
+     * leg because it needs no bank — it paints three labels — and because a board
+     * with no resident art has nothing to demand. It covers the screen black and runs
+     * its own readout, so the clock still tells the time on a shelf or after a theme
+     * is lost. The themed leg below then reads the same residency flag to know its
+     * mapping is real; s_art is never a wild pointer. */
+    if (!art_resident) {
         lv_obj_set_style_bg_color(s_scr, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, LV_PART_MAIN);
         clock_base_show(s_scr);
@@ -1802,22 +1789,14 @@ esp_err_t clock_view_init(void)
          * uler ticking a callback that marks nothing, at 12 fps, to redraw a string
          * that changes once a minute. */
         clock_base_run();
-        ESP_LOGW(TAG, "no theme resident — base digital face (§26); the clock still "
+        ESP_LOGW(TAG, "no resident art — base digital face (§26); the clock still "
                       "tells the time");
         return ESP_OK;
     }
 
-    /* Themed leg: the mapping must exist and cover what the geometry says it must,
-     * or this is a stale bin/partition pair, or a theme that would not load. Fails
-     * loudly here rather than as a wild read past the end of the mapping. */
-    if (!art_resident) {
-        ESP_LOGE(TAG, "clock art bank unavailable (%s, %u B mapped for %u B) — "
-                      "re-flash the \"%s\" partition or load another theme?",
-                 esp_err_to_name(ESP_ERR_INVALID_SIZE), (unsigned)art_bank_bytes(),
-                 (unsigned)(orb_theme_geo()->blob_off + CLK_BLOB_BYTES),
-                 ART_BANK_PARTITION_NAME);
-        return ESP_ERR_INVALID_SIZE;
-    }
+    /* Themed leg: the residency flag is true here, so the mapping exists and covers
+     * what the geometry says it must, and s_art is a real read rather than NULL plus
+     * an offset. */
     s_art = art_bank_ptr() + orb_theme_geo()->blob_off;
     orb_bg_init(s_art);   /* the delta bank reads the same mapping, through the app */
     ESP_LOGI(TAG, "art bank mapped: %u B (theme needs %u B) from %s",

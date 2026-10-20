@@ -799,10 +799,17 @@ typedef enum { BOOT_ART_DEFAULT = 0, BOOT_ART_CARD = 1 } boot_art_t;
  * when the choice itself is damaged. B being valid is boot's evidence, and boot
  * verifies the pixels separately: this predicate decides where to look, not
  * whether it loaded. */
-static boot_art_t boot_resolve(const char *live, const bool b_valid)
+/* What the owner's choice and the slot's contents agree on. Pure, so the host suite
+ * drives every case with vectors, and so the dial's answer cannot drift from the
+ * page's. `b_valid` is FORMAT 2's verdict; `b_is_bundle` is FORMAT 3's, and P6.5
+ * §25.5(2) is why both are needed: a chosen slot holding a bundle is no longer an
+ * absence, it is a theme the reader can draw. A choice of "card" that names nothing
+ * drawable is still the default — D13's rule that the fallback never installs. */
+static boot_art_t boot_resolve(const char *live, const bool b_valid,
+                               const bool b_is_bundle)
 {
     if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;
-    return b_valid ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
+    return (b_valid || b_is_bundle) ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
 }
 
 /* Slot B, always. Slot A is what `idf.py flash` wrote and what the factory dial
@@ -2098,16 +2105,24 @@ esp_err_t orb_theme_boot(void)
      * answer). P6.4's flip page and P6.5's FORMAT 3 reader are what change this. */
     orb_bundle3_hdr_t b3;
     bool slot_is_bundle = false;
+    /* The magic and format word WITHOUT the rest of the parse. A slot that claims
+     * FORMAT 3 and whose header will not check is neither drawable nor empty, and the
+     * §24.7 lesson is that an unreadable bundle must not be described by FORMAT 2's
+     * generic line: it gets its own sentence, which needs to know it was a bundle. */
+    bool slot_claims3 = false;
     uint32_t raw3[W_WORDS];
     if (!b.valid && esp_partition_read(p, SLOT_B_HDR, raw3, sizeof raw3) == ESP_OK &&
-        raw3[W_MAGIC] == THEME_MAGIC && raw3[W_FORMAT] == ORB_BUNDLE3_FORMAT &&
-        orb_bundle3_hdr_parse(raw3, &b3) == NULL)
-        slot_is_bundle = true;
+        raw3[W_MAGIC] == THEME_MAGIC && raw3[W_FORMAT] == ORB_BUNDLE3_FORMAT) {
+        slot_claims3 = true;
+        if (orb_bundle3_hdr_parse(raw3, &b3) == NULL) slot_is_bundle = true;
+    }
 
-    if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD && !b.valid && slot_is_bundle) {
+    if (boot_resolve(s_live, b.valid, slot_is_bundle) == BOOT_ART_CARD && !b.valid) {
         /* The chosen slot holds a bundle (P6.5 §25.5(2)). Its clock section, if it has
          * one, is now the dial; anything else falls through to the default with the
-         * bundle's own sentence on its row. */
+         * bundle's own sentence on its row. !b.valid is what makes it this branch and
+         * not adopt()'s: the same slot cannot answer both formats, and a header that
+         * parses as FORMAT 2 is read as FORMAT 2 whatever the sniff saw. */
         const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B");
         if (be == ESP_OK) {
             ESP_LOGI(TAG, "bundle \"%s\" from slot-B (chosen): %u B refilled to the "
@@ -2126,7 +2141,7 @@ esp_err_t orb_theme_boot(void)
                 sizeof s_damage_why);
         ESP_LOGE(TAG, "the chosen bundle \"%s\" would not load (%s) — drawing the default",
                  b3.name, esp_err_to_name(be));
-    } else if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD) {
+    } else if (boot_resolve(s_live, b.valid, slot_is_bundle) == BOOT_ART_CARD) {
         const esp_err_t ae = adopt(p, &b, "slot-B");
         if (ae == ESP_OK) {
             /* The §20.5(2) line: the measured milliseconds of the fused refill, on
@@ -2166,6 +2181,17 @@ esp_err_t orb_theme_boot(void)
         /* Stored, not chosen: the same resting state as a FORMAT 2 install the owner
          * walked away from. Nothing is damaged and no row needs a reason. */
         ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not chosen", b3.name);
+    } else if (slot_claims3) {
+        /* The choice is "card", the slot claims FORMAT 3, and its header will not
+         * parse. The ledger names it as damage the owner can act on — re-store — with
+         * no id to hang it on, because the id is a hash of a name this header cannot
+         * be trusted to carry. FORMAT 2's twin two lines up does the same thing with a
+         * blank id, and the row for the file on the card is where the truth lands. */
+        s_damage_id[0] = '\0';
+        strlcpy(s_damage_why, "the stored bundle's header is damaged — re-store it",
+                sizeof s_damage_why);
+        ESP_LOGE(TAG, "slot-B claims FORMAT 3 and its header would not parse — "
+                      "drawing the default");
     } else if (b.valid) {
         /* B holds an install the owner walked away from. It is not drawn and not
          * erased: it is theirs, and the default costs nothing to keep. */

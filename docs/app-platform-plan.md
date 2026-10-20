@@ -3742,6 +3742,40 @@ plate differs from the shipped `.bin` by 59 bytes in its flat border, which is t
 bake's own history and not the reader's claim. Hence the pair-forged golden: it makes the
 byte check something the suite controls.
 
+**Bench, orb-A, `v1.1.0+6b9f970` — and the board corrected the commit twice.** The
+first flash reported the reader working; the boot log said otherwise (`source:
+baked-in`, empty damage word), because `boot_resolve()` had one input and a chosen
+bundle was not in its vocabulary. The second flash drew the bundle and the ledger
+contradicted itself: `active: avkit-b31` beside a row saying `changed=True`, because
+the slot header's art word is the INSTALLED span's checksum with the inter-bank pads
+included and no card file has ever carried that number. Both are fixed, with the
+board's wording in each commit message. What stands after them:
+
+- `bundle "avkit-b31" from slot-B (chosen): 1175552 B refilled to the arena in 182 ms`
+  — the §20.5(2) line through the FORMAT 3 door. The span is 1989 B larger than
+  FORMAT 2's identical-theme figure because it is the sector-rounded installed region,
+  and the refill costs the same **182 ms**: D30's budget holds on the new path, which
+  is §24.5(2)'s answer, and the glass ran the clock at 12 fps off it.
+- `source: slot-B`, `active: avkit-b31`, and that bundle's row alone
+  `active=True changed=False`. §24.9's flag-lies-by-omission note is closed on
+  hardware, not in a comment.
+- **Clause 2 of the pass line, refused at the wrong door:** `POST /sd/install` with a
+  bundle id answered `that is a FORMAT 3 app bundle — press Store, not Load`, left the
+  drawn theme and its 182 ms refill untouched, and claimed no damage. No fallback read
+  happened, so there was nothing for the retirement's guard to be there for yet.
+- A stored-and-not-chosen bundle boots quietly (`slot-B holds bundle "avkit-b31" —
+  stored, and not chosen`), which is D30's resting state holding for the new format.
+- The device was returned to FORMAT 2 av-kit through its own door and reads
+  `active: av-kit`, 182 ms, clean ledger.
+
+**Still owed to M6.** A cap-sized fixture (§25.5(2)'s at-cap case), the PSRAM pin for
+§20.5(4), the glass's own visual check against the kit-rendered reference, and the
+press that CHOOSES a stored bundle: Store deliberately does not choose, Load is the
+FORMAT 2 door, so today a bundle reaches the dial only via a reboot after a Store that
+took a slot already chosen. That lever is §24.5(4)'s flip press, which is step 3's
+work and is blocked on the owner's ruling about the default's new home — not on this
+reader, which is now the thing the flip will press onto.
+
 ### 25.6 §25.5(1) PAID 2026-10-19 — the bundle→pair reverse path
 
 `bake_clock.py --from-bundle <bundle> [--bundle-section clock]` rebuilds

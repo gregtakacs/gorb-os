@@ -75,7 +75,15 @@ sleep 2
 fetch GET "$ORB/api/v1/sd"
 grep -q "\"id\":\"$ID\"" "$BODY" || fail 'the card does not list the fixture id'
 
-# [5] the flip: press (waiting out a busy queue), expect the boundary
+# [5] the STORE door first — the two-stage press §26 slice 3 rules: the flip
+# only lands an id a slot already holds, and the store answers reboot:none.
+T0=$(date +%s.%N)
+fetch POST "$ORB/api/v1/sd/bundle?id=$ID" || { fail 'store: no body'; kill $CAP; exit 1; }
+T1=$(date +%s.%N)
+say "store: $(cat "$BODY") ($(python3 -c "print(round($T1-$T0,2))")s door-to-body)"
+grep -q '"reboot":"none"' "$BODY" || fail 'store did not answer reboot:none'
+
+# [6] then the FLIP: press (waiting out a busy queue), expect the boundary
 for r in $(seq 1 25); do
   fetch POST "$ORB/api/v1/sd/flip?id=$ID" || { fail 'flip: no body'; exit 1; }
   grep -q 'already running' "$BODY" || break
@@ -99,7 +107,7 @@ grep -q '"live":"slot-B"' "$BODY" || fail 'live is not slot-B'
 grep -q '"active":"d32-bench"' "$BODY" || fail 'active is not d32-bench'
 say "refill/bundle cost: $(python3 -c "import json;d=json.load(open('$BODY'));print(d['refill_ms'],'ms /',d['refill_bytes'],'B | bundle',d['bundle_ms'],'ms /',d['bundle_bytes'],'B')" 2>/dev/null)"
 
-# [6] the projection line, from THIS boot: exactly the figures the bundle carries
+# [7] the projection line, from THIS boot: exactly the figures the bundle carries
 BOOT=$(awk -v r="$R" '$1+0>r' "$SER")
 echo "$BOOT" | grep 'projected into a dial' | tail -1 | tee -a /dev/stdout \
   | grep -q '1 complication row' || fail 'no projection line, or not one comp row'
@@ -107,7 +115,7 @@ echo "$BOOT" | grep -q 'tourbillon_n 8 @ 12 fps start 4500' \
   || fail 'the projection line does not name the carriage the bundle carries'
 echo "$BOOT" | grep -q 'no drawable clock' && fail 'the device refused its own bench bundle'
 
-# [7] the heap question, and the glass keeping time
+# [8] the heap question, and the glass keeping time
 fetch GET "$ORB/api/v1/status" && PSRAM1=$(python3 -c "import json;print(json.load(open('$BODY'))['heap_psram'])")
 say "psram on the carriage face: ${PSRAM1:-?} (baseline ${PSRAM0:-?})"
 sleep 30
@@ -115,7 +123,7 @@ MIND=$(dial "$R")
 say "min clock fps across 30 s on the new face: $MIND"
 [ "${MIND:-0}" -ge 4 ] || fail 'the dial fell under 4 fps — a marking bug, not a missing feature'
 
-# [8] put the board back
+# [9] put the board back
 fetch POST "$ORB/api/v1/sd/default" || fail 'sd/default returned no body'
 E3=$(date +%s)
 for j in $(seq 1 45); do sleep 1

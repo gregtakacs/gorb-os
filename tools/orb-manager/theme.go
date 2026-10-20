@@ -15,7 +15,8 @@ import (
 // operator named or the USB console reported, through the orbnet theme module, which is
 // the single place the device theme API is spoken.
 //
-// FORMAT 2 decides who names a theme, and it is not the caller of these endpoints.
+// FORMAT 2 settled who names a theme, and FORMAT 3 inherits the rule unchanged: it is not
+// the caller of these endpoints.
 // The theme's identity is the name embedded in its container; the 12-hex id the orb
 // lists beside it is that name's hash, and it is the only handle the device accepts on
 // install and delete. So these handlers take an id where they used to take a name, and
@@ -58,7 +59,7 @@ func (s *Server) handleThemeList(w http.ResponseWriter, r *http.Request) {
 // there is no FORMAT 3 compositor until P6.5 — so the reply is never a claim that the
 // glass changed; the caller re-reads the row's try witness for the outcome. The route keeps
 // its /api/theme/install name so the flip page's button needs no change; only the device
-// verb it dials moved with the FORMAT 2 door.
+// verb it dials moved with the bundle door.
 func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.themeTarget(w, r, true)
 	if !ok {

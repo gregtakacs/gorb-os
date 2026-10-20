@@ -21,27 +21,27 @@ import (
 // these tests take the ids off the list the device handed back instead of typing them, so a
 // client that invented an addressing scheme fails here rather than on glass.
 
-// fakeContainer writes a FORMAT-2 .orbtheme header holding name, enough of a container for
-// the identity gates. The header's own crc is not checked by the identity path, so it is
-// left as written; tools/host_sd_test.py pins the real packer against the C reader.
+// fakeContainer hands a test the bytes a FORMAT 3 bake produces. It deliberately borrows
+// the double's writer rather than writing its own header: the claim under test is that the
+// hub's reader parses what a device's door accepts, so the input has to come from the far
+// side and not from a copy of this package's own parse. tools/host_orbbundle_test.py pins
+// that writer against the C reader byte for byte, which is what makes borrowing it a real
+// test rather than an agreement by construction.
 func fakeContainer(t *testing.T, name string) []byte {
 	t.Helper()
 	if len(name) > ThemeNameMax {
 		t.Fatalf("fakeContainer name is %d bytes, over the %d the header holds", len(name), ThemeNameMax)
 	}
-	b := make([]byte, 1024)
-	binary.LittleEndian.PutUint32(b[0:], 0x474F5254) // 'TROR'
-	binary.LittleEndian.PutUint32(b[4:], 2)          // FORMAT 2
-	binary.LittleEndian.PutUint32(b[8:], 1)          // GEOM_ABI
-	copy(b[14*4:], name)
-	return b
+	return orbfake.Container(name)
 }
 
-// fakeContainerFormat1 writes the pre-FORMAT-2 container: a slug where the name now
-// lives, stamped FORMAT 1. No current orb can read it (orb_theme.c:262).
-func fakeContainerFormat1(t *testing.T, slug string) []byte {
-	b := fakeContainer(t, slug)
-	binary.LittleEndian.PutUint32(b[4:], 1)
+// fakeContainerFormat writes the container stamped f — 2 for the FORMAT 2 file no orb on
+// this network can install (the reader island went in 7c0fd4b), 1 for the pre-FORMAT-2
+// artifact. The FORMAT word is the first field the firmware checks after the magic, so a
+// wrong stamp refuses there and never reaches the header's checksum.
+func fakeContainerFormat(t *testing.T, name string, f uint32) []byte {
+	b := fakeContainer(t, name)
+	binary.LittleEndian.PutUint32(b[4:], f)
 	return b
 }
 
@@ -125,7 +125,7 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 	}
 }
 
-// Uploading a FORMAT-2 container lands it under the id its own name hashes to, and the
+// Uploading a FORMAT 3 container lands it under the id its own name hashes to, and the
 // name the operator picked for the file on disk is irrelevant. The old client asked for a
 // name and the firmware threw it away; this pins the two agreeing that the header decides.
 func TestThemeUploadFilesByTheEmbeddedName(t *testing.T) {
@@ -160,25 +160,36 @@ func TestThemeUploadFilesByTheEmbeddedName(t *testing.T) {
 	}
 }
 
-// A FORMAT-1 container is the fragmented-identity artifact itself. The hub must refuse it
-// before the bytes cross the room, with the reason, because the device would answer 422
-// after the whole payload arrived.
-func TestThemeUploadRefusesFormat1BeforeDialing(t *testing.T) {
-	c, ip, f := liveOrb(t)
-
-	_, err := c.ThemeUpload(ip, fakeContainerFormat1(t, "skeleton"), false)
-	if err == nil {
-		t.Fatal("a FORMAT-1 container was accepted")
-	}
-	if !strings.Contains(err.Error(), "FORMAT") {
-		t.Errorf("err = %v, want it to name the format it rejected", err)
-	}
-	for _, call := range f.Calls() {
-		if strings.Contains(call, "/api/v1/sd/theme") {
-			t.Errorf("a FORMAT-1 file reached the orb anyway: %q", call)
+// A container the firmware cannot read is the fragmented-identity artifact itself. The hub
+// must refuse it before the bytes cross the room, with the reason, because the device would
+// answer 422 after the whole payload arrived. FORMAT 2 is the case that matters today: the
+// Theme Editor exports it, every current orb refuses it, and until this file moved the hub
+// refused FORMAT 3 — so the pair rejected each other's good files and passed through each
+// other's dead ones.
+func TestThemeUploadRefusesADeadFormatBeforeDialing(t *testing.T) {
+	for _, f := range []uint32{1, 2} {
+		c, ip, orb := liveOrb(t)
+		_, err := c.ThemeUpload(ip, fakeContainerFormat(t, "skeleton", f), false)
+		if err == nil {
+			t.Fatalf("a FORMAT-%d container was accepted", f)
+		}
+		if !strings.Contains(err.Error(), "FORMAT") {
+			t.Errorf("FORMAT %d: err = %v, want it to name the format it rejected", f, err)
+		}
+		if !strings.Contains(err.Error(), "FORMAT 3 only") {
+			t.Errorf("FORMAT %d: err = %v, want it to say what the orb reads", f, err)
+		}
+		for _, call := range orb.Calls() {
+			if strings.Contains(call, "/api/v1/sd/theme") {
+				t.Errorf("a FORMAT-%d file reached the orb anyway: %q", f, call)
+			}
 		}
 	}
 }
+
+// The FORMAT 3 accept side of that same loop is TestThemeUploadFilesByTheEmbeddedName
+// above: the fixture it uploads is a real FORMAT 3 bundle now, so that test refuses to pass
+// unless the hub's reader and the device's door agree on the same bytes.
 
 // Two different themes cannot share a name, and the second one has to be a decision.
 // Without the 409 surfacing as an overwrite prompt, a re-bake either silently replaces a

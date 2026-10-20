@@ -1,6 +1,6 @@
 // Command orbfake runs the internal/orbfake device double as a listening server, for
 // a human driving a real hub through a browser. It answers the theme routes
-// main/net/orb_net.c registers, with h_sd's FORMAT-2 row shapes, so the Theme card can
+// main/net/orb_net.c registers, with h_sd's row shapes, so the Theme card can
 // be exercised with no orb on a cable. It answers the provisioning verbs too — wifi
 // scan/join/ap, config, reboot, screen — so the Add-an-orb wizard is testable without
 // a radio anywhere near the bench.

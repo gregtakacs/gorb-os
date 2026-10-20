@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"net/http"
@@ -428,16 +429,127 @@ func (o *Orb) takeBusy() bool {
 	return b
 }
 
-// Container writes a FORMAT-2 .orbtheme header carrying name, for callers that need a
-// file the double will file. Only the identity fields are populated; the payload is the
-// device\'s business, and tools/host_sd_test.py pins the real packer against the C
-// reader field by field.
+// Container writes a FORMAT-3 .orbtheme carrying name, for callers that need a file the
+// double will file. One section, one plate element, no art — enough that every field a
+// reader checks exists and agrees, because a fixture that skips the index would let the
+// hub's index walk go untested. tools/host_orbbundle_test.py pins the real packer against
+// the C reader field by field; this is the LAN shape of the same file, written here from
+// the layout rather than imported from orbnet, so the two agree by rule and not by
+// construction.
 func Container(name string) []byte {
-	b := make([]byte, 512)
-	b[0], b[1], b[2], b[3] = 0x54, 0x52, 0x4f, 0x47 // 'TROR' little-endian
-	b[4] = 2                                        // FORMAT 2
-	copy(b[14*4:], name)
+	slug := []byte("clock")
+	blob := appendWords(nil, 1, 0, 26, uint32(len(slug))) // n_elem, n_spr, n_scal, n_slug
+	// The clock dialect's 26 scalars, every one at the app's own default: the fixture
+	// themes nothing, and D31 keeps those words the app's rather than the theme's.
+	blob = appendWords(blob, make([]uint32, 26)...)
+	// One plate row: n, class, slot, frame0, n_frames, x, y, w, h, order, flags,
+	// colour, border, radius, text_off, text_len, reserved — theme_schema's order.
+	blob = appendWords(blob, 1, 3, 0, 0, 1, 0, 0, 466, 466, 0, 0, 0, 0, 0, 0, 0, 0)
+	blob = append(blob, slug...)
+	for len(blob)%4 != 0 {
+		blob = append(blob, 0)
+	}
+
+	blobOff := uint32(fIdxHead + fIdxWords*4)
+	region := appendWords(nil, 1, 0) // n_sections, reserved
+	region = append(region, idxRecord(
+		blobOff+uint32(len(blob))-uint32((len(slug)+3)&^3), uint16(len(slug)),
+		1, blobOff, uint32(len(blob)), crc32.ChecksumIEEE(blob),
+		0, 0, 0, 0, 0)...)
+	region = append(region, blob...)
+
+	artOff := uint32(fHdrBytes+len(region)+fSector-1) & ^uint32(fSector-1)
+	b := make([]byte, artOff)
+	put := func(word int, v uint32) { binary.LittleEndian.PutUint32(b[word*4:], v) }
+	put(0, fMagic)
+	put(1, fFormat)
+	put(2, fABI)
+	put(3, uint32(len(b)))
+	put(4, fHdrBytes)
+	put(5, uint32(len(region)))
+	put(6, crc32.ChecksumIEEE(region))
+	put(7, 0)  // art_size
+	put(8, 0)  // art_crc
+	put(9, 1)  // n_sections — where FORMAT 2 kept scr_w
+	put(11, 0) // serial
+	put(13, artOff)
+	copy(b[fNameWord*4:], name)
+	put(fHdrCRCWord, hdrCRC(b))
+	copy(b[fHdrBytes:], region)
 	return b
+}
+
+// The FORMAT 3 header's word positions and caps, restated here for the same reason idOK
+// and themeID are: the double must fail when the client's copy drifts, so it may not
+// import them. Word 9 is the one a v2 reader would misread — FORMAT 2 kept scr_w there and
+// FORMAT 3 counts app sections there, which is why the FORMAT word is checked first.
+const (
+	fHdrBytes   = 128
+	fMagic      = 0x474F5254 // 'T','R','O','G' little-endian on the wire
+	fFormat     = 3
+	fABI        = 3
+	fNameWord   = 14
+	fNameBytes  = 56
+	fHdrCRCWord = 28
+	fIdxWords   = 10 // a 40-byte index record
+	fIdxHead    = 8  // n_sections + reserved
+	fSector     = 4096
+	// The two D29 install sums — ORB_BUNDLE_GEOM_CAP and ORB_BUNDLE_ART_CAP. `== cap` is
+	// accepted at both: geometry's erase covers it sector-aligned and lands exactly on the
+	// banks, and the banks have slot-less-art-offset to live in.
+	fGeomCap = 0xF000
+	fArtCap  = 0x3F0000
+)
+
+func le32(v uint32) []byte {
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], v)
+	return b[:]
+}
+
+// appendWords appends little-endian u32s, the shape every count in a FORMAT 3 bundle is
+// written in.
+func appendWords(b []byte, vals ...uint32) []byte {
+	for _, v := range vals {
+		b = append(b, le32(v)...)
+	}
+	return b
+}
+
+// idxRecord packs one 40-byte index record, in the layout orb_bundle.c's IDX_BYTES comment
+// states and orbbundle.py's IDX_PACK writes: four u16s at 0,2,4,6 (slug_off, slug_len,
+// abi_min, abi_max), seven u32s at 8,12,16,20,24,28,32 (n_elem, geom_off, geom_size,
+// geom_crc, art_off, art_size, art_crc), two u16s at 36,38 (scr_w, scr_h). The u16 head is
+// what a writer that read only the field names gets wrong: n_elem lands where a u32 layout
+// would put geom_off, and every offset after it shifts.
+func idxRecord(slugOff uint32, slugLen uint16, nElem, geomOff, geomSize, geomCRC,
+	artOff, artSize, artCRC, scrW, scrH uint32) []byte {
+	r := make([]byte, fIdxWords*4)
+	binary.LittleEndian.PutUint16(r[0:], uint16(slugOff))
+	binary.LittleEndian.PutUint16(r[2:], slugLen)
+	binary.LittleEndian.PutUint16(r[4:], fABI)
+	binary.LittleEndian.PutUint16(r[6:], fABI)
+	binary.LittleEndian.PutUint32(r[8:], nElem)
+	binary.LittleEndian.PutUint32(r[12:], geomOff)
+	binary.LittleEndian.PutUint32(r[16:], geomSize)
+	binary.LittleEndian.PutUint32(r[20:], geomCRC)
+	binary.LittleEndian.PutUint32(r[24:], artOff)
+	binary.LittleEndian.PutUint32(r[28:], artSize)
+	binary.LittleEndian.PutUint32(r[32:], artCRC)
+	binary.LittleEndian.PutUint16(r[36:], uint16(scrW))
+	binary.LittleEndian.PutUint16(r[38:], uint16(scrH))
+	return r
+}
+
+// hdrCRC is _hdr_crc in tools/orbbundle.py and orb_bundle3_hdr_parse's own sum in
+// main/art/orb_bundle.c: crc32 over the 128 header bytes with the checksum word zeroed.
+// zlib CRC-32 and esp_rom_crc32_le share the polynomial, so all three land on one value.
+func hdrCRC(b []byte) uint32 {
+	z := append([]byte(nil), b[:fHdrBytes]...)
+	for i := fHdrCRCWord * 4; i < fHdrCRCWord*4+4; i++ {
+		z[i] = 0
+	}
+	return crc32.ChecksumIEEE(z)
 }
 
 // MaxUpload is ORB_THEME_UPLOAD_MAX, restated here rather than imported from orbnet so
@@ -465,20 +577,37 @@ func themeID(name string) string {
 	return hex.EncodeToString(d[:])[:12]
 }
 
-// containerName is the firmware's read of the header name, kept independent of orbnet
-// for the same reason idOK is: this double must not agree with the client by
-// construction. It returns the name and the reason it refused the container.
+// containerName is the firmware's read of the header — card_check3's gate, kept
+// independent of orbnet for the same reason idOK is: this double must not agree with the
+// client by construction. It returns the name and the reason it refused the container, in
+// the sentences main/art/orb_bundle.c and main/net/orb_net.c actually answer with, in the
+// order they check. No device on this network installs a FORMAT 2 container: the reader
+// island went in 7c0fd4b, so a fixture that claimed otherwise would let the pair agree on
+// a file nothing can mount.
 func containerName(b []byte) (string, string) {
-	if len(b) < 128 {
+	if len(b) < fHdrBytes {
 		return "", "shorter than the 128 B header"
 	}
-	if binary.LittleEndian.Uint32(b[0:]) != 0x474F5254 {
-		return "", "not a .orbtheme container"
+	w := func(i int) uint32 { return binary.LittleEndian.Uint32(b[i*4:]) }
+	if w(0) != fMagic {
+		return "", "not an .orbtheme file"
 	}
-	if f := binary.LittleEndian.Uint32(b[4:]); f != 2 {
-		return "", fmt.Sprintf("theme format %d this firmware cannot read", f)
+	if f := w(1); f != fFormat {
+		return "", "theme format this firmware cannot read"
 	}
-	field := b[14*4 : 14*4+56]
+	if abi := w(2); abi != fABI {
+		return "", fmt.Sprintf("bundle geometry v%d; this build reads v%d — re-bake it", abi, fABI)
+	}
+	if w(fHdrCRCWord) != hdrCRC(b) {
+		return "", "container header is damaged — re-copy the file onto the card"
+	}
+	if g := w(5); g > fGeomCap {
+		return "", fmt.Sprintf("geometry region is %d B; the dial's table area holds %d B", g, fGeomCap)
+	}
+	if a := w(7); a > fArtCap {
+		return "", fmt.Sprintf("pixel payload is %d B; a theme slot holds %d B", a, fArtCap)
+	}
+	field := b[fNameWord*4 : fNameWord*4+fNameBytes]
 	end := len(field)
 	for i, c := range field {
 		if c == 0 {

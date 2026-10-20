@@ -1,5 +1,7 @@
 #!/bin/bash
-# m5_upload_proof.sh — open item 1 of docs/app-platform-plan.md §17.4, benched.
+# bench_upload_proof.sh — open item 1 of docs/app-platform-plan.md §17.4, benched.
+#   Renamed from m5_upload_proof.sh: the M5-era name outlived the M5 comparison it
+#   recorded; the bench and its verdict stand unchanged.
 #
 # The claim under test: with the tile-ring loan (829d8ca + f7481db), a browser
 # upload reaches the card on a boot with the radio associated, and every refusal
@@ -13,18 +15,24 @@
 #
 # Run DETACHED (it exceeds any 30 s tool cap by design):
 #   cd /home/greg/docker/Projects/gorb-os-2
-#   setsid tools/m5_upload_proof.sh > /tmp/m5p_run.log 2>&1 < /dev/null &
+#   setsid tools/bench_upload_proof.sh > /tmp/m5p_run.log 2>&1 < /dev/null &
 # Prereq: the board flashed with the bundle this session packed, card in socket,
 # nothing else holding the port (capf.py opens it, and the open resets the board
 # — that reset IS the clean boot this bench wants, plan §17.6).
 set -u
-ORB=${ORB:-http://192.168.2.34}
-REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5p_ser.txt
 BODY=/tmp/m5p_body.json
 FIX=/tmp/m5p/hsb_color.orbapp
 SLUG=hsb_color
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 cd "$REPO" || exit 1
+# The clone is the binding: the HTTP target comes from THIS clone's .orb-target —
+# the same file capf.py and serflash.sh read; an ORB override may only name the
+# bound board (split-board verdicts mean nothing).
+. tools/orb_bind.sh
+orb_require
+ORB=${ORB:-http://$ORB_IP}
+[ "$ORB" = "http://$ORB_IP" ] || orb_die "ORB=$ORB is not the bound orb $ORB_LABEL (http://$ORB_IP). Unset ORB or re-bind .orb-target."
 say(){ echo "[$(date +%T)] $*"; }
 verdict=PASS
 fail(){ say "FAIL: $*"; verdict=FAIL; }

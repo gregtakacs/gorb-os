@@ -1,6 +1,8 @@
 #!/bin/bash
-# m5_powercut.sh — P4's power-cut-mid-install pass line, cut with the board's own
-# reboot door (plan §8 P4; D9 in orb_app_install.c:429). h_reboot arms a fixed
+# bench_powercut.sh — P4's power-cut-mid-install pass line, cut with the board's own
+#   reboot door. Renamed from m5_powercut.sh: the M5-era name outlived the M5
+#   comparison it recorded; the bench itself and its verdict stand unchanged.
+# The mechanism (plan §8 P4; D9 in orb_app_install.c:429): h_reboot arms a fixed
 # 750 ms one-shot timer and does NOT drain orb_jobs (orb_net.c:3688) — a blunt
 # instrument, which is exactly what a power cut is. Arming the cut BEFORE the
 # install POST puts rst at ≈T0+750 ms while the worker is still in
@@ -22,12 +24,18 @@
 #
 # Run DETACHED:
 #   cd /home/greg/docker/Projects/gorb-os-2
-#   setsid tools/m5_powercut.sh > /tmp/m5p_run.log 2>&1 < /dev/null &
+#   setsid tools/bench_powercut.sh > /tmp/m5p_run.log 2>&1 < /dev/null &
 set -u
-ORB=${ORB:-http://192.168.2.34}
-REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5p_ser.txt
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 cd "$REPO" || exit 1
+# The clone is the binding: the HTTP target comes from THIS clone's .orb-target —
+# the same file capf.py and serflash.sh read; an ORB override may only name the
+# bound board (split-board verdicts mean nothing).
+. tools/orb_bind.sh
+orb_require
+ORB=${ORB:-http://$ORB_IP}
+[ "$ORB" = "http://$ORB_IP" ] || orb_die "ORB=$ORB is not the bound orb $ORB_LABEL (http://$ORB_IP). Unset ORB or re-bind .orb-target."
 say(){ echo "[$(date +%T)] $*"; }
 verdict=PASS
 fail(){ say "FAIL: $*"; verdict=FAIL; }

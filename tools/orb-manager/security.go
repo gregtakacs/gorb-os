@@ -359,6 +359,11 @@ var deviceRoutes = map[string][]string{
 	// orb_theme_install_bundle(). It queues instead of flipping, and its ack
 	// says reboot:none on purpose — the firmware comment is the contract.
 	"/api/v1/sd/bundle": {http.MethodPost},
+	// §26 slice 3's flip door: the press that PUTS A STORED BUNDLE ON THE GLASS.
+	// bundle stores and answers reboot:none; flip chooses and answers
+	// reboot:automatic — the two-stage form's two wires, each pinned by the
+	// firmware comment beside its handler.
+	"/api/v1/sd/flip":   {http.MethodPost},
 	"/api/v1/sd/rescan": {http.MethodPost},
 	// P4's card-app verbs, added because the merge that landed them in firmware left
 	// them out of this map: a device feature the hub cannot dial is a feature nobody

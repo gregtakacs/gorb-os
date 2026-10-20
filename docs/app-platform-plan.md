@@ -3953,13 +3953,24 @@ still preferred, so shipping behaviour is byte-for-byte what it was and the new 
 reachable only through `ORB_BASE_RENDER_FORCE`, which slice 2 deletes. On orb-A the branch
 ran once, boot completed, the clock came to the foreground, and **zero** sprite-commit or
 blend lines appeared across 8 s — the themed path demonstrably did not build behind the
-`return`. What is NOT yet verified is the pixels. There is no pixel path anywhere on this
-bench: the hub (this repo's own `tools/orb-manager`, live at `127.0.0.1:3779`) exposes build,
-flash, console, theme, tz and watch routes and **no framebuffer or screenshot surface** —
-verified against its route table, not assumed — and `tools/cap.py`/`capf.py`/`grab_boot.py`
-capture serial text only. So the claim is "it runs and tells the time", not "it looks right",
-and closing that gap takes a person's eyes on the glass, the same standing reserved for the
-QR onboarding proof (§`ap-onboarding-qr-plan.md:177`: "Human / camera (the only real proof)").
+`return`. What was NOT verified then is the pixels, and the sentence under this one (added at
+`ab13a13`) said no pixel path exists on this bench. It does now (`5e8655e`), because the gap
+was worth closing rather than working around: `/api/v1/fb` serves the PSRAM panel mirror — the
+same buffer the QSPI bands DMA out, and the only full-frame record there is, since the CO5300's
+GRAM is write-only — copied on the LVGL task inside the commit window, after the clock has
+composited and before the bands read. `tools/fbgrab.py` fetches it, checks received length
+against the device's own `X-Orb-FB` header, and reports ink fraction, mean luma, a luminance
+thumbnail and a `--diff` between two grabs. Measured on orb-A: PIL parses the BMP at the exact
+geometry and agrees with the bench decoder within one luma unit at 25 points spread over the
+frame; bmp and raw565 of one screen put ink at 97.48% and 97.45%; `--diff` reads 3.67% for two
+frames of the same clock and 97.45% for clock against menu, so the metric separates drift from
+content; a dark frame fails `--min-ink` with exit 1; and the capture costs the frame carrying it
+19.5 ms (434,312 B staged, off the device log). Three of the four defects this first exercised —
+a `?direct=1` path that could never run, a BMP header shifted four bytes, and rows 1402 bytes
+wide where BMP wants 1400 — were invisible until something decoded the file, which is the
+standing objection to log-line evidence in one measurement. What the capture has NOT yet seen is
+**the base face**: orb-A boots av-kit, so slice 1's branch still has never produced a visible
+frame. Slice 2's first act is to make it one and grab it.
 
 Two facts slice 1 settled that §26's plan assumed rather than knew. The base face does
 **not** want the dial's scheduler: `orb_sched`'s policy is a sprite view's contract (pose
@@ -3973,8 +3984,11 @@ would never fire until slice 2 removes that function, and slice 1 would ship unt
 `use_baked_in()`, `art_bank_map_at_0()` and the override, retarget `s_source` and the four
 sentences that promise a default, rewrite the D13 rows in `host_tz_test.py`, and move the
 partition-table write into the flash path so a board learns the two-slot layout. Slice 2 is
-where M6's clause 3 becomes a real test rather than a sentence. Slice 2 needs the owner's eyes
-on the glass for its visual check — the hub can flash the build but shows no pixels (above).
+where M6's clause 3 becomes a real test rather than a sentence. Slice 2 no longer needs a
+person holding the dial to check its face: it builds, flashes, and `tools/fbgrab.py` says
+what the glass holds — ink fraction, mean luma and a thumbnail, plus `--diff` against a
+capture taken before the change. That is what slice 1 could not do and why its status above
+reads "runs, unseen".
 
 
 **Two things this section will not guess.** Both are visible to a person holding the device,

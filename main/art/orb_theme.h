@@ -296,6 +296,12 @@ const char *orb_theme_staged_why(void);
 uint32_t orb_theme_refill_ms(void);
 uint32_t orb_theme_refill_bytes(void);
 
+/** The last streaming bundle store (P6.4): milliseconds of the fused card-to-slot
+ *  pass and the bytes of art it moved. Both 0 until a bundle installs. The page
+ *  reads the pair so the §20.5(1) copy rate needs no serial cable. */
+uint32_t orb_theme_bundle_ms(void);
+uint32_t orb_theme_bundle_bytes(void);
+
 /** Put a FORMAT 3 app bundle in the target slot: streaming ingest (§22.3, P6.3).
  *  Each section's bank is checksummed as its bytes cross from the card, the region
  *  is verified before the first erase, and the installed bytes are read back and
@@ -325,6 +331,12 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
 esp_err_t orb_theme_post_install(const char *id);
 esp_err_t orb_theme_post_default(void);
 
+/** P6.4's flip door: post the streaming bundle store (orb_theme_install_bundle)
+ *  on the same queue the FORMAT 2 install uses. No reboot follows — a stored
+ *  bundle is not drawn, and a boot that shows the owner nothing is theatre. The
+ *  refusal lands in orb_theme_try_why() exactly as the FORMAT 2 press's does. */
+esp_err_t orb_theme_post_bundle(const char *id);
+
 /** What the last pick could not do: the id it was asked for and the sentence
  *  the ladder answered with. Both "" after a success, and the picker puts them on
  *  the row that was pressed rather than in a status line nothing can reach. */
@@ -337,6 +349,12 @@ typedef struct {
     char      why[72];            /* why it is unloadable; empty when err == ESP_OK */
     uint32_t  art_size;
     uint32_t  serial;
+    uint32_t  fmt;                /* 2 or 3, from the FORMAT word; 0 = unreadable.
+                                   * A fmt 3 row is a BUNDLE: loadable through
+                                   * orb_theme_post_bundle(), never through the
+                                   * picker, and never active — a FORMAT 3 slot
+                                   * is stored, not drawn, until P6.5's reader. */
+    uint32_t  n_sections;         /* fmt 3 only: the index's app count; 0 for v2 */
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;           /* this file is what the dial is drawing */
     bool      changed;          /* the installed copy of this name has different bytes */

@@ -160,6 +160,11 @@ typedef struct {
                                          * what proves they are really zero */
     char     name[THEME_NAME_MAX + 1];   /* the theme's one true name; the card
                                           * filename is theme_id(name), never this */
+    uint32_t fmt;                        /* 2 or 3, stamped by hdr_parse/hdr_at_any;
+                                          * FORMAT 2's readers refuse to treat a 3
+                                          * as a theme, and P6.4's doors split on
+                                          * this word. Unset (0) means unreadable. */
+    uint32_t n_sections;                 /* fmt 3 only: the index's app count */
 } orb_thdr_t;
 
 typedef struct {
@@ -262,6 +267,15 @@ static void rd_wordstr(const uint32_t *w, int base, char *dst, int cap)
     dst[i] = '\0';
 }
 
+/* The FORMAT 3 gate's one sentence, and the accept signal, in one definition.
+ * Callers that can install a bundle compare the returned POINTER rather than
+ * rephrasing what a caller that cannot should show, so the wording lives once
+ * and the rule cannot drift (the method R4 set for the identity refusal).
+ * The pointer is the fact; the text only rides it. */
+static const char THEME3_REFUSAL[] =
+    "that is a FORMAT 3 app bundle; this firmware installs "
+    "single-app themes only — update the dial to load it";
+
 /* NULL on success, otherwise the reason this file is not a theme this device can
  * load — in words, because every one of them is what the page shows next to the
  * file the owner just uploaded. */
@@ -270,23 +284,24 @@ static const char *hdr_parse(const uint32_t *w, orb_thdr_t *o)
     if (w[W_MAGIC]    != THEME_MAGIC)     return "not an .orbtheme file";
     if (w[W_FORMAT]   != THEME_FORMAT) {
         /* FORMAT 3 is not unreadable-by-accident: it is a bundle this build
-         * cannot install YET, so a well-formed one names itself and names the
-         * fix. A bundle with a header this build cannot check falls to the
-         * generic line WITH ITS FORMAT WORD UNVERIFIED — measured on hardware
-         * 2026-10-19 (§24.7): the torn-header upload answers "theme format this
-         * firmware cannot read", not the bundle reader's own reason, because
-         * orb_bundle3_hdr_parse()'s reason is discarded HERE. That is the safe
-         * direction: the bundle sentence promises "update the dial to load it",
-         * and no sentence may promise that about bytes whose checksum failed.
-         * Only words already loaded; the door stays shut either way. */
+         * stores through its own door and cannot draw yet (P6.4), so a
+         * well-formed one returns THEME3_REFUSAL above for the pointer
+         * comparison. A bundle whose header this build cannot check falls to
+         * the generic line WITH ITS FORMAT WORD UNVERIFIED — measured on
+         * hardware 2026-10-19 (§24.7), and the FORMAT 3 rows of
+         * host_sd_test.py pin the order now: the reader is consulted only
+         * after the format word, and its refusal is spoken only after the
+         * reader's own checksum settles. No sentence names a file as any
+         * format before its 128 bytes have proven themselves. */
         orb_bundle3_hdr_t b3;
         if (w[W_FORMAT] == ORB_BUNDLE3_FORMAT &&
             orb_bundle3_hdr_parse(w, &b3) == NULL)
-            return "that is a FORMAT 3 app bundle; this firmware installs "
-                   "single-app themes only — update the dial to load it";
+            return THEME3_REFUSAL;
         return "theme format this firmware cannot read";
     }
     if (w[W_GEOM_ABI] != THEME_GEOM_ABI)  return "baked for a different dial — re-bake it";
+    o->fmt = THEME_FORMAT;                /* the only format that reaches here */
+    o->n_sections = 0;
 
     /* The self-checksum first: it covers 128 bytes, so it costs nothing, and a
      * torn header that claims a 4 MB payload would otherwise be streamed, hashed
@@ -689,7 +704,11 @@ static const char   *s_source = "baked-in";
  * finds the commit landed. "" is the clean state. It is a witness and never a
  * request — see THEME_NVS_STAGED for why that distinction survives D13. */
 static char          s_staged_id[ORB_THEME_ID_HEX + 1];
-#define STAGED_WHY "pixels staged, never committed — the dial shows the previous theme"
+/* §24.5(2) measured on hardware: an interrupted flip on this single-slot firmware
+ * falls back to the FACTORY clock, not the previous theme — the copy erases the
+ * slot it is replacing. The old wording promised the opposite of the boot the
+ * bench watched; P6.4 owns this sentence and states the measured fact. */
+#define STAGED_WHY "pixels staged, never committed — the dial shows the factory clock"
 
 /* D30's boot refill, as the ledger reports it: the milliseconds of the fused
  * read-and-CRC pass and the bytes it moved. Both stay 0 on a boot that drew the
@@ -698,6 +717,14 @@ static char          s_staged_id[ORB_THEME_ID_HEX + 1];
  * (Arm A, or MECH_B 0) rather than a measurement that failed. */
 static uint32_t      s_refill_ms;
 static uint32_t      s_refill_bytes;
+
+/* The last streaming bundle store, timed the way the refill is timed: the
+ * milliseconds of the fused card-to-slot pass and the bytes of art it moved.
+ * Both stay 0 until a store lands, and P6.4's page reads them off /api/v1/sd
+ * so the §20.5(1) rate is reachable without a serial cable — the lesson
+ * §24.6(5) learned about what gates a bench. */
+static uint32_t      s_bundle_ms;
+static uint32_t      s_bundle_bytes;
 
 /* The fallback pair, straight out of the generated header. Naming those objects
  * works in THIS file only, and only because orb_theme_geo.h is not included here:
@@ -742,6 +769,8 @@ const char *orb_theme_staged_id(void)      { return s_staged_id; }
 const char *orb_theme_staged_why(void)     { return s_staged_id[0] ? STAGED_WHY : ""; }
 uint32_t    orb_theme_refill_ms(void)      { return s_refill_ms; }
 uint32_t    orb_theme_refill_bytes(void)   { return s_refill_bytes; }
+uint32_t    orb_theme_bundle_ms(void)      { return s_bundle_ms; }
+uint32_t    orb_theme_bundle_bytes(void)   { return s_bundle_bytes; }
 
 /* ---- the two decisions D13 pinned, kept free of every syscall ---------------
  *
@@ -1104,7 +1133,12 @@ static void slot_read(slot_t *s, const esp_partition_t *p)
      * mmap'd (art_bank.h on the DROM window), and 128 bytes do not justify an MMU
      * entry every boot. */
     if (esp_partition_read(p, s->hdr_base, hdr, sizeof hdr) != ESP_OK) return;
-    if (hdr_parse(hdr, &s->h)) return;
+    /* The FORMAT 2 reader reads FORMAT 2 only (P6.4): a bundle's header parses
+     * through the sentinel, never into a slot the boot would try to refill. The
+     * explicit tag test is belt to hdr_parse's sentinel — boot's bundle row
+     * ("an app bundle this dial cannot draw yet") depends on b.valid staying
+     * false here, and this is the one read that decides it. */
+    if (hdr_parse(hdr, &s->h) || s->h.fmt != THEME_FORMAT) return;
     /* The slot's own layout rule, against the SLOT offsets — not the file's. */
     if (s->h.geom_off != SLOT_GEOM_OFF || s->h.art_off != SLOT_ART_OFF) return;
     /* The blob's own counts, and only the first four or the first seven words are
@@ -1463,11 +1497,12 @@ static esp_err_t copy_into(int fd, const orb_thdr_t *h, const esp_partition_t *p
  * --inspect with installed bytes.
  *
  * Nothing here selects the bundle. The install leaves the choice key alone and the
- * dial keeps drawing what it drew; the flip page (P6.4) is the first thing with a
- * multi-app door to press. D26 is honoured on the way — boot says plainly that a
+ * dial keeps drawing what it drew; the flip page (P6.4, landed) is the door that
+ * presses it, and only it. D26 is honoured on the way — boot says plainly that a
  * bundle in the slot is not drawable yet. */
 
 static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t whysz);
+static const char *hdr_at(int fd, orb_thdr_t *h);   /* defined with the upload door below */
 
 /* The v3 twin of card_check(). Same fd discipline, same sentences, and the file's
  * own layout rule: a bundle puts its region where a container puts its blob, and
@@ -1491,6 +1526,70 @@ static const char *card_check3(int fd, orb_bundle3_hdr_t *o, uint32_t *file_size
         return "container parts are not where this format puts them";
     if (o->art_off > *file_size || o->art_size > *file_size - o->art_off)
         return "art region runs past the end of the file";
+    return NULL;
+}
+
+/* The door's reader: an open container read by whichever format its own header
+ * proves, with FORMAT 3's shared tuple words (name, both checksums, serial) and
+ * its format tag filled into the FORMAT 2 struct so the duplicate check below
+ * and every caller of it is one rule, not two. Returns NULL, the bundle sentence
+ * for a caller holding no bundle door, or the reason the header is nothing this
+ * device reads. card_check3() is re-read rather than duplicated: it is the same
+ * door the install path uses, and a container checked here and re-checked there
+ * is the identical pair of sentences, byte for byte. */
+static const char *hdr_at_any(int fd, orb_thdr_t *h, orb_bundle3_hdr_t *b3, uint32_t *fsz)
+{
+    const char *r = hdr_at(fd, h);           /* FORMAT 2's full header check */
+    if (r != THEME3_REFUSAL) return r;        /* FORMAT 2, or nothing */
+    if (!b3) return r;                        /* no bundle door here */
+    r = card_check3(fd, b3, fsz);
+    if (r) return r;
+    h->fmt = 3;
+    h->n_sections = b3->n_sections;
+    h->geom_crc = b3->geom_crc;
+    h->art_crc  = b3->art_crc;
+    h->serial   = b3->serial;
+    strlcpy(h->name, b3->name, sizeof h->name);
+    return NULL;
+}
+
+/* FORMAT 3's container check at the door, the twin of verify_container() and
+ * nothing else: the region alone verified through the shipped reader (bounds,
+ * region checksum, index, walk, blob lengths/crcs/slugs, art bounds,
+ * sortedness), then the art region streamed and checksummed against the
+ * header's own. Per-bank rules are NOT checked here — the install settles them
+ * on the wire (orb_bundle_bank_rule), and the streamed whole-art checksum here
+ * is the same figure read_bundle()'s art walk settles against at the far end,
+ * so a bank tampered between this door and the install still dies at the
+ * install, not on the wall. The region buffer is install_bundle()'s size and
+ * cap: geom_size is already clamped to ORB_BUNDLE_GEOM_CAP by the header gate
+ * before it reaches this malloc. */
+static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size)
+{
+    uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) return "out of memory for the bundle's tables";
+    size_t pos = h->geom_off;
+    if (rd_at(fd, &pos, region, h->geom_size) != (ssize_t)h->geom_size) {
+        heap_caps_free(region);
+        return "geometry region runs past the end of the file";
+    }
+    orb_bundle_t b;
+    const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, &b);
+    heap_caps_free(region);
+    if (r) return r;
+    if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";
+    uint32_t crc = 0;
+    pos = h->art_off;
+    uint32_t left = h->art_size;
+    while (left) {
+        const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
+        if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
+            return "pixel data is shorter than its header claims — re-copy it";
+        crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
+        left -= (uint32_t)want;
+    }
+    if (crc != h->art_crc)
+        return "pixels do not match their checksum — re-copy the file onto the card";
     return NULL;
 }
 
@@ -1653,11 +1752,12 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
 }
 
 /* The one implementation of "put this bundle on the wall". Worker task, like every
- * other theme operation. It does NOT change what the dial draws: the bundle is
- * stored, not chosen, and the flip page (P6.4) is the first thing with a multi-app
- * door to press. D26 still applies — the page reports the install as waiting, in
- * these words, because "it installed and nothing happened" is a sentence an owner
- * reads as a broken button. */
+ * other theme operation, reached only through orb_theme_post_bundle() — the page
+ * and the queue cannot disagree about whether the copy may hold the card lock. It
+ * does NOT change what the dial draws: the bundle is stored, not chosen, until the
+ * FORMAT 3 reader (P6.5) gives a compositor something to draw. D26 still applies —
+ * the page reports the install as stored-and-waiting, because "it installed and
+ * nothing happened" is a sentence an owner reads as a broken button. */
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -1744,8 +1844,10 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         return install_failed(e, w, why, whysz);
     }
     staged_clear();
-    ESP_LOGI(TAG, "bundle \"%s\" (%s) in slot-B in %lld ms — stored, and not yet chosen",
-             h.name, id, (long long)((esp_timer_get_time() - t0) / 1000));
+    s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+    s_bundle_bytes = h.art_size;
+    ESP_LOGI(TAG, "bundle \"%s\" (%s) in slot-B in %u ms — stored, and not yet chosen",
+             h.name, id, (unsigned)s_bundle_ms);
     return ESP_OK;
 }
 
@@ -2123,6 +2225,37 @@ esp_err_t orb_theme_post_default(void)
     return orb_jobs_post(default_job, (void *)&r, sizeof r);
 }
 
+/* P6.4's flip worker: the bundle's half of install_job, and its one deliberate
+ * difference is the reboot. A FORMAT 2 install reboots because loading is
+ * choosing, and the new dial cannot draw itself until the boot refills the
+ * arena; a bundle store changes nothing the dial draws (the slot is stored,
+ * not live, until P6.5), so rebooting would cost the owner a boot to show them
+ * the same clock they already had. The try witness is identical: the row the
+ * press named carries the refusal sentence, exactly as the FORMAT 2 door's
+ * does. */
+static void bundle_job(void *arg)
+{
+    const install_req_t *r = arg;
+    char why[56] = "";
+    if (orb_theme_install_bundle(r->id, why, sizeof why) != ESP_OK) {
+        try_note(r->id, why[0] ? why : "the install failed");
+        return;
+    }
+    try_note(NULL, NULL);
+}
+
+esp_err_t orb_theme_post_bundle(const char *id)
+{
+    if (!theme_id_ok(id)) return ESP_ERR_INVALID_ARG;
+    /* Named before the queue is asked, exactly as post_install does it: the row
+     * a refusal lands on is the row that was pressed, even when the reason is
+     * that the card never answered. */
+    try_note(id, "");
+    install_req_t r;
+    strlcpy(r.id, id, sizeof r.id);
+    return orb_jobs_post(bundle_job, &r, sizeof r);
+}
+
 esp_err_t orb_theme_set_live(const char *which)
 {
     if (!which) return ESP_ERR_INVALID_ARG;
@@ -2154,7 +2287,23 @@ esp_err_t orb_theme_delete(const char *id)
      * unmounted volume answer with the wrong error, not a crash. card_open_verified_id
      * mounts too; this is the one the unlink's own lock hold depends on. */
     if (orb_sd_ensure_mounted() != ESP_OK) return ESP_ERR_NOT_FOUND;
-    const int fd = card_open_verified_id(id, &h, &w);
+    int fd = card_open_verified_id(id, &h, &w);
+    if (fd < 0) {
+        /* The FORMAT 2 resolver refuses a bundle at the identity check (its name
+         * hashes fine, but card_check calls it damaged), so it cannot tell a
+         * bundle from a corrupt theme here. Try the bundle door, and keep the
+         * FORMAT 2 reason if that too refuses — the caller's error is then the
+         * one about the id it was issued, never a card edit's wording. */
+        orb_bundle3_hdr_t b3;
+        uint32_t fsz = 0;
+        const char *bw = NULL;
+        const int bfd = card_open_verified_id3(id, &b3, &fsz, &bw);
+        if (bfd >= 0) {
+            fd = bfd;
+            strlcpy(h.name, b3.name, sizeof h.name);
+            h.fmt = 3;
+        }
+    }
     if (fd < 0) return ESP_ERR_NOT_FOUND;
     card_close(fd);
 
@@ -2223,9 +2372,45 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     e->why[0] = '\0';
     e->active = false; e->changed = false;
     e->art_size = 0; e->serial = 0;
+    e->fmt = 0; e->n_sections = 0;
 
     orb_thdr_t h;
     const char *why = card_check(fd, &h);
+    if (why == THEME3_REFUSAL) {
+        /* A bundle, listed as one (P6.4): the id is the same R4 hash of the same
+         * owner name, the layout and art bounds are the install door's own rule
+         * (card_check3, re-run here so a listed row means a press has a chance),
+         * and the row is never active: nothing draws a bundle yet. The reason a
+         * torn bundle header carries is the generic one it always carried —
+         * §24.7 measured that and the order above is what keeps it true. */
+        orb_bundle3_hdr_t b3;
+        uint32_t fsz3 = 0;
+        why = card_check3(fd, &b3, &fsz3);
+        if (!why) {
+            char bid[THEME_ID_HEX + 1];
+            theme_id(b3.name, bid);
+            strlcpy(e->name, b3.name, sizeof e->name);
+            e->fmt = 3;
+            e->n_sections = b3.n_sections;
+            e->art_size = b3.art_size;
+            e->serial = b3.serial;
+            if (strcmp(bid, rec->name) != 0) {
+                /* FORMAT 2's own sentence, one rule for both formats: a bundle
+                 * copied onto the card under a name that is not its hash is
+                 * addressable and refused, exactly like a theme — and the id the
+                 * row carries stays the filename stem, which is what a damaged
+                 * row needs to remain addressable. */
+                strlcpy(e->why, "the file is not named for its own theme name — re-upload it",
+                        sizeof(e->why));
+                e->err = ESP_ERR_INVALID_ARG;
+            } else {
+                strlcpy(e->id, bid, sizeof e->id);
+                e->err = ESP_OK;
+            }
+            c->n++;
+            return true;
+        }
+    }
     if (why) {
         /* Listed with its reason rather than skipped. "no themes on the card" and
          * "three themes, all damaged" are different problems — the card's or the
@@ -2265,6 +2450,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
      * harness drives with vectors: same name and both CRCs is the wall; same name and
      * a different CRC is a card file that is not what the dial draws. */
     theme_state(&h, &e->active, &e->changed);
+    e->fmt = h.fmt;
     e->err = ESP_OK;
     c->n++;
     return true;
@@ -2428,7 +2614,12 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
 
     /* Verify the file that is NOW on the card — not the bytes that passed through
      * this handler. A card that dropped a write, or a client that lied about the
-     * length, is caught here rather than by the install three boots later. */
+     * length, is caught here rather than by the install three boots later.
+     *
+     * Both formats are received (P6.4): FORMAT 3 is stored through this door and
+     * installed by the bundle press, which re-verifies everything it is about to
+     * put in a slot. A torn FORMAT 3 header still answers the generic line — its
+     * format word is unverified, and the refusal says only what is proven. */
     const int fd = open(up->tmp, O_RDONLY);
     if (fd < 0) {
         *why = "the uploaded file is not on the card";
@@ -2436,8 +2627,10 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
         return ESP_FAIL;
     }
     orb_thdr_t h;
-    const char *r = hdr_at(fd, &h);
-    if (!r) r = verify_container(fd, &h);
+    orb_bundle3_hdr_t b3;
+    uint32_t fsz = 0;
+    const char *r = hdr_at_any(fd, &h, &b3, &fsz);
+    if (!r) r = (h.fmt == 3) ? verify_bundle3(fd, &b3, fsz) : verify_container(fd, &h);
     close(fd);
 
     /* The card filename is the id, and the id is the hash of the header's owner name.
@@ -2462,9 +2655,12 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
         const int efd = open(final, O_RDONLY);
         if (efd >= 0) {
             orb_thdr_t oh;
-            const char *or_ = hdr_at(efd, &oh);
+            orb_bundle3_hdr_t oh3;
+            uint32_t ohfsz = 0;
+            const char *or_ = hdr_at_any(efd, &oh, &oh3, &ohfsz);
             close(efd);
-            if (!or_ && oh.geom_crc == h.geom_crc && oh.art_crc == h.art_crc &&
+            if (!or_ && oh.fmt == h.fmt && oh.geom_crc == h.geom_crc &&
+                oh.art_crc == h.art_crc &&
                 oh.serial == h.serial && strcmp(oh.name, h.name) == 0) {
                 /* Idempotent: identical theme, discard the scratch, nothing changed. */
                 unlink(up->tmp); orb_sd_unlock(); free(up);

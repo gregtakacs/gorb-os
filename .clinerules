@@ -475,6 +475,16 @@ kit you just baked, you baked the wrong kit.
     /tmp/bakevenv/bin/python tools/bake_clock.py /tmp/p1/av-kit/theme \
         --bg-frames /tmp/p1/av-kit/frames --bg-fps 15 --tick-rate 15 --force-sweep
 
+The pair has a second door now (P6.5, §25.6): `tools/bake_clock.py --from-bundle
+<bundle.orbtheme>` rebuilds `clock_assets.{bin,h}` from a FORMAT 3 section's element
+table instead of from a kit, with no PIL in the loop. Both paths print through the one
+`.h` writer in `_finish()`; only the provenance comment differs, so the same
+compare-the-`.h`-ignoring-provenance rule applies to a rebuilt pair. The container is
+that pair's source of truth, and anything the table cannot state (a tourbillon, a real
+delta bank, an extent its catalogue does not account for) refuses with a sentence rather
+than rebuilding a wrong clock. Sentinel: `tools/host_from_bundle_test.py` (76 checks, 18
+refusal vectors) and `tools/mut_from_bundle.py` (11/11).
+
 The 59-page **flagship** bench bank (`LAT_BYTES_KIT3 = 3858874` in
 `main/art/art_bank.c:642`) was baked from `watch-orbital-kit3.zip`, sha256
 c910be26dde63eb4... That zip and its prep output left the repo on 2026-10-12;

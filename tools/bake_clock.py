@@ -86,6 +86,10 @@ from PIL import Image
 SCREEN_W = 466
 SCREEN_H = 466
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import theme_schema as ts          # the element table's one column list (D32)
+import orbbundle as ob             # the FORMAT 3 reader --from-bundle consumes
+
 # orb-os hand kinds (index == the theme's kind integer)
 KINDS = ["hour", "minute", "second", "static1", "static2"]
 
@@ -1485,7 +1489,21 @@ def resize_full(img):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("theme_dir")
+    ap.add_argument("theme_dir", nargs="?", default=None,
+                    help="the kit directory to bake from. Omit it with --from-bundle.")
+    ap.add_argument("--from-bundle", default=None, metavar="BUNDLE",
+                    help="the reverse path (P6.5, §22.5): rebuild the compiled "
+                         "clock_assets.{bin,h} pair FROM a FORMAT 3 bundle's clock "
+                         "section instead of from a kit directory. The container is "
+                         "then the source of truth -- the kit it was re-baked from is "
+                         "not read -- which is the clause §0.2 still owed. The .bin is "
+                         "the section's bank bytes; the .h is printed by the same "
+                         "format definition a kit bake uses, so the two paths cannot "
+                         "drift. Refuses by name what the table cannot state: a "
+                         "tourbillon, a real delta bank, an extent the catalogue does "
+                         "not account for, and a bundle with no clock section.")
+    ap.add_argument("--bundle-section", default="clock", metavar="SLUG",
+                    help="which section --from-bundle rebuilds (default: clock).")
     ap.add_argument("--bin", default="assets/clock_assets.bin")
     ap.add_argument("--header", default="assets/clock_assets.h")
     ap.add_argument("--orbtheme", default=None, metavar="PATH",
@@ -1625,6 +1643,31 @@ def main():
 
     ap.add_argument("--preview-dir", default=None)
     args = ap.parse_args()
+
+    if args.from_bundle:
+        # The reverse path reads a container and writes a pair. It has no kit to
+        # fold, no bank to pack and no complications to bake, so a source-side flag
+        # beside it means the person typing meant something else -- refused, not
+        # silently ignored. --orbtheme is refused too: writing FORMAT 2 from a FORMAT
+        # 3 bundle would be a downgrade nobody asked for.
+        if args.theme_dir:
+            sys.exit("--from-bundle reads a container, not a kit directory: give one "
+                     "of the two, and this run named both.")
+        if args.orbtheme:
+            sys.exit("--from-bundle rebuilds the compiled pair from a FORMAT 3 "
+                     "container and writes no FORMAT 2 container: --orbtheme is the "
+                     "forward direction.")
+        for f in ("bg_gif", "bg_frames", "tourbillon", "matte", "dump_dir",
+                  "force_sweep", "no_sweep", "tick_rate", "comps"):
+            v = getattr(args, f, None)
+            if v not in (None, False, 0, "auto"):
+                sys.exit("--from-bundle takes no %s: the bundle already carries what "
+                         "a source-side flag would decide." % ("--" + f.replace("_", "-")))
+        clock_from_bundle(args)
+        return
+    if not args.theme_dir:
+        sys.exit("give a theme directory to bake, or --from-bundle <bundle> to rebuild "
+                 "the pair from a FORMAT 3 container.")
 
     if args.bg_gif and args.bg_frames:
         sys.exit("--bg-gif and --bg-frames are alternatives for the same thing "
@@ -2168,9 +2211,238 @@ def rebucket_comps(comps, matte_mask):
     return changed
 
 
+def _bundle_planes(b, art, refuse):
+    """The sprite catalogue against the byte walk, before any number is trusted.
+
+    Returns the rows by index. The plate is colour-only (no alpha plane); every
+    sprite carries colour + alpha, so a row's size is checkable from its own extent.
+    A bank this catalogue cannot account for byte-for-byte is a bank this tool does
+    not understand -- §25.3's rule, read from the other end."""
+    at, planes = 0, {}
+    for i, s in enumerate(b["sprites"]):
+        if s["off"] != at:
+            refuse("the sprite catalogue is not contiguous at row %d: it starts at %d, "
+                   "the previous plane ends at %d" % (i, s["off"], at))
+        want = s["w"] * s["h"] * (2 if i == 0 else 3)
+        if s["size"] != want:
+            refuse("catalogue row %d claims %d B of a %dx%d plane; that extent is %d B"
+                   % (i, s["size"], s["w"], s["h"], want))
+        planes[i] = s
+        at += s["size"]
+    if at != len(art):
+        refuse("the catalogue accounts for %d B of an art region of %d B" % (at, len(art)))
+    for e in b["elements"]:
+        s = planes.get(e["frame0"])
+        if s is None:
+            refuse("element %d points at sprite row %d of a table with %d rows"
+                   % (e["n"], e["frame0"], len(b["sprites"])))
+        if (s["w"], s["h"]) != (e["w"], e["h"]):
+            refuse("element %d is %dx%d while its plane is %dx%d: the table and the "
+                   "catalogue describe different layers"
+                   % (e["n"], e["w"], e["h"], s["w"], s["h"]))
+    return planes
+
+
+def _bundle_clock_state(section, hdr, src_path):
+    """The clock state a FORMAT 3 bundle names, in the shape `_finish()` consumes.
+
+    This is `rebake_bundle.py` backwards, under the same rulings. Every number comes
+    from one of three carried places: the 26 scalars verbatim (D31), the element
+    table (placement, per §25.2's identity: draw point is (x, y) and the centre is
+    (x + pivot_x, y + pivot_y)), or the sprite catalogue (a plane's offset, size and
+    extent). What the container does not carry is refused by name, never guessed:
+    §25.3's tourbillon, a real delta-rect bank, and any bank the catalogue cannot
+    account for."""
+    def refuse(what):
+        sys.exit("refused: %s" % what)
+
+    b, rec = section["blob"], section["rec"]
+    sc, art = b["scalars"], section["art"]
+    scr_w, scr_h = rec["scr_w"], rec["scr_h"]
+    by = {}
+    for e in b["elements"]:
+        cls, slot = e["class"], e["slot"]
+        if cls not in (ts.CLASS_PLATE, ts.CLASS_HAND, ts.CLASS_SPRITE):
+            refuse("element %d is class %r: the compiled clock has no field for it, "
+                   "and §25.3 rules that class into the complication mapping"
+                   % (e["n"], ts.CLASS_NAMES[cls]))
+        if cls == ts.CLASS_HAND and slot >= 5:
+            refuse("a tourbillon (hand slot %d): the fan-out mapping is not ruled, and "
+                   "the .h's diff-rect fields ride no bundle column" % slot)
+        if cls == ts.CLASS_PLATE and slot > 1:
+            refuse("a plate at slot %d: the clock dialect is one plate and one overlay"
+                   % slot)
+        if (cls, slot) in by:
+            refuse("two rows for %s slot %d: one slot draws one layer"
+                   % (ts.CLASS_NAMES[cls], slot))
+        by[(cls, slot)] = e
+    if sc["tourbillon_n"]:
+        refuse("tourbillon_n %d with no tourbillon row: the scalars and the table "
+               "disagree, and the pair would name a bank the art does not hold"
+               % sc["tourbillon_n"])
+    if sc["bg_frames"]:
+        refuse("%d distinct plate frames: those planes ride the gif table a FORMAT 3 "
+               "clock section does not carry" % sc["bg_frames"])
+
+    plate = by.get((ts.CLASS_PLATE, 0))
+    if plate is None:
+        refuse("no plate row: the pair's blank-layer centres come from the plate's own "
+               "extent, and a clock with no plate has no centre")
+    if (plate["x"], plate["y"], plate["w"], plate["h"]) != (0, 0, scr_w, scr_h):
+        refuse("a plate at extent (%d,%d,%d,%d) of a %dx%d panel: the compiled clock "
+               "draws its background full-screen, so a plate that is not the whole "
+               "panel is not a plate"
+               % (plate["x"], plate["y"], plate["w"], plate["h"], scr_w, scr_h))
+    if plate["n_frames"] != 1:
+        refuse("a gif bank: the plate names %d frames, and the delta rects that would "
+               "carry them are the shape §25.3 refuses -- a FORMAT 3 clock section "
+               "holds one keyframe" % plate["n_frames"])
+    return by, plate, sc, scr_w, scr_h, _bundle_planes(b, art, refuse), refuse
+
+
+def clock_from_bundle(args):
+    """`--from-bundle`: rebuild the compiled pair from a FORMAT 3 bundle's clock
+    section. The `.bin` is the section's bank bytes, which the container carries
+    verbatim; the `.h` is printed by `_finish()` through the SAME format definition a
+    kit bake uses, so the two paths cannot drift. Refusals are §25.3's sentences."""
+    sec = _find_bundle_section(args)
+    st = _bundle_clock_state2(sec, args._bundle_hdr, args.from_bundle)
+
+    class _Blob:
+        buf = st["art"]
+
+    # _finish() re-reads its scalars from `style` and then applies the sweep and
+    # tick-rate command overrides. Both are off here: the carried scalars already
+    # hold the values the source bake settled on, and re-deciding them from defaults
+    # would contradict them.
+    args.force_sweep, args.tick_rate, args.no_sweep = False, 0, True
+    args.tourbillon, args.tourbillon_fps = None, st["tourbillon_fps"]
+    _finish(st["style"], st["name"], st["bg"], st["shadow_on"], st["shadow_dx"],
+            st["shadow_dy"], st["hand_recs"], st["shadow_recs"], st["overlay"],
+            st["baked_frames"], st["anim_frames"], st["plate_off"], _Blob(), args,
+            st["gif"], [], st["matte_mask"], prov=st["prov"])
+    print("rebuilt %s + %s from %s: theme %r, %d elements, art %d B"
+          % (args.bin, args.header, args.from_bundle, st["name"],
+             len(sec["blob"]["elements"]), len(st["art"])))
+
+
+def _find_bundle_section(args):
+    """Read the bundle and take the section named. Every container refusal the reader
+    makes comes first: this tool re-checks no checksum, and rebuilds no pair from
+    bytes it could not verify. A reader refusal is a sentence (D26), and a traceback
+    is a poor way to show one -- the same shape `--orbtheme` gives a container write."""
+    try:
+        hdr, secs = ob.read_bundle(args.from_bundle)
+    except ValueError as e:
+        sys.exit("refused: %s: %s" % (args.from_bundle, e))
+    if hdr["fmt"] != 3:
+        sys.exit("refused: %s is FORMAT %d; --from-bundle reads a FORMAT 3 container, "
+                 "and FORMAT 2 carries no element table to rebuild from"
+                 % (args.from_bundle, hdr["fmt"]))
+    sec = ob.find_section(secs, args.bundle_section)
+    if sec is None:
+        sys.exit("refused: %s has no %r section, and the plate/hand/shadow/overlay "
+                 "table is the clock's own dialect (the sections it does hold: %s)"
+                 % (args.from_bundle, args.bundle_section,
+                    ", ".join(s["blob"]["slug"] for s in secs)))
+    args._bundle_hdr = hdr
+    return sec
+
+
+def _bundle_clock_state2(section, hdr, src_path):
+    """The records, the gif block, the style dict and the provenance comment, built
+    from the checks `_bundle_clock_state()` ran. Placement comes from §25.2's one
+    identity, and what the container does not carry was refused before this ran."""
+    by, plate, sc, scr_w, scr_h, planes, refuse = _bundle_clock_state(
+        section, hdr, src_path)
+    cx, cy = plate["x"] + plate["w"] // 2, plate["y"] + plate["h"] // 2
+
+    def rec_of(e, crop_pivot=None):
+        s = planes[e["frame0"]]
+        return dict(w=e["w"], h=e["h"], offx=e["x"], offy=e["y"],
+                    pivotx=e["pivot_x"] if crop_pivot is None else crop_pivot[0],
+                    pivoty=e["pivot_y"] if crop_pivot is None else crop_pivot[1],
+                    centerx=e["x"] + e["pivot_x"], centery=e["y"] + e["pivot_y"],
+                    blend=0, show=0 if (e["flags"] & ts.EF_HIDDEN) else 1,
+                    color_off=s["off"], diffx=0, diffy=0, diffw=0, diffh=0)
+
+    # An absent row is `show=0`: the slot draws nothing and sits at the plate's
+    # centre, exactly the record a kit bake emits for an unused slot.
+    hand_recs, shadow_recs = [], []
+    for i in range(5):
+        hd, sh = by.get((ts.CLASS_HAND, i)), by.get((ts.CLASS_SPRITE, i))
+        hand_recs.append(rec_of(hd) if hd else blank_sprite(cx, cy, 0))
+        if sh is None:
+            shadow_recs.append(blank_sprite(cx, cy, 0))
+            continue
+        if hd is None:
+            refuse("a shadow at slot %d with no hand there: a shadow's crop pivot is "
+                   "its hand's centre minus its own draw point, so the light offset is "
+                   "only recoverable from the hand it hangs under" % i)
+        # §25.2: a shadow's crop pivot differs from the hand's by the light offset the
+        # source baked, and that offset IS (shadow centre - hand centre).
+        shadow_recs.append(rec_of(sh, (hand_recs[i]["centerx"] - sh["x"],
+                                       hand_recs[i]["centery"] - sh["y"])))
+    ov = by.get((ts.CLASS_PLATE, 1))
+    overlay = rec_of(ov) if ov else blank_sprite(0, 0, 0)
+
+    # The gif block is the plate's keyframe with no rects. R6 retired the per-frame
+    # delay, so the table carries the OS beat; a uniform delay at the baked tick rate
+    # is what a PNG frame pack's own bake printed, which is what the shipped pair has.
+    gif = None
+    if sc["bg_mode"]:
+        ms = max(1, int(round(1000.0 / max(1, sc["tick_rate"]))))
+        gif = dict(frames=sc["gif_frames"], key_off=sc["bg_key_off"], rects=[],
+                   first=[0] * (sc["gif_frames"] + 1), delays=[ms] * sc["gif_frames"],
+                   src="%s (FORMAT 3 'clock': the keyframe only, no delta rects, and "
+                       "the delays are the OS beat per R6)" % src_path)
+
+    style = {"bg": sc["bg"], "plateFollow": sc["plate_follow"],
+             "secondSweep": bool(sc["second_sweep"]),
+             "secondRailway": bool(sc["second_railway"]),
+             "textOverHands": bool(sc["text_over_hands"]), "tickRate": sc["tick_rate"],
+             "bgAnim": {"fps": sc["bg_fps"], "loop": bool(sc["bg_loop"]),
+                        "everySec": sc["bg_every"]},
+             "hands": {"order": [sc["order%d" % i] for i in range(sc["order_n"])],
+                       "shadow": {"on": bool(sc["shadow_on"]), "dx": sc["shadow_dx"],
+                                  "dy": sc["shadow_dy"]}}}
+    return dict(style=style, bg=style["bgAnim"], shadow_on=bool(sc["shadow_on"]),
+                shadow_dx=sc["shadow_dx"], shadow_dy=sc["shadow_dy"],
+                hand_recs=hand_recs, shadow_recs=shadow_recs, overlay=overlay,
+                gif=gif, plate_off=sc["plate_off"], anim_frames=sc["bg_frames"],
+                baked_frames=[], matte_mask=sc["matte_mask"], art=bytes(section["art"]),
+                name=hdr["name"], tourbillon_fps=sc["tourbillon_fps"],
+                prov=_bundle_provenance(src_path, bytes(section["art"]),
+                                        len(section["blob"]["elements"])))
+
+
+def _bundle_provenance(path, art, n_elem):
+    """The `.h` comment block, naming the bundle this pair was rebuilt from.
+
+    Provenance is the pair's ONE deliberate difference from a kit bake: a kit bake
+    names the directory it read, this names the container and a hash of the bytes it
+    read. Everything below `#pragma once` is the shared format definition."""
+    return ("/* AUTO-GENERATED by tools/bake_clock.py -- DO NOT EDIT.\n"
+            " * Re-bake:  python3 tools/bake_clock.py --from-bundle <bundle>\n"
+            " * Source theme: rebuilt from FORMAT 3 %s\n"
+            " * Section 'clock': %d elements, art sha256 %s\n"
+            " * The container is this pair's source of truth; the kit it came from is\n"
+            " * not needed to rebuild it. The gif tables carry the plate's keyframe and\n"
+            " * the OS beat, not a delta bank (R6).\n"
+            " */\n#pragma once\n\n#include <stdint.h>\n\n"
+            % (path, n_elem,
+               __import__("hashlib").sha256(art).hexdigest()[:16]))
+
+
 def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             hand_recs, shadow_recs, overlay, baked_frames, anim_frames,
-            plate_off, blob, args, gif=None, tourb_recs=None, matte_mask=0):
+            plate_off, blob, args, gif=None, tourb_recs=None, matte_mask=0,
+            prov=None):
+    """Write the pair, then the container if asked. `prov` replaces the generated
+    provenance comment: `--from-bundle` names the bundle it read, and a bake names
+    the kit directory it read. Everything BELOW the comment is one format definition
+    for both paths (the pair rule), so a rebuilt pair and a baked pair differ in the
+    line that says where the bytes came from and nowhere else."""
     hands_style = style.get("hands", {}) or {}
     order = [int(k) for k in (hands_style.get("order", [0, 1, 2, 3, 4]) or [0, 1, 2, 3, 4])
              if 0 <= int(k) < 5]
@@ -2208,13 +2480,15 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
 
 
     hdr = []
-    hdr.append("/* AUTO-GENERATED by tools/bake_clock.py -- DO NOT EDIT.\n"
-               " * Re-bake:  python3 tools/bake_clock.py <theme_dir>\n"
-               " * Source theme: {}{}\n */\n#pragma once\n\n#include <stdint.h>\n\n".format(
-                   theme_name,
-                   "\n * Source background: {}  (delta-rect bank; re-bake from the\n"
-                   " * PNG/GIF source, never from a baked .bin)".format(
-                       gif.get("src", "?")) if gif else ""))
+    if prov is None:
+        prov = ("/* AUTO-GENERATED by tools/bake_clock.py -- DO NOT EDIT.\n"
+                " * Re-bake:  python3 tools/bake_clock.py <theme_dir>\n"
+                " * Source theme: {}{}\n */\n#pragma once\n\n#include <stdint.h>\n\n".format(
+                    theme_name,
+                    "\n * Source background: {}  (delta-rect bank; re-bake from the\n"
+                    " * PNG/GIF source, never from a baked .bin)".format(
+                        gif.get("src", "?")) if gif else ""))
+    hdr.append(prov)
     hdr.append("#define CLK_SCR_W {}\n#define CLK_SCR_H {}\n\n".format(SCREEN_W, SCREEN_H))
     hdr.append("typedef struct {\n"
                "  uint16_t w, h;            /* cropped ink size */\n"

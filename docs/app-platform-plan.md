@@ -3658,15 +3658,55 @@ C parity 320/0, element suite 46/0. Firmware untouched.
 
 ### 25.5 What the rest of P6.5 owes
 
-1. **The bundle→pair half** (§22.5's exact clause): `bake_clock.py --from-bundle` —
-   read a FORMAT 3 bundle, take the `clock` section, rebuild
-   `assets/clock_assets.{bin,h}` byte-for-byte and prove it against the shipped pair.
-   The mapping's center − off identity makes this mechanical; the proof is that the
-   rebuilt `.h` matches the one the kit path baked.
+1. **PAID 2026-10-19** — the bundle→pair half. `bake_clock.py --from-bundle`; the
+   proof is §25.6.
 2. **The device reader**: the resolver's FORMAT 3 path — element rows → the draw
    list, the `active: true` question for bundles, scalars as the default's home.
 3. **The retirement**: FORMAT 2's dialect out of the firmware's reader; §19/§24's
    FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it.
 4. **PAID 2026-10-19** — `tools/mut_rebake.py`, 17/17 (see §25.4).
+
+### 25.6 §25.5(1) PAID 2026-10-19 — the bundle→pair reverse path
+
+`bake_clock.py --from-bundle <bundle> [--bundle-section clock]` rebuilds
+`clock_assets.{bin,h}` from a FORMAT 3 section with no kit, no PIL and no card in the
+loop. §0.2's last clause is paid: a finished container now converts back into the
+compiled-in pair.
+
+**One format definition.** `_finish()` grew one parameter, `prov`, and prints the
+provenance comment from it; every line below `#pragma once` is the same code both
+paths run. A second `.h` writer would have been the drift, so there is none. Provenance
+is the pair's only deliberate difference, and it names the container plus a hash of the
+art — the rule `.clinerules` already uses to compare a kit re-bake.
+
+**Every field is carried or refused.** Scalars ride verbatim (D31). Hands, shadows and
+the overlay come from the element rows through §25.2's identity, and the shipped pair
+reproduces exactly, including the three shadow crop pivots — a shadow's pivot is
+`hand_centre − shadow_xy`, so the light offset is recoverable from the hand it hangs
+under and the earlier worry about it was answered by measurement, not assertion. The
+gif tables are rebuilt as one keyframe with zero delta rects, which is the only bank
+shape FORMAT 3 can hold; `clk_gif_delays` is regenerated at
+`round(1000 / tick_rate)` — R6's own ruling that the OS beat is the rate, and for
+av-kit's 15 fps that is the shipped `67` byte-for-byte. What cannot be rebuilt refuses
+by sentence: a tourbillon, a real delta bank, an extent the catalogue does not account
+for, a plate that is not the panel, a shadow with no hand, and any bundle with no
+`clock` section.
+
+**Proof.** `tools/host_from_bundle_test.py` parses the shipped `.h`, forges the faithful
+bundle through `orbbundle`/`orbtheme` with `assets/clock_assets.bin` as its art, and
+requires the rebuilt pair to match: **76 checks, 18 refusal vectors, 0 failures.** The
+rebuilt `.h` is byte-identical to `assets/clock_assets.h` from `#pragma once` down, and
+the rebuilt `.bin` md5s to the shipped art. `tools/mut_from_bundle.py` is
+**11/11 caught** — including the shadow-pivot recovery, the delay regeneration and the
+`EF_HIDDEN` row, which was a real gap the first battery exposed. Against the same
+bake's own container the `.bin` is byte-identical (`cmp` clean); against the shipped
+`.bin` the delta is the 59-byte antialiasing fringe `.clinerules` documents for any
+fresh bake of this kit, so the byte-exact claim is made against a container built from
+the committed art and the fringe is measured, not assumed.
+
+Firmware, the committed pair and every other suite are untouched: format3 52/0,
+element 46/0, `mut_rebake.py` still 17/17, and the kit-bake path re-emits the shipped
+`.h` and `.bin` unchanged after the refactor. §25.5(2) and (3) are still owed.
+
 
 

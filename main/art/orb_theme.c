@@ -2005,9 +2005,15 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     s_geo.from_container = true;
     strlcpy(s_geo.name, h->name, sizeof(s_geo.name));
     strlcpy(s_active_name, h->name, sizeof(s_active_name));
-    s_active_geom_crc = raw[W_BAKED_MS];       /* the container's figure, see above */
-    s_bundle_file_geom = raw[W_BAKED_MS];
-    s_active_art_crc  = h->art_crc;
+    s_active_geom_crc = s_bundle_file_geom = raw[W_BAKED_MS];
+    /* FORMAT 3's identity is that ONE figure. The region holds every index record and
+     * and every record carries its bank's checksum, so the container's region checksum
+     * already pins the pixels. Hashing art again would add no coverage and cost a
+     * figure the slot cannot state honestly: word 8 is the INSTALLED span's checksum,
+     * pads included, and no card file has ever carried that number. Both halves get
+     * the same word, so the row's art term is identically false and the geom term
+     * alone answers "is this the bundle on the wall". */
+    s_active_art_crc  = s_active_geom_crc;
     s_active_valid    = true;
     s_source = src_name;
     s_refill_ms = ms;
@@ -2618,7 +2624,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
                 memset(&as, 0, sizeof as);
                 strlcpy(as.name, b3.name, sizeof as.name);
                 as.geom_crc = s_bundle_file_geom;
-                as.art_crc = b3.art_crc;
+                as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
                 as.fmt = 3;
                 theme_state(&as, &e->active, &e->changed);
             }

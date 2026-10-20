@@ -158,6 +158,18 @@ static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never 
 static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
 static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
 
+/* D32 ruling C: the carriage is its own object. A FORMAT 3 theme places it
+ * with the carriage row's geometry and turns it with the seconds angle plus
+ * the row's start orientation (R-G's wall sampler, one offset), so a theme
+ * that also carries a plain second hand draws BOTH — the hand as layer 2 and
+ * the animated carriage directly above it, the pair a real tourbillon bridge
+ * reads. Before this ruling the bank was the seconds layer (the .h's comment
+ * still says so at the tourbillon array); that swap is gone, and the shipped
+ * av-kit pair — tourbillon_n 0 — draws byte-identically either way. */
+static lv_obj_t       *s_car;               /* the carriage object, NULL = none */
+static lv_image_dsc_t  s_car_dsc;           /* its descriptor until the first swap */
+static int32_t         s_car_start_10;      /* start orientation, tenths of a degree */
+
 /* Orbit marks (sweep perf). The generic hand marking would take the union
  * of the two rotated bounding boxes of the carriage (~260x350 swung around
  * the dial centre): most of the page on EVERY tick, so the commit hook
@@ -200,15 +212,14 @@ static void compose_now(void);
 
 
 
-/* The sprite the given layer index draws RIGHT NOW: a tourbillon frame when
- * the theme has a frame bank on the second hand, the static hand otherwise.
- * Geometry (bbox, pivot, centre) is identical across the bank — the frame
- * swap changes pixels, never the rotation maths. */
+/* The sprite the given layer index draws RIGHT NOW. Since D32 ruling C the
+ * frame bank is its own object (s_car, turned and swapped by
+ * tourbillon_advance), so a layer index always draws its own record; the
+ * hand[2] pixel-swap a FORMAT 2 tourbillon bake used is gone, and the only
+ * themes that ever carried a bank — FORMAT 3 bundles with a carriage row —
+ * arrive with the geometry the swap never needed. */
 static const clk_sprite_t *layer_spr(const int k)
 {
-    if (k == 2 && clk_theme.tourbillon_n
-        && s_tourb_shown >= 0 && s_tourb_shown < (int32_t)clk_theme.tourbillon_n)
-        return &clk_theme.tourbillon[s_tourb_shown];
     return &clk_theme.hand[k];
 }
 
@@ -353,6 +364,7 @@ static int32_t s_ang_10[5] = { INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN, INT32
  * poses, false when the caller must fall back to the swept-box union (no
  * bank, no prior composite, shadowed seconds, or classic path). */
 static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10);
+static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out);
 
 #define HAND_REDRAW_EPS_10 2
 static void apply_angles(const float ang[5])
@@ -364,33 +376,54 @@ static void apply_angles(const float ang[5])
         if (a == s_ang_10[i]) continue;
         if (s_ang_10[i] != INT32_MIN &&
             abs((int)(a - s_ang_10[i])) < HAND_REDRAW_EPS_10) continue;
-        if (!s_hand[i] && !s_shadow[i]) { s_ang_10[i] = a; continue; }
+        if (!s_hand[i] && !s_shadow[i] && !(i == 2 && s_car)) { s_ang_10[i] = a; continue; }
 
         const int32_t prev = s_ang_10[i];
         lv_area_t u;
         bool have = false;
+        /* The carriage turns with the seconds layer plus its own start
+         * orientation; every mark and setter below uses whichever angle the
+         * layer's pixels actually stand at. */
+        const bool car = (i == 2 && s_car);
+        const int32_t c_prev = car && prev != INT32_MIN ? prev + s_car_start_10 : prev;
+        const int32_t c_a    = car ? a + s_car_start_10 : a;
 
         /* Sweep tourbillon: the orbit rotates the whole carriage, so the
          * box union below is most of the page on EVERY tick and the commit
          * hook re-composites the full dial+glass across it (measured: sweep
          * ran at half tick's frame rate, the whole gap in those marks).
-         * Mark the two poses' rotated ink instead — each source row's ink
-         * extent rotated as a segment, accumulated per device row — so the
-         * rebuild is confined to what the carriage actually covered or
-         * vacated. The frame swap's changed pixels are added by
-         * tourbillon_advance's diff-box marks; the chord model tracks only
-         * the hand's own art, so a shadowed second hand keeps the box. */
-        const bool inked = (i == 2 && prev != INT32_MIN) &&
-                           tourbillon_ink_mark((int)s_tourb_shown, prev, a);
+         * A carriage with no needle and no shadow sharing its angle is the
+         * case the chord model was built for: mark the two poses' rotated
+         * ink instead — each source row's ink extent rotated as a segment,
+         * accumulated per device row — so the rebuild is confined to what
+         * the carriage actually covered or vacated. The frame swap's
+         * changed pixels are added by tourbillon_advance's diff-box marks.
+         * Anything else sharing this angle still owes its own wedge, so the
+         * box path runs whenever the chords are not the whole story. */
+        const bool car_alone = car && !s_hand[2] && !s_shadow[2];
+        const bool inked = car_alone && prev != INT32_MIN &&
+                           tourbillon_ink_mark((int)s_tourb_shown, c_prev, c_a);
 
         if (!inked && prev != INT32_MIN) {
             /* Union of the old and new wedge of every layer sharing this angle,
-             * in both their un-shifted (hand) and shifted (shadow) positions. */
-            if (s_hand[i]) {
-                gfx_swept_box(&clk_theme.hand[i],   prev, &u);
-                lv_area_t n; gfx_swept_box(&clk_theme.hand[i], a, &n);
+             * in both their un-shifted (hand) and shifted (shadow) positions.
+             * A standalone carriage contributes its own rotated box at the
+             * carriage angle, not the hand's at the plain seconds angle. */
+            if (car) {
+                const clk_sprite_t *cs = &clk_theme.tourbillon[
+                    s_tourb_shown >= 0 ? s_tourb_shown : 0];
+                tourb_mark(cs, c_prev, &u);
+                lv_area_t n; tourb_mark(cs, c_a, &n);
                 gfx_area_union(&u, &n);
                 have = true;
+            }
+            if (s_hand[i]) {
+                lv_area_t w0, w1;
+                gfx_swept_box(&clk_theme.hand[i],   prev, &w0);
+                gfx_swept_box(&clk_theme.hand[i],   a,    &w1);
+                gfx_area_union(&w0, &w1);
+                if (have) gfx_area_union(&u, &w0);
+                else { u = w0; have = true; }
             }
             if (s_shadow[i]) {
                 lv_area_t su; gfx_swept_box(&clk_theme.shadow[i], prev, &su);
@@ -400,8 +433,14 @@ static void apply_angles(const float ang[5])
                 else { u = su; have = true; }
             }
         }
-        else if (!inked && s_hand[i]) {
-            gfx_swept_box(&clk_theme.hand[i], a, &u);
+        else if (!inked && (s_hand[i] || car)) {
+            if (car) {
+                const clk_sprite_t *cs = &clk_theme.tourbillon[
+                    s_tourb_shown >= 0 ? s_tourb_shown : 0];
+                tourb_mark(cs, c_a, &u);
+            } else {
+                gfx_swept_box(&clk_theme.hand[i], a, &u);
+            }
             if (s_shadow[i]) {
                 lv_area_t sn; gfx_swept_box(&clk_theme.shadow[i], a, &sn);
                 gfx_area_union(&u, &sn);
@@ -428,11 +467,13 @@ static void apply_angles(const float ang[5])
              * (full-box) invalidation is the one that paints it. */
             if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
             if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
+            if (car)         lv_image_set_rotation(s_car,       c_a);
         }
         else {
             lv_display_enable_invalidation(disp, false);
             if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
             if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
+            if (car)         lv_image_set_rotation(s_car,       c_a);
             lv_display_enable_invalidation(disp, true);
             /* The setter early-returns without applying its angle if it
              * already equals the widget's — impossible here since s_ang_10 is
@@ -605,7 +646,11 @@ static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 #if CLK_BG_DIRECT_PUSH
     if (!orb_sched_l4_active()) return false;
 #endif
-    if (clk_theme.tourbillon_n <= 0 || s_shadow[2]) return false;
+    /* The chord model covers the carriage's own art. It used to decline on a
+     * shadowed second layer because the bank WAS that layer and its shadow
+     * moved with it; since ruling C the shadow belongs to the stationary
+     * needle, so a moving frame leaves it untouched and the chords stand. */
+    if (clk_theme.tourbillon_n <= 0) return false;
     if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
         return false;                          /* no composite on the glass yet */
     if (!tourb_chords(f)) return false;        /* fall back to the box union */
@@ -629,14 +674,17 @@ static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 static void tourbillon_advance(void)
 {
     const int n = (int)clk_theme.tourbillon_n;
-    if (n <= 0 || !s_hand[2]) return;
+    if (n <= 0 || !s_car) return;
 
     const uint32_t fps = clk_theme.tourbillon_fps ? clk_theme.tourbillon_fps : 15;
     const int f = (int)(((uint64_t)(lv_tick_get() - s_tourb_t0) * fps)
                         / 1000u % (uint32_t)n);
     if (f == s_tourb_shown) return;
 
-    const int32_t a = s_ang_10[2];
+    /* The carriage stands at the seconds angle plus its start orientation —
+     * the pose apply_angles just set on it, whatever that was when the frame
+     * clock started and between its ticks. */
+    const int32_t a = s_ang_10[2] == INT32_MIN ? INT32_MIN : s_ang_10[2] + s_car_start_10;
     lv_area_t u;
     if (s_tourb_shown < 0 || a == INT32_MIN) {
         /* First draw of this layer: no prior composite exists to diff against,
@@ -654,7 +702,7 @@ static void tourbillon_advance(void)
      * needs rebuilding. Under L4 the commit painter owns the rows outright. */
     lv_display_t *disp = lv_obj_get_display(s_scr);
     lv_display_enable_invalidation(disp, false);
-    lv_image_set_src(s_hand[2], &s_tourb_dsc[f]);
+    lv_image_set_src(s_car, &s_tourb_dsc[f]);
     lv_display_enable_invalidation(disp, true);
 #if CLK_BG_DIRECT_PUSH
     if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
@@ -1033,6 +1081,18 @@ static void clock_layer_commit(void)
         }
     }
     if (!aux_done) aux_add_jobs(orb_theme_geo(), jc, &nj);  /* no live static at all */
+    /* The carriage is its own layer (D32 ruling C): it joins the stack where
+     * its object sits in the sibling chain — above every ordered layer and
+     * its aux block, below the buckets that drain after them. Its pose is
+     * the seconds angle plus the start orientation, the same figure
+     * apply_angles set and tourbillon_advance marks against. */
+    if (s_car && s_ang_10[2] != INT32_MIN && nj < CLK_JOB_MAX) {
+        const clk_sprite_t *cs = &clk_theme.tourbillon[
+            s_tourb_shown >= 0 && s_tourb_shown < (int)clk_theme.tourbillon_n
+                ? s_tourb_shown : 0];
+        if (gfx_paint_ctx_init(&jc[nj], cs, blob(), s_ang_10[2] + s_car_start_10,
+                               (uint8_t)2)) nj++;
+    }
     /* A bucket whose layer never joined the stack — hidden, or folded into the
      * bank by a --matte force — still has to draw its window: it rides above
      * what does exist. The kit's plate is in the bank either way, so this is the
@@ -1181,6 +1241,7 @@ static int32_t comp_iso_week(const struct tm *ti)
 static bool comp_value(uint8_t src, const struct tm *ti, time_t t, int32_t *out)
 {
     switch (src) {
+    case CLK_SRC_NONE:        *out = 0;                            break;  /* a FORMAT 3 static window: one plate, frame 0 (D32 R-B: no fixed domain to consult, the row is one tile) */
     case CLK_SRC_WEEKDAY:     *out = (ti->tm_wday + 6) % 7;   break;
     case CLK_SRC_MONTH:       *out = ti->tm_mon;              break;
     case CLK_SRC_DATE:        *out = ti->tm_mday;             break;
@@ -1880,6 +1941,18 @@ esp_err_t clock_view_init(void)
         if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
     }
     if (!aux_built) aux_create();                 /* no live static: ride the bank */
+    /* D32 ruling C: the carriage. One object when the theme names a frame
+     * bank, created under the complications so a hosted window still covers
+     * it the way its bucket says, placed by the bank's own shared geometry,
+     * and turned by tourbillon_advance with the seconds angle plus the row's
+     * start orientation. A theme that carries both hand/2 and hand/5 now
+     * draws both — the needle and the animated frame it carries. */
+    s_car = NULL;
+    s_car_start_10 = ((int32_t)clk_theme.tourbillon_start + 5) / 10 % 3600;
+    if (clk_theme.tourbillon_n > 0 && clk_theme.tourbillon_n <= CLK_TOURB_MAX &&
+        clk_theme.tourbillon[0].show &&
+        gfx_sprite_drawable(&clk_theme.tourbillon[0]))
+        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc);
     /* What the dial actually built for the sub-dials, in the line the owner reads
      * after a re-bake: the count the theme declared, and the order position the
      * block joined. A row with an src this build cannot drive is reported by

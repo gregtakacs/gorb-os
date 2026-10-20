@@ -2236,10 +2236,16 @@ def _bundle_planes(b, art, refuse):
         if s is None:
             refuse("element %d points at sprite row %d of a table with %d rows"
                    % (e["n"], e["frame0"], len(b["sprites"])))
-        if (s["w"], s["h"]) != (e["w"], e["h"]):
-            refuse("element %d is %dx%d while its plane is %dx%d: the table and the "
-                   "catalogue describe different layers"
-                   % (e["n"], e["w"], e["h"], s["w"], s["h"]))
+        if e["frame0"] + e["n_frames"] > len(b["sprites"]):
+            refuse("element %d names %d frames from row %d of a table with %d rows: "
+                   "the animation runs off the end of the catalogue"
+                   % (e["n"], e["n_frames"], e["frame0"], len(b["sprites"])))
+        for f in range(e["n_frames"]):
+            p = planes[e["frame0"] + f]
+            if (p["w"], p["h"]) != (e["w"], e["h"]):
+                refuse("element %d is %dx%d while its plane is %dx%d: the table and "
+                       "the catalogue describe different layers"
+                       % (e["n"], e["w"], e["h"], p["w"], p["h"]))
     return planes
 
 
@@ -2263,12 +2269,16 @@ def _bundle_clock_state(section, hdr, src_path):
     for e in b["elements"]:
         cls, slot = e["class"], e["slot"]
         if cls not in (ts.CLASS_PLATE, ts.CLASS_HAND, ts.CLASS_SPRITE):
+            # A BANK row is the one acceptance the device gives this sentence's
+            # subject and this tool does not: the compiled pair has no field for
+            # a complication (orb_clock3.c projects one; a .h cannot carry it).
             refuse("element %d is class %r: the compiled clock has no field for it, "
                    "and §25.3 rules that class into the complication mapping"
                    % (e["n"], ts.CLASS_NAMES[cls]))
-        if cls == ts.CLASS_HAND and slot >= 5:
-            refuse("a tourbillon (hand slot %d): the fan-out mapping is not ruled, and "
-                   "the .h's diff-rect fields ride no bundle column" % slot)
+        if cls == ts.CLASS_HAND and slot >= 6:
+            refuse("a hand at slot %d: the clock declares six hand slots — three live "
+                   "hands, a rotating disc, its counterweight, and the carriage — "
+                   "and no more" % slot)
         if cls == ts.CLASS_PLATE and slot > 1:
             refuse("a plate at slot %d: the clock dialect is one plate and one overlay"
                    % slot)
@@ -2276,10 +2286,30 @@ def _bundle_clock_state(section, hdr, src_path):
             refuse("two rows for %s slot %d: one slot draws one layer"
                    % (ts.CLASS_NAMES[cls], slot))
         by[(cls, slot)] = e
-    if sc["tourbillon_n"]:
+    # D32 ruling C: the carriage is one row, and the scalar is its length. The
+    # pair can carry the bank (the .h has always had the tourbillon array);
+    # what it cannot carry is a start orientation, so a non-zero `degrees` is
+    # refused HERE and drawn by the device, whose struct has the field.
+    car = by.get((ts.CLASS_HAND, 5))
+    if car is not None:
+        if not sc["tourbillon_n"]:
+            refuse("a carriage row with tourbillon_n 0: the scalars and the table "
+                   "disagree, and the pair would name a bank the art does not hold")
+        if sc["tourbillon_n"] != car["n_frames"]:
+            refuse("a carriage row naming %d frames while the scalars name %d: the "
+                   "row's plane is the animation's length"
+                   % (car["n_frames"], sc["tourbillon_n"]))
+        if car["n_frames"] > 16:
+            refuse("a carriage naming %d frames: the dial holds 16, and the rest is "
+                   "a bank it has no room for" % car["n_frames"])
+    if sc["tourbillon_n"] and car is None:
         refuse("tourbillon_n %d with no tourbillon row: the scalars and the table "
                "disagree, and the pair would name a bank the art does not hold"
                % sc["tourbillon_n"])
+    if car is not None and car["degrees"]:
+        refuse("a carriage at start orientation %d: the compiled pair carries no "
+               "tourbillon_start line, and a fallback that cannot say it refuses "
+               "the translation (the device's reader draws it)" % car["degrees"])
     if sc["bg_frames"]:
         refuse("%d distinct plate frames: those planes ride the gif table a FORMAT 3 "
                "clock section does not carry" % sc["bg_frames"])
@@ -2320,7 +2350,7 @@ def clock_from_bundle(args):
     _finish(st["style"], st["name"], st["bg"], st["shadow_on"], st["shadow_dx"],
             st["shadow_dy"], st["hand_recs"], st["shadow_recs"], st["overlay"],
             st["baked_frames"], st["anim_frames"], st["plate_off"], _Blob(), args,
-            st["gif"], [], st["matte_mask"], prov=st["prov"])
+            st["gif"], st["tourb_recs"], st["matte_mask"], prov=st["prov"])
     print("rebuilt %s + %s from %s: theme %r, %d elements, art %d B"
           % (args.bin, args.header, args.from_bundle, st["name"],
              len(sec["blob"]["elements"]), len(st["art"])))
@@ -2386,6 +2416,18 @@ def _bundle_clock_state2(section, hdr, src_path):
     ov = by.get((ts.CLASS_PLATE, 1))
     overlay = rec_of(ov) if ov else blank_sprite(0, 0, 0)
 
+    # D32 ruling C: the carriage rebuilds into the .h's own tourbillon block.
+    # One row, one shared record geometry, one plane offset per frame — the
+    # diff rects the kit bake pre-computed ride no bundle column and print as
+    # zero, which is the state the dial's box-marking path already honours.
+    tourb_recs = []
+    car = by.get((ts.CLASS_HAND, 5))
+    if car is not None:
+        for f in range(car["n_frames"]):
+            r = rec_of(car)
+            r["color_off"] = planes[car["frame0"] + f]["off"]
+            tourb_recs.append(r)
+
     # The gif block is the plate's keyframe with no rects. R6 retired the per-frame
     # delay, so the table carries the OS beat; a uniform delay at the baked tick rate
     # is what a PNG frame pack's own bake printed, which is what the shipped pair has.
@@ -2409,6 +2451,7 @@ def _bundle_clock_state2(section, hdr, src_path):
     return dict(style=style, bg=style["bgAnim"], shadow_on=bool(sc["shadow_on"]),
                 shadow_dx=sc["shadow_dx"], shadow_dy=sc["shadow_dy"],
                 hand_recs=hand_recs, shadow_recs=shadow_recs, overlay=overlay,
+                tourb_recs=tourb_recs,
                 gif=gif, plate_off=sc["plate_off"], anim_frames=sc["bg_frames"],
                 baked_frames=[], matte_mask=sc["matte_mask"], art=bytes(section["art"]),
                 name=hdr["name"], tourbillon_fps=sc["tourbillon_fps"],

@@ -185,6 +185,7 @@ static clk_bg_rect_t      rects[4];
 static uint16_t           first_[GIF_CAP];
 static uint16_t           delays[GIF_CAP];
 static uint32_t           bgf[4];
+static clk_comp_t         comps[16];
 static orb_bundle_t       b;
 
 static uint8_t *slurp(const char *p, long *n)
@@ -236,6 +237,7 @@ int main(int argc, char **argv)
     io.theme = &th; io.rects = rects; io.rect_first = first_;
     io.gif_delays = delays; io.bg_frames = bgf;
     io.first_cap = GIF_CAP; io.delays_cap = GIF_CAP;
+    io.comps = comps; io.comp_cap = 16;
     r = orb_clock3_parse(s, &io);
     if (strcmp(argv[1], "--refuse") == 0) {
         printf("%s %s\n", r ? "refused" : "ACCEPTED", r ? r : "");
@@ -266,10 +268,18 @@ int main(int argc, char **argv)
     printf("scalar gif_frames %u\n", th.gif_frames);
     printf("scalar tourbillon_n %u\n", th.tourbillon_n);
     printf("scalar tourbillon_fps %u\n", th.tourbillon_fps);
+    printf("scalar tourbillon_start %u\n", th.tourbillon_start);
     for (int i = 0; i < 5; i++)  dump_sprite("hand", i, &th.hand[i]);
     for (int i = 0; i < 5; i++)  dump_sprite("shadow", i, &th.shadow[i]);
     dump_sprite("overlay", 0, &th.overlay);
     for (int i = 0; i < CLK_TOURB_MAX; i++) dump_sprite("tourbillon", i, &th.tourbillon[i]);
+    printf("n_comps %u\n", io.out_n_comps);
+    for (uint32_t i = 0; i < io.out_n_comps; i++) {
+        const clk_comp_t *c = &comps[i];
+        printf("comp %u %u %u %u %d %d %u %u %u %u %u %u %d %u %u\n", i,
+               c->tag, c->kind, c->src, c->x, c->y, c->w, c->h, c->count,
+               c->first, c->off, c->frame_bytes, c->value_min, c->scale, c->show);
+    }
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
            rects[0].off);
@@ -323,10 +333,15 @@ def parsed(out):
     """The harness's dump, as dicts keyed the way EXP is."""
     sc, spr, first, delay = {}, {}, {}, {}
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
+    comps = []
     for line in out.splitlines():
         w = line.split()
         if w[0] == "scalar":
             sc[w[1]] = [int(x) for x in w[2:]]
+        elif w[0] == "n_comps":
+            pass
+        elif w[0] == "comp":
+            comps.append([int(x) for x in w[1:]])
         elif w[0] in ("hand", "shadow", "tourbillon"):
             spr.setdefault(w[0], {})[int(w[1])] = [int(x) for x in w[2:]]
         elif w[0] == "overlay":
@@ -348,7 +363,7 @@ def parsed(out):
         elif w[0] == "counts":
             cnt = (int(w[1]), int(w[2]))
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
-                art=art, scr=scr, counts=cnt, nrect=nrect)
+                art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps)
 
 
 SCALARS = ("bg", "plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
@@ -591,8 +606,21 @@ REFUSALS = (
     # a too-wide table). What the writer WILL emit and the dial must still refuse:
     ("a text row, which check_table allows", lambda e, s: e[0].update({"class": ts.CLASS_TEXT, "n_frames": 1, "radius": 0, "degrees": 0, "scale16": 0}),
      "complication mapping"),
-    ("a hand at slot 5", lambda e, s: e[2].update({"slot": 5}),
-     "diff-rect fields ride no bundle column"),
+    # D32 ruling C: hand slot 5 IS a thing now — without a scalar naming its
+    # length it is the same lie the old tourbillon_n vector was. Slot 6 is the
+    # new "no such slot".
+    ("a carriage row, no frames named", lambda e, s: e[2].update({"slot": 5}),
+     "scalars and the table disagree"),
+    ("a hand at slot 6", lambda e, s: e[2].update({"slot": 6}),
+     "and no more"),
+    # D32 R-C's own pair of guards: the row and the scalar must name one bank,
+    # and that bank must fit the array the dial holds.
+    ("a carriage length lie", lambda e, s: (e[2].update({"slot": 5}),
+                                            s.update({"tourbillon_n": 3})),
+     "animation's length"),
+    ("a carriage of twenty frames", lambda e, s: (e[2].update({"slot": 5, "n_frames": 20}),
+                                                  s.update({"tourbillon_n": 20})),
+     "no room for"),
     ("a plate at slot 2", lambda e, s: e[1].update({"slot": 2}),
      "one plate and one overlay"),
     ("no plate row", lambda e, s: e.pop(0), "no plate has no centre"),
@@ -621,6 +649,154 @@ def refusals(exe, base):
         ck(needle in bsent, "%s: --from-bundle said %r, missing %r"
            % (what, bsent[:200], needle))
     print("  refusals: %d forgeries, both ends agree" % len(REFUSALS))
+
+
+# ---------------------------------------------------------------------------
+# D32's accept side: the refusals above refuse the carriage and the bank in
+# their lies; this forges them in their truth. The pair-forged bundle grows a
+# carriage row (class hand, slot 5, three synthetic planes) and a month window
+# (class bank, slot 0, twelve plates because a year has twelve months), with
+# filler pixels — the projection's claim is the TABLE (offsets, extents, the
+# domain, the stride); the pixels are R-H's bench question, asked on the glass.
+# ---------------------------------------------------------------------------
+CAR_W, CAR_H = 64, 64
+WIN_W, WIN_H = 40, 30
+CAR_PLANE = CAR_W * CAR_H * 3
+WIN_PLANE = WIN_W * WIN_H * 3
+
+
+def d32_forge(base, kind="both"):
+    """The pair-forged clock bundle plus a carriage row and/or a month window."""
+    hdr, secs = ob.read_bundle(base)
+    sec = [s for s in secs if s["blob"]["slug"] == "clock"][0]
+    els = [dict(e) for e in sec["blob"]["elements"]]
+    sc = dict(sec["blob"]["scalars"])
+    spr = [dict(s) for s in sec["blob"]["sprites"]]
+    art = bytes(sec["art"])
+    at = len(art)
+
+    def planes(w, h, cnt):
+        nonlocal at
+        first = len(spr)
+        for _ in range(cnt):
+            spr.append({"off": at, "size": w * h * 3, "w": w, "h": h})
+            art.extend(b"\x11" * (w * h * 3))
+            at += w * h * 3
+        return first
+
+    art = bytearray(art)
+    proto = dict(els[0])
+    car_f0 = win_f0 = 0
+    if kind in ("both", "carriage"):
+        car_f0 = planes(CAR_W, CAR_H, 3)
+        row = dict(proto, n=20, slot=5, flags=0, order=1, alpha=255,
+                   frame0=car_f0, n_frames=3, x=120, y=120,
+                   w=CAR_W, h=CAR_H, pivot_x=32, pivot_y=32, radius=0,
+                   degrees=0, scale16=0, kind=0, src=0)
+        row["class"] = ts.CLASS_HAND
+        els.append(row)
+        sc["tourbillon_n"] = 3
+        sc["tourbillon_fps"] = 12
+    if kind in ("both", "window"):
+        win_f0 = planes(WIN_W, WIN_H, 12)
+        row = dict(proto, n=21, slot=0, flags=0, order=3, alpha=255,
+                   frame0=win_f0, n_frames=12, x=60, y=200,
+                   w=WIN_W, h=WIN_H, pivot_x=0, pivot_y=0, radius=0,
+                   degrees=0, scale16=16, kind=0, src=2)   # src 2: month
+        row["class"] = ts.CLASS_BANK
+        els.append(row)
+    out = "%s.d32-%s.orbtheme" % (base, kind)
+    ob.write_bundle(out, hdr["name"],
+                    [{"slug": "clock", "elements": els, "scalars": sc,
+                      "sprites": spr, "art": bytes(art),
+                      "scr_w": sec["rec"]["scr_w"], "scr_h": sec["rec"]["scr_h"]}])
+    return out, car_f0, win_f0, len(sec["art"])
+
+
+def bake_pair(path):
+    """`--from-bundle` on a path, with the header it wrote (accept-side pins)."""
+    d = tempfile.mkdtemp(prefix="fkb.")
+    p = subprocess.run(
+        [sys.executable, os.path.join(HERE, "bake_clock.py"), "--from-bundle", path,
+         "--header", os.path.join(d, "o.h"), "--bin", os.path.join(d, "o.bin")],
+        capture_output=True, text=True, timeout=180)
+    hdr = ""
+    try:
+        hdr = open(os.path.join(d, "o.h")).read()
+    except OSError:
+        pass
+    return p.returncode, p.stdout + p.stderr, hdr
+
+
+def d32_battery(exe, base):
+    path, car_f0, win_f0, art_len = d32_forge(base, "both")
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "the carriage-and-window bundle was refused: %s" % out[:300])
+    if rc:
+        return
+    p = parsed(out)
+    car_off = art_len
+    win_off = art_len + 3 * CAR_PLANE
+    ck(p["sc"]["tourbillon_n"] == [3] and p["sc"]["tourbillon_fps"] == [12]
+       and p["sc"]["tourbillon_start"] == [0],
+       "the carriage scalars read %s / %s / %s"
+       % (p["sc"]["tourbillon_n"], p["sc"]["tourbillon_fps"],
+          p["sc"]["tourbillon_start"]))
+    tb = p["spr"]["tourbillon"]
+    ck(tb[0][9] == 1, "carriage frame 0 is not shown")
+    ck(tb[0][10] == car_off and tb[1][10] == car_off + CAR_PLANE
+       and tb[2][10] == car_off + 2 * CAR_PLANE,
+       "the bank does not stride the catalogue: %s %s %s"
+       % (tb[0][10], tb[1][10], tb[2][10]))
+    ck(tb[0][0] == CAR_W and tb[0][6] == 152 and tb[0][7] == 152,
+       "the bank's geometry is not the carriage row's own")
+    ck(tb[3][9] == 0 and tb[3][0] == 0,
+       "the bank ran past tourbillon_n into the array")
+    ck(p["spr"]["hand"][2][9] == 1, "R-C: the second hand vanished beside the carriage")
+    ck(len(p["comps"]) == 1, "the month window did not project alone: %d rows"
+       % len(p["comps"]))
+    c = p["comps"][0]
+    ck(c[1:] == [0, 0, 2, 60, 200, WIN_W, WIN_H, 12, 3, win_off, WIN_PLANE, 0, 16, 1],
+       "the window projected as %s, not the row-and-domain record" % (c,))
+
+    # --from-bundle: the pair carries the bank it is shown and refuses the
+    # complication it has no field for, saying so in one sentence each.
+    refused, bsent = bake_says(path)
+    ck(refused and "complication mapping" in bsent,
+       "the pair end refused the window bundle differently: %r" % bsent[:200])
+    cpath, _, _, car_len = d32_forge(base, "carriage")
+    brc, btxt, bhdr = bake_pair(cpath)
+    ck(brc == 0, "the carriage-only bundle: --from-bundle said %r" % btxt[:300])
+    if brc == 0:
+        ck("/* tourbillon_n,tourbillon_fps */ 3, 12," in bhdr,
+           "the rebuilt .h does not carry the bank the row named")
+        rows = re.findall(r"\{\s*([\d, -]+)\s*\}, /\* tourb00 \*/", bhdr)
+        ck(rows and [int(x) for x in rows[0].split(",")][10] == car_len,
+           "the rebuilt tourbillon frame 0 does not sit on its plane")
+
+    # The device's own guards, past the writer's door: one word each, restamped.
+    for label, word, val, needle in (
+            ("battery source", 18, 9, "no such input"),
+            ("a month of three plates", 7, 3, "indexes 12 plates"),
+            ("a strip kind", 17, 1, "glyph"),
+            ("order rung seven", 3, 7, "five live layers")):
+        t = elem_tamper(path, 9, word, val)
+        rc, out, err = run(exe, "--refuse", t)
+        ck(rc == 0 and needle in out,
+           "%s: the device said %r, not %r" % (label, out[:160], needle))
+        refused, bsent = bake_says(t)
+        ck(refused and "complication mapping" in bsent,
+           "%s: the pair end drifted from its one sentence: %r" % (label, bsent[:160]))
+    t = elem_tamper(cpath, 8, 15, 9000)          # the carriage's degrees
+    rc, out, err = run(exe, "--dump3f", t)
+    ck(rc == 0, "the device refused a start orientation: %s" % out[:160])
+    ck(parsed(out)["sc"]["tourbillon_start"] == [9000],
+       "the start orientation did not land in the theme struct")
+    refused, bsent = bake_says(t)
+    ck(refused and "tourbillon_start" in bsent,
+       "the pair refused a start orientation it cannot carry, but not in words: %r"
+       % bsent[:200])
+    print("  D32 battery: carriage, window, and the guards between the doors")
 
 
 
@@ -749,14 +925,20 @@ MUTANTS = (
      ("elem", 0, 6, 99)),
     ("a row's size against its plane", "if (sp.w != e.w || sp.h != e.h)",
      "if (0 && sp.w != e.w || sp.h != e.h)", ("elem", 2, 10, 30)),
-    # Anchors name the refusal, not the `if`: `if (e.slot >= 5)` guards both the hand
-    # and the sprite bound and is not unique, and a mutant that cannot be compiled
-    # must abort the run rather than pass for a caught one.
-    ("the hand slot bound", 'if (e.slot >= 5)\n                    return reject("a tourbillon',
-     'if (0)\n                    return reject("a tourbillon',
-     ("vec", "a hand at slot 5")),
-    ("the tourbillon scalar's claim", "if (t->tourbillon_n)",
-     "if (0 && t->tourbillon_n)", ("vec", "tourbillon_n 5, no rows")),
+    # Anchors name the refusal, not the `if`: the hand bound and the sprite bound
+    # share the shape of their test, and a mutant that cannot be compiled must
+    # abort the run rather than pass for a caught one.
+    ("the hand slot bound", 'if (e.slot >= 6)',
+     'if (0 && e.slot >= 6)',
+     ("vec", "a hand at slot 6")),
+    ("the carriage's capacity", "if (car.n_frames > CLK_TOURB_MAX)",
+     "if (0 && car.n_frames > CLK_TOURB_MAX)",
+     ("vec", "a carriage of twenty frames")),
+    ("the carriage's length against its scalar", "if (t->tourbillon_n != car.n_frames)",
+     "if (0 && t->tourbillon_n != car.n_frames)",
+     ("vec", "a carriage length lie")),
+    ("the tourbillon scalar's claim", "if (t->tourbillon_n && at_hand[5] < 0)",
+     "if (0 && t->tourbillon_n && at_hand[5] < 0)", ("vec", "tourbillon_n 5, no rows")),
     ("the plate-frame count", "if (t->bg_frames)", "if (0 && t->bg_frames)",
      ("vec", "bg_frames 2")),
     # check_table refuses a repeated (class, slot) and an unknown class, so the
@@ -826,6 +1008,7 @@ def mutants(exe, golden_path):
 if __name__ == "__main__":
     EXE, PAIR = main()
     refusals(EXE, PAIR)
+    d32_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))

@@ -35,8 +35,13 @@ idf_component_register(
         # orb_bundle.c on purpose — that file is the format mirror of
         # tools/orbbundle.py and carries no dialect knowledge; this one is the clock's
         # own reading of it. tools/host_clock3_test.py compiles the shipped file with
-        # host gcc, so it stays free of anything but clock_assets.h and orb_bundle.h.
+        # host gcc, so it stays free of anything but clk_types.h and orb_bundle.h.
         "art/orb_clock3.c"
+        # D31's seam, D32's consumer contract: (class, slot, frame) to pixels, for
+        # every app that draws from a theme rather than from a baked table. Host
+        # coverage is tools/host_orbelems_test.py; the file itself carries no
+        # dialect knowledge and no allocator, exactly like the two above it.
+        "art/orb_elems.c"
         # P5b: the asset registry. Its own directory because it is the one file in
         # the tree that knows what a slot IS, and it compiles without LVGL on
         # purpose — tools/host_orbapp_reader_test.py links it straight into the

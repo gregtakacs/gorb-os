@@ -161,6 +161,14 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	app := b.AppImage()
 	if len(app) == 0 {
+		// Two different reasons, and the operator can only act on the right one:
+		// a bundle whose manifest names no app image is a broken file, while a
+		// whole-flash image is exactly what it claims and simply has no separable
+		// slot to push. Say which, so the fix is in the message.
+		if b.Merged {
+			s.jsonErr(w, "the hub's firmware is a whole-flash image written at 0x0, which has no app slot to push over WiFi — flash this orb over the cable, or load a .zip bundle to update it wirelessly")
+			return
+		}
 		s.jsonErr(w, "the hub's firmware carries no app image to push")
 		return
 	}
@@ -177,11 +185,21 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 		switch verdict {
 		case firmware.VerdictUpgrade:
 		case firmware.VerdictDowngrade:
-			s.jsonErr(w, ip+" runs "+st.FW+", newer than this hub's "+b.Version+
-				"; the hub will not push it as a downgrade")
+			// The one refusal on this route that has a yes behind it. The verdict
+			// travels as a field rather than only as prose so the page can recognise
+			// a downgrade without parsing a sentence, and so a scripted caller sees the
+			// same structure. Rollback is enabled in the bootloader, which is what makes
+			// retrying with force a recoverable act rather than a leap of faith.
+			s.jsonErrFields(w, ip+" runs "+st.FW+", newer than this hub's "+b.Version+
+				"; forcing it pushes a downgrade over Wi-Fi", map[string]any{
+				"verdict": string(verdict), "overridable": true,
+				"from": st.FW, "to": b.Version,
+			})
 			return
 		default:
-			s.jsonErr(w, ip+" already runs this firmware ("+st.FW+")")
+			s.jsonErrFields(w, ip+" already runs this firmware ("+st.FW+")", map[string]any{
+				"verdict": string(verdict),
+			})
 			return
 		}
 	}

@@ -20,6 +20,39 @@ type Image struct {
 	// Data is the image as packaged. Treat it as read-only: a bundle is built
 	// once and reused across every flash of the hub's lifetime.
 	Data []byte
+	// Verbatim writes Data byte-for-byte, skipping the offset-0 parameter
+	// rewrite. patchBootloaderFlashParams finds an appended SHA256 at the END of
+	// the bytes it is handed, which is right for a lone bootloader and wrong for a
+	// merged whole-flash image: it would digest bootloader+table+app+assets
+	// together and overwrite the last 32 bytes of the assets partition with the
+	// result. `esptool merge_bin` finalises each sub-image's header and digest as
+	// it lays them down, so a merged blob arrives correct and must not be touched.
+	Verbatim bool
+}
+
+// IsESPImage reports whether raw opens with the ESP image magic — the one test
+// that tells a flashable image blob from an archive or a text file without
+// parsing it. The firmware loader dispatches on it.
+func IsESPImage(raw []byte) bool { return len(raw) > 0 && raw[0] == espImageMagic }
+
+// prepareImage does the per-image work one write needs before it goes on the
+// wire: the offset-0 flash-parameter rewrite an ordinary image gets, then padding
+// to a 4-byte flash boundary. A Verbatim image skips the rewrite — see the field.
+func prepareImage(img Image, p FlashPlan) ([]byte, error) {
+	if img.Offset == 0 {
+		if _, _, _, _, _, err := parseImageHeader(img.Data); err != nil {
+			return nil, fmt.Errorf("%s: %w", img.Name, err)
+		}
+	}
+	data := img.Data
+	if !img.Verbatim {
+		var err error
+		data, err = patchBootloaderFlashParams(img.Data, img.Offset, p)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pad4(data), nil
 }
 
 // FlashPlan is the ordered set of images to write plus the flash geometry the
@@ -312,20 +345,13 @@ func Session(pt *Port, o Options) error {
 		if err := ctxErr(o.Ctx); err != nil {
 			return err
 		}
-		raw := img.Data
-		if len(raw) == 0 {
+		if len(img.Data) == 0 {
 			continue
 		}
-		if img.Offset == 0 {
-			if _, _, _, _, _, err := parseImageHeader(raw); err != nil {
-				return fmt.Errorf("%s: %w", img.Name, err)
-			}
-		}
-		data, err := patchBootloaderFlashParams(raw, img.Offset, o.Plan)
+		data, err := prepareImage(img, o.Plan)
 		if err != nil {
 			return err
 		}
-		data = pad4(data)
 		logf(fmt.Sprintf("writing %s (%d B) @0x%X", img.Name, len(data), img.Offset))
 		iprog := func(written, total int) {
 			if o.OnProgress != nil {

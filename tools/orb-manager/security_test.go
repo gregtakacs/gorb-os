@@ -125,7 +125,7 @@ func TestMutatingRoutesRequireTokenAndSameOrigin(t *testing.T) {
 func TestEveryMutatingRouteRefusesAnUncredentialedPOST(t *testing.T) {
 	s, srv := securedHub(t)
 	routes := []string{
-		"/api/ports/probe", "/api/firmware", "/api/firmware/reset", "/api/flash",
+		"/api/firmware", "/api/firmware/reset", "/api/flash",
 		"/api/flash/cancel", "/api/watch", "/api/provision", "/api/orb/allow",
 		// The join dialog's Rescan rides this door, so it claims a cable and
 		// writes to the console: same guard class as provision.

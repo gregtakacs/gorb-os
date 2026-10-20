@@ -1087,20 +1087,43 @@ def landing_page_js():
     if not (0 < nroutes <= cap):
         print(f'FAIL orb_net.c: {nroutes} routes vs max_uri_handlers {cap}'); rc = 1
 
-    # P5.1 (§7 item 7): /api/v1/screen is the one route whose whole purpose is
-    # measurement, so it must be gated in BOTH places — an ungated handler inside
-    # a #if'd table entry still registers nothing (harmless), and a table entry
-    # inside the #if over an ungated handler is the bug that actually ships: the
-    # knob injector stays in the image and simply becomes unreachable by URL, so
-    # nobody auditing the build notices it is still there.
-    mscr = re.search(r'#if CONFIG_ORB_DEBUG_HTTP\s*\n\s*\{ \.uri = "/api/v1/screen"[^\n]*\n\s*#endif', src)
-    if not mscr:
-        print('FAIL orb_net.c: /api/v1/screen is not registered inside its own '
-              'CONFIG_ORB_DEBUG_HTTP guard (plan §7 item 7)'); rc = 1
-    hsc = re.search(r'(?:/\*[^/]*?\*/\s*)*#if CONFIG_ORB_DEBUG_HTTP\s*\n\s*static esp_err_t h_screen', src)
-    if not hsc:
-        print('FAIL orb_net.c: h_screen() is not wrapped in #if CONFIG_ORB_DEBUG_HTTP, '
-              'so a build that drops the route still carries the knob injector'); rc = 1
+    # P5.1 (§7 item 7): the routes whose whole purpose is measurement must be
+    # gated in BOTH places — an ungated handler inside a #if'd table entry still
+    # registers nothing (harmless), and a table entry inside the #if over an
+    # ungated handler is the bug that actually ships: the injector stays in the
+    # image and simply becomes unreachable by URL, so nobody auditing the build
+    # notices it is still there. P5.1 pinned that with a regex over the table,
+    # which held only while /api/v1/screen was the single door AND the last one
+    # in its #if; P6's second door broke it by adding a line. The span check
+    # below asserts the same two properties for every door in the file.
+
+    # P6 (§26): /api/v1/fb is the second measurement door, under the same rule as
+    # the first — anything whose whole purpose is looking at the device must be
+    # compiled out of a build that leaves for a shelf, in BOTH the table and the
+    # handler. Checked by guard SPAN rather than by regex: the fb door carries
+    # twenty lines of doc comment between its #if and its function, which a
+    # screen-shaped pattern cannot see through, and a third door added later is
+    # covered by this the day someone writes it instead of by a new pin.
+    spans, stack = [], []
+    for t in re.finditer(r'(?m)^[ \t]*#[ \t]*(if|ifdef|ifndef|endif)\b', src):
+        if t.group(1) != 'endif':
+            line = src[t.start():src.index('\n', t.start())]
+            stack.append((t.start(), 'DBG' if 'ORB_DEBUG_HTTP' in line else 'x'))
+        elif stack:
+            start, tag = stack.pop()
+            if tag == 'DBG': spans.append((start, t.end()))
+    doors = {}
+    for s, e in spans:
+        for m in re.finditer(r'\{ \.uri = "([^"]+)"[^}]*\.handler = (\w+) \}', src[s:e]):
+            doors[m.group(1)] = m.group(2)
+    for uri, fn in (('/api/v1/screen', 'h_screen'), ('/api/v1/fb', 'h_fb')):
+        if doors.get(uri) != fn:
+            print(f'FAIL orb_net.c: {uri} is not registered inside a '
+                  f'CONFIG_ORB_DEBUG_HTTP guard (plan §7 item 7)'); rc = 1
+        d = re.search(r'static esp_err_t %s\(httpd_req_t' % fn, src)
+        if not d or not any(s <= d.start() < e for s, e in spans):
+            print(f'FAIL orb_net.c: {fn}() stays compiled in when its route is '
+                  f'gated out — an unreachable knob injector is still shipped'); rc = 1
 
     # P5.1 (§7 item 7): h_sd()'s row loop must test the bound BEFORE writing each
     # row. snprintf returns the length it WOULD have written, so with the check
@@ -1152,12 +1175,21 @@ MUTATIONS = [
     # and the debug door registered without its guard.
     ('h_sd overflow check back after the loop',
      '        if (off < 0 || (size_t)off >= sizeof json) { too_big = true; break; }\n', ''),
-    ('the screen door loses its guard',
-     '#if CONFIG_ORB_DEBUG_HTTP\n        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },\n#endif',
-     '        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },'),
     ('the screen handler stays compiled in',
      '#if CONFIG_ORB_DEBUG_HTTP\nstatic esp_err_t h_screen(httpd_req_t *req)',
      'static esp_err_t h_screen(httpd_req_t *req)'),
+    # P6's second door. One table guard now covers both measurement routes, so
+    # the mutation drops it for both: the entries still register in a bench
+    # build, so nothing looks wrong until someone ships it. The handler variant
+    # is the one that actually puts a 652 KB pixel door in a customer build with
+    # no URL to reach it. (Replaces P5.1's screen-only table mutation, whose
+    # anchor the second door invalidated.)
+    ('the debug doors lose their guard',
+     '#if CONFIG_ORB_DEBUG_HTTP\n        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },\n        { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },\n#endif',
+     '        { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },\n        { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },'),
+    ('the fb handler stays compiled in',
+     '#endif /* CONFIG_ORB_DEBUG_HTTP */\n\n#if CONFIG_ORB_DEBUG_HTTP\n/* GET /api/v1/fb',
+     '#endif /* CONFIG_ORB_DEBUG_HTTP */\n\n/* GET /api/v1/fb'),
     # Every registered route must fit the httpd table cap. The anchor is read from
     # the source so the battery cannot go stale when a phase raises the number
     # (29 routes registered as of P4a). Lowering the cap past the count is the bug:
@@ -1175,8 +1207,8 @@ MUTATIONS = [
      'static uint32_t install_target(void) { return SLOT_B_HDR; }',
      'static uint32_t install_target(void) { return SLOT_A_HDR; }', 1, 'theme'),
     ('boot draws a slot it never verified',
-     'return b_valid ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
-     '(void)b_valid;\n    return BOOT_ART_CARD;', 1, 'theme'),
+     'return (b_valid || b_is_bundle) ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
+     '(void)b_valid; (void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
     ('the owner\'s choice stops mattering',
      'if (!live || strcmp(live, THEME_LIVE_CARD) != 0) return BOOT_ART_DEFAULT;',
      'if (!live) return BOOT_ART_DEFAULT;', 1, 'theme'),

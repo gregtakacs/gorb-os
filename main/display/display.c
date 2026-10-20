@@ -669,6 +669,42 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
 
 static display_commit_hook_t s_commit_hook;   /* defined with the L4 API below */
 
+/* ---- one-shot frame capture state (see display.h for the contract) --------
+ * A three-state flag is the whole synchronisation: the LVGL task only ever
+ * writes the staging buffer while state == CAP_ARMED, and it clears ARMED in
+ * the same breath it sets READY, so a commit and a direct fallback copy can
+ * never both be filling the buffer. Nothing here is freed once allocated:
+ * a free racing a copy is the exact bug this feature must not ship with, and
+ * 434 KB of PSRAM held for a bench door that a shipping build compiles out
+ * entirely is the honest cost of not having that race. */
+#define CAP_IDLE  0
+#define CAP_ARMED 1
+#define CAP_READY 2
+
+static uint8_t   s_cap_state;
+static bool      s_cap_torn;
+static uint32_t  s_cap_seq;
+static uint16_t *s_cap_buf;                   /* PSRAM, mirror image of one frame */
+static size_t    s_cap_bytes;                 /* SCREEN_W * SCREEN_H * 2          */
+static uint32_t  s_cap_copies;                /* captures taken, for the log      */
+static uint32_t  s_cap_last_us;               /* cost of the copy, microseconds   */
+
+/* Runs on the LVGL task, in the post-composite commit window. */
+static void capture_maybe_copy(void)
+{
+    if (s_cap_state != CAP_ARMED || !s_cap_buf) return;
+    const int64_t t0 = esp_timer_get_time();
+    memcpy(s_cap_buf, s_fb, s_cap_bytes);
+    s_cap_last_us = (uint32_t)(esp_timer_get_time() - t0);
+    s_cap_seq     = s_bench_frames;   /* frames retired BEFORE this one went out */
+    s_cap_torn    = false;
+    s_cap_state   = CAP_READY;
+    s_cap_copies++;
+    ESP_LOGI(TAG, "fb capture: %u B staged in %u us (frame %u, copy %u)",
+             (unsigned)s_cap_bytes, (unsigned)s_cap_last_us,
+             (unsigned)s_cap_seq, (unsigned)s_cap_copies);
+}
+
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                           uint8_t *px_map)
 {
@@ -720,6 +756,12 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
             const int64_t t_hook = esp_timer_get_time();
             if (s_commit_hook) s_commit_hook();
             s_bench_hook_us += (uint64_t)(esp_timer_get_time() - t_hook);
+            /* Mirror now holds the complete frame — LVGL's chunks plus the
+             * clock's overlays — and the bands about to read it out have not
+             * been submitted, so this is the only point at which a copy is a
+             * picture of a whole displayed frame rather than of a screenshot
+             * race. Deliberately AFTER the hook for that reason. */
+            capture_maybe_copy();
             const int64_t t_te = esp_timer_get_time();
             wait_for_te();
             s_bench_te_us += (uint64_t)(esp_timer_get_time() - t_te);
@@ -1069,6 +1111,61 @@ void display_set_commit_hook(display_commit_hook_t hook)
 uint16_t *display_fb_mirror(void)
 {
     return s_coalesce_mode ? s_fb : NULL;
+}
+
+/* ---- one-shot frame capture (the bench door; contract in display.h) ---- */
+bool display_capture_present(void) { return s_fb != NULL; }
+const uint16_t *display_capture_data(void) { return s_cap_buf; }
+size_t display_capture_bytes(void) { return s_cap_bytes; }
+
+bool display_capture_ready(uint32_t *seq, bool *torn)
+{
+    if (s_cap_state != CAP_READY) return false;
+    if (seq)  *seq  = s_cap_seq;
+    if (torn) *torn = s_cap_torn;
+    return true;
+}
+
+/** The staging buffer, allocated once and never freed — see the state block
+ *  above for why freeing it is the one thing not allowed to happen here. */
+static esp_err_t capture_stage(void)
+{
+    if (s_cap_buf) return ESP_OK;
+    const size_t n = (size_t)SCREEN_WIDTH * (size_t)SCREEN_HEIGHT * 2;
+    s_cap_buf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    if (!s_cap_buf) return ESP_ERR_NO_MEM;
+    s_cap_bytes = n;
+    return ESP_OK;
+}
+
+esp_err_t display_capture_arm(void)
+{
+    if (!s_fb) return ESP_ERR_INVALID_STATE;
+    const esp_err_t e = capture_stage();
+    if (e != ESP_OK) return e;
+    /* Armed last and nothing else touched first: until this store lands, the
+     * LVGL task has no reason to look at the buffer at all. */
+    s_cap_state = CAP_ARMED;
+    return ESP_OK;
+}
+
+esp_err_t display_capture_direct(uint32_t *seq)
+{
+    if (!s_fb) return ESP_ERR_INVALID_STATE;
+    /* A commit is about to copy this same buffer; waiting it out is cheaper
+     * than explaining a half-written frame to someone debugging a dial. */
+    if (s_cap_state == CAP_ARMED) return ESP_ERR_INVALID_STATE;
+    const esp_err_t e = capture_stage();
+    if (e != ESP_OK) return e;
+    const int64_t t0 = esp_timer_get_time();
+    memcpy(s_cap_buf, s_fb, s_cap_bytes);
+    s_cap_last_us = (uint32_t)(esp_timer_get_time() - t0);
+    s_cap_seq     = s_bench_frames;
+    s_cap_torn    = true;
+    s_cap_state   = CAP_READY;
+    s_cap_copies++;
+    if (seq) *seq = s_cap_seq;
+    return ESP_OK;
 }
 
 /* ---- Tile-ring loan (see the loan block above the flush path) ----

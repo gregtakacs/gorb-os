@@ -246,6 +246,33 @@ menu "Orb microSD (theme storage)"
             noticed at the next reboot.
 
 
+    config ORB_ART_ARENA_MARGIN_KB
+        int "PSRAM the art arena gate keeps off the table, KiB"
+        default 2048
+        range 0 6144
+        help
+            §20.5(4)'s pin, and the ONLY reason it is configurable. The gate in
+            art_bank_fill() refuses when free PSRAM is under need_bytes + this margin,
+            and the margin exists so the LVGL task, the install worker and their stacks
+            keep working while the arena holds a theme. Shipping is 2048: that value is
+            a decision (D30), and this option does not invite anyone to tune it.
+
+            M6(4) asks the opposite question: prove the refusal path is honest by making
+            the arena UNABLE to hold a cap-sized bundle, then confirm the picker names
+            the reason and offers Arm A rather than drawing half a theme. With the
+            shipping margin, a 4,128,768 B bank needs 6.1 MB free on an 8 MB board, so
+            the refusal depends on whatever LVGL had already taken that day — it is not
+            a lever. Raise this to force it: at 6144 every arena refill refuses, at 4096
+            only the big ones do, and at 0 the gate is the bare allocation, which is the
+            §20.2 Arm A probe the M3 builds already priced with this same define at 0
+            and 1.
+
+            A dev-only build flag, not a knob an owner can reach: it is compiled in, it
+            is not in NVS, and no route sets it. Restore 2048 before any build leaves the
+            bench, and note that the value the shipping image was audited against is
+            2048 — an image built otherwise is a different measurement, not the same one
+            with a tweak.
+
 endmenu
 
 menu "Orb idle dim"
@@ -404,5 +431,6 @@ menu "Orb idle dim"
             count stuck at zero through deliberate lifts means it is over the lift.
             tools/host_idle_dim_test.py pins the decision's logic, the high-water
             and the run-of-N; only the orb can pin its threshold.
+
 
 endmenu

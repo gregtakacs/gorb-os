@@ -23,7 +23,8 @@ still matches the code.
 Run:  python3 tools/host_art_residency_test.py              (rc 0 = pass)
       python3 tools/host_art_residency_test.py --mutations  (each must fail)
 """
-import os, sys
+import os
+import re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -40,6 +41,10 @@ PAGE_BUDGET = DROM_PAGES - IMAGE_PAGES        # 234
 RESERVE_MAX = 8                               # ORB_ART_RESERVE_MAX (ruling B5)
 EXTRA_MAX = 8                                 # ART_BANK_EXTRA_MAX
 ARENA_MARGIN = 2 * 1024 * 1024                # ORB_ART_ARENA_MARGIN: PSRAM the arena gate keeps
+# The shipping figure, read where it now lives: main/Kconfig's default. A Kconfig
+# default is the value a build that never mentions the option gets, so pinning it here
+# is the same guarantee the old literal gave, from the file that now owns the number.
+KCONFIG = os.path.join(ROOT, "main", "Kconfig")
 
 FAILS = []
 QUIET = [False]                 # the per-mutation replay silences the ok chatter
@@ -89,7 +94,12 @@ def lint_shipped_source():
         "art_bank_primary_release();",                         # release is by mechanism
         "esp_err_t art_bank_map_at_0(size_t need_bytes) { return art_bank_map(0, need_bytes); }",
         "#define ORB_ART_M3_PROBE 0",        # ditto the probe that prices it
-        "#define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)",
+        # The margin is §20.5(4)'s bench pin, so the header reads it from Kconfig rather
+        # than a literal. The SHIPPING figure is still pinned — it just lives in the
+        # option's default now, which is where a dev build changes it and a shipping
+        # build must not. Both halves are checked, or the knob could ship at 6144 and
+        # every refill would refuse quietly.
+        "#define ORB_ART_ARENA_MARGIN (CONFIG_ORB_ART_ARENA_MARGIN_KB * 1024u)",
         "return e->map != NULL || e->psram;",                       # liveness: both kinds
         "if (art_extra_live(&s_extra[i]) && !s_extra[i].psram)",    # arena bills ZERO pages
         "return s_extra[slot].psram ? s_extra[slot].plane : s_extra[slot].map;",  # one ptr, two sources
@@ -117,6 +127,18 @@ def lint_shipped_source():
        "lint: exactly 7 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
     ok("all %u reservation slots are booked" in src and "all %u secondary slots hold banks" in src,
        "lint: both exhaustion reasons present (reservation-full counts, secondary-full does not)")
+    # The arena margin moved behind a Kconfig option so §20.5(4) can FORCE the refusal
+    # it measures. The shipping figure must not drift with it, and a Kconfig default is
+    # the value a build that never mentions the option gets — so that is the number to
+    # pin, read from the file that now owns it. Without this the knob could ship at 6144
+    # and every arena refill would refuse quietly on every board.
+    kc = open(KCONFIG).read()
+    m = re.search(r"config ORB_ART_ARENA_MARGIN_KB\b.*?\n\s+default (\d+)", kc, re.S)
+    ok(m is not None, "lint: ORB_ART_ARENA_MARGIN_KB has no default in main/Kconfig")
+    if m:
+        ok(int(m.group(1)) * 1024 == ARENA_MARGIN,
+           "lint: the arena margin's shipping default is %s KiB, not %d KiB (D30)"
+           % (m.group(1), ARENA_MARGIN // 1024))
 
 
 # ---- the mirror: art_pages_accounted / orb_art_reserve / art_bank_map_extra ----

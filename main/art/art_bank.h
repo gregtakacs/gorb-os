@@ -106,8 +106,12 @@ void art_bank_lat_probe(void);
  * and at 1; lighting it for shipping does not retire the measurement. */
 #define ORB_ART_MECH_B 1
 
-/* PSRAM the arena gate keeps off the table on top of the bank itself. */
-#define ORB_ART_ARENA_MARGIN (2u * 1024u * 1024u)
+/* PSRAM the arena gate keeps off the table on top of the bank itself. 2048 KiB is the
+ * shipping decision (D30); the Kconfig option in front of it is §20.5(4)'s bench pin,
+ * there so the refusal can be FORCED rather than hoped for. Reading the default from
+ * a define rather than a literal is what lets a dev build set it without editing this
+ * file, which is the difference between a knob and a mistake. */
+#define ORB_ART_ARENA_MARGIN (CONFIG_ORB_ART_ARENA_MARGIN_KB * 1024u)
 
 /* ---- M3 bench probe: overflow bank, re-map (A) vs arena (B) ----------------
  * The §6 M3 protocol, same one-line-switch family as ORB_ART_M2_PROBE,

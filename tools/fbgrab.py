@@ -21,6 +21,11 @@ the bytes received: a truncated grab fails here loudly instead of reading as a
 dark UI. `consistency=` is echoed too -- `commit` frames are whole; `torn` ones
 admit they raced a repaint, which is the honest price of ?direct=1.
 
+Let a grab finish. esp_http_server is a single task, so killing this tool
+mid-transfer leaves the device sitting in send() on a dead socket until it times
+out, and no route -- /api/v1/status included -- answers while that lasts. It
+recovers by itself; it is not a hang.
+
 Usage:
   fbgrab.py                          bmp to /tmp/orb-fb.bmp, stats + thumbnail
   fbgrab.py --fmt raw565 --out f.bin

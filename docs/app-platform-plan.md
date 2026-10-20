@@ -91,7 +91,7 @@ close the item; the work order is §13.
 |---|---|---|
 | D11 | The theme picker's commit path | **A theme pick installs and reboots, unconditionally.** The stage-then-ask flow is rejected: no pending NVS key, no "reboot now" / "keep this dial" rows, no boot-time card install. Press on a theme copies the container into the alternate slot on the worker task, verifies it from flash, marks that slot live, and asks the OS for the reboot — the pick IS the confirmation. Failure stays honest: the row answers with its reason and the device does not reboot. |
 | D12 | App option pages may nest | **Sub-menus, one level deep** (owner chose this ABI shape from the four offered). An app's option list can carry header rows that open one nested list; items live inside it, never inside each other. One ABI hook added (§1.4): `opt_kind` — `OPT_ROW` / `OPT_GROUP` / `OPT_ITEM`, contiguous-section convention, NULL hook = today's flat page. |
-| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** **AMENDMENT DECLINED (option A, ruled 2026-10-19, §24): the ping-pong that would have made both slots install targets is deferred, because the card-less fallback reads its pixels from partition offset 0 and offset 0 is inside slot A. The clause stays load-bearing. D30 ships its refill, its `staged` word and its light on the single target slot; §24.1 records the four homes the default could move to and the number that rules each out.** |
+| D13 | The default theme's slot | **The factory default is never an install target, and stays pickable.** Today the flashed bank at `assets` partition offset 0 sits inside slot A's region and `target_slot()` installs into A whenever slot B holds an install: the second pick erases the default AND the `use_baked_in()` card-less fallback, which reads pixels from that same region. The model the owner ratified: **A = the default, B = the card install** — a swap flips which is live, it never copies over A. **D21/D24 (§0.9) keep the rule and change what fills it: the slot holds a whole multi-app FORMAT-3 bundle rather than one clock dial's bank, so A stays the shipped default bundle and the flip is the bundle swap.** **RETIRED 2026-10-19 by §26.** The premise it protects — that a board must boot to a theme it was flashed with — was dropped instead of amended: a fresh flash has **no theme**, and the dial renders each app's base form from OS primitives. No factory pixels means offset 0 stops being sacred, `assets` becomes two honest slots, and ping-pong unblocks without a home for the default being found at all. §24.1's four rejected homes are moot. The clause bound until then, and D30 shipped its refill, its `staged` word and its light on the single target slot under it.** |
 
 ### 0.4 Owner's ruling, 2026-10-12 (third round) — the M3 overflow-mechanism choice
 
@@ -180,7 +180,7 @@ wasm3 from an optional tier to a committed one. D3's "escape hatch" wording and 
 | D27 | The wasm3 memory bound | **Declared in the manifest and gated at install**, in the same shape as `caps` and `period_ms`: the owner sees the cost before consenting, and a module that cannot fit never writes a byte of flash. A trapping module bills a C2 fault, so two strikes mark the app failed and the dial boots to the clock. |
 | D28 | Who defines the format | **The firmware's resolver is the source of truth.** The theme editor adheres to it, never the reverse. |
 | D29 | The theme budget | **`ORB_THEME_SLOT_CAP`, 0x3F0000 (4,128,768 B) per bundle**, policed by the editor at build time and again by the installer at verify time. It is a 63-page ceiling at the measured 64 KB MMU page. **The row read "(4,128,764 B)" from §0.9 until 2026-10-15; `orb_theme.h:372` says 0x3F0000 and 0x3F0000 is 4,128,768.** |
-| D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20. **P6.3 as shipped (2026-10-19, §24): the fused boot refill, the lit mechanism B and the `staged` word landed; the ping-pong half did not, because D13's amendment was declined and the default has no home that does not consume a slot (§24.1). The flip is single-slot-B until it does. **P6.4 (2026-10-19, §24.8) built the flip page's store half: /api/v1/sd/bundle is the ingest's first live caller, /api/v1/sd/theme stores a verified bundle, and the page's store button warns the owner that a cut mid-copy returns the factory clock — the sentence §24.5(2) assigned to this slice. The glass half (progress bar, arena swap at a tick boundary, ping-pong) waits on the default's new home and on P6.5's reader** |
+| D30 | Flipping among several card themes | **RULED 2026-10-15 (owner): the PSRAM hybrid, default-first — lazy, no reboot, no size gate.** Two worker stages per flip. (1) Select the baked-in default: a selection change, zero PSRAM, and it frees the previous theme's arena. (2) ONE fused card pass streams the bundle into both the PSRAM arena and the other flash slot (ping-pong) while P6's flip page paints a progress bar; verify the arena by streaming CRC, swap the live bank at a tick boundary, then write the slot header LAST (D9's order; the ledger reads `staged` until commit). One theme is resident at a time, so every bundle ≤ D29's ceiling flips lazy — the two-arena /2 arithmetic and the per-size split are retired. Boot refills the arena from the committed slot: no card on the boot path, +≈0.15 s at av-kit and ≈0.5 s at cap (D14's fill arithmetic, moved onto flash). A torn flip leaves glass and boot on the default, which the owner accepted; the previous theme stays one press away in its slot. Arm A (copy+reboot) survives only as the fallback when the arena cannot allocate at flip time. Measurements §19.2; the ruling's full text, its consequences, and its outstanding bench gate are §20. **P6.3 as shipped (2026-10-19, §24): the fused boot refill, the lit mechanism B and the `staged` word landed; the ping-pong half did not, because D13's amendment was declined and the default has no home that does not consume a slot (§24.1). The flip is single-slot-B until it does. **P6.4 (2026-10-19, §24.8) built the flip page's store half: /api/v1/sd/bundle is the ingest's first live caller, /api/v1/sd/theme stores a verified bundle, and the page's store button warns the owner that a cut mid-copy returns the factory clock — the sentence §24.5(2) assigned to this slice. The glass half (progress bar, arena swap at a tick boundary, ping-pong) waits on the default's new home and on P6.5's reader. **§26 settled the first half of that on 2026-10-19: the reader landed (§25.7) and the default's new home is that it has none, so the glass half is unblocked — with this ruling's "a torn flip lands on the default" restated as "lands on the base render, with the last good theme still in the other slot", which is the same promise and a version-matched floor under it.** |
 | D31 | Content when a theme carries none | **The app supplies its own default.** Theme content wins wherever the bundle carries it. Where it does not, the app renders a default rather than showing nothing, and D21's two choices ("substitute an OS global or refuse to run") gain the third it left open. The default is code, not bytes: D22's five primitives draw it, so D21's "`.orbapp` never ships a byte of art" stands and D10's "the OS ships no art" stands. The selector is §4.1's `assets` flag, which that row already named "D21's fallback contract": `required` keeps D26's install refusal, `optional` means the app has a default to draw. App-carried *layout* for a silent theme reads from the container's own `geometry` region (§4.1: opaque to the OS, already size- and CRC-checked at `orb_app_manifest.c:319`) — the only reading those counts exist for. §9 item 3 is closed for the clock. |
 | D32 | Who declares a displayed element, and who sets the pace | **Ruled by the owner 2026-10-15.** The **theme** declares, per app, the elements it displays — identity, class, pixels, animation frames, opacity mask, and the **depth order** of the stack — in one legible schema the OS can read. The **app** says how and where each element it was given is painted, and when it needs repainting. Every element is bound to its theme, so a different theme re-composes the same app. The **OS** composites in the declared order and picks, per live app stack, the **highest frame rate it can afford** out of a declared acceptable set (a watch ladder like 4/8/12/15 fps; another app 1 fps to as-fast-as-possible), asks that app to repaint at that pace, and adjusts the pick dynamically. Recorded as heard in §23. It re-opens **D23**, **D26** and **D16**, with those amendments applied to §0 on 2026-10-15 (§23.4, wording at §23.9), and voids §22.2's opaque per-section geometry (§23.3). Split as ruled: the element table is **P6**, the scheduler is **P8** — numbered P8 because P7 is the ratified wasm3 tier (§23.5). R6 and R7 are ruled (§23.6, consequences at §23.7); R2 is ruled with D26; R3, R4 and R5 are open (§23.8). |
 
@@ -3859,4 +3859,96 @@ element 46/0, `mut_rebake.py` still 17/17, and the kit-bake path re-emits the sh
 `.h` and `.bin` unchanged after the refactor. §25.5(2) and (3) are still owed.
 
 
+
+
+---
+
+## 26 — No default theme: the fifth home for the default (RULED 2026-10-19, owner)
+
+§24.1's dead end was real and it was not an arithmetic problem. It was a premise: that a
+board must boot to a theme it was flashed with. Drop that and the knot unties, so the
+owner dropped it. **A freshly-flashed orb has no theme at all.** Themes arrive from the
+card, and only from the card. With none chosen and none installed, the dial renders the
+**base version** of each app: what the OS can draw from its own primitives — LVGL's
+compiled-in font, rectangles, lines, the STATUS line — with no art bank behind it.
+
+**Partition arithmetic, checked before writing this.** `partitions.csv` puts `assets` at
+**0x420000, 0x800000** (8 MB), and `CMakeLists.txt:62` flashes `assets/clock_assets.bin`
+at that same 0x420000. `orb_theme.c`'s slot map is SLOT_A_HDR 0 / SLOT_B_HDR 0x400000
+*within* that partition, so the flashed default lands exactly on slot A and runs through
+its art region — D13's claim, verified rather than trusted. Stop flashing it and the whole
+8 MB is two honest slots, which is what ping-pong needs: **the default's home is not found,
+it is vacated.** `assets` keeps its offset and size, so the retention invariant at the head
+of the CSV is untouched and the table does not move.
+
+**What this retires, by name.** Not amends — retires, and the doc should say so rather than
+keep clauses that no longer bind:
+- **D13's clause.** It exists because the card-less fallback read pixels from offset 0 and
+  offset 0 was inside slot A. No fallback pixels, no constraint. §24.1's four rejected homes
+  are moot: this is option five, and it is the only one that costs a slot nothing.
+- **`use_baked_in()` and `art_bank_map_at_0()`** (`orb_theme.c:744`, `art_bank.c:350`), and
+  with them D13's "the default ALWAYS maps, whatever ORB_ART_MECH_B says".
+- **The `s_source == "baked-in"` state**, the `built-in` row in `clock_themes.c`'s list, and
+  the four sentences that promise `"— the default is drawn"` / `"the dial shows the factory
+  clock"`. Each needs a true replacement, not a deletion: with no default, a refused refill
+  leaves the base renderer, and the sentence must say that.
+- **`target_slot()`'s asymmetry.** Slot A becomes a legal install target for the first time.
+  The `host_tz_test.py` D13 table that pins "an install aimed at offset 0 erases the default
+  and the fallback together" changes its meaning: it can now erase the *previous theme*, which
+  is the point of ping-pong, and the table must be rewritten to test the new rule rather than
+  deleted.
+- **D30's safety property, restated not weakened.** "A torn flip leaves glass and boot on the
+  default" becomes "a torn flip leaves glass and boot on the base render, and the last good
+  theme in the other slot." That is at least as good a story: the base render is deterministic
+  and version-matched to the firmware, where the old default was a snapshot of one kit baked
+  at one date.
+
+**M6's own pass line changes, and keeps its teeth.** Clause 3 read "a card-less board still
+tells the time". Under this ruling it must read **"a card-less board still tells the time,
+from the base render"** — the requirement survives, the mechanism is new. Do not let it be
+closed by the sentence "there is no default, so nothing to check": that is how a board ships
+that shows a black rectangle until someone finds a card.
+
+**The cost, stated before the code, because it is the largest item in P6 and it is new.**
+There is no renderer that draws an app from its declared elements today. `clock_view.c` is
+85 hand-written read sites over one `clk_theme_t`, and `host_orblayers_test.py` pins the
+fact in its own words: *the shipped analog clock is still a special view, not a table
+renderer, and no element can reach the draw-list gate yet.* So the base render is not a
+fallback flag — it is the §23 table-driven draw path, arriving early and with a harder
+contract, because a special-cased clock cannot render an app that has no art. Two halves
+that were planned separately turn out to be the same work:
+1. **A primitive draw path** for at least TEXT, HAND, PLATE and STATUS: draw-list built from
+   an element table, geometry from the rows, no `color_off` dereferenced when a section
+   carries no bank. The §25.7 reader already hands back `n_spr` and a plane list, so "a clock
+   section with no art" is expressible today and nothing draws it.
+2. **`clock_view.c` made safe without a bank.** It currently returns an error when the bank
+   is short (`clock_view.c:1766`), so with no default a fresh board would fail
+   `display_init()` and the clock would never come up at all. That gate becomes a branch to
+   the base renderer, and `orb_bg_classic_init()`'s plate read needs the same audit: a null
+   blob today is a crash, not a fallback.
+
+**Slices, in the order that keeps a working board at every step.** Each is flashable and
+each leaves the dial telling the time.
+1. **Base render, additive.** Draw the base clock when `orb_theme` reports no resident theme.
+   The flashed default is still there and still preferred, so nothing regresses if this is
+   abandoned halfway. Bench: run it by choosing nothing on a board that has a default, which
+   needs a temporary override — say so in the commit rather than pretending the state occurred
+   naturally.
+2. **No-default boot.** Drop the `clock_assets.bin` flash line and the CMake guard beside it;
+   retarget `use_baked_in()`'s two call sites at the base render; rewrite the four sentences
+   and `s_source`; rewrite the D13 table in `host_tz_test.py`. A board that OTA'd from an older
+   build keeps its slot-B theme and never sees the base render, so migration is free.
+3. **Ping-pong.** Now unblocked with nothing left to protect: `target_slot()` alternates,
+   §20.5(3)'s progress bar and arena swap land, `staged` keeps its meaning, and §24.5(4)'s press
+   gets its two-stage form.
+4. **FORMAT 2 retirement (§25.5(3)).** Ordering constraint GONE. There is no boot path left to
+   brick — the reason the deletion had to wait was the default, and the default no longer
+   exists. This can run any time after slice 2, including in parallel with 3.
+
+**Two things I will not guess.** Both are visible to a person holding the device, and a wrong
+answer looks like a broken product rather than a wrong field: the base clock's face (§26 asks
+only that it tell the time legibly at arm's length), and what the glass and the flip page show
+before the first theme ever arrives — the state a board is in on a shelf. There is precedent
+for the second: the unconfigured-network case already has an on-screen ask. Recorded as open
+questions rather than decided by whoever writes the code first.
 

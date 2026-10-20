@@ -697,7 +697,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | P4b | the container sheds its art claim for good: `art_size`/`art_req`/`art_crc` stop being read by the installer, `art_req` with no payload inverts from refusal (`orb_app_manifest.c:317`) to a valid D21 declaration, and the gate-2 refusal text changes | no container can offer art to an installer that will not take it; the sentinel pins the inverted gate and the writer drops the field. **Landed 2026-10-13 (`e66c0f0`, fix `e74d500`). The refusal lives once, in the reader: `orbapp_check_header` refuses any container with `art_size` or `art_crc` non-zero ("carries a %u B art payload: no container ships art (D21) — re-package it"), mirrored in the same words in `orbapp.py`; `art_req` survives as D18's request-as-declaration, bounded only by the old slot cap as a mis-count guard, and `art_req>0, art_size==0` is now the ACCEPT vector (the inversion the pass line named). The installer lost gate 2 entirely (gates renumbered), the art CRC loop in `verify_payload`, the `h->art_size` fill into the registry row, the `art_crc` term from the upload dedup tuple, and `APPS_ART_SMALL_MAX` with the art term in `ORB_APP_UPLOAD_MAX` (now geometry + 128 KB slack: the largest legal file cannot carry pixels). Scan's truncation fact moved to the copied prefix (`geom_off+geom_size`) — the art claim can no longer extend it because no file the reader admits has one. Writer: `write_container`/`pack_header` have no art argument, `disclosure()` has no art line — the owner consents to no pixels because there are none. Sentinels: writer 147 checks / 24 mutants, reader 50 vectors / 9 mutants (two new: the D21 gate dropped, the bound doubled), install 25/25, scan 17 vectors / 13 mutants — all caught. The fold also righted two lies the P4a close had told itself: install's six "new" P4a mutants were dead tuples sitting OUTSIDE the `MUTATIONS` list (the count that read 16/16 never ran them — folded in, plus the stride mutant re-anchored to the uninstall site where the first-occurrence `_m` actually hits the install copy), and scan's caps mutant and terminator mutant lost their uniqueness to P4a's second caps emitter and the three shared handler closes — re-anchored, with the word-check and the terminator assert now scoped per-body, both green. Bench: §15 P4b record — the live D21 422 arrived verbatim, and it caught a third thing: both header validators had been returning their refusal from a frame-local buffer, so the door printed garbage where the sentence should be (the `#\x04\x06` the fix commit is named for) — `static char why[160]` in both, pinned by a new lint rule and its own mutant.** |
 | P5 | table-driven menu pages, generic worker jobs, the position readout, the 3 debt fixes, **and the `layer_*`/`bank`/`status` broker stubs get bodies** (§1.4 reserved them and `orb_svc.h:115` named P5 as their blocker) — **decomposed 2026-10-12 into five separable commits, and P5.1 is in.** **P5.1 (landed, `df87abc`): the three debt fixes of §7 item 7.** **P5.2 (landed, and benched 2026-10-13): the `menu_page_t` table** replaces `page_rows`/`row_text`/`activate`/`go_back` (§7 item 1; item 2's AP/TZ/DISPLAY/PERMISSIONS/apps/exit half — APPS and ABOUT join as `s_top` entries in P5.3). `host_menu_test.py` was rebuilt around the table: 131 checks including a press block that drives the lifted dispatcher the stub used to fake, 48 mutants all caught, six structural lints over the table's text. The lifted labels/titles/hints are the shipped ones, so identical rendered text is pinned by the suite rather than by eye. **P5.3 (landed 2026-10-13): APPS + ABOUT rows** (§7 items 2 and 4). Three pages — `PG_APPS`, its one-app `PG_APPACT`, and the inert `PG_ABOUT` — reusing `orb_app_enable()`/`orb_app_uninstall()`/`orb_app_activate()` as a second caller rather than new business logic. Bench: walked on the flashed P5.3 build — 49 checks, 0 failed, and the top page's app row derived as 6 where it had been 4, the two new OS rows accounted for exactly. The re-walk landed afterwards: the P5.4 image carries P5.3's pages and its walk log matched this one, so the pending line is closed. APPS/ABOUT's own rows are host-pinned until the walk grows checks for them. **P5.4 (landed 2026-10-13): the position readout** (§7 item 6). `title_line()` composes the armed header and gates on the window's own `rows > ROW_MAX`, so a page that scrolls counts itself and a page that fits says nothing — no per-page flag to forget. 10 new checks pin the exact text at the boundary in both directions, 6 new mutants, 73 of 73 caught, suite 179 checks. Costs 112 B: `0x17ad80` to `0x17adf0`. Bench: re-walked on the committed image — 49 checks, 0 failed, 229 cursor records, and the log is byte-identical to P5.3's once the boot stamp is normalized. The digits are host-pinned: the cursor log line keeps the bare title so the walk's `row N/M` stays the pair the header composes, and the bench has no framebuffer readback. **P5.5 (landed 2026-10-13): the `layer_*` bodies** (§1.4, shaped by §1.2b). The per-app table lives in `main/gfx/orb_layers.{h,c}` with generation-tagged handles, row-owned PSRAM planes behind an installed allocator hook, and a job builder that keeps table order as paint order; `orb_svc.c` grew the four gated bodies, the suspend/uninstall wipes, and the live/refused ledger pair the status endpoint now prints per row. `gfx_prim_ctx_init()` — the entry `orb_assets.h` had promised since P5b — is real, and it lives in `orb_layers.c` so the suite can drive it (see §1.2b's closing note). `tools/host_orblayers_test.py`: 73 vectors over the shipped table and registry with the shipped bake, 10 source-rewrite mutants all caught, mirror lints pinning the two stubbed compositor maths against `orb_gfx.c`'s text. Firmware builds clean: +2,944 B flash. **Bench-corrected 2026-10-14 (§16): the embedded tables died on the board — 14,720 B of .bss answered `httpd_start: ESP_ERR_HTTPD_TASK` and the config server stopped. `fix(svc)` moved each row's table to a lazy PSRAM calloc (16 x 920 B returned to the heap, +256 B flash), freed at row-forget, kept across suspend, with a per-row refusal word so the ledger counts refusals made before a table exists; 5 new host vectors pin the paths the embedded shape did not have.** No commit-hook caller yet — that is P6, as recorded. Bench state on `fix(svc)`'s image: heap region back to 136 KiB, `config server listening`, boot-to-dial 1.98 s; the status-body read of the `layers` pair awaits the radio fix in §16's checklist. No commit-hook caller yet — that is P6, as recorded. Item 3 needed no P5 work: `orb_jobs_post(fn, arg, arglen)` is already the generic payload carrier, and `menu_view.c` has called it that way since before P5 opened | `host_menu_test.py` rewritten for the table, all mutations red; the compositor primitives reachable through the gate and counted by the ledger |
 | P5b | **new (D22/D23):** the asset registry. The frozen class enum (`text`/`sprite`/`hand`/`plate`/`ring`/`bank`/`layer`/`status`) versioned through `abi_min`/`abi_max`; `<slug>/<name>` vs `global/<name>` resolution and its two fixed orders; the manifest's legible asset table; the five **generated** fallback primitives (no shipped pixels, D22); `orb_app_manifest.h/.c` and `tools/orbapp.py` gain the table together | a declared-optional asset resolves global-then-fallback and a declared-required one refuses at install (D26), all on the host; a card app draws a ring and a hand with zero theme bytes present. **D31 names the owner of that second clause:** the app supplies the default content and theme content wins wherever a bundle carries it. P5.5's `layer_*` bodies sit behind this row, because the descriptor's art reference is a registry handle and nothing else is legal |
-| P6 | **rewritten (D21/D24/D29):** `.orbtheme` FORMAT 3, the theme as a multi-app bundle. The app-to-slot binding map, the 0x3F0000 budget gate at both bake and install, several bundles listed on the card, the flip-on-orb over them (D30 ruled §20: default-first lazy copy into the PSRAM arena and the ping-pong slot in one fused card pass, progress bar on the glass, no reboot, Arm A kept only as the arena-full fallback), and the retirement of the clock's FORMAT 2 dialect. The compiled-in `clock_assets` pair stays the card-less fallback, and `bake_clock.py` gains the reverse path §0.2 still owes. **Design draft in §22, rewritten in part by D32 (§23): the per-app section carries a legible ELEMENT TABLE, not an opaque blob. R1–R7 are all ruled or consumed (§23.6, §24). P6.1–P6.3 landed: the format and the gate at both doors, the refill with its timing figure, the `staged` word, and the streaming ingest under a parity family (§24.6). P6.4 landed 2026-10-19 (§24.8) — the flip door, its worker, the scan's bundle row, and the store half of the page; M6's bundle-half bench rides the next flash. P6.5's FORMAT 2 retirement remains. The rate ladder and the picker sit in P8 (§23.5)** | the shipped av-kit source kit re-bakes to a FORMAT 3 bundle that boots, a FORMAT 2 file is refused at the format gate with no fallback reader, and a card-less board still tells the time |
+| P6 | **rewritten (D21/D24/D29):** `.orbtheme` FORMAT 3, the theme as a multi-app bundle. The app-to-slot binding map, the 0x3F0000 budget gate at both bake and install, several bundles listed on the card, the flip-on-orb over them (D30 ruled §20: default-first lazy copy into the PSRAM arena and the ping-pong slot in one fused card pass, progress bar on the glass, no reboot, Arm A kept only as the arena-full fallback), and the retirement of the clock's FORMAT 2 dialect. The compiled-in `clock_assets` pair stays the card-less fallback, and `bake_clock.py` gains the reverse path §0.2 still owes. **Design draft in §22, rewritten in part by D32 (§23): the per-app section carries a legible ELEMENT TABLE, not an opaque blob. R1–R7 are all ruled or consumed (§23.6, §24). P6.1–P6.3 landed: the format and the gate at both doors, the refill with its timing figure, the `staged` word, and the streaming ingest under a parity family (§24.6). P6.4 landed and benched 2026-10-19 (§24.8, §24.9) — the flip door, its worker, the scan's bundle row, and the store half of the page, with M6(1)'s streaming rate (4398 ms at av-kit size) and M6(3)'s bundle-half cut proven on orb-A. P6.5's FORMAT 2 retirement remains. The rate ladder and the picker sit in P8 (§23.5)** | the shipped av-kit source kit re-bakes to a FORMAT 3 bundle that boots, a FORMAT 2 file is refused at the format gate with no fallback reader, and a card-less board still tells the time |
 | P6b | **new (D28):** orb-manager's theme and app manager. Bundle editor over the firmware resolver's format, preview rendered from the manifest's asset table at real scale, the budget meter, upload of app files and bundles, and release packaging of the cross-product | an editor-built bundle installs on the first try, and the preview's pixels match the dial's at the same coordinates |
 | P7 | **promoted from optional (D20/D3):** the wasm3 tier over the same `orb_svc_t`, the module carried in the container's `code` range, and `wasm_mem_max` gated at install (D27) | a wasm app that traps twice is marked failed and the dial boots to the clock, exactly as C2 already specifies for a faulting compiled app |
 | P8 | **new (D32, split ruled 2026-10-15; numbered P8 because P7 is the wasm3 tier):** the OS schedules the repaint. The manifest carries an explicit rate SET (R7) and the app names a runtime ask; the OS picks the highest achievable rung not faster than the ask, else the set's floor, re-picks dynamically under a hysteresis rule, and drives per-element repaints through `layer_touch`'s damage rects. R6's advance mode becomes a compositor behaviour. **Its first commit is D16's beat delivery** — the machinery §0.6 deferred for want of a consumer, which D32 finally supplies. | a two-app board where each stack holds its rung while the other is parked, a measured rung-vs-rows table replacing §13.4's single 8 fps ceiling, no flicker across a rung boundary over a 60 s sample, and the dial's own hands unaffected while a second app is scheduled |
@@ -2730,11 +2730,13 @@ makes the firmware resolver the truth, so a browser-side reader is not part of t
    with `host_art_residency_test.py:72`'s pin moved in the same commit, the boot arena
    refill, the `staged` word. Bench item §20.5(2) lands here.
 4. **P6.4** the flip page and worker, with M6's four measurements as the pass line.
-   **LANDED 2026-10-19 (§24.8), bench owed to the next flash:** the device's door owns the
+   **LANDED and BENCHED 2026-10-19 (§24.8, §24.9):** the device's door owns the
    format check; `/api/v1/sd/theme` now stores a verified FORMAT 3 bundle; the scan lists it
    (`fmt`, `sects`); `POST /api/v1/sd/bundle` is the first live caller of
    `orb_theme_install_bundle()`; the page's Store button carries the power-cut sentence
-   §24.5(2) assigned here; M6(1)'s and M6(3)'s bundle halves are now runnable on flash.
+   §24.5(2) assigned here. M6(1) over HTTP: 4398 ms at av-kit size. M6(3)'s bundle half:
+   the cut landed, the witness and recovery are proven. The progress-bar-on-glass flip and
+   cap-size refill remain behind P6.5 (they need the default's new home and the reader).
 5. **P6.5** the reverse path, av-kit re-baked to FORMAT 3, and the FORMAT 2 dialect
    deleted from the firmware.
 
@@ -3471,6 +3473,86 @@ claim goes stale without saying so. The page's upload label and the door's FORMA
 sentences are worth a second hardware table with this build's stamp; §24.7's table stays
 the record of the build it measured, and row 1's answer changed on purpose with this
 commit — the refusal that table pinned was true of the firmware that gave it.
+
+### 24.9 The flip door benched on orb-A: the rate, the cut, and the words the doors speak — 2026-10-19
+
+§24.8 closed saying the bench rode the next flash. The flash happened the same day,
+twice: the first pass of the battery caught a real bug (`26fc3c2`'s message carries it —
+`verify_bundle3` hashed the art region including the writer's inter-bank sector pads,
+so a two-section bundle could never upload), and every number below is from the audited
+clean build `v1.1.0+26fc3c2` on orb-A (`.32`, MAC 44:BD:8D:60:80:88, RSSI −52, the card
+as §24.7 left it — one FORMAT 2 av-kit, which is also the correction to §24.7's bench
+note: `av-kit-b` is not on this card and was not seen by any probe here).
+
+**The upload door, §24.7's battery redone on the firmware that opens it:**
+
+| File | Body | HTTP | The sentence |
+|---|---|---|---|
+| `b3_blob.orbtheme`, headerless | 8,192 B | 422 | "not an .orbtheme file" |
+| `b3_header.orbtheme`, FORMAT 3 header torn | 16,384 B | 422 | "theme format this firmware cannot read" |
+| `b3_region.orbtheme`, region torn past the header | 16,384 B | 422 | "geometry checksum mismatch — the copy on the card is damaged" |
+| `b3_valid.orbtheme`, two real sections | 16,384 B | 200 | stored |
+| `b3_valid` again, byte-identical | — | 200 | stored quietly (the §6 tuple, `fmt` included, held) |
+| `b3_format2.orbtheme` (the real av-kit) | 1,177,659 B | 200 | stored — the dialect coexists |
+| `m5_avkit.b3.orbtheme`, the real pixels as FORMAT 3 | 1,181,755 B | 200 | stored in 10.8 s of radio |
+
+Row 3 is §24.7 row 2's premise dying: the door used to be blind past its 128 bytes, and
+region damage is now named at the door in the reader's own words, before the rename.
+Row 1's old answer is row 1's history. The scan then listed both bundles
+(`13620ad69497` FORMAT 3, 2 sections, 1,177,659 B — the name `av-kit (bench)` hashing to
+its id like every R4 file).
+
+**M6(1)'s streaming-door figure, over HTTP with no serial cable:** `POST
+/api/v1/sd/bundle?id=13620ad69497` → `{"state":"storing","reboot":"none"}` → 6 s later
+`/api/v1/sd` carried `bundle_ms: 4398`, `bundle_bytes: 1177659`. Against §19.2's FORMAT 2
+comparison (4406 ms installing the same 1,177,659 B container) the fused streaming pass
+is **the same cost to the millisecond — 4398 vs 4406 — for a bundle carrying a second
+section, a rebase, and the wire verification the FORMAT 2 door does not do**. The second
+store of the same bundle measured 3099 ms; both figures are recorded because the
+difference is cache warmth on a 29 GB card, not a rate, and the ledger quotes the first.
+
+**The words the doors speak — the reason `26fc3c2` exists.** Pressed at the wrong door,
+each dialect now names itself and the right button, through the walk resolver's carried
+reason rather than R4's identity line (which is a lie about a file whose name matches
+its id perfectly): the FORMAT 2 door on the bundle answered
+`that is a FORMAT 3 app bundle — press Store, not Load` (53 bytes — sized to survive the
+try witness's 56-byte buffer, `_Static_assert`-pinned), and the bundle door on av-kit
+answered `theme format this firmware cannot read` — the reader's own format line, which
+propagates only because `resolve3_entry` now carries it. The first cross-probe run
+showed one stale witness pair (a 2 s read racing the worker, and a refusal inherited
+from a file deleted under an old build); the clean re-press at 4 s is what the table
+above records. Nothing invisible was allowed to stand as a pass.
+
+**M6(3)'s bundle half — the cut, through the streaming door.** Armed with the same
+idiom §24.5(2) used (`/api/v1/reboot`'s 750 ms one-shot, store posted 350 ms after the
+arm): `staged_id: 13620ad69497`, `staged_why: "pixels staged, never committed — the dial
+shows the factory clock"` (the corrected text, on hardware, in the boot that followed a
+cut this firmware caused), `damage` empty, `source: baked-in`, `refill_ms: 0`, and the
+dial alive. The slot held av-kit's commit before the press and the copy erases the
+header sector first — so the cut destroyed the FORMAT 2 install exactly as §24.5(2)
+proved for the FORMAT 2 door, and the new sentence is the honest one that says so.
+Recovery, same run: a clean re-store landed (`bundle_ms: 3099`, staged cleared by the
+install itself), and re-installing av-kit through the FORMAT 2 door returned the dial to
+`source: slot-B, active: av-kit, refill_ms: 182` — the §24.5(1) figure to the millisecond
+across the whole session's abuse.
+
+**The boot promise §20.6 wrote, observed the first time it could be.** Before the cut
+even ran, the re-flash's own reboot put the earlier small-bundle store in the slot and
+the next boot answered the pair `damage_id: d3910a0e16eb` / `an app bundle this dial
+cannot draw yet` — installed bytes named as installed bytes, the dial on the factory
+clock, the choice key left written so P6.5's reader can honour it. That branch had
+never run on any board; it ran twice here and cleared both times.
+
+**Bench state after this session, and the owed list it settles.** orb-A runs
+`v1.1.0+26fc3c2` — the tree is that commit, so the stamp claim and `orb_version.sh` agree
+again; §24.6's `A061615644e5` claim is superseded by this sentence. The card carries
+av-kit (installed, chosen) plus the two bench bundles, deletable from the page. orb-B
+was not touched (§24.7's state stands). Of §24.5: item 1 stands paid; item 2 is now paid
+**on both doors**; item 3's pin half stays owed (no uncarded board exists); item 4
+(ping-pong) unchanged. What M6 still owes is the two halves that are not the door's:
+the progress-bar-on-glass flip (behind the default's new home and P6.5) and the cap-size
+refill (P6.5's reader, or the bundle path once the swap exists). The streaming door's
+M6 half is closed.
 
 
 

@@ -4245,6 +4245,22 @@ P6b editor decisions rather than following them.
   the first hand at 434,312 (= 466·466·2), and the catalogue accounts for the bank to the
   byte. `budget3(bytes)` answers to that bullet's promise, reading both D29 install sums back
   off finished bytes rather than estimating them from the model.
+- **A browser bake from real Chrome pixels projects, and zero of the fifteen shipped presets
+  qualify for it today.** `_selftest/bake3-test.html` mounts the composer's own component,
+  composes each preset's plate twice — frame 0 and the last frame of its loop — and calls the
+  plate animated if any pixel moved. All fifteen fail. The least motion is `neon` at 40 px over
+  a 15-frame loop and the most `kitetour` at 72,571 px over 8, and 14 of the 15 also carry
+  complications a clock section has no field for — `aviator` alone has none, and still
+  animates. This is not the bake failing; it is §25.3's
+  rule measured against the product. `orb_clock3.c` gives a FORMAT 3 clock one static plate
+  keyframe — it forces `bg_frames` to 0 and derives a one-frame gif block from the keyframe
+  copy — so an animated geartrain has nowhere to ride until the complication mapping lands.
+  The page therefore bakes a still of whichever preset qualifies first (today: none, so the
+  skeleton still it uses is labelled a still), and the shipped projection accepts that bake:
+  483,936 bytes, plate colour-only at `colour_off` 0, hands seated at (213,95) and (217,33),
+  bank 479,840 B accounted to the byte. **The `.orbtheme` button must not be pointed at
+  `bakeClock3` yet**: it would refuse every dial the gallery ships. What it owes instead is
+  this sentence, in its own note, before an owner presses it.
 - **No new Go format package enters the tree.** §22.3's install-end gate closes on the
   device, where it already landed (`orb_bundle.c:171-180`). Go's theme work shrinks to
   retargeting the identity read's dialect (fact 3) and forwarding bytes.

@@ -2169,7 +2169,18 @@ class Component extends DCLogic {
         // only refusal here the owner could not predict from the dial itself.
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'theme name is ' + G.nameBytes(tn) + ' B; the header holds ' + (G.NAME_MAX - 1);
-        return F + '-frame bank' + (nw ? ' · ' + nw + ' window' + (nw > 1 ? 's' : '') : '') + (nf ? ' · ' + nf + ' flare' + (nf > 1 ? 's' : '') : '');
+        // What the owner is about to learn by pressing this is that the watch will not take
+        // the file, so the button says it first. The dial reads FORMAT 3 only (D33), and a
+        // FORMAT 3 clock section carries ONE static plate keyframe: orb_clock3.c forces
+        // bg_frames to 0 because the section has no delta bank to index. A dial with a
+        // moving train therefore has nothing to bake to, and every preset in the gallery
+        // moves -- measured, not assumed, in _selftest/bake3-test.html, where the least
+        // motion is 40 px over a 15-frame loop. Complications are the other blocker: the
+        // compiled clock has no comp table, so a date window would freeze at the bake date.
+        const moves = F > 1, liveComp = nw + nf;
+        const why = moves ? F + '-frame train' : liveComp ? liveComp + ' live com' + (liveComp > 1 ? 'plications' : 'plication') : null;
+        return (why ? 'FORMAT 2 · dial wants 3 (' + why + ') · ' : 'FORMAT 2 · ') +
+          F + '-frame bank' + (nw ? ' · ' + nw + ' window' + (nw > 1 ? 's' : '') : '') + (nf ? ' · ' + nf + ' flare' + (nf > 1 ? 's' : '') : '');
       })(),
       exportBundle: () => this.exportBundle(),
       loadBundle: (e) => this.importBundle(e.target.files && e.target.files[0]),

@@ -2264,8 +2264,6 @@
 
     // Every row starts from blankElement(): packElements refuses a missing field rather
     // than defaulting it, because a default applied at pack time is a value nobody wrote.
-    // Every row starts from blankElement(): packElements refuses a missing field rather
-    // than defaulting it, because a default applied at pack time is a value nobody wrote.
     // The bank builds empty and every plane enters through row(), so no plane is ever
     // counted twice and row 0 keeps the colour-only cost the projection reads it at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };

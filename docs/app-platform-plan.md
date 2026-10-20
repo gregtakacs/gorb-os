@@ -3953,9 +3953,13 @@ still preferred, so shipping behaviour is byte-for-byte what it was and the new 
 reachable only through `ORB_BASE_RENDER_FORCE`, which slice 2 deletes. On orb-A the branch
 ran once, boot completed, the clock came to the foreground, and **zero** sprite-commit or
 blend lines appeared across 8 s — the themed path demonstrably did not build behind the
-`return`. What is NOT yet verified is the pixels: the framebuffer grab lives in the hub,
-which is not in this workspace, so the claim is "it runs and tells the time", not "it looks
-right". That gap belongs to whoever runs slice 2 with the hub attached.
+`return`. What is NOT yet verified is the pixels. There is no pixel path anywhere on this
+bench: the hub (this repo's own `tools/orb-manager`, live at `127.0.0.1:3779`) exposes build,
+flash, console, theme, tz and watch routes and **no framebuffer or screenshot surface** —
+verified against its route table, not assumed — and `tools/cap.py`/`capf.py`/`grab_boot.py`
+capture serial text only. So the claim is "it runs and tells the time", not "it looks right",
+and closing that gap takes a person's eyes on the glass, the same standing reserved for the
+QR onboarding proof (§`ap-onboarding-qr-plan.md:177`: "Human / camera (the only real proof)").
 
 Two facts slice 1 settled that §26's plan assumed rather than knew. The base face does
 **not** want the dial's scheduler: `orb_sched`'s policy is a sprite view's contract (pose
@@ -3969,8 +3973,8 @@ would never fire until slice 2 removes that function, and slice 1 would ship unt
 `use_baked_in()`, `art_bank_map_at_0()` and the override, retarget `s_source` and the four
 sentences that promise a default, rewrite the D13 rows in `host_tz_test.py`, and move the
 partition-table write into the flash path so a board learns the two-slot layout. Slice 2 is
-where M6's clause 3 becomes a real test rather than a sentence, and it needs the hub
-attached for the visual check.
+where M6's clause 3 becomes a real test rather than a sentence. Slice 2 needs the owner's eyes
+on the glass for its visual check — the hub can flash the build but shows no pixels (above).
 
 
 **Two things this section will not guess.** Both are visible to a person holding the device,

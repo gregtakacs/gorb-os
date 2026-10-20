@@ -276,6 +276,13 @@ _H3_ABI  = _recrc([w if i != 2 else 99 for i, w in enumerate(_H3_OK)])
 _H3_BIG  = _recrc([w if i != orbtheme.W_ART_SIZE else 0x3F0001
                    for i, w in enumerate(_H3_OK)])
 _H3_NAME = _recrc([0 if 14 <= i < 28 else w for i, w in enumerate(_H3_OK)])
+# A real FORMAT 2 container header: same magic, same header shape, its own checksum
+# honestly stamped — so the ONLY reason the door refuses it is the format word. This is
+# the vector the P6 pass line asks for ("a FORMAT 2 file is refused at the format gate
+# with no fallback reader"); the format check runs before the self-checksum, so a
+# well-formed FORMAT 2 header hears the format sentence and not the damaged one.
+_H3_FMT2 = _recrc([orbtheme.FORMAT if i == orbtheme.W_FORMAT else w
+                   for i, w in enumerate(_H3_OK)])
 # The one sentence the reader returns verbatim (not through reject's vsnprintf), and
 # the two the caller sees for an oversized art region and a torn header. Pinned to the
 # shipped strings, which the accept/refusal rows below re-check against.
@@ -298,6 +305,9 @@ B3_ROWS = "\n".join([
     arr("h3abi", _H3_ABI),
     arr("h3big", _H3_BIG),
     arr("h3noname", _H3_NAME),
+    arr("h3fmt2", _H3_FMT2),
+    '    r3why("FORMAT 2 at the door: refused at the format gate, no fallback reader", '
+    '"%s", h3fmt2);' % _H3_FMT_SENT,
     '    r3why("torn header: the self-checksum, not the name, is the first word", '
     '"%s", h3torn);' % _H3_TORN_SENT,
     '    r3why("unknown abi: the reader names the version it wants", '

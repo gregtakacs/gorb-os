@@ -3639,12 +3639,21 @@ The tool exits with the sentence, never a partial table:
 `rebake_bundle.py` verifies its own output on every run (the mapping's contract is
 round-trip, and a tool that only writes cannot tell you it lost something):
 `read_bundle` the file, assert the art byte-identical, the catalogue against the byte
-walk, every element field against the source geometry, all 26 scalars verbatim, the
-screen pair in the record. av-kit's re-bake: **0 failures, 1,177,659 B, 8 elements,
+walk, every element field — including each row's `frame0` seat in the byte-ordered
+rect list, both pivot identities, and the crop-pivot-equals-center-minus-off claim
+itself — against the source geometry, all 26 scalars verbatim, the name identity, and
+the screen pair in the record. av-kit's re-bake: **0 failures, 1,177,659 B, 8 elements,
 art 1,173,563 B identical**. The shipped C reader — `main/art/orb_bundle.c`, compiled
 by the P6.1 harness's own `compile_reader` — parsed the same bytes and dumped
 `ok sec 0 clock … 8 8 4096 1173563 466 466`: the device's reader, not the writer's
-mirror, accepted the product bundle. Suites re-run green unchanged: format3 52/0,
+mirror, accepted the product bundle. `tools/mut_rebake.py` runs 17 mutants — 13
+mapping breaks (swapped placement, crop-pivot-as-pivot, lost rung, overlay demoted,
+class/slot/frame0 broken, wrong plane sizes, unsorted planes, dropped scalars, screen
+pair and name identity lost) and 4 §25.3 guards tripped by forged-geometry drivers
+(tourbillon, real delta rects, comp table, moved plate): **17/17 caught**. The harness
+earned its keep writing itself: the first draft's verify lacked frame0 checks, the
+name check compared against its own mutated value, and the refusal-exit mapping read
+inverted — every one a mutant exposed. Suites re-run green unchanged: format3 52/0,
 C parity 320/0, element suite 46/0. Firmware untouched.
 
 ### 25.5 What the rest of P6.5 owes
@@ -3658,7 +3667,6 @@ C parity 320/0, element suite 46/0. Firmware untouched.
    list, the `active: true` question for bundles, scalars as the default's home.
 3. **The retirement**: FORMAT 2's dialect out of the firmware's reader; §19/§24's
    FORMAT 2 fixtures and `mk_bundle_fix.py`'s synthetic rows follow it.
-4. **The mutation harness** for the tool itself — the repo discipline every shipped
-   tool meets, owed before the pair half so a broken mapping cannot pass silently.
+4. **PAID 2026-10-19** — `tools/mut_rebake.py`, 17/17 (see §25.4).
 
 

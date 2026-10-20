@@ -371,7 +371,7 @@ func TestRosterIsDocumentedAndBadged(t *testing.T) {
 	}
 	js := readWebFile(t, "app.js")
 	for _, want := range []string{
-		"function viaBadge", // the merge has a widget, not just fields
+		"function statusBadge", // the merge has a widget, not just fields
 		"o.key",
 		"dataset.mac", // a cable-only row cannot be gated on a mac it does not have
 		"Identify",

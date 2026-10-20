@@ -233,9 +233,21 @@ browser and the hub still works as a plain web app.
 
 The page opens on the fleet and nowhere else. One card per orb the hub has met:
 the name it answers to, the address the hub remembers, the MAC underneath both,
-and a badge saying how the hub could reach it right now. A chip on a lead is asked
-what it is before it is judged: the hub sends one free `PING` down the cable
-(`cableproof.go`), and only a board that stays silent is no orb. A silent cable is
+the firmware it runs, and one status word — `connected`, `disconnected`, `asking`,
+or `on cable (<tty>)` — the hub's own answer to "can I reach it right now". The
+tile says nothing about WHICH reader taught the hub a fact: announce, status dial,
+console banner and USB descriptor are the hub's accounting, and a card that
+recited its provenance was the tile auditing itself instead of answering the
+question. `fw` and `state` are folded from every answer that carries them — the
+60 s announce, the ten-second liveness dial's status body, the free serial `PING`
+(`cableproof.go`), an Identify probe, and Adopt — and a remembered row wears the
+last stamp the file holds at first paint, so no field waits out a channel nobody
+uses. A board that loses power reads `disconnected` within one sweep: the dead
+verdict outranks the cached announce, the row keeps its address as where it was
+last seen, and the LAN claim returns when something answers again. A chip on a
+lead is asked
+what it is before it is judged: the hub sends one free `PING` down the cable,
+and only a board that stays silent is no orb. A silent cable is
 not a card — it is the **New Orb** button, which appears only while an
 Espressif chip the hub cannot yet prove was ever an orb sits on some tty, and
 asks for exactly two things: which cable, and a name. Both verdicts are the
@@ -286,21 +298,48 @@ no Forget; that verdict is the hub's, not the card's guess.
   bundle goes through the ROM instead, with a factory-reset box that stays
   unchecked.
 
-- **Leave it lonely** — the only end of orb life this page offers, inside an
-  orb's firmware card, only when that orb is on a cable, in its own colour, and
-  it does not act until you type `LONELY`. It writes the lonely image: the
+- **Erase flash completely** — the full end of orb life this page offers, inside
+  an orb's firmware card, only when that orb is on a cable, in its own colour.
+  The button press is the confirmation; the page asks for no typed word, though
+  the hub's HTTP door still requires the payload word `LONELY`. The card button
+  and the Forget dialog both name this act "Erase flash completely"; the internal
+  door is `/api/lonely` and the embedded base image is `lonely.bin`, neither of
+  which the page shows. It writes the base image: the
   loaded firmware bundle's bootloader, partition table and initial otadata at
   their usual offsets, a small embedded app in the ota_0 slot, and — in the
   same ROM session, after the images land — a region erase of the NVS and
   storage partitions the bundle's own partition table declares, so the time
   zone, the name and every Wi-Fi credential go with the orb life. The app
   boots, wipes any owner settings it can still find at every start (so a board
-  that became lonely by any door keeps nothing), bounces a message across the
-  panel reading "I used to be an Orb, now I'm just lonely. Flash me!" with an
-  8-ball, and holds its USB enumeration instead of boot-looping. The drawing is
-  composited — each dirty band is rebuilt black-plus-message-plus-ball and
-  flushed once, never erased-then-drawn — which is what the flicker complaint
-  bought. It speaks no orb protocol and announces nothing. On success the hub
+  that lost its orb life by any door keeps nothing), shows a placeholder
+  message and 8-ball on the panel, and holds its USB enumeration instead of
+  boot-looping. The panel is
+  repainted whole every 125 ms: 59 even bands, each composited black-plus-message-
+  plus-ball and flushed once, never erased-then-drawn, the burst opened on the
+  panel's TE pulse, and four band buffers in flight so a band costs the larger of
+  wire and compose rather than their sum. Speed is declared in pixels per second —
+  message 28/22, ball 62/46, giving a 3.5x2.8 px and a 7.8x5.8 px hop — half the
+  per-tick velocities the first TE-locked build shipped with, which covered too
+  much glass per refresh to read as a float. Six CO5300 rules hold that scheme, and
+  dropping any of them shows on the glass rather than at compile time: pixels go
+  out in wire order (the panel reads each one big-endian, so an unswapped 0x2104
+  ball body arrives as 0x0421 green); every flush window is even on both axes and
+  full width, because the panel clocks two pixels per cycle and programs
+  CASET/RASET verbatim (odd windows shear the rows and leave a sprite's old pixels
+  outside the window that meant to erase them); no band buffer is resubmitted
+  before its trans-done ISR hands it back, and never more than four are outstanding;
+  the whole panel is painted once while the display is still dark, so the GRAM a
+  board powers on with never shows; the sweep opens on TE, because the panel scans
+  GRAM on its own clock and a mid-scan write shows the message moved and the ball
+  not yet, which is the flicker; and every refresh pays for the whole panel and
+  advances motion by one fixed step, because a repaint-only-what-moved frame cost 2
+  to 15 bands depending on where the sprites landed, and the hop rate varied with
+  it. Measured on the panel 2026-10-15: TE toggles on GPIO13, and a refresh costs
+  32 to 48 ms of the 125 ms interval, against 60 to 79 ms when one band buffer
+  serialized every band behind its own 22 ms of wire. `lonely/test/run.sh` runs the
+  shipped drawing code against a fake panel with a modelled ring and fails on the
+  first violation, including a refresh that flushes other than 59 bands or a hop
+  other than the fixed step. It speaks no orb protocol and announces nothing. On success the hub
   forgets the board completely (fleet row, name, address grant, port identity,
   on-disk state) and **marks the chip lonely**, because the cable sweep will
   re-read the same eFuse MAC off the lonely app's descriptor a moment later:
@@ -310,7 +349,12 @@ no Forget; that verdict is the hub's, not the card's guess.
   time — an orb flash, a serial ack, an announcement. This is also the recovery
   path from a wiped board's flap — it needs no BOOT-button press, because
   entering download mode is the same auto-reset dance a flash uses. Rebuild the
-  image with `lonely/build.sh` (ESP-IDF v5.4, run with bash).
+  image with `lonely/build.sh` (ESP-IDF v5.4, run with bash). Rebuilding alone changes
+  no running hub: `go:embed` freezes `lonely.bin` into the hub binary, so a fix needs a
+  rebuilt `orb-manager` and a hub restart both. Measured on the bench 2026-10-15 — a
+  lonely write from a hub older than the fix wrote the broken image and the same green
+  ball came back up. `app_init: Compile time` on the board's own console is the one
+  read that says which image actually landed.
 - **No whole-chip erase on this hub.** The page and the HTTP surface offer
   lonely and nothing more destructive: a blank S3 retries its nonexistent
   image every boot, re-enumerating its USB port every few seconds, which reads
@@ -420,7 +464,9 @@ so a deliberate downgrade stays possible.
   Each vendored file carries a sha256 and the SRI the composer demands, recorded in
   `MANIFEST.json`; `make vendor-check` re-verifies both and runs as part of
   `make check`, so a hand-edited React fails the build instead of blanking the page.
-- **Manage** — the card an orb row opens. It dials that board's single address
+- **Manage** — the card a fleet tile opens: the tile is the door, so a press anywhere on
+  it opens this, and only the tile's own Forget and Identify take a press for themselves.
+  It dials that board's single address
   through the same-origin proxy for status, and the actions on the card — Update
   firmware (OTA, staged-then-verified), the cable flash when the board is on a
   lead, name, Wi-Fi join, and time zone — go through the hub's own routes or
@@ -449,7 +495,8 @@ so a deliberate downgrade stays possible.
     waiting out a full announce interval (up to 60 s) for each to think of announcing,
     and so a remembered row reads "Hall" at first paint instead of a MAC the operator
     cannot pronounce. The board still owns its name, and the hub page now shows it
-    instead of editing it: the card's name field is read-only, and the rename doors
+    instead of editing it: a tile's title is the name, the tile carries no field for
+    it, and the rename doors
     are the orb's own network page (`POST /api/v1/name`) and the serial `NAME` verb
     over the cable — the flash-time naming inside New Orb still writes through,
     because a board is born needing a word. The hub
@@ -457,8 +504,10 @@ so a deliberate downgrade stays possible.
     the copy; a board the hub just factory-reset reads **The Orb** on the card until
     its next owner renames it. There is no room or location field: a word the hub kept about where a
     board sits could disagree with the board, so the book stores the address it was last
-    reachable at and the name the board last reported. A restored address shows as
-    `remembered` and becomes clickable once the startup dial or a real announce says it
+    reachable at and the name the board last reported, plus the last fw stamp and
+    state token any answer carried — the remembered row wears them at first paint.
+    A restored address reads `asking` on the tile until the startup dial answers,
+    and becomes clickable once that dial or a real announce says it
     answers. A board the hub knows only from a cable is not remembered at all: an entry
     with no address cannot be dialed, so the row lives on the cable tier while the lead
     is in and disappears from the list on the sweep after it is not — and its address is
@@ -490,13 +539,16 @@ so a deliberate downgrade stays possible.
     still claims that address. A live board the gate refuses is not left with a dead
     button: the same annotation carries `liveForget: true` plus `livePort` — the lead
     the hub can act on — and the button opens the **forget dialog** with the two real
-    endings. *Full reset* writes the lonely image over that lead (the same
-    `/api/lonely` door, word and all): the board stops being an orb, every setting on
-    it goes, and the row ends with the lonely mark keeping it off the fleet. *Factory
-    reset settings* sends the serial `RESET ALL` (the same `/api/orb/cmd` door): the
+    endings, offered in this order. *Reset settings* sends the serial `RESET ALL`
+    (the same `/api/orb/cmd` door): the
     firmware stays, the owner data goes, the board reboots as its own open provisioning
-    AP for whoever claims it next, and the hub renames its card **The Orb** on the ack
-    — a store-side default only, until the next owner's word replaces it. A live board
+    AP so you can reconfigure its Wi-Fi, time zone and name, and the hub renames its
+    card **The Orb** on the ack
+    — a store-side default only, until the next owner's word replaces it. *Erase
+    flash completely* writes the base image over that lead (the same
+    internal `/api/lonely` door and payload word): the board stops being an orb, every
+    setting on it goes, and the row ends with the internal lonely mark keeping it off
+    the fleet. A live board
     with no lead shows the refusal instead of dead buttons: the hub commands cables,
     not the air. The gate lives in `liveness.go`.
   - **Remembered orb.** The address the hub last had an orb at — learned over
@@ -685,7 +737,7 @@ accepts six verbs, each replying with an `-ACK`/`-NAK` line the hub can key on:
 | `SCAN` | arm a scan and mirror the results to the console as `PROVSCAN` lines — the network list, without joining the orb's AP. It posts the firmware's **armed** scan (`NET_CMD_SCAN_BOOT`), not the bare one: `scan_collect()` frees the driver's AP list and prints nothing unless the state is `SCAN_SCANNING`, and `scan_begin()` does not set that state — it expects its caller to have armed it. A `SCAN` that posted the bare command therefore ran a real radio scan, discarded every result at the done event, and never printed the `PROVSCAN-END` the hub waits for; the hub re-pushed for its whole budget and reported no ack. `scancmd_test.go` pins the post, because the wrong call reads as the tidier one |
 | `MODE <hex-ap\|hex-sta>` | switch the persistent reachability mode and reboot: `ap` = isolated (own AP + page only, never associates), `sta` = rejoin Wi-Fi. `POST /api/v1/wifi/mode {"mode":"ap\|"sta"}` is the same door over HTTP, and the page's only exit from an isolation the page can also enter — an isolated orb is reachable at exactly one address, its own `192.168.4.1`, so a one-way mode would be a trap |
 | `RESET ALL` | factory-reset, the whole device: erase **both** NVS partitions and reboot as if freshly flashed. The literal `ALL` guard is required and it is the scope — credentials, tz, name and mode go, and so do the theme choice, the app grants and enables, every per-app setting, the fault ledger and the idle-dim timeout, plus esp_wifi's own copy of the passphrase in `nvs.net80211` (a reset that left the driver's copy behind would leave a passphrase on a board that is changing hands). Same two partitions the flash-time `wipe` target (`nvs` + `storage`) — the runtime door and the wired-flash door now mean the same thing. Answers `RESET-ACK`, or `RESET-PART` when one partition refused to erase; either way it reboots, because a half-wiped orb is neither configured nor clean. On a **clean** wipe the reset then writes the default name **The Orb** into the fresh `storage` NVS (`net_factory_reset`), so the board comes back introduced rather than silent — status, the page, the serial read and the hub's next poll all carry that one word until the next owner's `NAME` replaces it or clears it; the hub's ack write-back puts the same word on the card immediately, before the board can answer a poll. `RESET-PART` seeds nothing back into a half-erased store. Not erased: installed app *blobs* (they resolve from the `apps` partition headers, so they come back present but unarmed and defaulted) and the firmware itself. No HTTP door matches it — `POST /api/v1/reset` only reboots into provisioning and keeps the config |
-| `PING` | report the orb's own state: `ORB-PING b` (unconfigured), `c-ap` or `c-sta` |
+| `PING` | report the orb's own state and running version: `ORB-PING b fw=v1.2.3+abc` — state `b` (unconfigured), `c-ap` or `c-sta`, and the same `esp_app_desc_t` version `/api/v1/status` carries. A board on firmware older than the stamp answers with the bare state token and the hub folds that as no news about the version rather than as no version |
 
 A board boots with one `GorbOS-STATE <b|c-ap|c-sta>` line so the hub can classify it
 without a reboot-probe. State (a) — a bare ESP32-S3 with no gorb-os — is the absence of
@@ -792,7 +844,9 @@ cmd/orbfake/         runs that double as a listening server for a human driving 
                      than with this repo's listener: see "Listening for an orb" under Development.
 web/                 the embedded hub UI (index.html, app.css, app.js)
 lonely/              the standalone ESP-IDF "I used to be an Orb" app, its build.sh,
-                     and the staged lonely.bin the hub embeds and writes at 0x20000
+                     the staged lonely.bin the hub embeds and writes at 0x20000, and
+                     test/run.sh — a host check that runs the app's own drawing code
+                     against a fake CO5300 and holds it to the four panel rules
 ```
 
 ## Development
@@ -913,7 +967,7 @@ changed nothing pushes nothing, an orb that arrives or a board that gets plugged
 one frame, and the ages on
 screen move on the 25 s heartbeat. A frame body is byte for byte what `GET /api/orbs`
 answers, so the page has one renderer (`applyFound`) and patches rows in place by MAC
-rather than rebuilding the card under someone mid-word. There is no Refresh button: it
+rather than rebuilding a tile under someone reading it. There is no Refresh button: it
 re-read a cache the hub was already about to push, and with the hub originating nothing
 it could not speed the LAN up. What it cannot do is renew a grant by being read — the
 stream calls the same `orbCard` the poll does, and neither reaches `reconcileFleet`.
@@ -924,6 +978,14 @@ machine's USB ports, and the join key is the canonical base MAC — the descript
 serial the host reads free, never an address. A board on both carries `via:
 ["lan","usb"]`, its tty in `ports`, and stays dialable on its LAN address; a board on
 a cable only sits on the list undialable, `ip` empty, refusal naming its port.
+`connected` is the tile's status word and the digest's: one derived verdict per
+row, true on a lead into this hub, an address whose dial answered inside the
+staleness window, or an announce still inside its TTL, and false when the
+ten-second sweep has answered that address dead. The dead verdict outranks the
+cached announce — the tile that kept claiming on-LAN after a board lost power
+was the card believing its own cache over the wire — while the remembered address
+stays on the row as where the board was last seen, and the claim re-earns itself
+on the next packet or dial that answers.
 `identity` says who vouches for the mac: `confirmed` (a hub read it off the chip —
 stickiest), `descriptor` (the host cable saw it), `claimed` (the
 packet says so), `unknown` (an unattributed port, listed under its tty path so two

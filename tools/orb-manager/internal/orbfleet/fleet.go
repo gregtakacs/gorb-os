@@ -308,6 +308,39 @@ func (s *Store) nameClashLocked(c, clean string) error {
 	return nil
 }
 
+// NoteAnswer folds what the board itself said about its running firmware and
+// its own state token into an existing row, without touching the presence
+// clock. That last part is the whole design: a dial that answers is not an
+// announcement, and a Forget gate fed by a presence clock the hub winds by
+// probing its own address book is a gate that never opens (the same reason
+// orbmdnsToObservation carries the heard-time and not the fold-time). It
+// updates only the fields the caller actually read — an empty fw or state is
+// "the board did not say", never "the board has none" — so a PING from older
+// firmware, which answers with a state token and no stamp, cannot wipe a
+// version the announce already carried. The row must exist: answers fold onto
+// boards the hub has met; a board nobody has met yet is the announce's or the
+// flash's or Adopt's job, each of which creates the row with its own evidence.
+func (s *Store) NoteAnswer(mac, fw, state string) (Orb, bool, error) {
+	c, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return Orb{}, false, errors.New(why)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, ok := s.byMAC[c]
+	if !ok {
+		return Orb{}, false, fmt.Errorf("no orb %s to fold an answer into", c)
+	}
+	changed := false
+	if fw != "" && row.FW != fw {
+		row.FW, changed = fw, true
+	}
+	if state != "" && row.State != state {
+		row.State, changed = state, true
+	}
+	return *row, changed, nil
+}
+
 // NoteDeviceName folds what the DEVICE reported into the row, and it is the reason
 // the hub's Name field is a cache rather than an owner: the device's word always
 // wins, and the two disagree in exactly one direction.

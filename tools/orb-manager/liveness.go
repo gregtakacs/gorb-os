@@ -164,10 +164,14 @@ func (c *liveCache) probeAll(ctx context.Context, targets []string, workers int)
 	return atomic.LoadInt32(&moved) != 0
 }
 
-// annotateReachability tells a remembered row what the dial found, and makes it
-// clickable when the answer was yes. It is the difference between the file being a list
-// of stale strings and being the fast start the operator asked for: the row appears at
-// first paint, and one repaint later it says whether the board is there.
+// annotateReachability settles one verdict per row — Connected — and keeps the
+// fields that feed it honest. Every row with an address is asked, not just the
+// remembered ones: a board that loses power stops answering within the ten-second
+// sweep long before its cached announce ages out, and a tile that kept claiming
+// on-LAN across that gap was the card believing its own cache over the wire. The
+// row appears at first paint, and one repaint later it says whether the board is
+// there — which is the difference between the file being a list of stale strings
+// and being the fast start the operator asked for.
 //
 // A dial answer is NOT folded into the row's presence clock. LastSeen means "announced",
 // and a board that answers HTTP without announcing is connected but not broadcasting —
@@ -175,34 +179,65 @@ func (c *liveCache) probeAll(ctx context.Context, targets []string, workers int)
 // would make the Forget gate refuse on the hub's own fabrication. The alive address is
 // refused by the gate's third condition instead, from the verdict, which is the truth.
 func (s *Server) annotateReachability(rows []orbRow, now time.Time) {
-	if s.live == nil {
-		return
-	}
 	for i := range rows {
 		r := &rows[i]
-		if r.Reachable == "" || r.IP == "" || s.fleet == nil {
+		// A lead into this hub is a present-tense connection, and an announce the
+		// browser still lists was paid for by a packet inside its TTL. Either one
+		// says connected until something fresher says otherwise.
+		r.Connected = r.OnCable || hasStr(r.Via, "lan")
+		if r.IP == "" || s.fleet == nil || s.live == nil {
 			continue
 		}
 		alive, known := s.live.verdict(r.IP, now)
-		switch {
-		case !known:
-			r.Reachable = "unknown"
-		case alive:
+		if !known {
+			// No fresh verdict is not evidence of absence. A row the wire or the
+			// bench is producing keeps the claim it earned; a remembered row says
+			// the hub has not asked yet.
+			if r.Reachable != "" && !r.OnCable {
+				r.Reachable = "unknown"
+				r.Connected = false
+			}
+			continue
+		}
+		if alive {
 			r.Reachable = "alive"
+			r.Connected = true
 			// Same decision the proxy will make if this row is clicked, so the card
 			// cannot promise a dial the request would refuse.
 			if may, why := s.mayDial(r.IP); may {
 				r.Dialable, r.Refusal = true, ""
-				r.Via = []string{"lan"}
+				r.addVia("lan")
 			} else {
 				r.Refusal = why
 			}
-		default:
-			r.Reachable = "dead"
-			r.Refusal = "no answer at " + r.IP + ": this board is not reachable where it was " +
-				"last seen, which is why Forget is offered"
+			continue
+		}
+		// A fresh dead verdict outranks every cached claim above it. The row keeps
+		// its address — a rebooted orb that took a fresh lease re-earns the claim
+		// on the next packet or the next dial that answers — and drops the
+		// present-tense claim, and Dialable with it: a click here can only fail.
+		// A lead into this hub is not an HTTP timeout, though: a board sitting on
+		// a cable is connected whatever its stale address does, so OnCable holds
+		// the verdict true and only the lan half of the claim goes.
+		r.Reachable = "dead"
+		r.Connected = r.OnCable
+		r.Dialable = false
+		r.dropVia("lan")
+		r.Refusal = "no answer at " + r.IP + ": this board is not reachable where it was " +
+			"last seen, which is why Forget is offered"
+	}
+}
+
+// hasStr is the one pass a string slice needs; the stdlib's slices.Contains is
+// fine, but this file predates its import here and the call reads better than the
+// import does.
+func hasStr(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
 		}
 	}
+	return false
 }
 
 // forgetGate is the whole rule, called by the row annotation that decides whether to

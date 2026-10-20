@@ -214,7 +214,7 @@ func TestAConsoleAnswerNeverReadsAsAProbe(t *testing.T) {
 	s, _ := proofHub(t, func() (cableVerdict, error) {
 		return cableVerdict{ack: true, state: "c-sta"}, nil
 	}, orbOnACable())
-	s.recordCableProof("/dev/ttyACM0", macHall, "c-sta", "")
+	s.recordCableProof("/dev/ttyACM0", macHall, "c-sta", "", "")
 
 	got := s.consoleProofs([]cableSighting{orbOnACable()})
 	if len(got) != 1 {
@@ -248,7 +248,7 @@ func TestAConsoleAnswerNeverReadsAsAProbe(t *testing.T) {
 func TestAHandSentPingCountsTheSameWay(t *testing.T) {
 	s, _ := proofHub(t, nil, orbOnACable())
 	s.lonely.mark(macHall)
-	if changed := s.recordCableProof("/dev/ttyACM0", macHall, "b", "   "); changed {
+	if changed := s.recordCableProof("/dev/ttyACM0", macHall, "", "", "   "); changed {
 		t.Error("a blank name on a first sighting is not a change to the book")
 	}
 	if s.lonely.has(macHall) {
@@ -442,5 +442,30 @@ func TestTheGapAnAnswerArms(t *testing.T) {
 	p.retain([]cableSighting{{port: "/dev/ttyACM1", isOrb: true, mac: "aabbccddeeff"}})
 	if p.at["/dev/ttyACM1"].IsZero() {
 		t.Error("a lead still on the bench lost its clock")
+	}
+}
+
+// The PING answer grew a firmware stamp so a board with no address and no paid
+// reboot can still say what it runs. The proof is only worth having if it reaches
+// the row, which means recordCableProof must fold it — and fold it as an answer,
+// not as an announce: the presence clock stays the announce's, or the Forget gate
+// would be fed by the hub asking its own questions.
+func TestACablePingStampLandsOnTheRowAndNowhereElse(t *testing.T) {
+	s, _ := proofHub(t, func() (cableVerdict, error) {
+		return cableVerdict{ack: true, state: "c-sta", fw: "v1.4.0+cafe123"}, nil
+	}, orbOnACable())
+	if changed := s.recordCableProof("/dev/ttyACM0", macHall, "c-sta", "v1.4.0+cafe123", ""); !changed {
+		t.Fatal("a stamp the store did not hold was reported as no news")
+	}
+	row, ok := s.fleet.Look(macHall)
+	if !ok {
+		t.Fatal("the proven board has no fleet row")
+	}
+	if row.FW != "v1.4.0+cafe123" || row.State != "c-sta" {
+		t.Errorf("the ack's facts did not reach the row: %+v", row)
+	}
+	// The same answer again is the no-news case: the row holds, and nothing moves.
+	if changed := s.recordCableProof("/dev/ttyACM0", macHall, "c-sta", "v1.4.0+cafe123", ""); changed {
+		t.Error("a stamp the row already wore was reported as a change")
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -29,19 +30,20 @@ func (s *Server) adoptFirmware(b *firmware.Bundle) {
 	log.Printf("orb-manager: firmware %s (%s, %d image(s), sha256 %s)", b.Source, b.Version, len(b.Images), short(b.SHA256))
 }
 
-// loadFirmwareFile reads a bundle the user picked. The bytes arrive from an
-// upload, so nothing here walks a directory tree looking for a firmware: one
-// named file is the whole contract, and every shape error surfaces as a message
-// the UI can show instead of a stat failure deep in the flasher.
-func loadFirmwareFile(name string, raw []byte) (*firmware.Bundle, error) {
+// loadFirmwareFile reads a firmware the user picked, in either shape Load
+// accepts. The bytes arrive from an upload, so nothing here walks a directory
+// tree looking for a firmware: one named file is the whole contract, and every
+// shape error surfaces as a message the UI can show instead of a stat failure
+// deep in the flasher.
+func loadFirmwareFile(name string, raw []byte, o firmware.Options) (*firmware.Bundle, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("%s is empty", name)
 	}
-	b, err := firmware.Load(raw, name)
+	b, err := firmware.LoadWithOptions(raw, name, o)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := b.AppPlan(); err != nil {
+	if err := b.Ready(); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -49,13 +51,15 @@ func loadFirmwareFile(name string, raw []byte) (*firmware.Bundle, error) {
 
 // startFirmware loads the built-in bundle, or the one -firmware names, and makes
 // it active. Called before bind so a broken bundle is a startup failure.
-func (s *Server) startFirmware(path string) error {
+func (s *Server) startFirmware(path string, allowForeign bool) error {
 	if path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read firmware file %s: %w", path, err)
 		}
-		b, err := loadFirmwareFile(nameOf(path), raw)
+		// A file named on the command line is as deliberate a choice as the second
+		// click on a refusal, so -allow-foreign opens the same gate here.
+		b, err := loadFirmwareFile(nameOf(path), raw, firmware.Options{AllowForeign: allowForeign})
 		if err != nil {
 			return err
 		}
@@ -115,7 +119,7 @@ func (s *Server) firmwareName() string {
 func (s *Server) describeFirmware(*http.Request) (any, error) {
 	b := s.firmwareBundle()
 	if b == nil {
-		return map[string]any{"present": false, "images": []any{}, "semver": semverPayload(""),
+		return map[string]any{"present": false, "merged": false, "foreign": false, "images": []any{}, "semver": semverPayload(""),
 			"source": "", "version": "", "project": "", "sha256": "", "built": "", "idf": ""}, nil
 	}
 	return firmwareSummaryPayload(b), nil
@@ -125,6 +129,12 @@ func (s *Server) describeFirmware(*http.Request) (any, error) {
 // carries the images the flash needs, makes it the active firmware. A bad file
 // is refused with the reason and leaves the built-in firmware in place: picking a
 // wrong file must never leave the hub unable to flash.
+//
+// probe=1 answers the same question without adopting the answer. The flash modal
+// reads a file's project and shape the moment it is picked, so the operator can see
+// what they are about to commit to, and a browse dialog that silently changed the
+// hub's firmware would make the modal's Flash button a formality rather than a
+// decision.
 func (s *Server) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -146,13 +156,46 @@ func (s *Server) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, "short read of "+hdr.Filename+": "+err.Error())
 		return
 	}
-	b, err := loadFirmwareFile(hdr.Filename, raw)
+	allowForeign := r.FormValue("allow_foreign") == "1"
+	b, err := loadFirmwareFile(hdr.Filename, raw, firmware.Options{AllowForeign: allowForeign})
 	if err != nil {
+		if !allowForeign {
+			if p := foreignProjectName(err); p != "" {
+				// The one refusal with a second send behind it. Carrying the name as
+				// a field, and the fact that it is overridable, lets the card
+				// offer the button and quote the project back rather than parse the
+				// sentence it is displaying.
+				s.jsonErrFields(w, err.Error(), map[string]any{
+					"foreign_project": p, "overridable": true,
+				})
+				return
+			}
+		}
 		s.jsonErr(w, err.Error())
+		return
+	}
+	// A probe reports and does not adopt. Everything the modal needs to label its
+	// choice — project, version, shape, the foreign flag — is already in this
+	// payload, so one handler answers both questions and the two answers cannot
+	// disagree about what the file is.
+	if r.FormValue("probe") == "1" {
+		s.jsonOK(w, firmwareSummaryPayload(b))
 		return
 	}
 	s.adoptFirmware(b)
 	s.jsonOK(w, firmwareSummaryPayload(b))
+}
+
+// foreignProjectName is the project a refused file did declare, when the only
+// thing in the way was that it is not gorb-os. The upload handler offers a second
+// send on this alone, so a wrong chip, an oversized blob or a file with no
+// descriptor at all still gets one flat refusal and no button to press.
+func foreignProjectName(err error) string {
+	var ng *firmware.NotGorbOS
+	if errors.As(err, &ng) {
+		return ng.Project
+	}
+	return ""
 }
 
 // handleFirmwareReset returns the hub to the firmware it shipped with, so a
@@ -183,6 +226,15 @@ func firmwareSummaryPayload(b *firmware.Bundle) map[string]any {
 		"source": b.Source, "version": b.Version, "project": b.Project,
 		"idf": b.IDFVersion, "built": b.Built, "sha256": b.SHA256,
 		"semver": semverPayload(b.Version),
+		// merged is the shape flag the panel needs: a whole-flash image replaces
+		// the bootloader and every partition in one write, and it leaves this hub
+		// with no app slot to push over WiFi.
+		"merged": b.Merged,
+		// foreign is the decision flag: this hub is flashing somebody else's
+		// firmware because the operator said so. The panel says it back, because a
+		// hub quietly running a vendor demo image is a hub that will confuse
+		// whoever opens it next.
+		"foreign": b.Foreign,
 	}
 }
 
@@ -206,7 +258,18 @@ func (s *Server) jsonOK(w http.ResponseWriter, payload any) {
 }
 
 func (s *Server) jsonErr(w http.ResponseWriter, msg string) {
+	s.jsonErrFields(w, msg, nil)
+}
+
+// jsonErrFields is jsonErr with named additions, for the refusals where the hub
+// knows what the operator's next action is and the card must not guess at it from
+// the wording of a sentence written for a person to read.
+func (s *Server) jsonErrFields(w http.ResponseWriter, msg string, extra map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg})
+	out := map[string]any{"ok": false, "error": msg}
+	for k, v := range extra {
+		out[k] = v
+	}
+	_ = json.NewEncoder(w).Encode(out)
 }

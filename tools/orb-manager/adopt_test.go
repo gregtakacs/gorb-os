@@ -123,11 +123,35 @@ func TestOrbUpdateGatesThenStagesAndReboots(t *testing.T) {
 	if env["ok"] == true || !strings.Contains(fmt.Sprint(env["error"]), "newer than this hub") {
 		t.Errorf("a downgrade was not refused as one: %v", env["error"])
 	}
+	// The refusal is also a contract with the page, which must recognise a
+	// downgrade without parsing prose and know that a second press exists. The
+	// fields are the whole mechanism: read them or do not offer the retry.
+	if env["overridable"] != true {
+		t.Errorf("a downgrade refusal must carry overridable:true so the modal can offer one confirm: %v", env)
+	}
+	if env["verdict"] != "downgrade" {
+		t.Errorf("a downgrade refusal must carry verdict \"downgrade\", got %v", env["verdict"])
+	}
+	// Forced, the same downgrade is pushed: rollback is enabled in the bootloader,
+	// so the orb reverts an image that never validates and the operator's judgement
+	// is a press rather than a refusal.
+	if _, env = postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q,"force":true}`, ip)); env["ok"] != true {
+		t.Errorf("a forced downgrade was not pushed: %v", env["error"])
+	}
+	// A no-op gets no retry: forcing it would reboot a board to change nothing.
 	o.SetFirmware("v1.0.13+aaaaaaa")
 	_, env = postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q}`, ip))
+	if env["overridable"] == true {
+		t.Error("a no-op refusal carries overridable, so the modal would offer a press that changes nothing")
+	}
+	if env["verdict"] == nil {
+		t.Error("a no-op refusal carries no verdict, so the page cannot say why it stopped")
+	}
 	if env["ok"] == true || !strings.Contains(fmt.Sprint(env["error"]), "already runs") {
 		t.Errorf("a same-version update was not refused as a no-op: %v", env["error"])
 	}
+	o.SetFirmware("v1.0.0+aaaaaaa")
+	o.SetOTANextFW("v1.0.13+aaaaaaa")
 
 	// The upgrade path. The device must show the staged slot consumed by exactly
 	// the reboot this handler sent, and the reply must carry both stamps: the

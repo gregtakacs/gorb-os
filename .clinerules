@@ -116,6 +116,10 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   the ACTIVE firmware bundle's bootloader @0x0, partition table @0x8000 and initial
   otadata @0x11000, and the lonely app @0x20000 (ota_0) — deliberately the orb's own
   geometry, so a New Orb flash over a lonely board replaces every byte this writes.
+  A whole-flash `.bin` picked as the active firmware closes this door by name: all
+  three borrowed images are inside the blob, fused into one span at 0x0 with no
+  manifest naming any of them, so `Bundle.LonelyPlan` refuses with the shape and
+  points at a `.zip` (`TestMergedBlobClosesTheLonelyDoor`).
   Works on a boot-looping blank board (`EnterDownloadMode`'s auto-reset wins the timing
   race the same way a New Orb flash does) and on a still-running orb. On success it
   forgets the board exactly like a wipe used to, **and marks the chip lonely** — the
@@ -168,7 +172,7 @@ Measured on two orbs, 2026-10-14, while implementing `esprom.Wipe`.
   answers again: on a clean erase the firmware seeds the default name **"The Orb"**
   into the fresh NVS itself (net_factory_reset), so the device and the card agree
   from the first poll; the next owner's word corrects it exactly like any device
-  name does) and **Erase flash completely** (the `/api/lonely` write, `LONELY` payload
+  name does) and **Reset this orb → Firmware** (was "Erase flash completely"; the `/api/lonely` write, `LONELY` payload
   word, which erases the owner data and writes a minimal base image that holds the
   port for an easy reflash). The two visible labels never mention the internal
   `lonely` name or the base image's on-screen message — that is an inside joke; keep
@@ -1142,3 +1146,90 @@ there is a test artifact, not an orb.
   zip second leaves a running hub serving the previous image — and a flash driven by that
   hub "verifies" a fix that is not in it. Check `grep 'orb-manager v' <log>` against the
   binary's mtime when a firmware change appears not to take effect.
+
+## Flashing lives behind one button, and the gate that took an explicit yes was the wrong shape (2026-10-19)
+
+The merged-`.bin` feature landed as a project gate plus a refusal that opened into a
+paragraph. The operator's verdict on the result: wordy, and no visible way out. Both
+halves were the same mistake, and the lesson is broader than the feature.
+
+- **A refusal rendered as prose is a dead end with extra steps.** The card showed the
+  hub's sentence plus a "Flash it anyway" button nobody located. Put a decision in a
+  modal where the choices are the whole surface, and keep prose to the one line that
+  states what the chosen act costs.
+- **`ESP32-S3-Touch-AMOLED-1.75-FactoryOnly-260805.bin` was refused correctly and
+  uselessly.** The hub read `esp32-s3-touch-amoled-brookesia` from its descriptor —
+  DFRobot's factory demo for this exact panel, a valid S3 whole-flash image — and said
+  the hub only flashes gorb-os releases. True, final, useless. The gate existed to stop a
+  silent network push of a stray build to 0x0. Over a cable the operator picked the file
+  up and plugged it in, so a second question there answers nothing. The gate is now
+  positional rather than conversational: a file from disk is reachable only on the cable
+  branch of the flash modal, which sends `allow_foreign=1` itself. CLI parity is
+  `--allow-foreign`. The flag is not gone — it still gates every scripted caller, which
+  has no cable to imply intent.
+- **`probe=1` is what let the warning go away.** `POST /api/firmware` validates and
+  reports without adopting when the field is set, so the modal names the project on the
+  file row before the operator commits. A label reading
+  `esp32-s3-touch-amoled-brookesia` beats a paragraph about foreign firmware: same fact,
+  positioned where a wrong file gets spotted.
+- **Version comparisons do not belong on the cable path.** `planFor` ignores the mode
+  argument and writes the full manifest: bootloader, partition table, otadata, both app
+  slots. Correct from any version in any direction, so a breaking-change detector there
+  would be a gate with nothing behind it. The question is real only for the spare-slot
+  OTA. Its answer is the hardware: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` reverts an
+  image that never marks itself valid, so a downgrade over Wi-Fi is offered behind one
+  confirm (`overridable: true`, `verdict: "downgrade"`, retry with `force: true`) rather
+  than refused. Reading the on-device layout instead is unavailable: the ROM answers
+  `MEM_READ` and `SPI_READ` with the `[1,5]` no-stub failure, which is also why
+  **Read what this board runs** (was *Identify this orb*, a label that said nothing) must
+  reboot the board to read the bootloader's console line. Keep the reboot cost visible:
+  it is the reason the control is a press and not a refresh.
+- **Gates that decide survivability stay shut on every path:** the 16 MB ceiling and
+  0x9000 floor, the `0xE9` header, the chip ID, the zip-bomb caps, descriptor hygiene. A
+  blob naming no project is refused with no second press, cable included — a confirmation
+  with no name to quote back asks for trust rather than attention. The partition-table
+  shape gate is the one dropped under the flag, and only there: a vendor's layout is not
+  ours to grade, the write is verbatim, and `esprom.NvsRegions` already fails the wipe at
+  the door that needs a table.
+- **"Reset" named two acts and the card offered only the destructive one.** Erasing the
+  whole flash to change a Wi-Fi password is why the label was wrong. **Reset this orb**
+  opens a modal with **Settings** (`/api/orb/cmd` `RESET ALL`: firmware stays) and
+  **Firmware** (`/api/lonely`: base image, board stops being an orb). Checking Firmware
+  forces Settings, because the base image re-provisions anyway — two boxes, not four
+  states. No typed word anywhere; the hub's `LONELY` payload gate stays for every
+  non-browser caller. The `lonely` name is an inside joke and stays out of
+  operator-facing strings.
+- **The post-flash panel had no exit anyone could see.** `joinDone` filled `#ob-done` with
+  **Open this orb** (navigates away) and **Change network** (reopens the form). Both move
+  the operator somewhere. Backdrop and Escape did close it, and nothing said so. A
+  completed action needs a control that says it is completed: `#ob-close`, **Done**,
+  closes the dialog and stays on the hub.
+
+The UI's six firmware rows are now one button and one modal. `ui_test.go` pins the shape.
+
+`web/app.js` is one `<script>` with no build step, so a syntax error anywhere discards the
+whole file: every handler stays unwired and the page sits on its loading placeholders with
+nothing in the hub's log to point at the line. Two tests hold that boundary, because Go
+cannot parse JavaScript and there is no engine on this box:
+
+  `TestAppJSAssignsOnlyDeclaredNames`, plus its own negative case. Rewriting the modal
+  deleted a `let buildVersion` line and left the assignment behind, which becomes a silent
+  global in a browser.
+  `TestAppJSProseStaysInComments`, plus its own negative case. A splice lost the `//` on one
+  comment continuation line at column zero. Braces stayed balanced and quotes stayed paired,
+  so every balance test passed, and the hub served a dead page.
+  `TestAppJSWritesResolveInScope`, plus its own negative case. A later revert deleted
+  `const btn = $("#mn-flashbtn")` from `gateFwButtons` and left `btn.disabled` behind, so
+  every fleet tile click threw a ReferenceError inside `openOrbByIP` before `show("orb")`:
+  tiles looked selectable and did nothing. A name declared in *some* function is not
+  declared in *this* one, so this check walks lexical scopes: `function` bodies, arrow
+  bodies at any depth, and top-level `for`/`if`/`try` blocks all bind their own names, and
+  only text outside every region counts as the file's top level.
+
+Check parseability with esprima before trusting a green suite
+(`python3 -c "import esprima; esprima.parseScript(open('web/app.js').read())"`), and run
+the real client against a stub DOM under the node binary this box carries at
+`~/.local/lib/python3.14/site-packages/nodejs_wheel/bin/node` (it has no npm, so no jsdom:
+a hand-written element stub is enough to catch a boot throw and a broken click path).
+Re-fetch the **served** file after `make manager`: assets are embedded, so a running hub
+serves the bytes it was built with, never the ones on disk.

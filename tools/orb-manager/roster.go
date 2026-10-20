@@ -69,6 +69,18 @@ type cableSighting struct {
 	port  string
 	isOrb bool
 	mac   string
+	// espressif is the weaker attribution: the host sees a genuine Espressif chip
+	// (VID 0x303A) without being able to match the product id to an orb. It is true of a
+	// board sitting in its downloader, one mid boot-loop, and one flashed with something
+	// that is not gorb-os — which is exactly the set a paid probe exists to distinguish,
+	// and exactly the set isOrb reports as false. The identity sweep widens to it because
+	// the chip is ours and takes the reset, so the operator never has to ask by hand; the
+	// cable attribution below stays on isOrb, because a product id is a claim about the
+	// running image and a fleet row is a claim about the board.
+	//
+	// Deliberately absent from plugDigest: that digest answers "did a lead change hands",
+	// and a board moving from downloader to running did not move.
+	espressif bool
 }
 
 // cableCache is the roster's view of the plug set. list is nil until main enables it,
@@ -88,6 +100,13 @@ type cableCache struct {
 	// though no mDNS packet caused it. The version digest is what keeps this from
 	// costing a frame: a spurious wake sends a keepalive, not a repaint.
 	wake func()
+	// gone is called with the ports that were on the last good sweep and are not on this
+	// one. It is a separate callback from wake because the two mean opposite things to
+	// the identity cache: a moving plug set is news to the stream, while a port that has
+	// left is a verdict that must be thrown away rather than merely re-displayed. Only a
+	// sweep that actually enumerated produces it — refresh keeps the previous set on an
+	// enumeration failure, and a bench nobody re-read is not an empty bench.
+	gone func(ports []string)
 }
 
 func newCableCache() *cableCache { return &cableCache{ttl: cableSweepTTL} }
@@ -100,6 +119,36 @@ func (s *Server) enableCables(list func() ([]cableSighting, error), wake func())
 	defer s.cables.mu.Unlock()
 	s.cables.list = list
 	s.cables.wake = wake
+	s.cables.gone = s.forgetCablePorts
+}
+
+// forgetCablePorts retires every verdict about a board that has left the bench, and is
+// the reason a re-plug always asks again.
+//
+// It has to clear more than the identity cache. A not-an-orb verdict is exempt from the
+// TTL precisely so it cannot decay into the descriptor's guess, so nothing else in the
+// hub would ever give it up, and a board reflashed while unplugged would be filed back as
+// running what it ran an hour ago. A departure is the one event that outranks that
+// exemption: the operator physically broke the claim's own evidence — the chip sitting on
+// that lead — so the hub drops the answer, tells the stream to repaint so the badge
+// cannot linger on a row nothing now supports, and lets the sweep pay the question again.
+func (s *Server) forgetCablePorts(ports []string) {
+	var lost, cleared bool
+	for _, p := range ports {
+		if s.identities.drop(p) {
+			lost = true
+		}
+		// The in-flight claim is released with the port: a probe whose cable was pulled
+		// mid-read would otherwise hold that port's slot against the next board to
+		// arrive until its own budget expired.
+		s.identities.release(p)
+		if _, held := s.ops.cancel(p); held {
+			cleared = true
+		}
+	}
+	if lost || cleared {
+		s.wakeOrbs()
+	}
 }
 
 // refresh re-sweeps when the cache has aged out and reports what it has, along with the
@@ -121,6 +170,7 @@ func (c *cableCache) refresh(now time.Time) ([]cableSighting, string) {
 	seen, err := c.list()
 	first := !c.swept
 	shouldWake := false
+	var departed []string
 	if err != nil {
 		// Keep answering from the last set that enumerated: a host whose sysfs read
 		// failed once does not have an empty bench, it has a bench nobody re-read.
@@ -128,6 +178,7 @@ func (c *cableCache) refresh(now time.Time) ([]cableSighting, string) {
 		c.err = err.Error()
 		seen = c.seen
 	} else {
+		departed = portsGone(c.seen, seen)
 		c.seen, c.err, c.at, c.swept = seen, "", now, true
 		if d := plugDigest(seen); d != c.plug {
 			c.plug = d
@@ -144,7 +195,41 @@ func (c *cableCache) refresh(now time.Time) ([]cableSighting, string) {
 	if shouldWake {
 		c.wake()
 	}
+	if len(departed) > 0 && c.gone != nil {
+		c.gone(departed)
+	}
 	return seen, perr
+}
+
+// portsGone names the ports on the previous good sweep that the new one does not carry:
+// the physical departures. Keyed on the port rather than the MAC, because the identity
+// cache keys on the port, and because a board whose descriptor went unreadable left just
+// as surely as one whose device node vanished — both must be re-asked on return.
+func portsGone(prev, now []cableSighting) []string {
+	if len(prev) == 0 {
+		return nil
+	}
+	here := make(map[string]bool, len(now))
+	for _, c := range now {
+		here[c.port] = true
+	}
+	var gone []string
+	for _, c := range prev {
+		if !here[c.port] {
+			gone = append(gone, c.port)
+		}
+	}
+	return gone
+}
+
+// force drops the cached sweep so the next refresh re-enumerates whatever is plugged in
+// now. The launch identify needs it: a hub that started with the previous run's cable
+// list still cached would probe a bench that is no longer there, and a first refresh
+// that happened during startup would otherwise be served from a stale TTL.
+func (c *cableCache) force() {
+	c.mu.Lock()
+	c.at = time.Time{}
+	c.mu.Unlock()
 }
 
 // cablePortFor answers "is this MAC on a cable right now, and on which one".
@@ -184,8 +269,8 @@ func hostCableSweep() ([]cableSighting, error) {
 	out := make([]cableSighting, 0, len(ports))
 	for _, p := range ports {
 		u := esprom.ClassifyPort(p)
-		s := cableSighting{port: p, isOrb: u.IsOrbDevice()}
-		if s.isOrb && u.Serial != "" {
+		s := cableSighting{port: p, isOrb: u.IsOrbDevice(), espressif: u.IsEspressif()}
+		if (s.isOrb || s.espressif) && u.Serial != "" {
 			// The descriptor spells it "44:BD:8D:78:26:18" and the fleet key is
 			// canonical, so the two views cannot disagree about which board a cable
 			// belongs to. A descriptor that is not a MAC is an orb-shaped stranger:
@@ -226,7 +311,7 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 		// still answers with a list, empty rather than absent.
 		lan = []orbRow{}
 	}
-	seen, cableErr := s.cables.refresh(now)
+	seen, cableErr := s.cableSightsErr(now)
 	// An unplug is worth a dial the same second it happens. The board either moved to
 	// the LAN (its row stands, on the answer) or left the network entirely (its minute
 	// toward Forget starts now, not when the sweep budget gets around to it). Only a
@@ -559,6 +644,13 @@ func (s *Server) watchCables(ctx context.Context) {
 		case <-t.C:
 			s.cables.refresh(time.Now())
 			s.proveCables(ctx)
+			// Keep a paid not-an-orb verdict inside its own expiry window, so it
+			// cannot age out and hand the lead back to the descriptor's guess
+			// (launchprobe.go). Cheaper than it looks: it only re-asks ports whose
+			// cached answer is a paid negative, and at most once every
+			// contradictedReprobe.
+			s.identifyCables(ctx)
+
 		}
 	}
 }

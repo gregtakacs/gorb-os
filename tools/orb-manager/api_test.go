@@ -17,6 +17,7 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 )
 
 // The Onboard port picker went blank when the LAN-discovery removal shed
@@ -225,7 +226,7 @@ func TestBuildPanelFieldsMatchBetweenClientAndHandler(t *testing.T) {
 	src := readAppJS(t)
 	fields, block := clientFields(t, src, "/api/build")
 
-	want := []string{"present", "images", "version", "project", "source", "sha256"}
+	want := []string{"present", "images", "version", "project", "source", "foreign", "merged", "sha256"}
 	if strings.Join(fields, ",") != strings.Join(want, ",") {
 		t.Errorf("the panel reads %v, want exactly %v — update this list and the handler together", fields, want)
 	}
@@ -344,6 +345,14 @@ func bundleServer(t *testing.T) *Server {
 // uploadBundle POSTs one firmware bundle the way the Onboard card does.
 func uploadBundle(t *testing.T, s *Server, filename string, blob []byte) (int, map[string]any) {
 	t.Helper()
+	return uploadBundleForm(t, s, filename, blob, nil)
+}
+
+// uploadBundleForm is uploadBundle with the card's other form fields, which is how
+// the second send — the one carrying the operator's yes — gets exercised the way a
+// browser actually sends it rather than the way a handler unit test would like to.
+func uploadBundleForm(t *testing.T, s *Server, filename string, blob []byte, fields map[string]string) (int, map[string]any) {
+	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	fw, err := mw.CreateFormFile("firmware", filename)
@@ -351,6 +360,11 @@ func uploadBundle(t *testing.T, s *Server, filename string, blob []byte) (int, m
 		t.Fatal(err)
 	}
 	fw.Write(blob)
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
 	mw.Close()
 	req := httptest.NewRequest(http.MethodPost, "/api/firmware", &body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -574,9 +588,15 @@ func TestFirmwareUploadFieldNamesMatchBetweenClientAndHandler(t *testing.T) {
 			t.Errorf(`the upload path must check %s; without it a refused bundle looks accepted`, want)
 		}
 	}
-	// A refused pick must leave the built-in firmware in place, and say so.
-	if !strings.Contains(src, "still flashing the built-in firmware") {
-		t.Error(`a refused upload must tell the user the built-in firmware is still what will flash`)
+	// A refused pick must leave what the hub already carries in place, and the page
+	// must say so in one line. The modal probes a file before the operator presses
+	// Flash, so a bad pick is reported while the dialog is still open and nothing has
+	// been adopted; the sentence is short because the dialog is the whole context.
+	if !strings.Contains(src, "function ffProbe") {
+		t.Error(`the modal must probe a picked file through the hub rather than trust its suffix`)
+	}
+	if !strings.Contains(src, `form.append("probe", "1")`) {
+		t.Error(`the pick-time probe must send probe=1, or browsing a file would silently adopt it`)
 	}
 }
 
@@ -655,9 +675,9 @@ func TestIdentityFieldsMatchBetweenClientAndHandler(t *testing.T) {
 	if lerr != nil || len(live) == 0 {
 		t.Skip("no serial ports on this host: nothing to render an identity against")
 	}
-	probePort := live[0]
-	s.identities.done(probePort, esprom.OrbInfo{
-		Port: probePort, IsOrb: true, MAC: "44:bd:8d:60:80:88", Project: "gorb-os",
+	verdictPort := live[0]
+	s.identities.done(verdictPort, esprom.OrbInfo{
+		Port: verdictPort, IsOrb: true, MAC: "44:bd:8d:60:80:88", Project: "gorb-os",
 		Version: "8eb4bf0-dirty", CompileTime: "Oct 12 2026 01:58:41",
 		CompiledAt: "2026-10-12T01:58:41Z", ElfSHA256: "d5fd8bb9d", IDF: "v5.4",
 		IP: "192.168.2.32", Reason: "identified", ProbedAt: "2026-10-12T10:00:00Z",
@@ -682,7 +702,7 @@ func TestIdentityFieldsMatchBetweenClientAndHandler(t *testing.T) {
 	// is the host's business, not the contract's.
 	var entry map[string]any
 	for _, e := range payload.Ports {
-		if e["port"] == probePort {
+		if e["port"] == verdictPort {
 			entry = e
 		}
 	}
@@ -779,9 +799,15 @@ func interpolations(body, field string) []string {
 // button pointing at a file that was never accepted.
 func TestFirmwareUploadReportsARefusedProject(t *testing.T) {
 	src := readAppJS(t)
-	state := blockContaining(t, src, "async function pickFirmware")
-	if !strings.Contains(state, "j.error") && !strings.Contains(state, ".error") {
-		t.Error("pickFirmware must surface the hub's error text, or a refused bundle looks like a stalled upload")
+	state := blockContaining(t, src, "async function ffProbe")
+	if !strings.Contains(state, "j.error") {
+		t.Error("ffProbe must surface the hub's error text, or a refused bundle looks like a stalled upload")
+	}
+	// The refusal is drawn, not appended to a sentence: the modal shows the hub's
+	// reason in its own state line and leaves the file row empty.
+	drawn := blockContaining(t, src, `$("#ob-fwfile").onchange`)
+	if !strings.Contains(drawn, "ff-state") || !strings.Contains(drawn, "r.error") {
+		t.Error("the file handler must show a probe refusal in the modal instead of a wordy panel")
 	}
 	fw := readFile(t, "internal/firmware/firmware.go")
 	if !strings.Contains(fw, "not gorb-os") {
@@ -808,22 +834,24 @@ func TestEveryVerdictHasClientWording(t *testing.T) {
 	}
 }
 
-// A probe is a reboot. Two things follow, and both are pinned: nothing may call
-// it implicitly, and the answer must be invalidated by a flash so a re-probe
-// reports the new firmware rather than repeating the old one.
-func TestProbeIsNeverImplicitAndIsInvalidatedByFlash(t *testing.T) {
+// Identification is automatic now, so the invariant inverts: no client path may reset a
+// port at all. A button was a way for one click to reboot a board nobody meant to reboot,
+// and the sweep gate is a stricter judge of that than a click ever was. The reboot cost is
+// still disclosed on the card, and a flash still invalidates the answer it superseded.
+func TestIdentificationIsNeverClickDriven(t *testing.T) {
 	src := readAppJS(t)
-	if n := strings.Count(src, `"/api/ports/probe"`); n != 1 {
-		t.Errorf("app.js posts to /api/ports/probe %d times; it must be reached only from the Identify click", n)
+	if n := strings.Count(src, `/api/ports/probe`); n != 0 {
+		t.Errorf("app.js posts to /api/ports/probe %d times; the hub must be the only thing that resets a board", n)
 	}
-	if strings.Contains(src, "probePort()") && !strings.Contains(src, `$("#ob-probe").onclick = probePort`) {
-		t.Error("probePort must be wired only to the Identify button")
+	if strings.Contains(src, "function probePort") {
+		t.Error("a click-driven probe path survived in the client")
 	}
-	if !strings.Contains(src, "btn.disabled = true") {
-		t.Error("the Identify button must disable while a probe runs; a double click would reset the chip twice")
+	hub := readFile(t, "main.go")
+	if strings.Contains(hub, `mux.Handle("/api/ports/probe"`) {
+		t.Error("the server still serves an explicit probe door, so a scripted POST can reboot any port")
 	}
 	if !strings.Contains(src, "about 10 seconds") {
-		t.Error("the card must warn the user the orb restarts and how long it takes")
+		t.Error("the card must still say identification costs a reboot of about 10 seconds")
 	}
 
 	flash := readFile(t, "flash.go")
@@ -832,21 +860,51 @@ func TestProbeIsNeverImplicitAndIsInvalidatedByFlash(t *testing.T) {
 	}
 }
 
-// The probe must never touch a port the host cannot attribute to the Espressif
-// peripheral: EnterDownloadMode toggles DTR/RTS, and doing that to an Arduino on
-// the same bench resets a device the user never asked about.
-func TestProbeRefusesPortsItCannotAttribute(t *testing.T) {
-	// A path no device backs: classifyPort cannot confirm the vendor, so the
-	// probe must refuse rather than open it and start pulsing control lines.
-	info, err := esprom.ProbeOrb(context.Background(), "/dev/serial/by-id/definitely-not-a-real-device")
+// The sweep must not share a wire with a write in progress: an identity probe toggles
+// DTR/RTS, which would corrupt a flash mid-image. The refusal is PER PORT — the registry
+// key, not a global flag — and it is recorded as a failure naming the operation, because a
+// port the hub declined to ask is not a port that answered "not an orb".
+// The sweep must not share a wire with a write in progress: an identity probe toggles
+// DTR/RTS, which would corrupt a flash mid-image. Two things follow, and both are pinned.
+// A held port is left completely alone — the refusal writes no state, because a question
+// the hub decided not to ask must never cost a board the answer it already has. And the
+// objection is the claim, not the port: release it and the question is asked.
+func TestTheSweepSkipsAPortWhileAnOperationHoldsIt(t *testing.T) {
+	p := &probeScript{answer: map[string]func() (esprom.OrbInfo, error){reflashPort: orbAnswer}}
+	b := &bench{}
+	s := wiredHub(t, p, b)
+
+	job, _, err := s.ops.start(context.Background(), reflashPort, opFlash, 0)
 	if err != nil {
-		t.Fatalf("ProbeOrb must report a refusal, not fail: %v", err)
+		t.Fatalf("claim the port for a flash: %v", err)
 	}
-	if info.IsOrb {
-		t.Error("a nonexistent device reported as an orb")
+	defer s.ops.finish(job)
+
+	if n := s.identifyCables(context.Background()); n != 0 {
+		t.Errorf("the sweep reset a port a flash holds (%d asks)", n)
 	}
-	if info.Reason == "" {
-		t.Error("refusal must say why, or the UI has nothing to show")
+	info, _, proven, present := s.identities.cachedVerdict(reflashPort)
+	if !present || proven != provenProbe || info.IsOrb {
+		t.Errorf("a port held by a flash lost its paid verdict: present=%v proven=%q isOrb=%v",
+			present, proven, info.IsOrb)
+	}
+	if _, ok := s.contradicts(reflashPort); !ok {
+		t.Error("a flash running on a wire silently cleared the contradiction the hub had paid for")
+	}
+
+	// The claim is what stopped it. Same port, same gate, nothing on file: declined while
+	// held, asked the moment the flash lets go.
+	free := launchHub(t, goldSighting(), p)
+	job2, _, err := free.ops.start(context.Background(), reflashPort, opFlash, 0)
+	if err != nil {
+		t.Fatalf("claim the port for a flash: %v", err)
+	}
+	if n := free.identifyCables(context.Background()); n != 0 {
+		t.Errorf("a port under a flash was reset %d times", n)
+	}
+	free.ops.finish(job2)
+	if n := free.identifyCables(context.Background()); n != 1 {
+		t.Errorf("once the flash released the port the sweep asked it %d times, want 1", n)
 	}
 }
 
@@ -942,57 +1000,50 @@ func TestBuiltInBundleCarriesASemver(t *testing.T) {
 	}
 }
 
-func TestProbeRefusesWhileAnOperationHoldsThatPort(t *testing.T) {
-	s := newHub()
-	job, _, err := s.ops.start(context.Background(), "/dev/ttyACM0", opFlash, 0)
-	if err != nil {
-		t.Fatalf("claiming the port: %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	s.handleProbe(rec, httptest.NewRequest(http.MethodPost, "/api/ports/probe",
-		strings.NewReader(`{"port":"/dev/ttyACM0"}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 while a flash holds that port", rec.Code)
-	}
-	var env struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	json.Unmarshal(rec.Body.Bytes(), &env)
-	if env.OK || !strings.Contains(env.Error, "flash") {
-		t.Errorf("body = %s, want a refusal naming the running flash", rec.Body)
-	}
-
-	// A different cable is not refused by this guard: it reaches the probe, which
-	// fails for the ordinary reason (no such device) rather than being told the
-	// hub is busy.
-	rec2 := httptest.NewRecorder()
-	s.handleProbe(rec2, httptest.NewRequest(http.MethodPost, "/api/ports/probe",
-		strings.NewReader(`{"port":"/dev/serial/by-id/definitely-not-a-real-device"}`)))
-	if strings.Contains(rec2.Body.String(), "is running on that port") {
-		t.Errorf("a flash on ttyACM0 blocked Identify on a different cable: %s", rec2.Body)
-	}
-
-	s.ops.finish(job)
-	if live := s.ops.running(); len(live) != 0 {
-		t.Errorf("finish left %d operation(s) registered", len(live))
-	}
-}
-
 // A probe takes the same per-port lock a flash does, so two hubs (or a hub and
-// orbprobe) cannot reset and write the same wire at once. The claim goes through
-// the registry, which is also what makes it cancellable.
-func TestProbeTakesThePortLock(t *testing.T) {
-	src := readFile(t, "identity.go")
-	if !strings.Contains(src, "orbbind.LockPort") {
-		t.Error("handleProbe must lock the port: without it a concurrent flash and probe share the wire")
+// orbprobe) cannot reset and write the same wire at once. Now that the sweep is the only
+// caller, every one of those guards has to live in the sweep itself: a background loop
+// that skipped them would corrupt a flash nobody can see coming.
+func TestTheSweepProbeTakesThePortLock(t *testing.T) {
+	// Behavior first: a lock held by anyone else — another hub, or orbprobe on the same
+	// bench — must stop the sweep dead. If this fails, the sweep resets a wire somebody
+	// else is writing.
+	lock, err := orbbind.LockPort(reflashPort)
+	if err != nil {
+		t.Skipf("cannot take a port lock in this environment: %v", err)
 	}
-	if !strings.Contains(src, "s.ops.busy(req.Port)") {
-		t.Error("handleProbe must check the per-port operation registry, not a process-wide flag")
+	p := &probeScript{answer: map[string]func() (esprom.OrbInfo, error){reflashPort: orbAnswer}}
+	s := launchHub(t, goldSighting(), p)
+	if n := s.identifyCables(context.Background()); n != 0 {
+		t.Errorf("the sweep reset a port someone else holds the lock on (%d asks)", n)
 	}
-	if !strings.Contains(src, "s.ops.start(r.Context(), req.Port, opProbe") {
-		t.Error("handleProbe must claim its port under the request context, so it is cancellable")
+	info, _, proven, present := s.identities.cachedVerdict(reflashPort)
+	if !present || proven != provenFailed || !strings.Contains(info.Reason, "busy") {
+		t.Errorf("a lock refusal filed proven=%q reason=%q present=%v; the card must be able to say why nothing was asked",
+			proven, info.Reason, present)
+	}
+	if _, ok := s.contradicts(reflashPort); ok {
+		t.Error("a port the hub could not open was read as a verdict that its board is not an orb")
+	}
+	// The refusal is retried on a backoff, not on the next tick. A port whose lock is
+	// stuck under another process would otherwise be reset-reckoned once a sweep forever,
+	// and every one of those files another failure. (Asked-and-answered once the claim is
+	// genuinely released is pinned in TestTheSweepSkipsAPortWhileAnOperationHoldsIt, where
+	// nothing was filed and so nothing is in backoff.)
+	lock.Release()
+	if n := s.identifyCables(context.Background()); n != 0 {
+		t.Errorf("a port that just failed on its lock was re-asked at once (%d asks); failedRetry is the backoff", n)
+	}
+
+	// The guards themselves, which the behavior above can only imply: a sweep that opened
+	// the port without the lock would still pass a test like the one above, because nobody
+	// else would be holding it.
+	src := readFile(t, "launchprobe.go")
+	if !strings.Contains(src, "orbbind.LockPort(c.port)") {
+		t.Error("the sweep must lock the port: without it a concurrent flash and probe share the wire")
+	}
+	if !strings.Contains(src, "s.ops.start(ctx, c.port, opProbe, probeBudget)") {
+		t.Error("the sweep must claim its port in the per-port operation registry, so a flash on that wire refuses it and a stuck probe still dies on its budget")
 	}
 }
 

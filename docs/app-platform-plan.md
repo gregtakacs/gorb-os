@@ -4205,7 +4205,12 @@ P6b editor decisions rather than following them.
    `tools/make_bundle_fixture.py` with an animated sprite and a four-plate bank, beside a
    `.json` of the authority's own read-back. `--verify-c` re-runs the shipped C reader over
    it; `internal/orbnet/themecontainer_test.go` re-runs the hub's. The JS writer matches the
-   same file, which is what makes the D33 parity claim checkable instead of asserted.
+   same file, which is what makes the D33 parity claim checkable instead of asserted. That
+   file pins the **container** dialect only: its `clock` section carries colour-only sprite
+   rows, which `orb_clock3.c` refuses ("catalogue row 1 claims 16000 B of a 40x200 plane;
+   that extent is 24000 B"), because a hand's plane needs an alpha stride. The projection
+   leg therefore runs on the browser's own bake (§29 next bullet), and the compiled clock's
+   golden stays `host_clock3_test.py`'s av-kit pair forge.
 
 
 **What D33 decides for P6b.**
@@ -4224,8 +4229,22 @@ P6b editor decisions rather than following them.
   input model with the Python that defines the format, and the suite requires the browser's
   bytes to match the committed `tests/fixtures/format3-pair.orbtheme` byte for byte, then
   hands those bytes back to `read_bundle` so the authority vouches for them rather than the
-  fixture vouching for itself. It needs no pillow and no numpy: the writer takes encoded
-  pixels, and the encoders stay pinned by `headless-orbtheme.test.js`.
+  fixture vouching for itself. It needs no pillow and no numpy for the writer leg: the
+  writer takes encoded pixels.
+- **The bake path is in the browser too, and its gate is the projection, not the door.**
+  `bank3(planes)` encodes RGBA planes the way `theme_schema.bank_bytes` costs them (RGB565
+  colour then an A8 stride, so a masked plane is `w*h*3` and a colour-only bank `w*h*2`),
+  and `bakeClock3({plate, hands, shadows, plates})` assembles a `clock` section under
+  `orb_clock3.c`'s own rules: plate slot 0 full-panel and one keyframe, hand slots 0-4, a
+  sprite row only as a shadow beneath a hand of the same slot, overlay at plate slot 1, and
+  `tourbillon_n`/`bg_frames` refused outright because the delta and carriage planes a FORMAT
+  3 clock section cannot carry. The pass line is deliberately the harder one — `orb_bundle.c`
+  opening a bundle proves nothing about whether the dial can draw it — so
+  `tools/verify_js_bake.py` compiles the shipped `orb_clock3.c` with the shipped
+  `orb_bundle.c` behind it and projects the browser's bytes: the plate seats at colour_off 0,
+  the first hand at 434,312 (= 466·466·2), and the catalogue accounts for the bank to the
+  byte. `budget3(bytes)` answers to that bullet's promise, reading both D29 install sums back
+  off finished bytes rather than estimating them from the model.
 - **No new Go format package enters the tree.** §22.3's install-end gate closes on the
   device, where it already landed (`orb_bundle.c:171-180`). Go's theme work shrinks to
   retargeting the identity read's dialect (fact 3) and forwarding bytes.

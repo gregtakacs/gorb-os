@@ -19,8 +19,9 @@
 //
 //   /tmp/nodeenv/bin/node tools/watch-composer/_selftest/headless-bundle3.test.js
 //
-// Needs node and a python3 that can import the repo's own tools/. No pillow, no numpy:
-// the writer takes encoded pixels, and encoding them is a later slice's parity.
+// Needs node and a python3 that can import the repo's own tools/. The writer leg needs
+// nothing else; the bake-path leg shells out to tools/verify_js_bake.py, which compiles the
+// shipped orb_clock3.c and so wants gcc and zlib — without them it prints a SKIP.
 'use strict';
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -281,6 +282,55 @@ const fwd = B.writeBundle3({ name: 'Forward', sections: [{ slug: 'clock', abi_mi
   elements: [E({ class: SPRITE })], art: new Uint8Array(8192) }] });
 ok(B.verifyBundle3(fwd.bytes).sections[0].rec.abi_max === 4,
    'the walk opens a forward-straddling section rather than refusing it');
+
+// ---- 7. the bake path: planes in, a bundle the compiled dial projects out ----
+// The writer takes encoded pixels; this is the encoding half, and its pass line is not
+// "the door opens" but "orb_clock3.c seats it" — the projection is what turns a table into
+// a drawable dial, and a bake the door accepts and the projection refuses looks exactly
+// like a store bug to the person holding it.
+const plateRgba = (w, h) => { const r = new Uint8Array(w * h * 4); for (let i = 0; i < w * h; i++) { r[i * 4] = 3; r[i * 4 + 1] = 7; r[i * 4 + 2] = 11; r[i * 4 + 3] = 255; } return r; };
+const mkPlane = (w, h, a) => { const r = plateRgba(w, h); if (a !== undefined) for (let i = 0; i < w * h; i++) r[i * 4 + 3] = a; return r; };
+const PL = { rgba: mkPlane(466, 466), w: 466, h: 466 };
+const HK = { slot: 0, rgba: mkPlane(40, 200, 200), x: 233, y: 233, w: 40, h: 200, pivot_x: 20, pivot_y: 190 };
+const SK = { slot: 0, rgba: mkPlane(40, 200, 90), x: 235, y: 235, w: 40, h: 200, pivot_x: 20, pivot_y: 190 };
+const baked = B.bakeClock3({ name: 'Bench Bake', serial: 20261020, bakedMs: 1730000000000,
+  plate: PL, hands: [HK], shadows: [SK], order: [0] });
+const walk = B.verifyBundle3(baked.bytes).sections[0];
+ok(baked.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 * 2,
+   'the bank costs the plate colour-only and every sprite its alpha stride',
+   baked.meter.artSize + ' B (w*h*2 then 2 w*h*3)');
+ok(walk.blob.elements.length === 3 && walk.blob.sprites.length === 3 &&
+   walk.blob.elements[1].frame0 === 1 && walk.blob.elements[2].frame0 === 2,
+   'the bake walks back as three rows seated on three planes, each pointing at its own');
+ok(walk.rec.art_size === baked.meter.artSize && walk.rec.scr_w === 466 && walk.rec.scr_h === 466,
+   'the index record the dial reads carries the bank it names and the panel it was baked for');
+// counts(16) + scalars(104) + rows(204) + catalogue(48) + 'clock' padded to words(8),
+// behind the index head(8) and its one record(40).
+ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 204 + 48 + 8,
+   'the region is the index over one self-describing blob', baked.meter.geomSize + ' B');
+ok(baked.meter.geomCap === 61440 && baked.meter.artCap === 4128768,
+   'the meter names both D29 install caps, not the file shape');
+refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: mkPlane(10, 10), w: 10, h: 10 } }),
+        'full-screen', 'a plate that is not the whole panel is refused as the dial words it');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, scalars: { tourbillon_n: 4 } }),
+        'carriage tables', 'a carriage the section has no rows for is refused at the bake');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, shadows: [SK] }),
+        'no hand there', 'a shadow with no hand under it is refused, not silently drawn');
+refuses(() => B.bank3([{ rgba: mkPlane(4, 4), w: 4, h: 5 }]), 'RGBA',
+        'a plane whose bytes do not match its own extent is refused before an offset is spent');
+const bkPath = '/tmp/js_bake_parity.orbtheme';
+fs.writeFileSync(bkPath, Buffer.from(baked.bytes));
+const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
+if (!hasGcc) {
+  console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
+} else {
+  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath], { encoding: 'utf8' });
+  ok(pr.status === 0, 'the shipped orb_clock3.c projects the browser bake',
+     (pr.stdout || pr.stderr).trim().split('\n')[0]);
+  ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
+     'and seats the hand at the element rect with the plate-colour size as its offset',
+     (pr.stdout.match(/hand.*434312/) || ['none'])[0]);
+}
 
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');
 process.exit(fails ? 1 : 0);

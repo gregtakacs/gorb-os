@@ -45,16 +45,20 @@ ROOT = (sys.argv[sys.argv.index("--root") + 1] if "--root" in sys.argv
 P = lambda *a: os.path.join(ROOT, *a)
 SD_C, SD_H = P("main", "sd", "orb_sd.c"),   P("main", "sd", "orb_sd.h")
 TH_C, TH_H = P("main", "art", "orb_theme.c"), P("main", "art", "orb_theme.h")
+# D32's header split moved the clock geometry defines, the CLK_SRC__MAX assert and
+# the clk_aux_t enum out of orb_theme.h and into clk_types.h; the pins below read
+# the two headers as one blob so either can hold them.
+CT_H       = P("main", "art", "clk_types.h")
 B3_C, B3_H = P("main", "art", "orb_bundle.c"), P("main", "art", "orb_bundle.h")
 NET_C      = P("main", "net", "orb_net.c")
 GEN_H      = P("tests", "fixtures", "avkit-pair.h")
 GEN_B      = P("tests", "fixtures", "avkit-pair.bin")
-for p in (SD_C, SD_H, TH_C, TH_H, B3_C, B3_H, NET_C, GEN_H, GEN_B):
+for p in (SD_C, SD_H, TH_C, TH_H, CT_H, B3_C, B3_H, NET_C, GEN_H, GEN_B):
     if not os.path.exists(p):
         sys.exit("missing " + p + " — the lifts below have no fallback")
 
 sd_src, th_src = open(SD_C).read(), open(TH_C).read()
-th_hdr, sd_src_h = open(TH_H).read(), open(SD_H).read()
+th_hdr, sd_src_h = open(TH_H).read() + open(CT_H).read(), open(SD_H).read()
 net_src, gen_src = open(NET_C).read(), open(GEN_H).read()
 gen_bin = open(GEN_B, "rb").read()
 if "--src" in sys.argv:                      # mutation runs re-point the NET lifts
@@ -1138,7 +1142,7 @@ def caps_lint():
             rc = 1
     m = re.search(r"#define CLK_STRIP_GLYPHS_MAX\s+(\d+)", th_hdr)
     if not m:
-        sys.exit("could not find CLK_STRIP_GLYPHS_MAX in " + TH_H)
+        sys.exit("could not find CLK_STRIP_GLYPHS_MAX in orb_theme.h/clk_types.h")
     ok = int(m.group(1)) == ts.CLK_STRIP_GLYPHS
     print("%-5s %-16s reader %4d  schema %4d"
           % ("ok" if ok else "FAIL", "CLK_STRIP_GLYPHS", int(m.group(1)), ts.CLK_STRIP_GLYPHS))
@@ -1146,7 +1150,7 @@ def caps_lint():
         rc = 1
     m = re.search(r"_Static_assert\(CLK_SRC__MAX == (\d+)", th_hdr)
     if not m:
-        sys.exit("orb_theme.h no longer asserts the source enum's length — the theme_schema "
+        sys.exit("no CLK_SRC__MAX assert in orb_theme.h/clk_types.h — the theme_schema "
                  "driving values are unpinned")
     ok = int(m.group(1)) == len(ts.SOURCES)
     print("%-5s %-16s reader %4d  schema %4d" % ("ok" if ok else "FAIL", "CLK_SRC__MAX", int(m.group(1)), len(ts.SOURCES)))
@@ -1267,7 +1271,7 @@ def run_mutations():
             print("FAIL mutation %r: anchor found %dx, want at least 1 — the battery is stale"
                   % (name, src.count(old))); rc = 1; continue
         tmp = tempfile.mkdtemp()
-        for real in (SD_C, SD_H, TH_C, TH_H, B3_C, B3_H, GEN_H, GEN_B, NET_C,
+        for real in (SD_C, SD_H, TH_C, TH_H, CT_H, B3_C, B3_H, GEN_H, GEN_B, NET_C,
                      P("tools", "orbtheme.py"), P("tools", "orbbundle.py")):
             d = os.path.join(tmp, os.path.relpath(os.path.dirname(real), ROOT))
             os.makedirs(d, exist_ok=True); shutil.copy(real, d)

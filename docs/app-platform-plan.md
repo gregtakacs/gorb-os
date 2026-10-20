@@ -3929,6 +3929,7 @@ that were planned separately turn out to be the same work:
 
 **Slices, in the order that keeps a working board at every step.** Each is flashable and
 each leaves the dial telling the time.
+
 1. **Base render, additive.** Draw the base clock when `orb_theme` reports no resident theme.
    The flashed default is still there and still preferred, so nothing regresses if this is
    abandoned halfway. Bench: run it by choosing nothing on a board that has a default, which
@@ -3945,10 +3946,40 @@ each leaves the dial telling the time.
    brick — the reason the deletion had to wait was the default, and the default no longer
    exists. This can run any time after slice 2, including in parallel with 3.
 
-**Two things I will not guess.** Both are visible to a person holding the device, and a wrong
-answer looks like a broken product rather than a wrong field: the base clock's face (§26 asks
-only that it tell the time legibly at arm's length), and what the glass and the flip page show
-before the first theme ever arrives — the state a board is in on a shelf. There is precedent
-for the second: the unconfigured-network case already has an on-screen ask. Recorded as open
-questions rather than decided by whoever writes the code first.
+**Slice 1 PAID 2026-10-19** (`6e1c6c9`), with the owner's face chosen: **digital** — large
+`HH:MM` in montserrat_48, date beneath at 14, one status line reading `waiting to sync`
+until the clock is synced and nothing after. Additive as planned: the flashed default is
+still preferred, so shipping behaviour is byte-for-byte what it was and the new path is
+reachable only through `ORB_BASE_RENDER_FORCE`, which slice 2 deletes. On orb-A the branch
+ran once, boot completed, the clock came to the foreground, and **zero** sprite-commit or
+blend lines appeared across 8 s — the themed path demonstrably did not build behind the
+`return`. What is NOT yet verified is the pixels: the framebuffer grab lives in the hub,
+which is not in this workspace, so the claim is "it runs and tells the time", not "it looks
+right". That gap belongs to whoever runs slice 2 with the hub attached.
+
+Two facts slice 1 settled that §26's plan assumed rather than knew. The base face does
+**not** want the dial's scheduler: `orb_sched`'s policy is a sprite view's contract (pose
+hands, step a frame bank, mark layer boxes), so a text face owns a plain 1 s `lv_timer`
+instead — installing the real policy here would tick at 12 fps to redraw a string that
+changes once a minute. And the no-theme check is `!from_container` plus the override, not
+`theme == NULL`: `use_baked_in()` today points `theme` at the compiled pair, so a NULL test
+would never fire until slice 2 removes that function, and slice 1 would ship untestable.
+
+**Slice 2 is next and it is the one with the teeth**: stop flashing the default, delete
+`use_baked_in()`, `art_bank_map_at_0()` and the override, retarget `s_source` and the four
+sentences that promise a default, rewrite the D13 rows in `host_tz_test.py`, and move the
+partition-table write into the flash path so a board learns the two-slot layout. Slice 2 is
+where M6's clause 3 becomes a real test rather than a sentence, and it needs the hub
+attached for the visual check.
+
+
+**Two things this section will not guess.** Both are visible to a person holding the device,
+and a wrong answer looks like a broken product rather than a wrong field. **The base clock's
+face is ANSWERED** (owner, 2026-10-19): digital — large time, date beneath, one status line —
+as the cheapest legible thing and the base form that asks least of a theme it has not been
+given; slice 1 below is that answer. **Still open: what the glass and the flip page show
+before the first theme ever arrives**, the state a board is in on a shelf. There is precedent
+for the second — the unconfigured-network case already has an on-screen ask — and the answer
+probably reuses it, but it is a decision and not an inference. Recorded here so whoever writes
+slice 2 decides it deliberately rather than discovering it in the pixels.
 

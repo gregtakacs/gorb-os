@@ -4067,8 +4067,17 @@ slots outlive the card, and the door re-verifies the headers itself, so the scan
 over-suggests. The clock's `pick_default` and its active-row label treat slot A as the
 default leg. `host_tz_test.py` (23 batteries) pins the slot vocabulary and the chosen-A
 failure order; `host_sd_test.py` (22 batteries) pins the route, the flip worker's
-choice-before-reboot order, and the JS anchors. On-device bench is owed: `tools/m5_flip.sh`
-drives the store half and gains its flip assertions on the next flash cycle.
+choice-before-reboot order, and the JS anchors. **Bench PAID 2026-10-20 on orb-B
+(`.34`, fw `7d57f2f`): M5_FLIP PASS — two stores answered reboot:none with no boundary
+and a 4.48 s ingest into slot-B (the ping-pong target from the default leg), PSRAM
+unchanged; the flip answered reboot:automatic, the worker logged its own sentence,
+`rst:0xc` followed 1.1 s later, and the re-leased board reported live slot-B with the
+av-kit row active; sd/default put the choice back.** The bench fix the run demanded is
+itself a finding: with the base face printing no fps line (this board's flashed default
+predates FORMAT 3, and the new reader correctly calls it `source none`), the m5 idiom of
+anchoring windows on the last clock line reads the capture's own open-reset as a flip;
+m5_flip.sh now anchors on the press's host wall time with a -2 s grace — a +3 s one
+swallowed a real boundary that landed +0.86 s after the ack.
 
 
 ## 27 — P6.5(3) lands: the FORMAT 2 ingest door is gone, and P6 closes — 2026-10-20, `7c0fd4b`

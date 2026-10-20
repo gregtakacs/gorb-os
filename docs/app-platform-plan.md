@@ -3544,20 +3544,23 @@ clock, the choice key left written so P6.5's reader can honour it. That branch h
 never run on any board; it ran twice here and cleared both times.
 
 **Bench state after this session, and the owed list it settles.** orb-A runs
-`v1.1.0+26fc3c2` — the code on the silicon is this commit's, and the tree has moved past
-it by one docs-only commit; the re-flash into `c349d38`'s stamp is the step that re-syncs
-them and it is running while this sentence is written. The trap hit for real: `idf.py
-reconfigure` does **not** re-bake the app descriptor for a commit that touches no build
-input — the stale stamp survives reconfigure, `touch main/CMakeLists.txt`, and deleting
-the cached `esp_app_desc.c.obj` (the version rides in `compile_commands.json`'s
-definitions, which reconfigure refreshes only on a genuine cache miss); `idf.py fullclean`
-is the documented fix and the audit refuses the stale image exactly as serflash.sh's
-header promises. §24.6's `A061615644e5` claim is superseded by this sentence. The card
-carries av-kit (installed, chosen) plus the two bench bundles, deletable from the page.
-orb-B was not touched (§24.7's state stands). Of §24.5: item 1 stands paid; item 2 is
-now paid **on both doors**; item 3's pin half stays owed (no uncarded board exists);
-item 4 (ping-pong) unchanged. What M6 still owes is the two halves that are not the
-door's: the progress-bar-on-glass flip (behind the default's new home and P6.5) and the
+`v1.1.0+26fc3c2` — the code on the silicon is HEAD's code, and the tree has moved past
+that hash by docs-only commits; the re-flash of this tree's image re-syncs the label,
+and whatever hash the board then reports over `/api/v1/status`, the code under it is
+`26fc3c2`'s. The trap hit for real and is worth naming precisely, because I first
+mis-named it: `idf.py reconfigure` DOES re-bake the app descriptor for a docs-only
+commit — what bit me was ORDER. A build whose configure ran before the commit carries
+`-dirty` or the previous hash, `touch CMakeLists` and deleting the cached descriptor
+object do not help (the version rides `compile_commands.json` definitions), and the
+audit refuses every stale variant exactly as serflash.sh's header promises. The rule
+the flasher enforces: commit FIRST, reconfigure SECOND, flash THIRD.
+`serflash.sh --check` between two and three costs seconds and catches all of it.
+§24.6's `A061615644e5` claim is superseded by this sentence. The card carries av-kit
+(installed, chosen) plus the two bench bundles, deletable from the page. orb-B was not
+touched (§24.7's state stands). Of §24.5: item 1 stands paid; item 2 is now paid **on
+both doors**; item 3's pin half stays owed (no uncarded board exists); item 4
+(ping-pong) unchanged. What M6 still owes is the two halves that are not the door's:
+the progress-bar-on-glass flip (behind the default's new home and P6.5) and the
 cap-size refill (P6.5's reader, or the bundle path once the swap exists). The streaming
 door's M6 half is closed.
 

@@ -9,7 +9,7 @@ sentence to match orbbundle.py's. No board, no card, no partition: the
 host_orbapp_reader_test.py discipline, applied to the bundle.
 
 The vectors are the §22.6 refusal set plus the field-order sentinels: one
-element table whose 17 fields all carry distinct values (the lesson the app
+element table whose 19 fields all carry distinct values (the lesson the app
 manifest suite learned when a field order drifted), the scalar sextet trio
 (words 3/4 i8, word 10 i16 — the same table orb_bundle_scalar_sext mirrors),
 and every forgery the Python reader refuses, restamped so the ONLY guard left
@@ -155,10 +155,11 @@ int main(int argc, char **argv)
                     printf("case%u ok elem %u n=%u class=%u flags=%u order=%u "
                            "alpha=%u slot=%u frame0=%u frames=%u x=%d y=%d w=%u "
                            "h=%u pivot_x=%d pivot_y=%d radius=%u degrees=%u "
-                           "scale16=%u\n", id, row,
+                           "scale16=%u kind=%u src=%u\n", id, row,
                            e.n, e.cls, e.flags, e.order, e.alpha, e.slot,
                            e.frame0, e.n_frames, e.x, e.y, e.w, e.h,
-                           e.pivot_x, e.pivot_y, e.radius, e.degrees, e.scale16);
+                           e.pivot_x, e.pivot_y, e.radius, e.degrees, e.scale16,
+                           e.kind, e.src);
                 }
             }
             if (flags & F_FIND) {
@@ -441,9 +442,13 @@ def elem(n, cls, **kw):
 
 F_LAYOUT, F_FIND, NO_ROW = 1, 2, 0xFFFFFFFF
 
-SENT = elem(1, 1, flags=3, order=4, alpha=5, slot=6, frame0=7, n_frames=8,
+# Class BANK so the two appended columns may carry values at all (they belong to
+# a complication row alone), kind=2/src=9 because both must be valid ids AND
+# distinct sentinels; alpha moves to 18 so every field still carries its own
+# value, which is the whole point of a field-order sentinel.
+SENT = elem(1, 5, flags=3, order=4, alpha=18, slot=6, frame0=7, n_frames=8,
             x=-9, y=-10, w=11, h=12, pivot_x=-13, pivot_y=-14, radius=15,
-            degrees=16, scale16=17)
+            degrees=16, scale16=17, kind=2, src=9)
 SCAL = {"bg": 0xCAFEB0BA, "shadow_dx": -3, "shadow_dy": -4, "bg_fps": -300}
 SPR = [{"off": 0, "size": 1024, "w": 32, "h": 32}]
 ART = bytes((i * 3 + 1) & 0xFF for i in range(2048))
@@ -513,7 +518,7 @@ VECTORS = [
     (2, 0, NO_ROW, [], build(specs=[dict(SOLO, raw_blob=_w(solo_blob, 2, 11))]),
      "same", None, "scalars"),
     (3, 0, NO_ROW, [],
-     build(specs=[dict(SOLO, raw_blob=solo_blob + b"\0\0\0\0")]),
+     build(specs=[dict(SOLO, raw_blob=solo_blob + b"\0\0")]),
      "same", None, "torn file"),
     (4, 0, NO_ROW, [], build(specs=[dict(SOLO, raw_blob=solo_blob[:116])]),
      "same", None, "shorter than"),
@@ -584,6 +589,24 @@ VECTORS = [
      build(specs=[{"slug": "solo", "elements": [SENT], "raw_blob": SEXT_BLOB,
                    "sprites": [], "art": b""}]),
      "dump", None, None),
+    # §23.5's append-only rule read from the device end: a blob baked at the
+    # pre-D32 stride of 17 words — the sentinel row with its kind and src words
+    # spliced out — must parse whole, and the two missing columns must land in
+    # the reader as the zeros those columns were written after. The expectations
+    # come from the writer's parse of the same bytes, so this pins C and py to
+    # the SAME stride derivation, not just to width 19.
+    (86, F_LAYOUT, 0, [],
+     build(specs=[{"slug": "solo", "elements": [SENT],
+                   "raw_blob": solo_blob[:120 + 17 * 4] + solo_blob[120 + 19 * 4:],
+                   "sprites": SPR, "art": ART}]),
+     "dump", None, None),
+    # And one width below the floor: the same row spliced to 16 words. That is
+    # no schema this dialect ever had, and both readers must say so in the same
+    # sentence rather than divide out a stride and walk the table sideways.
+    (87, 0, NO_ROW, [],
+     build(specs=[dict(SOLO, raw_blob=solo_blob[:120 + 16 * 4] +
+                       solo_blob[120 + 19 * 4:])]),
+     "same", None, "narrowest"),
     # P6.2's budget gate on the header: word 5 (geom_size) and word 7 (art_size)
     # forged past the caps refuse with the writer's own sentences; == cap PASSES
     # the gate and dies one line later at the file bounds — the refusal word
@@ -994,7 +1017,8 @@ def check_case(cid, flags, row, queries, raw, kind, expect, rule, cl):
                      ("frames", e0["n_frames"]), ("x", e0["x"]), ("y", e0["y"]),
                      ("w", e0["w"]), ("h", e0["h"]), ("pivot_x", e0["pivot_x"]),
                      ("pivot_y", e0["pivot_y"]), ("radius", e0["radius"]),
-                     ("degrees", e0["degrees"]), ("scale16", e0["scale16"]))}
+                     ("degrees", e0["degrees"]), ("scale16", e0["scale16"]),
+                     ("kind", e0["kind"]), ("src", e0["src"]))}
             check(d == want, "case %d: element field order/values disagree:\n"
                   "  C:  %r\n  py: %r" % (cid, d, want))
         sl = [l for l in cl if l.split()[1:2] == ["scal"] and l.split()[2] == "0"]
@@ -1034,7 +1058,11 @@ MUTANTS = [
      "if (walk > region_size || s->geom_size > region_size - walk)",
      "if (0 && (walk > region_size || s->geom_size > region_size - walk))", 16),
     ("allow a length the counts do not produce",
-     "if (want != len) {", "if (want > len) {", 3),
+     "if (ne == 0 ? eb != 0 : eb % ((uint64_t)ne * 4u) != 0)",
+     "if (0 && (ne == 0 ? eb != 0 : eb % ((uint64_t)ne * 4u) != 0))", 3),
+    ("allow a stride below the dialect floor",
+     "if (st < ORB_BUNDLE_ELEM_WORDS_MIN || st > 0xFFFFu)",
+     "if (0 && (st < ORB_BUNDLE_ELEM_WORDS_MIN || st > 0xFFFFu))", 87),
     ("ignore the scalar dialect word",
      "if (nsc != ORB_BUNDLE_SCALARS_N)", "if (0 && nsc != ORB_BUNDLE_SCALARS_N)", 2),
     # ("drop the u16 count cap" RETIRED at P6.2: the budget gate speaks first on

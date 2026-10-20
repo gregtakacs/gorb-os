@@ -466,8 +466,24 @@ ELEMENT_FIELDS = (
     ("radius",   "u16"),   # RING: the circle its plates sit on
     ("degrees",  "u16"),   # fixed-point 100ths, 0..35999 (the dial's own rule)
     ("scale16",  "u16"),   # fixed-point x16, the comp maths' own scale
+    # D32 ruling A, appended exactly as the header comment above promises. Both
+    # belong to a BANK row and must be zero on every other class — check_element
+    # refuses a non-zero one rather than let a row mean two things. `kind` is
+    # this file's KINDS id (window/strip/ring/flare): how the dial draws the
+    # row's plates. `src` is this file's SOURCES id: what value indexes them.
+    # A row read from a table narrower than these two columns carries zero for
+    # each, which is window/NONE — a plate that never changes — so the default
+    # is an element every app may ignore, never a drawn value.
+    ("kind",     "u8"),    # BANK only: KINDS id, how the plates are drawn
+    ("src",      "u8"),    # BANK only: SOURCES id, what indexes the plates
 )
-ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 17 words, 68 bytes per row
+ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 19 words, 76 bytes per row
+# The narrowest row the FORMAT 3 dialect has ever written, before D32's ruling A
+# appended kind and src. A blob's element-row stride is derived from its own
+# length (§23.5), and a stride below this floor is not a shorter row of this
+# dialect but a torn file; the reader refuses it rather than read a width that
+# cannot be the current schema's. orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN agrees.
+ELEMENT_WORDS_MIN = 17
 
 # Flag bits, kept in the low nibble so a high bit means "a schema this build does
 # not know", which check_element refuses rather than painting wrongly.
@@ -493,11 +509,13 @@ ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
 # is why the row is named "counterw" and not more honestly — the field is 12 bytes
 # with the NUL and nothing about the layout is negotiable at this end.
 #
-# What is NOT here is deliberate: which value drives a BANK slot (moon_age, date,
-# weekday ...) is the app's own rule, because an element row carries no source column
-# and §25.6 forbids inventing a column the shipped dialect does not prove. The clock
-# binds a comp slot to a source in its own table; a theme supplies the pixels, the
-# placement, the depth and the frame count, and never the meaning.
+# What a BANK row means was this table's one deliberate hole until D32's ruling A
+# closed it: an element row now carries `kind` and `src`, so a theme says both what
+# draws in a complication slot and what value indexes its plates. What stays the
+# app's own rule is the FRAME-TO-VALUE mapping — CLOCK_WINDOW_DOMAIN below. The
+# domain of a source is a fact about the clock's calendar, not about the theme, and
+# §25.6's refusal to trust a carried figure for it stands: a month window is twelve
+# plates because a year has twelve months, not because a row said so.
 CLOCK_SLOTS = (
     # name           class     slot   what the dial draws with it
     ("bg",            "plate",  0,    "the one static background, full panel"),
@@ -531,13 +549,33 @@ CLOCK_SLOTS = (
     ("comp15",        "bank",   15,   "complication 15: one plate per value"),
 )
 
-# The slots the shipped dial draws today, and the only ones a bundle may fill and
-# boot. The comp rows above are declared so a theme can CARRY them and be refused in
-# words rather than drawn wrong — D26's direction — until the clock's own comp
-# binding lands and gives a bank slot a value to index by.
+# The clock's own frame-to-value domain for a WINDOW complication (D32 ruling B):
+# source name -> (value_min, plate count). Only fixed calendar domains appear; a
+# source outside this table indexes by its own range, and the row's n_frames is
+# checked against what the bake packed rather than against a figure the table
+# would invent. orb_clock3.c mirrors this table for the device's re-check of a
+# hostile bundle, and the suite pins the mirror — the same discipline as
+# clock_slot_declares().
+CLOCK_WINDOW_DOMAIN = {
+    "weekday":     (0, 7),    "month":    (0, 12),   "date":     (1, 31),
+    "hour12":      (0, 12),   "hour24":   (0, 24),   "minute":   (0, 60),
+    "second":      (0, 60),   "moon_age": (0, 30),   "ampm":     (0, 2),
+    "week":        (1, 53),   "day_of_year": (1, 366), "quarter": (1, 4),
+}
+
+# The slots the shipped dial draws, and the only ones a bundle may fill and boot.
+# Ruling D32-E put every class the vocabulary names into scope; the dial draws all
+# of them now — plate, hands including the carriage, shadows, and the sixteen
+# complication slots — so the refusal a row can still meet is the projection's own
+# (a class this app's manifest does not offer, a plate whose art the bundle does
+# not hold), and ruling D32-F makes any of those refusals fall the whole flip to
+# the dial's digits rather than draw a partial theme.
 CLOCK_SLOTS_DRAWN = ("bg", "glass", "hour", "minute", "second", "dial", "counterw",
                      "carriage", "sh_hour", "sh_minute", "sh_second", "sh_dial",
-                     "sh_counterw")
+                     "sh_counterw",
+                     "comp0", "comp1", "comp2", "comp3", "comp4", "comp5", "comp6",
+                     "comp7", "comp8", "comp9", "comp10", "comp11", "comp12",
+                     "comp13", "comp14", "comp15")
 
 
 def clock_slot(name):
@@ -635,6 +673,36 @@ def check_element(rec, where="elem"):
     if int(rec["scale16"]) and int(rec["scale16"]) < 16:
         raise ValueError("%s.scale16: %d scales the element below one sixteenth of its "
                          "art, which no bake produces by intent" % (where, int(rec["scale16"])))
+    # ---- D32 ruling A: the two complication columns ----
+    # They belong to a BANK row and to nothing else. A non-zero one on another class
+    # is a row written for a complication that names a plain slot — the same lie the
+    # radius-on-a-text-row rule refuses, and refused in the same shape.
+    kind, src = int(rec["kind"]), int(rec["src"])
+    if kind and cls != CLASS_BANK:
+        raise ValueError("%s.kind: %d on a %s row — how plates are drawn is a "
+                         "complication's question, and this class answers it with "
+                         "its slot" % (where, kind, CLASS_NAMES[cls]))
+    if src and cls != CLASS_BANK:
+        raise ValueError("%s.src: %d on a %s row — what indexes plates is a "
+                         "complication's question, and this class answers it with "
+                         "its slot" % (where, src, CLASS_NAMES[cls]))
+    if cls == CLASS_BANK:
+        if not 0 <= kind < len(KINDS):
+            raise ValueError("%s.kind: %d is not a way to draw plates (0..%d)"
+                             % (where, kind, len(KINDS) - 1))
+        if not 0 <= src < len(SOURCES):
+            raise ValueError("%s.src: %d is not a value this dial can read (0..%d)"
+                             % (where, src, len(SOURCES) - 1))
+        # Ruling B: the frame-to-value map is the source's domain, not a carried
+        # figure. A WINDOW whose source has a fixed calendar domain must carry
+        # exactly that many plates — a month row with 13 frames is not a theme
+        # being clever, it is a bake that counted the wrong thing.
+        if kind == KINDS.index("window") and SOURCES[src] in CLOCK_WINDOW_DOMAIN:
+            want = CLOCK_WINDOW_DOMAIN[SOURCES[src]][1]
+            if int(rec["n_frames"]) != want:
+                raise ValueError("%s: a window driven by %r indexes %d plates, and "
+                                 "the row carries %d" % (where, SOURCES[src], want,
+                                                         int(rec["n_frames"])))
     return rec
 
 
@@ -677,11 +745,23 @@ def pack_elements(recs, cap=ELEM_MAX):
     return out
 
 
-def unpack_elements(words, n):
-    """The reader's side. Deliberately does NOT re-run check_element: a device that
-    refused a theme it had already installed would leave the dial with no theme at
-    all, so the firmware bounds-checks what it can and paints the rest."""
-    return unpack_records(words, ELEMENT_FIELDS, n, "elem")
+def unpack_elements(words, n, stride=None):
+    """The reader's side, at the row stride the blob carries (§23.5): columns past
+    a narrow row's width read as the zeros they were written after, and columns
+    before a wider row's belong to a schema this file does not own. Deliberately
+    does NOT re-run check_element: a device that refused a theme it had already
+    installed would leave the dial with no theme at all, so the firmware
+    bounds-checks what it can and paints the rest."""
+    if stride is None:
+        stride = ELEMENT_WORDS
+    out = []
+    for i in range(n):
+        row = words[i * stride:(i + 1) * stride]
+        rec = blank_element()
+        rec.update(unpack_record(row[:len(ELEMENT_FIELDS)],
+                                 ELEMENT_FIELDS[:len(row)], "elem[%d]" % i))
+        out.append(rec)
+    return out
 
 
 def blank_element():
@@ -724,7 +804,7 @@ if __name__ == "__main__":
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.
-    assert ELEMENT_WORDS == 17 == len(ELEMENT_FIELDS), "element row width moved"
+    assert ELEMENT_WORDS == 19 == len(ELEMENT_FIELDS), "element row width moved"
     assert len(CLASS_NAMES) == 8, "class vocabulary moved; orb_assets.h's bound must agree"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     _e = dict(blank_element(), **{"n": 0, "class": CLASS_HAND, "slot": 0,

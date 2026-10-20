@@ -367,19 +367,38 @@ def golden_checks(binp, path):
 W_HDR_CRC_W = 28                       # orbtheme.W_HDR_CRC: hdr_crc's word index in the header
 
 
+def derived_stride(buf, geom_off, blob_off):
+    """The element row width the blob itself carries (§23.5): its length less
+    the fixed head, scalars, sprite catalogue and padded slug, over its own row
+    count. orb_bundle.c's blob_check derives the same number; the forger uses it
+    so a row is landed on the way the reader will, not the way the writer meant."""
+    import struct as st
+    base = geom_off + blob_off
+    n_elem, n_spr, n_scal, n_slug = st.unpack_from("<4I", buf, base)
+    fixed = (4 + n_scal) * 4 + n_spr * 16 + n_slug + (-n_slug % 4)
+    geom_size = st.unpack_from("<I", buf, geom_off + 8 + 16)[0]      # IDX_GEOM_SIZE
+    if not n_elem:
+        return ts.ELEMENT_WORDS
+    return (geom_size - fixed) // (n_elem * 4)
+
+
 def elem_word(buf, row, word):
     """The byte offset of one element row's word inside a written bundle.
 
     The blob head is the writer's four count words plus the 26 carried scalars
-    (orbbundle.pack_blob), and the element rows follow it at 17 words each — the
-    same walk `orb_bundle.c`'s blob_check() makes, which is the point: a forger that
-    found the row by a different route would be testing its own arithmetic.
+    (orbbundle.pack_blob), and the element rows follow it at the writer's own
+    stride — theme_schema.ELEMENT_WORDS, 19 now that D32's ruling A appended
+    kind and src. The stride is read from the golden walk the writer took, the
+    same one `orb_bundle.c`'s blob_check() derives, which is the point: a
+    forger that found the row by a different route would be testing its own
+    arithmetic.
     """
     import struct as st
     from orbtheme import W_GEOM_OFF
     geom_off = st.unpack_from("<I", buf, 4 * W_GEOM_OFF)[0]
     blob_off = st.unpack_from("<I", buf, geom_off + 8 + 12)[0]     # IDX_GEOM_OFF
-    return geom_off + blob_off + (4 + 26) * 4 + row * 17 * 4 + word * 4
+    stride = derived_stride(buf, geom_off, blob_off)
+    return geom_off + blob_off + (4 + 26) * 4 + row * stride * 4 + word * 4
 
 
 def spr_word(buf, row, word):
@@ -391,7 +410,7 @@ def spr_word(buf, row, word):
     blob_off = st.unpack_from("<I", buf, geom_off + 8 + 12)[0]
     head = geom_off + blob_off + (4 + 26) * 4
     n_elem = st.unpack_from("<I", buf, geom_off + blob_off)[0]
-    return head + n_elem * 17 * 4 + row * 4 * 4 + word * 4
+    return head + n_elem * derived_stride(buf, geom_off, blob_off) * 4 + row * 4 * 4 + word * 4
 
 
 def regeom(buf):

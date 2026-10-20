@@ -45,7 +45,17 @@ extern "C" {
 #define ORB_BUNDLE_SECT_MAX  8u        /* B5's app cap: the index's width */
 #define ORB_BUNDLE_IDX_WORDS 10u       /* 4H + 7I + 2H = 40-byte records */
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
-#define ORB_BUNDLE_ELEM_WORDS 17u      /* theme_schema.ELEMENT_FIELDS */
+#define ORB_BUNDLE_ELEM_WORDS 19u      /* theme_schema.ELEMENT_FIELDS: the width a
+                                        * write carries and this reader decodes.
+                                        * A read row's STRIDE is the blob's own
+                                        * number (§23.5): blob_check() derives it
+                                        * from the length equality, an older row
+                                        * stride decodes with the appended
+                                        * columns zero, and D32's ruling A —
+                                        * append-only, no format bump — holds. */
+#define ORB_BUNDLE_ELEM_WORDS_MIN 17u  /* the narrowest row the shipped dialect
+                                        * ever wrote, pre-D32: the floor the
+                                        * derived stride is refused below */
 #define ORB_BUNDLE_SLUG_MAX  23u       /* ORBAPP_SLUG_MAX - 1: the NUL's room */
 #define ORB_BUNDLE_GEOM_CAP  0xF000u   /* orb_theme.c SLOT_GEOM_CAP: 60 KB of tables */
 #define ORB_BUNDLE_ART_CAP   0x3F0000u /* SLOT_CAP less SLOT_ART_OFF: the
@@ -63,6 +73,9 @@ typedef struct {
     uint32_t    art_off,  art_size;             /* its bank inside the file */
     uint32_t    art_crc;                        /* record's, cross-checked to blob */
     uint16_t    n_elem, n_spr;
+    uint16_t    elem_words;    /* the blob's own row stride (§23.5): 19 from a
+                                * current bake, 17 from an older one; 0 reads
+                                * as the current width */
     uint16_t    scr_w, scr_h;
     uint8_t     abi_min, abi_max;
     uint8_t     slug_len;
@@ -160,10 +173,12 @@ const orb_bundle_sec_t *orb_bundle_find(const orb_bundle_t *b,
                                         const char *slug);
 
 /* The unpacked element row — the device's side of unpack_record(): fixed
- * 17-word rows, narrow fields masked from their word, the four i16 fields
+ * 19-word rows, narrow fields masked from their word, the four i16 fields
  * sign-extended exactly as the C compositor will read them. Field order is
  * theme_schema.ELEMENT_FIELDS and the sentinel suite pins the order by
- * dumping a table whose every field carries a distinct sentinel. */
+ * dumping a table whose every field carries a distinct sentinel. `kind` and
+ * `src` are D32's ruling A, appended past scale16: both belong to a BANK row
+ * and read zero on every other class, where they name nothing. */
 typedef struct {
     uint16_t n;
     uint8_t  cls;
@@ -177,10 +192,18 @@ typedef struct {
     uint16_t w, h;
     int16_t  pivot_x, pivot_y;
     uint16_t radius, degrees, scale16;
+    uint8_t  kind;   /* BANK only: CLK_KIND_* — how the plates are drawn  */
+    uint8_t  src;    /* BANK only: CLK_SRC_*  — what value indexes the plates */
 } orb_bundle_elem_t;
 
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
                         orb_bundle_elem_t *e);
+
+/* The element table's row stride, in words, as the section's blob carries it:
+ * orb_bundle_elem_at() and orb_bundle_spr_at() both land on it, and a table
+ * baked before an appended column still addresses whole. 0 — a section not
+ * filled by blob_check() — reads as the current schema's width. */
+uint32_t orb_bundle_elem_stride(const orb_bundle_sec_t *s);
 
 /* One row of the section's sprite catalogue — the planes its bank holds, in byte
  * order, each named by the element that draws it. `orb_bundle_elem_at()` gives a

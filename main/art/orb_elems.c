@@ -146,6 +146,8 @@ static orb_elems_ans_t seat(const orb_bundle_sec_t *sec, const orb_bundle_elem_t
     out->degrees  = e->degrees;
     out->radius   = e->radius;
     out->scale16  = e->scale16;
+    out->kind     = e->kind;      /* the two D32 columns, both zero off a BANK row */
+    out->src      = e->src;
     out->off      = sp.off;
     out->size     = sp.size;
     out->plane_w  = sp.w;

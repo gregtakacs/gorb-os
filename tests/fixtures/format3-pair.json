@@ -12,9 +12,9 @@
     "weather.bank": 4,
     "weather.sprite": 12
   },
-  "geom_crc": 3952273863,
+  "geom_crc": 798811123,
   "geom_off": 128,
-  "geom_size": 832,
+  "geom_size": 880,
   "n_elem": {
     "clock": 3,
     "weather": 3

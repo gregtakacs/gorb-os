@@ -50,9 +50,10 @@ ROOT = (sys.argv[sys.argv.index("--root") + 1] if "--root" in sys.argv
 P = lambda *a: os.path.join(ROOT, *a)
 SD_C, SD_H = P("main", "sd", "orb_sd.c"),   P("main", "sd", "orb_sd.h")
 TH_C, TH_H = P("main", "art", "orb_theme.c"), P("main", "art", "orb_theme.h")
+B3_C, B3_H = P("main", "art", "orb_bundle.c"), P("main", "art", "orb_bundle.h")
 NET_C      = P("main", "net", "orb_net.c")
 GEN_H      = P("assets", "clock_assets.h")
-for p in (SD_C, SD_H, TH_C, TH_H, NET_C, GEN_H):
+for p in (SD_C, SD_H, TH_C, TH_H, B3_C, B3_H, NET_C, GEN_H):
     if not os.path.exists(p):
         sys.exit("missing " + p + " — the lifts below have no fallback")
 
@@ -668,6 +669,56 @@ HDR_REFUSALS.append('    rhdr("torn header, stale checksum", '
                     '"container header is damaged — re-copy the file onto the card", hbad_torn);')
 HDR_REFUSALS = "\n".join(HDR_REFUSALS)
 
+# ---- P6.4: the FORMAT 3 door vectors ------------------------------------------
+# §24.7's hardware truth, pinned as vectors instead of prose: a well-formed
+# bundle header returns the sentinel (by POINTER, the row after), a torn one
+# returns the generic line with its format word UNVERIFIED, and every other
+# refusal a verified FORMAT 3 header earns is the READER's own sentence, spoken
+# by the direct rows because the FORMAT 2 gate suppresses it on purpose. Built
+# from the writer's pack_header3 so no word here is transcribed by eye.
+import orbbundle as ob3
+_m3 = re.search(r"static const char THEME3_REFUSAL\[\] =\s*(((?:\"[^\"]*\"\s*)+));", th_src)
+if not _m3:
+    sys.exit("THEME3_REFUSAL is gone from orb_theme.c — the accept signal has no "
+             "single definition to compare against any more")
+T3_SENT = "".join(re.findall(r'"([^"]*)"', _m3.group(1)))
+if th_src.count('"that is a FORMAT 3 app bundle') != 1:
+    sys.exit("the FORMAT 3 sentence is defined more than once in orb_theme.c — the "
+             "one-definition rule this whole gate rests on is gone")
+
+_h3 = list(struct.unpack("<32I", ob3.pack_header3(
+    "b3 probe", 2, 40, 0xAABBCCDD, 0x10000, 4096, 0x11223344, serial=7)))
+_h3_torn = list(_h3); _h3_torn[orbtheme.W_HDR_CRC] ^= 0x55AA
+_h3_abi  = _recrc([w if i != 2 else 99 for i, w in enumerate(_h3)])
+_h3_f4   = _recrc([w if i != orbtheme.W_FORMAT else 4 for i, w in enumerate(_h3)])
+_h3_big  = _recrc([w if i != orbtheme.W_ART_SIZE else 0x3F0001 for i, w in enumerate(_h3)])
+_h3_noname = _recrc([0 if 14 <= i < 28 else w for i, w in enumerate(_h3)])
+B3_ROWS = "\n".join([
+    arr("h3ok", _h3),
+    arr("h3torn", _h3_torn),
+    arr("h3abi", _h3_abi),
+    arr("h3f4", _h3_f4),
+    arr("h3big", _h3_big),
+    arr("h3noname", _h3_noname),
+    '    rhdr("FORMAT 3, writer\'s own header", "%s", h3ok);' % T3_SENT,
+    '    rhdr("FORMAT 3, torn checksum: format word unverified", '
+    '"theme format this firmware cannot read", h3torn);',
+    '    rhdr("FORMAT 3, unknown abi: reader reason suppressed at the gate", '
+    '"theme format this firmware cannot read", h3abi);',
+    '    rhdr("FORMAT 4: unreadable, not a bundle", '
+    '"theme format this firmware cannot read", h3f4);',
+    '    rhdr("FORMAT 3, payload over the slot: budget reason suppressed", '
+    '"theme format this firmware cannot read", h3big);',
+    '    r3ptr(h3ok);',
+    '    r3fields("writer\'s header parses whole", h3ok, "b3 probe", 2, 7, 0x11223344u, 0xAABBCCDDu, 0x10000u, 40u);',
+    '    r3why("reader refuses a lying abi", h3abi, '
+    '"bundle geometry v99; this build reads v3 — re-bake it");',
+    '    r3why("reader refuses payload over the slot", h3big, '
+    '"pixel payload is 4128769 B; a theme slot holds 4128768 B — theme is larger than a slot");',
+    '    r3why("reader refuses a nameless bundle", h3noname, '
+    '"theme has no name in its header — re-bake it");',
+])
+
 
 # The lifted helpers the shipped code calls. Renamed rather than link-interposed:
 # glibc's own strlcpy appeared only in 2.38, so a definition here would collide with
@@ -695,17 +746,31 @@ f_name_ok  = f_name_ok.replace("strlcpy", "host_strlcpy").replace("strlcat", "ho
 f_theme_pt = f_theme_pt.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 pure_theme = pure_theme.replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 
-# P6.1's door calls the bundle reader from inside hdr_parse; this suite never
-# hands the lifted reader a FORMAT 3 header (every row here is v2), so the type,
-# the stamp, and the symbol need only LINK. The stub says what it is if some
-# future row ever does call it — silence would be the crime.
-BUNDLE_STUB = """
-#define ORB_BUNDLE3_FORMAT 3u
-typedef struct { char name[57]; } orb_bundle3_hdr_t;
-static const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
-{ (void)w; (void)o; return "harness stub: the bundle reader is not lifted here"; }
-"""
-pure_theme = BUNDLE_STUB + pure_theme
+# P6.4's doors hand the lifted reader real FORMAT 3 headers (the vector set
+# below), so the P6.1 stub retires on its own instruction: the reader is LIFTED,
+# not stubbed — b32, reject, the real orb_bundle3_hdr_t, the writer's own header
+# words. The word-index enum is deliberately NOT lifted with it: orb_bundle.c
+# declares the identical anonymous enum (its comment names orb_theme.c's as the
+# layout), and C forbids one enumerator twice in a translation unit.
+# bundle_wordmap_lint() compares the two enum blocks as text every run, which is
+# what makes sharing them a checked fact in this harness and not a hope.
+b3_src = open(P("main/art/orb_bundle.c")).read()
+b3_hdr_src = open(P("main/art/orb_bundle.h")).read()
+b3_typedef = lift(b3_hdr_src, r"typedef struct \{\s*char\s+name\[57\];[\s\S]*?\} orb_bundle3_hdr_t;", "orb_bundle.h")
+b3_b32 = lift(b3_src, r"static uint32_t b32\(const uint8_t \*p\)[\s\S]*?\n\}", "orb_bundle.c")
+b3_rej = lift(b3_src, r"static char s_msg\[160\];[\s\S]*?\n\}", "orb_bundle.c")
+b3_parse = lift(b3_src, r"const char \*orb_bundle3_hdr_parse\(const uint32_t \*w, orb_bundle3_hdr_t \*o\)\n\{[\s\S]*?\n\}", "orb_bundle.c")
+BUNDLE_STUB = ("#include <stdarg.h>\n"
+               + lift(b3_hdr_src, r"#define ORB_BUNDLE3_FORMAT[\s\S]*?#define ORB_BUNDLE_ART_CAP[\s\S]*?\*/", "orb_bundle.h")
+               + "\n#define B3_MAGIC  0x474F5254u\n"
+               + b3_typedef + "\n" + b3_b32 + "\n" + b3_rej + "\n" + b3_parse + "\n")
+# Insert before hdr_parse, not at the top: the lifted reader reads the word map,
+# and the word map is the head of pure_theme. One anchor, one insertion.
+_B3_AT = "static const char *hdr_parse(const uint32_t *w, orb_thdr_t *o)"
+if _B3_AT not in pure_theme:
+    sys.exit("hdr_parse's definition line moved in orb_theme.c — the bundle reader "
+             "lift no longer knows where to stand")
+pure_theme = pure_theme.replace(_B3_AT, BUNDLE_STUB + _B3_AT, 1)
 
 # ---------------------------------------------------------------------------
 # THE GEOMETRY ARENA — the one function in the theme layer whose mistake draws
@@ -1346,6 +1411,43 @@ static void rhdr(const char *what, const char *want, const uint32_t *w)
     else          { printf("ok    header refused as designed: %s\n", got); }
 }
 
+/* P6.4: the accept signal is the sentinel's ADDRESS, not its text (a rewording
+ * that keeps the pointer is the change the doors survive; a copied literal is
+ * the drift they don't). r3ptr is the one row no string compare can fake. */
+static void r3ptr(const uint32_t *w)
+{
+    orb_thdr_t o;
+    const char *got = hdr_parse(w, &o);
+    if (got != THEME3_REFUSAL) { fails++; printf("FAIL FORMAT 3 accept not the sentinel pointer: '%s'\n", got ? got : "accepted"); }
+    else            { printf("ok    FORMAT 3 accept is the sentinel's own pointer, not a copy\n"); }
+}
+/* r3fields: the reader fills every shared field from the writer's header. A
+ * dropped or swapped field is the §22.8 lesson one level down — the tuple the
+ * duplicate check compares is exactly these words. */
+static void r3fields(const char *what, const uint32_t *w, const char *name,
+                     unsigned ns, unsigned ser, unsigned acrc, unsigned gcrc,
+                     unsigned aoff, unsigned gsz)
+{
+    orb_bundle3_hdr_t b;
+    const char *r = orb_bundle3_hdr_parse(w, &b);
+    int pass = !r && strcmp(b.name, name) == 0 && b.n_sections == ns && b.serial == ser &&
+               b.art_crc == acrc && b.geom_crc == gcrc && b.art_off == aoff && b.geom_size == gsz;
+    if (!pass) fails++;
+    printf("%-5s %-32s reader fills every shared field: %s\n", pass ? "ok" : "FAIL",
+           what, r ? r : (pass ? name : "FIELDS WRONG"));
+}
+/* r3why: the reader's OWN sentence for a verified-format header, which the
+ * FORMAT 2 gate suppresses. The door (hdr_at_any) speaks this text; the gate
+ * row above pins that it does not. */
+static void r3why(const char *what, const uint32_t *w, const char *want)
+{
+    orb_bundle3_hdr_t b;
+    const char *got = orb_bundle3_hdr_parse(w, &b);
+    if (!got)         { fails++; printf("FAIL %s: reader ACCEPTED; wanted '%s'\n", what, want); }
+    else if (strcmp(got, want)) { fails++; printf("FAIL %s: reader said '%s'; wanted '%s'\n", what, got, want); }
+    else              { printf("ok    %s: %s\n", what, got); }
+}
+
 int main(void)
 {
     puts("== the crc32 the device's ROM routine is supposed to agree with ==");
@@ -1415,6 +1517,8 @@ int main(void)
 @REFUSES@
     puts("== the header's refusals ==");
 @HDRREFUSES@
+    puts("== the FORMAT 3 door (P6.4): the accept signal and the reader's own refusals ==");
+@B3ROWS@
 @ARENA_CASES@
     return fails != 0;
 }
@@ -1444,6 +1548,7 @@ for k, v in (("@ARENA@", ARENA_DECLS), ("@ARENA_CASES@", ARENA_CASES),
              ("@COMPCHECKS@", COMPCHECKS), ("@NROWS2@", str(NROWS2)),
              ("@HIDES@", HIDES), ("@NW2@", str(len(WORDS2))),
              ("@REFUSES@", REFUSE_CALLS), ("@HDRREFUSES@", HDR_REFUSALS),
+             ("@B3ROWS@", B3_ROWS),
              ("@NW@", str(len(WORDS))), ("@ART@", str(ART_BYTES)),
              ("@GEOMLEN@", str(len(GEOM))), ("@NROWS@", str(NROWS))):
     HARNESS = HARNESS.replace(k, v)
@@ -1806,6 +1911,47 @@ MUTATIONS = [
     ("the arena is freed out from under the published tables", "th",
      "    s_geo.from_container = true;",
      "    s_geo.from_container = true;\n    free(arena);"),
+    # ---- P6.4: the flip door ----
+    # A pin you can delete without a failure is not a pin; each line below is one
+    # way the store could lie, and each must redden a check.
+    ("the FORMAT 3 gate re-refuses the well-formed bundle (door dead again)", "th",
+     "            orb_bundle3_hdr_parse(w, &b3) == NULL)\n            return THEME3_REFUSAL;",
+     "            orb_bundle3_hdr_parse(w, &b3) == NULL)\n            return \"theme format this firmware cannot read\";"),
+    ("the torn bundle header now NAMES a format it cannot prove", "th",
+     "        if (w[W_FORMAT] == ORB_BUNDLE3_FORMAT &&\n"
+     "            orb_bundle3_hdr_parse(w, &b3) == NULL)\n"
+     "            return THEME3_REFUSAL;\n"
+     "        return \"theme format this firmware cannot read\";",
+     "        if (w[W_FORMAT] == ORB_BUNDLE3_FORMAT) {\n"
+     "            const char *r3m = orb_bundle3_hdr_parse(w, &b3);\n"
+     "            return r3m ? r3m : THEME3_REFUSAL;\n"
+     "        }\n"
+     "        return \"theme format this firmware cannot read\";"),
+    ("the scan stops distinguishing the bundle row", "th",
+     "    if (why == THEME3_REFUSAL) {", "    if (0 && why == THEME3_REFUSAL) {"),
+    ("the upload door accepts a bundle without the region check", "th",
+     "r = (h.fmt == 3) ? verify_bundle3(fd, &b3, fsz) : verify_container(fd, &h);",
+     "r = (h.fmt == 3) ? NULL : verify_container(fd, &h);"),
+    ("the duplicate tuple drops the format word", "th",
+     "if (!or_ && oh.fmt == h.fmt && oh.geom_crc == h.geom_crc &&",
+     "if (!or_ && oh.geom_crc == h.geom_crc &&"),
+    ("bundle_job reboots to show a store nobody can draw", "th",
+     "    try_note(NULL, NULL);\n}\n\nesp_err_t orb_theme_post_bundle",
+     "    try_note(NULL, NULL);\n    orb_jobs_reboot_soon(\"bundle store\");\n}\n\nesp_err_t orb_theme_post_bundle"),
+    ("post_bundle calls the ingest off the worker (no queue, no busy gate)", "th",
+     "    return orb_jobs_post(bundle_job, &r, sizeof r);",
+     "    orb_theme_install_bundle(r.id, NULL, 0); return ESP_OK;"),
+    ("slot_read trusts the FORMAT 2 reader alone with a v3 slot", "th",
+     "if (hdr_parse(hdr, &s->h) || s->h.fmt != THEME_FORMAT) return;",
+     "if (hdr_parse(hdr, &s->h)) return;"),
+    ("the store confirm loses the power-cut sentence", "net",
+     "A power cut during the copy brings back the factory clock, and storing again recovers it.",
+     "Stored bundles are not drawn yet."),
+    ("the flip route vanishes from the table", "net",
+     "        { .uri = \"/api/v1/sd/bundle\",   .method = HTTP_POST, .handler = h_bundle_install },\n", ""),
+    ("the bundle timing never reaches the page", "net",
+     "\\\"bundle_ms\\\":%u,\\\"bundle_bytes\\\":%u,",
+     "/* P6.4's timing pair removed */"),
 ]
 
 def run_mutations():
@@ -1824,7 +1970,7 @@ def run_mutations():
                   % (name, src.count(old))); rc = 1; continue
         tmp = tempfile.mkdtemp()
         # Reproduce the tree the lifts read from, with the one file mutated.
-        for real in (SD_C, SD_H, TH_C, TH_H, GEN_H, NET_C, P("tools", "orbtheme.py")):
+        for real in (SD_C, SD_H, TH_C, TH_H, B3_C, B3_H, GEN_H, NET_C, P("tools", "orbtheme.py"), P("tools", "orbbundle.py")):
             d = os.path.join(tmp, os.path.relpath(os.path.dirname(real), ROOT))
             os.makedirs(d, exist_ok=True); shutil.copy(real, d)
         open(os.path.join(tmp, os.path.relpath(path, ROOT)), "w").write(src.replace(old, new, 1))
@@ -2392,12 +2538,108 @@ def install_lint():
                   "nobody, which is the log-line failure §20.4 exists to end" % need)
             rc = 1
 
+    # ---- P6.4: the flip door — a bundle has exactly one caller and no reboot ----
+    # The streaming ingest (P6.3) shipped unrouted; P6.4's sin would be routing it
+    # wrong. Four things, all checkable without a card: the ingest has exactly one
+    # caller and it does not reboot; the FORMAT 2 reader still refuses a FORMAT 3
+    # slot so boot can name it; the scan lists a bundle with active never true; and
+    # the page's store button posts to the bundle route and not the install one.
+    if "bundle_job" in spans:
+        ja, jb = spans["bundle_job"]
+        jbody = "\n".join(lines[ja:jb + 1])
+        if "orb_jobs_reboot_soon" in jbody:
+            print("FAIL bundle_job() reboots — a stored bundle is not drawn, so the boot "
+                  "shows the owner nothing they asked for; the store does not choose (P6.4)")
+            rc = 1
+        if "orb_theme_install_bundle(" not in jbody:
+            print("FAIL bundle_job() does not call the streaming ingest — the flip page "
+                  "would store through the FORMAT 2 door or not at all"); rc = 1
+    else:
+        print("FAIL main/art/orb_theme.c has no bundle_job() — orb_theme_post_bundle is "
+              "the only thing that reaches the streaming ingest, and it has no worker"); rc = 1
+    if "orb_theme_post_bundle" in spans:
+        pa, pb = spans["orb_theme_post_bundle"]
+        pbody = "\n".join(lines[pa:pb + 1])
+        if "orb_jobs_post(bundle_job" not in pbody:
+            print("FAIL orb_theme_post_bundle() does not queue bundle_job — the ingest "
+                  "ran off the worker loses the busy gate and the card-lock rule"); rc = 1
+    else:
+        print("FAIL main/art/orb_theme.c has no orb_theme_post_bundle() — P6.4's route "
+              "has nothing to post"); rc = 1
+    # The ingest has exactly one caller (the job); a second one would be a second
+    # opinion about card-lock discipline.
+    if th_src.count("orb_theme_install_bundle(r->id") != 1:
+        print("FAIL orb_theme_install_bundle() is not called from exactly one place — the "
+              "one-worker rule that keeps the card lock singular is only held if the "
+              "bundle_job is its sole caller"); rc = 1
+    # The FORMAT 2 reader must refuse the tag, or boot's bundle row is a lie.
+    if "slot_read" in spans:
+        ra, rb = spans["slot_read"]
+        rbody = "\n".join(lines[ra:rb + 1])
+        if "s->h.fmt != THEME_FORMAT" not in rbody:
+            print("FAIL slot_read() does not refuse a FORMAT 3 tag — the bundle would "
+                  "read as a valid v2 slot and boot would refill garbage it never verified")
+            rc = 1
+    # scan's bundle branch, by its exact condition: a dead-coded `0 &&` keeps every
+    # string below alive and kills the behaviour, so the strings are not enough.
+    if "scan_entry" in spans:
+        ea, eb = spans["scan_entry"]
+        ebody = "\n".join(lines[ea:eb + 1])
+        if ("if (why == THEME3_REFUSAL) {" not in ebody
+                or "card_check3(" not in ebody
+                or "e->active = false" not in ebody or "e->fmt = 3" not in ebody):
+            print("FAIL scan_entry() lost its live bundle branch (exact condition, the "
+                  "v3 door, the fmt stamp, active held false) — bundles would list as "
+                  "broken themes and the flip page could never offer one")
+            rc = 1
+    # The upload door: FORMAT 3 header through the v3 door, region+art verified,
+    # BEFORE the rename, and the duplicate tuple includes the format word.
+    if "orb_theme_upload_end" in spans:
+        ua, ub = spans["orb_theme_upload_end"]
+        ubody = "\n".join(lines[ua:ub + 1])
+        for need in ("hdr_at_any(", "verify_bundle3(", "oh.fmt == h.fmt"):
+            if need not in ubody:
+                print("FAIL orb_theme_upload_end() lost %s — an unverified FORMAT 3 "
+                      "container would reach the card name it is filed under" % need)
+                rc = 1
+        rpos, upos = ubody.find("rename("), min((ubody.find(x) for x in ("hdr_at_any(", "verify_bundle3(") if ubody.find(x) >= 0), default=-1)
+        if rpos >= 0 and upos >= 0 and upos > rpos:
+            print("FAIL orb_theme_upload_end() verifies after the rename — the window "
+                  "where a half-checked file carries a loadable name is the C8 bug")
+            rc = 1
+    # The staged sentence is the measured one, in the firmware and on the page.
+    if "the dial shows the factory clock" not in th_src:
+        print("FAIL STAGED_WHY lost the measured fallback sentence — §24.5(2) proved the "
+              "old wording false on hardware; the correction must not rot back"); rc = 1
+    # The page's store button hits /api/v1/sd/bundle through the bundle post. The
+    # ROUTE TABLE line and the JSON format string are pinned, not their bare words:
+    # the words survive in comments and argument lists when the wiring is gone,
+    # which is exactly how two mutants here first survived.
+    for need in ('{ .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install }',
+                 "orb_theme_post_bundle(id)", "h_bundle_install(httpd_req_t",
+                 "\\\"bundle_ms\\\":%u,\\\"bundle_bytes\\\":%u"):
+        if need not in net_src:
+            print("FAIL the flip door is missing %s from orb_net.c — P6.4's whole claim "
+                  "is a route to the streaming ingest" % need); rc = 1
+    if net_src.count("brings back the factory clock") != 2:
+        print("FAIL the page's power-cut warning is not on BOTH confirm doors — the store "
+              "and the install cost the same interruption and must say so alike"); rc = 1
+    # The install route must NOT be able to store a bundle: it posts FORMAT 2 only.
+    ka = net_src.find("static esp_err_t h_theme_install(")
+    kb = net_src.find("\n}\n", ka)
+    if ka > 0 and ("post_bundle" in net_src[ka:kb]):
+        print("FAIL h_theme_install() posts a bundle job — the FORMAT 2 door must not "
+              "reach the ingest; that is the same refusal-not-trust split as the scan")
+        rc = 1
+
     if not rc:
         print("ok    install verifies off-card, on-partition and geometrically before "
               "the header erase, and never names slot A")
         print("ok    both install paths bracket the copy with the staged word, the bundle "
               "path parses-rebases-copies in that order, stores without choosing, and the "
               "sd body carries the word")
+        print("ok    the flip door stores without rebooting, the FORMAT 2 reader refuses a "
+              "bundle slot, the scan holds a bundle inactive, and the page posts /sd/bundle")
     return rc
 
 
@@ -2453,6 +2695,25 @@ def caps_lint():
         if not ok:
             print("      reader:", got, "\n      schema:", tuple(want))
             rc = 1
+
+    # P6.4's harness runs one translation unit: the lifted bundle reader shares
+    # orb_theme.c's word-index enum instead of carrying a second copy C would reject
+    # as duplicate enumerators. That sharing is only sound while the two enums are
+    # the same map — orb_bundle.c's comment claims it; this line makes it a checked
+    # fact. Drift here silently changes which word the reader calls FORMAT, so the
+    # whole P6.4 gate would read the wrong byte and still print ok.
+    _e_th = re.search(r"enum \{[^}]*W_MAGIC[^}]*\}", th_src)
+    _e_b3 = re.search(r"enum \{[^}]*W_MAGIC[^}]*\}", b3_src)
+    def _emap(m):
+        return re.sub(r"\s+", "", re.sub(r"/\*[\s\S]*?\*/", "", m.group(0)))
+    if not _e_th or not _e_b3:
+        print("FAIL a word-index enum is unfindable — caps_lint no longer knows the map"); rc = 1
+    elif _emap(_e_th) != _emap(_e_b3):
+        print("FAIL orb_bundle.c and orb_theme.c word maps differ — the shared-enum lift "
+              "is reading FORMAT from the wrong word, so every P6.4 gate claim is void")
+        rc = 1
+    else:
+        print("ok    orb_bundle.c's word map is orb_theme.c's, byte for byte")
     return rc
 
 

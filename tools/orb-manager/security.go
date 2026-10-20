@@ -352,6 +352,10 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/sd/default": {http.MethodPost},
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},
+	// P6.4's store door: the flip page's second press, and the only route to
+	// orb_theme_install_bundle(). It queues instead of flipping, and its ack
+	// says reboot:none on purpose — the firmware comment is the contract.
+	"/api/v1/sd/bundle":  {http.MethodPost},
 	"/api/v1/sd/rescan":  {http.MethodPost},
 	// P4's card-app verbs, added because the merge that landed them in firmware left
 	// them out of this map: a device feature the hub cannot dial is a feature nobody

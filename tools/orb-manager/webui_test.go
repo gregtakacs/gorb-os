@@ -183,8 +183,8 @@ func TestALonelyEndingLeavesNoStoryOnTheFleetCard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lonely.go: %v", err)
 	}
-	if !strings.Contains(string(hub), `"the orb is lonely now: its settings, name and credentials went with it`) {
-		t.Error("the lonely door no longer reports what it did in the log it streams")
+	if !strings.Contains(string(hub), `"the flash is erased: its settings, name and credentials went with it`) {
+		t.Error("the erase door no longer reports what it did in the log it streams")
 	}
 }
 

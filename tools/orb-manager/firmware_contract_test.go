@@ -288,3 +288,18 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+// The hub folds a cable board's firmware from the PING answer, and the fold dies
+// silently the day the firmware drops the token. The pin reads the dispatch line
+// out of orb_net.c and refuses the drift here rather than leaving it as a blank
+// fw column for a hub that still believes the ack says more than state.
+func TestFirmwarePingAnswerCarriesTheStampTheHubParses(t *testing.T) {
+	src := firmwareFile(t, filepath.Join("main", "net", "orb_net.c"))
+	if !strings.Contains(src, "\"ORB-PING %s fw=%s\"") {
+		t.Error("orb_net.c no longer prints ORB-PING <state> fw=<version>: " +
+			"esprom.ParsePingFW reads the second token and cableproof.go folds it onto the row")
+	}
+	if !strings.Contains(src, "esp_app_get_description()->version") {
+		t.Error("the PING stamp no longer comes from the app descriptor, the same read /api/v1/status answers from")
+	}
+}

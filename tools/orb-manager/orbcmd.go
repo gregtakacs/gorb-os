@@ -187,7 +187,7 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 			if mac == "" {
 				mac = macNorm(hostUSBSerial(req.Port))
 			}
-			changed := s.recordCableProof(req.Port, mac, res.State, "")
+			changed := s.recordCableProof(req.Port, mac, res.State, res.FW, "")
 			if changed {
 				s.saveState()
 			}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // gateClock returns a hub whose fleet runs on a clock the test drives, plus the instant
@@ -641,5 +642,142 @@ func TestTheCableRefusalComesFromAKeyedSweep(t *testing.T) {
 		t.Error("a board the sweep puts on a cable the host keyed to its mac was forgettable")
 	} else if !strings.Contains(why, "/dev/ttyACM1") {
 		t.Errorf("the port refusal does not name the socket: %q", why)
+	}
+}
+
+// The power-off bug, pinned. A board seen on the LAN and then unplugged from the
+// wall stops answering HTTP long before its cached announce ages out, and the card
+// used to believe the cache: annotateReachability only asked the rows the address
+// book produced, so a browse row kept Via ["lan"] — and the tile kept its on-LAN
+// claim — for the rest of the TTL plus grace, with the sweep's dead verdict
+// already in hand. The verdict is the freshest fact on the row and outranks the
+// record; the row keeps its address and loses its present tense.
+func TestAPoweredOffOrbLosesItsLanClaimToTheDeadVerdict(t *testing.T) {
+	now := time.Now()
+	s, clock := gateClock(now)
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-20*time.Second)))
+	s.live.record("192.168.2.31", false, now.Add(-time.Second))
+	// The row the browse tier builds: announced, listed, Via lan, no remembered-
+	// tier Reachable word. This is the exact shape that used to skip annotation.
+	rows := []orbRow{{
+		Key: macHall, MAC: macHall, IP: "192.168.2.31", Port: 80,
+		Via: []string{"lan"}, Dialable: true,
+	}}
+	s.annotateReachability(rows, clock())
+	r := rows[0]
+	if r.Connected {
+		t.Error("the tile still reads connected while its address is known dead")
+	}
+	if r.Reachable != "dead" {
+		t.Errorf("Reachable = %q, want dead on the announced row the sweep answered for", r.Reachable)
+	}
+	if r.Dialable {
+		t.Error("the row stays clickable onto an address the sweep just called dead")
+	}
+	for _, v := range r.Via {
+		if v == "lan" {
+			t.Errorf("Via still claims the LAN the verdict denies: %v", r.Via)
+		}
+	}
+}
+
+// The other side of the same line: absence of a verdict is absence of evidence,
+// not evidence of absence. A row the wire is producing with no dial paid for yet
+// keeps its connected read, and a remembered row says the hub is asking rather
+// than deciding on a hunch.
+func TestNoVerdictContradictsNoRow(t *testing.T) {
+	now := time.Now()
+	s, clock := gateClock(now)
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-5*time.Second)))
+	rows := []orbRow{
+		{Key: macHall, MAC: macHall, IP: "192.168.2.31", Via: []string{"lan"}},
+		{Key: "other", MAC: "44bd8d782619", IP: "192.168.2.32", Reachable: "unknown"},
+	}
+	s.annotateReachability(rows, clock())
+	if !rows[0].Connected || rows[0].Reachable != "" {
+		t.Errorf("an unasked-about announced row lost its earned claim: %+v", rows[0])
+	}
+	if rows[1].Connected || rows[1].Reachable != "unknown" {
+		t.Errorf("a remembered row claims a present the hub has not asked about: %+v", rows[1])
+	}
+}
+
+// A lead is not an HTTP timeout. A board sitting on a cable whose remembered
+// address does not answer is connected — over that lead — and only the lan half
+// of its claim goes.
+func TestADeadAddressOnALiveLeadStillReadsConnected(t *testing.T) {
+	now := time.Now()
+	s, clock := gateClock(now)
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-2*time.Minute)))
+	s.live.record("192.168.2.31", false, now)
+	rows := []orbRow{{
+		Key: macHall, MAC: macHall, IP: "192.168.2.31",
+		OnCable: true, Via: []string{"usb", "lan"},
+	}}
+	s.annotateReachability(rows, clock())
+	r := rows[0]
+	if !r.Connected {
+		t.Error("a board on a lead read disconnected because an old address timed out")
+	}
+	if !hasStr(r.Via, "usb") || hasStr(r.Via, "lan") {
+		t.Errorf("Via = %v, want usb kept and the dead lan claim dropped", r.Via)
+	}
+}
+
+// The status body the sweep already pays for carries fw, state and the board's
+// name, and foldProbeStatus is what stopped discarding it. Two rules keep the
+// fold honest, and both are pinned here: a dial renews facts and never the
+// presence clock — the Forget gate must not be fed by the hub dialing its own
+// address book — and the answer folds onto the MAC the BODY named, so a board
+// that moved addresses re-earns its own row rather than buying a stranger's.
+func TestAStatusAnswerFoldsItsFactsAndNothingElse(t *testing.T) {
+	now := time.Now()
+	s, _ := gateClock(now)
+	if _, err := s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-90*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.fleet.Look(macHall)
+	if before.FW != "094fa22" {
+		t.Fatalf("the seeded row does not carry the stamp the test replaces: %+v", before)
+	}
+
+	s.foldProbeStatus("192.168.2.31", &orbnet.Status{
+		MAC: macHall, FW: "v1.3.0+deadbee", State: "normal", Name: "Hall",
+	})
+	after, _ := s.fleet.Look(macHall)
+	if after.FW != "v1.3.0+deadbee" || after.State != "normal" {
+		t.Errorf("the answer did not fold: %+v", after)
+	}
+	if after.Name != "Hall" {
+		t.Errorf("the name a successful read reported did not fold: %+v", after)
+	}
+	if !after.LastSeen.Equal(before.LastSeen) {
+		t.Errorf("the dial renewed the presence clock: %v -> %v", before.LastSeen, after.LastSeen)
+	}
+
+	// An answer with no stamp is old firmware, which is no news: it must not wipe
+	// the version the announce already carried.
+	s.foldProbeStatus("192.168.2.31", &orbnet.Status{MAC: macHall})
+	after, _ = s.fleet.Look(macHall)
+	if after.FW != "v1.3.0+deadbee" {
+		t.Errorf("a stamp-less answer erased a known version: %+v", after)
+	}
+
+	// A body naming a MAC the store has never met is a stranger at a remembered
+	// address. Adopt and the browse are the doors that introduce boards; a sweep
+	// reply is not, and it must not create a row.
+	s.foldProbeStatus("192.168.2.31", &orbnet.Status{MAC: "de ad be ef 00 11", FW: "v9"})
+	if _, ok := s.fleet.Look("deadbeef0011"); ok {
+		t.Error("a stranger's answer at a known address created a fleet row")
+	}
+
+	// And the same stranger's answer folds onto nothing when its own row lives at
+	// a different address: the cross-lock is the announce's to move, not the dial's.
+	if _, err := s.fleet.Observe(obsAt(macBed, "192.168.2.99", now.Add(-time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	s.foldProbeStatus("192.168.2.31", &orbnet.Status{MAC: macBed, FW: "v9"})
+	if bed, _ := s.fleet.Look(macBed); bed.FW == "v9" {
+		t.Error("a fold landed on a row whose address is not the one the hub dialed")
 	}
 }

@@ -720,3 +720,43 @@ func TestCheckNameASCIIRefusesWhatTheOrbCannotStore(t *testing.T) {
 		}
 	}
 }
+
+// NoteAnswer is the store half of the dial-that-answered fold. Two rules make it
+// different from Observe, and both are pinned: it renews facts and never the
+// presence clock — a gate fed by the hub dialing its own address book is a gate
+// that never opens — and an empty field is "the board did not say", never "the
+// board has none", so a stamp-less answer from older firmware cannot wipe a
+// version an announce already carried.
+func TestNoteAnswerFoldsFactsAndNotPresence(t *testing.T) {
+	s := newTest()
+	row := observe(t, s, macA, "192.168.2.31")
+	before := row.LastSeen
+
+	got, changed, err := s.NoteAnswer(macA, "v1.3.0+aaaaaaa", "")
+	if err != nil || !changed {
+		t.Fatalf("NoteAnswer: changed=%v err=%v", changed, err)
+	}
+	if got.FW != "v1.3.0+aaaaaaa" {
+		t.Errorf("FW = %q, want the folded stamp", got.FW)
+	}
+	if got.State != "associated" {
+		t.Errorf("an empty state overwrote the remembered one: %q", got.State)
+	}
+	after, _ := s.ByMAC(macA)
+	if !after.LastSeen.Equal(before) {
+		t.Errorf("the fold wound the presence clock: %v -> %v", before, after.LastSeen)
+	}
+
+	// Same answer again: no news, no write, and a caller that persists on changed
+	// does not touch the file.
+	if _, changed, _ := s.NoteAnswer(macA, "v1.3.0+aaaaaaa", "associated"); changed {
+		t.Error("a verdict the row already wore reported as a change")
+	}
+
+	// A MAC the store has never met has no row to fold onto, and NoteAnswer does
+	// not invent one: that is Observe, Confirm and MarkRemembered's shared job,
+	// each with its own evidence behind it.
+	if _, _, err := s.NoteAnswer(macC, "v1", "normal"); err == nil {
+		t.Error("NoteAnswer created a row for a board nobody has met")
+	}
+}

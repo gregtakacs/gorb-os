@@ -65,8 +65,10 @@ func ParseOrbName(line string) (string, bool) {
 	return m[1], true
 }
 
-// pingRe matches the answer to a PING: "ORB-PING <state>".
-var pingRe = regexp.MustCompile(`ORB-PING\s+(\S+)`)
+// pingRe matches the answer to a PING: "ORB-PING <state> [fw=<version>]".
+// The fw suffix is what a board running this repo's orb_net.c prints; a board
+// on older firmware answers with the bare state token and parses the same.
+var pingRe = regexp.MustCompile(`ORB-PING\s+(\S+)(?:\s+fw=(\S+))?`)
 
 // ParsePing returns the state token a PING produced, or ("", false).
 func ParsePing(line string) (string, bool) {
@@ -77,6 +79,18 @@ func ParsePing(line string) (string, bool) {
 	return m[1], true
 }
 
+// ParsePingFW returns the firmware stamp a PING produced with it, or ("", false)
+// when the line is not a PING answer or the board ran a firmware that prints no
+// stamp. It is the reboot-free read of the running version: the same string
+// /api/v1/status carries, printed by the same RAM read.
+func ParsePingFW(line string) (string, bool) {
+	m := pingRe.FindStringSubmatch(line)
+	if m == nil || m[2] == "" {
+		return "", false
+	}
+	return m[2], true
+}
+
 // CmdResult is the outcome of one generic serial command.
 type CmdResult struct {
 	Sent     bool      `json:"sent"`
@@ -84,6 +98,7 @@ type CmdResult struct {
 	Nak      string    `json:"nak,omitempty"`      // the NAK reason, if a NAK came back
 	IP       string    `json:"ip,omitempty"`       // post-join lease banner, when a PROV follows
 	State    string    `json:"state,omitempty"`    // state token from a PING or state banner
+	FW       string    `json:"fw,omitempty"`       // running version from a PING answer, when it carried one
 	Networks []ScanNet `json:"networks,omitempty"` // captured PROVSCAN rows, when a SCAN
 }
 
@@ -143,6 +158,9 @@ func RunCommand(ctx context.Context, pt *Port, line string, ackPrefixes []string
 		}
 		if st, ok := ParsePing(trimmed); ok {
 			res.State = st
+		}
+		if fw, ok := ParsePingFW(trimmed); ok {
+			res.FW = fw
 		}
 		if st, ok := ParseState(trimmed); ok {
 			res.State = st

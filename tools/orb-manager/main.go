@@ -346,9 +346,20 @@ func main() {
 	// and it is wired here rather than in newHub so the suite never dials a LAN. The
 	// sweeper shares the cable context's shutdown for the same reason the cable watcher
 	// does: both exist to keep an open card current, and both are pointless without one.
+	//
+	// The body is not discarded. Every ten seconds and once at launch this hub already
+	// pays for a full /api/v1/status from every remembered address; fw, state and the
+	// board's own name come back in it, and the tile used to wait up to a full announce
+	// interval for facts it was already holding. Throwing them away was the bug;
+	// foldProbeStatus is the ten lines that stopped it. A dial renews facts, never the
+	// presence clock — the Forget gate still reads announces only.
 	s.live.probe = func(ip string) bool {
-		_, err := s.orb.Status(ip)
-		return err == nil
+		st, err := s.orb.Status(ip)
+		if err != nil {
+			return false
+		}
+		s.foldProbeStatus(ip, st)
+		return true
 	}
 	go s.probeLiveness(cableCtx)
 	// Once at startup, before the first card is worth looking at: the file already says

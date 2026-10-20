@@ -346,12 +346,26 @@ func (s *Server) roster(lan []orbRow, now time.Time) ([]orbRow, string) {
 // The fleet tier that calls this admits only rows carrying an address, so every row here
 // has something to dial; a board with none is not on the card at all.
 func (s *Server) rememberedRow(row orbfleet.Orb, now time.Time) orbRow {
-	return orbRow{
+	r := orbRow{
 		Key: row.MAC, MAC: row.MAC, Instance: instanceForMAC(row.MAC),
 		IP: row.IP, Port: row.Port, Name: row.Name, Reachable: "unknown",
 		Refusal: "remembered from a previous run and not yet heard from: the hub is asking " +
 			"it now, and the row becomes clickable when it answers",
 	}
+	// The stored facts ride the row at first paint. The state file carries the fw
+	// stamp and the state token the last dial or the last announce learned, and a
+	// card that showed a blank until a packet arrived was making the operator wait
+	// for news the hub already had.
+	r.FW, r.State = row.FW, row.State
+	if !row.LastSeen.IsZero() {
+		r.AgeS = int(now.Sub(row.LastSeen).Seconds())
+	}
+	if s.fleet != nil {
+		r.Shared = row.Shared
+		r.Note = row.Note
+		r.Cable = s.chipRead(row.MAC)
+	}
+	return r
 }
 
 // cableRow is a board on a lead that has not announced: real MAC, no address, nothing

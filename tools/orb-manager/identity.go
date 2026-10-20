@@ -405,6 +405,15 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		// stayed suppressed here forever while probing back as an orb.
 		if info.IsOrb {
 			s.lonely.clear(info.MAC)
+			// The descriptor answered for itself, so the running version it
+			// printed belongs on the row: this is the firmware stamp for a board
+			// with no lease, read at the price of one reboot the operator paid.
+			if s.fleet != nil && (info.Version != "" || info.State != "") {
+				if _, changed, err := s.fleet.NoteAnswer(info.MAC, info.Version, info.State); err == nil && changed {
+					s.saveState()
+					s.wakeOrbs()
+				}
+			}
 			// The banner named itself, so the card can stop being blank. This is
 			// the only read path for a board with no lease: the console is open
 			// right now, and the serial door writes names without ever reading

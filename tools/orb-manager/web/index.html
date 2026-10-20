@@ -18,24 +18,26 @@
 </header>
 
 <!-- The fleet is the page. It is what the hub already knows, rendered as the hub
-     said it: one card per board, the Forget button only where the hub's own
+     said it: one tile per board, the Forget button only where the hub's own
      verdict says the board cannot come straight back, and nothing at all for a
      cable with no orb on it — a blank chip is a candidate for New Orb, not an
-     orb. A blank port never renders here. -->
+     orb. A blank port never renders here. The list carries no frame: the tile is
+     the door, so the tile is what lights up under the cursor. -->
 <main id="manage" class="view">
-  <article class="card" id="mn-findcard">
+  <section id="mn-findcard" class="fleet">
     <h3>Orbs</h3>
     <p class="hint" id="mn-find-state">Loading…</p>
     <ul id="mn-find" class="orbgrid"></ul>
     <div class="row"><span class="hint" id="mn-find-note"></span></div>
-    <p class="hint">Every board the hub has met as an orb gets one card, keyed on its MAC and
+    <p class="hint">Every board the hub has met as an orb gets one tile, keyed on its MAC and
     followed through address changes. A board on a cable is asked what it is the moment the
-    hub notices it, over the same lead, at no cost to the board: one that answers is a card.
+    hub notices it, over the same lead, at no cost to the board: one that answers is a tile.
     A chip that answers nothing runs no orb and is not listed at all &mdash; it is the New Orb
-    button. A card turns amber when this hub carries newer firmware than that orb runs.
+    button. A tile turns amber when this hub carries newer firmware than that orb runs, and
+    opens that orb when you click it anywhere on the tile.
     Forget appears only on a board that is not answering, not announcing, and not on a
     cable; a board you can still reach will re-list itself.</p>
-  </article>
+  </section>
 
   <p class="hint" id="mn-empty" hidden>No orbs yet. A board on a cable that stayed silent
   when the hub asked it runs no orb: give it one with the New Orb button. Add an orb by its
@@ -117,12 +119,12 @@
     </div>
     <div id="ob-idcard" class="idcard" hidden></div>
     <div class="row" id="ob-lonelyrow">
-      <button id="ob-lonely" class="danger" title="Replace the firmware with the lonely image: the board stops being an orb, boots instead of boot-looping, and bounces a message asking to be reflashed. Takes the fleet row, the name, the time zone and every Wi-Fi credential with it.">Leave it lonely&#8230;</button>
+      <button id="ob-lonely" class="danger" title="Wipe this orb clean, including its software. You can set it up again later.">Erase flash completely&#8230;</button>
       <span id="ob-lonely-confirm" class="hint" hidden>
-        <button id="ob-lonely-go" class="danger">free this orb&#8217;s firmware on <span id="ob-lonely-port">this orb</span></button>
+        <button id="ob-lonely-go" class="danger">Erase <span id="ob-lonely-port">this orb</span> completely</button>
         <button id="ob-lonely-no" class="ghost">Cancel</button>
       </span>
-      <span id="ob-lonely-hint" class="hint">The only end of orb life this page offers. The board boots, wipes its own settings, says why on its screen, and waits; New Orb flashes it into something else whenever you like. There is no whole-chip erase here on purpose: a blank chip boot-loops and reads as a broken cable.</span>
+      <span id="ob-lonely-hint" class="hint">Wipes everything on this orb, including its software, so you can start over. Only do this if you mean to reset the orb for good.</span>
     </div>
   </article>
 
@@ -203,11 +205,13 @@
 
        • cable  — the board is on a lead of this machine. Deleting its row alone
          would only hide it until the next sweep, so the dialog offers what
-         actually ends a live board: the lonely image (the board stops being an
-         orb, wipes its own settings and waits for whoever comes next) or RESET
-         ALL (firmware stays, owner data goes, the board comes back as the open
-         provisioning AP it was the day it was flashed). Both travel the USB
-         lead: the hub has no door onto a network it cannot command.
+         actually ends a live board: RESET SETTINGS (RESET ALL over the lead:
+         the firmware stays, the Wi-Fi credentials, time zone and name go, and
+         the board comes back as the open provisioning AP it was the day it was
+         flashed) or ERASE FLASH COMPLETELY (the board stops being an orb, wipes
+         its own settings, and boots a minimal base image that holds its port
+         for an easy reflash later). Both travel the USB lead: the hub has no
+         door onto a network it cannot command.
        • drop   — no lead, no announce inside the grace, no answer at the
          remembered address. The row will not rebuild itself, so the press drops
          it and nothing more.
@@ -222,15 +226,15 @@
     <h3 id="fj-title">Forget</h3>
     <p class="hint" id="fj-who"></p>
     <div id="fj-cable" hidden>
-      <p class="hint">Deleting the row of a live board only hides it until the next check-in. Choose an ending instead:</p>
+      <p class="hint">This orb is plugged in, so hiding it won't stick — it comes right back. Choose what to do instead:</p>
       <div class="row">
-        <button id="fj-lonely" class="danger" title="Write the lonely image over the USB lead: the board stops being an orb, wipes its name, time zone and credentials, boots, and asks to be reflashed.">Full reset — lonely firmware</button>
-        <button id="fj-reset" class="danger" title="Send RESET ALL over the USB lead: settings go, firmware stays, the board reboots as its own open provisioning AP for the next owner.">Factory reset settings</button>
+        <button id="fj-reset" class="danger" title="Clear its Wi-Fi password, time zone and name. The orb keeps its current software and comes back ready to set up again.">Reset settings</button>
+        <button id="fj-lonely" class="danger" title="Wipe the orb clean, including its software. It stops acting as an orb and waits to be set up again later.">Erase flash completely</button>
       </div>
     </div>
     <div id="fj-gone" hidden>
       <p class="hint" id="fj-gone-what"></p>
-      <div class="row"><button id="fj-forget" class="danger" title="Drop this board's fleet row. Nothing is sent to the board: it keeps its firmware, its name and its settings, and the hub lists it again the moment it announces or returns to a lead.">Forget this orb</button></div>
+      <div class="row"><button id="fj-forget" class="danger" title="Take this orb off the list. Nothing is sent to it, so it keeps its software, name and settings, and shows up again the next time you plug it in or it comes online.">Forget this orb</button></div>
     </div>
     <p class="hint" id="fj-wait" hidden></p>
     <p class="hint" id="fj-note"></p>
@@ -240,7 +244,7 @@
 </div>
 
 <!-- The flash progress for the doors that live on an orb's own card: a cable
-     reflash and a lonely write. It opens the moment either starts, so the wire's
+     reflash and a full erase. It opens the moment either starts, so the wire's
      progress is on screen while the wire is working, and closes when told. The
      New Orb dialog owns its own progress bar; naming and picking happen there. -->
 <div class="flashpanel" id="ob-flashpanel" hidden>

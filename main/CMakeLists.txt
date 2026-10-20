@@ -17,6 +17,10 @@ idf_component_register(
         # gate-to-table path is honest.
         "gfx/orb_layers.c"
         "clock/clock_view.c"
+        # §26 slice 1: the face shown when no theme is resident. Own TU because the
+        # themed dial's job is drawing sprites and this one's contract is that it draws
+        # none — the two must not be able to reach for each other's state.
+        "clock/clock_base.c"
         "clock/clock_themes.c"
         "knob/knob.c"
         "color/color_picker.c"

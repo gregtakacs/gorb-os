@@ -131,6 +131,31 @@ void display_set_commit_hook(display_commit_hook_t hook);
  *  LVGL-task only, and only meaningful from inside the commit hook. */
 uint16_t *display_fb_mirror(void);
 
+/* ---- one-shot frame capture, so "it looks right" can be measured ----------
+ *
+ * The CO5300's GRAM is write-only over QSPI, so the panel cannot be read back
+ * and the PSRAM mirror is the only full-frame record of what the glass shows.
+ * Copying it from the HTTP task races the LVGL task mid-chunk and yields a
+ * torn image with no way to tell, so a capture is ARMED and then performed by
+ * the LVGL task itself, in the same post-composite window the clock's commit
+ * hook uses (after every chunk is mirrored and after the clock's overlays are
+ * in). What comes back is therefore a frame the panel actually received.
+ *
+ * A screen that never repaints never commits, so nothing copies: `wait` ms
+ * elapses and the caller may fall back to display_capture_direct(), which
+ * copies from the calling task and REPORTS itself as torn rather than pretending.
+ *
+ * Used only by the gated /api/v1/fb door; the state lives here either way,
+ * because the mirror and the one safe copy site both do.
+ */
+bool      display_capture_present(void);   /* false = no PSRAM mirror in this build */
+esp_err_t display_capture_arm(void);       /* ESP_ERR_NO_MEM if staging cannot alloc */
+bool      display_capture_ready(uint32_t *seq, bool *torn);
+const uint16_t *display_capture_data(void);/* valid until the next arm/direct */
+size_t    display_capture_bytes(void);
+/** Copy now, from this task. Reports torn=true. Refuses while a commit is mid-copy. */
+esp_err_t display_capture_direct(uint32_t *seq);
+
 /**
  * Lend the display's tile ring (2 x 18,640 B of internal DMA RAM) to another
  * peripheral for one sequence, and take it back. The SD driver's bring-up and

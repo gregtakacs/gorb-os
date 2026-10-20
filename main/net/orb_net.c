@@ -60,6 +60,8 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
 #include "knob.h"     /* h_screen injection; h_status reads the raw/detent pair */
 #include "art_bank.h"
+#include "display.h"        /* h_fb: the one-shot frame capture over the panel mirror */
+#include "board_config.h"   /* h_fb: SCREEN_WIDTH/HEIGHT, the row scratch's size */
 #include "orb_sd.h"
 #include "orb_theme.h"
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
@@ -3943,6 +3945,183 @@ static esp_err_t h_screen(httpd_req_t *req)
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
+#if CONFIG_ORB_DEBUG_HTTP
+/* GET /api/v1/fb?fmt=bmp|raw565&wait=ms&direct=1 — the glass, as bytes.
+ *
+ * Every claim about a screen so far rested on a log line saying the draw path
+ * ran plus a person holding the dial. "It runs" is not "it looks right", and
+ * §26's slice 1 status is stuck on exactly that difference. The CO5300 GRAM is
+ * write-only, so the panel cannot be read back; the PSRAM mirror IS the frame
+ * the panel received, and display_capture_arm() copies it on the LVGL task
+ * inside the commit window, so this is one whole displayed frame rather than a
+ * screenshot race.
+ *
+ * Same gate as /api/v1/screen and the same reason (§7 item 7): measurement, not
+ * a feature. It reads pixels and changes nothing, cannot reach the card, the
+ * radio or the bootloader, and is less capable than the reboot route beside it.
+ * At 652 KB it is also the largest response this device makes — a bench-only
+ * expense by design. bmp is a plain 24-bit BMP so any viewer opens it with
+ * nothing installed; raw565 is little-endian top-down for tools that want
+ * pixels rather than a picture of them. One capture at a time: the staging
+ * buffer and row scratch are singletons, so a second caller gets 503 rather
+ * than interleaved pixels.
+ */
+static esp_err_t h_fb(httpd_req_t *req)
+{
+    static uint8_t s_row[SCREEN_WIDTH * 3 + 4];   /* one BMP row + pad */
+    static bool    s_busy;
+    char v[8];
+    const bool want_raw = q_param(req, "fmt", v, sizeof v) && !strcmp(v, "raw565");
+    const bool go_direct = q_param(req, "direct", v, sizeof v) && v[0] == '1';
+    char wbuf[8] = "";
+    int wait_ms = 1500;
+    if (q_param(req, "wait", wbuf, sizeof wbuf)) {
+        wait_ms = atoi(wbuf);
+        if (wait_ms < 0) wait_ms = 0;
+        if (wait_ms > 8000) wait_ms = 8000;
+    }
+
+    if (!display_capture_present()) {
+        ESP_LOGW(TAG, "fb: no panel mirror in this build, nothing to capture");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no panel mirror\"}");
+    }
+    if (s_busy) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"capture already running\"}");
+    }
+    s_busy = true;
+
+    esp_err_t r = ESP_OK;
+    uint32_t seq = 0;
+    bool torn = true;
+    bool have = false;
+
+    /* Armed only for the commit-synchronised path. display_capture_direct()
+     * refuses while ARMED — that refusal is what keeps a commit's copy and a
+     * fallback copy from filling the same buffer at once — so arming first
+     * would make ?direct=1 structurally unable to ever run. It did exactly
+     * that until the first bench capture caught it. */
+    if (!go_direct) {
+        if (display_capture_arm() != ESP_OK) {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_sendstr(req, "{\"error\":\"cannot stage capture (psram)\"}");
+            s_busy = false;
+            return ESP_OK;
+        }
+        /* The copy happens at the next commit. On the clock that is a frame or
+         * two away; a screen that never repaints never commits, and that is
+         * what ?direct=1 and the 504 below are for. */
+        for (int waited = 0; waited < wait_ms; waited += 10) {
+            if (display_capture_ready(&seq, &torn)) { have = true; break; }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    if (!have && go_direct) {
+        r = display_capture_direct(&seq);
+        if (r == ESP_OK) { torn = true; have = true; }
+    }
+    if (!have) {
+        if (go_direct) {
+            /* Only one thing makes a direct copy refuse: a commit is mid-copy
+             * into the same buffer, so another caller armed first. */
+            ESP_LOGW(TAG, "fb: direct copy refused, a commit holds the buffer");
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            s_busy = false;
+            return httpd_resp_sendstr(req,
+                   "{\"error\":\"capture buffer held by a commit\",\"retry\":\"later\"}");
+        }
+        ESP_LOGW(TAG, "fb: no commit within %d ms; retry with ?direct=1", wait_ms);
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        httpd_resp_sendstr(req, "{\"error\":\"no frame committed\",\"retry\":\"direct=1\"}");
+        s_busy = false;
+        return ESP_OK;
+    }
+    r = ESP_OK;
+
+    const uint16_t *src = display_capture_data();
+    const size_t total = display_capture_bytes();
+    /* Padded row, always: the tool on the other end checks its received length
+     * against this number, and a BMP row is 466*3 rounded UP to 4 bytes. */
+    const uint32_t img_bytes = want_raw ? (uint32_t)total
+        : (uint32_t)(54 + ((SCREEN_WIDTH * 3 + 3) & ~3) * SCREEN_HEIGHT);
+
+    char meta[128];
+    snprintf(meta, sizeof meta,
+             "seq=%u consistency=%s fmt=%s w=%u h=%u bytes=%u",
+             (unsigned)seq, torn ? "torn" : "commit", want_raw ? "raw565" : "bmp",
+             (unsigned)SCREEN_WIDTH, (unsigned)SCREEN_HEIGHT, (unsigned)img_bytes);
+    httpd_resp_set_type(req, want_raw ? "application/octet-stream" : "image/bmp");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "X-Orb-FB", meta);
+
+    /* Chunked, never a Content-Length: the whole point is that we do not hold
+     * a second 652 KB buffer to size one, and the host tool checks the length
+     * against this header instead. */
+    /* BMP insists each row start on a 4-byte boundary: 466*3 = 1398 pads to
+     * 1400. The first version of this sent 1402 (sizeof the row scratch rather
+     * than the padded row), which put every row 2 bytes out of true — a
+     * progressive horizontal shear of one third of the frame height that a
+     * thumbnail of a round dial does not visibly fail. The pad bytes are zeroed
+     * per row, because s_row is static and would otherwise leak the previous
+     * row's tail into the next one's padding. */
+    const int row_bytes = (SCREEN_WIDTH * 3 + 3) & ~3;
+    if (!want_raw) {
+        uint8_t hdr[54] = {
+            'B', 'M',                        /* 0  signature            */
+            0, 0, 0, 0,                      /* 2  file size, patched   */
+            0, 0, 0, 0,                      /* 6  reserved             */
+            54, 0, 0, 0,                     /* 10 pixel data offset    */
+            40, 0, 0, 0,                     /* 14 DIB header size      */
+            SCREEN_WIDTH & 255, (SCREEN_WIDTH >> 8) & 255, 0, 0,   /* 18 width  */
+            SCREEN_HEIGHT & 255, (SCREEN_HEIGHT >> 8) & 255, 0, 0, /* 22 height */
+            1, 0,                            /* 26 planes               */
+            24, 0,                           /* 28 bits per pixel       */
+            0, 0, 0, 0,                      /* 30 BI_RGB               */
+            0, 0, 0, 0,                      /* 34 image size           */
+            0, 0, 0, 0,                      /* 38 x pixels per metre   */
+            0, 0, 0, 0,                      /* 42 y pixels per metre   */
+            0, 0, 0, 0,                      /* 46 colours used         */
+            0, 0, 0, 0 };                    /* 50 important colours    */
+        const uint32_t sz = img_bytes;
+        hdr[2] = (uint8_t)sz;  hdr[3] = (uint8_t)(sz >> 8);
+        hdr[4] = (uint8_t)(sz >> 16); hdr[5] = (uint8_t)(sz >> 24);
+        if (httpd_resp_send_chunk(req, (const char *)hdr, 54) != ESP_OK) r = ESP_FAIL;
+        /* Bottom-up, as BMP requires: row 0 of the file is the panel's last. */
+        for (int y = SCREEN_HEIGHT - 1; y >= 0 && r == ESP_OK; y--) {
+            uint8_t *o = s_row;
+            const uint16_t *in = src + (size_t)y * SCREEN_WIDTH;
+            for (int x = 0; x < SCREEN_WIDTH; x++, in++, o += 3) {
+                const uint16_t p = __builtin_bswap16(*in);   /* wire -> native */
+                const uint32_t r5 = (p >> 11) & 0x1F, g6 = (p >> 5) & 0x3F,
+                               b5 = p & 0x1F;
+                o[0] = (uint8_t)((b5 << 3) | (b5 >> 2));
+                o[1] = (uint8_t)((g6 << 2) | (g6 >> 4));
+                o[2] = (uint8_t)((r5 << 3) | (r5 >> 2));
+            }
+            memset(o, 0, (size_t)row_bytes - (size_t)SCREEN_WIDTH * 3);
+            if (httpd_resp_send_chunk(req, (const char *)s_row,
+                                      row_bytes) != ESP_OK) r = ESP_FAIL;
+        }
+    } else {
+        for (int y = 0; y < SCREEN_HEIGHT && r == ESP_OK; y++) {
+            const uint16_t *in = src + (size_t)y * SCREEN_WIDTH;
+            uint16_t *o = (uint16_t *)(void *)s_row;
+            for (int x = 0; x < SCREEN_WIDTH; x++) o[x] = __builtin_bswap16(in[x]);
+            if (httpd_resp_send_chunk(req, (const char *)s_row,
+                                      SCREEN_WIDTH * 2) != ESP_OK) r = ESP_FAIL;
+        }
+    }
+    if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
+
+    ESP_LOGI(TAG, "fb: served %u B %s seq=%u %s%s", (unsigned)img_bytes,
+             want_raw ? "raw565" : "bmp", (unsigned)seq, torn ? "torn" : "commit",
+             r == ESP_OK ? "" : " (client aborted)");
+    s_busy = false;
+    return r;
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
 /* Copy src into dst as JSON string contents. Every string on this page came from a
  * filename on somebody's card or from a browser, and a title containing a quote would
  * otherwise break the page's JSON.parse with nothing on the device to explain why. */
@@ -5393,8 +5572,8 @@ static esp_err_t net_start_httpd(void)
      *
      * The merge with the app-platform line makes one of those 32 conditional:
      * /api/v1/screen registers only under CONFIG_ORB_DEBUG_HTTP, default y on the
-     * bench and off for a build that leaves for a shelf. Count is therefore 32 with
-     * the door on and 31 with it off, and host_tz_test.py counts the table textually,
+     * bench and off for a build that leaves for a shelf. Count is therefore 34 with
+     * the door on and 32 with it off, and host_tz_test.py counts the table textually,
      * so it sees 32 either way. Both fit 36; the guard never pushes the count up. */
     cfg.max_uri_handlers  = 36;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
@@ -5451,6 +5630,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/reprov",  .method = HTTP_POST, .handler = h_reprov },
 #if CONFIG_ORB_DEBUG_HTTP
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
+        { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
 #endif
         /* microSD + themes. /themes is the page; the seven under /api/v1/sd are its
          * backing calls — the bundle store door added the seventh at P6.4 — and

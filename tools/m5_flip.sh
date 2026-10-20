@@ -102,13 +102,18 @@ store(){ # store ID LABEL — one store-door press: reboot:none, NO flip, cost o
   say "store($label): $CODE -> $(cat "$BODY")"
   grep -q '"state":"storing"' "$BODY" || { fail "store $label refused: $(cat "$BODY")"; return; }
   grep -q '"reboot":"none"' "$BODY" || { fail "store $label did NOT answer reboot:none: $(cat "$BODY")"; return; }
-  local E=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
-  # The dial must NOT flip: assert NO new rst:0x boundary after the store press.
-  # (A flip would reboot; the store door must not. Its ABSENCE is the pass here.)
+  # The window anchor is the press's own host wall time. capf stamps every line in
+  # that domain, and the base face emits no fps line to anchor on — a board booting
+  # to source none is exactly the post-slice-2 state this bench now runs on, and
+  # anchoring on absent fps lines once read the capture's own open-reset as a flip.
+  local E=$(date +%s)
+  # (A flip would reboot inside a second of the ack; the store door must not. Its
+  # ABSENCE is the pass here. The -2 grace excludes only the capture's own
+  # open-reset; a +3 grace once swallowed a real flip boundary that landed +0.86 s.)
   local R=""
   for j in $(seq 1 40); do
     sleep 1
-    R=$(awk -v e="$E" '$1+0>e+3 && /rst:0x/ {print $1; exit}' "$SER")
+    R=$(awk -v e="$E" '$1+0>(e-2) && /rst:0x/ {print $1; exit}' "$SER")
     [ -n "$R" ] && { fail "store $label: the dial FLIPPED (rst:0x after a reboot:none store)"; return; }
   done
   # Read the ingest cost the store worker recorded, beside the refill figures (nonzero).
@@ -121,7 +126,7 @@ store(){ # store ID LABEL — one store-door press: reboot:none, NO flip, cost o
     sleep 2
   done
   say "--- store $label ---"
-  awk -v e="$E" '$1+0>e-8' "$SER" | grep -E 'bundle|store|rst:0x|sta ip|config server|clock: clock [0-9]+ fps' | head -24
+  awk -v e="$E" '$1+0>(e-8)' "$SER" | grep -E 'bundle|store|rst:0x|sta ip|config server|clock: clock [0-9]+ fps' | head -24
   say "store $label: ack wall $(echo "$t1-$t0" | bc)s  device bundle_ms=$BM bundle_bytes=$BB"
 }
 
@@ -134,22 +139,35 @@ store "$IDB" "avkit"
 fetch GET "$ORB/api/v1/status" && PSRAM1=$(python3 -c "import json;print(json.load(open('$BODY'))['heap_psram'])")
 say "psram after stores: ${PSRAM1:-?} (baseline ${PSRAM0:-?}) — a store moves no pages; a drop here means the store wrongly made the bundle resident (§26 ping-pong's job, not P6.4's)"
 
-# [7] the FLIP door, §26 slice 3: the second press of the two-stage form. Both stores
-# landed while the dial drew A, so both aimed at B and avkit is the one B holds (the
-# avkit-b store was overwritten by the ping-pong — as designed, D13's asymmetry is
-# retired). The flip must find that id, log its own sentence, and the reboot boundary
-# its answer promised must APPEAR — the inverse of the store's absence-assertion.
-flip(){ # flip ID LABEL EXPECT_NAME — press, expect the boundary, verify the re-leased dial
+# [7] the FLIP door, §26 slice 3: the second press of the two-stage form. The dial
+# drew the default leg (base face on this bench board: its flashed default predates
+# FORMAT 3 and the new reader rightly refuses it), so both stores aimed at B and the
+# avkit store is the one B holds (the avkit-b store was overwritten by the ping-pong
+# — as designed, D13's asymmetry is retired). The flip must find that id, log its own
+# sentence, and the reboot boundary its answer promised must APPEAR — the inverse of
+# the store's absence-assertion.
+flip(){ # flip ID LABEL EXPECT_NAME — press (waiting out a busy queue), expect the boundary, verify the re-leased dial
   local id=$1 label=$2 want=$3
-  local E=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
-  fetch POST "$ORB/api/v1/sd/flip?id=$id" || { fail "flip $label: no body"; return; }
+  # The store job may still be draining; the door 409s while any theme job runs, and
+  # a wait is what a 409 means. Retry until the ack is the flip's own.
+  local r
+  for r in $(seq 1 25); do
+    fetch POST "$ORB/api/v1/sd/flip?id=$id" || { fail "flip $label: no body"; return; }
+    grep -q 'already running' "$BODY" || break
+    say "flip $label: queue busy — waiting out the running job"
+    sleep 2
+  done
   say "flip($label): $CODE -> $(cat "$BODY")"
   grep -q '"state":"flipping"' "$BODY" || { fail "flip $label refused: $(cat "$BODY")"; return; }
   grep -q '"reboot":"automatic"' "$BODY" || { fail "flip $label did NOT answer reboot:automatic"; return; }
+  # Anchor the reboot window on the ack's own host instant: capf stamps lines in that
+  # domain, and the base face prints no fps line to anchor on — anchoring on absent
+  # fps lines once read the capture's own open-reset as a flip.
+  local E=$(date +%s)
   local R=""
   for j in $(seq 1 45); do
     sleep 1
-    R=$(awk -v e="$E" '$1+0>e+3 && /rst:0x/ {print $1; exit}' "$SER")
+    R=$(awk -v e="$E" '$1+0>(e-2) && /rst:0x/ {print $1; exit}' "$SER")
     [ -n "$R" ] && break
   done
   [ -n "$R" ] || { fail "flip $label: reboot:automatic promised a boundary and none came"; return; }
@@ -164,20 +182,22 @@ flip(){ # flip ID LABEL EXPECT_NAME — press, expect the boundary, verify the r
     && grep -q '"ok":true,"active":true' "$BODY" \
     || fail "flip $label: no row is name=$want id=$id and active:true"
   say "flip $label: dial on slot-B, active \"$want\", row true — press to boundary ${j}s"
-  awk -v e="$E" '$1+0>e-8' "$SER" | grep -E 'flipped to|from slot|refilled|rst:0x|sta ip' | head -10
+  awk -v e="$E" '$1+0>(e-8)' "$SER" | grep -E 'flipped to|from slot|refilled|rst:0x|sta ip' | head -10
 }
 flip "$IDB" "avkit" "av-kit"
 
 # [8] put the board back: sd/default answers reboot:automatic too, and the flip-back
 # must land the live word on "default" — the flip is one press from where it started.
-E3=$(grep -E 'clock: clock [0-9]+ fps' "$SER" | tail -1 | cut -d' ' -f1)
+# The queue is fresh on a board that just rebooted for the flip, so one press; the
+# anchor is again the press's own host instant.
 fetch POST "$ORB/api/v1/sd/default" || fail 'sd/default returned no body'
 grep -q '"reboot":"automatic"' "$BODY" || fail 'sd/default did NOT answer reboot:automatic'
+E3=$(date +%s)
 for j in $(seq 1 45); do
   sleep 1
-  awk -v e="$E3" '$1+0>e+3 && /rst:0x/ {f=1} END{exit !f}' "$SER" && break
+  awk -v e="$E3" '$1+0>(e-2) && /rst:0x/ {f=1} END{exit !f}' "$SER" && break
 done
-for i in $(seq 1 90); do sleep 1; awk -v e="$E3" '$1+0>e+3 && /sta ip/ {f=1} END{exit !f}' "$SER" && break; done
+for i in $(seq 1 90); do sleep 1; awk -v e="$E3" '$1+0>(e-2) && /sta ip/ {f=1} END{exit !f}' "$SER" && break; done
 sleep 3
 fetch GET "$ORB/api/v1/sd" && say "after default: $(head -c 300 "$BODY")"
 grep -q '"live":"default"' "$BODY" || fail 'flip-back did not land on live=default'

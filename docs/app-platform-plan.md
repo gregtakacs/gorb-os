@@ -4143,13 +4143,53 @@ only when `esp_partition_mmap` genuinely fails — a board with no assets partit
 a blob larger than the partition, or an exhausted DROM window. Whether a shipping SKU should
 carry such a table is a §26 decision still on the table, not something this slice assumed.
 
+**RULED 2026-10-20 (owner): ship WITH the default; the open item above is closed.** `idf.py
+flash` keeps writing `assets/orb_default.img` (the FORMAT 3 av-kit image), so a fresh board
+boots to the dial, and the base face stays exactly what Option B made it: the no-resident-art
+fallback, never a factory state. The no-default-SKU option is rejected. This ruling also fixes
+the reading of the same day's earlier close-out sentence, "displays the themeless default with
+the digital clock": the shelf state is the slot-A dial; the digital face is what a REFUSED
+slot A shows, and that sentence described the fallback leg, not the factory state. One
+operational
+consequence of the ruling: `serflash.sh` deliberately does not resend the assets partition, so
+a bench board whose flashed blob predates FORMAT 3 lives in the refused-fallback state until
+someone writes the bank back (`idf.py flash`, or `esptool write_flash 0x420000
+assets/orb_default.img`).
+
+**And the "erase never reaches the base face" premise above is FALSE for the shipped code —
+re-measured 2026-10-20 on orb-B, no overrides.** The default leg now reads slot A's header
+before it maps anything: `adopt_default_bundle()` (orb_theme.c:1140) flash-reads the header
+and returns `ESP_ERR_NOT_FOUND` on erased or FORMAT 2 bytes, so `esp_partition_mmap` is never
+reached, nothing maps, `art_bank_ready()` stays false, and the residency gate takes the base
+leg. The always-map finding above belonged to the boot path it preceded. Measured on the
+shipped build, all three no-default-adjacent states, each a `fbgrab` of the live glass:
+
+| state | boot log | ink / mean luma |
+|---|---|---|
+| slot A stale (pre-FORMAT 3 blob) | `default slot-A refused: ESP_ERR_NOT_FOUND` | 0.87% / 1.7 |
+| slot A erased (`erase_region 0x420000 0x800000`) | same refusal + `no resident art — base digital face (§26)` | 0.89% / 1.8 |
+| default rewritten (restored) | `default bundle "av-kit" from slot-A: mapped` | 97.26% / 54.7 |
+
+The two base captures differ by 0.65% of pixels (same face, digits moved); erased vs dial by
+97.24%, which rules a stale frame in or out. With them M6's clause 3 — "a card-less board
+still tells the time, from the base render" — is bench-testable on shipped code in a state a
+board actually reaches: erase, grab, `--min-ink 0.3` passes at ~0.9% (the face is three
+labels, not a black rectangle), write the bank back. No forced builds were needed; this closes
+slice 1's "the base face has never produced a visible frame" gap from shipped firmware. In the
+same commit: `art_bank_map_at_0()` deleted (no caller since the verified door landed; its
+comment still asserted the retired always-map rule), and the two header comments that named
+`use_baked_in()` as live corrected to the base-face truth.
+
 
 **Two things this section will not guess.** Both are visible to a person holding the device,
 and a wrong answer looks like a broken product rather than a wrong field. **The base clock's
 face is ANSWERED** (owner, 2026-10-19): digital — large time, date beneath, one status line —
 as the cheapest legible thing and the base form that asks least of a theme it has not been
-given; slice 1 below is that answer. **Still open: what the glass and the flip page show
-before the first theme ever arrives**, the state a board is in on a shelf. There is precedent
+given; slice 1 below is that answer. **What the glass and the flip page show before the first
+theme ever arrives**, the state a board is in on a shelf — RULED 2026-10-20, twice: the first
+close-out record below ruled the shelf state, and the same-day ruling above fixed its wording
+(ship WITH the flashed default: shelf glass is the slot-A dial, the base face is the refusal
+fallback, now measured in pixels on both paths). There is precedent
 for the second — the unconfigured-network case already has an on-screen ask — and the answer
 probably reuses it, but it is a decision and not an inference. Recorded here so whoever writes
 slice 2 decides it deliberately rather than discovering it in the pixels.
@@ -4313,8 +4353,9 @@ ahead-commits already in `origin/main` by patch-id) is deleted locally and on `o
 
 **Consequence for the plan.** P6b's client half is DONE. The roadmap's remaining P6b item —
 the hub-side theme **editor/preview** §27 named — and the larger FORMAT 3 threads (P6.5's
-glass/flip, P7 wasm3 code tier, P8 OS-scheduled repaint, and the open §26 first-boot
-decision) are still open and unrelated to the ingest dialect.
+glass/flip, P7 wasm3 code tier, P8 OS-scheduled repaint) are still open and unrelated to the
+ingest dialect; the §26 first-boot decision named there closed the same day (RULED: ship WITH
+the flashed default — see the §26 ruling records).
 
 ## 29 — D33: the web release decides P6b's shape (RULED 2026-10-20, owner)
 

@@ -99,9 +99,10 @@ void art_bank_lat_probe(void);
  * D30 (docs/app-platform-plan.md §20.4) lights it: an installed theme's pixels
  * are arena pixels from boot onward, refilled from its slot by one fused
  * read-and-CRC pass. Mechanism A keeps two jobs and loses none of them — it is
- * how the card-less default maps its bank (art_bank_map_at_0(), which ignores
- * this define on purpose, D13 as ruled option A), and it is Arm A, the fallback
- * an install takes when the arena cannot hold the bundle it was handed (§20.2).
+ * how the flashed default maps its bank (through orb_theme's slot-A door, which
+ * verifies the FORMAT 3 header before mapping and can refuse — §26 slice 2
+ * retired D13's always-map rule), and it is Arm A, the fallback an install
+ * takes when the arena cannot hold the bundle it was handed (§20.2).
  * The two M3 probe builds this define priced are still exactly this define at 0
  * and at 1; lighting it for shipping does not retire the measurement. */
 #define ORB_ART_MECH_B 1
@@ -191,12 +192,9 @@ static inline esp_err_t art_bank_init_at_0(size_t need_bytes)
     return art_bank_init(0, need_bytes);
 }
 
-/** Map the bank at partition offset 0 and ALWAYS map it, mechanism B lit or not.
- *  The card-less fallback calls this, and only this, because the pixels it draws
- *  are the ones `idf.py flash` wrote and nothing else on the board holds a copy
- *  of them (D13, and the reason it survives as a rule: an arena copy of them
- *  would have to be made from the same bytes an install erases). */
-esp_err_t art_bank_map_at_0(size_t need_bytes);
+/* There is no always-map default entry point any more: §26 slice 2 moved the
+ * default leg behind orb_theme's slot-A door, which verifies the FORMAT 3
+ * header first and falls to the base render when the bytes there refuse. */
 
 /** The primary bank as a PSRAM arena copy, optionally CRC-verified DURING the
  *  one read pass that fills it — D30's boot refill in its fused shape, the

@@ -24,9 +24,11 @@
  * bundle carries it — that precedence is what makes an owner's theme swap change
  * the dial. Where it does not, a `required` declaration gets a refusal (D26) and
  * an `optional` one gets the app's default (tier 2, D31); never a substitute
- * chosen silently. Tier 3, the board's own pair, is its own answer rather than a
- * flavour of miss, because the clock draws it today through use_baked_in() and a
- * caller that cannot tell the two apart cannot say which face it is showing.
+ * chosen silently. Tier 3, the board's own pair, was retired with §26 slice 2
+ * and §27: the clock no longer carries compiled pixels, and a board with no
+ * resident bank draws the base face instead. What survives of the tiering is
+ * the caller's duty — one that cannot tell resident art from its absence
+ * cannot say which face it is showing.
  *
  * NO SHIPPED PIXELS (D22, D10). A tier-2 default is one of five generated
  * primitives, baked into the plane layout the art bank uses, so the caller hands

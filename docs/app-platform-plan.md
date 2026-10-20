@@ -3984,7 +3984,11 @@ would never fire until slice 2 removes that function, and slice 1 would ship unt
 `use_baked_in()`, `art_bank_map_at_0()` and the override, retarget `s_source` and the four
 sentences that promise a default, rewrite the D13 rows in `host_tz_test.py`, and move the
 partition-table write into the flash path so a board learns the two-slot layout. Slice 2 is
-where M6's clause 3 becomes a real test rather than a sentence. Slice 2 no longer needs a
+where M6's clause 3 becomes a real test rather than a sentence. **Working doc for whoever
+picks this up: `docs/slice2-handoff.md`** — it re-verifies every anchor below, corrects three
+in the outgoing summary, and records the one structural problem: the art gate at
+`clock_view.c:1774` runs ahead of the base branch at 1811, so slice 2 is a reorder first and a
+deletion second. Delete that file when the slice lands. Slice 2 no longer needs a
 person holding the dial to check its face: it builds, flashes, and `tools/fbgrab.py` says
 what the glass holds — ink fraction, mean luma and a thumbnail, plus `--diff` against a
 capture taken before the change. That is what slice 1 could not do and why its status above

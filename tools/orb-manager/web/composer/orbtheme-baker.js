@@ -2199,6 +2199,139 @@
            rec.abi_max >= GEOM_ABI3 && rec.abi_min <= GEOM_ABI3;
   }
 
+  /* The bake path: drawn planes in, an installable bundle out.
+   *
+   * writeBundle3 takes ENCODED pixels on purpose — the writer's parity is a byte question,
+   * which headless-bundle3.test.js answers, and encoding is a canvas question, which is
+   * this function's. bank3 follows theme_schema.bank_bytes: RGB565 colour then an A8 alpha
+   * stride, so a plane costs w*h*3 and a colour-only bank w*h*2. `alpha: false` is right
+   * only for a bank of plates, because orb_clock3.c reads plane 0 colour-only for exactly
+   * that reason; every sprite, hand and overlay carries its mask, and dropping it would
+   * draw junk where the art has a rounded corner. The rows come out contiguous because
+   * they are emitted in byte order — the catalogue cannot claim a hole it did not write. */
+  function bank3(planes, o) {
+    o = o || {};
+    var alpha = o.alpha === undefined ? true : !!o.alpha;
+    var out = [], rows = [], at = 0, i, p, col, cost;
+    if (!planes || !planes.length) throw new Error('a bank holds at least one plane; an empty one draws nothing');
+    for (i = 0; i < planes.length; i++) {
+      p = planes[i];
+      if (!(p.w > 0 && p.h > 0)) {
+        throw new Error('bank plane ' + i + ' is ' + p.w + 'x' + p.h + ': a plane with no extent carries no pixels and names no catalogue row');
+      }
+      if (!p.rgba || p.rgba.length !== p.w * p.h * 4) {
+        throw new Error('bank plane ' + i + ' is ' + (p.rgba ? p.rgba.length : 0) + ' B of RGBA, not the ' +
+          (p.w * p.h * 4) + ' B its ' + p.w + 'x' + p.h + ' extent calls for');
+      }
+      col = rgb565Plane(p.rgba, p.w, p.h);
+      if (alpha) col = concat([col, alphaPlane(p.rgba, p.w, p.h)]);
+      cost = col.length;
+      out.push(col);
+      rows.push({ off: at, size: cost, w: p.w, h: p.h });
+      at += cost;
+    }
+    return { art: concat(out), sprites: rows, size: at };
+  }
+
+  /* A clock section the compiled dial will project, assembled from planes the caller drew.
+   *
+   * Every rule here is orb_clock3.c's, not a preference: plate slot 0 and overlay slot 1
+   * only; hand slots 0-4; a sprite row is a shadow and its slot is its hand's, because the
+   * light offset is only recoverable from the hand it hangs under; the plate is the whole
+   * panel and one keyframe, since the delta rects that would carry more are the shape
+   * §25.3 refuses. tourbillon_n and bg_frames stay zero because the scalars naming them
+   * would point at rows this section has no field for. A caller asking for either gets the
+   * dial's own sentence rather than a bundle the door opens and the projection then
+   * rejects — the worst failure this path can have, because it looks like a store error.
+   *
+   * The bank is plate first (colour only, the dial reads it so), then one masked plane per
+   * row in table order, so the catalogue is contiguous and accounts for the art exactly. */
+  function bakeClock3(o) {
+    var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
+    var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
+    var sc = {}, k;
+    for (k in (o.scalars || {})) sc[k] = o.scalars[k];
+    if (!o.plate) throw new Error('a clock section needs a plate: the compiled dial takes its blank-layer centre from the plate’s own middle, so with no plate it has no centre');
+    var pl = o.plate;
+    if (pl.w !== scrW || pl.h !== scrH || pl.x || pl.y) {
+      throw new Error('a plate at extent (' + (pl.x || 0) + ',' + (pl.y || 0) + ',' + pl.w + ',' + pl.h +
+        ') of a ' + scrW + 'x' + scrH + ' panel: the compiled clock draws its background full-screen, so a plate that is not the whole panel is not a plate');
+    }
+    ['tourbillon_n', 'bg_frames', 'gif_frames'].forEach(function (n) {
+      if (sc[n]) throw new Error(n + ' = ' + sc[n] + ': those planes ride the gif and carriage tables a FORMAT 3 clock section does not carry, so this bake refuses them');
+    });
+    sc.tourbillon_n = 0; sc.bg_frames = 0; sc.gif_frames = 0; sc.plate_off = 0;
+
+    // Every row starts from blankElement(): packElements refuses a missing field rather
+    // than defaulting it, because a default applied at pack time is a value nobody wrote.
+    // Every row starts from blankElement(): packElements refuses a missing field rather
+    // than defaulting it, because a default applied at pack time is a value nobody wrote.
+    // The bank builds empty and every plane enters through row(), so no plane is ever
+    // counted twice and row 0 keeps the colour-only cost the projection reads it at.
+    var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
+    var elems = [], nid = 1, ord = 1, handSlot = {};
+    function row(e, plane, masked) {
+      var b = bank3([plane], { alpha: masked });
+      bank.art = concat([bank.art, b.art]);
+      bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: plane.w, h: plane.h });
+      bank.size += b.sprites[0].size;
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      rec.frame0 = bank.sprites.length - 1;
+      elems.push(rec);
+    }
+    row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+          order: 0, alpha: 255, n_frames: 1 }, pl, false);
+    // Depth: plate, then the hands in the order given, then their shadows beneath the hands
+    // that cast them, then the overlay last — FORMAT 2's clock_view draws the crystal over
+    // everything, and the table says what the renderer already does.
+    for (k = 0; k < hands.length; k++) {
+      var h = hands[k];
+      if (!(h.slot >= 0 && h.slot < 5)) throw new Error('a hand at slot ' + h.slot + ': the compiled clock has five hand fields, slots 0-4');
+      handSlot[h.slot] = 1;
+      row({ n: nid++, 'class': classId('hand'), slot: h.slot, x: h.x, y: h.y, w: h.w, h: h.h,
+            pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: ord++, alpha: h.alpha === undefined ? 255 : h.alpha,
+            n_frames: 1, flags: h.flags || 0, scale16: h.scale16 || 0 }, h, true);
+    }
+    for (k = 0; k < shadows.length; k++) {
+      var s = shadows[k];
+      if (!handSlot[s.slot]) {
+        throw new Error('a shadow at slot ' + s.slot + ' with no hand there: a shadow’s crop pivot is its hand’s centre minus its own draw point, so the light offset is only recoverable from the hand it hangs under');
+      }
+      row({ n: nid++, 'class': classId('sprite'), slot: s.slot, x: s.x, y: s.y, w: s.w, h: s.h,
+            pivot_x: s.pivot_x, pivot_y: s.pivot_y, order: ord++, alpha: s.alpha === undefined ? 255 : s.alpha,
+            n_frames: 1, flags: s.flags || 0 }, s, true);
+    }
+    for (k = 0; k < plates.length; k++) {
+      row({ n: nid++, 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
+            w: plates[k].w, h: plates[k].h, order: ord++, flags: plates[k].flags || 0,
+            alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
+    }
+    for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
+    sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
+
+    var b = writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
+      sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
+                   sprites: bank.sprites, art: bank.art }] });
+    b.meter = budget3(b.bytes);
+    b.n_elem = elems.length;
+    return b;
+  }
+
+  /* The D29 meter, read back off finished bytes rather than estimated from the model. The
+   * editor shows it before an owner stores and after, and a number that disagreed with the
+   * file it described would be worse than no number. Both sums are the INSTALL sums — the
+   * region a slot reserves for tables, and the room its banks have left — so a full theme
+   * reads 100% and is legal, exactly as checkBudget3 accepts == cap. */
+  function budget3(raw) {
+    var h = parseBundle3(raw);
+    return { name: h.name, bytes: raw.length, geomSize: h.geomSize, geomCap: GEOM_CAP3,
+             geomPct: Math.round(h.geomSize / GEOM_CAP3 * 1000) / 10,
+             artSize: h.artSize, artCap: SLOT_ART_CAP3,
+             artPct: Math.round(h.artSize / SLOT_ART_CAP3 * 1000) / 10,
+             nSections: h.nSections };
+  }
+
   root.GorbBake = {
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
@@ -2252,7 +2385,12 @@
     packBlob3: packBlob3, unpackBlob3: unpackBlob3,
     packIndex3: packIndex3, unpackIndex3: unpackIndex3, packHeader3: packHeader3,
     parseBundle3: parseBundle3, verifyBundle3: verifyBundle3, writeBundle3: writeBundle3,
-    sectionAbiOk: sectionAbiOk
+    sectionAbiOk: sectionAbiOk,
+    // The bake path D33 puts in the browser: encoded planes -> a bank and its catalogue,
+    // a clock section the compiled dial projects, and the D29 sums read back off finished
+    // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
+    // reason the dial will print instead of a reason of its own.
+    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

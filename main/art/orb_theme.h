@@ -37,7 +37,9 @@
  *
  * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as a slot
  * designator: "default", "slot-A" or "slot-B" (§26 slice 3). The legacy "card"
- * still reads — it was always exactly "slot-B" — but is never written again.
+ * word is DEAD, by owner ruling 2026-10-20 — new infra owes no backwards
+ * compatibility — so an NVS still holding it boots the default leg until one
+ * press overwrites the word.
  * It is not a pending operation: nothing installs at boot. Boot reads the
  * choice, verifies the slot it names, and falls back to the default with the
  * damage recorded when the named slot's bytes do not match what the store
@@ -259,12 +261,13 @@ const char *orb_theme_source(void);
 /** The owner name of the theme currently on the wall, "" for the factory dial. */
 const char *orb_theme_active_name(void);
 
-/** The owner's choice, as resolved at boot. §26 slice 3 made it a slot designator;
- *  "card" is the legacy spelling of "slot-B" that older NVS still holds and that
- *  orb_theme_live() passes through unchanged. The lifted-line pair below is pinned
- *  by tools/host_tz_test.py's lift regex — keep the four defines adjacent. */
+/** The owner's choice, as resolved at boot: a slot designator. The legacy
+ *  "card" word is deleted outright (owner ruling 2026-10-20: no backwards
+ *  compatibility at this stage); a board whose NVS still holds it boots the
+ *  default leg like any other unknown word. The lifted-line pair below is
+ *  pinned by tools/host_tz_test.py's lift regex — keep the three defines
+ *  adjacent. */
 #define THEME_LIVE_DEFAULT "default"
-#define THEME_LIVE_CARD    "card"
 #define THEME_LIVE_SLOT_A  "slot-A"
 #define THEME_LIVE_SLOT_B  "slot-B"
 const char *orb_theme_live(void);

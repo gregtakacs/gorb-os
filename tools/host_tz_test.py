@@ -159,7 +159,6 @@ def lift_theme(text, where, pattern):
 
 d13_lift = "\n".join([
     lift_theme(theme_hdr, THEME_HDR, r"#define THEME_LIVE_DEFAULT[^\n]*\n"
-                                     r"#define THEME_LIVE_CARD[^\n]*\n"
                                      r"#define THEME_LIVE_SLOT_A[^\n]*\n"
                                      r"#define THEME_LIVE_SLOT_B[^\n]*"),
     lift_theme(theme_src, THEME_SRC, r"#define SLOT_A_HDR[^\n]*\n#define SLOT_B_HDR[^\n]*"),
@@ -727,14 +726,17 @@ int main(void)
     puts("== ruling D13: the slot the dial draws, and the one an install may write ==");
     /* P6.5 retired FORMAT 2, so the resolve predicate has one input that matters:
      * the choice, and whether the slot it points at holds a drawable FORMAT 3
-     * bundle. A choice of "card" that names no drawable bundle is an absence, and
+     * bundle. A choice that names no drawable bundle is an absence, and
      * the answer is the default with the choice left written — a boot that quietly
      * cleared it would forget what the owner asked for. */
-    boot_case("card chosen, B is a bundle", THEME_LIVE_CARD, true, BOOT_ART_CARD);
-    boot_case("card chosen, no bundle", THEME_LIVE_CARD, false, BOOT_ART_DEFAULT);
-    /* §26 slice 3: the slot designators. "slot-B" is the same leg the legacy "card"
-     * always named; "slot-A" names the default leg whatever B holds, because A draws
-     * mapped from its own header and B's state cannot move it. */
+    /* §26 slice 3: the slot designators. "slot-B" is the only word that draws B;
+     * "slot-A" names the default leg whatever B holds, because A draws mapped from
+     * its own header and B's state cannot move it. The legacy "card" is DEAD by
+     * owner ruling 2026-10-20 — new infra owes no backwards compatibility — and a
+     * board still holding it in NVS falls like any other unknown until one press
+     * rewrites the word. Both rows below pin that deletion as behaviour. */
+    boot_case("card is dead, B is a bundle", "card", true, BOOT_ART_DEFAULT);
+    boot_case("card is dead, no bundle", "card", false, BOOT_ART_DEFAULT);
     boot_case("slot-B chosen, B is a bundle", THEME_LIVE_SLOT_B, true, BOOT_ART_CARD);
     boot_case("slot-B chosen, no bundle", THEME_LIVE_SLOT_B, false, BOOT_ART_DEFAULT);
     boot_case("slot-A chosen, B is a bundle", THEME_LIVE_SLOT_A, true, BOOT_ART_DEFAULT);
@@ -1207,23 +1209,24 @@ MUTATIONS = [
     # The ping-pong's two predicates, mutated in the file that ships them. Each is
     # the failure the pair was written to remove, and each must turn a row of the
     # table above red: an install aimed at either slot regardless of the glass, a
-    # boot that draws a slot it never verified, and a boot that stops honouring
-    # either spelling of the B choice.
+    # boot that draws a slot it never verified, a boot that revives the dead card
+    # word, and a boot that stops honouring the one B spelling that exists.
     ('an install aims at slot B whatever the glass',
      'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
      'return SLOT_B_HDR;', 1, 'theme'),
     ('an install aims at slot A whatever the glass',
      'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
      'return SLOT_A_HDR;', 1, 'theme'),
-    ('boot draws the card slot with no bundle in it',
+    ('boot draws the slot-B leg with no bundle in it',
      'return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
      '(void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
-    ('the legacy card word stops being honoured',
-     'if (strcmp(live, THEME_LIVE_CARD) == 0 || strcmp(live, THEME_LIVE_SLOT_B) == 0)',
-     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)', 1, 'theme'),
-    ('the slot designator stops being honoured',
-     'if (strcmp(live, THEME_LIVE_CARD) == 0 || strcmp(live, THEME_LIVE_SLOT_B) == 0)',
-     'if (strcmp(live, THEME_LIVE_CARD) == 0)', 1, 'theme'),
+    ('the dead card word is revived as a B choice',
+     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)',
+     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0 || strcmp(live, "card") == 0)',
+     1, 'theme'),
+    ('the slot-B designator stops being honoured',
+     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)',
+     'if (0 && strcmp(live, THEME_LIVE_SLOT_B) == 0)', 1, 'theme'),
 ]
 
 def run_mutations():

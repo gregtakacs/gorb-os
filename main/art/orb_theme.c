@@ -50,7 +50,7 @@ static const char *TAG = "orb_theme";
  * nvs_flash_erase() of the default partition. */
 #define THEME_NVS_PARTITION "storage"
 #define THEME_NVS_NAMESPACE "orb.settings"
-/* Which slot the dial draws — THEME_LIVE_DEFAULT or THEME_LIVE_CARD. A CHOICE the
+/* Which slot the dial draws — THEME_LIVE_DEFAULT, _SLOT_A or _SLOT_B. A CHOICE the
  * owner made, not an operation waiting for a reboot: D13 deleted the pending key,
  * because a staged install that survives into a boot is a theme change the owner
  * can no longer cancel and a failure the owner cannot see coming. */
@@ -378,20 +378,22 @@ static boot_art_t s_art = BOOT_ART_DEFAULT;
  * drives every case with vectors, and so the dial's answer cannot drift from the page's.
  * §26 (P6.5) retired FORMAT 2, so a bundle is the only drawable thing a slot can hold;
  * §26 slice 3 made the choice a SLOT designator: "slot-A" and "slot-B" name the slot to
- * draw, "default" names slot A without claiming its contents are a bundle, and the
- * legacy "card" — the only installed word a pre-flip board can hold, and always slot B,
- * the only slot a store could then write — reads as "slot-B" forever. The A-named words
- * share one leg because slot A draws the same way whatever it holds: mapped in place,
- * installed pixels sitting at the same slot-relative offsets the flashed bank ships.
+ * draw, "default" names slot A without claiming its contents are a bundle. The owner
+ * ruling of 2026-10-20 deleted the legacy "card" alias outright — this is new infra
+ * with no backwards compatibility owed — so a board whose NVS still holds that word
+ * falls to the default leg like any other unknown, until one flip or store press
+ * overwrites it. The A-named words share one leg because slot A draws the same way
+ * whatever it holds: mapped in place, installed pixels sitting at the same
+ * slot-relative offsets the flashed bank ships.
  * A choice that names no drawable bundle is still the default: the fallback never
  * installs, and the default leg reading a damaged slot A is that leg's own failure,
  * reported where it can be seen — not a reason to reach across to the other slot. */
 static boot_art_t boot_resolve(const char *live, const bool b_is_bundle)
 {
     if (!live) return BOOT_ART_DEFAULT;
-    if (strcmp(live, THEME_LIVE_CARD) == 0 || strcmp(live, THEME_LIVE_SLOT_B) == 0)
+    if (strcmp(live, THEME_LIVE_SLOT_B) == 0)
         return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
-    return BOOT_ART_DEFAULT;   /* "default", "slot-A", junk, or no key at all */
+    return BOOT_ART_DEFAULT;   /* "default", "slot-A", "card", junk, or no key at all */
 }
 
 /* The ping-pong (§26 slice 3, owner ruling 2026-10-20): install into whichever slot
@@ -1245,7 +1247,7 @@ esp_err_t orb_theme_boot(void)
         /* Stored, not chosen: nothing is damaged and no row needs a reason. */
         ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not chosen", b3.name);
     } else if (slot_claims3) {
-        /* Chosen (as "card" or "slot-B") or not, a slot that claims FORMAT 3 with a
+        /* Chosen (as "slot-B") or not, a slot that claims FORMAT 3 with a
          * header that will not parse is damage the owner can act on (re-store), with
          * no id to hang it on because the id hashes a name this header cannot be
          * trusted to carry. */
@@ -1439,10 +1441,10 @@ esp_err_t orb_theme_set_live(const char *which)
     if (!which) return ESP_ERR_INVALID_ARG;
     /* Only real choices reach NVS: a typo written down is a boot that silently
      * draws the default, and a silent default is the failure mode this whole
-     * rewrite exists to remove. The legacy "card" stays writable so nothing that
-     * spoke the old word suddenly starts failing — the doors today write
-     * "default" and the flip door writes the slot designators. */
-    if (strcmp(which, THEME_LIVE_DEFAULT) != 0 && strcmp(which, THEME_LIVE_CARD) != 0 &&
+     * rewrite exists to remove. The legacy "card" is NOT a choice any more (owner
+     * ruling 2026-10-20: no backwards compatibility at this stage) — a pre-flip
+     * board holding it boots the default leg and one press rewrites the word. */
+    if (strcmp(which, THEME_LIVE_DEFAULT) != 0 &&
         strcmp(which, THEME_LIVE_SLOT_A) != 0 && strcmp(which, THEME_LIVE_SLOT_B) != 0)
         return ESP_ERR_INVALID_ARG;
     const esp_err_t e = nvs_put(THEME_NVS_LIVE, which);

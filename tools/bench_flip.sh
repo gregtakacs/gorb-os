@@ -1,5 +1,7 @@
 #!/bin/bash
-# m5_flip.sh — the FORMAT 3 store door + the theme upload + the flip door, on the board.
+# bench_flip.sh — the FORMAT 3 store door + the theme upload + the flip door, on the
+#   board. Renamed from m5_flip.sh: the M5 Arm-A/Arm-B comparison the name records was
+#   retired by D30, and the rename deferral died with it (D30 §26 slice 3, 2026-10-20).
 #   MIGRATED from the M5 Arm-A/Arm-B flip comparison (D11/D30). D30 (2026-10-15)
 #   retired the reboot-on-every-pick rule and §27 deleted the FORMAT 2 ingest door.
 #   §26 slice 3's flip door landed (2026-10-20), so this drives BOTH stages of the
@@ -31,13 +33,21 @@
 #
 # Run DETACHED:
 #   cd /home/greg/docker/Projects/gorb-os-2
-#   setsid tools/m5_flip.sh > /tmp/m5f_run.log 2>&1 < /dev/null &
+#   setsid tools/bench_flip.sh > /tmp/m5f_run.log 2>&1 < /dev/null &
 set -u
-ORB=${ORB:-http://192.168.2.34}
-REPO=/home/greg/docker/Projects/gorb-os-2
 SER=/tmp/m5f_ser.txt
 BODY=/tmp/m5f_body.json
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 cd "$REPO" || exit 1
+# The clone is the binding: the HTTP target comes from THIS clone's .orb-target —
+# the same file capf.py and serflash.sh read. The hardcoded .34 default let a bare
+# run from an orb-A-bound clone drive orb-B's radio while capturing orb-A's serial:
+# a split-board run whose verdict means nothing. An ORB override may only name the
+# bound board.
+. tools/orb_bind.sh
+orb_require
+ORB=${ORB:-http://$ORB_IP}
+[ "$ORB" = "http://$ORB_IP" ] || orb_die "ORB=$ORB is not the bound orb $ORB_LABEL (http://$ORB_IP). Unset ORB or re-bind .orb-target."
 say(){ echo "[$(date +%T)] $*"; }
 verdict=PASS
 fail(){ say "FAIL: $*"; verdict=FAIL; }

@@ -35,7 +35,7 @@ func TestParseOrbNameReadsTheBanner(t *testing.T) {
 }
 
 // A probe reads the whole boot window through ParseAppInfo, so the name has to ride
-// the same OrbInfo the version rides on — otherwise /api/ports/probe answers "orb,
+// the same OrbInfo the version rides on — otherwise a paid probe answers "orb,
 // unnamed" for a board that said its name out loud two lines earlier.
 func TestParseAppInfoCarriesTheBannerName(t *testing.T) {
 	lines := []string{

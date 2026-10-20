@@ -451,7 +451,7 @@ def parse_header(raw):
     if not name:
         # Every nameless theme would hash to one constant and collide with each
         # other on the card, so an empty name is refused here, at parse, exactly as
-        # the firmware's hdr_parse() refuses it.
+        # the firmware's orb_bundle3_hdr_parse() refuses it.
         raise ValueError("theme has no name in its header — re-bake it")
     return {"fmt": hdr[1], "abi": hdr[2], "hdr_size": hdr[3], "geom_off": hdr[4],
             "geom_size": hdr[5], "geom_crc": hdr[6], "art_size": hdr[7],

@@ -204,7 +204,7 @@ typedef struct {
      * existed, which is why the paint path tests the counts and not the pointer.
      * All three live in the one arena the loader allocated, and like the four
      * tables above they are never freed while the dial is running. Non-const for
-     * the same reason rects is: orb_theme_geom_parse() fills them in place. */
+     * the same reason rects is: orb_clock3_parse() fills them in place. */
     clk_comp_t   *comps;
     clk_aux_t    *aux;
     clk_sprite_t *bank;
@@ -238,7 +238,7 @@ typedef struct {
  * It resolves and verifies ONLY. Nothing installs from the card here (D13): the
  * boot path that opened the card, copied a container and kept a retry counter was
  * a boot that could spend seconds on a card it did not need and could be left
- * half-installed by a power cut. Installing is orb_theme_install()'s job, and the
+ * half-installed by a power cut. Storing is orb_theme_install_bundle()'s job, and the
  * only thing that decides when it runs is a pick.
  */
 esp_err_t orb_theme_boot(void);
@@ -263,21 +263,6 @@ const char *orb_theme_live(void);
  * leaves the dial drawing what it was drawing until the boot that follows.
  */
 esp_err_t orb_theme_set_live(const char *which);
-
-/**
- * Install one card theme into slot B: verify the whole container first, copy it,
- * verify the copy out of the partition, then commit the header that makes it
- * live, then set live=card. Runs the same verify-first ladder the old boot path
- * ran, in the same order, for the same reason — a failed copy costs a row message
- * and not a brick. `id` is a device-issued card filename stem (12 hex chars); it is
- * resolved by walking the themes directory and re-verified by hashing that file's
- * header name, so a file swapped under an id cannot install and no browser string
- * ever reaches a path builder. Takes the card lock for the copy and writes flash,
- * so it is a WORKER TASK call: a multi-second SD-to-flash copy on the LVGL task
- * freezes the dial and swallows the knob. `why` receives the sentence the row shows;
- * it may be NULL.
- */
-esp_err_t orb_theme_install(const char *id, char *why, size_t whysz);
 
 /* True when `id` is exactly ORB_THEME_ID_HEX chars of [0-9a-f] — a card filename
  * stem this device could have issued. The HTTP handlers call it to reject a
@@ -314,35 +299,30 @@ uint32_t orb_theme_bundle_bytes(void);
  *  is verified before the first erase, and the installed bytes are read back and
  *  checksummed from the partition before the header makes them live.
  *
- *  Unlike orb_theme_install() this does NOT choose the theme and does not ask for a
- *  reboot: the firmware that can draw a bundle arrives with the flip page (P6.4) and
- *  the FORMAT 3 compositor, so the row reports the install as stored. Boot says the
- *  same thing from the slot — "an app bundle this dial cannot draw yet" — rather
+ *  This is the only theme-store door. It does NOT choose the theme and does not ask
+ *  for a reboot: the firmware draws a stored bundle from slot B on the next boot, so
+ *  the row reports the store as done. Boot says the same thing from the slot rather
  *  than calling installed bytes missing (D26).
  *
- *  Returns the same esp_err_t/`why` pair shape as orb_theme_install(). */
+ *  Returns the esp_err_t/`why` pair the picker and page show. */
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
 
 /**
- * Queue an install on the shell's one worker, and ask for the reboot that draws
- * it if it lands. These are the ONLY way anything below main/ triggers a theme
- * change: the dial's picker and the browser's Load button both post here, so the
- * knob and the page cannot hold two opinions about what picking a theme does.
+ * Queue the streaming bundle store (orb_theme_install_bundle) on the shell's one
+ * worker. This is the ONLY way anything below main/ triggers a theme change: the
+ * dial's picker and the browser's Store button both post here, so the knob and the
+ * page cannot hold two opinions about what picking a theme does. No reboot follows —
+ * a stored bundle is drawn from slot B on the next boot, and a boot that shows the
+ * owner nothing is theatre.
  *
  * Returns what the queue said — ESP_ERR_INVALID_STATE when another job is
  * outstanding, ESP_ERR_NO_MEM when the queue refused — and never blocks, so a
  * page handler may call it from the httpd task and the shell's poll from the LVGL
- * one. The reason a refused install costs is in orb_theme_try_why(), which the
+ * one. The reason a refused store costs is in orb_theme_try_why(), which the
  * row and the page read as one string.
  */
-esp_err_t orb_theme_post_install(const char *id);
-esp_err_t orb_theme_post_default(void);
-
-/** P6.4's flip door: post the streaming bundle store (orb_theme_install_bundle)
- *  on the same queue the FORMAT 2 install uses. No reboot follows — a stored
- *  bundle is not drawn, and a boot that shows the owner nothing is theatre. The
- *  refusal lands in orb_theme_try_why() exactly as the FORMAT 2 press's does. */
 esp_err_t orb_theme_post_bundle(const char *id);
+esp_err_t orb_theme_post_default(void);
 
 /** What the last pick could not do: the id it was asked for and the sentence
  *  the ladder answered with. Both "" after a success, and the picker puts them on

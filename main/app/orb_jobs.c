@@ -4,7 +4,7 @@
  * The sizing and the watermark log are lifted from the menu's worker, which is
  * where they were measured. 4096 is not a round number: it is the stack size
  * that held against a real 3.87 MB container running orb_theme_scan() and the
- * orb_theme_install() copy through FatFs, whose own frames sit on top of these.
+ * orb_theme_install_bundle() copy through FatFs, whose own frames sit on top of these.
  * The high-water line after every job is what turns "it worked" into a number
  * the next change can check, and a reading near zero here means the next theme
  * that needs more stack is a crash rather than a log line.

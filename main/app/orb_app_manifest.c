@@ -2,7 +2,7 @@
  * main/app/orb_app_manifest.c — the .orbapp reader; see the header for the
  * three-way mirror rule and why refusals are the writer's own sentences.
  *
- * Structured like hdr_parse() in main/art/orb_theme.c: cheap fixed-layout
+ * Structured like orb_bundle3_hdr_parse() in main/art/orb_bundle.c: cheap fixed-layout
  * refusals first, checksum before anything streamed, semantics last — a
  * header whose numbers do not add up is refused before one payload byte is
  * looked at. The one place this file is STRICTER than the writer's reader

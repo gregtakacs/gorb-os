@@ -7,7 +7,7 @@
  * §25.6 proved derivable. It is `bake_clock.py --from-bundle` on the device, over
  * the same mapping, refusing the same list (§25.3) for the same reasons.
  *
- * Pure by the same rule that keeps `orb_theme_geom_parse` testable: no allocator,
+ * Pure by the same rule that keeps `orb_clock3_parse` testable: no allocator,
  * no card, no partition, no static. The caller owns the theme struct and the four
  * tables and passes their capacities down, so a host vector can drive the whole
  * function with static buffers and the caps it wants to prove.

@@ -327,7 +327,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
 
     /* Extents, layer by layer, in FORMAT 2's own words: the same lie at either door
      * gets the same sentence. A layer the dial will not look at is not checked, for
-     * the reason orb_theme_geom_parse gives. The plate and the keyframe are checked
+     * the reason orb_clock3_parse gives. The plate and the keyframe are checked
      * against the panel rather than against a catalogue row because their size is
      * the panel's, which is the one extent a clock section cannot lie about. */
     if (t->plate_off % 2u ||

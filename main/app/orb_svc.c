@@ -675,11 +675,10 @@ static esp_err_t svc_theme_install(orb_app_t *a, const char *id)
     for (int i = 0; s_te_n > 0 && i < s_te_n; i++)
         if (strcmp(s_te[i].id, id) == 0 && s_te[i].err == ESP_OK) { known = true; break; }
     if (!known) return ESP_ERR_NOT_FOUND;
-    /* D11 verbatim through the OS package manager: orb_theme_post_install owns
-     * the copy-verify-mark job on the shared worker and the reboot ask at its
-     * end — the same function the dial's picker and the browser's Load button
-     * already queue, which is the promise that all three doors agree. */
-    return orb_theme_post_install(id);
+    /* D11 through the OS package manager: orb_theme_post_bundle owns the
+     * streaming store on the shared worker — the same door the dial's picker and
+     * the browser's Store button queue, which is the promise that all three agree. */
+    return orb_theme_post_bundle(id);
 }
 
 static void svc_status(orb_app_t *a, const char *fmt, ...)

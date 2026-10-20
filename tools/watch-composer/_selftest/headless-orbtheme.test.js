@@ -14,7 +14,7 @@
 // whose hand pivots read as overlay offsets — bad art, not an error message — and a bank
 // whose rects do not replay leaves a stale rectangle frozen on the glass forever.
 //
-//   /tmp/nodeenv/bin/node tools/watch-composer/_selftest/headless-orbtheme.test.js
+//   ~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-orbtheme.test.js
 //
 // Needs the bake venv (pillow + numpy) for the reference run:
 //   python3 -m venv /tmp/bakevenv && /tmp/bakevenv/bin/pip install pillow numpy

@@ -1008,7 +1008,7 @@ box has no Chrome, so those three can only be exercised on the Windows side. Ask
 ```sh
 cd /home/greg/docker/Projects/gorb-os
 python3 tools/watch-composer/deploy_test_folder.py            # -> /mnt/c/Users/greg/Downloads/test
-/tmp/nodeenv/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side gate
+~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side gate
 ```
 
 The deploy script copies the four files the app loads (`Watch Composer.dc.html`,

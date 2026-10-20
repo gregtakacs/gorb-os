@@ -244,9 +244,13 @@ and that nothing throws when an asset reference dangles:
 
 ```sh
 python3 -m pip install --user --break-system-packages nodeenv \
-  && python3 -m nodeenv --node=lts /tmp/nodeenv
-/tmp/nodeenv/bin/node headless-test.js          # or one suite: ... headless-test.js ui
+  && python3 -m nodeenv --node=lts ~/.local/share/nodeenv-gorb
+~/.local/share/nodeenv-gorb/bin/node headless-test.js   # or one suite: ... headless-test.js ui
 ```
+
+The environment lives under `~/.local/share`, never `/tmp`: `/tmp` on this box is tmpfs,
+so a runner parked there dies on every reboot and the suites vanish from the gate lineup
+silently. The path is the same for every clone on the box — both dev instances share it.
 
 | File | Checks |
 |---|---|
@@ -262,7 +266,7 @@ python3 -m pip install --user --break-system-packages nodeenv \
 arrive as files:
 
 ```sh
-B3_VEC=/tmp/bundle3_vectors /tmp/nodeenv/bin/node headless-bundle3.test.js
+B3_VEC=/tmp/bundle3_vectors ~/.local/share/nodeenv-gorb/bin/node headless-bundle3.test.js
 ```
 
 It runs `python3 tools/make_bundle_fixture.py --vectors $B3_VEC` for its reference, so the
@@ -275,7 +279,7 @@ side runs the real Python (`pillow` + `numpy`) and compiles nothing:
 
 ```sh
 python3 -m venv /tmp/bakevenv && /tmp/bakevenv/bin/pip install pillow numpy
-ORBTHEM_VEC=/tmp/orbtheme_vectors /tmp/nodeenv/bin/node headless-orbtheme.test.js
+ORBTHEM_VEC=/tmp/orbtheme_vectors ~/.local/share/nodeenv-gorb/bin/node headless-orbtheme.test.js
 ```
 
 Its real-kit section caches the bench bake in `/tmp/orbtheme_e2e` and reuses it until

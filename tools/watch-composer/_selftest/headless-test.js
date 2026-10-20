@@ -5,10 +5,11 @@
 //   node headless-test.js              all suites
 //   node headless-test.js ui           only the suite whose name contains 'ui'
 //
-// Node is not on the dev box by default. Bootstrap once with:
+// Node is not on the dev box by default. Bootstrap once with (NOT under /tmp — that
+// is tmpfs here, and the runner dies on every host reboot):
 //   python3 -m pip install --user --break-system-packages nodeenv
-//   python3 -m nodeenv --node=lts /tmp/nodeenv
-//   /tmp/nodeenv/bin/node headless-test.js
+//   python3 -m nodeenv --node=lts ~/.local/share/nodeenv-gorb
+//   ~/.local/share/nodeenv-gorb/bin/node headless-test.js
 'use strict';
 const { spawnSync } = require('child_process');
 const fs = require('fs');

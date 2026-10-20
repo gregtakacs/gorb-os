@@ -79,6 +79,7 @@
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
 #include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
+#include "clock_base.h"  /* §26: the face shown when no theme is resident */
 #include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
 
 #include "clock_assets.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
@@ -1763,6 +1764,13 @@ esp_err_t clock_view_init(void)
      * is that the mapping exists and covers what the geometry says it must: a stale
      * bin/partition pair, or a theme that would not load, fails loudly at this line
      * rather than as a wild read past the end of the mapping. */
+    /* §26: the base render. Two ways into it, and only one of them is shipping. A
+     * board with no resident theme has NO bank to demand, and returning from here
+     * would leave it showing nothing at all — which is how a rule written while a
+     * default always existed (this gate's own comment asks the owner to "load another
+     * theme") turns into a blank panel on the shelf. Until slice 2 drops the flashed
+     * default the no-theme state cannot arise on its own, so the bench override forces
+     * it; that is the only reason the flag exists and it is deleted with slice 2. */
     const esp_err_t art_err = art_bank_ready()
                     && art_bank_bytes() >= orb_theme_geo()->blob_off + CLK_BLOB_BYTES
                             ? ESP_OK : ESP_ERR_INVALID_SIZE;
@@ -1780,6 +1788,42 @@ esp_err_t clock_view_init(void)
              (unsigned)art_bank_bytes(), (unsigned)CLK_BLOB_BYTES, orb_theme_source());
 
     s_scr = lv_obj_create(NULL);
+
+    /* The bench override, as a compile-time 0/1 so the branch reads as one condition.
+ * CONFIG_ symbols for a disabled bool are UNDEFINED rather than 0, which is why this is
+ * #if-defined rather than a bare reference to CONFIG_ORB_BASE_RENDER_FORCE — the same
+ * reason main/sd/orb_sd.c tests #if CONFIG_ORB_SD_ENABLE. */
+#if CONFIG_ORB_BASE_RENDER_FORCE
+#define ORB_BASE_RENDER_FORCE 1
+#else
+#define ORB_BASE_RENDER_FORCE 0
+#endif
+
+/* §26: the base render, when there is no theme to draw. Placed here rather than at
+     * the gate above because it needs the screen, and the screen is the one thing the
+     * themed path and this one both need before they diverge. A board with no resident
+     * theme has no bank to DEMAND — returning from the gate instead would leave a panel
+     * showing nothing, which is how a rule written while a default always existed turns
+     * into a blank screen on a shelf. Until slice 2 stops flashing the default the
+     * no-theme state cannot arise by itself, so the bench override forces it: the flag
+     * exists to make the renderer runnable at all, and an unrunnable renderer is a file
+     * that compiles rather than a feature. It is deleted by slice 2, not defaulted. */
+    if (ORB_BASE_RENDER_FORCE || !orb_theme_geo()->from_container) {
+        lv_obj_set_style_bg_color(s_scr, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, LV_PART_MAIN);
+        clock_base_show(s_scr);
+        /* The readout keeps itself current: clock_base owns a one-second LVGL timer
+         * rather than borrowing the dial's scheduler, whose policy is a sprite view's
+         * — pose hands, advance a frame bank, mark layer boxes — and none of which a
+         * text face has. Installing that policy over three labels would be the sched-
+         * uler ticking a callback that marks nothing, at 12 fps, to redraw a string
+         * that changes once a minute. */
+        clock_base_run();
+        ESP_LOGW(TAG, "no theme resident — base digital face (§26); the clock still "
+                      "tells the time");
+        return ESP_OK;
+    }
+
     /* Screen bg stays TRANSPARENT: the plate covers the full 466x466 opaquely,
      * so a black cover fill here would be rendered (and re-rendered per dirty
      * chunk) purely to be painted over — ~0.7 us/px of LVGL CPU time on the

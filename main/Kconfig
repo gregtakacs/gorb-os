@@ -273,6 +273,24 @@ menu "Orb microSD (theme storage)"
             2048 — an image built otherwise is a different measurement, not the same one
             with a tweak.
 
+
+    config ORB_BASE_RENDER_FORCE
+        bool "Force the no-theme base render even when a default is flashed (bench)"
+        default n
+        help
+            §26 slice 1 only. The base face exists to be what a board shows when it has
+            NO theme, and until slice 2 drops the flashed default that state cannot occur
+            on a real board — so without this override the new code is unrunnable and an
+            unrunnable renderer is not a feature, it is a file that compiles.
+
+            Set it on a bench build to force the base face over the flashed av-kit bank and
+            see whether the clock still tells the time. Leave it off for shipping: the
+            shipping path never reads it, and slice 2 replaces this override with the real
+            condition (no resident theme) at which point this option is deleted rather than
+            defaulted. A commit that leaves this =y in sdkconfig.defaults has shipped a
+            board that ignores its own art.
+
+
 endmenu
 
 menu "Orb idle dim"

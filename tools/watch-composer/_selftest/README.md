@@ -9,6 +9,7 @@ human to read; they assert nothing.
 |---|---|
 | `selftest.html` | engine level: `WatchEngine.textKits()` caps/slice/glyph/byDate output, plus the posed preview frame (`previewDate`, `PREVIEW_MOON`) against new/full controls |
 | `export-test.html` | end to end: drives the real `Component.exportKit()` and inspects the bytes of the zip it builds (manifest, `text/<id>_<kind>/` sprites, `preview.png` moon pose, calendar-hand + perimeter blocks), and bakes the same files through the real `Component.finishTheme()` to re-read the `.orbtheme` container Chrome's own PNG encoder produced (`themeCheck`, below) |
+| `bake3-test.html` | FORMAT 3 in real pixels: mounts the real `Component`, composes every preset's plate at frame 0 and at the end of its loop and reports which ones a FORMAT 3 clock section could carry at all (all 15 animate, so today: none), then bakes a still through `GorbBake.bakeClock3` and prints the bundle base64 on a `B64:` line so `tools/verify_js_bake.py` can hand it to the shipped `orb_clock3.c`. Add the row that prints `RESULT: PASS` |
 | `probe-shade.html` + `probe-shade.js` | measurement probe: per-row/per-column alpha profile of a window kit's `shade.png` and how a digit-cell's mean shade changes as it slides across the strip |
 | `probe-geom.html` | measurement probe: where the additional hand's tip really lands, in device pixels, against the band its ring prints |
 | `probe-calendar.html` | visual probe: the additional hand in each of its four roles, each ring with the hand that reads it, the five invented tips, and the ring display controls (size, position, orientation, colour, face) shown rather than described |
@@ -305,12 +306,29 @@ tenth-of-a-degree precision, so a facing off the 15-degree steppers survives.
 These are stubs, not a renderer — gradients, shadows and text metrics are no-ops, though
 the 2D context now tracks the real CTM (so `getTransform()` answers under `compose`'s
 opening lens) and records each draw's live shadow offsets for assertions. Pixel
-truth is still `export-test.html` under Chrome. This box has no browser, so deploy it to
-the Windows side and open it there:
+truth is still `export-test.html` under Chrome. Chrome is reachable from here through
+WSL interop, so no one has to leave the shell to get it: deploy, then dump the DOM headless.
+`deploy_test_folder.py` copies to the Windows side because Chrome cannot load these over the
+`\\wsl.localhost` UNC path — it reports the page as loaded and every `../`-relative script as
+absent, which reads as a passing page with no engine in it.
 
 ```sh
 python3 ../deploy_test_folder.py     # -> /mnt/c/Users/greg/Downloads/test, prints both file:// URLs
+CH='/mnt/c/Program Files/Google/Chrome/Application/chrome.exe'
+"$CH" --headless=new --disable-gpu --no-sandbox --user-data-dir='C:\Temp\wc' \
+      --virtual-time-budget=600000 --dump-dom \
+      'file:///C:/Users/greg/Downloads/test/_selftest/bake3-test.html' >/tmp/run.out 2>&1 &
 ```
+
+Two things about that invocation cost a debugging cycle each, so they are written down:
+a full 15-preset sweep takes well over a minute of real time, so the run must be detached
+(`&`) and read afterwards — a foreground call dies at the shell's 30 s limit and leaves a
+truncated dump that looks like a page with no report; and Chrome writes its own startup
+noise to the same stream, so parse the `<pre id="out">` element out of the dump rather than
+grepping the file, or the source text's own `RESULT:` strings read as verdicts.
+
+The same deploy step is what the manual route uses — open the two `file:///C:/Users/greg/Downloads/test/…`
+URLs it prints to check by eye what the headless dump cannot show.
 
 `make_art_kit.py` turns a real kit zip into a custom-art kit (transparent sub-dial,
 art-backed hand, translucent case) so `prep_watch_kit.py` and `bake_clock.py` can be run

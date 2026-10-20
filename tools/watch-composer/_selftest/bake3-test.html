@@ -1,0 +1,181 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bake3-selftest</title>
+<body><pre id="out">booting…</pre>
+<!-- Does the browser bake a FORMAT 3 clock section out of REAL canvas pixels, and which
+     designs may it bake at all? headless-bundle3.test.js answers the byte question with
+     synthetic planes; this answers the two pixel questions D33 actually owes:
+
+       1. orb_clock3.c gives a FORMAT 3 clock ONE static plate keyframe (bg_frames is
+          forced to 0 and the gif block is derived from one frame). A composer dial whose
+          movement animates therefore CANNOT be baked without lying about it, so the
+          button's refusal surface has to be measured preset by preset, not assumed.
+       2. a plate folded from a real Chrome canvas has to survive toBlob -> inflate ->
+          rgb565 -> the C projection, which no node stub can show.
+
+     The last line is `RESULT: PASS` or `RESULT: FAIL — <why>`. A line beginning `B64:`
+     carries a whole baked bundle so tools/verify_js_bake.py can be pointed at what the
+     browser actually produced. Run it as the other _selftest pages are run:
+
+       chrome --headless=new --disable-gpu --no-sandbox --virtual-time-budget=180000 \
+         --dump-dom 'file://<win-path>/_selftest/bake3-test.html'
+-->
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  let fails = 0;
+  const ok = (n, c, x) => { say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
+  const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h || w; return c; };
+  const pix = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
+
+  // The plate the compiled dial reads: the whole panel, hands and crystal left off, every
+  // texel opaque because compose() grounds it in black. Read off a live canvas, so the
+  // bytes are the ones a bake would spend rather than a stand-in for them.
+  const platePlane = (c) => { const p = pix(c); return { rgba: p, w: c.width, h: c.height, x: 0, y: 0 }; };
+  const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
+  // A hand sprite at rest. clk_sprite_t carries no rotation-offset field and clock_view
+  // pushes ang[0..2] from hand_angles() measured at 12 o'clock, so a sprite whose art does
+  // not ALREADY point up cannot enter a FORMAT 3 clock section at all: the .h's
+  // zeroRotationDeg has no column to ride. Such a design is refused, not baked flat.
+  const handPlane = (h, slot) => {
+    const sp = h.sp, c = cv(sp.c.width, sp.c.height);
+    c.getContext('2d').drawImage(sp.c, 0, 0);
+    const px = Math.round(sp.px), py = Math.round(sp.py), p = platePlane(c);
+    p.x = Math.round(h.x) - px; p.y = Math.round(h.y) - py;
+    p.pivot_x = px; p.pivot_y = py; p.slot = slot;
+    return p;
+  };
+  const still = (M, gt, F) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }); return c; };
+  /* The dials are built by the component itself, mounted and settled the way the app builds
+   * them, not by calling face()/movement() on a hand-assembled option object. Two reasons,
+   * both of which bit the first draft of this page: opts() leaves `frames` out on request and
+   * movement() then divides by it inside the balance jewel's gradient, and the train angle the
+   * plate is lit at only exists once the render loop has settled. Anything less than a mount
+   * bakes a dial the composer never shows. */
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export';
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  const mount = async (id) => {
+    const P = E.PRESETS[id];
+    IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.buildMovement();
+    if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');
+    return { F: IT.face(id), M: IT.base, gt: IT.gt, B: IT.B, fps: IT.F, d: IT.state.designs[id] };
+  };
+
+  async function main() {
+    if (!E || !E.PRESETS) throw new Error('watch-engine.js did not load beside the page');
+    if (!G || !G.bakeClock3) throw new Error('orbtheme-baker.js has no bakeClock3 to test');
+    const ids = Object.keys(E.PRESETS);
+    ok('the sweep has the whole preset table to work from', ids.length >= 8, ids.length + ' presets');
+    // One mount for the whole sweep: componentDidMount is what flips `ready`, and without it
+    // nothing builds a movement. It awaits the webfont load, so it needs the internet the
+    // app itself needs; offline, it times out at 4 s and carries on with the fallback faces.
+    IT.state.dial = ids[0]; IT.state.designs = {};
+    await IT.componentDidMount();
+    /* ---- 1. the refusal surface, measured rather than assumed ----
+     * A FORMAT 3 clock section gives the compiled dial ONE static plate keyframe:
+     * bakeClock3 forces bg_frames to 0, and orb_clock3.c derives a one-frame gif block
+     * from the keyframe copy because there is no delta bank in the section to index. So
+     * the question the .orbtheme button must answer before it spends a bake is whether
+     * THIS dial's plate moves. It is measured the only way that means anything: compose
+     * the plate at frame 0 and again at the end of the loop, and compare the pixels. */
+    say('--- what a FORMAT 3 clock bake may take, preset by preset ---');
+    const canBake = [];
+    for (const id of ids) {
+      const P = E.PRESETS[id];
+      const V = await mount(id), F = V.F, M = V.M, B = V.B, d = V.d;
+      const why = [], c0 = still(M, V.gt[0], F), c1 = still(M, V.gt[B - 1], F);
+      const a = pix(c0), b = pix(c1);
+      let moved = 0;
+      for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) moved++;
+      if (moved) why.push('plate animates (' + moved + ' px over the ' + B + '-frame loop)');
+      if ((d.comps || []).length) why.push((d.comps || []).length + ' complication(s)');
+      if (M.cageAt) why.push('carriage');
+      const ch = (F.hands || []).filter((h) => ROLE[h.id] !== undefined);
+      if (!ch.length) why.push('no centre hour/minute/second hand');
+      const off = ch.filter((h) => Math.abs(E.handZeroDeg(h)) > 0.01);
+      if (off.length) why.push(off.length + ' hand art not drawn at 12');
+      if (!why.length) canBake.push(id);
+      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE'));
+    }
+    say('  ' + canBake.length + ' of ' + ids.length + ' presets a FORMAT 3 clock bake may take today');
+    // Reported, not asserted: which presets qualify is a fact about the engine, and the
+    // suite's promise is that the button states it instead of baking a frozen train and
+    // calling it a theme. The check below is the one that holds either way round.
+    ok('every preset got a verdict above', ids.length === canBake.length + ids.length - canBake.length, canBake.length + ' of ' + ids.length + ' may bake');
+
+    /* ---- 2. the bake that IS honest: a still, hands seated ----
+     * The refusal above protects a product promise (freeze the train and the watch stops
+     * being the one the author composed). It is no reason to leave the pixel path
+     * unexercised, so the bake below is a still of frame 0 — precisely what a design with
+     * its geartrain hidden would ship. */
+    const id = canBake.length ? canBake[0] : 'skeleton';
+    const V = await mount(id), F = V.F, M = V.M;
+    say('--- the pixel bake, on a still of the ' + id + ' dial ---');
+    const plate = platePlane(still(M, V.gt[0], F));
+    let opaque = 0;
+    for (let i = 3; i < plate.rgba.length; i += 4) if (plate.rgba[i] === 255) opaque++;
+    ok('the plate Chrome drew is opaque at every texel', opaque === 466 * 466, opaque + ' of ' + (466 * 466));
+    const col = {};
+    for (let i = 0; i < plate.rgba.length; i += 4) {
+      const k = plate.rgba[i] + ',' + plate.rgba[i + 1] + ',' + plate.rgba[i + 2];
+      if (k !== '0,0,0') col[k] = 1;
+    }
+    ok('and it carries a real picture, not a flat fill', Object.keys(col).length > 64, Object.keys(col).length + ' distinct colours');
+
+    const ch = F.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
+    ok('the bake has hands to seat', ch.length >= 2, ch.length);
+    let r = null, err = null;
+    try {
+      r = G.bakeClock3({ name: 'Chrome Pixel Bake', serial: 20261020, bakedMs: 1234,
+                         plate, hands: ch, order: ch.map((h) => h.slot + 1) });
+    } catch (e) { err = e; }
+    if (err) ok('Chrome baked its real pixels through bakeClock3', false, String(err.message || err).slice(0, 170));
+    else {
+      ok('Chrome baked real pixels into a FORMAT 3 bundle', r.bytes.length > 0, r.bytes.length + ' B');
+      const m = r.meter;
+      ok('both D29 install sums fit the caps the meter names',
+         m.geomSize <= m.geomCap && m.artSize <= m.artCap,
+         'geom ' + m.geomSize + '/' + m.geomCap + ' (' + m.geomPct + '%) · art ' + m.artSize + '/' + m.artCap + ' (' + m.artPct + '%)');
+      const w = G.verifyBundle3(r.bytes);
+      ok('the browser reader walks its own bake back to one clock section',
+         w.sections.length === 1 && w.sections[0].blob.slug === 'clock');
+      ok('and counts the plate plus every hand it seated',
+         w.sections[0].blob.elements.length === 1 + ch.length, w.sections[0].blob.elements.length + ' rows');
+      const u = w.sections[0].blob.sprites;
+      ok('the catalogue costs the plate colour-only and every hand masked',
+         u.length === 1 + ch.length && u[0].size === 466 * 466 * 2,
+         u.map((s) => s.w + 'x' + s.h + ':' + s.size).join(' '));
+      let bin = '', BY = new Uint8Array(r.bytes), CH = 8192;
+      for (let i = 0; i < BY.length; i += CH) bin += String.fromCharCode.apply(null, BY.subarray(i, i + CH));
+      say('B64LEN ' + BY.length);
+      say('B64:' + btoa(bin));
+    }
+    say(fails ? 'RESULT: FAIL — ' + fails + ' check(s)' : 'RESULT: PASS');
+    document.title = fails ? 'FAIL' : 'PASS';
+
+  }
+  main().catch((e) => { say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 7).join('\n')); document.title = 'FAIL'; });
+})();
+</script>

@@ -204,6 +204,22 @@ int orb_bundle_slug_rule(const uint8_t *p, uint32_t n)
     return 0;
 }
 
+/* unpack_blob()'s sprite list, one row at a time: the four words pack_blob()
+ * wrote per plane, in the order it wrote them (off, size, w, h). Same zero-copy
+ * rule as orb_bundle_elem_at — no bounds re-check here, because blob_check()
+ * proved the blob's length against n_elem and n_spr before any index landed. */
+void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
+                       orb_bundle_spr_t *sp)
+{
+    const uint8_t *r = s->blob + BLOB_HEAD_BYTES +
+                       (uint64_t)s->n_elem * (ORB_BUNDLE_ELEM_WORDS * 4u) +
+                       (uint64_t)i * SPR_BYTES;
+    sp->off  = b32(r +  0);
+    sp->size = b32(r +  4);
+    sp->w    = b32(r +  8);
+    sp->h    = b32(r + 12);
+}
+
 /* unpack_blob()'s mirror, in its refusal order: head length, scalar dialect,
  * count length arithmetic — in 64-bit, because a u32 product can wrap where
  * Python's arbitrary precision cannot and the two readers must refuse the

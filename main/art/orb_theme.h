@@ -212,6 +212,13 @@ typedef struct {
     uint16_t      n_aux;
     uint16_t      n_bank;
     size_t         art_size;          /* pixel bytes, not partition bytes */
+    uint32_t       blob_off;          /* the theme's bank's offset inside the mapped
+                                       *   art region. Zero for FORMAT 2 and for the
+                                       *   compiled pair, whose payload starts at the
+                                       *   region's first byte; a FORMAT 3 bundle
+                                       *   packs one bank per section, so the clock's
+                                       *   pixels begin wherever its record said and
+                                       *   clock_view's blob base must follow. */
     bool           from_container;    /* false = the compiled-in pair */
     char           name[ORB_THEME_NAME_MAX + 1];  /* the installed theme's owner name */
 } orb_theme_geo_t;

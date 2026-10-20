@@ -34,6 +34,7 @@
 
 #include "orb_theme.h"
 #include "orb_bundle.h"
+#include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sd.h"
 #include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
@@ -697,6 +698,10 @@ static orb_theme_geo_t s_geo;
  * reports active=false and changed=true. */
 static char          s_active_name[ORB_THEME_NAME_MAX + 1];
 static uint32_t      s_active_geom_crc, s_active_art_crc;
+/* The stored bundle's CONTAINER region checksum, read off its slot header at
+ * boot: the figure the flip page matches a card file against, where
+ * s_active_geom_crc holds the rebase's. Both name the same bytes. */
+static uint32_t      s_bundle_file_geom;
 static bool          s_active_valid;
 static char          s_live[16] = THEME_LIVE_DEFAULT;
 /* The slot boot was asked to draw and could not. Id "" means nothing is
@@ -1767,7 +1772,8 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
  * the section count where FORMAT 2 carried a panel width, and word 10 is zero: an
  * installed bundle does not claim a panel size it never had. */
 static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
-                            uint32_t art_crc, uint32_t serial)
+                            uint32_t art_crc, uint32_t serial,
+                            uint32_t file_geom_crc)
 {
     memset(hdr, 0, W_WORDS * 4);
     hdr[0] = THEME_MAGIC;     hdr[1] = ORB_BUNDLE3_FORMAT;
@@ -1775,6 +1781,11 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
     hdr[4] = SLOT_GEOM_OFF;   hdr[5] = h->geom_size;  hdr[6] = h->geom_crc;
     hdr[7] = h->art_size;     hdr[8] = art_crc;
     hdr[9] = h->n_sections;   hdr[11] = serial;       hdr[13] = SLOT_ART_OFF;
+    /* Word 10 (FORMAT 2's bake duration, always 0 for a bundle) carries the CARD
+     * file's region checksum. The slot's own geom_crc is the rebase's figure and
+     * cannot be made to equal a file's, and the flip page's active/changed question
+     * is asked of the file — so the answer has to survive the rebase. */
+    hdr[10] = file_geom_crc;
     for (int i = 0; h->name[i] && i < (int)sizeof(h->name) - 1; i++)
         hdr[W_NAME + i / 4] |= (uint8_t)h->name[i] << (8 * (i % 4));
     hdr[W_HDR_CRC] = esp_rom_crc32_le(0, (const uint8_t *)hdr, W_WORDS * 4);
@@ -1824,6 +1835,11 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         return install_failed(ESP_ERR_INVALID_CRC, pv, why, whysz);
     }
 
+    /* The container's own region checksum, kept for the header word the row's
+     * active/changed comparison reads: the rebase below restamps h.geom_crc to the
+     * slot's figure, and the card file keeps the one it shipped with. */
+    const uint32_t file_geom_crc = h.geom_crc;
+
     /* Banks to SLOT_ART_OFF, records and region checksum following. The file's base
      * comes back for the stream's seeks: after this the records describe the slot. */
     uint32_t file_art_base = 0;
@@ -1861,7 +1877,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     const esp_err_t ee = esp_partition_erase_range(p, install_target(), THEME_SECTOR);
     if (ee == ESP_OK) {
         uint32_t hdr[W_WORDS];
-        build_slot_hdr3(hdr, &h, art_crc, serial);
+        build_slot_hdr3(hdr, &h, art_crc, serial, file_geom_crc);
         e = esp_partition_write(p, install_target(), hdr, sizeof(hdr));
         if (e != ESP_OK) w = "could not make the new slot live";
     } else {
@@ -1877,6 +1893,118 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     s_bundle_bytes = h.art_size;
     ESP_LOGI(TAG, "bundle \"%s\" (%s) in slot-B in %u ms — stored, and not yet chosen",
              h.name, id, (unsigned)s_bundle_ms);
+    return ESP_OK;
+}
+
+/* The FORMAT 3 twin of adopt() (P6.5 §25.5(2)): the same two publications — pixels
+ * resident and checked, geometry the dial can draw — reached through the bundle's
+ * own doors. Three differences, and each is the format's, not a lapse:
+ *
+ *   The region is read before the pixels are filled, because a bundle's art lives at
+ *   addresses only its records name. FORMAT 2's payload starts at the region's first
+ *   byte and its length is in the header; here both come out of the table, so the
+ *   table has to be parsed first. The region is at most ORB_BUNDLE_GEOM_CAP, and the
+ *   header gate already refused a bigger claim before this malloc.
+ *
+ *   The refill verifies against the INSTALLED figure in the slot header, which is the
+ *   checksum of the padded art span as it now sits in flash (copy_bundle3's readback),
+ *   not the container's bank sum. That is deliberate and it is the same rule FORMAT 2
+ *   follows: the boot that verifies and the boot that draws share one pass over the
+ *   bytes that are actually resident, and the pads between banks are part of what the
+ *   slot holds. §24.9's door-side bug was hashing pads at a door that had no span;
+ *   this is a span, hashed whole, once.
+ *
+ *   The row's identity keeps the CONTAINER's region checksum, in the header word
+ *   FORMAT 2 spent on a bake duration. orb_bundle_rebase() restamps the region's own
+ *   figure when it moves banks, so the slot's geom_crc can never equal the card
+ *   file's, and a comparison built on it would call every stored bundle "changed"
+ *   forever. Word 10 carries what the file said instead; the damaged-vs-active
+ *   question is then the same one FORMAT 2 answers.
+ *
+ * Returns ESP_OK with the bundle drawn, or the reason it is not. A refusal leaves the
+ * caller's fallback exactly where adopt()'s does: the default draws, and the row on
+ * the flip page carries the sentence. */
+static uint16_t  s_b3_first[GIFS_MAX + 1], s_b3_delays[GIFS_MAX];
+static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
+static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
+
+static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t *h,
+                               const uint32_t *raw, const char *src_name)
+{
+    uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) return ESP_ERR_NO_MEM;
+    if (esp_partition_read(p, SLOT_B_HDR + SLOT_GEOM_OFF, region, h->geom_size) != ESP_OK) {
+        heap_caps_free(region);
+        return ESP_FAIL;
+    }
+    orb_bundle_t b;
+    /* SLOT_CAP as the file size: inside a slot the banks are bounded by the slot, and
+     * the reader's art checks want the span they live in rather than a card's length.
+     * Every bank was proved against its own record's crc at the install door and
+     * written back-from-flash in the same pass; boot proves them again here as the
+     * refill hashes the span they sit in. */
+    const char *why = orb_bundle_parse_region(h, region, h->geom_size, SLOT_CAP, &b);
+    if (why) {
+        ESP_LOGE(TAG, "bundle in slot-B would not parse: %s", why);
+        heap_caps_free(region);
+        return ESP_ERR_INVALID_CRC;
+    }
+    const orb_bundle_sec_t *sec = orb_bundle_find(&b, ORB_CLOCK3_SLUG);
+    if (!sec) {
+        /* Not damage — a bundle that carries other apps and no clock. The row's
+         * sentence says which, because "the file I stored is not on the wall" without
+         * a reason is what an owner reads as a broken button. */
+        ESP_LOGI(TAG, "bundle in slot-B carries no %s section", ORB_CLOCK3_SLUG);
+        heap_caps_free(region);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* The span to refill: the installed art region runs to the end of the LAST bank,
+     * sector-rounded, which is what copy_bundle3 erased, wrote and read back. */
+    uint32_t end = SLOT_ART_OFF;
+    for (uint32_t i = 0; i < b.n_sections; i++) {
+        const uint32_t e2 = b.sec[i].art_off + b.sec[i].art_size;
+        if (e2 > end) end = e2;
+    }
+    const uint32_t span = (end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+
+    uint32_t ms = 0;
+    const esp_err_t fe = art_bank_fill(SLOT_B_ART, span, true, raw[W_ART_CRC], &ms);
+    if (fe != ESP_OK) {
+        heap_caps_free(region);
+        return fe;
+    }
+
+    orb_clock3_io_t io;
+    memset(&io, 0, sizeof io);
+    io.theme = &s_theme;
+    io.rects = s_b3_rects; io.rect_first = s_b3_first;
+    io.gif_delays = s_b3_delays; io.bg_frames = s_b3_bgf;
+    io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
+    why = orb_clock3_parse(sec, &io);
+    heap_caps_free(region);
+    if (why) {
+        ESP_LOGE(TAG, "bundle \"%s\" has no drawable clock: %s", h->name, why);
+        return ESP_FAIL;
+    }
+
+    s_geo.theme = &s_theme;
+    s_geo.rects = s_b3_rects; s_geo.rect_first = s_b3_first;
+    s_geo.gif_delays = s_b3_delays; s_geo.bg_frames = s_b3_bgf;
+    s_geo.comps = NULL; s_geo.aux = NULL; s_geo.bank = NULL;
+    s_geo.n_comps = 0; s_geo.n_aux = 0; s_geo.n_bank = 0;
+    s_geo.art_size = io.out_art_size;
+    s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;
+    s_geo.from_container = true;
+    strlcpy(s_geo.name, h->name, sizeof(s_geo.name));
+    strlcpy(s_active_name, h->name, sizeof(s_active_name));
+    s_active_geom_crc = raw[W_BAKED_MS];       /* the container's figure, see above */
+    s_bundle_file_geom = raw[W_BAKED_MS];
+    s_active_art_crc  = h->art_crc;
+    s_active_valid    = true;
+    s_source = src_name;
+    s_refill_ms = ms;
+    s_refill_bytes = span;
     return ESP_OK;
 }
 
@@ -1976,7 +2104,29 @@ esp_err_t orb_theme_boot(void)
         orb_bundle3_hdr_parse(raw3, &b3) == NULL)
         slot_is_bundle = true;
 
-    if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD) {
+    if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD && !b.valid && slot_is_bundle) {
+        /* The chosen slot holds a bundle (P6.5 §25.5(2)). Its clock section, if it has
+         * one, is now the dial; anything else falls through to the default with the
+         * bundle's own sentence on its row. */
+        const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B");
+        if (be == ESP_OK) {
+            ESP_LOGI(TAG, "bundle \"%s\" from slot-B (chosen): %u B refilled to the "
+                          "arena in %u ms", s_active_name,
+                     (unsigned)s_refill_bytes, (unsigned)s_refill_ms);
+            return ESP_OK;
+        }
+        char did[THEME_ID_HEX + 1];
+        theme_id(b3.name, did);
+        strlcpy(s_damage_id, did, sizeof s_damage_id);
+        strlcpy(s_damage_why,
+                be == ESP_ERR_NOT_FOUND ? "it carries no clock section to draw"
+                    : be == ESP_ERR_NO_MEM
+                        ? "not enough memory for its pixels — the default is drawn"
+                        : "the installed copy did not verify — re-store it",
+                sizeof s_damage_why);
+        ESP_LOGE(TAG, "the chosen bundle \"%s\" would not load (%s) — drawing the default",
+                 b3.name, esp_err_to_name(be));
+    } else if (boot_resolve(s_live, b.valid) == BOOT_ART_CARD) {
         const esp_err_t ae = adopt(p, &b, "slot-B");
         if (ae == ESP_OK) {
             /* The §20.5(2) line: the measured milliseconds of the fused refill, on
@@ -2013,13 +2163,9 @@ esp_err_t orb_theme_boot(void)
         ESP_LOGE(TAG, "the chosen theme \"%s\" would not load (%s) — drawing the default",
                  b.h.name, esp_err_to_name(ae));
     } else if (slot_is_bundle) {
-        char did[THEME_ID_HEX + 1];
-        theme_id(b3.name, did);
-        strlcpy(s_damage_id, did, sizeof s_damage_id);
-        strlcpy(s_damage_why, "an app bundle this dial cannot draw yet",
-                sizeof s_damage_why);
-        ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not drawable by this dial yet",
-                 b3.name);
+        /* Stored, not chosen: the same resting state as a FORMAT 2 install the owner
+         * walked away from. Nothing is damaged and no row needs a reason. */
+        ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not chosen", b3.name);
     } else if (b.valid) {
         /* B holds an install the owner walked away from. It is not drawn and not
          * erased: it is theirs, and the default costs nothing to keep. */
@@ -2409,9 +2555,14 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
         /* A bundle, listed as one (P6.4): the id is the same R4 hash of the same
          * owner name, the layout and art bounds are the install door's own rule
          * (card_check3, re-run here so a listed row means a press has a chance),
-         * and the row is never active: nothing draws a bundle yet. The reason a
-         * torn bundle header carries is the generic one it always carried —
-         * §24.7 measured that and the order above is what keeps it true. */
+         * and active/changed asked of the same identity pair FORMAT 2's rows get —
+         * which P6.5 §25.5(2) is what made possible: a stored bundle can now BE the
+         * dial, so a row that always said active=false was lying by omission. The
+         * figure compared is the container's own region checksum, kept in the slot
+         * header's word 10 for exactly this question; the slot's geom_crc is the
+         * rebase's figure and could never match a file's. The reason a torn bundle
+         * header carries is the generic one it always carried — §24.7 measured that
+         * and the order above is what keeps it true. */
         orb_bundle3_hdr_t b3;
         uint32_t fsz3 = 0;
         why = card_check3(fd, &b3, &fsz3);
@@ -2435,6 +2586,15 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
             } else {
                 strlcpy(e->id, bid, sizeof e->id);
                 e->err = ESP_OK;
+                orb_thdr_t as;      /* the identity theme_state() reads, in the
+                                     *   FORMAT 2 shape it was written for: name
+                                     *   and the two figures a row is matched on */
+                memset(&as, 0, sizeof as);
+                strlcpy(as.name, b3.name, sizeof as.name);
+                as.geom_crc = s_bundle_file_geom;
+                as.art_crc = b3.art_crc;
+                as.fmt = 3;
+                theme_state(&as, &e->active, &e->changed);
             }
             c->n++;
             return true;

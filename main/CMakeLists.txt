@@ -27,6 +27,12 @@ idf_component_register(
         "art/art_bank.c"
         "art/orb_theme.c"
         "art/orb_bundle.c"
+        # P6.5 §25.5(2): the FORMAT 3 clock section's projection. Separate from
+        # orb_bundle.c on purpose — that file is the format mirror of
+        # tools/orbbundle.py and carries no dialect knowledge; this one is the clock's
+        # own reading of it. tools/host_clock3_test.py compiles the shipped file with
+        # host gcc, so it stays free of anything but clock_assets.h and orb_bundle.h.
+        "art/orb_clock3.c"
         # P5b: the asset registry. Its own directory because it is the one file in
         # the tree that knows what a slot IS, and it compiles without LVGL on
         # purpose — tools/host_orbapp_reader_test.py links it straight into the

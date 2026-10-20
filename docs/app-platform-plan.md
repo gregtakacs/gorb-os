@@ -3,7 +3,9 @@
 Status: **P1–P3 landed 2026-10-12; P4 and P6 landed through 2026-10-20; P6b landed
 2026-10-20 (§28) — the broker (`main/app/orb_svc.c/h`) is the app surface, the grant table
 is live, the app platform is on card, and the theme platform is FORMAT 3-only end to end
-(P6 CLOSED 2026-10-20, §27). The orb-manager hub speaks the FORMAT 3 store door (§28). The
+(P6 CLOSED 2026-10-20, §27). The orb-manager hub speaks the FORMAT 3 store door (§28).
+**§31 PROPOSED 2026-10-20: the animated-plate contract — a FORMAT 3 clock may carry a
+keyframe plate bank with no format bump; awaiting the owner's ruling.** The
 phase table below carries the evidence per row.** Written 2026-10-11 at commit
 `a911468`; the owner ruled on
 every open point the same day (§0.1). P4 may start. Two of the three bench
@@ -4537,5 +4539,114 @@ empty), so every firmware result on this tree still stands.
 **The two clones, trued.** `origin/main` fast-forwarded `7f30bbb → 8ecc8d3` (no
 force). `../gorb-os` pushed from; this tree `--ff-only` onto the same `8ecc8d3`.
 Both clean, `0/0` against `origin/main` — §28's invariant restored.
+
+## 31 — Animated plate: the FORMAT 3 contract for keyframe background banks — PROPOSED 2026-10-20, awaiting owner ruling
+
+**Why now.** The owner asked the editor for a FORMAT 3 export and a send-to-orb, and
+found neither (§29's measurement explains the first: all fifteen presets animate their
+plate, and the compiled clock refuses a plate that names more than one keyframe). Ruled
+direction: design the plate-multi-frame extension first, so animated presets ship whole
+rather than stilled. This section is that design.
+
+**The finding that sets the shape: no format bump is needed.** Every byte an animated
+background would carry is already legal FORMAT 3. The clock blob's 26-word dialect
+(`orb_bundle.h:47`, gate `orb_bundle.c:249`) already names `bg_frames` (w9), `bg_fps`
+(w10), `bg_loop` (w11), `bg_every` (w12), `bg_mode` (w21) and `gif_frames` (w23); the
+element row already carries `frame0`/`n_frames` with `ELEM_FRAMES_MAX 360`; the schema
+already lets a `plate` take frames and `EF_OS_ADV` (§29's own words: "plate and ring take
+both at the schema, and the compiled clock then refuses an animated plate in its own
+words"). The two refusals that stand between a preset and the glass are projection
+behaviour, not format: `orb_clock3.c:277` rejects `bg_frames != 0` and `:303` rejects
+`plate.n_frames != 1`. The planes need no new machinery — this is the carriage mechanism
+(D32): contiguous keyframe planes in the catalogue, OS-advanced at a named fps. FORMAT
+2's delta-GIF needs the rects/delays subtables a bundle blob has no room for
+(`BLOB_COUNT_WORDS` is n_elem/n_spr/n_scalars/slug_len — there is no rects count);
+keyframes do not.
+
+**The contract, stated as acceptance rules.** A clock section MAY carry an animated
+background iff, and the projection refuses the whole dial otherwise (refuse-whole, D32's
+policy):
+
+1. The animation rides **the plate row itself**: class `plate`, slot 0, full-panel
+   (existing rule), `n_frames = N`, `frame0 = k`. Slot 1 (glass) and every other class
+   keep `n_frames == 1`.
+2. `scalars.bg_mode == 0` (keyframes). Mode 1 (delta bank) keeps §25.3's refusal, in
+   those words — a delta bank is still unruled, not merely unimplemented.
+3. `scalars.bg_frames == N − 1` — FORMAT 2's own semantics ("distinct extra plate
+   frames"), mirroring the carriage's scalar/row cross-check (`:264`): the scalars and
+   the row must name one animation.
+4. The N plate planes are contiguous in catalogue order at `frame0`, each exactly
+   `scr_w·scr_h·2` B (colour-only, `PLATE_BYTES_T`). The §25.3 byte-for-byte accounting
+   already proves the bank inside the art region; this pins its shape.
+5. `2 ≤ N ≤ CLK_BG_MAX 16` when `bg_frames > 0`; `bg_fps` obeys the same free-u16 rule
+   tourbillon_fps got (D32 ruling C): projection validates the shape, runtime picks the
+   rung. `bg_loop`/`bg_every` ride as authored.
+6. `gif_frames == 0` (no delta vocabulary is honoured by this shape; av-kit's
+   source-truth `gif_frames 15` under a still plate stays legal exactly as §25.3 ruled,
+   because nothing is claimed of it).
+
+**Cost is the real constraint, and it is arithmetic, not opinion.** A full-panel keyframe
+is 434,312 B (466², RGB565, colour-only). Against D29's 4,128,768 B bundle cap: a body the
+size of av-kit's art (1,173,563 B) leaves **6 plate frames**; a bare plate-plus-hands kit
+reaches 9. `ELEM_FRAMES_MAX` never binds here; the cap does. `theme_schema` gains the
+authoring check — `N·scr_w·scr_h·2 + Σ other planes ≤ slot cap` — so the editor refuses in
+the writer's own sentence at design time, not the installer at store time.
+
+**Consumer and the rate question.** The bank lands in `clk_theme_t` as plane records: a
+new `clk_sprite_t bg[CLK_BG_MAX]` plus a count. The FORMAT 2 fields at `clk_types.h:45-58`
+describe a rects world this shape does not use; the record carries planes, not offsets.
+`clock_view` grows a third standalone object beside the carriage (`s_car`, §23.11): one
+LVGL image, full-panel, behind everything, `src` swapped per advance, loop per
+`bg_loop`/`bg_every`. Its flush cost is the panel's worst case — every advance
+invalidates all 466 rows. The nearest measured figure is the D32 bench: a carriage face
+min'd at **6 fps flush-bound**, and that animated a 146² region plus the hands. Until P8
+puts a real rung ladder on the dial, the honest policy is: request `bg_fps`, expect the
+flush floor, and let P8's measured table set the ceiling. §23.11's bench idiom repeats:
+the shipped bake carries the fps the bench measured, not the fps the preset loops at.
+
+**Which presets survive is a measurement, not a claim.** §29's motion numbers were
+first-vs-last frame; a loop's true motion is the union of consecutive-frame diffs (the
+bake3-test idiom, widened). A preset whose motion is local bakes better as a **static
+plate plus a masked sprite row** at the motion's bounding box — §29's ruled animation
+carrier, and 15 frames of a 120² region costs 648 KB, not 6.5 MB. A preset with
+whole-panel motion (kitetour's 72,571 px per loop is the signature) must fit N keyframes
+under the cap or reduce frames. The bake tells the truth per preset; no preset is
+promised an export before its motion union has been measured.
+
+**The editor slice, in order.** (1) `orbtheme-baker.js`: `bakeClock3` stops forcing
+`bg_frames` to 0 and accepts plate keyframes under rules 1-6; the composer's export
+computes each preset's motion union and picks plate-bank or sprite-region by the cap
+arithmetic; the `.orbtheme` note (line 364) is rewritten from FORMAT 2's
+`/orbtheme/<sha256>` world to the FORMAT 3 store/flip story, carrying §29's refusal
+sentence for whatever the split cannot. (2) Firmware: `orb_clock3.c` replaces the two
+refusals with the cross-checks above; `clk_types.h` grows `CLK_BG_MAX` and the plane
+array; `clock_view.c` grows the bg consumer beside the carriage's. (3) Proof:
+`host_clock3_test.py` goldens the animated projection; `verify_js_bake.py` projects a
+browser-baked animated bundle through the shipped C; `mut_rebake.py` gains mutants
+(bg_frames/row disagreement, non-contiguous plate bank, animated glass, over-cap N);
+`headless-bundle3.test.js` re-pins the mirror; the bench runs the `bench_d32.sh` idiom on
+an animated bundle and `fbgrab` settles glass-versus-requested-fps.
+
+**One hardening asked alongside.** The index's per-section `abi_min`/`abi_max`
+(`orb_bundle.c:391-392`) are parsed and enforced by nobody. This extension deliberately
+needs no bump — which makes it exactly the day those fields were promised for. Wiring one
+check (`abi_min > ORB_BUNDLE3_ABI` refuses the section with the firmware-too-old sentence)
+costs four lines and makes the next dialect change negotiable per section instead of
+bundle-wide.
+
+**What this deliberately does not buy.** Send-to-orb from the composer page: the boards
+serve no CORS headers, so the push rides the hub's `/api/theme/upload` — already FORMAT
+3-correct and demonstrated live on orb-B with store, flip and delete — and the composer's
+export stays a download the owner picks in that button until a hub round adds a push
+action on the composer frame. Delta-GIF backgrounds: unruled, per rule 2. Glass
+animation: refused by rule 1 — the crystal composites, it does not loop.
+
+**Ruling asked of the owner.** Accept rules 1-6 as the plate-bank contract (keyframes
+only, delta still refused); accept `CLK_BG_MAX 16` with the cap arithmetic as the binding
+limit; accept motion-split bake policy (plate bank vs sprite region, chosen by the
+authoring check); accept or defer the per-section abi enforcement.
+
+
+
 
 

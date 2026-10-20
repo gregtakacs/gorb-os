@@ -3965,6 +3965,21 @@ static esp_err_t h_screen(httpd_req_t *req)
  * pixels rather than a picture of them. One capture at a time: the staging
  * buffer and row scratch are singletons, so a second caller gets 503 rather
  * than interleaved pixels.
+ *
+ * Two behaviours a bench operator will meet, both measured here rather than
+ * predicted. Aborting mid-transfer is NOT free: esp_http_server is one task, so
+ * a half-read 652 KB response sits in send() until the socket times out and
+ * every other route — /api/v1/status included — answers nothing meanwhile
+ * (observed: ~1-2 min of dark API after two Ctrl-C'd grabs, recovering on its
+ * own with nothing wedged). Let a grab finish. And ?direct=1 on a screen that
+ * repaints can return the frame from before a just-requested switch: it copies
+ * what the mirror holds at that instant, which is honest but not what was
+ * asked for, so prefer the commit path when a switch is in flight.
+ *
+ * BMP rows pad to 4 bytes (466*3 = 1398 -> 1400), 932 B less than the row
+ * scratch's size. Sending the scratch instead of the padded row shears the
+ * frame by a third of its height, and a thumbnail of a round dial does not
+ * visibly fail — which is how that one got past review once already.
  */
 static esp_err_t h_fb(httpd_req_t *req)
 {

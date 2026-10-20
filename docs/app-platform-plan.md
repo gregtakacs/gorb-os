@@ -2588,7 +2588,9 @@ Four measurements, same rig as §19, before the flip UI relies on any of it:
    must be measured, not assumed, and it lands as a line in the boot log.
 3. A power cut inside the commit window (the `m5_powercut.sh` idiom, retargeted at the
    header write): must roll back to the committed theme with the `staged` word set and
-   the dial alive.
+   the dial alive. **PAID 2026-10-20 on orb-A — `tools/bench_storecut.sh`, BENCH_STORECUT
+   PASS**; the torn copy also cannot theme the dial: the flip onto it fails safe at boot's
+   adopt with one sentence. §26's tail carries the witnesses.
 4. The fallback refusal path: pin PSRAM so the arena cannot allocate a cap-sized
    bundle, and confirm the picker names the reason and offers Arm A.
 Arm B2 (map-in-place off the card) stays unbenched on purpose — §20.1 killed it on
@@ -4102,6 +4104,25 @@ this gate are now clone-bound and renamed (`1dbad79`): `tools/m5_*.sh` → `tool
 another host, and `bench_store.sh` carries the same wall-time anchor fix `bench_flip.sh`
 demanded — its clock-line anchor read empty on the base face and the empty anchor turned
 the capture's own open-reset into a false flip FAIL.
+**2026-10-20 — the §20.5(3) store-cut gate is paid, and §26's closure holds under a power
+cut.** `tools/bench_storecut.sh` cuts the FORMAT 3 **store** window. The fuse is bench_powercut's
+own idiom: POST /api/v1/reboot arms the board's 750 ms one-shot and does not drain `orb_jobs`,
+so the tear lands where a pulled plug would. It is a new script, not a flag on
+`bench_powercut.sh`, because the pass lines differ: that bench asserts a torn **app** is absent;
+this one asserts a torn **copy** rolls back and that a flip onto it fails safe. The fuse fires
+50 ms after the store press; trial 1 landed `rst:0x` inside the art copy (≈4.6 s, header not
+yet written) on both runs. The ledger rolled back: `staged_id` names av-kit-b, `staged_why`
+speaks, `live:"default"`, `source:"slot-A"`, the clock ticking at 16–17 fps. The torn copy
+cannot theme the glass: slot B's OLD header still advertises av-kit and the flip door reads
+headers only (by design), so the press took and boot's adopt refused — `damage_why:"the
+installed copy did not verify — re-store it"`, serial `would not load (ESP_ERR_INVALID_CRC)`,
+board back on slot-A. Failing safe with a sentence on the row is §20.5(3)'s gate, and it held.
+Recovery re-stored clean (bundle_ms 4013, `staged` cleared), the flip onto the fresh copy
+themed the dial (`source:"slot-B"`), `sd/default` put the board back where it started. The
+first run's FAIL was the script, not the board: the recovery wait broke on stale stamps (a
+press seconds after the flip's boot, with the `(e-2)` margin) and the `staged` guard tested an
+inverted empty-expansion; both fixed in the same commit, and the re-run printed
+**BENCH_STORECUT PASS**.
 
 
 ## 27 — P6.5(3) lands: the FORMAT 2 ingest door is gone, and P6 closes — 2026-10-20, `7c0fd4b`

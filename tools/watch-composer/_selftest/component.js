@@ -489,6 +489,13 @@ class Component extends DCLogic {
     // or on the pane, and onKey ignores it while a field has it.
     this._onKey = (e) => { this.onKey(e); };
     window.addEventListener('keydown', this._onKey);
+    // A hidden or occluded window freezes the task queue the movement render
+    // loop yields through (MessageChannel), and the status line freezes at
+    // "Rendering 1 / N" while `rendering` stays true forever — the hub window
+    // bench note of 10/21. Say so on the way out; the loop resumes itself the
+    // moment the window is visible again.
+    this._vis = () => { if (document.hidden && this.rendering) this.setState({ status: 'Movement render paused: this window is hidden — bring it back and it continues' }); };
+    document.addEventListener('visibilitychange', this._vis);
     while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
     this.loadArt();                                       // needs the engine's registry, so after the wait
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
@@ -496,7 +503,7 @@ class Component extends DCLogic {
     this.ready = true;
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); this.buildId = -1; }
+  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -1485,7 +1492,27 @@ class Component extends DCLogic {
    * plans and renders first (compPass3), and its tiles bill against the bank
    * inside the same policy. FORMAT 2's kit route is untouched beside this:
    * exportKit(true) still answers the old loader. */
+  /* One settle predicate, asked twice per bake: on press, and again right
+   * before the motion walk with the comp/aux awaits behind it. buildMovement
+   * sets gt.length to B the moment frame 0 lands and fills the rest across
+   * awaited ticks — the race line 901 already dodges for the preview. A bake
+   * that walked holed or rebuilt frames measured the train as zero motion and
+   * shipped a silent still. Rendering in flight, a short table, a hole in it,
+   * or frames keyed to an older movement signature is not settled. */
+  settled3() {
+    const M = this.base, gt = this.gt, B = gt.length, fps = this.F, fc = this.face();
+    if (!M || !fc || B < 1 || B !== this.B || this.rendering || gt.some((g) => !g)
+        || this._mk !== this.mvKey()) return null;
+    return { M, gt, B, fps, fc };
+  }
+  /* An error thrown anywhere inside the bake must surface on the status line.
+   * The hub window has no console, and before this a throw past t3bake's own
+   * try left the status frozen mid-sentence with no explanation at all. */
   async exportTheme3() {
+    try { await this._export3Body(); }
+    catch (e) { this.setState({ status: 'Not baked: bake threw — ' + (e && e.message ? e.message : String(e)) }); }
+  }
+  async _export3Body() {
     const G = window.GorbBake;
     if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
     const D = this.design();
@@ -1513,15 +1540,20 @@ class Component extends DCLogic {
       this.setState({ status: 'Not baked: ' + (plan.refuses[0] || pp.refuses[0]) + ' — the .orbtheme note says this before you press.' });
       return;
     }
-    const M = this.base, gt = this.gt, B = gt.length, fps = this.F, fc = this.face();
-    // D34 bench: gt.length is B the moment frame 0 lands and the rest fill across
-    // awaited ticks. A bake pressed mid-build walked empty frames, measured zero
-    // train motion, and shipped a still plate under a silent shimmer verdict.
-    if (!M || !fc || B < 1 || B !== this.B || this.rendering || gt.some((g) => !g)
-        || this._mk !== this.mvKey()) {
-      this.setState({ status: 'Not baked: the movement has not settled into its loop yet — press again once the dial runs' });
+    const s0 = this.settled3();
+    if (!s0) {
+      this.setState({ status: 'Not baked: the movement has not settled into its loop yet — keep this window visible and press again once the dial runs' });
       return;
     }
+    // The comp and aux passes below call face().compHoles — added to the engine
+    // with the D34 rows. A browser-cached engine from before it (no cache-buster
+    // on the script tags) is the only way this page can meet an engine that young
+    // at odds; say what to do about it instead of a bare TypeError.
+    if (typeof this.face().compHoles !== 'function') {
+      this.setState({ status: 'Not baked: the loaded watch-engine.js is older than this page — hard-reload the editor (Ctrl+F5), or restart orb-manager if this is the hub' });
+      return;
+    }
+    let M = s0.M, gt = s0.gt, B = s0.B, fps = s0.fps, fc = s0.fc;
     // Every comp the plan can plate: static art (custom windows, openings, engravings)
     // rides the plate frames; a planned row's own plates must not.
     const liveIds = plan.rows.map((r) => r.id);
@@ -1546,9 +1578,23 @@ class Component extends DCLogic {
     }
     this.setState({ status: 'Measuring plate motion across the ' + B + '-frame loop' + (compRows.length ? ' with the comp rows off the plate' : '') + '…' });
     await new Promise((r) => setTimeout(r, 30));      // paint the status before the walk
+    // The comp and pointer passes awaited for seconds above, and a font settling
+    // or an edit in that window re-keys the movement: componentDidUpdate rebuilds
+    // it, gt shrinks to holes, and frameCanvas hands the walk blank canvases —
+    // the silent-still bake, measured twice on the bench. Nothing walks until the
+    // loop is settled again, on the same predicate, with the fresh frames.
+    const s1 = this.settled3();
+    if (!s1) {
+      this.setState({ status: 'Not baked: the movement rebuilt itself mid-bake — press again once the dial runs' });
+      return;
+    }
+    M = s1.M; gt = s1.gt; B = s1.B; fps = s1.fps; fc = s1.fc;
     const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt };
     const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, compRows.length ? onlyBase : undefined), m3);
-    const { un, bw, bh } = m3;
+    // measureFrames3 settles unionPx/bboxW/bboxH onto m; reading m3.un read undefined for
+    // every animated dial — the walk's answer dropped on the floor, t3bake's tripwire
+    // reporting it as "union 0 px", and every moving plate bake refused as stale.
+    const un = m3.unionPx, bw = m3.bboxW, bh = m3.bboxH;
     this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB };
     await this.t3bake(nm, fc, M, gt, B, fps);
   }
@@ -1592,8 +1638,8 @@ class Component extends DCLogic {
     const { pxs, un, bw, bh, compRows, compB, auxRows, auxB } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
     const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
-    const hands = [];
-    let oth = 0;
+    const hands = [], shadows = [];
+    let oth = 0, sdx = 0, sdy = 0;
     for (const h of (fc.hands || [])) {
       if (ROLE[h.id] === undefined || !h.sp) continue;
       const w = Math.round(h.sp.c.width), hh = Math.round(h.sp.c.height), px = Math.round(h.sp.px), py = Math.round(h.sp.py);
@@ -1601,10 +1647,53 @@ class Component extends DCLogic {
       c.getContext('2d').drawImage(h.sp.c, 0, 0);
       oth += w * hh * 3;
       hands.push({ slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py });
+      /* Every seated hand casts, shadowed and unshadowed bakes being two looks
+       * the author should never have to leave for a FORMAT 2 kit. The mask is
+       * the same padded black blur the kit export ships (pad, blur/2, alpha),
+       * and the row reads by orb_clock3.c's §25.2 projection: the device crops
+       * the pivot from the hand (crop = hand centre - this x), so the light
+       * offset rides the PIVOT COLUMN — centre = x + column lands the shadow's
+       * centre on hand centre + (dx,dy), screen-fixed while it turns with the
+       * hand, exactly what the FORMAT 2 .h record carries. */
+      const sh = fc.handShadow(h), bl = sh.blur, pd = Math.ceil(bl * 1.5 + 2);
+      const dx = Math.round(sh.dx), dy = Math.round(sh.dy);
+      if (sh.alpha > 0.01) {
+        const sil = document.createElement('canvas'); sil.width = w; sil.height = hh;
+        const sx = sil.getContext('2d'); sx.drawImage(h.sp.c, 0, 0);
+        sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, w, hh);
+        const mc = document.createElement('canvas'); mc.width = w + 2 * pd; mc.height = hh + 2 * pd;
+        const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha;
+        if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)';
+        mx.drawImage(sil, pd, pd);
+        shadows.push({ slot: ROLE[h.id], rgba: pixOf(mc), w: mc.width, h: mc.height,
+                       x: Math.round(h.x) - px - pd, y: Math.round(h.y) - py - pd,
+                       pivot_x: px + pd + dx, pivot_y: py + pd + dy });
+        oth += mc.width * mc.height * 3;
+        if (ROLE[h.id] === 0) { sdx = dx; sdy = dy; }   // theme-wide light = the hour hand's
+      }
     }
     if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
     const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0, hasCage: !!M.cageAt });
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
+    /* The silent-still tripwire. A "still" verdict is only honest when the loop
+     * genuinely does not move, and this walk is the LAST thing the bake does: the
+     * comp and pointer passes awaited for seconds before it, and every canvas it
+     * reads comes back through frameCanvas. The build already priced this same
+     * loop on its own canvases, before any of that: rowPrice() diffs consecutive
+     * BASE frames and returns the worst dirty-row count, so a dial that truly
+     * holds still prices at 0 rows and a turning train prices well above one tile
+     * row. When the bake calls the plate still but the movement that painted it
+     * has dirty rows, the walk measured stale or blank canvases rather than this
+     * dial — and baking it ships a frozen train behind the sentence "the still
+     * bakes the same dial", which is exactly the defect D34 shipped. Refuse, and
+     * quote both readings so the next report is a measurement, not a guess. */
+    const bs = this.budgetStats;
+    if (pol.carrier === 'still' && bs && bs.mv === this.mvKey(1) && bs.rows >= 16) {
+      this.setState({ status: 'Not baked: the walk measured a still plate (union ' + (un | 0) +
+        ' px) but this movement prices ' + bs.rows + ' dirty rows a tick — the bake ran against stale frames. ' +
+        'Wait for the seam readout to settle, then press again.' });
+      return;
+    }
     const plate = { rgba: pxs[0], w: 466, h: 466 };
     if (pol.carrier === 'bank') {
       plate.frames = [];
@@ -1612,7 +1701,10 @@ class Component extends DCLogic {
       plate.fps = pol.fps;
     }
     const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier)),
+                   // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
+                   // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
+    if (shadows.length) { opts.shadows = shadows; opts.scalars = { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }; }
     if (pol.carrier === 'sprite') {
       const cf = [];
       let cw = 0, chh = 0, same = true;
@@ -2007,7 +2099,13 @@ class Component extends DCLogic {
       }
       if (sel.type === 'subdial') {
         Sx('Scale', 'scale', opt(E.SCALES));
-        if (E.POINTER_SCALES[sel.scale]) Cx('Drive', 'carrier', opt(E.SUB_CARRIERS), 'plates');   // D34
+        // D34: a pointer-capable subdial defaults to the pointer — a bare hand needs
+        // no per-tick bank. Plates stays selectable, and a HOSTED subdial defaults to
+        // plates: the punch belongs to the host tile and a pointer row carries none.
+        // The chip shows the baker's own predicate, so the default is never display-only.
+        if (E.POINTER_SCALES[sel.scale])
+          Cx('Drive', 'carrier', opt(E.SUB_CARRIERS),
+             (window.GorbBake && GorbBake.pointerDefault3(sel, D.comps)) ? 'pointer' : 'plates');
         R('Open centre', 'open', 0, 0.8, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'closed'));
         R('Height', 'height', -1.5, 2, 0.05, (v) => (v < 0 ? 'sunk ' + (-v).toFixed(2) : v === 0 ? 'flush' : 'raised ' + v.toFixed(2)), 1);
         if (sel.style === 'carbon') R('Weave angle', 'weaveAngle', 0, 90, 1, (v) => v + '°', +D.weaveAngle || 0);

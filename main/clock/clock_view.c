@@ -133,7 +133,7 @@ static int32_t   s_aux_ang_10[CLK_AUX_MAX];
  * runs per flush and must not redo the arithmetic per pointer per flush. */
 static clk_sprite_t s_aux_pose[CLK_AUX_MAX];
 static uint32_t  s_aux_logged;                /* bit i: "no input" printed for row i */
-static int       s_aux_at = -1;               /* order index the block rides above */
+static int       s_aux_at = -1;               /* order position the block inserts before */
 
 
 
@@ -1075,12 +1075,13 @@ static void clock_layer_commit(void)
     for (int oi = 0; oi < clk_theme.order_n && nj < CLK_JOB_MAX - 1; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
-        if (clk_theme.matte_mask & (1u << k)) {           /* baked into the bg */
-            if (!aux_done && oi == s_aux_at) {
-                aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
-            }
-            continue;
+        /* The sub-dial pointers join BEFORE the live hand they belong under
+         * (see aux_insert_at) — and for every order that lists statics first,
+         * that position is also directly above the last live static. */
+        if (!aux_done && oi == s_aux_at) {
+            aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
         }
+        if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
         /* Tiles that must stay under THIS live layer, and only statics ever
          * host one: buckets 1 and 2 would name a hand slot, which no bake
          * emits, and bucket 0 is already down below the whole list — calling
@@ -1091,13 +1092,8 @@ static void clock_layer_commit(void)
             if (gfx_paint_ctx_init(&jc[nj], &clk_theme.shadow[k], blob(), s_ang_10[k], (uint8_t)k)) nj++;
         if (s_hand[k] && s_ang_10[k] != INT32_MIN)
             if (gfx_paint_ctx_init(&jc[nj], layer_spr(k), blob(), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
-        /* The sub-dial pointers join above the last live static, and below
-         * whatever the theme ordered after it (see aux_insert_at). */
-        if (!aux_done && oi == s_aux_at) {
-            aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
-        }
     }
-    if (!aux_done) aux_add_jobs(orb_theme_geo(), jc, &nj);  /* no live static at all */
+    if (!aux_done) aux_add_jobs(orb_theme_geo(), jc, &nj);  /* nothing live to join under */
     /* The carriage is its own layer (D32 ruling C): it joins the stack where
      * its object sits in the sibling chain — above every ordered layer and
      * its aux block, below the buckets that drain after them. Its pose is
@@ -1611,27 +1607,36 @@ static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
  * pixels it exists to darken. The bake packed it with the SAME pivot as its
  * hand, which is what keeps the light direction fixed while the pointer sweeps.
  *
- * z-order: the block rides the stack above the last live static (a pointer
- * belongs on top of the plate it points at) and below the dial's own hands,
- * which is the kit's own reading — the date pointer is z=1, the hour z=2.
- * s_aux_at is that order index, computed once per view in clock_view_init and
+ * z-order: the block inserts BEFORE the first live hand (a pointer on its own
+ * ring belongs under the main hands that sweep across it) and above every live
+ * static (it belongs on top of the plate it points at), which is the kit's own
+ * reading — the date pointer is z=1, the hour z=2.
+ * s_aux_at is that order position, computed once per view in clock_view_init and
  * honoured by BOTH paint paths, because a row LVGL renders itself has to come
  * out identical to a row the L4 hook paints. */
 
-/* Where the block joins clk_theme.order: the index of the last live static, so
- * the pointers paint after it. -1 when the theme has no live static at all (both
- * folded into the bank, or a plain classic dial), which puts the block at the
- * front of the list — still above the bank, and below every hand. */
+/* Where the block joins clk_theme.order: the order position it goes BEFORE. A
+ * sub-dial pointer stands on its own ring, UNDER the main hands that sweep
+ * across it, so the block precedes the first live hand — which for every bake
+ * that orders statics first (the kit bakes, the composer's, bake_clock.py's) is
+ * also the index directly above the last live static, the same join point this
+ * function has always resolved to for those tables. A theme with live statics
+ * and no live hand joins above the last static; one with neither returns -1,
+ * which leaves the callers' fall-through ride the block above everything that
+ * does exist — the only reading left when there is no hand to hide it under.
+ * The D34 composer bakes order:[0,1] with no static rows at all, and a block
+ * appended after the loop then drew the seconds pointer OVER the hour hand. */
 static int aux_insert_at(void)
 {
-    int at = -1;
+    int last_static = -1;
     for (int oi = 0; oi < (int)clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
-        if (k < 3 || k > 4) continue;
+        if (k < 0 || k > 4) continue;
         if (clk_theme.matte_mask & (1u << k)) continue;   /* folded into the bg */
-        at = oi;
+        if (k <= 2) return oi;              /* below the first live hand */
+        last_static = oi + 1;               /* above the last live static */
     }
-    return at;
+    return last_static;
 }
 
 /* The value that turns a pointer, in thousandths of one unit: day 5 is 5000, and
@@ -2008,6 +2013,18 @@ esp_err_t clock_view_init(void)
     /* Fresh widgets are all at rotation 0, so forget the angles we last pushed;
      * otherwise a rebuilt view would skip the re-pose as "unchanged". */
     for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
+    /* The sub-dial pointers take the same rule, and the reason is the same and
+     * worse: s_aux_ang_10 is static-zero, and 0 is a REAL pose rather than a
+     * "never posed" mark — a seconds pointer rebuilt at 30 s would compare its
+     * new angle against the dead theme's last one, skip the setter as
+     * "unchanged" when they match, and the stale s_aux_obj entries would point
+     * at widgets this destroy already freed. AUX_HIDDEN is the honest "nothing
+     * drawn yet", so the first tick poses every fresh widget and marks its box. */
+    for (int i = 0; i < CLK_AUX_MAX; i++) {
+        s_aux_ang_10[i] = AUX_HIDDEN;
+        s_aux_obj[i] = NULL;
+    }
+    s_aux_logged = 0;
 
     /* Complication widgets, bucket 0 first: created BEFORE the hand/layer loop
      * below so the classic path's sibling order is plate -> comp tiles -> S2 H2
@@ -2037,22 +2054,22 @@ esp_err_t clock_view_init(void)
     for (int oi = 0; oi < clk_theme.order_n; ++oi) {
         const int k = clk_theme.order[oi];
         if (k < 0 || k > 4) continue;
+        /* The sub-dial block joins BEFORE the first live hand — the depth a
+         * pointer on its own ring must sit at, since the main hands sweep over
+         * it (see aux_insert_at). */
+        if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
         /* Folded into the background at bake time (tools/bake_clock.py
          * --matte): the plate/bank already carries this layer's pixels, so an
          * object here would paint a SECOND copy over them. The bake also ships
          * the sprite blank, so this is the belt to that pair of braces -- it
          * is what keeps a half-swapped bin+header pair from double-blending. */
-        if (clk_theme.matte_mask & (1u << k)) {
-            if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
-            continue;
-        }
+        if (clk_theme.matte_mask & (1u << k)) continue;
         complications_create_bucket(geo, k);      /* the tiles under layer k */
         if (k <= 2 && clk_theme.shadow_on)
             s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k]);
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
-        if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
     }
-    if (!aux_built) aux_create();                 /* no live static: ride the bank */
+    if (!aux_built) aux_create();                 /* nothing to join under: ride the top */
     /* D32 ruling C: the carriage. One object when the theme names a frame
      * bank, created under the complications so a hosted window still covers
      * it the way its bucket says, placed by the bank's own shared geometry,

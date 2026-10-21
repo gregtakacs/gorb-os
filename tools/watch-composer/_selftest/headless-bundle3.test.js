@@ -294,7 +294,11 @@ const PL = { rgba: mkPlane(466, 466), w: 466, h: 466 };
 const HK = { slot: 0, rgba: mkPlane(40, 200, 200), x: 233, y: 233, w: 40, h: 200, pivot_x: 20, pivot_y: 190 };
 const SK = { slot: 0, rgba: mkPlane(40, 200, 90), x: 235, y: 235, w: 40, h: 200, pivot_x: 20, pivot_y: 190 };
 const baked = B.bakeClock3({ name: 'Bench Bake', serial: 20261020, bakedMs: 1730000000000,
-  plate: PL, hands: [HK], shadows: [SK], order: [0] });
+  plate: PL, hands: [HK], shadows: [SK], order: [0],
+  // The composer's bake ships this scalar pair with every shadow row: a dial
+  // that seats a shadow the flag keeps unbuilt is the "no shadows" bug in one
+  // word, and the walk below reads it back so the two can never drift.
+  scalars: { shadow_on: 1, shadow_dx: 2, shadow_dy: 2 } });
 const walk = B.verifyBundle3(baked.bytes).sections[0];
 ok(baked.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 * 2,
    'the bank costs the plate colour-only and every sprite its alpha stride',
@@ -302,6 +306,9 @@ ok(baked.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 * 2,
 ok(walk.blob.elements.length === 3 && walk.blob.sprites.length === 3 &&
    walk.blob.elements[1].frame0 === 1 && walk.blob.elements[2].frame0 === 2,
    'the bake walks back as three rows seated on three planes, each pointing at its own');
+ok(walk.blob.scalars.shadow_on === 1 && walk.blob.elements[2].class === SPRITE &&
+   walk.blob.elements[2].slot === 0,
+   'the shadow row walks back as the hand’s sprite slot, under the flag that builds it');
 ok(walk.rec.art_size === baked.meter.artSize && walk.rec.scr_w === 466 && walk.rec.scr_h === 466,
    'the index record the dial reads carries the bank it names and the panel it was baked for');
 // counts(16) + scalars(104) + rows(3 * 23 words * 4 = 276: D34 widened the row from
@@ -449,8 +456,12 @@ ok(cpCal.rows.map((r) => r.id).join(',') === 'c2,c3,c5,c4' && cpCal.rows[2].host
 const cpReg = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'hours' },
                            { id: 'c2', type: 'subdial', scale: 'seconds' },
                            { id: 'c3', type: 'window', host: 'c1', shows: 'date' }]);
-ok(cpReg.rows.map((r) => r.id).join(',') === 'c3,c1,c2',
-   'the regulator\u2019s hosted window rides first, under its hours subdial\u2019s punched plate');
+ok(cpReg.rows.map((r) => r.id).join(',') === 'c3,c1',
+   'the regulator\u2019s hosted window rides first, under its hours subdial\u2019s punched plate (the bare seconds ring is the pointer\u2019s by default and leaves the bank)');
+ok(B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'hours' },
+                   { id: 'c2', type: 'subdial', scale: 'seconds' },
+                   { id: 'c3', type: 'window', host: 'c1', shows: 'date' }]).rows.map((r) => r.id).join(',') === 'c2',
+   'and the regulator\u2019s seconds hand is the one pointer the default puts on the dial');
 const cpPhase = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'none' },
                              { id: 'c2', type: 'moon', host: 'c1' }]);
 ok(cpPhase.rows.length === 1 && cpPhase.rows[0].src === 'moon_age' && !cpPhase.rows[0].hosted,
@@ -467,7 +478,7 @@ ok(cpMany.rows.length === 17 && cpMany.refuses.length === 1 && /cap of 16/.test(
    'seventeen windows exceed the dial\u2019s 16 complication slots and say so before the guard runs');
 // ---- 7e2. pointerPlan3 (D34): the drive that replaces the plates ----
 const ptSec = B.pointerPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds', carrier: 'pointer' },
-                              { id: 'c1', type: 'subdial', scale: 'hours' }]);
+                              { id: 'c1', type: 'subdial', scale: 'hours', carrier: 'plates' }]);
 ok(ptSec.rows.length === 1 && ptSec.rows[0].id === 'c2' && ptSec.rows[0].src === 'second' &&
    ptSec.rows[0].vmin === 0 && ptSec.rows[0].vmax === 60 && ptSec.rows[0].span === 3600 &&
    ptSec.rows[0].zero === 0 && ptSec.rows[0].motion === 'rotate' && ptSec.refuses.length === 0,
@@ -482,9 +493,21 @@ ok(ptDate.rows.length === 0 && /pointer/.test(ptDate.refuses[0] || '') && /plate
 const pt9 = B.pointerPlan3(Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, type: 'subdial', scale: 'seconds', carrier: 'pointer' })));
 ok(pt9.rows.length === 9 && pt9.refuses.length === 1 && /pointer slots/.test(pt9.refuses[0]),
    'nine pointers overflow the dial\u2019s eight pointer slots and say so before any art is drawn');
-const ptNone = B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' }, { id: 'c2', type: 'subdial', scale: 'seconds', carrier: 'plates' }]);
-ok(ptNone.rows.length === 0 && ptNone.refuses.length === 0,
-   'the pointer is opt-in: every other carrier\u2019s plan is byte-identical to the one this slice shipped before it');
+const ptDflt = B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' },
+                               { id: 'c2', type: 'subdial', scale: 'hours', carrier: 'plates' },
+                               { id: 'c3', type: 'subdial', scale: 'date' },
+                               { id: 'c4', type: 'subdial', scale: 'hours' },
+                               { id: 'c5', type: 'window', host: 'c4', shows: 'date' }]);
+ok(ptDflt.rows.length === 1 && ptDflt.rows[0].id === 'c1' && ptDflt.refuses.length === 0,
+   'pointer is the default for a bare seconds or hours ring: plates stays the opt-out, hosted and other scales stay on the bank',
+   JSON.stringify(ptDflt));
+ok(B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' }]).rows.length === 0,
+   'the defaulted pointer never also claims a window row: the drive replaces the plates, it does not join them');
+const ptHost = B.pointerPlan3([{ id: 'c4', type: 'subdial', scale: 'hours', carrier: 'pointer' },
+                               { id: 'c5', type: 'window', host: 'c4', shows: 'date' }]);
+ok(ptHost.rows.length === 0 && /hosts/.test(ptHost.refuses[0] || '') && /plates/.test(ptHost.refuses[0] || ''),
+   'a subdial hosting another indication refuses the pointer drive: the row carries nothing to punch',
+   ptHost.refuses[0]);
 // the plan's own row shape must bake through bakeClock3's aux seam, unmodified but for art
 const bakedPT = B.bakeClock3({ name: 'pt-plan', serial: 7, bakedMs: 1, plate: PL, hands: [HK], order: [0],
   aux: ptSec.rows.map((r, i) => Object.assign({}, r, { slot: i, x: 300, y: 120, w: 28, h: 64,
@@ -614,6 +637,16 @@ if (!hasGcc) {
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
      'and seats the hand at the element rect with the plate-colour size as its offset',
      (pr.stdout.match(/hand.*434312/) || ['none'])[0]);
+  // D34's shadow contract across the wire: the row draws at its own draw point,
+  // its PIVOT COLUMN became a centre offset from the hand by the light, and the
+  // crop pivot the C recomputed is the hand's centre minus the row's x — the
+  // composer's whole shadow placement in three numbers.
+  ok(/shadow\s+\[0\] 40x200 draws at \(235,235\)/.test(pr.stdout),
+     'and seats the shadow row at its own padded draw point',
+     (pr.stdout.match(/shadow.*draws.*/) || ['none'])[0]);
+  ok(/shadow\[0\] centre \(255,425\) = hand centre \(253,423\) \+ light \(2,2\), crop pivot \(18,188\)/.test(pr.stdout),
+     'and the light offset survives the projection exactly as the composer encoded it',
+     (pr.stdout.match(/shadow\[0\] centre.*/) || ['none'])[0]);
   ok(/plate bank: 2 extra keyframes at 434312, 868624/.test(pr.stdout),
      'and the projection fills the bgAnim table with the keyframes\' own offsets',
      (pr.stdout.match(/plate bank.*/) || ['none'])[0]);

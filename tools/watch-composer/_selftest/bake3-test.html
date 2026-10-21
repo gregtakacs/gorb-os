@@ -107,7 +107,7 @@
      * THIS dial's plate moves. It is measured the only way that means anything: compose
      * the plate at frame 0 and again at the end of the loop, and compare the pixels. */
     say('--- what a FORMAT 3 clock bake may take, preset by preset ---');
-    const canBake = [];
+    const canBake = [], stillTrips = [];
     for (const id of ids) {
       const P = E.PRESETS[id];
       const V = await mount(id), F = V.F, M = V.M, B = V.B, d = V.d;
@@ -118,6 +118,13 @@
       IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, undefined, onlyBaseOf(d)), meas);
       const pol = G.splitPolicy3(meas);
       if (pol.carrier === 'refuse') why.push(pol.sentence.slice(0, 150));
+      /* The export pane's silent-still tripwire refuses a "still" verdict when the
+       * movement prices dirty rows — the two readings cannot both be true of one
+       * honest walk. Here every walk IS honest, so any preset that trips it is the
+       * tripwire false-refusing a legitimate bake. Rows come from the build's own
+       * rowPrice pass, so this costs no extra rendering. -1 means unpriced. */
+      const bs = IT.budgetStats, rows = bs && bs.mv === IT.mvKey(1) ? bs.rows : -1;
+      if (pol.carrier === 'still' && rows >= 16) stillTrips.push(id + ' (' + rows + ' rows)');
       // §31's comp table closed the last blocker: a live comp plans a window row.
       // Only what no element row can carry (a datetext flare, an unknown type) refuses.
       let cnote = '';
@@ -131,13 +138,17 @@
       const off = ch.filter((h) => Math.abs(E.handZeroDeg(h)) > 0.01);
       if (off.length) why.push(off.length + ' hand art not drawn at 12');
       if (!why.length) canBake.push(id);
-      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE') + cnote);
+      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE') + cnote + ' · union ' + meas.unionPx + ' px · ' + rows + ' dirty rows');
     }
     say('  ' + canBake.length + ' of ' + ids.length + ' presets a FORMAT 3 clock bake may take today');
     // Reported, not asserted: which presets qualify is a fact about the engine, and the
     // suite's promise is that the button states it instead of baking a frozen train and
     // calling it a theme. The check below is the one that holds either way round.
     ok('every preset got a verdict above', ids.length === canBake.length + ids.length - canBake.length, canBake.length + ' of ' + ids.length + ' may bake');
+    /* The tripwire's premise, tested not assumed: on an honest walk a preset the
+     * policy calls still must carry no dirty rows. One that does means the guard
+     * would refuse a bake this dial is entitled to, and the threshold is wrong. */
+    ok('no honest still carries dirty rows, so the tripwire cannot false-refuse', stillTrips.length === 0, stillTrips.join(', ') || 'no still preset priced dirty rows');
 
     /* ---- 1.9 motion walk, real pixels (D34 bench: a Skeleton bake shipped bg_frames 0) ----
      * Same call shape as the composer's own bake pass (line 1935): plate at every gt frame,
@@ -148,10 +159,17 @@
     const m3 = { frames: IT.gt.length, fps: IT.F, unionPx: 0, movedPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!IT.base.cageAt };
     IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, undefined), m3);
     const pol = G.splitPolicy3(m3);
+    const sb = IT.budgetStats, srows = sb && sb.mv === IT.mvKey(1) ? sb.rows : -1;
     say('--- Skeleton motion walk: ' + m3.frames + ' gt frames at ' + m3.fps + ' fps ---');
-    say('  moved ' + m3.movedPx + ' px · union ' + m3.unionPx + ' px · box ' + m3.bboxW + 'x' + m3.bboxH + ' · cage ' + m3.hasCage);
+    say('  moved ' + m3.movedPx + ' px · union ' + m3.unionPx + ' px · box ' + m3.bboxW + 'x' + m3.bboxH + ' · cage ' + m3.hasCage + ' · ' + srows + ' dirty rows');
     say('  policy: ' + pol.carrier + ' — ' + pol.sentence);
     ok('the Skeleton train moves the plate across its own loop', m3.unionPx > 466 * 466 / 1000, 'union ' + m3.unionPx + ' px vs band ' + Math.round(466 * 466 / 1000));
+    /* And the guard must ARM here. The hub's complaint was a Skeleton bake that
+     * measured union 0 and shipped a frozen train as a still; this dial moves, so
+     * the build's own row count has to clear the threshold the guard checks. If it
+     * does not, the guard can never catch the hub's failure and the threshold is
+     * the thing to fix. */
+    ok('so the hub tripwire would arm on a Skeleton that measured zero', srows >= 16, srows + ' dirty rows vs the guard threshold 16');
 
     /* ---- 2. the bake that IS honest: a still, hands seated ----
      * The refusal above protects a product promise (freeze the train and the watch stops

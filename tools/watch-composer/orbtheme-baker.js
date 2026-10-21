@@ -2815,7 +2815,7 @@
       } else if (c.type === 'moon') src = 'moon_age';
       else if (c.type === 'subdial') {
         if (c.scale === 'none') return;                                  // no hand: plate art
-        if (c.carrier === 'pointer') return;      // D34: pointerPlan3 owns this row, not the bank
+        if (c.carrier === 'pointer' || pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
         src = (c.scale === undefined) ? 'second' : COMP3_SCALE_SRC[c.scale];
         if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + c.scale + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
       } else {
@@ -2850,12 +2850,32 @@
    * carrier the author just said no to. Rows here carry the drive, not the art:
    * the composer measures the plate and the pivot off the pixels and feeds them
    * to bakeClock3's `aux` option. */
+  /* D34 follow-up: the Drive chip defaults a pointer-capable subdial to Pointer,
+   * and Cx defaults never write into the design — so the bake reads the default
+   * the same way the chip shows it. An unset carrier on the seconds or hours
+   * ring belongs to the pointer row; an explicit `plates` is the author's
+   * escape hatch and stays on the bank. A subdial HOSTING another indication
+   * never defaults to the pointer either: the plates carrier punches the host
+   * tile so the hosted tile sits inside it, and a pointer row carries nothing
+   * to punch. The UI and the bake share this one predicate. */
+  function pointerDefault3(c, comps) {
+    if (c.type !== 'subdial' || c.carrier != null) return false;
+    if (!(c.scale === undefined || c.scale === 'seconds' || c.scale === 'hours')) return false;
+    return !(comps || []).some(function (x) { return x.host === c.id; });
+  }
   var COMP3_POINTER_SPAN = 3600;                       // one whole turn, tenths of a degree
   function pointerPlan3(comps) {
     var rows = [], refuses = [];
     (comps || []).forEach(function (c) {
-      if (c.type !== 'subdial' || c.carrier !== 'pointer') return;
+      if (c.type !== 'subdial') return;
+      if (c.carrier === 'plates') return;
+      if (c.carrier !== 'pointer' && !pointerDefault3(c, comps)) return;
       var id = c.id === undefined ? '?' : c.id;
+      if ((comps || []).some(function (x) { return x.host === id; })) {
+        refuses.push('the subdial \u201c' + id + '\u201d hosts another indication: the plates carrier punches its '
+          + 'plate so the hosted tile sits inside the hole, and a pointer row carries nothing to punch — drive it as plates');
+        return;
+      }
       var src = c.scale === undefined ? 'second' : COMP3_SCALE_SRC[c.scale];
       if (!src || !COMP3_RING_FULL[src]) {
         refuses.push('the subdial \u201c' + id + '\u201d asks to be driven as a pointer and reads scale '
@@ -2936,7 +2956,8 @@
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
-    liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3
+    liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
+    pointerDefault3: pointerDefault3
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

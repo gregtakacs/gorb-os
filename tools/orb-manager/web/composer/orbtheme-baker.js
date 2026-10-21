@@ -91,7 +91,7 @@
    * (SLOT_GEOM_CAP), banks install at +0x10000 inside SLOT_CAP — the payload budget
    * below, 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
    * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
-  var RECTS_MAX = 2048, GIFS_MAX = 32, BG_FRAMES_MAX = 8, TOURB_MAX = 16;
+  var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 16, TOURB_MAX = 16;
   var SLOT_CAP = 0x003f0000;
   var GEOM_BUDGET = 0xf000;
 
@@ -1684,18 +1684,33 @@
     ['x', 'i16'], ['y', 'i16'], ['w', 'u16'], ['h', 'u16'],
     ['pivot_x', 'i16'], ['pivot_y', 'i16'], ['radius', 'u16'],
     ['degrees', 'u16'], ['scale16', 'u16'],
-    ['kind', 'u8'], ['src', 'u8']   // D32's ruling A: a BANK row's how and what
+    ['kind', 'u8'], ['src', 'u8'],   // D32's ruling A. On an AUX row (D34) the pair
+                             // reads as the motion id and the driving source.
+    ['span', 'i16'], ['zero', 'i16'], ['vmin', 'u16'], ['vmax', 'u16']
+    // D34's four drive columns, an AUX row's and nobody else's. The motion names the
+    // unit: tenths of a degree on rotate/retrograde/indexed, pixels on a slide. A row
+    // read through a narrower stride carries zero for each, which checkElement refuses
+    // on an AUX row rather than draws as a pointer frozen at its own zero.
   ];
-  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 19 words, 76 bytes a row
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 23 words, 92 bytes a row
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
   var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN;
-  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status'];
+  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
+  var CLASS_AUX = 8;                       // D34: a pointer, appended at 8
+  // How an AUX row moves (theme_schema.MOTION_NAMES / clk_types.h's CLK_MOTION_*).
+  // The motion IS the unit of span/zero: an angle in tenths of a degree, or pixels
+  // along the named axis. One vocabulary, so a row cannot name a motion and a unit
+  // that contradict each other.
+  var MOTION_NAMES = ['rotate', 'retrograde', 'indexed', 'slide-x', 'slide-y'];
+  var MOTION_ROTATE = 0, MOTION_RETROGRADE = 1, MOTION_INDEXED = 2,
+      MOTION_SLIDE_X = 3, MOTION_SLIDE_Y = 4;
+  function motionIsSlide(k) { return k === MOTION_SLIDE_X || k === MOTION_SLIDE_Y; }
   // R6: whose frames the OS may advance, and which classes cannot animate at all. This
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
@@ -1780,13 +1795,65 @@
      * the domain's own count of plates. Rules and sentences mirror
      * theme_schema.check_element rule for rule. */
     var kind = Math.trunc(rec.kind | 0), src = Math.trunc(rec.src | 0);
-    if (kind && cls !== CLASS_BANK) {
-      throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how plates ' +
-        'are drawn is a complication\u2019s question, and this class answers it with its slot');
+    if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX) {
+      throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how a row ' +
+        'draws or moves is a driven element’s question, and this class answers it with its slot');
     }
-    if (src && cls !== CLASS_BANK) {
-      throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what indexes ' +
-        'plates is a complication\u2019s question, and this class answers it with its slot');
+    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX) {
+      throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what drives ' +
+        'a row is a driven element’s question, and this class answers it with its slot');
+    }
+    /* ---- D34: the pointer row. Rule for rule the Python's and rule for rule
+     * orb_clock3.c's: the browser refuses the shapes the dial would refuse, in the
+     * dial's own words, so an author never spends an upload learning what the host
+     * already knew. No missing drive column is defaulted — a pointer with no domain
+     * is a refusal, not a zero. ---- */
+    if (cls === CLASS_AUX) {
+      var span = Math.trunc(rec.span | 0), zero = Math.trunc(rec.zero | 0);
+      var vmin = Math.trunc(rec.vmin >>> 0), vmax = Math.trunc(rec.vmax >>> 0);
+      if (!(kind >= 0 && kind < MOTION_NAMES.length))
+        throw new Error(where + '.kind: ' + kind + ' is not a way for a pointer to move (' +
+          MOTION_NAMES.join(', ') + ')');
+      if (!(src >= 0 && src < SOURCES.length))
+        throw new Error(where + '.src: ' + src + ' is not a value this dial can read (0..' +
+          (SOURCES.length - 1) + ')');
+      if (SOURCES[src] === 'none')
+        throw new Error(where + ".src: an AUX pointer driven by 'none' never moves, and a row " +
+          'that never moves is plate art that was written as a row');
+      if (SOURCES[src] === 'text' || SOURCES[src] === 'value')
+        throw new Error(where + '.src: an AUX pointer driven by ' + q(SOURCES[src]) +
+          ': this dial has no such input');
+      if (vmax < 1)
+        throw new Error(where + '.vmax: ' + vmax + ' cannot divide a ' + MOTION_NAMES[kind] +
+          ' — a pointer’s span is shared across its domain');
+      if (vmin > vmax)
+        throw new Error(where + '.vmin: ' + vmin + ' is above vmax ' + vmax +
+          ' — the domain runs low to high');
+      if (!span)
+        throw new Error(where + '.span: 0 is a pointer that goes nowhere; give it the ' +
+          (motionIsSlide(kind) ? 'distance' : 'angle') + ' it travels');
+      if (Math.trunc(rec.n_frames | 0) !== 1)
+        throw new Error(where + ': an AUX row carries one plate, not ' + rec.n_frames +
+          ' — several plates indexed by a value is a BANK row');
+      if (motionIsSlide(kind)) {
+        if (Math.abs(span) > SCREEN_W || Math.abs(zero) > SCREEN_W)
+          throw new Error(where + ': a ' + MOTION_NAMES[kind] + ' of ' + span + ' px from ' +
+            zero + ' cannot stay on a ' + SCREEN_W + ' px panel — a slide’s span and zero ' +
+            'are pixels, not tenths');
+      } else {
+        var pw = Math.trunc(rec.w | 0), ph = Math.trunc(rec.h | 0);
+        var ppx = Math.trunc(rec.pivot_x | 0), ppy = Math.trunc(rec.pivot_y | 0);
+        if (pw && ph && !(ppx >= 0 && ppx < pw && ppy >= 0 && ppy < ph))
+          throw new Error(where + ': an AUX pointer’s pivot (' + ppx + ',' + ppy +
+            ') sits outside its own ' + pw + 'x' + ph + ' plate, so it would turn about a ' +
+            'point off the glass');
+        if (Math.abs(zero) > 3600)
+          throw new Error(where + '.zero: ' + zero + ' is an offset past one full turn ' +
+            '(3600 tenths), which is not a direction');
+        if (Math.abs(span) > 3600)
+          throw new Error(where + '.span: ' + span + ' asks a pointer to travel more than one ' +
+            'full turn; a ' + MOTION_NAMES[kind] + ' that needs more is a disc, not a hand');
+      }
     }
     if (cls === CLASS_BANK) {
       if (!(kind >= 0 && kind < COMP_KINDS.length)) {
@@ -1850,16 +1917,27 @@
     }
     return out;
   }
-  function unpackElements(words, n) {
-    if (words.length < n * ELEMENT_WORDS) {
+  function unpackElements(words, n, stride) {
+    // The reader honours the stride the BLOB carries, not the width this build writes:
+    // the same §23.5 rule orb_bundle.c's orb_bundle_elem_stride() and theme_schema's own
+    // stride argument implement. D34 widened the row from 19 words to 23, and a bundle
+    // baked before it still has to read — columns past a narrow row's width land on the
+    // zeros they were written after, which is the whole point of appending rather than
+    // renumbering. A stride narrower than the dialect has ever written is a torn file.
+    var w = stride || ELEMENT_WORDS;
+    if (w < ELEMENT_WORDS_MIN || w > 0xFFFF) {
+      throw new Error('elem: row stride of ' + w + ' words is not a width this dialect ' +
+        'has ever written (' + ELEMENT_WORDS_MIN + '..' + ELEMENT_WORDS + ')');
+    }
+    if (words.length < n * w) {
       throw new Error('elem: blob holds ' + words.length + ' words, too few for ' + n +
-        ' records of ' + ELEMENT_WORDS);
+        ' records of ' + w);
     }
     var out = [];
     for (var i = 0; i < n; i++) {
-      var r = {};
-      for (var k = 0; k < ELEMENT_WORDS; k++) {
-        r[ELEMENT_FIELDS[k][0]] = sext(words[i * ELEMENT_WORDS + k] >>> 0, ELEMENT_FIELDS[k][1]);
+      var r = blankElement(), base = i * w;
+      for (var k = 0; k < w && k < ELEMENT_WORDS; k++) {
+        r[ELEMENT_FIELDS[k][0]] = sext(words[base + k] >>> 0, ELEMENT_FIELDS[k][1]);
       }
       out.push(r);
     }
@@ -2304,14 +2382,24 @@
    * Every rule here is orb_clock3.c's, not a preference: plate slot 0 and overlay slot 1
    * only; hand slots 0-4; a sprite row is a shadow and its slot is its hand's, because the
    * light offset is only recoverable from the hand it hangs under; the plate is the whole
-   * panel and one keyframe, since the delta rects that would carry more are the shape
-   * §25.3 refuses. tourbillon_n and bg_frames stay zero because the scalars naming them
-   * would point at rows this section has no field for. A caller asking for either gets the
-   * dial's own sentence rather than a bundle the door opens and the projection then
-   * rejects — the worst failure this path can have, because it looks like a store error.
+   * panel and either one still frame or a §31 keyframe bank — pass plate.frames, an array
+   * of two or more whole-panel planes, and the bake emits them contiguous and colour-only
+   * under one row, with the scalars cross-set to match (bg_frames = frames − 1, bg_mode 0,
+   * gif_frames 0). The bank's tempo comes from plate.fps/bg_fps and plate.loop/bg_every;
+   * a one-shot with no tempo is refused, not frozen. o.carriage is §31's
+   * sprite-region carrier, and o.comps is §31's comp table (D32 ruling A): a
+   * comp entry's masked planes enter contiguous under one window row, and the
+   * projection's bank rules refuse at the bake. A caller asking for any of the refused shapes
+   * gets the dial's own sentence rather than a bundle the door opens and the projection
+   * then rejects — the worst failure this path can have, because it looks like a store
+   * error.
    *
-   * The bank is plate first (colour only, the dial reads it so), then one masked plane per
-   * row in table order, so the catalogue is contiguous and accounts for the art exactly. */
+   * The bank is the plate's planes first (colour only, the dial reads them so), then one
+   * masked plane per row in table order, so the catalogue is contiguous and accounts for
+   * the art exactly. The D29 art cap is checked against the assembled bank before the
+   * write: a full-panel keyframe costs w*h*2 and a comp tile w*h*3, the cap
+   * binds long before the dialect's 16-frame bound, and an owner choosing
+   * frames needs both numbers. */
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
@@ -2323,15 +2411,109 @@
       throw new Error('a plate at extent (' + (pl.x || 0) + ',' + (pl.y || 0) + ',' + pl.w + ',' + pl.h +
         ') of a ' + scrW + 'x' + scrH + ' panel: the compiled clock draws its background full-screen, so a plate that is not the whole panel is not a plate');
     }
-    ['tourbillon_n', 'bg_frames', 'gif_frames'].forEach(function (n) {
-      if (sc[n]) throw new Error(n + ' = ' + sc[n] + ': those planes ride the gif and carriage tables a FORMAT 3 clock section does not carry, so this bake refuses them');
-    });
-    sc.tourbillon_n = 0; sc.bg_frames = 0; sc.gif_frames = 0; sc.plate_off = 0;
+    var frames = pl.frames;
+    if (frames !== undefined) {
+      if (!(frames.length >= 2)) {
+        throw new Error('a plate bank of ' + (frames ? frames.length : 0) + ' frames: one keyframe is a still plate, and zero frames draw nothing — pass two or more planes or none');
+      }
+      if (frames.length > BG3_FRAMES_MAX) {
+        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds ' + BG3_FRAMES_MAX + ', and the rest is a bank it has no room for');
+      }
+      if (sc.bg_frames !== undefined && sc.bg_frames !== frames.length - 1) {
+        throw new Error('a plate row naming ' + frames.length + ' frames while the scalars name ' + sc.bg_frames + ' extra: the row’s planes are the animation’s length');
+      }
+      if (sc.gif_frames) {
+        throw new Error('an animated plate naming ' + sc.gif_frames + ' gif frames: a keyframe bank carries whole planes and no delta rects');
+      }
+      // A bank with no stated tempo is a loop — what every FORMAT 2 bgAnim kit
+      // was. A one-shot must be asked for (loop: 0) and must then name its fps.
+      var fps = sc.bg_fps || pl.fps || 0;
+      var loop = sc.bg_loop !== undefined ? sc.bg_loop
+                                          : (pl.loop !== undefined ? pl.loop : 1);
+      if (!loop && fps < 1) {
+        throw new Error('a one-shot plate bank at bg_fps ' + fps + ': an animation with no tempo is a frame that never arrives');
+      }
+      for (k = 0; k < frames.length; k++) {
+        var fp = frames[k];
+        if (!fp || fp.w !== scrW || fp.h !== scrH) {
+          throw new Error('keyframe ' + k + ' of a plate bank is ' + (fp ? fp.w + 'x' + fp.h : 'nothing') + ': every frame of a keyframe bank is the whole panel, the frame the consumer paints at rest included');
+        }
+      }
+      sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
+      if (!sc.bg_every) sc.bg_every = pl.every || 1;
+      sc.bg_mode = 0; sc.gif_frames = 0;
+    } else if (sc.bg_frames) {
+      throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
+    }
+    /* §31's sprite-region carrier: a carriage bank — the tourbillon row at hand
+     * slot 5 that d32 proved on glass. The dial fans its frames by the seconds
+     * angle plus the row's start orientation, so the bake hands it the motion's
+     * bounding box as the row's extent and the loop's fps as the scalar. */
+    var car = o.carriage;
+    if (car) {
+      if (sc.tourbillon_n) throw new Error('a carriage row while the scalars name tourbillon_n = ' + sc.tourbillon_n + ': the row’s planes are the bank’s length');
+      if (!(car.frames && car.frames.length >= 2)) throw new Error('a carriage bank of ' + (car.frames ? car.frames.length : 0) + ' frames: a carriage is an animation, and one frame is a static hand this bake seats elsewhere');
+      if (car.frames.length > TOURB_MAX) throw new Error('a carriage bank of ' + car.frames.length + ' frames: the dial holds ' + TOURB_MAX + ' tourbillon records');
+      if (!(car.fps >= 1)) throw new Error('a carriage bank at ' + (car.fps || 0) + ' fps: the row animates at its own tempo, and a loop with no tempo is a frame that never arrives');
+      var cw = car.w, chh = car.h;
+      for (k = 0; k < car.frames.length; k++) {
+        var cf = car.frames[k];
+        if (!cf || cf.w !== cw || cf.h !== chh) throw new Error('carriage frame ' + k + ' is ' + (cf ? cf.w + 'x' + cf.h : 'nothing') + ' against a ' + cw + 'x' + chh + ' row: every frame of one bank is one extent, the same box the dial invalidates');
+      }
+      sc.tourbillon_n = car.frames.length; sc.tourbillon_fps = car.fps;
+    } else {
+      if (sc.tourbillon_n) throw new Error('tourbillon_n = ' + sc.tourbillon_n + ': a carriage is a row this bake does not assemble, and the scalar would name a bank the section does not hold');
+    }
+    /* §31's comp table, D32's ruling A: a window row per live complication, its
+     * plates contiguous and masked. Every check below is orb_clock3.c's
+     * bank-row projection rule for rule — the bake refuses the shapes the
+     * projection would refuse, in the dial's own words where it has them, so
+     * an author never spends an upload learning what the host already knew. */
+    var compRows = o.comps || [], compB = 0, k3, j3;
+    for (k3 = 0; k3 < compRows.length; k3++) {
+      var cr = compRows[k3], slot3 = cr.slot;
+      if (!(slot3 >= 0 && slot3 < CLK_COMP_MAX))
+        throw new Error('a complication at slot ' + slot3 + ': the clock declares ' + CLK_COMP_MAX +
+          ' complication slots and the manifest of any app may not invent one');
+      var src3 = String(cr.src), srcId3 = SOURCES.indexOf(src3);
+      if (srcId3 < 0)
+        throw new Error('a bank at slot ' + slot3 + ' driven by ' + q(String(cr.src)) + ': this dial reads ' +
+          SOURCES.length + ' values and none of them is that');
+      if (src3 === 'battery' || src3 === 'power_reserve' || src3 === 'text' || src3 === 'value')
+        throw new Error('a bank at slot ' + slot3 + ' driven by source ' + q(src3) +
+          ': this dial has no such input, and D32\u2019s ruling refuses the flip rather than ship a comp that would draw nothing');
+      var want3 = src3 === 'none' ? 1 : CLOCK_WINDOW_DOMAIN[src3][1];
+      var pl3 = cr.planes;
+      if (!pl3 || pl3.length !== want3)
+        throw new Error('a window at slot ' + slot3 + ' driven by ' + q(src3) + ' indexes ' + want3 +
+          ' plates, and the bake was handed ' + (pl3 ? pl3.length : 0));
+      var cwr = cr.w | 0, chr = cr.h | 0;
+      if (!(cwr > 0 && chr > 0))
+        throw new Error('a window at slot ' + slot3 + ' is ' + cwr + 'x' + chr + ': a plate with no extent carries no pixels');
+      if ((cr.x | 0) < 0 || (cr.y | 0) < 0 || (cr.x | 0) + cwr > scrW || (cr.y | 0) + chr > scrH)
+        throw new Error('a window at slot ' + slot3 + ' places its ' + cwr + 'x' + chr + ' box at (' +
+          (cr.x | 0) + ',' + (cr.y | 0) + ') of a ' + scrW + 'x' + scrH + ' panel: the runtime would draw it off the glass');
+      var ordr = cr.order | 0;
+      if (ordr < 0 || ordr > 4)
+        throw new Error('a bank row at slot ' + slot3 + ' ordered at rung ' + ordr +
+          ': a window\u2019s depth is a bucket under one of the dial\u2019s five live layers');
+      for (j3 = 0; j3 < pl3.length; j3++) {
+        var pp3 = pl3[j3];
+        if (!pp3 || pp3.w !== cwr || pp3.h !== chr)
+          throw new Error('complication ' + slot3 + ' frame ' + j3 + ' is ' + (pp3 ? pp3.w + 'x' + pp3.h : 'nothing') +
+            ' against the row\u2019s ' + cwr + 'x' + chr + ': one bank, one extent');
+      }
+      compB += cwr * chr * 3 * want3;
+    }
+    if (!sc.tourbillon_n) sc.tourbillon_n = 0;
+    sc.plate_off = 0;
+    if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
 
     // Every row starts from blankElement(): packElements refuses a missing field rather
     // than defaulting it, because a default applied at pack time is a value nobody wrote.
-    // The bank builds empty and every plane enters through row(), so no plane is ever
-    // counted twice and row 0 keeps the colour-only cost the projection reads it at.
+    // The bank builds empty and every plane enters through row() or rowFrames(), so no
+    // plane is ever counted twice and the plate's rows keep the colour-only cost the
+    // projection reads them at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
     var elems = [], nid = 1, ord = 1, handSlot = {};
     function row(e, plane, masked) {
@@ -2344,8 +2526,28 @@
       rec.frame0 = bank.sprites.length - 1;
       elems.push(rec);
     }
-    row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-          order: 0, alpha: 255, n_frames: 1 }, pl, false);
+    // §31: one row, N planes. The keyframes enter contiguously, in bank order,
+    // colour-only like the plate — the projection seats the row against exactly
+    // this shape, and the bgAnim consumer flips through it on its beat.
+    function rowFrames(e, planes, masked) {
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      rec.frame0 = bank.sprites.length;
+      for (var j = 0; j < planes.length; j++) {
+        var b = bank3([planes[j]], { alpha: masked });
+        bank.art = concat([bank.art, b.art]);
+        bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: planes[j].w, h: planes[j].h });
+        bank.size += b.sprites[0].size;
+      }
+      elems.push(rec);
+    }
+    if (frames) {
+      rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+                  order: 0, alpha: 255, n_frames: frames.length }, frames, false);
+    } else {
+      row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+            order: 0, alpha: 255, n_frames: 1 }, pl, false);
+    }
     // Depth: plate, then the hands in the order given, then their shadows beneath the hands
     // that cast them, then the overlay last — FORMAT 2's clock_view draws the crystal over
     // everything, and the table says what the renderer already does.
@@ -2371,8 +2573,124 @@
             w: plates[k].w, h: plates[k].h, order: ord++, flags: plates[k].flags || 0,
             alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
     }
+    if (car) {
+      rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: car.x, y: car.y,
+                  w: cw, h: chh, pivot_x: car.pivot_x, pivot_y: car.pivot_y,
+                  order: ord++, alpha: 255, n_frames: car.frames.length,
+                  degrees: car.degrees || 0 }, car.frames, true);
+    }
+    /* D34: the pointers. Every refusal below is orb_clock3.c's AUX projection said
+     * here, at the author's elbow, so a bake never ships a pointer the dial would
+     * refuse at the flip — the same mirroring the bank rows above run by. A pointer
+     * costs ONE masked plate whatever its domain, which is the whole point of the
+     * class: a sub-dial seconds hand used to be sixty whole dials. */
+    var auxRows = o.aux || [], auxB = 0, k4;
+    for (k4 = 0; k4 < auxRows.length; k4++) {
+      var ar = auxRows[k4];
+      var m4 = ar.motion === undefined ? MOTION_ROTATE
+                                       : (typeof ar.motion === 'string' ? MOTION_NAMES.indexOf(ar.motion) : ar.motion);
+      if (!(m4 >= 0 && m4 < MOTION_NAMES.length))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' moves as motion ' +
+          JSON.stringify(ar.motion) + ': the dialect names ' + MOTION_NAMES.join(', ') +
+          ' and this names none of them');
+      if (!(ar.slot >= 0 && ar.slot < CLK_AUX_MAX))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ': the clock declares ' +
+          CLK_AUX_MAX + ' pointer slots and the manifest of any app may not invent one');
+      var s4 = String(ar.src), sid4 = SOURCES.indexOf(s4);
+      if (sid4 < 0)
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' driven by ' + q(s4) +
+          ': this dial reads ' + SOURCES.length + ' values and none of them is that');
+      if (s4 === 'none' || s4 === 'text' || s4 === 'value')
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' driven by ' + q(s4) +
+          ': a value that never changes, or one this dial cannot derive, is a row that ' +
+          'would sit still and read as a watch that is simply wrong');
+      if (!(ar.vmax >= 1))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a domain of ' + ar.vmax +
+          ': its span is shared across the domain, so nothing can be computed from it');
+      if ((ar.vmin | 0) > (ar.vmax | 0))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' whose vmin ' + (ar.vmin | 0) +
+          ' is above vmax ' + (ar.vmax | 0) + ': the domain runs low to high');
+      if (!(ar.span | 0))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a span of 0: it would ' +
+          'sit at its zero forever, which is a plate drawn as a row');
+      if (motionIsSlide(m4)) {
+        if (Math.abs(ar.span) > scrW || Math.abs(ar.zero | 0) > scrW)
+          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' slides by ' + ar.span +
+            ' from ' + (ar.zero | 0) + ': a slide’s span and zero are pixels and this ' +
+            'one leaves the ' + scrW + ' px panel');
+      } else {
+        if (Math.abs(ar.zero | 0) > 3600)
+          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a zero of ' + (ar.zero | 0) +
+            ': an offset past one full turn is not a direction');
+        if (Math.abs(ar.span) > 3600)
+          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a span of ' + ar.span +
+            ': more than one full turn is a disc, not a hand');
+      }
+      var apr = ar.plane;
+      if (!apr) throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with no plate');
+      if (apr.w !== (ar.w | 0) || apr.h !== (ar.h | 0))
+        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' is ' + (apr.w|0) + 'x' + (apr.h|0) +
+          ' against the row’s ' + (ar.w|0) + 'x' + (ar.h|0) + ': one row, one extent');
+      if (!motionIsSlide(m4)) {
+        var apx = ar.pivot_x | 0, apy = ar.pivot_y | 0;
+        if (!(apx >= 0 && apx < (ar.w|0) && apy >= 0 && apy < (ar.h|0)))
+          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' turns about (' + apx + ',' + apy +
+            '), outside its own ' + (ar.w|0) + 'x' + (ar.h|0) + ' plate');
+      }
+      auxB += (ar.w | 0) * (ar.h | 0) * 3;
+    }
+    for (k3 = 0; k3 < compRows.length; k3++) {
+      var c4 = compRows[k3];
+      rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
+                  x: c4.x | 0, y: c4.y | 0, w: c4.w, h: c4.h, order: c4.order | 0, alpha: 255,
+                  n_frames: c4.planes.length, scale16: c4.scale16 | 0,
+                  flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true);
+    }
+    for (k4 = 0; k4 < auxRows.length; k4++) {
+      var a5 = auxRows[k4], m5 = a5.motion === undefined ? MOTION_ROTATE
+              : (typeof a5.motion === 'string' ? MOTION_NAMES.indexOf(a5.motion) : a5.motion);
+      // A slide carries no pivot to turn about; its own centre is the origin the row
+      // places, and clk_sprite_t's pivot is read only by the dirty-mark maths. The
+      // motion rides the row's `kind` column and the drive its four appended words.
+      row({ n: nid++, 'class': classId('aux'), slot: a5.slot, kind: m5, src: SOURCES.indexOf(String(a5.src)),
+            x: a5.x | 0, y: a5.y | 0, w: a5.w | 0, h: a5.h | 0,
+            pivot_x: motionIsSlide(m5) ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),
+            pivot_y: motionIsSlide(m5) ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
+            order: a5.order === undefined ? ord : a5.order, alpha: 255, n_frames: 1,
+            span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
+            flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
+    }
     for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
     sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
+    // The D34 bench lesson, enforced: clock_view treats every order entry as a
+    // hand-slot id verbatim, so a seated hand that no order entry names is art
+    // the file carries and the dial never paints. A bake that mis-spells its
+    // order (the +1 FORMAT 2 residue that lost Skeleton its hour hand on glass)
+    // must fail here, not on the watch.
+    if (o.order) {
+      for (k = 0; k < hands.length; k++) {
+        if (o.order.indexOf(hands[k].slot) < 0) {
+          throw new Error('the hand at slot ' + hands[k].slot + ' is seated but the order table [' +
+            o.order.join(',') + '] never names it: order entries are hand-slot ids verbatim, ' +
+            'and a hand the order omits draws nothing on the watch');
+        }
+      }
+    }
+
+    // The D29 sum, named before the file is written: the plate bank is the part
+    // of an over-cap bake an owner can actually trade away, so the sentence says
+    // what it cost. checkBudget3 still refuses the same overage at the door —
+    // this is the authoring half of §31, and it must never disagree with it.
+    if (bank.size > SLOT_ART_CAP3) {
+      throw new Error('the bake\'s art bank is ' + bank.size + ' B against the ' +
+        SLOT_ART_CAP3 + ' B the slot leaves for banks' +
+        (frames ? ': the plate\'s ' + frames.length + ' keyframes of ' + scrW + 'x' + scrH +
+                ' cost ' + (scrW * scrH * 2 * frames.length) + ' B of it, and one keyframe ' +
+                'is ' + (scrW * scrH * 2) + ' B' : '') +
+        (compB ? (frames ? ', and' : ':') + ' the complication tiles cost ' + compB + ' B' : '') +
+        (auxB ? (frames || compB ? ', and' : ':') + ' the pointer plates cost ' + auxB + ' B' : '') +
+        ' — drop frames or shrink the art');
+    }
 
     var b = writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
       sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
@@ -2380,6 +2698,48 @@
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
     return b;
+  }
+
+  /* §31's motion split, as one pure function so the sweep page, the composer's
+   * export, and the headless suite all answer from the same arithmetic. Input
+   * is a motion measurement, not pixels — the caller composes and diffs;
+   * this only decides, from §31's ruled cap arithmetic:
+   *
+   *   m = { frames, fps, unionPx, bboxW, bboxH, otherB, compB, auxB, hasCage }
+   *
+   * Order of preference is cost, not novelty: a local motion on a caged dial
+   * rides the carriage at a fraction of a full-panel bank (648 KB against
+   * 6.5 MB, §31's own numbers), a whole-panel motion is a keyframe bank, and
+   * a bank thins (frame step, fps over it) before it refuses, because
+   * §23.11's rule is that the shipped bake carries the tempo that fits.
+   * A union under one in a thousand of the panel is antialiasing shimmer —
+   * RGB565 quantisation swallows it, and the honest bake is the still.
+   * Returns { carrier, keyframes, fps, decim, sentence }. */
+  function splitPolicy3(m) {
+    var panel = SCREEN_W * SCREEN_H, kf = panel * 2, cap = SLOT_ART_CAP3;
+    var oth = m.otherB | 0, comp = m.compB | 0, aux = m.auxB | 0, B = m.frames | 0, fps = m.fps | 0;
+    comp += aux;   // D34: a pointer plate is art the slot carries before any bank frame fits
+    var bw = m.bboxW | 0, bh = m.bboxH | 0, area = bw * bh;
+    var thin = function (n, step) { return { keyframes: Math.floor(n / step), fps: Math.max(1, Math.round(fps / step)), decim: step }; };
+    if (B < 2 || fps < 1) return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1, sentence: 'no measured loop to bake: frames ' + B + ' at ' + fps + ' fps' };
+    if (!(m.unionPx > panel / 1000))
+      return { carrier: 'still', keyframes: 1, fps: 0, decim: 1, sentence: 'plate union ' + (m.unionPx | 0) + ' px is under the shimmer band; the still bakes the same dial' };
+    if (m.hasCage && area && area <= panel / 3) {
+      var per = area * 3, maxSp = Math.min(TOURB_MAX, Math.floor((cap - oth - comp) / per));
+      if (maxSp >= 2) {
+        var s2 = thin(B, Math.ceil(B / maxSp));
+        if (s2.keyframes >= 2) { s2.carrier = 'sprite'; s2.bbox = [bw, bh];
+          s2.sentence = 'carriage bank at the ' + bw + 'x' + bh + ' motion box: ' + s2.keyframes + ' masked frames, ' + (s2.keyframes * per) + ' B'; return s2; }
+      }
+    }
+    var maxB = Math.min(BG3_FRAMES_MAX, Math.floor((cap - oth - comp) / kf));
+    if (maxB >= 2) {
+      var b2 = thin(B, Math.ceil(B / maxB));
+      if (b2.keyframes >= 2) { b2.carrier = 'bank';
+        b2.sentence = 'plate keyframe bank: ' + b2.keyframes + ' of ' + B + ' frames at ' + b2.fps + ' fps' + (b2.decim > 1 ? ' (thinned by ' + b2.decim + ')' : '') + ', ' + (b2.keyframes * kf) + ' B'; return b2; }
+    }
+    return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1,
+             sentence: 'union ' + (m.unionPx | 0) + ' px in a ' + bw + 'x' + bh + ' box fits neither carrier: ' + B + ' plate keyframes of ' + kf + ' B exceed the ' + (cap - oth - comp) + ' B the slot leaves after ' + oth + ' B of art' + (comp ? ' and ' + comp + ' B of complication tiles' : '') + ', and the box is ' + (m.hasCage ? 'not local' : 'not a caged motion a carriage row can carry') };
   }
 
   /* The D29 meter, read back off finished bytes rather than estimated from the model. The
@@ -2394,6 +2754,141 @@
              artSize: h.artSize, artCap: SLOT_ART_CAP3,
              artPct: Math.round(h.artSize / SLOT_ART_CAP3 * 1000) / 10,
              nSections: h.nSections };
+  }
+
+  /* Which comps the compiled clock must carry in its table — the one predicate
+   * behind the button's note, the export guard and the bake, so none of the
+   * three can promise what another refuses. Live is data-driven: a window
+   * printing calendar text, a moon on tonight's phase, a subdial hand that
+   * turns. Each maps to one window row by compPlan3 below. Static is
+   * geometry-driven and rides inside the baked plate: an opening is a hole
+   * with the movement art — the bank itself — under it; a flare is engraved
+   * art unless it prints the date; a custom-format window is uploaded art; a
+   * subdial with no scale has no hand to drive. Anything unrecognised counts
+   * live: the safe direction is the refusal the author can see. */
+  function liveComps3(comps) {
+    return (comps || []).filter(function (c) {
+      if (c.type === 'opening') return false;
+      if (c.type === 'window') return c.shows !== 'custom';
+      if (c.type === 'flare') return c.icon === 'datetext';
+      if (c.type === 'subdial') return c.scale !== 'none';   // an engraved dial with no hand is plate art
+      return true;
+    });
+  }
+
+  /* The §31 comp table, planned: one window row per live comp. The dial drives
+   * the value (D32 ruling B: the frame-to-value map is the clock's calendar,
+   * not a carried figure), so a row names a source and the domain's own count
+   * of plates — a date window is 31 plates because a month has 31 days, a
+   * seconds subdial is 60 whole dials because the runtime indexes one per
+   * tick and a FORMAT 3 pointer snaps to its domain where a FORMAT 2 aux row
+   * interpolated. A datetext flare needs the glyph fields no element row
+   * holds — orb_clock3.c's refusal, said here so the author hears it before
+   * export. Hosted rows are ordered BEFORE their host: the runtime paints its
+   * bottom bucket in record order, and a host tile carries a punched aperture
+   * over the tile beneath it. Unknown types refuse rather than freeze. */
+  var COMP3_SCALE_SRC = { seconds: 'second', date: 'date', day: 'weekday', month: 'month', hours: 'hour12' };
+  var COMP3_SHOW_SRC = { date: 'date', day: 'weekday', month: 'month' };
+  /* D34: the scales whose hand sweeps a WHOLE turn across its domain. A pointer row
+   * carries one plate and the dial turns it, so the plate must be the box the hand
+   * covers at every value — and the centre of that box is the pivot only when the
+   * sweep is whole, because only then is the union a disc about the pivot. A date
+   * ring stops 1/31 of a turn short of closing, so its box centre sits off the true
+   * pivot by a margin nobody can measure from the pixels alone: the author who wants
+   * a pointer on one gets the window row, and this is the sentence that says so.
+   * The scales that qualify are the ones the complaint was ever about. */
+  var COMP3_RING_FULL = { second: 60, minute: 60, hour12: 12, hour24: 24 };
+  function compPlan3(comps) {
+    var rows = [], refuses = [];
+    (comps || []).forEach(function (c) {
+      var src = null, id = c.id === undefined ? '?' : c.id;
+      if (c.type === 'opening') return;                                  // a hole in the plate
+      if (c.type === 'flare') {
+        if (c.icon !== 'datetext') return;                               // engraving
+        refuses.push('the flare \u201c' + id + '\u201d prints the date, and printing it needs the glyph fields no element row holds');
+        return;
+      }
+      if (c.type === 'window') {
+        if (c.shows === 'custom') return;                                // uploaded art is plate content
+        src = COMP3_SHOW_SRC[c.shows];
+        if (!src) { refuses.push('the window \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
+      } else if (c.type === 'moon') src = 'moon_age';
+      else if (c.type === 'subdial') {
+        if (c.scale === 'none') return;                                  // no hand: plate art
+        if (c.carrier === 'pointer' || pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
+        src = (c.scale === undefined) ? 'second' : COMP3_SCALE_SRC[c.scale];
+        if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + c.scale + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
+      } else {
+        refuses.push('the complication \u201c' + id + '\u201d of type \u201c' + c.type + '\u201d has no mapping to a window row');
+        return;
+      }
+      var dom = CLOCK_WINDOW_DOMAIN[src];
+      rows.push({ id: id, type: c.type, src: src, count: dom[1], valueMin: dom[0], host: c.host || 'dial' });
+    });
+    var byId = {};
+    rows.forEach(function (r) { byId[r.id] = r; });
+    rows.forEach(function (r) { r.hosted = Object.prototype.hasOwnProperty.call(byId, r.host) ? r.host : null; });
+    var ordered = rows.filter(function (r) { return !r.hosted; });
+    rows.forEach(function (r) {
+      if (!r.hosted) return;
+      var at = -1;
+      for (var i = 0; i < ordered.length; i++) if (ordered[i].id === r.hosted) { at = i; break; }
+      ordered.splice(at < 0 ? ordered.length : at, 0, r);                // host gone static: it stands on the plate
+    });
+    if (ordered.length > CLK_COMP_MAX)
+      refuses.push(ordered.length + ' complications exceed the dial\u2019s cap of ' + CLK_COMP_MAX + ' — remove one');
+    return { rows: ordered, refuses: refuses };
+  }
+  /* D34: the pointer table, planned. An author who sets a subdial's drive to
+   * `pointer` says the moving part IS the indication and refuses the plate-per-tick
+   * bank for it — one masked hand plate, and the dial turns it. Only a scale whose
+   * hand sweeps a WHOLE turn across its domain can take that carrier: the row's
+   * linear drive (zero + value*span/vmax, span inside one turn) lands the hand on
+   * every tick of a 60- or 12-division ring, and a date ring that stops 1/31 of a
+   * turn short of closing does not. A refused drive stays a refusal even when the
+   * rest of the bake is legal — silently falling back to plates would ship the
+   * carrier the author just said no to. Rows here carry the drive, not the art:
+   * the composer measures the plate and the pivot off the pixels and feeds them
+   * to bakeClock3's `aux` option. */
+  /* D34 follow-up: the Drive chip defaults a pointer-capable subdial to Pointer,
+   * and Cx defaults never write into the design — so the bake reads the default
+   * the same way the chip shows it. An unset carrier on the seconds or hours
+   * ring belongs to the pointer row; an explicit `plates` is the author's
+   * escape hatch and stays on the bank. A subdial HOSTING another indication
+   * never defaults to the pointer either: the plates carrier punches the host
+   * tile so the hosted tile sits inside it, and a pointer row carries nothing
+   * to punch. The UI and the bake share this one predicate. */
+  function pointerDefault3(c, comps) {
+    if (c.type !== 'subdial' || c.carrier != null) return false;
+    if (!(c.scale === undefined || c.scale === 'seconds' || c.scale === 'hours')) return false;
+    return !(comps || []).some(function (x) { return x.host === c.id; });
+  }
+  var COMP3_POINTER_SPAN = 3600;                       // one whole turn, tenths of a degree
+  function pointerPlan3(comps) {
+    var rows = [], refuses = [];
+    (comps || []).forEach(function (c) {
+      if (c.type !== 'subdial') return;
+      if (c.carrier === 'plates') return;
+      if (c.carrier !== 'pointer' && !pointerDefault3(c, comps)) return;
+      var id = c.id === undefined ? '?' : c.id;
+      if ((comps || []).some(function (x) { return x.host === id; })) {
+        refuses.push('the subdial \u201c' + id + '\u201d hosts another indication: the plates carrier punches its '
+          + 'plate so the hosted tile sits inside the hole, and a pointer row carries nothing to punch — drive it as plates');
+        return;
+      }
+      var src = c.scale === undefined ? 'second' : COMP3_SCALE_SRC[c.scale];
+      if (!src || !COMP3_RING_FULL[src]) {
+        refuses.push('the subdial \u201c' + id + '\u201d asks to be driven as a pointer and reads scale '
+          + '\u201c' + (c.scale === undefined ? 'seconds' : c.scale) + '\u201d: a pointer plate turns through '
+          + 'a whole linear sweep, and that ring does not close under its own hand — drive it as plates');
+        return;
+      }
+      rows.push({ id: id, type: 'subdial', src: src, vmin: 0, vmax: COMP3_RING_FULL[src],
+                  span: COMP3_POINTER_SPAN, zero: 0, motion: MOTION_NAMES[MOTION_ROTATE] });
+    });
+    if (rows.length > CLK_AUX_MAX)
+      refuses.push(rows.length + ' pointers exceed the dial\u2019s ' + CLK_AUX_MAX + ' pointer slots \u2014 remove one');
+    return { rows: rows, refuses: refuses };
   }
 
   root.GorbBake = {
@@ -2441,10 +2936,16 @@
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,
     ELEM_MAX: ELEM_MAX, ELEM_FRAMES_MAX: ELEM_FRAMES_MAX,
+    // D34: the pointer vocabulary, exported so the composer and the suite read the
+    // same table the baker refuses against rather than restating ids.
+    CLASS_AUX: CLASS_AUX, MOTION_NAMES: MOTION_NAMES, MOTION_ROTATE: MOTION_ROTATE,
+    MOTION_SLIDE_X: MOTION_SLIDE_X, MOTION_SLIDE_Y: MOTION_SLIDE_Y,
+    motionIsSlide: motionIsSlide, AUX_MAX: CLK_AUX_MAX,
     GEOM_CAP: GEOM_CAP3, ART_CAP: SLOT_ART_CAP3, SLUG_MAX: SLUG_MAX,
     IDX_ORDER: IDX_ORDER, IDX_OFF: IDX_OFF, IDX_TYPES: IDX_TYPES,
     blankElement: blankElement, classId: classId, checkElement: checkElement,
     checkTable: checkTable, packElements: packElements, unpackElements: unpackElements,
+
     checkSlug: checkSlug, checkBudget3: checkBudget3,
     packBlob3: packBlob3, unpackBlob3: unpackBlob3,
     packIndex3: packIndex3, unpackIndex3: unpackIndex3, packHeader3: packHeader3,
@@ -2454,7 +2955,9 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3
+    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
+    liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
+    pointerDefault3: pointerDefault3
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

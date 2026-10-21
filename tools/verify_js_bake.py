@@ -70,13 +70,26 @@ def main():
             elif w[0] in ("plate", "overlay", "hand", "shadow", "tourbillon"):
                 # dump_sprite's own field order: tag i w h offx offy pivotx pivoty
                 # centerx centery blend show color_off diffx diffy diffw diffh
-                spr.append((w[0], int(w[1]), int(w[2]), int(w[3]), int(w[4]), int(w[5]), int(w[12])))
+                spr.append((w[0], int(w[1]), int(w[2]), int(w[3]), int(w[4]), int(w[5]), int(w[12]),
+                            int(w[6]), int(w[7]), int(w[8]), int(w[9])))
         shown = [s for s in spr if s[6]]
         print("%s: projected — %d seated sprites, %dx%s panel, bank %s B, %d complications, "
               "%d pointers"
               % (slug, len(shown), scr[0], scr[1], art[1], ncomp, n_aux))
-        for kind, idx, w, h, offx, offy, coff in shown[:8]:
+        for kind, idx, w, h, offx, offy, coff, px, py, cx, cy in shown[:8]:
             print("    %-10s[%d] %dx%d draws at (%d,%d) colour_off %d" % (kind, idx, w, h, offx, offy, coff))
+            if kind == "shadow":
+                # §25.2's whole contract in one line: the row's PIVOT COLUMN became
+                # the centre, and the CROPPED pivot — recomputed from the hand, never
+                # carried by the row — pins the plane's pivot pixel there. A light
+                # offset that survived the wire as (centre - hand centre) is the
+                # composer's shadow promise; the print is what makes the test able
+                # to say so.
+                hand = next((s for s in shown if s[0] == "hand" and s[1] == idx), None)
+                hx = hand[4] + hand[7] if hand else 0
+                hy = hand[5] + hand[8] if hand else 0
+                print("    shadow[%d] centre (%d,%d) = hand centre (%d,%d) + light (%d,%d), crop pivot (%d,%d)"
+                      % (idx, cx, cy, hx, hy, cx - hx, cy - hy, px, py))
         for (_, tag, kind, src, x, y, cw, ch, count, first, off, fbytes, vmin, scale, show) in comps:
             print("    comp[%d] window src=%s box %dx%d at (%d,%d) %d plates off %d stride %d value_min %d %s"
                   % (tag, SOURCES[src], cw, ch, x, y, count, off, fbytes, vmin,

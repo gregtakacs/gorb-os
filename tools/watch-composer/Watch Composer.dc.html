@@ -1876,7 +1876,12 @@ class Component extends DCLogic {
   async exportTheme3() {
     const G = window.GorbBake;
     if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
-    const D = this.design(), comps = (D.comps || []).length;
+    const D = this.design();
+    // The refusal counts what the bake actually loses, through the baker's own
+    // predicate — the same one the button note quotes. An opening is a hole in
+    // the baked plate and a decorative flare is engraving: both survive FORMAT 3
+    // untouched, and calling them "live" refused dials the note had passed.
+    const comps = G.liveComps3(D.comps).length;
     const nm = String(this.themeName() || 'watch').replace(/\u0000/g, '').trim();
     if (!G.nameOk(nm)) {
       this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
@@ -2673,7 +2678,7 @@ class Component extends DCLogic {
       themeNote: (() => {
         const G = window.GorbBake;
         if (!G) return 'baker not loaded';
-        const nw = (D.comps || []).filter((c) => c.type === 'window').length, nf = (D.comps || []).filter((c) => c.type === 'flare').length;
+        const liveComp = G.liveComps3(D.comps).length;
         if (D.comps && D.comps.length > G.caps.comp) return 'too many complications for the device table (max ' + G.caps.comp + ')';
         // FORMAT 2 left one rule on the name -- the header's field size -- and it is the
         // only refusal here the owner could not predict from the dial itself.
@@ -2685,7 +2690,6 @@ class Component extends DCLogic {
         // GorbBake.splitPolicy3). Complications are the blocker that remains: the
         // compiled clock still has no comp table, so a live window would vanish
         // from the baked dial -- that refusal is the button's, stated first.
-        const liveComp = nw + nf;
         if (liveComp) return 'FORMAT 3 · ' + liveComp + ' live comp' + (liveComp > 1 ? 's' : '') + ': no comp table yet, press to see the refusal';
         const cost = F * 466 * 466 * 2;
         return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';

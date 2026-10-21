@@ -1229,7 +1229,19 @@ esp_err_t menu_view_init(void)
     s_res_mx = xSemaphoreCreateMutex();
     if (!s_res_mx) return ESP_ERR_NO_MEM;
 
+    /* Every object below comes from the internal heap, and this init runs at
+     * boot after the clock has already taken the art bank and its own widgets
+     * (orb_app_init_all inits clock, then picker, then menu). When that heap is
+     * fragmented the largest free block can drop below what an LVGL object
+     * needs — the fleet saw heap_internal_largest ~9216 here — and lv_obj_create
+     * returns NULL. Pre-hardening, the next line dereferenced that NULL: a boot-
+     * time panic, billed by C2 as a menu fault, twice into permanent quarantine,
+     * with no UI to clear it (that UI lives in this app). Check every allocation
+     * and return ESP_ERR_NO_MEM instead; orb_app_init_all already drops an app
+     * whose init fails, so the menu skips the carousel this boot, draws nothing,
+     * costs no fault strike, and is retried clean on the next boot. */
     s_scr = lv_obj_create(NULL);
+    if (!s_scr) return ESP_ERR_NO_MEM;
     lv_obj_set_style_bg_color(s_scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
@@ -1237,6 +1249,7 @@ esp_err_t menu_view_init(void)
     lv_obj_set_scrollbar_mode(s_scr, LV_SCROLLBAR_MODE_OFF);
 
     s_title = lv_label_create(s_scr);
+    if (!s_title) goto nomem;
     lv_obj_set_style_text_color(s_title, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
     lv_label_set_text(s_title, "MENU");
@@ -1248,6 +1261,7 @@ esp_err_t menu_view_init(void)
     const int row_h = 46, row_w = 320, row_gap = 6, row_top = 150;
     for (int i = 0; i < ROW_MAX; i++) {
         s_row[i] = lv_obj_create(s_scr);
+        if (!s_row[i]) goto nomem;
         lv_obj_set_size(s_row[i], row_w, row_h);
         lv_obj_set_style_radius(s_row[i], 10, 0);
         lv_obj_set_style_pad_all(s_row[i], 0, 0);
@@ -1256,6 +1270,7 @@ esp_err_t menu_view_init(void)
         lv_obj_set_pos(s_row[i], (SCREEN_WIDTH - row_w) / 2, row_top + i * (row_h + row_gap));
 
         s_row_lbl[i] = lv_label_create(s_row[i]);
+        if (!s_row_lbl[i]) goto nomem;
         lv_obj_set_style_text_font(s_row_lbl[i], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(s_row_lbl[i], COL_TXT_LO, 0);
         lv_label_set_text(s_row_lbl[i], "");
@@ -1266,12 +1281,14 @@ esp_err_t menu_view_init(void)
      * the dial can tell the owner why the card did not answer, which orb_sd's
      * silent ESP_OK/ESP_FAIL otherwise leaves them to guess at. */
     s_status = lv_label_create(s_scr);
+    if (!s_status) goto nomem;
     lv_obj_set_style_text_color(s_status, lv_color_make(0xe0, 0xb0, 0x40), 0);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_label_set_text(s_status, "");
     lv_obj_align(s_status, LV_ALIGN_BOTTOM_MID, 0, -66);
 
     s_hint = lv_label_create(s_scr);
+    if (!s_hint) goto nomem;
     lv_obj_set_style_text_color(s_hint, COL_TXT_LO, 0);
     lv_obj_set_style_text_font(s_hint, &lv_font_montserrat_14, 0);
     lv_label_set_text(s_hint, "push to open");
@@ -1281,6 +1298,18 @@ esp_err_t menu_view_init(void)
     ESP_LOGI(TAG, "menu ready (worker up, %d zones, %s)", orb_net_tz_count(),
              orb_sd_mounted() ? "card mounted" : "no card");
     return ESP_OK;
+
+nomem:
+    /* Tear the whole half-built subtree down (deleting s_scr frees its children
+     * with it), null every cached pointer, and release the mutex, so a dropped
+     * init leaves no dangling screen for menu_view_screen()/repaint() to touch
+     * and nothing held across the failure. The next boot starts from empty. */
+    lv_obj_del(s_scr);
+    s_scr = NULL; s_title = NULL; s_status = NULL; s_hint = NULL;
+    for (int i = 0; i < ROW_MAX; i++) { s_row[i] = NULL; s_row_lbl[i] = NULL; }
+    vSemaphoreDelete(s_res_mx);
+    s_res_mx = NULL;
+    return ESP_ERR_NO_MEM;
 }
 
 lv_obj_t *menu_view_screen(void) { return s_scr; }

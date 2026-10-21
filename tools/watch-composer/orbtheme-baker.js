@@ -91,7 +91,7 @@
    * (SLOT_GEOM_CAP), banks install at +0x10000 inside SLOT_CAP — the payload budget
    * below, 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
    * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
-  var RECTS_MAX = 2048, GIFS_MAX = 32, BG_FRAMES_MAX = 8, TOURB_MAX = 16;
+  var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 16, TOURB_MAX = 16;
   var SLOT_CAP = 0x003f0000;
   var GEOM_BUDGET = 0xf000;
 
@@ -2335,8 +2335,8 @@
       if (!(frames.length >= 2)) {
         throw new Error('a plate bank of ' + (frames ? frames.length : 0) + ' frames: one keyframe is a still plate, and zero frames draw nothing — pass two or more planes or none');
       }
-      if (frames.length > 16) {
-        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds 16 plate frames, and the rest is a bank it has no room for');
+      if (frames.length > BG3_FRAMES_MAX) {
+        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds ' + BG3_FRAMES_MAX + ', and the rest is a bank it has no room for');
       }
       if (sc.bg_frames !== undefined && sc.bg_frames !== frames.length - 1) {
         throw new Error('a plate row naming ' + frames.length + ' frames while the scalars name ' + sc.bg_frames + ' extra: the row’s planes are the animation’s length');
@@ -2364,8 +2364,27 @@
     } else if (sc.bg_frames) {
       throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
     }
-    if (sc.tourbillon_n) throw new Error('tourbillon_n = ' + sc.tourbillon_n + ': a carriage is a row this bake does not assemble, and the scalar would name a bank the section does not hold');
-    sc.tourbillon_n = 0; sc.plate_off = 0;
+    /* §31's sprite-region carrier: a carriage bank — the tourbillon row at hand
+     * slot 5 that d32 proved on glass. The dial fans its frames by the seconds
+     * angle plus the row's start orientation, so the bake hands it the motion's
+     * bounding box as the row's extent and the loop's fps as the scalar. */
+    var car = o.carriage;
+    if (car) {
+      if (sc.tourbillon_n) throw new Error('a carriage row while the scalars name tourbillon_n = ' + sc.tourbillon_n + ': the row’s planes are the bank’s length');
+      if (!(car.frames && car.frames.length >= 2)) throw new Error('a carriage bank of ' + (car.frames ? car.frames.length : 0) + ' frames: a carriage is an animation, and one frame is a static hand this bake seats elsewhere');
+      if (car.frames.length > TOURB_MAX) throw new Error('a carriage bank of ' + car.frames.length + ' frames: the dial holds ' + TOURB_MAX + ' tourbillon records');
+      if (!(car.fps >= 1)) throw new Error('a carriage bank at ' + (car.fps || 0) + ' fps: the row animates at its own tempo, and a loop with no tempo is a frame that never arrives');
+      var cw = car.w, chh = car.h;
+      for (k = 0; k < car.frames.length; k++) {
+        var cf = car.frames[k];
+        if (!cf || cf.w !== cw || cf.h !== chh) throw new Error('carriage frame ' + k + ' is ' + (cf ? cf.w + 'x' + cf.h : 'nothing') + ' against a ' + cw + 'x' + chh + ' row: every frame of one bank is one extent, the same box the dial invalidates');
+      }
+      sc.tourbillon_n = car.frames.length; sc.tourbillon_fps = car.fps;
+    } else {
+      if (sc.tourbillon_n) throw new Error('tourbillon_n = ' + sc.tourbillon_n + ': a carriage is a row this bake does not assemble, and the scalar would name a bank the section does not hold');
+    }
+    if (!sc.tourbillon_n) sc.tourbillon_n = 0;
+    sc.plate_off = 0;
     if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
 
     // Every row starts from blankElement(): packElements refuses a missing field rather
@@ -2432,6 +2451,12 @@
             w: plates[k].w, h: plates[k].h, order: ord++, flags: plates[k].flags || 0,
             alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
     }
+    if (car) {
+      rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: car.x, y: car.y,
+                  w: cw, h: chh, pivot_x: car.pivot_x, pivot_y: car.pivot_y,
+                  order: ord++, alpha: 255, n_frames: car.frames.length,
+                  degrees: car.degrees || 0 }, car.frames, true);
+    }
     for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
     sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
 
@@ -2453,6 +2478,47 @@
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
     return b;
+  }
+
+  /* §31's motion split, as one pure function so the sweep page, the composer's
+   * export, and the headless suite all answer from the same arithmetic. Input
+   * is a motion measurement, not pixels — the caller composes and diffs;
+   * this only decides, from §31's ruled cap arithmetic:
+   *
+   *   m = { frames, fps, unionPx, bboxW, bboxH, otherB, hasCage }
+   *
+   * Order of preference is cost, not novelty: a local motion on a caged dial
+   * rides the carriage at a fraction of a full-panel bank (648 KB against
+   * 6.5 MB, §31's own numbers), a whole-panel motion is a keyframe bank, and
+   * a bank thins (frame step, fps over it) before it refuses, because
+   * §23.11's rule is that the shipped bake carries the tempo that fits.
+   * A union under one in a thousand of the panel is antialiasing shimmer —
+   * RGB565 quantisation swallows it, and the honest bake is the still.
+   * Returns { carrier, keyframes, fps, decim, sentence }. */
+  function splitPolicy3(m) {
+    var panel = SCREEN_W * SCREEN_H, kf = panel * 2, cap = SLOT_ART_CAP3;
+    var oth = m.otherB | 0, B = m.frames | 0, fps = m.fps | 0;
+    var bw = m.bboxW | 0, bh = m.bboxH | 0, area = bw * bh;
+    var thin = function (n, step) { return { keyframes: Math.floor(n / step), fps: Math.max(1, Math.round(fps / step)), decim: step }; };
+    if (B < 2 || fps < 1) return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1, sentence: 'no measured loop to bake: frames ' + B + ' at ' + fps + ' fps' };
+    if (!(m.unionPx > panel / 1000))
+      return { carrier: 'still', keyframes: 1, fps: 0, decim: 1, sentence: 'plate union ' + (m.unionPx | 0) + ' px is under the shimmer band; the still bakes the same dial' };
+    if (m.hasCage && area && area <= panel / 3) {
+      var per = area * 3, maxSp = Math.min(TOURB_MAX, Math.floor((cap - oth) / per));
+      if (maxSp >= 2) {
+        var s2 = thin(B, Math.ceil(B / maxSp));
+        if (s2.keyframes >= 2) { s2.carrier = 'sprite'; s2.bbox = [bw, bh];
+          s2.sentence = 'carriage bank at the ' + bw + 'x' + bh + ' motion box: ' + s2.keyframes + ' masked frames, ' + (s2.keyframes * per) + ' B'; return s2; }
+      }
+    }
+    var maxB = Math.min(BG3_FRAMES_MAX, Math.floor((cap - oth) / kf));
+    if (maxB >= 2) {
+      var b2 = thin(B, Math.ceil(B / maxB));
+      if (b2.keyframes >= 2) { b2.carrier = 'bank';
+        b2.sentence = 'plate keyframe bank: ' + b2.keyframes + ' of ' + B + ' frames at ' + b2.fps + ' fps' + (b2.decim > 1 ? ' (thinned by ' + b2.decim + ')' : '') + ', ' + (b2.keyframes * kf) + ' B'; return b2; }
+    }
+    return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1,
+             sentence: 'union ' + (m.unionPx | 0) + ' px in a ' + bw + 'x' + bh + ' box fits neither carrier: ' + B + ' plate keyframes of ' + kf + ' B exceed the ' + (cap - oth) + ' B the slot leaves after ' + oth + ' B of art, and the box is ' + (m.hasCage ? 'not local' : 'not a caged motion a carriage row can carry') };
   }
 
   /* The D29 meter, read back off finished bytes rather than estimated from the model. The
@@ -2527,7 +2593,7 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3
+    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

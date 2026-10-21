@@ -356,15 +356,68 @@ refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466, lo
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466,
           frames: Array.from({ length: 17 }, () => ({ rgba: kf(1), w: 466, h: 466 })) } }),
         'no room for', 'a seventeen-frame bank is refused before a byte is encoded');
+// ---- 7c. §31's other carrier: the carriage bank, the motion's bbox ----
+const CARF = (a) => ({ rgba: mkPlane(64, 64, a), w: 64, h: 64 });
+const bakedC = B.bakeClock3({ name: 'Carriage Bake', serial: 20261020, bakedMs: 1730000000001,
+  plate: PL, hands: [HK], order: [0],
+  carriage: { x: 200, y: 200, w: 64, h: 64, pivot_x: 32, pivot_y: 32, degrees: 4500, fps: 12,
+              frames: [CARF(200), CARF(220), CARF(240)] } });
+const walkC = B.verifyBundle3(bakedC.bytes).sections[0];
+const carRow = walkC.blob.elements[walkC.blob.elements.length - 1];
+ok(carRow.class === 2 && carRow.slot === 5 && carRow.n_frames === 3 && carRow.frame0 === 2,
+   'the carriage seats as one hand row at slot 5 naming three contiguous planes',
+   'class ' + carRow.class + ' slot ' + carRow.slot + ' n ' + carRow.n_frames + ' frame0 ' + carRow.frame0);
+ok(walkC.blob.scalars.tourbillon_n === 3 && walkC.blob.scalars.tourbillon_fps === 12 &&
+   carRow.degrees === 4500,
+   'the carriage scalars cross-set: three frames at 12 fps, start orientation from the row',
+   'n ' + walkC.blob.scalars.tourbillon_n + ' fps ' + walkC.blob.scalars.tourbillon_fps + ' deg ' + carRow.degrees);
+ok(walkC.blob.sprites[2].size === 64 * 64 * 3 && walkC.blob.sprites[4].off === walkC.blob.sprites[2].off + 2 * 64 * 64 * 3,
+   'carriage frames are masked planes, contiguous, three strides deep',
+   walkC.blob.sprites.slice(2, 5).map(s => s.size).join('/'));
+refuses(() => B.bakeClock3({ name: 'x', plate: PL,
+          carriage: { x: 0, y: 0, w: 64, h: 64, pivot_x: 32, pivot_y: 32, fps: 12, frames: [CARF(200)] } }),
+        'is an animation', 'a one-frame carriage is a static hand and the bake says which');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL,
+          carriage: { x: 0, y: 0, w: 64, h: 64, pivot_x: 32, pivot_y: 32, fps: 0, frames: [CARF(200), CARF(220)] } }),
+        'no tempo', 'a carriage with no fps is refused, not frozen');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL,
+          carriage: { x: 0, y: 0, w: 64, h: 64, pivot_x: 32, pivot_y: 32, fps: 12,
+                      frames: [CARF(200), { rgba: mkPlane(32, 32, 220), w: 32, h: 32 }] } }),
+        'one bank is one extent', 'a carriage frame smaller than its row is refused');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK],
+          carriage: { x: 0, y: 0, w: 64, h: 64, pivot_x: 32, pivot_y: 32, fps: 12, frames: [CARF(200), CARF(220)] },
+          scalars: { tourbillon_n: 5 } }),
+        'row’s planes are the bank’s length', 'a scalar disagreeing with the carriage row is refused');
+// ---- 7d. splitPolicy3: the one arithmetic, every measurement ----
+const sp = (m) => B.splitPolicy3(m);
+ok(sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 368, bboxH: 265, otherB: 75696, hasCage: false }).carrier === 'still',
+   'a 65-px union of AA shimmer bakes the still, not a lie of motion');
+const pBank = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070, hasCage: true });
+ok(pBank.carrier === 'bank' && pBank.keyframes === 8 && pBank.decim === 1 && pBank.fps === 4,
+   'a whole-panel motion takes the full bank at its own tempo', pBank.sentence);
+const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, hasCage: false });
+ok(pThin.carrier === 'bank' && pThin.keyframes === 7 && pThin.decim === 2,
+   'a 15-frame loop thins to what fits rather than refusing: 7 keyframes by step 2', pThin.sentence);
+const pSp = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: true });
+ok(pSp.carrier === 'sprite' && pSp.keyframes === 15,
+   'a local motion on a caged dial rides the carriage at full length, cheapest first', pSp.sentence);
+const pNoCage = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: false });
+ok(pNoCage.carrier === 'bank',
+   'the same box without a cage is still a bank — the carriage carrier is the cage');
+const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: true });
+ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
+   'a bake with no room left names the byte it tripped on', pRef.sentence);
 const bkPath = '/tmp/js_bake_parity.orbtheme', bkAnim = '/tmp/js_bake_anim.orbtheme';
+const bkCar = '/tmp/js_bake_carriage.orbtheme';
 fs.writeFileSync(bkPath, Buffer.from(baked.bytes));
 fs.writeFileSync(bkAnim, Buffer.from(bakedA.bytes));
+fs.writeFileSync(bkCar, Buffer.from(bakedC.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
   console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
 } else {
-  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim], { encoding: 'utf8' });
-  ok(pr.status === 0, 'the shipped orb_clock3.c projects both browser bakes',
+  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar], { encoding: 'utf8' });
+  ok(pr.status === 0, 'the shipped orb_clock3.c projects all three browser bakes',
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
      'and seats the hand at the element rect with the plate-colour size as its offset',
@@ -372,6 +425,9 @@ if (!hasGcc) {
   ok(/plate bank: 2 extra keyframes at 434312, 868624/.test(pr.stdout),
      'and the projection fills the bgAnim table with the keyframes\' own offsets',
      (pr.stdout.match(/plate bank.*/) || ['none'])[0]);
+  ok(/tourbillon\s*\[\d\] 64x64 draws at \(200,200\)/.test(pr.stdout),
+     'and the browser\'s carriage bake projects as a tourbillon bank at its row\'s box',
+     (pr.stdout.match(/tourbillon.*/) || ['none'])[0]);
 }
 
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');

@@ -462,14 +462,15 @@ setTimeout(async () => {
   // A button that dies silently is worse than no button: the author cannot tell a refused
   // bake from a broken page, and every refusal here is something they can act on.
   ok(typeof rv.exportTheme === 'function', 'the theme button is callable');
-  ok(/frame bank/.test(rv.themeNote) || /too many/.test(rv.themeNote),
+  ok(/· measures on export/.test(rv.themeNote) || /live comp/.test(rv.themeNote) || /too many/.test(rv.themeNote),
      'the theme button says what it will ship', JSON.stringify(rv.themeNote));
-  // The watch reads FORMAT 3 only (D33) and this button still bakes FORMAT 2, so the note
-  // has to say the file will not install and name the reason the dial would give — the
-  // section carries one static plate keyframe, so a moving train has nothing to bake to.
-  // A button that quietly ships an unloadable file is the failure this line exists for.
-  ok(/FORMAT 2 · dial wants 3 \(\d+-frame train\)/.test(rv.themeNote),
-     'and it names FORMAT 2 as the format the dial will refuse, with the reason',
+  // §31 turned the button on: the FORMAT 3 bake now carries the moving train as a
+  // measured keyframe/carriage bank, and the note says it measures on export.
+  // The blocker that remains is the comp table: a dial with live complications
+  // would bake to a dial that LACKS them, so the note states that refusal, in
+  // the button, before the press — the failure this line has always existed for.
+  ok(/FORMAT 3 · \d+ live comps?: no comp table yet/.test(rv.themeNote),
+     'and it names the comp-table refusal for a dial with live complications',
      JSON.stringify(rv.themeNote));
   await (async () => {
     const name = { got: null }, threw = { err: null };

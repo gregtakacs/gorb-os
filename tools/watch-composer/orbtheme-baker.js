@@ -2535,6 +2535,24 @@
              nSections: h.nSections };
   }
 
+  /* Which comps the compiled clock cannot carry — the one predicate behind both
+   * the button's note and the export guard, so neither can promise what the
+   * other refuses. FORMAT 3 has no comp table (the open §31 slice), so the bake
+   * freezes whatever the watch would drive at runtime: a window showing calendar
+   * text, a moon on tonight's phase, any subdial's hand. What survives the bake
+   * untouched: an opening is a hole in the baked plate with the movement art —
+   * the bank itself — under it; a flare is engraved static art unless it prints
+   * the date; a custom-format window is uploaded art. Anything unrecognised
+   * counts live: the safe direction is the refusal the author can see. */
+  function liveComps3(comps) {
+    return (comps || []).filter(function (c) {
+      if (c.type === 'opening') return false;
+      if (c.type === 'window') return c.shows !== 'custom';
+      if (c.type === 'flare') return c.icon === 'datetext';
+      return true;
+    });
+  }
+
   root.GorbBake = {
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
@@ -2584,6 +2602,7 @@
     IDX_ORDER: IDX_ORDER, IDX_OFF: IDX_OFF, IDX_TYPES: IDX_TYPES,
     blankElement: blankElement, classId: classId, checkElement: checkElement,
     checkTable: checkTable, packElements: packElements, unpackElements: unpackElements,
+
     checkSlug: checkSlug, checkBudget3: checkBudget3,
     packBlob3: packBlob3, unpackBlob3: unpackBlob3,
     packIndex3: packIndex3, unpackIndex3: unpackIndex3, packHeader3: packHeader3,
@@ -2593,7 +2612,8 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3
+    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
+    liveComps3: liveComps3
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

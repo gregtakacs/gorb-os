@@ -407,6 +407,17 @@ ok(pNoCage.carrier === 'bank',
 const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: true });
 ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
    'a bake with no room left names the byte it tripped on', pRef.sentence);
+// liveComps3: the one count behind the button note and the export guard. The §31
+// first cut refused every comp row and quoted the raw count — it called Skeleton's
+// own opening a "live complication" while its note had promised the bake.
+ok(B.liveComps3([{ type: 'opening' }, { type: 'flare', icon: 'star' }, { type: 'window', shows: 'custom' }]).length === 0,
+   'openings, engraved flares and custom art windows are not live: the baked plate carries them');
+ok(B.liveComps3([{ type: 'window', shows: 'date' }, { type: 'moon' }, { type: 'subdial' }, { type: 'flare', icon: 'datetext' }]).length === 4,
+   'calendar windows, moons, subdial hands and date-printing flares are live: no comp table, nothing drives them');
+ok(B.liveComps3([{ type: 'whatever-comes-next' }]).length === 1,
+   'an unrecognised comp counts live — the safe direction is the refusal the author can see');
+ok(B.liveComps3(undefined).length === 0 && B.liveComps3([]).length === 0,
+   'a design with no comps is no comp');
 const bkPath = '/tmp/js_bake_parity.orbtheme', bkAnim = '/tmp/js_bake_anim.orbtheme';
 const bkCar = '/tmp/js_bake_carriage.orbtheme';
 fs.writeFileSync(bkPath, Buffer.from(baked.bytes));

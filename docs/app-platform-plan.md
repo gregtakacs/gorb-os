@@ -4764,6 +4764,19 @@ The note div now tells the FORMAT 3 store/flip contract the watch actually imple
 carriage section and nine `splitPolicy3` checks (96 JS checks, all six suites green,
 all 24 host suites green, `idf.py build` clean).
 
+**Correction, same evening — the guard lied and the note disagreed with it.** The
+export refused any design with any comp row and quoted the raw count: Skeleton, the
+composer's default dial, pressed to "shows 2 live complications" while its own button
+note had promised the bake — an opening is a hole in the baked plate and a decorative
+flare is engraving, both shipped untouched by FORMAT 3. The refusal and the note now
+count through one predicate the baker exports (`GorbBake.liveComps3`): live is a window
+showing calendar text, a moon, any subdial (its hand is not a baked slot), and a
+date-printing flare; an unknown type counts live, so the safe direction stays a refusal
+the author can see. Four bundle3 checks pin it. The shipped bake set narrows from the
+sweep table's motion verdict to what the button actually carries today: **sector,
+orbital, kitetour bake as banks; aviator, station bake as stills; the other ten
+presets refuse** with an honest live count, until the comp-table bake lands.
+
 **Still open on this contract:** the hub's send-to-orb round (the button downloads;
 the hub's upload door is the receiver), the comp-table bake, and P8 consolidating the
 delivered-fps ladder across bank sizes.

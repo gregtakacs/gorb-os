@@ -95,6 +95,26 @@ def aux_expect_deg(src, tmv, flags, vmin, vmax, zero, span, frac):
     return (zero + v * float(span) / float(vmax)) / 10.0
 
 
+def slide_expect(src, tmv, flags, vmin, vmax, zero, span, frac):
+    """The px a slide reaches, computed from the same _aux_* helpers the angle
+    vectors use. One shared expectation, two readings of it: a slide and a rotation
+    that disagreed about the VALUE would already pass a per-motion vector set, so
+    they consume one number and differ only in what it is a number OF."""
+    jump, wrap = bool(flags & ts.FLAG_JUMP), bool(flags & ts.FLAG_WRAP)
+    v = _aux_clamped(_aux_base(src, tmv) + _aux_frac_units(src, tmv, jump, frac),
+                     jump, wrap, vmin, vmax)
+    return zero + v * float(span) / float(vmax)
+
+
+def retro_expect_deg(src, tmv, flags, vmin, vmax, zero, span, frac):
+    """A retrograde hand clamps at its own far mark instead of wrapping the circle.
+    The clamp is the whole spec, and it is written here in float so the integer path
+    under test cannot be the thing that defines its own answer."""
+    deg = aux_expect_deg(src, tmv, flags, vmin, vmax, zero, span, frac)
+    lim = abs(span) / 10.0
+    return max(-lim, min(lim, deg))
+
+
 def aux_tol_deg(span, vmax):
     """Half a tenth of quantisation, plus one thousandth of a value unit — the
     most the x1000 scale can hide, which on a narrow ring is wider than a tenth."""
@@ -218,6 +238,40 @@ static void chk_aux_deg(const clk_aux_t *a, const struct tm *ti, time_t t,
         printf("FAIL aux deg src=%u want=%.4f got=%.4f tol=%.4f\\n",
                (unsigned)a->src, want_deg, got, tol); }
 }
+/* D34: a slide is the same drive read in pixels. It is checked through the SHARED
+ * divide (aux_offset_px) rather than by re-deriving the value in C, because the point
+ * of the append is that one arithmetic serves both motions — two copies of the divide
+ * is exactly the drift this bench is for. */
+static void chk_aux_slide(const clk_aux_t *a, const struct tm *ti, time_t t,
+                          double frac, double want_px, double tol)
+{
+    int64_t v1000 = 0;
+    if (!aux_value_1000(a, ti, t, frac, &v1000)) { fails++;
+        printf("FAIL slide src=%u declined\\n", (unsigned)a->src); return; }
+    double got = (double)aux_offset_px(a, v1000);
+    double d = got - want_px;
+    if (d > tol || d < -tol) { fails++;
+        printf("FAIL slide src=%u kind=%u zero=%d span=%d max=%u want=%.3f got=%.3f\\n",
+               (unsigned)a->src, (unsigned)a->kind, (int)a->zero, (int)a->span,
+               (unsigned)a->value_max, want_px, got); }
+}
+/* The clamp, not the wrap: a retrograde hand that reached past its span would read as
+ * a ring that overtravels its own scale, which is the failure a watch owner sees. */
+static void chk_aux_retro(const clk_aux_t *a, const struct tm *ti, time_t t,
+                          double frac, double want_deg, double tol)
+{
+    int64_t v1000 = 0;
+    if (!aux_value_1000(a, ti, t, frac, &v1000)) { fails++;
+        printf("FAIL retro src=%u declined\\n", (unsigned)a->src); return; }
+    double got = aux_angle_10(a, v1000) / 10.0;
+    /* The C returns a positive residue of the turn; compare on the circle. */
+    double d = got - want_deg;
+    while (d > 180.0) d -= 360.0;
+    while (d < -180.0) d += 360.0;
+    if (d > tol || d < -tol) { fails++;
+        printf("FAIL retro src=%u want=%.4f got=%.4f\\n",
+               (unsigned)a->src, want_deg, got); }
+}
 static void chk_aux_none(const clk_aux_t *a, const struct tm *ti)
 {
     int64_t v1000 = 0;
@@ -241,7 +295,7 @@ MUTATIONS = [
     # The aux driver: the rounding, the wrap, the two clamps, and the two
     # sweeps. Each of these is a pointer a few tenths of a degree off the mark
     # the kit painted, or parked on the wrong numeral — never an error message.
-    ("ang %= 3600;",                 "ang &= 3600 - 1;"),
+    ("t %= 3600;",                   "t &= 3600 - 1;"),          # D34: moved into aux_angle_10
     ("(num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den)",
      "num / den"),
     ("if (v1000 > hi) v1000 = hi;",  ""),
@@ -249,6 +303,11 @@ MUTATIONS = [
     ("ti->tm_sec * 1000 / 60",       "0"),
     ("(int64_t)(frac * 1000.0)",     "0"),
     ("!(a->flags & CLK_FLAG_JUMP)",  "1"),
+    # D34's two new readings. A slide that fell through to the angle path, or a
+    # retrograde clamp that never clamped, is a pointer painted at the wrong end of
+    # its own scale with every number on the wire still legal.
+    ("a->kind == CLK_MOTION_RETROGRADE &&", "0 &&"),
+    ("return aux_travel(a, v1000);", "return aux_angle_10(a, v1000) * 10;"),
 ]
 
 def build_body():
@@ -391,6 +450,51 @@ def build_body():
                                aux_tol_deg(span, vmax)))
                         k += 1
 
+    # D34: the same drive read as a SLIDE and as a RETROGRADE arc. One record per
+    # source over the same dom table, so a slide cannot be quietly tested against a
+    # different value set than the rotation it is meant to be able to replace.
+    k = 0
+    for src in dom:
+        vmin, vmax = dom[src]
+        for jump in (False, True):
+            for kind, zero, span in ((ts.MOTION_SLIDE_X, -40, 80),
+                                     (ts.MOTION_SLIDE_Y, 0, 200),
+                                     (ts.MOTION_RETROGRADE, 0, 1800),
+                                     # A retrograde whose zero already sits past its own
+                                     # far mark: the ONLY shape that exercises the clamp,
+                                     # since a value inside its domain plus a zero inside
+                                     # the span can never reach the span. Without this the
+                                     # clamp is dead code that every vector passes by —
+                                     # --mutations caught it, which is the bench working.
+                                     (ts.MOTION_RETROGRADE, 2000, 1200),
+                                     (ts.MOTION_RETROGRADE, -900, -600)):
+                for tmv in tms:
+                    flags = ts.FLAG_JUMP if jump else 0
+                    frac = ((tmv["sec"] % 60) / 60.0)
+                    ti = "tmy%d" % k
+                    decl("static const struct tm %s = { .tm_wday=%d, .tm_mon=%d,"
+                         " .tm_mday=%d, .tm_hour=%d, .tm_min=%d, .tm_sec=%d };"
+                         % (ti, tmv["wd"], tmv["mon"], tmv["mday"], tmv["hour"],
+                            tmv["min"], tmv["sec"]))
+                    ax = "ay%d" % k
+                    decl("static const clk_aux_t %s = { .src=%d, .kind=%d, .host=0,"
+                         " .span=%d, .zero=%d, .value_min=%d, .value_max=%d,"
+                         " .flags=%d };"
+                         % (ax, ts.SOURCES.index(src), kind, span, zero, vmin, vmax,
+                            flags))
+                    if kind in ts.MOTION_SLIDES:
+                        chk("chk_aux_slide(&%s,&%s,0LL,%r,%r,%r);"
+                            % (ax, ti, frac,
+                               slide_expect(src, tmv, flags, vmin, vmax, zero, span, frac),
+                               0.6 + 0.001 * abs(span) / vmax))
+                    else:
+                        chk("chk_aux_retro(&%s,&%s,0LL,%r,%r,%r);"
+                            % (ax, ti, frac,
+                               retro_expect_deg(src, tmv, flags, vmin, vmax, zero, span,
+                                                frac),
+                               aux_tol_deg(span, vmax) + 0.2))
+                    k += 1
+
     # The vendor's own reading, spelled out: the c4 date ring ships value 1..31
     # over a full turn, so day 5 is 5*3600/31 = 581 tenths and day 31 comes back
     # round to zero — the two numbers the kit's art pins (31 at the top, 5 at
@@ -450,7 +554,13 @@ def lifted_c(mutations=()):
         # ring formula the bake packed against — a hand on the wrong numeral is
         # the same class of failure as a window on the wrong tile.
         lift(cview, "static bool aux_value_1000("),
+        # D34: the divide is one function now, and aux_angle_10 reads it. Lifting
+        # only the caller would compile a stub and score a wrong angle as a right
+        # one, so both travel — the shared divide is precisely what a slide and a
+        # rotation must not be able to disagree about.
+        lift(cview, "static int32_t aux_travel("),
         lift(cview, "static int32_t aux_angle_10("),
+        lift(cview, "static int32_t aux_offset_px("),
     ])
     body, _ = build_body()
     # The record shape the driver reads. Lifted from the shipping headers rather
@@ -461,11 +571,18 @@ def lifted_c(mutations=()):
     auxt = re.search(r"typedef struct \{[^{}]*clk_sprite_t spr;[^{}]*\} clk_aux_t;",
                      cheader)
     flags = re.search(r"enum \{[^{}]*CLK_FLAG_UNDER_DIAL[^{}]*\};", cheader)
+    # D34's motion ids live in clk_types.h, the header the dial's geometry types
+    # moved to; the driver cannot compile without them, and restating them here
+    # would let a renumber pass the bench.
+    clk = open(os.path.join(ROOT, "main", "art", "clk_types.h")).read()
+    motions = re.search(r"enum \{[^{}]*CLK_MOTION_ROTATE[^{}]*CLK_MOTION__MAX[^{}]*\};", clk)
+    assert motions, ("CLK_MOTION_* not found in main/art/clk_types.h — the pointer's "
+                     "motion vocabulary moved and this bench must travel with it")
     assert spr and auxt and flags, \
         "clk_sprite_t / clk_aux_t / CLK_FLAG_* not found in the shipping " \
         "headers — the aux driver's contract moved, update this bench too"
 
-    src = (C_PRE + m.group(0) + "\n" + flags.group(0) + "\n" + spr.group(0) + "\n"
+    src = (C_PRE + m.group(0) + "\n" + flags.group(0) + "\n" + motions.group(0) + "\n" + spr.group(0) + "\n"
            + auxt.group(0) + "\n" + mo.group(0) + "\n" + funcs + "\n" + C_HARNESS
            + "int main(void)\n{\n" + body + "    return fails ? 1 : 0;\n}\n")
     for old, new in mutations:

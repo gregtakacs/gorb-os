@@ -1216,7 +1216,7 @@ class Component extends DCLogic {
     return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type: 'application/zip' });
   }
   busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
-  frameCanvas(f, hidden, date) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden); return c; }
+  frameCanvas(f, hidden, date, compOnly, noHands) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden, compOnly, noHands); return c; }
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
   // hands at 10:09:36 and the moon at PREVIEW_MOON whatever mode the preview is playing in.
   previewCanvas() { const f = Math.min(this.state.frame, Math.max(0, this.gt.length - 1)); return this.frameCanvas(f, {}, WatchEngine.previewDate()); }
@@ -1481,43 +1481,91 @@ class Component extends DCLogic {
    * policy the sweep test shares (GorbBake.splitPolicy3): still under the
    * shimmer band, carriage bank for a local caged motion, plate keyframe bank
    * (thinned to what the slot holds) for whole-panel motion, and an honest
-   * refusal with the byte it tripped on when neither fits. FORMAT 2's kit
-   * route is untouched beside this: exportKit(true) still answers the old
-   * loader. */
+   * refusal with the byte it tripped on when neither fits. The comp table
+   * plans and renders first (compPass3), and its tiles bill against the bank
+   * inside the same policy. FORMAT 2's kit route is untouched beside this:
+   * exportKit(true) still answers the old loader. */
   async exportTheme3() {
     const G = window.GorbBake;
     if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
     const D = this.design();
-    // The refusal counts what the bake actually loses, through the baker's own
-    // predicate — the same one the button note quotes. An opening is a hole in
-    // the baked plate and a decorative flare is engraving: both survive FORMAT 3
-    // untouched, and calling them "live" refused dials the note had passed.
-    const comps = G.liveComps3(D.comps).length;
+    // §31's comp table: the baker's own plan says which comps become window rows
+    // and which the element row cannot carry. The button note quotes this same
+    // function, so neither can promise what the other refuses.
+    const plan = G.compPlan3(D.comps);
+    // D34: and which subdial hands the dial TURNS instead of plating — the pointer
+    // table, planned beside the comp table so one refusal list stays honest.
+    const pp = G.pointerPlan3(D.comps);
+    // D34's authoring hint: a budget refusal over plates-driven hour or second rings is
+    // this row wanting pointer drive — one hand plate, not a window row's tiles. The
+    // hint rides the refusal sentence so the baker can see which lever moves.
+    const PTSCALE3 = { second: 'seconds', hour12: 'hours' };
+    const pt3 = plan.rows.filter((r) => PTSCALE3[r.src]);
+    this._ptrHint = pt3.length ? ' — the subdial' + (pt3.length > 1 ? 's' : '') + ' #' + pt3.map((r) => r.id).join(' and #') +
+      ' is' + (pt3.length > 1 ? ' are' : '') + ' plate-driven here: ' + pt3.reduce((s, r) => s + r.count, 0) +
+      ' tiles. Set its Drive chip to Pointer and the bake pays ' + pt3.length + ' hand plate' + (pt3.length > 1 ? 's' : '') + ' instead' : '';
     const nm = String(this.themeName() || 'watch').replace(/\u0000/g, '').trim();
     if (!G.nameOk(nm)) {
       this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
       return;
     }
-    if (comps) {
-      this.setState({ status: 'Not baked: the FORMAT 3 clock bake carries no comp table yet, and this dial shows ' + comps + ' live complication' + (comps > 1 ? 's' : '') + ' — the baked dial would lack them. The .orbtheme note says this before you press.' });
+    if (plan.refuses.length || pp.refuses.length) {
+      this.setState({ status: 'Not baked: ' + (plan.refuses[0] || pp.refuses[0]) + ' — the .orbtheme note says this before you press.' });
       return;
     }
     const M = this.base, gt = this.gt, B = gt.length, fps = this.F, fc = this.face();
-    if (!M || !fc || B < 1 || this._mk !== this.mvKey()) {
+    // D34 bench: gt.length is B the moment frame 0 lands and the rest fill across
+    // awaited ticks. A bake pressed mid-build walked empty frames, measured zero
+    // train motion, and shipped a still plate under a silent shimmer verdict.
+    if (!M || !fc || B < 1 || B !== this.B || this.rendering || gt.some((g) => !g)
+        || this._mk !== this.mvKey()) {
       this.setState({ status: 'Not baked: the movement has not settled into its loop yet — press again once the dial runs' });
       return;
     }
-    this.setState({ status: 'Measuring plate motion across the ' + B + '-frame loop…' });
+    // Every comp the plan can plate: static art (custom windows, openings, engravings)
+    // rides the plate frames; a planned row's own plates must not.
+    const liveIds = plan.rows.map((r) => r.id);
+    const onlyBase = (D.comps || []).filter((c) => liveIds.indexOf(String(c.id)) < 0 && c.type !== 'opening'
+      && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
+    let compRows = [], compB = 0;
+    if (plan.rows.length) {
+      this.setState({ status: 'Rendering the comp table: ' + plan.rows.length + ' rows, ' +
+        plan.rows.reduce((s, r) => s + r.count, 0) + ' tiles…' });
+      await new Promise((r) => setTimeout(r, 30));
+      const cp = await this.compPass3(plan, onlyBase, pp.rows.map((r) => r.id));
+      if (cp.refuse) { this.setState({ status: 'Not baked: ' + cp.refuse }); return; }
+      compRows = cp.rows; compB = cp.compB;
+    }
+    let auxRows = [], auxB = 0;
+    if (pp.rows.length) {
+      this.setState({ status: 'Rendering the pointer table: ' + pp.rows.length + ' hand plate' + (pp.rows.length > 1 ? 's' : '') + '…' });
+      await new Promise((r) => setTimeout(r, 30));
+      const ap = await this.auxPass3(pp, onlyBase);
+      if (ap.refuse) { this.setState({ status: 'Not baked: ' + ap.refuse }); return; }
+      auxRows = ap.rows; auxB = ap.auxB;
+    }
+    this.setState({ status: 'Measuring plate motion across the ' + B + '-frame loop' + (compRows.length ? ' with the comp rows off the plate' : '') + '…' });
     await new Promise((r) => setTimeout(r, 30));      // paint the status before the walk
+    const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt };
+    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, compRows.length ? onlyBase : undefined), m3);
+    const { un, bw, bh } = m3;
+    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB };
+    await this.t3bake(nm, fc, M, gt, B, fps);
+  }
+  /* §31's motion walk, apart from the export so the sweep page runs the same
+   * code: compose the plate at every frame, diff consecutive frames cyclically,
+   * and settle unionPx, bboxW, bboxH and the moved count onto m in place.
+   * Returns the frame pixels: the bake needs frame 0 whatever the split decides,
+   * and every keyframe is one of them. */
+  measureFrames3(plateAt, m) {
     const PANEL = 466 * 466;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
-    const plateAt = (f) => pixOf(this.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }));
     const pxs = [];
-    for (let f = 0; f < B; f++) pxs.push(plateAt(f));
+    for (let f = 0; f < m.frames; f++) pxs.push(pixOf(plateAt(f)));   // plateAt hands back a canvas
     const mask = new Uint8Array(PANEL);
     let bx = PANEL, by = PANEL, bx2 = -1, by2 = -1, moved = 0;
-    for (let f = 0; f < B; f++) {
-      const a = pxs[f], b = pxs[(f + 1) % B];
+    for (let f = 0; f < m.frames; f++) {
+      const a = pxs[f], b = pxs[(f + 1) % m.frames];
       for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
         if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) {
           moved++;
@@ -1531,9 +1579,9 @@ class Component extends DCLogic {
       }
     }
     let un = 0; for (let p = 0; p < PANEL; p++) if (mask[p]) un++;
-    const bw = moved ? bx2 - bx + 1 : 0, bh = moved ? by2 - by + 1 : 0;
-    this._t3 = { pxs, un, bw, bh };
-    await this.t3bake(nm, fc, M, gt, B, fps);
+    m.unionPx = un; m.movedPx = moved;
+    m.bboxW = moved ? bx2 - bx + 1 : 0; m.bboxH = moved ? by2 - by + 1 : 0;
+    return pxs;
   }
   /* The split's other half: decide carriers off the measurement, assemble the
    * planes the bake wants, and download under the id the card will file it by.
@@ -1541,7 +1589,7 @@ class Component extends DCLogic {
    * frame pixels in its locals and the bake should not also hold its stack. */
   async t3bake(nm, fc, M, gt, B, fps) {
     const G = window.GorbBake;
-    const { pxs, un, bw, bh } = this._t3; this._t3 = null;
+    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
     const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
     const hands = [];
@@ -1555,7 +1603,7 @@ class Component extends DCLogic {
       hands.push({ slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py });
     }
     if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
-    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, hasCage: !!M.cageAt });
+    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0, hasCage: !!M.cageAt });
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
     const plate = { rgba: pxs[0], w: 466, h: 466 };
     if (pol.carrier === 'bank') {
@@ -1564,7 +1612,7 @@ class Component extends DCLogic {
       plate.fps = pol.fps;
     }
     const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier)),
-                   bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot + 1) };
+                   bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
     if (pol.carrier === 'sprite') {
       const cf = [];
       let cw = 0, chh = 0, same = true;
@@ -1581,7 +1629,9 @@ class Component extends DCLogic {
       opts.carriage = { x: 0, y: 0, w: cw, h: chh, pivot_x: M.cageAt[0], pivot_y: M.cageAt[1],
                         degrees: Math.round(M.cageOff * 18000 / Math.PI), fps: pol.fps, frames: cf };
     }
-    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + '…' });
+    if (compRows.length) opts.comps = compRows;
+    if (auxRows.length) opts.aux = auxRows;
+    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
       let id = null;
@@ -1594,8 +1644,148 @@ class Component extends DCLogic {
       this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · art ' +
         r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%) · upload it and the watch stores, flips, and boots it' });
     } catch (e) {
-      this.setState({ status: 'Not baked: ' + (e && e.message ? e.message : String(e)) });
+      const msg3 = (e && e.message ? e.message : String(e));
+      this.setState({ status: 'Not baked: ' + msg3 + (msg3.indexOf('complication tiles cost') >= 0 ? (this._ptrHint || '') : '') });
     }
+  }
+  /* §31's comp-table pass: render every domain value of every planned row as one
+   * RGBA plate, cropped to the footprint it actually changed against the plate it
+   * will be blitted on — the box is measured from the dial's own pixels, the same
+   * discipline that picks the bank's keyframe bounds. A host row is punched at its
+   * hosted rows' apertures so the record below shows through: the runtime paints
+   * its bottom bucket in record order, and compPlan3 already ordered hosted before
+   * host. The centre hands never enter a tile: compose's compOnly filter narrows
+   * the hand pass to the row's own pointers, which is also what lets a hosted
+   * tile stand on the subdial's static plate with no frozen hand in it. A texel
+   * the value did not change enters transparent — see diff-alpha below. */
+  async compPass3(plan, onlyBase, ptrIds) {
+    const PANEL = 466 * 466, W = 466;
+    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
+    const DATE3 = {
+      date: (v) => new Date(2026, 0, v),
+      weekday: (v) => new Date(2026, 0, 5 + v),        // 2026-01-05 is a Monday: frame 0, Monday first
+      month: (v) => new Date(2026, v, 15),
+      moon_age: (v) => { const d = new Date(2026, 6, 15); d.__moon = v / 30; d.toDateString = () => 'moon-' + v; return d; },
+      second: (v) => new Date(2026, 0, 1, 0, 0, v),
+      minute: (v) => new Date(2026, 0, 1, 0, v, 0),
+      hour12: (v) => new Date(2026, 0, 1, v, 0, 0),
+      hour24: (v) => new Date(2026, 0, 1, v, 0, 0)
+    };
+    const base = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, null, onlyBase));
+    const kids = {};
+    plan.rows.forEach((r) => { if (r.hosted) (kids[r.hosted] = kids[r.hosted] || []).push(r.id); });
+    const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;
+    const sx = scratch.getContext('2d');
+    const out = []; let compB = 0;
+    for (let ri = 0; ri < plan.rows.length; ri++) {
+      const r = plan.rows[ri];
+      const only = onlyBase.concat(r.hosted ? [r.id] : [r.id].concat(kids[r.id] || []));
+      let bx = W, by = W, bx2 = -1, by2 = -1;
+      const rends = [];
+      for (let v = 0; v < r.count; v++) {
+        const px = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, DATE3[r.src](v), only, ptrIds || []));
+        rends.push(px);
+        for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
+          if (px[i] !== base[i] || px[i + 1] !== base[i + 1] || px[i + 2] !== base[i + 2]) {
+            const x = p % W, y = (p / W) | 0;
+            if (x < bx) bx = x; if (x > bx2) bx2 = x;
+            if (y < by) by = y; if (y > by2) by2 = y;
+          }
+        }
+        await new Promise((res) => setTimeout(res));   // yield the tab between renders
+      }
+      if (bx2 < 0) return { refuse: 'the complication “' + r.id + '” renders nothing across its ' + r.count + ' values: the bake can plate what the dial draws' };
+      const w = bx2 - bx + 1, h = by2 - by + 1;
+      const holes = kids[r.id] ? this.face().compHoles(kids[r.id]) : [];
+      // Diff-alpha: a texel this value did not change against the plate underneath
+      // enters transparent, so the bank keeps painting through the tile and an
+      // open-centre subdial stays open over a moving train. The stride is raw
+      // RGB565A8 — this is correctness, not compression.
+      const planes = rends.map((px) => {
+        const o = new Uint8Array(w * h * 4);
+        for (let y = 0; y < h; y++) {
+          let so = (((by + y) * W) + bx) * 4, ro = y * w * 4;
+          for (let x = 0; x < w; x++, so += 4, ro += 4) {
+            const live = px[so] !== base[so] || px[so + 1] !== base[so + 1] || px[so + 2] !== base[so + 2];
+            if (live) { o[ro] = px[so]; o[ro + 1] = px[so + 1]; o[ro + 2] = px[so + 2]; o[ro + 3] = px[so + 3]; }
+            else { o[ro] = base[so]; o[ro + 1] = base[so + 1]; o[ro + 2] = base[so + 2]; }
+          }
+        }
+        if (!holes.length) return { rgba: o, w, h };
+        scratch.width = w; scratch.height = h;
+        sx.putImageData(new ImageData(new Uint8ClampedArray(o.buffer, 0, o.length), w, h), 0, 0);
+        sx.save(); sx.translate(-bx, -by); WatchEngine.punchHoles(sx, holes); sx.restore();
+        return { rgba: sx.getImageData(0, 0, w, h).data, w, h };
+      });
+      compB += w * h * 3 * r.count;
+      out.push({ slot: ri, src: r.src, x: bx, y: by, w, h, planes });
+    }
+    return { rows: out, compB };
+  }
+  /* D34's pointer table, rendered. A pointer row costs ONE masked plate: the dial is
+   * drawn twice at the zero pose — hand shown and hand hidden — and the diff of the two
+   * renders IS the hand, shadow and all; the box around that diff is the plate. The
+   * pivot is the engine's own layout centre for the subdial (face().outline), the very
+   * point its hand turns about, and the box grows to include it: orb_clock3.c refuses a
+   * rotation whose pivot lies outside its own plate, and a hand with barely a tail could
+   * otherwise crop it off. Live comps hosted here punch as apertures — the hand sweeps
+   * UNDER the window, the same way a host tile in the plate table punches under its row. */
+  async auxPass3(pp, onlyBase) {
+    const W = 466, PANEL = W * W;
+    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer);
+    const kids = {};
+    (this.design().comps || []).forEach((c) => { if (c.host && c.host !== 'dial') (kids[String(c.host)] = kids[String(c.host)] || []).push(String(c.id)); });
+    const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;
+    const sx = scratch.getContext('2d');
+    const out = []; let auxB = 0;
+    for (let ri = 0; ri < pp.rows.length; ri++) {
+      const r = pp.rows[ri];
+      const pose = r.src === 'second' ? new Date(2026, 0, 1, 0, 0, r.vmin)
+        : r.src === 'minute' ? new Date(2026, 0, 1, 0, r.vmin, 0)
+        : (r.src === 'hour12' || r.src === 'hour24') ? new Date(2026, 0, 1, r.vmin, 0, 0) : null;
+      if (!pose) return { refuse: 'the pointer \u201c' + r.id + '\u201d reads source \u201c' + r.src + '\u201d: the bake can pose a hand at zero for second, minute and the two hour rings and for nothing else' };
+      const hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)]));
+      const bare = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, pose, [String(r.id)]));
+      let bx = W, by = W, bx2 = -1, by2 = -1;
+      for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
+        if (hand[i] !== bare[i] || hand[i + 1] !== bare[i + 1] || hand[i + 2] !== bare[i + 2]) {
+          const x = p % W, y = (p / W) | 0;
+          if (x < bx) bx = x; if (x > bx2) bx2 = x;
+          if (y < by) by = y; if (y > by2) by2 = y;
+        }
+      }
+      if (bx2 < 0) return { refuse: 'the pointer \u201c' + r.id + '\u201d draws no hand: that subdial prints no hand for the bake to lift off the plate and turn' };
+      const g = this.face().outline(r.id);                     // the layout centre that hand turns about
+      if (!g) return { refuse: 'the pointer \u201c' + r.id + '\u201d has no layout centre on this dial' };
+      const gx = Math.round(g.x), gy = Math.round(g.y);
+      if (gx < bx) bx = gx; if (gx > bx2) bx2 = gx;
+      if (gy < by) by = gy; if (gy > by2) by2 = gy;
+      const w = bx2 - bx + 1, h = by2 - by + 1;
+      // Diff-alpha, the comp pass's own rule: a texel the hand does not change enters
+      // transparent, so the pointer paints over the dial it rides and not as a card of it.
+      const o = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) {
+        let so = (((by + y) * W) + bx) * 4, ro = y * w * 4;
+        for (let x = 0; x < w; x++, so += 4, ro += 4) {
+          const live = hand[so] !== bare[so] || hand[so + 1] !== bare[so + 1] || hand[so + 2] !== bare[so + 2];
+          if (live) { o[ro] = hand[so]; o[ro + 1] = hand[so + 1]; o[ro + 2] = hand[so + 2]; o[ro + 3] = hand[so + 3]; }
+          else { o[ro] = bare[so]; o[ro + 1] = bare[so + 1]; o[ro + 2] = bare[so + 2]; }
+        }
+      }
+      const holes = this.face().compHoles(kids[String(r.id)] || []);
+      let rgba = o;
+      if (holes.length) {
+        scratch.width = w; scratch.height = h;
+        sx.putImageData(new ImageData(new Uint8ClampedArray(o.buffer, 0, o.length), w, h), 0, 0);
+        sx.save(); sx.translate(-bx, -by); WatchEngine.punchHoles(sx, holes); sx.restore();
+        rgba = sx.getImageData(0, 0, w, h).data;
+      }
+      auxB += w * h * 3;
+      out.push({ slot: ri, src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
+                 x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } });
+      await new Promise((res) => setTimeout(res));   // yield the tab between renders
+    }
+    return { rows: out, auxB: auxB };
   }
   /* The device theme, baked here rather than on the bench. It starts from the exact PNG
    * bytes the layer kit would have shipped (white balance included, shadows raw), so the
@@ -1817,6 +2007,7 @@ class Component extends DCLogic {
       }
       if (sel.type === 'subdial') {
         Sx('Scale', 'scale', opt(E.SCALES));
+        if (E.POINTER_SCALES[sel.scale]) Cx('Drive', 'carrier', opt(E.SUB_CARRIERS), 'plates');   // D34
         R('Open centre', 'open', 0, 0.8, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'closed'));
         R('Height', 'height', -1.5, 2, 0.05, (v) => (v < 0 ? 'sunk ' + (-v).toFixed(2) : v === 0 ? 'flush' : 'raised ' + v.toFixed(2)), 1);
         if (sel.style === 'carbon') R('Weave angle', 'weaveAngle', 0, 90, 1, (v) => v + '°', +D.weaveAngle || 0);
@@ -2289,7 +2480,6 @@ class Component extends DCLogic {
       themeNote: (() => {
         const G = window.GorbBake;
         if (!G) return 'baker not loaded';
-        const liveComp = G.liveComps3(D.comps).length;
         if (D.comps && D.comps.length > G.caps.comp) return 'too many complications for the device table (max ' + G.caps.comp + ')';
         // FORMAT 2 left one rule on the name -- the header's field size -- and it is the
         // only refusal here the owner could not predict from the dial itself.
@@ -2298,11 +2488,16 @@ class Component extends DCLogic {
         // §31 turned the button on: the FORMAT 3 bake carries a moving train as a
         // plate keyframe bank or a carriage bank, and measures which BEFORE baking
         // (the split is _selftest/motion-test.html's table, exported as
-        // GorbBake.splitPolicy3). Complications are the blocker that remains: the
-        // compiled clock still has no comp table, so a live window would vanish
-        // from the baked dial -- that refusal is the button's, stated first.
-        if (liveComp) return 'FORMAT 3 · ' + liveComp + ' live comp' + (liveComp > 1 ? 's' : '') + ': no comp table yet, press to see the refusal';
+        // GorbBake.splitPolicy3). The comp table (§31's last open slice, D32's
+        // ruling A) plates every live complication as one window row the dial
+        // drives itself — the button note quotes the same compPlan3 the export
+        // runs, and only names a refusal the element row truly cannot carry.
+        const plan3 = G.compPlan3(D.comps), pp3 = G.pointerPlan3(D.comps);
+        if (plan3.refuses.length || pp3.refuses.length) return 'FORMAT 3 · refuses: ' + (plan3.refuses[0] || pp3.refuses[0]);
         const cost = F * 466 * 466 * 2;
+        if (pp3.rows.length) return 'FORMAT 3 · ' + pp3.rows.length + ' subdial hand' + (pp3.rows.length > 1 ? 's' : '') + ' bake as one pointer plate each' + (plan3.rows.length ? ' · ' + plan3.rows.length + ' comp rows' : '') + ' · ' + F + '-frame train · measures on export';
+        if (plan3.rows.length) return 'FORMAT 3 · ' + plan3.rows.length + ' comp' + (plan3.rows.length > 1 ? 's' : '') +
+          ' bake as ' + plan3.rows.reduce((s, r) => s + r.count, 0) + ' plates · ' + F + '-frame train · measures on export';
         return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';
       })(),
       exportBundle: () => this.exportBundle(),

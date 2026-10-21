@@ -1008,6 +1008,14 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 static uint16_t  s_b3_first[GIFS_MAX + 1], s_b3_delays[GIFS_MAX];
 static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
+static clk_aux_t  s_b3_aux[CLK_AUX_MAX];      /* D34: the FORMAT 3 dial's pointer rows,
+                                               * the table a bundle's AUX elements project
+                                               * into. Static for the same reason as the
+                                               * comp table beside it: the projection
+                                               * allocates nothing, and clock_view's aux
+                                               * pass reads the rows for the life of the
+                                               * theme. Sized to CLK_AUX_MAX because that
+                                               * is the cap the projection refuses past. */
 static clk_comp_t s_b3_comps[CLK_COMP_MAX];   /* D32 slice 2: the FORMAT 3 dial's
                                                * complications, filled by the
                                                * projection and read by clock_view
@@ -1082,6 +1090,7 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     io.gif_delays = s_b3_delays; io.bg_frames = s_b3_bgf;
     io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
     io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
+    io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
     why = orb_clock3_parse(sec, &io);
     heap_caps_free(region);
     if (why) {
@@ -1096,9 +1105,15 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * was reachable (D32 R-F), so a count of zero here means the table carries
      * no bank row, not that a row was dropped. */
     s_geo.comps = io.out_n_comps ? s_b3_comps : NULL;
-    s_geo.aux = NULL; s_geo.bank = NULL;
+    /* D34: the pointers a bundle carried ride the same static table the projection
+     * filled. A count of zero names a dial with no pointer rows, not a row that was
+     * dropped — the projection refuses the whole flip past its own guards (D32 R-F),
+     * so nothing can be partly drawn here. */
+    s_geo.aux = io.out_n_aux ? s_b3_aux : NULL;
+    s_geo.bank = NULL;
     s_geo.n_comps = (uint16_t)io.out_n_comps;
-    s_geo.n_aux = 0; s_geo.n_bank = 0;
+    s_geo.n_aux   = (uint16_t)io.out_n_aux;
+    s_geo.n_bank = 0;
     s_geo.art_size = io.out_art_size;
     s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;
     s_geo.from_container = true;
@@ -1107,8 +1122,9 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * reads as its frame count, a bank row as a comp; both zero is the plain
      * dial, which is every bundle before D32 and every refusal's alternative. */
     ESP_LOGI(TAG, "bundle \"%s\" projected into a dial: %u complication row%s, "
-             "tourbillon_n %u @ %u fps start %u",
+             "%u pointer row%s, tourbillon_n %u @ %u fps start %u",
              h->name, (unsigned)io.out_n_comps, io.out_n_comps == 1 ? "" : "s",
+             (unsigned)io.out_n_aux, io.out_n_aux == 1 ? "" : "s",
              (unsigned)s_theme.tourbillon_n, (unsigned)s_theme.tourbillon_fps,
              (unsigned)s_theme.tourbillon_start);
     if (s_theme.bg_frames)                      /* §31: an animated plate says so */

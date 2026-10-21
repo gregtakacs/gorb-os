@@ -1,22 +1,21 @@
 {
   "abi": 3,
-  "art_crc": 3384237532,
+  "art_crc": 1534424489,
   "art_off": 4096,
-  "art_size": 599296,
+  "art_size": 1266944,
   "baked_ms": 1730000000000,
   "baked_ms_word": 3423147008,
-  "bytes": 603392,
+  "bytes": 1271040,
   "format": 3,
   "frames": {
-    "clock.hand": 12,
     "weather.bank": 4,
     "weather.sprite": 12
   },
-  "geom_crc": 798811123,
+  "geom_crc": 2475229638,
   "geom_off": 128,
-  "geom_size": 880,
+  "geom_size": 1100,
   "n_elem": {
-    "clock": 3,
+    "clock": 4,
     "weather": 3
   },
   "n_sections": 2,

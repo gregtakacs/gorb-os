@@ -95,7 +95,7 @@ uint32_t orb_bundle_scalar(const orb_bundle_sec_t *s, uint32_t idx)
 }
 
 /* unpack_record()'s device-side twin: one row of the blob's own stride (see
- * orb_bundle_elem_stride — 19 words from the current schema, 17 from one baked
+ * orb_bundle_elem_stride — 23 words from the current schema, 17 from one baked
  * before D32's append), narrow fields masked from their word, the i16s
  * sign-extended. blob_check() proved the table's length against the blob before
  * any row index reaches here, and the compositor iterates exactly n_elem rows —
@@ -133,6 +133,13 @@ void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
     /* The two D32 columns, read only from a row wide enough to hold them. */
     e->kind     = orb_bundle_elem_stride(s) >= 18u ? (uint8_t)b32(r + 68) : 0u;
     e->src      = orb_bundle_elem_stride(s) >= 19u ? (uint8_t)b32(r + 72) : 0u;
+    /* D34's four drive columns, at the same guard. A row from before them reads each
+     * as zero, which is the value orb_clock3.c refuses an AUX row for: a pointer with
+     * no domain to divide is a refusal, not a hand parked at twelve. */
+    e->span     = orb_bundle_elem_stride(s) >= 20u ? (int16_t) b32(r + 76) : 0;
+    e->zero     = orb_bundle_elem_stride(s) >= 21u ? (int16_t) b32(r + 80) : 0;
+    e->vmin     = orb_bundle_elem_stride(s) >= 22u ? (uint16_t)b32(r + 84) : 0u;
+    e->vmax     = orb_bundle_elem_stride(s) >= 23u ? (uint16_t)b32(r + 88) : 0u;
 }
 
 /* ---- the FORMAT 3 header -------------------------------------------------- */

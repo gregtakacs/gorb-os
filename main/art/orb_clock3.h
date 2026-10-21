@@ -64,6 +64,16 @@ typedef struct {
     uint32_t         comp_cap;
     uint32_t         out_n_comps;
 
+    /* D34: the pointer table. A bundle's AUX rows project here, one clk_aux_t per
+     *  row, in slot order. Same contract as `comps` directly above: a caller with no
+     *  room for pointers passes NULL/0 and the projection refuses a bundle that names
+     *  one, so a dial never comes up with its sub-dial hands quietly missing. The row
+     *  carries its own drive (src/motion/span/zero/vmin/vmax) because, unlike a BANK
+     *  row, an AUX row is not indexed by its value — it MOVES by it. */
+    clk_aux_t       *aux;
+    uint32_t         aux_cap;
+    uint32_t         out_n_aux;
+
     /* Out: where the section's bank sits inside a mapped art region, so a
      *  multi-section bundle's clock pixels are found by adding this to the
      *  region base, and how long that bank is. clock_view's bounds check reads

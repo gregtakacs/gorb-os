@@ -704,9 +704,20 @@ def vectors_refuse(add):
         return f
 
     SPRITE = 1                                        # orb_asset_class_t index
+    # The first id past the vocabulary, DERIVED from the enum this file already lifted
+    # rather than written as a literal. The vector's whole value is that it names the
+    # boundary; a hard-coded 8 became a false pass the day D34 appended AUX at that
+    # index, and a passing boundary test that no longer tests a boundary is the exact
+    # kind of green this suite exists to refuse.
+    _ae = re.search(r"typedef enum \{(.*?)\} orb_asset_class_t;",
+                    open(READER_C).read() + open(ASSETS_H).read(), re.S)
+    _first_past = len([n for n in re.findall(
+        r"^\s*(ORB_ASSET_[A-Z_]+)\s*(?:=\s*\d+)?\s*(?:,|/)", _ae.group(1), re.M)
+        if n != "ORB_ASSET_CLASS_N"])
     arow_vector("asset_class_past_the_vocabulary", ROW_DIAL,
-                "asset 0 declares class 8, which this build's vocabulary does not"
-                " carry: the app needs an ABI this dial does not speak", forge0(8))
+                "asset 0 declares class %d, which this build's vocabulary does not"
+                " carry: the app needs an ABI this dial does not speak" % _first_past,
+                forge0(_first_past))
     arow_vector("asset_class_way_past", ROW_DIAL,
                 "asset 0 declares class 200, which this build's vocabulary does not"
                 " carry: the app needs an ABI this dial does not speak", forge0(200))
@@ -1048,7 +1059,9 @@ def lint_asset_mirror(hc, hh, ah):
                        a_enum.group(1), re.M)
     assert names == ["ORB_ASSET_TEXT", "ORB_ASSET_SPRITE", "ORB_ASSET_HAND",
                      "ORB_ASSET_PLATE", "ORB_ASSET_RING", "ORB_ASSET_BANK",
-                     "ORB_ASSET_LAYER", "ORB_ASSET_STATUS", "ORB_ASSET_CLASS_N"], \
+                     "ORB_ASSET_LAYER", "ORB_ASSET_STATUS",
+                     "ORB_ASSET_AUX",       # D34's append, at 8
+                     "ORB_ASSET_CLASS_N"], \
         "the class vocabulary moved: %s" % (names,)
     assert orbapp.ASSET_CLASSES == tuple(n.lower().replace("orb_asset_", "")
                                         for n in names[:-1]), \

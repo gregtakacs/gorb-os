@@ -462,15 +462,15 @@ setTimeout(async () => {
   // A button that dies silently is worse than no button: the author cannot tell a refused
   // bake from a broken page, and every refusal here is something they can act on.
   ok(typeof rv.exportTheme === 'function', 'the theme button is callable');
-  ok(/· measures on export/.test(rv.themeNote) || /live comp/.test(rv.themeNote) || /too many/.test(rv.themeNote),
+  ok(/· measures on export/.test(rv.themeNote) || /comp(s)? bake as/.test(rv.themeNote) || /refuses:/.test(rv.themeNote) || /too many/.test(rv.themeNote),
      'the theme button says what it will ship', JSON.stringify(rv.themeNote));
-  // §31 turned the button on: the FORMAT 3 bake now carries the moving train as a
-  // measured keyframe/carriage bank, and the note says it measures on export.
-  // The blocker that remains is the comp table: a dial with live complications
-  // would bake to a dial that LACKS them, so the note states that refusal, in
-  // the button, before the press — the failure this line has always existed for.
-  ok(/FORMAT 3 · \d+ live comps?: no comp table yet/.test(rv.themeNote),
-     'and it names the comp-table refusal for a dial with live complications',
+  // §31 turned the button on: the FORMAT 3 bake carries the moving train as a
+  // measured keyframe/carriage bank, and §31's last slice plates the live
+  // complications: the default Skeleton's small-seconds rides 60 window plates
+  // the dial indexes itself, and the note counts them before the press — the
+  // same compPlan3 the export runs, so note and bake cannot disagree.
+  ok(/FORMAT 3 · \d+ comps? bake as \d+ plates/.test(rv.themeNote),
+     'and it names the comp table it will bake for a dial with live complications',
      JSON.stringify(rv.themeNote));
   await (async () => {
     const name = { got: null }, threw = { err: null };

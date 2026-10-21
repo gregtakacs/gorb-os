@@ -43,6 +43,7 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import orbbundle as ob            # noqa: E402  (the writer, the oracle)
 import orbtheme as _OT            # noqa: E402  (the header's own word map)
+import theme_schema as ts         # noqa: E402  (the row width the stride vectors forge)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 READER_C = os.path.join(ROOT, "main", "art", "orb_bundle.c")
@@ -489,6 +490,10 @@ def _w(blob, idx, val):
 
 solo_blob = ob.pack_blob("solo", [SENT], SCAL, SPR)
 solo_len = len(solo_blob)
+# The row width the writer emits TODAY, read from the schema that owns it. D34 took it
+# from 19 words to 23; a literal 19 in the two stride vectors below would have spliced
+# out a legal 20-word row and been reported as a caught mutant.
+EW = ts.ELEMENT_WORDS
 solo_goff = 48
 solo_aoff = art_offset(48 + solo_len)
 
@@ -597,7 +602,7 @@ VECTORS = [
     # the SAME stride derivation, not just to width 19.
     (86, F_LAYOUT, 0, [],
      build(specs=[{"slug": "solo", "elements": [SENT],
-                   "raw_blob": solo_blob[:120 + 17 * 4] + solo_blob[120 + 19 * 4:],
+                   "raw_blob": solo_blob[:120 + 17 * 4] + solo_blob[120 + EW * 4:],
                    "sprites": SPR, "art": ART}]),
      "dump", None, None),
     # And one width below the floor: the same row spliced to 16 words. That is
@@ -605,7 +610,7 @@ VECTORS = [
     # sentence rather than divide out a stride and walk the table sideways.
     (87, 0, NO_ROW, [],
      build(specs=[dict(SOLO, raw_blob=solo_blob[:120 + 16 * 4] +
-                       solo_blob[120 + 19 * 4:])]),
+                       solo_blob[120 + EW * 4:])]),
      "same", None, "narrowest"),
     # P6.2's budget gate on the header: word 5 (geom_size) and word 7 (art_size)
     # forged past the caps refuse with the writer's own sentences; == cap PASSES

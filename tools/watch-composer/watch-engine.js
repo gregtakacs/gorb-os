@@ -689,6 +689,13 @@
   };
   const SUB_DISPLAYS = { classic: 'Classic track', railway: 'Railway', dots: 'Dots', minimal: 'Ticks only', bold: 'Bold numerals', numerals: 'Numerals only', sector: 'Sector' };
   const SCALES = { seconds: 'Seconds', date: 'Date 1–31', day: 'Day of week', month: 'Month', hours: 'Hours', none: 'No scale' };
+  // D34: the drives a subdial hand can take at bake. `plates` is §31's window row
+  // (one baked dial per tick); `pointer` is the appended AUX row — one masked hand
+  // plate the dial turns. The pointer carrier is offered only on the scales whose
+  // hand closes a whole turn under its own domain, because the row's drive is one
+  // linear sweep; orbtheme-baker.js' pointerPlan3 owns the matching refusal.
+  const SUB_CARRIERS = { plates: 'Plates · one dial per tick', pointer: 'Pointer · one hand the dial turns' };
+  const POINTER_SCALES = { seconds: 1, hours: 1 };
   const SHOWS = { date: 'Date', day: 'Day', month: 'Month', custom: 'Custom format' };
   // date formatting: moment/Unicode-style tokens (YYYY MMMM MMM MM M DDDD DDD DD D Do dddd ddd dd d E WW W Q) and strftime (%Y %y %B %b %m %d %e %j %A %a %u %w %V %U %q); [text] is literal
   const LDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], LMONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -2930,16 +2937,16 @@
     const enOf = (c) => (c.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === c.host) || {}).en || en);
     const paint = (ctx, c, date, i) => { setFace(fontKey); const h = hostOf(c); ctx.save(); ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, TAU); ctx.clip(); drawComp(ctx, c, date, enOf(c), pal, i + 1); ctx.restore(); };
     let ck = null, cvals = null;
-    F.comps = (date) => {
-      const key = date.toDateString();
+    F.comps = (date, only) => {
+      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString();
       if (key === ck) return cvals;
       const a = cv(S), subs = {};
-      lay.comps.forEach((c, i) => { const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
+      lay.comps.forEach((c, i) => { if (only && only.indexOf(c.id) < 0) return; const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
       ck = key; cvals = { dial: a, subs };
       return cvals;
     };
     F.shadow = SH;
-    F.drawHands = (ctx, date) => drawHands(ctx, F.hands, date, F.light, SH);
+    F.drawHands = (ctx, date, only, noH) => { let hs = only ? F.hands.filter((h) => only.indexOf(h.id) >= 0) : F.hands; if (noH) hs = hs.filter((h) => noH.indexOf(h.id) < 0); drawHands(ctx, hs, date, F.light, SH); };
     F.handShadow = (hd) => ({ dx: SH.dir[0] * 1.6 * hd.h * SH.dist, dy: SH.dir[1] * 1.6 * hd.h * SH.dist, blur: 1.4 * hd.h * SH.blur, alpha: Math.min(1, 0.5 * SH.kk * SH.op) });
     F.hit = (x, y) => { for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) return h.id; } return null; };
     /* What sits under this pixel, top of the stack first -- the drawing order read
@@ -3121,6 +3128,7 @@
       setFace(fontKey);
       return kits;
     };
+    F.compHoles = (ids) => lay.comps.filter((c) => ids.indexOf(c.id) >= 0).map((c) => c.hole);
     F.compSprites = () => {
       const out = [];
       lay.comps.forEach((c, i) => {
@@ -3148,12 +3156,20 @@
   }
 
   // base = movement() result (static plate, inner-light haze, optional live tourbillon); gt = one geartrain frame
+  /* §31's comp-table punch: clear the apertures of the given holes to alpha 0 so a
+   * host tile lets the row beneath it show through, with no shadow and no rim —
+   * the rim art of the host is its own row's job, already baked around the hole. */
+  function punchHoles(ctx, holes) {
+    ctx.save(); ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = '#000';
+    holes.forEach((h) => { ctx.beginPath(); holePath(h)(ctx); ctx.fill(); });
+    ctx.restore();
+  }
   function drawCage(ctx, base, gt, date) {
     if (!gt || !gt.cage || !base || !base.cageAt) return;
     const [x, y] = base.cageAt;
     ctx.save(); ctx.translate(x, y); ctx.rotate(TURN.second(date) * TAU - (base.cageOff || 0)); ctx.translate(-x, -y); ctx.drawImage(gt.cage, 0, 0); ctx.restore();
   }
-  function compose(out, base, gt, F, date, hidden) {
+  function compose(out, base, gt, F, date, hidden, compOnly, noHands) {
     hidden = hidden || {};
     out.setTransform(1, 0, 0, 1, 0, 0); out.globalCompositeOperation = 'source-over'; out.globalAlpha = 1; out.filter = 'none';
     out.fillStyle = '#000'; out.fillRect(0, 0, S, S);
@@ -3173,14 +3189,14 @@
     if (!hidden.movement && F.plateFlares) dz(() => ctx.drawImage(F.plateFlares, 0, 0));
     if (!hidden.geartrain && gt) dz(() => { ctx.drawImage(gt, 0, 0); drawCage(ctx, base, gt, date); });
     if (base && !(hidden.movement && hidden.geartrain)) dz(() => { ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(base.haze, 0, 0); ctx.globalCompositeOperation = 'source-over'; });
-    const cp = F.comps(date), df = F.dateFlares ? F.dateFlares(date) : null;
+    const cp = F.comps(date, compOnly), df = F.dateFlares ? F.dateFlares(date) : null;
     if (!hidden.complications) dz(() => ctx.drawImage(cp.dial, 0, 0));
     if (!hidden.dial) { ctx.drawImage(F.dial, 0, 0); if (df) dz(() => ctx.drawImage(df.dial, 0, 0)); }
     F.subLayers.forEach((sl) => {
       if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
       if (!hidden.subdials) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
     });
-    if (!hidden.hands) dz(() => F.drawHands(ctx, date));
+    if (!hidden.hands) dz(() => F.drawHands(ctx, date, compOnly, noHands));
     if (!hidden.glass) dz(() => ctx.drawImage(F.glass, 0, 0));
     if (k < 1) { out.save(); out.translate(C, C); out.scale(k, k); out.translate(-C, -C); out.drawImage(F._in, 0, 0); out.restore(); }
     if (!hidden.outer) out.drawImage(F.outer, 0, 0);
@@ -3318,7 +3334,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

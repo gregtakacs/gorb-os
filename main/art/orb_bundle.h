@@ -45,7 +45,7 @@ extern "C" {
 #define ORB_BUNDLE_SECT_MAX  8u        /* B5's app cap: the index's width */
 #define ORB_BUNDLE_IDX_WORDS 10u       /* 4H + 7I + 2H = 40-byte records */
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
-#define ORB_BUNDLE_ELEM_WORDS 19u      /* theme_schema.ELEMENT_FIELDS: the width a
+#define ORB_BUNDLE_ELEM_WORDS 23u      /* theme_schema.ELEMENT_FIELDS: the width a
                                         * write carries and this reader decodes.
                                         * A read row's STRIDE is the blob's own
                                         * number (§23.5): blob_check() derives it
@@ -172,13 +172,16 @@ const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *re
 const orb_bundle_sec_t *orb_bundle_find(const orb_bundle_t *b,
                                         const char *slug);
 
-/* The unpacked element row — the device's side of unpack_record(): fixed
- * 19-word rows, narrow fields masked from their word, the four i16 fields
+/* The unpacked element row — the device's side of unpack_record(): fixed-width
+ * rows at the stride the blob carries, narrow fields masked from their word, the
+ * four i16 fields
  * sign-extended exactly as the C compositor will read them. Field order is
  * theme_schema.ELEMENT_FIELDS and the sentinel suite pins the order by
  * dumping a table whose every field carries a distinct sentinel. `kind` and
- * `src` are D32's ruling A, appended past scale16: both belong to a BANK row
- * and read zero on every other class, where they name nothing. */
+ * `src` are D32's ruling A, appended past scale16: on a BANK row they name how the
+ * plates are drawn and what indexes them, and D34 widened the pair to the AUX row,
+ * where the same two bytes name how a pointer moves and what moves it — the class
+ * decides which vocabulary each byte is read in. Every other class reads zero. */
 typedef struct {
     uint16_t n;
     uint8_t  cls;
@@ -192,8 +195,17 @@ typedef struct {
     uint16_t w, h;
     int16_t  pivot_x, pivot_y;
     uint16_t radius, degrees, scale16;
-    uint8_t  kind;   /* BANK only: CLK_KIND_* — how the plates are drawn  */
-    uint8_t  src;    /* BANK only: CLK_SRC_*  — what value indexes the plates */
+    uint8_t  kind;   /* BANK: CLK_KIND_*.  AUX: MOTION_* */
+    uint8_t  src;    /* BANK and AUX: CLK_SRC_* */
+    /* D34's four drive columns, for an AUX row and for no other class. A row baked
+     * before them reads each as zero — the same append-only answer `kind` and `src`
+     * get from a 17-word stride — and orb_clock3.c refuses an AUX row whose vmax is
+     * zero rather than divide by it. The units follow the motion: tenths of a degree
+     * for rotate/retrograde/indexed, pixels for a slide. */
+    int16_t  span;   /* AUX: travel across the whole value domain */
+    int16_t  zero;   /* AUX: where the pointer sits at vmin        */
+    uint16_t vmin;   /* AUX: the value `zero` stands for           */
+    uint16_t vmax;   /* AUX: the domain `span` divides; 0 refuses  */
 } orb_bundle_elem_t;
 
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,

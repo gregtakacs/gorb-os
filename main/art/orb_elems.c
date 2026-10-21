@@ -35,13 +35,14 @@
 
 /* Class names in enum order, for the refusal sentences. Fixed strings: a sentence an
  * owner reads has to name the thing in the words the vocabulary uses. */
-static const char *const CLS_NAME[8] = {
-    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status"
+static const char *const CLS_NAME[9] = {
+    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux"
 };
 
 static const char *cls_word(uint16_t cls)
 {
-    return cls < 8 ? CLS_NAME[cls] : "unknown-class";
+    return cls < (uint16_t)(sizeof CLS_NAME / sizeof CLS_NAME[0])
+           ? CLS_NAME[cls] : "unknown-class";
 }
 
 const char *orb_elems_why(orb_elems_ans_t a)
@@ -146,8 +147,12 @@ static orb_elems_ans_t seat(const orb_bundle_sec_t *sec, const orb_bundle_elem_t
     out->degrees  = e->degrees;
     out->radius   = e->radius;
     out->scale16  = e->scale16;
-    out->kind     = e->kind;      /* the two D32 columns, both zero off a BANK row */
+    out->kind     = e->kind;      /* the D32 pair: a BANK row's how, an AUX row's motion */
     out->src      = e->src;
+    out->span     = e->span;      /* D34's drive, meaningless off an AUX row            */
+    out->zero     = e->zero;
+    out->vmin     = e->vmin;
+    out->vmax     = e->vmax;
     out->off      = sp.off;
     out->size     = sp.size;
     out->plane_w  = sp.w;

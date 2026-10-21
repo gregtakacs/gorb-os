@@ -304,10 +304,13 @@ ok(walk.blob.elements.length === 3 && walk.blob.sprites.length === 3 &&
    'the bake walks back as three rows seated on three planes, each pointing at its own');
 ok(walk.rec.art_size === baked.meter.artSize && walk.rec.scr_w === 466 && walk.rec.scr_h === 466,
    'the index record the dial reads carries the bank it names and the panel it was baked for');
-// counts(16) + scalars(104) + rows(228: three of D32's 19-word rows) + catalogue(48)
-// + 'clock' padded to words(8), behind the index head(8) and its one record(40).
-ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 228 + 48 + 8,
-   'the region is the index over one self-describing blob', baked.meter.geomSize + ' B');
+// counts(16) + scalars(104) + rows(3 * 23 words * 4 = 276: D34 widened the row from
+// D32's 19) + catalogue(48) + 'clock' padded to words(8), behind the index head(8) and
+// its one record(40). The 48 B per row the append costs is the honest price of the four
+// drive columns, and it is why this line names the width instead of a bare total.
+ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 276 + 48 + 8,
+   'the region is the index over one self-describing blob at D34’s 23-word rows',
+   baked.meter.geomSize + ' B');
 ok(baked.meter.geomCap === 61440 && baked.meter.artCap === 4128768,
    'the meter names both D29 install caps, not the file shape');
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: mkPlane(10, 10), w: 10, h: 10 } }),
@@ -407,28 +410,206 @@ ok(pNoCage.carrier === 'bank',
 const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: true });
 ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
    'a bake with no room left names the byte it tripped on', pRef.sentence);
+const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, auxB: 3 * 466 * 466 * 2, hasCage: false });
+ok(pAux.carrier === 'bank' && pAux.keyframes < pThin.keyframes,
+   'pointer plates bill the bank budget before the thin: three whole-panel plates take three keyframes away',
+   pThin.sentence + ' | ' + pAux.sentence);
 // liveComps3: the one count behind the button note and the export guard. The §31
 // first cut refused every comp row and quoted the raw count — it called Skeleton's
 // own opening a "live complication" while its note had promised the bake.
 ok(B.liveComps3([{ type: 'opening' }, { type: 'flare', icon: 'star' }, { type: 'window', shows: 'custom' }]).length === 0,
    'openings, engraved flares and custom art windows are not live: the baked plate carries them');
 ok(B.liveComps3([{ type: 'window', shows: 'date' }, { type: 'moon' }, { type: 'subdial' }, { type: 'flare', icon: 'datetext' }]).length === 4,
-   'calendar windows, moons, subdial hands and date-printing flares are live: no comp table, nothing drives them');
+   'calendar windows, moons, subdial hands and date-printing flares are live: the comp table drives them');
+ok(B.liveComps3([{ type: 'subdial', scale: 'none' }]).length === 0,
+   'a subdial with no scale has no hand: engraved plate art, not a row');
 ok(B.liveComps3([{ type: 'whatever-comes-next' }]).length === 1,
    'an unrecognised comp counts live — the safe direction is the refusal the author can see');
 ok(B.liveComps3(undefined).length === 0 && B.liveComps3([]).length === 0,
    'a design with no comps is no comp');
+// ---- 7e. compPlan3: the design table, as window rows the dial drives itself ----
+// D32 ruling A/B: every live comp becomes one window row over its calendar
+// domain, and only what the element row truly cannot carry (glyph work,
+// unknown types) refuses. The plan is the single source behind the note, the
+// guard and the bake.
+const cpCal = B.compPlan3([{ id: 'c1', type: 'opening' },
+                           { id: 'c2', type: 'window', host: 'dial', shows: 'day' },
+                           { id: 'c3', type: 'window', host: 'dial', shows: 'month' },
+                           { id: 'c4', type: 'subdial', host: 'dial', scale: 'date' },
+                           { id: 'c5', type: 'moon', host: 'c4' }]);
+ok(cpCal.refuses.length === 0 && cpCal.rows.length === 4,
+   'the calendar compiles whole: two windows, a date subdial and its hosted moon');
+const cpBy = {}; cpCal.rows.forEach((r) => { cpBy[r.id] = r; });
+ok(cpBy.c2.src === 'weekday' && cpBy.c2.count === 7 && cpBy.c3.count === 12 &&
+   cpBy.c4.src === 'date' && cpBy.c4.count === 31 && cpBy.c4.valueMin === 1 &&
+   cpBy.c5.src === 'moon_age' && cpBy.c5.count === 30,
+   'rows name the source and the domain\u2019s own count, never a number the bake invented');
+ok(cpCal.rows.map((r) => r.id).join(',') === 'c2,c3,c5,c4' && cpCal.rows[2].hosted === 'c4',
+   'the hosted moon is ordered before its host: the runtime paints record order, and the host tile punches over the tile below');
+const cpReg = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'hours' },
+                           { id: 'c2', type: 'subdial', scale: 'seconds' },
+                           { id: 'c3', type: 'window', host: 'c1', shows: 'date' }]);
+ok(cpReg.rows.map((r) => r.id).join(',') === 'c3,c1,c2',
+   'the regulator\u2019s hosted window rides first, under its hours subdial\u2019s punched plate');
+const cpPhase = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'none' },
+                             { id: 'c2', type: 'moon', host: 'c1' }]);
+ok(cpPhase.rows.length === 1 && cpPhase.rows[0].src === 'moon_age' && !cpPhase.rows[0].hosted,
+   'a moon over an engraved no-hand subdial is one plain row: the static plate rides in the bank');
+const cpFlare = B.compPlan3([{ id: 'c9', type: 'flare', icon: 'datetext' }]);
+ok(cpFlare.rows.length === 0 && /glyph/.test(cpFlare.refuses[0] || ''),
+   'a date-printing flare refuses in the dial\u2019s own words: no element row holds glyph fields',
+   cpFlare.refuses[0]);
+const cpUnk = B.compPlan3([{ id: 'z1', type: 'astrolabe' }]);
+ok(cpUnk.rows.length === 0 && /astrolabe/.test(cpUnk.refuses[0] || ''),
+   'an unknown comp type refuses rather than freezes silently');
+const cpMany = B.compPlan3(Array.from({ length: 17 }, (_, i) => ({ id: 'w' + i, type: 'window', shows: 'date' })));
+ok(cpMany.rows.length === 17 && cpMany.refuses.length === 1 && /cap of 16/.test(cpMany.refuses[0]),
+   'seventeen windows exceed the dial\u2019s 16 complication slots and say so before the guard runs');
+// ---- 7e2. pointerPlan3 (D34): the drive that replaces the plates ----
+const ptSec = B.pointerPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds', carrier: 'pointer' },
+                              { id: 'c1', type: 'subdial', scale: 'hours' }]);
+ok(ptSec.rows.length === 1 && ptSec.rows[0].id === 'c2' && ptSec.rows[0].src === 'second' &&
+   ptSec.rows[0].vmin === 0 && ptSec.rows[0].vmax === 60 && ptSec.rows[0].span === 3600 &&
+   ptSec.rows[0].zero === 0 && ptSec.rows[0].motion === 'rotate' && ptSec.refuses.length === 0,
+   'a pointer seconds subdial plans one whole-turn row over sixty values \u2014 one plate, not sixty',
+   JSON.stringify(ptSec));
+ok(B.compPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds', carrier: 'pointer' }]).rows.length === 0,
+   'a pointer-driven subdial never also claims a window row: the drive replaces the plates, it does not join them');
+const ptDate = B.pointerPlan3([{ id: 'c4', type: 'subdial', scale: 'date', carrier: 'pointer' }]);
+ok(ptDate.rows.length === 0 && /pointer/.test(ptDate.refuses[0] || '') && /plates/.test(ptDate.refuses[0] || ''),
+   'a date ring refuses the pointer drive in one sentence: its hand never closes its own turn',
+   ptDate.refuses[0]);
+const pt9 = B.pointerPlan3(Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, type: 'subdial', scale: 'seconds', carrier: 'pointer' })));
+ok(pt9.rows.length === 9 && pt9.refuses.length === 1 && /pointer slots/.test(pt9.refuses[0]),
+   'nine pointers overflow the dial\u2019s eight pointer slots and say so before any art is drawn');
+const ptNone = B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' }, { id: 'c2', type: 'subdial', scale: 'seconds', carrier: 'plates' }]);
+ok(ptNone.rows.length === 0 && ptNone.refuses.length === 0,
+   'the pointer is opt-in: every other carrier\u2019s plan is byte-identical to the one this slice shipped before it');
+// the plan's own row shape must bake through bakeClock3's aux seam, unmodified but for art
+const bakedPT = B.bakeClock3({ name: 'pt-plan', serial: 7, bakedMs: 1, plate: PL, hands: [HK], order: [0],
+  aux: ptSec.rows.map((r, i) => Object.assign({}, r, { slot: i, x: 300, y: 120, w: 28, h: 64,
+        pivot_x: 14, pivot_y: 56, plane: { rgba: mkPlane(28, 64, 200), w: 28, h: 64 } })) });
+// D34 bench: the composer exported order:[1,2] for hands at slots 0,1 — FORMAT 2's
+// show-table +1 — and the watch drew minute, skipped the empty slot 2, and never
+// painted hour. The device treats order verbatim; a hand the table omits is refused.
+try {
+  B.bakeClock3({ name: 'off-by-one', serial: 9, bakedMs: 1, plate: PL, hands: [HK], order: [1] });
+  ok(false, 'the order-table hand guard fired', 'bakeClock3 accepted a seated hand it never names');
+} catch (e) {
+  ok(/never names it/.test(e.message),
+     'a seated hand the order table omits is refused before the file is written', e.message);
+}
+const walkPT = B.verifyBundle3(bakedPT.bytes).sections[0];
+const ptRow = walkPT.blob.elements.filter((e) => e.class === B.CLASS_AUX)[0];
+ok(!!ptRow && ptRow.kind === B.MOTION_ROTATE && ptRow.span === 3600 && ptRow.vmax === 60 && ptRow.n_frames === 1,
+   'the planned row bakes as one whole-turn, one-frame AUX record the shipped C projects');
+// ---- 7f. the comp table baked: bank rows, masked contiguous planes ----
+const CMP = (slot, src, n, w, h) => ({ slot, src, x: 8, y: 8, w, h,
+  planes: Array.from({ length: n }, (_, v) => ({ rgba: mkPlane(w, h, (slot * 100 + v) & 0xFF), w, h })) });
+const bakedK = B.bakeClock3({ name: 'Comp Bake', serial: 20261020, bakedMs: 1730000000000,
+  plate: PL, hands: [HK], order: [0], comps: [CMP(0, 'date', 31, 40, 24), CMP(1, 'second', 60, 32, 32)] });
+const walkK = B.verifyBundle3(bakedK.bytes).sections[0];
+const bank0 = walkK.blob.elements[2], bank1 = walkK.blob.elements[3];
+ok(walkK.blob.elements.length === 4 && bank0.class === 5 && bank0.kind === 0 && bank0.src === 3 &&
+   bank0.n_frames === 31 && bank1.class === 5 && bank1.src === 7 && bank1.n_frames === 60,
+   'two bank rows walk back over the plate and the hand: window kind, date and second by id, their domains\u2019 own counts');
+ok(bank0.slot === 0 && bank1.slot === 1 && bank0.frame0 === 2 && bank1.frame0 === 33 &&
+   walkK.blob.sprites.length === 93 && walkK.blob.sprites[2].size === 40 * 24 * 3 &&
+   walkK.blob.sprites[92].size === 32 * 32 * 3,
+   'the catalogue seats 31 + 60 masked planes contiguous behind the hand, every tile at w*h*3');
+ok(bakedK.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 + (40 * 24 * 3 * 31) + (32 * 32 * 3 * 60),
+   'the bank sums to plate colour, one hand, and the comp tiles at stride',
+   bakedK.meter.artSize + ' B');
+ok(walkK.rec.abi_min === 3 && walkK.rec.abi_max === 3 && B.parseBundle3(bakedK.bytes).abi === 3,
+   'a comp-carrying bake declares the one dialect its 19-word rows need, at the header and both index ends');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'date', 30, 40, 24)] }),
+        'indexes 31 plates', 'a date window handed thirty plates is refused, not padded');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'text', 1, 40, 24)] }),
+        'no such input', 'a comp the wall clock cannot drive refuses as orb_clock3.c words it');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(16, 'date', 31, 40, 24)] }),
+        'may not invent one', 'a seventeenth complication slot is the dial\u2019s own sentence');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [{ slot: 0, src: 'date', x: 440, y: 8, w: 40, h: 24,
+  planes: Array.from({ length: 31 }, () => ({ rgba: mkPlane(40, 24), w: 40, h: 24 })) }] }),
+        'off the glass', 'a window that would hang over the panel edge refuses at the bake');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'date', 31, 40, 24), CMP(0, 'moon_age', 30, 20, 20)] }),
+        'two rows claim', 'two comps on one bank slot is the duplicate the table already refuses');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'second', 60, 200, 200)] }),
+        'complication tiles cost', 'the over-cap sentence names the comp bytes an owner can trade away');
+const pCompR = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070,
+                    compB: 3600000, hasCage: true });
+ok(pCompR.carrier === 'refuse' && /3600000 B of complication tiles/.test(pCompR.sentence),
+   'a comp table that eats the bank forces the refusal, and the sentence names its cost', pCompR.sentence);
+const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450,
+                    compB: 1300000, hasCage: false });
+ok(pCompT.carrier === 'bank' && pCompT.keyframes === 5 && pCompT.decim === 3,
+   'the same bank thins for the tile bill first: 15 frames to 5 by step 3', pCompT.sentence);
 const bkPath = '/tmp/js_bake_parity.orbtheme', bkAnim = '/tmp/js_bake_anim.orbtheme';
-const bkCar = '/tmp/js_bake_carriage.orbtheme';
+const bkCar = '/tmp/js_bake_carriage.orbtheme', bkComp = '/tmp/js_bake_comp.orbtheme',
+  bkAux = '/tmp/js_bake_aux.orbtheme';
 fs.writeFileSync(bkPath, Buffer.from(baked.bytes));
 fs.writeFileSync(bkAnim, Buffer.from(bakedA.bytes));
 fs.writeFileSync(bkCar, Buffer.from(bakedC.bytes));
+fs.writeFileSync(bkComp, Buffer.from(bakedK.bytes));
+// ---- 8. D34: the pointer row, baked here and projected by the shipped C ----
+// A sub-dial hand used to cost one whole dial per value: Skeleton's 78.5 px small
+// seconds was 60 plates and 3.8 MB, which the D29 guard refused by that number. The
+// AUX class carries the same indication as ONE masked plate that MOVES, with the span,
+// the origin and the domain written by the theme. The row is the unit of the check, so
+// these assertions are about the row's fields, not about a picture.
+const AXW = { rgba: mkPlane(28, 64, 120), w: 28, h: 64 };
+const auxSec = { slot: 0, src: 'second', motion: 'rotate', span: 3600, zero: 0,
+                 vmin: 0, vmax: 60, x: 300, y: 120, w: 28, h: 64,
+                 pivot_x: 14, pivot_y: 56, order: 3, plane: AXW };
+const auxBar = { slot: 1, src: 'battery', motion: 'slide-x', span: 90, zero: -45,
+                 vmin: 0, vmax: 100, x: 200, y: 400, w: 90, h: 10,
+                 order: 4, plane: { rgba: mkPlane(90, 10, 90), w: 90, h: 10 } };
+const bakedX = B.bakeClock3({ name: 'Pointer Bake', serial: 20261021, bakedMs: 1730000000000,
+  plate: PL, hands: [HK], order: [0], aux: [auxSec, auxBar] });
+const walkX = B.verifyBundle3(bakedX.bytes).sections[0];
+const auxRows = walkX.blob.elements.filter((e) => e.class === B.CLASS_AUX);
+ok(auxRows.length === 2, 'two pointer rows walk back as class aux',
+   walkX.blob.elements.map((e) => B.CLASS_NAMES[e.class]).join(','));
+ok(auxRows[0].kind === B.MOTION_ROTATE && auxRows[0].src === B.SOURCES.indexOf('second') &&
+   auxRows[0].span === 3600 && auxRows[0].vmax === 60 && auxRows[0].vmin === 0,
+   'the rotate row carries its own drive back off its own bytes',
+   JSON.stringify(auxRows.map((r) => [r.kind, r.src, r.span, r.vmin, r.vmax])));
+ok(auxRows[1].kind === B.MOTION_SLIDE_X && auxRows[1].span === 90 && auxRows[1].zero === -45,
+   'the slide row reads as a slide: a motion id and a span in PIXELS',
+   JSON.stringify([auxRows[1].kind, auxRows[1].span, auxRows[1].zero]));
+ok(B.motionIsSlide(auxRows[1].kind) && !B.motionIsSlide(auxRows[0].kind),
+   'motionIsSlide is the one predicate both the drive and the mark read');
+ok(bakedX.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 + (28 * 64 * 3) + (90 * 10 * 3),
+   'the bank costs a pointer ONE masked plate, whatever its domain covers',
+   bakedX.meter.artSize + ' B');
+// Sixty seconds on a sub-dial is one row now. The number the old model spent.
+// The claim is the one the class exists for, stated as the ratio it actually is:
+// one masked plate against one plate per second of a minute, at a tile the size of
+// the sub-dial itself. Over 50x on a 40 px dial; Skeleton's real 78.5 px small seconds
+// measured 3.8 MB, which is the number the guard quoted, and this row is ~5 KB.
+ok(28 * 64 * 3 * 50 < 60 * 40 * 40 * 3,
+   'one pointer plate is over fifty times under the 60 whole dials it replaces',
+   (28 * 64 * 3) + ' B against ' + (60 * 40 * 40 * 3) + ' B');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { vmax: 0 })] }),
+        'nothing can be computed from it', 'a pointer over a domain of nothing refuses rather than divide by zero');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { src: 'none' })] }),
+        'would sit still', 'a pointer driven by a value that never changes is plate art, refused as a row');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { span: 7200 })] }),
+        'full turn', 'a pointer cannot travel past one turn; that is a disc');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { pivot_x: 400 })] }),
+        'outside its own', 'a pointer cannot turn about a point that is not on it');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxBar, { span: 900 })] }),
+        'px panel', 'a slide longer than the glass refuses in the panel\u2019s own pixels');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { slot: 8 })] }),
+        'pointer slots', 'a ninth pointer is past the cap the dial declares');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { motion: 'spin' })] }),
+        'names none of them', 'a motion the vocabulary has no word for refuses by name');
+fs.writeFileSync(bkAux, Buffer.from(bakedX.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
   console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
 } else {
-  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar], { encoding: 'utf8' });
-  ok(pr.status === 0, 'the shipped orb_clock3.c projects all three browser bakes',
+  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar, bkComp, bkAux], { encoding: 'utf8' });
+  ok(pr.status === 0, 'the shipped orb_clock3.c projects all four browser bakes, comp table included',
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
      'and seats the hand at the element rect with the plate-colour size as its offset',
@@ -439,6 +620,23 @@ if (!hasGcc) {
   ok(/tourbillon\s*\[\d\] 64x64 draws at \(200,200\)/.test(pr.stdout),
      'and the browser\'s carriage bake projects as a tourbillon bank at its row\'s box',
      (pr.stdout.match(/tourbillon.*/) || ['none'])[0]);
+  ok(/2 complications/.test(pr.stdout) &&
+     /comp\[0\] window src=date box 40x24 at \(8,8\) 31 plates .* stride 2880 value_min 1/.test(pr.stdout) &&
+     /comp\[1\] window src=second .* 60 plates .* stride 3072/.test(pr.stdout),
+     'and the dial\u2019s own projection seats both comp rows: date over 31 plates from value 1, second over 60',
+     (pr.stdout.match(/comp\[0\].*/) || ['none'])[0]);
+  // D34 across the wire: the browser wrote the row, the SHIPPED C read it into a
+  // clk_aux_t. This is the check the whole slice turns on — a pointer the dial cannot
+  // seat is a hand that sits at twelve and reads as a watch that is simply wrong.
+  ok(/2 pointers/.test(pr.stdout),
+     'the shipped projection seats both pointers the browser baked',
+     (pr.stdout.match(/aux\[0\].*/) || ['none'])[0]);
+  ok(/aux\[0\] rotate src=second box 28x64 at \(300,120\) travel 3600 from 0 over 0\.\.60 shown/.test(pr.stdout),
+     'and the rotate row arrives with its own span, origin and domain',
+     (pr.stdout.match(/aux\[0\].*/) || ['none'])[0]);
+  ok(/aux\[1\] slide-x src=battery box 90x10 at \(200,400\) travel 90 from -45 over 0\.\.100 shown/.test(pr.stdout),
+     'and the slide arrives as pixels along x, not as an angle',
+     (pr.stdout.match(/aux\[1\].*/) || ['none'])[0]);
 }
 
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');

@@ -54,7 +54,13 @@
     p.pivot_x = px; p.pivot_y = py; p.slot = slot;
     return p;
   };
-  const still = (M, gt, F) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }); return c; };
+  const still = (M, gt, F, only) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }, only); return c; };
+  // The export's own filter: static comps ride the plate, planned rows do not.
+  const onlyBaseOf = (d) => {
+    const live = G.compPlan3(d.comps).rows.map((r) => r.id);
+    return (d.comps || []).filter((c) => live.indexOf(String(c.id)) < 0 && c.type !== 'opening'
+      && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
+  };
   /* The dials are built by the component itself, mounted and settled the way the app builds
    * them, not by calling face()/movement() on a hand-assembled option object. Two reasons,
    * both of which bit the first draft of this page: opts() leaves `frames` out on request and
@@ -105,25 +111,47 @@
     for (const id of ids) {
       const P = E.PRESETS[id];
       const V = await mount(id), F = V.F, M = V.M, B = V.B, d = V.d;
-      const why = [], c0 = still(M, V.gt[0], F), c1 = still(M, V.gt[B - 1], F);
-      const a = pix(c0), b = pix(c1);
-      let moved = 0;
-      for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) moved++;
-      if (moved) why.push('plate animates (' + moved + ' px over the ' + B + '-frame loop)');
-      if ((d.comps || []).length) why.push((d.comps || []).length + ' complication(s)');
-      if (M.cageAt) why.push('carriage');
+      const why = [];
+      // Measure what the export would carry: the engine's own split, live comps
+      // off the plate, their motion carried by window rows instead.
+      const meas = { frames: V.B, fps: IT.F, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt };
+      IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, undefined, onlyBaseOf(d)), meas);
+      const pol = G.splitPolicy3(meas);
+      if (pol.carrier === 'refuse') why.push(pol.sentence.slice(0, 150));
+      // §31's comp table closed the last blocker: a live comp plans a window row.
+      // Only what no element row can carry (a datetext flare, an unknown type) refuses.
+      let cnote = '';
+      if ((d.comps || []).length) {
+        const pl = G.compPlan3(d.comps), ptp = G.pointerPlan3(d.comps);
+        if (pl.refuses.length || ptp.refuses.length) why.push(pl.refuses[0] || ptp.refuses[0]);
+        else if (pl.rows.length || ptp.rows.length) cnote = ' · ' + pl.rows.length + ' comp row(s) + ' + ptp.rows.length + ' pointer row(s) bake';
+      }
       const ch = (F.hands || []).filter((h) => ROLE[h.id] !== undefined);
       if (!ch.length) why.push('no centre hour/minute/second hand');
       const off = ch.filter((h) => Math.abs(E.handZeroDeg(h)) > 0.01);
       if (off.length) why.push(off.length + ' hand art not drawn at 12');
       if (!why.length) canBake.push(id);
-      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE'));
+      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE') + cnote);
     }
     say('  ' + canBake.length + ' of ' + ids.length + ' presets a FORMAT 3 clock bake may take today');
     // Reported, not asserted: which presets qualify is a fact about the engine, and the
     // suite's promise is that the button states it instead of baking a frozen train and
     // calling it a theme. The check below is the one that holds either way round.
     ok('every preset got a verdict above', ids.length === canBake.length + ids.length - canBake.length, canBake.length + ' of ' + ids.length + ' may bake');
+
+    /* ---- 1.9 motion walk, real pixels (D34 bench: a Skeleton bake shipped bg_frames 0) ----
+     * Same call shape as the composer's own bake pass (line 1935): plate at every gt frame,
+     * hands and glass and case off, comps on the plate. If this union sits under the
+     * shimmer band while the preview runs a live train, the walk or the phase source is
+     * lying — and the watch will show a still background. */
+    await mount('skeleton');
+    const m3 = { frames: IT.gt.length, fps: IT.F, unionPx: 0, movedPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!IT.base.cageAt };
+    IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, undefined), m3);
+    const pol = G.splitPolicy3(m3);
+    say('--- Skeleton motion walk: ' + m3.frames + ' gt frames at ' + m3.fps + ' fps ---');
+    say('  moved ' + m3.movedPx + ' px · union ' + m3.unionPx + ' px · box ' + m3.bboxW + 'x' + m3.bboxH + ' · cage ' + m3.hasCage);
+    say('  policy: ' + pol.carrier + ' — ' + pol.sentence);
+    ok('the Skeleton train moves the plate across its own loop', m3.unionPx > 466 * 466 / 1000, 'union ' + m3.unionPx + ' px vs band ' + Math.round(466 * 466 / 1000));
 
     /* ---- 2. the bake that IS honest: a still, hands seated ----
      * The refusal above protects a product promise (freeze the train and the watch stops
@@ -144,14 +172,47 @@
     }
     ok('and it carries a real picture, not a flat fill', Object.keys(col).length > 64, Object.keys(col).length + ' distinct colours');
 
-    const ch = F.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
+    let ch = F.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
     ok('the bake has hands to seat', ch.length >= 2, ch.length);
+    // §31's comp table through Chrome's own pixels: the mounted dial's live comps
+    // render at every domain value through the component's real compPass3, and the
+    // page measures the plate's motion the export's way — comps off the frames.
+    const plan = G.compPlan3(V.d.comps);
+    let cpR = null;
+    if (plan.rows.length && !plan.refuses.length) {
+      const liveIds = plan.rows.map((x) => x.id);
+      const onlyBase = (V.d.comps || []).filter((c) => liveIds.indexOf(String(c.id)) < 0 && c.type !== 'opening'
+        && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
+      cpR = await IT.compPass3(plan, onlyBase);
+      ok('the comp-table pass plated ' + plan.rows.length + ' row(s) without refusal', !cpR.refuse, cpR.refuse || '');
+    }
     let r = null, err = null;
     try {
       r = G.bakeClock3({ name: 'Chrome Pixel Bake', serial: 20261020, bakedMs: 1234,
-                         plate, hands: ch, order: ch.map((h) => h.slot + 1) });
+                         plate, hands: ch, order: ch.map((h) => h.slot),
+                         comps: cpR && !cpR.refuse ? cpR.rows : undefined });
     } catch (e) { err = e; }
-    if (err) ok('Chrome baked its real pixels through bakeClock3', false, String(err.message || err).slice(0, 170));
+    if (err) {
+      // The dial the sweep chose does not fit: the bake's guard fired with the
+      // tile's number. That is the correct result — prove the guard said it by
+      // number, then bake the lightest comp preset so the real-pixel bundle
+      // below still completes.
+      ok('the art-cap guard refused it by number, not silence',
+         /art bank is .* complication tiles cost/.test(String(err.message || err)), String(err.message).slice(0, 160));
+      const V2 = await mount('phase'), F2 = V2.F, M2 = V2.M;
+      const plan2 = G.compPlan3(V2.d.comps);
+      const only2 = onlyBaseOf(V2.d);
+      cpR = await IT.compPass3(plan2, only2);
+      ok('the phase comp-table pass plated ' + plan2.rows.length + ' row(s) without refusal', !cpR.refuse, cpR.refuse || '');
+      const ch2 = F2.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
+      try {
+        r = G.bakeClock3({ name: 'Chrome Pixel Bake', serial: 20261020, bakedMs: 1234,
+                           plate: platePlane(still(M2, V2.gt[0], F2, only2)), hands: ch2,
+                           order: ch2.map((h) => h.slot), comps: cpR.rows });
+        ch = ch2; err = null;
+      } catch (e) { err = e; }
+    }
+    if (err) ok('Chrome baked real pixels through bakeClock3', false, String(err.message || err).slice(0, 170));
     else {
       ok('Chrome baked real pixels into a FORMAT 3 bundle', r.bytes.length > 0, r.bytes.length + ' B');
       const m = r.meter;
@@ -161,12 +222,15 @@
       const w = G.verifyBundle3(r.bytes);
       ok('the browser reader walks its own bake back to one clock section',
          w.sections.length === 1 && w.sections[0].blob.slug === 'clock');
-      ok('and counts the plate plus every hand it seated',
-         w.sections[0].blob.elements.length === 1 + ch.length, w.sections[0].blob.elements.length + ' rows');
+      const nTiles = cpR && !cpR.refuse ? cpR.rows.reduce((s, x) => s + x.planes.length, 0) : 0;
+      ok('and counts the plate, every hand and every comp tile it seated',
+         w.sections[0].blob.elements.length === 1 + ch.length + (cpR && !cpR.refuse ? cpR.rows.length : 0) &&
+         w.sections[0].blob.sprites.length === 1 + ch.length + nTiles,
+         w.sections[0].blob.elements.length + ' rows, ' + w.sections[0].blob.sprites.length + ' planes');
       const u = w.sections[0].blob.sprites;
-      ok('the catalogue costs the plate colour-only and every hand masked',
-         u.length === 1 + ch.length && u[0].size === 466 * 466 * 2,
-         u.map((s) => s.w + 'x' + s.h + ':' + s.size).join(' '));
+      ok('the catalogue costs the plate colour-only and every comp tile masked at w*h*3',
+         u[0].size === 466 * 466 * 2 && (!nTiles || u[1 + ch.length].size === cpR.rows[0].w * cpR.rows[0].h * 3),
+         u[0].w + 'x' + u[0].h + ':' + u[0].size + (nTiles ? ' · first tile ' + u[1 + ch.length].w + 'x' + u[1 + ch.length].h + ':' + u[1 + ch.length].size : ''));
       let bin = '', BY = new Uint8Array(r.bytes), CH = 8192;
       for (let i = 0; i < BY.length; i += CH) bin += String.fromCharCode.apply(null, BY.subarray(i, i + CH));
       say('B64LEN ' + BY.length);

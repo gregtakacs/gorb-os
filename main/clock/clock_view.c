@@ -105,6 +105,12 @@ static lv_image_dsc_t s_overlay_dsc;
 static lv_image_dsc_t s_hand_dsc[5];
 static lv_image_dsc_t s_shadow_dsc[5];
 
+/* Which motions travel in pixels rather than an angle. One predicate, shared by the
+ * maths, the mark and the painter, because a slide recognised in one place and not the
+ * other is a pointer whose rows nobody dirtied — ghost ink outside the restored rows,
+ * the exact failure the swept-box contract exists to prevent. */
+#define MOTION_IS_SLIDE(k) ((k) == CLK_MOTION_SLIDE_X || (k) == CLK_MOTION_SLIDE_Y)
+
 /* ---- the sub-dial pointers (the theme's clk_aux_t rows) -------------------
  * One widget, descriptor, and last-shown angle per row — the same shape of
  * state s_hand/s_shadow/s_ang_10 are for the five compiled-in slots, and for
@@ -114,7 +120,18 @@ static lv_image_dsc_t s_shadow_dsc[5];
  * arrays are indexed by row and not by pointer. */
 static lv_obj_t *s_aux_obj[CLK_AUX_MAX];
 static lv_image_dsc_t s_aux_dsc[CLK_AUX_MAX];
-static int32_t   s_aux_ang_10[CLK_AUX_MAX];   /* INT32_MIN = nothing drawn */
+/* What is currently shown per row, in the unit the row's MOTION names: tenths of a
+ * degree for a rotate/retrograde/indexed pointer, whole pixels for a slide. One array
+ * covers both because a row has one motion and never changes it, and a "last shown"
+ * figure that had to be two types is where a slide and a rotation would start
+ * disagreeing about the same tick. AUX_HIDDEN (INT32_MIN) is the nothing-drawn mark,
+ * unreachable by either unit. */
+static int32_t   s_aux_ang_10[CLK_AUX_MAX];
+#define AUX_HIDDEN INT32_MIN
+/* The record a slide actually paints: its theme sprite with centery/centerx displaced
+ * by the current offset. Kept whole rather than computed inside the commit hook, which
+ * runs per flush and must not redo the arithmetic per pointer per flush. */
+static clk_sprite_t s_aux_pose[CLK_AUX_MAX];
 static uint32_t  s_aux_logged;                /* bit i: "no input" printed for row i */
 static int       s_aux_at = -1;               /* order index the block rides above */
 
@@ -1557,9 +1574,18 @@ static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj
 static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
 {
     for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
-        if (s_aux_ang_10[i] == INT32_MIN) continue;       /* nothing drawn */
+        if (s_aux_ang_10[i] == AUX_HIDDEN) continue;      /* nothing drawn */
         if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-        if (gfx_paint_ctx_init(&jc[*nj], &g->aux[i].spr, blob(), s_aux_ang_10[i], CLK_ROLE_AUX))
+        /* A pointer reaches the compositor as the one thing it is: a sprite at a pose.
+         * A rotation is that sprite with an angle. A SLIDE is that sprite with its
+         * centre displaced and an angle of zero — which takes gfx_paint_ctx_init's
+         * STATIC path (its `rot` is false at a whole turn), so the swept box, the row
+         * marks and the per-role blend accounting are the ones every layer already
+         * pays for and gfx grows no new mode. s_aux_pose holds the displaced record,
+         * written once per tick by aux_update rather than recomputed per flush. */
+        const bool slide = MOTION_IS_SLIDE(g->aux[i].kind);
+        if (gfx_paint_ctx_init(&jc[*nj], slide ? &s_aux_pose[i] : &g->aux[i].spr,
+                               blob(), slide ? 0 : s_aux_ang_10[i], CLK_ROLE_AUX))
             (*nj)++;
     }
 }
@@ -1639,18 +1665,68 @@ static bool aux_value_1000(const clk_aux_t *a, const struct tm *ti, time_t t,
     return true;
 }
 
-/* ang = zero + value * span / value_max, in tenths of a degree — the formula
- * tools/theme_schema.py states on the span field and the bake laid the ring out
- * against. Half-up, not truncated: the bake placed day 5 at 58.1 degrees and a
- * truncated read parks the pointer a tenth off the mark the art was drawn to. */
-static int32_t aux_angle_10(const clk_aux_t *a, int64_t v1000)
+/* One line of arithmetic, two readings of its answer. D34 gave a pointer a MOTION
+ * column, and the motion decides what `span` and `zero` ARE: tenths of a degree on a
+ * rotate/retrograde/indexed row, pixels along the named axis on a slide-x/slide-y row.
+ * Both are "zero + value * span / value_max", so the divide is written ONCE — a second
+ * copy of that expression is where a slide and a rotation would start disagreeing about
+ * the same theme. Half-up, not truncated: the bake placed day 5 at 58.1 degrees, and a
+ * truncated read parks the pointer a tenth off the mark the art was drawn to.
+ *
+ * Returns the raw figure. The caller interprets it, because the two readings have
+ * genuinely different bounds: an angle wraps the circle and a displacement does not —
+ * clamping a slide to 3600 would stop a reserve bar a third of the way across its own
+ * scale and read as a watch that lies about its battery. */
+static int32_t aux_travel(const clk_aux_t *a, int64_t v1000)
 {
     const int64_t den = (int64_t)a->value_max * 1000;
     const int64_t num = (int64_t)a->zero * den + v1000 * (int64_t)a->span;
-    int64_t ang = (num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den);
-    ang %= 3600;
-    if (ang < 0) ang += 3600;
-    return (int32_t)ang;
+    return (int32_t)((num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den));
+}
+
+/* The angle a pointer holds, in tenths of a degree. The wrap belongs HERE: an angle
+ * has no meaning past a turn, and CLK_MOTION_RETROGRADE is the one that must not wrap
+ * — it reaches its span and comes back, which is what a retrograde date ring does.
+ * It is expressed as a clamp rather than a bounce because the value driving it already
+ * resets at the top of its own domain: tm_mday returns to 1 without ever passing 31,
+ * so clamping at the span is exactly the mechanical "reach the far mark, then jump
+ * home" and no extra state is needed to draw it. */
+static int32_t aux_angle_10(const clk_aux_t *a, int64_t v1000)
+{
+    int32_t t = aux_travel(a, v1000);
+    /* One clamp, in the direction the span points. A negative span is a ring that
+     * reads counter-clockwise, and its retrograde limit is that same far mark. */
+    if (a->kind == CLK_MOTION_RETROGRADE &&
+        ((a->span >= 0 && t > a->span) || (a->span < 0 && t < a->span)))
+        t = a->span;
+    t %= 3600;
+    if (t < 0) t += 3600;
+    return t;
+}
+
+/* The displacement a slide holds, in whole pixels from its row's placed origin. No
+ * wrap and no modulus: a reserve bar at 100% sits at zero+span and stays there, and a
+ * figure that wrapped at 3600 would stop the bar a third of the way across its own
+ * scale and draw a watch that lies about its battery. */
+static int32_t aux_offset_px(const clk_aux_t *a, int64_t v1000)
+{
+    return aux_travel(a, v1000);
+}
+
+/* The box a pointer at its current pose covers, in whichever geometry its motion
+ * uses. A slide's swept box is the displaced record at no angle, which gfx_swept_box
+ * answers correctly given the displaced sprite — so one helper serves both and the
+ * invalidation below cannot mark the rows of the wrong shape. */
+static void aux_mark_box(const clk_aux_t *a, int32_t move_10, lv_area_t *out)
+{
+    if (MOTION_IS_SLIDE(a->kind)) {
+        clk_sprite_t d = a->spr;
+        if (a->kind == CLK_MOTION_SLIDE_X) d.centerx = (int16_t)(d.centerx + move_10);
+        else                              d.centery = (int16_t)(d.centery + move_10);
+        gfx_swept_box(&d, 0, out);
+        return;
+    }
+    gfx_swept_box(&a->spr, move_10, out);
 }
 
 /* Widgets for every row the theme ships, twin before hand so a shadow goes down
@@ -1684,9 +1760,9 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
         const clk_aux_t *a = &g->aux[i];
         int32_t a_new;
         if (a->flags & CLK_FLAG_AUX_SHADOW) {
-            a_new = (i > 0) ? s_aux_ang_10[i - 1] : INT32_MIN;   /* follow the hand */
+            a_new = (i > 0) ? s_aux_ang_10[i - 1] : AUX_HIDDEN;  /* follow the hand */
         } else if (!a->spr.show) {
-            a_new = INT32_MIN;
+            a_new = AUX_HIDDEN;
         } else {
             int64_t v1000;
             if (!aux_value_1000(a, ti, t, frac, &v1000)) {
@@ -1698,7 +1774,13 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
                              (unsigned)a->src);
                 }
             } else {
-                a_new = aux_angle_10(a, v1000);
+                /* One call, one reading of the row’s own motion: the angle a pointer
+                 * turns through, or the pixels a bar slides. Reading a slide through
+                 * the angle path would wrap its offset at 3600 tenths and park a reserve
+                 * bar a third of the way across its own scale — a dial that lies about
+                 * its battery while every number on the wire stays legal. */
+                a_new = MOTION_IS_SLIDE(a->kind) ? aux_offset_px(a, v1000)
+                                                 : aux_angle_10(a, v1000);
             }
         }
         if (a_new == s_aux_ang_10[i]) continue;               /* nothing moved */
@@ -1707,17 +1789,28 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
          * about the point the device pins its pivot. Same discipline as
          * apply_angles() — under L4 the commit hook owns those rows. */
         const int32_t prev = s_aux_ang_10[i];
+        /* Stage the INCOMING pose before anything reads it: the commit hook and the
+         * classic widget below both draw a slide from s_aux_pose, and a mark computed
+         * from one displacement with a paint reading another is the ghost the swept-box
+         * contract exists to prevent. */
+        if (a_new != AUX_HIDDEN && MOTION_IS_SLIDE(a->kind)) {
+            s_aux_pose[i] = a->spr;
+            if (a->kind == CLK_MOTION_SLIDE_X)
+                s_aux_pose[i].centerx = (int16_t)(s_aux_pose[i].centerx + a_new);
+            else
+                s_aux_pose[i].centery = (int16_t)(s_aux_pose[i].centery + a_new);
+        }
         if (s_aux_obj[i]) {
             lv_area_t u;
             bool have = false;
-            if (prev != INT32_MIN) {
-                gfx_swept_box(&a->spr, prev, &u); have = true;
-                if (a_new != INT32_MIN) {
-                    lv_area_t nn; gfx_swept_box(&a->spr, a_new, &nn);
+            if (prev != AUX_HIDDEN) {
+                aux_mark_box(a, prev, &u); have = true;
+                if (a_new != AUX_HIDDEN) {
+                    lv_area_t nn; aux_mark_box(a, a_new, &nn);
                     gfx_area_union(&u, &nn);
                 }
-            } else if (a_new != INT32_MIN) {
-                gfx_swept_box(&a->spr, a_new, &u); have = true;
+            } else if (a_new != AUX_HIDDEN) {
+                aux_mark_box(a, a_new, &u); have = true;
             }
             if (have) {
                 if (u.x1 < 0) u.x1 = 0;
@@ -1739,15 +1832,34 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
              * first pose ever needs LVGL's own render because nothing has ever
              * painted these pixels. */
             lv_display_t *disp = lv_obj_get_display(s_scr);
-            if (a_new == INT32_MIN) {
+            /* One pose, two setters. A pointer that turns gets the rotation setter
+             * apply_angles() uses for the hands; a pointer that slides gets a position
+             * setter and NO rotation at all, because rotating a sprite the hook paints
+             * at zero would put the classic path and the L4 path on two different
+             * pixels — the split aux_add_jobs' comment exists to forbid. The displacement
+             * rides the same s_aux_pose record the mark and the hook read, so all three
+             * paths move by one number. */
+            const bool slide = MOTION_IS_SLIDE(a->kind);
+            if (a_new == AUX_HIDDEN) {
                 lv_obj_set_hidden(s_aux_obj[i], true);
-            } else if (prev == INT32_MIN) {
-                lv_obj_set_hidden(s_aux_obj[i], false);
-                lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
             } else {
-                lv_display_enable_invalidation(disp, false);
-                lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
-                lv_display_enable_invalidation(disp, true);
+                if (prev == AUX_HIDDEN) lv_obj_set_hidden(s_aux_obj[i], false);
+                else lv_display_enable_invalidation(disp, false);
+                if (slide) {
+                    /* make_layer() parked the widget so its pivot lands on the sprite's
+                     * centre; the slide moves it along ONE axis from there by the same
+                     * displacement s_aux_pose carries and the mark was computed from. */
+                    const lv_coord_t base_x = a->spr.centerx - a->spr.pivotx;
+                    const lv_coord_t base_y = a->spr.centery - a->spr.pivoty;
+                    lv_obj_set_pos(s_aux_obj[i],
+                                   a->kind == CLK_MOTION_SLIDE_X
+                                       ? (lv_coord_t)(base_x + a_new) : base_x,
+                                   a->kind == CLK_MOTION_SLIDE_Y
+                                       ? (lv_coord_t)(base_y + a_new) : base_y);
+                } else {
+                    lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
+                }
+                if (prev != AUX_HIDDEN) lv_display_enable_invalidation(disp, true);
             }
         }
         s_aux_ang_10[i] = a_new;

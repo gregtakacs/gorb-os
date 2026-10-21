@@ -2272,6 +2272,17 @@ def _bundle_clock_state(section, hdr, src_path):
     by = {}
     for e in b["elements"]:
         cls, slot = e["class"], e["slot"]
+        if cls == ts.CLASS_AUX:
+            # D34's honest asymmetry, said as itself. The DEVICE projects an AUX row
+            # into the clk_aux_t table clock_view.c draws; the compiled PAIR has no
+            # such array to receive it, because the .h's aux table was FORMAT 2's and
+            # §26 retired the pair that carried it. So this tool refuses a pointer the
+            # device accepts — and says which half is short, rather than borrow the
+            # BANK sentence and imply a pointer is a complication it cannot map.
+            refuse("element %d is class %r: the device projects a pointer into its "
+                   "aux table and the compiled pair has none — --from-bundle rebuilds "
+                   "a FORMAT 2 .h, which carries no pointer rows"
+                   % (e["n"], ts.CLASS_NAMES[cls]))
         if cls not in (ts.CLASS_PLATE, ts.CLASS_HAND, ts.CLASS_SPRITE):
             # A BANK row is the one acceptance the device gives this sentence's
             # subject and this tool does not: the compiled pair has no field for

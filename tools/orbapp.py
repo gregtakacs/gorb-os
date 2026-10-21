@@ -510,13 +510,19 @@ def unpack_settings(blob, n):
 # ---- the header -------------------------------------------------------------
 
 
-# ---- the asset vocabulary and its table (D23, D31; P5b) --------------------
-# The eight classes, in main/assets/orb_assets.h's orb_asset_class_t order. The
+# ---- the asset vocabulary and its table (D23, D31; P5b; D34) ---------------
+# The nine classes, in main/assets/orb_assets.h's orb_asset_class_t order. The
 # sentinel lifts that enum and fails if this tuple's order ever disagrees — the same
 # rule CAP_OWNER obeys, and for the same reason: the wire carries an index into this
 # list, so a silent renumber would resolve every installed app's `dial` slot as
 # somebody else's plate and nothing downstream could tell.
-ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status")
+# `aux` is D34's append at the END, which is the only place a class may enter: a
+# manifest written before it indexes 0..7 and reads unchanged, and an OS that predates
+# it refuses a row naming 8 at its own bound instead of drawing a pointer that sits
+# still. An app offers it the way it offers a hand — one named slot, one plane — and
+# what moves is the row's own drive, which the manifest has no business naming.
+ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
+                 "aux")
 ASSET_MAX      = 16            # rows in one manifest's table; == ORBAPP_ASSETS_MAX
 ASSET_NAME_MAX = 12            # bytes incl NUL, and the name carries NO prefix
 ASSET_OWNER_MAX = SLUG_MAX - 1 # the `<slug>` half of an owner-scoped reference

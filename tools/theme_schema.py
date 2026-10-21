@@ -474,10 +474,24 @@ ELEMENT_FIELDS = (
     # A row read from a table narrower than these two columns carries zero for
     # each, which is window/NONE — a plate that never changes — so the default
     # is an element every app may ignore, never a drawn value.
-    ("kind",     "u8"),    # BANK only: KINDS id, how the plates are drawn
-    ("src",      "u8"),    # BANK only: SOURCES id, what indexes the plates
+    ("kind",     "u8"),    # BANK: KINDS id, how the plates are drawn.
+                           # AUX: MOTION_NAMES id, how the pointer moves.
+    ("src",      "u8"),    # BANK and AUX: SOURCES id, what value drives the row.
+    # D34's four drive columns, for an AUX row and for no other class. `kind` and `src`
+    # already ride the row and already answer the same two questions for it — HOW it
+    # moves (its MOTION_NAMES id, read straight as clk_aux_t.kind) and WHAT moves it
+    # (its SOURCES id) — so they carry no new meaning here; these four finish the
+    # sentence with how far, from where, across what domain. Every one is written in the
+    # unit the motion names (MOTION_UNIT): tenths of a degree for an angle, pixels for a
+    # slide. A row read from a table narrower than these carries zero for each, which
+    # check_element refuses on an AUX row rather than draw as a pointer that never
+    # leaves home — the same "refuse, never guess" the class gate itself runs by.
+    ("span",     "i16"),   # AUX: travel across the whole value domain, in motion's unit
+    ("zero",     "i16"),   # AUX: where the pointer sits at value_min, same unit
+    ("vmin",     "u16"),   # AUX: the value `zero` stands for
+    ("vmax",     "u16"),   # AUX: the domain `span` divides. 0 is a refusal, never a /0
 )
-ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 19 words, 76 bytes per row
+ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 23 words, 92 bytes per row
 # The narrowest row the FORMAT 3 dialect has ever written, before D32's ruling A
 # appended kind and src. A blob's element-row stride is derived from its own
 # length (§23.5), and a stride below this floor is not a shorter row of this
@@ -547,6 +561,19 @@ CLOCK_SLOTS = (
     ("comp13",        "bank",   13,   "complication 13: one plate per value"),
     ("comp14",        "bank",   14,   "complication 14: one plate per value"),
     ("comp15",        "bank",   15,   "complication 15: one plate per value"),
+    # D34: the pointer slots. Identity is still (class, slot), so an AUX row claims one
+    # of these eight by ordinal and the clock keeps them in CLK_AUX_MAX's own order.
+    # Names are `ptr0..ptr7` and NOT `subdial_seconds` or `reserve`: the clock does not
+    # know what a pointer indicates, only that one row turns it, and a name that claimed
+    # the role would be a second source of truth about the art.
+    ("ptr0",          "aux",    0,    "pointer 0: one plate, moved by the row's own drive"),
+    ("ptr1",          "aux",    1,    "pointer 1: one plate, moved by the row's own drive"),
+    ("ptr2",          "aux",    2,    "pointer 2: one plate, moved by the row's own drive"),
+    ("ptr3",          "aux",    3,    "pointer 3: one plate, moved by the row's own drive"),
+    ("ptr4",          "aux",    4,    "pointer 4: one plate, moved by the row's own drive"),
+    ("ptr5",          "aux",    5,    "pointer 5: one plate, moved by the row's own drive"),
+    ("ptr6",          "aux",    6,    "pointer 6: one plate, moved by the row's own drive"),
+    ("ptr7",          "aux",    7,    "pointer 7: one plate, moved by the row's own drive"),
 )
 
 # The clock's own frame-to-value domain for a WINDOW complication (D32 ruling B):
@@ -575,7 +602,8 @@ CLOCK_SLOTS_DRAWN = ("bg", "glass", "hour", "minute", "second", "dial", "counter
                      "sh_counterw",
                      "comp0", "comp1", "comp2", "comp3", "comp4", "comp5", "comp6",
                      "comp7", "comp8", "comp9", "comp10", "comp11", "comp12",
-                     "comp13", "comp14", "comp15")
+                     "comp13", "comp14", "comp15",
+                     "ptr0", "ptr1", "ptr2", "ptr3", "ptr4", "ptr5", "ptr6", "ptr7")
 
 
 def clock_slot(name):
@@ -600,9 +628,29 @@ ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 20
 # Mirrors orb_asset_class_t in main/assets/orb_assets.h, in that enum's order. A
 # lint reads the header and compares, because a hand-maintained copy of an enum is
 # exactly the drift this file's whole purpose is to remove.
-CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status")
+# AUX is D34's append: a theme-named pointer — a sub-dial hand, a retrograde sweep, a
+# sliding reserve bar — that moves by a source value about an origin the row itself
+# places. It enters as a class, not as a wider use of HAND's slot, because the clock
+# declares six hand slots by ordinal and their rotation is the compiled dial's own
+# hour/minute/second mapping; an AUX row names its own drive and its own motion, and
+# a reader that has never heard of class 8 refuses it whole (D26) rather than let a
+# pointer that should be turning sit still.
+CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux")
 CLASS_TEXT, CLASS_SPRITE, CLASS_HAND, CLASS_PLATE = 0, 1, 2, 3
 CLASS_RING, CLASS_BANK, CLASS_LAYER, CLASS_STATUS = 4, 5, 6, 7
+CLASS_AUX = 8
+
+# How an AUX row moves, in the order clk_aux_t.kind reads it. The first three are the
+# vocabulary clk_types.h has always carried; the two slide kinds are D34's append and
+# the first thing a theme can ask for that is NOT an angle.
+MOTION_NAMES = ("rotate", "retrograde", "indexed", "slide-x", "slide-y")
+MOTION_ROTATE, MOTION_RETROGRADE, MOTION_INDEXED, MOTION_SLIDE_X, MOTION_SLIDE_Y = 0, 1, 2, 3, 4
+# Which unit `span` and `zero` are written in, per motion. A theme that names
+# slide-x and a span of 3600 means 3600 PIXELS, not a turn — the motion decides the
+# unit, so no extra column has to be trusted to say what the number one means.
+MOTION_UNIT = {"rotate": "tenths of a degree", "retrograde": "tenths of a degree",
+               "indexed": "tenths of a degree", "slide-x": "px", "slide-y": "px"}
+MOTION_SLIDES = (MOTION_SLIDE_X, MOTION_SLIDE_Y)
 
 # Classes whose frame is app state, not a clock (R6). A BANK is indexed "one plate
 # per value", so OS advancement would march a date wheel on a tick nobody asked for.
@@ -674,18 +722,85 @@ def check_element(rec, where="elem"):
         raise ValueError("%s.scale16: %d scales the element below one sixteenth of its "
                          "art, which no bake produces by intent" % (where, int(rec["scale16"])))
     # ---- D32 ruling A: the two complication columns ----
-    # They belong to a BANK row and to nothing else. A non-zero one on another class
-    # is a row written for a complication that names a plain slot — the same lie the
-    # radius-on-a-text-row rule refuses, and refused in the same shape.
+    # They belong to a BANK row and to an AUX row, and to nothing else. A non-zero one
+    # on any other class is a row written for a driven element that names a plain slot —
+    # the same lie the radius-on-a-text-row rule refuses, and refused in the same shape.
+    # D34 widened the pair's scope rather than appending look-alikes: on a BANK row
+    # `kind` is a KINDS id and on an AUX row it is a MOTION_NAMES id, and the class
+    # decides which of the two vocabularies the byte is read in, exactly as the class
+    # already decides whether `degrees` is a face or a carriage's start.
     kind, src = int(rec["kind"]), int(rec["src"])
-    if kind and cls != CLASS_BANK:
-        raise ValueError("%s.kind: %d on a %s row — how plates are drawn is a "
-                         "complication's question, and this class answers it with "
+    if kind and cls not in (CLASS_BANK, CLASS_AUX):
+        raise ValueError("%s.kind: %d on a %s row — how a row draws or moves is a "
+                         "driven element's question, and this class answers it with "
                          "its slot" % (where, kind, CLASS_NAMES[cls]))
-    if src and cls != CLASS_BANK:
-        raise ValueError("%s.src: %d on a %s row — what indexes plates is a "
-                         "complication's question, and this class answers it with "
+    if src and cls not in (CLASS_BANK, CLASS_AUX):
+        raise ValueError("%s.src: %d on a %s row — what drives a row is a driven "
+                         "element's question, and this class answers it with "
                          "its slot" % (where, src, CLASS_NAMES[cls]))
+    # ---- D34: the pointer row, and the four numbers that make it move ----
+    # An AUX row is a sprite with a drive. The checks below are the ones that keep a
+    # mis-declared pointer from shipping as a hand that sits at 12 forever and reads as
+    # a watch that is simply wrong: the motion must exist, the source must be one the
+    # dial can derive, the domain must be wide enough to divide, and an angle must stay
+    # an angle. Mirrored rule for rule by main/art/orb_clock3.c's AUX projection.
+    if cls == CLASS_AUX:
+        if not 0 <= kind < len(MOTION_NAMES):
+            raise ValueError("%s.kind: %d is not a way for a pointer to move (%s, 0..%d)"
+                             % (where, kind, "/".join(MOTION_NAMES), len(MOTION_NAMES) - 1))
+        if not 0 <= src < len(SOURCES):
+            raise ValueError("%s.src: %d is not a value this dial can read (0..%d)"
+                             % (where, src, len(SOURCES) - 1))
+        if SOURCES[src] == "none":
+            raise ValueError("%s.src: an AUX pointer driven by 'none' never moves, and a "
+                             "row that never moves is plate art that was written as a "
+                             "row" % where)
+        vmax, vmin = int(rec["vmax"]), int(rec["vmin"])
+        span, zero = int(rec["span"]), int(rec["zero"])
+        if vmax < 1:
+            raise ValueError("%s.vmax: %d cannot divide a %s — a pointer's span is shared "
+                             "across its domain, so the domain has to hold at least one "
+                             "unit" % (where, vmax, MOTION_NAMES[kind]))
+        if span == 0:
+            raise ValueError("%s.span: 0 is a pointer that goes nowhere; give it the %s it "
+                             "travels, or bake the plate and name no row"
+                             % (where, MOTION_UNIT[MOTION_NAMES[kind]]))
+        if vmin > vmax:
+            raise ValueError("%s.vmin: %d is above vmax %d — the domain runs low to high, "
+                             "and frame 0 indexes the bottom of it" % (where, vmin, vmax))
+        if kind in MOTION_SLIDES:
+            # A slide is placed by its own origin and travels in pixels, so it has no
+            # pivot to turn about and no angle to stay inside. A slide of more than the
+            # panel's width is a bar that leaves the glass at one end of its domain.
+            if abs(span) > 466 or abs(zero) > 466:
+                raise ValueError("%s: a %s of %d px cannot stay on a 466 px panel — a "
+                                 "slide's span and zero are pixels, not tenths"
+                                 % (where, MOTION_NAMES[kind], span))
+        else:
+            # A rotation turns about a point inside its own plate, the same bound a HAND
+            # is held to, and for the same reason: a pivot off the ink is a pointer
+            # swinging about a point that is not on it.
+            if int(rec["w"]) and int(rec["h"]):
+                px, py = int(rec["pivot_x"]), int(rec["pivot_y"])
+                w, h = int(rec["w"]), int(rec["h"])
+                if not (0 <= px < w and 0 <= py < h):
+                    raise ValueError("%s: an AUX pointer's pivot (%d,%d) sits outside its "
+                                     "own %dx%d plate, so it would turn about a point off "
+                                     "the glass" % (where, px, py, w, h))
+            if abs(zero) > 3600:
+                raise ValueError("%s.zero: %d is an offset past one full turn "
+                                 "(±3600 tenths), which is not a direction"
+                                 % (where, zero))
+            if abs(span) > 3600:
+                raise ValueError("%s.span: %d asks a pointer to travel more than one full "
+                                 "turn; a %s that needs more is a disc, not a hand"
+                                 % (where, span, MOTION_NAMES[kind]))
+        # One plane, whatever the motion: a pointer is one plate that moves, and a row
+        # naming several is a bank wearing an AUX label.
+        if int(rec["n_frames"]) != 1:
+            raise ValueError("%s: an AUX row carries one plate, not %d — several plates "
+                             "indexed by a value is a BANK row"
+                             % (where, int(rec["n_frames"])))
     if cls == CLASS_BANK:
         if not 0 <= kind < len(KINDS):
             raise ValueError("%s.kind: %d is not a way to draw plates (0..%d)"
@@ -815,9 +930,11 @@ if __name__ == "__main__":
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.
-    assert ELEMENT_WORDS == 19 == len(ELEMENT_FIELDS), "element row width moved"
-    assert len(CLASS_NAMES) == 8, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert ELEMENT_WORDS == 23 == len(ELEMENT_FIELDS), "element row width moved"
+    assert len(CLASS_NAMES) == 9, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
+    assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"
     _e = dict(blank_element(), **{"n": 0, "class": CLASS_HAND, "slot": 0,
                                   "flags": EF_OS_ADV, "order": 1, "alpha": 255,
                                   "frame0": 0, "n_frames": 1, "x": 10, "y": 20,
@@ -825,6 +942,17 @@ if __name__ == "__main__":
                                   "radius": 0, "degrees": 9000, "scale16": 16})
     assert pack_elements([_e]) == pack_record(_e, ELEMENT_FIELDS, "elem[0]")
     assert unpack_elements(pack_elements([_e]), 1)[0] == _e, "element row must round-trip"
+    # A D32-width row still reads: the four drive columns land on the zeros they were
+    # written after, which is the append-only promise the stride derivation exists for.
+    _narrow = unpack_elements(pack_record(_e, ELEMENT_FIELDS[:19], "e"), 1, stride=19)[0]
+    assert _narrow == dict(_e, span=0, zero=0, vmin=0, vmax=0), "a narrow row must widen"
+    # ---- D34: the pointer row, accepted and refused, and round-tripped ----
+    _ax = dict(blank_element(), **{"n": 5, "class": CLASS_AUX, "slot": 0, "order": 3,
+                                   "alpha": 255, "frame0": 4, "n_frames": 1,
+                                   "x": 300, "y": 120, "w": 40, "h": 8,
+                                   "pivot_x": 4, "pivot_y": 4,
+                                   "kind": MOTION_ROTATE, "src": SOURCES.index("second"),
+                                   "span": 3600, "zero": 0, "vmin": 0, "vmax": 60})
     # `class` is a Python keyword, so every override below is a dict KEY and the
     # helper applies it with update() — a kwarg here is a SyntaxError, not a test.
     def _with(**over):
@@ -833,8 +961,13 @@ if __name__ == "__main__":
         return r
     assert check_table([_e, _with(n=1, **{"class": CLASS_TEXT, "slot": 3, "radius": 0,
                                           "pivot_x": 0, "pivot_y": 0, "flags": 0})])
+    assert unpack_elements(pack_elements([_ax]), 1)[0] == _ax, "a pointer row must round-trip"
+    assert check_table([_e, _ax])
+    _slide = dict(_ax, **{"slot": 1, "kind": MOTION_SLIDE_X, "span": 90, "zero": -45,
+                          "vmin": 0, "vmax": 100, "pivot_x": 0, "pivot_y": 0})
+    assert check_element(_slide, "sentinel-aux-slide")
     for _bad, _why in (
-        (_with(**{"class": 8}), "unknown class"),
+        (_with(**{"class": 9}), "unknown class"),
         (_with(flags=EF_ALPHA | 0x80), "unknown flag bit"),
         (_with(order=64), "order past the rungs"),
         (_with(n_frames=0), "zero frames"),
@@ -845,7 +978,22 @@ if __name__ == "__main__":
         (_with(pivot_x=99), "hand pivot off the plate"),
         (_with(**{"class": CLASS_TEXT, "slot": 1, "radius": 40}), "radius on a text row"),
         (_with(scale16=8), "scale below one sixteenth"),
+        (_with(**{"class": CLASS_AUX, "kind": 1}), "a drive on a plain hand row"),
+        (_ax, "an accepted pointer refuses — the fixture broke"),
+        (dict(_ax, kind=5), "motion past the vocabulary"),
+        (dict(_ax, src=0), "a pointer driven by none"),
+        (dict(_ax, vmax=0), "a domain that cannot divide"),
+        (dict(_ax, span=0), "a pointer that goes nowhere"),
+        (dict(_ax, vmin=61), "vmin above vmax"),
+        (dict(_ax, n_frames=2), "a pointer carrying two plates"),
+        (dict(_ax, zero=3700), "a pointer zero past a turn"),
+        (dict(_ax, span=3700), "a pointer travelling past a turn"),
+        (dict(_ax, pivot_x=44), "a pointer pivot off the plate"),
+        (dict(_slide, span=900), "a slide off the panel"),
     ):
+        if _why.startswith("an accepted"):
+            assert check_element(_bad, "sentinel-aux") == _bad
+            continue
         try:
             check_element(_bad, "sentinel")
         except ValueError:

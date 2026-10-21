@@ -4439,7 +4439,9 @@ P6b editor decisions rather than following them.
   byte. `budget3(bytes)` answers to that bullet's promise, reading both D29 install sums back
   off finished bytes rather than estimating them from the model.
 - **A browser bake from real Chrome pixels projects, and zero of the fifteen shipped presets
-  qualify for it today.** `_selftest/bake3-test.html` mounts the composer's own component,
+  qualify for it today.** _Superseded 2026-10-20 by §31.2: the animated-plate contract
+  landed the same day, the motion table was measured, and 9 of 15 bake animated with zero
+  refusals. Read §31.2 as the current number._ `_selftest/bake3-test.html` mounts the composer's own component,
   composes each preset's plate twice — frame 0 and the last frame of its loop — and calls the
   plate animated if any pixel moved. All fifteen fail. The least motion is `neon` at 40 px over
   a 15-frame loop and the most `kitetour` at 72,571 px over 8, and 14 of the 15 also carry
@@ -4453,7 +4455,9 @@ P6b editor decisions rather than following them.
   483,936 bytes, plate colour-only at `colour_off` 0, hands seated at (213,95) and (217,33),
   bank 479,840 B accounted to the byte. **The `.orbtheme` button must not be pointed at
   `bakeClock3` yet**: it would refuse every dial the gallery ships. What it owes instead is
-  this sentence, in its own note, before an owner presses it.
+  this sentence, in its own note, before an owner presses it. _Superseded the same day by
+  §31.2's motion table and `exportTheme3` in the click path: the guard-measure-split-bake
+  walk refuses by name, not by preset count._
 - **No new Go format package enters the tree.** §22.3's install-end gate closes on the
   device, where it already landed (`orb_bundle.c:171-180`). Go's theme work shrinks to
   retargeting the identity read's dialect (fact 3) and forwarding bytes.
@@ -5123,5 +5127,115 @@ with it, both mine, both invisible to every suite:
    the pair now joins twin-first, one order on both paths. Mirrored in the dump, the
    verify print, the C battery (flag maps, centre identity holds, both lies refuse), and
    twelve new headless checks at the bake seam.
+
+
+---
+
+## 32 — The P6 debts, triaged against the tree — 2026-10-21
+
+The ask was "complete the missing P6 items". §29 lists three: the commit-hook caller
+P5.5 handed forward, D30's progress bar with the lazy arena swap, and the two open M6
+numbers. Two of the three are not finishable as written, and the reason is in the tree
+rather than in the schedule. One is finished, and it is the one §29 called a measurement.
+
+**1. The commit-hook caller: re-assigned to P8, and the reason is a consumer count.**
+`orb_layers_jobs()` still has no production caller. The header blamed P6's rewrite; the
+tree says more than that. `grep layer_add` across `main/`, excluding the broker's own
+gated bodies, returns **zero**: no built-in app uses the layer table, and
+`orb_carousel.c` paints its peek as an LVGL chip on `lv_layer_top()` rather than through
+`layer_*`. The first caller is the wasm tier, which is P7. A commit hook that appends a
+list no app ever fills is the machinery-without-a-consumer D16 refuses, and it is not
+benchable either: with nothing in the table the pass line is "the dial did not change",
+which the dial's own suites already say. `orb_layers.h`'s header now records the
+re-assignment and the count behind it. P8 takes it, because the hook is where per-element
+repaint arrives and `layer_touch` is where its damage rects come from — the two halves
+§23.5 already says P8 owes.
+
+**2. A promise the header made and the body did not keep.** §1.2b's own rule is that
+writing a promise and not the function is the drift the D25 freeze exists to prevent.
+`orb_layers.h` said rows dropped by `jmax` were "skipped and counted". The loop condition
+`n < jmax` ends the walk before it can count, and `t->refuses` never moves — so the
+comment was the defective half, not the code. Billing the app would be wrong on the
+merits too: the counter answers "what did this app ask for that the OS refused", and a
+full `jc[]` is the compositor's capacity beside the dial's own hands and complications.
+An app inside `ORB_LAYER_MAX` must never move an owner-facing ledger row for a reason the
+owner controls. The comment now states the rule, and `host_orblayers_test.py` grew two
+vectors that pin it, one of which the old comment would have failed
+(`jmax 0 builds nothing, still uncounted`). Suite: **75 vectors, rc=0, 0 lint failures**
+(was 73).
+
+**3. D30's progress bar and lazy swap: real P6 work, and it is not a mechanical finish.**
+`h_bundle_flip` still answers `reboot:"automatic"`, so the shipped flip is the §24.8
+copy-and-reboot path and D30's "no reboot" remains unmet. Landing it needs a progress
+channel from the worker to a page that can paint while the worker holds the card, and an
+arena swap that cannot race the render task — the same task whose brightness write froze
+the dial until `14ea0f0` fixed it. The write path, the swap point and the page's ownership of the glass
+are three decisions, not an implementation detail, and §20.5(3) defers them by name. Left
+open deliberately rather than half-built on the one board with no rollback slot.
+
+**4. M6(2) at cap: unmeasurable on this rig, and the arithmetic is the finding.** A
+cap-sized bank needs `cap + margin` = 6,176,720 + 2,097,152 = **8,273,872 B** contiguous
+PSRAM. §20.5(4) measured 7,206,536 free after av-kit's refill, and §31.2 measured
+4,982,352 free after a 2.48 MB flip on orb-B. The gate therefore refuses before the arena
+can ever be that big: the number M6(2) asks for does not exist on this silicon at these
+settings. Lowering the margin to admit a cap bank would measure a configuration the
+project refuses to ship, so it would not be the missing measurement either. The refusal
+arm of that same gate is already PAID — it names both byte counts and hands off to Arm A.
+
+
+**5. M6/on-glass preview parity: PAID, and the attempt falsified its own second gate.**
+§28's pass line (b) was host-pinned against `tests/fixtures/avkit-pair.h` and explicitly
+left the glass unmeasured; §29 named `GET /api/v1/fb` as the door. The door and
+`tools/fbgrab.py` already exist, so the gap was a script.
+`tools/bench_preview_parity.py` closes it: it reads the shipped pair *text* rather than a
+re-imagination of the struct, captures raw565 frames across one full seconds revolution
+(a window under 62 s is refused outright, because an arc cannot certify a circle), and
+asserts that every pixel which changed between consecutive frames falls inside the outer
+bound of some shown row's crop — that row's farthest corner from its declared pivot, both
+numbers read from the bake rather than from the picture.
+
+Measured on orb-A (`192.168.2.32`), which is where av-kit is live — 19 frames over 80 s,
+exit 0:
+
+```
+  moving px      : 17995 (8.29% of panel)
+  containment    : 100.00% inside a declared outer bound (0 unexplained)
+```
+
+**That is the parity claim, and it holds exactly.** Every one of 17,995 pixels of real
+motion lands inside an annulus the bake printed (`centerx/centery` 233,233; seconds-hand
+farthest corner 203.4 px; the shadow twin at 238,238, which is the bake's light offset
+and not a mistake). The dial puts the element table's rows where the table says, now
+proven on pixels instead of on the host.
+
+The run also killed two gates I had written, and the fault was the gates' rather than the
+glass's. First, a centroid gate over all moving ink measured **49.9 px off** with 3,700 px
+in one 30° sector and zero in another: the hour and minute hands are movers too, and they
+move at a *fixed bearing*, so their frame-to-frame ink is lopsided by construction.
+Second, an inner radial bound (a row displaced along its own radius should break it) left
+**773 px** unexplained in the shipped run, 695 in the first — the hub, where the
+complication glyphs and the hands' own hub caps
+live and which the tool does not model as a mover. A third test, a band only the seconds
+rows could ink, was written, measured, and deleted: the minute hand's shadow reaches
+r 204.2 against the seconds shadow's 211.0, so on a multi-hand dial that band is ~7 px wide
+and the gate can never fire. A gate that cannot fail is the machinery-without-a-consumer
+this plan already refuses under item 1, so it is gone rather than kept as decoration. The
+hard gates are now containment and motion sufficiency; the centroid, the ring histogram
+and the inner-bound count print as diagnostics with their confounds named in the source.
+
+The limit is stated rather than papered over: proving placement *row by row* needs ink
+charged to one element, which is what the D31 `damage` route does and what P8 builds.
+Through `/api/v1/fb`, the union of movers is the honest ceiling.
+
+**6. §29's stale sentences are marked superseded.** "Zero of the fifteen shipped presets
+qualify" was written hours before §31.2 measured nine, and it is what produced a wrong
+claim about FORMAT 3 animation support earlier this session. Both §29 lines now carry a
+dated pointer to §31.2, so an agent that reads §29 first meets the correction before it
+meets the number.
+
+**Not done, and why:** the flip's glass half (item 3) needs the three rulings named there;
+the at-cap refill (item 4) does not exist to measure at these settings; the commit-hook
+caller (item 1) has no consumer until P7 puts one there, and P8 is where the hook itself
+changes.
 
 

@@ -356,8 +356,18 @@ int main(void)
     ck("hidden row kept live, out of the jobs", n == 2 && orb_layers_count(&T) == 3, n);
     ck("order is table order", jc[0].role == 1 && jc[1].role == 3, jc[0].role);
     ck("baked row answers with its own base", g_last_base != THEME, 0);
+    const unsigned rf_j = orb_layers_refuses(&T);
     n = orb_layers_jobs(&T, THEME, jc, 1);
     ck("jmax is a promise", n == 1, n);
+    /* The capacity refusal belongs to the compositor, not the ledger: the app
+     * stayed inside ORB_LAYER_MAX and the caller's array ran out. Pinning this
+     * is what keeps orb_layers.h's "dropped WITHOUT touching the refusal
+     * counter" from rotting back into the claim it used to make. */
+    ck("jmax exhaustion is not billed to the app",
+       orb_layers_refuses(&T) == rf_j, (int)orb_layers_refuses(&T));
+    n = orb_layers_jobs(&T, THEME, jc, 0);
+    ck("jmax 0 builds nothing, still uncounted",
+       n == 0 && orb_layers_refuses(&T) == rf_j, n);
     n = orb_layers_jobs(&T, NULL, jc, 8);
     ck("no payload: theme rows skip, baked stays", n == 1 && jc[0].role == 3, n);
     (void)hA; (void)hB;

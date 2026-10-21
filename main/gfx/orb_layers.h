@@ -21,12 +21,21 @@
  * and the frozen `layer_add(app, desc)` signature forces both, since it passes no
  * plane and no z: paint order IS table order, and re-ordering means del re-add.
  *
- * Two things this deliberately is NOT, both owned by P6:
+ * Two things this deliberately is NOT, and what became of the P6 hand-off:
  *  - the clock does not route through here (its art reaches the registry only once
  *    .orbapp ingest exists, and it still drives clock_layer_commit directly);
- *  - no commit hook calls the job builder yet. The pass line P5.5 does prove is
- *    the host one: every compositor primitive reachable through the gate, refused
- *    or accepted for exactly the documented reason, and counted either way.
+ *  - no commit hook calls the job builder yet. P5.5 named P6 as the owner of the
+ *    caller; P6's rewrite (D21/D24/D29) re-scoped it to the bundle format and the
+ *    hand-off was never taken. As of 2026-10-21 it is RE-ASSIGNED TO P8, which is
+ *    where the per-element repaint that needs it is specified. The reason it is
+ *    not wired now is a consumer count, not a design gap: `layer_add` has no
+ *    caller anywhere in main/ — no built-in app uses the table (the carousel is
+ *    an LVGL chip on lv_layer_top) and the wasm tier that would use it first is
+ *    P7 — so a wired caller would be a commit path with nothing ever on it, the
+ *    machinery-without-a-consumer refusal D16 already sets. What P5.5's pass line
+ *    did prove stands: every compositor primitive reachable through the gate,
+ *    refused or accepted for exactly the documented reason, and counted either
+ *    way, on the host.
  *
  * This header stays LVGL-free (orb_assets.h's own rule, and the reason the host
  * suite can compile the whole table). The job builder therefore takes the paint
@@ -165,11 +174,22 @@ int      orb_layers_count(const orb_layer_tab_t *t);
 uint32_t orb_layers_refuses(const orb_layer_tab_t *t);
 
 /** Build the job list for the live, shown rows, in table order: paint order IS
- *  list order, and list order is table order (§1.2a). Rows that will not paint
- *  (a handle's sprite gone undrawable, jmax spent) are skipped and counted,
- *  never drawn as garbage. `theme_base` answers for every tier-1 row — the
- *  payload of the bundle the caller resolved against; a baked row carries its
- *  own base and ignores it. Returns the count written to `jc`, at most jmax. */
+ *  list order, and list order is table order (§1.2a). A row that will not paint
+ *  (a handle's sprite gone undrawable, or no payload for a theme row) is skipped
+ *  and the frame draws without it, never as garbage.
+ *
+ *  Rows past `jmax` are dropped WITHOUT touching the refusal counter, on
+ *  purpose. The counter answers "what did this app ask the OS for that the OS
+ *  refused"; a full job array is the compositor's own capacity, not the app's
+ *  misbehaviour — the app stayed inside ORB_LAYER_MAX and the dial ran out of
+ *  slots beside its own hands and complications. Billing it there would let an
+ *  app's ledger row move for a reason the owner controls, which is exactly the
+ *  evidence the ledger exists to keep clean. An app must never be blamed for
+ *  the size of jc[].
+ *
+ *  `theme_base` answers for every tier-1 row — the payload of the bundle the
+ *  caller resolved against; a baked row carries its own base and ignores it.
+ *  Returns the count written to `jc`, at most jmax. */
 int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *theme_base,
                     struct gfx_paint_ctx *jc, int jmax);
 

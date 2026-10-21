@@ -34,6 +34,27 @@
 #define TICK_MS_LIGHT   1000
 #define TICK_MS_DARK      50
 
+/* The wake writer's task priority. It outranks the LVGL task (5) on purpose.
+ *
+ * The clock keeps animating while dimmed — dimming never parks it, so a dial is
+ * as live in the dark as in the light, and a dial whose owner turned dimming off
+ * is animating 24/7. Both the animation tick and the flush's TE wait run on the
+ * priority-5 LVGL task, and that TE wait is a busy spin with no yield. The one
+ * task that lifts the face after a touch is this idle_dim task, and it is the
+ * sole writer of the brightness register. As long as it sat at the system idle
+ * priority it could not get a slice while the animation spun, so a touch arrived
+ * (the poll stamps it on the LVGL task) but the restore lagged however long the
+ * renderer kept the CPU — the "wakes late, like it never wakes" symptom, and it
+ * would not go away by pausing the animation because the owner may have paused
+ * nothing. Above the renderer, the restore preempts the spin and the face lifts
+ * on the next dark tick regardless of animation load. The task then blocks in
+ * ulTaskNotifyTake, so it spends its priority waiting, not spinning: it costs a
+ * few microseconds of brightness write per touch, never the frame budget.
+ *
+ * 6, not 5: equal priority shares the slice round-robin and a flush in progress
+ * still defers the writer to the next tick. */
+#define IDLE_DIM_TASK_PRIO 6
+
 bool idle_motion_decide(idle_motion_t *st, const int16_t s[3], int16_t thresh_lsb)
 {
     /* Outside the feature switch: this is the part worth testing on a host, and
@@ -167,6 +188,11 @@ static const char *TAG = "idle_dim";
 static volatile uint32_t s_last_ms;           /* last touch, from any source     */
 static volatile uint32_t s_user_pct = 100;    /* where the dial sits while awake */
 static volatile bool     s_dimmed;
+/* The wake task's handle, so a knob touch on the LVGL task can pull it off its
+ * dark-tick sleep and restore the face now (ulTaskNotifyTake below) rather than
+ * after the remaining 50 ms. Written once in idle_dim_init before the task can
+ * be nudged; read only under `s_dimmed`, when a restore is actually pending. */
+static TaskHandle_t      s_idle_task;
 #if CONFIG_ORB_IDLE_MOTION_ENABLE
 static volatile uint32_t s_wakes;             /* motion-credited wakes, since boot */
 static volatile int32_t  s_worst_lsb;         /* boot-wide deviation high-water  */
@@ -316,7 +342,12 @@ static void idle_task(void *arg)
 #endif
 
     for (;;) {
-        vTaskDelay(per);
+        /* Block up to `per`, but wake early if idle_dim_activity nudged us (a
+         * knob touch while dimmed): pdTRUE clears any accumulated count on
+         * exit, so a burst of turns coalesces into the one restore that follows.
+         * This is why the task can now sit at a high priority and still cost no
+         * frame budget — it spends that priority blocked, not spinning. */
+        (void)ulTaskNotifyTake(pdTRUE, per);
         const uint32_t now = now_ms();
 
         /* One accelerometer reading every tick, in both states -- but the verdict
@@ -460,7 +491,8 @@ esp_err_t idle_dim_init(void)
     if (imu_present()) wake = "knob + motion";
     else ESP_LOGW(TAG, "no IMU: idle dim will wake on the rotary only");
 #endif
-    if (xTaskCreate(idle_task, "idle_dim", 3072, NULL, 2, NULL) != pdPASS)
+    if (xTaskCreate(idle_task, "idle_dim", 3072, NULL, IDLE_DIM_TASK_PRIO,
+                    &s_idle_task) != pdPASS)
         return ESP_ERR_NO_MEM;
     /* The effective values, not the Kconfig ones: after the first menu change
      * they are different facts, and this is the line the bench reads to confirm
@@ -478,6 +510,14 @@ void idle_dim_activity(const char *why)
     const uint32_t now = now_ms();
     s_last_ms  = now;
     s_act_calls++;
+    /* A touch while dimmed must lift the face now, not on the next dark tick.
+     * The restore itself stays on the task — the one writer of the brightness
+     * register — this only shortens how long it waits to run, so a knob turn
+     * reads as an instant wake however busy the animation keeps the renderer.
+     * Only when dimmed: awake there is nothing to restore, and nudging on every
+     * stamp would pull a higher-priority task ahead of the frames for nothing. */
+    if (s_dimmed && s_idle_task)
+        xTaskNotifyGive(s_idle_task);
     /* One line per second at most, and the count of what was dropped: a knob
      * bouncing at tens of Hz must not turn the serial line into the reason the
      * next symptom cannot be seen, while still saying how often it fired. */

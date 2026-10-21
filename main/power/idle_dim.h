@@ -25,9 +25,15 @@
  *     latching. The lit poll exists to keep the deviation high-water warm, which
  *     is the number ORB_IDLE_MOTION_MG is set from.
  *
- * Runs as one low-priority task on its own, not on the LVGL task: the brightness
- * write is a QSPI transaction of its own and the frame budget documented in
- * docs/fps-budget-findings-2026-10-10.md is not theirs to spend.
+ * Runs as one task on its own, not on the LVGL task, because the brightness
+ * write is a QSPI transaction that must not race the frame flush — it is the one
+ * writer of that register. It runs ABOVE the LVGL render task, not below it: the
+ * clock keeps animating while dimmed (dimming never parks it, and an owner who
+ * turned dimming off animates 24/7), so a wake writer that yielded to the
+ * renderer's flush spin would lift the face late exactly when the dial is busy.
+ * Priority alone bounds that; it sleeps in ulTaskNotifyTake the rest of the time,
+ * so the frame budget documented in docs/fps-budget-findings-2026-10-10.md still
+ * is not its to spend. See IDLE_DIM_TASK_PRIO in the .c for the full argument.
  */
 #include <stdbool.h>
 #include <stdint.h>

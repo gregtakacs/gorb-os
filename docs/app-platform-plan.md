@@ -4,8 +4,11 @@ Status: **P1–P3 landed 2026-10-12; P4 and P6 landed through 2026-10-20; P6b la
 2026-10-20 (§28) — the broker (`main/app/orb_svc.c/h`) is the app surface, the grant table
 is live, the app platform is on card, and the theme platform is FORMAT 3-only end to end
 (P6 CLOSED 2026-10-20, §27). The orb-manager hub speaks the FORMAT 3 store door (§28).
-**§31 PROPOSED 2026-10-20: the animated-plate contract — a FORMAT 3 clock may carry a
-keyframe plate bank with no format bump; awaiting the owner's ruling.** The
+**§31 RULED and SLICED 2026-10-20: the animated-plate contract is the owner's ("sounds
+good, start on the baker and the projection") and slices 1-2 are landed — rules 1-6 as
+the plate-bank contract, `CLK_BG_MAX 16`, projection, pair mirror, baker, and suites
+(§31.1 below). Open: the composer's motion-split export choice and the abi check
+(deferred, §31.1).** The
 phase table below carries the evidence per row.** Written 2026-10-11 at commit
 `a911468`; the owner ruled on
 every open point the same day (§0.1). P4 may start. Two of the three bench
@@ -4540,7 +4543,7 @@ empty), so every firmware result on this tree still stands.
 force). `../gorb-os` pushed from; this tree `--ff-only` onto the same `8ecc8d3`.
 Both clean, `0/0` against `origin/main` — §28's invariant restored.
 
-## 31 — Animated plate: the FORMAT 3 contract for keyframe background banks — PROPOSED 2026-10-20, awaiting owner ruling
+## 31 — Animated plate: the FORMAT 3 contract for keyframe background banks — RULED and SLICED 2026-10-20
 
 **Why now.** The owner asked the editor for a FORMAT 3 export and a send-to-orb, and
 found neither (§29's measurement explains the first: all fifteen presets animate their
@@ -4645,6 +4648,70 @@ animation: refused by rule 1 — the crystal composites, it does not loop.
 only, delta still refused); accept `CLK_BG_MAX 16` with the cap arithmetic as the binding
 limit; accept motion-split bake policy (plate bank vs sprite region, chosen by the
 authoring check); accept or defer the per-section abi enforcement.
+
+### 31.1 — The ruling and the landed slices (2026-10-20)
+
+**Ruled.** The owner accepted the contract and set the first cut: rules 1-6 stand as the
+plate-bank contract, `CLK_BG_MAX 16` is the bound with the D29 cap as the real limit, and
+"start on the baker and the projection" opened slices 1-2 the same day. The per-section
+abi check stays on the shelf — deferred, not refused; four lines when the next dialect
+change needs it.
+
+**Slice: projection + pair mirror.** `orb_clock3.c` replaced its two refusals with the
+cross-checks: the delta-vocabulary and capacity guards sit with the scalars, the
+row/scalar one-length, gif-disagreement and one-shot-tempo guards sit with the plate, and
+the plate-off seating guard sits after the row bounds are proved. The catalogue's
+colour-only rule generalized from "row 0" to "the plate's plane range" — keyframes cost
+`w*h*2` like the plate, and the walk accounts them at that. On success the projection now
+fills the plate-frame table with one offset per extra plane (`io->bg_frames[0..N-2]`);
+a still plate keeps the single keyframe row it always wrote. The glass rule (no animated
+overlay) fires in the table walk itself, before any offset is trusted. `bake_clock.py
+--from-bundle` says the same sentences in the same order, and its rebuilt `.h` carries
+the bank in the `clk_bg_frames` array the pair has always had — `baked_frames` now fills
+from the catalogue, so a rebuilt pair and a kit pair remain one definition. `CLK_BG_MAX`
+moved from `orb_sched.c`'s private 8 into `clk_types.h` as the shared 16; `orb_theme.c`'s
+dead `BG_FRAMES_MAX` comment-pointer died with the move.
+
+**The consumer needed no new object.** §31's step (2) had `clock_view.c` growing a bg
+consumer "beside the carriage's"; the walk of the shipped code found the consumer already
+live: `orb_sched.c`'s classic bgAnim path (`orb_bg_bg_live`, `build_bg_dscs`,
+`orb_bg_frame_now`, `orb_bg_show_plate_frame`) is FORMAT 2's whole-plane flipper, it
+reads exactly the theme scalars and the `clk_bg_frames` table the projection now fills,
+and the install path already wires them (`s_geo.bg_frames = s_b3_bgf`). What FORMAT 3
+never did was feed it. An installed animated theme therefore flips at `orb_sched_bg_rate`
+— the dialect's own ladder, the same one the kit path drove — with no new runtime code.
+The flush floor (§23.11's ~6 fps for full-panel invalidations) still binds until P8's
+rung table; the ladder is requested tempo, not delivered glass.
+
+**Slice: baker.** `bakeClock3` takes `plate.frames`, an array of two or more whole-panel
+planes: they enter contiguous and colour-only under one row, the scalars cross-set
+(`bg_frames = N-1`, `bg_mode` 0, `gif_frames` 0), a bank with no stated tempo means a
+loop at `every: 1` (what every FORMAT 2 bgAnim kit was), and an explicit one-shot without
+an fps is refused rather than frozen. The D29 sum is checked against the assembled bank
+before the write, in a sentence that names the keyframe cost so an owner can trade
+frames. `rowFrames()` is the one new writer helper; every existing refusal keeps its
+sentence.
+
+**Proof.** `host_clock3_test.py` grew four mirrored REFUSALS vectors and a §31 battery: a
+three-keyframe bank forged from the shipped pair projects at both ends, its plate-frame
+table lands at the keyframes' own offsets, its rebuilt `.h` carries `clk_bg_frames[2]`,
+and five bank-only lies (scalar disagreement, delta-mode claim, off-plate start, masked
+keyframe, shuffled bank) draw the projection's own sentence at both ends. The mutant
+anchors moved with the guards they pin — the zero-frame backstop now drives the plate
+floor, and the catalogue-seat mutant moved to a hand row because the generalized walk
+catches a plate-row lie first. 303 checks, 0 failures, with `--mutations` across 17
+guards. `headless-bundle3.test.js` grew §31's accept side (row, catalogue costs, scalar
+cross-set, art sum) and five authoring refusals, and its projection-parity step now runs
+both bakes through the shipped C — `plate bank: 2 extra keyframes at 434312, 868624`
+printed from `verify_js_bake.py`, which learned to report the table. 82 JS checks, all
+six suites green, all 24 host suites green, `idf.py build` clean.
+
+**Still open on this contract.** The composer's motion-split export (per-preset motion
+union choosing plate-bank versus sprite-region, and the eligibility note rewritten to the
+FORMAT 3 store story) is the editor slice this contract was cut for. The bench — the
+`bench_d32.sh` idiom on a browser-baked animated bundle with `fbgrab` settling requested
+versus delivered fps — rides the next orb visit. Preset-to-bank bakes are what those two
+steps measure; no preset is promised a frame count before them.
 
 
 

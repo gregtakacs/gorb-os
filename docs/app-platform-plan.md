@@ -7,8 +7,9 @@ is live, the app platform is on card, and the theme platform is FORMAT 3-only en
 **§31 RULED and SLICED 2026-10-20: the animated-plate contract is the owner's ("sounds
 good, start on the baker and the projection") and slices 1-2 are landed — rules 1-6 as
 the plate-bank contract, `CLK_BG_MAX 16`, projection, pair mirror, baker, and suites
-(§31.1 below). Open: the composer's motion-split export choice and the abi check
-(deferred, §31.1).** The
+(§31.1 below); the split, the glass bench, and the composer export landed the same
+day (§31.2): 9 of 15 presets bake animated, the bank measured 5–8 delivered fps on
+orb-B. Open: the hub send-to-orb round, the comp-table bake, the abi check.** The
 phase table below carries the evidence per row.** Written 2026-10-11 at commit
 `a911468`; the owner ruled on
 every open point the same day (§0.1). P4 may start. Two of the three bench
@@ -4706,12 +4707,66 @@ both bakes through the shipped C — `plate bank: 2 extra keyframes at 434312, 8
 printed from `verify_js_bake.py`, which learned to report the table. 82 JS checks, all
 six suites green, all 24 host suites green, `idf.py build` clean.
 
-**Still open on this contract.** The composer's motion-split export (per-preset motion
-union choosing plate-bank versus sprite-region, and the eligibility note rewritten to the
-FORMAT 3 store story) is the editor slice this contract was cut for. The bench — the
-`bench_d32.sh` idiom on a browser-baked animated bundle with `fbgrab` settling requested
-versus delivered fps — rides the next orb visit. Preset-to-bank bakes are what those two
-steps measure; no preset is promised a frame count before them.
+### 31.2 — the split landed, the glass said yes (2026-10-20, same day as the ruling)
+
+**The bench passed on orb-B (`v1.1.0+acc917e`).** `tools/bench_d31.sh` with its fixture
+`tools/bench_d31_bundle.py`: the shipped av-kit dial with its still plate replaced by a
+four-frame keyframe bank of a turning medallion (colour-only planes at the catalogue
+head, `bg_frames 3, bg_fps 8, bg_loop 1`), host-projected through the shipped C and
+mirrored by `--from-bundle` before a board is touched. The device agreed with the host
+to the byte: the boot line — a line §31 added to the loader for exactly this grep —
+reads `plate bank: 4 keyframes @ 8 fps, loop`; the flip landed it live (`live=slot-B`,
+`active=d31-anim`, press-to-boundary 1 s, refill 384 ms / 2,478,080 B). Two `fbgrab`s
+0.16 s apart across one bank stride diffed **80.41%** and **4.65%** of pixels (loop
+phase decides which frame pair lands; hands alone account for under 1% — the plate is
+moving on the glass). The heap question the ruling reserved for the bench: `heap_psram`
+7,472,728 → 4,982,352 across the flip, the bundle's own 2.48 MB footprint, no surprise.
+
+**The tempo question §31.1 left open, answered (§31.1 step 5):** requested `bg_fps 8`
+lands the ladder at `every=2` per ≈ 62 ms, and the steady clock on the animated face
+measured **min 5 / median 7 / max 8** over the bench's 30 s window, first settling
+second excluded. No ladder clamp is needed at 8: the flush floor for a whole-panel bank
+is ~5 fps on this board, every shipped tourbillon loop runs at 4, and 4 sits inside the
+floor with margin. The first bench run's FAIL was the bench's own gate counting the
+flip's settle second as the floor — the window now starts 3 s past the boundary, which
+is the difference between measuring the flush floor and measuring the reboot.
+
+**The motion table, measured as §31 ordered it (step 3).**
+`tools/watch-composer/_selftest/motion-test.html` mounts every shipped preset through
+the component (with its real train, cfg and case — the live pick's state, which
+bake3-test's design-only mount left classic: the caged presets' unions differ by half
+between the two mounts), composes the plate at every frame including the wrap, and
+feeds the consecutive-frame union and its bbox to **`GorbBake.splitPolicy3`** — one
+policy function for sweep, composer, and suite alike (still under a 0.1%-panel shimmer
+band; carriage bank first when the box is local AND the train is caged; plate keyframe
+bank next, thinned by frame step before it ever refuses; the refusal sentence names the
+byte it tripped on). Fifteen presets, fifteen honest verdicts, zero refusals:
+
+| carrier | presets | figures |
+|---|---|---|
+| bank at native tempo | skeleton, orbital, opentour, kitetour | 8 keyframes @ 4 fps, 3,474,496 B |
+| bank, thinned | calendar, regulator (÷2), modern (÷3), sector, diver (÷2) | 7–8 keyframes, 3.0–3.5 MB |
+| still (shimmer) | aviator, station, luna, neon, phase, perpetual | union 47–65 px — AA jitter RGB565 swallows |
+| carriage (sprite) | none today | every local box measured un-caged; every caged train measured whole-panel |
+
+§29's "0 of 15 qualify" is superseded: 9 of 15 bake animated today, 6 bake as the
+stills they already are. The carriage carrier (`bakeClock3`'s `carriage` row — hand
+slot 5, masked contiguous planes, `tourbillon_n/fps` cross-set, four refusals mirroring
+the projection, C-parity proved) ships idle on this table and ready for the first
+custom dial whose motion measures local on a caged train.
+
+**The composer slice (step 4).** The Device-theme button runs `exportTheme3`: guard,
+measure, split, bake, download — the walk in the click path, the status line naming
+the carrier and the art meter, the note stating the comp-table refusal BEFORE the press
+for the six comp presets (the clock's comp mapping remains the open §31-adjacent slice).
+The note div now tells the FORMAT 3 store/flip contract the watch actually implements.
+`headless-ui.test.js` follows the new note text; `headless-bundle3.test.js` grew the
+carriage section and nine `splitPolicy3` checks (96 JS checks, all six suites green,
+all 24 host suites green, `idf.py build` clean).
+
+**Still open on this contract:** the hub's send-to-orb round (the button downloads;
+the hub's upload door is the receiver), the comp-table bake, and P8 consolidating the
+delivered-fps ladder across bank sizes.
 
 
 

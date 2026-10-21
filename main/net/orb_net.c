@@ -1712,6 +1712,36 @@ static const char *reason_name(uint8_t r)
     }
 }
 
+/* The chip's own account of why this boot happened, in one short word. C2 stores
+ * every code-blamed reset under the single string "unexpected reset" (orb_svc.c),
+ * so the ledger cannot tell a task-watchdog bite from a panic over the LAN. This
+ * is the missing class: esp_reset_reason() reports the reset that ENDED the last
+ * boot, read on the boot right after a fault it names the crash. The set mirrors
+ * orb_reset_blames_code plus the owner/supply family, so a faulting fleet node
+ * reads "task-wdt" or "panic" and nothing else says it. */
+static const char *rst_name(int rr)
+{
+    switch (rr) {
+    case ESP_RST_UNKNOWN:    return "unknown";
+    case ESP_RST_POWERON:    return "poweron";
+    case ESP_RST_EXT:        return "ext";
+    case ESP_RST_SW:         return "sw";
+    case ESP_RST_PANIC:      return "panic";
+    case ESP_RST_INT_WDT:    return "int-wdt";
+    case ESP_RST_TASK_WDT:   return "task-wdt";
+    case ESP_RST_WDT:        return "wdt";
+    case ESP_RST_DEEPSLEEP:  return "deepsleep";
+    case ESP_RST_BROWNOUT:   return "brownout";
+    case ESP_RST_SDIO:       return "sdio";
+    case ESP_RST_USB:        return "usb";
+    case ESP_RST_JTAG:       return "jtag";
+    case ESP_RST_EFUSE:      return "efuse";
+    case ESP_RST_PWR_GLITCH: return "pwr-glitch";
+    case ESP_RST_CPU_LOCKUP: return "cpu-lockup";
+    default:                 return "other";
+    }
+}
+
 /* The two codes that mean the station came down because WE took it down:
  * esp_wifi_disconnect() on a join, or a set_mode() that rebuilt the interface.
  * They must never feed the failure counter — otherwise toggling the AP from the
@@ -2118,11 +2148,13 @@ static esp_err_t h_status(httpd_req_t *req)
      *
      * The fw field grew when the image began carrying a declared version rather than
      * a bare git describe: it now reads v1.0.0+e1a2b3c-dirty at 20 B, and 25 B with
-     * an -rc.N in front of the metadata. That is inside the 377 B of headroom just
-     * measured, and the re-measure above is what settles it against hardware.
+     * an -rc.N in front of the metadata. The fw field fits the frame; the reset-pair
+     * paragraph below is the current bound on total width, and the re-measure above
+     * is what settles it against hardware.
      *
      * The ledger binds before this frame does. apps_json holds the whole array in
-     * 768 B, and the three compiled-in rows filled 440 B of it; two more rows fit
+     * 1024 B (raised from 768 B for the per-app reason field), and the three
+     * compiled-in rows filled 440 B of it; two more rows fit
      * at the observed 146 B per row. The ~110 B per row this comment carried was
      * low by a third, because declared and denied_mask joined the row after that
      * figure was set. Both buffers reject rather than clip: the ledger answers an
@@ -2140,6 +2172,16 @@ static esp_err_t h_status(httpd_req_t *req)
      * mac_addr.c:366-387 derives the SoftAP address as memcpy(base) then
      * mac[5] += 1, live while CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y.
      *
+     * The reset pair and per-app reason joined the frame on 2026-10-21 for the
+     * menu-fault investigation, and the frame grew 1536 -> 2048 to hold them.
+     * esp_reset_reason() is fixed for a boot's life, so "rst"/"rst_name" cost a
+     * flat ~34 B. The per-app "reason" costs ~28 B but only on a faulted row;
+     * "unexpected reset" is the widest string orb_svc ever stores, so 11 rows
+     * faulted together add ~300 B over the 1159 B the same ledger measured bare
+     * (orb-A, 2026-10-21). Worst case lands near 1510 B in a 2048 B frame. Both
+     * the ledgers reject rather than clip, so re-measure with `curl -s
+     * ORB/api/v1/status | wc -c` before trusting a fuller ledger over this cap.
+     *
      * Static, not stack, per the s_scan_json rule above: 1536 B on a 4 KB httpd
      * task was already most of the stack. D19's second name list per row pushed it
      * past the point where a glance at the size is a gamble. Handlers run serially
@@ -2147,7 +2189,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * place for a buffer this size. Nothing on the host checks this one. The
      * /api/v1/config buffer has host_tz_test.py recomputing its worst case from the
      * zone table, and this has no equivalent. */
-    static char json[1536];
+    static char json[2048];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -2201,6 +2243,14 @@ static esp_err_t h_status(httpd_req_t *req)
         rname = rbuf;
     }
 
+    /* The reset that ended the LAST boot, read once: esp_reset_reason() is fixed
+     * for a boot's life, so every poll of a booted node reports the same class.
+     * This is the field the C2 ledger cannot give — it stores every code reset as
+     * "unexpected reset", so a task-watchdog bite and a panic look identical from
+     * the hub. Here they read task-wdt and panic. See rst_name(). */
+    const int rst = (int)esp_reset_reason();
+    const char *rst_nm = rst_name(rst);
+
 #if CONFIG_ORB_IDLE_DIM_ENABLE
     /* Read once, before the format string, so the two booleans and the countdown
      * describe the same instant rather than three races across the task that owns
@@ -2240,7 +2290,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * the LAN — a broker nobody can audit is a broker nobody has to trust.
      * Rows, not walkable entries: the ledger is exactly about the failed
      * and disabled apps the carousel hides. */
-    static char apps_json[768];        /* static: h_config_get's argument —
+    static char apps_json[1024];       /* static: h_config_get's argument —
                                         * httpd handlers run serially */
     {
         int off = snprintf(apps_json, sizeof apps_json, "[");
@@ -2283,14 +2333,16 @@ static esp_err_t h_status(httpd_req_t *req)
             const int w = snprintf(apps_json + off, sizeof apps_json - (size_t)off,
                 "%s{\"slug\":\"%s\",\"grants\":[%s],\"declared\":[%s],\"calls\":%u,"
                 "\"denials\":%u,\"denied_mask\":%u,\"beat_ms\":%u,\"cfg_used\":%u,"
-                "\"faults\":%u,\"layers\":[%d,%u],\"failed\":%s,\"status\":\"%s\"}",
+                "\"faults\":%u,\"layers\":[%d,%u],\"failed\":%s,\"status\":\"%s\","
+                "\"reason\":\"%s\"}",
                 i ? "," : "", a->slug, grants, declared,
                 (unsigned)orb_svc_calls(a),
                 (unsigned)orb_svc_denials(a), (unsigned)orb_svc_denied_mask(a),
                 (unsigned)orb_svc_beat_ms(a),
                 (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
                 orb_svc_layers_live(a), (unsigned)orb_svc_layers_refused(a),
-                a->failed ? "true" : "false", orb_svc_last_status(a));
+                a->failed ? "true" : "false", orb_svc_last_status(a),
+                orb_svc_fault_reason(a));
             if (w < 0 || (size_t)w >= sizeof apps_json - (size_t)off) break;
             off += w;
         }
@@ -2365,6 +2417,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"idle\":{\"on\":%s,\"dimmed\":%s,\"since_s\":%u,\"timeout_s\":%u,"
         "\"lit_pct\":%u,\"dim_pct\":%u,\"wakes\":%u,\"worst_mg\":%d,"
         "\"worst_dark_mg\":%d,\"stamps\":%u,\"writes_failed\":%u},"
+        "\"rst\":%d,\"rst_name\":\"%s\","
         "\"apps\":%s}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
@@ -2403,6 +2456,7 @@ static esp_err_t h_status(httpd_req_t *req)
         idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
         (unsigned)idle_dim_activity_count(),
         (unsigned)idle_dim_level_write_fail_count(),
+        rst, rst_nm,
         apps_json);
 
     if (n < 0 || (size_t)n >= sizeof(json)) {

@@ -60,7 +60,15 @@
     const P = E.PRESETS[id];
     IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
     IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
-    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    // The live gallery pick (component dial row) sets train, cfg, case and metal
+    // with the design; mounting design-only would measure a classic train under
+    // every preset's furniture — the shape of bake3-test's §29 mount, widened
+    // here but not repeated. This page must measure the dial the author ships.
+    IT.state.train = P.train || 'classic';
+    IT.state.cfg = Object.assign({}, P.cfg || {});
+    IT.state.caseStyle = P.caseStyle || 'polished';
+    IT.state.caseMetal = P.caseMetal || 'auto';
+    IT.state.hands = P.hands || 'auto'; IT.state.handFinish = P.handFinish || 'auto';
     IT.buildMovement();
     if (!await settle()) throw new Error(id + ' never settled');
     return { F: IT.face(id), M: IT.base, gt: IT.gt, B: IT.B, fps: IT.F };

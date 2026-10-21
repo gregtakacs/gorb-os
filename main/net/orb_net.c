@@ -4501,6 +4501,38 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
 {
     char e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * ORB_APP_TITLE_MAX], caps[40];
     int seen = 0;
+    /* The compiled tier first (indices 0..ORB_APP_BASE-1). P4a streamed only
+     * cards; a built-in that C2 quarantined at boot is exactly the row an owner
+     * must see and clear, and it answers installed=false (init_all skipped it),
+     * so the card loop below would hide it. A built-in is always on and never
+     * togglable, so drawInst shows only a Clear button for a failed one, and the
+     * reason rides along so the fault is named rather than a bare FAILED chip. */
+    for (size_t i = 0; i < ORB_APP_BASE; i++) {
+        const orb_app_t *a = orb_app_row(i);
+        if (!a) continue;
+        json_put(e_slug, sizeof e_slug, a->slug);
+        json_put(e_title, sizeof e_title, a->title ? a->title : "");
+        if (orbapp_caps_names(orb_svc_grants(a), caps, sizeof caps) < 0)
+            caps[0] = '\0';
+        char e_reason[2 * 40];
+        json_put(e_reason, sizeof e_reason, orb_svc_fault_reason(a));
+        const int w = snprintf(row, rowsz,
+            "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
+            "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
+            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
+            "\"compiled\":true,\"reason\":\"%s\"}",
+            seen++ ? "," : "", e_slug, e_title, (int)i, caps,
+            a->period_ms, a->n_settings,
+            a->enabled ? "true" : "false", a->failed ? "true" : "false",
+            a->iface ? "true" : "false",
+            (a == orb_app_current() || a->active) ? "true" : "false", e_reason);
+        if (w < 0 || (size_t)w >= rowsz) {
+            ESP_LOGE(TAG, "compiled app row exceeded %d B", (int)rowsz);
+            httpd_resp_send_chunk(req, "{}", HTTPD_RESP_USE_STRLEN);
+            continue;
+        }
+        httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+    }
     for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
         const orb_app_t *a = orb_app_row(i);
         if (!a || !a->installed) continue;
@@ -4730,6 +4762,35 @@ static esp_err_t h_app_enable(httpd_req_t *req)
     char b[224];
     snprintf(b, sizeof b, "{\"state\":\"%s\",\"slug\":\"%s\"}",
              strcmp(onv, "1") == 0 ? "enabled" : "disabled", id);
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/apps/clear?id=<slug> — the fault-record door, the third owner
+ * door (P4a's set). A built-in app that failed twice at boot cannot use the
+ * enable door above to revive (it refuses non-card rows, and a quarantine also
+ * leaves installed=false), and the only other way back was RESET ALL — which
+ * wipes the owner's WiFi with it. This clears just the fault record; a reboot
+ * rebuilds the app into the carousel. Card rows are accepted too, so an owner
+ * can clear a failed card app without uninstalling it. */
+static esp_err_t h_app_clear(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
+    }
+    char why[144] = "";
+    const esp_err_t e = orb_app_clear_faults(id, why, sizeof why);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, door_http_status(e));
+        char b[208];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[224];
+    snprintf(b, sizeof b, "{\"state\":\"cleared\",\"slug\":\"%s\",\"reboot\":true}", id);
     return httpd_resp_sendstr(req, b);
 }
 
@@ -5543,15 +5604,16 @@ static const char HTML_APPS[] =
 "var h='<div class=row><b>On the dial</b></div>';"
 "for(var i=0;i<x.length;i++){var a=x[i];"
 "h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):esc(a.slug))+'</div>';"
-"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 slot '+a.slot+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
+"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+(a.compiled?'built in':'slot '+a.slot)+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
 "h=h+'<div class=sub>'+(a.enabled?'on the carousel':'turned off')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
 "h=h+'<div style=\"margin-top:.3rem\">';"
-"h=h+(a.enabled?'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',0)\">Turn off</button> ':'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',1)\">Turn on</button> ');"
-"h=h+'<button onclick=\"unin(\\''+esc(a.slug)+'\\')\">Uninstall</button></div></div>';}"
+"h=h+(a.compiled?'':(a.enabled?'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',0)\">Turn off</button> ':'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',1)\">Turn on</button> '));"
+"h=h+(a.failed?'<button onclick=\"clearFault(\\''+esc(a.slug)+'\\')\">Clear fault</button>':'')+(a.compiled?'':'<button onclick=\"unin(\\''+esc(a.slug)+'\\')\">Uninstall</button>')+(a.compiled&&!a.failed?'built into the firmware - always on':'')+'</div></div>';}"
 "I.innerHTML=h;"
 "}"
 "function setOn(s,on){say((on?'turning on ':'turning off ')+s+'...','');j('/api/v1/apps/enable?id='+encodeURIComponent(s)+'&on='+on,{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say(on?'turned on - it walks the dial now':'turned off - the slot keeps its place','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions; the file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function clearFault(s){if(!confirm('Clear the fault record for '+s+'? A reboot brings it back; WiFi and the card are untouched.')){return;}say('clearing the fault for '+s+'...','');j('/api/v1/apps/clear?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('fault cleared - reboot the dial to rebuild it','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
 "</script></body></html>";
@@ -5739,6 +5801,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
         { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
+        { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

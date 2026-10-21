@@ -60,9 +60,10 @@ var version = "dev"
 type Server struct {
 	device *orbnet.Client // proxy/management-tuned: a busy orb's httpd can idle >0.4 s before first byte
 	orb    *orbnet.Client // status-probe tuned: short timeout for a single known IP
-	// ota is the upload-tuned client: one app image POSTed to /api/v1/ota is
-	// minutes of flash erase and write with the cache off, and reusing the 8 s
-	// management client would cancel every honest update mid-image.
+	// ota is the upload-tuned client: app images to /api/v1/ota and .orbtheme
+	// containers to /api/v1/sd/theme are minutes of flash and card writes, and
+	// reusing the 8 s management client would cancel every honest transfer
+	// mid-body.
 	ota     *orbnet.Client
 	repoDir string // the gorb-os clone root, for the Theme Editor only
 	// ops is the per-port operation registry: who holds which cable, doing what,
@@ -641,6 +642,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// module to land in (internal/orbnet/themes.go).
 	mux.Handle("/api/theme/list", s.requireControl(http.HandlerFunc(s.handleThemeList)))
 	mux.Handle("/api/theme/install", s.requireControl(http.HandlerFunc(s.handleThemeInstall)))
+	mux.Handle("/api/theme/flip", s.requireControl(http.HandlerFunc(s.handleThemeFlip)))
 	mux.Handle("/api/theme/default", s.requireControl(http.HandlerFunc(s.handleThemeDefault)))
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))

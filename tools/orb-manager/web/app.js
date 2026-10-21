@@ -2128,16 +2128,41 @@ function themeRow(t, state, list) {
   }
   const use = document.createElement("button");
   use.className = "ghost";
-  use.textContent = "Use";
+  use.textContent = "Store on the dial";
   use.disabled = !t.ok || t.active;
+  // Store is the firmware's FIRST press; the door answers once the copy is queued,
+  // seconds before the row's slot witness exists. So the press is not over when the
+  // POST returns: watchThemeJob follows the row to its outcome, and the state line
+  // says running, stored, or refused — never a silent no-op.
   use.onclick = async () => {
     use.disabled = true;
-    state.textContent = "storing " + t.name + " — the orb copies it to the card; the dial updates when P6.5 lands";
-    try { await themePost("/api/theme/install", { ip: themeIP, id: t.id }); }
-    catch (e) { state.textContent = "install refused: " + e.message; }
+    state.textContent = "storing " + t.name + " \u2014 queued; the copy takes a few seconds";
+    try {
+      await themePost("/api/theme/install", { ip: themeIP, id: t.id });
+      await watchThemeJob(state, t, "storing");
+    } catch (e) { state.textContent = "store refused: " + e.message; }
     use.disabled = false;
   };
   li.appendChild(use);
+  // The second press of the two-stage form: the flip, offered on exactly the rows the
+  // firmware offers it — one whose stored copy holds a slot and which is not already
+  // on the glass. The flip reboots the orb, so the wait is for the device to come
+  // back with the new face drawn.
+  if (t.ok && t.slot && !t.active) {
+    const flip = document.createElement("button");
+    flip.className = "ghost";
+    flip.textContent = "Put it on the dial";
+    flip.onclick = async () => {
+      flip.disabled = true;
+      state.textContent = "flipping " + t.name + " \u2014 the orb reboots onto it";
+      try {
+        await themePost("/api/theme/flip", { ip: themeIP, id: t.id });
+        await watchThemeJob(state, t, "flipping");
+      } catch (e) { state.textContent = "flip refused: " + e.message; }
+      flip.disabled = false;
+    };
+    li.appendChild(flip);
+  }
   // Delete is the one theme action that cannot be undone from here, so it asks
   // first: the firmware's own delete is a plain unlink on the card. The confirm names
   // the theme the way the operator knows it and quotes the id being removed, because
@@ -2154,6 +2179,45 @@ function themeRow(t, state, list) {
   };
   li.appendChild(del);
   return li;
+}
+
+// watchThemeJob follows one row after a store or a flip, from the queue ack to the
+// witness the worker leaves behind. The store door and the flip door both answer as
+// soon as the job is queued; the device then spends seconds copying (store) or goes
+// away for a reboot (flip). A press without this follow-up is the silent button this
+// card shipped with: the row never changed on screen and the operator could not tell
+// a running copy from a dead button. The outcome always names the firmware's own
+// reason: the row's slot for a stored theme, the list's try witness for a refusal,
+// the drawn name for a flip, and a re-read prompt when the orb stays quiet past two
+// minutes.
+async function watchThemeJob(state, t, kind) {
+  const busy = kind === "storing" ? "storing " : "flipping ";
+  for (let n = 0; n < 100; n++) {
+    await new Promise((res) => setTimeout(res, n < 60 ? 1200 : 3000));
+    let d;
+    try { d = await themePost("/api/theme/list", { ip: themeIP }); }
+    catch (e) { state.textContent = busy + t.name + " \u2014 the orb is mid-reboot; waiting"; continue; }
+    if (d.job_busy) { state.textContent = busy + t.name + " \u2014 the copy is running, " + n + " s"; continue; }
+    if (d.try_id === t.id && d.try_why) {
+      state.textContent = "could not " + (kind === "storing" ? "store" : "flip") + " " + t.name + ": " + d.try_why;
+      return;
+    }
+    const row = (d.themes || []).find((x) => x.id === t.id);
+    if (kind === "storing" && row && row.slot) {
+      state.textContent = "stored " + t.name + " in slot " + row.slot + " \u2014 press Put it on the dial";
+      await loadThemes(themeIP);
+      return;
+    }
+    if (kind === "flipping" && d.active === t.name) {
+      state.textContent = "the dial is drawing " + t.name;
+      await loadThemes(themeIP);
+      return;
+    }
+    state.textContent = busy + t.name + " finished without its witness \u2014 the rows were re-read";
+    await loadThemes(themeIP);
+    return;
+  }
+  state.textContent = busy + t.name + " still going after two minutes \u2014 re-read the card";
 }
 
 $("#mn-default").onclick = async () => {

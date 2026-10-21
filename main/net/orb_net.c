@@ -66,6 +66,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_theme.h"
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
 #include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
+#include "orb_jobs.h"     /* h_sd: the job-busy witness the themes page polls after a press */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 
@@ -4175,7 +4176,8 @@ static esp_err_t h_sd(httpd_req_t *req)
      * + 113 (name) + 12 (id) + 115 (why) + ~22 B of the P6.4 fmt/sects pair
      * + ~12 B of §26 slice 3's slot letter = ~374 B a row, ~4.4 kB for 12 of them, plus ~700 B of the original base fields, ~190 B
      * more for the staged pair at its full-width why and two 10-digit refill figures,
-     * and ~50 B for the bundle pair at two 10-digit figures = ~940 B. Measured against
+     * and ~50 B for the bundle pair at two 10-digit figures and ~15 B for the
+     * job-busy witness = ~955 B. Measured against
      * the live device at 192.168.2.34: the same route answers 653 B today with four
      * short-named themes and every new field empty, and a truncated body would look
      * exactly like the empty list "no card" prints — which is why an overflow is an
@@ -4214,7 +4216,7 @@ static esp_err_t h_sd(httpd_req_t *req)
         "\"source\":\"%s\",\"active\":\"%s\",\"live\":\"%s\",\"card_count\":%d,"
         "\"try_id\":\"%s\",\"try_why\":\"%s\",\"damage_id\":\"%s\",\"damage_why\":\"%s\","
         "\"staged_id\":\"%s\",\"staged_why\":\"%s\",\"refill_ms\":%u,\"refill_bytes\":%u,"
-        "\"bundle_ms\":%u,\"bundle_bytes\":%u,"
+        "\"bundle_ms\":%u,\"bundle_bytes\":%u,\"job_busy\":%s,"
         "\"themes\":[",
         orb_sd_mounted() ? "true" : "false",
         orb_sd_mounted() ? orb_sd_card_id() : "",
@@ -4223,7 +4225,11 @@ static esp_err_t h_sd(httpd_req_t *req)
         orb_theme_source(), active_name, orb_theme_live(), n > 0 ? n : 0,
         t_id, t_why, d_id, d_why, stg_id, stg_why,
         (unsigned)orb_theme_refill_ms(), (unsigned)orb_theme_refill_bytes(),
-        (unsigned)orb_theme_bundle_ms(), (unsigned)orb_theme_bundle_bytes());
+        (unsigned)orb_theme_bundle_ms(), (unsigned)orb_theme_bundle_bytes(),
+        /* The press the owner just made is a queued job, not a done one: without this
+         * witness a store in flight and a store that never started look the same from
+         * the page, which is the silent button §24.5(2) bans. ~15 B. */
+        orb_jobs_busy() ? "true" : "false");
 
     bool too_big = false;
     for (int i = 0; n > 0 && i < n; i++) {
@@ -5320,6 +5326,7 @@ static const char HTML_THEMES[] =
 "h=h+'</div>';"
 "if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
+"if(data.job_busy){h=h+'<div class=row><b>a theme job is running</b> <span class=sub>the copy is on the worker; the rows update when it lands</span></div>';}"
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
 "h=h+'<div class=row><div class=nm>'+esc(nm)"
 "+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
@@ -5328,7 +5335,7 @@ static const char HTML_THEMES[] =
 "if(data.damage_id==t.id&&data.damage_why){h=h+'<div class=sub>THE DIAL WOULD NOT LOAD IT: '+esc(data.damage_why)+'</div>';}"
 "if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
 "if(t.ok&&t.slot&&!t.active){h=h+' <button onclick=\"flip(\\''+t.id+'\\')\">Put it on the dial</button>';}"
-"else{h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why)+'</div>';}"
+"if(!t.ok){h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why||'the card copy did not verify')+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
 "L.innerHTML=h;}"
 
@@ -5336,21 +5343,42 @@ static const char HTML_THEMES[] =
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "function store(id){var nm=ROWS[id]||id;"
 "if(!confirm('Copy '+nm+' into the dial? It goes into the slot the dial is not drawing. A power cut during the copy leaves the dial drawing what it draws, and storing again recovers it.')){return;}"
-"say('storing '+nm+'...','');"
+"say('storing '+nm+' - queued; the copy takes a few seconds and the dial does not move yet','');"
 "j('/api/v1/sd/bundle?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('could not store '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('storing '+nm+' - the dial keeps drawing what it draws','ok');setTimeout(refresh,1500);});}"
+"watch('store',id,nm,0,0);}).catch(function(){say('the store request did not reach the orb - nothing was copied','bad');});}"
+/* The store door answers the moment the job is queued; the copy itself runs seconds
+ * later on the worker. So the press is not over when the door answers: read the card
+ * until orb_jobs goes quiet, then report what the worker actually left behind - the
+ * row's slot on success, its try witness on refusal. D11's failure-stays-honest rule,
+ * applied to the button instead of the glass. */
+"function watch(kind,id,nm,n,down){"
+"j('/api/v1/sd').then(function(r){var d=r.d;"
+"if(d&&d.job_busy){if(n>120){say((kind=='store'?'still storing ':'still flipping ')+nm+' after two minutes - reload this page for the outcome','bad');return;}"
+"say((kind=='store'?'storing ':'flipping ')+nm+' - copying, '+n+' s so far','');"
+"setTimeout(function(){watch(kind,id,nm,n+1,down);},1000);return;}"
+"data=d;draw();"
+"if(d&&d.try_id==id&&d.try_why){say((kind=='store'?'could not store ':'could not flip ')+nm+': '+d.try_why,'bad');return;}"
+"if(kind=='store'){var row=null;for(var i=0;d&&d.themes&&i<d.themes.length;i++){if(d.themes[i].id==id)row=d.themes[i];}"
+"if(row&&row.slot){say('stored '+nm+' in slot '+row.slot+' - press Put it on the dial to draw it','ok');}"
+"else{say('the copy finished with no slot on the row - press Rescan card to see why','bad');}return;}"
+"if(d&&d.active==nm){say('the orb is back - dial on '+(nm||'the factory face'),'ok');return;}"
+"if(down||n>6){say('the orb answered but is not on '+(nm||'the factory face')+' - reload this page and check the row','bad');return;}"
+"setTimeout(function(){watch(kind,id,nm,n+1,down);},1500);},"
+"function(){if(n>120){say('the orb stopped answering - reload this page','bad');return;}"
+"setTimeout(function(){watch(kind,id,nm,n+1,1);},1500);});}"
 "function flip(id){var nm=ROWS[id]||id;"
 "if(!confirm('Put '+nm+' on the dial? The orb reboots onto the stored copy.')){return;}"
 "say('flipping '+nm+'...','');"
 "j('/api/v1/sd/flip?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('could not flip '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('flipping '+nm+' - the orb is rebooting','ok');setTimeout(refresh,1500);});}"
+"say('flipping '+nm+' - the orb is rebooting; this page waits for it to come back','');"
+"watch('flip',id,nm,0,0);}).catch(function(){say('the flip request did not reach the orb','bad');});}"
 "function tofactory(){if(!confirm('Go back to the factory dial? The orb reboots.')){return;}"
 "say('choosing the factory dial...','');"
 "j('/api/v1/sd/default',{method:'POST'}).then(function(r){"
 "if(!r.ok){say('could not choose it: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('factory dial chosen - the orb is rebooting','ok');refresh();});}"
+"say('factory dial chosen - the orb is rebooting','ok');watch('flip','','',0,0);}).catch(function(){say('the request did not reach the orb','bad');});}"
 "function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
 "j('/api/v1/sd/delete?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();});}"

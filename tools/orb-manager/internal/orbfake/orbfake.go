@@ -36,6 +36,10 @@ type Theme struct {
 	OK      bool
 	Active  bool
 	Changed bool
+	// Slot mirrors h_sd's row witness: "A"/"B" when a stored copy of this file
+	// sits in that flash slot, "" when nothing stored it. serveBundle lands it on
+	// acknowledge, because the double has no worker for the copy to lag behind.
+	Slot string
 }
 
 // Orb is the fake. The zero value is not useful; build one with New.
@@ -239,17 +243,17 @@ func (o *Orb) serveSD(w http.ResponseWriter) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var b strings.Builder
-	fmt.Fprintf(&b, `{"mounted":%t,"card":%q,"uploading":false,"total_mb":7581,"free_mb":7100,`+
+	fmt.Fprintf(&b, `{"mounted":%t,"card":%q,"uploading":false,"job_busy":%t,"total_mb":7581,"free_mb":7100,`+
 		`"source":%q,"active":%q,"live":%q,"card_count":%d,"try_id":%q,"try_why":%q,`+
 		`"damage_id":%q,"damage_why":%q,"themes":[`,
-		o.Mounted, o.MountedCard(), o.sourceLocked(), o.active, o.live, len(o.themes),
+		o.Mounted, o.MountedCard(), o.JobBusy, o.sourceLocked(), o.active, o.live, len(o.themes),
 		o.tryID, o.tryWhy, o.damageID, o.damageWhy)
 	for i, t := range o.themes {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		fmt.Fprintf(&b, `{"name":%q,"id":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t}`,
-			t.Name, t.ID, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed)
+		fmt.Fprintf(&b, `{"name":%q,"id":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"slot":%q}`,
+			t.Name, t.ID, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Slot)
 	}
 	b.WriteString("]}")
 	writeJSON(w, 200, b.String())
@@ -304,6 +308,13 @@ func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, fmt.Sprintf(`{"error":"job refused: %s"}`, jsonSafe(t.Why)))
 		return
 	}
+	// The row's slot witness lands with the ack. The device lands it when its worker
+	// finishes copying, seconds after this same reply; the double has no worker, and
+	// a hub that must poll for a witness its fake never gives would leave the
+	// store-then-watch flow the page implements entirely untested.
+	o.mu.Lock()
+	t.Slot = "B"
+	o.mu.Unlock()
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"none"}`, id))
 }
 

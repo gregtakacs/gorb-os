@@ -49,6 +49,12 @@ type ThemeEntry struct {
 	OK      bool   `json:"ok"`
 	Active  bool   `json:"active"`
 	Changed bool   `json:"changed"`
+	// Slot is the letter of the flash slot holding this file's STORED copy, empty
+	// when nothing stored it. It is what tells the caller a store landed — the door
+	// acks the queue, not the copy — and it is the row state that makes the flip
+	// press meaningful (h_sd's own comment: the flip button belongs on a row that
+	// has one and is not already on the glass).
+	Slot string `json:"slot"`
 }
 
 // ThemeList is the part of h_sd's reply the card needs. Active is the installed
@@ -57,9 +63,14 @@ type ThemeEntry struct {
 // same 12 hex. Themes is an empty list rather than nil: the client takes .length on
 // it, and null has none.
 type ThemeList struct {
-	Mounted   bool         `json:"mounted"`
-	Card      string       `json:"card"`
-	Uploading bool         `json:"uploading"`
+	Mounted   bool   `json:"mounted"`
+	Card      string `json:"card"`
+	Uploading bool   `json:"uploading"`
+	// JobBusy mirrors orb_jobs_busy: a queued or running theme job. The store and
+	// flip doors ack the queue, so this is the only witness that separates "the
+	// copy is happening" from "the press went nowhere" while a job is in flight.
+	JobBusy bool `json:"job_busy"`
+
 	TotalMB   uint32       `json:"total_mb"`
 	FreeMB    uint32       `json:"free_mb"`
 	Source    string       `json:"source"`
@@ -162,6 +173,19 @@ func (c *Client) ThemeStore(ip, id string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return c.devicePost(ip, "/api/v1/sd/bundle?id="+url.QueryEscape(id), nil, "")
+}
+
+// ThemeFlip queues POST /api/v1/sd/flip?id= — §26's flip door, the second press of
+// the two-stage form: the store put the bundle in a slot and the glass never moved;
+// the flip names that slot to the choice key and reboots the orb onto it. The ack
+// arrives before the reboot and says reboot:automatic, so a nil error means the orb
+// WILL go away for a boot — the caller waits for it to come back and re-reads the
+// row, exactly as h_bundle_flip's firmware comment instructs.
+func (c *Client) ThemeFlip(ip, id string) (json.RawMessage, error) {
+	if err := CheckThemeID(id); err != nil {
+		return nil, err
+	}
+	return c.devicePost(ip, "/api/v1/sd/flip?id="+url.QueryEscape(id), nil, "")
 }
 
 // ThemeDefault queues the same job for the built-in fallback face. It takes no

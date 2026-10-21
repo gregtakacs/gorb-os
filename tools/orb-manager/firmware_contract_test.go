@@ -244,8 +244,12 @@ func TestUploadCeilingMatchesTheHeader(t *testing.T) {
 func themeRowJSONTags(t *testing.T) []string {
 	t.Helper()
 	tags := jsonTagsOf(t, orbnet.ThemeEntry{})
-	if len(tags) != 8 {
-		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd emits 8, and this test only checks the ones the struct declares", len(tags), tags)
+	// Nine, not eight: §26 slice 3 put slot on h_sd's row so the flip button belongs
+	// only to rows with a stored copy, and the hub card now reads that witness to
+	// report a store landing. The firmware row also carries fmt and sects, which the
+	// card does not decode and this test therefore does not check.
+	if len(tags) != 9 {
+		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is nine, and this test only checks the ones the struct declares", len(tags), tags)
 	}
 	return tags
 }

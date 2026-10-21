@@ -213,11 +213,11 @@ func (c *Client) postJSON(ip, path string, payload any) (json.RawMessage, error)
 }
 
 // PostImage POSTs raw bytes — an app image — to one device route and returns the
-// reply. It exists for /api/v1/ota, which is the one orb endpoint whose body is
-// not JSON: the firmware stages the bytes it receives with Content-Length as the
-// declared size (orb_net.c h_ora), so this sends a real length rather than
-// streaming through a hub the size of the image. The caller owns the bytes;
-// nothing here reads a disk.
+// reply. It exists for /api/v1/ota, one of the two orb endpoints whose body is
+// not JSON (h_theme_upload takes a raw container the same way): the firmware
+// stages the bytes it receives with Content-Length as the declared size, so this
+// sends a real length rather than streaming through a hub the size of the image.
+// The caller owns the bytes; nothing here reads a disk.
 func (c *Client) PostImage(ctx context.Context, ip, path string, contentType string, blob []byte) (json.RawMessage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(ip, path), bytes.NewReader(blob))
 	if err != nil {

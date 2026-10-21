@@ -1223,7 +1223,7 @@ class Component extends DCLogic {
     return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type: 'application/zip' });
   }
   busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
-  frameCanvas(f, hidden, date, compOnly, noHands) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden, compOnly, noHands); return c; }
+  frameCanvas(f, hidden, date, compOnly, noHands, noSh) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden, compOnly, noHands, noSh); return c; }
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
   // hands at 10:09:36 and the moon at PREVIEW_MOON whatever mode the preview is playing in.
   previewCanvas() { const f = Math.min(this.state.frame, Math.max(0, this.gt.length - 1)); return this.frameCanvas(f, {}, WatchEngine.previewDate()); }
@@ -1815,13 +1815,21 @@ class Component extends DCLogic {
     return { rows: out, compB };
   }
   /* D34's pointer table, rendered. A pointer row costs ONE masked plate: the dial is
-   * drawn twice at the zero pose — hand shown and hand hidden — and the diff of the two
-   * renders IS the hand, shadow and all; the box around that diff is the plate. The
-   * pivot is the engine's own layout centre for the subdial (face().outline), the very
-   * point its hand turns about, and the box grows to include it: orb_clock3.c refuses a
-   * rotation whose pivot lies outside its own plate, and a hand with barely a tail could
-   * otherwise crop it off. Live comps hosted here punch as apertures — the hand sweeps
-   * UNDER the window, the same way a host tile in the plate table punches under its row. */
+   * drawn twice at the zero pose — hand shown (cast shadow off) and hand hidden — and
+   * the diff of the two renders is the hand's ink; the box around that diff is the
+   * plate. The pointer's drop shadow is NOT in that plate: it goes down as §25.2's
+   * twin, a second aux row whose pixel is the blurred black silhouette of the same
+   * pose and whose pivot column seats its rotation centre on hand centre + light, so
+   * the offset stays fixed in screen space while the pointer turns. An opaque shadow
+   * baked into the hand plate is the artifact the twin exists to kill: it carries the
+   * plate that sat under the bake pose and smears it along the sweep, worst at the tip.
+   * The pivot is the engine's own layout centre for the subdial (face().outline), the
+   * very point its hand turns about, and the box grows to include it: orb_clock3.c
+   * refuses a rotation whose pivot lies outside its own plate, and a hand with barely
+   * a tail could otherwise crop it off. Live comps hosted here punch as apertures —
+   * the hand sweeps UNDER the window, the same way a host tile in the plate table
+   * punches under its row — and the twin is punched to the same holes, because the
+   * ink the window hides cannot cast through it. */
   async auxPass3(pp, onlyBase) {
     const W = 466, PANEL = W * W;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer);
@@ -1836,7 +1844,7 @@ class Component extends DCLogic {
         : r.src === 'minute' ? new Date(2026, 0, 1, 0, r.vmin, 0)
         : (r.src === 'hour12' || r.src === 'hour24') ? new Date(2026, 0, 1, r.vmin, 0, 0) : null;
       if (!pose) return { refuse: 'the pointer \u201c' + r.id + '\u201d reads source \u201c' + r.src + '\u201d: the bake can pose a hand at zero for second, minute and the two hour rings and for nothing else' };
-      const hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)]));
+      const hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)], null, 1));   // no cast shadow: the twin carries it
       const bare = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, pose, [String(r.id)]));
       let bx = W, by = W, bx2 = -1, by2 = -1;
       for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
@@ -1873,8 +1881,40 @@ class Component extends DCLogic {
         rgba = sx.getImageData(0, 0, w, h).data;
       }
       auxB += w * h * 3;
-      out.push({ slot: ri, src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
-                 x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } });
+      const row = { slot: ri, src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
+                    x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } };
+      /* The pointer's own cast shadow, down the §25.2 twin the centred hands take:
+       * the plate carries ink only, and the shadow is a second row — a padded black
+       * blur of the same pose-0 silhouette — whose pivot column lands its rotation
+       * centre on hand centre + light, so the offset stays screen-fixed while the
+       * pointer turns. The baker (orbtheme-baker.js) writes it as the next slot with
+       * the row flag orb_clock3.c's AUX_F_SHADOW names; an opaque shadow baked into
+       * the hand plate is the artifact this row exists to kill: it carries the plate
+       * that sat under the bake pose and smears it along as the pointer sweeps. */
+      const hd = (this.face().hands || []).find((h) => String(h.id) === String(r.id));
+      if (hd) {
+        const sh = this.face().handShadow(hd), bl = sh.blur, pd = Math.ceil(bl * 1.5 + 2);
+        const dx = Math.round(sh.dx), dy = Math.round(sh.dy);
+        if (sh.alpha > 0.01) {
+          const sil = document.createElement('canvas'); sil.width = w; sil.height = h;
+          const ix = sil.getContext('2d');
+          ix.putImageData(new ImageData(new Uint8ClampedArray(o.buffer, 0, o.length), w, h), 0, 0);
+          ix.globalCompositeOperation = 'source-in'; ix.fillStyle = '#000'; ix.fillRect(0, 0, w, h);
+          const tw = w + 2 * pd, th = h + 2 * pd, tx0 = bx - pd + dx, ty0 = by - pd + dy;
+          const tc = document.createElement('canvas'); tc.width = tw; tc.height = th;
+          const txc = tc.getContext('2d'); txc.globalAlpha = sh.alpha;
+          if (bl > 0.1) txc.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)';
+          txc.drawImage(sil, pd, pd);
+          scratch.width = tw; scratch.height = th;
+          sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, tw, th); sx.drawImage(tc, 0, 0);
+          if (holes.length) { sx.save(); sx.translate(-tx0, -ty0); WatchEngine.punchHoles(sx, holes); sx.restore(); }
+          const simg = sx.getImageData(0, 0, tw, th);
+          row.shadow = { rgba: new Uint8Array(simg.data.buffer), w: tw, h: th,
+                         x: tx0, y: ty0, pivot_x: gx - bx + pd, pivot_y: gy - by + pd };
+          auxB += tw * th * 3;
+        }
+      }
+      out.push(row);
       await new Promise((res) => setTimeout(res));   // yield the tab between renders
     }
     return { rows: out, auxB: auxB };

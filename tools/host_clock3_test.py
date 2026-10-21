@@ -285,16 +285,22 @@ int main(int argc, char **argv)
                c->first, c->off, c->frame_bytes, c->value_min, c->scale, c->show);
     }
     printf("n_aux %u\n", io.out_n_aux);
-    /* idx tag kind(motion) src x y w h pivot span zero vmin vmax show — every field
-     * the row carried, read back off the struct the projection filled. A pointer that
-     * arrived with a zero vmax would have been refused, so a printed vmax is itself
-     * the proof the guards let a legal row through. */
+    /* idx tag kind(motion) src x y w h pivot span zero vmin vmax show flags pivotx
+     * pivoty centerx centery — every field the row carried, read back off the struct
+     * the projection filled. A pointer that arrived with a zero vmax would have been
+     * refused, so a printed vmax is itself the proof the guards let a legal row
+     * through. The flag word is the projection's own mapping (CLK_FLAG_AUX_SHADOW =
+     * twin), which is how the FORMAT 3 row flag bit and the FORMAT 2 dialect prove
+     * out as one contract, and the pivot/centre pair is what lets the twin's line
+     * read as §25.2's identity: centre = hand centre + light. */
     for (uint32_t i = 0; i < io.out_n_aux; i++) {
         const clk_aux_t *a = &auxs[i];
-        printf("aux %u %u %u %u %d %d %u %u %d %d %d %u %u %u\n", i,
+        printf("aux %u %u %u %u %d %d %u %u %d %d %d %u %u %u %u %d %d %d %d\n", i,
                a->tag, a->kind, a->src, a->spr.offx, a->spr.offy, a->spr.w, a->spr.h,
                (int)a->span, (int)a->zero, (int)a->value_min, (unsigned)a->value_max,
-               (unsigned)a->spr.color_off, a->spr.show);
+               (unsigned)a->spr.color_off, a->spr.show, (unsigned)a->flags,
+               (int)a->spr.pivotx, (int)a->spr.pivoty,
+               (int)a->spr.centerx, (int)a->spr.centery);
     }
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
@@ -358,10 +364,13 @@ def parsed(out):
         elif w[0] in ("n_comps", "n_aux"):
             pass
         elif w[0] == "aux":
-            # idx tag kind src x y w h span zero vmin vmax color_off show — the harness's
-            # own order, named here so the battery reads a field and not an index.
+            # idx tag kind src x y w h span zero vmin vmax color_off show flags
+            # pivotx pivoty centerx centery — the harness's own order, named here so
+            # the battery reads a field and not an index. flags carries the
+            # projection's CLK_FLAG_AUX_SHADOW (256).
             aux.append(dict(zip(("i", "tag", "kind", "src", "x", "y", "w", "h", "span",
-                                 "zero", "vmin", "vmax", "off", "show"),
+                                 "zero", "vmin", "vmax", "off", "show", "flags",
+                                 "pivotx", "pivoty", "cx", "cy"),
                                 (int(v) for v in w[1:]))))
         elif w[0] == "comp":
             comps.append([int(x) for x in w[1:]])
@@ -960,6 +969,57 @@ def d34_battery(exe, base):
         a = parsed(out)["aux"][0]
         ck(a["kind"] == 3 and a["span"] == 90 and a["zero"] == -45,
            "the slide did not project its own motion and pixel span: %s" % a)
+
+    # §26 slice 4, the pointer's shadow twin: the flag rides the u8 row column as
+    # bit 4, projects onto the runtime pairing flag, and lands the twin's centre on
+    # the hand's centre plus the light — the §25.2 identity the centred hands'
+    # shadows already carry, said now by the aux table. The hand row forged above
+    # draws at (300,120) 28x64 about (14,56); its twin adds two pad each side and
+    # takes the light (4,4): draw point (302,122), pivot (16,58), centre (318,180).
+    def add_twin(flag=1 << 4, n=1):
+        def m(els, sc, spr, art):
+            for k2 in range(n):
+                w, h, x0, y0 = 32 + 8 * k2, 68 + 4 * k2, 302 + 2 * k2, 122 + 2 * k2
+                off = len(art)
+                art += b"\x33" * (w * h * 3)
+                els.append(dict(ts.blank_element(), **{
+                    "n": max(e["n"] for e in els) + 1, "class": ts.CLASS_AUX,
+                    "slot": k2 + 1, "order": 3, "alpha": 255, "frame0": len(spr),
+                    "n_frames": 1, "x": x0, "y": y0, "w": w, "h": h,
+                    "pivot_x": 16 + 4 * k2, "pivot_y": 58 + 2 * k2, "flags": flag,
+                    "kind": 0, "src": ts.SOURCES.index("second"),
+                    "span": 3600, "zero": 0, "vmin": 0, "vmax": 60}))
+                spr.append({"off": off, "size": w * h * 3, "w": w, "h": h})
+        return m
+
+    tw = d34_forge(base, "twin", mutate=add_twin())
+    rc, out, err = run(exe, "--dump3f", tw)
+    ck(rc == 0, "the device refused a pointer with its shadow twin: %s" % (out or err)[:200])
+    if rc == 0:
+        rows = parsed(out)["aux"]
+        ck(len(rows) == 2, "the twin did not project as the second row: %d rows" % len(rows))
+        ck(rows[0]["flags"] == 0 and rows[1]["flags"] == 256,
+           "the twin flag did not project as CLK_FLAG_AUX_SHADOW on the twin row alone: %s" % rows)
+        ck(rows[1]["cx"] == rows[0]["cx"] + 4 and rows[1]["cy"] == rows[0]["cy"] + 4,
+           "the twin's centre is not the hand's centre plus the light: %s vs %s" % (rows[1], rows[0]))
+
+    # Orphans are the lies this flag makes possible, and the door names them in the
+    # pairing's own words: a twin with no hand before it has no pose to take, and a
+    # twin under a twin darkens a shadow, which is a smudge with a story.
+    def orphan(els, sc, spr, art):
+        for e in els:
+            if e["class"] == ts.CLASS_AUX:
+                e["slot"] = 1
+                e["flags"] = 1 << 4
+    orp = d34_forge(base, "orph", mutate=orphan)
+    rc, out, err = run(exe, "--refuse", orp)
+    ck(rc == 0 and "no hand before it" in out,
+       "a twin with no hand before it: the device said %r, not the pairing sentence" % (out or err)[:180])
+    stk = d34_forge(base, "stack", mutate=add_twin(n=2))
+    rc, out, err = run(exe, "--refuse", stk)
+    ck(rc == 0 and "under another shadow" in out,
+       "a twin under a twin: the device said %r, not the pairing sentence" % (out or err)[:180])
+
     # The one lie the WRITER lets through, because ELEMENT_WORDS_MAX is not a thing
     # and a ninth pointer slot is a legal u16 field: the device must refuse it, in the
     # sentence that names the cap. The other pointer lies this slice guards are

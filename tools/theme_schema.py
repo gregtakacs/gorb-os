@@ -505,7 +505,12 @@ EF_ALPHA  = 1 << 0   # draw with `alpha`, not opaquely
 EF_LOOP   = 1 << 1   # animation wraps; clear means clamp at the last frame
 EF_OS_ADV = 1 << 2   # the OS advances frames at the picked rate (R6); else the app
 EF_HIDDEN = 1 << 3   # declared and bound, not drawn — a theme's own off switch
-EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN
+EF_AUX_SHADOW = 1 << 4  # aux row: the shadow TWIN of the row directly before it.
+                        # The u8 element column cannot carry clk_types.h's 1<<8, so
+                        # the flag lives here as bit 4; orb_clock3.c's AUX_F_SHADOW
+                        # maps it onto CLK_FLAG_AUX_SHADOW, and class aux is the only
+                        # place it means anything — a hand's shadow is its own class.
+EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW
 
 ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
 
@@ -683,6 +688,10 @@ def check_element(rec, where="elem"):
         raise ValueError("%s.flags: unknown flag bits 0x%02x — a schema this build "
                          "does not know, refused rather than drawn wrong"
                          % (where, flags & ~EF_ALL))
+    if flags & EF_AUX_SHADOW and cls != CLASS_AUX:
+        raise ValueError("%s.flags: the pointer shadow twin is a rule for class aux; "
+                         "class %s already owns its shadow's placement (§25.2)"
+                         % (where, CLASS_NAMES[cls]))
     if not 0 <= int(rec["order"]) < ELEM_ORDER_N:
         raise ValueError("%s.order: %d is past the dial's %d depth rungs"
                          % (where, int(rec["order"]), ELEM_ORDER_N))
@@ -966,9 +975,14 @@ if __name__ == "__main__":
     _slide = dict(_ax, **{"slot": 1, "kind": MOTION_SLIDE_X, "span": 90, "zero": -45,
                           "vmin": 0, "vmax": 100, "pivot_x": 0, "pivot_y": 0})
     assert check_element(_slide, "sentinel-aux-slide")
+    # §26 slice 4: the twin row is a flagged aux row, legal on its class and only there.
+    _twin = dict(_ax, **{"slot": 1, "flags": EF_AUX_SHADOW})
+    assert check_element(_twin, "sentinel-aux-twin")
+    assert unpack_elements(pack_elements([_twin]), 1)[0] == _twin, "a twin row must round-trip"
     for _bad, _why in (
         (_with(**{"class": 9}), "unknown class"),
         (_with(flags=EF_ALPHA | 0x80), "unknown flag bit"),
+        (_with(flags=EF_AUX_SHADOW), "twin bit off class aux"),
         (_with(order=64), "order past the rungs"),
         (_with(n_frames=0), "zero frames"),
         (_with(frame0=359, n_frames=2), "frames past the bound"),

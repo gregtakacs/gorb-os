@@ -2946,7 +2946,10 @@
       return cvals;
     };
     F.shadow = SH;
-    F.drawHands = (ctx, date, only, noH) => { let hs = only ? F.hands.filter((h) => only.indexOf(h.id) >= 0) : F.hands; if (noH) hs = hs.filter((h) => noH.indexOf(h.id) < 0); drawHands(ctx, hs, date, F.light, SH); };
+    // noSh renders the hands with every cast shadow alpha-zeroed and nothing else
+    // changed: the bake's pointer diff needs the ink alone, because the twin row —
+    // not the hand plate — carries the shadow (§25.2, and orb_clock3.c's AUX_F_SHADOW).
+    F.drawHands = (ctx, date, only, noH, noSh) => { let hs = only ? F.hands.filter((h) => only.indexOf(h.id) >= 0) : F.hands; if (noH) hs = hs.filter((h) => noH.indexOf(h.id) < 0); drawHands(ctx, hs, date, F.light, noSh ? { dir: [0, 0], kk: 0, dist: 0, blur: 0, op: 0 } : SH); };
     F.handShadow = (hd) => ({ dx: SH.dir[0] * 1.6 * hd.h * SH.dist, dy: SH.dir[1] * 1.6 * hd.h * SH.dist, blur: 1.4 * hd.h * SH.blur, alpha: Math.min(1, 0.5 * SH.kk * SH.op) });
     F.hit = (x, y) => { for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) return h.id; } return null; };
     /* What sits under this pixel, top of the stack first -- the drawing order read
@@ -3169,7 +3172,7 @@
     const [x, y] = base.cageAt;
     ctx.save(); ctx.translate(x, y); ctx.rotate(TURN.second(date) * TAU - (base.cageOff || 0)); ctx.translate(-x, -y); ctx.drawImage(gt.cage, 0, 0); ctx.restore();
   }
-  function compose(out, base, gt, F, date, hidden, compOnly, noHands) {
+  function compose(out, base, gt, F, date, hidden, compOnly, noHands, noSh) {
     hidden = hidden || {};
     out.setTransform(1, 0, 0, 1, 0, 0); out.globalCompositeOperation = 'source-over'; out.globalAlpha = 1; out.filter = 'none';
     out.fillStyle = '#000'; out.fillRect(0, 0, S, S);
@@ -3196,7 +3199,7 @@
       if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
       if (!hidden.subdials) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
     });
-    if (!hidden.hands) dz(() => F.drawHands(ctx, date, compOnly, noHands));
+    if (!hidden.hands) dz(() => F.drawHands(ctx, date, compOnly, noHands, noSh));
     if (!hidden.glass) dz(() => ctx.drawImage(F.glass, 0, 0));
     if (k < 1) { out.save(); out.translate(C, C); out.scale(k, k); out.translate(-C, -C); out.drawImage(F._in, 0, 0); out.restore(); }
     if (!hidden.outer) out.drawImage(F.outer, 0, 0);

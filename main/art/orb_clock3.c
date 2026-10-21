@@ -35,6 +35,15 @@ static const char *const CLASS_NAMES[9] = {
 #define CLS_BANK   5
 #define CLS_AUX    8            /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+#define AUX_F_SHADOW 0x10       /* aux row: the shadow TWIN of the row before it.
+                                 * FORMAT 3's element flag column is a u8, so the
+                                 * runtime's CLK_FLAG_AUX_SHADOW (1 << 8) cannot ride
+                                 * it; bit 4 is the slot the element dialect leaves
+                                 * free for a pointer (alpha/loop/os-adv mean nothing
+                                 * to a single-frame row). orbtheme-baker.js writes it
+                                 * as AUX_F_SHADOW3; the projection below maps it onto
+                                 * the runtime flag, so clock_view's pairing rules
+                                 * read one vocabulary however the theme arrived. */
 
 /* D34's motion ids (theme_schema.MOTION_NAMES, in that order). The first three are
  * the ones clk_aux_t.kind has always read; the two slides are new, and each names
@@ -731,8 +740,25 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * carries none of them rather than borrow a byte that means something else:
          * scale16 is the comp maths' x16 fraction, and reading it as a snap flag
          * would be a meaning nobody wrote. A pointer therefore interpolates, and the
-         * flag rides the next ABI append when a theme actually asks for the stutter. */
+         * flag rides the next ABI append when a theme actually asks for the stutter.
+         * The twin is the one meaning a row can carry: AUX_F_SHADOW lands on the
+         * runtime flag every clock-side pairing rule already reads. */
         a->flags     = 0;
+        if (e.flags & AUX_F_SHADOW) {
+            /* The twin takes its pose from the row before it and draws under it, so
+             * the row before it must exist and must be a hand. A twin with no hand
+             * is the same lie §25.2 refuses for a hand shadow with no hand: it can
+             * only ever draw a smudge where a pointer should be. */
+            orb_bundle_elem_t pe;
+            if (slot == 0 || at_aux[slot - 1] < 0)
+                return reject("a pointer shadow at slot %u with no hand before it: the twin takes its pose from the row under it, and the row before it is empty",
+                              (unsigned)slot);
+            orb_bundle_elem_at(sec, (uint32_t)at_aux[slot - 1], &pe);
+            if (pe.flags & AUX_F_SHADOW)
+                return reject("a pointer shadow at slot %u under another shadow: a twin darkens a pointer, not a shadow",
+                              (unsigned)slot);
+            a->flags = CLK_FLAG_AUX_SHADOW;
+        }
         a->spr.blend = 0;
         a->spr.show  = (uint8_t)(e.flags & EF_HIDDEN ? 0 : 1);
     }

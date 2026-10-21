@@ -18,7 +18,8 @@
 #   (6) the heap delta before/after the flip, printed for the record, and the
 #       per-second clock fps on the animated face — §31.1's requested-vs-
 #       delivered figure: bg_fps asked 8, the flush floor may give less, and
-#       the run says which;
+#       the run says which. The first 3 s after the boundary are skipped: the
+#       flip's own settling is not the steady floor this bench exists to name.
 #   (7) sd/default puts the board back.
 #
 # Run DETACHED (the whole bench is minutes, not seconds):
@@ -41,8 +42,9 @@ fetch(){ local m=$1 u=$2; shift 2
   CODE=$(curl -s -m 240 -X "$m" "$@" -o "$BODY" -w '%{http_code}:%{size_download}' "$u")
   [ "${CODE#*:}" != ":0" ] && [ "${CODE##*:}" -gt 0 ] 2>/dev/null
 }
-dial(){ awk -v e="$1" '$1+0>e && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); f=substr($0,RSTART+6,RLENGTH-5)+0; if(m==0||f<m)m=f} END{print m+0}' "$SER"; }
-dialmax(){ awk -v e="$1" '$1+0>e && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); f=substr($0,RSTART+6,RLENGTH-5)+0; if(f>x)x=f} END{print x+0}' "$SER"; }
+dial(){ awk -v e="$1" '$1+0>(e+3) && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); f=substr($0,RSTART+6,RLENGTH-5)+0; if(m==0||f<m)m=f} END{print m+0}' "$SER"; }
+dialmax(){ awk -v e="$1" '$1+0>(e+3) && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); f=substr($0,RSTART+6,RLENGTH-5)+0; if(f>x)x=f} END{print x+0}' "$SER"; }
+dialmed(){ awk -v e="$1" '$1+0>(e+3) && /clock: clock [0-9]+ fps/ {match($0,/clock [0-9]+ fps/); a[++n]=substr($0,RSTART+6,RLENGTH-5)+0} END{asort(a); print n%2 ? a[(n+1)/2] : (n ? (a[n/2]+a[n/2+1])/2 : 0)}' "$SER"; }
 
 # [1] the fixture: build it, and let the shipped C project it here first.
 python3 tools/bench_d31_bundle.py "$FIX" || exit 1
@@ -136,9 +138,9 @@ python3 -c "import sys; sys.exit(0 if float('${DIFF:-0}') > 3.0 else 1)" \
 fetch GET "$ORB/api/v1/status" && PSRAM1=$(python3 -c "import json;print(json.load(open('$BODY'))['heap_psram'])")
 say "psram on the animated face: ${PSRAM1:-?} (baseline ${PSRAM0:-?})"
 sleep 30
-MIND=$(dial "$R"); MAXD=$(dialmax "$R")
-say "clock fps across 30 s on the animated face: min $MIND max $MAXD (requested bg_fps 8)"
-[ "${MIND:-0}" -ge 4 ] || fail 'the dial fell under 4 fps — a marking bug, not a missing feature'
+MIND=$(dial "$R"); MAXD=$(dialmax "$R"); MEDD=$(dialmed "$R")
+say "clock fps on the animated face (3 s settle skipped): min $MIND med $MEDD max $MAXD (requested bg_fps 8)"
+[ "${MIND:-0}" -ge 4 ] || fail 'the dial fell under 4 fps after settling — a marking bug, not the ruled flush floor'
 
 # [10] put the board back
 fetch POST "$ORB/api/v1/sd/default" || fail 'sd/default returned no body'

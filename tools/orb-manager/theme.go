@@ -69,6 +69,20 @@ func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	s.themeReply(w, raw, err)
 }
 
+// handleThemeFlip queues the flip (POST /api/v1/sd/flip): the second press of the
+// firmware's two-stage form. The store put the bundle in a slot and the glass never
+// moved; the flip names that slot to the choice key and reboots the orb onto it. The
+// ack arrives before the reboot, so the caller watches the orb go away and come back
+// — this reply is a promise of a reboot, never a claim that the glass moved.
+func (s *Server) handleThemeFlip(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.themeTarget(w, r, true)
+	if !ok {
+		return
+	}
+	raw, err := s.device.ThemeFlip(t.IP, t.ID)
+	s.themeReply(w, raw, err)
+}
+
 // handleThemeDefault restores the built-in fallback face.
 func (s *Server) handleThemeDefault(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.themeTarget(w, r, false)
@@ -140,7 +154,13 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overwrite := r.URL.Query().Get("overwrite") == "1"
-	raw, err := s.device.ThemeUpload(t.IP, body, overwrite)
+	// The upload rides the ota-tuned client, not the 8 s management client: the
+	// device opens the card file and writes 4 KB chunks straight to FAT, and a
+	// ~490 KB container took longer than one management call should ever take.
+	// The 8 s budget killed the POST mid-body, the device deleted the .part, and
+	// the operator watched a card that never changed (the theme-twin of h_ota's
+	// ~2 MB reasoning above).
+	raw, err := s.ota.ThemeUpload(t.IP, body, overwrite)
 	if de, ok := err.(*orbnet.DeviceError); ok && de.OverwriteConflict() {
 		s.jsonErr(w, de.Error()+" — send it again with overwrite to replace it")
 		return

@@ -59,6 +59,11 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 	s := newHub()
 	s.device = orbnet.NewClient(2 * time.Second)
 	s.device.DevicePort = port
+	// Theme uploads ride the upload-tuned client (theme.go): the hub's real
+	// wiring sets this too, and a test that left it nil would pass a handler
+	// the shipped binary would crash. Mirror the port here.
+	s.ota = orbnet.NewClient(2 * time.Second)
+	s.ota.DevicePort = port
 	s.grants.learn(host)
 	return s, host, func() orbCall { return last }, f
 }
@@ -130,6 +135,15 @@ func TestThemeListThroughTheHub(t *testing.T) {
 	if row["id"] != auroraID || row["name"] != "aurora" {
 		t.Errorf("row = %v, want the name beside the id the orb issued", row)
 	}
+	// The slot witness is what turns a store press from a hope into a fact: the door
+	// acks the queue, and the row's slot is the copy arriving. If it stopped surviving
+	// the hub, the Store button could never tell stored from refused.
+	if _, hasSlot := row["slot"]; !hasSlot {
+		t.Error("the row lost the slot witness; the card cannot see a store land")
+	}
+	if _, hasBusy := data["job_busy"]; !hasBusy {
+		t.Error("the list lost the job_busy witness; a queued press would read as a dead button")
+	}
 	if _, hasTitle := row["title"]; hasTitle {
 		t.Error("the row carries a title field; FORMAT 2 has one name")
 	}
@@ -143,7 +157,7 @@ func TestThemeListThroughTheHub(t *testing.T) {
 // itself. These are the calls that write to a card.
 func TestThemeCallsRefuseAnUnlearnedAddress(t *testing.T) {
 	for _, path := range []string{
-		"/api/theme/list", "/api/theme/install", "/api/theme/default",
+		"/api/theme/list", "/api/theme/install", "/api/theme/flip", "/api/theme/default",
 		"/api/theme/delete", "/api/theme/rescan",
 	} {
 		s, _, called, _ := fakeOrbHub(t)
@@ -201,6 +215,7 @@ func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
 	cases := []struct{ path, id, wantMethod, wantPath, wantQuery string }{
 		{"/api/theme/list", "", http.MethodGet, "/api/v1/sd", ""},
 		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/bundle", "id=" + auroraID},
+		{"/api/theme/flip", auroraID, http.MethodPost, "/api/v1/sd/flip", "id=" + auroraID},
 		{"/api/theme/default", "", http.MethodPost, "/api/v1/sd/default", ""},
 		{"/api/theme/delete", "7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=7565e4480e56"},
 		{"/api/theme/rescan", "", http.MethodPost, "/api/v1/sd/rescan", ""},

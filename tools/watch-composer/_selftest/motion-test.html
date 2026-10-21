@@ -111,19 +111,18 @@
       }
       let un = 0; for (let p = 0; p < PANEL; p++) if (mask[p]) un++;
       const bw = moved ? bx2 - bx + 1 : 0, bh = moved ? by2 - by + 1 : 0;
-      const bank = B * KF, sprite = B * bw * bh * 3, oth = otherBytes(V.F);
-      const maxBank = Math.floor((CAP - oth) / KF);
-      const frac = (bw * bh) / PANEL;
-      let verdict;
-      if (!moved) verdict = 'STILL';
-      else if (B <= 16 && bank + oth <= CAP) verdict = 'BANK';
-      else if (frac <= 1 / 3 && sprite + oth <= CAP && bw * bh < PANEL) verdict = 'SPRITE';
-      else verdict = 'REFUSE';
+      const oth = otherBytes(V.F);
+      // One policy, one implementation: the page measures, the baker decides.
+      const pol = G.splitPolicy3({ frames: B, fps: V.fps, unionPx: un,
+                                   bboxW: bw, bboxH: bh, otherB: oth,
+                                   hasCage: !!V.M.cageAt });
       say('MOTION id=' + id + ' frames=' + B + ' fps=' + V.fps +
           ' union_px=' + un + ' changed=' + moved +
           ' bbox=' + bw + 'x' + bh + '@' + (moved ? bx + ',' + by : '0,0') +
-          ' bank_b=' + bank + ' sprite_b=' + sprite + ' other_b=' + oth +
-          ' max_bank=' + maxBank + ' verdict=' + verdict);
+          ' cage=' + (V.M.cageAt ? 1 : 0) + ' other_b=' + oth +
+          ' carrier=' + pol.carrier + ' keyframes=' + pol.keyframes +
+          ' bake_fps=' + pol.fps + ' decim=' + pol.decim +
+          ' — ' + pol.sentence);
       rows++;
     }
     ok('every preset got a motion row', rows === ids.length, rows + ' of ' + ids.length);

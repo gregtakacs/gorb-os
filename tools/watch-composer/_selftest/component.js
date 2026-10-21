@@ -1475,6 +1475,123 @@ class Component extends DCLogic {
     try { P = this.preset(); } catch (e) { P = null; }
     return (P && P.name) || this.state.dial || 'watch';
   }
+  /* §31's export: the FORMAT 3 clock bake, chosen by measurement. Compose the
+   * plate at every frame of the loop (hands and glass hidden — they enter as
+   * their own rows), diff consecutive frames, and hand the union to the one
+   * policy the sweep test shares (GorbBake.splitPolicy3): still under the
+   * shimmer band, carriage bank for a local caged motion, plate keyframe bank
+   * (thinned to what the slot holds) for whole-panel motion, and an honest
+   * refusal with the byte it tripped on when neither fits. FORMAT 2's kit
+   * route is untouched beside this: exportKit(true) still answers the old
+   * loader. */
+  async exportTheme3() {
+    const G = window.GorbBake;
+    if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
+    const D = this.design(), comps = (D.comps || []).length;
+    const nm = String(this.themeName() || 'watch').replace(/\u0000/g, '').trim();
+    if (!G.nameOk(nm)) {
+      this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
+      return;
+    }
+    if (comps) {
+      this.setState({ status: 'Not baked: the FORMAT 3 clock bake carries no comp table yet, and this dial shows ' + comps + ' live complication' + (comps > 1 ? 's' : '') + ' — the baked dial would lack them. The .orbtheme note says this before you press.' });
+      return;
+    }
+    const M = this.base, gt = this.gt, B = gt.length, fps = this.F, fc = this.face();
+    if (!M || !fc || B < 1 || this._mk !== this.mvKey()) {
+      this.setState({ status: 'Not baked: the movement has not settled into its loop yet — press again once the dial runs' });
+      return;
+    }
+    this.setState({ status: 'Measuring plate motion across the ' + B + '-frame loop…' });
+    await new Promise((r) => setTimeout(r, 30));      // paint the status before the walk
+    const PANEL = 466 * 466;
+    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
+    const plateAt = (f) => pixOf(this.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }));
+    const pxs = [];
+    for (let f = 0; f < B; f++) pxs.push(plateAt(f));
+    const mask = new Uint8Array(PANEL);
+    let bx = PANEL, by = PANEL, bx2 = -1, by2 = -1, moved = 0;
+    for (let f = 0; f < B; f++) {
+      const a = pxs[f], b = pxs[(f + 1) % B];
+      for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
+        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) {
+          moved++;
+          if (!mask[p]) {
+            mask[p] = 1;
+            const x = p % 466, y = (p / 466) | 0;
+            if (x < bx) bx = x; if (x > bx2) bx2 = x;
+            if (y < by) by = y; if (y > by2) by2 = y;
+          }
+        }
+      }
+    }
+    let un = 0; for (let p = 0; p < PANEL; p++) if (mask[p]) un++;
+    const bw = moved ? bx2 - bx + 1 : 0, bh = moved ? by2 - by + 1 : 0;
+    this._t3 = { pxs, un, bw, bh };
+    await this.t3bake(nm, fc, M, gt, B, fps);
+  }
+  /* The split's other half: decide carriers off the measurement, assemble the
+   * planes the bake wants, and download under the id the card will file it by.
+   * A second method only because the first one holds the walk's ~8 MB of
+   * frame pixels in its locals and the bake should not also hold its stack. */
+  async t3bake(nm, fc, M, gt, B, fps) {
+    const G = window.GorbBake;
+    const { pxs, un, bw, bh } = this._t3; this._t3 = null;
+    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
+    const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
+    const hands = [];
+    let oth = 0;
+    for (const h of (fc.hands || [])) {
+      if (ROLE[h.id] === undefined || !h.sp) continue;
+      const w = Math.round(h.sp.c.width), hh = Math.round(h.sp.c.height), px = Math.round(h.sp.px), py = Math.round(h.sp.py);
+      const c = document.createElement('canvas'); c.width = w; c.height = hh;
+      c.getContext('2d').drawImage(h.sp.c, 0, 0);
+      oth += w * hh * 3;
+      hands.push({ slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py });
+    }
+    if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
+    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, hasCage: !!M.cageAt });
+    if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
+    const plate = { rgba: pxs[0], w: 466, h: 466 };
+    if (pol.carrier === 'bank') {
+      plate.frames = [];
+      for (let k = 0; k < pol.keyframes; k++) plate.frames.push({ rgba: pxs[k * pol.decim], w: 466, h: 466 });
+      plate.fps = pol.fps;
+    }
+    const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier)),
+                   bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot + 1) };
+    if (pol.carrier === 'sprite') {
+      const cf = [];
+      let cw = 0, chh = 0, same = true;
+      for (let k = 0; k < pol.keyframes; k++) {
+        const im = gt[Math.min(k * pol.decim, B - 1)].cage;
+        if (!im) { same = false; break; }
+        const w = im.width, hh = im.height;
+        if (!cw) { cw = w; chh = hh; } else if (w !== cw || hh !== chh) same = false;
+        const c = document.createElement('canvas'); c.width = w; c.height = hh;
+        c.getContext('2d').drawImage(im, 0, 0);
+        cf.push({ rgba: pixOf(c), w, h: hh });
+      }
+      if (!same || cf.length < 2) { this.setState({ status: 'Not baked: the motion split chose the carriage, but this dial’s cage frames are not one extent — bake the still or change the design' }); return; }
+      opts.carriage = { x: 0, y: 0, w: cw, h: chh, pivot_x: M.cageAt[0], pivot_y: M.cageAt[1],
+                        degrees: Math.round(M.cageOff * 18000 / Math.PI), fps: pol.fps, frames: cf };
+    }
+    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + '…' });
+    try {
+      const r = G.bakeClock3(opts);
+      let id = null;
+      try {
+        if (window.crypto && window.crypto.subtle)
+          id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(nm))));
+      } catch (e) { id = null; }
+      const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
+      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
+      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · art ' +
+        r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%) · upload it and the watch stores, flips, and boots it' });
+    } catch (e) {
+      this.setState({ status: 'Not baked: ' + (e && e.message ? e.message : String(e)) });
+    }
+  }
   /* The device theme, baked here rather than on the bench. It starts from the exact PNG
    * bytes the layer kit would have shipped (white balance included, shadows raw), so the
    * only difference from what tools/bake_clock.py produces is what that script folds:
@@ -2153,7 +2270,11 @@ class Component extends DCLogic {
       exportKit: () => this.exportKit(),
       // the theme bakes from the kit's own PNG bytes, so it rides the same render pass:
       // exportKit(true) collects the files and hands them to finishTheme instead of zipping
-      exportTheme: () => this.exportKit(true),
+      // §31: the FORMAT 3 bake, measured and split in the click path itself.
+      // The FORMAT 2 kit route (exportKit(true) -> finishTheme) stays for the
+      // FORMAT 2 loader the old firmware still carries; this is the device theme
+      // for every watch that takes the store door.
+      exportTheme: () => this.exportTheme3(),
       // FORMAT 2: the name is typed, so the field that types it sits beside the button,
       // and the byte counter beside it is the same count the baker applies, not JS chars.
       themeNameVal: this.state.themeName == null ? '' : this.state.themeName,
@@ -2169,18 +2290,16 @@ class Component extends DCLogic {
         // only refusal here the owner could not predict from the dial itself.
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'theme name is ' + G.nameBytes(tn) + ' B; the header holds ' + (G.NAME_MAX - 1);
-        // What the owner is about to learn by pressing this is that the watch will not take
-        // the file, so the button says it first. The dial reads FORMAT 3 only (D33), and a
-        // FORMAT 3 clock section carries ONE static plate keyframe: orb_clock3.c forces
-        // bg_frames to 0 because the section has no delta bank to index. A dial with a
-        // moving train therefore has nothing to bake to, and every preset in the gallery
-        // moves -- measured, not assumed, in _selftest/bake3-test.html, where the least
-        // motion is 40 px over a 15-frame loop. Complications are the other blocker: the
-        // compiled clock has no comp table, so a date window would freeze at the bake date.
-        const moves = F > 1, liveComp = nw + nf;
-        const why = moves ? F + '-frame train' : liveComp ? liveComp + ' live com' + (liveComp > 1 ? 'plications' : 'plication') : null;
-        return (why ? 'FORMAT 2 · dial wants 3 (' + why + ') · ' : 'FORMAT 2 · ') +
-          F + '-frame bank' + (nw ? ' · ' + nw + ' window' + (nw > 1 ? 's' : '') : '') + (nf ? ' · ' + nf + ' flare' + (nf > 1 ? 's' : '') : '');
+        // §31 turned the button on: the FORMAT 3 bake carries a moving train as a
+        // plate keyframe bank or a carriage bank, and measures which BEFORE baking
+        // (the split is _selftest/motion-test.html's table, exported as
+        // GorbBake.splitPolicy3). Complications are the blocker that remains: the
+        // compiled clock still has no comp table, so a live window would vanish
+        // from the baked dial -- that refusal is the button's, stated first.
+        const liveComp = nw + nf;
+        if (liveComp) return 'FORMAT 3 · ' + liveComp + ' live comp' + (liveComp > 1 ? 's' : '') + ': no comp table yet, press to see the refusal';
+        const cost = F * 466 * 466 * 2;
+        return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';
       })(),
       exportBundle: () => this.exportBundle(),
       loadBundle: (e) => this.importBundle(e.target.files && e.target.files[0]),

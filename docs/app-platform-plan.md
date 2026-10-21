@@ -5037,4 +5037,47 @@ with it, both mine, both invisible to every suite:
    The guard now demands: not rendering, `B === this.B`, and no hole in `gt`. Measured
    after the fix, the same Skeleton dials into `bank — 8 of 8 frames at 4 fps,
    3 474 496 B`: union 48 770 px, two hundred times the band, by the browser's own pixels.
+3. **A hub theme upload died at eight seconds, and the card never saw the file.**
+   `handleThemeUpload` rode `s.device`, the management client whose whole budget is
+   `deviceTimeout = 8 s` — right for a JSON status call, wrong for a 490 KB body the
+   device writes to FAT in 4 KB chunks. Go cancelled the POST mid-body, the device hit
+   its `upload aborted by client` path, deleted the `.part`, and the operator watched a
+   card that never changed. The dial's own page was the control: its XHR allows 900 s,
+   which is how the first D34 file landed. Theme upload now rides `s.ota`, the
+   upload-tuned client the app image already uses, and `theme_test.go` wires the same
+   client so a future swap to the short one fails the suite instead of the bench.
+   `orbnet/client.go`'s PostImage comment claiming OTA was the one raw-body endpoint
+   was the belief that hid this; it names two now.
+4. **The Drive chip's default is Pointer, and the bake reads the same rule.**
+   `Cx` defaults never write into the design, so a display-only switch would have shown
+   Pointer while baking Plates — the drift class again. `GorbBake.pointerDefault3` is the
+   one predicate both the chip and `pointerPlan3`/`compPlan3` consult: an unset carrier
+   on the bare seconds or hours ring is the pointer's; an explicit `plates`, a foreign
+   scale, or a subdial HOSTING another comp stays on the bank, because the punch belongs
+   to the host tile and a pointer row carries nothing to punch — an explicit
+   `carrier:'pointer'` on a hosted subdial now refuses in that sentence rather than
+   painting a hand across its window. The Regulator preset bakes unchanged by this rule.
+5. **The sub-dial second hand carried its shadow as an opaque smear, worst at the tip.**
+   `auxPass3` diffed the dial with the pointer shown against the dial with it hidden —
+   and the shown render included the engine's canvas drop shadow, so the plate baked the
+   shadow as OPAQUE pixels carrying the sub-dial background from under the bake pose. As
+   the pointer swept, those stale texels rode along the sprite and landed on plate that
+   no longer matched: a gray trail under the shadow, longest where the tip travels. The
+   centred hands had already been given the §25.2 twin; the pointer now takes the same
+   contract. Engine seam: `drawHands`/`compose`/`frameCanvas` grew `noSh`, which renders
+   the hands with every cast-shadow alpha zeroed, and `auxPass3` bakes the ink-only plate
+   from it plus a second row — a padded black blur, draw point at hand origin + light,
+   pivot column landing the rotation centre on hand centre + light, screen-fixed while
+   the pointer turns, punched to the hosted windows' apertures like the hand. Baker seam:
+   FORMAT 3's flag column is a u8, so the twin rides bit 4 (`AUX_F_SHADOW3` /
+   `theme_schema.EF_AUX_SHADOW`, refused on any other class) and `orb_clock3.c` maps it
+   onto `CLK_FLAG_AUX_SHADOW`, refusing a twin with no hand before it and a twin under a
+   twin in the pairing's own words; physical aux slots are renumbered at the write, since
+   the twin takes the slot directly after its hand and the cap is eight rows. The device
+   had a matching bug of its own: `aux_add_jobs` appended the twin AFTER its hand, so the
+   L4 compositor painted the shadow over the pointer the classic path stacks under it —
+   the pair now joins twin-first, one order on both paths. Mirrored in the dump, the
+   verify print, the C battery (flag maps, centre identity holds, both lies refuse), and
+   twelve new headless checks at the bake seam.
+
 

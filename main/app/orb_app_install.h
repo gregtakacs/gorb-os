@@ -142,6 +142,15 @@ const char *orb_app_install_try_why(void);
 esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz);
 esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);
 
+/* Clear: one app's fault record, compiled tier included — the door ON cannot
+ * be for a built-in. Enable revives a failed CARD app (its is_card/installed
+ * gates a quarantined built-in fails), so a boot-faulted menu had only RESET
+ * ALL — which also wipes WiFi. This clears the broker's fault word and mirrors
+ * it into RAM, touching nothing else; a built-in app rebuilds into the carousel
+ * on the next reboot (re-running its init off this task is the widget race the
+ * input rules forbid). Card apps are accepted too: a clear without an uninstall. */
+esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz);
+
 /** Boot ladder, AFTER orb_svc_init() and BEFORE orb_app_init_all(): apply the
  *  stored enable words to the rows resolve_boot placed. Separate from resolve
  *  because the words live in NVS and resolve runs before the partition is up

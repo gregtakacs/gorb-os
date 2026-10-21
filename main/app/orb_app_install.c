@@ -907,6 +907,53 @@ esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
     return ESP_OK;
 }
 
+/* Third owner door: clear one app's fault record — compiled tier included.
+ *
+ * This exists because the ON gesture above cannot reach a built-in app.
+ * orb_app_enable revives a failed app through clear_faults only on the CARD
+ * path: door_open refuses a compiled row at the is_card gate before the revive
+ * branch runs, and a two-strike C2 quarantine also leaves that row installed=
+ * false (init_all skips it), so the enable door's NOT_FOUND gate would refuse it
+ * too. A dial whose menu panicked at boot — the failure this hardening closes —
+ * therefore had one way back: RESET ALL, which also wipes the owner's WiFi.
+ *
+ * This door clears only the fault record. It skips both door_open gates on
+ * purpose: the app is a built-in (not a card), and a quarantine is exactly the
+ * state where installed reads false, so requiring an install would defeat the
+ * door's whole point. It validates the name and the no-card-job front the same
+ * way, then clears the broker's word and mirrors it into RAM. The screen is NOT
+ * rebuilt here: re-running a built-in app's iface->init off the httpd task is
+ * the widget race every rule in input_router.c exists to avoid, so the app
+ * returns on the next reboot, when init_all finds its fault word gone. */
+esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    if (!slug || !orb_sd_name_ok(slug))
+        return door_refuse(ESP_ERR_INVALID_ARG, "not a usable app name", why, whysz);
+    if (orb_jobs_busy() || orb_app_upload_busy())
+        return door_refuse(ESP_ERR_INVALID_STATE,
+                           "a card job is running — try again when it finishes",
+                           why, whysz);
+    const orb_app_t *row = orb_app_find_slug(slug);
+    if (!row)
+        return door_refuse(ESP_ERR_NOT_FOUND,
+                           "no app by that name is known to this dial", why, whysz);
+    if (orb_app_index_of(row) < 0)
+        return door_refuse(ESP_ERR_NOT_FOUND,
+                           "that app has no fault record to clear", why, whysz);
+
+    orb_app_t *a = (orb_app_t *)row;
+    const esp_err_t e = orb_svc_clear_faults(a);
+    if (e != ESP_OK)
+        return door_refuse(e, "the fault record would not clear — the app stays failed",
+                           why, whysz);
+    a->failed = false;
+    a->fault_count = 0;
+    ESP_LOGI(TAG, "fault record cleared for \"%s\"%s", a->slug,
+             orb_app_is_card(a) ? "" : " — a reboot rebuilds it into the carousel");
+    return ESP_OK;
+}
+
 esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';

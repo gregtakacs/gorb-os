@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
@@ -501,6 +501,10 @@ class Component extends DCLogic {
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
+    // Under a hub, learn the loaded orb once so the Send note names it before the
+    // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
+    // headless run has no fetch — either way the button's press-time read still works.
+    if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
   componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
@@ -1508,11 +1512,27 @@ class Component extends DCLogic {
   /* An error thrown anywhere inside the bake must surface on the status line.
    * The hub window has no console, and before this a throw past t3bake's own
    * try left the status frozen mid-sentence with no explanation at all. */
-  async exportTheme3() {
-    try { await this._export3Body(); }
+  async exportTheme3(opts) {
+    try { await this._export3Body(opts || {}); }
     catch (e) { this.setState({ status: 'Not baked: bake threw — ' + (e && e.message ? e.message : String(e)) }); }
   }
-  async _export3Body() {
+  /* §31's last open round: send the baked bundle straight to the orb rather than
+   * handing the owner a file to re-upload. The bake is the SAME walk the download
+   * runs — same guard, same motion measure, same carrier split — so a sent dial is
+   * byte-for-byte the dial a downloaded one would have been. Only the last step
+   * differs: the bytes ride the hub's FORMAT 3 upload door (POST /api/theme/upload)
+   * to the orb the hub is already talking to. The store behaves exactly as the Manage
+   * card's own upload: the orb verifies the bundle and files it in the slot the glass
+   * is not drawing, and nothing flips or reboots on its own — a flip is a separate
+   * press, on the orb or the Manage card. The button that names this only appears
+   * when the page was served by a hub (see hubSend3), because the door is the hub's:
+   * opened from the filesystem the composer has no
+   * hub to dial and no orb address to dial it with, so only the download shows. */
+  async sendTheme3ToOrb() {
+    await this.exportTheme3({ send: true });
+  }
+  async _export3Body(opts) {
+    opts = opts || {};
     const G = window.GorbBake;
     if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
     const D = this.design();
@@ -1596,7 +1616,7 @@ class Component extends DCLogic {
     // reporting it as "union 0 px", and every moving plate bake refused as stale.
     const un = m3.unionPx, bw = m3.bboxW, bh = m3.bboxH;
     this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB };
-    await this.t3bake(nm, fc, M, gt, B, fps);
+    await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
   }
   /* §31's motion walk, apart from the export so the sweep page runs the same
    * code: compose the plate at every frame, diff consecutive frames cyclically,
@@ -1633,7 +1653,7 @@ class Component extends DCLogic {
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
    * frame pixels in its locals and the bake should not also hold its stack. */
-  async t3bake(nm, fc, M, gt, B, fps) {
+  async t3bake(nm, fc, M, gt, B, fps, send) {
     const G = window.GorbBake;
     const { pxs, un, bw, bh, compRows, compB, auxRows, auxB } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
@@ -1732,13 +1752,79 @@ class Component extends DCLogic {
           id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(nm))));
       } catch (e) { id = null; }
       const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
-      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
-      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · art ' +
-        r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%) · upload it and the watch stores, flips, and boots it' });
+      const bytes = r.bytes;
+      const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
+      if (send) { await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
+      this.download(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
+      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
+        ' · upload it: the orb stores it without flipping, then flip to it to boot the new dial' });
     } catch (e) {
       const msg3 = (e && e.message ? e.message : String(e));
       this.setState({ status: 'Not baked: ' + msg3 + (msg3.indexOf('complication tiles cost') >= 0 ? (this._ptrHint || '') : '') });
     }
+  }
+  /* Whether this page can push to an orb at all. It can only when a hub served it:
+   * the upload door is the hub's POST /api/theme/upload, and the orb address to name
+   * to that door is the one the hub learned over the cable or was handed. A page
+   * opened from the filesystem (file://) has no hub to dial, so the Send button hides
+   * and only the download shows. Same-origin is the whole check the composer makes;
+   * whether a hub is CURRENTLY talking to an orb is answered later, by /api/orb/known,
+   * at the press. */
+  hubSend3() {
+    return typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
+  }
+  /* The learned orb address, read off the hub. /api/orb/known answers the same
+   * question the Manage card pre-fills from; the composer does not keep an orb IP of
+   * its own, so a board unplugged and re-plugged under a new lease cannot leave the
+   * Send button dialing the old one. Caches the answer so a dial does not re-ask the
+   * hub on every paint; a null is a real answer (no orb loaded yet). */
+  async hubOrbIp() {
+    if (this.state.hubCheck && this.state.hubIp != null) return this.state.hubIp;
+    let ip = null;
+    try {
+      const r = await fetch('/api/orb/known');
+      const j = await r.json();
+      if (j && j.ok && j.data && j.data.ip) ip = j.data.ip;
+    } catch (e) { ip = null; }
+    this.setState({ hubIp: ip, hubCheck: true });
+    return ip;
+  }
+  /* Push the baked bytes to the orb through the hub's upload door. This mirrors
+   * app.js's own theme upload exactly: no name is sent (the container carries its own,
+   * and the device files it under sha256(name)[:12]); the only client decision is the
+   * overwrite, asked for only after the device refused one already under that name.
+   * A successful send is a store queued, never a claim the glass moved — the reply is
+   * read as the hub's envelope and the status names the name/id the hub read back. */
+  async postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
+    const ip = await this.hubOrbIp();
+    if (!ip) {
+      this.setState({ status: 'Not sent: this hub is not talking to an orb — load one on the Manage card first, then press again. (The download still ships without a hub.)' });
+      return;
+    }
+    this.setState({ status: 'Sending "' + nm + '" to ' + ip + (overwrite ? ' (replacing)' : '') + '…' });
+    let resp, j = {};
+    try {
+      resp = await fetch('/api/theme/upload?ip=' + encodeURIComponent(ip) + (overwrite ? '&overwrite=1' : ''), {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes,
+      });
+      j = await resp.json().catch(() => ({}));
+    } catch (e) {
+      this.setState({ status: 'Send failed: ' + (e && e.message ? e.message : String(e)) });
+      return;
+    }
+    if (!resp.ok || j.ok === false) {
+      const why = j.error || ('HTTP ' + resp.status);
+      if (!overwrite && String(why).indexOf('already on the card') >= 0 &&
+          typeof confirm === 'function' &&
+          confirm('The orb refused this send: ' + why + '\n\nReplace it with this bake?')) {
+        return this.postTheme3ToOrb(bytes, nm, stem, pol, meter, true);
+      }
+      this.setState({ status: 'Not sent: ' + why });
+      return;
+    }
+    const d = j.data || {};
+    this.setState({ status: 'Sent to ' + ip + ' as "' + (d.name || nm) + '" (' + (d.id || stem) + ') — ' +
+      pol.sentence + ' · ' + meter + ' · stored in the slot the glass is not drawing — flip to it on the orb to boot the new dial' });
   }
   /* §31's comp-table pass: render every domain value of every planned row as one
    * RGBA plate, cropped to the footprint it actually changed against the plate it
@@ -2609,6 +2695,19 @@ class Component extends DCLogic {
       // FORMAT 2 loader the old firmware still carries; this is the device theme
       // for every watch that takes the store door.
       exportTheme: () => this.exportTheme3(),
+      // §31's send-to-orb round: the same bake, pushed through the hub's upload door.
+      // The button renders only under a hub (same-origin http/https); opened from the
+      // filesystem the composer has no door to dial, so isHub is false and it hides.
+      isHub: this.hubSend3(),
+      sendToOrb: () => this.sendTheme3ToOrb(),
+      sendNote: (() => {
+        if (!this.hubSend3()) return 'no hub';
+        const G = window.GorbBake;
+        if (!G || !G.bakeClock3) return 'baker not loaded';
+        const tn = this.themeName();
+        if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
+        return this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
+      })(),
       // FORMAT 2: the name is typed, so the field that types it sits beside the button,
       // and the byte counter beside it is the same count the baker applies, not JS chars.
       themeNameVal: this.state.themeName == null ? '' : this.state.themeName,

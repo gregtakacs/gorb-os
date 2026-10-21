@@ -4640,9 +4640,9 @@ bundle-wide.
 
 **What this deliberately does not buy.** Send-to-orb from the composer page: the boards
 serve no CORS headers, so the push rides the hub's `/api/theme/upload` — already FORMAT
-3-correct and demonstrated live on orb-B with store, flip and delete — and the composer's
-export stays a download the owner picks in that button until a hub round adds a push
-action on the composer frame. Delta-GIF backgrounds: unruled, per rule 2. Glass
+3-correct and demonstrated live on orb-B with store, flip and delete. (That push landed
+in §31.3: the composer's Device-theme button still downloads, and a hub-served page now
+also offers a Send-to-orb button on that same door.) Delta-GIF backgrounds: unruled, per rule 2. Glass
 animation: refused by rule 1 — the crystal composites, it does not loop.
 
 **Ruling asked of the owner.** Accept rules 1-6 as the plate-bank contract (keyframes
@@ -4816,9 +4816,53 @@ plates and the guard refuses it by that number, so the author shrinks the dial.
 Datetext flares and the text/value sources stay refused: the element row carries no
 glyph fields, and the FORMAT 2 strip path remains the route for those.
 
-**Still open on this contract:** the hub's send-to-orb round (the button downloads;
-the hub's upload door is the receiver), and P8 consolidating the delivered-fps ladder
-across bank sizes.
+**Still open on this contract:** P8 consolidating the delivered-fps ladder across
+bank sizes. The hub's send-to-orb round is now closed by §31.3.
+
+#### §31.3 The send-to-orb round: the composer pushes on the hub's existing door
+
+**Landed (2026-10-21), the slice §31.1 named as its one held item.** A composed dial
+reaches the orb without a manual download-then-reupload. The hub's `/api/theme/upload`
+was already the FORMAT 3 receiver (§31.2, proven live); the missing half was the *push*
+from the composer frame. It is now there, and it is deliberately small.
+
+**What the composer does, and does not, do.** The `Watch Composer.dc.html` owns its side
+alone (`tools/watch-composer`, embedded by `make composer`). No board route, no
+`orb_net.c` change. The hub's Go side changed by one line: `serveComposer` now calls
+`setLaunchToken` when it serves the entry document, so the Send button's same-origin POST
+authenticates on the `orb_token` cookie even when the operator deep-linked straight to
+`/composer/` without loading the hub's own front page first — the case where the button
+would otherwise 403 "reload the page" on a page already reloaded.
+
+**Hub mode is the whole gate.** `exportTheme3({send})` runs the *identical* walk — guard,
+`compPlan3`/`pointerPlan3` refusal, motion measure, re-settle check, split, bake — and only
+the last step branches: `send` calls `postTheme3ToOrb` instead of `download`. So a sent
+dial is byte-for-byte the dial a downloaded one ships. The Send button renders only under
+a hub (`hubSend3`: `location.protocol` is http/https); opened from the filesystem the
+composer has no door to dial and no orb address, so `sendNote` reads `no hub` and the
+button hides, leaving the download as the one export. The orb address is never typed
+here: `hubOrbIp` reads `/api/orb/known` at press time (cached once) and pushes to the
+address the hub learned over the cable or was handed, so a board on a new DHCP lease
+cannot leave the button dialing a stale IP.
+
+**The store/flip contract is honored, not glossed.** The status names the send a *store*
+into the slot the glass is not drawing — "the orb verifies it, files it, and nothing
+flips or reboots on its own" — the same wording discipline the hub's own store reply uses
+("stored <name> in slot <n> — press Put it on the dial", `web/app.js`). A store never
+moves the dial: the flip is a separate press that reboots the orb onto the new face
+(D13 deleted the pending-reboot key; the firmware's store door answers `reboot:none`).
+The one device decision an
+upload carries, `?overwrite=1`, is asked for only after the firmware refused a different
+theme under the same name, mirroring `web/app.js` verbatim, so a composer press and a
+Manage-card upload behave as one tool.
+
+**The contract, pinned both ways.** `headless-ui.test.js` runs the send path with no
+network: it proves `isHub`/`sendToOrb`/`sendNote` are bound, that no `location` means
+`no hub` (button hidden, never thrown on), that an http location turns the note to the
+push door, and that a hub with no loaded orb refuses with an actionable sentence that
+leaves the download as the exit. On the Go side `TestComposerEntryCarriesLaunchToken`
+pins the cookie onto the entry document and OFF the byte-exact sibling scripts, so the
+one hardening cannot silently widen to serving the token on every asset.
 
 
 

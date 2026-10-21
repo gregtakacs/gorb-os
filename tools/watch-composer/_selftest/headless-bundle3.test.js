@@ -112,7 +112,9 @@ const E = (o) => Object.assign(B.blankElement(), { n: 1, n_frames: 1 }, o);
 const SPRITE = B.classId('sprite'), LAYER = B.classId('layer'), BANK = B.classId('bank');
 const HAND = B.classId('hand'), TEXT = B.classId('text'), STATUS = B.classId('status');
 refuses(() => B.packElements([E({ class: 99 })]), 'not a class this build knows', 'an unknown class id is refused');
-refuses(() => B.packElements([E({ class: SPRITE, flags: 16 })]), 'unknown flag bits', 'an unknown flag bit is refused rather than zeroed');
+refuses(() => B.packElements([E({ class: SPRITE, flags: 0x80 })]), 'unknown flag bits', 'an unknown flag bit is refused rather than zeroed');
+refuses(() => B.packElements([E({ class: SPRITE, flags: B.AUX_F_SHADOW3 })]), 'rule for class aux',
+        'the pointer shadow twin means nothing on another class, and the door says whose bit it is');
 refuses(() => B.packElements([E({ class: SPRITE, order: 64 })]), 'depth rungs', 'an order past the rungs is refused');
 refuses(() => B.packElements([E({ class: SPRITE, n_frames: 0 })]), 'n_frames: 0 draws nothing', 'a zero-frame row is refused');
 refuses(() => B.packElements([E({ class: SPRITE, frame0: 350, n_frames: 11 })]), 'run past the art region', 'a frame window past the bound is refused');
@@ -626,13 +628,46 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSe
         'pointer slots', 'a ninth pointer is past the cap the dial declares');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { motion: 'spin' })] }),
         'names none of them', 'a motion the vocabulary has no word for refuses by name');
+// §26 slice 4: the pointer's shadow twin. The row that darkens a sub-dial hand is a
+// SECOND aux row — flagged with AUX_F_SHADOW3 in the u8 column, slotted directly after
+// its hand — whose pivot column lands its centre on hand centre + light, the same
+// §25.2 placement the centred hands' shadows carry. The hand above is 28x64 at
+// (300,120) about (14,56); its twin pads two and takes the light (4,4): the plate
+// draws at (302,122) turning about (16,58), centre (318,180).
+const TWP = { rgba: mkPlane(32, 68, 60), w: 32, h: 68 };
+const auxTwin = Object.assign({}, auxSec, {
+  shadow: { rgba: TWP.rgba, w: 32, h: 68, x: 302, y: 122, pivot_x: 16, pivot_y: 58 } });
+const bakedT = B.bakeClock3({ name: 'Twin Bake', serial: 20261022, bakedMs: 1730000000001,
+  plate: PL, hands: [HK], order: [0], aux: [auxTwin, auxBar] });
+const walkT = B.verifyBundle3(bakedT.bytes).sections[0];
+const twRows = walkT.blob.elements.filter((e) => e.class === B.CLASS_AUX);
+ok(twRows.length === 3, 'a shadowed pointer bakes as two rows and the battery bar keeps its own, renumbered',
+   JSON.stringify(twRows.map((r) => r.slot)));
+ok(twRows[0].flags === 0 && twRows[1].flags === B.AUX_F_SHADOW3,
+   'the twin row carries the shadow bit and its hand row carries none',
+   JSON.stringify(twRows.map((r) => r.flags)));
+ok(twRows[1].slot === twRows[0].slot + 1 && twRows[2].slot === 2,
+   'the twin takes the slot directly after its hand, and every pointer behind it shifts by one',
+   JSON.stringify(twRows.map((r) => r.slot)));
+ok(twRows[1].x + twRows[1].pivot_x === twRows[0].x + twRows[0].pivot_x + 4 &&
+   twRows[1].y + twRows[1].pivot_y === twRows[0].y + twRows[0].pivot_y + 4,
+   'the twin’s centre is the hand’s centre plus the light (4,4): §25.2 in three numbers',
+   JSON.stringify(twRows.map((r) => [r.x + r.pivot_x, r.y + r.pivot_y])));
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxTwin, { shadow: { rgba: mkPlane(32, 68, 60), w: 30, h: 68, x: 302, y: 122, pivot_x: 16, pivot_y: 58 } })] }),
+        'one row, one extent', 'a twin plate that lies about its size refuses at the bake');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxTwin, { shadow: Object.assign({}, auxTwin.shadow, { pivot_x: 400 }) })] }),
+        'outside its own', 'a twin turning about a point off its own plate refuses at the bake');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: Array.from({ length: 5 }, (_, i) => Object.assign({}, auxTwin, { slot: i })) }),
+        'twins counted', 'four shadowed pointers is the cap; the fifth refuses before any art is drawn');
+const bkTwin = '/tmp/js_bake_twin.orbtheme';
+fs.writeFileSync(bkTwin, Buffer.from(bakedT.bytes));
 fs.writeFileSync(bkAux, Buffer.from(bakedX.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
   console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
 } else {
-  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar, bkComp, bkAux], { encoding: 'utf8' });
-  ok(pr.status === 0, 'the shipped orb_clock3.c projects all four browser bakes, comp table included',
+  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar, bkComp, bkAux, bkTwin], { encoding: 'utf8' });
+  ok(pr.status === 0, 'the shipped orb_clock3.c projects all five browser bakes, comp table included',
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
      'and seats the hand at the element rect with the plate-colour size as its offset',
@@ -670,6 +705,15 @@ if (!hasGcc) {
   ok(/aux\[1\] slide-x src=battery box 90x10 at \(200,400\) travel 90 from -45 over 0\.\.100 shown/.test(pr.stdout),
      'and the slide arrives as pixels along x, not as an angle',
      (pr.stdout.match(/aux\[1\].*/) || ['none'])[0]);
+  // §26 slice 4 across the wire: the shipped C maps the u8 twin bit onto the
+  // runtime pairing flag, and the twin's centre arrives as hand centre + light —
+  // the pointer twin keeps the same identity the centred hands' shadows print.
+  ok(/aux\[1\] rotate src=second box 32x68 at \(302,122\).*shadow-twin/.test(pr.stdout),
+     'the pointer twin projects as a flagged second row under its hand',
+     (pr.stdout.match(/aux\[1\].*twin.*/) || ['none'])[0]);
+  ok(/aux\[1\] shadow centre \(318,180\) = hand centre \(314,176\) \+ light \(4,4\)/.test(pr.stdout),
+     'and the pointer twin keeps the §25.2 light identity exactly as the composer encoded it',
+     (pr.stdout.match(/aux\[1\] shadow centre.*/) || ['none'])[0]);
 }
 
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');

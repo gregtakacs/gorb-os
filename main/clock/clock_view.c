@@ -1566,11 +1566,29 @@ static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj
 
 /* One ctx per pointer currently showing an angle, appended where the commit
  * loop put the block: rotated, so the hook's transform path — the same one the
- * hands pay for, and why an unchanged pointer is not in the list at all. */
+ * hands pay for, and why an unchanged pointer is not in the list at all. The
+ * jobs list composites front to back, so a shadowed pointer joins as two ctx
+ * with the twin FIRST — the same order aux_create() gives the LVGL siblings on
+ * the classic path and the same order the main hands keep with their shadows.
+ * A twin that joined after its hand rides over its own pointer: a smudge, not
+ * a shadow, and the worst of it at the tip, where the blurred offset overlaps
+ * the pointer body for half of every turn. */
 static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
 {
     for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
-        if (s_aux_ang_10[i] == AUX_HIDDEN) continue;      /* nothing drawn */
+        const clk_aux_t *a = &g->aux[i];
+        if (a->flags & CLK_FLAG_AUX_SHADOW) continue;      /* joined under its hand */
+        if (s_aux_ang_10[i] == AUX_HIDDEN) continue;       /* nothing drawn */
+        const uint16_t t = i + 1;
+        if (t < g->n_aux && t < CLK_AUX_MAX &&
+            (g->aux[t].flags & CLK_FLAG_AUX_SHADOW) &&
+            s_aux_ang_10[t] != AUX_HIDDEN && s_aux_ang_10[t] != INT32_MIN) {
+            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
+            const bool tslide = MOTION_IS_SLIDE(g->aux[t].kind);
+            if (gfx_paint_ctx_init(&jc[*nj], tslide ? &s_aux_pose[t] : &g->aux[t].spr,
+                                   blob(), tslide ? 0 : s_aux_ang_10[t], CLK_ROLE_AUX))
+                (*nj)++;
+        }
         if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
         /* A pointer reaches the compositor as the one thing it is: a sprite at a pose.
          * A rotation is that sprite with an angle. A SLIDE is that sprite with its
@@ -1579,8 +1597,8 @@ static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
          * marks and the per-role blend accounting are the ones every layer already
          * pays for and gfx grows no new mode. s_aux_pose holds the displaced record,
          * written once per tick by aux_update rather than recomputed per flush. */
-        const bool slide = MOTION_IS_SLIDE(g->aux[i].kind);
-        if (gfx_paint_ctx_init(&jc[*nj], slide ? &s_aux_pose[i] : &g->aux[i].spr,
+        const bool slide = MOTION_IS_SLIDE(a->kind);
+        if (gfx_paint_ctx_init(&jc[*nj], slide ? &s_aux_pose[i] : &a->spr,
                                blob(), slide ? 0 : s_aux_ang_10[i], CLK_ROLE_AUX))
             (*nj)++;
     }
@@ -1601,11 +1619,15 @@ static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
  *
  * A shadowed pointer is TWO rows: the hand, then its blur/offset twin flagged
  * CLK_FLAG_AUX_SHADOW (tools/bake_clock.py lays them down adjacent, hand first,
- * and tools/theme_schema.py packs that pair). The twin owns pixels and a centre
- * (the hand's, moved by the light vector) and no input of its own — the tick
- * gives it the row before it's angle — so it can never come loose from the
- * pixels it exists to darken. The bake packed it with the SAME pivot as its
- * hand, which is what keeps the light direction fixed while the pointer sweeps.
+ * and tools/theme_schema.py packs that pair; the FORMAT 3 composer bakes the
+ * same pair through orbtheme-baker.js, where row flag bit 4 — AUX_F_SHADOW3,
+ * mapped in orb_clock3.c — carries it into this vocabulary). The twin owns
+ * pixels and a centre (the hand's, moved by the light vector) and no input of
+ * its own — the tick gives it the row before it's angle — so it can never come
+ * loose from the pixels it exists to darken. The bake packs the twin so its
+ * pivot lands on its own centre, the hand's centre plus the light: pointer and
+ * twin turn as one rigid pair, and the offset stays fixed in screen space
+ * while the pointer sweeps.
  *
  * z-order: the block inserts BEFORE the first live hand (a pointer on its own
  * ring belongs under the main hands that sweep across it) and above every live

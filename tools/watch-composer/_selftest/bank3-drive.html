@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bank3-drive</title>
+<body><pre id="out">booting…</pre>
+<!-- Drives the composer's REAL export path (exportTheme3 → t3bake) for one preset and prints
+     the bytes the bake downloads, so the bank policy, the D34 tripwire and the art cap all run
+     over real Chrome pixels instead of a hand-assembled plane set. bake3-test.html bakes a
+     still on its own planes; a shipped dial needs what the button ships: plate.frames when
+     splitPolicy3 says 'bank'. This page never re-decides that. Run it as bake3-test runs:
+
+       chrome --headless=new --disable-gpu --no-sandbox --virtual-time-budget=240000 \
+         --dump-dom 'file://<abs-path>/_selftest/bank3-drive.html' > /tmp/bank3_dom.html
+
+     `B64:` carries the whole download blob; the status names the carrier and art meter. -->
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  let fails = 0;
+  const ok = (n, c, x) => { say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
+
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  // The D34 tripwire prices the walk against gt.length: a loop with frames still arriving
+  // reads as zero motion. The button bakes with the ticker running, so the ticker runs here.
+  IT.state.playing = true; IT.state.hidden = {}; IT.state.tab = 'export';
+  let tick = 0;
+  const pump = () => { stopPump(); tick = setInterval(() => IT.componentDidUpdate(), 40); };
+  const stopPump = () => clearInterval(tick);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  const mount = async (id) => {
+    const P = E.PRESETS[id];
+    IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    pump();
+    IT.buildMovement();
+    if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');
+  };
+
+  const DIAL = (location.search.match(/dial=([\w-]+)/) || [])[1] || 'skeleton';
+  const NAME = (location.search.match(/name=([\w -]+)/) || [])[1] || (E.PRESETS[DIAL] || {}).name || DIAL;
+
+  async function main() {
+    if (!E || !E.PRESETS || !E.PRESETS[DIAL]) throw new Error('no preset ' + DIAL);
+    if (!G || !G.bakeClock3) throw new Error('orbtheme-baker.js did not load beside the page');
+    IT.state.themeName = NAME;
+    await IT.componentDidMount();
+    await mount(DIAL);
+    // Intercept the download rather than clicking an <a>: headless Chrome has no save dir.
+    // The ticker runs through the bake the way it runs under a live button press: settled3()
+    // prices the walk against a half-filled loop, and the D34 tripwire says so in words.
+    let blob = null, fname = null;
+    IT.download = (b, n) => { blob = b; fname = n; };
+    say('--- baking ' + DIAL + ' (theme name "' + NAME + '") through exportTheme3 ---');
+    pump();
+    await wait(400);   // let the ticker fill the loop before the first settle check
+    // A ticker tick landing between the comp pass and the walk re-keys the movement — the
+    // race the product's "press again" sentence describes. The driver presses again.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await IT.exportTheme3();
+      if (!/not settled|rebuilt itself/.test(String(IT.state.status || ''))) break;
+      await wait(300);
+    }
+    const st = String(IT.state.status || '');
+    stopPump();
+    say('status: ' + st.slice(0, 200));
+    ok('the bake downloaded a file', !!blob && !!fname, fname || st.slice(0, 120));
+    ok('the status names a FORMAT 3 bake', /^Downloaded .*FORMAT 3 (bank|sprite|still)/.test(st), st.slice(0, 90));
+    if (!blob) { say('RESULT: FAIL — ' + fails + ' check(s)'); document.title = 'FAIL'; return; }
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let w = null, wErr = null;
+    try { w = G.verifyBundle3(bytes); } catch (e) { wErr = e; }
+    ok('verifyBundle3 walks the bake it just wrote', !wErr, wErr ? String(wErr.message).slice(0, 140) : '');
+    let plate = null, hands = [];
+    if (w && w.sections.length) {
+      const els = w.sections[0].blob.elements;
+      for (let i = 0; i < els.length; i++) {
+        const e = els[i], k = e.cls !== undefined ? e.cls : e.class;
+        if (k === 0 && !(e.slot & 0xffff)) plate = e;
+        if (k === 2) hands.push('' + (e.slot | 0));
+      }
+    }
+    const nf = plate ? (plate.n_frames | 0) : 0;
+    say('reader: plate row n_frames=' + nf + '  hand slots [' + hands.join(',') + ']  bytes ' + bytes.length);
+    ok('the plate row carries the frames the carrier promised', nf >= 2 || /still|sprite/.test(st), 'n_frames ' + nf);
+    ok('every centre hand rode the bake as its own row', hands.length >= 2, hands.join(','));
+    let bin = '', CH = 8192;
+    for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    say('B64LEN ' + bytes.length);
+    say('B64:' + btoa(bin));
+    say(fails ? 'RESULT: FAIL — ' + fails + ' check(s)' : 'RESULT: PASS');
+    document.title = fails ? 'FAIL' : 'PASS';
+  }
+  main().catch((e) => { say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 7).join('\n')); document.title = 'FAIL'; });
+})();
+</script>
+

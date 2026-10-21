@@ -57,10 +57,8 @@ def main():
                 n_aux = int(w[1])
             elif w[0] == "aux":
                 # the harness's own field order: idx tag kind src x y w h span zero
-                # vmin vmax color_off show
-                auxs.append((int(w[1]), int(w[2]), int(w[3]), int(w[4]), int(w[5]), int(w[6]),
-                             int(w[7]), int(w[8]), int(w[9]), int(w[10]), int(w[11]),
-                             int(w[12]), int(w[13]), int(w[14])))
+                # vmin vmax color_off show flags pivotx pivoty centerx centery
+                auxs.append(tuple(int(x) for x in w[1:]))
             elif w[0] == "comp":
                 # the harness's own field order: idx tag kind src x y w h count
                 # first off frame_bytes value_min scale show
@@ -94,14 +92,29 @@ def main():
             print("    comp[%d] window src=%s box %dx%d at (%d,%d) %d plates off %d stride %d value_min %d %s"
                   % (tag, SOURCES[src], cw, ch, x, y, count, off, fbytes, vmin,
                      "shown" if show else "hidden"))
-        for (_, tag, kind, src, x, y, aw, ah, span, zero, vmin, vmax, coff, show) in auxs:
+        for a in auxs:
+            (_, tag, kind, src, x, y, aw, ah, span, zero, vmin, vmax, coff, show,
+             flags, px, py, cx, cy) = a
             # D34: the pointer, read back off the clk_aux_t the shipped projection filled.
             # The unit is the motion's own, so it is printed with the number rather than
             # beside it: 3600 on a rotate is a turn, 90 on a slide-x is ninety pixels.
-            print("    aux[%d] %s src=%s box %dx%d at (%d,%d) travel %d from %d over %d..%d %s"
+            print("    aux[%d] %s src=%s box %dx%d at (%d,%d) travel %d from %d over %d..%d %s%s"
                   % (tag, MOTIONS[kind] if kind < len(MOTIONS) else "?%d" % kind,
                      SOURCES[src], aw, ah, x, y, span, zero, vmin, vmax,
-                     "shown" if show else "hidden"))
+                     "shown" if show else "hidden",
+                     " shadow-twin" if flags & 256 else ""))
+            if flags & 256:
+                # §25.2's identity for the pointer's twin: the projection took the
+                # row's pivot column as the centre (x + pivot), and the hand it hangs
+                # under is the row the dial placed directly before it. A light offset
+                # that survived the wire as (twin centre - hand centre) is the
+                # composer's shadow promise; the print is what lets the test say so.
+                hand = next((p for p in auxs if p[0] == tag - 1), None)
+                if hand:
+                    print("    aux[%d] shadow centre (%d,%d) = hand centre (%d,%d) "
+                          "+ light (%d,%d), crop pivot (%d,%d)"
+                          % (tag, cx, cy, hand[17], hand[18], cx - hand[17],
+                             cy - hand[18], px, py))
         print("    scalars: tick_rate %s order_n %s shadow_on %s bg_frames %s"
               % (sc.get("tick_rate"), sc.get("order_n"), sc.get("shadow_on"),
                  sc.get("bg_frames")))

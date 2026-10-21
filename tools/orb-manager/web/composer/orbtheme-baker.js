@@ -68,6 +68,11 @@
     week: [1, 53],      day_of_year: [1, 366], quarter: [1, 4]
   };
   var FLAG_JUMP = 1 << 3, FLAG_24H = 1 << 4, FLAG_AUX_SHADOW = 1 << 8;
+  // FORMAT 3's row flag column is a u8, so the pointer's shadow twin rides bit 4 —
+  // the slot the element dialect leaves free for an aux row (alpha/loop/os-adv mean
+  // nothing to a single-frame pointer) — and orb_clock3.c's AUX_F_SHADOW maps it
+  // back onto the runtime FLAG_AUX_SHADOW above. The two names are one contract.
+  var AUX_F_SHADOW3 = 1 << 4;
   var BANK_FIELDS = [['w', 'u16'], ['h', 'u16'], ['offx', 'i16'], ['offy', 'i16'],
                      ['pivotx', 'i16'], ['pivoty', 'i16'], ['centerx', 'i16'], ['centery', 'i16'],
                      ['blend', 'u8'], ['show', 'u8'], ['color_off', 'u32'],
@@ -1698,7 +1703,7 @@
   var ELEMENT_WORDS_MIN = 17;
   var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
-  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN;
+  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3;
   var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
@@ -1746,6 +1751,10 @@
     if (flags & ~EF_ALL) {
       throw new Error(where + '.flags: unknown flag bits 0x' + pad2hex(flags & ~EF_ALL) +
         ' — a schema this build does not know, refused rather than drawn wrong');
+    }
+    if ((flags & AUX_F_SHADOW3) && cls !== CLASS_AUX) {
+      throw new Error(where + '.flags: the pointer shadow twin is a rule for class aux; class ' +
+        q(CLASS_NAMES[cls]) + ' already owns its shadow\u2019s placement (§25.2)');
     }
     var ord = Math.trunc(rec.order | 0);
     if (!(ord >= 0 && ord < ELEM_ORDER_N)) {
@@ -2637,8 +2646,32 @@
           throw new Error('a pointer at slot ' + (ar.slot | 0) + ' turns about (' + apx + ',' + apy +
             '), outside its own ' + (ar.w|0) + 'x' + (ar.h|0) + ' plate');
       }
-      auxB += (ar.w | 0) * (ar.h | 0) * 3;
+      /* The twin row the composer raised with this pointer (auxPass3): pixels, an
+       * extent, and a pivot the dial will rotate it about, same three checks the
+       * hand's own plate passes. A slide's twin turns about nothing — its motion is
+       * a displacement, and the row below forces the pivot to the plate middle as
+       * it does for the hand — so the pivot check is the rotation path's alone. */
+      if (ar.shadow) {
+        var av = ar.shadow;
+        if (!av.rgba) throw new Error('a pointer at slot ' + (ar.slot | 0) + ' carries a shadow row with no pixels');
+        if (!(av.w > 0 && av.h > 0) || av.rgba.length !== (av.w | 0) * (av.h | 0) * 4)
+          throw new Error('the shadow of the pointer at slot ' + (ar.slot | 0) + ' is ' + (av.w | 0) + 'x' + (av.h | 0)
+            + ' against ' + av.rgba.length + ' bytes: one row, one extent');
+        if (!motionIsSlide(m4) && !((av.pivot_x | 0) >= 0 && (av.pivot_x | 0) < (av.w | 0)
+                                    && (av.pivot_y | 0) >= 0 && (av.pivot_y | 0) < (av.h | 0)))
+          throw new Error('the shadow of the pointer at slot ' + (ar.slot | 0) + ' turns about (' + (av.pivot_x | 0) + ',' + (av.pivot_y | 0)
+            + '), outside its own ' + (av.w | 0) + 'x' + (av.h | 0) + ' plate');
+      }
+      auxB += (ar.w | 0) * (ar.h | 0) * 3 + (ar.shadow ? (ar.shadow.w | 0) * (ar.shadow.h | 0) * 3 : 0);
     }
+    /* One slot a row, and the twin takes the slot directly after its hand — that
+     * adjacency is clock_view's pairing rule, not a layout preference, so the
+     * physical numbering is the baker's and every pointer after a shadowed one
+     * shifts by two. What the dial cannot hold is refused here, before art. */
+    var auxSlot3 = 0;
+    for (k4 = 0; k4 < auxRows.length; k4++) auxSlot3 += auxRows[k4].shadow ? 2 : 1;
+    if (auxSlot3 > CLK_AUX_MAX)
+      throw new Error(auxSlot3 + ' pointer rows — shadow twins counted — exceed the dial\u2019s cap of ' + CLK_AUX_MAX);
     for (k3 = 0; k3 < compRows.length; k3++) {
       var c4 = compRows[k3];
       rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
@@ -2646,19 +2679,35 @@
                   n_frames: c4.planes.length, scale16: c4.scale16 | 0,
                   flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true);
     }
+    var auxSlotW = 0;
     for (k4 = 0; k4 < auxRows.length; k4++) {
       var a5 = auxRows[k4], m5 = a5.motion === undefined ? MOTION_ROTATE
               : (typeof a5.motion === 'string' ? MOTION_NAMES.indexOf(a5.motion) : a5.motion);
       // A slide carries no pivot to turn about; its own centre is the origin the row
       // places, and clk_sprite_t's pivot is read only by the dirty-mark maths. The
       // motion rides the row's `kind` column and the drive its four appended words.
-      row({ n: nid++, 'class': classId('aux'), slot: a5.slot, kind: m5, src: SOURCES.indexOf(String(a5.src)),
+      var or5 = a5.order === undefined ? ord : a5.order;
+      row({ n: nid++, 'class': classId('aux'), slot: auxSlotW++, kind: m5, src: SOURCES.indexOf(String(a5.src)),
             x: a5.x | 0, y: a5.y | 0, w: a5.w | 0, h: a5.h | 0,
             pivot_x: motionIsSlide(m5) ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),
             pivot_y: motionIsSlide(m5) ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
-            order: a5.order === undefined ? ord : a5.order, alpha: 255, n_frames: 1,
+            order: or5, alpha: 255, n_frames: 1,
             span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
             flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
+      /* The twin: the hand's drive words verbatim — the loader validates them like
+       * any row's and the driver ignores them, taking the pose from the hand — and
+       * its own draw point and pivot column, whose sum (x + pivot) is the hand's
+       * centre plus the light, which is the whole §25.2 placement in three numbers.
+       * AUX_F_SHADOW3 is what tells the dial this row never drives itself. */
+      if (a5.shadow) {
+        row({ n: nid++, 'class': classId('aux'), slot: auxSlotW++, kind: m5, src: SOURCES.indexOf(String(a5.src)),
+              x: a5.shadow.x | 0, y: a5.shadow.y | 0, w: a5.shadow.w | 0, h: a5.shadow.h | 0,
+              pivot_x: motionIsSlide(m5) ? ((a5.shadow.w | 0) >> 1) : (a5.shadow.pivot_x | 0),
+              pivot_y: motionIsSlide(m5) ? ((a5.shadow.h | 0) >> 1) : (a5.shadow.pivot_y | 0),
+              order: or5, alpha: 255, n_frames: 1,
+              span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
+              flags: (a5.hidden ? EF_HIDDEN : 0) | AUX_F_SHADOW3 }, a5.shadow, true);
+      }
     }
     for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
     sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
@@ -2935,6 +2984,7 @@
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,
+    AUX_F_SHADOW3: AUX_F_SHADOW3,
     ELEM_MAX: ELEM_MAX, ELEM_FRAMES_MAX: ELEM_FRAMES_MAX,
     // D34: the pointer vocabulary, exported so the composer and the suite read the
     // same table the baker refuses against rather than restating ids.

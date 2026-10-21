@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>motion-union-selftest</title>
+<body><pre id="out">booting…</pre>
+<!-- §31 step 3: the motion table every preset's bake policy rides on.
+     bake3-test.html measured FIRST-versus-LAST plate pixels (§29's numbers);
+     §31 rules that a loop's TRUE motion is the UNION of consecutive-frame
+     diffs, widened. This page mounts every shipped preset exactly as
+     bake3-test mounts it, composes the plate (hands and glass hidden) at
+     EVERY frame of its loop including the wrap, and prints one machine line
+     per preset:
+
+       MOTION id=.. frames=.. fps=.. union_px=.. bbox=WxH@X,Y bank_b=..
+              sprite_b=.. other_b=.. max_bank=.. verdict=..
+
+     verdict is the cap arithmetic §31 states as binding:
+       STILL   — the plate never moves: one keyframe, the pre-§31 bake.
+       BANK    — the whole plate as N keyframes fits the slot's bank room.
+       SPRITE  — the motion is local and a masked bank at the bbox fits
+                 where the full-panel one does not (the §29/§31 carriage
+                 carrier, mapping left to the bake).
+       REFUSE  — neither fits: the preset ships stilled or not at all.
+     Bank cost per keyframe is scr_w*scr_h*2 (colour-only, the plate's own
+     format); sprite cost per frame is bbox_w*bbox_h*3 (a carriage plane
+     carries its alpha, d32's own bank). other_b is every non-plate plane a
+     bake seats — measured off the real bake, so max_bank is the honest
+     count the slot has left. Run as the other _selftest pages: the full
+     sweep is minutes, run it detached. Last line RESULT: PASS|FAIL.
+-->
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  let fails = 0;
+  const ok = (n, c, x) => { say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
+  const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h || w; return c; };
+  const pix = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
+  const still = (M, gt, F) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }); return c; };
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export';
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  const mount = async (id) => {
+    const P = E.PRESETS[id];
+    IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.buildMovement();
+    if (!await settle()) throw new Error(id + ' never settled');
+    return { F: IT.face(id), M: IT.base, gt: IT.gt, B: IT.B, fps: IT.F };
+  };
+  // The non-plate art one bake seats: the centre hands, masked, at rest. Bytes
+  // only — the verdict needs the planes' cost, not their pixels.
+  const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
+  function otherBytes(F) {
+    let b = 0;
+    for (const h of (F.hands || [])) {
+      if (ROLE[h.id] === undefined) continue;
+      b += Math.round(h.sp.c.width) * Math.round(h.sp.c.height) * 3;
+    }
+    return b;
+  }
+
+  async function main() {
+    if (!E || !E.PRESETS) throw new Error('watch-engine.js did not load beside the page');
+    if (!G || !G.bakeClock3) throw new Error('orbtheme-baker.js has no bakeClock3 to test');
+    const ids = Object.keys(E.PRESETS);
+    ok('the sweep has the whole preset table to work from', ids.length >= 8, ids.length + ' presets');
+    IT.state.dial = ids[0]; IT.state.designs = {};
+    await IT.componentDidMount();
+    const CAP = 0x00400000 - 0x00010000;      // SLOT_ART_CAP3: the bake's own bound
+    const PANEL = 466 * 466, KF = PANEL * 2;  // one plate keyframe, colour-only
+    say('--- §31 motion table: union of consecutive-frame diffs, preset by preset ---');
+    let rows = 0;
+    for (const id of ids) {
+      const V = await mount(id), B = V.B;
+      const pxs = [];
+      for (let f = 0; f < B; f++) pxs.push(pix(still(V.M, V.gt[f], V.F)));
+      // Union mask and bbox over every consecutive pair, the wrap included.
+      const mask = new Uint8Array(PANEL);
+      let bx = PANEL, by = PANEL, bx2 = -1, by2 = -1, moved = 0;
+      for (let f = 0; f < B; f++) {
+        const a = pxs[f], b = pxs[(f + 1) % B];
+        for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
+          if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) {
+            moved++;
+            if (!mask[p]) {
+              mask[p] = 1;
+              const x = p % 466, y = (p / 466) | 0;
+              if (x < bx) bx = x; if (x > bx2) bx2 = x;
+              if (y < by) by = y; if (y > by2) by2 = y;
+            }
+          }
+        }
+      }
+      let un = 0; for (let p = 0; p < PANEL; p++) if (mask[p]) un++;
+      const bw = moved ? bx2 - bx + 1 : 0, bh = moved ? by2 - by + 1 : 0;
+      const bank = B * KF, sprite = B * bw * bh * 3, oth = otherBytes(V.F);
+      const maxBank = Math.floor((CAP - oth) / KF);
+      const frac = (bw * bh) / PANEL;
+      let verdict;
+      if (!moved) verdict = 'STILL';
+      else if (B <= 16 && bank + oth <= CAP) verdict = 'BANK';
+      else if (frac <= 1 / 3 && sprite + oth <= CAP && bw * bh < PANEL) verdict = 'SPRITE';
+      else verdict = 'REFUSE';
+      say('MOTION id=' + id + ' frames=' + B + ' fps=' + V.fps +
+          ' union_px=' + un + ' changed=' + moved +
+          ' bbox=' + bw + 'x' + bh + '@' + (moved ? bx + ',' + by : '0,0') +
+          ' bank_b=' + bank + ' sprite_b=' + sprite + ' other_b=' + oth +
+          ' max_bank=' + maxBank + ' verdict=' + verdict);
+      rows++;
+    }
+    ok('every preset got a motion row', rows === ids.length, rows + ' of ' + ids.length);
+    say(fails ? 'RESULT: FAIL — ' + fails + ' check(s)' : 'RESULT: PASS');
+    document.title = fails ? 'FAIL' : 'PASS';
+  }
+  main().catch((e) => { say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 7).join('\n')); document.title = 'FAIL'; });
+})();
+</script>
+

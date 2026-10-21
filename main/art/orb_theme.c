@@ -132,10 +132,11 @@ _Static_assert(W_WORDS == 32, "container header must be 128 bytes");
 /* Bounds the loader accepts, from clock_view.c's own array sizes and from what
  * the shipped bake measures (128 rects, 8 GIF frames). A theme wanting more than
  * the dial holds is refused as unloadable rather than installed and then clamped
- * at paint time into a half-drawn frame. */
+ * at paint time into a half-drawn frame. The plate bank's own bound is no loader
+ * constant: orb_clock3.c refuses a bank past CLK_BG_MAX at the projection (§31),
+ * so s_b3_bgf below never sees a row count it cannot hold. */
 #define RECTS_MAX       2048
 #define GIFS_MAX        32                         /* CLK_GIF_MAX */
-#define BG_FRAMES_MAX   8                          /* CLK_BG_MAX  */
 
 /* A sprite occupies colour w*h*2 then alpha w*h. Must match sprite_bytes() in
  * clock_view.c, which is the code these offsets are checked against. */

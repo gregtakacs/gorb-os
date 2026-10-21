@@ -313,23 +313,65 @@ ok(baked.meter.geomCap === 61440 && baked.meter.artCap === 4128768,
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: mkPlane(10, 10), w: 10, h: 10 } }),
         'full-screen', 'a plate that is not the whole panel is refused as the dial words it');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, scalars: { tourbillon_n: 4 } }),
-        'carriage tables', 'a carriage the section has no rows for is refused at the bake');
+        'does not assemble', 'a carriage the section has no rows for is refused at the bake');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, shadows: [SK] }),
         'no hand there', 'a shadow with no hand under it is refused, not silently drawn');
 refuses(() => B.bank3([{ rgba: mkPlane(4, 4), w: 4, h: 5 }]), 'RGBA',
         'a plane whose bytes do not match its own extent is refused before an offset is spent');
-const bkPath = '/tmp/js_bake_parity.orbtheme';
+
+// ---- 7b. the §31 keyframe plate bank: N whole-panel planes under one row ----
+// The bake's claim is the dialect's own: one row, planes contiguous behind the
+// plate, colour-only, and the scalars cross-set to agree. Then the shipped
+// projection says so too — same bytes, same table, the browser end refusing
+// what orb_clock3.c would refuse and accepting what it would project.
+const kf = (tint) => { const r = mkPlane(466, 466); for (let i = 0; i < 466 * 466; i++) { r[i * 4] = (i * 7 + tint) & 0xFF; } return r; };
+const APL = { rgba: kf(1), w: 466, h: 466, frames: [{ rgba: kf(1), w: 466, h: 466 },
+                                                    { rgba: kf(9), w: 466, h: 466 },
+                                                    { rgba: kf(17), w: 466, h: 466 }] };
+const bakedA = B.bakeClock3({ name: 'Anim Bake', serial: 20261020, bakedMs: 1730000000000,
+  plate: APL, hands: [HK], order: [0] });
+const walkA = B.verifyBundle3(bakedA.bytes).sections[0];
+ok(walkA.blob.elements[0].n_frames === 3 && walkA.blob.elements[0].frame0 === 0,
+   'the animated plate projects as one row naming three contiguous planes',
+   'n_frames ' + walkA.blob.elements[0].n_frames + ' frame0 ' + walkA.blob.elements[0].frame0);
+ok(walkA.blob.sprites[0].size === 466 * 466 * 2 && walkA.blob.sprites[1].size === 466 * 466 * 2 &&
+   walkA.blob.sprites[2].size === 466 * 466 * 2,
+   'every keyframe costs the plate colour-only, alpha strides and all',
+   'rows 0-2: ' + walkA.blob.sprites.slice(0, 3).map(s => s.size).join('/'));
+ok(walkA.blob.scalars.bg_frames === 2 && walkA.blob.scalars.bg_mode === 0 &&
+   walkA.blob.scalars.gif_frames === 0 && walkA.blob.scalars.bg_loop === 1,
+   'the scalars cross-set: two extra, delta vocabularies zero, the loop live');
+ok(bakedA.meter.artSize === 466 * 466 * 2 * 3 + 40 * 200 * 3,
+   'the bank is three keyframes and the masked hand, nothing else',
+   bakedA.meter.artSize + ' B');
+refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466, frames: [kf(1)] },
+   }), 'two or more', 'a one-frame bank is a still plate and the bake says which');
+refuses(() => B.bakeClock3({ name: 'x', plate: APL, scalars: { bg_frames: 4 } }),
+        'animation', 'a scalar disagreeing with the row is refused at the bake');
+refuses(() => B.bakeClock3({ name: 'x', plate: APL, scalars: { gif_frames: 15 } }),
+        'no delta rects', 'a keyframe bank with a gif count on it is refused');
+refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466, loop: 0,
+          frames: [{ rgba: kf(1), w: 466, h: 466 }, { rgba: kf(9), w: 466, h: 466 }] } }),
+        'no tempo', 'a one-shot bank with no fps is refused, not frozen');
+refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466,
+          frames: Array.from({ length: 17 }, () => ({ rgba: kf(1), w: 466, h: 466 })) } }),
+        'no room for', 'a seventeen-frame bank is refused before a byte is encoded');
+const bkPath = '/tmp/js_bake_parity.orbtheme', bkAnim = '/tmp/js_bake_anim.orbtheme';
 fs.writeFileSync(bkPath, Buffer.from(baked.bytes));
+fs.writeFileSync(bkAnim, Buffer.from(bakedA.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
   console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
 } else {
-  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath], { encoding: 'utf8' });
-  ok(pr.status === 0, 'the shipped orb_clock3.c projects the browser bake',
+  const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim], { encoding: 'utf8' });
+  ok(pr.status === 0, 'the shipped orb_clock3.c projects both browser bakes',
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),
      'and seats the hand at the element rect with the plate-colour size as its offset',
      (pr.stdout.match(/hand.*434312/) || ['none'])[0]);
+  ok(/plate bank: 2 extra keyframes at 434312, 868624/.test(pr.stdout),
+     'and the projection fills the bgAnim table with the keyframes\' own offsets',
+     (pr.stdout.match(/plate bank.*/) || ['none'])[0]);
 }
 
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');

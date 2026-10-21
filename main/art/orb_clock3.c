@@ -176,6 +176,13 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                 if (e.slot > 1)
                     return reject("a plate at slot %u: the clock dialect is one plate "
                                   "and one overlay", (unsigned)e.slot);
+                /* §31 rule 5: the animation is the plate behind the hands. An
+                 * overlay naming frames would want the plate's whole machinery
+                 * on the glass, and that is a different machine. */
+                if (e.slot == 1 && e.n_frames != 1)
+                    return reject("an animated glass: the overlay names %u frames — "
+                                  "§31 animates the plate behind the hands",
+                                  (unsigned)e.n_frames);
                 cell = &at_plate[e.slot];
                 break;
             case CLS_HAND:
@@ -274,10 +281,18 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         return reject("tourbillon_n %u with no tourbillon row: the scalars and the "
                       "table disagree, and the pair would name a bank the art does "
                       "not hold", (unsigned)t->tourbillon_n);
-    if (t->bg_frames)
+    /* §31: bg_frames is a keyframe bank's length, not a gif table's. Delta mode
+     * under a count is still §25.3's shape — whole planes named by a vocabulary
+     * of rects the section does not carry — and the row cross-check lands with
+     * the plate below, where both halves can disagree. */
+    if (t->bg_frames && t->bg_mode == 1)
         return reject("%u distinct plate frames: those planes ride the gif table a "
                       "FORMAT 3 clock section does not carry",
                       (unsigned)t->bg_frames);
+    if (t->bg_frames >= CLK_BG_MAX)
+        return reject("a plate animation of %u frames: the dial holds %u, and the "
+                      "rest is a bank it has no room for",
+                      (unsigned)t->bg_frames + 1u, (unsigned)CLK_BG_MAX);
     if (t->bg_mode == 1 && t->gif_frames < 2)
         return "delta-rect background with fewer than two frames";
     if ((uint32_t)t->gif_frames + 1u > io->first_cap ||
@@ -285,10 +300,13 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         return "more GIF frames than the dial holds";
 
 
-    /* The plate: required, full-panel, one frame. The last two are the compiled
-     * dial's own assumptions — it paints the background edge to edge and takes its
-     * blank-layer centre from the plate's middle — so a table that breaks them is
-     * not a clock this file can lie about. */
+    /* The plate: required, full-panel, and either still or a keyframe bank
+     * (§31). The bank is the carriage's mechanism pointed at the background:
+     * N whole-panel frames, contiguous at the row's frame0, colour-only, and
+     * advanced by the OS. The last two below are the compiled dial's own
+     * assumptions — it paints the background edge to edge and takes its
+     * blank-layer centre from the plate's middle — so a table that breaks them
+     * is not a clock this file can lie about. */
     if (at_plate[0] < 0)
         return "no plate row: the pair's blank-layer centres come from the plate's "
                "own extent, and a clock with no plate has no centre";
@@ -300,25 +318,51 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                       "the whole panel is not a plate",
                       (int)plate.x, (int)plate.y, (unsigned)plate.w,
                       (unsigned)plate.h, (unsigned)scr_w, (unsigned)scr_h);
-    if (plate.n_frames != 1)
-        return reject("a gif bank: the plate names %u frames, and the delta rects that "
-                      "would carry them are the shape §25.3 refuses — a FORMAT 3 clock "
-                      "section holds one keyframe", (unsigned)plate.n_frames);
+    /* The writer refuses a zero-frame row at its own door (theme_schema: 0 draws
+     * nothing); this is the damaged-card backstop, where a wrapped count would
+     * otherwise read as a still plate and paint no bank at all. */
+    if (!plate.n_frames)
+        return reject("a plate row naming 0 frames: the background is a layer that "
+                      "draws, and a row with no plane draws nothing");
+    /* One length, said once. The row names the planes and the scalar names the
+     * loop, and either half lying about the other is the same disagreement the
+     * carriage pair refuses; a keyframe bank with a gif count on it is two
+     * animation vocabularies claiming one background; and a one-shot with no
+     * tempo is a frame that never arrives, so it is refused rather than drawn
+     * as a freeze. The plate's own plane — the consumer's frame 0 — is seated
+     * below, where the catalogue has been walked and the row bounds proved. */
+    const uint8_t plate_anim = plate.n_frames > 1u || t->bg_frames != 0;
+    if (plate_anim) {
+        if (t->bg_frames != (uint16_t)(plate.n_frames - 1u))
+            return reject("a plate row naming %u frames while the scalars name %u "
+                          "extra: the row's planes are the animation's length",
+                          (unsigned)plate.n_frames, (unsigned)t->bg_frames);
+        if (t->gif_frames)
+            return reject("an animated plate naming %u gif frames: a keyframe bank "
+                          "carries whole planes and no delta rects",
+                          (unsigned)t->gif_frames);
+        if (!t->bg_loop && t->bg_fps < 1)
+            return reject("a one-shot plate bank at bg_fps %d: an animation with no "
+                          "tempo is a frame that never arrives", (int)t->bg_fps);
+    }
     const int16_t cx = (int16_t)(plate.x + plate.w / 2);
     const int16_t cy = (int16_t)(plate.y + plate.h / 2);
 
     /* The catalogue against the bank, before any offset is trusted: §25.3's last
-     * bullet, read from the device end. Row 0 is colour-only because it is the
-     * plate, and every other plane carries an alpha stride, so each row's cost is
-     * computed from its own extent rather than believed. A bank this catalogue does
-     * not account for whole is a bank this projection does not understand, and the
-     * extents below would only be a guess about it. */
+     * bullet, read from the device end. The plate's rows are colour-only because
+     * they are the background — the plate itself and, since §31, every keyframe
+     * of its bank, the consumer painting each one the plate widget already
+     * paints — and every other plane carries an alpha stride, so each row's cost
+     * is computed from its own extent rather than believed. A bank this catalogue
+     * does not account for whole is a bank this projection does not understand,
+     * and the extents below would only be a guess about it. */
     uint64_t at = 0;
     for (uint32_t i = 0; i < ns; i++) {
         orb_bundle_spr_t sp;
         orb_bundle_spr_at(sec, i, &sp);
+        const int on_plate = i >= plate.frame0 && i < plate.frame0 + plate.n_frames;
         const uint64_t want = PLATE_BYTES_T(sp.w, sp.h)
-                            + (i ? (uint64_t)sp.w * sp.h : 0);
+                            + (on_plate ? 0 : (uint64_t)sp.w * sp.h);
         if (sp.off != at)
             return reject("the sprite catalogue is not contiguous at row %u: it starts "
                           "at %lu, the previous plane ends at %lu",
@@ -360,6 +404,20 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                               (unsigned)e.n, (unsigned)e.w, (unsigned)e.h,
                               (unsigned long)sp.w, (unsigned long)sp.h);
         }
+    }
+
+    /* Frame 0 of the loop is the plate: what the consumer paints at rest, what
+     * the plate scalar points at, and what a still keyframe table names, are one
+     * plane. A bank whose first frame sat elsewhere would show one frame twice
+     * and another never. */
+    if (plate_anim) {
+        orb_bundle_spr_t pf;
+        orb_bundle_spr_at(sec, plate.frame0, &pf);
+        if (t->plate_off != pf.off)
+            return reject("a plate bank whose first plane sits at %lu while the "
+                          "scalars paint the plate at %u: frame 0 of the loop is "
+                          "the plate",
+                          (unsigned long)pf.off, (unsigned)t->plate_off);
     }
 
     /* ---- the layers, in the dialect's own vocabulary ---- */
@@ -552,13 +610,16 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          (uint64_t)t->bg_key_off + PLATE_BYTES_T(scr_w, scr_h) > (uint64_t)art))
         return "the keyframe pixels lie outside the declared payload";
 
-    /* ---- the gif block, derived (§25.6) ----
+    /* ---- the gif block, derived (§25.6), and the plate bank (§31) ----
      * One zero rect: the compiled path the shipped pair takes is the keyframe copy,
      * which discards the rect list, and a FORMAT 3 clock section carries no delta
-     * bank to index. Every window boundary is therefore 0, and the plate-frame table
-     * holds one frame at the keyframe. R6 retired the per-frame delay, so the delay
-     * table carries the OS beat — the same uniform figure a PNG frame pack's own
-     * bake printed, which is the 67 ms the shipped av-kit pair carries. */
+     * bank to index. Every window boundary is therefore 0. The plate-frame table
+     * is the bgAnim consumer's own row list: a still plate keeps the one keyframe
+     * row it has always been handed, and an animated one gets one offset per
+     * extra plane, in bank order — frame 0 needs no row because the consumer
+     * starts on the plate. R6 retired the per-frame delay, so the delay table
+     * carries the OS beat — the same uniform figure a PNG frame pack's own bake
+     * printed, which is the 67 ms the shipped av-kit pair carries. */
     io->rects[0].x = io->rects[0].y = 0;
     io->rects[0].w = io->rects[0].h = 0;
     io->rects[0].off = 0;
@@ -568,6 +629,14 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     if (!ms) ms = 1;
     for (uint32_t i = 0; i < (uint32_t)t->gif_frames; i++)
         io->gif_delays[i] = (uint16_t)ms;
-    io->bg_frames[0] = 0;
+    if (plate.n_frames > 1u) {
+        for (uint32_t f = 1; f < plate.n_frames; f++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, plate.frame0 + f, &sp);
+            io->bg_frames[f - 1] = sp.off;
+        }
+    } else {
+        io->bg_frames[0] = 0;
+    }
     return NULL;
 }

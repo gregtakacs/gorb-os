@@ -31,11 +31,14 @@ def main():
             continue
         sc = {}
         spr = []
+        bgrows = []
         art = scr = cnt = None
         for line in out.splitlines():
             w = line.split()
             if w[0] == "scalar":
                 sc[w[1]] = w[2]
+            elif w[0] == "bgframe":
+                bgrows.append(int(w[2]))
             elif w[0] == "art":
                 art = int(w[1]), int(w[2])
             elif w[0] == "scr":
@@ -51,8 +54,12 @@ def main():
               % (slug, len(shown), scr[0], scr[1], art[1]))
         for kind, idx, w, h, offx, offy, coff in shown[:8]:
             print("    %-10s[%d] %dx%d draws at (%d,%d) colour_off %d" % (kind, idx, w, h, offx, offy, coff))
-        print("    scalars: tick_rate %s order_n %s shadow_on %s"
-              % (sc.get("tick_rate"), sc.get("order_n"), sc.get("shadow_on")))
+        print("    scalars: tick_rate %s order_n %s shadow_on %s bg_frames %s"
+              % (sc.get("tick_rate"), sc.get("order_n"), sc.get("shadow_on"),
+                 sc.get("bg_frames")))
+        if bgrows:
+            print("    plate bank: %d extra keyframes at %s"
+                  % (len(bgrows), ", ".join(str(o) for o in bgrows)))
     if bad:
         print("%d of %d bundles the compiled dial would refuse" % (bad, len(sys.argv) - 1), file=sys.stderr)
     return 1 if bad else 0

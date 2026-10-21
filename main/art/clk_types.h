@@ -36,6 +36,15 @@ typedef struct {
 
 #define CLK_TOURB_MAX 16
 
+/* §31: plate frames in one keyframe bank. orb_sched.c's bgAnim consumer carried
+ * this as 8 when the extra planes could only arrive baked into a FORMAT 2 pair;
+ * a FORMAT 3 plate row can name more, and the D29 art cap binds first — one
+ * full-panel plane is 434,312 B against a 4,128,768 B bank budget, so the
+ * longest legal bake is 9 planes and 16 is the array bound that is never the
+ * wall. The projection (orb_clock3.c) and the pair mirror (bake_clock.py
+ * --from-bundle) refuse a longer bank with this number. */
+#define CLK_BG_MAX    16
+
 typedef struct {
   uint32_t bg;
   uint8_t  plate_follow;    /* 0 none 1 hour 2 minute 3 second */

@@ -184,7 +184,7 @@ static clk_theme_t        th;
 static clk_bg_rect_t      rects[4];
 static uint16_t           first_[GIF_CAP];
 static uint16_t           delays[GIF_CAP];
-static uint32_t           bgf[4];
+static uint32_t           bgf[CLK_BG_MAX];
 static clk_comp_t         comps[16];
 static orb_bundle_t       b;
 
@@ -286,6 +286,7 @@ int main(int argc, char **argv)
     for (uint32_t i = 0; i <= th.gif_frames; i++) printf("first %u %u\n", i, first_[i]);
     for (uint32_t i = 0; i < th.gif_frames; i++) printf("delay %u %u\n", i, delays[i]);
     printf("bgf %u\n", bgf[0]);
+    for (uint32_t i = 0; i < th.bg_frames; i++) printf("bgframe %u %u\n", i, bgf[i]);
     printf("art %u %u\n", io.out_art_off, io.out_art_size);
     printf("scr %u %u\n", s->scr_w, s->scr_h);
     printf("counts %u %u\n", s->n_elem, s->n_spr);
@@ -333,7 +334,7 @@ def parsed(out):
     """The harness's dump, as dicts keyed the way EXP is."""
     sc, spr, first, delay = {}, {}, {}, {}
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
-    comps = []
+    comps, bgl = [], {}
     for line in out.splitlines():
         w = line.split()
         if w[0] == "scalar":
@@ -356,6 +357,8 @@ def parsed(out):
             delay[int(w[1])] = int(w[2])
         elif w[0] == "bgf":
             bgf = int(w[1])
+        elif w[0] == "bgframe":
+            bgl[int(w[1])] = int(w[2])
         elif w[0] == "art":
             art = (int(w[1]), int(w[2]))
         elif w[0] == "scr":
@@ -363,7 +366,7 @@ def parsed(out):
         elif w[0] == "counts":
             cnt = (int(w[1]), int(w[2]))
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
-                art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps)
+                art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl)
 
 
 SCALARS = ("bg", "plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
@@ -627,7 +630,18 @@ REFUSALS = (
     ("a moved plate", lambda e, s: e[0].update({"x": 4}),
      "not the whole panel is not a plate"),
     ("a plate naming 3 frames", lambda e, s: e[0].update({"n_frames": 3}),
-     "holds one keyframe"),
+     "animation's length"),   # §31: the row and the scalar must name one bank
+    ("an animated glass", lambda e, s: e[1].update({"n_frames": 2}),
+     "animated glass"),       # §31 rule 5: the overlay is still one plate
+    ("a plate animation longer than the dial", lambda e, s: (
+        e[0].update({"n_frames": 18}),
+        s.update({"bg_mode": 0, "gif_frames": 0, "bg_frames": 17, "bg_loop": 1})),
+     "no room for"),
+    ("a one-shot plate bank with no tempo", lambda e, s: (
+        e[0].update({"n_frames": 3}),
+        s.update({"bg_mode": 0, "gif_frames": 0, "bg_frames": 2,
+                  "bg_loop": 0, "bg_fps": 0})),
+     "no tempo"),
     ("tourbillon_n 5, no rows", lambda e, s: s.update({"tourbillon_n": 5}),
      "scalars and the table disagree"),
     ("bg_frames 2", lambda e, s: s.update({"bg_frames": 2}), "does not carry"),
@@ -799,6 +813,102 @@ def d32_battery(exe, base):
     print("  D32 battery: carriage, window, and the guards between the doors")
 
 
+# ---------------------------------------------------------------------------
+# §31's accept side: a keyframe plate bank, true at both ends. The pair-forged
+# bundle grows n-1 colour-only full-panel planes directly behind the plate's —
+# the same contiguous, OS-advanced shape as the D32 carriage, pointed at the
+# background instead of a hand. The pixels are filler (the bench is the glass's
+# question, R-H as ever); the claim is the table, the offsets, the scalars, and
+# the plate-frame rows the projection writes for the bgAnim consumer.
+# ---------------------------------------------------------------------------
+KF_PLANE = SCR_W * SCR_H * 2         # one colour-only keyframe: 434,312 B
+
+
+def s31_forge(base, n=3, tag="", mutate=None):
+    """The pair-forged clock section with the plate row animating n keyframes."""
+    hdr, secs = ob.read_bundle(base)
+    sec = [s for s in secs if s["blob"]["slug"] == "clock"][0]
+    els = [dict(e) for e in sec["blob"]["elements"]]
+    sc = dict(sec["blob"]["scalars"])
+    spr = [dict(s) for s in sec["blob"]["sprites"]]
+    art = bytearray(sec["art"])
+    k = n - 1
+    art[KF_PLANE:KF_PLANE] = b"\x11" * (KF_PLANE * k)     # the keyframes, plate-first
+    for i in range(1, len(spr)):
+        spr[i]["off"] += KF_PLANE * k
+    spr[1:1] = [{"off": KF_PLANE * (j + 1), "size": KF_PLANE, "w": SCR_W, "h": SCR_H}
+                for j in range(k)]
+    for e in els:
+        if not (e["class"] == ts.CLASS_PLATE and e["slot"] == 0):
+            e["frame0"] += k
+        else:
+            e["n_frames"] = n
+    sc.update({"bg_mode": 0, "gif_frames": 0, "bg_frames": k, "bg_fps": 6,
+               "bg_loop": 1, "bg_every": 1, "plate_off": 0})
+    if mutate:
+        mutate(els, sc, spr, art)
+    out = "%s.s31%s.orbtheme" % (base, ("-" + tag) if tag else "-anim")
+    ob.write_bundle(out, hdr["name"],
+                    [{"slug": "clock", "elements": els, "scalars": sc,
+                      "sprites": spr, "art": bytes(art),
+                      "scr_w": sec["rec"]["scr_w"], "scr_h": sec["rec"]["scr_h"]}])
+    return out
+
+
+def s31_battery(exe, base):
+    """One honest bank projected by both ends, and the lies it makes possible."""
+    path = s31_forge(base, 3, "anim")
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "the device refused a keyframe plate bank: %s" % (out or err)[:200])
+    if rc == 0:
+        p = parsed(out)
+        ck(p["sc"]["bg_frames"] == [2],
+           "the projected scalar bank length is %s, not the row's 2 extra"
+           % p["sc"].get("bg_frames"))
+        ck(p["sc"]["bg_mode"] == [0] and p["sc"]["gif_frames"] == [0],
+           "the keyframe loop did not project mode 0 with no delta vocabulary: %s"
+           % {k: p["sc"].get(k) for k in ("bg_mode", "gif_frames")})
+        ck(p["bgl"] == {0: KF_PLANE, 1: 2 * KF_PLANE},
+           "the plate-frame table is %s, not the extra planes' own offsets" % p["bgl"])
+        ck(p["counts"] == (8, 10) and p["art"][1] == BLOB + 2 * KF_PLANE,
+           "the animated bundle is %s rows over %s B, not (8, 10) over %d"
+           % (p["counts"], p["art"][1], BLOB + 2 * KF_PLANE))
+
+    brc, btxt, bhdr = bake_pair(path)
+    ck(brc == 0, "the pair end refused the animated plate: %r" % btxt[:300])
+    ck("/* bg_frames */ 2, /* fps,loop,every */ 6, 1, 1," in bhdr,
+       "the rebuilt .h does not carry the bank the row named")
+    m = re.search(r"clk_bg_frames\[\d+\] = \{ ([^}]+) \}", bhdr)
+    ck(m and [int(x) for x in m.group(1).split(",")] == [KF_PLANE, 2 * KF_PLANE],
+       "the rebuilt bgAnim table does not point at the keyframes")
+
+    # Bank-only lies: each one is writer-legal, and both ends must say the
+    # projection's own sentence for it.
+    for label, mut, needle in (
+            ("a scalar disagreeing with the row",
+             lambda e, s, r, a: s.update({"bg_frames": 3}), "animation's length"),
+            ("delta mode claiming whole planes",
+             lambda e, s, r, a: s.update({"bg_mode": 1}), "does not carry"),
+            ("a bank that starts off the plate",
+             lambda e, s, r, a: s.update({"plate_off": KF_PLANE}),
+             "frame 0 of the loop"),
+            ("a keyframe carrying an alpha stride",
+             lambda e, s, r, a: r[1].update({"size": r[1]["size"] + SCR_W * SCR_H}),
+             "that extent is"),
+            ("keyframes shuffled out of bank order",
+             lambda e, s, r, a: r.__setitem__(slice(1, 3), r[1:3][::-1]),
+             "not contiguous")):
+        t = s31_forge(base, 3, "lie", mut)
+        rc, out, err = run(exe, "--refuse", t)
+        ck(rc == 0 and needle in out,
+           "%s: the device said %r, not %r" % (label, (out or err)[:160], needle))
+        refused, bsent = bake_says(t)
+        ck(refused and needle in bsent,
+           "%s: the pair end drifted from the one sentence: %r" % (label, bsent[:160]))
+    print("  §31 battery: keyframe bank accepted at both ends, %d bank-only lies mirrored"
+          % 5)
+
+
 
 # ---------------------------------------------------------------------------
 # Entry. The ordinary run is golden, derivations and refusals; --mutations adds the
@@ -914,15 +1024,15 @@ MUTANTS = (
      "if (plate.x || plate.y || plate.w != (uint16_t)scr_w || plate.h != (uint16_t)scr_h)",
      "if (0 && (plate.x || plate.y || plate.w != (uint16_t)scr_w ||"
      " plate.h != (uint16_t)scr_h))", ("vec", "a moved plate")),
-    ("the plate's one-frame rule", "if (plate.n_frames != 1)",
-     "if (0 && plate.n_frames != 1)", ("vec", "a plate naming 3 frames")),
+    ("the plate's zero-frame backstop", "if (!plate.n_frames)",
+     "if (0 && !plate.n_frames)", ("elem", 0, 7, 0)),
     ("the plate's existence", "if (at_plate[0] < 0)", "if (0 && at_plate[0] < 0)",
      ("vec", "no plate row")),
     # A row's frame0 and its own w are index-record words on the wire, so forging them
     # means editing a written file: check_element bounds frame0 against a declared
     # count it cannot see, and cannot cross-check w against a catalogue plane at all.
     ("a row's seat in the catalogue", "if (e.frame0 >= ns)", "if (0 && e.frame0 >= ns)",
-     ("elem", 0, 6, 99)),
+     ("elem", 1, 6, 99)),
     ("a row's size against its plane", "if (sp.w != e.w || sp.h != e.h)",
      "if (0 && sp.w != e.w || sp.h != e.h)", ("elem", 2, 10, 30)),
     # Anchors name the refusal, not the `if`: the hand bound and the sprite bound
@@ -939,8 +1049,13 @@ MUTANTS = (
      ("vec", "a carriage length lie")),
     ("the tourbillon scalar's claim", "if (t->tourbillon_n && at_hand[5] < 0)",
      "if (0 && t->tourbillon_n && at_hand[5] < 0)", ("vec", "tourbillon_n 5, no rows")),
-    ("the plate-frame count", "if (t->bg_frames)", "if (0 && t->bg_frames)",
+    ("the plate-frame count under delta mode",
+     "if (t->bg_frames && t->bg_mode == 1)",
+     "if (0 && t->bg_frames && t->bg_mode == 1)",
      ("vec", "bg_frames 2")),
+    ("the plate bank's one length", "if (t->bg_frames != (uint16_t)(plate.n_frames - 1u))",
+     "if (0 && t->bg_frames != (uint16_t)(plate.n_frames - 1u))",
+     ("vec", "a plate naming 3 frames")),
     # check_table refuses a repeated (class, slot) and an unknown class, so the
     # projection's matching guards are the backstop for a damaged file: driven as a
     # forged row class, which the writer would never emit.
@@ -1009,6 +1124,7 @@ if __name__ == "__main__":
     EXE, PAIR = main()
     refusals(EXE, PAIR)
     d32_battery(EXE, PAIR)
+    s31_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))

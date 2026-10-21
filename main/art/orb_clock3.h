@@ -31,11 +31,14 @@
 extern "C" {
 #endif
 
-/* The one rect and the one background-frame row a FORMAT 3 clock section can
- * name: a plate keyframe with no deltas (§25.6). Sized as a promise, not a
- * capacity — the capacities a caller must really have are the gif tables'. */
+/* The one rect a FORMAT 3 clock section can name: a plate keyframe with no
+ * deltas (§25.6). And the plate-frame table: still as the one keyframe row it
+ * has always been, or §31's keyframe bank, where a plate row of N frames writes
+ * N-1 extra-plane offsets at rows 0..N-2 (frame 0 stays the plate the scalars
+ * paint). Sized as a promise, not a capacity — the capacities a caller must
+ * really have are the gif tables' and CLK_BG_MAX's. */
 #define ORB_CLOCK3_N_RECTS 1u
-#define ORB_CLOCK3_N_BGF   1u
+#define ORB_CLOCK3_N_BGF   CLK_BG_MAX
 
 /** The caller's room, its own clock_assets.h, and where the result goes. Every
  *  out pointer is required; nothing here allocates, and nothing here writes a

@@ -2304,14 +2304,21 @@
    * Every rule here is orb_clock3.c's, not a preference: plate slot 0 and overlay slot 1
    * only; hand slots 0-4; a sprite row is a shadow and its slot is its hand's, because the
    * light offset is only recoverable from the hand it hangs under; the plate is the whole
-   * panel and one keyframe, since the delta rects that would carry more are the shape
-   * §25.3 refuses. tourbillon_n and bg_frames stay zero because the scalars naming them
-   * would point at rows this section has no field for. A caller asking for either gets the
-   * dial's own sentence rather than a bundle the door opens and the projection then
-   * rejects — the worst failure this path can have, because it looks like a store error.
+   * panel and either one still frame or a §31 keyframe bank — pass plate.frames, an array
+   * of two or more whole-panel planes, and the bake emits them contiguous and colour-only
+   * under one row, with the scalars cross-set to match (bg_frames = frames − 1, bg_mode 0,
+   * gif_frames 0). The bank's tempo comes from plate.fps/bg_fps and plate.loop/bg_every;
+   * a one-shot with no tempo is refused, not frozen. tourbillon_n stays refused because
+   * this API assembles no carriage row. A caller asking for any of the refused shapes
+   * gets the dial's own sentence rather than a bundle the door opens and the projection
+   * then rejects — the worst failure this path can have, because it looks like a store
+   * error.
    *
-   * The bank is plate first (colour only, the dial reads it so), then one masked plane per
-   * row in table order, so the catalogue is contiguous and accounts for the art exactly. */
+   * The bank is the plate's planes first (colour only, the dial reads them so), then one
+   * masked plane per row in table order, so the catalogue is contiguous and accounts for
+   * the art exactly. The D29 art cap is checked against the assembled bank before the
+   * write: a full-panel keyframe costs w*h*2, the cap binds long before the dialect's
+   * 16-frame bound, and an owner choosing frames needs that number. */
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
@@ -2323,15 +2330,49 @@
       throw new Error('a plate at extent (' + (pl.x || 0) + ',' + (pl.y || 0) + ',' + pl.w + ',' + pl.h +
         ') of a ' + scrW + 'x' + scrH + ' panel: the compiled clock draws its background full-screen, so a plate that is not the whole panel is not a plate');
     }
-    ['tourbillon_n', 'bg_frames', 'gif_frames'].forEach(function (n) {
-      if (sc[n]) throw new Error(n + ' = ' + sc[n] + ': those planes ride the gif and carriage tables a FORMAT 3 clock section does not carry, so this bake refuses them');
-    });
-    sc.tourbillon_n = 0; sc.bg_frames = 0; sc.gif_frames = 0; sc.plate_off = 0;
+    var frames = pl.frames;
+    if (frames !== undefined) {
+      if (!(frames.length >= 2)) {
+        throw new Error('a plate bank of ' + (frames ? frames.length : 0) + ' frames: one keyframe is a still plate, and zero frames draw nothing — pass two or more planes or none');
+      }
+      if (frames.length > 16) {
+        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds 16 plate frames, and the rest is a bank it has no room for');
+      }
+      if (sc.bg_frames !== undefined && sc.bg_frames !== frames.length - 1) {
+        throw new Error('a plate row naming ' + frames.length + ' frames while the scalars name ' + sc.bg_frames + ' extra: the row’s planes are the animation’s length');
+      }
+      if (sc.gif_frames) {
+        throw new Error('an animated plate naming ' + sc.gif_frames + ' gif frames: a keyframe bank carries whole planes and no delta rects');
+      }
+      // A bank with no stated tempo is a loop — what every FORMAT 2 bgAnim kit
+      // was. A one-shot must be asked for (loop: 0) and must then name its fps.
+      var fps = sc.bg_fps || pl.fps || 0;
+      var loop = sc.bg_loop !== undefined ? sc.bg_loop
+                                          : (pl.loop !== undefined ? pl.loop : 1);
+      if (!loop && fps < 1) {
+        throw new Error('a one-shot plate bank at bg_fps ' + fps + ': an animation with no tempo is a frame that never arrives');
+      }
+      for (k = 0; k < frames.length; k++) {
+        var fp = frames[k];
+        if (!fp || fp.w !== scrW || fp.h !== scrH) {
+          throw new Error('keyframe ' + k + ' of a plate bank is ' + (fp ? fp.w + 'x' + fp.h : 'nothing') + ': every frame of a keyframe bank is the whole panel, the frame the consumer paints at rest included');
+        }
+      }
+      sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
+      if (!sc.bg_every) sc.bg_every = pl.every || 1;
+      sc.bg_mode = 0; sc.gif_frames = 0;
+    } else if (sc.bg_frames) {
+      throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
+    }
+    if (sc.tourbillon_n) throw new Error('tourbillon_n = ' + sc.tourbillon_n + ': a carriage is a row this bake does not assemble, and the scalar would name a bank the section does not hold');
+    sc.tourbillon_n = 0; sc.plate_off = 0;
+    if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
 
     // Every row starts from blankElement(): packElements refuses a missing field rather
     // than defaulting it, because a default applied at pack time is a value nobody wrote.
-    // The bank builds empty and every plane enters through row(), so no plane is ever
-    // counted twice and row 0 keeps the colour-only cost the projection reads it at.
+    // The bank builds empty and every plane enters through row() or rowFrames(), so no
+    // plane is ever counted twice and the plate's rows keep the colour-only cost the
+    // projection reads them at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
     var elems = [], nid = 1, ord = 1, handSlot = {};
     function row(e, plane, masked) {
@@ -2344,8 +2385,28 @@
       rec.frame0 = bank.sprites.length - 1;
       elems.push(rec);
     }
-    row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-          order: 0, alpha: 255, n_frames: 1 }, pl, false);
+    // §31: one row, N planes. The keyframes enter contiguously, in bank order,
+    // colour-only like the plate — the projection seats the row against exactly
+    // this shape, and the bgAnim consumer flips through it on its beat.
+    function rowFrames(e, planes, masked) {
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      rec.frame0 = bank.sprites.length;
+      for (var j = 0; j < planes.length; j++) {
+        var b = bank3([planes[j]], { alpha: masked });
+        bank.art = concat([bank.art, b.art]);
+        bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: planes[j].w, h: planes[j].h });
+        bank.size += b.sprites[0].size;
+      }
+      elems.push(rec);
+    }
+    if (frames) {
+      rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+                  order: 0, alpha: 255, n_frames: frames.length }, frames, false);
+    } else {
+      row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+            order: 0, alpha: 255, n_frames: 1 }, pl, false);
+    }
     // Depth: plate, then the hands in the order given, then their shadows beneath the hands
     // that cast them, then the overlay last — FORMAT 2's clock_view draws the crystal over
     // everything, and the table says what the renderer already does.
@@ -2373,6 +2434,18 @@
     }
     for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
     sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
+
+    // The D29 sum, named before the file is written: the plate bank is the part
+    // of an over-cap bake an owner can actually trade away, so the sentence says
+    // what it cost. checkBudget3 still refuses the same overage at the door —
+    // this is the authoring half of §31, and it must never disagree with it.
+    if (bank.size > SLOT_ART_CAP3) {
+      throw new Error('the bake\'s art bank is ' + bank.size + ' B against the ' +
+        SLOT_ART_CAP3 + ' B the slot leaves for banks' +
+        (frames ? ': the plate\'s ' + frames.length + ' keyframes of ' + scrW + 'x' + scrH +
+                ' cost ' + (scrW * scrH * 2 * frames.length) + ' B of it, and one keyframe ' +
+                'is ' + (scrW * scrH * 2) + ' B' : '') + ' — drop frames or shrink the art');
+    }
 
     var b = writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
       sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,

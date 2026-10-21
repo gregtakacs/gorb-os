@@ -31,8 +31,9 @@
  * observable output along with the code. */
 static const char *TAG = "clock";
 
-/* bgAnim plate frames (baked in assets/clock_assets.h -> clk_bg_frames). */
-#define CLK_BG_MAX 8
+/* bgAnim plate frames: the bound is clk_types.h's CLK_BG_MAX (§31), the one
+ * number the projection refuses a plate bank against and this array's size.
+ * It arrives through orb_gfx.h above. */
 
 /* ---- GIF delta bank (bg_mode == 1) ---------------------------------------
  * s_canvas mirrors the pixels the panel currently holds under the plate. The

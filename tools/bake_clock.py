@@ -2211,19 +2211,21 @@ def rebucket_comps(comps, matte_mask):
     return changed
 
 
-def _bundle_planes(b, art, refuse):
+def _bundle_planes(b, art, refuse, plate):
     """The sprite catalogue against the byte walk, before any number is trusted.
 
-    Returns the rows by index. The plate is colour-only (no alpha plane); every
-    sprite carries colour + alpha, so a row's size is checkable from its own extent.
-    A bank this catalogue cannot account for byte-for-byte is a bank this tool does
-    not understand -- §25.3's rule, read from the other end."""
+    Returns the rows by index. The plate and every keyframe of its §31 bank are
+    colour-only (no alpha plane); every other sprite carries colour + alpha, so a
+    row's size is checkable from its own extent. A bank this catalogue cannot
+    account for byte-for-byte is a bank this tool does not understand --
+    §25.3's rule, read from the other end."""
     at, planes = 0, {}
     for i, s in enumerate(b["sprites"]):
         if s["off"] != at:
             refuse("the sprite catalogue is not contiguous at row %d: it starts at %d, "
                    "the previous plane ends at %d" % (i, s["off"], at))
-        want = s["w"] * s["h"] * (2 if i == 0 else 3)
+        on_plate = plate["frame0"] <= i < plate["frame0"] + plate["n_frames"]
+        want = s["w"] * s["h"] * (2 if on_plate else 3)
         if s["size"] != want:
             refuse("catalogue row %d claims %d B of a %dx%d plane; that extent is %d B"
                    % (i, s["size"], s["w"], s["h"], want))
@@ -2256,9 +2258,11 @@ def _bundle_clock_state(section, hdr, src_path):
     from one of three carried places: the 26 scalars verbatim (D31), the element
     table (placement, per §25.2's identity: draw point is (x, y) and the centre is
     (x + pivot_x, y + pivot_y)), or the sprite catalogue (a plane's offset, size and
-    extent). What the container does not carry is refused by name, never guessed:
-    §25.3's tourbillon, a real delta-rect bank, and any bank the catalogue cannot
-    account for."""
+    extent). What the container does not carry is refused by name, never guessed: a
+    real delta-rect bank (§25.3), a carriage start orientation (D32 ruling C — the .h
+    has no tourbillon_start line), and any bank the catalogue cannot account for.
+    What it does carry lands in the pair's own tables, the §31 keyframe plate bank
+    included: the .h has always had a clk_bg_frames array to receive it."""
     def refuse(what):
         sys.exit("refused: %s" % what)
 
@@ -2282,6 +2286,11 @@ def _bundle_clock_state(section, hdr, src_path):
         if cls == ts.CLASS_PLATE and slot > 1:
             refuse("a plate at slot %d: the clock dialect is one plate and one overlay"
                    % slot)
+        if cls == ts.CLASS_PLATE and slot == 1 and e["n_frames"] != 1:
+            # §31 rule 5: the animation is the plate behind the hands. An overlay
+            # naming frames would want the plate's whole machinery on the glass.
+            refuse("an animated glass: the overlay names %d frames — §31 animates "
+                   "the plate behind the hands" % e["n_frames"])
         if (cls, slot) in by:
             refuse("two rows for %s slot %d: one slot draws one layer"
                    % (ts.CLASS_NAMES[cls], slot))
@@ -2310,9 +2319,15 @@ def _bundle_clock_state(section, hdr, src_path):
         refuse("a carriage at start orientation %d: the compiled pair carries no "
                "tourbillon_start line, and a fallback that cannot say it refuses "
                "the translation (the device's reader draws it)" % car["degrees"])
-    if sc["bg_frames"]:
+    # §31: bg_frames is a keyframe bank's length, not a gif table's. Delta mode
+    # under a count is still §25.3's shape, and the row cross-check lands with
+    # the plate below, where both halves can disagree.
+    if sc["bg_frames"] and sc["bg_mode"] == 1:
         refuse("%d distinct plate frames: those planes ride the gif table a FORMAT 3 "
                "clock section does not carry" % sc["bg_frames"])
+    if sc["bg_frames"] >= 16:                      # CLK_BG_MAX, the one bound
+        refuse("a plate animation of %d frames: the dial holds 16, and the rest is "
+               "a bank it has no room for" % (sc["bg_frames"] + 1))
 
     plate = by.get((ts.CLASS_PLATE, 0))
     if plate is None:
@@ -2323,11 +2338,31 @@ def _bundle_clock_state(section, hdr, src_path):
                "draws its background full-screen, so a plate that is not the whole "
                "panel is not a plate"
                % (plate["x"], plate["y"], plate["w"], plate["h"], scr_w, scr_h))
-    if plate["n_frames"] != 1:
-        refuse("a gif bank: the plate names %d frames, and the delta rects that would "
-               "carry them are the shape §25.3 refuses -- a FORMAT 3 clock section "
-               "holds one keyframe" % plate["n_frames"])
-    return by, plate, sc, scr_w, scr_h, _bundle_planes(b, art, refuse), refuse
+    if not plate["n_frames"]:
+        refuse("a plate row naming 0 frames: the background is a layer that draws, "
+               "and a row with no plane draws nothing")
+    # One length, said once; two vocabularies must not claim one background; and
+    # a one-shot with no tempo is refused rather than drawn as a freeze. The
+    # plate's own plane — the consumer's frame 0 — is seated after the walk,
+    # where the catalogue has been accounted and the row bounds proved.
+    plate_anim = plate["n_frames"] > 1 or sc["bg_frames"]
+    if plate_anim:
+        if sc["bg_frames"] != plate["n_frames"] - 1:
+            refuse("a plate row naming %d frames while the scalars name %d extra: "
+                   "the row's planes are the animation's length"
+                   % (plate["n_frames"], sc["bg_frames"]))
+        if sc["gif_frames"]:
+            refuse("an animated plate naming %d gif frames: a keyframe bank carries "
+                   "whole planes and no delta rects" % sc["gif_frames"])
+        if not sc["bg_loop"] and sc["bg_fps"] < 1:
+            refuse("a one-shot plate bank at bg_fps %d: an animation with no tempo "
+                   "is a frame that never arrives" % sc["bg_fps"])
+    planes = _bundle_planes(b, art, refuse, plate)
+    if plate_anim and sc["plate_off"] != planes[plate["frame0"]]["off"]:
+        refuse("a plate bank whose first plane sits at %d while the scalars paint "
+               "the plate at %d: frame 0 of the loop is the plate"
+               % (planes[plate["frame0"]]["off"], sc["plate_off"]))
+    return by, plate, sc, scr_w, scr_h, planes, refuse
 
 
 def clock_from_bundle(args):
@@ -2448,12 +2483,18 @@ def _bundle_clock_state2(section, hdr, src_path):
              "hands": {"order": [sc["order%d" % i] for i in range(sc["order_n"])],
                        "shadow": {"on": bool(sc["shadow_on"]), "dx": sc["shadow_dx"],
                                   "dy": sc["shadow_dy"]}}}
+    # §31: the keyframe bank rides the pair's own bgAnim table — one offset per
+    # extra plane, in bank order. A still plate rebuilds the one keyframe row a
+    # kit bake has always printed; an animated one gets its planes' offsets.
+    baked_frames = ([planes[plate["frame0"] + f]["off"]
+                     for f in range(1, plate["n_frames"])]
+                    if plate["n_frames"] > 1 else [])
     return dict(style=style, bg=style["bgAnim"], shadow_on=bool(sc["shadow_on"]),
                 shadow_dx=sc["shadow_dx"], shadow_dy=sc["shadow_dy"],
                 hand_recs=hand_recs, shadow_recs=shadow_recs, overlay=overlay,
                 tourb_recs=tourb_recs,
                 gif=gif, plate_off=sc["plate_off"], anim_frames=sc["bg_frames"],
-                baked_frames=[], matte_mask=sc["matte_mask"], art=bytes(section["art"]),
+                baked_frames=baked_frames, matte_mask=sc["matte_mask"], art=bytes(section["art"]),
                 name=hdr["name"], tourbillon_fps=sc["tourbillon_fps"],
                 prov=_bundle_provenance(src_path, bytes(section["art"]),
                                         len(section["blob"]["elements"])))

@@ -36,6 +36,29 @@ func InstanceName(instance string) string { return instance + "." + ServiceName 
 // HostnameFor is the A-record name the firmware forms for an instance.
 func HostnameFor(instance string) string { return instance + ".local" }
 
+// OrbHost is HostnameFor inverted: it reports whether an A record's owner name is
+// shaped like an orb's host ("orb-<instance>.local"), and returns the instance. The
+// hub cannot know a host belongs to an orb until an SRV points at it, but the
+// firmware only ever forms orb hostnames as instance+".local" with an "orb-"
+// instance, so the shape is the cheap filter that keeps a neighbour's A record out
+// of the orb pipeline instead of into a refusal the card would render.
+func OrbHost(name string) (string, bool) {
+	n := strings.ToLower(strings.TrimSuffix(name, "."))
+	host, ok := strings.CutSuffix(n, ".local")
+	if !ok || host == "" || strings.Contains(host, ".") {
+		return "", false
+	}
+	// The leftmost label is the instance in full, "orb-782618" — the same string a
+	// PTR's ServiceInstance returns and what a refusal row is named by. The "orb-"
+	// prefix is only the shape check that proves the host could be an orb's; it is
+	// not stripped, so the returned instance and the instance in the FQDN agree.
+	if !strings.HasPrefix(host, "orb-") || host == "orb-" {
+		return "", false
+	}
+	return host, true
+}
+
+
 // ExpectInstance checks the announcement against the rule the device builds it
 // from: instance is "orb-" plus the last six hex digits of the base MAC
 // (orb_mdns.c mdns_update's six %c arguments off mac[6..11]). This is checked

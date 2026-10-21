@@ -370,10 +370,16 @@ func (r *Record) fill(body []byte, off int, whole []byte) error {
 		if len(body) != net.IPv4len {
 			return fmt.Errorf("orbmdns: A rdata of %d B is not an IPv4 address", len(body))
 		}
+		// The four bytes are kept verbatim, including 0.0.0.0. A placeholder
+		// address is well-formed DNS — it is what an iOS device puts in its own A
+		// record before DHCP hands it a lease — and this parser refuses the whole
+		// datagram when one record fails. Refusing 0.0.0.0 here turned a neighbour's
+		// pre-DHCP announce into an unnamed packet refusal on the hub's card, the
+		// same trap the empty TXT above already sidestepped. Whether an address may
+		// stand for an orb is a judgment about the orb, not the encoding, so it lives
+		// one level up in ParseOrbAddress, which still refuses 0.0.0.0, loopback and
+		// the group before any of them reaches a row.
 		r.A = net.IP(append([]byte(nil), body...))
-		if r.A.Equal(net.IPv4zero) {
-			return errors.New("orbmdns: A record names 0.0.0.0")
-		}
 	default:
 		// An unknown kind parses and is kept: a browse of one service type rides
 		// alongside whatever else a responder felt like including, and dropping

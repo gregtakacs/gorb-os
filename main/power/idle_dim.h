@@ -25,15 +25,25 @@
  *     latching. The lit poll exists to keep the deviation high-water warm, which
  *     is the number ORB_IDLE_MOTION_MG is set from.
  *
- * Runs as one task on its own, not on the LVGL task, because the brightness
- * write is a QSPI transaction that must not race the frame flush — it is the one
- * writer of that register. It runs ABOVE the LVGL render task, not below it: the
- * clock keeps animating while dimmed (dimming never parks it, and an owner who
- * turned dimming off animates 24/7), so a wake writer that yielded to the
- * renderer's flush spin would lift the face late exactly when the dial is busy.
- * Priority alone bounds that; it sleeps in ulTaskNotifyTake the rest of the time,
- * so the frame budget documented in docs/fps-budget-findings-2026-10-10.md still
- * is not its to spend. See IDLE_DIM_TASK_PRIO in the .c for the full argument.
+ * Decides on its own task, not on the LVGL task, so a wake is not held behind
+ * whatever the renderer is mid-doing. It runs ABOVE the LVGL render task, not
+ * below it: the clock keeps animating while dimmed (dimming never parks it, and
+ * an owner who turned dimming off animates 24/7), so a wake decision that yielded
+ * to the renderer's flush spin would lift the face late exactly when the dial is
+ * busy. Priority bounds the *decision's* latency; it sleeps in ulTaskNotifyTake
+ * the rest of the time, so the frame budget documented in
+ * docs/fps-budget-findings-2026-10-10.md still is not its to spend. See
+ * IDLE_DIM_TASK_PRIO in the .c for the full argument.
+ *
+ * It does NOT, however, put the brightness write on that high-priority task. The
+ * write is one QSPI transaction on the same bus the frame flush uses, and a
+ * higher-priority task issuing it can preempt the renderer mid-transaction and
+ * wedge the flush -- a frozen dial with the writes_failed counter still at zero,
+ * because the transaction itself never failed, only its placement. So the task
+ * publishes the level it decided, and the LVGL task performs the write at the top
+ * of its own loop via idle_dim_render_drain(): same task as the flush, so it
+ * cannot split one, and apply_level() still gets the panel's real answer back
+ * before it commits what to believe. This is why a caller must call that drain.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -45,6 +55,15 @@ extern "C" {
 
 /** Start the idle/motion task. Call after display_init() and imu_init(). */
 esp_err_t idle_dim_init(void);
+
+/** Perform any brightness write the idle task has asked for. MUST be called from
+ *  the LVGL task, once per loop, at the point where no frame flush is in flight
+ *  (top of the loop, before lv_timer_handler()). The idle task never touches the
+ *  QSPI bus itself: it publishes the level it decided and blocks here until this
+ *  writes it, because the only task that can issue a panel transaction safely is
+ *  the one already doing the flush -- a higher-priority writer would split a
+ *  transaction and freeze the clock. Cheap no-op when nothing is pending. */
+void idle_dim_render_drain(void);
 
 /** Note that the user touched the orb. Safe from any task: it only stamps a
  *  32-bit counter, and the policy task applies it on its next tick.

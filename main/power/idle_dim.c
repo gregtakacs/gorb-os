@@ -21,6 +21,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"   /* the render-task handoff that carries the brightness write */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_lcd_co5300.h"
@@ -34,25 +35,27 @@
 #define TICK_MS_LIGHT   1000
 #define TICK_MS_DARK      50
 
-/* The wake writer's task priority. It outranks the LVGL task (5) on purpose.
+/* The decision task's priority. It outranks the LVGL task (5) on purpose.
  *
  * The clock keeps animating while dimmed — dimming never parks it, so a dial is
  * as live in the dark as in the light, and a dial whose owner turned dimming off
  * is animating 24/7. Both the animation tick and the flush's TE wait run on the
- * priority-5 LVGL task, and that TE wait is a busy spin with no yield. The one
- * task that lifts the face after a touch is this idle_dim task, and it is the
- * sole writer of the brightness register. As long as it sat at the system idle
- * priority it could not get a slice while the animation spun, so a touch arrived
- * (the poll stamps it on the LVGL task) but the restore lagged however long the
- * renderer kept the CPU — the "wakes late, like it never wakes" symptom, and it
- * would not go away by pausing the animation because the owner may have paused
- * nothing. Above the renderer, the restore preempts the spin and the face lifts
- * on the next dark tick regardless of animation load. The task then blocks in
- * ulTaskNotifyTake, so it spends its priority waiting, not spinning: it costs a
- * few microseconds of brightness write per touch, never the frame budget.
+ * priority-5 LVGL task, and that TE wait is a busy spin with no yield. The task
+ * that DECIDES to lift the face after a touch is this one, and it must preempt
+ * that spin to take its dark 20 Hz IMU poll and its wake notice; at the system
+ * idle priority it could not get a slice while the animation spun, so a touch
+ * arrived (the poll stamps it on the LVGL task) but the decision to wake lagged
+ * however long the renderer kept the CPU — the "wakes late, like it never wakes"
+ * symptom, and it would not go away by pausing the animation because the owner
+ * may have paused nothing. Above the renderer, the decision preempts the spin on
+ * the next dark tick regardless of animation load. It then posts the brightness
+ * target and blocks on the ack (see apply_level), so it never spends its priority
+ * spinning, and the actual write runs back on the render task — this task no
+ * longer touches the QSPI bus at all, which is what lets it keep this priority
+ * without the frozen-dial the direct write caused.
  *
  * 6, not 5: equal priority shares the slice round-robin and a flush in progress
- * still defers the writer to the next tick. */
+ * still defers the decision to the next tick. */
 #define IDLE_DIM_TASK_PRIO 6
 
 bool idle_motion_decide(idle_motion_t *st, const int16_t s[3], int16_t thresh_lsb)
@@ -298,30 +301,108 @@ static void level_fail_log(const char *why, uint8_t percent, const char *err)
     s_level_fail_folded = 0;
 }
 
-/* The brightness write. Only this task calls it, so the panel driver never sees
- * a brightness transaction racing the clock's flush from another context.
- * True means the panel took the write; the caller decides what to believe about
- * the dimmed state from that answer (idle_dim_level_apply_decide), which is why
- * this returns anything at all. */
+/* The brightness write, marshalled to the LVGL task.
+ *
+ * This used to be the one function idle_task called to issue the QSPI 0x51 write
+ * itself, and the safety of that relied entirely on the task's priority: at the
+ * system idle priority it physically could not run while the renderer held the
+ * bus, so the write only ever landed at a quiescent point. Raising this task
+ * above the renderer (see IDLE_DIM_TASK_PRIO) to win the fast wake broke exactly
+ * that guarantee -- the write then landed inside a frame flush. A single
+ * draw_bitmap is three bus acquisitions (CASET, RASET, then an async RAMWR), and
+ * a higher task slipping a 0x51 between them desyncs the in-flight bookkeeping:
+ * the last band's trans-done no longer balances s_band_inflight, LVGL never
+ * re-arms a flush, and the dial freezes with a live clock behind it. The write
+ * returns ESP_OK throughout -- so writes_failed stays 0 and the wedge is
+ * invisible on /api/v1/status -- which is why placement, not the transaction,
+ * was the bug.
+ *
+ * The fix keeps the fast wake by moving only the WRITE off this task, never the
+ * decision. idle_task still decides when and to what level; it records that
+ * here and blocks until the LVGL task -- the one task the flush runs on, so the
+ * same-task sequencing makes a mid-transaction write impossible -- performs it at
+ * the top of its own loop. The ack is what lets the caller still "ask the panel
+ * first, believe it second": this returns the panel's real answer, so a write the
+ * render task never drained within the timeout reads as a lost write the next
+ * tick retries, exactly like a refused transaction. */
+static SemaphoreHandle_t s_lvl_ack;            /* render task -> here, per request */
+static volatile bool     s_lvl_pending;        /* a target is set, not yet written */
+static volatile uint8_t  s_lvl_target;         /* the percent the pending write is for */
+static volatile esp_err_t s_lvl_result;        /* what the panel said, read after ack */
+static uint32_t          s_lvl_seq;            /* author's request counter, not volatile */
+static volatile uint32_t s_lvl_ack_seq;        /* the seq the render task just answered */
+
 static bool apply_level(uint8_t percent, const char *why)
 {
-    esp_lcd_panel_handle_t panel = display_get_panel();
-    if (!panel) {
+    if (!display_get_panel()) {
         /* Counted as a lost write, not warned about and forgiven: "no panel yet"
          * and "the panel refused" reach the owner as the same dark dial, and the
-         * retry is the answer to both. */
+         * retry is the answer to both. Fast-pathed here rather than bounced to
+         * the render task, which would only answer the same way. */
         s_level_writes_failed++;
         level_fail_log(why, percent, "no panel yet");
         return false;
     }
-    const esp_err_t err = esp_lcd_panel_co5300_set_brightness(panel, percent);
-    if (err != ESP_OK) {
+    if (!s_lvl_ack) {
+        /* Pre-init (idle_dim_init's first apply runs before the semaphore and the
+         * LVGL task exist): nothing can drain this, so treat it as a lost write
+         * the next tick retries rather than blocking forever on an ack nobody
+         * will give. Boot defaults leave the panel at its own init level anyway,
+         * so no real dim is owed this early. */
         s_level_writes_failed++;
-        level_fail_log(why, percent, esp_err_to_name(err));
+        level_fail_log(why, percent, "no renderer yet");
+        return false;
+    }
+
+    const uint32_t seq = ++s_lvl_seq;
+    s_lvl_target  = percent;
+    s_lvl_pending = true;
+    /* Flush any ack a previous request left behind by timing out and then being
+     * drained late, so this wait cannot consume an ack that is not for `seq`. */
+    while (xSemaphoreTake(s_lvl_ack, 0) == pdTRUE) { }
+    /* One request at a time: this task is its only author. Bounded wait so a
+     * render task wedged by anything ELSE -- not ours to paper over -- degrades
+     * to a retried lost write, never a dim task that hangs on the ack. */
+    if (xSemaphoreTake(s_lvl_ack, pdMS_TO_TICKS(500)) != pdTRUE) {
+        s_lvl_pending = false;
+        s_level_writes_failed++;
+        level_fail_log(why, percent, "render task never drained");
+        return false;
+    }
+    /* An ack for a different seq belongs to a request that already timed out;
+     * believing it would let one wedged frame's write be mistaken for this one's.
+     * Treat it as a lost write -- the safe direction, retried next tick. */
+    const esp_err_t err = s_lvl_result;
+    if (s_lvl_ack_seq != seq || err != ESP_OK) {
+        s_level_writes_failed++;
+        level_fail_log(why, percent,
+                       s_lvl_ack_seq != seq ? "stale ack" : esp_err_to_name(err));
         return false;
     }
     ESP_LOGI(TAG, "%u%% -- %s", (unsigned)percent, why);
     return true;
+}
+
+/* Run the pending brightness write, from the LVGL task only, between frames.
+ * Called every loop iteration of lvgl_task before lv_timer_handler(), where no
+ * flush is in flight and the same-task rule makes a mid-transaction write
+ * impossible. Cheap no-op when idle_task posted nothing. Public so main.c's
+ * renderer can call it; the disabled build stubs it to the same no-op. */
+void idle_dim_render_drain(void)
+{
+    if (!s_lvl_pending)
+        return;
+    /* Read the author's seq and target together, then clear pending BEFORE the
+     * write, so a higher-priority idle_task resuming cannot post a new request
+     * that this frame would then clobber or double-answer. */
+    const uint32_t  seq     = s_lvl_seq;
+    const uint8_t   percent = s_lvl_target;
+    s_lvl_pending = false;
+    esp_lcd_panel_handle_t panel = display_get_panel();
+    s_lvl_result = panel ? esp_lcd_panel_co5300_set_brightness(panel, percent)
+                         : ESP_ERR_INVALID_STATE;
+    s_lvl_ack_seq = seq;                    /* published before the ack it rides */
+    xSemaphoreGive(s_lvl_ack);
 }
 
 static void idle_task(void *arg)
@@ -491,6 +572,14 @@ esp_err_t idle_dim_init(void)
     if (imu_present()) wake = "knob + motion";
     else ESP_LOGW(TAG, "no IMU: idle dim will wake on the rotary only");
 #endif
+    /* The brightness handoff (see apply_level): created before both the task and
+     * the render drain can use it. idle_dim_init runs before main.c starts the
+     * LVGL task, so a render drain that finds a pending request here always has
+     * a semaphore to ack against; apply_level refuses the write if it is not yet
+     * there, which only happens before this line has run. */
+    s_lvl_ack = xSemaphoreCreateBinary();
+    if (!s_lvl_ack)
+        return ESP_ERR_NO_MEM;
     if (xTaskCreate(idle_task, "idle_dim", 3072, NULL, IDLE_DIM_TASK_PRIO,
                     &s_idle_task) != pdPASS)
         return ESP_ERR_NO_MEM;
@@ -511,9 +600,10 @@ void idle_dim_activity(const char *why)
     s_last_ms  = now;
     s_act_calls++;
     /* A touch while dimmed must lift the face now, not on the next dark tick.
-     * The restore itself stays on the task — the one writer of the brightness
-     * register — this only shortens how long it waits to run, so a knob turn
-     * reads as an instant wake however busy the animation keeps the renderer.
+     * The restore decision stays on the task — it is the only thing that ever
+     * moves the level — and the write it triggers is drained on the render task;
+     * this only shortens how long the task waits to run, so a knob turn reads as
+     * an instant wake however busy the animation keeps the renderer.
      * Only when dimmed: awake there is nothing to restore, and nudging on every
      * stamp would pull a higher-priority task ahead of the frames for nothing. */
     if (s_dimmed && s_idle_task)
@@ -582,8 +672,8 @@ esp_err_t idle_dim_set_enabled(bool on)
      * long off-period would otherwise hand the task a stale s_last_ms and dim
      * the face the instant the switch flips, which reads as the switch
      * misfiring. And while dimmed, this stamp is what lifts the face on the
-     * task's next dark tick (50 ms) -- the restore itself stays in the task,
-     * the one writer of the brightness register per apply_level's rule. */
+     * task's next dark tick (50 ms) -- the restore stays the task's decision,
+     * and the write it posts is drained on the render task per apply_level. */
     s_last_ms = now_ms();
     return settings_persist(DIM_NVS_KEY_EN, on ? 1u : 0u);
 }
@@ -612,8 +702,8 @@ esp_err_t idle_dim_set_timeout_s(uint32_t seconds)
 /* ---- the app voice: the broker's two doors (see idle_dim.h) ----------------
  * Both run on the LVGL task through orb_svc.c and touch only single-word
  * volatile state, never NVS and never the brightness register — the task
- * stays the one writer of 0x51 (apply_level's rule), and an app's ask is
- * only ever an input to its next decision. */
+ * stays the only mover of 0x51 (its decision, drained on the render task per
+ * apply_level), and an app's ask is only ever an input to its next decision. */
 
 esp_err_t idle_dim_app_request(const char *slug, uint32_t timeout_s, bool hold)
 {
@@ -714,6 +804,10 @@ int      idle_dim_worst_dark_mg(void){ return 0; }
 #else /* !CONFIG_ORB_IDLE_DIM_ENABLE */
 
 esp_err_t idle_dim_init(void)                 { return ESP_OK; }
+/* main's LVGL loop calls the drain unconditionally, so the disabled build must
+ * answer it too: with no dim there is never a pending brightness write, and a
+ * drain that does nothing is the honest no-op, not a link error. */
+void    idle_dim_render_drain(void)            { }
 void    idle_dim_activity(const char *why)    { (void)why; }
 uint32_t idle_dim_activity_count(void)        { return 0; }
 /* The status block reads it unconditionally, so the disabled build says so

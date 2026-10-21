@@ -1,6 +1,7 @@
 package orbmdns
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -255,6 +256,23 @@ func (b *Browser) pump(s Source) {
 	}
 }
 
+// orbServiceWire is the _orb._tcp service name as it appears on the wire: two
+// length-prefixed labels, not the dotted spelling. bytes.Contains cannot be fed the
+// dotted name, because the dot is a label boundary (a length byte), not a literal.
+var orbServiceWire = []byte{4, '_', 'o', 'r', 'b', 4, '_', 't', 'c', 'p'}
+
+// packetMentionsOrbService is a cheap, parse-independent scan of a datagram for the
+// orb service label. It exists for one decision: a packet that failed to Parse at
+// all is refused, but the refusal tail answers "why is that orb missing", and a
+// truncated or malformed packet from a Chromecast that never named the orb service
+// is not evidence about any orb. Names are case-insensitive in DNS, so the scan
+// lowercases a copy first. A datagram too mangled to hold the label in order does
+// not match — which is the correct conservative answer for a neighbour's noise and
+// a safe miss for a real orb, whose four records the firmware builds in order.
+func packetMentionsOrbService(pkt []byte) bool {
+	return bytes.Contains(bytes.ToLower(pkt), orbServiceWire)
+}
+
 // Ingest folds one received datagram into the discovered set. from is the packet's
 // source address, kept for the log line: it says who announced, not what was
 // announced, and it is not an identity. Neither is the A record — both are claims
@@ -277,7 +295,17 @@ func (b *Browser) Ingest(pkt []byte, from net.Addr) {
 	}
 	m, err := Parse(pkt)
 	if err != nil {
-		b.refuse("", src, err.Error())
+		// A packet that will not parse is a defect only when it could have been an
+		// orb. Anything else — a neighbour's truncated response, a malformed
+		// announcement for some other service — is the LAN working, not a missing
+		// orb, and a tail full of it would bury the one refusal that matters and
+		// evict real rows from the bounded tail. It still reaches the log, so an
+		// operator can find it; it does not reach the card.
+		if packetMentionsOrbService(pkt) {
+			b.refuse("", src, err.Error())
+			return
+		}
+		b.logf("orbmdns: ignored a non-orb packet from %s: %s", src, err.Error())
 		return
 	}
 	if !m.Response {
@@ -347,6 +375,16 @@ func (b *Browser) note(instance, from string, set func(*partial)) {
 // and discarding the early one is what would make a browse depend on the order
 // four records happened to be sent in.
 func (b *Browser) cacheHost(rec *Record, from string) {
+	instance, ok := OrbHost(rec.Name)
+	if !ok {
+		// An A record for somebody else's host: an iPad, a printer, a Chromecast. It
+		// can never point an orb's SRV at a row, and its address — least of all a
+		// placeholder 0.0.0.0 — is not a defect the card should report. The question
+		// the refusal tail answers is "why is that orb missing", not "everything
+		// broadcasting on the subnet", so a stranger's host record is dropped here in
+		// silence rather than cached or refused.
+		return
+	}
 	name := strings.ToLower(rec.Name)
 	if rec.TTL == 0 {
 		b.mu.Lock()
@@ -356,7 +394,9 @@ func (b *Browser) cacheHost(rec *Record, from string) {
 	}
 	ip, err := ParseOrbAddress(rec.A)
 	if err != nil {
-		b.refuse(rec.Name, from, err.Error())
+		// A host named like an orb but carrying an address no orb can have. The
+		// instance is known, so this refusal names the orb it was meant to become.
+		b.refuse(InstanceName(instance), from, err.Error())
 		return
 	}
 	now := b.now()

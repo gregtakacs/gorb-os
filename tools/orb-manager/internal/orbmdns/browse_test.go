@@ -132,6 +132,18 @@ const (
 
 func from(ip string) net.Addr { return &net.UDPAddr{IP: net.ParseIP(ip), Port: Port} }
 
+// lyingRDLength is a well-framed orb answer whose last record's RDLENGTH is one byte
+// too long, so Parse refuses the whole message at the end-of-message check. The
+// _orb._tcp owner name near the front is untouched, which is what makes the packet
+// both unparsable and recognisably orb traffic — the combination the refusal tail is
+// for, as opposed to a neighbour's truncated datagram that never named the service.
+func lyingRDLength() []byte {
+	good := answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80)
+	lie := append([]byte(nil), good...)
+	lie[len(lie)-6] = 0x05
+	return lie
+}
+
 func TestOneOrbAnnouncesAsOneRow(t *testing.T) {
 	b, _ := hub(t)
 	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
@@ -365,6 +377,52 @@ func TestImpossibleAddressesAreRefused(t *testing.T) {
 	}
 }
 
+// The bug itself, end to end: an iPad on the subnet announces before DHCP gives it
+// an address, so its A record is the placeholder 0.0.0.0. That is well-formed DNS for
+// a foreign service, and the strict parser used to refuse the whole datagram for it,
+// which surfaced on the card as an unnamed "refused a packet" box. Now the packet
+// parses, is recognised as somebody else's host record, and is dropped in silence —
+// no row, no refusal, no wake.
+func TestNeighbourPlaceholderAddressIsSilentlyDropped(t *testing.T) {
+	pkt := answerBytesFor("_companion-link._tcp.local", 1, "Kitchen-iPad", "aabbccddeeff", "1", "normal", "0.0.0.0", 120, 80)
+	if _, err := Parse(pkt); err != nil {
+		t.Fatalf("a well-formed neighbour packet with a placeholder address was refused: %v", err)
+	}
+	b, woke := wakeRecorder()
+	b.Ingest(pkt, from("192.168.2.77"))
+	if got := b.Candidates(); len(got) != 0 {
+		t.Fatalf("a neighbour became an orb row: %+v", got)
+	}
+	if r := b.Refusals(); len(r) != 0 {
+		t.Errorf("a neighbour's placeholder address reached the refusal tail: %+v", r)
+	}
+	if wokeRecently(woke) {
+		t.Error("a neighbour's silent drop still woke the card")
+	}
+}
+
+// The boundary the filter must not cross: an A record shaped like an orb's host but
+// carrying an address no orb can have is a real defect about a real orb, and it is
+// refused and named by its instance — not as an anonymous packet. Dropping neighbour
+// noise must not become dropping broken orbs.
+func TestOrbHostWithImpossibleAddressIsRefusedByName(t *testing.T) {
+	b, woke := wakeRecorder()
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", "127.0.0.1", 120, 80), from(goodIP))
+	if got := b.Candidates(); len(got) != 0 {
+		t.Fatalf("a loopback address was listed: %+v", got)
+	}
+	r := b.Refusals()
+	if len(r) != 1 {
+		t.Fatalf("%d refusals, want exactly one: %+v", len(r), r)
+	}
+	if r[0].Name != InstanceName(goodInst) {
+		t.Errorf("the refusal named %q, want the orb it was %q", r[0].Name, InstanceName(goodInst))
+	}
+	if !wokeRecently(woke) {
+		t.Error("a refusal about a real orb did not wake the card")
+	}
+}
+
 // TXT is the one place the firmware forbids compression, and a browser that expanded
 // a 0xC0 pair inside it would read two garbage characters as part of a key.
 func TestTXTBytesAreNeverExpanded(t *testing.T) {
@@ -434,7 +492,11 @@ func TestEveryMutationWakes(t *testing.T) {
 	}{
 		{"a row landing", answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80)},
 		{"a refusal", answerBytes(1, goodInst, "", goodFW, "normal", goodIP, 120, 80)},
-		{"an unparsable packet", []byte{0xc0, 0x1f, 0x00}},
+		// An unparsable packet that names the orb service is a defect about an orb
+		// and must wake the card. It is built by lying about the last record's
+		// RDLENGTH, which trips the parser's end-of-message check while leaving the
+		// _orb._tcp owner name intact near the front of the packet.
+		{"an unparsable orb packet", lyingRDLength()},
 	}
 	for _, tc := range cases {
 		b, woke := wakeRecorder()
@@ -444,9 +506,24 @@ func TestEveryMutationWakes(t *testing.T) {
 		}
 	}
 
+	// The filter's own half: a malformed packet that never named the orb service is a
+	// neighbour's traffic, not a missing orb. It changes nothing the card renders, so
+	// it must not wake it — which is also what stops a chatty subnet from evicting the
+	// one real refusal off the bounded tail.
+	b, woke := wakeRecorder()
+	b.Ingest([]byte{0xc0, 0x1f, 0x00}, from(goodIP))
+	select {
+	case <-woke:
+		t.Error("a non-orb malformed packet refused a slot on the card and woke it")
+	default:
+	}
+	if r := b.Refusals(); len(r) != 0 {
+		t.Errorf("a non-orb malformed packet reached the refusal tail: %+v", r)
+	}
+
 	// A goodbye removes a row, and the wake has to come from the removal rather from the packet
 	// being interesting.
-	b, woke := wakeRecorder()
+	b, woke = wakeRecorder()
 	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
 	<-woke
 	b.Ingest(answerBytes(2, goodInst, goodMAC, goodFW, "normal", goodIP, 0, 80), from(goodIP))

@@ -190,6 +190,13 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 		// require rewriting it — support.js consults window.__resources for each CDN
 		// URL before falling back, and that map is injected into the entry document.
 		// Touching this file would be the wrong fix even if it worked today.
+		//
+		// no-cache, not immutable: the bare <script src> tags carry no version query,
+		// and the 10/21 hub bake failure was exactly this skew — a fresh page against
+		// a heuristic-cached engine from before D34, crashing on a function the new
+		// page calls. Always-revalidate costs a 304 per reload and makes the skew
+		// impossible. The 3 MB of vendor keeps its immutable header (see serveVendor).
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeContent(w, r, name, modTime, bytes.NewReader(raw))
 		return
 	}
@@ -208,6 +215,9 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 		// support.js tag, whose loader reads it the moment it runs.
 		body = injectBeforeSupport(injectOffline(raw, true))
 	}
+	// Same always-revalidate rule as the sibling scripts: an entry page cached
+	// against a revalidated engine is the mirror-image of the same skew.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeContent(w, r, name, modTime, bytes.NewReader(injectAfterBody(body, hubBackLink+hubDepWatch)))
 }
 

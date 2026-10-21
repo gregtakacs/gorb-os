@@ -217,6 +217,12 @@ func (s *Server) serveComposer(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same always-revalidate rule as the sibling scripts: an entry page cached
 	// against a revalidated engine is the mirror-image of the same skew.
+	// The launch token is handed over on the same channel handleIndex uses, so the
+	// Send-to-orb button's same-origin POST to /api/theme/upload authenticates even
+	// when the composer was deep-linked directly and the operator never loaded the
+	// hub's own front page this launch. The value is this process's one token;
+	// resetting the cookie to it is harmless, and HttpOnly keeps it off the page's JS.
+	setLaunchToken(w, s.token)
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeContent(w, r, name, modTime, bytes.NewReader(injectAfterBody(body, hubBackLink+hubDepWatch)))
 }

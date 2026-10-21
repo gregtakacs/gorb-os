@@ -131,6 +131,42 @@ func TestComposerServesEditorWithAWayHome(t *testing.T) {
 	}
 }
 
+// The composer's Send-to-orb button POSTs to /api/theme/upload from the composer
+// document, so the launch token must ride to that route as a cookie. handleIndex sets
+// it, but a direct /composer/ open (a deep link, or a bookmark) never touches handleIndex
+// and would carry no credential: the button's first press would 403 with "reload the Orb
+// Manager page" while the operator had done exactly that. serveComposer now hands the
+// same token the entry document it already injects a back link into.
+func TestComposerEntryCarriesLaunchToken(t *testing.T) {
+	s := &Server{repoDir: repoComposerDir(t), token: "launchsecret"}
+	rr := httptest.NewRecorder()
+	s.serveComposer(rr, httptest.NewRequest(http.MethodGet, "/composer/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var found *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == tokenCookie {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatal("composer entry set no " + tokenCookie + " cookie: the Send-to-orb POST could not authenticate")
+	}
+	if found.Value != "launchsecret" {
+		t.Errorf("cookie carries %q, want this launch's token", found.Value)
+	}
+	// A sibling script is served byte-exact and must NOT gain the cookie: the token
+	// belongs on the document the button lives in, not on every asset it loads.
+	sr := httptest.NewRecorder()
+	s.serveComposer(sr, httptest.NewRequest(http.MethodGet, "/composer/watch-engine.js", nil))
+	for _, c := range sr.Result().Cookies() {
+		if c.Name == tokenCookie {
+			t.Error("a sibling script set the launch cookie; only the entry document should")
+		}
+	}
+}
+
 func TestComposerIndexHTMLDoesNotRedirect(t *testing.T) {
 	// ServeFile answers a path ending index.html with a 301 to "./"; the card's
 	// href and any hand-typed URL must land on the editor directly.

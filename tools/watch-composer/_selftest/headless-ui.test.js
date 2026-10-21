@@ -440,9 +440,35 @@ setTimeout(async () => {
   for (const k of ['exportKit', 'exportTheme', 'themeNote', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
     // FORMAT 2's theme-name field: the input, its live byte count and its placeholder
     'themeNameVal', 'themeNameIn', 'themeNamePh', 'themeNameLen',
+    // §31's send-to-orb round: the hub-gated push button and its three bindings
+    'isHub', 'sendToOrb', 'sendNote',
     // the three bindings the deselect/scroll row reads: a missing one renders a dead button
     'clearSel', 'clearLabel', 'clearOp', 'pickGuide', 'g', 'paneRef'])
     ok(rv[k] !== undefined, 'the template binding ' + k + ' has a backing property');
+  // §31's send-to-orb round: under a hub (http/https) the push button names the door;
+  // opened from the filesystem (no location) it hides and the note says so. The headless
+  // stub has no location, so the binding must report not-hub, never throw.
+  ok(rv.isHub === false && rv.sendNote === 'no hub',
+     'no location means no hub: the Send button stays hidden', JSON.stringify([rv.isHub, rv.sendNote]));
+  ok(typeof rv.sendToOrb === 'function', 'and the send button is still callable off-hub');
+  await (async () => {
+    // A press with no hub learned no orb: postTheme3ToOrb must report, not dial blindly.
+    const g = global, savedLoc = g.location;
+    try {
+      g.location = { protocol: 'http:' };
+      ok(it.hubSend3() === true, 'with http://location the composer reports hub mode');
+      ok(/pushes to/.test(it.renderVals().sendNote),
+         'under a hub the send note names the door it will push through', it.renderVals().sendNote);
+      // with a hub but no orb answer, the send refuses with an actionable sentence
+      it.state.hubIp = null; it.state.hubCheck = true;
+      await it.postTheme3ToOrb(new Uint8Array([1, 2, 3]), 'x', 'x', { sentence: 'still' }, 'art 3/9 B');
+      ok(/not talking to an orb/.test(it.state.status),
+         'a hub with no loaded orb is refused, with the download left as the way out', it.state.status.slice(0, 48));
+    } finally {
+      if (savedLoc === undefined) delete g.location; else g.location = savedLoc;
+      it.state.hubCheck = false; it.state.hubIp = null;
+    }
+  })();
   ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
   for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
   // FORMAT 2's identity field: an untouched box must still name the theme after the dial,

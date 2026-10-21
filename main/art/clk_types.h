@@ -104,6 +104,24 @@ enum {
     CLK_KIND__MAX
 };
 
+/* D34: how a clk_aux_t pointer MOVES. The first three are the values clk_aux_t.kind
+ * has always carried, written out so the enum and the struct's comment cannot drift
+ * apart. The two slides are the append that lets a pointer travel in PIXELS rather
+ * than an angle, which is what a sliding power-reserve bar or a linear date scale
+ * needs and what no rotation of a sprite can imitate.
+ *
+ * The motion IS the unit. On rotate/retrograde/indexed, `span` and `zero` are tenths
+ * of a degree; on slide-x/slide-y they are pixels along that axis. No column claims
+ * the unit separately, so a row cannot name a motion and contradict its own unit. */
+enum {
+    CLK_MOTION_ROTATE     = 0,   /* angle = zero + value*span/value_max              */
+    CLK_MOTION_RETROGRADE = 1,   /* as rotate, clamped: reaches span, then returns    */
+    CLK_MOTION_INDEXED    = 2,   /* as rotate, snapped to whole units                 */
+    CLK_MOTION_SLIDE_X    = 3,   /* offset px = zero + value*span/value_max, along x  */
+    CLK_MOTION_SLIDE_Y    = 4,   /* the same along y: a vertical reserve gauge         */
+    CLK_MOTION__MAX
+};
+
 /* What drives a comp's value. Every one derives from the wall clock and the
  * battery state the view already has, so a new theme feature needs no new input
  * path and no new firmware build. */
@@ -213,7 +231,8 @@ typedef struct {
     clk_sprite_t spr;          /* w,h,off,pivot,centre,blend,show,color_off */
     uint16_t tag;              /* manifest hand index, or the comp tag it belongs to */
     uint8_t  src;              /* CLK_SRC_*   */
-    uint8_t  kind;             /* 0 rotating hand, 1 retrograde, 2 indexed pointer */
+    uint8_t  kind;             /* CLK_MOTION_*: how it moves, and therefore in what
+                                 * unit `span` and `zero` are written. D34. */
     uint16_t host;             /* 0 = main dial centre, else a comp tag */
     int16_t  span;             /* tenths of a degree swept across the value range */
     int16_t  zero;             /* tenths of a degree at value_min */

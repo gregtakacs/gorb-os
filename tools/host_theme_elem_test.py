@@ -109,7 +109,11 @@ def _n(recs):
 
 
 SENT = (
-    ("unknown class id", lambda: ts.check_element(row(**{"class": 8})), "class"),
+    # The first id past the vocabulary, derived: D34 made 8 a real class, and a
+    # literal here would have quietly retargeted this vector onto my new AUX rule
+    # (which also names .src) and reported a pass for the wrong reason.
+    ("unknown class id", lambda: ts.check_element(
+        row(**{"class": len(ts.CLASS_NAMES)})), "class"),
     ("class id negative", lambda: ts.check_element(row(**{"class": -1})), "class"),
     ("unknown flag bit", lambda: ts.check_element(row(flags=ts.EF_ALPHA | 0x80)), "flags"),
     ("order past the rungs", lambda: ts.check_element(row(order=ts.ELEM_ORDER_N)), "order"),

@@ -25,15 +25,31 @@
  * esp_err.h, and this one compiles on a host. The suite pins the mirror, so a
  * class renamed on one side and not the other fails there — the discipline every
  * other counted vocabulary in this firmware uses. */
-static const char *const CLASS_NAMES[8] = {
-    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status"
+static const char *const CLASS_NAMES[9] = {
+    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux"
 };
 
 #define CLS_SPRITE 1
 #define CLS_HAND   2
 #define CLS_PLATE  3
 #define CLS_BANK   5
+#define CLS_AUX    8            /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+
+/* D34's motion ids (theme_schema.MOTION_NAMES, in that order). The first three are
+ * the ones clk_aux_t.kind has always read; the two slides are new, and each names
+ * the AXIS it travels as well as the fact that it is not an angle — so `span` and
+ * `zero` are pixels on those rows and tenths of a degree on the other three, with no
+ * extra column anywhere claiming which. MOTION_LAST is the bound the row's byte is
+ * checked against, and it moves with the vocabulary rather than being copied into a
+ * count that can lag it. */
+#define MOTION_ROTATE      0
+#define MOTION_RETROGRADE  1
+#define MOTION_INDEXED     2
+#define MOTION_SLIDE_X     3
+#define MOTION_SLIDE_Y     4
+#define MOTION_LAST        MOTION_SLIDE_Y
+#define MOTION_IS_SLIDE(k) ((k) == MOTION_SLIDE_X || (k) == MOTION_SLIDE_Y)
 
 /* theme_schema.CLOCK_WINDOW_DOMAIN, mirrored for the device's re-check of a
  * hostile bundle (D32 ruling B: the frame-to-value map is the clock's calendar,
@@ -164,6 +180,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     /* ---- the table, indexed by (class, slot): the identity §25.2 ruled ---- */
     int16_t at_plate[2] = { -1, -1 }, at_hand[6] = { -1,-1,-1,-1,-1,-1 };
     int16_t at_shadow[5] = { -1,-1,-1,-1,-1 };
+    int16_t at_aux[CLK_AUX_MAX];
+    for (int i = 0; i < CLK_AUX_MAX; i++) at_aux[i] = -1;   /* the stack zeroes no -1 */
     int16_t at_bank[CLK_COMP_MAX] = { -1,-1,-1,-1,-1,-1,-1,-1,
                                       -1,-1,-1,-1,-1,-1,-1,-1 };
     for (uint32_t i = 0; i < ne; i++) {
@@ -216,6 +234,17 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                                   "complication mapping",
                                   (unsigned)e.n, nm, (unsigned)e.slot);
                 cell = &at_shadow[e.slot];
+                break;
+            case CLS_AUX:
+                /* D34: a pointer is addressed by its own ordinal, not by a comp tag and
+                 * not by a hand slot — the row's `slot` IS the index into the aux table,
+                 * which is what lets a theme say "the seconds hand of the six o'clock
+                 * sub-dial" without the dial knowing what a sub-dial is. */
+                if (e.slot >= CLK_AUX_MAX)
+                    return reject("a pointer at slot %u: the clock declares %u pointer "
+                                  "slots and the manifest of any app may not invent one",
+                                  (unsigned)e.slot, (unsigned)CLK_AUX_MAX);
+                cell = &at_aux[e.slot];
                 break;
             default:
                 return reject("element %u is class %s: the compiled clock has no field "
@@ -281,6 +310,27 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         return reject("tourbillon_n %u with no tourbillon row: the scalars and the "
                       "table disagree, and the pair would name a bank the art does "
                       "not hold", (unsigned)t->tourbillon_n);
+    /* D34 bench: the composer exported order:[1,2] for hands seated at slots
+     * 0,1 — FORMAT 2's show-table +1 carried into a dialect where the table
+     * holds slot ids verbatim — and the watch painted minute, skipped the empty
+     * slot 2, and never drew hour. A live hand the order omits is art the file
+     * carries and the dial never paints: the same half-drawn dial §25 refuses
+     * for a shadow without its hand. The carriage at slot 5 rides the
+     * tourbillon pair above, and hidden or matte-folded rows make no promise
+     * to paint. */
+    for (int k = 0; k < 5; k++) {
+        if (at_hand[k] < 0) continue;
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_hand[k], &e);
+        if (e.flags & EF_HIDDEN) continue;
+        if (t->matte_mask & (1u << k)) continue;         /* folded into the bank */
+        int named = 0;
+        for (int oi = 0; oi < t->order_n; oi++)
+            if (t->order[oi] == k) named = 1;
+        if (!named)
+            return reject("the hand at slot %d is seated but the order table names no %d: "
+                          "a live hand the order omits draws nothing on the watch", k, k);
+    }
     /* §31: bg_frames is a keyframe bank's length, not a gif table's. Delta mode
      * under a count is still §25.3's shape — whole planes named by a vocabulary
      * of rects the section does not carry — and the row cross-check lands with
@@ -570,6 +620,121 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * w*h*3, so a FORMAT 3 tile is always the runtime-composited kind. The
          * under-dial case is one a FORMAT 2 bake could produce and a FORMAT 3
          * catalogue cannot describe. */
+    }
+
+    /* ---- the pointers (D34): one AUX row, one clk_aux_t, driven by the row's own
+     * drive. Every refusal below is a thing the row could get wrong in a way that
+     * would draw a WRONG dial rather than no dial — a pointer that never moves, one
+     * that divides by a zero domain, one that turns about a point off its own ink, one
+     * asked to slide further than the glass is wide. Those are refused here, in the
+     * dial's own words, exactly as the bank rows above are, so an author reads at
+     * either end of the wire what the device would have made of the theme.
+     *
+     * The row is read as a clk_aux_t and nothing invents a number it did not carry:
+     * `kind` is the motion, `src` the value, span/zero/vmin/vmax the drive, and the
+     * sprite's geometry is the row's own box and pivot, which is why a pointer sits
+     * wherever the theme drew it rather than at the panel centre. A slide's pivot is
+     * left at the plate's own middle: it never rotates, and clk_sprite_t's pivot is
+     * read by gfx_swept_box() for the dirty mark, so a slide that named a corner would
+     * mark the wrong rows. */
+    io->out_n_aux = 0;
+    for (int slot = 0; slot < CLK_AUX_MAX; slot++) {
+        if (at_aux[slot] < 0) continue;
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_aux[slot], &e);
+        if (e.kind > MOTION_LAST)
+            return reject("a pointer at slot %u moves as motion %u: the dial knows %u "
+                          "ways for a row to move (rotate, retrograde, indexed, "
+                          "slide-x, slide-y) and this names none of them",
+                          (unsigned)slot, (unsigned)e.kind, (unsigned)(MOTION_LAST + 1));
+        if (e.src >= CLK_SRC__MAX)
+            return reject("a pointer at slot %u driven by source %u: this dial reads %u "
+                          "values and none of them is that",
+                          (unsigned)slot, (unsigned)e.src, (unsigned)CLK_SRC__MAX);
+        if (e.src == CLK_SRC_NONE)
+            return reject("a pointer at slot %u driven by 'none': a value that never "
+                          "changes is plate art, and a row that never moves is a lie "
+                          "about being a pointer", (unsigned)slot);
+        if (e.src == CLK_SRC_TEXT || e.src == CLK_SRC_VALUE)
+            return reject("a pointer at slot %u driven by source %u: this dial has no "
+                          "such input, and D32's ruling refuses the flip rather than "
+                          "ship a comp that would draw nothing",
+                          (unsigned)slot, (unsigned)e.src);
+        if (!e.vmax)
+            return reject("a pointer at slot %u with a domain of 0: its span is shared "
+                          "across the domain, so nothing can be computed from it",
+                          (unsigned)slot);
+        if (e.vmin > e.vmax)
+            return reject("a pointer at slot %u whose value_min %u is above value_max "
+                          "%u: the domain runs low to high", (unsigned)slot,
+                          (unsigned)e.vmin, (unsigned)e.vmax);
+        if (!e.span)
+            return reject("a pointer at slot %u with a span of 0: it would sit at its "
+                          "zero forever, which is a plate drawn as a row",
+                          (unsigned)slot);
+        if (e.n_frames != 1u)
+            return reject("a pointer at slot %u naming %u frames: a pointer is one "
+                          "plate that moves, and several plates indexed by a value is a "
+                          "bank row", (unsigned)slot, (unsigned)e.n_frames);
+        if (!MOTION_IS_SLIDE(e.kind)) {
+            /* An angle stays an angle: inside one turn of home, and turning about a
+             * point on its own ink. Both are the HAND rules, inherited deliberately —
+             * a pointer that fails either would draw a mark swinging about nothing. */
+            /* One turn is 3600 tenths, and that is also the widest offset these two
+             * i16 columns carry with room to spare. A pointer needing more travel than
+             * a turn is a disc, and the sentence says so at the door. */
+            if (e.zero < -3600 || e.zero > 3600)
+                return reject("a pointer at slot %u with a zero of %d: an offset past "
+                              "one full turn is not a direction",
+                              (unsigned)slot, (int)e.zero);
+            if (e.span < -3600 || e.span > 3600)
+                return reject("a pointer at slot %u with a span of %d: more than one "
+                              "full turn is a disc, not a hand", (unsigned)slot,
+                              (int)e.span);
+            if (e.w && e.h && !(e.pivot_x >= 0 && (int32_t)e.pivot_x < (int32_t)e.w &&
+                                e.pivot_y >= 0 && (int32_t)e.pivot_y < (int32_t)e.h))
+                return reject("a pointer at slot %u turns about (%d,%d), outside its own "
+                              "%ux%u plate", (unsigned)slot, (int)e.pivot_x,
+                              (int)e.pivot_y, (unsigned)e.w, (unsigned)e.h);
+        } else {
+            /* A slide is in pixels, and the panel is 466 px across: a slide that long
+             * leaves the glass at one end of its domain whatever the value is. */
+            if (e.span > 466 || e.span < -466 || e.zero > 466 || e.zero < -466)
+                return reject("a pointer at slot %u slides by %d from %d: a slide's span "
+                              "and zero are pixels, and this one leaves the %u px panel",
+                              (unsigned)slot, (int)e.span, (int)e.zero,
+                              (unsigned)scr_w);
+        }
+        if (!io->aux || !io->aux_cap)
+            return reject("a pointer at slot %u, and this dial was built without a "
+                          "pointer table to project it into", (unsigned)slot);
+        if (io->out_n_aux >= io->aux_cap)
+            return reject("more pointers than this dial's table holds (%lu)",
+                          (unsigned long)io->aux_cap);
+        orb_bundle_spr_t sp;
+        orb_bundle_spr_at(sec, e.frame0, &sp);
+        clk_aux_t *a = &io->aux[io->out_n_aux++];
+        memset(a, 0, sizeof *a);
+        fill_sprite(&a->spr, &e, &sp, NULL);
+        a->tag       = (uint16_t)slot;
+        a->src       = (uint8_t)e.src;
+        /* clk_aux_t.kind and the row's `kind` share the first three ids by D34's
+         * design; the two slides are the dial's own appends to that enum and are read
+         * by clock_view.c's slide path. */
+        a->kind      = (uint8_t)e.kind;
+        a->host      = 0;               /* every pointer places itself: no host arbour */
+        a->span      = e.span;
+        a->zero      = e.zero;
+        a->value_min = (int16_t)e.vmin;
+        a->value_max = e.vmax;
+        /* No row column names JUMP, WRAP or 24H for a pointer, so the projection
+         * carries none of them rather than borrow a byte that means something else:
+         * scale16 is the comp maths' x16 fraction, and reading it as a snap flag
+         * would be a meaning nobody wrote. A pointer therefore interpolates, and the
+         * flag rides the next ABI append when a theme actually asks for the stutter. */
+        a->flags     = 0;
+        a->spr.blend = 0;
+        a->spr.show  = (uint8_t)(e.flags & EF_HIDDEN ? 0 : 1);
     }
 
     /* Extents, layer by layer, in FORMAT 2's own words: the same lie at either door

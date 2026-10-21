@@ -43,7 +43,6 @@ NAME = "Longplayer Pair"
 SERIAL = 20261020
 BAKED_MS = 1730000000000
 
-
 def plane(w, h, seed):
     """One RGB565 plane: a gradient with a seed-dependent offset, so no two planes
     compress or crc alike."""
@@ -53,12 +52,9 @@ def plane(w, h, seed):
         px += struct.pack("<H", (v & 0xF800) | ((v >> 5) & 0x3E) | (v >> 11))
     return bytes(px)
 
-
 def bank(n_planes, w, h, seed):
     """`n_planes` plates laid end to end — the shape a value-per-plate wheel bakes to."""
     return b"".join(plane(w, h, seed + i) for i in range(n_planes))
-
-
 
 def elem(n, cls, **kw):
     r = ts.blank_element()
@@ -66,22 +62,49 @@ def elem(n, cls, **kw):
     r.update(kw)
     return r
 
-
 # ---- section: clock — the compiled dialect orb_clock3.c reads -----------------
-# Two plates (the base and its overlay) and one hour hand: the shape the compiled
-# clock's (class, slot) index expects, with no complication row to refuse.
+# Two plates (the base and its overlay), one hour hand, and D34's pointer row: the
+# shape the compiled clock's (class, slot) index expects, plus the one class the
+# fixture did not carry before — a sub-dial seconds hand turned by the row's own
+# drive. It is in the GOLDEN file deliberately: every reader pinned to these bytes
+# (orb_bundle.c, orb_theme.c, orbbundle.py, orbtheme-baker.js) then exercises the
+# 23-word row and the AUX class on every run, and a writer that dropped the four
+# drive columns would change the digest rather than pass quietly.
 clock_elems = [
     elem(1, ts.CLASS_NAMES.index("plate"), slot=0, x=0, y=0, w=466, h=466,
          order=0, alpha=255),
     elem(2, ts.CLASS_NAMES.index("plate"), slot=1, x=0, y=0, w=466, h=466,
-         order=1, alpha=128),
+         order=1, alpha=128, frame0=3),
     elem(3, ts.CLASS_NAMES.index("hand"), slot=0, x=233, y=233, w=40, h=200,
-         order=2, pivot_x=20, pivot_y=190, n_frames=12, flags=ts.EF_OS_ADV),
+         order=2, pivot_x=20, pivot_y=190, frame0=1),
+    elem(4, ts.CLASS_NAMES.index("aux"), slot=0, x=300, y=120, w=28, h=64,
+         order=3, alpha=255, pivot_x=14, pivot_y=56, frame0=2,
+         kind=ts.MOTION_ROTATE, src=ts.SOURCES.index("second"),
+         span=3600, zero=0, vmin=0, vmax=60),
 ]
-clock_art = plane(466, 466, 3) + plane(40, 200, 9)
+# The pointer plate is MASKED (colour then a planar alpha stride), the way every
+# hand and every comp tile enters a bank: an AUX row's cost is w*h*3, and a fixture
+# that carried it colour-only would pin a shape no bake produces.
+# The hand plate is masked for the same arithmetic and the harder reason: D32
+# slice 2's catalogue gate in orb_clock3.c keeps only the PLATE row's own key frames
+# opaque — every other plane the dial composites must carry a planar alpha stride,
+# because a moving sprite without one paints a black box over the dial it crosses.
+# A colour-only hand here would pin exactly the shape the device refuses. The hand
+# is also ONE frame now: the compiled dial turns one plane per hand slot, so a row
+# naming twelve would sit inside the catalogue's letter and outside the dial's use —
+# the animated row in this fixture's clock dialect is the pointer, and the multi-frame
+# OS-ADV row the writers still pin lives in the weather section.
+aux_ptr_art = plane(28, 64, 41) + bytes([0xFF]) * (28 * 64)
+hand_art = plane(40, 200, 9) + bytes((i * 13 + 9) & 0xFF for i in range(40 * 200))  # one masked plane
+# The glass is a sprite the compositor blends, so it carries the planar alpha
+# stride too — the same extent math the shipped overlay sprite is checked against.
+overlay_art = plane(466, 466, 52) + bytes((i * 7 + 130) & 0xFF for i in range(466 * 466))
+clock_art = plane(466, 466, 3) + hand_art + aux_ptr_art + overlay_art
 clock_sprites = [
     {"off": 0, "size": 466 * 466 * 2, "w": 466, "h": 466},
-    {"off": 466 * 466 * 2, "size": 40 * 200 * 2, "w": 40, "h": 200},
+    {"off": 466 * 466 * 2, "size": 40 * 200 * 3, "w": 40, "h": 200},
+    {"off": 466 * 466 * 2 + 40 * 200 * 3, "size": 28 * 64 * 3, "w": 28, "h": 64},
+    {"off": 466 * 466 * 2 + 40 * 200 * 3 + 28 * 64 * 3, "size": 466 * 466 * 3, "w": 466, "h": 466},
 ]
 
 # ---- section: weather — an app dialect, animated ------------------------------
@@ -110,11 +133,14 @@ weather_sprites = [
 
 SECTIONS = [
     {"slug": "clock", "elements": clock_elems, "art": clock_art,
-     "sprites": clock_sprites, "scr_w": 466, "scr_h": 466},
+     "sprites": clock_sprites, "scr_w": 466, "scr_h": 466,
+     # D34: orb_clock3 refuses a seated live hand the order table omits — the
+     # fixture's own hand at slot 0 must be named, so this clock is a projection
+     # -legal dial and not just wire-legal bytes.
+     "scalars": {"order0": 0, "order_n": 1}},
     {"slug": "weather", "elements": weather_elems, "art": weather_art,
      "sprites": weather_sprites},
 ]
-
 
 def write_vectors(outdir):
     """Dump the fixture's INPUTS, so another implementation can be held against the same
@@ -154,7 +180,6 @@ def write_vectors(outdir):
     print("wrote the FORMAT 3 vector model into %s (%d sections, container %d B)"
           % (outdir, len(secs), os.path.getsize(tmp)))
     return 0
-
 
 def verify_c():
     """Runs the SHIPPED device reader — main/art/orb_bundle.c, host gcc, the parity
@@ -197,7 +222,6 @@ def verify_c():
                                      got["art_size"]))
     return 0
 
-
 def read_back(path):
     """Print the authority's own read-back of ANY bundle as JSON, so another
     implementation's bytes can be checked through the reference reader rather than
@@ -233,7 +257,6 @@ def read_back(path):
     sys.stdout.write("\n")
     return 0
 
-
 def main():
     if "--verify-c" in sys.argv:
         return verify_c()
@@ -246,7 +269,6 @@ def main():
     # format never had.
     tmp = OUT + ".tmp"
     ob.write_bundle(tmp, NAME, SECTIONS, serial=SERIAL, baked_ms=BAKED_MS)
-
 
     hdr, secs = ob.read_bundle(tmp)  # the authority reads back what it wrote
     raw = open(tmp, "rb").read()
@@ -289,8 +311,6 @@ def main():
     os.replace(side_tmp, SIDE)
 
     print("wrote %s (%d B) and %s" % (OUT, len(raw), SIDE))
-
-
 
 if __name__ == "__main__":
     sys.exit(main() or 0)

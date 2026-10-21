@@ -43,7 +43,7 @@ _Static_assert(ORB_ASSET_NAME_MAX == ORBAPP_ASSET_NAME_MAX,
  * it: reordering the enum without reordering these would keep every check green
  * while the ledger started naming the wrong failure. */
 const char *const orb_asset_class_name[ORB_ASSET_CLASS_N] = {
-    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status"
+    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux"
 };
 
 static const char *const WHY[10] = {
@@ -331,7 +331,8 @@ orb_prim_t orb_asset_class_prim(orb_asset_class_t cls)
      * that cannot turn is a static mark on a dial — a wrong answer, not merely an
      * ugly one. LAYER gets RECT because a layer is a box until it has art. */
     switch (cls) {
-    case ORB_ASSET_HAND:   return ORB_PRIM_BAR;
+    case ORB_ASSET_HAND:   /* fall through */
+    case ORB_ASSET_AUX:    return ORB_PRIM_BAR;
     case ORB_ASSET_TEXT:   return ORB_PRIM_TEXT;
     case ORB_ASSET_STATUS: return ORB_PRIM_TEXT;
     case ORB_ASSET_RING:   return ORB_PRIM_RING;

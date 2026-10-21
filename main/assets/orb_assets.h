@@ -77,7 +77,15 @@ typedef enum {
     ORB_ASSET_BANK,         /* an indexed run of plates, one per value            */
     ORB_ASSET_LAYER,        /* a compositor slot: order and mark, not pixels      */
     ORB_ASSET_STATUS,       /* the app's one status line                          */
-    ORB_ASSET_CLASS_N       /* 8: the vocabulary's width, and the refusal bound   */
+    /* D34's append. A pointer: one plate the dial MOVES by a value the row names,
+     * about an origin the row places, across a domain the row divides. It is not a
+     * HAND, because a HAND's rotation is the compiled dial's own hour/minute/second
+     * mapping onto one of six declared slots, while an AUX row carries its own drive
+     * (CLK_SRC_*), its own motion (MOTION_*) and its own span — which is what lets one
+     * class serve a running seconds hand, a retrograde reserve and a sliding date bar
+     * without a new slot vocabulary. */
+    ORB_ASSET_AUX,          /* one plate that moves by a value: it turns or slides   */
+    ORB_ASSET_CLASS_N       /* 9: the vocabulary's width, and the refusal bound      */
 } orb_asset_class_t;
 
 /* The dialect this vocabulary speaks — the container's geometry ABI, and not a
@@ -87,6 +95,14 @@ typedef enum {
  * that checks two constants agree is a check that runs when someone remembers to
  * run it; an assert is a check that runs when someone builds. */
 #define ORB_ASSET_CLASS_ABI   2u
+/* D34 appended the AUX class WITHOUT moving this word, exactly as D32 appended the
+ * row's two complication columns without moving the format: an appended class is one
+ * a reader that predates it refuses at its own bound (ORB_ASSET_CLASS_N was 8, so class
+ * 8 is "not a class this build knows"), and D26 makes that a refusal at the door rather
+ * than a silent skip. Bumping the ABI instead would have made every manifest already on
+ * every card uninstallable to draw a hand — the ratio D24's no-backward-path rule is
+ * for. The word moves when a class is RENUMBERED or a column REAPPEARS with a new
+ * meaning, and not before. */
 
 /* The names the classes answer to, indexed by orb_asset_class_t. Wire text: the
  * strings a manifest's asset table carries. Lowercase, fixed. */

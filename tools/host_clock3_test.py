@@ -186,6 +186,9 @@ static uint16_t           first_[GIF_CAP];
 static uint16_t           delays[GIF_CAP];
 static uint32_t           bgf[CLK_BG_MAX];
 static clk_comp_t         comps[16];
+static clk_aux_t          auxs[CLK_AUX_MAX];   /* D34: the pointer table, sized as the
+                                                * device sizes it — CLK_AUX_MAX is the
+                                                * cap the projection refuses past. */
 static orb_bundle_t       b;
 
 static uint8_t *slurp(const char *p, long *n)
@@ -238,6 +241,7 @@ int main(int argc, char **argv)
     io.gif_delays = delays; io.bg_frames = bgf;
     io.first_cap = GIF_CAP; io.delays_cap = GIF_CAP;
     io.comps = comps; io.comp_cap = 16;
+    io.aux   = auxs;  io.aux_cap   = CLK_AUX_MAX;   /* D34 */
     r = orb_clock3_parse(s, &io);
     if (strcmp(argv[1], "--refuse") == 0) {
         printf("%s %s\n", r ? "refused" : "ACCEPTED", r ? r : "");
@@ -279,6 +283,18 @@ int main(int argc, char **argv)
         printf("comp %u %u %u %u %d %d %u %u %u %u %u %u %d %u %u\n", i,
                c->tag, c->kind, c->src, c->x, c->y, c->w, c->h, c->count,
                c->first, c->off, c->frame_bytes, c->value_min, c->scale, c->show);
+    }
+    printf("n_aux %u\n", io.out_n_aux);
+    /* idx tag kind(motion) src x y w h pivot span zero vmin vmax show — every field
+     * the row carried, read back off the struct the projection filled. A pointer that
+     * arrived with a zero vmax would have been refused, so a printed vmax is itself
+     * the proof the guards let a legal row through. */
+    for (uint32_t i = 0; i < io.out_n_aux; i++) {
+        const clk_aux_t *a = &auxs[i];
+        printf("aux %u %u %u %u %d %d %u %u %d %d %d %u %u %u\n", i,
+               a->tag, a->kind, a->src, a->spr.offx, a->spr.offy, a->spr.w, a->spr.h,
+               (int)a->span, (int)a->zero, (int)a->value_min, (unsigned)a->value_max,
+               (unsigned)a->spr.color_off, a->spr.show);
     }
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
@@ -334,13 +350,19 @@ def parsed(out):
     """The harness's dump, as dicts keyed the way EXP is."""
     sc, spr, first, delay = {}, {}, {}, {}
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
-    comps, bgl = [], {}
+    comps, bgl, aux = [], {}, []
     for line in out.splitlines():
         w = line.split()
         if w[0] == "scalar":
             sc[w[1]] = [int(x) for x in w[2:]]
-        elif w[0] == "n_comps":
+        elif w[0] in ("n_comps", "n_aux"):
             pass
+        elif w[0] == "aux":
+            # idx tag kind src x y w h span zero vmin vmax color_off show — the harness's
+            # own order, named here so the battery reads a field and not an index.
+            aux.append(dict(zip(("i", "tag", "kind", "src", "x", "y", "w", "h", "span",
+                                 "zero", "vmin", "vmax", "off", "show"),
+                                (int(v) for v in w[1:]))))
         elif w[0] == "comp":
             comps.append([int(x) for x in w[1:]])
         elif w[0] in ("hand", "shadow", "tourbillon"):
@@ -366,7 +388,8 @@ def parsed(out):
         elif w[0] == "counts":
             cnt = (int(w[1]), int(w[2]))
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
-                art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl)
+                art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl,
+                aux=aux)
 
 
 SCALARS = ("bg", "plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
@@ -855,6 +878,108 @@ def s31_forge(base, n=3, tag="", mutate=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# D34: the pointer row. One row that moves by the drive the THEME wrote into it,
+# projected by both ends; then the lies that class makes possible, each refused by
+# both doors in the same words. The row is a masked plane, so its cost is w*h*3.
+# ---------------------------------------------------------------------------
+AUX_W, AUX_H = 28, 64
+AUX_PLANE = AUX_W * AUX_H * 3          # colour then the planar alpha stride
+
+
+def d34_forge(base, tag="", mutate=None, kind=0, src="second", span=3600,
+              zero=0, vmin=0, vmax=60, slot=0, size=None):
+    """The av-kit clock section with one AUX pointer row appended to its table."""
+    hdr, secs = ob.read_bundle(base)
+    sec = [s for s in secs if s["blob"]["slug"] == "clock"][0]
+    els = [dict(e) for e in sec["blob"]["elements"]]
+    sc = dict(sec["blob"]["scalars"])
+    spr = [dict(s) for s in sec["blob"]["sprites"]]
+    art = bytearray(sec["art"])
+    w, h = size or (AUX_W, AUX_H)
+    off = len(art)
+    art += b"\x22" * (w * h * 3)                       # the pointer's own plate
+    els.append(dict(ts.blank_element(), **{
+        "n": max(e["n"] for e in els) + 1, "class": ts.CLASS_AUX, "slot": slot,
+        "order": 3, "alpha": 255, "frame0": len(spr), "n_frames": 1,
+        "x": 300, "y": 120, "w": w, "h": h,
+        "pivot_x": w // 2, "pivot_y": h - 8,
+        "kind": kind, "src": ts.SOURCES.index(src),
+        "span": span, "zero": zero, "vmin": vmin, "vmax": vmax}))
+    spr.append({"off": off, "size": w * h * 3, "w": w, "h": h})
+    if mutate:
+        mutate(els, sc, spr, art)
+    out = "%s.d34%s.orbtheme" % (base, ("-" + tag) if tag else "-aux")
+    ob.write_bundle(out, hdr["name"],
+                    [{"slug": "clock", "elements": els, "scalars": sc,
+                      "sprites": spr, "art": bytes(art),
+                      "scr_w": sec["rec"]["scr_w"], "scr_h": sec["rec"]["scr_h"]}])
+    return out
+
+
+def d34_battery(exe, base):
+    """One pointer accepted by both doors, and the pointer-only lies mirrored."""
+    path = d34_forge(base, "aux")
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "the device refused a pointer row: %s" % (out or err)[:200])
+    if rc == 0:
+        p = parsed(out)
+        ck(len(p.get("aux", [])) == 1,
+           "the projection seated %d pointer rows, not the one the table named"
+           % len(p.get("aux", [])))
+        a = p["aux"][0]
+        ck(a["kind"] == 0 and a["src"] == ts.SOURCES.index("second") and
+           a["span"] == 3600 and a["vmax"] == 60,
+           "the clk_aux_t did not carry the row\u2019s own drive back: %s" % a)
+        ck(a["w"] == AUX_W and a["h"] == AUX_H and a["show"] == 1,
+           "the pointer sprite is %s, not the %dx%d plane the row placed" % (a, AUX_W, AUX_H))
+        ck(p["counts"] == (9, 9 + 1) or p["counts"][0] == 9,
+           "the pointer row is not in the element count: %s" % (p["counts"],))
+        ck(p["art"][1] == BLOB + AUX_PLANE,
+           "the bank is %s B, not the av-kit\u2019s %d plus the pointer\u2019s %d"
+           % (p["art"][1], BLOB, AUX_PLANE))
+
+    # The pair end REFUSES a pointer, and that asymmetry is the ruling rather than a
+    # gap: the device has a clk_aux_t table to project into and the compiled .h has no
+    # such array, because the pair's own aux table was FORMAT 2's and §26 retired it.
+    # Pinned as a refusal with its own sentence, so a future slice that gives the pair
+    # a pointer table fails here and has to come back and change this line on purpose.
+    brc, btxt, bhdr = bake_pair(path)
+    ck(brc != 0, "--from-bundle accepted a pointer row into a .h that has no aux array")
+    ck("carries no pointer rows" in btxt,
+       "the pair end refused a pointer for some other reason: %r" % btxt[:240])
+
+    # A slide is accepted, and accepted with the geometry a slide needs: no pivot to
+    # turn about, a span in pixels. Refusing it would be refusing the half of D34 that
+    # is not an angle, so this is the accept side of the same door.
+    sp = d34_forge(base, "slide", kind=3, src="battery", span=90, zero=-45,
+                   vmin=0, vmax=100, size=(90, 10))
+    rc, out, err = run(exe, "--dump3f", sp)
+    ck(rc == 0, "the device refused a sliding pointer: %s" % (out or err)[:200])
+    if rc == 0:
+        a = parsed(out)["aux"][0]
+        ck(a["kind"] == 3 and a["span"] == 90 and a["zero"] == -45,
+           "the slide did not project its own motion and pixel span: %s" % a)
+    # The one lie the WRITER lets through, because ELEMENT_WORDS_MAX is not a thing
+    # and a ninth pointer slot is a legal u16 field: the device must refuse it, in the
+    # sentence that names the cap. The other pointer lies this slice guards are
+    # writer-illegal by construction — theme_schema's own self-test refuses each one
+    # (see its D34 vector set), which is the cheaper door, and a hostile card that
+    # skipped that door still meets the C one above.
+    t = d34_forge(base, "slot8", slot=8)
+    rc, out, err = run(exe, "--refuse", t)
+    ck(rc == 0 and "pointer slots" in out,
+       "a ninth pointer slot: the device said %r, not the cap sentence"
+       % (out or err)[:180])
+    # A pointer at the LAST legal slot projects, and its ordinal survives: eight rows
+    # is the cap, so slot 7 must be the widest accepted table.
+    t7 = d34_forge(base, "slot7", slot=7)
+    rc, out, err = run(exe, "--dump3f", t7)
+    ck(rc == 0, "the device refused a pointer at the last legal slot: %s" % (out or err)[:160])
+    print("  D34 battery: pointer accepted by the device, refused by the pair mirror "
+          "for its own reason, and past the cap in the cap\u2019s own words")
+
+
 def s31_battery(exe, base):
     """One honest bank projected by both ends, and the lies it makes possible."""
     path = s31_forge(base, 3, "anim")
@@ -1125,6 +1250,7 @@ if __name__ == "__main__":
     refusals(EXE, PAIR)
     d32_battery(EXE, PAIR)
     s31_battery(EXE, PAIR)
+    d34_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))

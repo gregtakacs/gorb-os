@@ -4777,11 +4777,264 @@ sweep table's motion verdict to what the button actually carries today: **sector
 orbital, kitetour bake as banks; aviator, station bake as stills; the other ten
 presets refuse** with an honest live count, until the comp-table bake lands.
 
+**§31's last slice landed the same day: the comp-table bake.** `GorbBake.compPlan3`
+turns the design's live comps into window rows the dial drives from its own calendar
+(D32 rulings A/B): calendar windows take `date`/31, `weekday`/7, `month`/12; a moon
+takes `moon_age`/30; a subdial takes its scale's domain (`second`/60, `date`/31,
+`weekday`/7, `month`/12, `hour12`/12) — its pointer is 60 whole dials, snapping to
+whole values where a FORMAT 2 aux row interpolated. Live means data-driven, so the
+predicate grew one more static exemption: a subdial with no scale has no hand and
+rides inside the plate. A hosted row orders before its host, because the runtime
+paints its bottom bucket in record order and a host tile carries a punched aperture.
+`bakeClock3` takes `o.comps` and refuses every shape `orb_clock3.c` would refuse —
+slot, source, count against domain, box on the panel, rung, one extent — in the dial's
+own words; `splitPolicy3` takes `m.compB` and thins the bank for the tile bill before
+it refuses, naming the cost. The composer's `compPass3` renders each row at every
+domain value through a new `compOnly` filter in the engine (it narrows the comp layers
+AND the hand pass, so centre hands never bake into tiles and a hosted tile stands on
+its subdial's plate with no frozen hand in it), crops to the footprint the pixels
+actually moved against the plate beneath, masks every texel the value did not change
+(diff-alpha, so the bank keeps painting through the tile and an open-centre subdial
+stays open over a moving train — correctness, not compression: the stride is raw),
+and punches the hosted apertures on host tiles. Plate frames now measure with live
+comps hidden: a subdial hand is the row's motion, not the bank's. No ABI bump: the
+bundle route stamps `GEOM_ABI3` at the header and both index ends, and the 19-word
+rows are that dialect's own D32 columns.
+
+**Proof and the shipped set.** `headless-bundle3.test.js` grew 26 checks (122 total):
+plan mapping and hosted ordering on the calendar/regulator/phase shapes, six refusal
+sentences, the bank walk (rows, contiguous masked catalogue, stride sums), the ABI
+declaration, and the two policy cases where comp bytes thin or defeat the bank.
+`verify_js_bake.py` prints the projected comp rows and the suite pins the shipped
+`orb_clock3.c` seating `date` over 31 plates from value 1 and `second` over 60. All
+six JS suites, `host_clock3_test` (269 checks) and the comp-math family stay green;
+`bake3-test.html` reports every preset's plan and bakes the mounted dial's real tiles
+through the component's own `compPass3`. All fifteen presets plan a comp table or
+need none, and 15 of 15 take the sweep's verdict; the carrier choice and the D29
+budget still decide each bake — Skeleton's 78.5 px small-seconds costs 3.8 MB in 60
+plates and the guard refuses it by that number, so the author shrinks the dial.
+Datetext flares and the text/value sources stay refused: the element row carries no
+glyph fields, and the FORMAT 2 strip path remains the route for those.
+
 **Still open on this contract:** the hub's send-to-orb round (the button downloads;
-the hub's upload door is the receiver), the comp-table bake, and P8 consolidating the
-delivered-fps ladder across bank sizes.
+the hub's upload door is the receiver), and P8 consolidating the delivered-fps ladder
+across bank sizes.
 
 
 
 
+
+### Re-recorded after a working-tree revert: D32 and D33
+
+The plan file lost this session's P6.1–P6.3 records during a stash/pop cycle in the
+middle of D34's work, and git never held a commit with them. They are re-recorded here in
+condensed form, because D34's ruling cites them. The code, the tests and the commit
+messages are the authority; this section is the memory.
+
+- **D32 (P6.1, landed): an element row carries three appended columns — `order u8`,
+  `kind u8`, `src u8` — and the class decides which vocabulary `src` is read in.** The
+  append was made safe by the stride rule §23.10 already established: the reader derives
+  the row width from the blob's own length equality, so a missing column reads zero,
+  `ELEMENT_WORDS_MIN` stays at 17, and the shipped av kit reads unchanged. `kind` is
+  `CLK_KIND_{WINDOW,FLARE,SECTOR,HAND}` re-used from the complications, and `src` is the
+  `ELEM_SRC_*` family. Ruling: the class owns the reading. A BANK row's `src` names a
+  plate sequence; a WINDOW row's names the value that picks one. An appended class is the
+  only way a new kind of thing may enter, and a class never renumbers — a renumber is what
+  an ABI bump is FOR.
+- **D33 (P6.3, landed): one carrier for one motion, and the motion is what the author
+  named.** §31 closed with the bank, the carrier the author pre-renders. The sweep table's
+  motion verdict and the guard's live-count are the same number seen from two ends, and
+  the table's two corrections matter: **sector and orbital bake as banks** (their motion is
+  a value changing which plate shows, and an author who wants it smooth gets plates), and
+  a **sub-dial hand is not a motion an author chose** — it is the indication, so it must
+  not arrive as sixty whole dials. That second correction is the sentence that made D34
+  this slice's subject rather than a later one. A date window is `src window / domain
+  date(31) / kind window`, and the refusal names the author's own design rather than a
+  budget: the author knows which comp they placed and cannot compute a projection.
+
+### §34 and §35, corrected
+
+§34's line previously claimed the guard's ratio "does its work inside a carrier the author
+chose". It did not: the ratio priced a carrier the author was handed. An author with a
+seconds-hand sub-dial had no carrier to choose between, and D34 gives them the second one.
+§35's sweep table previously said `sector / orbital / skeleton / regulator — data-driven
+complication: the carrier IS the bank`. That row was never true of any dial: `compPlan3`
+maps a live comp to one WINDOW row, so every live comp on every dial baked as one plate;
+Skeleton's live `second`/`sunrise`/`sunset` are calendar text a window shows; Regulator's
+subdials are whole dials; Kite Tourbillon's seconds are an `IDX6` index a hand rotates
+through and the guard's own words call a keyframe bank in disguise — and it had no
+carriage row, so its tourbillon never turned. The table now reads **banks** for sector,
+orbital, kitetour and regulator, **stills** for aviator and station, and **refused** for
+the other ten.
+
+### D34: a theme-named pointer is a row, and the theme writes its own drive
+
+**Slice.** P6.3's fourth consumer. `docs/orb-clock3-complications.md` §6.2 and §8.1 name
+it: *"the right shape for a 78.5 px sub-dial seconds hand is one small sprite that moves,
+not sixty whole dials — and the class to carry it is a HAND or a newly-named pointer
+slot, not a BANK."* This is the pointer row.
+
+**Why the platform needed it.** The guard already ruled that an animation conveying a
+state rather than motion must be data-driven — `orb_compcalc.c`'s words, next to the
+sentence quoting Skeleton's 78.5 px small seconds at 3.8 MB and the rule that a bank over
+20 % of the art slot is "the wrong tool". So the platform had already refused the keyframe
+bank for a sub-dial hand, had built `CLK_KIND_FLARE` ("one sprite picked by value") for
+exactly that indication, and had shipped **no path to it**: `compPlan3` maps a live comp
+to one window row, names one alternative, and that alternative is the bank the guard
+calls the wrong tool. An author wanting a running seconds sub-dial either paid the number
+the guard quotes or pre-rendered the hand into the plate and lost the motion the
+indication is made of. The gap was not a missing nicety; it was the guard pointing at a
+tool the toolchain had not built.
+
+**A. An appended class, carrying its own drive.** `ORB_ASSET_AUX` / `CLASS_AUX` is **8**,
+appended at the top, and the only place a class may enter. A BANK row addressing comp 8
+in the 560×16 model would claim a slot no vocabulary names; an appended class names nine,
+and the ninth is a different kind of thing. Four columns arrive past D32's pair —
+`span i16`, `zero i16`, `value_min u16`, `value_max u16` — so the row is **23 words**
+where D32 wrote 19. D32 proved the append-only trick works (the shipped av kit's 17-word
+rows still read, because the stride is derived from the blob's geometry length and a
+column past the row's width reads zero) and D34 reuses it verbatim: `ELEMENT_WORDS_MIN`
+stays at 17, the stride gate becomes `[17, scalars + n_elem*23]`, and every bundle written
+before the carriage, the complications and the pointer still installs. 16 bytes a row is
+the honest price, against the 3.8 MB the guard quoted.
+
+**B. The motion IS the unit; no column claims the unit separately.**
+`CLK_MOTION_ROTATE 0 / RETROGRADE 1 / INDEXED 2` keep the ids `clk_aux_t.kind` always
+carried; `SLIDE_X 3 / SLIDE_Y 4` are the append that lets a pointer travel in pixels,
+which is what a power-reserve bar and a linear date scale need and no rotation of a
+sprite can imitate. On the three angles `span`/`zero` are tenths of a degree; on the two
+slides, pixels along the named axis. A separate unit column would be a second source of
+truth about the same byte, and the contradicting pair it would allow — an angle's span on
+a row whose unit says pixels — would arrive as a dial whose hands move at a fifth of
+their designed travel. One vocabulary, so a row cannot state a motion and a unit that
+disagree.
+
+**C. One arithmetic, read two ways.** `aux_travel()` holds
+`zero + value*span/value_max` **once**; `aux_angle_10()` adds the retrograde clamp and the
+turn wrap, `aux_offset_px()` adds neither. That is the entire difference between a
+rotation and a slide, and it is why a slide reuses every mark a rotation pays for: a slide
+enters the compositor as its sprite with `centerx`/`centery` displaced and `ang_10 = 0`,
+which takes `gfx_paint_ctx_init()`'s **static** path (its `rot` is false at a whole turn),
+so `gfx_swept_box`, the row marks and the per-role blend accounting are the ones every
+layer already uses and `main/gfx/` grows no mode. `host_comp_math_test` lifts both
+readings and scores 6353 vectors with 16/16 mutants caught — including two retrograde
+records whose zero already sits past their own span, the only shape that exercises the
+clamp. `--mutations` proved that: the clamp survived as dead code until those vectors
+existed. Clamping rather than bouncing is deliberate — `tm_mday` returns to 1 without ever
+passing 31, so clamping at the span *is* the mechanical reach-and-jump-home, with no state
+to carry.
+
+**D. What a row may not carry, and where each refusal lives.** One slot, one plate
+(`n_frames != 1` is a bank wearing an AUX label). Not `none` (a row that never moves is
+plate art written as a row), nor `text`/`value` (D32's refusals, inherited). `vmax` may
+not be 0: the bake divides by the domain, and a row whose domain cannot divide is not a
+pointer parked at its zero but a bug wearing a legal row. A rotation's pivot lies inside
+its own plate, the HAND rule inherited for the HAND reason. An angle's span stays inside
+one turn — **±3600, not the ±36000 a first draft wrote**: one turn is 3600 tenths and the
+column is an `i16`, so a 36000 bound is an arm that can never catch a limb, which
+`-Wtype-limits` said out loud on the first build. A slide's span and zero stay inside the
+panel. All of it is mirrored rule-for-rule in `theme_schema.check_element`, the baker's
+`checkElement`, and `orb_clock3.c`'s AUX projection, in the dial's own sentences.
+
+**E. No flag borrows a meaning the theme never wrote.** The projection sets
+`clk_aux_t.flags = 0`. `CLK_FLAG_JUMP/WRAP/24H` are a comp's flags and `scale16` is the
+comp maths' x16 fraction; reading either as a snap flag gives a row a behaviour no column
+claims. A pointer interpolates, and the flag rides the next ABI append when a theme asks
+for the stutter. Same discipline behind `aux_mark_box()` taking `a->kind`: inferring a
+slide from a zero pivot would silently reclassify every rotation that authors its plate
+with a corner pivot.
+
+**F. `ptr0..ptr7`, and not `subdial_seconds`.** The dial does not know what a pointer
+indicates, only that one row turns it; a name claiming the role would be a second source
+of truth about the art. `CLOCK_SLOT_DECLS` grows to 37, all 37 drawn.
+
+**G. The pair mirror refuses what the device accepts, and says which half is short.**
+`--from-bundle` refuses a pointer row: the compiled `.h` carries no pointer table, because
+the pair's aux array was FORMAT 2's and §26 retired the pair that filled it. The refusal
+names that asymmetry rather than borrow the BANK sentence and imply a pointer is a
+complication the mirror cannot map. `host_clock3_test` pins it *as a refusal with its own
+sentence*, so the slice that gives the pair a pointer table fails there and has to change
+the line on purpose.
+
+**H. The append moves NO ABI word.** `ORB_ASSET_CLASS_ABI` stays 2, FORMAT stays 3. An
+appended class is one a reader that predates it refuses at its own bound
+(`ORB_ASSET_CLASS_N` was 8, so class 8 is "not a class this build knows") and D26 makes
+that a refusal at the door rather than a silent skip. Bumping the ABI would have made
+every manifest already on every card uninstallable in order to draw a hand — the ratio
+D24's no-backward-path rule exists for. The word moves when a class is RENUMBERED or a
+column reappears with a new meaning, and not before.
+
+**Measured.** One masked plate: 5376 B for a 28×64 sub-dial seconds hand against the
+288000 B sixty 40×40 tiles would cost — over fifty times under on that geometry, and
+Skeleton's real 78.5 px small seconds measured 3.8 MB. The drive is 8 bytes of row.
+`host_clock3_test` 281, `host_comp_math_test` 6353 vectors / 16 mutants, `host_orb_bundle_c_test`
+333, `headless-bundle3` 145, `host_orbelems_test` 561, `theme_schema` self-test, firmware
+builds with no warning on a touched file. All six JS suites and every host suite green.
+
+**The fixture the gate caught, and why the green claim had been hollow.** `verify_js_bake`
+walks the committed pair fixture through the SHIPPED `orb_clock3.c` projection — the one
+check that holds the golden file against the door it must pass. It had been refusing for two
+commits: D32 slice 2's catalogue gate keeps only the plate row's own key frames opaque, and
+the fixture's hand plane was colour-only, then named twelve frames against a three-row
+catalogue, then the glass shared the plate's un-alpha'd plane. Each lie the new gate named,
+the fixture now tells the truth about: one masked hand plane, and the overlay glass a masked
+466×466 plane of its own. The suites stayed green through all of it — nothing but that one
+tool fed the committed bytes to the projection, so a hole opened the day the gate landed and
+closed only when this slice happened to reroute the tool. The suite battery's own rule
+rephrased: a fixture every reader walks but no projection does pins nothing.
+
+**Found by this slice's own sentinels.** Three checks had hard-coded the old row width or
+class count — the first-id-past-the-vocabulary vector, `orb_elems.c`'s `CLS_NAME` bound,
+and the two stride vectors in `host_orb_bundle_c_test`. Two of them were **passing for the
+wrong reason within hours of the append**: the boundary vector landed on the new legal
+class 8 and reported a catch it had not made. All three now derive the number from the
+schema or the enum. A boundary test pinned to a literal stops testing the boundary the day
+the boundary moves.
+
+**The composer's Drive control landed with the seam it writes through.** A seconds or hours
+subdial now carries a Drive field — `plates` (D33's window row, one baked dial per tick) or
+`pointer` (one masked hand plate the dial turns). The panel offers the field only on the
+scales whose hand closes its own turn, because the row's drive is one linear sweep: a date
+ring that stops 1/31 short of closing keeps the plates row and reads the refusal in the
+export note, in `pointerPlan3`'s words, not the panel's. `compPlan3` skips a
+pointer-driven subdial, so one comp never claims two rows. The bake path's `auxPass3`
+measures each plate the way the slice measures everything else: the dial is rendered twice
+at the zero pose, hand shown and hand hidden, and the diff of the two renders IS the hand —
+shadow, anti-aliasing and all — so the plate is the pixels the value moves and not a box
+invented around it. The pivot is the engine's own layout centre for the subdial
+(`face().outline`), the exact point its hand turns about, and the box grows to include it
+because the device refuses a rotation whose pivot lies off its plate. Hosted live comps
+punch their apertures into the hand, so the pointer sweeps UNDER a date window the way a
+host tile in the plate table already punches under its row. `splitPolicy3` bills the
+pointer plates against the bank budget before a single keyframe is promised — three
+whole-panel plates take three keyframes away, and the suite pins exactly that. Engine
+seam: `compose`/`drawHands` grew a `noHands` id list so the pointer's hand never bakes
+into another row's tile. The plate walk needed nothing: it renders with the hand pass
+already off.
+
+**Glass findings, first dial ever baked through the JS export (orb-B, 2026-10-21).** The
+seconds pointer animated live (two grabs one minute apart: subdial hand at 19 s then 57 s),
+and the pre-D34 firmware refused the same bundle whole — blank dial, not a half-drawn one —
+which proves the append-only ABI from the other side of the glass. Two defects came back
+with it, both mine, both invisible to every suite:
+
+1. **The order table's `+1` lost the hour hand.** The export wrote `order: slot + 1` —
+   FORMAT 2's show-table dialect — while `clock_view` draws `order[i]` verbatim as the hand
+   slot id, exactly as `bake_clock.py` has always written it. The watch drew minute (hour+1
+   aliases onto it), skipped the empty slot, and never painted hour. `bake3-test` agreed
+   with the export because it computed the expectation the same wrong way: the shared
+   misreading the av-kit bench rule warns about, one more time, one door short of glass.
+   The fix is the raw slot id, and the lie now dies at both doors: `bakeClock3` refuses a
+   seated hand its order table omits, and `orb_clock3_parse` refuses the same dial at the
+   projection — the pair to §25's shadow-without-its-hand. The committed fixture seat a
+   hand with `order_n 0`: projection-illegal while wire-legal, so it now names its hand.
+2. **A bake pressed while the movement was rebuilding shipped a silent still.**
+   `buildMovement` sets `gt.length = B` when frame 0 lands and fills the rest across
+   awaited ticks; the settle guard checked the length, not the holes. The walk read
+   frames `undefined` as canvases, saw zero diff, and the policy's shimmer band said
+   `still` — the file downloaded with `bg_frames 0` and the status line's one quiet
+   sentence. The preview loop (line 901) had been dodging this exact race for a month.
+   The guard now demands: not rendering, `B === this.B`, and no hole in `gt`. Measured
+   after the fix, the same Skeleton dials into `bank — 8 of 8 frames at 4 fps,
+   3 474 496 B`: union 48 770 px, two hundred times the band, by the browser's own pixels.
 

@@ -497,10 +497,15 @@ def mirror_checks():
     src = open(Elems_C).read()
     hdr = open(os.path.join(ROOT, "main", "art", "orb_elems.h")).read()
 
-    names = re.search(r"CLS_NAME\[8\] = \{(.*?)\};", src, re.S)
+    # The bound is read, not assumed: the day the vocabulary grows the mirror's own
+    # size is part of what must agree, and a literal 8 here would have made D34's
+    # append look like a broken mirror rather than a wider one.
+    names = re.search(r"CLS_NAME\[(\d+)\] = \{(.*?)\};", src, re.S)
     check(names is not None, "orb_elems.c still carries its CLS_NAME mirror")
     if names:
-        eq(re.findall(r'"([^"]+)"', names.group(1)), list(ts.CLASS_NAMES),
+        eq(int(names.group(1)), len(ts.CLASS_NAMES),
+           "orb_elems.c's CLS_NAME is sized to theme_schema.CLASS_NAMES")
+        eq(re.findall(r'"([^"]+)"', names.group(2)), list(ts.CLASS_NAMES),
            "orb_elems.c's class names are theme_schema.CLASS_NAMES, in order")
 
     for cname, cval in (("EF_ALPHA", ts.EF_ALPHA), ("EF_LOOP", ts.EF_LOOP),

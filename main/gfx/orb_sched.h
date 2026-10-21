@@ -144,6 +144,24 @@ void orb_sched_reset_fps(void);
  * period, holding *every ticks per frame. */
 uint32_t orb_sched_tick_base_ms(void);
 uint32_t orb_sched_bg_rate(uint32_t base, uint32_t *every);
+
+/* ---- the rung pick (P8.1, D16/D32) ----------------------------------------
+ *
+ * The OS owns ONE flush cadence; every live element rides on top of it. An
+ * element constrained to a fixed beat (a hand at 4 fps, a plate bank at bg_fps)
+ * must land on the cadence WITHOUT aliasing: at a 4 fps ask the stack can flush
+ * at 4, 8, or 12 fps and evenly distribute the redraws, but 15 fps would make
+ * the hand advance 3.75 frames a tick and jitter. An element with no fixed beat
+ * (period 0, "as fast as the glass goes") imposes no divisor and just rides the
+ * floor. The pick is therefore the highest achieved flush rate <= the measured
+ * floor that is a common multiple of every constrained element's ask, so no
+ * constrained element aliases; if the floor admits none, it falls back to the
+ * set's floor (the slowest constrained ask). `floor_fps` is the delivered figure
+ * this build measured for the bank on the glass (docs §33), never the ask.
+ *
+ * Pure and host-mirrored (tools/host_sched_rung_test.py); it reads no globals so
+ * it is testable without the dial, and a rung that cannot fire gets deleted. */
+uint32_t orb_sched_pick_rung(const uint16_t *asks, unsigned n, uint32_t floor_fps);
 /* The synthetic ink the DISPLAY_BENCH paint pass blended, so the report can
  * prove the ink it booked really reached the glass. */
 void orb_sched_ink_px_add(uint32_t n);

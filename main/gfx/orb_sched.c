@@ -373,6 +373,43 @@ uint32_t orb_sched_bg_rate(uint32_t base, uint32_t *every)
     return per;
 }
 
+/* P8.1's rung pick. LCM-based and pure — see the header comment for the
+ * no-alias rule and the floor. `asks` are per-element constrained rates in fps;
+ * a 0 entry is a free/max element that imposes no divisor. Returns the flush fps
+ * the OS should aim at, or floor_fps when nothing constrains the beat. */
+static uint32_t rung_gcd(uint32_t a, uint32_t b)
+{
+    while (b) { uint32_t t = a % b; a = b; b = t; }
+    return a;
+}
+
+uint32_t orb_sched_pick_rung(const uint16_t *asks, unsigned n, uint32_t floor_fps)
+{
+    if (floor_fps == 0) floor_fps = 1;
+    uint32_t lcm = 1;        /* the divisor every constrained ask must divide into */
+    int any  = 0;            /* did any element name a fixed beat? */
+    uint16_t slowest = 0;    /* the set's floor: the slowest constrained ask */
+    for (unsigned i = 0; i < n; i++) {
+        uint16_t a = asks[i];
+        if (a == 0) continue;                /* free/max: rides the floor */
+        any = 1;
+        if (slowest == 0 || a < slowest) slowest = a;
+        uint32_t g = rung_gcd(lcm, a);
+        uint32_t l = lcm / g * a;
+        if (l == 0 || l > 1000) return slowest;   /* LCM past the panel range: no
+                                                   * even rung exists; run at the
+                                                   * set's floor (slowest ask) */
+        lcm = l;
+    }
+    if (!any) return floor_fps;              /* nothing constrained: go as fast as
+                                              * the glass goes */
+    /* Highest common multiple of lcm not above the measured floor. If the floor
+     * cannot even hold one lcm cycle, the set aliases at any rate the panel can
+     * commit, so the honest answer is the set's floor itself. */
+    if (lcm > floor_fps) return slowest;
+    return (floor_fps / lcm) * lcm;
+}
+
 /* Per-second throughput report while the clock is live: how many composited
  * ticks we actually got, and what the flush path booked for the flushes they
  * produced (display_bench_snapshot counts every last-chunk DMA completion). */

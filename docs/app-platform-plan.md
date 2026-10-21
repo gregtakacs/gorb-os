@@ -712,7 +712,7 @@ The shell's discipline is right and stays: the armed/unarmed two-level gate, the
 | P6 | **rewritten (D21/D24/D29):** `.orbtheme` FORMAT 3, the theme as a multi-app bundle. The app-to-slot binding map, the 0x3F0000 budget gate at both bake and install, several bundles listed on the card, the flip-on-orb over them (D30 ruled §20: default-first lazy copy into the PSRAM arena and the ping-pong slot in one fused card pass, progress bar on the glass, no reboot, Arm A kept only as the arena-full fallback), and the retirement of the clock's FORMAT 2 dialect. The compiled-in `clock_assets` pair stays the card-less fallback, and `bake_clock.py` gains the reverse path §0.2 still owes. **Design draft in §22, rewritten in part by D32 (§23): the per-app section carries a legible ELEMENT TABLE, not an opaque blob. R1–R7 are all ruled or consumed (§23.6, §24). P6.1–P6.3 landed: the format and the gate at both doors, the refill with its timing figure, the `staged` word, and the streaming ingest under a parity family (§24.6). P6.4 landed and benched 2026-10-19 (§24.8, §24.9) — the flip door, its worker, the scan's bundle row, and the store half of the page, with M6(1)'s streaming rate (4398 ms at av-kit size) and M6(3)'s bundle-half cut proven on orb-A. **P6.5 CLOSED 2026-10-20: all four owed items are PAID — §25.5(1) the bundle→pair reverse path, §25.5(2) the FORMAT 3 device reader, §25.5(3) the FORMAT 2 retirement (`7c0fd4b`, §27), §25.5(4) `mut_rebake.py`. The FORMAT 2 dialect is out of the firmware reader and writer; the door is FORMAT 3-only. P6 is DONE.** The rate ladder and the picker sit in P8 (§23.5)** | the shipped av-kit source kit re-bakes to a FORMAT 3 bundle that boots, a FORMAT 2 file is refused at the format gate with no fallback reader, and a card-less board still tells the time |
 | P6b | **new (D28):** orb-manager's theme and app manager. Bundle editor over the firmware resolver's format, preview rendered from the manifest's asset table at real scale, the budget meter, upload of app files and bundles, and release packaging of the cross-product | an editor-built bundle installs on the first try, and the preview's pixels match the dial's at the same coordinates |
 | P7 | **promoted from optional (D20/D3):** the wasm3 tier over the same `orb_svc_t`, the module carried in the container's `code` range, and `wasm_mem_max` gated at install (D27) | a wasm app that traps twice is marked failed and the dial boots to the clock, exactly as C2 already specifies for a faulting compiled app |
-| P8 | **new (D32, split ruled 2026-10-15; numbered P8 because P7 is the wasm3 tier):** the OS schedules the repaint. The manifest carries an explicit rate SET (R7) and the app names a runtime ask; the OS picks the highest achievable rung not faster than the ask, else the set's floor, re-picks dynamically under a hysteresis rule, and drives per-element repaints through `layer_touch`'s damage rects. R6's advance mode becomes a compositor behaviour. **Its first commit is D16's beat delivery** — the machinery §0.6 deferred for want of a consumer, which D32 finally supplies. | a two-app board where each stack holds its rung while the other is parked, a measured rung-vs-rows table replacing §13.4's single 8 fps ceiling, no flicker across a rung boundary over a 60 s sample, and the dial's own hands unaffected while a second app is scheduled |
+| P8 | **new (D32, split ruled 2026-10-15; numbered P8 because P7 is the wasm3 tier):** the OS schedules the repaint. The manifest carries an explicit rate SET (R7) and the app names a runtime ask; the OS picks the highest achievable rung not faster than the ask, else the set's floor, re-picks dynamically under a hysteresis rule, and drives per-element repaints through `layer_touch`'s damage rects. R6's advance mode becomes a compositor behaviour. **Its first commit is D16's beat delivery** — the machinery §0.6 deferred for want of a consumer, which D32 finally supplies. | a two-app board where each stack holds its rung while the other is parked, a measured rung-vs-rows table replacing §10's single 8 fps ceiling, no flicker across a rung boundary over a 60 s sample, and the dial's own hands unaffected while a second app is scheduled |
 | Shelve | the three-slot `assets` re-slice, the per-app bank claim, D18's art-banking installer path, `apps/clock/` directory split | void under D20/D21 — do not build these |
 
 ## 9. Resolved, and what is still genuinely open
@@ -2807,7 +2807,7 @@ wording** — this section is the mulling, not the amendment.
 | A depth map the OS paints in order | the theme's `order0..4`+`order_n` scalars, the LAYER class, and 8 layer rows per app (`orb_layers.h:48-74`, `ORB_LAYER_MAX 8`) | one order column per element row, replacing a 5-slot scalar. |
 | The app saying where and when | `layer_add`/`layer_set`/`layer_touch`/`layer_del` (`orb_svc.h:146-149`), with `ang_10`, `show`, `blend` and fallback styling in the descriptor | **unchanged** — this half is already the app's, and is the half the ruling leaves alone. |
 | Per-element invalidation, so a rate ladder can be cheap | `layer_touch(app, h, area)` takes a damage rect | already there. A ladder is mechanically feasible on day one. |
-| The cost model the pick reads | the measured `flush_ms = -33.2 + 215.1 µs/row + 648 ns/real-layer-blend + 95 ns/synthetic-blend`, plus per-role blend counts (`CLK_PAINT_ROLES 8`) | reused as the pick's input. Rows are the driver — §13.4 proved it — so the pick must count rows, not elements. |
+| The cost model the pick reads | the measured `flush_ms = -33.2 + 215.1 µs/row + 648 ns/real-layer-blend + 95 ns/synthetic-blend`, plus per-role blend counts (`CLK_PAINT_ROLES 8`) | reused as the pick's input. Rows are the driver — §5 proved it — so the pick must count rows, not elements. |
 
 **Genuinely new, after that table:** the declared rate *set* (today's manifest carries one
 `period_ms`, the fastest beat), and the OS re-picking it dynamically. Everything else the
@@ -2853,7 +2853,7 @@ before it, so a row is never half-edited.
   3000 ms) becomes a declared **set** of acceptable rates. The 3000 ms floor was priced
   against a *whole-dial* commit pass measured at 185 ms; a ladder that repaints one
   element's damage rect is a different measurement, so the floor gets **re-measured, not
-  re-argued** — D9's lesson that the model is not the measurement. §13.4's 8 fps ceiling
+  re-argued** — D9's lesson that the model is not the measurement. §10's 8 fps ceiling
   for the current carriage is the honest starting number: 12 and 15 fps are only
   affordable on stacks thin enough to touch fewer rows.
 - **§1.2b's asset-table seam** moves with D23. The sentence §23.4 first quoted as "the
@@ -2966,7 +2966,7 @@ consents to is the whole reachable range and not one number.
 
 **The set's floor and D16's floor disagree, and that is a measurement P8 takes.** D16's
 3000 ms floor was priced against a whole-dial commit pass at 185 ms; a 12 fps rung is
-83 ms, which the shipped carriage cannot flush at all (§13.4: mean flush 138 ms, and the
+83 ms, which the shipped carriage cannot flush at all (§5: mean flush 138 ms, and the
 carriage alone force-marks ~255 rows). So 12 and 15 fps are reachable only on thin stacks
 or on repaints that stay inside a damage rect — and the row-counting pick at §23.2 is what
 decides, on the bench, which stacks qualify.
@@ -5238,4 +5238,86 @@ the at-cap refill (item 4) does not exist to measure at these settings; the comm
 caller (item 1) has no consumer until P7 puts one there, and P8 is where the hook itself
 changes.
 
+
+**Not done, and why:** the flip's glass half (item 3) needs the three rulings named there;
+the at-cap refill (item 4) does not exist to measure at these settings; the commit-hook
+caller (item 1) has no consumer until P7 puts one there, and P8 is where the hook itself
+changes.
+
+
+## 33 — P8.1: the harmonic rung pick, measured against the flush floor — 2026-10-21
+
+§8's P8 row promised "a measured rung-vs-rows table replacing §10's single 8 fps ceiling."
+That table is here. It measures delivered fps across animated plate-bank sizes on orb-B,
+lands the per-stack selector `orb_sched_pick_rung()`, and states the requested-vs-delivered
+gap per rung. §13.4 was a wrong pointer in §8 and three §23 lines; it is D12 menu nesting.
+The 8 fps figure lives in §10, and the flush cost model in §5. All four pointers corrected.
+
+### 33.1 The pick rule, and why LCM not max-min
+
+`orb_sched_pick_rung(asks, n, floor_fps)` is pure and lives in `main/gfx/orb_sched.c`. It
+reads the constrained per-element asks (fps); a `0` entry is a free/max element that imposes
+no divisor. The rule is the highest clean multiple of every constrained ask that fits at or
+under the measured flush floor.
+
+It is LCM-based, not max-min. Two elements asking 4 fps and 6 fps force a flush at their LCM,
+12, or a multiple: 12, 24, 36. A flush at 15 aliases both — the 4 fps hand advances 3.75 ticks
+per frame, the 6 fps hand advances 2.5. So a 4 fps ask at floor 15 picks 12, not 15. The floor
+is the panel's commit ceiling; the ask is what the art wants; the pick is the rung between them.
+
+Three gates, each pinned by a vector and a mutant in `tools/host_sched_rung_test.py` (19
+vectors, lint clean, 6/6 mutants caught):
+- Free elements only (`asks` all zero): run at the floor. The panel is the only limit.
+- LCM exceeds the floor: run at the set's own floor (the slowest ask), because no even rung
+  exists and the set aliases at any rate the panel commits.
+- LCM overflows the 1..1000 range: same fallback. The cap is an overflow guard, not a policy.
+
+### 33.2 Delivered-fps table (orb-B, rssi ≈ -75, serial `clock N fps` line)
+
+| rung (keyframes) | bank art | ask (bg_fps) | delivered min/med/max | flush | motion | source |
+|---|---|---|---|---|---|---|
+| N=1 (still) | — | — | refused at bake | — | — | projection bound 2..16 |
+| N=2 (full panel) | 1,607,875 B | 16 | **5 / 5 / 5** | panel-bound | glass-diff 3.78% | `bench_rung_table.sh` sweep |
+| N=4 (full panel) | 2,476,499 B | 16 | **3 / 5 / 5** | 227 ms / 500% page | confirmed | boot `plate bank: 4 keyframes @ 16 fps, loop` |
+| N=4 (d31-anim, on-card) | resident | 8 | **7 / 8 / 8** | — | confirmed | §8 validate loop (already installed) |
+| N=8 | 4,213,747 B | 16 | **REFUSED** | — | — | +84,979 B past D29's 4,128,768 B cap |
+| N=16 | 7,688,243 B | 16 | **REFUSED** | — | — | +3,559,475 B past cap, and §32's contiguous-free limit |
+
+The requested-vs-delivered gap is the finding. At ask 16 the glass delivers 5. The `clock N
+fps` line is a composite stack cadence, not a per-element count; per-element attribution needs
+the D31 damage route (a later P8 commit).
+
+### 33.3 Why bank size does not move the floor
+
+The full-panel plate invalidates all 466 rows on every keyframe advance, so the flush floor is
+panel-bound, not bank-size-bound. N=2 (1.61 MB) and N=4 (2.48 MB) both deliver 5 at ask 16, and
+the rung-04 boot line reads `flush avg 227 ms ... 500% page`. Resident bytes change; the flush
+ms/row cost does not. A larger bank buys more distinct frames, not a faster beat. Only a
+thinner element set (fewer marked rows) or a repaint inside a damage rect lifts the floor toward
+the 12/15 fps §23.7 prices — and that is per-element damage, which is what the pick aims to
+schedule next.
+
+### 33.4 Build and refusal accounting
+
+`orb_sched_pick_rung()` compiled into its object at `-O2`; the xtensa `nm` shows `T
+orb_sched_pick_rung` in `orb_sched.c.obj`. No production caller wires it yet (the commit-hook
+consumer is P7's, per §32 item 1), so `--gc-sections` drops it from the linked image: the
+shipped binary holds at **`0x184ac0`, delta 0 against baseline**. The rule is reachable through
+`host_sched_rung_test.py`'s mirror today and through the scheduler tick when P8.2 installs the
+caller.
+
+N=8 and N=16 are refusals, not measurements. The generator (`tools/bench_rung_table.py`)
+computes the bank ask and refuses before a byte is written, the §32 idiom. N=8 trips D29's art
+region by 84,979 B; N=16 by 3,559,475 B and §32's contiguous-PSRAM-free limit. Neither is
+measurable on current silicon at these settings.
+
+### 33.5 What this retires and what it hands off
+
+§10's single 8 fps ceiling is superseded for animated banks by this table: the ceiling is a
+function of marked rows and the flush ms/row constant (§5), not a magic number. `disclosure()`
+(`tools/orbapp.py:275`) and `bake_clock.py`'s bake-time `@ F fps` already state an ask, and the
+disclosure already says the beat "may only slow from here" — both agree with delivered ≤ ask, so
+neither needed a code change. The open items P8 owes next: the commit-hook caller that gives the
+pick a consumer, and the D31 per-element damage route that lets the table attribute fps to one
+element rather than to the composite stack.
 

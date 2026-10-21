@@ -37,6 +37,13 @@ static const char *TAG = "main";
 static void lvgl_task(void *arg)
 {
     while (1) {
+        /* Brightness writes the idle-dim task decided are issued here, on the
+         * same task as the frame flush, before this iteration touches the panel.
+         * The last flush fully retired when the previous lv_timer_handler()
+         * returned, so no transaction is in flight to split -- the placement the
+         * idle task cannot guarantee at its own priority. No-op when it posted
+         * nothing; its decision latency does not depend on this running. */
+        idle_dim_render_drain();
         uint32_t sleep_ms = lv_timer_handler();
         if (sleep_ms > 50) sleep_ms = 50;
         if (sleep_ms < 5) sleep_ms = 5;

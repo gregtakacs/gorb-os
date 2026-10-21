@@ -653,6 +653,88 @@ LINT_MUTATIONS = [
 ]
 
 
+# ---- the lint that keeps the brightness write OFF the writer task -------------
+#
+# The freeze this file exists to fix was not a failed transaction: it was a
+# correctly-succeeding QSPI write issued from the priority-6 idle task, landing
+# inside the priority-5 renderer's draw_bitmap and leaving the flush never
+# re-armed -- writes_failed stayed 0, the clock froze. The fix moves ONLY the
+# write to the render task (the one task that can touch the bus while not racing
+# itself); the decision to change the level stays on the idle task. That split is
+# invisible to the vectors above (they pin the predicates, not the call site's
+# placement), and it is one well-intentioned refactor to undo -- putting the write
+# back in apply_level "because that's where the percent already is". So the
+# shipping file's own text is checked: the driver call appears at exactly one
+# site, inside idle_dim_render_drain; apply_level neither issues it nor skips the
+# handoff; and the idle task still routes through apply_level (checked by the
+# lint above). Regress it and this lint dies, exactly as the predicate lint does.
+BRIGHT_WRITE_RE = re.compile(r"esp_lcd_panel_co5300_set_brightness\s*\(")
+
+
+def _fn_region(text, header_re, what):
+    m = re.search(header_re, text, re.M)
+    if not m:
+        raise SystemExit("%s not found in %s -- the lint has nothing to check, "
+                         "which means it silently stopped working" % (what, SRC))
+    tail = text[m.end():]
+    end = re.search(r"^\}", tail, re.M)
+    if not end:
+        raise SystemExit("%s never closes in %s" % (what, SRC))
+    return tail[:end.end()]
+
+
+def lint_write_on_render_task(mutations=()):
+    """True when the brightness write is issued only on the render task."""
+    text = open(SRC).read()
+    for old, new in mutations:
+        text = text.replace(old, new)
+    sites = BRIGHT_WRITE_RE.findall(text)
+    if len(sites) != 1:
+        print("FAIL  the panel brightness write appears %d time(s), not exactly "
+              "one -- more than one caller means a task can split a frame flush "
+              "and freeze the clock, the exact bug this fix moved the write away "
+              "from" % len(sites))
+        return False
+    drain = _fn_region(text, r"^void idle_dim_render_drain\(void\)",
+                       "idle_dim_render_drain")
+    apply = _fn_region(text, r"^static bool apply_level\(uint8_t percent, const "
+                            r"char \*why\)", "apply_level")
+    if not BRIGHT_WRITE_RE.search(drain):
+        print("FAIL  idle_dim_render_drain no longer performs the brightness "
+              "write -- the single call site is somewhere off the render task, "
+              "which is where it froze the dial")
+        return False
+    if BRIGHT_WRITE_RE.search(apply):
+        print("FAIL  apply_level issues the brightness write itself -- back on "
+              "the high-priority idle task, inside the flush, is the frozen dial")
+        return False
+    if "s_lvl_pending = true" not in apply:
+        print("FAIL  apply_level never posts a pending request -- the decision "
+              "never reaches the render task, so the face never changes level")
+        return False
+    if "xSemaphoreTake(s_lvl_ack" not in apply:
+        print("FAIL  apply_level does not wait on the ack -- it would believe an "
+              "intent, not the panel's answer, and a lost write stops being "
+              "retried")
+        return False
+    return True
+
+
+# The regressions this lint must catch, spelled against the shipped text.
+LINT_WRITE_MUTATIONS = [
+    # (a) the write walks back into apply_level, i.e. onto the idle task: the bug.
+    ("    s_lvl_target  = percent;",
+     "    s_lvl_target  = percent;\n"
+     "    esp_lcd_panel_co5300_set_brightness(display_get_panel(), percent);"),
+    # (b) apply_level stops handing off, so the render task is never asked.
+    ("    s_lvl_pending = true;", "    /* no handoff */;"),
+    # (c) the render drain performs no write, so the level never lands at all.
+    ("    s_lvl_result = panel ? esp_lcd_panel_co5300_set_brightness(panel, percent)\n"
+     "                         : ESP_ERR_INVALID_STATE;",
+     "    s_lvl_result = ESP_OK; (void)panel;"),
+]
+
+
 def run_cfg(elapsed_vectors, clamp_vectors, mutations=()):
     """Compile both new decisions in one host binary and replay every case.
 
@@ -830,9 +912,18 @@ def main():
             else:
                 survivors += 1
                 print("FAIL  lint mutant SURVIVED: %s" % mut[0][:50])
+        for mut in LINT_WRITE_MUTATIONS:
+            # The regression here is placement, not logic: the brightness write
+            # back on the writer task, the frozen-dial bug this fix exists for.
+            if not lint_write_on_render_task(mutations=[mut]):
+                print("ok    write-placement mutant caught: %s" % mut[0][:50])
+            else:
+                survivors += 1
+                print("FAIL  write-placement mutant SURVIVED: %s" % mut[0][:50])
         total = (len(MUTATIONS) + len(WAKE_MUTATIONS)
                  + len(ELAPSED_MUTATIONS) + len(CLAMP_MUTATIONS)
                  + len(LEVEL_MUTATIONS) + len(LINT_MUTATIONS)
+                 + len(LINT_WRITE_MUTATIONS)
                  + len(APP_MUTATIONS))
         ok(survivors == 0, "%d mutants, %d survived" % (total, survivors))
     else:
@@ -857,6 +948,10 @@ def main():
         ok(lint_task_commits(),
            "idle_task commits the dimmed state only through "
            "idle_dim_level_apply_decide, and only after apply_level answers")
+        ok(lint_write_on_render_task(),
+           "the brightness write is issued only inside idle_dim_render_drain "
+           "(the render task), never by apply_level on the high-priority idle "
+           "task -- the placement that froze the dial")
 
     print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED" % len(FAILS)))
     for f in FAILS:

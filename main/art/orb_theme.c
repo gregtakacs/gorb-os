@@ -1111,6 +1111,10 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
              h->name, (unsigned)io.out_n_comps, io.out_n_comps == 1 ? "" : "s",
              (unsigned)s_theme.tourbillon_n, (unsigned)s_theme.tourbillon_fps,
              (unsigned)s_theme.tourbillon_start);
+    if (s_theme.bg_frames)                      /* §31: an animated plate says so */
+        ESP_LOGI(TAG, "plate bank: %u keyframes @ %u fps, %s",
+                 (unsigned)s_theme.bg_frames + 1u, (unsigned)s_theme.bg_fps,
+                 s_theme.bg_loop ? "loop" : "one-shot");
 
     strlcpy(s_geo.name, h->name, sizeof(s_geo.name));
     strlcpy(s_active_name, h->name, sizeof(s_active_name));

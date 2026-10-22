@@ -50,21 +50,41 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
     v->cfg_worst = 0;
     v->why[0] = '\0';
 
-    /* Gate 1 — the manifest+geometry prefix the slot must hold. The blob copied
-     * into a slot is the container's bytes [0, geom_end): header, the settings
-     * table the reader unpacked, and the geometry the app draws from. Since D21
-     * (§0.9) that prefix is the WHOLE payload — the reader refuses any container
-     * with art bytes before this gate is ever consulted, so no art term enters
-     * the slot arithmetic. geom_off+geom_size is therefore the whole thing
-     * that has to fit APPS_SLOT_GEOM_CAP; the reader already capped geom_size at
-     * ORBAPP_GEOM_BYTES_MAX, so this fires only if that cap and the slot geometry
-     * drift apart. == cap is ACCEPTED: the last word before the header sector. */
-    const uint64_t blob = (uint64_t)h->geom_off + h->geom_size;
+    /* Gate 1 — the manifest+geometry+code prefix the slot must hold. The blob
+     * copied into a slot is the container's bytes [0, region_end): header, the
+     * settings table the reader unpacked, the geometry the app draws from, and —
+     * since P7 — the wasm code region that rides the sector-aligned slot art's
+     * payload vacated. D27 is that "a module that cannot fit never writes a byte of
+     * flash", so the code region enters this arithmetic and an oversized module is
+     * refused before the erase, not after a slot is spent. Since D21 (§0.9) no art
+     * term enters: the reader refuses any container with art bytes before here. The
+     * reader already capped code_size at ORBAPP_CODE_BYTES_MAX, so the max() term
+     * fires only if that cap and the slot geometry drift apart. == cap is ACCEPTED:
+     * the last word before the header sector. */
+    uint64_t blob = (uint64_t)h->geom_off + h->geom_size;
+    if (h->code_size) {
+        const uint64_t code_end = (uint64_t)h->code_off + h->code_size;
+        if (code_end > blob)
+            blob = code_end;
+    }
     if (blob > (uint64_t)APPS_SLOT_GEOM_CAP) {
         snprintf(v->why, sizeof v->why,
-                 "its manifest and geometry are %llu B: a slot holds %u B —"
+                 "its manifest, geometry and code are %llu B: a slot holds %u B —"
                  " re-bake the app smaller",
                  (unsigned long long)blob, (unsigned)APPS_SLOT_GEOM_CAP);
+        return false;
+    }
+
+    /* Gate 1b — D27's memory ceiling, enforced off the board's real budget before
+     * the erase. The reader already refused a bound past ORBAPP_WASM_MEM_MAX, so
+     * this is the defensive twin the host suite drives: a code-bearing app whose
+     * declared linear memory this build cannot allocate never gets a slot to try,
+     * and the refusal names the ceiling so the owner can act on it. */
+    if (h->wasm_mem_max > (uint32_t)ORBAPP_WASM_MEM_MAX) {
+        snprintf(v->why, sizeof v->why,
+                 "declares a %u B wasm memory bound past the %u B this build gates "
+                 "at (D27) — re-package it smaller",
+                 (unsigned)h->wasm_mem_max, (unsigned)ORBAPP_WASM_MEM_MAX);
         return false;
     }
 
@@ -308,6 +328,29 @@ static const char *verify_payload(int fd, const orbapp_hdr_t *h)
     }
     if (crc != h->geom_crc)
         return "the geometry does not match its checksum — re-copy the file onto the card";
+
+    /* P7 (D20/D27): the code region is a second payload, copied into the slot by
+     * copy_prefix just as the geometry is, so it gets the same OFF-CARD checksum
+     * before the erase — a module that would arrive corrupt on the dial must be
+     * refused here and never cost a slot. D27's promise is that a module which
+     * cannot fit or cannot trust its own bytes "never writes a byte of flash", and
+     * the geometry's crc32 is checked exactly this way; the code's is now its twin.
+     * A native app has code_size 0 and skips this whole block, so the pre-P7 verify
+     * is byte-for-byte what it was. */
+    if (h->code_size) {
+        crc = 0;
+        pos = h->code_off;
+        left = h->code_size;
+        while (left) {
+            const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
+            if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want)
+                return "the file is shorter than its code claims — re-copy it";
+            crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
+            left -= want;
+        }
+        if (crc != h->code_crc)
+            return "the code does not match its checksum — re-copy the file onto the card";
+    }
     return NULL;
 }
 
@@ -434,7 +477,14 @@ static esp_err_t copy_prefix(const esp_partition_t *p, int fd, const orbapp_hdr_
     if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
 
     const uint32_t base = slot_base(slot);
-    const uint32_t blob = h->geom_off + h->geom_size;
+    /* P7: the copied prefix is the geometry's end OR the code region's end, the
+     * same max install_decide priced the slot against. A native app has code_size 0
+     * and this stays geom_end — the pre-P7 copy is byte-identical. A module-bearing
+     * app gets its code bytes into the slot too, so the header's code triple points
+     * at bytes that are actually there (the integrity P7.2's loader will trust). */
+    uint32_t blob = h->geom_off + h->geom_size;
+    if (h->code_size && (h->code_off + h->code_size) > blob)
+        blob = h->code_off + h->code_size;
     const uint32_t blob_align = (blob + APPS_SECTOR - 1) & ~(uint32_t)(APPS_SECTOR - 1);
     if (blob > (uint32_t)APPS_SLOT_GEOM_CAP) { *why = "the app is larger than a slot"; return ESP_ERR_INVALID_SIZE; }
 

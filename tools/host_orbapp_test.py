@@ -517,6 +517,55 @@ check("and a blob measured against the MOVED boundary is accepted at == cap",
                         settings=[dict(id="mode", type="enum", min=0, max=3, default=1)],
                         geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b - _set_b))
       == A.GEOM_BYTES_MAX, "file is not the cap")
+# ---- P7 (D20/D27): the code region and its memory bound ----------------------
+_MOD = b"\x00asm\x01\x00\x00\x00" + b"\x11" * 100   # a tiny well-formed module header
+# Positive control: a native app (no code, no bound) still writes at the pre-P7 size,
+# so the four new header words cost a no-code container nothing but the header.
+check("a native container still round-trips with a zero code triple",
+      (lambda: (A.write_container(os.path.join(D, "nat.orbapp"), "nat", "Nat"),
+                A.read_container(os.path.join(D, "nat.orbapp"))[0]["code_size"] == 0))())
+# Positive control: a module-bearing container round-trips its bytes and its bound.
+def _code_roundtrip():
+    p = os.path.join(D, "wasmapp.orbapp")
+    A.write_container(p, "wasmapp", "WasmApp", code=_MOD, wasm_mem_max=65536)
+    h, _st, _geom, _art = A.read_container(p)
+    return h["code_size"] == len(_MOD) and h["wasm_mem_max"] == 65536 and h["code"] == _MOD
+check("a code region round-trips its bytes, size and D27 bound", _code_roundtrip())
+# D27's ceiling is the refusal the P7 pass line names ("install refuses > 128 KB").
+expect_refuse("a wasm memory bound past the D27 ceiling is refused at pack",
+              lambda: A.write_container(os.path.join(D, "big.orbapp"), "big", "Big",
+                                        code=_MOD, wasm_mem_max=A.WASM_MEM_MAX + 1),
+              wants="past the")
+# A module with no bound is no bounded module: the gate has nothing to hold.
+expect_refuse("a code region with a zero memory bound is refused",
+              lambda: A.write_container(os.path.join(D, "zm.orbapp"), "zm", "ZM",
+                                        code=_MOD, wasm_mem_max=0),
+              wants="zero memory")
+# A bound with no module bills a runtime the reader never populates.
+expect_refuse("a memory bound with no code behind it is refused",
+              lambda: A.write_container(os.path.join(D, "mc.orbapp"), "mc", "MC",
+                                        code=b"", wasm_mem_max=65536),
+              wants="no code")
+# The module is priced in flash: past a slot's payload it cannot be copied, so pack
+# refuses (D27's "a module that cannot fit never writes a byte of flash").
+expect_refuse("a code region past the slot budget is refused",
+              lambda: A.write_container(
+                  os.path.join(D, "ov.orbapp"), "ov", "OV",
+                  code=b"\x00asm\x01\x00\x00\x00" + b"\x00" * A.CODE_BYTES_MAX,
+                  wasm_mem_max=65536),
+              wants="past the")
+# A code region that would push the whole copied prefix past the slot is refused by
+# the same sum arithmetic the geometry uses — code rides the slot's payload region.
+expect_refuse("code after a full-ceiling geometry is refused (the SUM rule)",
+              lambda: A.write_container(
+                  os.path.join(D, "ov2.orbapp"), "ov2", "OV2",
+                  geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b),
+                  code=_MOD, wasm_mem_max=65536),
+              wants="a slot holds")
+# The code region is opaque bytes: an unaligned length is legal (a wasm module is a
+# byte stream, not words) — the one respect the code triple is looser than geom.
+check("a code region of any byte length is legal (wasm is not worded)",
+      A._code_size(7) == 7 and A._code_size(100) == 100)
 expect_refuse("a title over the field is refused, never truncated",
               lambda: A.pack_header(A.app_id_of("pin"), "pin", "T" * A.TITLE_MAX,
                                     0, 0, 0, (0, 0, 0, 0), b"", 0))
@@ -533,10 +582,13 @@ expect_refuse("a filled sig word is refused while signing is unimplemented (C3)"
 
 
 def _fmt2():
-    """A container claiming FORMAT 2, CRC recomputed so only the format check
-    can stop it: a reader that ignored FORMAT would parse this as a v1 app."""
+    """A container claiming a FORMAT newer than this build's, CRC recomputed so
+    only the format check can stop it: a reader that ignored FORMAT would parse
+    this as the current layout. The number is FORMAT+1 (P7 bumped the build's
+    FORMAT to 2, so the future vector moved to 3 with it — the check must always
+    stamp a number THIS build does not speak, not a fixed one)."""
     w = A.pack_header(A.app_id_of("pin"), "pin", "P", 0, 0, 0, (0, 0, 0, 0), b"", 0)
-    w[A.W_FORMAT] = 2
+    w[A.W_FORMAT] = A.FORMAT + 1
     w[A.W_HDR_CRC] = A._hdr_crc(w)
     return b"".join(struct.pack("<I", v) for v in w)
 
@@ -710,7 +762,7 @@ MUTATIONS = [
     ("the setting id width check is gone",
      "if not isinstance(sid, str) or not SET_RE.match(sid):", "if 0:"),
     ("the CRC word moves below the manifest it must cover",
-     "W_HDR_CRC    = W_ART_CRC    + 1", "W_HDR_CRC    = W_SIG           + 1"),
+     "W_HDR_CRC    = W_WASM_MEM    + 1", "W_HDR_CRC    = W_SIG           + 1"),
     ("the settings table cap is gone", "if len(settings) > SETTINGS_MAX:", "if 0:"),
     ("the header CRC check is gone", "if hdr[W_HDR_CRC] != _hdr_crc(hdr):", "if 0:"),
     ("the FORMAT check is gone", "if hdr[W_FORMAT] != FORMAT:", "if 0:"),

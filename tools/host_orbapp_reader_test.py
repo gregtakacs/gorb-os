@@ -461,7 +461,7 @@ def vectors_refuse(add):
     ok, msg = python_outcome(mt)
     add(Case("magic_theme_is_named", mt, parse=msg, hash_calls=0,
              py=("refuse", msg)))
-    f2 = patch(build_hdr()[0][:], orbapp.W_FORMAT, 2)
+    f2 = patch(build_hdr()[0][:], orbapp.W_FORMAT, orbapp.FORMAT + 1)
     ok, msg = python_outcome(f2)
     add(Case("format_future", f2, parse=msg, hash_calls=0, py=("refuse", msg)))
     hs = patch(build_hdr()[0][:], orbapp.W_HDR_SIZE, 200)
@@ -597,6 +597,70 @@ def vectors_refuse(add):
         except ValueError as e:
             msg = str(e)
         add(Case(nm, lay, flags=F_CHECK | F_LAYOUT, layout=msg, py=("skip", None)))
+    # -- P7 (D20/D27): the code region and its memory bound ------------------------
+    # A hand-forged code triple inside a golden header, CRC kept honest by patch so
+    # each vector probes the rule that owns the field and not the checksum. The
+    # writer's check_header and the device's orbapp_check_header must refuse the same
+    # damage in the same words — the mirror's whole point — so py=("refuse", msg) pins
+    # that agreement, and the ACCEPT vector pins that a coherent module-bearing
+    # header is admitted by both voices and not just refused by the stricter one.
+    def code_hdr(code_size, code_crc, mem):
+        w = build_hdr()[0][:]
+        w[orbapp.W_CODE_SIZE] = code_size
+        w[orbapp.W_CODE_CRC] = code_crc
+        w[orbapp.W_WASM_MEM] = mem
+        w[orbapp.W_HDR_CRC] = orbapp._hdr_crc(w)
+        return w
+    # ACCEPT: a coherent code triple — a real module, a bounded memory ask. Only the
+    # check stage runs (layout is the next loop's subject), so the words that gate
+    # D27 are what this proves, and the reader must say OK where the writer says OK.
+    acc = code_hdr(256, 0x1234abcd, 65536)
+    ok, msg = python_outcome(acc)
+    assert ok, "the coherent code header must pass the writer's check: %s" % msg
+    add(Case("code_bearing_header_accepted", acc, flags=F_CHECK, check=None,
+             hash_calls=1, py=("ok", None),
+             note="P7 D20/D27 positive control: a coherent module + bounded memory "
+                  "is the shape every wasm app will ship; both voices accept it"))
+    # REFUSE: the D27 ceiling. wasm_mem_max past 128 KB is the refusal the plan's
+    # P7 pass line names ("install-time refuses > 128 KB"), reached at pack, at read
+    # and on the dial in one sentence.
+    over = code_hdr(256, 0x1234abcd, orbapp.WASM_MEM_MAX + 1)
+    ok, msg = python_outcome(over)
+    add(Case("wasm_mem_past_ceiling_refused", over, flags=F_CHECK, check=msg,
+             hash_calls=1, py=("refuse", msg),
+             note="D27: the module could not be allocated on the dial, so it must "
+                  "not install — the refusal the P7 pass line benches"))
+    # REFUSE: a module with no bound. Zero memory on a code-bearing app is no ceiling
+    # for the gate to hold, the inverse of the D27 intent.
+    zmem = code_hdr(256, 0x1234abcd, 0)
+    ok, msg = python_outcome(zmem)
+    add(Case("code_with_zero_mem_refused", zmem, flags=F_CHECK, check=msg,
+             hash_calls=1, py=("refuse", msg),
+             note="D27: a zero linear-memory bound is no bound at all"))
+    # REFUSE: a bound with no module. The native shape is code_size 0 and mem 0; a
+    # non-zero mem on a codeless header is a miscount, mirrored from pack.
+    nocode = patch(build_hdr()[0][:], orbapp.W_WASM_MEM, 65536)
+    ok, msg = python_outcome(nocode)
+    add(Case("mem_bound_with_no_code_refused", nocode, flags=F_CHECK, check=msg,
+             hash_calls=1, py=("refuse", msg),
+             note="ships a memory bound for a module it does not carry"))
+    # REFUSE: code past the slot budget — it cannot fit the flash it would write.
+    big = code_hdr(orbapp.CODE_BYTES_MAX + 4, 0, 65536)
+    ok, msg = python_outcome(big)
+    add(Case("code_past_slot_refused", big, flags=F_CHECK, check=msg,
+             hash_calls=1, py=("refuse", msg),
+             note="D27's flash half: a module past a slot's payload cannot install"))
+    # LAYOUT: the code region mislaid. Reuses the file-layout loop's shape so a code
+    # region that could sit anywhere is refused, exactly as a mislaid geometry is.
+    lay = patch(build_hdr()[0][:], orbapp.W_CODE_OFF, 449)
+    h = orbapp.parse_header(pack_words(lay))
+    try:
+        orbapp.check_file_layout(h)
+        raise AssertionError("code_off_unaligned: writer accepted the mislayout")
+    except ValueError as e:
+        msg = str(e)
+    add(Case("code_off_unaligned", lay, flags=F_CHECK | F_LAYOUT, layout=msg,
+             py=("skip", None)))
     # -- the settings table on its own --------------------------------------------------
     g, sblob, _ab = build_hdr()
     add(Case("unpack_count_over_table", g, sblob,
@@ -1186,6 +1250,35 @@ MUTATIONS = [
     ("asset_name_max_widened_past_the_wire", "d",
      "#define ORB_ASSET_NAME_MAX      12u",
      "#define ORB_ASSET_NAME_MAX      16u"),
+    # ---- P7 (D20/D27): the code region's gates, each mutated to nothing ----------
+    # The over-ceiling refusal is the exact rule the P7 pass line benches ("install
+    # refuses > 128 KB"); dropping it lets an un-allocatable module reach the dial.
+    ("d27_mem_ceiling_check_dropped", "c",
+     "if (h->wasm_mem_max > ORBAPP_WASM_MEM_MAX)",
+     "if (0 && h->wasm_mem_max > ORBAPP_WASM_MEM_MAX)"),
+    # The ceiling itself doubled: the same over-ceiling vector then reads as legal,
+    # so the number and its refusal must move together or a suite dies.
+    ("d27_mem_ceiling_doubled", "h", "ORBAPP_WASM_MEM_MAX   0x00020000u",
+     "ORBAPP_WASM_MEM_MAX   0x00040000u"),
+    # A code-bearing module must carry a non-zero bound; dropping the rule lets a
+    # module run with no ceiling the gate can hold, the inverse of D27.
+    ("d27_zero_bound_allowed", "c",
+     "if (h->code_size != 0 && h->wasm_mem_max == 0)",
+     "if (0 && h->code_size != 0 && h->wasm_mem_max == 0)"),
+    # A bound with no code behind it is a miscount; dropping it lets a native app
+    # claim a wasm reservation and bill a runtime the reader never populates.
+    ("d27_bound_without_code_allowed", "c",
+     "if (h->code_size == 0 && (h->code_crc != 0 || h->wasm_mem_max != 0))",
+     "if (0 && h->code_size == 0 && (h->code_crc != 0 || h->wasm_mem_max != 0))"),
+    # The code region past the slot budget: dropping it lets a module too large to
+    # copy reach install, where the slot gate then prices it too late.
+    ("d27_code_size_bound_dropped", "c",
+     "if (h->code_size > ORBAPP_CODE_BYTES_MAX)",
+     "if (0 && h->code_size > ORBAPP_CODE_BYTES_MAX)"),
+    # The layout equality that stops a code region overlapping the geometry.
+    ("code_layout_equality_dropped", "c",
+     "if ((uint64_t)h->code_off != art)",
+     "if (0 && (uint64_t)h->code_off != art)"),
 ]
 
 

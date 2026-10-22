@@ -1230,8 +1230,9 @@ esp_err_t menu_view_init(void)
     if (!s_res_mx) return ESP_ERR_NO_MEM;
 
     /* Every object below comes from the internal heap, and this init runs at
-     * boot after the clock has already taken the art bank and its own widgets
-     * (orb_app_init_all inits clock, then picker, then menu). When that heap is
+     * boot as the shell — first built since D35, before the card tier spends
+     * anything, but still behind the theme's primary bank and the display
+     * stack. When that heap is
      * fragmented the largest free block can drop below what an LVGL object
      * needs — the fleet saw heap_internal_largest ~9216 here — and lv_obj_create
      * returns NULL. Pre-hardening, the next line dereferenced that NULL: a boot-

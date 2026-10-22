@@ -1031,7 +1031,7 @@ uint32_t orb_svc_layers_refused(const orb_app_t *a)
            (s_row[slot].layers ? orb_layers_refuses(s_row[slot].layers) : 0);
 }
 
-/* ---- C2: the fault counter and the boot-into-clock rule (plan §1.4) ---------
+/* ---- C2: the fault counter and the boot-into-home rule (plan §1.4) ---------
  *
  * The S3 gives no MPU wall around an app, so an abort inside a hook is a
  * reboot boundary, not a recoverable error — and IDF 5.4 offers no supported
@@ -1050,10 +1050,12 @@ uint32_t orb_svc_layers_refused(const orb_app_t *a)
  *                     seen here was not the owner's, and X pays
  *
  * Two consecutive faults mark the app failed with its reason until the owner
- * reinstalls (orb_svc_clear_faults is that door, P4's APPS page will use it).
- * The HOME entry is exempt from the fail: with the clock itself faulting,
- * "boot into the clock" has no destination, and a dial that tells the time
- * through a misbehaving clock beats a bricked orb — the counter still runs
+ * reinstalls (orb_svc_clear_faults is that door, the APPS page uses it) — every
+ * card row alike, the factory pair included (D35 removed the old HOME-row
+ * exemption's subject by making the clock an ordinary row).
+ * The HOME entry itself stays exempt: it is the shell menu now, chrome that
+ * builds from tables and cannot fault; and if it ever did, a dial that still
+ * answers the long press beats a bricked orb — the counter still runs
  * and the status endpoint still shows it.
  * (The record itself and the namespace words are declared above, next to
  * orb_svc_init, which consumes them first.)

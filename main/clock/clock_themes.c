@@ -28,6 +28,8 @@
 #include "orb_jobs.h"
 #include "orb_theme.h"
 #include "orb_sd.h"        /* orb_sd_mounted(), for the reason line only */
+#include "orb_app.h"       /* D35: this app's own ledger row */
+#include "orb_svc.h"       /* orb_grant_ok — the caps this manifest declares */
 
 #include <stdio.h>
 #include <string.h>
@@ -317,11 +319,15 @@ void clock_opt_inc(orb_app_t *app, int idx, int32_t steps)
 
 void clock_opt_sel(orb_app_t *app, int idx)
 {
-    (void)app;
-    /* A press on the GROUP is the shell's to act on (it opens and closes), and it
-     * reaches here only if the shell forwards it: doing nothing is the right answer
-     * either way, because the clock has no opinion about whether its own header is
-     * showing its rows. */
+    /* D35/D19: a theme pick is the clock asking for the D11 install, and the
+     * clock's manifest DECLARES themes — so the declaration is consulted here,
+     * not skipped because the module predates its own row. A revoked cap
+     * degrades the page visibly: the refusal is status text on the group the
+     * owner just pressed, and the install never reaches the worker. */
+    if (idx != ROW_DEFAULT && idx != ROW_GROUP && !orb_grant_ok(app, CAP_THEMES)) {
+        strlcpy(s_ui.status, "theme permission revoked", sizeof s_ui.status);
+        return;
+    }
     if (idx == ROW_DEFAULT) { pick_default(); return; }
     if (idx == ROW_GROUP)   return;
     clock_themes_pick(idx - ROW_ITEMS);
@@ -329,12 +335,15 @@ void clock_opt_sel(orb_app_t *app, int idx)
 
 void clock_opt_arm(orb_app_t *app, bool armed)
 {
-    (void)app;
     s_armed = armed;
     if (armed) {
         /* Entering the page is when the card is worth walking: the rows are the
-         * card's contents, and contents change between visits. */
-        clock_themes_request_scan();
+         * card's contents, and contents change between visits. D35/D19: the walk
+         * reads the card, the manifest declares sd_read, and the ledger counts
+         * the refusal the same way it counts a guest's — denied is a state the
+         * page shows, not an error the app hides. */
+        if (orb_grant_ok(app, CAP_SD_READ)) clock_themes_request_scan();
+        else strlcpy(s_ui.status, "card permission revoked", sizeof s_ui.status);
     } else {
         clock_themes_reset();
     }

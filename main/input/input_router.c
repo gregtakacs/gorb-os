@@ -260,7 +260,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     if (lpress) {
         orb_carousel_cancel();
         disarm_all();
-        set_screen(orb_app_home(), true);   /* C8: the dial, by table flag not by name */
+        set_screen(orb_app_home(), true);   /* C8: the home row — the shell since D35 */
         return;
     }
 

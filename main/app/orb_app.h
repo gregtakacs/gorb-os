@@ -216,15 +216,19 @@ struct orb_app {
 #define ORB_APP_TITLE_MAX    32   /* == ORBAPP_TITLE_MAX  */
 #define ORB_APP_SETTINGS_MAX 16   /* == ORBAPP_SETTINGS_MAX */
 
-/** The compiled-in entry count — the base every card-app registry index sits on.
- *  Clock, color_picker, menu. Card apps occupy indices ORB_APP_BASE..+CAP-1 so
- *  the broker keys their grants on a slot no compiled-in app can ever hold. */
+/** The first card-app registry index — the base every card row sits on.
+ *  D35 left ONE compiled row (the shell, index 0), but this stays 3: indices 1
+ *  and 2 are the retired keys of the entries the clock and the picker held as
+ *  compiled rows, and the C6 rule says a key is never reused, so the ledger
+ *  span keeps its shape and no successor can inherit a stranger's words. */
 #define ORB_APP_BASE 3
 
 /** The registry's card table (plan P4). Installed .orbapp apps live here, beside
- *  the three compiled-in entries rather than inside them, so orb_app_count()/at()/
- *  neighbour()/service_all() keep walking only the compiled tier (a card app has
- *  no iface until the P6 VM tier builds one) while the ledger — orb_app_rows()/
+ *  the one compiled shell row rather than inside it, so orb_app_count()/at()/
+ *  neighbour()/service_all() walk the compiled tier first and the qualified card
+ *  rows after (a card app's iface comes from the behaviour module its header
+ *  names — D1/C6, and since D35 that includes the shipped clock and picker),
+ *  while the ledger — orb_app_rows()/
  *  row()/find_slug()/index_of() and therefore the broker's grant words — sees
  *  both. On a build with nothing installed the card table is empty and every
  *  compiled-tier count is exactly what it was before P4. Boot-resolve (main.c)
@@ -287,6 +291,10 @@ enum {
     ORB_BEHAVIOUR_COLOR_PICKER = 1,  /* the HSB editor: LVGL-drawn, vector-only   */
     ORB_BEHAVIOUR_WASM         = 2,  /* the wasm3 code tier (P7/D20): one generic
                                       * iface, N instances, over orb_svc_t        */
+    ORB_BEHAVIOUR_CLOCK        = 3,  /* the dial face (D35, §35): the factory clock
+                                      * is a card row over this module exactly like
+                                      * the picker over kind 1 — the id was claimed
+                                      * by the P9 ruling, so it is never reused     */
 };
 
 /** The iface the compiled-in module behind `behaviour_kind` builds with, or NULL

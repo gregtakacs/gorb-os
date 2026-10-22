@@ -17,12 +17,28 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
+/* The row type color_picker_bind_app() takes: orb_app.h is LVGL-free, so this
+ * include is safe from any picker caller (D35 settings ownership). */
+#include "orb_app.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /** Build the picker's widgets on its own screen. Call after display_init. */
 esp_err_t color_picker_init(void);
+
+/**
+ * D35: bind the ledger row that owns this app's settings. Once bound, the
+ * three channel values load from (and commit through) the row's own NVS
+ * namespace via the broker's cfg entries — declared in the factory container
+ * as `hue` (0..359, default 210), `sat` and `bri` (0..100, defaults 80/90).
+ * The defaults in the manifest and the statics below are the same numbers on
+ * purpose: a first boot that never wrote a key reads back the colors the
+ * compiled picker always started with, and there is no legacy key to move
+ * because the pre-D35 picker never persisted anything.
+ */
+void color_picker_bind_app(orb_app_t *app);
 
 /** The picker's screen object, for input_router to lv_screen_load(). */
 lv_obj_t *color_picker_screen(void);

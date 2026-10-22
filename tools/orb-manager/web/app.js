@@ -2182,6 +2182,11 @@ async function watchThemeJob(state, t) {
     if (d.job_busy) { state.textContent = "storing " + t.name + " \u2014 the copy is running, " + n + " s"; continue; }
     if (d.try_id === t.id && d.try_why) {
       state.textContent = "could not store " + t.name + ": " + d.try_why;
+      // Re-read the rows: since §31 the orb marks an undrawable bundle not-loadable
+      // at the list itself, so a refusal is very likely already a greyed Store button
+      // and a reason tag on this row. An operator who watches only the state line
+      // should not have to press Re-read to see the verdict that produced it.
+      await loadThemes(themeIP);
       return;
     }
     if (d.staged_id === t.id) {

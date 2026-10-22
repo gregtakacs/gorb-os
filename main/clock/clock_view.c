@@ -1966,8 +1966,18 @@ esp_err_t clock_view_init(void)
      * draws the dial on the themed leg below. No resident bank draws the base digital
      * face, the fallback for a board that has lost its theme. Residency is checked
      * before art is demanded so a bankless board is never failed at an art gate and
-     * left on the panel's reset black. */
+     * left on the panel's reset black.
+     *
+     * The middle term is the projection verdict, and it is not redundancy: mapping
+     * and adoption are two separate facts, and the arithmetic alone reads
+     * `bytes >= blob_off + art_size` over a zeroed geo — after a refusal's
+     * use_no_art() that is `bytes >= 0`, true — sending this leg into orb_bg_init
+     * over pixels that are not a bank. Bronze panicked in exactly that loop on
+     * 2026-10-22. The theme answers the one honest question here — is there an
+     * adopted, drawable theme — and the arithmetic stays what it always was: does
+     * the mapping cover the blob. */
     const bool art_resident = art_bank_ready()
+                    && orb_theme_resident()
                     && art_bank_bytes() >= orb_theme_geo()->blob_off
                                             + orb_theme_geo()->art_size;
 

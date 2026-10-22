@@ -910,7 +910,8 @@ def install_lint():
     if erase < 0:
         print("FAIL orb_theme_install_bundle(): no header erase — the commit that makes a "
               "slot live has gone missing along with the discipline around it"); rc = 1
-    for need in ("card_open_verified_id3(", "orb_bundle_parse_region(", "copy_bundle3("):
+    for need in ("card_open_verified_id3(", "orb_bundle_parse_region(",
+                 "clock3_verdict(", "copy_bundle3("):
         at = body.find(need)
         if at < 0:
             print("FAIL orb_theme_install_bundle(): never calls %s — it can commit a slot "
@@ -1101,6 +1102,10 @@ def naming_lint():
         if not re.search(r"strcmp\s*\(\s*bid\s*,\s*rec->name\s*\)", calls("scan_entry")):
             print("FAIL scan_entry() lists a theme without checking the filename against the "
                   "hash of its header name"); rc = 1
+        if "clock3_verdict3(" not in calls("scan_entry"):
+            print("FAIL scan_entry() marks a row loadable on the header alone — §31 says "
+                  "valid is the projection's answer, asked of the target orb; the hub's "
+                  "Store button gates on this row"); rc = 1
     if not rc:
         print("ok    card identity is one rule, applied by all %d FORMAT 3 consumers, "
               "verified on the walk and again on the open" % len(CONSUMERS))

@@ -5573,3 +5573,52 @@ inject was the operator error. The row re-provisioned through the Restore
 button. (A later deliberate wtrap activate then trapped twice in
 `orb_activate` and C2 quarantined it — visible on the APPS row as designed,
 cleared through `/api/v1/apps/clear`.)
+
+---
+
+## 37 — The b3 loop: validity is the projection's answer, asked at every door — 2026-10-22
+
+Bronze took the theme the owner stored, rebooted into a `LoadProhibited` panic
+loop at `clock_view_init`, and needed its `assets` partition re-flashed by hand
+to come back. The stored bundle — "b3 valid", a FORMAT 3 container for a 240x240
+panel — was always unloadable on this 466x466 orb. Nothing said so until the
+boot that died. Two independent defects made a wrong theme a bricked dial, and
+both are now closed on the device, verified by re-running the exact press:
+
+1. **The residency gate trusted the mapping, not the projection.**
+   `adopt_bundle3` mapped the slot's pixels and only then ran
+   `orb_clock3_parse`. A refused parse zeroed the geometry (`use_no_art`) but
+   left the mapping resident, so `art_bank_ready()` answered true, the
+   `clock_view_init` gate computed `art_bank_bytes() >= 0 + 0`, and the themed
+   leg painted over pixels that are not a bank. Fix: the projection runs before
+   any map/fill, so a refusal never maps at all, and the clock's gate gained
+   `orb_theme_resident()` — the theme's own adopted-and-drawable verdict — as a
+   middle term. Mapping and adoption are two facts and the gate needs both.
+
+2. **The store door verified the container and never asked if it would draw.**
+   `orb_theme_install_bundle` checked identity, region and banks — all true of
+   b3 — wrote the one slot, and rebooted onto the refusal. `orb_theme_scan`
+   marked such a row loadable, so the hub's row read "valid" and Store-on-dial
+   stayed armed. Fix: one helper, `clock3_verdict`, runs the shipped projection
+   over scratch tables (the live theme's rows must not be rewritten by a
+   refusal) and guards them with a mutex (a scan and a store can ask at once);
+   it answers at the upload door, the store door, and the list. The store
+   refuses before the first erase, with the projection's sentence as `why`;
+   the row's `ok` carries the same sentence, which is what the hub's Store
+   button gates on.
+
+Responsibility, restated: **validity is the target orb's answer, never the
+file's self-report or the hub's**. A container can be internally flawless and
+undrawable on a given panel — geometry compatibility is not a property of the
+bundle alone. The firmware that will paint the dial is the only thing allowed
+to say "loadable", and it now says it before it commits, at the door, on the
+row, and in the boot's log. The hub's only fix was cosmetic: the theme card
+re-reads its rows after a store refusal, so the greyed button and the reason
+tag that produced the refusal are on screen without an extra press.
+
+Bench proof, same press, new firmware: the scan lists `b3 valid` as
+`ok:false — a format-3 clock section made for a different panel`; the Store
+POST still acks the queue, the worker then refuses it, `try_why` carries the
+projection's sentence, the slot keeps drawing `av-kit`, and uptime never
+reset. The stale bench bundle that b3's 2026-10-21 pass had missed is caught
+by the same seam (`av-kit (bench)` now lists with its own refusal).

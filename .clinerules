@@ -59,6 +59,20 @@ Two launch gotchas that burned time this session, both avoided by using a
   capture scripts (`tools/capf.py <secs> <log> [--no-reset]`,
   `tools/cap.py <secs> [reset]`) with a duration under ~12 s inline; longer
   captures go detached.
+- **Never park a port-opener (`cat /dev/ttyACM*`, `tail -f`, an open monitor)
+  on an orb port to watch for a WSL reattach — detect the NODE, never open it.**
+  Reattach detection is legitimate: when Windows retakes the port, HTTP and the
+  hub go blind together. It needs no open: the device symlink's existence
+  (`[ -e /dev/serial/by-id/…<MAC>…-if00 ]`) is the whole event, and
+  `tools/orb-manager/scripts/wsl-usb.sh` already automates it
+  (`node_of`/`wait_node` stat only; `watch` runs the Windows-side usbipd
+  auto-attacher). A previous session instead left an inline
+  `while :; do cat /dev/ttyACM0 >>/tmp/con.log; sleep 0.4; done`: every open
+  pulsed DTR/RTS, its log recorded 62 USB_UART_CHIP_RESETs in one day, 25 into
+  DOWNLOAD mode (board answers nothing — looks bricked), and its reopens
+  wedged Orb Manager's identify op past its deadline and stranded the chip at
+  "waiting for download". Console viewing goes through the hub's read-only
+  USB console or a bounded `capf.py`, never a holder.
 
 ## Wiping an orb: the ROM has no chip-erase opcode, and `FLASH_MD5` needs a preamble
 

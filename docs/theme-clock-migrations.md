@@ -176,9 +176,11 @@ Two new public symbols land in the same commit:
   owns one table per registry slot; this exposes a read pointer to the
   scheduler. No such getter exists today — the commit adds it.
 - `ORB_LAYER_JOB_MAX` in `orb_layers.h`. The table caps at `ORB_LAYER_MAX` (8
-  rows — `orb_layers.h:83`), and `orb_layers_jobs()` emits at most one job per
+  rows at writing time — `orb_layers.h:83`), and `orb_layers_jobs()` emits at most one job per
   row (`orb_layers.c:313-327`: a row is skipped or emitted, never expanded).
-  The honest ceiling is therefore `ORB_LAYER_MAX`. The clock's file-private
+  The honest ceiling is therefore `ORB_LAYER_MAX`. (Commit 3 raised the table to
+  16 — the shipped analog bake names nine composite rows; the owner's
+  decision, recorded in the commit body.) The clock's file-private
   `CLK_JOB_MAX` (`clock_view.c:869` = 12 + 32 + aux) is larger only because
   the old path packs shadow pairs and complication blits as separate jobs;
   that count belongs to the deleted renderer, not the table.
@@ -272,10 +274,15 @@ element (currently zero callers in firmware — this is the wiring), then
 `orb_asset_resolve()` per answer, then `layer_add` per resolved desc in the
 bake's z-order. It does NOT read the legacy `orb_theme_geo()` adapter: that
 adapter is the migration's destination, not its source. New `s_handle[]`
-array replaces `s_hand[]`/`s_shadow[]` pointers. `ORB_LAYER_MAX` is 8
-(`orb_layers.h:83`): the shipped analog bake must fit (it does — order rows ≤
-8), and any bake that doesn't refuses at add with the refusal counted, never
-truncated. No caps change: the clock keeps `sd_read|themes`, and `CAP_UI` is a
+array replaces `s_hand[]`/`s_shadow[]` pointers. `ORB_LAYER_MAX` was 8
+(`orb_layers.h:83`): the shipped analog bake on the bench board turned
+out to name nine composite rows (ten clock-section elements; the plate is the
+canvas, not a row) — so the constant is 16 as of this commit, the owner's
+decision, and any bake that overruns even that refuses at add with the refusal
+counted, never truncated. (Commit 3 also lands the rows `show=0`: the legacy
+commit hook still owns the mark set until Commit 4 deletes it, and two paths
+cannot share one. The ledger — live rows and refusals — is the pass line this
+commit; the pixels move in the next.) No caps change: the clock keeps `sd_read|themes`, and `CAP_UI` is a
 FREE cap — `orb_grant_ok` passes free caps unconditionally
 (`orb_svc.c:175-177`), and free caps are undeclarable by the writer's own rule
 (`orbapp.py:144`). So `tools/make_factory_apps.py` and the generated

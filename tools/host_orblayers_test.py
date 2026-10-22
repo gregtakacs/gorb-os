@@ -194,12 +194,16 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
     g_commit_calls++; g_commit_nj = nj; g_commit_jc = jc; g_commit_canvas = canvas;
 }
 
+/* The shipped hook's job array lives at file scope for the same reason: the
+ * ceiling is now ORB_LAYER_JOB_MAX deep, and the LVGL task's stack is not ours
+ * to spend a kilobyte of per tick. One caller, one task — mirrored here as the
+ * function-static it also is on the target. */
 static int hook_mirror(const orb_layer_tab_t *t, const uint8_t *payload,
                        const uint16_t *canvas)
 {
+    static gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
     if (!t || orb_layers_count(t) == 0) return 0;
     if (!canvas) return 0;
-    gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
     int nj = orb_layers_jobs(t, payload, jc, ORB_LAYER_JOB_MAX);
     if (nj) gfx_commit(nj, jc, canvas);
     return nj;
@@ -555,6 +559,70 @@ int main(void)
     orb_layers_wipe(&H);
     orb_layers_wipe(&R);
 
+    /* 15 — Migration 2, Commit 3: the raised ceiling and the inert table. The
+     * shipped clock's bake claims every composite element it names — nine on
+     * the analog bake the board carries (measured at boot) — so the table must
+     * reach 16 and the hook must carry all of them in one commit. And the
+     * commit-3 table enters every row HIDDEN (the legacy renderer still owns
+     * the mark set): a full table of hidden rows is live bookkeeping that
+     * builds zero jobs, which is the exact state the bench's byte-identical
+     * grab depends on. */
+    orb_layer_tab_t K;
+    memset(&K, 0, sizeof K);
+    for (int i = 0; i < ORB_LAYER_MAX; i++) {
+        orb_layer_desc_t r = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 8 * i, 8 * i, 8, 8);
+        r.art.off = BANK_B_OFF + PL_SPR_OFF;
+        r.role = (uint8_t)(i % CLK_PAINT_ROLES);
+        int hk = orb_layers_add(&K, &r);
+        ck("cap: every row of the raised table claims", hk > 0, hk);
+    }
+    ck("cap: the whole table is live", orb_layers_count(&K) == ORB_LAYER_MAX,
+       orb_layers_count(&K));
+    ck("cap: the job ceiling is the table", ORB_LAYER_JOB_MAX == 16, ORB_LAYER_JOB_MAX);
+    g_commit_calls = 0;
+    int nk = hook_mirror(&K, THEME, CANVAS);
+    ck("cap: one commit carries all sixteen rows",
+       nk == ORB_LAYER_MAX && g_commit_calls == 1, nk);
+    orb_layer_desc_t over = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 0, 0, 8, 8);
+    over.art.off = 0x30;
+    ck("cap: the row past the ceiling refuses, counted",
+       orb_layers_add(&K, &over) == -1 && orb_layers_refuses(&K) == 1,
+       (int)orb_layers_refuses(&K));
+    orb_layers_wipe(&K);
+
+    g_commit_calls = 0;
+    orb_layer_tab_t V;
+    memset(&V, 0, sizeof V);
+    for (int i = 0; i < 3; i++) {
+        orb_layer_desc_t r = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 8 * i, 8 * i, 8, 8);
+        r.art.off = BANK_B_OFF + PL_SPR_OFF;
+        r.show = 0;                                   /* exactly clock_view.c's add */
+        ck("inert: a hidden row claims", orb_layers_add(&V, &r) > 0, 0);
+    }
+    int nv = hook_mirror(&V, THEME, CANVAS);
+    ck("inert: three live hidden rows commit nothing",
+       nv == 0 && g_commit_calls == 0 && orb_layers_count(&V) == 3, nv);
+
+    /* The suspended-app wipe (orb_svc_app_suspended) empties the table but
+     * keeps it and the generations; the dial's re-show re-claims without
+     * deleting first. Mirrored here: wipe, then re-add the same three rows —
+     * the ledger must land back at three live, zero refusals. */
+    const uint32_t rf_v = orb_layers_refuses(&V);
+    orb_layers_wipe(&V);
+    ck("resume: the wipe emptied without refusing",
+       orb_layers_count(&V) == 0 && orb_layers_refuses(&V) == rf_v,
+       (int)orb_layers_refuses(&V));
+    for (int i = 0; i < 3; i++) {
+        orb_layer_desc_t r = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 8 * i, 8 * i, 8, 8);
+        r.art.off = BANK_B_OFF + PL_SPR_OFF;
+        r.show = 0;
+        ck("resume: the row re-claims after the wipe", orb_layers_add(&V, &r) > 0, 0);
+    }
+    ck("resume: the ledger is back to the bake's count",
+       orb_layers_count(&V) == 3 && orb_layers_refuses(&V) == rf_v,
+       orb_layers_count(&V));
+    orb_layers_wipe(&V);
+
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;
 }
@@ -664,6 +732,10 @@ def lint(tmp, out):
             "orb_svc_layer_table allocates: a scheduler read is now the thing "
             "that spends an app's PSRAM table — Commit 2's whole no-create rule")
     sc = open(P("gfx", "orb_sched.c"), encoding="utf-8").read()
+    pin("static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];" in sc,
+        "the commit hook's job array left file scope — at ORB_LAYER_JOB_MAX (16) "
+        "deep it is a kilobyte of the LVGL task's stack per tick, which is the "
+        "one thing clock_view.c's legacy hook never spent")
     hm = re.search(r"void orb_sched_commit_layers\(const orb_app_t \*active\)\n"
                    r"\{(.*?)\n\}", sc, re.S)
     pin(hm is not None, "orb_sched_commit_layers is gone from orb_sched.c")
@@ -672,12 +744,14 @@ def lint(tmp, out):
         for stmt in ("const orb_layer_tab_t *t = orb_svc_layer_table(active);",
                      "if (!t || orb_layers_count(t) == 0) return;",
                      "if (!s_canvas) return;",
-                     "gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];",
-                     "int nj = orb_layers_jobs(t, art_bank_ptr(), jc, ORB_LAYER_JOB_MAX);",
-                     "if (nj) gfx_commit(nj, jc, s_canvas);"):
+                     "int nj = orb_layers_jobs(t, art_bank_ptr(), s_lay_jc, ORB_LAYER_JOB_MAX);",
+                     "if (nj) gfx_commit(nj, s_lay_jc, s_canvas);"):
             pin(stmt in hb,
                 "the shipped commit hook no longer reads `" + stmt + "` — the "
                 "harness's hook_mirror mirrors a body that moved")
+        pin("gfx_paint_ctx_t jc[" not in hb,
+            "the commit hook allocates its job array on the stack again — the "
+            "array belongs beside the function (see the file-scope pin above)")
         pin("blob_off" not in hb and "orb_theme_geo" not in hb,
             "the commit hook grew a blob_off term: the base fix belongs at the "
             "resolver, and a hook-side add breaks every non-clock app's rows")

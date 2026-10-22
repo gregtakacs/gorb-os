@@ -74,10 +74,16 @@ typedef struct orb_layer_desc {
     uint8_t     pad2[3];
 } orb_layer_desc_t;
 
-/* Rows per app. Eight: a hand, a ring, a plate, a card and a status line with
- * room to spare. The static cost of the feature is this times the 16 broker rows
- * (about 15 KB of .bss); heap is spent only when an app actually bakes. */
-#define ORB_LAYER_MAX 8
+/* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,
+ * a plate, a card and a status line with room to spare" for an app that had
+ * never claimed a row; the clock's own shipped analog bake names nine
+ * composite elements (its clock section carries ten rows; the plate is the
+ * canvas, not a row), and the migration's rule is that a bake the theme names
+ * is a bake the table holds whole. Sixteen covers the shipped dial with room
+ * for a third-party plate, ring, card and status line too. The table is PSRAM
+ * heap, allocated on the first add this app actually claims, so the raised
+ * ceiling costs nothing on a row that never bakes and never adds. */
+#define ORB_LAYER_MAX 16
 
 /* The job-array ceiling a commit pass sizes itself to. `orb_layers_jobs()` emits
  * at most one job per row (a row is skipped or emitted, never expanded), and the

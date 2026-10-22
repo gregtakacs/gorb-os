@@ -14,12 +14,21 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+/* The broker's handle, forward-typed the way orb_svc.h itself carries it: the
+ * clock claims its layer rows through the broker, and the registry's header
+ * would drag half the OS into every screen that shows a clock. */
+typedef struct orb_app orb_app_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** Create the clock UI on its own LVGL screen (call after display_init + lv_init). */
-esp_err_t clock_view_init(void);
+/** Create the clock UI on its own LVGL screen (call after display_init + lv_init).
+ *  `self` is the clock's registry row: the layer table is claimed through the
+ *  broker exactly as a hosted app claims one, so the gate, the ledger and the
+ *  scheduler's commit pass see the dial the same way they see every other app
+ *  (Migration 2, commit 3). */
+esp_err_t clock_view_init(orb_app_t *self);
 
 /** The clock's screen object, for input_router to lv_screen_load(). */
 struct _lv_obj_t *clock_view_screen(void);

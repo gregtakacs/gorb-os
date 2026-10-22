@@ -158,7 +158,7 @@ void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps)
  * pointer); the hooks' own behaviour is host_orbapp_wasm_test.py's and the device's. */
 const orb_app_iface_t orb_wasm_iface = { 0 };
 
-esp_err_t clock_view_init(void)  { T("clock_init");  return g_rc_clock; }
+esp_err_t clock_view_init(orb_app_t *self)  { (void)self; T("clock_init");  return g_rc_clock; }
 /* The clock's options surface (B1/B2). Stubbed rather than lifted: what this
  * suite proves is that the registry DISPATCHES them, and the answers themselves
  * are host_menu_test.py's and the device's to check. */

@@ -515,6 +515,13 @@ void orb_sched_ink_px_add(uint32_t n)
 #endif
 }
 
+/* The commit hook's job array. Static rather than per-call stack: with the
+ * table's ceiling at ORB_LAYER_MAX (16) it is ~1 KB of the LVGL task's stack
+ * per tick, and that stack is not ours to spend — the same reasoning
+ * clock_view.c's legacy hook gives its own list. One caller (the tick below),
+ * on one task, exactly as the hook clock_view registers. */
+static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
+
 /* ---- the layer-table commit pass (Migration 2, P8 Commit 2) --------------
  *
  * The OS's own commit path for anything that draws through the app layer
@@ -527,15 +534,21 @@ void orb_sched_ink_px_add(uint32_t n)
  * art_bank_init() and for a board with no theme, and then every base-less row
  * draws nothing (orb_layers.c:320-323), which is what a dial with no art is
  * supposed to do. A tier-1 row's `art.off` indexes THAT, not the clock's blob:
- * see the base-convention vectors in tools/host_orblayers_test.py, and the
- * report's note on where the section's bank base gets folded in.
+ * the fold happens at the resolve step, into orb_asset_t.off — see the shipped
+ * clock's build pass (clock_view.c's clock_layers_build) and the base
+ * convention vectors in tools/host_orblayers_test.py section 14.
  *
  * Ordering hazard, stated rather than hidden: gfx_commit() consumes the WHOLE
  * mark set, and the clock's legacy path marks its own rows during its tick and
  * commits them at the LVGL flush. A live app table and the legacy clock
  * renderer therefore fight for one mark set, which is exactly why Commit 4
- * deletes the legacy path. Until then the clock builds no rows, this pass finds
- * an empty table and returns before it touches a mark.
+ * deletes the legacy path. Commit 3 lands the clock's table WITHOUT ending the
+ * legacy path, so its rows enter it hidden (desc.show = 0): orb_layers_jobs()
+ * skips an unshown row, this pass builds zero jobs for the shipped dial, the
+ * marks stay the legacy renderer's, and the table is live bookkeeping that
+ * Commit 4's layer_set wakes. A bake whose rows this pass DOES emit — any app
+ * that ever claims a shown row while the clock's legacy hook stands — is what
+ * Commit 4 closes the door on.
  */
 void orb_sched_commit_layers(const orb_app_t *active)
 {
@@ -545,9 +558,8 @@ void orb_sched_commit_layers(const orb_app_t *active)
                                        * row FROM: the classic LVGL path owns
                                        * those pixels, as it owns them for a
                                        * non-GIF dial today */
-    gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
-    int nj = orb_layers_jobs(t, art_bank_ptr(), jc, ORB_LAYER_JOB_MAX);
-    if (nj) gfx_commit(nj, jc, s_canvas);
+    int nj = orb_layers_jobs(t, art_bank_ptr(), s_lay_jc, ORB_LAYER_JOB_MAX);
+    if (nj) gfx_commit(nj, s_lay_jc, s_canvas);
 }
 
 static void tick_timer_cb(lv_timer_t *timer)

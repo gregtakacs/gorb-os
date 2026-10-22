@@ -118,9 +118,17 @@ Host gates before flashing: `idf.py build`, `python3 tools/host_tz_test.py`,
   with `orb_asset_from_bundle`, and `layer_add` one `orb_layer_desc_t` per
   element in z-order through the broker (`orb_svc_t.layer_add`). Keep
   `s_ang_10[]`; add `s_handle[ORB_LAYER_MAX]` for handles.
-- `ORB_LAYER_MAX` is 8 (`orb_layers.h:83`). The shipped analog bake fits
-  (order rows ≤ 8). Do not raise the constant; a bake that overruns must land
-  in the refused counter, and the pass line below proves it did not.
+  (Measured against the tree: no symbol `orb_asset_from_bundle` exists. The
+  fold lands as `clk_row_desc()` inside `clock_view.c` — the clock's own resolve
+  step — and the extraction into `orb_assets.c` as a shared converter is the
+  fifth commit the Stop conditions anticipate, recorded in this report.)
+- `ORB_LAYER_MAX` was 8. The first consumer named nine composite rows —
+  measured at boot on the board's live bake (`layer table: 9 rows`, refused 0;
+  its clock section carries ten elements and the plate is skipped as the
+  canvas), so the constant is 16 as of this commit, by the owner's decision; a
+  bake that overruns even 16 must land in the refused counter, and the pass
+  line below proves the shipped one did not. `ORB_LAYER_JOB_MAX` follows the
+  table.
 - NO caps or manifest change: `CAP_UI` is a FREE cap — `orb_grant_ok` passes
   free caps unconditionally (`orb_svc.c:175-177`), and free caps are
   undeclarable by the writer's rule (`tools/orbapp.py:144`). The factory

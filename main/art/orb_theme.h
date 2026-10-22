@@ -42,6 +42,7 @@
 
 #include "esp_err.h"
 #include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
+#include "orb_bundle.h"  /* orb_bundle_sec_t — orb_theme_live_sec() hands one back */
 
 #define ORB_THEME_EXT      ".orbtheme"
 #define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */
@@ -118,6 +119,19 @@ const orb_theme_geo_t *orb_theme_geo(void);
  *  is bytes with no dial, and a fallback that tests only the mapping walks the
  *  themed leg over them. A themed leg needs both: see clock_view_init()'s gate. */
 bool orb_theme_resident(void);
+
+/** The adopted bundle's section for `slug`, with the offset at which that
+ *  section's own art bank begins inside the payload art_bank_ptr() maps. True
+ *  fills both; false (a base-face dial, or a bundle carrying no such section)
+ *  leaves them untouched. The returned section is the reader's live view of the
+ *  adopted bytes: walk it with orb_bundle_elem_at() and orb_elems_at(), read
+ *  only, and expect it to stand for the life of the adoption — a flip reboots,
+ *  so it stands for the life of the boot. This is the door an app resolves its
+ *  elements through; the geometry adapter is what the clock's legacy path
+ *  reads until Migration 2 deletes it. */
+bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
+                        uint32_t *bank_off);
+
 
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */
 const char *orb_theme_source(void);

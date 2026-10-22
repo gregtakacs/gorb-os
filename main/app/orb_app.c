@@ -90,9 +90,8 @@ static struct _lv_obj_t *clock_screen(orb_app_t *app)
  * so the registry's job is to point at them and nothing more. */
 static esp_err_t clock_init(orb_app_t *app)
 {
-    (void)app;
     if (clock_themes_init() != ESP_OK) return ESP_ERR_NO_MEM;
-    return clock_view_init();
+    return clock_view_init(app);
 }
 
 static void clock_service(orb_app_t *app)

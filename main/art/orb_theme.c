@@ -245,6 +245,22 @@ bool orb_theme_id_ok(const char *id) { return theme_id_ok(id); }
  * The resolved geometry the dial draws with.
  * ------------------------------------------------------------------------- */
 
+/* The adopted bundle kept for the apps to resolve against (Migration 2,
+ * commit 3). The projection consumes the element table once, and the region
+ * used to be freed at that point; the layer table's first consumer must ask the
+ * SAME table a second question — which elements does this theme name, in what
+ * order, at what plane — and orb_elems.c answers that question only from a
+ * parsed section it can walk. So the region now stays resident: PSRAM, at most
+ * ORB_BUNDLE_GEOM_CAP (60 KB), published once per adoption and retired when the
+ * next adoption replaces it or when the dial falls to the base face. A flip
+ * reboots (D11), so exactly one adoption is live at a time, the clock resolves
+ * once per boot at init, and nothing here churns under a running draw.
+ * s_live_sec's blob pointers address s_live_region — the two are published and
+ * retired together. */
+static orb_bundle_t             s_live_b;              /* the index, by value  */
+static const orb_bundle_sec_t  *s_live_sec = NULL;     /* its clock section    */
+static uint8_t                 *s_live_region = NULL;  /* the blobs' home      */
+
 static clk_theme_t   s_theme;                    /* parsed container geometry */
 static orb_theme_geo_t s_geo;
 /* The installed slot's identity, captured at boot where the slot is adopted. The
@@ -297,6 +313,12 @@ static uint32_t      s_bundle_bytes;
  * off by the time anything reads it. */
 static void use_no_art(void)
 {
+    /* The apps resolve against nothing: retire the published index with the
+     * geometry, so a base-face dial cannot half-draw a bundle it dropped. */
+    heap_caps_free(s_live_region);
+    s_live_region = NULL;
+    s_live_sec = NULL;
+    memset(&s_live_b, 0, sizeof s_live_b);
     s_geo.theme      = NULL;
     s_geo.rects      = NULL;
     s_geo.rect_first = NULL;
@@ -318,6 +340,28 @@ static void use_no_art(void)
 }
 
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
+
+/* The adopted bundle's app section, or NULL. This is the door Migration 2's
+ * commit 3 opens: an app that draws from a theme asks the bundle directly which
+ * elements it names — through orb_elems.c, against the section returned here —
+ * instead of reading a projection of it back out of the geometry adapter. The
+ * section is the ADOPTED one: the same bytes the dial is drawing, proven at the
+ * same door. bank_off answers where that section's own art bank begins inside
+ * the payload art_bank_ptr() maps — the figure a catalogue offset must be
+ * folded with before it can index the payload (see the measurement in
+ * tools/host_orblayers_test.py section 14). The base face has no bundle: the
+ * answer is NULL and the caller draws what a dial with no theme draws. */
+bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
+                        uint32_t *bank_off)
+{
+    if (!s_live_sec || !s_live_region) return false;
+    const orb_bundle_sec_t *s = orb_bundle_find(&s_live_b, slug);
+    if (!s) return false;
+    *sec = s;
+    *bank_off = s->art_off - SLOT_ART_OFF;
+    return true;
+}
+
 const char *orb_theme_source(void)         { return s_source; }
 /* The residency verdict the boot ladder reached: an adopted, drawable theme whose
  * geometry is published. Not the same question as art_bank_ready() — that answers
@@ -1097,8 +1141,8 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
     io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
     why = orb_clock3_parse(sec, &io);
-    heap_caps_free(region);
     if (why) {
+        heap_caps_free(region);
         ESP_LOGE(TAG, "bundle \"%s\" has no drawable clock: %s", h->name, why);
         return ESP_FAIL;
     }
@@ -1124,8 +1168,22 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     } else {
         fe = art_bank_fill(slot_hdr_base + SLOT_ART_OFF, span, true, raw[W_ART_CRC], &ms);
     }
-    if (fe != ESP_OK)
+    if (fe != ESP_OK) {
+        heap_caps_free(region);              /* the parse's copy dies with the map */
         return fe;
+    }
+    /* Publish the parsed index for the apps to resolve against (see the block
+     * above s_live_b): the projection consumed the element table once, and
+     * Migration 2's commit 3 makes the first consumer that asks it again, so the
+     * region now survives the parse instead of dying at it. It goes up only once
+     * the pixels are resident, so no door can answer a section whose bank the
+     * dial cannot draw. Retire the previous adoption AFTER the new one is proved
+     * -- a failed load leaves the dial drawing what it was drawing, pointers and
+     * all. */
+    heap_caps_free(s_live_region);
+    s_live_region = region;
+    s_live_b = b;
+    s_live_sec = orb_bundle_find(&s_live_b, ORB_CLOCK3_SLUG);   /* re-found in the copy */
 
     s_geo.theme = &s_theme;
     s_geo.rects = s_b3_rects; s_geo.rect_first = s_b3_first;

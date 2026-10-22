@@ -81,6 +81,9 @@
 #include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
 #include "clock_base.h"  /* §26: the face shown when no theme is resident */
 #include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
+#include "orb_layers.h" /* orb_layer_desc_t + orb_asset_class_prim: the rows clock_layers_build claims */
+#include "orb_elems.h"  /* orb_elems_at: the element dialect's reader — Migration 2's first caller */
+#include "orb_clock3.h" /* ORB_CLOCK3_SLUG: the one name the clock's section answers to */
 
 #include "clk_types.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
 /* Second, deliberately: this header #defines the names clock_assets.h just defined
@@ -1946,7 +1949,176 @@ static void compose_now(void)
 
 
 
-esp_err_t clock_view_init(void)
+/* ---- the layer table: the dial's rows, claimed the way every app claims ----
+ * (Migration 2, Commit 3.)
+ *
+ * The rows come from the bundle, not from the geometry adapter: the adapter is
+ * what the projection builds, and the projection is what this migration
+ * deletes. So the adopted section is opened (orb_theme_live_sec — the same
+ * bytes the dial is drawing, proven at the same door), its element table is
+ * walked in the theme's own depth order, and every row is answered by
+ * orb_elems_at(), the element dialect's reader, before it becomes an
+ * orb_layer_desc_t the broker gates and the compositor commits.
+ *
+ * The fold. orb_elems_at() answers a plane's offset inside its section's own
+ * bank; orb_asset_t.off is documented payload-relative (orb_assets.h), and the
+ * commit pass resolves a base-less row against art_bank_ptr() (orb_sched.c).
+ * The two conventions meet HERE, at the resolve step: off = plane + bank_off,
+ * where bank_off is the figure the getter answers. Section 14 of
+ * tools/host_orblayers_test.py pins both readings against the shipped hook:
+ * the folded row lands the element's own pixels, an unfolded one lands its
+ * neighbour's.
+ *
+ * What the table does NOT do this commit is DRAW. The legacy clock_layer_commit
+ * still owns the flush and the mark set (its header comment and orb_sched.c's
+ * both say why the two cannot share one), so every row enters hidden —
+ * `show = 0`, live and counted, painting nothing. The pass line is the ledger:
+ * the owner's app row reports the live count equal to the bake's runtime rows,
+ * refused 0, and the frame byte-identical. Commit 4 deletes the legacy renderer
+ * and wakes these rows with layer_set, angles and all.
+ *
+ * What is not a row: the plate (class plate slot 0 — the canvas is the plate,
+ * and a row for it would blend the background over its own restore); a row the
+ * bake folded into the plate (the matte mask names it, honoured the way the
+ * legacy job list skips a folded layer); and a switched-off row (EF_HIDDEN),
+ * which is a theme's own off switch and not a refusal.
+ */
+
+typedef struct { uint16_t cls, slot; } clk_layer_key_t;
+#define CLK_LAYER_KEYS_MAX 37   /* the clock's whole drawn vocabulary: 2 plates, 6 hands,
+                                 * 5 shadows, 16 complications, 8 pointers. An ADOPTED
+                                 * table cannot exceed it — orb_clock3.c refuses a row
+                                 * outside those cells and a duplicate inside — so the
+                                 * bound here is a belt, not a budget. */
+static clk_layer_key_t s_lay_key[CLK_LAYER_KEYS_MAX];
+static int s_lay_handle[CLK_LAYER_KEYS_MAX];
+static int s_lay_n;
+static orb_app_t *s_lay_app;                /* the row the table is claimed under */
+
+#define CLK_EF_HIDDEN  0x08u    /* theme_schema EF_HIDDEN, the mirror orb_clock3.c keeps */
+#define CLK_W_MATTE    20u      /* orb_clock3.c W_MATTE_MASK: one truth, read the same way */
+
+/* The fps bucket a row's art belongs to — the mapping the legacy job list
+ * uses: an ordered layer counts under its slot, the carriage (hand slot 5)
+ * rides the seconds count it turns with, a shadow counts with the hand casting
+ * it, and the glass and the baked rows keep their own buckets. */
+static uint8_t clk_row_role(uint16_t cls, uint16_t slot)
+{
+    if (cls == ORB_ASSET_HAND)   return (uint8_t)(slot == 5u ? 2u : slot);
+    if (cls == ORB_ASSET_SPRITE) return (uint8_t)slot;
+    if (cls == ORB_ASSET_PLATE)  return CLK_ROLE_GLASS;
+    if (cls == ORB_ASSET_BANK)   return CLK_ROLE_COMP;
+    return CLK_ROLE_AUX;
+}
+
+/* One element's row. The descriptor's own placement, pivot and blend stay
+ * zero: the resolver's box and pivot answer them (orb_layers.c's recipe); the
+ * FORMAT 3 dialect carries no blend column (a shadow is its own alpha plate);
+ * and the angle starts at the theme's fixed degrees — the wall angle is what
+ * Commit 4's tick adds, per row, per beat. */
+static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
+                         orb_layer_desc_t *d)
+{
+    d->art.cls     = e->cls;
+    d->art.tier    = ORB_ASSET_OK;                    /* the theme answered it  */
+    d->art.x       = e->x;
+    d->art.y       = e->y;
+    d->art.w       = (int16_t)e->w;
+    d->art.h       = (int16_t)e->h;
+    d->art.pivotx  = e->pivot_x;
+    d->art.pivoty  = e->pivot_y;
+    d->art.prim    = (uint16_t)orb_asset_class_prim((orb_asset_class_t)e->cls);
+    d->art.global  = 0;                               /* the clock's namespace  */
+    d->art.off     = bank_off + e->off;               /* the fold — see above   */
+    d->art.bytes   = e->size;
+    d->ang_10      = (int16_t)(e->degrees / 10u);     /* hundredths -> tenths   */
+    d->show        = 0;                               /* Commit 4 wakes it      */
+    d->role        = clk_row_role(e->cls, e->slot);
+    d->gen_prim    = 0xFFu;                           /* the answer's own prim  */
+    d->alpha       = 255;
+}
+
+static void clock_layers_build(orb_app_t *self)
+{
+    const orb_svc_t *svc = orb_svc_table();
+    /* The broker wipes an app's rows when it goes behind the glass
+     * (orb_svc_app_suspended — P5.5's clause that an app behind the dial owns
+     * no pixels), and the wipe kills the handles behind this file's back. So
+     * the delete-first pass runs only over a live table; behind a wipe the
+     * handles are already dead, the table itself survives for the re-add, and
+     * deleting them here would bill the ledger refusals the app never made. */
+    if (orb_svc_layers_live(self) > 0)
+        for (int i = 0; i < s_lay_n; i++) svc->layer_del(self, s_lay_handle[i]);
+    s_lay_n = 0;
+
+    const orb_bundle_sec_t *sec = NULL;
+    uint32_t bank_off = 0;
+    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off))
+        return;             /* no adopted bundle: no rows. The base face claims none. */
+
+    /* Depth first, table order second. The insert sort is over at most 37
+     * entries before anything is claimed. */
+    const uint32_t matte = orb_bundle_scalar(sec, CLK_W_MATTE);
+    uint16_t pick_cls[CLK_LAYER_KEYS_MAX], pick_slot[CLK_LAYER_KEYS_MAX];
+    uint16_t pick_ord[CLK_LAYER_KEYS_MAX];
+    int n = 0, hidden = 0, folded = 0;
+    for (uint32_t i = 0; i < sec->n_elem && n < CLK_LAYER_KEYS_MAX; i++) {
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, i, &e);
+        if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
+        if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
+        if ((e.cls == ORB_ASSET_HAND || e.cls == ORB_ASSET_SPRITE)
+            && e.slot < 5u && (matte & (1u << e.slot))) { folded++; continue; }
+        if (e.cls == ORB_ASSET_PLATE && (matte & 0x20u)) { folded++; continue; }
+        pick_cls[n] = e.cls; pick_slot[n] = e.slot; pick_ord[n] = e.order;
+        n++;
+    }
+    for (int a = 1; a < n; a++) {                 /* stable: equal depths keep table order */
+        const uint16_t kc = pick_cls[a], ks = pick_slot[a], ko = pick_ord[a];
+        int b = a - 1;
+        while (b >= 0 && pick_ord[b] > ko) {
+            pick_ord[b + 1] = pick_ord[b];
+            pick_cls[b + 1] = pick_cls[b];
+            pick_slot[b + 1] = pick_slot[b];
+            b--;
+        }
+        pick_ord[b + 1] = (uint8_t)ko;
+        pick_cls[b + 1] = kc;
+        pick_slot[b + 1] = ks;
+    }
+
+    int refused = 0;
+    for (int k = 0; k < n; k++) {
+        orb_elem_t el;
+        char why[160];
+        const orb_elems_ans_t a = orb_elems_at(sec, pick_cls[k], pick_slot[k], 0u,
+                                               &el, why, sizeof why);
+        if (a != ORB_ELEMS_OK) {
+            /* An adopted table answers OK to its own rows; anything else is
+             * stated once and skipped rather than half-claimed. */
+            ESP_LOGW(TAG, "layer row %u/%u: %s", (unsigned)pick_cls[k],
+                     (unsigned)pick_slot[k], why);
+            refused++;
+            continue;
+        }
+        orb_layer_desc_t d;
+        memset(&d, 0, sizeof d);
+        clk_row_desc(&el, bank_off, &d);
+        const int h = svc->layer_add(self, &d);
+        if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
+                                               * table counted it; the walk moves on */
+        s_lay_key[s_lay_n].cls  = pick_cls[k];
+        s_lay_key[s_lay_n].slot = pick_slot[k];
+        s_lay_handle[s_lay_n] = h;
+        s_lay_n++;
+    }
+
+    ESP_LOGI(TAG, "layer table: %d row%s, %d hidden, %d folded, %d refused (base %lu)",
+             s_lay_n, s_lay_n == 1 ? "" : "s", hidden, folded, refused,
+             (unsigned long)bank_off);
+}
+
+esp_err_t clock_view_init(orb_app_t *self)
 {
     /* B1/B2, and the owner's rule that file management is the OS's: the clock does
      * not walk /sd itself and never will. It declares the one directory it reads
@@ -2142,6 +2314,14 @@ esp_err_t clock_view_init(void)
     /* Glass / hub cap last, on top of everything. */
     s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc);
 
+    /* The layer table, from the same bundle the widgets above were projected
+     * from (Migration 2 commit 3). It claims no pixels this commit: see the
+     * block above clock_layers_build. A failure here is a smaller ledger row on
+     * the owner's app page and a log line — never a dial that fails to boot:
+     * the legacy path above already owns the glass by this point. */
+    s_lay_app = self;
+    clock_layers_build(self);
+
     /* Tourbillon frame bank: descriptors for the second-hand layer's swap.
      * Reset the frame state so the first tick (re)draws it whole. */
     for (int i = 0; i < (int)clk_theme.tourbillon_n && i < CLK_TOURB_MAX; i++)
@@ -2258,6 +2438,15 @@ void clock_view_set_bounce(bool on)
          * parked, so whatever s_tourb_shown claims is stale. */
         s_tourb_shown = -1;
         s_tourb_t0 = lv_tick_get();
+        /* The broker wipes this dial's rows when it goes behind the glass
+         * (orb_svc_app_suspended), so the layer table is re-claimed on the
+         * way back: a dial that returns to a table that no longer exists is
+         * a dial that silently stops feeding the ledger. Only an emptied
+         * table rebuilds — an activation that finds its rows still standing
+         * (the boot ladder's first show) leaves them and their handles alone.
+         * (Migration 2, commit 3.) */
+        if (s_lay_app && orb_svc_layers_live(s_lay_app) == 0)
+            clock_layers_build(s_lay_app);
         lv_obj_invalidate(s_scr);
         if (!orb_bg_gif_mode()) orb_bg_show_plate_frame(orb_bg_frame_now());
         compose_now();

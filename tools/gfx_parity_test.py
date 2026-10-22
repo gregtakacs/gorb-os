@@ -105,6 +105,23 @@ def canon(t):
                "", t, flags=re.S)
     t = re.sub(r"/\* The marks this tick made.*?where the pixels leave\.\) \*/\s*",
                "", t, flags=re.S)
+    # P8.2 (Commit 1): the tick's period now comes from the pick, so the tail
+    # after the throughput report — the retired per-mode period selection plus
+    # the now-unified deadline ladder — is erased on both sides down to the
+    # shared report_fps_if_due(); anchor. Everything that still marks or welds
+    # (the GIF/carriage advance, the policy seam, request_commit) sits BEFORE
+    # that call and stays under comparison; only the beat-selection is forgiven,
+    # and it is the one thing this commit set out to rewrite. Reword the anchor
+    # and this stops matching: the parity line then fails loudly rather than
+    # quietly forgiving a tick that stopped compositing anything.
+    t = re.sub(r'(report_fps_if_due\(\);).*\}', r'\1 }', t, flags=re.S)
+    # P8.2 (Commit 1): report_fps_if_due grows the hysteresis gate at its reset
+    # boundary — the measured-window figure feeds the demote/promote state
+    # machine before the counters clear. That inserted block has no pinned
+    # counterpart, so it drops out here; the surrounding snapshot/reset is the
+    # shipped routine and stays whole.
+    t = re.sub(r'/\* The report-second boundary.*?sched_hysteresis\(measured\);\s*',
+               "", t, flags=re.S)
     t = t.replace('if (!s_running) return;', 'if (!s_active) return;')
     for k, v in NAMES.items():
         t = re.sub(r'\b%s\b' % re.escape(k), v, t)

@@ -9,13 +9,19 @@ that reads the SHIPPING C and asserts every branch the mirror depends on is
 still present, a truth table, and a mutation harness. If someone edits the pick,
 the lint fails and forces a re-read.
 
-The rule (D16/D32, docs §33): the OS owns one flush cadence. Each element either
-names a fixed beat (a constrained fps) or is free (0, rides as fast as the glass
-goes). The pick is the highest rate <= the measured floor that is a common
-multiple of every constrained ask, so no constrained element aliases (a 4 fps
-hand at a 15 fps flush advances 3.75 frames a tick and jitters). When the floor
-admits no such multiple, fall back to the set's floor (the slowest ask). With no
-constrained element, run at the floor.
+The rule (D16/D32, docs §33/§40, P8.2): the OS owns one flush cadence, and the
+pick reads the MEASURED floor (never an ask). Each element asks with a mode:
+FREE rides whatever the working cap allows and contributes no constraint;
+FLUID asks a continuous motion capped at its rate (a ceiling, not a divisor);
+DISTINCT names a fixed beat it must not alias (a divisor). The working cap is
+the measured floor clamped to [4..15], tightened lower by every fluid ask. The
+answer is the highest LADDER RUNG {12,8,4,2,1} at or under the cap that every
+distinct ask divides into, so no constrained element aliases (a 4 fps hand at a
+15 fps flush advances 3.75 frames a tick and jitters). A distinct ask is a
+ladder rung by install-time construction. When no rung under the cap is a common
+multiple, fall back to the set's own floor (the slowest distinct ask, clamped
+into the band — which may sit above the working cap; that is the alias-free
+honest answer). With no distinct ask at all, run at the working cap.
 """
 import os
 import re
@@ -28,27 +34,52 @@ SRC = os.path.join(HERE, "..", "main", "gfx", "orb_sched.c")
 # ---- the mirror (an exec-able string, so mutants patch text, not this file) --
 MIRROR_SRC = '''
 def pick_rung(asks, floor_fps):
+    CEIL = 15
+    FLOOR = 4
+    LADDER = (12, 8, 4, 2, 1)
+    def clamp(f):
+        if f < FLOOR:
+            return FLOOR
+        if f > CEIL:
+            return CEIL
+        return f
     if floor_fps == 0:
         floor_fps = 1
+    cap = clamp(floor_fps)
     lcm = 1
-    any_ = False
+    over = False
+    any_distinct = False
     slowest = 0
-    for a in asks:
-        if a == 0:
+    for fps, mode in asks:
+        if fps == 0:
             continue
-        any_ = True
-        if slowest == 0 or a < slowest:
-            slowest = a
-        g = gcd(lcm, a)
-        l = lcm // g * a
-        if l == 0 or l > 1000:
-            return slowest
-        lcm = l
-    if not any_:
-        return floor_fps
-    if lcm > floor_fps:
-        return slowest
-    return (floor_fps // lcm) * lcm
+        if mode == 'free':
+            continue
+        if mode == 'fluid':
+            c = clamp(fps)
+            if c < cap:
+                cap = c
+            continue
+        any_distinct = True
+        if slowest == 0 or fps < slowest:
+            slowest = fps
+        if not over:
+            g = gcd(lcm, fps)
+            l = lcm // g * fps
+            if l == 0 or l > 1000:
+                over = True
+            else:
+                lcm = l
+    if not any_distinct:
+        return cap
+    if not over:
+        for rung in LADDER:
+            if rung > cap:
+                continue
+            if rung % lcm != 0:
+                continue
+            return rung
+    return clamp(slowest)
 '''
 
 
@@ -78,14 +109,20 @@ def lint():
         txt[txt.index("uint32_t orb_sched_pick_rung("):]
     checks = [
         ("gcd helper present", "static uint32_t rung_gcd("),
-        ("free element skips", "if (a == 0) continue;"),
-        ("slowest floor tracked", "if (slowest == 0 || a < slowest)"),
-        ("gcd reduce before multiply", "uint32_t g = rung_gcd(lcm, a);"),
-        ("lcm product", "uint32_t l = lcm / g * a;"),
-        ("lcm cap returns set floor", "if (l == 0 || l > 1000) return slowest;"),
-        ("no-constrained runs floor", "if (!any) return floor_fps;"),
-        ("floor under one cycle runs set floor", "if (lcm > floor_fps) return slowest;"),
-        ("highest common multiple", "return (floor_fps / lcm) * lcm;"),
+        ("clamp into band", "if (fps < ORB_SCHED_PANEL_FLOOR) return ORB_SCHED_PANEL_FLOOR;"),
+        ("working cap starts at measured floor", "uint32_t cap = rung_clamp(floor_fps ? floor_fps : 1);"),
+        ("0 ask binds nothing", "if (a->fps == 0) continue;"),
+        ("free ask rides the cap", "if (a->mode == ORB_SCHED_FREE) continue;"),
+        ("fluid is a cap not a divisor", "if (a->mode == ORB_SCHED_FLUID) {"),
+        ("fluid tightens the cap", "if (c < cap) cap = c;"),
+        ("slowest floor tracked", "if (slowest == 0 || a->fps < slowest)"),
+        ("gcd reduce before multiply", "uint32_t g = rung_gcd(lcm, a->fps);"),
+        ("lcm product", "uint32_t l = lcm / g * a->fps;"),
+        ("lcm overflow sets over", "if (l == 0 || l > 1000) over = 1;"),
+        ("no distinct runs the cap", "if (!any_distinct) return cap;"),
+        ("rung skipped over cap", "if (rung > cap) continue;"),
+        ("rung must divide cleanly", "if (rung % lcm != 0) continue;"),
+        ("fallback clamps the set floor", "return rung_clamp(slowest);"),
     ]
     fails = []
     for why, needle in checks:
@@ -99,39 +136,36 @@ def lint():
 # deleted, not kept as decoration (this session's §32 discipline). Expectations
 # are computed against the mirror's branches, not guessed.
 VECTORS = [
-    # no element constrained: the stack runs the measured floor (free/max).
+    # No constraint at all: run at the measured floor (clamped into [4..15]).
     ([], 5, 5),
-    ([0, 0], 8, 8),
-    ([0], 15, 15),
-    # one constrained hand at 4 fps, a floor that admits a clean multiple.
-    ([4], 8, 8),        # 8 = 4*2, no alias
-    ([4], 15, 12),      # 15 is NOT a multiple of 4; the hand would advance
-                        # 3.75 ticks/frame. Pick 12 (=4*3), the highest clean rung.
-    ([4], 16, 16),
-    ([4], 3, 4),        # floor below one cycle: fall back to the set's floor (4)
-    ([4], 11, 8),
-    # second hand every 1 s (1 fps) is a divisor of everything: never binds.
-    ([1], 15, 15),
-    # two constrained elements: the rung must be a multiple of BOTH (their LCM).
-    ([4, 6], 12, 12),   # lcm 12, floor 12 -> 12
-    ([4, 6], 23, 12),   # lcm 12, floor 23 -> 23//12=1 -> 12
-    ([4, 6], 11, 4),    # lcm 12 > floor 11 -> fall back to the set's floor,
-                        # the slowest constrained ask = min(4,6) = 4
-    ([3, 5], 30, 30),   # lcm 15, floor 30 -> 30
-    ([3, 5], 14, 3),    # lcm 15 > floor 14 -> set's floor slowest = min(3,5) = 3
-    # free element mixed with a constrained one: the free one rides, the beat binds.
-    ([4, 0], 15, 12),
-    # the fallback returns the SLOWEST ask, not the first: pins min-tracking.
-    ([6, 4], 11, 4),    # lcm 12 > floor 11, but the first ask (6) is not the min;
-                        # the set's floor is 4, so first-wins (6) is wrong
-    # the LCM cap is an overflow guard, independent of the (small) panel floor:
-    # it fires on lcm > 1000 even when the floor could still hold one cycle.
-    ([40, 27], 1100, 27),  # lcm 1080 > the 1000 cap -> set's floor min(40,27)=27;
-                           # without the cap the pick would read 1080 (a real ask,
-                           # tested at a floor deliberately above the panel range)
-    # a constrained ask past the panel's LCM range collapses to the set's floor.
-    ([700, 800], 30, 700),  # lcm 5600 > 1000 -> return slowest (700)
-    ([60], 30, 60),     # lcm 60 > floor 30 -> set's floor slowest = 60
+    ([(0, 'free')], 15, 15),
+    ([(5, 'free')], 15, 15),           # a nonzero FREE ask still rides the cap
+    # FLUID is a ceiling, not a divisor: it only tightens the working cap.
+    ([(8, 'fluid')], 15, 8),           # continuous motion capped at 8
+    ([(20, 'fluid')], 15, 15),         # a fluid ask above the ceiling no-ops
+    ([(2, 'fluid')], 15, 4),           # a fluid ask below the band clamps to the floor
+    ([(8, 'fluid'), (4, 'distinct')], 15, 8),   # fluid binds cap, distinct divides rung
+    # DISTINCT is a divisor of the rung, so a slow ask need not slow the tick.
+    ([(2, 'distinct')], 15, 12),       # a 2 fps ask still lets the tick run 12
+    ([(4, 'distinct')], 15, 12),       # 15 not a multiple of 4; highest clean rung 12
+    ([(4, 'distinct')], 8, 8),         # cap 8: rung 8 divides clean
+    ([(8, 'distinct')], 15, 8),        # 12 aliases 8 (1.5), so pick 8
+    ([(12, 'distinct')], 15, 12),
+    ([(6, 'distinct')], 15, 12),       # 6 divides 12 clean
+    # A distinct ask the ladder cannot serve under the cap falls back to the
+    # set's own floor (the slowest ask), clamped.
+    ([(5, 'distinct')], 15, 5),        # no rung <=15 is a multiple of 5 -> floor 5
+    ([(60, 'distinct')], 15, 15),      # ask above the ceiling: clamp to the band
+    ([(4, 'distinct')], 3, 4),         # floor below the band clamps the cap up to 4
+    # Two distinct asks: the rung must divide into BOTH (their LCM).
+    ([(4, 'distinct'), (6, 'distinct')], 15, 12),   # lcm 12
+    ([(4, 'distinct'), (6, 'distinct')], 11, 4),    # lcm 12 > cap 11 -> set floor min=4
+    ([(8, 'distinct'), (12, 'distinct')], 15, 8),   # lcm 24 exceeds the ladder -> set floor min=8
+    # The fallback returns the SLOWEST ask, not the first: pins min-tracking.
+    ([(6, 'distinct'), (4, 'distinct')], 11, 4),    # first ask 6 is not the min (4)
+    # The LCM overflow guard is separate from the (small) band: a huge LCM sets
+    # over and skips the ladder, falling back to the clamped set floor.
+    ([(40, 'distinct'), (27, 'distinct')], 15, 15), # lcm 1080 > 1000 -> over -> clamp(27)=15
 ]
 
 
@@ -150,18 +184,27 @@ def check_vectors():
 # Each mutant patches MIRROR_SRC text, re-execs it, and must flip at least one
 # truth-table answer.
 MUTS = [
-    ("drop free-element skip",
-     "        if a == 0:\n            continue", "        if False:\n            continue"),
-    ("ignore the lcm, run floor",
-     "    return (floor_fps // lcm) * lcm", "    return floor_fps"),
-    ("fallback to floor not set floor",
-     "    if lcm > floor_fps:\n        return slowest", "    if lcm > floor_fps:\n        return floor_fps"),
-    ("no-constrained returns 1",
-     "    if not any_:\n        return floor_fps", "    if not any_:\n        return 1"),
-    ("lcm cap disabled",
-     "        if l == 0 or l > 1000:\n            return slowest", "        if False:\n            return slowest"),
+    ("free element no longer rides (treated as distinct)",
+     "        if mode == 'free':\n            continue",
+     "        if False:\n            continue"),
+    ("fluid no longer tightens the cap",
+     "            if c < cap:\n                cap = c",
+     "            if False:\n                cap = c"),
+    ("ladder stops respecting the cap",
+     "            if rung > cap:\n                continue",
+     "            if False:\n                continue"),
+    ("ladder stops checking the alias",
+     "            if rung % lcm != 0:\n                continue",
+     "            if False:\n                continue"),
+    ("no-distinct returns 1, not the cap",
+     "    if not any_distinct:\n        return cap",
+     "    if not any_distinct:\n        return 1"),
+    ("fallback skips the band clamp",
+     "    return clamp(slowest)",
+     "    return slowest"),
     ("slowest floor not tracked (first wins)",
-     "        if slowest == 0 or a < slowest:\n            slowest = a", "        if slowest == 0:\n            slowest = a"),
+     "        if slowest == 0 or fps < slowest:\n            slowest = fps",
+     "        if slowest == 0:\n            slowest = fps"),
 ]
 
 

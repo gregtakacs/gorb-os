@@ -151,23 +151,67 @@ void orb_sched_reset_fps(void);
 uint32_t orb_sched_tick_base_ms(void);
 uint32_t orb_sched_bg_rate(uint32_t base, uint32_t *every);
 
-/* ---- the rung pick (P8.1, D16/D32) ----------------------------------------
+/* ---- the rung pick (P8.1, D16/D32; mode-aware per the owner ruling §40) -----
  *
- * The OS owns ONE flush cadence; every live element rides on top of it. An
- * element constrained to a fixed beat (a hand at 4 fps, a plate bank at bg_fps)
- * must land on the cadence WITHOUT aliasing: at a 4 fps ask the stack can flush
- * at 4, 8, or 12 fps and evenly distribute the redraws, but 15 fps would make
- * the hand advance 3.75 frames a tick and jitter. An element with no fixed beat
- * (period 0, "as fast as the glass goes") imposes no divisor and just rides the
- * floor. The pick is therefore the highest achieved flush rate <= the measured
- * floor that is a common multiple of every constrained element's ask, so no
- * constrained element aliases; if the floor admits none, it falls back to the
- * set's floor (the slowest constrained ask). `floor_fps` is the delivered figure
- * this build measured for the bank on the glass (docs §33), never the ask.
+ * The OS owns ONE flush cadence; every live element rides on top of it. Since
+ * §40 an ask carries a MODE, not just a rate:
+ *
+ *   ORB_SCHED_DISTINCT  the element has an authored frame animation that must
+ *                        meet its frames on an even tick boundary. Its rate is
+ *                        one of the ladder {1,2,4,8,12} and it contributes a
+ *                        DIVISOR: the tick must be a ladder rung that is a
+ *                        common multiple of every distinct ask, so none aliases
+ *                        (a 4 fps hand at a 15 fps flush advances 3.75 frames a
+ *                        tick and jitters).
+ *   ORB_SCHED_FLUID     continuous motion (a sweep, a slide) that wants
+ *                        steadiness, not a rung. It contributes a CAP, not a
+ *                        divisor: the pick is any integer fps up to the fluid
+ *                        max, the measured floor, and the ceiling.
+ *   ORB_SCHED_FREE      no fixed beat ("as fast as the glass goes"); rides the
+ *                        floor. Contributes no divisor and no cap.
+ *
+ * The pick is therefore the highest ladder rung <= the working cap that is a
+ * common multiple of every DISTINCT ask. The working cap is the tighter of the
+ * measured floor and every fluid cap. A fluid-only or free-only stack runs at
+ * the working cap. If the distinct asks admit no clean rung (their LCM is past
+ * the ladder), it falls back to the slowest distinct ask — P8.1's ruling kept.
+ * `floor_fps` is the delivered figure this build measured on the glass (docs
+ * §33), never the ask. The animated result clamps into [4..15]: the owner
+ * benchmarked 15 as the hardware ceiling and 4 as the full-panel floor.
  *
  * Pure and host-mirrored (tools/host_sched_rung_test.py); it reads no globals so
  * it is testable without the dial, and a rung that cannot fire gets deleted. */
-uint32_t orb_sched_pick_rung(const uint16_t *asks, unsigned n, uint32_t floor_fps);
+
+/* The two hardware constants the owner signed 2026-10-22 (§40): the ANIMATED
+ * ceiling (no animated stack beat 15 in any §33 run) and the animated full-panel
+ * floor (a whole-panel repaint measured 5 sustained; the floor sits under the
+ * measurement, D9's discipline). Static screens are not scheduled by the pick. */
+#define ORB_SCHED_FPS_CEILING 15
+#define ORB_SCHED_PANEL_FLOOR  4
+
+/* Hysteresis, signed by the owner as drafted (2026-10-22, §40). A run demotes
+ * after two report-seconds delivering under the pick; it promotes after ten
+ * stable seconds carrying at least 25% model slack; demotes are rate-limited to
+ * one per 30 s. They land as named constants so the bench can re-tune them and
+ * the number moves in exactly one place. */
+#define ORB_SCHED_HYST_DEMOTE_SEC  2    /* report-seconds under pick before a demote */
+#define ORB_SCHED_HYST_PROMOTE_SEC 10   /* stable seconds of slack before a promote   */
+#define ORB_SCHED_HYST_SLACK_PCT   25   /* model slack % that licenses a promote      */
+#define ORB_SCHED_HYST_DEMOTE_MS   30000 /* minimum ms between two demotes            */
+
+typedef enum {
+    ORB_SCHED_FREE     = 0,   /* no fixed beat: rides the working cap      */
+    ORB_SCHED_DISTINCT = 1,   /* authored frames: a ladder divisor         */
+    ORB_SCHED_FLUID    = 2,   /* continuous motion: a cap, never a divisor */
+} orb_sched_mode_t;
+
+typedef struct {
+    uint16_t fps;    /* the element's ask, in fps; 0 imposes nothing          */
+    uint8_t  mode;   /* an orb_sched_mode_t                                  */
+} orb_sched_ask_t;
+
+uint32_t orb_sched_pick_rung(const orb_sched_ask_t *asks, unsigned n,
+                            uint32_t floor_fps);
 /* The synthetic ink the DISPLAY_BENCH paint pass blended, so the report can
  * prove the ink it booked really reached the glass. */
 void orb_sched_ink_px_add(uint32_t n);

@@ -998,10 +998,17 @@ static void act_appact(int row)
     if (row == 0) {
         /* The carousel's own door, on the LVGL task where lv_screen_load()
          * must run. It refuses an app that cannot walk, and the line says so
-         * rather than leaving the owner staring at a screen that did not move. */
+         * rather than leaving the owner staring at a screen that did not move.
+         * NOT_FOUND is its own sentence: it is not the app failing, it is the
+         * platform not yet drawing that kind — a code app's layers have no
+         * compositor commit until P8 lands, and the owner reading "will not
+         * go on the dial" after a clean install would look in the app, not
+         * the phase list. */
         const esp_err_t e = orb_app_activate(a);
         snprintf(s_ui.status, sizeof(s_ui.status),
                  e == ESP_OK ? "\"%s\": on the dial"
+                             : e == ESP_ERR_NOT_FOUND
+                 ? "\"%s\": code apps draw layers the dial cannot paint yet"
                              : "\"%s\": %s will not go on the dial",
                  a->title ? a->title : a->slug, a->slug);
         ESP_LOGI(TAG, "apps: activate \"%s\" -> %s", a->slug, esp_err_to_name(e));
@@ -1280,18 +1287,33 @@ esp_err_t menu_view_init(void)
 
     /* Result line: why a scan failed, or what was just set. It is the only place
      * the dial can tell the owner why the card did not answer, which orb_sd's
-     * silent ESP_OK/ESP_FAIL otherwise leaves them to guess at. */
+     * silent ESP_OK/ESP_FAIL otherwise leaves them to guess at.
+     *
+     * Width-bounded and wrapping, because the panel is round: the chord at this
+     * label's bottom edge (y=400) is ~325 px, and a refusal sentence with the
+     * title prefix runs ~60 characters — over 400 px on one line, its ends
+     * outside the visible circle (bench, orb-B: the switch-refusal message was
+     * unreadable). 300 px leaves margin inside the chord; WRAP takes the second
+     * line upward, toward the wider part of the circle, not off the bottom. */
     s_status = lv_label_create(s_scr);
     if (!s_status) goto nomem;
     lv_obj_set_style_text_color(s_status, lv_color_make(0xe0, 0xb0, 0x40), 0);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(s_status, 300);
+    lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_status, "");
     lv_obj_align(s_status, LV_ALIGN_BOTTOM_MID, 0, -66);
 
+    /* Same circular bound, tighter here: the chord at this hint's bottom edge
+     * (y=432) is ~244 px, and the app-doors hint runs 55 characters. 230 px
+     * keeps both wrap lines inside the circle; the hint growing to two lines is
+     * cheaper than the word "uninstall" losing its tail. */
     s_hint = lv_label_create(s_scr);
     if (!s_hint) goto nomem;
     lv_obj_set_style_text_color(s_hint, COL_TXT_LO, 0);
     lv_obj_set_style_text_font(s_hint, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(s_hint, 230);
+    lv_label_set_long_mode(s_hint, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_hint, "push to open");
     lv_obj_align(s_hint, LV_ALIGN_BOTTOM_MID, 0, -34);
 

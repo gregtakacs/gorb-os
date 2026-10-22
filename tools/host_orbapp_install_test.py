@@ -556,6 +556,26 @@ def lint(src):
             bad.append("P4a: enabling a failed app must clear its record first")
         if "that app is on the dial" not in eb:
             bad.append("P4a: disabling the app on the glass must be refused")
+    # 7b. THE DOOR GATE'S WORKER EXEMPTION (bench, orb-B 2026-10-21). The dial
+    #       menu runs the enable/uninstall doors AS its orb_jobs job; busy() is
+    #       that job's own flag, so a gate that reads it unconditionally refuses
+    #       every press on the glass with "a card job is running" — the door
+    #       deadlocks on itself. door_open must read busy() only when the caller
+    #       is not the worker, and orb_jobs.c must answer on_worker by task
+    #       identity (never by a flag a posted-but-unstarted job could fake).
+    dlo = src.find("static const orb_app_t *door_open(")
+    dhi = src.find("esp_err_t orb_app_enable(", dlo if dlo >= 0 else 0)
+    if dlo < 0 or dhi < 0:
+        bad.append("P7: could not locate door_open body")
+    else:
+        db = src[dlo:dhi]
+        if "!orb_jobs_on_worker()" not in db or "orb_jobs_busy()" not in db:
+            bad.append("P7: door_open must exempt the worker from its busy gate")
+        if "orb_app_upload_busy()" not in db:
+            bad.append("P7: the upload window must still refuse the door")
+    jsrc = read(os.path.join(ROOT, "main", "app", "orb_jobs.c"))
+    if "xTaskGetCurrentTaskHandle() == s_worker" not in jsrc:
+        bad.append("P7: orb_jobs_on_worker must compare task identity")
     # 8. key stability: the fresh-install wipe guards a REUSED slot (an
     #    upgrade keeps words — D19), and main.c runs the apply rung between
     #    the broker coming up and the first screen building.

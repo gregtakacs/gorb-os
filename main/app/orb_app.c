@@ -29,6 +29,8 @@
 #include <stdio.h>      /* card_fill's snprintf into the row's own buffers */
 #include <string.h>
 
+#include "orb_app_wasm.h"   /* P7.2: orb_wasm_iface, registered below as a behaviour module */
+
 #include "esp_heap_caps.h"   /* the card table lives in PSRAM, not internal .bss */
 
 #include "clock_view.h"
@@ -229,6 +231,11 @@ typedef struct {
 
 static const orb_behaviour_module_t s_behaviour[] = {
     { ORB_BEHAVIOUR_COLOR_PICKER, &s_picker_iface },
+    /* P7.2 (D20): the wasm3 code tier. One compiled iface serves every code-bearing
+     * .orbapp; orb_app_wasm.c keys per-app state by flash_slot, so two installed wasm
+     * apps sharing this iface are two rows over two M3 runtimes — unlike the picker,
+     * which is a C6 singleton. The iface's hooks are the guest's entry points. */
+    { ORB_BEHAVIOUR_WASM,         &orb_wasm_iface },
 };
 
 const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind)

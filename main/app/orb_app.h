@@ -285,6 +285,8 @@ void orb_app_card_reset(void);
 enum {
     ORB_BEHAVIOUR_NONE         = 0,  /* reserved: not a module, entry keeps its own iface */
     ORB_BEHAVIOUR_COLOR_PICKER = 1,  /* the HSB editor: LVGL-drawn, vector-only   */
+    ORB_BEHAVIOUR_WASM         = 2,  /* the wasm3 code tier (P7/D20): one generic
+                                      * iface, N instances, over orb_svc_t        */
 };
 
 /** The iface the compiled-in module behind `behaviour_kind` builds with, or NULL

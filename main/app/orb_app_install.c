@@ -1341,10 +1341,13 @@ esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
             orbapp_hdr_t oh;
             const char *or_ = app_hdr_validate(efd, &oh);
             close(efd);
-            if (!or_ && oh.geom_crc == h.geom_crc &&
+            if (!or_ && oh.geom_crc == h.geom_crc && oh.code_crc == h.code_crc &&
+                oh.code_size == h.code_size &&
                 oh.serial == h.serial && strcmp(oh.slug, h.slug) == 0) {
-                /* geom_crc + serial + slug is the whole identity tuple: the art
-                 * words on both sides are zero because app_hdr_validate just
+                /* geom_crc + the code pair + serial + slug is the whole identity
+                 * tuple: D20 made the code region the app's payload, so two files
+                 * whose modules differ are two apps whatever else they share. The
+                 * art words on both sides are zero because app_hdr_validate just
                  * refused any file that carried art (D21). */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
                 ESP_LOGI(TAG, "app upload of \"%s\" is unchanged — kept as is", h.slug);

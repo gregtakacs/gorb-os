@@ -20,11 +20,16 @@ fixed and ordered. A rename, a dropped required flag, or a made-up hook turns a 
 red here, not on the dial.
 
 THE DEVICE HALF. The m3 calls cannot run here, so their ORDER is pinned by a
-structural lint over the shipped text: the ceiling is armed before LoadModule, imports
-bind before Load, the PSRAM image copy precedes Parse, and the trap path bills C2 —
+structural lint over the shipped text: the ceiling is armed before LoadModule, links
+attach AFTER Load (m3_bind.c refuses to link an unloaded module — a bench-caught P7.2
+ordering bug), the raw-fn signatures carry m3's results(params) notation (the bench
+refused the first import-bearing module over the dump-style underscore spelling), the
+PSRAM image copy precedes Parse, and the trap path bills C2 —
 orb_svc_note_fault at the report, and the engine released only once the broker's
-second-strike flag lands (P7.3). Reordering or dropping any of those is a lint
-failure here.
+second-strike flag lands (P7.3). The seam lints cover the upload identity tuple too:
+D20 made the code region the app's payload, so a code-only re-upload is a different
+app, and the bench proved the pre-P7 tuple silently kept the old bytes. Reordering or
+dropping any of those is a lint failure here.
 
 Run:      python3 tools/host_orbapp_wasm_test.py
 Mutants:  python3 tools/host_orbapp_wasm_test.py --mutations
@@ -280,9 +285,10 @@ def lint(text):
           r"m3_LoadModule\s*\(",
           "SetResourceLimit(MemoryBytes)", "LoadModule",
           "arm the ceiling before the module can allocate past the owner's consent")
-    # Imports bind before the CALL to Load, because Load resolves them.
-    order(r"=\s*bind_imports\s*\(", r"m3_LoadModule\s*\(",
-          "bind_imports", "LoadModule", "imports bind before the module loads")
+    # Links attach after the CALL to Load: m3_LinkRawFunction throws moduleNotLinked
+    # on a module whose runtime pointer is still NULL (bench, 2026-10-21).
+    order(r"m3_LoadModule\s*\(", r"=\s*bind_imports\s*\(",
+          "LoadModule", "bind_imports", "m3 refuses to link an unloaded module")
     # The image is copied to owned PSRAM (m3 keeps a pointer) before the parse.
     order(r"memcpy\s*\(\s*s->code", r"m3_ParseModule\s*\(",
           "PSRAM image copy", "ParseModule",
@@ -291,6 +297,12 @@ def lint(text):
     if not re.search(r"orb_svc_note_fault\s*\(\s*s->app\s*,\s*why\s*\)", text):
         fails.append("  device lint: the trap path does not bill orb_svc_note_fault — "
                      "D27's trapping-module rule is unbuilt")
+    # Raw-fn signatures are written in m3's results(params) notation. The module-dump
+    # underscore spelling throws in SignatureToFuncType (m3_bind.c has no case for
+    # '_'): the bench refused the first import-bearing module over it, 2026-10-21.
+    if not re.search(r"\{\s*\"orb\",\s*\"now\",\s*\"v\(iii\)\"", text):
+        fails.append("  device lint: the orb.now binding is not in m3's results(params) "
+                     "notation — the underscore form throws return-count-overflow")
     order(r"trapped in", r"orb_svc_note_fault\s*\(",
           "trap report", "orb_svc_note_fault",
           "the fault is billed where the trap is reported, in one place")
@@ -351,6 +363,14 @@ def lint_seam(inst, mn):
           r"orb_app_init_all\s*\(\s*\)",
           "apply_code", "orb_app_init_all",
           "the wasm init answers OK only for a module this rung already loaded", mn)
+    # The upload dup gate prices the code region: D20 made the module the app's
+    # payload, so a re-upload that changed only the code is a new app, not the
+    # "unchanged" quiet-accept — the bench watched a serial-numbered overwrite
+    # silently keep the old bytes until the tuple grew the code pair, 2026-10-21.
+    if not re.search(r"geom_crc == h\.geom_crc &&\s*oh\.code_crc == h\.code_crc &&\s*"
+                     r"oh\.code_size == h\.code_size &&", inst):
+        fails.append("  seam lint: the upload identity tuple ignores the code region — "
+                     "two files whose modules differ must never read as unchanged")
     return fails
 
 
@@ -401,6 +421,12 @@ MUTATIONS = [
      _sub("snprintf(why, sizeof why, \"wasm trapped in %s\", s_entries[entry].export_name);",
           "orb_svc_note_fault(s->app, why); snprintf(why, sizeof why, \"wasm %s\", "
           "s_entries[entry].export_name);")),
+    # lint: links attach before the module is in the runtime — the exact shape the
+    # bench caught (m3_bind.c:134, 2026-10-21): the loader must never go back to it.
+    ("link before the runtime holds the module", "lint",
+     _rex(r"(r = m3_LoadModule\(s->rt, s->mod\);[\s\S]*?return ESP_FAIL; \})\n\n"
+          r"(    /\* Link AFTER Load[\s\S]*?\*/\n    M3Result br = bind_imports\(s->mod\);)",
+          r"\2\n\n\1")),
     # seam: the read-back becomes a size nod instead of a CRC — a rotted slot would
     # reach the engine, the exact thing verify_slot_geom refuses for geometry.
     ("drop code read-back CRC", "seam",
@@ -424,6 +450,16 @@ MUTATIONS = [
     ("rung before enable words", "seam_main",
      _rex(r"(orb_app_install_apply_enable\(\);)",
           r"orb_app_install_apply_code();\n    \1")),
+    # lint: the raw-call sig reverts to the module-dump underscore spelling — the
+    # bench bug of 2026-10-21: m3_bind.c parses it as returns and refuses the link.
+    ("underscore sig notation", "lint",
+     _sub("\"orb\", \"now\", \"v(iii)\"", "\"orb\", \"now\", \"iii_\"")),
+    # seam: the upload identity tuple drops the code pair again — a code-only
+    # re-upload reads as "unchanged" and the old module survives on the card.
+    ("tuple ignores the code region", "seam",
+     _sub("oh.geom_crc == h.geom_crc && oh.code_crc == h.code_crc &&\n"
+          "                oh.code_size == h.code_size &&",
+          "oh.geom_crc == h.geom_crc &&")),
 ]
 
 
@@ -488,7 +524,7 @@ def main():
     if mutate:
         tail = ", all %d mutants caught" % len(MUTATIONS)
     print("all host checks pass (%d plan vectors, %d table rows, %d lint rules%s)" % (
-        len(vecs_plan()), len(EXPECT_ENTRIES), 7 + 6, tail))
+        len(vecs_plan()), len(EXPECT_ENTRIES), 8 + 7, tail))
 
 
 if __name__ == "__main__":

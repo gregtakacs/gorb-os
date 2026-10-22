@@ -173,8 +173,11 @@ m3ApiRawFunction(imp_now)                    /* (i32,i32,i32) writes sec/frac/sy
     m3ApiSuccess();
 }
 
-/* Name, signature, host fn. The signature is wasm3's notation: params then a '_'
- * separator then results, so "iii_" is three i32 args and nothing returned. */
+/* Name, signature, host fn. The signature is wasm3's raw-call notation: the results
+ * first, then the params in parens — "v(iii)" is three i32 args and nothing returned.
+ * m3_bind.c's SignatureToFuncType has no case for '_', so the module-dump spelling
+ * ("iii_") parses its params as returns and throws "malformed signature; return count
+ * overflow" — caught on the bench enabling the first import-bearing module 2026-10-21. */
 typedef struct {
     const char *module;
     const char *name;
@@ -183,7 +186,7 @@ typedef struct {
 } wasm_bind_t;
 
 static const wasm_bind_t s_binds[] = {
-    { "orb", "now", "iii_", imp_now },
+    { "orb", "now", "v(iii)", imp_now },
 };
 
 /* Apply every import the module actually declared. m3_LinkRawFunction on a name the
@@ -373,12 +376,17 @@ esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
         slot_release(s); return ESP_ERR_INVALID_SIZE;
     }
 
-    M3Result br = bind_imports(s->mod);        /* bind before Load: Load resolves imports */
-    if (br) { ESP_LOGW(TAG, "slot %d: import bind failed: %s", slot, br); slot_release(s); return ESP_FAIL; }
-
     r = m3_LoadModule(s->rt, s->mod);          /* takes s->mod either way */
     if (r) { ESP_LOGW(TAG, "slot %d: module would not load: %s", slot, r); slot_release(s); return ESP_FAIL; }
+
+    /* Link AFTER Load: m3_LinkRawFunction throws moduleNotLinked on a module whose
+     * runtime pointer is still NULL (m3_bind.c:134 — caught on the bench 2026-10-21,
+     * where the pre-load bind refused every module). The pointer is valid to use here;
+     * it is the runtime's from this line, and slot_release frees it as part of the
+     * runtime, so it is NULLed the moment the link lands. */
+    M3Result br = bind_imports(s->mod);
     s->mod = NULL;                             /* now owned by the runtime */
+    if (br) { ESP_LOGW(TAG, "slot %d: import bind failed: %s", slot, br); slot_release(s); return ESP_FAIL; }
 
     /* Resolve the entry points. A missing required export (the tick) or a lookup
      * failure on a required one releases the whole instance: a half-resolved module

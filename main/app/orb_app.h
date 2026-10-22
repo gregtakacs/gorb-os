@@ -201,6 +201,11 @@ struct orb_app {
     bool                active;
     uint8_t             fault_count;   /* C2: two consecutive faults mark failed */
     bool                failed;
+    /** True once this row's behaviour module has been built this boot. The
+     *  boot gather sets it for every row it passes; orb_app_activate() builds
+     *  a row it finds without it — the only task that may, and the case D35
+     *  created: a card row enabled after the gather has had no init yet. */
+    bool                init_done;
 };
 
 #define ORB_APP_CAP 8   /* B5: cap 8 installed, hard, no repartition */

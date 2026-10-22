@@ -674,6 +674,7 @@ esp_err_t orb_app_init_all(void)
             continue;
         }
         app->installed = true;
+        app->init_done = true;
     }
 
     /* The card table, built after the compiled tier so an installed app never
@@ -726,6 +727,7 @@ esp_err_t orb_app_init_all(void)
                 built = true;
         if (built) {
             app->installed = true;
+            app->init_done = true;   /* the module is built — by its first row */
             ESP_LOGI(TAG, "%s: reuses its behaviour module's built screen — walkable",
                      app->slug);
             continue;
@@ -739,6 +741,7 @@ esp_err_t orb_app_init_all(void)
             continue;
         }
         app->installed = true;
+        app->init_done = true;
     }
 
     ESP_LOGI(TAG, "%u app(s) built, %d walkable",
@@ -822,6 +825,22 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * the direct-activate path (?to=<card-slug>, a route) so a below-ABI package
      * can never reach the iface derefs below and take the dial down with it. */
     if (!app->iface) return ESP_ERR_NOT_SUPPORTED;
+
+    /* D35's open follow-up (bench orb-B 2026-10-21): a card row whose enable
+     * word landed AFTER the boot gather — the picker re-enabled from /apps, a
+     * factory Restore pressed before any reboot — was never init()ed, and its
+     * screen() answer is NULL until it is. Gather only builds rows enabled at
+     * the moment it runs. Build once here: both callers of this function, the
+     * router's poll and the menu's press, run on the LVGL task, which is the
+     * one task widget construction is allowed to happen on. A wasm row's init
+     * checks residency only, so this is where the native kinds get their face. */
+    if (!app->init_done) {
+        if (app->iface->init && app->iface->init(app) != ESP_OK) {
+            ESP_LOGE(TAG, "%s: lazy init refused — cannot be shown", app->slug);
+            return ESP_FAIL;
+        }
+        app->init_done = true;
+    }
 
     orb_app_t *old = s_current;
     if (old == app) {

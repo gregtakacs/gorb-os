@@ -88,17 +88,22 @@ def canon(t):
     # the tick's policy seam: one callback where the shipped tick had the pair
     t = t.replace('if (s_policy.tick) s_policy.tick(timer);',
                   'compose_now(); tourbillon_advance(); /* no-op unless the theme has a frame bank */')
-    t = t.replace('if (orb_sched_l4_active() && s_policy.mark_all) s_policy.mark_all();',
-                  'if (l4_active()) mark_all_layers();')
     t = t.replace('if (orb_sched_l4_active() && s_policy.bench) s_policy.bench();',
                   'if (l4_active()) bench_plan();')
-    # Migration 2 (P8, Commit 2): the layer-table commit call lands in the tick
-    # after the mark pass. The pinned pre-extraction tick owns no app table, so
-    # the block — comment and call together — drops out of the shipped side here,
-    # which is the same documented-delta mechanism the three seam rules above
-    # use. Reword the block and this stops matching: the parity line then fails
-    # loudly instead of quietly forgiving a tick that stopped committing.
-    t = re.sub(r"\n */\* The app layer table,.*?\n *orb_sched_commit_layers\(orb_app_current\(\)\);",
+    # Migration 2 (P8, Commit 4): the blanket static re-mark and the interim
+    # tick-side layer-table commit both retired from the tick — the re-mark
+    # because its shipped discipline (mark only what moved) was the flag-off
+    # default it early-returned on anyway, the commit because the weld point
+    # moved to the display flush hook orb_sched.c now registers. The pinned
+    # tick's mark pass — comment and call together — and the shipped tick's
+    # replacement comment drop out on this side and that, the same
+    # documented-delta mechanism the seam rules above use. Reword either
+    # block and these stop matching: the parity line then fails loudly
+    # instead of quietly forgiving a tick that stopped marking anything.
+    t = re.sub(r"/\* Own every pixel any layer can reach.*?the commit consumes them\. \*/\s*"
+               r"if \(l4_active\(\)\) mark_all_layers\(\);\s*",
+               "", t, flags=re.S)
+    t = re.sub(r"/\* The marks this tick made.*?where the pixels leave\.\) \*/\s*",
                "", t, flags=re.S)
     t = t.replace('if (!s_running) return;', 'if (!s_active) return;')
     for k, v in NAMES.items():
@@ -184,5 +189,6 @@ if unexpected:
 print('\nparity holds: the %d paint routines against %s, and the %d bank/tick routines '
       'against %s — every moved routine is the shipped one, and the only deltas are '
       'the documented renames, the threaded art-bank base, the policy callbacks, and '
-      'the layer-table commit call Migration 2 added.'
+      'the layer-table seam Migration 2 landed — mark pass retired, commit '
+      'welding at the display flush hook, as of Commit 4.'
       % (len(CASES) - len(SCHED), REF, len(SCHED), SCHED_REF))

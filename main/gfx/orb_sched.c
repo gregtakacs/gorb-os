@@ -13,7 +13,10 @@
  * narrower one the hook exists to serve: the DELTA BANK still never maps the
  * partition itself — orb_bg_init() takes the app's own blob() base, and every
  * GIF and plate read below goes through s_art. What the hook adds is one read
- * of the mapped payload, nothing else.
+ * of the mapped payload, nothing else. As of Commit 4 this TU also OWNS the
+ * hook: sched_flush_commit() is what display's flush calls, and the dial's
+ * private commit hook is gone — the app layer table is the only L4 job source
+ * on the glass.
  */
 
 #include "orb_sched.h"
@@ -60,8 +63,9 @@ static const char *TAG = "clock";
  * advancing the GIF only every Nth tick drops tiles is the question this flag
  * is here to answer -- read chunks/s in the fps line. Measured on the shipped
  * flagship bake: /1 = 9.0 tiles and 15 fps, /2 = 8.0 and 18, /3 = 8.3 and 18,
- * so the GIF contributes ~1 tile/frame and the plateau is mark_all_layers()'s
- * hand-box floor, not the GIF.
+ * so the GIF contributes ~1 tile/frame and the plateau was the blanket
+ * static-layer re-mark's hand-box floor, not the GIF — a discipline since
+ * deleted (Migration 2 Commit 4): rows mark only what moved.
  * SHIPPED DEFAULT IS 1: background fidelity wins over the +3 fps a half-speed
  * GIF buys. Set to 2 only if throughput is prioritised over smoothness. */
 #define CLK_GIF_THROTTLE 1
@@ -517,18 +521,18 @@ void orb_sched_ink_px_add(uint32_t n)
 
 /* The commit hook's job array. Static rather than per-call stack: with the
  * table's ceiling at ORB_LAYER_MAX (16) it is ~1 KB of the LVGL task's stack
- * per tick, and that stack is not ours to spend — the same reasoning
- * clock_view.c's legacy hook gives its own list. One caller (the tick below),
- * on one task, exactly as the hook clock_view registers. */
+ * per flush, and that stack is not ours to spend — the same reasoning
+ * clock_view.c's retired hook gave its own list. One caller (the flush hook
+ * below), on one task (the LVGL one), exactly as that retired hook ran. */
 static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
 
-/* ---- the layer-table commit pass (Migration 2, P8 Commit 2) --------------
+/* ---- the layer-table commit pass (Migration 2, P8 Commits 2-4) -----------
  *
  * The OS's own commit path for anything that draws through the app layer
  * table: read the entry on the glass's rows, build the job list in table order
  * (paint order IS table order — §1.2a), and hand it to the same gfx_commit()
- * the dial's private hook drives. The app never names a paint context, a sprite
- * or a row mark, which is the whole point of the table.
+ * the dial's private hook used to drive. The app never names a paint context,
+ * a sprite or a row mark, which is the whole point of the table.
  *
  * `theme_base` is art_bank_ptr(), the mapped live payload — NULL before
  * art_bank_init() and for a board with no theme, and then every base-less row
@@ -538,17 +542,16 @@ static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
  * clock's build pass (clock_view.c's clock_layers_build) and the base
  * convention vectors in tools/host_orblayers_test.py section 14.
  *
- * Ordering hazard, stated rather than hidden: gfx_commit() consumes the WHOLE
- * mark set, and the clock's legacy path marks its own rows during its tick and
- * commits them at the LVGL flush. A live app table and the legacy clock
- * renderer therefore fight for one mark set, which is exactly why Commit 4
- * deletes the legacy path. Commit 3 lands the clock's table WITHOUT ending the
- * legacy path, so its rows enter it hidden (desc.show = 0): orb_layers_jobs()
- * skips an unshown row, this pass builds zero jobs for the shipped dial, the
- * marks stay the legacy renderer's, and the table is live bookkeeping that
- * Commit 4's layer_set wakes. A bake whose rows this pass DOES emit — any app
- * that ever claims a shown row while the clock's legacy hook stands — is what
- * Commit 4 closes the door on.
+ * The mark-set ownership that made Commits 2 and 3 land this pass in the tick
+ * as an idle guard is closed: the legacy renderer that marked its rows in the
+ * tick and committed them at the flush is deleted, and this pass now owns the
+ * one weld point — sched_flush_commit(), registered with display's flush
+ * below and in orb_sched_start(). Every mark site (the dial's wedges, the GIF
+ * pushes, the tourbillon diff, the table's own wake touches) leaves its damage
+ * in the row bank; the flush welds it all in one pass, after the chunks
+ * mirror and before the bands DMA. Committing earlier — in the tick — would
+ * leave any LVGL-initiated repaint (a bounce, a menu return) welded by nobody
+ * and is gone for that reason.
  */
 void orb_sched_commit_layers(const orb_app_t *active)
 {
@@ -561,6 +564,29 @@ void orb_sched_commit_layers(const orb_app_t *active)
     int nj = orb_layers_jobs(t, art_bank_ptr(), s_lay_jc, ORB_LAYER_JOB_MAX);
     if (nj) gfx_commit(nj, s_lay_jc, s_canvas);
 }
+
+#if CLK_BG_DIRECT_PUSH
+/* The weld point (Migration 2, Commit 4): what display's flush calls once per
+ * commit, after every dirty chunk has mirrored into the panel buffer and
+ * before the bands DMA it out — the same slot clock_layer_commit occupied
+ * until this commit deleted it.
+ *
+ * The glass gate is load-bearing and inherited whole from that hook: the tick
+ * timer is paused off-glass but the flush is not, and since D35 home is the
+ * menu shell, so the first commit after boot belongs to the MENU's frame. A
+ * writer into the mirror with no view on the glass writes nothing; the marks
+ * ride to the next commit, where either they flush as that screen's pixels or
+ * the first activation's bounce repaints them whole. The l4 test is the
+ * retired hook's first line kept: without it a board falling back to the
+ * all-through-LVGL path (CLK_BG_DIRECT_PUSH=0 builds aside, a GIF bank that
+ * outgrew the canvas) would weld an app table over LVGL's own render. */
+static void sched_flush_commit(void)
+{
+    if (!orb_sched_l4_active()) return;
+    if (!orb_sched_running()) return;
+    orb_sched_commit_layers(orb_app_current());
+}
+#endif
 
 static void tick_timer_cb(lv_timer_t *timer)
 {
@@ -592,25 +618,15 @@ static void tick_timer_cb(lv_timer_t *timer)
     }
     if (s_policy.tick) s_policy.tick(timer);
 #if CLK_BG_DIRECT_PUSH
-    /* Own every pixel any layer can reach, not just the ones that moved:
-     * apply_angles marked the swept union (which clears the vacated wedge), this
-     * marks the full box of each layer at its present pose (which is what a
-     * hand that stands still or is clipped by the GIF rect's x-extent needs to
-     * be restored and redrawn every tick). Marks union per row, so both
-     * contributions apply, and the commit consumes them. */
-    if (orb_sched_l4_active() && s_policy.mark_all) s_policy.mark_all();
 #if DISPLAY_BENCH
     if (orb_sched_l4_active() && s_policy.bench) s_policy.bench();   /* walks the blocks + marks their rows */
 #endif
-    /* The app layer table, after every mark this tick made and before this
-     * frame's marks reach the DMA: gfx_commit() consumes the WHOLE mark set, so
-     * a commit ahead of the mark pass would drop damage the app has not asked
-     * to draw yet. Today this returns at its own empty-table guard — the clock
-     * builds no rows until Commit 3 — and the shipped dial draws through
-     * clock_layer_commit at the flush exactly as it did before the call landed.
-     * The two paths cannot both own one mark set, which is what Commit 4's
-     * deletion of the legacy renderer settles. */
-    orb_sched_commit_layers(orb_app_current());
+    /* The marks this tick made — the dial's wedges and frame diffs, the GIF's
+     * pushed rows, the table pass's wake touches — weld at the flush, where
+     * sched_flush_commit() composites the app's rows over them before the DMA
+     * reads a line. (Migration 2, Commit 4: the blanket static re-mark and the
+     * interim tick-side commit both retired; the panel never sees a weld half
+     * done, because the weld happens where the pixels leave.) */
     request_commit();
 #endif
     report_fps_if_due();
@@ -655,6 +671,13 @@ static void tick_timer_cb(lv_timer_t *timer)
 void orb_sched_start(uint32_t period_ms, const orb_sched_policy_t *policy)
 {
     if (policy) s_policy = *policy;
+#if CLK_BG_DIRECT_PUSH
+    /* Migration 2, Commit 4: the app layer table's weld point. Display calls
+     * the hook at every commit, and the gate inside it — not a registration
+     * traded per screen — is what keeps a parked dial out of another screen's
+     * frame, exactly the discipline the clock's own registration used. */
+    display_set_commit_hook(sched_flush_commit);
+#endif
     s_tick_timer = lv_timer_create(tick_timer_cb, period_ms, NULL);
     lv_timer_pause(s_tick_timer);   /* parked until the clock is on the glass */
 }

@@ -21,7 +21,7 @@
  * minute shadow must overpaint the second hand it falls across. (orb-os lays
  * all the shadows down first; that reads as a smudge across a hand the theme
  * orders below, so this port interleaves instead — see clock_view_init and
- * clock_layer_commit, which must and do agree on the stack.)
+ * the layer table's depth sort, which must and do agree on the stack.)
  *
  * Because LVGL runs in LV_DISPLAY_RENDER_MODE_PARTIAL it renders and flushes
  * only the invalidated rectangle. The hands are baked TRIMMED to their opaque
@@ -144,20 +144,6 @@ static int       s_aux_at = -1;               /* order position the block insert
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
  * the hook can never disagree about who owns a row. */
 
-/* Re-mark every layer's full swept box each tick on L4/GIF themes (see
- * mark_all_layers). SHIPPED = 0: a layer marks only the rows it actually
- * dirties (apply_angles wedges, gif_apply_frame pushes, tourbillon diff
- * boxes), and the commit hook repaints every layer across each marked row.
- * The blanket re-mark made a STANDING hand pay its whole swept box every
- * tick -- measured 134.9 ms flush for a static needle at 15 fps, dropping to
- * 54.5 ms with the re-mark off (docs/rows-capacity-2026-10-10.md, batch 6:
- * 10 flashed points, panel byte-identical under the flush gate). The classic
- * freeze bug (mark_all_layers header) cannot return: restore and repaint are
- * per-row x-span scoped, so an unmarked row is never touched. 1 restores the
- * old discipline for A/B. */
-#ifndef CLOCK_L4_MARK_STATIC_BOXES
-#define CLOCK_L4_MARK_STATIC_BOXES 0
-#endif
 
 /* GIF-mode hand beat state (hand_angles): tick counter, the true seconds it
  * was last re-anchored to, and the wall fraction held between beats. */
@@ -173,7 +159,8 @@ static double           s_bt_frac = 0.0;
  * swaps only the pixels inside the baked diff rect vs the PREVIOUS frame can
  * differ, so the per-tick re-mark is that rotated diff box — not the
  * carriage's full swept box, which would re-composite ~40% of the page every
- * tick and re-create the mark_all_layers plateau this dial must not hit. */
+ * tick and re-create the full-page plateau the static re-mark was retired
+ * over (docs/rows-capacity-2026-10-10.md). */
 static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never */
 static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
 static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
@@ -199,9 +186,9 @@ static int32_t         s_car_start_10;      /* start orientation, tenths of a de
  * footprint of both poses: every source row's ink extent (x0,x1) is kept
  * per frame (PSRAM chords, built on first use), rotated as a line segment
  * with 16.16 fixed-point trig, and accumulated into per-device-row x-spans
- * — marks are as wide as the ink and no wider. The commit hook's flush gate
- * (clock_layer_commit) then skips DMA for rows whose rebuild came out
- * byte-identical anyway. If the chord tables cannot be built the caller
+ * — marks are as wide as the ink and no wider. The commit band's flush gate
+ * (orb_gfx.c, fed by the scheduler's table commit) then skips DMA for rows
+ * whose rebuild came out byte-identical anyway. If the chord tables cannot be built the caller
  * falls back to the swept-box union. */
 static uint16_t *s_tourb_cx0[CLK_TOURB_MAX];
 static uint16_t *s_tourb_cx1[CLK_TOURB_MAX];
@@ -229,19 +216,10 @@ static const uint8_t *blob(void) { return s_art; }
  * compose block further down, like tick_base_ms() used to be declared for
  * tick_timer_cb. */
 static void compose_now(void);
+static void clock_layers_refresh(void);
 
 
 
-/* The sprite the given layer index draws RIGHT NOW. Since D32 ruling C the
- * frame bank is its own object (s_car, turned and swapped by
- * tourbillon_advance), so a layer index always draws its own record; the
- * hand[2] pixel-swap a FORMAT 2 tourbillon bake used is gone, and the only
- * themes that ever carried a bank — FORMAT 3 bundles with a carriage row —
- * arrive with the geometry the swap never needed. */
-static const clk_sprite_t *layer_spr(const int k)
-{
-    return &clk_theme.hand[k];
-}
 
 
 
@@ -773,87 +751,14 @@ static void clock_tick_policy(lv_timer_t *timer)
     (void)timer;
     compose_now();
     tourbillon_advance();          /* no-op unless the theme has a frame bank */
-}
-
-/* Every layer the painter owns, at the angle it is currently held at.
- *
- * Called once per tick, and it is what makes the hook the complete owner of the
- * rows it rebuilds. Marking only the layers whose angle CHANGED was the bug: a
- * hand that stands still (the hour hand for an hour at a time, the minute hand
- * under the 0.2-degree re-pose gate) never marked its own box, so the rows it
- * lives on carried nothing but the GIF rect's narrow x-extent. The hook's
- * restore then wiped that row back to plain background and paint_row's per-row
- * x-clip
- * refused to draw the hand outside it -- the hour hand lost its tip and the
- * minute hand was painted once and froze outside the animated area. */
-static void mark_all_layers(void)
-{
-    /* Rows-capacity bench experiment (docs/rows-capacity-2026-10-10.md): the
-     * unconditional full-box re-mark makes a STANDING hand pay its box's
-     * restore+re-blend every tick (measured: a plain sweeping needle costs
-     * ~85 ms/frame on top of the GIF, and ticking it at 1 Hz does NOT help).
-     * Under the L4 hook every marked row is re-composited from the canvas
-     * across ALL layers anyway, so layers that did not move need no mark:
-     * apply_angles marks moving hands, gif_apply_frame marks pushed rows.
-     * Default 1 = the shipped discipline, byte-for-byte. */
-#if !CLOCK_L4_MARK_STATIC_BOXES
-    return;
-#endif
-    /* Full-coverage art (tourbillon kits — dial/glass reach every row) cannot
-     * afford this discipline at all: re-marking four static boxes unions
-     * ~430 rows of full-page restore+repaint per tick and caps the dial at
-     * 5 fps (measured). It is also provably redundant under the current hook:
-     * the hook's restore wipes each marked row to plain canvas and the layer
-     * loop below repaints EVERY layer across the marked span, so a static
-     * layer's pixels are rebuilt by whoever actually dirtied its rows — and
-     * when nothing moved at all there is nothing to flush. Layers mark
-     * themselves on the ticks they change: apply_angles (rotation, incl. the
-     * carriage orbit step) and tourbillon_advance (frame swap) both do.
-     * Classic themes keep the shipped discipline byte-for-byte — the
-     * "hands missing / trailing" freeze bug predates the per-row x-span
-     * restore and is not re-litigated for art that runs fine today. */
-    if (clk_theme.tourbillon_n > 0) return;
-
-    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
-
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
-        if (s_ang_10[k] == INT32_MIN) continue;
-        lv_area_t b;
-        if (s_hand[k])   {
-            /* A live tourbillon re-marks ONLY its current frame's changed rect:
-             * every other pixel of the shown frame is, row for row, exactly
-             * what the last composite produced (nothing else writes them), and
-             * the frame swap / orbit step mark their own boxes themselves
-             * (tourbillon_advance, apply_angles). The full box would be ~40%
-             * of the page re-marked EVERY tick. */
-            if (k == 2 && clk_theme.tourbillon_n && s_tourb_shown >= 0)
-                tourb_mark(&clk_theme.tourbillon[s_tourb_shown], s_ang_10[k], &b);
-            else
-                gfx_swept_box(&clk_theme.hand[k], s_ang_10[k], &b);
-            gfx_mark_rows(b.y1, b.y2, b.x1, b.x2, false);
-        }
-        if (s_shadow[k]) {
-            /* Its OWN box, never the hand's fallthrough: the shadow record is
-             * the hand's shifted by dx,dy, so the old reuse under-marked the
-             * vacated shadow edge on themes with shadows, and re-marked a
-             * tourbillon diff box twice at hand coords on themes without. */
-            lv_area_t sb;
-            gfx_swept_box(&clk_theme.shadow[k], s_ang_10[k], &sb);
-            gfx_mark_rows(sb.y1, sb.y2, sb.x1, sb.x2, false);
-        }
-    }
-
-    /* The overlay deliberately does NOT mark its own box any more. Its pixels
-     * never move, so the only rows needing a re-composite under/over it are
-     * the ones some OTHER layer already flagged (gif pushes, hand wedges, the
-     * tourbillon's diff box) — the commit hook restores those rows from the
-     * canvas and repaints every layer, overlay included, over them. Marking
-     * the overlay's own box was harmless while it was a hub cap, but a kit
-     * "glass" overlay covers the whole page, and self-marking it made every
-     * tick restore and re-blend the ENTIRE dial (measured 2.4 pages/tick,
-     * 3-4 fps). Same rule as a still hand's box: never re-dirty what did not
-     * change. */
+    /* Then the app's side of the frame: every row of this dial's layer table
+     * takes the pose the two passes above just settled (Migration 2, Commit 4).
+     * Damage already sits in the row bank — the mark sites run inside them,
+     * and each marks both the pose it vacates and the one it takes. The
+     * scheduler's flush hook welds whatever this pass changed, so the panel
+     * cannot catch a half-painted dial: the marks and the table agree before
+     * the first restore row does. */
+    clock_layers_refresh();
 }
 
 
@@ -861,15 +766,7 @@ static void mark_all_layers(void)
 
 
 
-#define CLK_L4_MAX_JOBS 12           /* order[5] x (shadow+hand) + glass */
-#define CLK_COMP_JOBS_MAX 32         /* blits for the baked complications: 16
-                                      * windows, or ~3 strips' glyphs + window
-                                      * pieces. Overflow drops the rest with a
-                                      * one-line log (see comp_add_jobs). */
-#define CLK_AUX_JOBS_MAX CLK_AUX_MAX /* one blit per aux row (a row is a hand OR
-                                      * its twin, never both); overflow is the
-                                      * same one-line log as the comp list */
-#define CLK_JOB_MAX (CLK_L4_MAX_JOBS + CLK_COMP_JOBS_MAX + CLK_AUX_JOBS_MAX)
+
 
 #if DISPLAY_BENCH
 /* ---- Synthetic live layer, to price a blended pixel --------------------------
@@ -1039,104 +936,6 @@ static void bench_paint_band(int32_t y0, int nr)
 }
 #endif /* DISPLAY_BENCH */
 
-/* The app's half of the composite: decide WHICH layers go down, in which order,
- * and hand the list to gfx_commit() (main/gfx/orb_gfx.c), which owns the restore,
- * the band walk, the flush gate and the mark clearing. The row-major layout and
- * the measurement behind it are documented there. */
-static void clock_layer_commit(void);
-static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj,
-                          int bucket);
-static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj);
-
-static void clock_layer_commit(void)
-{
-    if (!orb_sched_l4_active()) return;
-    /* The glass gate, and it is load-bearing at boot: the tick timer is paused
-     * off-glass but this hook is not — clock_view_init's first compose_now()
-     * marks the dial's rows BEFORE the router homes, and since D35 home is the
-     * menu shell, so the first commit the hook ever sees belongs to the MENU's
-     * frame. Restoring those rows from the GIF canvas then painted the dial over
-     * the landing card — a clock ghost on every cold boot's menu, gone only
-     * after a round trip (bounce's full invalidate consumed the stale marks).
-     * The hook is the clock's one writer into the mirror; a writer with no view
-     * on the glass writes nothing, and the marks ride to the next commit, where
-     * either they are flushed as the other screen's pixels or the first
-     * activation's bounce repaints them whole. */
-    if (!orb_sched_running()) return;
-    uint16_t *fb = display_fb_mirror();
-    if (!fb) return;
-
-    /* Resolve the live layer list once, in the same z-stack as the LVGL
-     * sibling order built in clock_view_init(): a shadow goes down directly
-     * under its OWN hand, not under every hand. The two paths must agree
-     * exactly — a row LVGL paints itself has to come out identical to one this
-     * hook paints — so the interleave lives here too. All the row-independent
-     * maths (including gfx_swept_box's double-precision libm) is hoisted into the
-     * ctx: one build per layer per commit, not per layer per row. */
-    /* One ctx per live layer, built once for this commit. Static rather than
-     * stack: the hook has exactly one caller (the LVGL task's flush) and the
-     * LVGL task stack is not ours to spend 900 B of. */
-    static gfx_paint_ctx_t jc[CLK_JOB_MAX];
-    int nj = 0;
-    /* Bucket 0 first: the tiles that belong below EVERY live layer, which is
-     * every window the bake has ever placed except a hosted one. A tile with a
-     * bucket (a WINDOW's `first`: the KINDS slot it must stay under) joins the
-     * list at that slot's own turn, so the plate's frame composites over its
-     * edge. The moon under the c4 plate only reaches the glass from UNDER the
-     * plate, and the plate only covers it if the tile went down first. */
-    comp_add_jobs(orb_theme_geo(), jc, &nj, 0);
-    int buckets_done = 1;                                 /* bit b = bucket drained */
-    bool aux_done = false;
-    for (int oi = 0; oi < clk_theme.order_n && nj < CLK_JOB_MAX - 1; ++oi) {
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
-        /* The sub-dial pointers join BEFORE the live hand they belong under
-         * (see aux_insert_at) — and for every order that lists statics first,
-         * that position is also directly above the last live static. */
-        if (!aux_done && oi == s_aux_at) {
-            aux_add_jobs(orb_theme_geo(), jc, &nj); aux_done = true;
-        }
-        if (clk_theme.matte_mask & (1u << k)) continue;   /* baked into the bg */
-        /* Tiles that must stay under THIS live layer, and only statics ever
-         * host one: buckets 1 and 2 would name a hand slot, which no bake
-         * emits, and bucket 0 is already down below the whole list — calling
-         * it again with k == 0 would blend every dial-hosted window a SECOND
-         * time, right under the hour hand. */
-        if (k >= 3) { comp_add_jobs(orb_theme_geo(), jc, &nj, k); buckets_done |= 1 << k; }
-        if (s_shadow[k] && s_ang_10[k] != INT32_MIN)
-            if (gfx_paint_ctx_init(&jc[nj], &clk_theme.shadow[k], blob(), s_ang_10[k], (uint8_t)k)) nj++;
-        if (s_hand[k] && s_ang_10[k] != INT32_MIN)
-            if (gfx_paint_ctx_init(&jc[nj], layer_spr(k), blob(), s_ang_10[k], (uint8_t)k)) nj++;  /* tourbillon frame if live */
-    }
-    if (!aux_done) aux_add_jobs(orb_theme_geo(), jc, &nj);  /* nothing live to join under */
-    /* The carriage is its own layer (D32 ruling C): it joins the stack where
-     * its object sits in the sibling chain — above every ordered layer and
-     * its aux block, below the buckets that drain after them. Its pose is
-     * the seconds angle plus the start orientation, the same figure
-     * apply_angles set and tourbillon_advance marks against. */
-    if (s_car && s_ang_10[2] != INT32_MIN && nj < CLK_JOB_MAX) {
-        const clk_sprite_t *cs = &clk_theme.tourbillon[
-            s_tourb_shown >= 0 && s_tourb_shown < (int)clk_theme.tourbillon_n
-                ? s_tourb_shown : 0];
-        if (gfx_paint_ctx_init(&jc[nj], cs, blob(), s_ang_10[2] + s_car_start_10,
-                               (uint8_t)2)) nj++;
-    }
-    /* A bucket whose layer never joined the stack — hidden, or folded into the
-     * bank by a --matte force — still has to draw its window: it rides above
-     * what does exist. The kit's plate is in the bank either way, so this is the
-     * same reading the classic path reaches for, and the bake printed the forced
-     * fold's pixel cost when it took it. */
-    for (int b = 1; b < 5; b++)
-        if (!(buckets_done & (1 << b))) comp_add_jobs(orb_theme_geo(), jc, &nj, b);
-    if (s_overlay && !(clk_theme.matte_mask & 0x20u) && nj < CLK_JOB_MAX)
-        if (gfx_paint_ctx_init(&jc[nj], &clk_theme.overlay, blob(), 0, CLK_ROLE_GLASS)) nj++;  /* the glass */
-
-    /* The layers this dial asked for, in the order it asked: gfx_commit()
-     * owns the restore, the band walk, the flush gate and the clearing.
-     * Building the list above is the whole of the app's side. */
-    gfx_commit(nj, jc, orb_bg_canvas());
-
-}
 #endif /* CLK_BG_DIRECT_PUSH */
 
 /* ---- complications: baked windows and strips under the live dial -----------
@@ -1168,13 +967,12 @@ static lv_obj_t       *s_comp_obj[CLK_COMP_MAX][CLK_COMP_SLOTS];
 static lv_image_dsc_t  s_comp_dsc[CLK_COMP_MAX][CLK_COMP_SLOTS];
 /* The frame drawn right now, per comp: the window's tile index; the strip's
  * digit at each glyph position and a 0 for each window piece; -1 = nothing
- * drawn. Sole truth for both paths: the L4 commit hook builds its jobs from
- * these, and the classic path reads the LVGL widgets comp_slot_show keeps in
- * step. Any drift between the two is the one-tick ghost the hands paid for
- * before apply_angles learned to hold its angles. */
+ * drawn. Sole truth for both paths: the layer table's pose pass reads these
+ * to pick each BANK row's plane, and the classic path reads the LVGL widgets
+ * comp_slot_show keeps in step. Any drift between the two is the one-tick
+ * ghost the hands paid for before apply_angles learned to hold its angles. */
 static int32_t         s_comp_frame[CLK_COMP_MAX][CLK_COMP_SLOTS];
 static uint32_t        s_comp_logged;        /* bit i: hide reason for comp i printed */
-static bool            s_comp_jobs_warned;   /* job-list overflow is a one-liner */
 
 /* theme_schema.frame_index() verbatim: sign-aware round-to-nearest at
  * scale = frames-per-value-unit x16, clamp below the domain, and WRAP —
@@ -1509,116 +1307,6 @@ static void complications_create(void)
     complications_create_bucket(g, 0);
 }
 
-#if CLK_BG_DIRECT_PUSH
-static void comp_jobs_overflow(void)
-{
-    if (s_comp_jobs_warned) return;
-    s_comp_jobs_warned = true;
-    ESP_LOGW(TAG, "complication/aux blits exceed the %d-slot job list — later rows not drawn",
-             CLK_JOB_MAX);
-}
-
-/* One paint ctx per currently-drawn slot of ONE z bucket, in record order.
- * Every comp blit is static (ang == 0) — the hook's cheapest path — and the
- * ctxs rebuild each commit from s_comp_frame, exactly how the hands stay honest
- * between the two paths. A bank row without pixels (w or h 0) is dropped inside
- * gfx_paint_ctx_init's drawable test, matching the reader's rule.
- *
- * A WINDOW's `first` IS the bucket: the KINDS slot whose live layer this tile
- * belongs under (0 = below every live layer, the case for every theme baked
- * before a sub-dial ever hosted a window, and the reason 0 needs no plumbing).
- * A STRIP's `first` is its bank index, so a strip cannot be bucketed and rides
- * bucket 0 — the only place any strip has ever been baked to sit. */
-static void comp_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj,
-                          int bucket)
-{
-    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
-        const clk_comp_t *c = &g->comps[i];
-        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
-
-        if (c->kind == CLK_KIND_WINDOW) {
-            if ((int)c->first != bucket) continue;
-            const int32_t f = s_comp_frame[i][0];
-            if (f < 0) continue;
-            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-            const clk_sprite_t spr = {
-                .w = c->w, .h = c->h,
-                .pivotx = 0, .pivoty = 0,
-                .centerx = c->x, .centery = c->y,
-                .blend = c->blend, .show = 1,
-                .color_off = c->off + (uint32_t)f * c->frame_bytes,
-            };
-            if (gfx_paint_ctx_init(&jc[*nj], &spr, blob(), 0, CLK_ROLE_COMP)) (*nj)++;
-            continue;
-        }
-        if (c->kind != CLK_KIND_STRIP || bucket != 0) continue;
-
-        const int npos = comp_strip_positions(c);
-        for (int p = 0; p < npos + 2 && p < CLK_COMP_SLOTS; p++) {
-            const int32_t f = s_comp_frame[i][p];
-            if (f < 0) continue;
-            uint16_t bidx;
-            int32_t x, y = c->y;
-            if      (p <  npos) { bidx = (uint16_t)(c->first + (uint16_t)f);
-                                  x = c->x + c->glyph_lead + (int32_t)p * c->glyph_step; }
-            else if (p == npos) { bidx = c->edge_left;  x = c->x; }
-            else                { bidx = c->edge_right; x = 0;    }
-            if (bidx >= g->n_bank) continue;
-            const clk_sprite_t *b = &g->bank[bidx];
-            if (p > npos) x = c->x + (int32_t)c->w - (int32_t)b->w;
-            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-            const clk_sprite_t spr = {
-                .w = b->w, .h = b->h,
-                .pivotx = 0, .pivoty = 0,
-                .centerx = (int16_t)x, .centery = (int16_t)y,
-                .blend = c->blend, .show = 1,
-                .color_off = b->color_off,
-            };
-            if (gfx_paint_ctx_init(&jc[*nj], &spr, blob(), 0, CLK_ROLE_COMP)) (*nj)++;
-        }
-    }
-}
-
-/* One ctx per pointer currently showing an angle, appended where the commit
- * loop put the block: rotated, so the hook's transform path — the same one the
- * hands pay for, and why an unchanged pointer is not in the list at all. The
- * jobs list composites front to back, so a shadowed pointer joins as two ctx
- * with the twin FIRST — the same order aux_create() gives the LVGL siblings on
- * the classic path and the same order the main hands keep with their shadows.
- * A twin that joined after its hand rides over its own pointer: a smudge, not
- * a shadow, and the worst of it at the tip, where the blurred offset overlaps
- * the pointer body for half of every turn. */
-static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
-{
-    for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
-        const clk_aux_t *a = &g->aux[i];
-        if (a->flags & CLK_FLAG_AUX_SHADOW) continue;      /* joined under its hand */
-        if (s_aux_ang_10[i] == AUX_HIDDEN) continue;       /* nothing drawn */
-        const uint16_t t = i + 1;
-        if (t < g->n_aux && t < CLK_AUX_MAX &&
-            (g->aux[t].flags & CLK_FLAG_AUX_SHADOW) &&
-            s_aux_ang_10[t] != AUX_HIDDEN && s_aux_ang_10[t] != INT32_MIN) {
-            if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-            const bool tslide = MOTION_IS_SLIDE(g->aux[t].kind);
-            if (gfx_paint_ctx_init(&jc[*nj], tslide ? &s_aux_pose[t] : &g->aux[t].spr,
-                                   blob(), tslide ? 0 : s_aux_ang_10[t], CLK_ROLE_AUX))
-                (*nj)++;
-        }
-        if (*nj >= CLK_JOB_MAX) { comp_jobs_overflow(); return; }
-        /* A pointer reaches the compositor as the one thing it is: a sprite at a pose.
-         * A rotation is that sprite with an angle. A SLIDE is that sprite with its
-         * centre displaced and an angle of zero — which takes gfx_paint_ctx_init's
-         * STATIC path (its `rot` is false at a whole turn), so the swept box, the row
-         * marks and the per-role blend accounting are the ones every layer already
-         * pays for and gfx grows no new mode. s_aux_pose holds the displaced record,
-         * written once per tick by aux_update rather than recomputed per flush. */
-        const bool slide = MOTION_IS_SLIDE(a->kind);
-        if (gfx_paint_ctx_init(&jc[*nj], slide ? &s_aux_pose[i] : &a->spr,
-                               blob(), slide ? 0 : s_aux_ang_10[i], CLK_ROLE_AUX))
-            (*nj)++;
-    }
-}
-#endif /* CLK_BG_DIRECT_PUSH */
 
 /* ---- aux hands: the sub-dial pointers a theme's style declares -------------
  *
@@ -1876,11 +1564,11 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
             lv_display_t *disp = lv_obj_get_display(s_scr);
             /* One pose, two setters. A pointer that turns gets the rotation setter
              * apply_angles() uses for the hands; a pointer that slides gets a position
-             * setter and NO rotation at all, because rotating a sprite the hook paints
-             * at zero would put the classic path and the L4 path on two different
-             * pixels — the split aux_add_jobs' comment exists to forbid. The displacement
-             * rides the same s_aux_pose record the mark and the hook read, so all three
-             * paths move by one number. */
+             * setter and NO rotation at all, because rotating a sprite the commit
+             * paints at zero would put the classic path and the L4 path on two
+             * different pixels. The displacement rides the same s_aux_pose record
+             * the mark and the table's pose pass read, so all three paths move by
+             * one number. */
             const bool slide = MOTION_IS_SLIDE(a->kind);
             if (a_new == AUX_HIDDEN) {
                 lv_obj_set_hidden(s_aux_obj[i], true);
@@ -1969,13 +1657,13 @@ static void compose_now(void)
  * the folded row lands the element's own pixels, an unfolded one lands its
  * neighbour's.
  *
- * What the table does NOT do this commit is DRAW. The legacy clock_layer_commit
- * still owns the flush and the mark set (its header comment and orb_sched.c's
- * both say why the two cannot share one), so every row enters hidden —
- * `show = 0`, live and counted, painting nothing. The pass line is the ledger:
- * the owner's app row reports the live count equal to the bake's runtime rows,
- * refused 0, and the frame byte-identical. Commit 4 deletes the legacy renderer
- * and wakes these rows with layer_set, angles and all.
+ * Rows enter the table hidden — `show = 0`, live and counted, painting
+ * nothing — and the tick's pose pass below (clock_layers_refresh) wakes and
+ * drives them: the legacy renderer that owned this dial's composite until
+ * Commit 4 is deleted, the scheduler's flush hook is the only commit path,
+ * and the pass line is the ledger: the owner's app row reports the live count
+ * equal to the bake's runtime rows, refused 0, and the frame byte-identical
+ * against the dial-c3 baselines.
  *
  * What is not a row: the plate (class plate slot 0 — the canvas is the plate,
  * and a row for it would blend the background over its own restore); a row the
@@ -1984,7 +1672,20 @@ static void compose_now(void)
  * which is a theme's own off switch and not a refusal.
  */
 
-typedef struct { uint16_t cls, slot; } clk_layer_key_t;
+/* One claimed row: the identity the bundle named, what the pose pass needs
+ * to derive its current pose, and the descriptor as last pushed through the
+ * gate — the pose shadow the per-tick diff reads. Commit 4 grew the record
+ * for exactly that; Commit 3 only remembered (cls, slot). */
+typedef struct {
+    uint16_t cls, slot;        /* the identity, echoed back for logs          */
+    uint16_t frame0, n_frames; /* the element's own frame window into the bank */
+    int16_t  x, y;             /* theme placement — what a slide displaces     */
+    uint8_t  kind;             /* BANK: CLK_KIND_*; AUX: CLK_MOTION_*; else 0  */
+    uint8_t  gidx;             /* BANK/AUX: this row's index in the geo table
+                                * the tick state is indexed by; 0xFF = none */
+    orb_layer_desc_t d;        /* the pose the table holds right now          */
+} clk_layer_key_t;
+#define CLK_EF_AUX_TWIN   0x10u  /* theme_schema EF_AUX_SHADOW, the twin bit */
 #define CLK_LAYER_KEYS_MAX 37   /* the clock's whole drawn vocabulary: 2 plates, 6 hands,
                                  * 5 shadows, 16 complications, 8 pointers. An ADOPTED
                                  * table cannot exceed it — orb_clock3.c refuses a row
@@ -1994,6 +1695,13 @@ static clk_layer_key_t s_lay_key[CLK_LAYER_KEYS_MAX];
 static int s_lay_handle[CLK_LAYER_KEYS_MAX];
 static int s_lay_n;
 static orb_app_t *s_lay_app;                /* the row the table is claimed under */
+/* The section and bank base the rows' frame offsets resolve against. The
+ * adopted bundle changes only at boot — the store door stages, the flip
+ * worker reboots — and this pass rebuilds on any re-show, so caching what
+ * clock_layers_build opened is safe. NULL with s_lay_n stays louder than a
+ * wrong answer: the pass keeps the glass it has. */
+static const orb_bundle_sec_t *s_lay_sec;
+static uint32_t s_lay_bank_off;
 
 #define CLK_EF_HIDDEN  0x08u    /* theme_schema EF_HIDDEN, the mirror orb_clock3.c keeps */
 #define CLK_W_MATTE    20u      /* orb_clock3.c W_MATTE_MASK: one truth, read the same way */
@@ -2050,11 +1758,19 @@ static void clock_layers_build(orb_app_t *self)
     if (orb_svc_layers_live(self) > 0)
         for (int i = 0; i < s_lay_n; i++) svc->layer_del(self, s_lay_handle[i]);
     s_lay_n = 0;
+    s_lay_sec = NULL;                          /* the pose pass parks with the  */
+    s_lay_bank_off = 0;                        /* rows it cannot resolve        */
 
     const orb_bundle_sec_t *sec = NULL;
     uint32_t bank_off = 0;
     if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off))
         return;             /* no adopted bundle: no rows. The base face claims none. */
+    s_lay_sec = sec; s_lay_bank_off = bank_off;
+    const orb_theme_geo_t *g_geo = orb_theme_geo();
+    const int n_comps_geo = (int)g_geo->n_comps  < CLK_COMP_MAX
+                            ? (int)g_geo->n_comps  : CLK_COMP_MAX;
+    const int n_aux_geo   = (int)g_geo->n_aux     < CLK_AUX_MAX
+                            ? (int)g_geo->n_aux    : CLK_AUX_MAX;
 
     /* Depth first, table order second. The insert sort is over at most 37
      * entries before anything is claimed. */
@@ -2070,7 +1786,15 @@ static void clock_layers_build(orb_app_t *self)
         if ((e.cls == ORB_ASSET_HAND || e.cls == ORB_ASSET_SPRITE)
             && e.slot < 5u && (matte & (1u << e.slot))) { folded++; continue; }
         if (e.cls == ORB_ASSET_PLATE && (matte & 0x20u)) { folded++; continue; }
-        pick_cls[n] = e.cls; pick_slot[n] = e.slot; pick_ord[n] = e.order;
+        /* A pointer's twin draws UNDER its hand — the legacy job list put it
+         * there and the classic path's sibling order agrees. The bake packs
+         * the pair adjacent, hand first, and gives both the hand's depth, so
+         * depth-ties must break twin-first: the twin's sort key steps down
+         * one rung. Equal keys otherwise keep table order. */
+        const uint8_t twin = (e.cls == ORB_ASSET_AUX &&
+                              (e.flags & CLK_EF_AUX_TWIN)) ? 1u : 0u;
+        pick_cls[n] = e.cls; pick_slot[n] = e.slot;
+        pick_ord[n] = (twin && e.order) ? (uint16_t)(e.order - 1u) : e.order;
         n++;
     }
     for (int a = 1; a < n; a++) {                 /* stable: equal depths keep table order */
@@ -2107,8 +1831,24 @@ static void clock_layers_build(orb_app_t *self)
         const int h = svc->layer_add(self, &d);
         if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
                                                * table counted it; the walk moves on */
-        s_lay_key[s_lay_n].cls  = pick_cls[k];
-        s_lay_key[s_lay_n].slot = pick_slot[k];
+        clk_layer_key_t *r = &s_lay_key[s_lay_n];
+        r->cls = pick_cls[k]; r->slot = pick_slot[k];
+        r->frame0 = el.frame0; r->n_frames = el.n_frames;
+        r->x = el.x; r->y = el.y;
+        r->kind = (uint8_t)el.kind;
+        /* The tick state — s_comp_frame, s_aux_ang_10 — is indexed by the
+         * GEO table's own slot, which a dense bake makes the element slot and
+         * a sparse one not. Resolve it once here, against the same projection
+         * the update passes walk, and the pose pass never guesses. */
+        r->gidx = 0xFFu;
+        if (pick_cls[k] == ORB_ASSET_BANK && el.kind == CLK_KIND_WINDOW) {
+            for (int c = 0; c < n_comps_geo; c++)
+                if (g_geo->comps[c].tag == el.slot) { r->gidx = (uint8_t)c; break; }
+        } else if (pick_cls[k] == ORB_ASSET_AUX) {
+            for (int c = 0; c < n_aux_geo; c++)
+                if (g_geo->aux[c].tag == el.slot) { r->gidx = (uint8_t)c; break; }
+        }
+        r->d = d;                               /* the pose the table holds now */
         s_lay_handle[s_lay_n] = h;
         s_lay_n++;
     }
@@ -2116,6 +1856,121 @@ static void clock_layers_build(orb_app_t *self)
     ESP_LOGI(TAG, "layer table: %d row%s, %d hidden, %d folded, %d refused (base %lu)",
              s_lay_n, s_lay_n == 1 ? "" : "s", hidden, folded, refused,
              (unsigned long)bank_off);
+}
+
+/* The per-tick pose pass (Migration 2, Commit 4): what the deleted
+ * clock_layer_commit's job-list walk did at the flush, done against the wall
+ * state at the tick instead — once per row, on the numbers that pass already
+ * kept, and nothing reaches the gate twice.
+ *
+ * Each row's pose is DERIVED, never stored twice: hands and shadows read
+ * s_ang_10 (apply_angles' angle, set before this runs), the carriage reads it
+ * plus its start orientation at the frame tourbillon_advance just composited,
+ * BANK rows read s_comp_frame the complication pass just selected, pointer
+ * rows read s_aux_ang_10 / the slide s_aux_pose aux_update just staged, and
+ * the glass is the static it was baked as. The gates match the retired job
+ * list line for line — an angle of INT32_MIN means never posed, a comp frame
+ * of -1 means the pass already hid it, shadow rows honour the theme's
+ * shadow_on scalar — so a row that the legacy path would not have painted
+ * wakes hidden and stays that way.
+ *
+ * Diff first: an hour hand that stands still costs one integer compare, the
+ * way the retired hook made it cost. A 0->1 transition also TOUCHES: that is
+ * the one damage a mark site cannot have computed, because until now the row
+ * drew nothing and its box never entered the row bank. Vacated poses need no
+ * touch here — every move-mark (apply_angles' wedges, the comp and pointer
+ * boxes, the tourbillon diff) marks old and new together, exactly as the
+ * legacy path demanded, and the flush weld restores and repaints both. */
+static void clock_layers_refresh(void)
+{
+    if (s_lay_n == 0 || !orb_sched_l4_active())
+        return;                       /* base face, classic path: nothing to feed */
+    const orb_svc_t *svc = orb_svc_table();
+    for (int i = 0; i < s_lay_n; i++) {
+        clk_layer_key_t *r = &s_lay_key[i];
+        orb_layer_desc_t d = r->d;    /* start from the pose the table holds */
+        uint8_t show = 0;
+
+        /* The visibility gates are the retired job list's own, widgets and
+         * all: s_hand/s_shadow/s_car/s_overlay exist exactly where
+         * clock_view_init decided a layer draws, and a row whose widget the
+         * compiled vocabulary does not build — a pointer twin's hand that
+         * was matte-folded, a sprite beyond the shadowed slots — stays
+         * hidden here for the same reason it stayed out of that list. The
+         * ledger counts it (the bake named a real row); generalising the
+         * renderer past the compiled five is a later commit's bench. */
+        switch (r->cls) {
+        case ORB_ASSET_HAND:
+            if (r->slot < 5u) {
+                const int32_t a = s_ang_10[r->slot];
+                if (s_hand[r->slot] && a != INT32_MIN) { show = 1; d.ang_10 = (int16_t)a; }
+            } else if (s_car && s_ang_10[2] != INT32_MIN) {
+                /* The carriage: the seconds angle plus its start orientation,
+                 * at the frame the wall clock just picked — the same figure
+                 * apply_angles and tourbillon_advance mark against. */
+                int f = s_tourb_shown;
+                if (f < 0 || f >= (int)r->n_frames) f = 0;
+                orb_bundle_spr_t sp;
+                orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + f), &sp);
+                d.art.off = s_lay_bank_off + sp.off;
+                d.art.bytes = sp.size;
+                d.ang_10 = (int16_t)(s_ang_10[2] + s_car_start_10);
+                show = 1;
+            }
+            break;
+        case ORB_ASSET_SPRITE:
+            if (r->slot < 5u && s_shadow[r->slot]) {
+                const int32_t a = s_ang_10[r->slot];
+                if (a != INT32_MIN) { show = 1; d.ang_10 = (int16_t)a; }
+            }
+            break;
+        case ORB_ASSET_PLATE:
+            if (s_overlay) show = 1;  /* the glass: built, unfolded, static   */
+            break;
+        case ORB_ASSET_BANK: {
+            /* FORMAT 3 admits no comp kind but the window, so one row is one
+             * plate and the complication pass' own selection answers which. */
+            const int32_t f = (r->gidx != 0xFFu && r->kind == CLK_KIND_WINDOW)
+                              ? s_comp_frame[r->gidx][0] : -1;
+            if (f >= 0 && (uint32_t)f < r->n_frames) {
+                orb_bundle_spr_t sp;
+                orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + (uint32_t)f), &sp);
+                d.art.off = s_lay_bank_off + sp.off;
+                d.art.bytes = sp.size;
+                show = 1;
+            }
+            break; }
+        case ORB_ASSET_AUX: {
+            const int32_t v = (r->gidx != 0xFFu) ? s_aux_ang_10[r->gidx] : AUX_HIDDEN;
+            if (v != AUX_HIDDEN && v != INT32_MIN) {
+                if (MOTION_IS_SLIDE(r->kind)) {
+                    /* A slide reaches the compositor as the one thing it is:
+                     * the plate at its placed origin, displaced along its
+                     * axis by aux_update's own figure — the same number
+                     * s_aux_pose carries to the marks and the widgets, so
+                     * all three paths move by one and the static paint path
+                     * costs what every static row costs. */
+                    d.x = (int16_t)(r->x + (r->kind == CLK_MOTION_SLIDE_X ? v : 0));
+                    d.y = (int16_t)(r->y + (r->kind == CLK_MOTION_SLIDE_Y ? v : 0));
+                    d.ang_10 = 0;
+                } else {
+                    d.x = 0; d.y = 0;   /* the resolver's own placement        */
+                    d.ang_10 = (int16_t)v;
+                }
+                show = 1;
+            }
+            break; }
+        default:
+            break;
+        }
+        d.show = show;
+        if (memcmp(&d, &r->d, sizeof d) == 0) continue;
+        const bool wake = !r->d.show && show;
+        svc->layer_set(s_lay_app, s_lay_handle[i], &d);
+        r->d = d;
+        if (wake)                     /* the row's first box: no mark site knew */
+            svc->layer_touch(s_lay_app, s_lay_handle[i], NULL);
+    }
 }
 
 esp_err_t clock_view_init(orb_app_t *self)
@@ -2315,10 +2170,11 @@ esp_err_t clock_view_init(orb_app_t *self)
     s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc);
 
     /* The layer table, from the same bundle the widgets above were projected
-     * from (Migration 2 commit 3). It claims no pixels this commit: see the
-     * block above clock_layers_build. A failure here is a smaller ledger row on
-     * the owner's app page and a log line — never a dial that fails to boot:
-     * the legacy path above already owns the glass by this point. */
+     * from (Migration 2, Commits 3 and 4). Rows enter hidden and the tick's
+     * pose pass wakes them — see clock_layers_refresh. A failure here is a
+     * smaller ledger row on the owner's app page and a log line — never a
+     * dial that fails to boot: the table only feeds L4, and a dial without a
+     * canvas still draws through the widgets above. */
     s_lay_app = self;
     clock_layers_build(self);
 
@@ -2334,16 +2190,15 @@ esp_err_t clock_view_init(orb_app_t *self)
     /* The wall pair is the broker's to seed now: the first orb_time_now()
      * below stamps the anchor, exactly where the deleted s_t0_us line did. */
     compose_now();
-#if CLK_BG_DIRECT_PUSH
-    display_set_commit_hook(clock_layer_commit);
-#if DISPLAY_BENCH
+#if CLK_BG_DIRECT_PUSH && DISPLAY_BENCH
+    /* The flush weld point is the scheduler's to register since Commit 4
+     * (orb_sched.c's sched_flush_commit); only the bench probe init below is
+     * still this file's. */
     bench_init();
-#endif
 #endif
 
     static const orb_sched_policy_t clock_policy = {
         .tick     = clock_tick_policy,
-        .mark_all = mark_all_layers,
 #if DISPLAY_BENCH
         .bench    = bench_plan,
 #endif
@@ -2399,7 +2254,7 @@ esp_err_t clock_view_init(orb_app_t *self)
      * static layer is already folded into the plate/bank and costs no
      * gfx_blend_px on any commit (tools/bake_clock.py --matte, which only ever
      * sets a bit it PROVED pixel-identical); mask 0 is the ordinary dial where
-     * every layer is composited by clock_layer_commit each tick. */
+     * every layer is composited by the layer-table commit each tick. */
     ESP_LOGI(TAG, "composite: %s",
              clk_theme.matte_mask ? "baked static matte" : "runtime layers");
     if (clk_theme.tourbillon_n)
@@ -2450,6 +2305,11 @@ void clock_view_set_bounce(bool on)
         lv_obj_invalidate(s_scr);
         if (!orb_bg_gif_mode()) orb_bg_show_plate_frame(orb_bg_frame_now());
         compose_now();
+        /* Pose the rebuilt table BEFORE the resume: a row woken on this
+         * activation's first tick would leave one flush — this one, from the
+         * bounce invalidate — welding a dial with missing hands. The wake
+         * marks land in the same window the bounce dirty is flushing. */
+        clock_layers_refresh();
         orb_sched_resume();
     } else {
         orb_sched_pause();

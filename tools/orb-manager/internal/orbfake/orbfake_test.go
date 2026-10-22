@@ -83,12 +83,12 @@ func TestDoubleEmitsTheFormatTwoRowShape(t *testing.T) {
 		t.Fatalf("status %d", code)
 	}
 	for _, want := range []string{`"name":"aurora"`, `"id":"9b89025ce7a6"`, `"changed":false`,
-		`"try_id":`, `"damage_id":`, `"active":true`} {
+		`"try_id":`, `"staged_id":`, `"stored":`, `"active":true`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("h_sd reply missing %s:\n%s", want, body)
 		}
 	}
-	for _, gone := range []string{`"title":`, `try_slug`, `damage_slug`} {
+	for _, gone := range []string{`"title":`, `try_slug`, `damage_slug`, `"damage_id":`, `"live":`, `"slot":`} {
 		if strings.Contains(body, gone) {
 			t.Errorf("h_sd reply still carries FORMAT 1 field %s:\n%s", gone, body)
 		}

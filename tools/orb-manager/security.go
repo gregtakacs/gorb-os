@@ -349,21 +349,17 @@ var deviceRoutes = map[string][]string{
 	// POST only; the current mode already reads off /api/v1/status.
 	"/api/v1/wifi/mode": {http.MethodPost},
 	// h_fb: the one-shot frame capture over the PSRAM mirror, same gate as /api/v1/screen.
-	// It reads pixels and changes nothing. P6 removed the FORMAT 2 install door; the
-	// store route below is now the only way to commit a card theme.
-	"/api/v1/fb":         {http.MethodGet},
-	"/api/v1/sd/default": {http.MethodPost},
-	"/api/v1/sd/delete":  {http.MethodPost},
-	"/api/v1/sd/theme":   {http.MethodPost},
-	// P6.4's store door: the flip page's second press, and the only route to
-	// orb_theme_install_bundle(). It queues instead of flipping, and its ack
-	// says reboot:none on purpose — the firmware comment is the contract.
+	// It reads pixels and changes nothing. P6 removed the FORMAT 2 install door, and
+	// Migration 1 removed the flip and default doors with the A/B pair: /api/v1/sd/bundle
+	// is now the only theme write verb, and delete stays the one unqueued outcome.
+	"/api/v1/fb":        {http.MethodGet},
+	"/api/v1/sd/delete": {http.MethodPost},
+	"/api/v1/sd/theme":  {http.MethodPost},
+	// Migration 1's store door: the one press that puts a card theme on the glass.
+	// It queues, acks reboot:automatic, and reboots onto the new face when the copy
+	// verifies — the single store verb after the flip/default pair was retired with
+	// the A/B choice, each pinned by the firmware comment beside its handler.
 	"/api/v1/sd/bundle": {http.MethodPost},
-	// §26 slice 3's flip door: the press that PUTS A STORED BUNDLE ON THE GLASS.
-	// bundle stores and answers reboot:none; flip chooses and answers
-	// reboot:automatic — the two-stage form's two wires, each pinned by the
-	// firmware comment beside its handler.
-	"/api/v1/sd/flip":   {http.MethodPost},
 	"/api/v1/sd/rescan": {http.MethodPost},
 	// P4's card-app verbs, added because the merge that landed them in firmware left
 	// them out of this map: a device feature the hub cannot dial is a feature nobody
@@ -377,7 +373,14 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/apps/install":   {http.MethodPost},
 	"/api/v1/apps/enable":    {http.MethodPost},
 	"/api/v1/apps/uninstall": {http.MethodPost},
-	"/api/v1/sd/app":         {http.MethodPost},
+	// 7c9ff63's two recovery doors. clear faults a QUARANTINED built-in without the
+	// RESET ALL collateral: a compiled tier's menu that panicked at boot reads
+	// installed false, so both door_open gates refuse the enable revive and this is
+	// the only way back short of wiping the owner's WiFi. factory restores every
+	// built-in at once. Both reboots are the firmware's, not the proxy's arm.
+	"/api/v1/apps/clear":   {http.MethodPost},
+	"/api/v1/apps/factory": {http.MethodPost},
+	"/api/v1/sd/app":       {http.MethodPost},
 }
 
 // Byte caps for one proxied exchange. The orb's httpd is real and sometimes slow, so

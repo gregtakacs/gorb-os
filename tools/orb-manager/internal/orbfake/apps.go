@@ -219,7 +219,7 @@ func (o *Orb) doorAppLocked(slug string) (*CardApp, int, string) {
 const (
 	doorBusyBody      = `{"error":"a card job is running — try again when it finishes"}`
 	notFoundBody      = `{"error":"no app by that name is installed on this dial"}`
-	builtinBody       = `{"error":"that app ships inside the firmware — it is always on"}`
+	builtinBody       = `{"error":"the shell menu is part of the dial — it cannot be turned off"}`
 	onDialBody        = `{"error":"that app is on the dial — carousel away from it first"}`
 	noIfaceBody       = `{"error":"no firmware module implements this app's behaviour — it cannot be shown"}`
 	reviveFailBody    = `{"error":"the fault record would not clear — the app stays failed"}`
@@ -424,6 +424,52 @@ func (o *Orb) serveAppEnable(w http.ResponseWriter, r *http.Request) {
 	a.Enabled = on == "1"
 	writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"slug":%q}`,
 		map[bool]string{true: "enabled", false: "disabled"}[a.Enabled], jsonSafe(slug)))
+}
+
+// serveAppClear mirrors h_app_clear (7c9ff63), the third owner door. It skips
+// door_open's gates on purpose: the row a caller needs here is a QUARANTINED built-in,
+// which reads installed false after its two strikes, so door_open's NOT_FOUND and
+// NOT_SUPPORTED arms would both refuse the one revival that does not wipe the owner's
+// WiFi. The firmware reads one argument, answers its own sentences, and names the
+// reboot in the success body rather than claiming it happened.
+func (o *Orb) serveAppClear(w http.ResponseWriter, r *http.Request) {
+	slug := appID(r)
+	if slug == "" {
+		writeJSON(w, 400, missingIDBody)
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	a := o.apps[slug]
+	if a == nil {
+		writeJSON(w, 404, notFoundBody)
+		return
+	}
+	a.Failed = false
+	a.Installed = true
+	a.Enabled = true
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"cleared","slug":%q,"reboot":true}`, jsonSafe(slug)))
+}
+
+// serveAppFactory mirrors h_app_factory: no arguments, the firmware's short busy
+// sentence at 409 while a card job holds the door, and an ack that names the queued
+// restore rather than claiming it finished. The double lands the restore on the ack,
+// built-ins revived and card rows off the install, as its other state doors do.
+func (o *Orb) serveAppFactory(w http.ResponseWriter) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.JobBusy {
+		writeJSON(w, 409, `{"error":"a card job is running"}`)
+		return
+	}
+	for _, a := range o.apps {
+		if a.Builtin {
+			a.Failed, a.Installed, a.Enabled = false, true, true
+			continue
+		}
+		a.Installed, a.Enabled = false, false
+	}
+	writeJSON(w, 200, `{"state":"restoring"}`)
 }
 
 // serveAppUninstall mirrors h_app_uninstall. Uninstalling the row on the glass is the

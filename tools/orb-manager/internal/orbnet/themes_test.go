@@ -32,10 +32,10 @@ func fakeIP(srv *httptest.Server) string { return strings.TrimPrefix(srv.URL, "h
 // The ids here are theme_id(name) as tools/orbtheme.py computes it, so a fixture row's
 // id agrees with its own name the way the device insists they must.
 const sdReply = `{"mounted":true,"card":"SDSC","uploading":false,"total_mb":7581,` +
-	`"free_mb":7100,"source":"sd","active":"aurora","live":"sd","card_count":2,` +
-	`"try_id":"f526795c9539","try_why":"art short","damage_id":"","damage_why":"",` +
-	`"themes":[{"name":"aurora","id":"9b89025ce7a6","why":"","bytes":123456,"serial":7,"ok":true,"active":true,"changed":false},` +
-	`{"name":"broken","id":"f526795c9539","why":"art short","bytes":12,"serial":3,"ok":false,"active":false,"changed":true}]}`
+	`"free_mb":7100,"source":"slot","active":"aurora","card_count":2,` +
+	`"try_id":"f526795c9539","try_why":"art short","staged_id":"","staged_why":"",` +
+	`"themes":[{"name":"aurora","id":"9b89025ce7a6","why":"","bytes":123456,"serial":7,"ok":true,"active":true,"changed":false,"stored":true},` +
+	`{"name":"broken","id":"f526795c9539","why":"art short","bytes":12,"serial":3,"ok":false,"active":false,"changed":true,"stored":false}]}`
 
 func TestThemeListParsesTheDeviceRowShape(t *testing.T) {
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +71,15 @@ func TestThemeListParsesTheDeviceRowShape(t *testing.T) {
 	if !l.Themes[1].Changed {
 		t.Errorf("second row changed = false, want the overwritten flag parsed")
 	}
+	// stored is Migration 1's row witness: a copy sits in the single flash slot.
+	// The active row has one by definition; the broken card-file does not.
+	if !l.Themes[0].Stored || l.Themes[1].Stored {
+		t.Errorf("stored witnesses = %v/%v, want the active row stored and the card-only row not",
+			l.Themes[0].Stored, l.Themes[1].Stored)
+	}
+	if l.Source != "slot" {
+		t.Errorf("source = %q, want the firmware's own word for the drawn slot", l.Source)
+	}
 }
 
 // An empty list must arrive as an empty slice: the client takes .length on it, and
@@ -90,7 +99,7 @@ func TestThemeListNeverHandsBackNil(t *testing.T) {
 }
 
 // The verbs and the query spelling belong to the firmware, not to this client:
-// install and delete carry ?id= and nothing else, default and rescan carry nothing, and
+// install and delete carry ?id= and nothing else, rescan carries nothing, and
 // upload sends raw bytes with a Content-Length and NO name. A drift here is a 400 that
 // only shows up on glass — which is exactly the bug this list used to encode.
 func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
@@ -114,7 +123,6 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	steps := []func() error{
 		func() error { _, err := c.ThemeList(ip); return err },
 		func() error { _, err := c.ThemeStore(ip, "9b89025ce7a6"); return err },
-		func() error { _, err := c.ThemeDefault(ip); return err },
 		func() error { _, err := c.ThemeDelete(ip, "f893c0d634b3"); return err },
 		func() error { _, err := c.ThemeRescan(ip); return err },
 		func() error { _, err := c.ThemeUpload(ip, uploadable, false); return err },
@@ -128,7 +136,6 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	want := []string{
 		"GET /api/v1/sd",
 		"POST /api/v1/sd/bundle?id=9b89025ce7a6",
-		"POST /api/v1/sd/default",
 		"POST /api/v1/sd/delete?id=f893c0d634b3",
 		"POST /api/v1/sd/rescan",
 		"POST /api/v1/sd/theme",

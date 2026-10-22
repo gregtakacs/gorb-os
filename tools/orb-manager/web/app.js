@@ -2077,7 +2077,7 @@ async function loadThemes(ip) {
 // theme_id(name), the 12 hex the orb filed it under, and it is the ONLY handle install
 // and delete accept: the device has no route that takes a name, so a button that sent
 // one would be refused by every orb on the market. The id goes on the row for the same
-// reason try_id and damage_id match on it — when a theme fails to load, that is the
+// reason try_id and staged_id match on it — when a theme fails to load, that is the
 // string the orb and the operator can both point at.
 function themeRow(t, state, list) {
   const li = document.createElement("li");
@@ -2120,49 +2120,33 @@ function themeRow(t, state, list) {
     why.textContent = "last try failed: " + list.try_why;
     li.appendChild(why);
   }
-  if (list && list.damage_id === t.id && list.damage_why) {
+  // Migration 1's torn-store witness, keyed by id: a store whose pixels reached the
+  // slot and whose header never did. Boot draws the base face beside it and one
+  // re-store clears it, so the row names the repair rather than only the damage.
+  if (list && list.staged_id === t.id && list.staged_why) {
     const why = document.createElement("span");
-    why.className = "tag err";
-    why.textContent = "the dial would not load it: " + list.damage_why;
+    why.className = "tag warn";
+    why.textContent = "half-stored: " + list.staged_why + " \u2014 press Store again";
     li.appendChild(why);
   }
   const use = document.createElement("button");
   use.className = "ghost";
   use.textContent = "Store on the dial";
   use.disabled = !t.ok || t.active;
-  // Store is the firmware's FIRST press; the door answers once the copy is queued,
-  // seconds before the row's slot witness exists. So the press is not over when the
-  // POST returns: watchThemeJob follows the row to its outcome, and the state line
-  // says running, stored, or refused — never a silent no-op.
+  // Migration 1 made this the ONE press: the door answers once the copy is queued and
+  // the orb reboots onto the new face when it verifies, so the press is not over when
+  // the POST returns. watchThemeJob follows the row to its witness and the state line
+  // says rebooting, stored, or refused — never a silent no-op.
   use.onclick = async () => {
     use.disabled = true;
     state.textContent = "storing " + t.name + " \u2014 queued; the copy takes a few seconds";
     try {
       await themePost("/api/theme/install", { ip: themeIP, id: t.id });
-      await watchThemeJob(state, t, "storing");
+      await watchThemeJob(state, t);
     } catch (e) { state.textContent = "store refused: " + e.message; }
     use.disabled = false;
   };
   li.appendChild(use);
-  // The second press of the two-stage form: the flip, offered on exactly the rows the
-  // firmware offers it — one whose stored copy holds a slot and which is not already
-  // on the glass. The flip reboots the orb, so the wait is for the device to come
-  // back with the new face drawn.
-  if (t.ok && t.slot && !t.active) {
-    const flip = document.createElement("button");
-    flip.className = "ghost";
-    flip.textContent = "Put it on the dial";
-    flip.onclick = async () => {
-      flip.disabled = true;
-      state.textContent = "flipping " + t.name + " \u2014 the orb reboots onto it";
-      try {
-        await themePost("/api/theme/flip", { ip: themeIP, id: t.id });
-        await watchThemeJob(state, t, "flipping");
-      } catch (e) { state.textContent = "flip refused: " + e.message; }
-      flip.disabled = false;
-    };
-    li.appendChild(flip);
-  }
   // Delete is the one theme action that cannot be undone from here, so it asks
   // first: the firmware's own delete is a plain unlink on the card. The confirm names
   // the theme the way the operator knows it and quotes the id being removed, because
@@ -2181,52 +2165,46 @@ function themeRow(t, state, list) {
   return li;
 }
 
-// watchThemeJob follows one row after a store or a flip, from the queue ack to the
-// witness the worker leaves behind. The store door and the flip door both answer as
-// soon as the job is queued; the device then spends seconds copying (store) or goes
-// away for a reboot (flip). A press without this follow-up is the silent button this
-// card shipped with: the row never changed on screen and the operator could not tell
-// a running copy from a dead button. The outcome always names the firmware's own
-// reason: the row's slot for a stored theme, the list's try witness for a refusal,
-// the drawn name for a flip, and a re-read prompt when the orb stays quiet past two
-// minutes.
-async function watchThemeJob(state, t, kind) {
-  const busy = kind === "storing" ? "storing " : "flipping ";
+// watchThemeJob follows one row after a store, from the queue ack to the witness the
+// firmware leaves behind. Migration 1 made store the one press: the door answers as soon
+// as the job is queued, the device then spends seconds copying and reboots onto the new
+// face. A press without this follow-up is the silent button this card shipped with: the
+// row never changed on screen and the operator could not tell a running copy from a dead
+// button. The outcome always names the firmware's own reason: the drawn name for a
+// landing, the list's try witness for a refusal, the staged witness for a torn store, and
+// a re-read prompt when the orb stays quiet past two minutes.
+async function watchThemeJob(state, t) {
   for (let n = 0; n < 100; n++) {
     await new Promise((res) => setTimeout(res, n < 60 ? 1200 : 3000));
     let d;
     try { d = await themePost("/api/theme/list", { ip: themeIP }); }
-    catch (e) { state.textContent = busy + t.name + " \u2014 the orb is mid-reboot; waiting"; continue; }
-    if (d.job_busy) { state.textContent = busy + t.name + " \u2014 the copy is running, " + n + " s"; continue; }
+    catch (e) { state.textContent = "storing " + t.name + " \u2014 the orb is mid-reboot; waiting"; continue; }
+    if (d.job_busy) { state.textContent = "storing " + t.name + " \u2014 the copy is running, " + n + " s"; continue; }
     if (d.try_id === t.id && d.try_why) {
-      state.textContent = "could not " + (kind === "storing" ? "store" : "flip") + " " + t.name + ": " + d.try_why;
+      state.textContent = "could not store " + t.name + ": " + d.try_why;
       return;
     }
-    const row = (d.themes || []).find((x) => x.id === t.id);
-    if (kind === "storing" && row && row.slot) {
-      state.textContent = "stored " + t.name + " in slot " + row.slot + " \u2014 press Put it on the dial";
-      await loadThemes(themeIP);
+    if (d.staged_id === t.id) {
+      state.textContent = "the store tore before its header: " + (d.staged_why || "the slot has no drawable bundle") + " \u2014 press Store again";
       return;
     }
-    if (kind === "flipping" && d.active === t.name) {
+    if (d.active === t.name) {
       state.textContent = "the dial is drawing " + t.name;
       await loadThemes(themeIP);
       return;
     }
-    state.textContent = busy + t.name + " finished without its witness \u2014 the rows were re-read";
+    const row = (d.themes || []).find((x) => x.id === t.id);
+    if (row && row.stored) {
+      state.textContent = "stored " + t.name + " \u2014 the orb is rebooting onto it";
+      continue;
+    }
+    state.textContent = "storing " + t.name + " finished without its witness \u2014 the rows were re-read";
     await loadThemes(themeIP);
     return;
   }
-  state.textContent = busy + t.name + " still going after two minutes \u2014 re-read the card";
+  state.textContent = "storing " + t.name + " still going after two minutes \u2014 re-read the card";
 }
 
-$("#mn-default").onclick = async () => {
-  if (!themeIP) return;
-  const state = $("#mn-themestate");
-  state.textContent = "restoring the built-in face — the orb restarts itself";
-  try { await themePost("/api/theme/default", { ip: themeIP }); }
-  catch (e) { state.textContent = "refused: " + e.message; }
-};
 $("#mn-rescan").onclick = async () => {
   if (!themeIP) return;
   const state = $("#mn-themestate");

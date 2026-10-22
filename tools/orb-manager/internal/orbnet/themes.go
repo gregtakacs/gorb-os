@@ -49,17 +49,17 @@ type ThemeEntry struct {
 	OK      bool   `json:"ok"`
 	Active  bool   `json:"active"`
 	Changed bool   `json:"changed"`
-	// Slot is the letter of the flash slot holding this file's STORED copy, empty
-	// when nothing stored it. It is what tells the caller a store landed — the door
-	// acks the queue, not the copy — and it is the row state that makes the flip
-	// press meaningful (h_sd's own comment: the flip button belongs on a row that
-	// has one and is not already on the glass).
-	Slot string `json:"slot"`
+	// Stored is this file's row witness that a copy sits in the single flash slot
+	// the dial draws (h_sd's "stored"). Migration 1 retired the A/B pair and with
+	// it the second press: one press of store IS the theme change, and this bool is
+	// what tells the caller the copy landed — the door acks the queue, not the write.
+	Stored bool `json:"stored"`
 }
 
 // ThemeList is the part of h_sd's reply the card needs. Active is the installed
-// theme's NAME, not its id, because it is the sentence the operator reads; TryID and
-// DamageID name by id, because they are 12 hex and the row they belong to carries the
+// theme's NAME, not its id, because it is the sentence the operator reads; Source is
+// the firmware's own word for what the glass is drawing ("slot" or "none"). TryID and
+// StagedID name by id, because they are 12 hex and the row they belong to carries the
 // same 12 hex. Themes is an empty list rather than nil: the client takes .length on
 // it, and null has none.
 type ThemeList struct {
@@ -71,16 +71,20 @@ type ThemeList struct {
 	// copy is happening" from "the press went nowhere" while a job is in flight.
 	JobBusy bool `json:"job_busy"`
 
-	TotalMB   uint32       `json:"total_mb"`
-	FreeMB    uint32       `json:"free_mb"`
-	Source    string       `json:"source"`
-	Active    string       `json:"active"`
-	Live      string       `json:"live"`
-	CardCount int          `json:"card_count"`
-	TryID     string       `json:"try_id"`
-	TryWhy    string       `json:"try_why"`
-	DamageID  string       `json:"damage_id"`
-	DamageWhy string       `json:"damage_why"`
+	TotalMB   uint32 `json:"total_mb"`
+	FreeMB    uint32 `json:"free_mb"`
+	Source    string `json:"source"`
+	Active    string `json:"active"`
+	CardCount int    `json:"card_count"`
+	TryID     string `json:"try_id"`
+	TryWhy    string `json:"try_why"`
+	// StagedID/StagedWhy are Migration 1's torn-store witness: a store whose pixels
+	// reached the slot and whose header never did. Boot draws the base face beside
+	// it and one re-store clears it (orb_theme_staged_*). The damage-reporting pair
+	// it replaces is retired with the A/B choice: one slot leaves no rotted other
+	// half to explain.
+	StagedID  string       `json:"staged_id"`
+	StagedWhy string       `json:"staged_why"`
 	Themes    []ThemeEntry `json:"themes"`
 }
 
@@ -161,38 +165,19 @@ func (c *Client) ThemeList(ip string) (*ThemeList, error) {
 	return &l, nil
 }
 
-// ThemeStore queues POST /api/v1/sd/bundle?id= — the FORMAT 3 store door
+// ThemeStore queues POST /api/v1/sd/bundle?id= — Migration 1's one store door
 // (orb_theme_post_bundle), the only route to a card theme now the FORMAT 2 install door
 // is gone. The id is the one that row came back with: a caller cannot name a card file,
 // and h_bundle_install answers 400 before the card is touched if it is not 12 lowercase
-// hex. A nil error means the store job was queued; it does NOT mean the glass changed —
-// the store door answers reboot:none on purpose, because there is no FORMAT 3 compositor
-// to draw a stored bundle until P6.5. The try witness on the row is where the outcome lands.
+// hex. A nil error means the store job was queued. The door acks reboot:automatic on
+// purpose: under the single slot the store IS the theme change, and the firmware
+// reboots onto the new face once the copy verifies. The row's stored witness is where
+// the landing shows; the try witness is where a refusal lands.
 func (c *Client) ThemeStore(ip, id string) (json.RawMessage, error) {
 	if err := CheckThemeID(id); err != nil {
 		return nil, err
 	}
 	return c.devicePost(ip, "/api/v1/sd/bundle?id="+url.QueryEscape(id), nil, "")
-}
-
-// ThemeFlip queues POST /api/v1/sd/flip?id= — §26's flip door, the second press of
-// the two-stage form: the store put the bundle in a slot and the glass never moved;
-// the flip names that slot to the choice key and reboots the orb onto it. The ack
-// arrives before the reboot and says reboot:automatic, so a nil error means the orb
-// WILL go away for a boot — the caller waits for it to come back and re-reads the
-// row, exactly as h_bundle_flip's firmware comment instructs.
-func (c *Client) ThemeFlip(ip, id string) (json.RawMessage, error) {
-	if err := CheckThemeID(id); err != nil {
-		return nil, err
-	}
-	return c.devicePost(ip, "/api/v1/sd/flip?id="+url.QueryEscape(id), nil, "")
-}
-
-// ThemeDefault queues the same job for the built-in fallback face. It takes no
-// target: the default is the bank idf.py flash wrote, not a card file, which is why it
-// is its own route and not another value on install.
-func (c *Client) ThemeDefault(ip string) (json.RawMessage, error) {
-	return c.devicePost(ip, "/api/v1/sd/default", nil, "")
 }
 
 // ThemeDelete removes a theme from the card by id. It is the only theme call that is
@@ -248,5 +233,6 @@ func (c *Client) ThemeUpload(ip string, body []byte, overwrite bool) (json.RawMe
 
 // MaxThemeUpload is ORB_THEME_UPLOAD_MAX from main/art/orb_theme.h, restated so the
 // hub refuses the same size the device would, with a sentence an operator can act on
-// instead of a 413 from a device two hops away.
-const MaxThemeUpload = 0x00400000 + 0x20000
+// instead of a 413 from a device two hops away. Migration 1 grew the single slot from
+// 4 MB to 8, and the ceiling with it.
+const MaxThemeUpload = 0x00800000 + 0x20000

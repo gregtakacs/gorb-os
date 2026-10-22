@@ -54,7 +54,7 @@ func TestAppJSOnlyReferencesElementsThePageHas(t *testing.T) {
 func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	page := readWebFile(t, "index.html")
 	for _, id := range []string{
-		"mn-themecard", "mn-themes", "mn-themestate", "mn-default", "mn-rescan",
+		"mn-themecard", "mn-themes", "mn-themestate", "mn-rescan",
 		"mn-fw-file", "mn-up-btn", "mn-up-state",
 		"mn-consolecard", "mn-con-port", "mn-con-go", "mn-con-stop", "mn-con-state", "mn-con-log",
 		"ob-cancel", "ob-op",
@@ -78,7 +78,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	}
 	src := readAppJS(t)
 	for _, want := range []string{
-		"/api/theme/list", "/api/theme/install", "/api/theme/delete", "/api/theme/default",
+		"/api/theme/list", "/api/theme/install", "/api/theme/delete",
 		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
 		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
 		// The fleet controls, pinned by the same rule as the rest. /api/fleet/set
@@ -240,13 +240,13 @@ func TestThemeCardAddressesThemesByID(t *testing.T) {
 	}
 }
 
-// The orb keys the two failure sentences it reports — the install it refused and the copy
-// boot could not load — on the theme id. They have to reach the row they belong to, or a
-// press that did nothing is indistinguishable from one that worked, which is the C8 lesson
-// the firmware's own panel applies the same way.
+// The orb keys the two failure sentences it reports — the install it refused and the
+// store that tore before its header — on the theme id. They have to reach the row they
+// belong to, or a press that did nothing is indistinguishable from one that worked,
+// which is the C8 lesson the firmware's own panel applies the same way.
 func TestThemeCardSurfacesTheOrbsOwnRefusals(t *testing.T) {
 	row := blockOf(t, readAppJS(t), "function themeRow")
-	for _, want := range []string{"try_id", "try_why", "damage_id", "damage_why"} {
+	for _, want := range []string{"try_id", "try_why", "staged_id", "staged_why"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("themeRow ignores %s, so a refused install stays silent on the card", want)
 		}

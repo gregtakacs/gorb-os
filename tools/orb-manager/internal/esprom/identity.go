@@ -117,6 +117,15 @@ const probeWindowSecs = 9
 // couple of seconds and it re-joins Wi-Fi. That is why nothing here is automatic
 // and why the UI asks the user to click it one port at a time.
 //
+// The two OS calls of a probe, kept as seams so the exit guarantee below is
+// testable against fake control lines without hardware. Production is the sysfs
+// classifier and the real opener; the hub already fakes at its own layer (the
+// probeOrb field), but that seam cannot see the chip's control-line history.
+var (
+	probeClassify = classifyPort
+	probeOpen     = OpenPort
+)
+
 // The caller must hold the per-port lock — an identity probe resets the chip, so
 // a flash sharing the wire would have its write corrupted by it.
 //
@@ -124,6 +133,11 @@ const probeWindowSecs = 9
 // between the reset sequences, never inside one: EnterDownloadMode's control-line
 // timings are the whole trick, and stopping half through one leaves the chip in an
 // unknown state.
+//
+// Once download mode is entered, every exit path — answer, failure, timeout, cancel
+// — hard-resets the chip before releasing it. A chip left in DOWNLOAD answers
+// nothing: no Wi-Fi, no HTTP, no banner, so to a bench with no browser open it reads
+// as a bricked board that was merely probed.
 func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 	info := OrbInfo{Port: port}
 	if err := ctxErr(ctx); err != nil {
@@ -135,7 +149,7 @@ func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 	// Only the Espressif USB-JTAG peripheral may be probed, and a port the host
 	// cannot attribute is treated as not-an-orb rather than given the benefit of
 	// the doubt.
-	usb := classifyPort(port)
+	usb := probeClassify(port)
 	if !usb.IsOrbDevice() {
 		switch {
 		case !usb.Known:
@@ -149,7 +163,7 @@ func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 	// host already knows it. Report it even when the probe cannot go further.
 	info.MAC = usb.Serial
 
-	pt, err := OpenPort(port)
+	pt, err := probeOpen(port)
 	if err != nil {
 		info.Reason = "port unavailable: " + err.Error()
 		return info, nil
@@ -163,8 +177,31 @@ func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 		info.Reason = "could not enter download mode: " + err.Error()
 		return info, nil
 	}
-	d := New(pt, func(string, ...any) {})
+	// From this line the chip owes a boot. An interrupted handshake — a silent ROM
+	// after a disturbed entry, a cancel, a budget that expired — used to return
+	// through the paths below without any reset, stranding the chip at
+	// "waiting for download": invisible on a headless sweep, indistinguishable from
+	// a bricked board from across the room. The defer is the guarantee; the normal
+	// HardReset below clears the flag. Defer order matters: registered after
+	// pt.Close(), so this fires first, on an fd still open to drive the line.
+	bootedOut := false
+	defer func() {
+		if !bootedOut {
+			_ = HardReset(pt)
+			bootedOut = true
+		}
+	}()
+	// WithContext is load-bearing: without it the Device's ctxErr sees nil, and a
+	// probe's own handshake ignores the operator's Cancel and the op's deadline —
+	// each Sync attempt burns its full 3 s window, which is how a cancelled
+	// identify outlived its budget on the bench.
+	d := New(pt, func(string, ...any) {}).WithContext(ctx)
 	if err := d.Sync(); err != nil {
+		if IsCancelled(err) {
+			// A cancelled handshake is not the chip failing to answer; the probe
+			// was stopped, and saying otherwise blames the orb (cancel.go).
+			return info, err
+		}
 		// No ROM answer: a genuine serial device that is not an ESP32 in download
 		// mode — the FTDI cable, the meter, the Arduino on the desk.
 		info.Reason = "no bootloader answer - not an orb"
@@ -185,9 +222,13 @@ func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 	// ROM and then prints no app_init block is an ESP32-S3 not running gorb-os: a
 	// dev board, or an orb whose app failed to link.
 	if err := HardReset(pt); err != nil {
+		// Attempted: a failing pulse means a dead fd, and the defer could not do
+		// better with it. Claim the exit so no second pulse hits a live line.
+		bootedOut = true
 		info.Reason = "reset failed: " + err.Error()
 		return info, nil
 	}
+	bootedOut = true
 	lines := CaptureBoot(ctx, pt, probeWindowSecs)
 	if err := ctxErr(ctx); err != nil {
 		// The operator walked away; do not report their cancelled probe as an

@@ -112,6 +112,13 @@ esp_err_t orb_theme_boot(void);
 /** The resolved geometry; valid from orb_theme_boot() onwards, never NULL. */
 const orb_theme_geo_t *orb_theme_geo(void);
 
+/** The residency verdict: true only when boot adopted a valid, drawable theme and
+ *  published its geometry. Distinct from art_bank_ready(), which answers only
+ *  whether a pixel span is mapped — a mapped span whose clock projection refused
+ *  is bytes with no dial, and a fallback that tests only the mapping walks the
+ *  themed leg over them. A themed leg needs both: see clock_view_init()'s gate. */
+bool orb_theme_resident(void);
+
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */
 const char *orb_theme_source(void);
 /** The owner name of the theme currently on the wall, "" for the base face. */

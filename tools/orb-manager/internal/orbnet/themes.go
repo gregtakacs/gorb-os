@@ -36,10 +36,14 @@ import (
 // ThemeEntry is one row of GET /api/v1/sd's "themes" array, as h_sd formats it from
 // orb_theme_scan. Name and ID are the same theme seen two ways — the label, and the
 // handle every later request must come back with. Why is the reason a row is not
-// loadable when OK is false. Changed is the card holding bytes newer than the
-// installed slot's, which is the one thing the active tag cannot say on its own: an
-// overwrite leaves the name, and therefore the id, alone, so a row can read active
-// while the card underneath it has moved.
+// loadable when OK is false, and since §31 it can be the projection's own refusal
+// sentence ("...made for a different panel"): the orb ran this bundle's clock
+// against its own panel to answer. The hub's Store button gates on this field —
+// validity was always the target orb's answer, never the file's self-report.
+// Changed is the card holding bytes newer than the installed slot's, which is the
+// one thing the active tag cannot say on its own: an overwrite leaves the name, and
+// therefore the id, alone, so a row can read active while the card underneath it has
+// moved.
 type ThemeEntry struct {
 	Name    string `json:"name"`
 	ID      string `json:"id"`

@@ -19,3 +19,6 @@ mask_*.png
 sprite_*.png
 keyframe.png
 .orb-target
+# Go build artifact from tools/orb-manager — the hub embeds its web assets at
+# build time, so the binary is never an input and never committed.
+tools/orb-manager/orb-manager

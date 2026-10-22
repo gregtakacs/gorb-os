@@ -29,6 +29,7 @@
 #include "esp_rom_crc.h"
 #include "esp_timer.h"              // the listing timing in orb_theme_scan()
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"   /* the §31 verdict lock */
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -318,6 +319,12 @@ static void use_no_art(void)
 
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
 const char *orb_theme_source(void)         { return s_source; }
+/* The residency verdict the boot ladder reached: an adopted, drawable theme whose
+ * geometry is published. Not the same question as art_bank_ready() — that answers
+ * only whether a span is mapped, and a mapped span whose clock projection refused
+ * is pixels with no dial. clock_view_init gates its themed leg on the two together;
+ * §26's fallback is about losing the theme, not about mapping bytes no parse adopted. */
+bool orb_theme_resident(void)              { return s_active_valid; }
 const char *orb_theme_active_name(void)    { return s_active_name; }
 
 /* §20.4's word and the two refill figures. All four are read-only answers for the
@@ -574,6 +581,66 @@ static const char *card_check3(int fd, orb_bundle3_hdr_t *o, uint32_t *file_size
 }
 
 
+/* §31: the projection verdict, asked of a parsed bundle before any door commits.
+ * One function for the store, the upload and the list, so a row's word, an
+ * upload's refusal and the store's sentence are one fact and not three opinions:
+ * the answer is whatever boot's adopt would do with the same region on this panel.
+ * A bundle with no clock section is refused too — the slot IS the dial under
+ * Migration 1, and storing one would silently replace a working face with the
+ * base digital readout; that trade is the owner's to make only if it is said so,
+ * and saying it here is the saying. The tables are a dedicated set: a door runs
+ * while the live theme is being painted from s_b3_*, and a refusal must not
+ * rewrite the dial on the glass. The mutex is the same reason in scheduler form —
+ * a scan on the httpd worker and a store on the theme worker may ask at once, and
+ * neither may see the other's half-written rows. */
+static SemaphoreHandle_t s_verdict_mx;
+static clk_theme_t   s_chk_theme;
+static clk_bg_rect_t s_chk_rects[ORB_CLOCK3_N_RECTS];
+static uint16_t      s_chk_first[GIFS_MAX + 1], s_chk_delays[GIFS_MAX];
+static uint32_t      s_chk_bgf[ORB_CLOCK3_N_BGF];
+static clk_aux_t     s_chk_aux[CLK_AUX_MAX];
+static clk_comp_t    s_chk_comps[CLK_COMP_MAX];
+
+static const char *clock3_verdict(const orb_bundle_t *b)
+{
+    const orb_bundle_sec_t *sec = orb_bundle_find(b, ORB_CLOCK3_SLUG);
+    if (!sec)
+        return "the bundle carries no clock section to draw";
+    if (!s_verdict_mx) return "out of memory for the verdict lock";
+    xSemaphoreTake(s_verdict_mx, portMAX_DELAY);
+    orb_clock3_io_t pio;
+    memset(&pio, 0, sizeof pio);
+    pio.theme = &s_chk_theme;
+    pio.rects = s_chk_rects; pio.rect_first = s_chk_first;
+    pio.gif_delays = s_chk_delays; pio.bg_frames = s_chk_bgf;
+    pio.first_cap = GIFS_MAX + 1; pio.delays_cap = GIFS_MAX;
+    pio.comps = s_chk_comps; pio.comp_cap = CLK_COMP_MAX;
+    pio.aux   = s_chk_aux;   pio.aux_cap   = CLK_AUX_MAX;
+    const char *r = orb_clock3_parse(sec, &pio);
+    xSemaphoreGive(s_verdict_mx);
+    return r;
+}
+
+/* The verdict straight off a card file's own bytes: the region read is the whole
+ * ask — orb_bundle_parse_region checks the index, every bank record and the region
+ * checksum, and the projection needs no pixels. verify_bundle3() streams the art
+ * for that file's integrity; this asks only whether the clock inside would draw. */
+static const char *clock3_verdict3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size)
+{
+    uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) return "out of memory for the bundle's tables";
+    size_t pos = h->geom_off;
+    if (rd_at(fd, &pos, region, h->geom_size) != (ssize_t)h->geom_size) {
+        heap_caps_free(region);
+        return "geometry region runs past the end of the file";
+    }
+    orb_bundle_t b;
+    const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, &b);
+    if (!r) r = clock3_verdict(&b);
+    heap_caps_free(region);
+    return r;
+}
+
 /* FORMAT 3's container check at the door, and the only one now that FORMAT 2 is
  * retired: the region alone verified through the shipped reader (bounds,
  * region checksum, index, walk, blob lengths/crcs/slugs, art bounds,
@@ -600,6 +667,9 @@ static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t f
     }
     orb_bundle_t b;
     const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, &b);
+    /* §31: the upload door asks the projection while the region is already in
+     * hand. A clock this panel refuses never reaches the card, let alone a row. */
+    if (!r) r = clock3_verdict(&b);
     heap_caps_free(region);
     if (r) return r;
     if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";
@@ -799,6 +869,21 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
  * FORMAT 3 reader (P6.5) gives a compositor something to draw. D26 still applies —
  * the page reports the install as stored-and-waiting, because "it installed and
  * nothing happened" is a sentence an owner reads as a broken button. */
+
+/* The store door's verdict-only projection: the same tables at the same caps, in a
+ * separate set, because a store runs while a live theme is being painted and the
+ * s_b3_* rows are that theme's (declared below adopt_bundle3). Nothing here
+ * survives the call: the store asks the projection one question (will this draw)
+ * and keeps no answers. Sized to the caps orb_clock3_parse refuses past, so its
+ * verdict is the boot's. */
+static clk_theme_t   s_chk_theme;
+static clk_bg_rect_t s_chk_rects[ORB_CLOCK3_N_RECTS];
+static uint16_t      s_chk_first[GIFS_MAX + 1], s_chk_delays[GIFS_MAX];
+static uint32_t      s_chk_bgf[ORB_CLOCK3_N_BGF];
+static clk_aux_t     s_chk_aux[CLK_AUX_MAX];
+static clk_comp_t    s_chk_comps[CLK_COMP_MAX];
+
+
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -851,6 +936,21 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         return install_failed(ESP_ERR_INVALID_SIZE, rv, why, whysz);
     }
     h.geom_off = SLOT_GEOM_OFF;
+
+    /* §31: the store answers with the projection boot will run, in the same words,
+     * before it destroys anything. Bronze's b3 loop was this seam missing: the door
+     * verified the container, wrote the one slot, and the next boot's
+     * orb_clock3_parse refused the clock section for the panel — themeless dial,
+     * and on v1.1.0 a panic loop. A clock that will not draw from this region on
+     * this panel will not draw at boot either: the inputs are identical. A refusal
+     * here costs the card read and leaves the working slot whole. */
+    {
+        const char *cv = clock3_verdict(&b);
+        if (cv) {
+            heap_caps_free(region); card_close(fd);
+            return install_failed(ESP_FAIL, cv, why, whysz);
+        }
+    }
 
     /* One target for the whole store: the single slot at offset 0. Migration 1 retired
      * the ping-pong, so the target is a constant and the serial probe, the copy, the
@@ -980,6 +1080,29 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
         return ESP_ERR_NOT_FOUND;
     }
 
+    /* The projection runs BEFORE a byte of pixels is brought resident. The order is
+     * the lesson of Bronze's b3 panic loop (2026-10-22): when map preceded parse, a
+     * clock section this panel refuses left the pixels resident with the geo zeroed,
+     * art_bank_ready() answered true over bytes that are not a bank, and the boot
+     * log's honest "base digital face" sentence and the themed leg's residency test
+     * disagreed about what the glass was about to read. The store door projects the
+     * same way now, so a refusal never maps at either door and the two answers can
+     * not diverge. Pure by contract (orb_clock3.h), so the region is all it needs. */
+    orb_clock3_io_t io;
+    memset(&io, 0, sizeof io);
+    io.theme = &s_theme;
+    io.rects = s_b3_rects; io.rect_first = s_b3_first;
+    io.gif_delays = s_b3_delays; io.bg_frames = s_b3_bgf;
+    io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
+    io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
+    io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
+    why = orb_clock3_parse(sec, &io);
+    heap_caps_free(region);
+    if (why) {
+        ESP_LOGE(TAG, "bundle \"%s\" has no drawable clock: %s", h->name, why);
+        return ESP_FAIL;
+    }
+
     /* The span to make resident: the installed art region runs to the end of the LAST
      * bank, sector-rounded, which is what copy_bundle3 erased, wrote and read back. */
     uint32_t end = SLOT_ART_OFF;
@@ -1001,25 +1124,8 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     } else {
         fe = art_bank_fill(slot_hdr_base + SLOT_ART_OFF, span, true, raw[W_ART_CRC], &ms);
     }
-    if (fe != ESP_OK) {
-        heap_caps_free(region);
+    if (fe != ESP_OK)
         return fe;
-    }
-
-    orb_clock3_io_t io;
-    memset(&io, 0, sizeof io);
-    io.theme = &s_theme;
-    io.rects = s_b3_rects; io.rect_first = s_b3_first;
-    io.gif_delays = s_b3_delays; io.bg_frames = s_b3_bgf;
-    io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
-    io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
-    io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
-    why = orb_clock3_parse(sec, &io);
-    heap_caps_free(region);
-    if (why) {
-        ESP_LOGE(TAG, "bundle \"%s\" has no drawable clock: %s", h->name, why);
-        return ESP_FAIL;
-    }
 
     s_geo.theme = &s_theme;
     s_geo.rects = s_b3_rects; s_geo.rect_first = s_b3_first;
@@ -1133,6 +1239,13 @@ esp_err_t orb_theme_boot(void)
      * one header at offset 0. At most one NVS write here, and the word it removes is
      * diagnostics, so the no-write-in-the-fallback rule holds. */
     s_staged_id[0] = '\0';
+    /* The §31 verdict lock exists before any door can post: both door tasks are
+     * created after app_main calls this, so this one creation needs no guard. */
+    s_verdict_mx = xSemaphoreCreateMutex();
+    if (!s_verdict_mx)
+        ESP_LOGE(TAG, "the projection verdict lock refused — stores and listings "
+                      "will name that and refuse");
+
     orb_bundle3_hdr_t b3;
     uint32_t raw3[W_WORDS];
     bool claims3 = false;
@@ -1377,6 +1490,17 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
         return true;
     }
     strlcpy(e->id, bid, sizeof e->id);
+    /* §31: "valid on this orb" is the projection's answer, not the header's. The
+     * region read is bounded by the header-checked geom_size, and the answer is
+     * the store door's own sentence — the row can mark nothing the press would
+     * then do. This is the check the hub's Store button gates on. */
+    const char *dr = clock3_verdict3(fd, &b3, fsz3);
+    if (dr) {
+        strlcpy(e->why, dr, sizeof(e->why));
+        e->err = ESP_ERR_INVALID_ARG;
+        c->n++;
+        return true;
+    }
     e->err = ESP_OK;
     /* Which slot holds this file's stored copy — the one slot. The store reboots, so a
      * row's stored marker tells the page this file is what the dial now draws; the

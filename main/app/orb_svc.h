@@ -240,6 +240,13 @@ uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the 
 int      orb_svc_layers_live(const orb_app_t *a);
 uint32_t orb_svc_layers_refused(const orb_app_t *a);
 
+/** The app's own compositor table, or NULL — Migration 2 (P8)'s read door for
+ *  the frame scheduler's commit pass. NULL means the app has never called
+ *  layer_add, and this getter does NOT create the table: an app that owns no
+ *  row owns no allocation. The pointer is the broker's own, so the caller reads
+ *  it and never writes it; the only writer stays the gated layer_* entries. */
+const orb_layer_tab_t *orb_svc_layer_table(const orb_app_t *a);
+
 /** The registry's revoke, called where it suspends an entry: an app that
  *  left the glass loses its power ask with it (§4.2 — auto-revoke is the
  *  shell's act, never the app's permission). */

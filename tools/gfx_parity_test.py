@@ -92,6 +92,14 @@ def canon(t):
                   'if (l4_active()) mark_all_layers();')
     t = t.replace('if (orb_sched_l4_active() && s_policy.bench) s_policy.bench();',
                   'if (l4_active()) bench_plan();')
+    # Migration 2 (P8, Commit 2): the layer-table commit call lands in the tick
+    # after the mark pass. The pinned pre-extraction tick owns no app table, so
+    # the block — comment and call together — drops out of the shipped side here,
+    # which is the same documented-delta mechanism the three seam rules above
+    # use. Reword the block and this stops matching: the parity line then fails
+    # loudly instead of quietly forgiving a tick that stopped committing.
+    t = re.sub(r"\n */\* The app layer table,.*?\n *orb_sched_commit_layers\(orb_app_current\(\)\);",
+               "", t, flags=re.S)
     t = t.replace('if (!s_running) return;', 'if (!s_active) return;')
     for k, v in NAMES.items():
         t = re.sub(r'\b%s\b' % re.escape(k), v, t)
@@ -175,5 +183,6 @@ if unexpected:
     sys.exit(1)
 print('\nparity holds: the %d paint routines against %s, and the %d bank/tick routines '
       'against %s — every moved routine is the shipped one, and the only deltas are '
-      'the documented renames, the threaded art-bank base, and the policy callbacks.'
+      'the documented renames, the threaded art-bank base, the policy callbacks, and '
+      'the layer-table commit call Migration 2 added.'
       % (len(CASES) - len(SCHED), REF, len(SCHED), SCHED_REF))

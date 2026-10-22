@@ -165,3 +165,25 @@ uint32_t orb_sched_pick_rung(const uint16_t *asks, unsigned n, uint32_t floor_fp
 /* The synthetic ink the DISPLAY_BENCH paint pass blended, so the report can
  * prove the ink it booked really reached the glass. */
 void orb_sched_ink_px_add(uint32_t n);
+
+/* ---- the layer-table commit pass (Migration 2, P8 Commit 2) ---------------
+ *
+ * The registry row type, forward-declared the way orb_svc.h declares it: an
+ * identical typedef of the same struct tag. Nothing here needs the row's
+ * contents — only its address, which is the one thing the broker's getter
+ * accepts. */
+typedef struct orb_app orb_app_t;
+
+/** Composite the active app's layer table: the job list `orb_layers_jobs()`
+ *  builds for the app's live shown rows, handed to `gfx_commit()` with the
+ *  delta bank's own canvas. Called from the tick's flush path after the active
+ *  app's `tick()` returns and before the frame's marks reach the DMA, so an app
+ *  never touches a paint context, a sprite pointer or `gfx_mark_rows`.
+ *
+ *  `active` is the entry on the glass (orb_app_current()), or NULL: no row, no
+ *  table, no commit. An app that never called layer_add owns no table, and the
+ *  getter answers NULL without minting one — see orb_svc_layer_table(). The
+ *  clock still draws through its own `clock_layer_commit()` while this lands:
+ *  the clock builds no rows until Commit 3, so today this pass is a no-op on
+ *  every frame, and the pixel-identity bench line is what proves it. */
+void orb_sched_commit_layers(const orb_app_t *active);

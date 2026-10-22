@@ -24,18 +24,15 @@
  * Two things this deliberately is NOT, and what became of the P6 hand-off:
  *  - the clock does not route through here (its art reaches the registry only once
  *    .orbapp ingest exists, and it still drives clock_layer_commit directly);
- *  - no commit hook calls the job builder yet. P5.5 named P6 as the owner of the
- *    caller; P6's rewrite (D21/D24/D29) re-scoped it to the bundle format and the
- *    hand-off was never taken. As of 2026-10-21 it is RE-ASSIGNED TO P8, which is
- *    where the per-element repaint that needs it is specified. The reason it is
- *    not wired now is a consumer count, not a design gap: `layer_add` has no
- *    caller anywhere in main/ — no built-in app uses the table (the carousel is
- *    an LVGL chip on lv_layer_top) and the wasm tier that would use it first is
- *    P7 — so a wired caller would be a commit path with nothing ever on it, the
- *    machinery-without-a-consumer refusal D16 already sets. What P5.5's pass line
- *    did prove stands: every compositor primitive reachable through the gate,
- *    refused or accepted for exactly the documented reason, and counted either
- *    way, on the host.
+ *  - the commit hook that calls the job builder LANDED 2026-10-22 in P8's
+ *    Migration 2 Commit 2: `orb_sched_commit_layers()` (main/gfx/orb_sched.c),
+ *    called by the frame tick after the active app's tick and before the DMA
+ *    commit. It is still a no-op on the glass: the clock builds no rows until
+ *    Commit 3 and `layer_add` still has no caller in main/, so the table the
+ *    hook reads is empty and the dial draws through `clock_layer_commit` as it
+ *    always has. What P5.5's pass line did prove stands: every compositor
+ *    primitive reachable through the gate, refused or accepted for exactly the
+ *    documented reason, and counted either way, on the host.
  *
  * This header stays LVGL-free (orb_assets.h's own rule, and the reason the host
  * suite can compile the whole table). The job builder therefore takes the paint
@@ -81,6 +78,16 @@ typedef struct orb_layer_desc {
  * room to spare. The static cost of the feature is this times the 16 broker rows
  * (about 15 KB of .bss); heap is spent only when an app actually bakes. */
 #define ORB_LAYER_MAX 8
+
+/* The job-array ceiling a commit pass sizes itself to. `orb_layers_jobs()` emits
+ * at most one job per row (a row is skipped or emitted, never expanded), and the
+ * table caps at ORB_LAYER_MAX rows, so ORB_LAYER_MAX is the honest ceiling for
+ * the whole list. The clock's file-private CLK_JOB_MAX (44) is larger only
+ * because the OLD renderer splits shadow pairs and complication blits into
+ * separate jobs; that count belongs to the renderer the migration deletes, not
+ * to this table, and reusing it here would size an app's job array by a number
+ * an app can never reach. */
+#define ORB_LAYER_JOB_MAX ORB_LAYER_MAX
 
 /* The largest box a fallback bakes. A whole-panel PLATE is not a fallback — that
  * is a bake's job under D31 — so the cap covers what an app plausibly asks the OS

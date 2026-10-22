@@ -5,9 +5,15 @@
  * every routine below out of both the pinned pre-extraction clock_view.c and
  * this file and compares token streams, so "unchanged" is checked, not claimed.
  *
- * The one thing this TU must never learn is how the art bank is mapped: the app
- * hands its blob() to orb_bg_init() and the delta reads stay a single load, so
- * the compositor keeps no art_bank dependency of its own.
+ * The one thing this TU used to be able to say about itself — that it keeps no
+ * art-bank dependency of its own — is no longer true as of Migration 2's commit
+ * hook. orb_sched_commit_layers() reads art_bank_ptr() and the broker's table
+ * getter, because a tier-1 layer row's offset is an offset into the live
+ * payload, and only the OS knows that payload. The rule that survives is the
+ * narrower one the hook exists to serve: the DELTA BANK still never maps the
+ * partition itself — orb_bg_init() takes the app's own blob() base, and every
+ * GIF and plate read below goes through s_art. What the hook adds is one read
+ * of the mapped payload, nothing else.
  */
 
 #include "orb_sched.h"
@@ -20,6 +26,10 @@
 #include "esp_heap_caps.h"
 #include "display.h"
 #include "orb_gfx.h"          /* CLK_SCR_W/H, the row marks, the commit band's counters */
+#include "orb_layers.h"       /* orb_layer_tab_t, ORB_LAYER_JOB_MAX, orb_layers_jobs  */
+#include "orb_svc.h"          /* orb_svc_layer_table: the broker's read door          */
+#include "orb_app.h"          /* orb_app_current: whose table the commit pass composites */
+#include "art_bank.h"         /* art_bank_ptr: the payload a tier-1 row's off indexes  */
 
 /* After orb_gfx.h, which brings in clock_assets.h: orb_theme_geo.h #undefs the
  * generated header's names to redefine them as runtime reads, and must not be
@@ -505,6 +515,41 @@ void orb_sched_ink_px_add(uint32_t n)
 #endif
 }
 
+/* ---- the layer-table commit pass (Migration 2, P8 Commit 2) --------------
+ *
+ * The OS's own commit path for anything that draws through the app layer
+ * table: read the entry on the glass's rows, build the job list in table order
+ * (paint order IS table order — §1.2a), and hand it to the same gfx_commit()
+ * the dial's private hook drives. The app never names a paint context, a sprite
+ * or a row mark, which is the whole point of the table.
+ *
+ * `theme_base` is art_bank_ptr(), the mapped live payload — NULL before
+ * art_bank_init() and for a board with no theme, and then every base-less row
+ * draws nothing (orb_layers.c:320-323), which is what a dial with no art is
+ * supposed to do. A tier-1 row's `art.off` indexes THAT, not the clock's blob:
+ * see the base-convention vectors in tools/host_orblayers_test.py, and the
+ * report's note on where the section's bank base gets folded in.
+ *
+ * Ordering hazard, stated rather than hidden: gfx_commit() consumes the WHOLE
+ * mark set, and the clock's legacy path marks its own rows during its tick and
+ * commits them at the LVGL flush. A live app table and the legacy clock
+ * renderer therefore fight for one mark set, which is exactly why Commit 4
+ * deletes the legacy path. Until then the clock builds no rows, this pass finds
+ * an empty table and returns before it touches a mark.
+ */
+void orb_sched_commit_layers(const orb_app_t *active)
+{
+    const orb_layer_tab_t *t = orb_svc_layer_table(active);
+    if (!t || orb_layers_count(t) == 0) return;
+    if (!s_canvas) return;            /* no canvas, nothing to restore a marked
+                                       * row FROM: the classic LVGL path owns
+                                       * those pixels, as it owns them for a
+                                       * non-GIF dial today */
+    gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
+    int nj = orb_layers_jobs(t, art_bank_ptr(), jc, ORB_LAYER_JOB_MAX);
+    if (nj) gfx_commit(nj, jc, s_canvas);
+}
+
 static void tick_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
@@ -545,6 +590,15 @@ static void tick_timer_cb(lv_timer_t *timer)
 #if DISPLAY_BENCH
     if (orb_sched_l4_active() && s_policy.bench) s_policy.bench();   /* walks the blocks + marks their rows */
 #endif
+    /* The app layer table, after every mark this tick made and before this
+     * frame's marks reach the DMA: gfx_commit() consumes the WHOLE mark set, so
+     * a commit ahead of the mark pass would drop damage the app has not asked
+     * to draw yet. Today this returns at its own empty-table guard — the clock
+     * builds no rows until Commit 3 — and the shipped dial draws through
+     * clock_layer_commit at the flush exactly as it did before the call landed.
+     * The two paths cannot both own one mark set, which is what Commit 4's
+     * deletion of the legacy renderer settles. */
+    orb_sched_commit_layers(orb_app_current());
     request_commit();
 #endif
     report_fps_if_due();

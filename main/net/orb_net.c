@@ -4266,18 +4266,11 @@ static esp_err_t h_sd(httpd_req_t *req)
     char t_id[ORB_THEME_ID_HEX * 2 + 3], t_why[128];
     json_put(t_id, sizeof t_id, orb_theme_try_id());
     json_put(t_why, sizeof t_why, orb_theme_try_why());
-    /* And what BOOT could not load, which is a different event with a different
-     * sentence: the bytes were verified when they were written, so a slot that fails
-     * now is corruption, and the only place the owner can learn that is the row of
-     * the theme they picked. */
-    char d_id[ORB_THEME_ID_HEX * 2 + 3], d_why[128];
-    json_put(d_id, sizeof d_id, orb_theme_damage_id());
-    json_put(d_why, sizeof d_why, orb_theme_damage_why());
-    /* And the `staged` witness (§20.4): a flip that staged and never committed
-     * rolls back on its own, so the owner needs the word on the row to know the
-     * dial is not showing what they pressed. Same id-pair shape as damage above,
-     * and a different event: damage says the committed bytes are broken, staged
-     * says the commit never happened. */
+    /* And the `staged` witness (Migration 1): a store whose pixels reached the slot and
+     * whose header never did. Under the single slot that word is only a witness that a
+     * store was armed and torn — boot draws the base face and one re-store clears it.
+     * The damage-reporting pair is retired with the A/B choice: with one slot there is
+     * no chosen-but-uncorruptable slot to explain. */
     char stg_id[ORB_THEME_ID_HEX * 2 + 3], stg_why[128];
     json_put(stg_id, sizeof stg_id, orb_theme_staged_id());
     json_put(stg_why, sizeof stg_why, orb_theme_staged_why());
@@ -4287,8 +4280,8 @@ static esp_err_t h_sd(httpd_req_t *req)
     json_put(active_name, sizeof active_name, orb_theme_active_name());
     int off = snprintf(json, sizeof json,
         "{\"mounted\":%s,\"card\":\"%.40s\",\"uploading\":%s,\"total_mb\":%u,\"free_mb\":%u,"
-        "\"source\":\"%s\",\"active\":\"%s\",\"live\":\"%s\",\"card_count\":%d,"
-        "\"try_id\":\"%s\",\"try_why\":\"%s\",\"damage_id\":\"%s\",\"damage_why\":\"%s\","
+        "\"source\":\"%s\",\"active\":\"%s\",\"card_count\":%d,"
+        "\"try_id\":\"%s\",\"try_why\":\"%s\","
         "\"staged_id\":\"%s\",\"staged_why\":\"%s\",\"refill_ms\":%u,\"refill_bytes\":%u,"
         "\"bundle_ms\":%u,\"bundle_bytes\":%u,\"job_busy\":%s,"
         "\"themes\":[",
@@ -4296,8 +4289,8 @@ static esp_err_t h_sd(httpd_req_t *req)
         orb_sd_mounted() ? orb_sd_card_id() : "",
         orb_theme_upload_busy() ? "true" : "false",
         (unsigned)(total / (1024 * 1024)), (unsigned)(freeb / (1024 * 1024)),
-        orb_theme_source(), active_name, orb_theme_live(), n > 0 ? n : 0,
-        t_id, t_why, d_id, d_why, stg_id, stg_why,
+        orb_theme_source(), active_name, n > 0 ? n : 0,
+        t_id, t_why, stg_id, stg_why,
         (unsigned)orb_theme_refill_ms(), (unsigned)orb_theme_refill_bytes(),
         (unsigned)orb_theme_bundle_ms(), (unsigned)orb_theme_bundle_bytes(),
         /* The press the owner just made is a queued job, not a done one: without this
@@ -4323,21 +4316,20 @@ static esp_err_t h_sd(httpd_req_t *req)
         json_put(e_name, sizeof e_name, ent[i].name);
         json_put(e_id,   sizeof e_id,   ent[i].id);
         json_put(e_why,  sizeof e_why,  ent[i].why);
-        /* slot is which physical slot holds this file's stored copy ("A"/"B", ""
-         * when nothing stored it): the flip button belongs on a row that has one
-         * and is not already on the glass. The door takes the id, never this
-         * letter — the letter is advice from a header read, the worker re-derives
-         * it before it writes anything. */
-        const char *e_slot = ent[i].slot == 'A' ? "A" : ent[i].slot == 'B' ? "B" : "";
+        /* stored is whether the one slot holds this file's stored copy. Under the
+         * single slot it is the same test as the row's id matching the slot's, and the
+         * page marks the row "stored" and offers a re-store; the door takes the id,
+         * never this flag. */
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"id\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"slot\":\"%s\"}",
+            "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
             i ? "," : "", e_name, e_id, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
             ent[i].err == ESP_OK ? "true" : "false",
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false",
-            (unsigned)ent[i].fmt, (unsigned)ent[i].n_sections, e_slot);
+            (unsigned)ent[i].fmt, (unsigned)ent[i].n_sections,
+            ent[i].stored ? "true" : "false");
     }
     if (!too_big)
         off += snprintf(json + off, sizeof json - (size_t)off, "]}");
@@ -4348,17 +4340,17 @@ static esp_err_t h_sd(httpd_req_t *req)
     return httpd_resp_sendstr(req, json);
 }
 
-/* POST /api/v1/sd/bundle?id=X — the flip page's store door (P6.4): the same press
- * shape the FORMAT 2 Load door had, through the same queue, and it is now the ONLY store route to
+/* POST /api/v1/sd/bundle?id=X — the theme store door. The same press shape the FORMAT 2
+ * Load door had, through the same queue, and it is the ONLY route to
  * orb_theme_install_bundle(): the FORMAT 2 door above refuses a bundle by identity
- * check and the picker never sees one. One field differs on purpose — reboot:none.
- * The store does not change what the dial draws (there is no FORMAT 3 compositor
- * until P6.5), and a reboot that shows the owner the same dial they already had is
- * the theatre D26 bans. The outcome lands where every other press outcome lands:
- * the try witness on the row, and /api/v1/sd's bundle_ms/bundle_bytes pair beside
- * the refill figures. The confirm() on the page is the slice's other duty from
- * §24.5(2): it says plainly that a cut during this copy comes back on the factory
- * clock, because the store erases the slot that held the old commit. */
+ * check and the picker never sees one. One field differs from the FORMAT 2 door on
+ * purpose — reboot:automatic. Under the single slot a store IS the theme change: it
+ * writes the one slot and bundle_job asks for the reboot that draws it, exactly as a
+ * FORMAT 2 install did. The outcome lands where every other press outcome lands: the
+ * try witness on the row, and /api/v1/sd's bundle_ms/bundle_bytes pair beside the
+ * refill figures. The confirm() on the page is the store's other duty: it says plainly
+ * that a cut during this copy comes back on the base face, because the store erases the
+ * slot that held the previous theme and only a re-store recovers it. */
 static esp_err_t h_bundle_install(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -4383,72 +4375,9 @@ static esp_err_t h_bundle_install(httpd_req_t *req)
     }
     char b[192];
     const int n = snprintf(b, sizeof b,
-        "{\"state\":\"storing\",\"id\":\"%s\",\"reboot\":\"none\"}", id);
+        "{\"state\":\"storing\",\"id\":\"%s\",\"reboot\":\"automatic\"}", id);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
     return httpd_resp_sendstr(req, b);
-}
-
-/* POST /api/v1/sd/flip?id=X — §26 slice 3's flip door, the second press of the
- * two-stage form. The store put the bundle in a slot and the glass never moved;
- * the flip names that slot's word to the choice key and reboots onto it. It takes
- * the same id the list handed out and resolves it against the SLOT headers on the
- * worker — never against a path — so it answers with no card in the socket, and a
- * press naming a bundle no slot holds refuses with a sentence on its row instead
- * of booting into a dial that would not load. reboot:"automatic" the way
- * sd/default answers: the flip IS the glass-changing event, and the owner who
- * stored it two seconds ago knows exactly what they pressed. */
-static esp_err_t h_bundle_flip(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_THEME_ID_HEX + 1] = "";
-    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
-    }
-    const esp_err_t e = orb_theme_post_flip(id);
-    if (e == ESP_ERR_INVALID_STATE) {
-        /* Same 409 discipline as the store route: a double press is a wait, not a
-         * defect in the theme. */
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
-    }
-    if (e != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        char b[96];
-        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
-        return httpd_resp_sendstr(req, b);
-    }
-    char b[192];
-    const int n = snprintf(b, sizeof b,
-        "{\"state\":\"flipping\",\"id\":\"%s\",\"reboot\":\"automatic\"}", id);
-    if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
-    return httpd_resp_sendstr(req, b);
-}
-
-/* POST /api/v1/sd/default — back to the dial drawn from slot A: the flashed bank
- * while nothing has overwritten it, and since the ping-pong, the word the flip door
- * itself writes when the pressed bundle sits in A. No card, no container, no copy:
- * the only work is the NVS write that says to draw it and the reboot that follows.
- * It lives or dies on that choice, not on whether a card is in the socket — which is
- * exactly why it is its own endpoint and not another value on the store one. */
-static esp_err_t h_theme_default(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    const esp_err_t e = orb_theme_post_default();
-    if (e == ESP_ERR_INVALID_STATE) {
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "{\"error\":\"a theme job is already running\"}");
-    }
-    if (e != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        char b[96];
-        snprintf(b, sizeof b, "{\"error\":\"job refused: %s\"}", esp_err_to_name(e));
-        return httpd_resp_sendstr(req, b);
-    }
-    return httpd_resp_sendstr(req, "{\"state\":\"default\",\"live\":\"default\","
-                                   "\"reboot\":\"automatic\"}");
 }
 
 /* POST /api/v1/sd/delete?id=X */
@@ -5110,27 +5039,47 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
     }
 
     const char *why = NULL;
-    const esp_err_t ee = orb_theme_upload_end(&up, overwrite, &why);
+    char committed[ORB_THEME_ID_HEX + 1] = "";
+    const esp_err_t ee = orb_theme_upload_end(&up, overwrite, &why, committed);
     if (ee == ORB_THEME_UPLOAD_E_DUP) {
         /* A different theme already lives under that name. 409, not 422: nothing is
          * wrong with the upload — the owner has to decide, and the page re-sends with
-         * ?overwrite=1 to keep the one they are pushing. */
+         * ?overwrite=1 to keep the one they are pushing. The upload armed the slot
+         * invalid before it ran, so this refusal leaves the dial base-faced until a
+         * store lands — the re-send, or a plain re-store of what is already on the card. */
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req,
             "{\"error\":\"a different theme with that name is already on the card\","
-            "\"overwrite\":false}");
+            "\"overwrite\":false,\"reboot\":\"none\"}");
     }
     if (ee != ESP_OK) {
         /* The reason goes in the body and not only the status line: whoever is at this
-         * page has no serial cable and no reason to go and get one. */
+         * page has no serial cable and no reason to go and get one. The upload armed the
+         * slot invalid before it ran, so a rejected upload leaves the base face — recover
+         * by re-uploading or re-storing a good file. */
         char b[256];
         httpd_resp_set_status(req, "422 Unprocessable Entity");
-        snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\"}",
+        snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\",\"reboot\":\"none\"}",
                  why ? why : "not a valid theme file");
         return httpd_resp_sendstr(req, b);
     }
+    /* The bytes are verified and on the card under `committed`. The upload armed the
+     * single slot invalid, so the theme is not live until it is stored. Queue the store
+     * door for that id: bundle_job copies card-to-slot, writes the header last, and
+     * reboots onto it. This is the same press the Store button and the dial make, so the
+     * upload door cannot hold a second opinion about what storing a theme does. */
     char b[192];
-    snprintf(b, sizeof b, "{\"state\":\"stored\",\"bytes\":%d}", got);
+    const esp_err_t pe = orb_theme_post_bundle(committed);
+    if (pe != ESP_OK) {
+        /* On the card but not queued. The slot stays armed invalid; the page says so and
+         * the owner re-presses Store. */
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        snprintf(b, sizeof b, "{\"error\":\"stored on the card, store job refused: %s\","
+                 "\"id\":\"%s\",\"reboot\":\"none\"}", esp_err_to_name(pe), committed);
+        return httpd_resp_sendstr(req, b);
+    }
+    snprintf(b, sizeof b, "{\"state\":\"stored\",\"id\":\"%s\",\"bytes\":%d,"
+             "\"reboot\":\"automatic\"}", committed, got);
     return httpd_resp_sendstr(req, b);
 }
 
@@ -5488,9 +5437,7 @@ static const char HTML_THEMES[] =
 "if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
 "C.textContent=data.card+' \\u2014 '+data.free_mb+' MB free of '+data.total_mb+' MB; dial is on '+data.source+' ('+(data.active||'baked-in')+')';"
 "var h='';"
-"h=h+'<div class=row><b>dial: '+(data.live=='slot-B'||data.live=='card'?'the stored copy in slot B'"
-":(data.live=='slot-A'?'the copy in slot A':'the factory default'))+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
-"if(data.live=='slot-B'||data.live=='card'){h=h+' <button onclick=tofactory()>Use the factory dial</button>';}"
+"h=h+'<div class=row><b>dial: '+(data.source=='slot'?'the stored theme':'the base face')+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
 "h=h+'</div>';"
 "if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
@@ -5500,9 +5447,9 @@ static const char HTML_THEMES[] =
 "+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
 "h=h+'<div class=sub>'+esc(t.id)+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
-"if(data.damage_id==t.id&&data.damage_why){h=h+'<div class=sub>THE DIAL WOULD NOT LOAD IT: '+esc(data.damage_why)+'</div>';}"
+"if(data.staged_id==t.id&&data.staged_why){h=h+'<div class=sub>STORE NEVER COMMITTED: '+esc(data.staged_why)+'</div>';}"
 "if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
-"if(t.ok&&t.slot&&!t.active){h=h+' <button onclick=\"flip(\\''+t.id+'\\')\">Put it on the dial</button>';}"
+"if(t.ok&&t.stored&&!t.active){h=h+' <span class=sub>stored, re-store to draw it</span>';}"
 "if(!t.ok){h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why||'the card copy did not verify')+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
 "L.innerHTML=h;}"
@@ -5510,43 +5457,30 @@ static const char HTML_THEMES[] =
 
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "function store(id){var nm=ROWS[id]||id;"
-"if(!confirm('Copy '+nm+' into the dial? It goes into the slot the dial is not drawing. A power cut during the copy leaves the dial drawing what it draws, and storing again recovers it.')){return;}"
-"say('storing '+nm+' - queued; the copy takes a few seconds and the dial does not move yet','');"
+"if(!confirm('Store '+nm+' on the dial? It overwrites the current theme and the orb reboots onto it. A power cut during the copy leaves the base face, and storing again recovers it.')){return;}"
+"say('storing '+nm+' - the orb copies it into the slot and reboots onto it in a few seconds','');"
 "j('/api/v1/sd/bundle?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('could not store '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
 "watch('store',id,nm,0,0);}).catch(function(){say('the store request did not reach the orb - nothing was copied','bad');});}"
-/* The store door answers the moment the job is queued; the copy itself runs seconds
- * later on the worker. So the press is not over when the door answers: read the card
- * until orb_jobs goes quiet, then report what the worker actually left behind - the
- * row's slot on success, its try witness on refusal. D11's failure-stays-honest rule,
- * applied to the button instead of the glass. */
+/* The store door answers the moment the job is queued; the copy runs seconds later on
+ * the worker, then the worker reboots the orb onto the theme it just wrote. So the press
+ * is not over when the door answers: read the card until the job is quiet and the orb is
+ * back on the new theme. A single slot leaves no second copy to nudge: storing once is the
+ * whole action, and a torn copy leaves the base face to be re-stored. D11's failure-stays-
+ * honest rule, applied to the button instead of the glass. */
 "function watch(kind,id,nm,n,down){"
 "j('/api/v1/sd').then(function(r){var d=r.d;"
-"if(d&&d.job_busy){if(n>120){say((kind=='store'?'still storing ':'still flipping ')+nm+' after two minutes - reload this page for the outcome','bad');return;}"
-"say((kind=='store'?'storing ':'flipping ')+nm+' - copying, '+n+' s so far','');"
+"if(d&&d.job_busy){if(n>120){say('still storing '+nm+' after two minutes - reload this page for the outcome','bad');return;}"
+"say('storing '+nm+' - copying, '+n+' s so far','');"
 "setTimeout(function(){watch(kind,id,nm,n+1,down);},1000);return;}"
 "data=d;draw();"
-"if(d&&d.try_id==id&&d.try_why){say((kind=='store'?'could not store ':'could not flip ')+nm+': '+d.try_why,'bad');return;}"
-"if(kind=='store'){var row=null;for(var i=0;d&&d.themes&&i<d.themes.length;i++){if(d.themes[i].id==id)row=d.themes[i];}"
-"if(row&&row.slot){say('stored '+nm+' in slot '+row.slot+' - press Put it on the dial to draw it','ok');}"
-"else{say('the copy finished with no slot on the row - press Rescan card to see why','bad');}return;}"
-"if(d&&d.active==nm){say('the orb is back - dial on '+(nm||'the factory face'),'ok');return;}"
-"if(down||n>6){say('the orb answered but is not on '+(nm||'the factory face')+' - reload this page and check the row','bad');return;}"
+"if(d&&d.try_id==id&&d.try_why){say('could not store '+nm+': '+d.try_why,'bad');return;}"
+"if(d&&d.staged_id==id&&d.staged_why){say('store of '+nm+' never committed: '+d.staged_why,'bad');return;}"
+"if(d&&d.active==nm){say('the orb is back - dial on '+nm,'ok');return;}"
+"if(down||n>6){say('the orb answered but is not on '+nm+' - reload this page and check the row','bad');return;}"
 "setTimeout(function(){watch(kind,id,nm,n+1,down);},1500);},"
 "function(){if(n>120){say('the orb stopped answering - reload this page','bad');return;}"
 "setTimeout(function(){watch(kind,id,nm,n+1,1);},1500);});}"
-"function flip(id){var nm=ROWS[id]||id;"
-"if(!confirm('Put '+nm+' on the dial? The orb reboots onto the stored copy.')){return;}"
-"say('flipping '+nm+'...','');"
-"j('/api/v1/sd/flip?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('could not flip '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('flipping '+nm+' - the orb is rebooting; this page waits for it to come back','');"
-"watch('flip',id,nm,0,0);}).catch(function(){say('the flip request did not reach the orb','bad');});}"
-"function tofactory(){if(!confirm('Go back to the factory dial? The orb reboots.')){return;}"
-"say('choosing the factory dial...','');"
-"j('/api/v1/sd/default',{method:'POST'}).then(function(r){"
-"if(!r.ok){say('could not choose it: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"say('factory dial chosen - the orb is rebooting','ok');watch('flip','','',0,0);}).catch(function(){say('the request did not reach the orb','bad');});}"
 "function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
 "j('/api/v1/sd/delete?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();});}"
@@ -5780,6 +5714,9 @@ static esp_err_t net_start_httpd(void)
      * that fails to register logs the line above rather than vanishing. P6.4's
      * /api/v1/sd/bundle store door is the 33rd; the ceiling stays 36 and the count
      * is re-checked by host_tz_test.py's textual table count, not by this sentence.
+     * Migration 1 then deleted the /api/v1/sd/flip and /api/v1/sd/default doors: the
+     * single slot makes the bundle store the only theme-changing press and it reboots,
+     * so the flip and factory-default routes no longer exist and the count drops by two.
      *
      * The merge with the app-platform line makes one of those 32 conditional:
      * /api/v1/screen registers only under CONFIG_ORB_DEBUG_HTTP, default y on the
@@ -5843,10 +5780,9 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
 #endif
-        /* microSD + themes. /themes is the page; the seven under /api/v1/sd are its
-         * backing calls — the bundle store door added the seventh at P6.4 — and
-         * none of them can do anything to the clock beyond staging a theme the
-         * owner then chooses to reboot into. */
+        /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
+         * backing calls. Migration 1 deleted the flip and default doors: under the
+         * single slot the bundle store is the only theme-changing press, and it reboots. */
         { .uri = "/themes",            .method = HTTP_GET,  .handler = h_themes },
         /* The apps drop zone: /apps is the page, /api/v1/apps its backing
          * call. Neither can touch anything but a read of the card. */
@@ -5861,8 +5797,6 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
-        { .uri = "/api/v1/sd/flip",     .method = HTTP_POST, .handler = h_bundle_flip },
-        { .uri = "/api/v1/sd/default",   .method = HTTP_POST, .handler = h_theme_default },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
         { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },
         /* Android + iOS/macOS captive-portal probes (see h_captive). The last two

@@ -10,12 +10,14 @@
  * the shell, so the theme page and the menu's own pages cannot drift apart on
  * how a detent behaves.
  *
- * The page nests one level deep (ruling D12): a plain row for the factory
- * default, one group header for the card, and the card's themes as its items.
- * Which of those rows the glass draws is the shell's decision and not this
- * file's — the count here is the whole page either way, so the group can be
- * closed without a single row of this file knowing, and an app cannot hide a
- * row from its owner by accident.
+ * The page nests one level deep (ruling D12): one group header for the card, and
+ * the card's themes as its items. Migration 1 dropped the plain factory-default
+ * row that used to sit above the group: under the single slot the base face is
+ * what an empty or torn slot already draws, and there is no second copy a press
+ * could store a default into. Which rows the glass draws is still the shell's
+ * decision and not this file's — the count here is the whole page either way, so
+ * the group can be closed without a single row of this file knowing, and an app
+ * cannot hide a row from its owner by accident.
  *
  * The two halves of the state are deliberate. s_ui is read by the repaint and
  * touched only on the LVGL task. s_shared is written by the worker and copied
@@ -43,12 +45,13 @@ static const char *TAG = "clock_theme";
 
 #define THEME_MAX 8     /* a card realistically holds a handful of themes */
 
-/* The page's own row numbers, in the order the shell will draw them. The two
- * fixed rows come first so the card list is always in the same place, and a
- * closed group leaves a page whose row 0 the owner can still press. */
-#define ROW_DEFAULT 0   /* OPT_ROW:   the factory dial */
-#define ROW_GROUP   1   /* OPT_GROUP: "From the card" */
-#define ROW_ITEMS   2   /* the scanned themes, one OPT_ITEM each */
+/* The page's own row numbers, in the order the shell will draw them. The group
+ * header comes first so the card list is always in the same place, and a closed
+ * group leaves a page whose row 0 the owner can still press. Migration 1 retired
+ * the plain "Factory default" row: with one slot the base face is what an empty or
+ * torn slot already draws, and there is no second copy to store a default into. */
+#define ROW_GROUP   0   /* OPT_GROUP: "From the card" */
+#define ROW_ITEMS   1   /* the scanned themes, one OPT_ITEM each */
 
 typedef struct {
     int               n;
@@ -168,27 +171,6 @@ void clock_themes_pick(int idx)
         snprintf(s_ui.status, sizeof s_ui.status, "storing \"%s\" …", e->name);
 }
 
-/* The "Factory default" row: the promise that there is always a way back to the
- * dial drawn from slot A holds. Nothing here goes near the card — slot A is the
- * bank `idf.py flash` wrote at partition offset 0 (and, since §26 slice 3's
- * ping-pong, possibly the copy a store wrote over it), and choosing it is one NVS
- * write and a reboot. */
-static void pick_default(void)
-{
-    const char *const lv = orb_theme_live();
-    if (strcmp(lv, THEME_LIVE_DEFAULT) == 0 || strcmp(lv, THEME_LIVE_SLOT_A) == 0) {
-        strlcpy(s_ui.status, "the factory dial is what is on the wall",
-                sizeof s_ui.status);
-        return;
-    }
-    ESP_LOGI(TAG, "pick: the factory default");
-    const esp_err_t e = orb_theme_post_default();
-    if (e == ESP_ERR_INVALID_STATE)
-        strlcpy(s_ui.status, "a theme job is already running", sizeof s_ui.status);
-    else if (e != ESP_OK)
-        snprintf(s_ui.status, sizeof s_ui.status, "the default could not start: %s",
-                 esp_err_to_name(e));
-}
 
 /* ---- the ABI the shell calls (B1/B2, ruling B2) ----------------------------
  *
@@ -211,23 +193,23 @@ esp_err_t clock_themes_init(void)
 int clock_opt_count(orb_app_t *app)
 {
     (void)app;
-    /* The two fixed rows plus the card's themes. Nothing here ever counted the
+    /* The one group header plus the card's themes. Nothing here ever counted the
      * reboot question any more — ruling D11 deleted it, because a pick installs
-     * and reboots by itself and there is no second press to have faith in.
-     * The items stay in the count while their group is CLOSED: the shell hides
-     * them, and an app that dropped them from its own number would be a second
-     * opinion about what is on the page, which is the one thing §13.4 forbids. */
+     * and reboots by itself and there is no second press to have faith in. Migration
+     * 1 dropped the factory-default row with the A/B slot it pointed at. The items
+     * stay in the count while their group is CLOSED: the shell hides them, and an
+     * app that dropped them from its own number would be a second opinion about what
+     * is on the page, which is the one thing §13.4 forbids. */
     return ROW_ITEMS + s_ui.n;
 }
 
-/** Which of the three shapes a row has (ruling D12). One group, its items, and
- *  the plain row above them — the shape the shell validates and renders, and the
- *  reason the card's themes are ITEMs rather than five rows the owner has to
- *  scroll past to reach the factory default. */
+/** Which of the two shapes a row has (ruling D12). One group and its items — the
+ *  shape the shell validates and renders, and the reason the card's themes are
+ *  ITEMs rather than loose rows. Migration 1 dropped the plain factory-default row
+ *  that used to lead the page. */
 orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx)
 {
     (void)app;
-    if (idx == ROW_DEFAULT) return OPT_ROW;
     if (idx == ROW_GROUP)   return OPT_GROUP;
     if (idx >= ROW_ITEMS && idx < ROW_ITEMS + s_ui.n) return OPT_ITEM;
     return OPT_ROW;                     /* out of range: the shell's bounds answer */
@@ -236,12 +218,11 @@ orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx)
 const char *clock_opt_label(orb_app_t *app, int idx)
 {
     (void)app;
-    /* The default is a ROW and the card is a GROUP, in that order, always: the
-     * owner who arrives with no card must still find the row that gets them back
-     * to the dial the box came with, which is the promise ruling D13 exists to
-     * keep. Its title is the compiled pair's, because until D10's .orbapp wiring
-     * ships the factory dial's source is the flashed bank, not a file. */
-    if (idx == ROW_DEFAULT) return "Factory default";
+    /* The card is a GROUP, at row 0, always. Migration 1 retired the factory-default
+     * ROW that used to lead the page: under the single slot there is no press that
+     * returns the dial to a second copy, so the group is the whole page and the
+     * base face needs no row to name it — it is what a slot with nothing valid in
+     * it already draws. */
     if (idx == ROW_GROUP)   return "From the card";
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";
@@ -255,15 +236,10 @@ const char *clock_opt_value(orb_app_t *app, int idx)
     static char v[48];                  /* one row's answer, repainted per poll */
     v[0] = '\0';
     /* Every string below is a read of state the theme layer already holds: the
-     * choice it resolved at boot, what its last install attempt could not do, and
-     * what boot found damaged in the slot. None of them touches the card, NVS or
+     * source boot resolved at boot, what its last install attempt could not do, and
+     * the witness a store was armed and torn. None of them touches the card, NVS or
      * the network, which is the rule these answers live under — the same callback
      * is the dial's animation. */
-    if (idx == ROW_DEFAULT) {
-        const char *const lv = orb_theme_live();
-        return (strcmp(lv, THEME_LIVE_DEFAULT) == 0 ||
-                strcmp(lv, THEME_LIVE_SLOT_A) == 0) ? "on the dial" : "";
-    }
     if (idx == ROW_GROUP) {
         /* What is on the wall, named, so a closed group still answers the question
          * a knock on the door asks. The shell overwrites this with "open" while the
@@ -275,12 +251,11 @@ const char *clock_opt_value(orb_app_t *app, int idx)
                      s_ui.e[i].name[0] ? s_ui.e[i].name : s_ui.e[i].id);
             return v;
         }
-        /* Nothing active with a choice in force: the named slot did not load, and
-         * the damage pair on h_sd says why. "default" with nothing active is not
-         * damage — it is a board whose slot A holds no bundle and no card was ever
-         * picked. */
-        return strcmp(orb_theme_live(), THEME_LIVE_DEFAULT) != 0
-                   ? "the stored copy did not load" : "none chosen";
+        /* Nothing active with themes on the card: the slot holds no valid bundle, so
+         * the dial is on the base face. The staged witness on h_sd says when that is a
+         * torn store rather than a board that has never stored a theme. */
+        return strcmp(orb_theme_source(), "slot") == 0
+                   ? "the stored copy did not load" : "on the base face";
     }
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";
@@ -289,13 +264,13 @@ const char *clock_opt_value(orb_app_t *app, int idx)
      * reason a theme is not on the wall goes on that theme's row, because the row
      * is the only thing on this screen the owner was looking at when they asked.
      *   - a file the card holds but cannot load: the list's own reason
-     *   - the slot boot was asked to draw and could not: boot's sentence
+     *   - the store that was armed and never committed: the staged witness
      *   - the install that was just refused: the install ladder's sentence
      * The last two name one theme each, by id, so the page says which theme. */
     if (e->err != ESP_OK) return e->why[0] ? e->why : "not loadable";
-    if (s_ui.n > 0 && orb_theme_damage_id()[0] &&
-        strcmp(e->id, orb_theme_damage_id()) == 0)
-        return orb_theme_damage_why();
+    if (s_ui.n > 0 && orb_theme_staged_id()[0] &&
+        strcmp(e->id, orb_theme_staged_id()) == 0 && orb_theme_staged_why()[0])
+        return orb_theme_staged_why();
     if (orb_theme_try_id()[0] && strcmp(e->id, orb_theme_try_id()) == 0 &&
         orb_theme_try_why()[0])
         return orb_theme_try_why();
@@ -323,12 +298,13 @@ void clock_opt_sel(orb_app_t *app, int idx)
      * clock's manifest DECLARES themes — so the declaration is consulted here,
      * not skipped because the module predates its own row. A revoked cap
      * degrades the page visibly: the refusal is status text on the group the
-     * owner just pressed, and the install never reaches the worker. */
-    if (idx != ROW_DEFAULT && idx != ROW_GROUP && !orb_grant_ok(app, CAP_THEMES)) {
+     * owner just pressed, and the install never reaches the worker. Migration 1
+     * left the group header as the only non-item row, so an ITEM press is the
+     * only one that needs the themes cap. */
+    if (idx >= ROW_ITEMS && !orb_grant_ok(app, CAP_THEMES)) {
         strlcpy(s_ui.status, "theme permission revoked", sizeof s_ui.status);
         return;
     }
-    if (idx == ROW_DEFAULT) { pick_default(); return; }
     if (idx == ROW_GROUP)   return;
     clock_themes_pick(idx - ROW_ITEMS);
 }

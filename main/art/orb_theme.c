@@ -1,7 +1,7 @@
 /**
  * orb_theme.c — see orb_theme.h for the model. An installed theme is a container
- * from the card copied into one of two A/B slots in the `assets` partition, and
- * the geometry it carries is what clock_view.c reads instead of the compiled-in
+ * from the card copied into the single slot at the head of the `assets` partition,
+ * and the geometry it carries is what clock_view.c reads instead of the compiled-in
  * one.
  *
  * The wire format is DEFINED in tools/orbtheme.py and mirrored here. That mirror
@@ -50,14 +50,12 @@ static const char *TAG = "orb_theme";
  * nvs_flash_erase() of the default partition. */
 #define THEME_NVS_PARTITION "storage"
 #define THEME_NVS_NAMESPACE "orb.settings"
-/* Which slot the dial draws — THEME_LIVE_DEFAULT, _SLOT_A or _SLOT_B. A CHOICE the
- * owner made, not an operation waiting for a reboot: D13 deleted the pending key,
- * because a staged install that survives into a boot is a theme change the owner
- * can no longer cancel and a failure the owner cannot see coming. */
-#define THEME_NVS_LIVE      "theme_live"
-/* D30's §20.4 ledger word, and NOT the key D13 deleted. This one changes nothing
- * about what the glass draws: boot resolves the choice key as ever, commits only
- * on a valid header, and then reports here whether a flip that had already swapped
+/* Migration 1 retired the `theme_live` choice key: with one slot there is no slot
+ * to name, so the key and the A/B designator words it held are gone. A board whose
+ * NVS still holds `theme_live` ignores it — boot reads the one slot at offset 0. */
+/* D30's §20.4 ledger word, and NOT the key Migration 1 deleted. This one changes nothing
+ * about what the glass draws: boot verifies the one slot, commits only
+ * on a valid header, and then reports here whether a store that had already swapped
  * its pixels never got its header written. A witness, not a pending operation —
  * which is the distinction that lets it exist under D13's own reasoning. The value
  * is the staging theme's 12-hex id, so the word lands on that theme's row and not
@@ -88,21 +86,18 @@ _Static_assert(W_WORDS == 32, "container header must be 128 bytes");
 #define THEME_NAME_MAX 56             /* one name field; 55 usable bytes + NUL */
 #define THEME_ID_HEX   12             /* sha256(name)[:12] — the card filename stem */
 
-/* Slot layout, private to this file. The two within-slot offsets are the only
- * numbers here; a slot's absolute addresses are its base plus those. Both are
- * 64 KB aligned because 64 KB is esp_partition_mmap's page, and an unaligned start
- * wastes an MMU entry on rounding at each end. The geometry sits in its own sector
- * at +0x1000 rather than tight against the 128-byte header so that making a slot
- * live — an erase plus a rewrite of its header block — cannot touch anything
- * underneath it. */
-#define SLOT_A_HDR      0x000000u
-#define SLOT_B_HDR      0x00400000u
-#define SLOT_GEOM_OFF   0x00001000u                 /* within a slot */
-#define SLOT_ART_OFF    0x00010000u                 /* within a slot */
-#define SLOT_A_ART      (SLOT_A_HDR + SLOT_ART_OFF)
-#define SLOT_B_ART      (SLOT_B_HDR + SLOT_ART_OFF)
+/* Slot layout, private to this file. There is ONE slot, at partition offset 0. The
+ * two within-slot offsets are the only numbers here. Both are 64 KB aligned because
+ * 64 KB is esp_partition_mmap's page, and an unaligned start wastes an MMU entry on
+ * rounding at each end. The geometry sits in its own sector at +0x1000 rather than
+ * tight against the 128-byte header so that making the slot live — an erase plus a
+ * rewrite of its header block — cannot touch anything underneath it. Migration 1
+ * retired the A/B pair: the whole 8 MB `assets` partition is one theme slot. */
+#define SLOT_HDR        0x000000u
+#define SLOT_GEOM_OFF   0x00001000u                 /* within the slot */
+#define SLOT_ART_OFF    0x00010000u                 /* within the slot */
 #define SLOT_GEOM_CAP   (SLOT_ART_OFF - SLOT_GEOM_OFF)   /* 60 KB of tables */
-#define SLOT_CAP        0x00400000u                      /* 4 MB per slot    */
+#define SLOT_CAP        0x00800000u                      /* 8 MB, the whole partition */
 
 /* Wire counts. THEME_SCALARS_N must equal len(orbtheme.THEME_FIELDS) and
  * SPRITE_WORDS_N len(orbtheme.SPRITE_FIELDS): a mismatch shifts every field after
@@ -243,15 +238,6 @@ static bool theme_id_ok(const char *id)
  * edge, one at the door, and both hold the same truth from this single definition. */
 bool orb_theme_id_ok(const char *id) { return theme_id_ok(id); }
 
-/* Does this owner name hash to this id? The one question every door asks after
- * reading a header, spelled once. */
-static bool theme_id_matches(const char *name, const char *id)
-{
-    char cid[THEME_ID_HEX + 1];
-    theme_id(name, cid);
-    return strcmp(cid, id) == 0;
-}
-
 
 
 /* ------------------------------------------------------------------------- *
@@ -259,12 +245,6 @@ static bool theme_id_matches(const char *name, const char *id)
  * ------------------------------------------------------------------------- */
 
 static clk_theme_t   s_theme;                    /* parsed container geometry */
-static clk_bg_rect_t *s_rects;
-static uint16_t     *s_first, *s_delays;
-static uint32_t     *s_bgframes;
-static clk_comp_t   *s_comps;
-static clk_aux_t    *s_aux;
-static clk_sprite_t *s_bank;
 static orb_theme_geo_t s_geo;
 /* The installed slot's identity, captured at boot where the slot is adopted. The
  * list marks a row active by matching its header name against s_active_name AND
@@ -276,32 +256,25 @@ static orb_theme_geo_t s_geo;
 static char          s_active_name[ORB_THEME_NAME_MAX + 1];
 static uint32_t      s_active_geom_crc, s_active_art_crc;
 /* The stored bundle's CONTAINER region checksum, read off its slot header at
- * boot: the figure the flip page matches a card file against, where
+ * boot: the figure the store page matches a card file against, where
  * s_active_geom_crc holds the rebase's. Both name the same bytes. */
 static uint32_t      s_bundle_file_geom;
 static bool          s_active_valid;
-static char          s_live[16] = THEME_LIVE_DEFAULT;
-/* The slot boot was asked to draw and could not. Id "" means nothing is
- * damaged; the picker puts the sentence on that theme's row rather than in a
- * status line nobody can reach from the dial. */
-static char          s_damage_id[ORB_THEME_ID_HEX + 1];
-static char          s_damage_why[56];
-static const char   *s_source = "baked-in";
+static const char   *s_source = "none";
 
-/* §20.4's `staged` word: the 12-hex id of the theme whose flip wrote its pixels
+/* §20.4's `staged` word: the 12-hex id of a store whose pixels reached the slot
  * and never wrote its header, read back out of NVS at boot and kept until a boot
- * finds the commit landed. "" is the clean state. It is a witness and never a
- * request — see THEME_NVS_STAGED for why that distinction survives D13. */
+ * finds the commit landed. "" is the clean state. Under the single slot it is only
+ * a witness that a store was armed and torn — never a request and never a choice. */
 static char          s_staged_id[ORB_THEME_ID_HEX + 1];
-/* §24.5(2) measured on hardware: an interrupted flip on this single-slot firmware
- * falls back to the FACTORY clock, not the previous theme — the copy erases the
- * slot it is replacing. The old wording promised the opposite of the boot the
- * bench watched; P6.4 owns this sentence and states the measured fact. */
-#define STAGED_WHY "pixels staged, never committed — the dial shows the factory clock"
+/* Migration 1's measured fact for that witness: an interrupted store on this
+ * single-slot firmware leaves the one slot headerless, so the dial falls to the
+ * base digital face and one re-store recovers it. */
+#define STAGED_WHY "pixels staged, never committed — the dial shows the base face"
 
 /* D30's boot refill, as the ledger reports it: the milliseconds of the fused
- * read-and-CRC pass and the bytes it moved. Both stay 0 on a boot that drew the
- * default, so `refill_ms` beside `source:"slot-B"` is the pair that tells the
+ * read-and-CRC pass and the bytes it moved. Both stay 0 on a boot that mapped the
+ * slot in place, so `refill_ms` beside `source:"slot"` is the pair that tells the
  * page a refill happened, and a 0 with a slot source is a build that mapped
  * (Arm A, or MECH_B 0) rather than a measurement that failed. */
 static uint32_t      s_refill_ms;
@@ -346,9 +319,6 @@ static void use_no_art(void)
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
 const char *orb_theme_source(void)         { return s_source; }
 const char *orb_theme_active_name(void)    { return s_active_name; }
-const char *orb_theme_live(void)           { return s_live; }
-const char *orb_theme_damage_id(void)      { return s_damage_id; }
-const char *orb_theme_damage_why(void)     { return s_damage_why; }
 
 /* §20.4's word and the two refill figures. All four are read-only answers for the
  * status surfaces: nothing here changes which dial the glass draws. */
@@ -359,67 +329,20 @@ uint32_t    orb_theme_refill_bytes(void)   { return s_refill_bytes; }
 uint32_t    orb_theme_bundle_ms(void)      { return s_bundle_ms; }
 uint32_t    orb_theme_bundle_bytes(void)   { return s_bundle_bytes; }
 
-/* ---- the two decisions D13 pinned, kept free of every syscall ---------------
+/* ---- single-slot boot (Migration 1) -----------------------------------------
  *
- * Which slot an install may write, and which slot a boot draws, are the two
- * numbers a wrong answer about costs a device its dial. Both are lifted verbatim
- * into tools/host_tz_test.py and truth-tabled there, because on the bench there is
- * no second slot to corrupt and no way to watch a boot draw the wrong bank. */
+ * With one slot at offset 0 there is no "which slot does a boot draw" and no
+ * "which slot must an install never hit" to decide: the boot reads offset 0, and an
+ * install always writes offset 0. The two predicates host_tz_test.py used to table
+ * (boot_resolve, install_target) and the boot_art_t they returned are retired with the
+ * A/B pair, so a torn store leaves the one slot headerless and the base face on. */
 
-typedef enum { BOOT_ART_DEFAULT = 0, BOOT_ART_CARD = 1 } boot_art_t;
-
-/* Which slot the dial is actually drawing, resolved once by orb_theme_boot(). This is
- * the only honest answer to "which slot must an install never erase", so it is what
- * install_target() alternates against. It starts on the default because a board that
- * has not resolved yet is drawing nothing, and the target that follows from that —
- * slot B — is the one that can never damage what is on the glass. */
-static boot_art_t s_art = BOOT_ART_DEFAULT;
-
-/* What the owner's choice and the slot contents agree on. Pure, so the host suite
- * drives every case with vectors, and so the dial's answer cannot drift from the page's.
- * §26 (P6.5) retired FORMAT 2, so a bundle is the only drawable thing a slot can hold;
- * §26 slice 3 made the choice a SLOT designator: "slot-A" and "slot-B" name the slot to
- * draw, "default" names slot A without claiming its contents are a bundle. The owner
- * ruling of 2026-10-20 deleted the legacy "card" alias outright — this is new infra
- * with no backwards compatibility owed — so a board whose NVS still holds that word
- * falls to the default leg like any other unknown, until one flip or store press
- * overwrites it. The A-named words share one leg because slot A draws the same way
- * whatever it holds: mapped in place, installed pixels sitting at the same
- * slot-relative offsets the flashed bank ships.
- * A choice that names no drawable bundle is still the default: the fallback never
- * installs, and the default leg reading a damaged slot A is that leg's own failure,
- * reported where it can be seen — not a reason to reach across to the other slot. */
-static boot_art_t boot_resolve(const char *live, const bool b_is_bundle)
-{
-    if (!live) return BOOT_ART_DEFAULT;
-    if (strcmp(live, THEME_LIVE_SLOT_B) == 0)
-        return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;
-    return BOOT_ART_DEFAULT;   /* "default", "slot-A", "card", junk, or no key at all */
-}
-
-/* The ping-pong (§26 slice 3, owner ruling 2026-10-20): install into whichever slot
- * the dial is NOT drawing. This is the rule ruling D13 deleted, correct again now that
- * D13 is retired — the flashed default is no longer sacred, so slot A is a legal target
- * and the second install destroys it, with reflash as the sanctioned recovery.
- *
- * What survives D13 is the invariant underneath it, which was always the real point:
- * a store never touches the slot being drawn, so a copy interrupted at any moment leaves
- * the live header intact and the dial drawing what it drew before. Slot A's protection
- * was one consequence of that; it is not the rule itself.
- *
- * Callers latch this once and pass the same value to the serial read, the erase, the
- * copy and the header write. Recomputing it per call would let a flip between two of
- * those steps aim the write at a slot the erase emptied. */
-static uint32_t install_target(boot_art_t live)
-{
-    return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;
-}
-
-/* The slot's name for the log, derived from the same base the copy used — so the
- * sentence a store prints cannot disagree with the slot it wrote. */
+/* The slot's name for the log — the one slot, so the sentence a store prints cannot
+ * disagree with the slot it wrote. */
 static const char *slot_name(uint32_t hdr_base)
 {
-    return (hdr_base == SLOT_A_HDR) ? "slot-A" : "slot-B";
+    (void)hdr_base;
+    return "slot";
 }
 
 
@@ -617,10 +540,11 @@ static void staged_clear(void)
  * reads slot-relative, which is what §22.1's third rule needs in order to answer
  * --inspect with installed bytes.
  *
- * Nothing here selects the bundle. The install leaves the choice key alone and the
- * dial keeps drawing what it drew; the flip page (P6.4, landed) is the door that
- * presses it, and only it. D26 is honoured on the way — boot says plainly that a
- * bundle in the slot is not drawable yet. */
+ * Nothing here chooses what to draw. The install writes the one slot, and the caller
+ * (bundle_job, off the store press) asks for the reboot that draws it — there is no
+ * choice key to leave alone and no second door to press the glass, because Migration 1
+ * merged the store and the flip into one press. D26 is honoured on the way — boot says
+ * plainly that a bundle in the slot is not drawable yet. */
 
 static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t whysz);
 
@@ -860,7 +784,7 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
     hdr[9] = h->n_sections;   hdr[11] = serial;       hdr[13] = SLOT_ART_OFF;
     /* Word 10 (FORMAT 2's bake duration, always 0 for a bundle) carries the CARD
      * file's region checksum. The slot's own geom_crc is the rebase's figure and
-     * cannot be made to equal a file's, and the flip page's active/changed question
+     * cannot be made to equal a file's, and the store page's active/changed question
      * is asked of the file — so the answer has to survive the rebase. */
     hdr[10] = file_geom_crc;
     for (int i = 0; h->name[i] && i < (int)sizeof(h->name) - 1; i++)
@@ -928,15 +852,14 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     }
     h.geom_off = SLOT_GEOM_OFF;
 
-    /* One target for the whole store. Latched here, before the first read, so the
-     * serial probe, the copy, the header erase and the header write cannot be driven by
-     * four separate answers even if the live choice were to change underneath us.
+    /* One target for the whole store: the single slot at offset 0. Migration 1 retired
+     * the ping-pong, so the target is a constant and the serial probe, the copy, the
+     * header erase and the header write all aim at it.
      *
-     * The serial counts up over whatever THIS slot held; a header that cannot be read
-     * restarts the count. Under the ping-pong the slot may hold the flashed default
-     * rather than a previous install, which is exactly the case D13 protected and this
-     * slice spends: the count is per-slot and nothing compares the two of them. */
-    const uint32_t tgt = install_target(s_art);
+     * The serial counts up over whatever the slot already held; a header that cannot be
+     * read restarts the count at 1. A torn store leaves it headerless, so the next store
+     * that lands re-bases from 1 — the count is a staleness guard, not a version line. */
+    const uint32_t tgt = SLOT_HDR;
     uint32_t raw[W_WORDS];
     uint32_t serial = 1;
     if (esp_partition_read(p, tgt, raw, sizeof raw) == ESP_OK) {
@@ -972,7 +895,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     staged_clear();
     s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     s_bundle_bytes = h.art_size;
-    ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, and not yet chosen",
+    ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, drawn on the next boot",
              h.name, id, slot_name(tgt), (unsigned)s_bundle_ms);
     return ESP_OK;
 }
@@ -1004,7 +927,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
  *
  * Returns ESP_OK with the bundle drawn, or the reason it is not. A refusal leaves the
  * caller's fallback exactly where adopt()'s does: the default draws, and the row on
- * the flip page carries the sentence. */
+ * the store page carries the sentence. */
 static uint16_t  s_b3_first[GIFS_MAX + 1], s_b3_delays[GIFS_MAX];
 static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
@@ -1107,7 +1030,7 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     s_geo.comps = io.out_n_comps ? s_b3_comps : NULL;
     /* D34: the pointers a bundle carried ride the same static table the projection
      * filled. A count of zero names a dial with no pointer rows, not a row that was
-     * dropped — the projection refuses the whole flip past its own guards (D32 R-F),
+     * dropped — the projection refuses the whole draw past its own guards (D32 R-F),
      * so nothing can be partly drawn here. */
     s_geo.aux = io.out_n_aux ? s_b3_aux : NULL;
     s_geo.bank = NULL;
@@ -1151,33 +1074,31 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
 }
 
 
-/* The flashed default, FORMAT 3 (§26 P6.5): slot A's bank now ships as a bundle, so
- * boot reads its header through the bundle door and, if it is one with a clock
- * section, adopts it MAPPED (not arena-filled) exactly as the FORMAT 2 default was
- * mapped. A slot-A header that is not a FORMAT 3 bundle returns non-OK and the caller
- * falls back. This is the only read that turns the flashed pixels into a dial; it
- * does not install or erase anything (D13's no-NVS-write-in-the-fallback rule holds).
- */
+/* The single slot's bundle (Migration 1): the header at offset 0, read through the
+ * bundle door. If it is a FORMAT 3 bundle with a clock section, it is adopted MAPPED
+ * (not arena-filled) exactly as the flashed default was. A header that is not a
+ * FORMAT 3 bundle — erased, a torn store, or a FORMAT 2 blob — returns non-OK and the
+ * caller falls to the base face. This is the only read that turns the slot's pixels
+ * into a dial; it installs and erases nothing, so the no-write-in-the-fallback rule
+ * that outlived the A/B pair holds. */
 static esp_err_t adopt_default_bundle(const esp_partition_t *p)
 {
     uint32_t raw[W_WORDS];
-    if (esp_partition_read(p, SLOT_A_HDR, raw, sizeof raw) != ESP_OK)
+    if (esp_partition_read(p, SLOT_HDR, raw, sizeof raw) != ESP_OK)
         return ESP_FAIL;
     if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT)
         return ESP_ERR_NOT_FOUND;           /* not a bundle: erased, or a FORMAT 2 blob */
     orb_bundle3_hdr_t h;
     if (orb_bundle3_hdr_parse(raw, &h) != NULL)
         return ESP_ERR_INVALID_CRC;         /* claims 3, header will not check */
-    return adopt_bundle3(p, &h, raw, "slot-A", SLOT_A_HDR, true);
+    return adopt_bundle3(p, &h, raw, "slot", SLOT_HDR, true);
 }
 
-/* One slot's header, read and classified — the ping-pong's shared sniff. Returns
- * whether the slot holds a parseable FORMAT 3 bundle, and sets *claims3 for the
- * in-between state: magic and format say bundle, the header checksum says torn.
- * Boot probes BOTH slots (§26 slice 3 — either can hold the copy the choice names,
- * and the `staged` word can only expire against the header the store actually
- * wrote, wherever that landed); the flip door uses the same read to match a pressed
- * id against what is really stored. */
+/* One slot's header, read and classified. Returns whether the slot holds a parseable
+ * FORMAT 3 bundle, and sets *claims3 for the in-between state: magic and format say
+ * bundle, the header checksum says torn. Boot and the scan probe the ONE slot at
+ * offset 0 with it; the `staged` witness expires only against this header, the header
+ * the store actually wrote. */
 static bool slot_probe3(const esp_partition_t *p, uint32_t base, orb_bundle3_hdr_t *b3,
                         uint32_t raw[W_WORDS], bool *claims3)
 {
@@ -1207,128 +1128,48 @@ esp_err_t orb_theme_boot(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    s_live[0] = '\0';
-    if (!nvs_get(THEME_NVS_LIVE, s_live, sizeof s_live) || !s_live[0])
-        strlcpy(s_live, THEME_LIVE_DEFAULT, sizeof s_live);
-    s_damage_id[0] = '\0';
-    s_damage_why[0] = '\0';
-
-    /* The flip door has landed (§26 slice 3), so the choice can name either slot and
-     * both headers are read before anything is decided. The B-only sniff that lived
-     * here was inert while no door could set the choice; its annotation said a choose
-     * door must not ship above a B-only read, and this is the generalisation that
-     * annotation asked for. A slot that claims FORMAT 3 but whose header will not
-     * check is neither drawable nor empty, and it gets its own damage sentence
-     * (§24.7's lesson that a FORMAT 3 file is never described by a generic
-     * "no theme"). A is probed for its id and integrity; the default leg re-reads it
-     * through its own door, because that door is also what maps it. */
-    orb_bundle3_hdr_t b3, a3;
-    uint32_t raw3[W_WORDS], rawA[W_WORDS];
-    bool slot_claims3 = false, a_claims3 = false;
-    const bool slot_is_bundle = slot_probe3(p, SLOT_B_HDR, &b3, raw3, &slot_claims3);
-    const bool a_is_bundle = slot_probe3(p, SLOT_A_HDR, &a3, rawA, &a_claims3);
-    const bool want_a = strcmp(s_live, THEME_LIVE_SLOT_A) == 0;
-
-    /* The `staged` witness expires on the boot that finds the header it waited for,
-     * identified by hashing a slot's own name back to the marker's id. The word can
-     * now only be expired honestly by checking BOTH slots: the store wrote whichever
-     * slot the ping-pong pointed at, and a flip since may have moved the glass to the
-     * other one. A slot naming a DIFFERENT theme is not that commit. One NVS write at
-     * boot, and the word it removes is diagnostics, so D13's no-NVS-write-in-the-
-     * fallback rule is untouched. */
+    /* Migration 1: one slot, one theme, no choice key and no A/B probe. The `staged`
+     * witness expires on the boot that finds the header the torn store waited for — the
+     * one header at offset 0. At most one NVS write here, and the word it removes is
+     * diagnostics, so the no-write-in-the-fallback rule holds. */
     s_staged_id[0] = '\0';
+    orb_bundle3_hdr_t b3;
+    uint32_t raw3[W_WORDS];
+    bool claims3 = false;
+    const bool slot_is_bundle = slot_probe3(p, SLOT_HDR, &b3, raw3, &claims3);
+
     char staged[ORB_THEME_ID_HEX + 1];
     if (nvs_get(THEME_NVS_STAGED, staged, sizeof staged) && theme_id_ok(staged)) {
         bool landed = false;
-        char cid[ORB_THEME_ID_HEX + 1];
         if (slot_is_bundle) {
+            char cid[ORB_THEME_ID_HEX + 1];
             theme_id(b3.name, cid);
-            landed = (strcmp(cid, staged) == 0);
-        }
-        if (!landed && a_is_bundle) {
-            theme_id(a3.name, cid);
             landed = (strcmp(cid, staged) == 0);
         }
         if (landed) staged_clear();
         else        strlcpy(s_staged_id, staged, sizeof s_staged_id);
     }
 
-    s_art = boot_resolve(s_live, slot_is_bundle);
-    if (s_art == BOOT_ART_CARD) {
-        /* The chosen slot holds a bundle: its clock section is the dial, and a refusal
-         * names itself on the row rather than silently landing on the default. */
-        const esp_err_t be = adopt_bundle3(p, &b3, raw3, "slot-B", SLOT_B_HDR, false);
-        if (be == ESP_OK) {
-            ESP_LOGI(TAG, "bundle \"%s\" from slot-B (chosen): %u B refilled to the "
-                          "arena in %u ms", s_active_name,
-                     (unsigned)s_refill_bytes, (unsigned)s_refill_ms);
-            return ESP_OK;
-        }
-        char did[THEME_ID_HEX + 1];
-        theme_id(b3.name, did);
-        strlcpy(s_damage_id, did, sizeof s_damage_id);
-        strlcpy(s_damage_why,
-                be == ESP_ERR_NOT_FOUND ? "it carries no clock section to draw"
-                    : be == ESP_ERR_NO_MEM
-                        ? "not enough memory for its pixels — the default is drawn"
-                        : "the installed copy did not verify — re-store it",
-                sizeof s_damage_why);
-        ESP_LOGE(TAG, "the chosen bundle \"%s\" would not load (%s) — drawing the default",
-                 b3.name, esp_err_to_name(be));
-    } else if (want_a && !a_is_bundle) {
-        /* The flip chose slot A and slot A cannot honour it. The factory pixels may
-         * have been spent by the ping-pong (owner ruling: that is the sanctioned
-         * cost, and re-storing is the recovery), so the sentence says which slot
-         * failed and what to do, and no id is claimed for a header that lied. It is
-         * asked before the stored-B branches: the CHOSEN slot failing outranks an
-         * unchosen slot's state, whatever that other slot happens to hold. */
-        s_damage_id[0] = '\0';
-        strlcpy(s_damage_why, "slot A holds no drawable copy — re-store the theme",
-                sizeof s_damage_why);
-        ESP_LOGE(TAG, "the choice names slot-A, and slot-A is not a drawable bundle — "
-                      "drawing the base face");
-    } else if (slot_is_bundle) {
-        /* Stored, not chosen: nothing is damaged and no row needs a reason. */
-        ESP_LOGI(TAG, "slot-B holds bundle \"%s\" — stored, and not chosen", b3.name);
-    } else if (slot_claims3) {
-        /* Chosen (as "slot-B") or not, a slot that claims FORMAT 3 with a
-         * header that will not parse is damage the owner can act on (re-store), with
-         * no id to hang it on because the id hashes a name this header cannot be
-         * trusted to carry. */
-        s_damage_id[0] = '\0';
-        strlcpy(s_damage_why, "the stored bundle's header is damaged — re-store it",
-                sizeof s_damage_why);
-        ESP_LOGE(TAG, "slot-B claims FORMAT 3 and its header would not parse — "
-                      "drawing the default");
-    } else {
-        ESP_LOGI(TAG, "no installed theme — reading the flashed default");
-    }
-    /* Every path from here draws the default, so the card answer above is void for
-     * targeting purposes even when it was the owner's choice: a card that would not
-     * load is not on the glass, and the ping-pong keys on what IS. Leaving s_art on
-     * CARD here would aim the next store's erase at the slot being drawn — the one
-     * failure the invariant exists to prevent. It is corrected at the source rather
-     * than at each install, so the two can never disagree. */
-    s_art = BOOT_ART_DEFAULT;
-
-    /* The default leg (D13 as ruled option A stands): slot A is the flashed bank, the
-     * only copy of the factory pixels on the board, and it is mapped — never arena-
-     * filled. §26 P6.5: those pixels now ship as a FORMAT 3 bundle, so boot reads slot
-     * A through the bundle door first. A bundle with a clock section is drawn; a
-     * board whose slot A is not a drawable bundle falls through to the base render. */
+    /* The one slot IS the theme. A valid, drawable bundle is adopted and drawn;
+     * anything else — a torn header, a claim of FORMAT 3 that will not parse, or a
+     * bundle with no clock section — is the base digital face, with the reason on the
+     * serial log for whoever reflashes. There is no second slot to reach across to and
+     * no factory copy to fall back on: a torn store answers one re-store. */
     const esp_err_t de = adopt_default_bundle(p);
     if (de == ESP_OK) {
-        ESP_LOGI(TAG, "default bundle \"%s\" from slot-A: mapped, %u B resident",
+        ESP_LOGI(TAG, "slot holds bundle \"%s\": mapped, %u B resident",
                  s_active_name, (unsigned)s_refill_bytes);
         return ESP_OK;
     }
-    /* No drawable default and no chosen card that loads: the compiled FORMAT 2 pair is
-     * retired, so there is no second copy of the factory pixels to fall back to. The
-     * board still boots — clock_view's residency gate fails and it paints the base
-     * digital face — and the reason is on the serial log for whoever reflashes it. */
+    if (claims3 && de == ESP_ERR_INVALID_CRC)
+        ESP_LOGE(TAG, "the slot claims FORMAT 3 and its header would not parse — "
+                      "re-store the theme");
+    else if (de == ESP_ERR_NOT_FOUND)
+        ESP_LOGI(TAG, "the slot is empty — base digital face");
+    else
+        ESP_LOGE(TAG, "the slot's theme would not load (%s) — base digital face",
+                 esp_err_to_name(de));
     use_no_art();
-    ESP_LOGE(TAG, "no drawable theme (default slot-A refused: %s) — base digital face",
-             esp_err_to_name(de));
     return ESP_OK;
 }
 
@@ -1374,89 +1215,11 @@ static void try_note(const char *id, const char *why)
 typedef struct { char id[ORB_THEME_ID_HEX + 1]; } install_req_t;
 
 
-static void default_job(void *arg)
-{
-    (void)arg;
-    /* No card, no container, no copy: the factory dial is the bank `idf.py flash`
-     * wrote at partition offset 0, which is the one set of bytes on this device
-     * that has never needed verifying at runtime. */
-    if (orb_theme_set_live(THEME_LIVE_DEFAULT) != ESP_OK) {
-        try_note("", "the dial could not be told to use the default");
-        return;
-    }
-    try_note(NULL, NULL);
-    if (orb_jobs_reboot_soon("theme: the factory default") != ESP_OK)
-        ESP_LOGE(TAG, "default chosen but the reboot could not be armed");
-}
-
-
-esp_err_t orb_theme_post_default(void)
-{
-    try_note("", "");
-    const install_req_t r = { { 0 } };
-    return orb_jobs_post(default_job, (void *)&r, sizeof r);
-}
-
-/* §26 slice 3's flip worker: the press that puts a STORED bundle on the glass.
- * It is default_job's shape — one choice write and the reboot that makes it
- * real — aimed by content instead of by button: the id comes back as it was
- * listed, the worker probes both slot headers for the name that hashes to it,
- * and the choice is set to whichever slot answers. No card, no container, no
- * copy: the bytes were verified when the store wrote them, and a flip that
- * cannot find the id in a slot refuses on the row rather than booting into a
- * dial that would not load. Slot B is asked first when BOTH hold the id: B is
- * the slot a store writes while A draws, so a both-holds-id board has its newer
- * copy in B, and A's copy is the one the owner overwrote least recently. */
-static void flip_job(void *arg)
-{
-    const install_req_t *r = arg;
-    const esp_partition_t *p = art_bank_partition();
-    if (!p) {
-        try_note(r->id, "no assets partition to flip to");
-        return;
-    }
-    orb_bundle3_hdr_t b3;
-    uint32_t raw[W_WORDS];
-    bool claims;
-    const char *word = NULL;
-    if (slot_probe3(p, SLOT_B_HDR, &b3, raw, &claims) && theme_id_matches(b3.name, r->id))
-        word = THEME_LIVE_SLOT_B;
-    else if (slot_probe3(p, SLOT_A_HDR, &b3, raw, &claims) && theme_id_matches(b3.name, r->id))
-        word = THEME_LIVE_SLOT_A;
-    if (!word) {
-        try_note(r->id, "nothing stored on the dial holds that theme — store it first");
-        return;
-    }
-    if (orb_theme_set_live(word) != ESP_OK) {
-        try_note(r->id, "the choice could not be written");
-        return;
-    }
-    try_note(NULL, NULL);
-    ESP_LOGI(TAG, "flipped to \"%s\" (%s)", b3.name, word);
-    if (orb_jobs_reboot_soon("theme: the flip") != ESP_OK)
-        ESP_LOGE(TAG, "flip chosen but the reboot could not be armed");
-}
-
-esp_err_t orb_theme_post_flip(const char *id)
-{
-    if (!theme_id_ok(id)) return ESP_ERR_INVALID_ARG;
-    /* Named before the queue is asked, exactly as the store door does it: the row
-     * a refusal lands on is the row that was pressed, even when the reason is that
-     * no slot holds the theme any more. */
-    try_note(id, "");
-    install_req_t r;
-    strlcpy(r.id, id, sizeof r.id);
-    return orb_jobs_post(flip_job, &r, sizeof r);
-}
-
-/* P6.4's flip worker: the bundle's half of install_job, and its one deliberate
- * difference is the reboot. A FORMAT 2 install reboots because loading is
- * choosing, and the new dial cannot draw itself until the boot refills the
- * arena; a bundle store changes nothing the dial draws (the slot is stored,
- * not live, until P6.5), so rebooting would cost the owner a boot to show them
- * the same clock they already had. The try witness is identical: the row the
- * press named carries the refusal sentence, exactly as the FORMAT 2 door's
- * does. */
+/* Migration 1's one worker: the press that stores a bundle into the single slot and
+ * then asks for the reboot that draws it. A store IS the theme change now — there is
+ * no second slot to store into without choosing and no flip to move the glass after —
+ * so a successful store reboots, exactly as a FORMAT 2 install did. The try witness is
+ * unchanged: the row the press named carries the refusal sentence. */
 static void bundle_job(void *arg)
 {
     const install_req_t *r = arg;
@@ -1466,35 +1229,20 @@ static void bundle_job(void *arg)
         return;
     }
     try_note(NULL, NULL);
+    if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
+        ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
 }
 
 esp_err_t orb_theme_post_bundle(const char *id)
 {
     if (!theme_id_ok(id)) return ESP_ERR_INVALID_ARG;
-    /* Named before the queue is asked, exactly as post_install does it: the row
+    /* Named before the queue is asked, exactly as the store door does it: the row
      * a refusal lands on is the row that was pressed, even when the reason is
      * that the card never answered. */
     try_note(id, "");
     install_req_t r;
     strlcpy(r.id, id, sizeof r.id);
     return orb_jobs_post(bundle_job, &r, sizeof r);
-}
-
-esp_err_t orb_theme_set_live(const char *which)
-{
-    if (!which) return ESP_ERR_INVALID_ARG;
-    /* Only real choices reach NVS: a typo written down is a boot that silently
-     * draws the default, and a silent default is the failure mode this whole
-     * rewrite exists to remove. The legacy "card" is NOT a choice any more (owner
-     * ruling 2026-10-20: no backwards compatibility at this stage) — a pre-flip
-     * board holding it boots the default leg and one press rewrites the word. */
-    if (strcmp(which, THEME_LIVE_DEFAULT) != 0 &&
-        strcmp(which, THEME_LIVE_SLOT_A) != 0 && strcmp(which, THEME_LIVE_SLOT_B) != 0)
-        return ESP_ERR_INVALID_ARG;
-    const esp_err_t e = nvs_put(THEME_NVS_LIVE, which);
-    if (e != ESP_OK) return e;
-    strlcpy(s_live, which, sizeof(s_live));
-    return ESP_OK;
 }
 
 esp_err_t orb_theme_delete(const char *id)
@@ -1563,11 +1311,11 @@ typedef struct {
     orb_theme_entry_t *out;
     int                cap;
     int                n;
-    /* §26 slice 3: the ids the two slot headers carried when this walk started,
-     * probed LIVE rather than remembered from boot — a store lands without a
-     * reboot, and the row's flip button must appear for a bundle that was stored
-     * since the last boot. Empty string = nothing drawable in that slot. */
-    char               slot_id[2][ORB_THEME_ID_HEX + 1];
+    /* Migration 1: the id the ONE slot header carried when this walk started, probed
+     * LIVE rather than remembered from boot — a store lands and reboots, and the row
+     * must show as stored for the theme that is in the slot right now. Empty string =
+     * nothing drawable in the slot. */
+    char               slot_id[ORB_THEME_ID_HEX + 1];
 } scan_ctx_t;
 
 /* The app's half of the walk. The OS found a <id>.orbtheme, checked the filename
@@ -1587,7 +1335,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
      * the header is read. */
     strlcpy(e->id, rec->name, sizeof(e->id));
     e->why[0] = '\0';
-    e->active = false; e->changed = false; e->slot = 0;
+    e->active = false; e->changed = false; e->stored = false;
     e->art_size = 0; e->serial = 0;
     e->fmt = 0; e->n_sections = 0;
 
@@ -1630,12 +1378,12 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     }
     strlcpy(e->id, bid, sizeof e->id);
     e->err = ESP_OK;
-    /* Which slot holds this file's stored copy, from the probe the walk started
-     * with. The flip page needs it to know which rows may be put on the dial; the
-     * flip door re-verifies the same headers before it acts, so a card that changed
+    /* Which slot holds this file's stored copy — the one slot. The store reboots, so a
+     * row's stored marker tells the page this file is what the dial now draws; the
+     * store door re-verifies the same header before it writes, so a card that changed
      * under the answer costs nothing but one honest refusal on the row. */
-    if (c->slot_id[0][0] && strcmp(c->slot_id[0], bid) == 0)      e->slot = 'A';
-    else if (c->slot_id[1][0] && strcmp(c->slot_id[1], bid) == 0) e->slot = 'B';
+    if (c->slot_id[0] && strcmp(c->slot_id, bid) == 0)
+        e->stored = true;
     orb_thdr_t as;      /* the identity theme_state() reads: name + the two figures */
     memset(&as, 0, sizeof as);
     strlcpy(as.name, b3.name, sizeof as.name);
@@ -1669,19 +1417,17 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
     }
 
     scan_ctx_t c = { .out = out, .cap = cap, .n = 0 };
-    /* Probe the slots for this walk's answers. The partition outliving the card is
-     * the point: a stored bundle stays flippable with no card in the socket at all,
-     * and this probe only decides what the page SUGGESTS — the door itself re-reads
-     * these same two headers on the worker before it writes anything. */
+    /* Probe the one slot for this walk's answer. The partition outliving the card is
+     * the point: a stored bundle stays listed as stored with no card in the socket at
+     * all, and this probe only decides what the page MARKS — the store door re-reads
+     * the same header on the worker before it writes anything. */
     const esp_partition_t *sp = art_bank_partition();
     if (sp) {
         orb_bundle3_hdr_t sh;
         uint32_t sraw[W_WORDS];
         bool claims;
-        if (slot_probe3(sp, SLOT_A_HDR, &sh, sraw, &claims))
-            theme_id(sh.name, c.slot_id[0]);
-        if (slot_probe3(sp, SLOT_B_HDR, &sh, sraw, &claims))
-            theme_id(sh.name, c.slot_id[1]);
+        if (slot_probe3(sp, SLOT_HDR, &sh, sraw, &claims))
+            theme_id(sh.name, c.slot_id);
     }
     /* Both ends logged, with the wait: a scan that never comes back is the one card
      * failure that looks like a dead web server from outside (the dial keeps drawing
@@ -1734,6 +1480,21 @@ esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)
      * defensively; this is the early, cheap no. */
     if (ensure_chunk() != ESP_OK) return ESP_ERR_NO_MEM;
 
+    /* Migration 1 / D9: an upload to this door is the start of a STORE, and under a
+     * single slot a store arms its invalid state BEFORE any payload crosses. Erase the
+     * slot's header sector now. A complete upload re-stores and reboots; a killed,
+     * cancelled, or refused one leaves the slot headerless, so the next boot draws the
+     * base face and one re-press recovers. Erasing just the 4 KB header is enough to
+     * make the slot unreadable — copy_bundle3 erases the payload region and rewrites the
+     * header last when the store runs. */
+    const esp_partition_t *ap = art_bank_partition();
+    if (!ap) return ESP_ERR_NOT_FOUND;
+    if (esp_partition_erase_range(ap, SLOT_HDR, THEME_SECTOR) != ESP_OK) {
+        ESP_LOGE(TAG, "upload: could not arm the slot — refusing before any bytes cross");
+        return ESP_FAIL;
+    }
+    ESP_LOGW(TAG, "upload started: the theme slot is armed invalid until a re-store lands");
+
     orb_theme_up_t *u = calloc(1, sizeof *u);
     if (!u) return ESP_ERR_NO_MEM;
     /* The scratch path is built from the OS's own declared themes directory, never
@@ -1783,10 +1544,12 @@ esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n)
     return ESP_OK;
 }
 
-esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why)
+esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why,
+                               char *committed_id)
 {
     orb_theme_up_t *const up = *u;
     *why = NULL;
+    if (committed_id) committed_id[0] = '\0';
     if (!up || up != s_up) { *why = "no upload is in progress"; return ESP_ERR_INVALID_STATE; }
 
     close(up->fd);
@@ -1840,8 +1603,11 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
             if (!or_ && oh3.geom_crc == b3.geom_crc &&
                 oh3.art_crc == b3.art_crc &&
                 oh3.serial == b3.serial && strcmp(oh3.name, b3.name) == 0) {
-                /* Idempotent: identical bundle, discard the scratch, nothing changed. */
+                /* Idempotent: identical bundle, discard the scratch, nothing changed.
+                 * The id is still reported so the caller re-stores the one it already
+                 * has — an upload armed the slot, so the only way out is a store. */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
+                if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
                 ESP_LOGI(TAG, "upload of \"%s\" (%s) is unchanged — kept as is", b3.name, id);
                 return ESP_OK;
             }
@@ -1889,6 +1655,7 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
     }
     ESP_LOGI(TAG, "bundle \"%s\" uploaded to the card as %s%s", b3.name, id,
              replace ? " (overwrote the previous one)" : "");
+    if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
     return ESP_OK;
 }
 

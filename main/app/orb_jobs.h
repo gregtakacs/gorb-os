@@ -48,6 +48,14 @@ esp_err_t orb_jobs_post(orb_job_fn fn, void *arg, size_t arglen);
 /** True while a job is queued or running, for the UI that has to say so. */
 bool orb_jobs_busy(void);
 
+/** True when the caller IS the worker, mid-job. busy() is the door gate's way
+ *  of refusing a request while the card is committed elsewhere — but a door the
+ *  dial menu runs reaches that gate from inside its own job, and one task can
+ *  hold no second job. Without this the gate deadlocks on the job it belongs
+ *  to: every switch press on the glass refuses itself (bench, orb-B 2026-10-21).
+ *  A caller this names can only ever meet its own request, so the gate opens. */
+bool orb_jobs_on_worker(void);
+
 /** Create the worker. Call once, after display_init: a job can reach the card,
  *  and the card's mount ladder must not run before its driver is up. */
 esp_err_t orb_jobs_start(void);

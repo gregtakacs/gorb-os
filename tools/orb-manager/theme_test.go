@@ -135,11 +135,12 @@ func TestThemeListThroughTheHub(t *testing.T) {
 	if row["id"] != auroraID || row["name"] != "aurora" {
 		t.Errorf("row = %v, want the name beside the id the orb issued", row)
 	}
-	// The slot witness is what turns a store press from a hope into a fact: the door
-	// acks the queue, and the row's slot is the copy arriving. If it stopped surviving
-	// the hub, the Store button could never tell stored from refused.
-	if _, hasSlot := row["slot"]; !hasSlot {
-		t.Error("the row lost the slot witness; the card cannot see a store land")
+	// The stored witness is what turns a store press from a hope into a fact: the door
+	// acks the queue, and the row's stored flag is the copy arriving in the single
+	// slot. If it stopped surviving the hub, the Store button could never tell
+	// stored from refused.
+	if _, hasStored := row["stored"]; !hasStored {
+		t.Error("the row lost the stored witness; the card cannot see a store land")
 	}
 	if _, hasBusy := data["job_busy"]; !hasBusy {
 		t.Error("the list lost the job_busy witness; a queued press would read as a dead button")
@@ -157,7 +158,7 @@ func TestThemeListThroughTheHub(t *testing.T) {
 // itself. These are the calls that write to a card.
 func TestThemeCallsRefuseAnUnlearnedAddress(t *testing.T) {
 	for _, path := range []string{
-		"/api/theme/list", "/api/theme/install", "/api/theme/flip", "/api/theme/default",
+		"/api/theme/list", "/api/theme/install",
 		"/api/theme/delete", "/api/theme/rescan",
 	} {
 		s, _, called, _ := fakeOrbHub(t)
@@ -215,8 +216,6 @@ func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
 	cases := []struct{ path, id, wantMethod, wantPath, wantQuery string }{
 		{"/api/theme/list", "", http.MethodGet, "/api/v1/sd", ""},
 		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/bundle", "id=" + auroraID},
-		{"/api/theme/flip", auroraID, http.MethodPost, "/api/v1/sd/flip", "id=" + auroraID},
-		{"/api/theme/default", "", http.MethodPost, "/api/v1/sd/default", ""},
 		{"/api/theme/delete", "7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=7565e4480e56"},
 		{"/api/theme/rescan", "", http.MethodPost, "/api/v1/sd/rescan", ""},
 	}
@@ -380,7 +379,7 @@ func TestThemeRoutesAreTokenGuarded(t *testing.T) {
 	s.routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	for _, p := range []string{"/api/theme/list", "/api/theme/install", "/api/theme/default",
+	for _, p := range []string{"/api/theme/list", "/api/theme/install",
 		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload"} {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+p, strings.NewReader(themeBody(ip, auroraID)))
 		req.Header.Set("Origin", "http://attack.example")
@@ -408,7 +407,7 @@ func TestThemeDeviceCallsLiveInOneModule(t *testing.T) {
 		t.Error("theme.go re-implements a device-side rule; the gates belong in internal/orbnet")
 	}
 	mod := readFile(t, "internal/orbnet/themes.go")
-	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/bundle?id=`, `"/api/v1/sd/default`, `"/api/v1/sd/delete?id=`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
+	for _, route := range []string{`"/api/v1/sd"`, `"/api/v1/sd/bundle?id=`, `"/api/v1/sd/delete?id=`, `"/api/v1/sd/theme`, `"/api/v1/sd/rescan`} {
 		if !strings.Contains(mod, route) {
 			t.Errorf("internal/orbnet/themes.go never dials %s, so the device sees a route it does not register", route)
 		}

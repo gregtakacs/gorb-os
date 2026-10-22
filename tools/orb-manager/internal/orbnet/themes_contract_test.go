@@ -80,28 +80,28 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 		t.Errorf("load state lost: %+v", l.Themes)
 	}
 
-	// Store the listed id. The FORMAT 3 store door copies the bundle and answers
-	// reboot:none without flipping the dial — there is no compositor to draw it until
-	// P6.5 — so the ack says a job was queued, and a fresh read shows the SAME active
-	// face as before. An install that silently flipped here would be the old FORMAT 2
-	// door, which P6 deleted.
+	// Store the listed id. Migration 1's one store door copies the bundle, verifies
+	// it, writes the header last and reboots onto the new face — the store IS the
+	// theme change — so the ack says reboot:automatic and a fresh read shows the
+	// dial moved to carousel with the stored witness landed. A store that left the
+	// face alone here would be the old two-press form Migration 1 retired.
 	ack, err := c.ThemeStore(ip, byName["carousel"].ID)
 	if err != nil {
 		t.Fatalf("store carousel: %v", err)
 	}
-	if !strings.Contains(string(ack), `"state":"storing"`) || !strings.Contains(string(ack), `"reboot":"none"`) {
-		t.Errorf("store door ack = %s, want state:storing reboot:none", ack)
+	if !strings.Contains(string(ack), `"state":"storing"`) || !strings.Contains(string(ack), `"reboot":"automatic"`) {
+		t.Errorf("store door ack = %s, want state:storing reboot:automatic", ack)
 	}
 	l2, err := c.ThemeList(ip)
 	if err != nil {
 		t.Fatalf("re-list: %v", err)
 	}
-	if l2.Active != "aurora" {
-		t.Errorf("active = %q after storing carousel, want the store door to leave the dial alone (no flip until P6.5)", l2.Active)
+	if l2.Active != "carousel" {
+		t.Errorf("active = %q after storing carousel, want the one press to have moved the dial", l2.Active)
 	}
 	for _, e := range l2.Themes {
-		if e.Name == "carousel" && e.Active {
-			t.Error("storing a theme flipped the dial; the store door must not until P6.5")
+		if e.Name == "carousel" && !e.Stored {
+			t.Error("the stored witness did not land with the store")
 		}
 	}
 
@@ -260,9 +260,9 @@ func TestThemeStoreRejectsANameWhereItWantsAnID(t *testing.T) {
 	}
 }
 
-// The refused-install and boot-damage strings key on id, and the card can only point them
+// The refused-install and torn-store strings key on id, and the card can only point them
 // at a row if the id that arrives beside them is the one the row carries.
-func TestThemeTryAndDamageKeyOnTheListedID(t *testing.T) {
+func TestThemeTryAndStagedKeyOnTheListedID(t *testing.T) {
 	c, ip, f := liveOrb(t)
 
 	l, err := c.ThemeList(ip)
@@ -276,7 +276,7 @@ func TestThemeTryAndDamageKeyOnTheListedID(t *testing.T) {
 		}
 	}
 	f.SetTry(carouselID, "the geometry blob was shorter than the counts claim")
-	f.SetDamage(carouselID, "art plane crc disagrees with the header")
+	f.SetStaged(carouselID, "the store tore before its header landed")
 
 	after, err := c.ThemeList(ip)
 	if err != nil {
@@ -285,20 +285,7 @@ func TestThemeTryAndDamageKeyOnTheListedID(t *testing.T) {
 	if after.TryID != carouselID || after.TryWhy == "" {
 		t.Errorf("try_id/try_why = %q/%q, want them to name the row that failed", after.TryID, after.TryWhy)
 	}
-	if after.DamageID != carouselID || after.DamageWhy == "" {
-		t.Errorf("damage_id/damage_why = %q/%q", after.DamageID, after.DamageWhy)
-	}
-}
-
-// The default face is not a card file, so it never took an id and must not start.
-func TestThemeDefaultNeedsNoTarget(t *testing.T) {
-	c, ip, f := liveOrb(t)
-	if _, err := c.ThemeDefault(ip); err != nil {
-		t.Fatalf("default: %v", err)
-	}
-	for _, call := range f.Calls() {
-		if strings.HasPrefix(call, "POST /api/v1/sd/default?") {
-			t.Errorf("default carried a query, and the firmware reads none: %q", call)
-		}
+	if after.StagedID != carouselID || after.StagedWhy == "" {
+		t.Errorf("staged_id/staged_why = %q/%q", after.StagedID, after.StagedWhy)
 	}
 }

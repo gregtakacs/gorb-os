@@ -642,8 +642,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// module to land in (internal/orbnet/themes.go).
 	mux.Handle("/api/theme/list", s.requireControl(http.HandlerFunc(s.handleThemeList)))
 	mux.Handle("/api/theme/install", s.requireControl(http.HandlerFunc(s.handleThemeInstall)))
-	mux.Handle("/api/theme/flip", s.requireControl(http.HandlerFunc(s.handleThemeFlip)))
-	mux.Handle("/api/theme/default", s.requireControl(http.HandlerFunc(s.handleThemeDefault)))
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))
 	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))

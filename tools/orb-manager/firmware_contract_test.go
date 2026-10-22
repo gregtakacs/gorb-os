@@ -165,7 +165,10 @@ func TestThemeRowFieldsMatchHsd(t *testing.T) {
 	// FORMAT 1's separate display title, and the slug-keyed failure strings, must stay
 	// gone in both directions: the client must not decode them, and the firmware must not
 	// start emitting them again.
-	for _, gone := range []string{"title", "try_slug", "damage_slug", "slug"} {
+	for _, gone := range []string{"title", "try_slug", "damage_slug", "slug",
+		// Migration 1 retires the A/B words in both directions: the firmware
+		// must not start emitting them again, and the hub must not decode them.
+		"slot", "live", "damage_id", "damage_why"} {
 		if strings.Contains(body, "\\\""+gone+"\\\"") {
 			t.Errorf("h_sd emits %q, which FORMAT 2 retired; the hub no longer decodes it", gone)
 		}
@@ -175,9 +178,9 @@ func TestThemeRowFieldsMatchHsd(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"try_id", "damage_id", "active", "changed"} {
+	for _, want := range []string{"try_id", "staged_id", "source", "active", "changed"} {
 		if !strings.Contains(body, "\\\""+want+"\\\"") {
-			t.Errorf("h_sd stopped reporting %q; the card keys its failure notes and its stale-row hint on it", want)
+			t.Errorf("h_sd stopped reporting %q; the card keys its failure notes and its torn-store warning on it", want)
 		}
 	}
 }
@@ -244,10 +247,11 @@ func TestUploadCeilingMatchesTheHeader(t *testing.T) {
 func themeRowJSONTags(t *testing.T) []string {
 	t.Helper()
 	tags := jsonTagsOf(t, orbnet.ThemeEntry{})
-	// Nine, not eight: §26 slice 3 put slot on h_sd's row so the flip button belongs
-	// only to rows with a stored copy, and the hub card now reads that witness to
-	// report a store landing. The firmware row also carries fmt and sects, which the
-	// card does not decode and this test therefore does not check.
+	// Nine, not eight: Migration 1 replaced the flip-era slot letter on h_sd's row
+	// with the stored boolean — the single witness that a copy sits in the one slot
+	// the dial draws — and the hub card now reads that witness to report a store
+	// landing. The firmware row also carries fmt and sects, which the card does not
+	// decode and this test therefore does not check.
 	if len(tags) != 9 {
 		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is nine, and this test only checks the ones the struct declares", len(tags), tags)
 	}
@@ -260,7 +264,7 @@ func themeRowJSONTags(t *testing.T) []string {
 func themeListJSONTags(t *testing.T) []string {
 	t.Helper()
 	tags := jsonTagsOf(t, orbnet.ThemeList{})
-	for _, want := range []string{"try_id", "try_why", "damage_id", "damage_why", "active", "live", "mounted", "card", "themes"} {
+	for _, want := range []string{"try_id", "try_why", "staged_id", "staged_why", "source", "active", "mounted", "card", "themes"} {
 		if !contains(tags, want) {
 			t.Errorf("ThemeList does not decode %q, so the card loses that part of h_sd's reply", want)
 		}

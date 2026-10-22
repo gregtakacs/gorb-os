@@ -51,7 +51,7 @@ func TestThemeErrorFallsBackToTheStatus(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`not json at all`))
 	})
-	if _, err := NewClient(2 * time.Second).ThemeDefault(fakeIP(srv)); err == nil {
+	if _, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6"); err == nil {
 		t.Fatal("a 404 was reported as success")
 	}
 }
@@ -79,7 +79,7 @@ func TestThemeUploadBounds(t *testing.T) {
 	if _, err := c.ThemeUpload("10.0.0.1", make([]byte, MaxThemeUpload+1), false); err == nil {
 		t.Error("an over-ceiling theme file was accepted")
 	}
-	if MaxThemeUpload != 0x00400000+0x20000 {
+	if MaxThemeUpload != 0x00800000+0x20000 {
 		t.Errorf("MaxThemeUpload = %d, must equal ORB_THEME_UPLOAD_MAX in main/art/orb_theme.h", MaxThemeUpload)
 	}
 }

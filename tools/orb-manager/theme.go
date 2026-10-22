@@ -54,42 +54,18 @@ func (s *Server) handleThemeList(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, list)
 }
 
-// handleThemeInstall queues a FORMAT 3 store on the orb (POST /api/v1/sd/bundle). The
-// store door answers as soon as the job is queued and does NOT reboot or flip the dial —
-// there is no FORMAT 3 compositor until P6.5 — so the reply is never a claim that the
-// glass changed; the caller re-reads the row's try witness for the outcome. The route keeps
-// its /api/theme/install name so the flip page's button needs no change; only the device
-// verb it dials moved with the bundle door.
+// handleThemeInstall queues a Migration 1 store on the orb (POST /api/v1/sd/bundle).
+// The store door answers as soon as the job is queued and acks reboot:automatic —
+// under the single slot the store IS the theme change, so the reply is a promise of a
+// reboot, never a claim that the glass already moved; the caller watches the row's
+// stored witness and the reboot for the outcome. The route keeps its /api/theme/install
+// name so the card's button needs no change; only the device verb it dials moved.
 func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.themeTarget(w, r, true)
 	if !ok {
 		return
 	}
 	raw, err := s.device.ThemeStore(t.IP, t.ID)
-	s.themeReply(w, raw, err)
-}
-
-// handleThemeFlip queues the flip (POST /api/v1/sd/flip): the second press of the
-// firmware's two-stage form. The store put the bundle in a slot and the glass never
-// moved; the flip names that slot to the choice key and reboots the orb onto it. The
-// ack arrives before the reboot, so the caller watches the orb go away and come back
-// — this reply is a promise of a reboot, never a claim that the glass moved.
-func (s *Server) handleThemeFlip(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.themeTarget(w, r, true)
-	if !ok {
-		return
-	}
-	raw, err := s.device.ThemeFlip(t.IP, t.ID)
-	s.themeReply(w, raw, err)
-}
-
-// handleThemeDefault restores the built-in fallback face.
-func (s *Server) handleThemeDefault(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.themeTarget(w, r, false)
-	if !ok {
-		return
-	}
-	raw, err := s.device.ThemeDefault(t.IP)
 	s.themeReply(w, raw, err)
 }
 
@@ -201,7 +177,7 @@ func (s *Server) themeTarget(w http.ResponseWriter, r *http.Request, needID bool
 
 // checkedTarget applies the gates every device-touching call shares, for callers that
 // have the fields already. needID distinguishes install/delete, where the id IS the
-// request, from list/default/rescan/upload, where the orb alone is.
+// request, from list/rescan/upload, where the orb alone is.
 func (s *Server) checkedTarget(w http.ResponseWriter, ip, id string, needID bool) (themeTarget, bool) {
 	t := themeTarget{IP: ip, ID: id}
 	if !s.checkedTargetInto(w, &t, needID) {

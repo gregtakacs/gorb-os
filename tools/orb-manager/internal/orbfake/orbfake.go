@@ -36,10 +36,11 @@ type Theme struct {
 	OK      bool
 	Active  bool
 	Changed bool
-	// Slot mirrors h_sd's row witness: "A"/"B" when a stored copy of this file
-	// sits in that flash slot, "" when nothing stored it. serveBundle lands it on
-	// acknowledge, because the double has no worker for the copy to lag behind.
-	Slot string
+	// Stored mirrors h_sd's row witness under Migration 1's single slot: a copy of
+	// this file sits in the flash slot the dial draws. serveBundle lands it on
+	// acknowledge — the double has no worker for the copy to lag behind — and an
+	// active row is stored by definition, since active means the slot is drawn.
+	Stored bool
 }
 
 // Orb is the fake. The zero value is not useful; build one with New.
@@ -47,11 +48,10 @@ type Orb struct {
 	mu        sync.Mutex
 	themes    []*Theme
 	active    string
-	live      string
 	tryID     string
 	tryWhy    string
-	damageID  string
-	damageWhy string
+	stagedID  string
+	stagedWhy string
 	calls     []string
 
 	// Card is the SD card id h_sd reports when mounted.
@@ -96,7 +96,7 @@ type Orb struct {
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
 // so a caller cannot seed a row whose id disagrees with its name.
 func New(themes ...Theme) *Orb {
-	o := &Orb{Card: "SDSC-8G", Mounted: true, live: "default",
+	o := &Orb{Card: "SDSC-8G", Mounted: true,
 		apps: map[string]*CardApp{}}
 	// Seed the inside-the-firmware rows first, in device order. h_status walks the registry
 	// from row zero, so a double that omits them answers a status request with "apps":[]
@@ -111,11 +111,13 @@ func New(themes ...Theme) *Orb {
 
 		t := themes[i]
 		t.ID = themeID(t.Name)
-		o.themes = append(o.themes, &t)
 		if t.Active {
+			// The single slot being drawn IS stored: h_sd marks such a row
+			// stored true, and source answers "slot".
+			t.Stored = true
 			o.active = t.Name
-			o.live = "sd"
 		}
+		o.themes = append(o.themes, &t)
 	}
 	return o
 }
@@ -133,10 +135,12 @@ func (o *Orb) Calls() []string {
 // be pointed at it by id.
 func (o *Orb) SetTry(id, why string) { o.mu.Lock(); o.tryID, o.tryWhy = id, why; o.mu.Unlock() }
 
-// SetDamage records what boot could not load.
-func (o *Orb) SetDamage(id, why string) {
+// SetStaged records the torn-store witness — a store armed whose header never landed —
+// the way the firmware does, so the card can be pointed at it by id. One re-store
+// clears it, exactly as the device's does.
+func (o *Orb) SetStaged(id, why string) {
 	o.mu.Lock()
-	o.damageID, o.damageWhy = id, why
+	o.stagedID, o.stagedWhy = id, why
 	o.mu.Unlock()
 }
 
@@ -207,16 +211,12 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveFb(w, r)
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
 		o.serveSD(w)
-	case r.URL.Path == "/api/v1/sd/default" && r.Method == http.MethodPost:
-		writeJSON(w, 200, `{"state":"default","live":"default","reboot":"automatic"}`)
 	case r.URL.Path == "/api/v1/sd/delete" && r.Method == http.MethodPost:
 		o.serveDelete(w, r)
 	case r.URL.Path == "/api/v1/sd/theme" && r.Method == http.MethodPost:
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/bundle" && r.Method == http.MethodPost:
 		o.serveBundle(w, r)
-	case r.URL.Path == "/api/v1/sd/flip" && r.Method == http.MethodPost:
-		o.serveFlip(w, r)
 	case r.URL.Path == "/api/v1/sd/rescan" && r.Method == http.MethodPost:
 		writeJSON(w, 200, fmt.Sprintf(`{"mounted":true,"card":%q}`, o.Card))
 	// The P4 card-app verbs. Registered here in the same order orb_net.c's uri table
@@ -230,6 +230,11 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveAppEnable(w, r)
 	case r.URL.Path == "/api/v1/apps/uninstall" && r.Method == http.MethodPost:
 		o.serveAppUninstall(w, r)
+	// 7c9ff63's recovery doors, mirrored gate-for-gate.
+	case r.URL.Path == "/api/v1/apps/clear" && r.Method == http.MethodPost:
+		o.serveAppClear(w, r)
+	case r.URL.Path == "/api/v1/apps/factory" && r.Method == http.MethodPost:
+		o.serveAppFactory(w)
 	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:
 		o.serveAppUpload(w, r)
 	default:
@@ -238,22 +243,23 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveSD formats h_sd's reply: the row shape is name, id, why, bytes, serial, ok,
-// active, changed — there is no title field, and try/damage key on _id.
+// active, changed, stored — there is no title field, and the try and staged witnesses
+// key on _id. Migration 1 retired the live word and the damage pair with the A/B slot.
 func (o *Orb) serveSD(w http.ResponseWriter) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var b strings.Builder
 	fmt.Fprintf(&b, `{"mounted":%t,"card":%q,"uploading":false,"job_busy":%t,"total_mb":7581,"free_mb":7100,`+
-		`"source":%q,"active":%q,"live":%q,"card_count":%d,"try_id":%q,"try_why":%q,`+
-		`"damage_id":%q,"damage_why":%q,"themes":[`,
-		o.Mounted, o.MountedCard(), o.JobBusy, o.sourceLocked(), o.active, o.live, len(o.themes),
-		o.tryID, o.tryWhy, o.damageID, o.damageWhy)
+		`"source":%q,"active":%q,"card_count":%d,"try_id":%q,"try_why":%q,`+
+		`"staged_id":%q,"staged_why":%q,"themes":[`,
+		o.Mounted, o.MountedCard(), o.JobBusy, o.sourceLocked(), o.active, len(o.themes),
+		o.tryID, o.tryWhy, o.stagedID, o.stagedWhy)
 	for i, t := range o.themes {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		fmt.Fprintf(&b, `{"name":%q,"id":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"slot":%q}`,
-			t.Name, t.ID, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Slot)
+		fmt.Fprintf(&b, `{"name":%q,"id":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"stored":%t}`,
+			t.Name, t.ID, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Stored)
 	}
 	b.WriteString("]}")
 	writeJSON(w, 200, b.String())
@@ -266,11 +272,13 @@ func (o *Orb) MountedCard() string {
 	return o.Card
 }
 
+// sourceLocked answers h_sd's "source" the firmware's way: orb_theme_source() says
+// "slot" when the single slot is drawn and "none" when the base face is.
 func (o *Orb) sourceLocked() string {
 	if o.active != "" {
-		return "sd"
+		return "slot"
 	}
-	return "default"
+	return "none"
 }
 
 // serveFb is h_fb: the one-shot frame capture over the PSRAM mirror. It reads pixels and
@@ -284,11 +292,14 @@ func (o *Orb) serveFb(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "BM")
 }
 
-// serveBundle is h_bundle_install (P6.4), now the only store door: ?id= must pass
+// serveBundle is h_bundle_install (P6.4), now the only theme write door: ?id= must pass
 // orb_theme_id_ok or the answer is the firmware's 400, a second job while one runs is a
-// 409, and the ack carries reboot:none on purpose. Storing does not flip the dial (no
-// FORMAT 3 compositor until P6.5), so the fake changes no theme state either: the answer
-// is that a job was queued, not that the glass changed.
+// 409, and the ack carries reboot:automatic — Migration 1 made the store the one press
+// that changes the theme, rebooting onto the new face when the copy verifies. The double
+// lands the outcome on acknowledge, the way it landed the slot witness before: no worker,
+// and a hub that must poll for a witness its fake never gives would leave the
+// store-then-watch flow the page implements entirely untested. A landing also clears the
+// torn-store witness, as the device's does.
 func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if !idOK(id) {
@@ -308,48 +319,16 @@ func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, fmt.Sprintf(`{"error":"job refused: %s"}`, jsonSafe(t.Why)))
 		return
 	}
-	// The row's slot witness lands with the ack. The device lands it when its worker
-	// finishes copying, seconds after this same reply; the double has no worker, and
-	// a hub that must poll for a witness its fake never gives would leave the
-	// store-then-watch flow the page implements entirely untested.
 	o.mu.Lock()
-	t.Slot = "B"
+	for _, x := range o.themes {
+		x.Active = false
+	}
+	t.Stored = true
+	t.Active = true
+	o.active = t.Name
+	o.stagedID, o.stagedWhy = "", ""
 	o.mu.Unlock()
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"none"}`, id))
-}
-
-// serveFlip is h_bundle_flip (§26 slice 3): the flip door. The firmware's ack is 200
-// flipping for any syntactically valid id — a press naming a bundle no slot holds is
-// refused later, on the row's try witness, not at the HTTP layer — so the fake mirrors
-// that gate-for-gate: 400 on a malformed id, 409 while a job runs, then the ack. When
-// the id names a theme the fake does hold it moves the live word to slot-B and marks
-// that row active, because a flip is exactly the press that moves the glass; the sd/
-// default constant reply predates the fake tracking its own default, and this stays
-// within what the firmware's own ack claims.
-func (o *Orb) serveFlip(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if !idOK(id) {
-		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)
-		return
-	}
-	if o.takeBusy() {
-		writeJSON(w, 409, `{"error":"a theme job is already running"}`)
-		return
-	}
-	o.mu.Lock()
-	for _, t := range o.themes { // find() takes the same mutex; the walk is inline like serveDelete's
-		if t.ID == id && t.OK {
-			for _, x := range o.themes {
-				x.Active = false
-			}
-			t.Active = true
-			o.active = t.Name
-			o.live = "slot-B"
-			break
-		}
-	}
-	o.mu.Unlock()
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"flipping","id":%q,"reboot":"automatic"}`, id))
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"automatic"}`, id))
 }
 
 // serveDelete is h_theme_del: same id gate, same 404 wording.

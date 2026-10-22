@@ -304,6 +304,8 @@ struct lv_obj_t; typedef struct lv_obj_t lv_obj_t;
 #define ESP_OK 0
 #define ESP_ERR_INVALID_STATE_ 263   /* the doors' refusal code, named apart from
                                  * ESP_FAIL so a check cannot pass on the wrong one */
+#define ESP_ERR_NOT_FOUND_ 259       /* orb_app_activate's no-screen refusal (P8 gap) */
+#define ESP_ERR_NOT_FOUND ESP_ERR_NOT_FOUND_   /* the lifted act_appact reads the real name */
 #define ESP_FAIL (-1)          /* the refused-write answer the D19 toggle's
                                 * status line is checked against, spelled as
                                 * esp_err.h spells it rather than as a bare -1 */
@@ -1150,6 +1152,15 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("a refused activate says which app failed to move",
        g_act_calls == 1 && !strcmp(s_ui.status, "\"Clock\": clock will not go on the dial"));
+    /* Bench, orb-B 2026-10-21: a wasm row's press met the registry's
+     * screen()==NULL refusal — ESP_ERR_NOT_FOUND — and the generic sentence
+     * blamed the app for a platform gap (the code-app compositor commit is
+     * P8). The row must say which. */
+    g_act_rc = ESP_ERR_NOT_FOUND_; g_act_calls = 0;
+    menu_view_apply_input(0, true);
+    ck("a no-face activate names the platform gap, not the app",
+       g_act_calls == 1 && !strcmp(s_ui.status,
+           "\"Clock\": code apps draw layers the dial cannot paint yet"));
     g_act_rc = 0;
     g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
     ck("the switch posts the worker with the slot and the wanted state",

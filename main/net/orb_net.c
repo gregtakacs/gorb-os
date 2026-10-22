@@ -2867,6 +2867,11 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
          * on an incomplete wipe instead of reporting a clean reset. */
         if (reset_e != ESP_OK)
             ESP_LOGE(TAG, "reset: incomplete (%s) — rebooting anyway", esp_err_to_name(reset_e));
+        /* D35: the wipe took the factory pair's enable words with it. Rows that
+         * still hold a slot get theirs rewritten (shipping state includes a
+         * clock); rows the owner had uninstalled queue the ordinary restore job,
+         * and a reboot that outruns the job costs only a second press. */
+        orb_app_install_factory_rearm();
         ESP_LOGI(TAG, "%s", reset_e == ESP_OK ? "RESET-ACK rebooting unconfigured"
                                               : "RESET-PART rebooting unconfigured");
         orb_svc_note_clean_reboot();
@@ -3928,11 +3933,13 @@ static esp_err_t h_screen(httpd_req_t *req)
     if (have_to) {
         /* A registry slug, resolved by orb_app_find_slug() - no longer a
          * three-way strcmp against input_screen_t values that had to be kept in
-         * step with an enum by hand. "clock" and "menu" are the entries' own
-         * slugs and "hue" is the color picker's registered alias, so every URL
-         * that worked before still works, and an app added to the table is
-         * reachable here the moment it is in it with nothing to edit in this
-         * file. */
+         * step with an enum by hand. D35 moved the picker from a compiled alias
+         * to an ordinary card row, and card rows have no alias field — so the
+         * PWA's historical "?to=hue" is translated here, in the layer that owns
+         * routes, to the row's real slug. Every other name is the registry's
+         * business: clock and menu are the rows' own slugs, and an app that
+         * installs is reachable here the moment it is in the table. */
+        if (strcmp(to, "hue") == 0) snprintf(to, sizeof to, "color_picker");
         const orb_app_t *app = orb_app_find_slug(to);
         if (!app) {
             /* The bad value goes to the log, never into the body: it is
@@ -4540,15 +4547,20 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         json_put(e_title, sizeof e_title, a->title ? a->title : "");
         if (orbapp_caps_names(a->caps, caps, sizeof caps) < 0)
             caps[0] = '\0';                       /* same rule as the card tier */
+        /* D35: a factory row is labeled, not privileged — the buttons below it
+         * are the same two every installed row gets, and the label only tells
+         * the owner where the bytes shipped from. */
+        const bool fct = orb_app_install_is_factory(a->slug);
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
-            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s}",
+            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s%s}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
             a->enabled ? "true" : "false", a->failed ? "true" : "false",
             a->iface ? "true" : "false",
-            (a == orb_app_current() || a->active) ? "true" : "false");
+            (a == orb_app_current() || a->active) ? "true" : "false",
+            fct ? ",\"factory\":true" : "");
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
                                                   * a placeholder keeps the body valid */
             ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);
@@ -4593,13 +4605,19 @@ static esp_err_t h_apps_list(httpd_req_t *req)
      * (orb_files.c:185), so a card inserted after boot answers true here and
      * the listing needs no rescan press to know about it. */
     const bool mounted = orb_sd_mounted();
+    /* D35: the Restore button's condition, read once per listing — the page
+     * shows the door only when a factory row is actually absent from the
+     * ledger, and the field says nothing else about the dial's behaviour. */
+    const bool fmissing = orb_app_install_factory_missing();
+    char closer[40];
+    snprintf(closer, sizeof closer, "],\"factory_missing\":%s}", fmissing ? "true" : "false");
     char card[83], head[160];
     json_put(card, sizeof card, mounted ? orb_sd_card_id() : "");
     if (n < 0 && !mounted) {
         httpd_resp_send_chunk(req, "{\"mounted\":false,\"count\":-1,\"apps\":[],\"installed\":[",
                               HTTPD_RESP_USE_STRLEN);
         apps_send_installed(req, row, APPS_ROW_MAX);
-        httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);
         return httpd_resp_send_chunk(req, NULL, 0);
     }
     if (n < 0) {
@@ -4613,7 +4631,7 @@ static esp_err_t h_apps_list(httpd_req_t *req)
                  card);
         httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
         apps_send_installed(req, row, APPS_ROW_MAX);
-        httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);
         return httpd_resp_send_chunk(req, NULL, 0);
     }
     snprintf(head, sizeof head,
@@ -4664,7 +4682,7 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     apps_send_installed(req, row, APPS_ROW_MAX);
     /* the chunked-encoding contract (esp_http_server.h:1129): finish by calling
      * the chunk API with length 0 — that is the terminating chunk. */
-    httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
@@ -4763,6 +4781,28 @@ static esp_err_t h_app_enable(httpd_req_t *req)
     snprintf(b, sizeof b, "{\"state\":\"%s\",\"slug\":\"%s\"}",
              strcmp(onv, "1") == 0 ? "enabled" : "disabled", id);
     return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/apps/factory — D35's Restore door. Re-seeds the two containers
+ * the image ships, through the same install ladder and the same enable ledger
+ * as a card install; rows already on the dial keep their state, and an owner's
+ * newer install of one of the two slugs is never walked back (serial rule).
+ * Like the card install this queues the same worker job and answers 202: the
+ * flash work is the worker's, and the /apps reload shows the rows. */
+static esp_err_t h_app_factory(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t e = orb_app_install_restore_factory_post();
+    if (e == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"a card job is running\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"the restore could not be queued\"}");
+    }
+    return httpd_resp_sendstr(req, "{\"state\":\"restoring\"}");
 }
 
 /* POST /api/v1/apps/clear?id=<slug> — the fault-record door, the third owner
@@ -5601,10 +5641,10 @@ static const char HTML_APPS[] =
 "function drawInst(){"
 "var I=document.getElementById('inst'),x=data.installed||[];"
 "if(!x.length){I.innerHTML='<div class=row><b>On the dial</b> \\u2014 nothing installed yet.</div>';return;}"
-"var h='<div class=row><b>On the dial</b></div>';"
+"var h='<div class=row><b>On the dial</b>'+(data.factory_missing?' <button onclick=\"facRes(this)\">Restore the factory apps</button>':'')+'</div>';"
 "for(var i=0;i<x.length;i++){var a=x[i];"
 "h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):esc(a.slug))+'</div>';"
-"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+(a.compiled?'built in':'slot '+a.slot)+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
+"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+(a.compiled?'shell':(a.factory?'factory, slot '+a.slot:'slot '+a.slot))+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
 "h=h+'<div class=sub>'+(a.enabled?'on the carousel':'turned off')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
 "h=h+'<div style=\"margin-top:.3rem\">';"
 "h=h+(a.compiled?'':(a.enabled?'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',0)\">Turn off</button> ':'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',1)\">Turn on</button> '));"
@@ -5612,7 +5652,8 @@ static const char HTML_APPS[] =
 "I.innerHTML=h;"
 "}"
 "function setOn(s,on){say((on?'turning on ':'turning off ')+s+'...','');j('/api/v1/apps/enable?id='+encodeURIComponent(s)+'&on='+on,{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say(on?'turned on - it walks the dial now':'turned off - the slot keeps its place','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
-"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions; the file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function unin(s){var f=onDial(s)&&(data.installed||[]).some(function(a){return a.slug==s&&a.factory;});if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions.'+(f?' This one ships inside the firmware: it stays gone until you press Restore the factory apps.':' The file stays on your card.'))){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function facRes(btn){if(!confirm('Restore the clock and HSB? Anything already installed keeps its state; anything missing comes back enabled.')){return;}if(btn){btn.disabled=true;}j('/api/v1/apps/factory',{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');if(btn){btn.disabled=false;}return;}say('restore queued - reload to see the rows','');refresh();}).catch(function(){say('orb not reachable','bad');if(btn){btn.disabled=false;}});}"
 "function clearFault(s){if(!confirm('Clear the fault record for '+s+'? A reboot brings it back; WiFi and the card are untouched.')){return;}say('clearing the fault for '+s+'...','');j('/api/v1/apps/clear?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('fault cleared - reboot the dial to rebuild it','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
@@ -5802,6 +5843,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
+        { .uri = "/api/v1/apps/factory", .method = HTTP_POST, .handler = h_app_factory },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

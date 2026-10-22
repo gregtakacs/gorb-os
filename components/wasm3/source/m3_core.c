@@ -18,6 +18,12 @@
 #include "m3_core.h"
 #include "m3_env.h"
 
+// On the dial, the interpreter's own memory goes to PSRAM (see m3_Malloc_Impl).
+// esp_heap_caps.h is the IDF allocator that lets us name the capability.
+#ifdef ESP_PLATFORM
+#  include "esp_heap_caps.h"
+#endif
+
 // The one place any of the m3_host.h implementations is built - see that header
 #include "m3_host.h"
 
@@ -138,6 +144,45 @@ void* m3_Realloc_Impl (void* i_ptr, size_t i_newSize, size_t i_oldSize)
     }
 
     return newPtr;
+}
+
+#elif defined(ESP_PLATFORM)
+
+// Every interpreter allocation goes to PSRAM, including the value stack that
+// m3_NewRuntime carves out. On this dial CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
+// (sdkconfig.defaults:16384) pins every sub-16 KB malloc to internal RAM, so a
+// plain calloc traps each runtime's 8 KB stack there; three enabled apps then
+// starve httpd's task stack and the config door will not open (bench, 2026-10-21).
+// The guest's linear memory already lives in PSRAM -- a 64 KB m3_Realloc clears the
+// same threshold -- so the value stack joining it is consistent, not a new exposure.
+// Render path and LVGL are untouched: this is scoped to the wasm tier alone.
+#define ORB_WASM_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+
+void* m3_Malloc_Impl (size_t i_size)
+{
+    return heap_caps_calloc(1, i_size, ORB_WASM_CAPS);
+}
+
+void m3_Free_Impl (void* io_ptr)
+{
+    heap_caps_free(io_ptr);
+}
+
+void* m3_Realloc_Impl (void* i_ptr, size_t i_newSize, size_t i_oldSize)
+{
+    if (M3_UNLIKELY(i_newSize == i_oldSize)) {
+        return i_ptr;
+    }
+
+    void* newPtr = heap_caps_realloc(i_ptr, i_newSize, ORB_WASM_CAPS);
+
+    if (M3_LIKELY(newPtr)) {
+        if (i_newSize > i_oldSize) {
+            memset((u8*)newPtr + i_oldSize, 0x0, i_newSize - i_oldSize);
+        }
+        return newPtr;
+    }
+    return NULL;
 }
 
 #else

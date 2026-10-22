@@ -197,7 +197,7 @@ void app_main(void)
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "gorb-os running — knob: turn swaps menu/hue/clock, push opens, hold returns to clock");
+    ESP_LOGI(TAG, "gorb-os running — knob: turn swaps apps, push opens, hold returns to the menu");
 
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
     /* Rollback handshake. With the safety net compiled in, the bootloader boots a

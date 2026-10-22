@@ -1231,7 +1231,12 @@ static const orb_app_t *door_open(const char *slug, char *why, size_t whysz,
         *err = door_refuse(ESP_ERR_INVALID_ARG, "not a usable app name", why, whysz);
         return NULL;
     }
-    if (orb_jobs_busy() || orb_app_upload_busy()) {
+    /* The gate refuses a door asked for while the card is committed elsewhere.
+     * A door already running on the worker — the glass's own enable/uninstall
+     * press, posted as this job — meets only its own busy flag, so the gate
+     * must not refuse it: that deadlock refused every switch press on the
+     * dial. The upload window is a separate, non-worker thing and still refuses. */
+    if ((orb_jobs_busy() && !orb_jobs_on_worker()) || orb_app_upload_busy()) {
         *err = door_refuse(ESP_ERR_INVALID_STATE,
                            "a card job is running — try again when it finishes",
                            why, whysz);

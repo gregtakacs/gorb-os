@@ -39,12 +39,19 @@ typedef struct {
 
 static QueueHandle_t     s_q;
 static TaskHandle_t      s_task;
+static TaskHandle_t volatile s_worker;  /* job_worker's own handle, set on entry */
 static volatile bool     s_busy;
 static bool              s_started;
+
+bool orb_jobs_on_worker(void)
+{
+    return xTaskGetCurrentTaskHandle() == s_worker;
+}
 
 static void job_worker(void *arg)
 {
     (void)arg;
+    s_worker = xTaskGetCurrentTaskHandle();
     job_t j;
     for (;;) {
         if (xQueueReceive(s_q, &j, portMAX_DELAY) != pdTRUE) continue;

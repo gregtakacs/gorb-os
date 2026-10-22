@@ -147,6 +147,10 @@ const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
     h->art_off        = w[ORBAPP_W_ART_OFF];
     h->art_size       = w[ORBAPP_W_ART_SIZE];
     h->art_crc        = w[ORBAPP_W_ART_CRC];
+    h->code_off       = w[ORBAPP_W_CODE_OFF];
+    h->code_size      = w[ORBAPP_W_CODE_SIZE];
+    h->code_crc       = w[ORBAPP_W_CODE_CRC];
+    h->wasm_mem_max   = w[ORBAPP_W_WASM_MEM];
     h->asset_off      = w[ORBAPP_W_ASSET_OFF];
     h->n_assets       = w[ORBAPP_W_N_ASSETS];
     /* The two header words P5b did not take stay reserved, and a writer that put
@@ -357,6 +361,32 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
      * needs no backing store — this is now the container's expected shape, and
      * any art_size is already gone refused above. */
 
+    /* P7 (D20/D27): the code region and its memory bound, mirrored in the same
+     * words the writer refuses them in (orbapp.py's _code_size/_wasm_mem and the
+     * check_header tail). These are the device's own refusals: a hand-edited card
+     * is refused on the dial with the sentence the owner can act on, and the D27
+     * gate reaches the install ladder before one byte is copied. A native app —
+     * every app that ever shipped — carries a zero code triple and passes all of
+     * these untouched. */
+    if (h->code_size > ORBAPP_CODE_BYTES_MAX)
+        return refuse(reason, cap, "code region is %u B, past the %u B a slot's "
+                      "payload can hold: the module cannot fit the flash it would "
+                      "write", h->code_size, (unsigned)ORBAPP_CODE_BYTES_MAX);
+    if (h->code_size == 0 && (h->code_crc != 0 || h->wasm_mem_max != 0))
+        return refuse(reason, cap, "ships no code but a %u B memory bound and "
+                      "code_crc 0x%08X: the code triple with no region is a "
+                      "miscount — re-package it", h->wasm_mem_max,
+                      (unsigned)h->code_crc);
+    if (h->code_size != 0 && h->wasm_mem_max == 0)
+        return refuse(reason, cap, "ships a %u B wasm module with a zero memory "
+                      "bound: D27 gates the module's linear memory at install, and "
+                      "a zero ceiling is no bound at all", h->code_size);
+    if (h->wasm_mem_max > ORBAPP_WASM_MEM_MAX)
+        return refuse(reason, cap, "wasm_mem_max %u B is past the %u B ceiling this "
+                      "build gates at (D27): the module could not be allocated on "
+                      "the dial, so it must not install", h->wasm_mem_max,
+                      (unsigned)ORBAPP_WASM_MEM_MAX);
+
     /* D16's floor, and only the floor: the writer refuses a too-low beat at
      * pack time and its own reader re-checks it on cards; the too-high end
      * dies at the writer alone, so a crafted period above a day is the
@@ -395,6 +425,15 @@ const char *orbapp_check_file_layout(const orbapp_hdr_t *h, char *reason,
     if ((uint64_t)h->art_off != art)
         return refuse(reason, cap,
                       "the payload is not sector-aligned off the geometry blob");
+    /* P7: the code region takes the sector-aligned slot art's payload vacated, so
+     * it starts on the same derived boundary the geometry ends on. Checked as an
+     * equality, not a range — a code region that could sit anywhere could sit on
+     * top of the geometry and read the CRC on the overlap (orbapp.py's writer rule,
+     * mirrored). A native app's code_off equals art_off and code_size is zero, and
+     * this equality holds for it as it does for a module-bearing one. */
+    if ((uint64_t)h->code_off != art)
+        return refuse(reason, cap,
+                      "the code region is not sector-aligned off the geometry blob");
     return NULL;
 }
 

@@ -38,7 +38,7 @@ extern "C" {
  * disagreement — the lint rule of tools/host_art_residency_test.py. */
 #define ORBAPP_MAGIC      0x00415247u    /* 'G','R','A' — unlike the theme magic on purpose */
 #define ORBAPP_THEME_MAGIC 0x474F5254u   /* so a theme handed here gets named, not miscalled */
-#define ORBAPP_FORMAT     1u
+#define ORBAPP_FORMAT     2u
 #define ORBAPP_GEOM_ABI   2u    /* The dialect this build speaks. 1 -> 2 is P5b's
                                  * asset table (D23): the geometry records did not
                                  * move, the vocabulary did. D23 names THIS word as
@@ -67,6 +67,13 @@ extern "C" {
                                      * reconstructs a prefix to strip it back off, and
                                      * `global/` + 12 still fits ORB_ASSET_REF_MAX. */
 #define ORBAPP_GEOM_BYTES_MAX 0x00040000u  /* 256 KB — the apps-partition sizing depends on it */
+#define ORBAPP_CODE_BYTES_MAX 0x00040000u  /* 256 KB — P7 (D20): a wasm module rides the
+ * slot's payload region the geometry shares, so one slot budget bounds both and
+ * install_decide prices the whole copied prefix against it */
+#define ORBAPP_WASM_MEM_MAX   0x00020000u  /* 128 KB — D27: the linear-memory ceiling an
+ * app may declare. Gated at install in the same shape as caps and period_ms, and it
+ * sits INSIDE the header CRC so a card cannot raise it unseen */
+
 #define ORBAPP_ART_BYTES_MAX  0x003D0000u  /* 3.81 MB — plausibility bound on the
                                             * art_req DECLARATION only: D21 (§0.9)
                                             * says no container carries art bytes */
@@ -106,18 +113,27 @@ enum {
     ORBAPP_W_ART_OFF    = ORBAPP_W_GEOM_CRC  + 1,
     ORBAPP_W_ART_SIZE   = ORBAPP_W_ART_OFF   + 1,
     ORBAPP_W_ART_CRC    = ORBAPP_W_ART_SIZE  + 1,
-    ORBAPP_W_HDR_CRC    = ORBAPP_W_ART_CRC   + 1,
-    /* P5b's two fields take words the P2 header left reserved for exactly this, so
-     * ORBAPP_HDR_WORDS does not move and the header CRC still covers up to
-     * W_HDR_CRC. One word at the end stays free, and the reader checks it zero:
-     * a word that reads as nothing today is a word that reads as something wrong
-     * tomorrow. The table itself lives in the blob region, where the slot CRC
-     * already reaches it. A container written before any app declared a slot leaves
-     * both zero, which reads as "declares nothing": the truth for every app that
-     * ever shipped (D25), and the one answer in this table that is not a refusal. */
+    /* P7 (D20/D27): the code region's three words and the gate's linear-memory
+     * ceiling, inserted INSIDE the header CRC's span so a card cannot rewrite them
+     * without disturbing the checksum — D27 gates wasm_mem_max "in the same shape"
+     * as caps and period_ms. They sit contiguously after the art triple, so the
+     * asset table and the one free word keep deriving from the moved HDR_CRC. */
+    ORBAPP_W_CODE_OFF   = ORBAPP_W_ART_CRC   + 1,
+    ORBAPP_W_CODE_SIZE  = ORBAPP_W_CODE_OFF  + 1,
+    ORBAPP_W_CODE_CRC   = ORBAPP_W_CODE_SIZE + 1,
+    ORBAPP_W_WASM_MEM   = ORBAPP_W_CODE_CRC  + 1,
+    ORBAPP_W_HDR_CRC    = ORBAPP_W_WASM_MEM  + 1,
+    /* P5b's two fields take words the header left reserved for exactly this, so the
+     * tail keeps its shape and the header CRC still covers up to W_HDR_CRC. One word
+     * at the end stays free, and the reader checks it zero: a word that reads as
+     * nothing today is a word that reads as something wrong tomorrow. The table
+     * itself lives in the blob region, where the slot CRC already reaches it. A
+     * container written before any app declared a slot leaves both zero, which reads
+     * as "declares nothing": the truth for every app that ever shipped (D25), and the
+     * one answer in this table that is not a refusal. */
     ORBAPP_W_ASSET_OFF  = ORBAPP_W_HDR_CRC   + 1,
     ORBAPP_W_N_ASSETS   = ORBAPP_W_ASSET_OFF + 1,
-    ORBAPP_HDR_WORDS    = ORBAPP_W_HDR_CRC   + 4,   /* 2 taken by P5b, 2 still free */
+    ORBAPP_HDR_WORDS    = ORBAPP_W_HDR_CRC   + 4,   /* asset_off, n_assets, 1 free */
     ORBAPP_HDR_BYTES    = ORBAPP_HDR_WORDS * 4,
     /* One settings descriptor on the wire, mirroring orb_setting_desc_t
      * field for field — the writer's S_* numbers (orbapp.py:172). */
@@ -155,6 +171,8 @@ typedef struct {
     uint32_t period_ms, caps, n_settings;
     uint32_t setting_off, geom_off, geom_size, geom_crc;
     uint32_t art_off, art_size, art_crc;
+    uint32_t code_off, code_size, code_crc, wasm_mem_max;  /* P7 (D20/D27): the code
+                                                            * region + its D27 bound */
     uint32_t asset_off, n_assets;   /* P5b (D23): the table, in the blob region    */
 } orbapp_hdr_t;
 

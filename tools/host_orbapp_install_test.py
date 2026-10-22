@@ -126,6 +126,12 @@ int main(int argc, char **argv)
         const uint32_t mask = rd32();
         uint32_t serial[8];
         for (int k = 0; k < 8; k++) serial[k] = rd32();
+        /* P7: the code region rides the case stream's tail, so every older vector
+         * (which carries none) reads zeros and the decision prices geometry alone,
+         * exactly as it did pre-P7. */
+        h.code_off     = rd32();
+        h.code_size    = rd32();
+        h.wasm_mem_max = rd32();
 
         static orb_setting_desc_t set[ORBAPP_SETTINGS_MAX];
         const uint32_t use = nset < ORBAPP_SETTINGS_MAX ? nset : ORBAPP_SETTINGS_MAX;
@@ -206,6 +212,7 @@ NL = "\n"
 # ever disagree — a re-typed number that quietly drifts is the whole reason the
 # decision is lifted instead of reimplemented.
 GEOM_CAP = 0x00040000          # ORBAPP_GEOM_BYTES_MAX == APPS_SLOT_GEOM_CAP
+WASM_MEM_MAX = 0x00020000      # ORBAPP_WASM_MEM_MAX — D27's linear-memory ceiling
 ART_JUNK = 0x003D0001          # over the OLD slot cap; install_decide must not
                                # read the art word at all since D21 (P4b) — the
                                # vectors fill it with an impossible claim and
@@ -217,18 +224,32 @@ SETTINGS_MAX = 16              # ORBAPP_SETTINGS_MAX
 
 # A refusal is checked by the fragment of its sentence that names WHICH gate fired
 # (the wording itself belongs to the reader mirror, not to this decision).
-WHY_KEY = {"geom": "manifest and geometry",
-           "quota": "setting(s) need", "cap": "already holds",
-           "range": "out of range"}
+WHY_KEY = {"geom": "geometry and code", "quota": "setting(s) need",
+           "cap": "already holds", "range": "out of range",
+           "mem": "wasm memory bound"}
 
 
-def ref(geom_off, geom_size, art_size, strc, nset, existing, cnt, mask, serial, quota):
+def ref(geom_off, geom_size, art_size, strc, nset, existing, cnt, mask, serial, quota,
+        code_off=0, code_size=0, wasm_mem=0):
     """The independent model of install_decide's ladder — the intent. The device
     runs the LIFTED code; the two must agree, and it is exactly their disagreement
-    that is the bug this suite hunts."""
+    that is the bug this suite hunts.
+
+    P7 adds the code region: the copied slot prefix is geom_end or code_end,
+    whichever is larger (a native app has code_size 0 and so geom_end, unchanged),
+    and gate 1b refuses a linear-memory bound past the D27 ceiling. Both default to
+    the no-code shape, so every pre-P7 vector's expected verdict is untouched."""
     blob = geom_off + geom_size
+    if code_size and (code_off + code_size) > blob:
+        blob = code_off + code_size
     if blob > GEOM_CAP:
         return dict(accept=0, slot=-1, reinstall=0, serial=0, cfg_worst=0, key="geom")
+    # Gate 1b — D27's memory ceiling, priced off the board's real budget before the
+    # erase. The reader refuses past ORBAPP_WASM_MEM_MAX upstream; this is the
+    # defensive twin, and a vector that trips only the ceiling (with a blob that
+    # still fits) is what proves install_decide reads the word at all.
+    if wasm_mem > WASM_MEM_MAX:
+        return dict(accept=0, slot=-1, reinstall=0, serial=0, cfg_worst=0, key="mem")
     # D21 (P4b): no art gate lives here. The installer reads no art word; the
     # vectors still carry one, filled with junk, and the model ignores it — the
     # pair of omissions is what pins "the decision prices geometry alone".
@@ -278,6 +299,21 @@ def V():
     a(("accept_7", 0, 1024, 0, 0, 0, -1, 7, 0b01111111, S0))
     a(("mixed_quota_accept", 0, 1024, 0, 2, 4, -1, 0, 0b0, S0))
     a(("legal_table_never_trips", 0, 1024, 0, 16, 16, -1, 0, 0b0, S0))
+    # ---- P7: the code region and D27's ceiling ----------------------------------
+    # code_off/code_size/wasm_mem ride as three extra trailing fields (see the
+    # tuple unpack below). A code region inside a slot's slack is ACCEPTED — the
+    # module is opaque bytes, so nothing here prices the geometry's counts against
+    # it, only the slot the whole prefix must fit. The code-bearing vectors each
+    # carry a legal (in-ceiling) memory bound EXCEPT the one named for the gate.
+    a(("accept_code_small", 0, 1024, 0, 0, 0, -1, 0, 0b0, S0, 4096, 1024, 65536))
+    # The code region past the slot the geom_end left room for: geom is a hair
+    # under cap, code rides past it — the max(geom_end, code_end) rule.
+    a(("refuse_code_over_slot", 0, GEOM_CAP - 512, 0, 0, 0, -1, 0, 0b0, S0,
+       GEOM_CAP - 512, 4096, 65536))
+    # D27's ceiling alone: a small blob that fits, but a bound past the D27 cap —
+    # the exact refusal the P7 pass line names, tripping gate 1b and not gate 1.
+    a(("refuse_mem_over_ceiling", 0, 1024, 0, 0, 0, -1, 0, 0b0, S0,
+       4096, 1024, WASM_MEM_MAX + 1))
     return g
 
 
@@ -295,8 +331,13 @@ def V_TINY():
 
 def pack_case(c):
     (name, go, gs, art, strc, nset, existing, cnt, mask, serials) = c[:10]
-    return struct.pack("<8I8I", go, gs, art, strc, nset,
-                       existing & 0xFFFFFFFF, cnt, mask, *serials)
+    # P7: the code triple is an optional tail. Older vectors carry none and pack as
+    # three zeros, which the harness fills into the header so the decision prices the
+    # geometry alone — the pre-P7 shape, byte for byte.
+    code_off, code_size, wasm = (c[10], c[11], c[12]) if len(c) > 10 else (0, 0, 0)
+    return struct.pack("<11I8I", go, gs, art, strc, nset,
+                       existing & 0xFFFFFFFF, cnt, mask, *serials,
+                       code_off, code_size, wasm)
 
 
 def run_vectors(cases, quota, binp, cases_file):
@@ -312,7 +353,8 @@ def run_vectors(cases, quota, binp, cases_file):
         "harness printed %d lines, expected %d" % (len(lines), len(cases))
     bad = []
     for c, line in zip(cases, lines):
-        exp = ref(c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], quota)
+        exp = ref(c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], quota,
+                  *(c[10:13] if len(c) > 10 else (0, 0, 0)))
         p = line.split(" ")
         got = dict(accept=int(p[1]), slot=int(p[2]), reinstall=int(p[3]),
                    serial=int(p[4]), cfg_worst=int(p[5]),
@@ -561,6 +603,21 @@ def lint(src):
     if "#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)" not in ih:
         bad.append("P4b: the upload bound still carries an art term — the "
                    "largest legal container is header + settings + geometry")
+    # ---- P7: the device half's code accounting, pinned as text ----------------
+    # install_decide is host-lifted and mutation-pinned, but copy_prefix and
+    # verify_payload run only on the worker task. Their code-region handling is the
+    # other half of D27's "never writes a byte of flash" promise — an accepted
+    # module must be COPIED (copy_prefix) and CHECKED OFF-CARD (verify_payload) just
+    # as the geometry is. A check nobody has watched is a check that may be dead, so
+    # each is pinned by a rule here and a mutant that must be caught.
+    if "if (h->code_size && (h->code_off + h->code_size) > blob)\n        blob = h->code_off + h->code_size;" not in src:
+        bad.append("P7: copy_prefix must widen the copied prefix to the code region's end — "
+                   "install_decide reserves the slot for code; a copy that stops at geom_end "
+                   "leaves the header pointing at bytes that were never written")
+    if 'if (h->code_size) {\n        crc = 0;\n        pos = h->code_off;' not in src:
+        bad.append("P7: verify_payload must checksum the code region off-card like the "
+                   "geometry — a corrupt module must be refused before the erase, not "
+                   "reach the slot the loader would trust")
     return bad
 
 
@@ -590,11 +647,37 @@ MUTATIONS = [
     ("geometry cap gate switched off (blob can overrun the slot)", "pure",
      _m("if (blob > (uint64_t)APPS_SLOT_GEOM_CAP)",
         "if (false && blob > (uint64_t)APPS_SLOT_GEOM_CAP)")),
+    # P7: the code region must enter the slot-fit max(). Dropping it lets a
+    # module-bearing app bill only its geometry and overrun the slot with code.
+    ("code region dropped from the slot-fit bill (P7 regression)", "pure",
+     _m("    if (h->code_size) {\n"
+        "        const uint64_t code_end = (uint64_t)h->code_off + h->code_size;\n"
+        "        if (code_end > blob)\n"
+        "            blob = code_end;\n"
+        "    }\n", "")),
+    # P7 D27: the ceiling gate switched off lets an un-allocatable memory bound
+    # through to the erase, which is the exact refusal the P7 pass line names.
+    ("D27 memory ceiling gate switched off", "pure",
+     _m("if (h->wasm_mem_max > (uint32_t)ORBAPP_WASM_MEM_MAX)",
+        "if (false && h->wasm_mem_max > (uint32_t)ORBAPP_WASM_MEM_MAX)")),
+    # P7 device half: the copied prefix must reach the code region's end. A copy that
+    # stops at geom_end leaves the header's code triple pointing at bytes never
+    # written — the loader (P7.2) would read garbage from the slot.
+    ("copy_prefix stops at geom_end (code never reaches the slot)", "device",
+     _m("    uint32_t blob = h->geom_off + h->geom_size;\n"
+        "    if (h->code_size && (h->code_off + h->code_size) > blob)\n"
+        "        blob = h->code_off + h->code_size;",
+        "    uint32_t blob = h->geom_off + h->geom_size;")),
+    # P7 device half: verify_payload must checksum the code off-card. Dropping the
+    # block lets a corrupt module survive to the erase the loader would trust.
+    ("verify_payload skips the code region's checksum", "device",
+     _m("    if (h->code_size) {\n        crc = 0;\n        pos = h->code_off;",
+        "    if (0 && h->code_size) {\n        crc = 0;\n        pos = h->code_off;")),
     ("installer re-reads the art word (a P4b regression re-grows the gate)", "pure",
-     _m("    /* Gate 1 — the manifest+geometry prefix the slot must hold.",
+     _m("    /* Gate 1 — the manifest+geometry+code prefix the slot must hold.",
         "    if (h->art_size) { snprintf(v->why, sizeof v->why, \"its art bank "
         "is too big\"); return false; }\n\n"
-        "    /* Gate 1 — the manifest+geometry prefix the slot must hold.")),
+        "    /* Gate 1 — the manifest+geometry+code prefix the slot must hold.")),
     ("off-card payload check dropped (erase before verify)", "device",
      _m("const char *vv = verify_payload(fd, h);",
         "const char *vv = NULL; (void)verify_payload;")),

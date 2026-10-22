@@ -31,12 +31,14 @@ Layout (§4.1's words, in §4.1's order; every name below is the paper's):
     period_ms  caps
     n_settings  setting_off
     geom_off geom_size geom_crc   art_off art_size art_crc
+    code_off code_size code_crc  wasm_mem_max   <- P7 (D20/D27): one wasm3 module
     hdr_crc
   settings   n_settings x SETTINGS_WORDS words: id[16] type min max def
     def_str[32]               <- C9's four types, frozen
   geometry   the app's own records, OPAQUE to the OS (D15)
+  code       one wasm3 module, opaque to the OS; absent for a native app
   payload    NONE since D21 (§0.9): art_size and art_crc are written 0 and the
-             file ends at the sector pad; art_req is a declaration, not bytes
+             file ends at the code region or, with no code, at the sector pad; art_req is a declaration, not bytes
 
 Three rules this writer enforces, all of them from `.clinerules:444-458` and
 §4.1's own bullets:
@@ -82,7 +84,16 @@ MAGIC      = 0x00415247        # 'G','R','A'. Deliberately unlike the theme's
                                # 0x474F5254, so a .orbtheme handed to the app
                                # loader dies on the magic word rather than
                                # parsing as an app with a surprising name.
-FORMAT     = 1                 # this container layout; a reader refuses others
+FORMAT     = 2                 # this container layout; a reader refuses others.
+                               # 1 -> 2 is P7's code region (D20/D27): the header
+                               # grows four gate/region words INSIDE hdr_crc's span
+                               # (code_off/code_size/code_crc and wasm_mem_max). A
+                               # gate field cannot sit where caps and period_ms do
+                               # not, so the word map moves and the CRC's last word
+                               # moves with it. D21 (§0.9) sanctions the bump: no
+                               # app ever shipped under FORMAT 1, so an old file that
+                               # reaches a new reader dies on the format word and the
+                               # "re-package it" sentence, never mis-parsed.
 GEOM_ABI   = 2                 # The dialect this writer stamps. 1 -> 2 is P5b's
                                # asset table (D23): the geometry records did not
                                # move, the vocabulary did, and D23 names THIS word
@@ -106,6 +117,14 @@ DEFSTR_MAX = 32                # STRING default bytes, NUL included
 ART_BYTES_MAX  = 0x003D0000    # 3.81 MB — art_req DECLARATION bound, nothing more
 SETTINGS_MAX   = 16            # the descriptor table the loader is sized for
 GEOM_BYTES_MAX = 0x00040000    # 256 KB of the app's own records
+
+# P7 (D20/D27): the code region. A `.orbapp` may carry one wasm3 module. Its bytes
+# ride the slot exactly as the geometry blob does — D27 is that "a module that cannot
+# fit never writes a byte of flash", so CODE_BYTES_MAX and install_decide's slot gate
+# price the region in flash. wasm_mem_max is NOT a flash number: it is the module's own
+# linear-memory reservation, gated at install in the same shape as caps and period_ms.
+CODE_BYTES_MAX = 0x00040000    # 256 KB of wasm — one slot's whole payload budget
+WASM_MEM_MAX   = 0x00020000    # 128 KB — the D27 linear-memory ceiling per app
 
 # D16 (§0.6): the manifest's period_ms is the FASTEST beat the app may ever run,
 # which is the number the owner prices the app at on the install confirm. 0 is a
@@ -174,13 +193,24 @@ W_GEOM_CRC   = W_GEOM_SIZE + 1
 W_ART_OFF    = W_GEOM_CRC  + 1
 W_ART_SIZE   = W_ART_OFF   + 1
 W_ART_CRC    = W_ART_SIZE  + 1
-W_HDR_CRC    = W_ART_CRC    + 1
+# P7 (D20/D27): the code region's three words plus the gate's linear-memory ceiling,
+# inserted INSIDE the header CRC's span (they precede W_HDR_CRC) exactly as caps and
+# period_ms do — D27 gates wasm_mem_max "in the same shape" as those, and a gate word
+# that lived outside the CRC could be rewritten on the card without disturbing any
+# checksum, which is the precise failure the whole manifest-sits-in-hdr_crc rule exists
+# to forbid. Placed contiguously after the art triple, so the asset table and the one
+# free word keep deriving from the (moved) HDR_CRC and their positions do not change.
+W_CODE_OFF   = W_ART_CRC     + 1
+W_CODE_SIZE  = W_CODE_OFF    + 1
+W_CODE_CRC   = W_CODE_SIZE   + 1
+W_WASM_MEM   = W_CODE_CRC    + 1
+W_HDR_CRC    = W_WASM_MEM    + 1
 # P5b (D23): the asset table's two fields take words this header left reserved for
-# exactly this, so HDR_WORDS does not move and the header CRC still covers up to
+# exactly this, so the tail keeps its shape and the header CRC still covers up to
 # W_HDR_CRC. One word at the end stays free and the reader checks it zero.
 W_ASSET_OFF  = W_HDR_CRC    + 1
 W_N_ASSETS   = W_ASSET_OFF  + 1
-HDR_WORDS    = W_HDR_CRC   + 4                      # 2 taken by P5b, 2 still free
+HDR_WORDS    = W_HDR_CRC   + 4                      # asset_off, n_assets, 1 free
 HDR_BYTES    = HDR_WORDS * 4
 SET_OFF      = HDR_BYTES                            # settings follow the header
 
@@ -765,15 +795,69 @@ def _geom_size(geom_size, counts):
     return geom_size
 
 
+def _wasm_mem(wasm_mem_max, code_size):
+    """D27's install-time-shaped gate, enforced on the way out: the declared
+    linear-memory ceiling must be a bound this build can honour, and it must be
+    coherent with whether the container carries code at all.
+
+    Zero memory with no code is the native app's shape (every app that ever
+    shipped, and every compiled module) and reads as "no wasm reservation". A
+    code-bearing app that declares zero is a refusal: the ceiling is what the
+    owner prices the module at and what m3_NewRuntime would be handed, so a
+    code-carrying app with no ceiling is a module that would run with no bound
+    the gate could enforce — the exact opposite of D27. Past the ceiling the
+    module could not be allocated on the dial, so it never writes a byte of flash."""
+    _u(wasm_mem_max, "wasm_mem_max")
+    _u(code_size, "code_size")
+    if wasm_mem_max > WASM_MEM_MAX:
+        raise ValueError("wasm_mem_max %d B is past the %d B ceiling this build "
+                         "gates at (D27): the module could not be allocated on "
+                         "the dial, so it must not install" % (wasm_mem_max, WASM_MEM_MAX))
+    if code_size == 0 and wasm_mem_max != 0:
+        raise ValueError("declares a %d B wasm memory bound but ships no code: "
+                         "the bound prices a module this container does not carry "
+                         "— drop it or ship the module" % wasm_mem_max)
+    if code_size != 0 and wasm_mem_max == 0:
+        raise ValueError("ships a %d B wasm module with a zero memory bound: D27 "
+                         "gates the module's linear memory at install, and a zero "
+                         "ceiling is no bound at all" % code_size)
+    return wasm_mem_max
+
+
+def code_offset(geom_off, geom_size):
+    """Code region start: the sector-aligned end of the geometry blob, so a copy
+    into a 64 KB-aligned slot stays aligned. The one payload slot D21 withdrew
+    from art is what P7's code region now occupies."""
+    return (geom_off + geom_size + SECTOR - 1) & ~(SECTOR - 1)
+
+
+def _code_size(code_size):
+    """The module is opaque bytes (D15, like geometry), so only its LENGTH is
+    checkable here: past a slot's payload budget it cannot be copied, and the
+    install slot boundary then prices it in flash the way D27 demands."""
+    _u(code_size, "code_size")
+    if code_size > CODE_BYTES_MAX:
+        raise ValueError("code region is %d B, past the %d B a slot's payload can "
+                         "hold: the module cannot fit the flash it would write"
+                         % (code_size, CODE_BYTES_MAX))
+    return code_size
+
+
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
                 settings_blob, serial=0, baked_ms=0, abi=None,
-                sig=0, behaviour_kind=0, asset_blob=b""):
+                sig=0, behaviour_kind=0, asset_blob=b"",
+                code_size=0, wasm_mem_max=0):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
 
     There is no art argument: D21 (§0.9) withdrew the container's payload, so
     art_size and art_crc go to the block as constants — zero, the only shape a
     reader will accept. art_req stays declarable; see _art_req.
+
+    The code region's offset and CRC are left for write_container (only it holds
+    the module's bytes), exactly as geom_* is; code_size and wasm_mem_max are the
+    caller's declarations and are gated here — code_size against the slot budget
+    and wasm_mem_max against D27's ceiling and its coherence with code_size.
 
     The CRC word goes last and covers the WHOLE block including the caps word:
     that is the D19 property, and the one respect in which this container is
@@ -813,6 +897,12 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
         raise ValueError("%d settings; the loader's table holds %d" % (n_set, SETTINGS_MAX))
     hdr[W_N_SETTINGS] = n_set
     hdr[W_ART_SIZE]   = 0            # D21 (§0.9): a container never carries art
+    # P7 (D20/D27): code_size and wasm_mem_max are the caller's declaration and are
+    # gated here; code_off/code_crc are left for write_container, as geom_* is. A
+    # native app (the shape every app that ever shipped) declares both zero and this
+    # block stamps nothing.
+    hdr[W_CODE_SIZE]  = _code_size(code_size)
+    hdr[W_WASM_MEM]   = _wasm_mem(wasm_mem_max, code_size)
     if len(asset_blob) % (ASSET_WORDS * 4):
         raise ValueError("asset table is %d B, not a whole number of %d B rows"
                          % (len(asset_blob), ASSET_WORDS * 4))
@@ -831,6 +921,10 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(asset_blob)
     hdr[W_GEOM_SIZE] = 0                             # filled below from the blob
     hdr[W_ART_OFF]  = art_offset(hdr[W_GEOM_OFF], 0)
+    # The code region starts where the sector-aligned payload slot begins — the same
+    # offset art's withdrawn payload occupied — and write_container recomputes it once
+    # the geometry's real size is known, as it does art_off.
+    hdr[W_CODE_OFF] = code_offset(hdr[W_GEOM_OFF], 0)
     hdr[W_GEOM_CRC], hdr[W_ART_CRC] = 0, 0           # filled by write_container
     _putstr(hdr, W_SLUG,  slug,  SLUG_MAX,  "slug")
     _putstr(hdr, W_TITLE, title, TITLE_MAX, "title")
@@ -886,6 +980,8 @@ def parse_header(raw, app_id=None):
         ("geom_off", W_GEOM_OFF), ("geom_size", W_GEOM_SIZE),
         ("geom_crc", W_GEOM_CRC), ("art_off", W_ART_OFF),
         ("art_size", W_ART_SIZE), ("art_crc", W_ART_CRC),
+        ("code_off", W_CODE_OFF), ("code_size", W_CODE_SIZE),
+        ("code_crc", W_CODE_CRC), ("wasm_mem_max", W_WASM_MEM),
         ("asset_off", W_ASSET_OFF), ("n_assets", W_N_ASSETS))}
     h["slug"]  = _getstr(hdr, W_SLUG, SLUG_MAX)
     h["title"] = _getstr(hdr, W_TITLE, TITLE_MAX)
@@ -972,6 +1068,26 @@ def check_header(h, app_id=None, stem=None):
     # its payload refused) is D21-inverted: no payload is the only legal shape,
     # so the art_size gate above owns the whole question and art_req stands
     # alone as the declaration it always meant to be.
+    # P7 (D20/D27): the code region and its memory bound. These mirror _code_size
+    # and _wasm_mem so a hand-edited card is refused on the dial in the same words
+    # the pack tool refused it in, and the D27 gate reaches the ladder the owner
+    # sees before consenting. The device reader mirrors these in the same words.
+    if h["code_size"] > CODE_BYTES_MAX:
+        raise ValueError("code region is %d B, past the %d B a slot's payload can "
+                         "hold: the module cannot fit the flash it would write"
+                         % (h["code_size"], CODE_BYTES_MAX))
+    if h["code_size"] == 0 and (h["code_crc"] != 0 or h["wasm_mem_max"] != 0):
+        raise ValueError("ships no code but a %d B memory bound and code_crc 0x%08x: "
+                         "the code triple with no region is a miscount — re-package it"
+                         % (h["wasm_mem_max"], h["code_crc"]))
+    if h["code_size"] != 0 and h["wasm_mem_max"] == 0:
+        raise ValueError("ships a %d B wasm module with a zero memory bound: D27 "
+                         "gates the module's linear memory at install, and a zero "
+                         "ceiling is no bound at all" % h["code_size"])
+    if h["wasm_mem_max"] > WASM_MEM_MAX:
+        raise ValueError("wasm_mem_max %d B is past the %d B ceiling this build "
+                         "gates at (D27): the module could not be allocated on the "
+                         "dial, so it must not install" % (h["wasm_mem_max"], WASM_MEM_MAX))
     if h["period_ms"] and h["period_ms"] < BEAT_MIN_MS:
         raise ValueError("period_ms %d is below the %d ms the OS can commit (D16)"
                          % (h["period_ms"], BEAT_MIN_MS))
@@ -992,20 +1108,36 @@ def check_file_layout(h):
         raise ValueError("the geometry blob does not follow the asset table")
     if h["art_off"] != art_offset(h["geom_off"], h["geom_size"]):
         raise ValueError("the payload is not sector-aligned off the geometry blob")
+    # P7: the code region occupies the sector-aligned slot the payload used to, so
+    # its offset is the same derived number as art_off — the file ends at code_off
+    # when it carries no code and at code_off+code_size when it does. Checked as an
+    # equality, not a range, exactly as every other derived placement here is: the
+    # damage is an overlap, and a code region that could sit anywhere is a code
+    # region that could sit on top of the geometry and read the CRC on the overlap.
+    if h["code_off"] != code_offset(h["geom_off"], h["geom_size"]):
+        raise ValueError("the code region is not sector-aligned off the geometry blob")
     return h
 
 
 def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                    period_ms=0, art_req=0, counts=(0, 0, 0, 0),
-                   behaviour_kind=0, serial=0, baked_ms=0, abi=None, assets=()):
+                   behaviour_kind=0, serial=0, baked_ms=0, abi=None, assets=(),
+                   code=b"", wasm_mem_max=0):
     """Emit one `.orbapp`, its name derived from the header that is its identity.
 
     Nothing is written unless every check passes, and the CRC is computed over
     the bytes as they will sit in the file — the same rule that lets the device
     stream a payload and check it instead of holding it in RAM. A container
     that reaches the card is one this function already refused to write if it was
-    wrong. There is no `art` argument (D21, §0.9): the payload is geometry and
-    nothing else; art_req is a declaration, not bytes.
+    wrong. There is no `art` argument (D21, §0.9): art_req is a declaration, not
+    bytes.
+
+    `code` is the one wasm3 module this card app may carry (D20), and
+    `wasm_mem_max` is its D27 linear-memory bound. A native app — every app that
+    ever shipped — passes neither and gets a zero code triple, which reads as
+    "no module". A module here is opaque bytes to the OS, exactly as geometry is;
+    what the OS prices is its size (against the slot) and its declared bound
+    (against D27's ceiling), enforced in pack_header before one byte is written.
 
     `assets` is the D23 table — the app's named slots — and it is the only art the
     container may describe. It ships NO pixels: every row is a reference, a class
@@ -1015,15 +1147,19 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
     """
     if not isinstance(geometry, (bytes, bytearray)):
         raise ValueError("geometry must be bytes")
+    if not isinstance(code, (bytes, bytearray)):
+        raise ValueError("code must be bytes")
     check_slug(slug)
     rows = check_settings(settings)
     s_blob = pack_settings(rows)
     a_blob = pack_assets(assets, slug)
     geom_bytes = bytes(geometry)
+    code_bytes = bytes(code)
     hdr = pack_header(app_id_of(slug), slug, title, caps, period_ms, art_req,
                       counts, s_blob, serial=serial,
                       baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind,
-                      asset_blob=a_blob)
+                      asset_blob=a_blob, code_size=len(code_bytes),
+                      wasm_mem_max=wasm_mem_max)
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
     # the blob it is about to lay down; fill and re-checksum in one place. The
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
@@ -1041,9 +1177,22 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
     hdr[W_ART_OFF]   = art_offset(hdr[W_GEOM_OFF], hdr[W_GEOM_SIZE])
     hdr[W_GEOM_CRC]  = zlib.crc32(geom_bytes) & 0xFFFFFFFF
     hdr[W_ART_CRC]   = 0
+    # P7: the code region rides the sector-aligned slot art's payload vacated, and
+    # the WHOLE copied prefix (header..code end) is what the slot must hold, so
+    # price it here in the device's own slot arithmetic before a file exists. A
+    # native app has code_off == art_off and code_size == 0, and the prefix stops
+    # at the geometry exactly as it did pre-P7.
+    hdr[W_CODE_OFF]  = code_offset(hdr[W_GEOM_OFF], hdr[W_GEOM_SIZE])
+    hdr[W_CODE_CRC]  = (zlib.crc32(code_bytes) & 0xFFFFFFFF) if code_bytes else 0
+    code_end         = hdr[W_CODE_OFF] + hdr[W_CODE_SIZE]
+    if code_bytes and code_end > GEOM_BYTES_MAX:
+        raise ValueError("its manifest, geometry and code are %d B: a slot holds "
+                         "%d B — re-bake the app smaller"
+                         % (code_end, GEOM_BYTES_MAX))
     hdr[W_HDR_CRC]   = _hdr_crc(hdr)
     raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + a_blob + geom_bytes
-    raw += b"\0" * (hdr[W_ART_OFF] - len(raw))
+    raw += b"\0" * (hdr[W_CODE_OFF] - len(raw))
+    raw += code_bytes
     # The NAME is derived from the slug, exactly as the theme upload renames a
     # .part into theme_id(header.name): a writer that honoured the caller's
     # filename could be talked into filing slug "bar" as "foo.orbapp", and the
@@ -1092,10 +1241,14 @@ def read_container(path, verify=True):
     a_end = h["asset_off"] + h["n_assets"] * ASSET_WORDS * 4
     if a_end > len(raw):
         raise ValueError("asset table runs past the end of the file")
+    code_end = h["code_off"] + h["code_size"]
+    if code_end > len(raw):
+        raise ValueError("code region runs past the end of the file")
     s_blob = raw[SET_OFF:SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4]
     a_blob = raw[h["asset_off"]:a_end]
     geom = raw[h["geom_off"]:end]
     art  = b""
+    code = raw[h["code_off"]:code_end]
     if verify:
         # The one payload CRC, named: the art word's twin is zero-gated by
         # check_header, so a damaged copy can only be the geometry's. The asset
@@ -1106,6 +1259,13 @@ def read_container(path, verify=True):
         if zlib.crc32(geom) & 0xFFFFFFFF != h["geom_crc"]:
             raise ValueError("geometry checksum mismatch — the copy on the card "
                              "is damaged")
+        # The code region sits PAST the geometry the slot CRC covers, so it carries
+        # its own checksum and this is where it is checked (the device verifies it
+        # from the partition, as it does the geometry's).
+        want = (zlib.crc32(code) & 0xFFFFFFFF) if code else 0
+        if want != h["code_crc"]:
+            raise ValueError("code checksum mismatch — the copy on the card is damaged")
+    h["code"] = code
     h["assets"] = unpack_assets(a_blob, h["n_assets"])
     for r in h["assets"]:
         r["ref"] = ("global/" + r["name"]) if r["ns"] == "global" else \

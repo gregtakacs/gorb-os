@@ -1,18 +1,50 @@
 # gorb-os
 
 **Greg's Orb OS** — ESP-IDF firmware for the Waveshare
-ESP32-S3-Touch-AMOLED-1.75 board
-(ESP32-S3R8, 466x466 CO5300 AMOLED via QSPI, 8 MB PSRAM, 16 MB flash).
+ESP32-S3-Touch-AMOLED-1.75 board (ESP32-S3R8, 466x466 CO5300 AMOLED via QSPI,
+8 MB OPI PSRAM, 16 MB flash). Current: `v1.1.0` (`version.txt`).
 
 A rewrite of the Arduino **Orb OS** project (https://github.com/gregtakacs/orb-os,
 locally `~/docker/Projects/orb-os`) onto ESP-IDF + LVGL 9. Comments that cite
 `orb-os/src/...` are pointing at that upstream on purpose: this repo is
 `gorb-os`, the upstream stays `orb-os`.
 
-## MVP
+## Current state
 
-Displays a centered digital text clock (HH:MM:SS) on the round AMOLED.
-Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
+The orb is a themed, connected device, not a clock sketch:
+
+- **Dial**: animated themed clock faces from FORMAT 3 `.orbtheme` bundles,
+  resident in an 8 MB `assets` partition (single-slot, Migration 1). A base
+  face renders when no theme is resident. Themes install from the config
+  page, the hub, or the microSD drop zone — never via a firmware reflash.
+- **App platform**: installable `.orbapp` containers behind one frozen
+  broker surface (`orb_svc`) with a per-app grant gate; compiled-in C apps
+  and wasm3 guests meet the same contract. Factory pair: the clock and an
+  HSB color editor. Knob-driven carousel and menu.
+- **Networking**: WiFi STA with first-boot SoftAP provisioning (captive-portal
+  aware), SNTP with the timezone as device config, the orb's name as device
+  config, LAN OTA into A/B slots with rollback, mDNS `_orb._tcp`, a gzipped
+  PWA config page on the device, and a 34-route HTTP API.
+- **Power**: idle dim with IMU motion wake (QMI8658).
+- **Tooling**: `tools/orb-manager` — a single Go binary hub that flashes,
+  provisions, and themes orbs over USB/LAN with no esptool and no IDF — and a
+  bench suite of 26 host-compiled parity tests. See
+  [docs/architecture.md](docs/architecture.md); live status and rulings:
+  [docs/app-platform-plan.md](docs/app-platform-plan.md).
+
+## Hardware
+
+| Component | Details |
+|-----------|---------|
+| MCU       | ESP32-S3R8 dual-core @240 MHz |
+| Display   | CO5300 AMOLED, 466x466, QSPI (CS=12, RST=39, SCLK=38, D0-D3=4/5/6/7, TE=13) |
+| I2C       | SDA=15, SCL=14 (shared bus: touch, IMU, RTC, PMIC; the firmware drives the QMI8658 IMU today) |
+| IMU       | QMI8658 6-axis — motion wake |
+| Knob      | KY-040 on header H2 (A=18, B=17, SW=16) — the primary input |
+| microSD   | SPI mode (MOSI=1, SCK=2, MISO=3, CS=41), no card-detect line |
+| Flash     | 16 MB — A/B app slots + 8 MB theme bank + PWA + NVS + app ledger (`partitions.csv`) |
+| PSRAM     | 8 MB OPI |
+| USB       | Native USB-Serial-JTAG (flash + console over USB-C) |
 
 ## Prerequisites
 
@@ -23,43 +55,6 @@ Time is free-running from a fixed epoch at boot (no RTC/SNTP yet).
 
 - USB-C cable connected to the board (flashes via the native USB-Serial-JTAG peripheral)
 
-## Versioning
-
-Every image carries a stamp in `esp_app_desc_t.version`, composed in exactly one
-place — `tools/orb_version.sh` — and read by everything else:
-
-    v<MAJOR>.<MINOR>.<PATCH>[-<prerelease>]+<7-char SHA>[-dirty]
-
-`version.txt` at the repo root holds the declared part, one line, no comments
-(cmake's `file(STRINGS)` folds every line into the value). The metadata after the
-plus is provenance and cannot be typed by hand: the SHA names the commit the tree
-was at, and `-dirty` says the tree carried uncommitted edits when cmake ran. A
-stamp is a git fact, never an aspiration.
-
-Bump `version.txt`, then:
-
-    idf.py reconfigure && idf.py build
-
-The reconfigure is not optional. cmake stamps at configure time and caches the
-result in `build/CMakeCache.txt`, so `idf.py build` alone recompiles your edits and
-keeps the old stamp — an image carrying new code under an old version.
-`tools/serflash.sh` reads the stamp back out of `build/gorb-os.bin` and refuses the
-flash when it disagrees with the working tree, so the failure is loud rather than
-silent. `tools/orb-manager`'s `make firmware` repacks the hub's built-in bundle
-from the build dir, and `orbpack` refuses to ship a stamp that is not a version
-(`-force` overrides, for a bench build).
-
-Widths are a hard limit, not a style choice. `esp_app_desc_t.version` holds 31
-bytes and cmake enforces the whole stamp against that, so each component caps at
-two digits: `v99.99.99-rc.99+e1a2b3c-dirty` is exactly 31. The realistic worst
-case for this project is 23. Check the composer after touching it — it runs the
-dirty predicate, the empty-HEAD case, the nested-checkout case and the grammar:
-
-    tools/orb_version.sh --self-test    # 14 assertions, ~2 s, no idf.py needed
-
-`docs/firmware-versioning.md` carries the grammar, the arithmetic and the four
-read-out surfaces.
-
 ## Build & Flash
 
     # one-time per shell
@@ -68,120 +63,98 @@ read-out surfaces.
     idf.py set-target esp32s3   # already configured
     idf.py build
 
-    # flash over USB-C (find your port with: ls /dev/ttyACM* /dev/ttyUSB*)
-    idf.py -p /dev/ttyACM0 flash
+    idf.py -p /dev/ttyACM0 flash            # full flash incl. partition table
+    idf.py -p /dev/ttyACM0 flash monitor    # + console
 
-    # flash + serial monitor in one step
-    idf.py -p /dev/ttyACM0 flash monitor
+Two bench paths avoid raw `idf.py flash` once a board is set up:
+
+    tools/serflash.sh        # app + otadata only, bound-target + stamp audited
+    tools/orb-manager        # the hub: flash/provision/theme over USB or LAN
+
+`serflash.sh` deliberately pushes only app + otadata, so a **changed
+`partitions.csv` needs one `idf.py flash`** (or a hub re-flash) to reach the
+board. The `assets` theme default (`assets/orb_default.img`) is flashed by
+`idf.py flash` too — re-bake it with `tools/rebake_bundle.py` +
+
+## Versioning
+
+Every image carries a stamp in `esp_app_desc_t.version`, composed in exactly
+one place — `tools/orb_version.sh` — and read by everything else:
+
+    v<MAJOR>.<MINOR>.<PATCH>[-<prerelease>]+<7-char SHA>[-dirty]
+
+`version.txt` at the repo root holds the declared part, one line, no comments
+(cmake's `file(STRINGS)` folds every line into the value). The metadata after
+the plus is provenance and cannot be typed by hand: the SHA names the commit
+the tree was at, and `-dirty` says the tree carried uncommitted edits when
+cmake ran. A stamp is a git fact, never an aspiration.
+
+Bump `version.txt`, then:
+
+    idf.py reconfigure && idf.py build
+
+The reconfigure is not optional. cmake stamps at configure time and caches the
+result, so `idf.py build` alone recompiles your edits and keeps the old stamp —
+an image carrying new code under an old version. `tools/serflash.sh` reads the
+stamp back out of `build/gorb-os.bin` and refuses the flash when it disagrees
+with the working tree. Widths are a hard limit: `esp_app_desc_t.version` holds
+31 bytes, so each component caps at two digits. Check the composer after
+touching it:
+
+    tools/orb_version.sh --self-test    # 14 assertions, ~2 s, no idf.py needed
+
+`docs/firmware-versioning.md` carries the grammar, the arithmetic and the four
+read-out surfaces.
 
 ## Host-side checks
 
-The config-body parser and the timezone offset math are pure functions with no
-device dependency, so they are checked on the bench before anything is flashed:
+Pure functions — the config-body parser, the timezone math, the manifest and
+bundle readers, the grant gate — are lifted verbatim out of shipped `.c` files
+and checked on the bench with host gcc before anything is flashed:
 
-    python3 tools/host_tz_test.py          # ~1 s, no idf.py needed
+    python3 tools/host_tz_test.py       # ~1 s, no idf.py needed
+    python3 tools/host_svc_test.py
+    ls tools/host_*_test.py             # the full family (26 suites)
 
-It lifts those functions verbatim out of `main/net/orb_net.c` (no copy, so it
-cannot drift) and runs the negative cases a browser would take minutes to type —
-escaped quotes, raw control bytes, overlong values, decoy keys — plus the offset
-across DST boundaries, local midnight, the date line and the half-hour zones.
+Formats keep a three-way rule: the Python writer, the shipped C reader, and
+the parity suite move in one commit or the test fails. The convention, the
+suite map, and the bench discipline are in
+[docs/architecture.md](docs/architecture.md).
 
-## Project Structure
 
-    main/
-      main.c              app_main entry, NVS init, LVGL task
-      board_config.h      pin map + display geometry constants
-      display/
-        display.c/h       SPI2 QSPI bus + LVGL 9 bring-up
-        co5300.c/h        CO5300 panel driver (esp_lcd_panel interface)
-      clock/
-        clock_view.c/h    centered HH:MM:SS label, 1-s LVGL timer
-      net/
-        orb_net.c/h       WiFi STA + SoftAP provisioning, SNTP on lease,
-                          /api/v1 HTTP (status, scan, join, config, ota, reboot),
-                          timezone as NVS device config
-      idf_component.yml   managed dependency: lvgl/lvgl ^9
-      CMakeLists.txt
-    partitions.csv        NVS + phy + factory app (16 MB flash)
-    sdkconfig.defaults    PSRAM OPI, USB console, LVGL font/color options
+## Project structure
 
-## Theme assets (offline baking)
-
-All dial art is baked on the bench by `tools/bake_clock.py`; the device never
-decodes PNG or JSON. It emits `assets/clock_assets.bin` (packed RGB565 planes,
-embedded via `target_add_binary_data`) plus `assets/clock_assets.h` (geometry +
-rect tables). Both are committed so `idf.py build` needs no bake step — but
-they are generated: regenerate them with the baker, don't hand-edit them.
-
-Animate the background from a **PNG frame sequence**, not a GIF:
-
-    python3 tools/bake_clock.py <theme_dir> \
-        --bg-frames ~/Downloads/skeleton-dial-frames.zip --bg-fps 12.5 \
-        --dump-dir assets/preview
-
-`--bg-frames` takes a `.zip` of PNGs, a folder, a glob, or one PNG; frames are
-natural-sorted (`frame_2` before `frame_10`). The same delta-rect bank (one
-keyframe + per-frame changed rects the device memcpy's over a PSRAM canvas) can
-also be fed from a GIF with `--bg-gif`, which keeps its native per-frame timing.
-
-Why PNG is the source of record and a `.bin` never is:
-
-- A GIF re-quantises every frame to a 256-colour palette *before* the bake even
-  sees it. This dial's art has ~61k unique colours per frame, so a GIF detour
-  costs up to 68/255 per channel; going straight from PNG to RGB565 costs at
-  most 7.
-- `clock_assets.bin` is already the final 5/6/5-bit quantisation. Re-baking it
-  re-quantises lossy data, cannot be re-dithered, carries no alpha, and stores
-  no size/fps/byte-order metadata — it is an output, not an asset.
-- Both loaders share one packer (`bake_bg_bank`), so PNG and GIF bakes are
-  byte-identical modulo the source's own pixels; the GIF regression bake
-  reproduces `assets/clock_assets.bin` exactly.
-
-Always check `--dump-dir`'s `stale_NN.png` before flashing: it should be solid
-black. Any lit pixel is the panel's canvas holding another frame's art.
-
-## Hardware
-
-| Component | Details |
-|-----------|----------|
-| MCU       | ESP32-S3R8 dual-core @240 MHz |
-| Display   | CO5300 AMOLED, 466x466, QSPI (CS=12, RST=39, SCLK=38, D0-D3=4/5/6/7) |
-| I2C       | SDA=15, SCL=14 (shared: touch, IMU, RTC, PMIC) |
-| Flash     | 16 MB |
-| PSRAM     | 8 MB OPI |
-| USB       | Native USB-Serial-JTAG (flash + console over USB-C) |
-
-## Notes
-
-- The clock is driven by an LVGL timer (runs in the LVGL task) to avoid
-  touching widgets from a non-LVGL context.
-- LVGL is pulled in as a managed component (lvgl/lvgl 9.x) via idf_component.yml.
-- CO5300 init sequence ported from the Arduino GFX library used by the
-  original orb-os fork.
+    main/          firmware: boot ladder, display, gfx compositor, clock, art
+                   (FORMAT 3 stack), app platform, net, sd, knob, input, imu,
+                   power, color — one dir per subsystem; contracts and the
+                   boot order live in docs/architecture.md
+    components/    vendored wasm3 interpreter (PROVENANCE.md tracked)
+    managed_components/  lvgl/lvgl ^9, espressif/esp_lcd_co5300 (idf_component.yml)
+    assets/        orb_default.img (the flashed FORMAT 3 slot default) + source art
+    partitions.csv 16 MB layout — retention + A/B invariants documented inline
+    docs/          plan/decision records (app-platform-plan.md is the master)
+                   + architecture.md, the deep version of this map
+    tools/         bakers, format writers/readers, host suites, serflash,
+                   orb-manager (the Go hub), watch-composer (the dial composer)
+    tests/         shared fixtures for the host suites
 
 ## Roadmap
 
-- [x] Digital clock (free-running from boot)
+- [x] Analog themed dial + base face; FORMAT 3 bundles, single 8 MB slot
 - [x] WiFi: STA + SoftAP provisioning, LAN config page, LAN OTA with A/B rollback
-- [x] SNTP for real time on DHCP lease, with the timezone as device config:
-      NVS key `tz`, applied with `setenv`/`tzset`, served as a zone table by
-      `/api/v1/config` and settable from the config page or during provisioning
-- [x] The orb's own name as device config: NVS key `name`, 32 printable ASCII
-      bytes, served by `/api/v1/status` and set by `POST /api/v1/name` or in the
-      join body. The DEVICE owns this string; the hub's fleet row keeps a copy of
-      it, so a deleted hub store or a reflash costs the orb its label only if the
-      write never landed. Printable ASCII only because the value is echoed into
-      JSON unescaped, and the device is the last thing standing between an attacker
-      and a forged key in its own replies.
-- [ ] Touch / IMU input
-- [ ] Multiple screens / theming
-- [ ] USB Mass-Storage (TinyUSB) access to the enclosed SD card, with a
-      knob-driven toggle back to USB-Serial-JTAG for flashing.
-      **Shelved — full design in `docs/usb-sd-msc-plan.md`.**
-
+- [x] SNTP with the timezone as device config; the orb's name as device config
+- [x] Input: rotary knob + input router + carousel + menu (IMU motion wake)
+- [x] Theming: bench-baked bundles, install from page/hub/SD, no reflash
+- [x] App platform: `.orbapp` containers, broker + grants, wasm3 tier, SD drop zone
+- [x] Hub: `tools/orb-manager` single-binary flash/provision/theme
+- [ ] Capacitive touch (the panel has it; the firmware does not drive it yet)
+- [ ] USB Mass-Storage (TinyUSB) access to the SD card — **shelved**, full
+      design in `docs/usb-sd-msc-plan.md`
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Upstream Orb OS is also MIT, so the port
-provenance (themes baked into `assets/clock_assets.bin`, ports noted in file
-headers) is license-compatible.
+provenance (source art under `assets/sources/`, ports noted in file headers)
+is license-compatible.
+
+`tools/mk_slot_image.py` if it is absent (the build prints the instruction).

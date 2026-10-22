@@ -22,15 +22,20 @@
  * plane and no z: paint order IS table order, and re-ordering means del re-add.
  *
  * Two things this deliberately is NOT, and what became of the P6 hand-off:
- *  - the clock does not route through here (its art reaches the registry only once
- *    .orbapp ingest exists, and it still drives clock_layer_commit directly);
- *  - the commit hook that calls the job builder LANDED 2026-10-22 in P8's
- *    Migration 2 Commit 2: `orb_sched_commit_layers()` (main/gfx/orb_sched.c),
- *    called by the frame tick after the active app's tick and before the DMA
- *    commit. It is still a no-op on the glass: the clock builds no rows until
- *    Commit 3 and `layer_add` still has no caller in main/, so the table the
- *    hook reads is empty and the dial draws through `clock_layer_commit` as it
- *    always has. What P5.5's pass line did prove stands: every compositor
+ *  - it is not the only way pixels reach the glass: the classic LVGL path
+ *    still renders a non-GIF dial (and the plate's own chunks), and that
+ *    fallback's LVGL descriptors keep their `blob()` base — the accessor
+ *    outlives this migration, whose delete-list entry for it P9's in-image
+ *    bundles own instead, because no tier-1 row resolved through a bundle
+ *    needs it ever since Commit 2's fold landed at the resolver;
+ *  - it is not a second compositor, and the clock's private one is GONE: as
+ *    of Migration 2's Commit 4 the compiled clock routes through here — its
+ *    build pass claims one row per composite element (`clock_layers_build`),
+ *    its tick re-poses them from the wall state (`clock_layers_refresh`), and
+ *    `orb_sched_commit_layers()` — called by the display flush hook
+ *    `orb_sched.c` registers at `orb_sched_start()` — is the only L4 commit
+ *    path on the glass. `clock_layer_commit` and its job-list helpers are
+ *    deleted. What P5.5's pass line did prove stands: every compositor
  *    primitive reachable through the gate, refused or accepted for exactly the
  *    documented reason, and counted either way, on the host.
  *

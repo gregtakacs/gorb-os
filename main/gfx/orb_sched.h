@@ -20,16 +20,17 @@
  * throughput report. Cadence is the OS's: it is the same ladder whoever owns
  * the pixels, and the app only decides the period it aims at.
  *
- * The seam is a policy struct installed at start (orb_sched_start): the three
- * functions the tick drives that ARE dial policy (compose_now, the tourbillon
- * advance, the L4 full-box mark pass, the bench plan) stay in clock_view.c and
- * are called through it. This TU includes no clock header, so the dependency
+ * The seam is a policy struct installed at start (orb_sched_start): the
+ * functions the tick drives that ARE dial policy (compose_now plus the
+ * tourbillon advance plus the layer-table pose pass, and the bench plan) stay
+ * in clock_view.c and are called through it. This TU includes no clock header,
+ * so the dependency
  * stays one-way — app -> gfx, never gfx -> app. Same shape as
  * gfx_set_band_hook(), which already carries a commit callback from here.
  *
  * What deliberately did NOT move: the hand-beat state (s_bt_ctr/sec/frac),
  * which only hand_angles() reads and clock_view_set_bounce() re-anchors, and
- * the layer/shadow/tourbillon widget sets the mark pass and commit hook walk.
+ * the layer/shadow/tourbillon widget sets the classic path renders.
  * Those are dial policy, and moving them would need an interface nobody has
  * asked for yet — P2's loader and P3's first foreign app will.
  */
@@ -44,7 +45,8 @@
  * rect or a hand rotation dirties it — the software image blit measured
  * ~250-300 cycles/px (~85 ms/frame on the orb ticks; experiment A: dropping the
  * plate invalidation took render~ 100->14 ms and fps 8->23) — the tick marks
- * the affected rows and the L4 commit hook (clock_layer_commit/paint_row)
+ * the affected rows and the L4 commit pass (orb_sched_commit_layers through
+ * the display flush hook, over the app's layer table, down into paint_row)
  * rebuilds them straight in the panel mirror: background restored out of the
  * canvas, then the hands/shadows/glass composited over it. 0 = old
  * all-through-LVGL path (A/B fallback).
@@ -63,13 +65,17 @@
 
 /* The dial policy the tick drives, installed once at orb_sched_start(). Every
  * member is required by the clock view; the scheduler NULL-guards them anyway
- * so a future app can own only the ones it has. */
+ * so a future app can own only the ones it has.
+ * (Migration 2, Commit 4 deleted the third member, mark_all: the full-box
+ * re-mark it served was already a no-op at the shipped CLOCK_L4_MARK_STATIC_-
+ * BOXES=0, and the layer-table commit welds every mark the real mark sites —
+ * apply_angles, gif_apply_frame, tourbillon_advance, the comp/aux update
+ * passes — leave behind. The rows-capacity lesson it carried stays written
+ * down in docs/rows-capacity-2026-10-10.md.) */
 typedef struct {
-    /* read the wall clock, pose the hands, advance the tourbillon frame bank */
+    /* read the wall clock, pose the hands, advance the tourbillon frame bank,
+     * and re-pose this dial's rows in the app layer table */
     void (*tick)(lv_timer_t *timer);
-    /* re-mark every owned layer's FULL box at its present pose (the L4 pass
-     * that makes the hook the complete owner of the rows it rebuilds) */
-    void (*mark_all)(void);
     /* the DISPLAY_BENCH synthetic-ink plan (walks the blocks, marks their rows) */
     void (*bench)(void);
 } orb_sched_policy_t;
@@ -176,14 +182,17 @@ typedef struct orb_app orb_app_t;
 
 /** Composite the active app's layer table: the job list `orb_layers_jobs()`
  *  builds for the app's live shown rows, handed to `gfx_commit()` with the
- *  delta bank's own canvas. Called from the tick's flush path after the active
- *  app's `tick()` returns and before the frame's marks reach the DMA, so an app
- *  never touches a paint context, a sprite pointer or `gfx_mark_rows`.
+ *  delta bank's own canvas. Called from the display flush hook this TU
+ *  registers (Migration 2, Commit 4) — after every dirty chunk has mirrored
+ *  and before the bands DMA out — so an app never touches a paint context, a
+ *  sprite pointer or `gfx_mark_rows`, and the weld point is the same one the
+ *  dial's private hook always had: one commit, one owner of the mark set, no
+ *  half-composited frame reaching the panel.
  *
  *  `active` is the entry on the glass (orb_app_current()), or NULL: no row, no
  *  table, no commit. An app that never called layer_add owns no table, and the
- *  getter answers NULL without minting one — see orb_svc_layer_table(). The
- *  clock still draws through its own `clock_layer_commit()` while this lands:
- *  the clock builds no rows until Commit 3, so today this pass is a no-op on
- *  every frame, and the pixel-identity bench line is what proves it. */
+ *  getter answers NULL without minting one — see orb_svc_layer_table(). Since
+ *  Commit 4 the clock feeds this table and owns no other L4 commit path; the
+ *  dial's rows wake on the tick's pose pass (clock_view.c's
+ *  clock_layers_refresh). */
 void orb_sched_commit_layers(const orb_app_t *active);

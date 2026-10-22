@@ -180,10 +180,12 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
 }
 
 /* ---- the recorded commit, and the hook it records -------------------------
- * Migration 2 (P8, Commit 2): orb_sched_commit_layers() lives in a TU the host
- * cannot compile (lvgl.h, display.h, esp_timer.h), so the shipped body is
+ * Migration 2 (P8, Commits 2-4): orb_sched_commit_layers() lives in a TU the
+ * host cannot compile (lvgl.h, display.h, esp_timer.h), so the shipped body is
  * mirrored here exactly as host_sched_rung_test.py mirrors the rung pick, and
  * the python side lints the shipped text for every branch this copy depends on.
+ * Commit 4 did not move the body; it moved the CALL to sched_flush_commit,
+ * which the section-14 lints below pin in the call site's old place.
  * gfx_commit is recorded, not simulated: the vector's whole claim is the job
  * count the commit was handed. */
 static int g_commit_calls, g_commit_nj;
@@ -563,10 +565,12 @@ int main(void)
      * shipped clock's bake claims every composite element it names — nine on
      * the analog bake the board carries (measured at boot) — so the table must
      * reach 16 and the hook must carry all of them in one commit. And the
-     * commit-3 table enters every row HIDDEN (the legacy renderer still owns
-     * the mark set): a full table of hidden rows is live bookkeeping that
-     * builds zero jobs, which is the exact state the bench's byte-identical
-     * grab depends on. */
+     * build enters every row HIDDEN: Commit 4's tick pass wakes them from the
+     * wall state, so hidden rows are the build instant, a suspend wipe's
+     * aftermath, and every pose the gates refuse (an unposed hand, a comp with
+     * no tile). A full table of hidden rows is live bookkeeping that builds
+     * zero jobs — the exact shape the wake marks and the resume rebuild rest
+     * on, mirrored here. */
     orb_layer_tab_t K;
     memset(&K, 0, sizeof K);
     for (int i = 0; i < ORB_LAYER_MAX; i++) {
@@ -734,8 +738,8 @@ def lint(tmp, out):
     sc = open(P("gfx", "orb_sched.c"), encoding="utf-8").read()
     pin("static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];" in sc,
         "the commit hook's job array left file scope — at ORB_LAYER_JOB_MAX (16) "
-        "deep it is a kilobyte of the LVGL task's stack per tick, which is the "
-        "one thing clock_view.c's legacy hook never spent")
+        "deep it is a kilobyte of the LVGL task's stack per flush, which is the "
+        "one thing clock_view.c's retired hook never spent")
     hm = re.search(r"void orb_sched_commit_layers\(const orb_app_t \*active\)\n"
                    r"\{(.*?)\n\}", sc, re.S)
     pin(hm is not None, "orb_sched_commit_layers is gone from orb_sched.c")
@@ -755,12 +759,36 @@ def lint(tmp, out):
         pin("blob_off" not in hb and "orb_theme_geo" not in hb,
             "the commit hook grew a blob_off term: the base fix belongs at the "
             "resolver, and a hook-side add breaks every non-clock app's rows")
-    pin("orb_sched_commit_layers(orb_app_current());" in sc,
-        "the tick no longer calls the layer-table commit: the hook is landed and "
-        "orphaned, which is the consumer count orb_layers.h records")
+    # Migration 2, Commit 4 moved the call site from the tick to the display
+    # flush hook THIS TU registers — the weld point where every mark of the
+    # frame is in the bank and no DMA has read a row yet. The tick-side call
+    # this pin replaced was Commit 2's interim; the orphan rule is the same
+    # one, and the hook must carry the glass gate the retired clock hook
+    # bequeathed (without it, boot's first commit welds the dial's pending
+    # marks over the menu — the ghost that hook's header comment documents).
+    mhook = re.search(r"static void sched_flush_commit\(void\)\n\{(.*?)\n\}",
+                      sc, re.S)
+    pin(mhook is not None,
+        "the flush hook Commit 4 registered is gone from orb_sched.c")
+    if mhook:
+        pin("if (!orb_sched_running()) return;" in mhook.group(1) and
+            "orb_sched_commit_layers(orb_app_current());" in mhook.group(1),
+            "sched_flush_commit lost its glass gate or the commit call: the "
+            "hook is landed and orphaned, which is the consumer count "
+            "orb_layers.h records")
+    pin("display_set_commit_hook(sched_flush_commit);" in sc,
+        "orb_sched_start no longer registers the layer-table flush hook")
+    tick_region = ""
+    if "static void tick_timer_cb" in sc:
+        tick_region = sc.split("static void tick_timer_cb")[1].split(
+            "report_fps_if_due")[0]
+    pin("orb_sched_commit_layers(orb_app_current());" not in tick_region,
+        "the tick calls the layer-table commit again — the interim Commit 2 "
+        "call site is back beside the flush hook, and two welds cannot share "
+        "one mark set")
     pin("void orb_sched_commit_layers(const orb_app_t *active);"
         in open(P("gfx", "orb_sched.h"), encoding="utf-8").read(),
-        "orb_sched.h no longer declares the commit hook the tick calls")
+        "orb_sched.h no longer declares the commit pass the flush hook calls")
     # And the four shipped facts the folded-base vectors above rest on. A move
     # here does not break a vector; it invalidates what the vectors MEAN, which
     # is why Commit 3 is not allowed to trust them unread.
@@ -777,8 +805,9 @@ def lint(tmp, out):
              "orb_theme.c's blob_off is no longer the section bank's offset INTO the "
              "mapped payload — the disagreement this commit reported may have moved"),
             ("clock/clock_view.c", "s_art = art_bank_ptr() + orb_theme_geo()->blob_off;",
-             "clock_view.c's legacy blob() is no longer payload+blob_off — the "
-             "renderer Commit 4 deletes reads a different base than the one proved here"),
+             "clock_view.c's blob() is no longer payload+blob_off — the classic "
+             "path still routes its LVGL descriptors through it, and the fold "
+             "proved here is what lets the table path not need it"),
             ("assets/orb_assets.h", "uint32_t off;        /* tier 1: offset into the theme's art payload",
              "orb_asset_t.off is no longer documented as payload-relative — the "
              "convention the commit hook depends on has changed its own mind")]

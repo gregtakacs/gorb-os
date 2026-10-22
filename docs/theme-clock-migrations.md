@@ -218,7 +218,81 @@ resolver, not a `+ blob_off` hack inside the hook.
 
 This is the function `orb_layers.h:27` says has no caller.
 
-This is the function `orb_layers.h:27` says has no caller.
+### Landed status — Migration 2, Commit 4, 2026-10-22
+
+Two claims above did not survive the tree, and the plan's own stop rules say
+a commit reports its deviations rather than rewrites its plan:
+
+- **`blob()` did not go, and not for want of the proof.** The host vectors
+  (tools/host_orblayers_test.py section 14) proved the conventions agree:
+  the fold lands as `off = bank_off + e->off` at the clock's own resolve step,
+  `orb_elems.c` hands the catalogue offset back verbatim, and the shipped
+  commit pass reads `art_bank_ptr()` with no `+ blob_off`. The deletion still
+  cannot land because `blob()` has three live callers OUTSIDE the L4 render —
+  `make_layer()` and `comp_slot_show()` fill the classic path's LVGL
+  descriptors with it, and `tourb_chords()` reads through it — and the classic
+  path is not dead: a theme with no GIF bank has no canvas, no L4, and no
+  layer-table commit, and draws those widgets. `orb_layers.h` now records the
+  corrected ownership: P9's in-image bundles retire the fallback, and the
+  accessor goes with it.
+- **The hook lands at the display flush, not after the tick.** The plan's
+  "after the active app's tick" call site (Commit 2's interim) cannot promise
+  a full-frame weld for a repaint the tick did not cause — a bounce, a menu
+  return — so Commit 4 moved the weld to the flush the retired
+  `clock_layer_commit` always had: `orb_sched.c`'s `sched_flush_commit()`,
+  registered at `orb_sched_start()`, gated on the glass the way that hook's
+  load-bearing comment demanded. It composites the ACTIVE app's table at the
+  point no DMA has read a marked row. `ORB_LAYER_JOB_MAX`, the table at 16,
+  and the `orb_svc_layer_table()` getter all landed as written.
+- **`mark_all_layers()` did not become bounce-time `layer_touch`es.** The
+  shipped marking discipline was already mark-only-what-moved
+  (`CLOCK_L4_MARK_STATIC_BOXES=0`, docs/rows-capacity-2026-10-10.md); the
+  blanket pass early-returned, so Commit 4 deleted it and the
+  `orb_sched_policy_t` slot beside it. Wake damage — the one box no mark site
+  can mark, a row going hidden-to-visible — is exactly one `layer_touch` per
+  waking row, issued by the tick's pose pass.
+
+What DID land as planned: `clock_layer_commit`, `comp_add_jobs`, `aux_add_jobs`
+and the job-list defines are gone (clock_view.c shed its ~300 lines: −18.6 KB
+of text); the tick poses the hands and `layer_set`s the moved rows; the table
+is the only L4 commit path; the gfx-parity harness was re-seamed, not relaxed
+(`tools/gfx_parity_test.py` now documents the retired mark seam and pins the
+flush-hook tick body against the same 3116942 reference, identical).
+
+### Bench record — Commit 4, orb-B, 2026-10-22
+
+Board state first: the P9 built-in-bundle default-first rule moved the live
+slot from `av-kit` to the factory `Modern` bake when the re-stamped firmware
+booted — so the bench covers BOTH live paths, deliberately:
+
+- **Classic fallback (Modern, plate-anim, no canvas).** fw `v1.1.0+49b0a95`,
+  `layer table: 9 rows, 0 refused`, min-ink 70.63% (pass 1.5%), two grabs
+  60 s apart diff 2.99% — hands advance, the no-L4 dial is untouched by the
+  migration.
+- **L4 table path (av-kit re-stored through the store door, GIF delta
+  bank).** Boot log `layer table: 9 rows, 0 hidden, 0 folded, 0 refused
+  (base 0)` beside `bg gif delta bank: 15 frames @ 67 ms (14.9 fps)`.
+  Status ledger `layers: [9, 0]`, `fw v1.1.0+49b0a95`. min-ink passes on
+  both grabs; the 60 s pair diff (4.02%) is hands + GIF phase.
+- **A/B against the commit-3 image** (`serflash.sh --rollback`, stamp
+  `v1.1.0+325f567`, same av-kit theme): both firmwares measure
+  `clock 12 fps | flush frames 12 avg 77 ms`, phases
+  `te ~113-161 dma ~88-105 hook ~658-690 (paint ~580-615)`, and
+  `blend/s by layer hr ~63.5k min ~124k sec ~104.8k glass ~596k aux ~47.6k`
+  on c4 and hr ~63.5k min ~124k sec ~104.7k glass ~596k aux ~47.6k on the
+  rollback. An earlier c4-vs-c3 pass read 15 fps on c3 and 12 on c4; the
+  re-measure with both images at the same board moment put c3 at 12 too —
+  the drift was the bench environment, not the commit. The frame-pair
+  cross-diff (6.1%) sits at the same magnitude as the within-firmware pair
+  diffs (3.4-4.0%) plus the minutes the boots were apart, and the ASCII
+  renders show hands, sub-dials and glass present on both. The board was
+  re-flashed to the commit image after the comparison (`AUDIT OK`).
+
+On the live bake the table commits the nine rows the projection names: plate
+over canvas, three hands with their three shadows, two pointer rows, glass.
+The window (BANK) pose path is host-vector-covered (section 14) and had no
+live GIF-theme window to light — the next GIF bake with a complication runs
+it on glass.
 
 ### ORB_BEHAVIOUR_CLOCK stays, internals change
 

@@ -229,7 +229,13 @@ static int32_t knob_edge(int32_t *raw, int32_t *net, uint8_t *prev_ab, uint8_t a
      * The net is closed either way: an arrival that was guarded, or that netted a
      * rock, starts the next notch from zero rather than carrying this one's residue. */
     if (ab == valley_ab) {
-        const int32_t since = (int64_t)(now_us - last_commit_us);
+        /* 64-bit on purpose. Truncating this delta to int32 is what killed the dial:
+         * esp_timer_get_time() counts microseconds since boot, so on a board left
+         * idle past 2^31 us (~36 min) the gap wrapped negative, this guard read it as
+         * "too soon since the last detent" forever, and every valley arrival was
+         * suppressed while raw kept moving. A reboot cleared it by resetting the
+         * clock. Pinned by the long-idle case in tools/host_knob_test.py. */
+        const int64_t since = now_us - last_commit_us;
         const int32_t n = (since >= (int64_t)KNOB_CLICK_GUARD_MS * 1000)
                           ? knob_detent_from_net(*net) : 0;
         *net = 0;

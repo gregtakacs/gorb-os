@@ -270,6 +270,23 @@ int main(void)
            s.det == 5, s.det, 5);
     }
 
+    /* ---- the click guard survives a board idle past the int32 wrap ----
+     * esp_timer_get_time() counts microseconds since boot. A device that sits on the
+     * menu screen goes idle for more than 2^31 us (~36 min), and an int32 guard delta
+     * wrapped that gap negative, read it as "too soon" forever, and stopped committing
+     * detents while raw kept moving -- the reported freeze, "fixed" only by a reboot.
+     * Everything above this line kept the clock small and could not see it. */
+    {
+        sim_t s; sim_init(&s, 3);
+        click(&s, +1, CLICK_GAP_US);                 /* a normal commit, now ~60 ms in */
+        ck("one click before the long idle commits", s.det == 1, s.det, 1);
+        s.clock_us = s.last_commit_us + (int64_t)4000000000LL;  /* idle past 2^31 us */
+        click(&s, +1, CLICK_GAP_US);
+        ck("the same click after 4000 s idle still commits", s.det == 2, s.det, 2);
+        for (int c = 0; c < 20; c++) click(&s, +1, CLICK_GAP_US);  /* and keeps working */
+        ck("and twenty more past the wrap are twenty more detents", s.det == 22, s.det, 22);
+    }
+
     /* ---- the two helpers, pinned directly ---- */
     ck("net +3 is a detent", knob_detent_from_net(3) == 1, knob_detent_from_net(3), 1);
     ck("net +2 is a detent", knob_detent_from_net(2) == 1, knob_detent_from_net(2), 1);
@@ -383,6 +400,9 @@ def lint_poll_logging_outside_lock(ksrc):
 # passed while its dither checks summed an oscillation to zero and never counted the
 # spurious repaints underneath.
 MUTATIONS = [
+    ("the click-guard delta truncated to int32 (the ~36-min idle freeze returns)",
+     r"const int64_t since = now_us - last_commit_us;",
+     "const int32_t since = (int32_t)(now_us - last_commit_us);"),
     ("every valley arrival is a detent, however it netted (the 'sometimes two' bug)",
      r"\? knob_detent_from_net\(\*net\) : 0;", " ? 1 : 0;"),
     ("the net is not closed on arrival, so one click can pay twice",

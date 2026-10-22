@@ -1019,6 +1019,18 @@ int orb_svc_layers_live(const orb_app_t *a)
     return orb_layers_count(s_row[slot].layers);
 }
 
+/* Migration 2 (P8, Commit 2): the scheduler's read door onto the same table
+ * those counters summarize. It returns the row's table EXACTLY as the broker
+ * holds it — NULL until the app's first layer_add, because a commit pass that
+ * minted a table would pay PSRAM for an app that never asked for a row, and the
+ * pointer it hands out is read-only by contract: the only writer of s_row[].layers
+ * is row_layers(), behind the CAP_UI gate, on an app's own call. */
+const orb_layer_tab_t *orb_svc_layer_table(const orb_app_t *a)
+{
+    const svc_row_t *r = row_of(a);
+    return r ? r->layers : NULL;
+}
+
 uint32_t orb_svc_layers_refused(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);

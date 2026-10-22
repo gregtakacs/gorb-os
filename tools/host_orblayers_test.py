@@ -38,6 +38,21 @@ What is under test
   jobs            table order IS paint order; show=0 rows stay live and
                   absent; a baked row answers with its own base; a theme row
                   with no payload draws nothing; jmax is a promise, not advice
+  the commit hook   orb_sched_commit_layers() is mirrored here (its TU needs
+                  lvgl and display): no table, an empty table and a
+                  canvas-less pass each reach no commit, and a hand-built
+                  table reaches gfx_commit exactly once, with the SHOWN rows'
+                  count and the canvas it was handed. The python side lints
+                  the shipped body against the mirror.
+  the art.off base  the hook hands orb_layers_jobs() the mapped payload, so a
+                  tier-1 row draws payload + art.off and nothing else. A
+                  forged two-bank payload proves both readings: a folded
+                  offset draws the planted plane, the raw catalogue offset
+                  draws the OTHER bank. The shipped convention is
+                  section-relative — orb_elems.c passes the catalogue row
+                  through, orb_clock3.c walks it from zero — so the fold
+                  belongs to the resolver, and the lint forbids a `+ blob_off`
+                  inside the hook by name.
 
 The two stubs that mirror shipped code (gfx_paint_ctx_init's gate, the swept
 box) are linted against orb_gfx.c's own text on the python side — the same
@@ -164,6 +179,32 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     return true;
 }
 
+/* ---- the recorded commit, and the hook it records -------------------------
+ * Migration 2 (P8, Commit 2): orb_sched_commit_layers() lives in a TU the host
+ * cannot compile (lvgl.h, display.h, esp_timer.h), so the shipped body is
+ * mirrored here exactly as host_sched_rung_test.py mirrors the rung pick, and
+ * the python side lints the shipped text for every branch this copy depends on.
+ * gfx_commit is recorded, not simulated: the vector's whole claim is the job
+ * count the commit was handed. */
+static int g_commit_calls, g_commit_nj;
+static const gfx_paint_ctx_t *g_commit_jc;
+static const uint16_t *g_commit_canvas;
+void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
+{
+    g_commit_calls++; g_commit_nj = nj; g_commit_jc = jc; g_commit_canvas = canvas;
+}
+
+static int hook_mirror(const orb_layer_tab_t *t, const uint8_t *payload,
+                       const uint16_t *canvas)
+{
+    if (!t || orb_layers_count(t) == 0) return 0;
+    if (!canvas) return 0;
+    gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
+    int nj = orb_layers_jobs(t, payload, jc, ORB_LAYER_JOB_MAX);
+    if (nj) gfx_commit(nj, jc, canvas);
+    return nj;
+}
+
 /* ---- the allocator, counted ---------------------------------------------- */
 static int g_alloc_n, g_free_n, g_alloc_fail_next;
 static long g_live_bytes;
@@ -219,6 +260,27 @@ static orb_layer_desc_t mk(uint16_t cls, uint16_t tier, int16_t x, int16_t y,
 static uint8_t theme_mem[1 << 17];                              /* the payload */
 #define THEME ((const uint8_t *)theme_mem)
 #define T1_OFF  0x120u
+
+/* ---- the base-convention rig (Migration 2, Commit 2) ----------------------
+ * A forged payload holding TWO section banks, so a tier-1 row's offset has an
+ * unambiguous answer to the question "payload-relative or section-relative?".
+ * The pixels live at BANK_B_OFF + PL_SPR_OFF inside the payload; a row that
+ * carries the folded offset draws them, and a row that carries the raw
+ * catalogue offset draws bank A's bytes at the same distance into the payload.
+ * Both facts are asserted below, because the one that is merely assumed is the
+ * one Commit 3 gets wrong. */
+#define BANK_B_OFF   0x20000u
+#define PL_SPR_OFF   0x120u
+#define PL_COLOR     0x0F0Fu                    /* the planted RGB565 word     */
+#define FAKE_COLOR   0xF0F0u                    /* what the wrong base draws   */
+
+static void forge_payload(void)
+{
+    for (int i = 0; i < (int)sizeof theme_mem; i++) theme_mem[i] = 0;
+    uint16_t *a = (uint16_t *)(theme_mem + PL_SPR_OFF);          /* bank A */
+    uint16_t *b = (uint16_t *)(theme_mem + BANK_B_OFF + PL_SPR_OFF);
+    *a = FAKE_COLOR; *b = PL_COLOR;
+}
 
 static orb_layer_tab_t T;   /* zero-init: every row free, every gen 0 */
 
@@ -425,6 +487,74 @@ int main(void)
     ck("empty-coverage bake refuses", orb_layers_add(&T, &bad) == -1, 0);
     ck("failed bake leaked nothing", g_live_bytes == bal, (int)(g_live_bytes - bal));
 
+    /* 13 — the commit hook's own contract, mirrored and counted. The shipped
+     * function lives in orb_sched.c, which the host cannot compile; the python
+     * lint pins that this body still matches the shipped one, so what these
+     * vectors assert is the commit the app's rows actually reach. */
+    const uint16_t *CANVAS = (const uint16_t *)0x1u;      /* recorded, never read */
+    g_commit_calls = 0;
+    ck("hook: no table, no commit",
+       hook_mirror(NULL, THEME, CANVAS) == 0 && g_commit_calls == 0, g_commit_calls);
+    orb_layer_tab_t H;
+    memset(&H, 0, sizeof H);
+    ck("hook: empty table, no commit",
+       hook_mirror(&H, THEME, CANVAS) == 0 && g_commit_calls == 0, g_commit_calls);
+
+    forge_payload();
+    orb_layer_desc_t f1 = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 20, 20, 8, 8);
+    f1.art.off = BANK_B_OFF + PL_SPR_OFF;             /* folded: payload-relative */
+    int hh = orb_layers_add(&H, &f1);
+    orb_layer_desc_t hid = f1; hid.show = 0;
+    int h2 = orb_layers_add(&H, &hid);
+    orb_layer_desc_t bar2 = mk(ORB_ASSET_HAND, ORB_ASSET_BOARD, 30, 30, 40, 40);
+    bar2.thick = 8; bar2.color = 0xF81F;
+    int h3 = orb_layers_add(&H, &bar2);
+    ck("hook: three rows live", hh > 0 && h2 > 0 && h3 > 0
+       && orb_layers_count(&H) == 3, orb_layers_count(&H));
+    /* The canvas guard, with rows on the table so the count guard cannot be
+     * what answered: no canvas means no marked row has anything to be restored
+     * from, and the commit pass that paints into the mirror anyway is the crash
+     * this guard exists to refuse. */
+    ck("hook: no canvas, no commit",
+       hook_mirror(&H, THEME, NULL) == 0 && g_commit_calls == 0, g_commit_calls);
+    int nj = hook_mirror(&H, THEME, CANVAS);
+    ck("hook: ONE commit, shown rows only", g_commit_calls == 1 && nj == 2, nj);
+    ck("hook: the commit was handed the canvas", g_commit_canvas == CANVAS, 0);
+    ck("hook: the array is ORB_LAYER_JOB_MAX deep",
+       ORB_LAYER_JOB_MAX == ORB_LAYER_MAX, ORB_LAYER_JOB_MAX);
+    int nj2 = hook_mirror(&H, THEME, CANVAS);
+    ck("hook: one commit per pass", g_commit_calls == 2 && nj2 == nj, g_commit_calls);
+    ck("hook: the row count never moved", orb_layers_count(&H) == 3,
+       orb_layers_count(&H));
+
+    /* 14 — the art.off base convention, measured rather than assumed. The hook
+     * hands orb_layers_jobs() the MAPPED PAYLOAD; a tier-1 row therefore draws
+     * from payload + art.off, with nothing added. So a bundle element's
+     * catalogue offset — which orb_elems.c passes through verbatim, and which
+     * orb_clock3.c proves is contiguous from ZERO inside its own section's bank
+     * — must arrive folded. The second vector is the same row unfolded: it draws
+     * the OTHER bank's planted word, which is the wrong-pixels failure Commit 3
+     * owes, and the reason the fix is the resolver's and not a + blob_off in
+     * the hook (a hook that added the clock's blob_off would break every
+     * non-clock app's rows, which are already payload-relative). */
+    gfx_paint_ctx_t jc2[ORB_LAYER_JOB_MAX];
+    int n2 = orb_layers_jobs(&H, THEME, jc2, ORB_LAYER_JOB_MAX);
+    ck("base: a folded off draws the planted plane",
+       n2 == 2 && jc2[0].col == (const uint16_t *)(THEME + BANK_B_OFF + PL_SPR_OFF)
+       && *jc2[0].col == PL_COLOR, n2);
+    orb_layer_desc_t raw = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 20, 20, 8, 8);
+    raw.art.off = PL_SPR_OFF;                        /* the catalogue's own number */
+    orb_layer_tab_t R;
+    memset(&R, 0, sizeof R);
+    int rh = orb_layers_add(&R, &raw);
+    int n3 = orb_layers_jobs(&R, THEME, jc2, ORB_LAYER_JOB_MAX);
+    ck("base: the SAME off unfolded draws another bank's word",
+       rh > 0 && n3 == 1 && jc2[0].col == (const uint16_t *)(THEME + PL_SPR_OFF)
+       && *jc2[0].col == FAKE_COLOR, n3);
+    ck("base: the payload base is used verbatim", g_last_base == THEME, 0);
+    orb_layers_wipe(&H);
+    orb_layers_wipe(&R);
+
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;
 }
@@ -512,6 +642,74 @@ def lint(tmp, out):
     pin("orb_asset_class_prim" in lay,
         "row_gen no longer falls through to the registry's class default: the "
         "HAND-becomes-RECT bug is back")
+    # ---- Migration 2, Commit 2: the commit hook, its getter, its constant ----
+    # The hook itself cannot compile here (orb_sched.c drags lvgl/display/esp
+    # headers), so the harness mirrors its body and the mirror is pinned to the
+    # shipped text the same way the ctx stub above is.
+    layh_def = "#define ORB_LAYER_JOB_MAX ORB_LAYER_MAX"
+    pin(layh_def in layh,
+        "ORB_LAYER_JOB_MAX is gone or no longer the table's own row count: the "
+        "commit array is sized by a number the table cannot reach")
+    pin("const orb_layer_tab_t *orb_svc_layer_table(const orb_app_t *a);" in svch,
+        "orb_svc.h no longer declares the read door the commit hook calls")
+    gm = re.search(r"const orb_layer_tab_t \*orb_svc_layer_table\(const orb_app_t \*a\)\n"
+                   r"\{(.*?)\n\}", svc, re.S)
+    pin(gm is not None, "orb_svc_layer_table is gone from orb_svc.c")
+    if gm:
+        gb = gm.group(1)
+        pin("row_of(a)" in gb and "->layers" in gb,
+            "orb_svc_layer_table no longer answers through row_of(): the getter "
+            "left the registry's own slot arithmetic and can now name a stranger")
+        pin("calloc" not in gb and "heap_caps" not in gb,
+            "orb_svc_layer_table allocates: a scheduler read is now the thing "
+            "that spends an app's PSRAM table — Commit 2's whole no-create rule")
+    sc = open(P("gfx", "orb_sched.c"), encoding="utf-8").read()
+    hm = re.search(r"void orb_sched_commit_layers\(const orb_app_t \*active\)\n"
+                   r"\{(.*?)\n\}", sc, re.S)
+    pin(hm is not None, "orb_sched_commit_layers is gone from orb_sched.c")
+    if hm:
+        hb = hm.group(1)
+        for stmt in ("const orb_layer_tab_t *t = orb_svc_layer_table(active);",
+                     "if (!t || orb_layers_count(t) == 0) return;",
+                     "if (!s_canvas) return;",
+                     "gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];",
+                     "int nj = orb_layers_jobs(t, art_bank_ptr(), jc, ORB_LAYER_JOB_MAX);",
+                     "if (nj) gfx_commit(nj, jc, s_canvas);"):
+            pin(stmt in hb,
+                "the shipped commit hook no longer reads `" + stmt + "` — the "
+                "harness's hook_mirror mirrors a body that moved")
+        pin("blob_off" not in hb and "orb_theme_geo" not in hb,
+            "the commit hook grew a blob_off term: the base fix belongs at the "
+            "resolver, and a hook-side add breaks every non-clock app's rows")
+    pin("orb_sched_commit_layers(orb_app_current());" in sc,
+        "the tick no longer calls the layer-table commit: the hook is landed and "
+        "orphaned, which is the consumer count orb_layers.h records")
+    pin("void orb_sched_commit_layers(const orb_app_t *active);"
+        in open(P("gfx", "orb_sched.h"), encoding="utf-8").read(),
+        "orb_sched.h no longer declares the commit hook the tick calls")
+    # And the four shipped facts the folded-base vectors above rest on. A move
+    # here does not break a vector; it invalidates what the vectors MEAN, which
+    # is why Commit 3 is not allowed to trust them unread.
+    conv = [("art/orb_elems.c",  "out->off      = sp.off;",
+             "orb_elems.c no longer hands the catalogue's off back verbatim — the "
+             "fold may already live there, and Commit 2's finding needs a re-read"),
+            ("art/orb_clock3.c", "uint64_t at = 0;",
+             "orb_clock3.c's catalogue walk no longer starts at zero — section-bank "
+             "relative is no longer the shipped reading"),
+            ("art/orb_clock3.c", "if (sp.off != at)",
+             "orb_clock3.c no longer requires a contiguous catalogue from the bank's "
+             "start, so 'off is inside the section's bank' is an assumption again"),
+            ("art/orb_theme.c",  "s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;",
+             "orb_theme.c's blob_off is no longer the section bank's offset INTO the "
+             "mapped payload — the disagreement this commit reported may have moved"),
+            ("clock/clock_view.c", "s_art = art_bank_ptr() + orb_theme_geo()->blob_off;",
+             "clock_view.c's legacy blob() is no longer payload+blob_off — the "
+             "renderer Commit 4 deletes reads a different base than the one proved here"),
+            ("assets/orb_assets.h", "uint32_t off;        /* tier 1: offset into the theme's art payload",
+             "orb_asset_t.off is no longer documented as payload-relative — the "
+             "convention the commit hook depends on has changed its own mind")]
+    for f, anchor, why in conv:
+        pin(anchor in open(P(f), encoding="utf-8").read(), why)
     # The broker wipes at exactly the two doors a free cap has, and no third.
     for where in ("orb_svc_forget_row", "orb_svc_app_suspended"):
         m2 = re.search(r"(?:esp_err_t|void|static \w+|int|bool|uint32_t) +" + where + r"\(", svc)

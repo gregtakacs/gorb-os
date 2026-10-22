@@ -5622,3 +5622,27 @@ POST still acks the queue, the worker then refuses it, `try_why` carries the
 projection's sentence, the slot keeps drawing `av-kit`, and uptime never
 reset. The stale bench bundle that b3's 2026-10-21 pass had missed is caught
 by the same seam (`av-kit (bench)` now lists with its own refusal).
+
+## 38 — The boot ghost: the commit hook paints only for the glass it is on — 2026-10-22
+
+After every cold boot the menu's landing card carried the clock's first frame:
+the av-kit dial ghosted under "MENU / push to open" until a trip to the clock
+and back wiped it. D35 moved homing to the shell and nobody re-asked who owns
+the mirror's rows at boot. The chain: `clock_view_init` composes the dial once
+(model re-sync), whose L4 path marks the dial's rows dirty; the router then
+homes to the MENU shell; the landing's first commit fires `clock_layer_commit`,
+the hook restores the marked rows from the clock's GIF canvas and repaints every
+layer over them - into the menu's frame, one writer per row and it was writing
+for a view nobody could see. A round trip cured it because bounce's full
+invalidate consumed the stale marks behind a running scheduler.
+
+The hook's only gate had been the mode (`orb_sched_l4_active`). It gained the
+glass gate next to it: `if (!orb_sched_running()) return;` - the same flag
+`clock_view_set_bounce` already maintains, set true BEFORE the load on every
+activation path, so the clock's own first paint is untouched and the marks made
+off-glass simply ride to the next commit, where either the bands flush them as
+the menu's own pixels or the first activation's bounce repaints them whole.
+Bench proof: the cold-boot landing captured through `/api/v1/fb?fmt=raw565`
+measures 1.12% non-black, 0.77% white (the title glyphs), and 0.00% chromatic
+over the whole dial region - the ghost's art is gone. Parity, rung, residency
+and the lifecycle suites (carousel, idle-dim, knob, menu) hold.

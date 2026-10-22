@@ -1048,6 +1048,18 @@ static void aux_add_jobs(const orb_theme_geo_t *g, gfx_paint_ctx_t *jc, int *nj)
 static void clock_layer_commit(void)
 {
     if (!orb_sched_l4_active()) return;
+    /* The glass gate, and it is load-bearing at boot: the tick timer is paused
+     * off-glass but this hook is not — clock_view_init's first compose_now()
+     * marks the dial's rows BEFORE the router homes, and since D35 home is the
+     * menu shell, so the first commit the hook ever sees belongs to the MENU's
+     * frame. Restoring those rows from the GIF canvas then painted the dial over
+     * the landing card — a clock ghost on every cold boot's menu, gone only
+     * after a round trip (bounce's full invalidate consumed the stale marks).
+     * The hook is the clock's one writer into the mirror; a writer with no view
+     * on the glass writes nothing, and the marks ride to the next commit, where
+     * either they are flushed as the other screen's pixels or the first
+     * activation's bounce repaints them whole. */
+    if (!orb_sched_running()) return;
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;
 

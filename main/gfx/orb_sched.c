@@ -387,42 +387,225 @@ uint32_t orb_sched_bg_rate(uint32_t base, uint32_t *every)
     return per;
 }
 
-/* P8.1's rung pick. LCM-based and pure — see the header comment for the
- * no-alias rule and the floor. `asks` are per-element constrained rates in fps;
- * a 0 entry is a free/max element that imposes no divisor. Returns the flush fps
- * the OS should aim at, or floor_fps when nothing constrains the beat. */
+/* P8.2's mode-aware rung pick. Pure — see the header for the no-alias rule, the
+ * two rate modes, and the working cap. Ladder rungs a DISTINCT ask may sit on
+ * and the tick may run on (§40), descending so the first hit is the highest.
+ * A 0 ask imposes nothing in any mode; a FREE ask rides the working cap. */
 static uint32_t rung_gcd(uint32_t a, uint32_t b)
 {
     while (b) { uint32_t t = a % b; a = b; b = t; }
     return a;
 }
 
-uint32_t orb_sched_pick_rung(const uint16_t *asks, unsigned n, uint32_t floor_fps)
+static const uint8_t RUNG_LADDER[] = { 12, 8, 4, 2, 1 };
+#define RUNG_LADDER_N (sizeof RUNG_LADDER / sizeof RUNG_LADDER[0])
+
+/* Clamp an animated rate into the owner-signed [4..15] band: below the panel
+ * floor the pick cannot be honoured anyway; above the ceiling nothing beat. */
+static uint32_t rung_clamp(uint32_t fps)
 {
-    if (floor_fps == 0) floor_fps = 1;
-    uint32_t lcm = 1;        /* the divisor every constrained ask must divide into */
-    int any  = 0;            /* did any element name a fixed beat? */
-    uint16_t slowest = 0;    /* the set's floor: the slowest constrained ask */
-    for (unsigned i = 0; i < n; i++) {
-        uint16_t a = asks[i];
-        if (a == 0) continue;                /* free/max: rides the floor */
-        any = 1;
-        if (slowest == 0 || a < slowest) slowest = a;
-        uint32_t g = rung_gcd(lcm, a);
-        uint32_t l = lcm / g * a;
-        if (l == 0 || l > 1000) return slowest;   /* LCM past the panel range: no
-                                                   * even rung exists; run at the
-                                                   * set's floor (slowest ask) */
-        lcm = l;
-    }
-    if (!any) return floor_fps;              /* nothing constrained: go as fast as
-                                              * the glass goes */
-    /* Highest common multiple of lcm not above the measured floor. If the floor
-     * cannot even hold one lcm cycle, the set aliases at any rate the panel can
-     * commit, so the honest answer is the set's floor itself. */
-    if (lcm > floor_fps) return slowest;
-    return (floor_fps / lcm) * lcm;
+    if (fps < ORB_SCHED_PANEL_FLOOR) return ORB_SCHED_PANEL_FLOOR;
+    if (fps > ORB_SCHED_FPS_CEILING) return ORB_SCHED_FPS_CEILING;
+    return fps;
 }
+
+uint32_t orb_sched_pick_rung(const orb_sched_ask_t *asks, unsigned n, uint32_t floor_fps)
+{
+    /* The working cap starts at the MEASURED floor (never an ask) and is bound
+     * tighter by every fluid cap; it lives inside [4..15] by definition, so the
+     * animated band needs no later clamp on the free/fluid return. */
+    uint32_t cap = rung_clamp(floor_fps ? floor_fps : 1);
+
+    uint32_t lcm = 1;        /* the divisor every distinct ask must divide into */
+    int      over = 0;       /* an LCM past the panel range: no even rung exists */
+    int      any_distinct = 0;
+    uint16_t slowest = 0;    /* the set's floor: the slowest distinct ask */
+
+    for (unsigned i = 0; i < n; i++) {
+        const orb_sched_ask_t *a = &asks[i];
+        if (a->fps == 0) continue;                       /* a 0 ask binds nothing */
+        if (a->mode == ORB_SCHED_FREE) continue;         /* rides the cap */
+        if (a->mode == ORB_SCHED_FLUID) {
+            uint32_t c = rung_clamp(a->fps);             /* fluid: a cap, not a divisor */
+            if (c < cap) cap = c;
+            continue;
+        }
+        /* DISTINCT: a divisor, and a ladder rung by install-time construction. */
+        any_distinct = 1;
+        if (slowest == 0 || a->fps < slowest) slowest = a->fps;
+        if (!over) {
+            uint32_t g = rung_gcd(lcm, a->fps);
+            uint32_t l = lcm / g * a->fps;
+            if (l == 0 || l > 1000) over = 1;            /* overflow guard, not policy */
+            else lcm = l;
+        }
+    }
+
+    if (!any_distinct) return cap;     /* fluid/free only: run at the working cap */
+
+    /* Highest ladder rung at or under the cap that every distinct ask divides
+     * into, so no constrained element aliases. The ladder is descending: the
+     * first rung that fits is the answer. */
+    if (!over) {
+        for (unsigned r = 0; r < RUNG_LADDER_N; r++) {
+            uint32_t rung = RUNG_LADDER[r];
+            if (rung > cap) continue;
+            if (rung % lcm != 0) continue;
+            return rung;
+        }
+    }
+    /* No clean rung under the cap: the honest answer is the set's own floor,
+     * P8.1's fallback kept, clamped into the animated band. */
+    return rung_clamp(slowest);
+}
+
+/* ---- the tick's live cadence (P8.2: the pick, not the bake, owns the beat) --
+ *
+ * The dial's asks come from the live theme; floor_fps comes from the running
+ * measurement window, never an ask (the header demands it). The GIF's authored
+ * tempo is a distinct divisor, so the pick cannot alias one-frame-per-tick; the
+ * plate's every-K hold is an OUTPUT of the pick now (K = frame period / tick
+ * period), replacing orb_sched_bg_rate's separate tick-side decision while the
+ * decimation itself stays. */
+#define SCHED_DIAL_ASKS 4
+static orb_sched_ask_t s_dial_asks[SCHED_DIAL_ASKS];
+static unsigned        s_dial_n;
+static uint32_t        s_floor_fps    = ORB_SCHED_FPS_CEILING; /* hysteresis cap  */
+static uint32_t        s_rung_fps     = ORB_SCHED_FPS_CEILING; /* current pick    */
+static uint32_t        s_rung_period  = 66;                     /* 1000/rung, ms    */
+static uint32_t        s_demote_run, s_promote_run;
+static uint32_t        s_last_demote_ms;
+static bool            s_floor_seeded;
+
+static void sched_fill_asks(void);
+static void sched_seed_floor(void);
+
+/* The dial's per-element asks, read from the live bake (§40). GIF mode names the
+ * bank's baked tempo as a distinct divisor; a plate bank names its bg_fps; the
+ * carriage names its tourbillon tempo; the sweep is a fluid cap bounded by the
+ * declared tick_rate; a still dial is one free ask that rides the floor. */
+static void sched_fill_asks(void)
+{
+    unsigned n = 0;
+    if (orb_bg_gif_mode()) {
+        const uint32_t gt = orb_bg_gif_tick_ms() ? orb_bg_gif_tick_ms() : 1;
+        s_dial_asks[n].fps  = (uint16_t)((1000 + gt / 2) / gt);   /* round to fps */
+        s_dial_asks[n].mode = ORB_SCHED_DISTINCT;
+        n++;
+    } else if (orb_bg_bg_live()) {
+        s_dial_asks[n].fps  = (uint16_t)(clk_theme.bg_fps < 1 ? 1 : clk_theme.bg_fps);
+        s_dial_asks[n].mode = ORB_SCHED_DISTINCT;
+        n++;
+    }
+    if (clk_theme.tourbillon_n) {
+        s_dial_asks[n].fps  = (uint16_t)(clk_theme.tourbillon_fps < 1 ? 1 : clk_theme.tourbillon_fps);
+        s_dial_asks[n].mode = ORB_SCHED_DISTINCT;
+        n++;
+    }
+    if (clk_theme.second_sweep) {
+        s_dial_asks[n].fps  = (uint16_t)(clk_theme.tick_rate ? clk_theme.tick_rate
+                                                             : ORB_SCHED_FPS_CEILING);
+        s_dial_asks[n].mode = ORB_SCHED_FLUID;
+        n++;
+    }
+    if (n == 0) {                       /* static content: free, rides the floor */
+        s_dial_asks[n].fps  = 0;
+        s_dial_asks[n].mode = ORB_SCHED_FREE;
+        n++;
+    }
+    s_dial_n = n;
+}
+
+/* The tick's period from the unified ladder: an animated dial — a GIF, a
+ * looping/playing plate, a carriage, or a sweep — rides the picked rung; a
+ * static one rides the hand beat (orb_sched_tick_base_ms), which the pick does
+ * not schedule (§40). The plate's play-running test is live, so a one-shot play
+ * that just started speeds the beat this tick, as the retired per-tick gate did. */
+static uint32_t sched_tick_period_ms(void)
+{
+    const bool anim = orb_bg_gif_mode()
+                   || (orb_bg_bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
+                   || clk_theme.tourbillon_n
+                   || clk_theme.second_sweep;
+    if (!anim) return orb_sched_tick_base_ms();
+    if (!s_floor_seeded) { sched_fill_asks(); sched_seed_floor(); }  /* first animated beat */
+    return s_rung_period ? s_rung_period : 1000;
+}
+
+/* Apply the picked rung: its period, and the plate's every-K hold as an OUTPUT
+ * of the pick (K = frame period / tick period). GIF and static carry K=1. */
+static void sched_apply_rung(void)
+{
+    s_rung_period = 1000u / (s_rung_fps ? s_rung_fps : 1);
+    s_bg_every    = 1;
+    if (!orb_bg_gif_mode() && orb_bg_bg_live() && clk_theme.bg_fps >= 1) {
+        const uint32_t frame_p = 1000u / (uint32_t)clk_theme.bg_fps;
+        uint32_t k = (frame_p + s_rung_period - 1) / (s_rung_period ? s_rung_period : 1);
+        s_bg_every = k < 1 ? 1 : k;                /* the plate advances every K ticks */
+    }
+}
+
+/* Seed the first-second floor from the §33 delivered table for the bank class
+ * now on the glass, so the pick starts at the honest figure and the running
+ * window only ever moves it from there. */
+static void sched_seed_floor(void)
+{
+    if (orb_bg_gif_mode())     s_floor_fps = 12;   /* thin GIF bank: §33 delivers 12 */
+    else if (orb_bg_bg_live()) s_floor_fps = ORB_SCHED_PANEL_FLOOR;  /* full-panel plate */
+    else                       s_floor_fps = ORB_SCHED_FPS_CEILING;  /* still/sweep */
+    s_rung_fps    = orb_sched_pick_rung(s_dial_asks, s_dial_n, s_floor_fps);
+    sched_apply_rung();
+    s_floor_seeded = true;
+}
+
+/* One rung move, logged once, quoting the measured figure it answers. */
+static void sched_rung_move(uint32_t from_fps)
+{
+    s_rung_fps = orb_sched_pick_rung(s_dial_asks, s_dial_n, s_floor_fps);
+    if (s_rung_fps == from_fps) return;          /* floor moved; the rung did not */
+    sched_apply_rung();
+    ESP_LOGI(TAG, "RUNG %u->%u fps (measured floor %u)",
+             (unsigned)from_fps, (unsigned)s_rung_fps, (unsigned)s_floor_fps);
+}
+
+/* The report-second hysteresis (§40, signed as drafted): demote after
+ * ORB_SCHED_HYST_DEMOTE_SEC report-seconds delivering under the pick, rate-
+ * limited to one move per ORB_SCHED_HYST_DEMOTE_MS; promote after
+ * ORB_SCHED_HYST_PROMOTE_SEC stable seconds carrying ORB_SCHED_HYST_SLACK_PCT%
+ * headroom. A distinct GIF/carriage pin moves the floor but not the rung, so no
+ * line prints — a rung that cannot fire is not claimed to have fired. */
+static void sched_hysteresis(uint32_t measured)
+{
+    sched_fill_asks();                       /* the asks follow the live bake  */
+    if (!s_floor_seeded) sched_seed_floor(); /* first second after a flip/theme  */
+    const uint32_t now = lv_tick_get();
+    if (measured < s_rung_fps) {
+        s_promote_run = 0;
+        if (++s_demote_run >= ORB_SCHED_HYST_DEMOTE_SEC &&
+            (uint32_t)(now - s_last_demote_ms) >= ORB_SCHED_HYST_DEMOTE_MS) {
+            const uint32_t from = s_rung_fps;
+            s_floor_fps = measured ? measured : ORB_SCHED_PANEL_FLOOR;
+            if (s_floor_fps < ORB_SCHED_PANEL_FLOOR) s_floor_fps = ORB_SCHED_PANEL_FLOOR;
+            s_demote_run = 0;
+            s_last_demote_ms = now;
+            sched_rung_move(from);
+        }
+        return;
+    }
+    s_demote_run = 0;
+    if (measured >= (uint32_t)((s_rung_fps * (100 + ORB_SCHED_HYST_SLACK_PCT)) / 100)) {
+        if (++s_promote_run >= ORB_SCHED_HYST_PROMOTE_SEC &&
+            s_floor_fps < ORB_SCHED_FPS_CEILING) {
+            const uint32_t from = s_rung_fps;
+            s_floor_fps = ORB_SCHED_FPS_CEILING;   /* the pick re-clamps it down */
+            s_promote_run = 0;
+            sched_rung_move(from);
+        }
+    } else {
+        s_promote_run = 0;                       /* steady, but no promote slack */
+    }
+}
+
 
 /* Per-second throughput report while the clock is live: how many composited
  * ticks we actually got, and what the flush path booked for the flushes they
@@ -497,6 +680,14 @@ static void report_fps_if_due(void)
 #if DISPLAY_CADENCE_PROBE
     display_cadence_drain();
 #endif
+    /* The report-second boundary is where the measured figure meets the hysteresis
+     * state machine (P8.2): the composited ticks in this window are what the glass
+     * actually bore, so feed them (scaled to a clean per-second rate) to the
+     * demote/promote gate before the counters reset. */
+    const uint32_t elapsed = now - s_fps_t0;
+    const uint32_t measured = elapsed
+        ? (uint32_t)(((uint64_t)s_fps_ticks * 1000u + elapsed / 2u) / elapsed) : 0;
+    sched_hysteresis(measured);
     s_fps_sub0 = sub;
     s_fps_te0 = te_now;
     s_fps_ph0 = pm; s_fps_ph1 = ph; s_fps_ph2 = pt; s_fps_ph3 = pd;
@@ -631,39 +822,32 @@ static void tick_timer_cb(lv_timer_t *timer)
 #endif
     report_fps_if_due();
 
-    /* The GIF delta bank always runs on its own fastest beat; a non-looping
-     * plate background only needs the fast beat while a play is running (the
-     * check in orb_bg_frame_now() may have just started one).
-     * Deadline-anchored, not callback-anchored: lv_timer decides lateness
-     * against a fixed 62.5 ms ladder we advance by the beat each tick, so
-     * this callback's own work (and the LVGL refresh it queues) is schedule
-     * to absorb, not drift to accumulate. Ask for a hair less than what is
-     * left: the timer can only fire on a handler wake and lvgl_task's sleeps
-     * quantise to ~5 ms, so an exact ask reliably lands one wake late.
-     * Measured reality for this bank: the display pipeline books ~54 ms of
-     * TE-wait + band submits per commit, so the tick still arrives ~67 ms
-     * apart (~15 fps, loop ~1.07 s) — the ladder keeps the SCHEDULE honest;
-     * true 16 needs ~5 ms shaved off the flush path, not the timer. */
-    uint32_t period;
-    if (orb_bg_gif_mode())                              period = orb_bg_gif_tick_ms();
-    else if (orb_bg_bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
-                                                 period = orb_sched_bg_rate(orb_sched_tick_base_ms(), &s_bg_every);
-    else                                         { s_bg_every = 1; period = orb_sched_tick_base_ms(); }
-    if (orb_bg_gif_mode()) {
-        if (!s_tick_due) s_tick_due = t_start_ms + period;
-        else             s_tick_due += period;
-        if ((int32_t)(t_start_ms - s_tick_due) >= (int32_t)period)
-            s_tick_due = t_start_ms + period;       /* fell a beat behind */
-        const int32_t left = (int32_t)(s_tick_due - t_start_ms) - 8;
-        lv_timer_set_period(timer, (left < 2) ? 2 : (uint32_t)left);
+    /* P8.2: the OS's pick owns the beat, not the bake. The period is the picked
+     * rung for an animated dial, the hand beat for a static one
+     * (sched_tick_period_ms). The GIF rides the rung too, and because the bank's
+     * tempo is a DISTINCT divisor the pick cannot alias it — one frame advances
+     * per tick, exactly as its own s_gif_due deadline above still drives.
+     * Deadline-anchored for every mode now, not just the GIF: lv_timer decides
+     * lateness against a ladder we advance by the beat each tick, so this
+     * callback's own work (and the LVGL refresh it queues) is schedule to
+     * absorb, not drift to accumulate. Ask a hair under what is left: the timer
+     * only fires on a handler wake and lvgl_task's sleeps quantise to ~5 ms, so
+     * an exact ask reliably lands one wake late. Measured reality for the thin
+     * bank: the flush path books ~54 ms of TE-wait + band submits per commit, so
+     * a rung asking 15 still arrives ~67 ms apart (~12 fps delivered) — the
+     * ladder keeps the SCHEDULE honest; true 16 needs the flush path trimmed. */
+    const uint32_t period = sched_tick_period_ms();
+    if (!s_tick_due) s_tick_due = t_start_ms + period;
+    else             s_tick_due += period;
+    if ((int32_t)(t_start_ms - s_tick_due) >= (int32_t)period)
+        s_tick_due = t_start_ms + period;            /* fell a beat behind */
+    const int32_t left = (int32_t)(s_tick_due - t_start_ms) - 8;
+    lv_timer_set_period(timer, (left < 2) ? 2 : (uint32_t)left);
 #if DISPLAY_CADENCE_PROBE
-        ESP_LOGI(TAG, "CAD tk now=%u due=%u gif_due=%u shown=%d",
-                 (unsigned)t_start_ms, (unsigned)s_tick_due,
-                 (unsigned)s_gif_due, s_gif_shown);
+    ESP_LOGI(TAG, "CAD tk now=%u due=%u gif_due=%u shown=%d",
+             (unsigned)t_start_ms, (unsigned)s_tick_due,
+             (unsigned)s_gif_due, s_gif_shown);
 #endif
-        return;
-    }
-    lv_timer_set_period(timer, period);
 }
 
 /* ---- the cadence's own lifecycle ----------------------------------------- */
@@ -709,6 +893,9 @@ void orb_sched_reset_fps(void)
 {
     s_fps_t0 = lv_tick_get();
     s_fps_ticks = 0;
+    s_floor_seeded = false;         /* the theme's bank class may have changed: re-seed */
+    s_demote_run = 0;
+    s_promote_run = 0;
     uint32_t bf; uint64_t bt; uint32_t bm;
     display_bench_snapshot(&bf, &bt, &bm);
     s_fps_bench_f0 = bf;

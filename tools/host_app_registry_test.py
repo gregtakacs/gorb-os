@@ -184,6 +184,7 @@ orb_opt_kind_t clock_opt_kind(orb_app_t *a, int i)
 static bool g_menu_long_taken;
 bool menu_view_opt_long(void) { T("menu_long"); return g_menu_long_taken; }
 esp_err_t color_picker_init(void){ T("picker_init"); return g_rc_picker; }
+void color_picker_bind_app(orb_app_t *a) { (void)a; T("picker_bind"); }
 esp_err_t menu_view_init(void)   { T("menu_init");   return g_rc_menu; }
 
 lv_obj_t *clock_view_screen(void)       { return (lv_obj_t *)&tok_clock; }
@@ -260,6 +261,7 @@ static void ck(const char *name, int ok)
 }
 static const orb_app_t *A(const char *slug) { return orb_app_find_slug(slug); }
 static int idx(const char *slug) { return orb_app_index_of(A(slug)); }
+static void seed_factory(void);   /* defined under restore_table (D35) */
 static void restore_table(void)
 {
     for (size_t i = 0; i < ORB_APP_N; i++) {
@@ -267,20 +269,49 @@ static void restore_table(void)
         s_apps[i].installed = true; s_apps[i].art_slot = -1;
         s_apps[i].art_bytes = 0; s_apps[i].art_offset = 0;
     }
-    s_apps[0].is_home = true;
+    s_apps[0].is_home = true;          /* D35: the one compiled row is the shell */
     s_current = NULL; g_bounce = g_picker_armed = g_menu_armed = 0; g_clock_opts = 2;
     g_map_calls = g_unmap_calls = g_service_calls = 0;
     g_map_rc = g_unmap_rc = ESP_OK; g_next_slot = 3; g_refuse_bytes = 0;
     g_rc_clock = g_rc_picker = g_rc_menu = ESP_OK;
+    orb_app_card_reset();
+    seed_factory();
 }
+
+/* D35 (plan §35): the factory rows, upserted the way orb_app_install's memory
+ * source does it — behaviour kinds 3 and 1, slots 0 and 1, enabled — without a
+ * partition, a CRC or an NVS word. The registry's view of the shipped dial. */
+static void seed_factory(void)
+{
+    orb_app_t r;
+    memset(&r, 0, sizeof r);
+    r.slug = (char *)"clock"; r.title = (char *)"Clock";
+    r.kind = ORB_APP_KIND_APP; r.behaviour_kind = ORB_BEHAVIOUR_CLOCK;
+    r.flash_slot = 0; r.art_slot = -1;
+    orb_app_card_upsert(&r);
+    orb_app_set_enabled(orb_app_find_slug("clock"), true);
+    memset(&r, 0, sizeof r);
+    r.slug = (char *)"color_picker"; r.title = (char *)"HSB";
+    r.kind = ORB_APP_KIND_APP; r.behaviour_kind = ORB_BEHAVIOUR_COLOR_PICKER;
+    r.flash_slot = 1; r.art_slot = -1;
+    orb_app_card_upsert(&r);
+    orb_app_set_enabled(orb_app_find_slug("color_picker"), true);
+}
+
+/* The seeded rows, addressed where the old compiled entries used to be. */
+#define CLK ((orb_app_t *)orb_app_find_slug("clock"))
+#define PCK ((orb_app_t *)orb_app_find_slug("color_picker"))
 
 int main(void)
 {
-    /* -- boot: table order is init order, and the clock's worker goes first -- */
+    /* -- boot: the compiled shell builds first; the card tier follows in slot
+     *    order, so the factory dial leads every installed app (D35 §35). The
+     *    shared orb_jobs worker was started by main.c before this ladder, so
+     *    no row's init can post to a queue that does not exist. -- */
     restore_table(); TR();
     orb_app_init_all();
-    ck("boot inits clock, then picker, then menu, in table order",
-       strncmp(g_trace, "clock_init|picker_init|menu_init|", 31) == 0);
+    ck("boot inits menu, then the factory clock, then the factory picker",
+       strncmp(g_trace, "menu_init|clock_init|picker_init|picker_bind", 43) == 0);
 
     /* -- a failing init drops that entry, not the dial -- */
     restore_table(); TR(); g_rc_picker = ESP_FAIL;
@@ -294,30 +325,36 @@ int main(void)
     /* -- slug resolution -- */
     restore_table();
     ck("the three entries resolve by slug", A("clock") && A("color_picker") && A("menu"));
-    ck("the hue alias still lands on the color picker",
-       A("hue") != NULL && strcmp(A("hue")->slug, "color_picker") == 0);
+    /* D35: card rows carry no alias field, and the registry no longer answers
+     * "hue" — the ?to= route translates it in the layer that owns routes. */
+    ck("the retired hue alias resolves nowhere in the registry", A("hue") == NULL);
     ck("an unknown slug resolves to nothing", A("nope") == NULL);
     ck("an empty slug resolves to nothing", A("") == NULL);
     ck("a NULL slug resolves to nothing", A(NULL) == NULL);
     ck("slug matching is case-sensitive", A("Clock") == NULL);
-    ck("the dial is the home entry", strcmp(orb_app_home()->slug, "clock") == 0);
+    ck("the shell is the home entry (D35 amended C8)", strcmp(orb_app_home()->slug, "menu") == 0);
 
-    /* -- the carousel: the P2 pass line, clock adjacent to color_picker -- */
+    /* -- the carousel: the ring the factory ships — shell, dial, editor. The
+     *    P2 pass line survives as a property of the seeded slots, not of the
+     *    compiled table: turning from the dial lands on the picker. -- */
     restore_table();
-    ck("clock -> color_picker is one step (P2 pass line)",
+    ck("clock -> color_picker is one step (P2 pass line, card-tier order)",
        orb_app_neighbour(A("clock"), 1) == A("color_picker"));
     ck("color_picker -> menu is one step",
        orb_app_neighbour(A("color_picker"), 1) == A("menu"));
     ck("menu wraps forward to the clock", orb_app_neighbour(A("menu"), 1) == A("clock"));
     ck("the clock wraps back to the menu", orb_app_neighbour(A("clock"), -1) == A("menu"));
-    ck("NULL start means the first walkable entry, the dial",
-       orb_app_neighbour(NULL, 1) == A("clock"));
-    restore_table(); s_apps[1].enabled = false;
+    ck("NULL start means the first walkable entry, the shell",
+       orb_app_neighbour(NULL, 1) == A("menu"));
+    ck("long press homes to the shell (C8 as amended)", orb_app_home() == A("menu"));
+    restore_table(); orb_app_set_enabled(A("color_picker"), false);
     ck("a disabled entry is skipped in both directions",
        orb_app_neighbour(A("clock"), 1) == A("menu")
        && orb_app_neighbour(A("menu"), -1) == A("clock"));
     restore_table();
-    for (size_t i = 0; i < ORB_APP_N; i++) s_apps[i].enabled = false;
+    s_apps[0].enabled = false;
+    orb_app_set_enabled(A("clock"), false);
+    orb_app_set_enabled(A("color_picker"), false);
     ck("a table with nothing walkable answers NULL rather than spinning",
        orb_app_neighbour(A("clock"), 1) == NULL);
 
@@ -375,17 +412,17 @@ int main(void)
 
     /* -- art residency: claim on activate, release on suspend -- */
     restore_table(); orb_app_init_all();
-    s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
+    PCK->art_offset = 0x400000; PCK->art_bytes = 0x80000;
     TR(); g_map_calls = 0;
     orb_app_activate(A("color_picker"));
     ck("a banked app maps its secondary bank on activate",
-       g_map_calls == 1 && s_apps[1].art_slot >= 0 && strstr(g_trace, "map(4194304,524288)") != NULL);
+       g_map_calls == 1 && PCK->art_slot >= 0 && strstr(g_trace, "map(4194304,524288)") != NULL);
     ck("the slot the registry booked is the slot handed to the compositor",
-       s_apps[1].art_slot >= 3 && art_bank_extra_ptr(s_apps[1].art_slot) == NULL);
+       PCK->art_slot >= 3 && art_bank_extra_ptr(PCK->art_slot) == NULL);
     TR(); g_unmap_calls = 0; g_svc_revoke_calls = 0;
     orb_app_activate(A("clock"));
     ck("suspending releases the bank, so a parked app costs no MMU pages",
-       g_unmap_calls == 1 && s_apps[1].art_slot == -1);
+       g_unmap_calls == 1 && PCK->art_slot == -1);
     ck("and the same swap revokes the parked app's hold on the dial",
        g_svc_revoke_calls == 1 && strstr(g_trace, "svc_revoke:color_picker") != NULL);
 
@@ -394,17 +431,17 @@ int main(void)
     /* Both entries banked, the incoming one bigger: this is §3.3's mechanism-B
      * question in miniature — the app that cannot fit must be refused, and the
      * app already on the glass must come back exactly as it was. */
-    s_apps[0].art_offset = 0x100000; s_apps[0].art_bytes = 0x40000;
-    s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
+    CLK->art_offset = 0x100000; CLK->art_bytes = 0x40000;
+    PCK->art_offset = 0x400000; PCK->art_bytes = 0x80000;
     orb_app_activate(A("clock"));                     /* the dial maps its bank */
     g_refuse_bytes = 0x80000;                          /* the picker's bank will not fit */
     TR(); g_map_calls = 0; g_unmap_calls = 0;
     const esp_err_t refused = orb_app_activate(A("color_picker"));
     ck("a bank the page budget refuses is a refused switch", refused == ESP_ERR_NO_MEM);
     ck("the refused app never becomes the visible one",
-       orb_app_current() == A("clock") && s_apps[1].art_slot == -1);
+       orb_app_current() == A("clock") && PCK->art_slot == -1);
     ck("the outgoing bank was released and then claimed back",
-       g_map_calls == 2 && g_unmap_calls == 1 && s_apps[0].art_slot >= 0);
+       g_map_calls == 2 && g_unmap_calls == 1 && CLK->art_slot >= 0);
     ck("the dial's beat is running again after the refused switch", g_bounce == 1);
     g_refuse_bytes = 0;
     ck("the same switch succeeds once the budget allows it",
@@ -421,21 +458,21 @@ int main(void)
      * art_slot == -1 — the compositor would read art_bank_extra_ptr(-1) and paint
      * the garbage art_bank.h fences off — and s_current was never reassigned. */
     restore_table(); orb_app_init_all();
-    s_apps[0].art_offset = 0x100000; s_apps[0].art_bytes = 0x40000;
-    s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
+    CLK->art_offset = 0x100000; CLK->art_bytes = 0x40000;
+    PCK->art_offset = 0x400000; PCK->art_bytes = 0x80000;
     orb_app_activate(A("clock"));
     ck("the on-glass app holds its bank before the doomed switch",
-       s_apps[0].art_slot >= 0 && g_map_calls == 1);
+       CLK->art_slot >= 0 && g_map_calls == 1);
     TR(); g_map_calls = 0; g_unmap_calls = 0;
     g_map_rc = ESP_ERR_NO_MEM;                          /* nothing fits at all */
     const orb_app_t *cur_before = orb_app_current();
     ck("a refusal the rollback cannot undo still keeps the dial on the old app",
        orb_app_activate(A("color_picker")) == ESP_ERR_NO_MEM
-       && orb_app_current() == A("clock") && s_apps[1].art_slot == -1);
+       && orb_app_current() == A("clock") && PCK->art_slot == -1);
     ck("the switch never repointed current — the failed rollback returned before the commit",
        orb_app_current() == cur_before);
     ck("NULL-reclaim: the app left ON the glass has NO bank — its suspend released it and the rollback could not re-claim",
-       s_apps[0].art_slot == -1);
+       CLK->art_slot == -1);
     /* Two map attempts past the reset: the refused incoming claim, and the
      * failed rollback re-claim of the outgoing bank. One unmap: releasing the
      * outgoing bank before the incoming claim. */
@@ -445,7 +482,7 @@ int main(void)
 
     /* -- no double-billing: re-activating a resident app maps it once -- */
     restore_table(); orb_app_init_all();
-    s_apps[1].art_offset = 0x400000; s_apps[1].art_bytes = 0x80000;
+    PCK->art_offset = 0x400000; PCK->art_bytes = 0x80000;
     g_map_calls = 0;
     orb_app_activate(A("color_picker")); orb_app_activate(A("menu"));
     orb_app_activate(A("color_picker"));
@@ -525,7 +562,7 @@ int main(void)
     /* A disabled app cannot have its rows reached either: the count gates on
      * enabled/failed, which is what keeps P4's disable path from leaving a live
      * page on the glass. */
-    s_apps[0].enabled = false;   /* the clock is the table's first entry */
+    orb_app_set_enabled(A("clock"), false);   /* D35: the clock is a card row now */
     ck("a disabled app offers no rows", orb_app_opt_count(clk) == 0 && !orb_app_has_options(clk));
     restore_table();
 
@@ -541,10 +578,13 @@ int main(void)
         * card table — so index == index_of == the broker's key even when a
         * slot is free (row() answers NULL for the hole). A rank-dense count
         * here would drift on every uninstall. */
-       orb_app_rows() == 3 + ORB_APP_CAP);
+       orb_app_rows() == ORB_APP_BASE + ORB_APP_CAP);   /* D35: the span is the key space */
     restore_table(); g_fault_slug = "clock"; orb_app_init_all();
-    ck("the HOME entry survives faulting — boot-into-clock needs a clock",
-       !A("clock")->failed && orb_app_count() == 3);
+    ck("a faulted factory clock quarantines like any card row (D35, no HOME exemption)",
+       A("clock")->failed && orb_app_count() == 2 && orb_app_home() == A("menu"));
+    restore_table(); g_fault_slug = "menu"; orb_app_init_all();
+    ck("the faulting HOME shell still boots — long press must land somewhere",
+       !A("menu")->failed && orb_app_count() == 3);
     restore_table(); g_fault_slug = NULL;
     TR(); orb_app_activate(A("color_picker"));
     ck("every activation stamps the reset record's slot",
@@ -557,7 +597,9 @@ int main(void)
      *    lift drives the SHIPPED orb_app_card_upsert()/card_fill(), so the
      *    iface attach, the walk gather, and the ledger-only refusal are the real
      *    shipping code, not a re-typed copy. -- */
-    restore_table(); orb_app_card_reset();
+    restore_table(); orb_app_card_reset();      /* D35: the card table starts empty,
+                                                 * so this section sees the shell
+                                                 * alone until it plants a row. */
     orb_app_t card; memset(&card, 0, sizeof card);
     card.slug = (char *)"hsb2";            /* distinct from the compiled picker */
     card.title = (char *)"HSB Card";
@@ -569,20 +611,21 @@ int main(void)
        cidx == ORB_APP_BASE && crow && crow->iface == orb_app_behaviour_iface(ORB_BEHAVIOUR_COLOR_PICKER)
        && crow->iface != NULL);
     ck("a registered card app starts ledger-only: enabled is false from card_fill",
-       crow && crow->enabled == false && orb_app_count() == 3
+       crow && crow->enabled == false && orb_app_count() == 1
        && orb_app_index_of(crow) == ORB_APP_BASE);
     /* Enable the one card row and rebuild: init_all must run its iface hooks. */
     ((orb_app_t *)crow)->enabled = true;
     TR(); orb_app_init_all();
     ck("an enabled card app builds through its module iface on the boot ladder",
        strstr(g_trace, "picker_init") != NULL);
-    ck("the qualified card row joins the walkable count", orb_app_count() == 4);
-    /* The menu entry is the compiled tier's last walkable stop; it now steps
-     * onto the card, and the card wraps forward to the dial. */
-    ck("the card app sits in the carousel after the compiled tier",
+    ck("the qualified card row joins the walkable count", orb_app_count() == 2);
+    /* D35: the compiled tier is the shell alone, and it leads; the card follows
+     * and the two wrap. (The shipped dial additionally holds the factory pair,
+     * seeded and pinned in the blocks above.) */
+    ck("the card app sits in the carousel after the shell",
        orb_app_neighbour(A("menu"), 1) == crow
-       && orb_app_neighbour(crow, 1) == A("clock")
-       && orb_app_neighbour(A("clock"), -1) == crow);
+       && orb_app_neighbour(crow, 1) == A("menu")
+       && orb_app_neighbour(A("menu"), -1) == crow);
     TR(); orb_app_activate(crow);
     ck("activating the installed card loads the picker screen and stamps its slot",
        strcmp(g_trace, "load|picker_show|cur_note:hsb2|") == 0);
@@ -610,9 +653,12 @@ int main(void)
        && orb_app_behaviour_iface(ORB_BEHAVIOUR_WASM) == &orb_wasm_iface
        && orb_app_behaviour_iface(ORB_BEHAVIOUR_WASM) != NULL);
     ((orb_app_t *)brow)->enabled = true;   /* force-enable: it must STILL stay out */
+    /* D35: the card table here holds this one unregistered row and nothing else
+     * (the card_reset above cleared the factory pair), so the ring is the shell
+     * alone and the bad row stays out of it even enabled. */
     ck("a card app with no module never joins the walkable set",
-       orb_app_count() == 3 && orb_app_neighbour(A("menu"), 1) == A("clock")
-       && orb_app_neighbour(crow, 1) != brow);
+       orb_app_count() == 1 && orb_app_neighbour(A("menu"), 1) == A("menu")
+       && orb_app_neighbour(A("menu"), 1) != brow);
     ck("and it cannot be activated — no screen to load, the dial stays put",
        orb_app_activate(brow) != ESP_OK && orb_app_current() != brow);
     ck("but it IS in the owner's ledger, indexed at its card slot",

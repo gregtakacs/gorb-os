@@ -402,10 +402,13 @@ def lint(src):
     # the calls happen. Searching the whole file would match each helper's own
     # DEFINITION (verify_slot_geom(, write_slot_header() far earlier than its call,
     # inverting every ordering this suite exists to enforce.
-    lo = src.find("esp_err_t orb_app_install(const char *stem")
-    hi = src.find("install_req_t", lo if lo >= 0 else 0)
+    # D35: the ladder moved from orb_app_install()'s frame into install_ladder(),
+    # which BOTH sources call. The order invariants are the same words; only the
+    # function that holds them moved — and the fd arguments became one src.
+    lo = src.find("static esp_err_t install_ladder(")
+    hi = src.find("esp_err_t orb_app_install(const char *stem")
     if lo < 0 or hi < 0:
-        return ["could not locate orb_app_install()'s body — the ladder is gone"]
+        return ["could not locate install_ladder()'s body — the shared ladder is gone"]
     ladder = src[lo:hi]
 
     def order(a, b, why):
@@ -415,14 +418,14 @@ def lint(src):
 
     # 1. the whole payload checksums off the card, and the pure decision runs,
     #    BEFORE the first erase (the erase lives inside copy_prefix).
-    order("verify_payload(fd, h)", "copy_prefix(p, fd, h",
+    order("verify_payload(src, h)", "copy_prefix(p, src, h",
           "the payload must be CRC-verified off the card before anything erases")
-    order("install_decide(h, &sl, &v)", "copy_prefix(p, fd, h",
+    order("install_decide(h, &sl, &v)", "copy_prefix(p, src, h",
           "cap/quota/slot/serial decided before the erase, so a refusal costs no slot")
     order("read_slots(p, h->slug, &sl)", "install_decide(h, &sl, &v)",
           "the slot state is read under the lock before the pure decision prices it")
     # 2. geometry read back FROM the partition, header written LAST.
-    order("copy_prefix(p, fd, h", "verify_slot_geom(",
+    order("copy_prefix(p, src, h", "verify_slot_geom(",
           "geometry must be copied before it is read back and CRCed from flash")
     order("verify_slot_geom(", "write_slot_header(",
           "the geometry must read back intact before the header makes the slot live (D9)")
@@ -618,6 +621,26 @@ def lint(src):
         bad.append("P7: verify_payload must checksum the code region off-card like the "
                    "geometry — a corrupt module must be refused before the erase, not "
                    "reach the slot the loader would trust")
+
+    # 9. D35 (§35): the factory apps are ordinary installs from an in-image
+    #    source. The whole ruling rests on there being ONE ladder — a second
+    #    pipeline would be a second set of gates, and the first drift would make
+    #    the shipped clock differ from the clock an owner can reinstall. These
+    #    pins are the structural form of that promise.
+    if src.count("install_ladder(p, &src") < 3:
+        bad.append("D35: every installer — card front, image front, and the factory "
+                   "door — must run through install_ladder(); a private copy of the "
+                   "erase/copy/verify/header-last sequence is the drift the ruling forbids")
+    if "if (sl.installed_count > 0) return 0;          /* someone owns this dial already */" not in src:
+        bad.append("D35: the boot rung must seed a clean slate ONLY — a missing factory "
+                   "row in a non-empty ledger is an owner's uninstall, and uninstalls are permanent")
+    if "orb_svc_set_enabled(ORB_APP_BASE + sl.existing_slot, true)" not in src:
+        bad.append("D35: a fresh factory install lands enabled through the same e<slot> "
+                   "word apply_enable reads — not a default, not a RAM-only bit")
+    for blob_sym in ("orb_app_factory_blob_0", "orb_app_factory_blob_1"):
+        if blob_sym not in src:
+            bad.append("D35: %s missing — the installer must reference the generated "
+                       "container table directly" % blob_sym)
     return bad
 
 
@@ -783,6 +806,69 @@ def run_mutations():
     return len(MUTATIONS) - caught
 
 
+def factory_check():
+    """D35 (§35): the shipped containers are what the ruling says they are.
+
+    Re-runs the generator in --check mode (the freshness rule bake_clock.py
+    serves), then reads the two blobs back out of the generated C table with the
+    Python reader — the mirror of the device reader both reader suites pin to —
+    and asserts each header's declared identity. A blob that no longer matches
+    this list is a ruling change, and a ruling change edits this list and the
+    D-row, in that order, not a silent re-bake."""
+    import re
+    import subprocess
+    fails = 0
+    def check(name, ok, detail=""):
+        nonlocal fails
+        print(("ok    " if ok else "FAIL  ") + name + (("  " + detail) if detail else ""))
+        if not ok:
+            fails += 1
+    r = subprocess.run([sys.executable, os.path.join(HERE, "make_factory_apps.py"),
+                        "--check"], capture_output=True, text=True)
+    check("factory blobs fresh", r.returncode == 0, (r.stdout + r.stderr).strip())
+    if r.returncode != 0:
+        return 1
+    ctext = open(os.path.join(ROOT, "main", "app", "orb_app_factory_blobs.c")).read()
+    blobs = {}
+    for m in re.finditer(r"const uint8_t orb_app_factory_blob_(\d+)\[\d+\] = \{(.*?)\};",
+                         ctext, re.S):
+        blobs[int(m.group(1))] = bytes(int(x, 16) for x in re.findall(r"0x([0-9a-f]{2})", m.group(2)))
+    check("both factory containers present in the C table", set(blobs) == {0, 1})
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
+    orbapp = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(orbapp)
+    want = [(0, "clock", "Clock", 3, "sd_read|themes"),
+            (1, "color_picker", "HSB", 1, "")]
+    for idx, slug, title, kind, capnames in want:
+        try:
+            h = orbapp.parse_header(blobs[idx], )
+        except ValueError as e:
+            check("factory blob %d parses" % idx, False, str(e))
+            fails += 1
+            continue
+        names = list(orbapp.CAP_FREE) + list(orbapp.CAP_OWNER)
+        got_caps = set(names[b] for b in range(len(names)) if h["caps"] >> b & 1)
+        want_caps = set(capnames.split("|")) if capnames else set()
+        ok = (h["slug"] == slug and h["title"] == title
+              and h["behaviour_kind"] == kind and got_caps == want_caps
+              and h["serial"] == 1 and h["code_size"] == 0 and h["art_size"] == 0)
+        check("factory blob %d is the %s row the ruling names" % (idx, title), ok,
+              "slug=%r kind=%d caps=%s serial=%d" % (h["slug"], h["behaviour_kind"],
+                                                     sorted(got_caps), h["serial"]))
+        fails += 0 if ok else 1
+        if slug == "color_picker":
+            rows = orbapp.unpack_settings(blobs[idx][h["setting_off"]:
+                                                  h["setting_off"] + h["n_settings"] *
+                                                  orbapp.SETTINGS_WORDS * 4],
+                                          h["n_settings"])
+            sets = {s["id"]: (s["min"], s["max"], s["default"]) for s in rows}
+            want_sets = {"hue": (0, 359, 210), "sat": (0, 100, 80), "bri": (0, 100, 90)}
+            check("the factory picker's settings match its statics", sets == want_sets, str(sets))
+            fails += 0 if sets == want_sets else 1
+    return fails
+
+
 def main():
     argv = sys.argv[1:]
     fails = 0
@@ -795,6 +881,7 @@ def main():
         print("ok    ladder lint: off-card verify, decide-before-erase, "
               "header-last, caps-from-manifest, no grant/NVS write, "
               "upload verify-before-publish + header-derived name")
+    fails += factory_check()
     fails += run_pure()
     if "--mutations" in argv:
         fails += run_mutations()

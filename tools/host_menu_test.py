@@ -258,10 +258,12 @@ check("the settle commits through set_screen, not around it",
 # rather than pretending to be an app it is not.
 check("the menu is a registered walkable entry",
       '"menu"' in APP_TABLE and "ORB_APP_KIND_SHELL" in APP_TABLE)
-# And the long-press's target must still be the dial, spelled as a table flag
-# rather than as an enum value the router hardcodes.
-check("the dial is the registered home entry",
-      re.search(r'"clock"[\s\S]{0,500}\.is_home\s*=\s*true', APP_TABLE) is not None)
+# And the long-press's target must still be the chrome, spelled as a table flag
+# rather than as an enum value the router hardcodes. D35 (§35) moved homing off
+# the dial: the clock is a factory card row now, uninstallable like any app, and
+# the shell menu is the row that can never go away — so the flag lives there.
+check("the shell menu is the registered home entry",
+      re.search(r'\"menu\"[\s\S]{0,500}\.is_home\s*=\s*true', APP_TABLE) is not None)
 
 # orb_theme_entry_t, from the shipped header — row_text() indexes its fields.
 KNOB_C = P("main", "knob", "knob.c")

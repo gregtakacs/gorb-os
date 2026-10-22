@@ -158,6 +158,14 @@ esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz);
  *  exactly as installed — off. */
 void orb_app_install_apply_enable(void);
 
+/** Boot ladder, AFTER orb_app_install_apply_enable() and BEFORE orb_app_init_all()
+ *  (P7.4): read every ENABLED wasm-kind row's module back from its flash slot,
+ *  CRC it against the header word the installer wrote, and hand it to the engine.
+ *  Disabled and C2-quarantined rows are never read — an app off at the toggle
+ *  must not cost its D27 memory or a runtime. A refused read-back drops that row
+ *  exactly as init_all already drops an app whose init refuses; the boot stands. */
+void orb_app_install_apply_code(void);
+
 /* ---- uploading an .orbapp FROM the browser TO the card (P4) ------------------
  *
  * The owner's card socket is unreachable from a laptop that is not the one the

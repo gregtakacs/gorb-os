@@ -93,7 +93,8 @@ bool orb_wasm_loaded(int slot);
 extern const orb_app_iface_t orb_wasm_iface;
 
 /* Point slot `slot`'s instance at its registry row, so a guest import reaches the
- * broker with its real caller and the broker's own gate applies. Call after load. */
+ * broker with its real caller. The callers are orb_app_install's load rung
+ * (apply_code at boot, wasm_row_load behind the enable door), never the shim. */
 void orb_wasm_bind_app(int slot, orb_app_t *app);
 
 /** The beat landing for a resident code app: call its orb_tick(now_ms). Safe on an

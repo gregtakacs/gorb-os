@@ -412,7 +412,8 @@ bool orb_wasm_loaded(int slot)
 }
 
 /* The registry sets the row this instance answers to, so an import can hand the broker
- * its caller. boot_resolve calls this right after orb_wasm_load succeeds. */
+ * its caller. orb_app_install's load rung (P7.4) calls this right after every
+ * orb_wasm_load that succeeds — at boot and behind the enable door. */
 void orb_wasm_bind_app(int slot, orb_app_t *app)
 {
     if (slot >= 0 && slot < WASM_N_SLOTS) s_slot[slot].app = app;

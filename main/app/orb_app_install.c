@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "orb_svc.h"   /* ORB_CFG_QUOTA_BYTES, ORB_SET_STRING, orb_setting_desc_t */
+#include "orb_app_wasm.h"  /* P7.4: orb_wasm_loaded/_load/_bind_app for the load rung */
 
 #define APPS_STR_WORST ((uint32_t)sizeof(((orb_setting_desc_t *)0)->def_str))
 #define APPS_NUM_WORST 4u   /* one nvs_set_u32 value: int/enum/toggle */
@@ -874,6 +875,93 @@ void orb_app_install_apply_enable(void)
     }
 }
 
+/* ---- P7.4: the code tier's load rung (plan §8 P7, D20/D27) -----------------
+ *
+ * The third boot rung, after the enable words land and before init_all builds
+ * screens: every enabled WASM-kind row gets its module read back from its slot
+ * and handed to the engine. It runs HERE, not inside the wasm module, because
+ * only this file knows the slot layout (D9's geometry) — the shim takes bytes,
+ * never partition offsets, exactly as it takes settings the caller unpacked.
+ *
+ * Read-back CRC before the engine sees a byte, mirroring verify_slot_geom: a
+ * slot whose module rotted since install is refused at this rung, and init_all
+ * then drops the row the same way it drops any app whose init refuses — the
+ * dial boots fine without it, which is the whole D27 promise applied to flash
+ * rather than to the card. A disabled row is never read at all: an app the
+ * owner turned off must not cost 128 KB of PSRAM or a runtime. */
+static esp_err_t wasm_row_load(const esp_partition_t *p, orb_app_t *row,
+                               char *why, size_t whysz)
+{
+    const int slot = row->flash_slot;
+    if (orb_wasm_loaded(slot)) return ESP_OK;          /* already resident */
+    uint32_t hdr[ORBAPP_HDR_WORDS];
+    if (esp_partition_read(p, slot_base(slot), hdr, sizeof hdr) != ESP_OK) {
+        snprintf(why, whysz, "the slot header could not be read");
+        return ESP_FAIL;
+    }
+    orbapp_hdr_t h;
+    char rwhy[128];
+    if (orbapp_parse_header(hdr, &h, rwhy, sizeof rwhy)) {
+        snprintf(why, whysz, "its header no longer parses: %.64s", rwhy);
+        return ESP_ERR_INVALID_CRC;
+    }
+    /* Defensive bound on a header whose CRC passes: the region must still fit
+     * the slot blob, or no read below is trustworthy. */
+    if (h.code_size == 0 || h.code_size > APPS_SLOT_GEOM_CAP ||
+        h.code_off > APPS_SLOT_GEOM_CAP - h.code_size) {
+        snprintf(why, whysz, "its code region is larger than the slot");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* The image lands in PSRAM whole: m3 parses lazily and keeps the pointer
+     * only until orb_wasm_load makes its OWN copy (orb_app_wasm.c), so this
+     * buffer is freed by us right after — unlike the shim's, which is the
+     * runtime's for the module's life. */
+    uint8_t *buf = heap_caps_malloc(h.code_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { snprintf(why, whysz, "no PSRAM for the module"); return ESP_ERR_NO_MEM; }
+    const uint32_t base = slot_base(slot) + APPS_SLOT_HDR_BYTES + h.code_off;
+    esp_err_t e = ESP_OK;
+    for (uint32_t off = 0; off < h.code_size; ) {
+        const uint32_t want = (h.code_size - off > 4096u) ? 4096u : h.code_size - off;
+        if (esp_partition_read(p, base + off, buf + off, want) != ESP_OK) {
+            e = ESP_FAIL;
+            break;
+        }
+        off += want;
+    }
+    if (e == ESP_OK && esp_rom_crc32_le(0, buf, h.code_size) != h.code_crc) {
+        snprintf(why, whysz, "the module did not read back intact");
+        e = ESP_ERR_INVALID_CRC;
+    }
+    if (e == ESP_OK) {
+        e = orb_wasm_load(slot, &h, buf, h.code_size);
+        if (e == ESP_OK) orb_wasm_bind_app(slot, row);
+        else snprintf(why, whysz, "the engine refused the module");
+    }
+    heap_caps_free(buf);
+    return e;
+}
+
+void orb_app_install_apply_code(void)
+{
+    const esp_partition_t *p = apps_partition();
+    if (!p) return;                                    /* no partition: no code apps */
+    for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
+        const orb_app_t *row = orb_app_row(i);
+        if (!row || !row->installed || !row->enabled || row->failed) continue;
+        if (row->behaviour_kind != ORB_BEHAVIOUR_WASM) continue;
+        /* C2 rows stay cold: init_all runs next and quarantines them, and a
+         * quarantined app must not cost its memory while it is quarantined. */
+        if (orb_svc_faulted(row)) continue;
+        char why[128] = "";
+        if (wasm_row_load(p, (orb_app_t *)row, why, sizeof why) != ESP_OK)
+            ESP_LOGW(TAG, "code app \"%s\" refused at load: %s", row->slug, why);
+            /* No enable rollback: init_all calls the module's init, gets FAIL
+             * for the row that never loaded, and drops it from the carousel —
+             * the same refusal path every other app's broken init already walks,
+             * so one broken module cannot cost the dial anything but its slot. */
+    }
+}
+
 /* One refusal sentence for both doors. */
 static esp_err_t door_refuse(esp_err_t e, const char *w, char *why, size_t whysz)
 {
@@ -941,6 +1029,26 @@ esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
                                              "the app stays failed", why, whysz);
             ((orb_app_t *)row)->failed = false;
             ((orb_app_t *)row)->fault_count = 0;
+        }
+        /* P7.4: a code app turns on only if its module reads back and the engine
+         * takes it NOW — the door promises a working app, not one that waits for
+         * a reboot to find out it rotted. The guard is !enabled, not !loaded, on
+         * purpose: a row already on means its own module is already resident (or
+         * this boot refused it at apply_code and failed the row), while a row off
+         * may face engine state left by a PREVIOUS occupant of the slot — an app
+         * uninstalled since the last reboot. Released before the load, and safe
+         * to release from here: an off row is not walkable, so no LVGL-task hook
+         * can be inside the slot it names. Loading itself is also race-free off
+         * the LVGL task for the same reason — the row joins the walkable set only
+         * when the word below lands. */
+        if (row->behaviour_kind == ORB_BEHAVIOUR_WASM && !row->enabled) {
+            orb_wasm_unload(row->flash_slot);
+            const esp_partition_t *cp = apps_partition();
+            char lw[128] = "";
+            if (!cp || wasm_row_load(cp, (orb_app_t *)row, lw, sizeof lw) != ESP_OK)
+                return door_refuse(ESP_FAIL, lw[0] ? lw
+                                 : "no apps partition to read the module from",
+                                   why, whysz);
         }
     }
 
@@ -1048,6 +1156,12 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
     /* Erase first, then the words, then the row: every power cut between the
      * three leaves the app already dead (D9) and at worst stale words on a
      * dirty slot, which the next fresh install wipes. */
+    /* A code app's engine state is deliberately NOT released here: this door
+     * runs on the httpd task while the LVGL task may be inside the module's
+     * service hook, and a slot_release under it is the race every rule here
+     * exists to avoid. The row is gone from the registry, so nothing reaches
+     * the slot again; the state goes at the next reboot, or at the enable door
+     * of whatever app takes this slot next, which releases before loading. */
     if (orb_svc_forget_row(slot) != ESP_OK)
         ESP_LOGW(TAG, "uninstall \"%s\": some owner words could not be erased — "
                       "reinstalling will wipe them again", slug);

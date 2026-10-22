@@ -2,6 +2,17 @@
 # are the compiled hub binary and headless flasher, regenerated on demand.
 bin/
 
+# An ad-hoc `go build` run from this directory ignores those redirects and writes the
+# binary here, named after the package: the hub itself plus every cmd/ main. Anchored,
+# and one name per binary: a glob like /orb* would swallow the tracked orbcmd.go.
+/orb-manager
+/orbflash
+/orbfake
+/orbpack
+/orbprobe
+/orbvendor
+/serprov
+
 # Do NOT ignore internal/firmware/bundle/*.zip or web/composer/*. That pair is
 # the firmware and the Theme Editor compiled into the binary — committed on
 # purpose, so `make build` works with no ESP-IDF and a downloaded .exe flashes an

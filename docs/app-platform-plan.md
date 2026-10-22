@@ -5521,3 +5521,55 @@ physical feel (items 2's confirm prose, 6's page text, 7's color surviving a
 reboot) stays the owner's fingers; the code paths behind all three are the ones the
 suites pin.
 
+## 36 — P9 bench report from the owner's fingers: three closes — 2026-10-21
+
+The owner's tactile pass over §35's flow reported three defects, each confirmed on
+orb-B and each closed the same night. The frame grabs and cursor logs are the
+evidence; the commits carry the fixes.
+
+**(1) The amber line and the hint ran off the circle.** Both labels were
+unbounded, and a refusal sentence with the title prefix runs ~60 characters —
+over the chord the panel offers at their height (~325 px at the status line,
+~244 at the hint). The owner saw the middle of a message and could not read the
+error. Both labels are now width-bounded (300/230 px) and `LV_LABEL_LONG_WRAP`;
+the frame grab of the doors page shows the hint folding to two lines fully
+inside the glass. Bench: `5bf2dfd`.
+
+**(2) Every switch press on the glass refused itself.** The menu runs the
+enable/uninstall doors as its own `orb_jobs` job, and `door_open` checked
+`orb_jobs_busy()` — the flag the press itself had just set. "a card job is
+running" answered every dial press; the browser's httpd task is not the worker,
+which is why the P9 bench missed it.
+`orb_jobs` now answers `orb_jobs_on_worker()` by task identity and the gate
+refuses only a caller that is not the worker; the upload window still refuses.
+Bench-verified end to end: a press on HSB's switch row logged `disabled
+"color_picker"` and `"HSB": off` on the glass. Pinned by the install suite.
+Bench: `50b9477`.
+
+**(3) Show-on-the-dial refused a freshly enabled app until reboot.** The boot
+gather builds only rows already enabled; a row enabled after it (the picker,
+the Restore button, the browser's switch) had its word set and no widgets, so
+its `screen()` answered NULL and activate returned `ESP_ERR_NOT_FOUND`.
+`orb_app_activate` now builds once behind a new `init_done` row flag — on the
+LVGL task, which is where both its callers stand. Bench: enabled the picker
+mid-boot, `screen?to=color_picker` walked the glass in the same boot, the long
+press still landed on the menu. Bench: `667b3a2`.
+
+**And one honest sentence, not a fix:** a wasm row's press hit the same
+NOT_FOUND for a different reason — the code tier has no screen by design until
+P8 wires the layer table to the compositor — and "wtick will not go on the
+dial" blamed the app for the platform's own phase gap. The doors page now says
+"code apps draw layers the dial cannot paint yet" for that code alone. The
+wasm test trio's show-on-dial row stays refused until P8 lands, correctly.
+The boot banner's gesture note (stale since C8's homing moved to the menu)
+went with it.
+
+All 26 host suites pass (the menu and install suites grew pins for (2) and the
+sentence); firmware green; device left clean: glass on the menu, six rows
+installed and enabled, `factory_missing` false. One incident worth recording: a
+synthetic press aimed at a cursor the log never confirmed landed uninstalled
+`wtrap` — the two-press guard worked exactly as specified, an unconfirmed
+inject was the operator error. The row re-provisioned through the Restore
+button. (A later deliberate wtrap activate then trapped twice in
+`orb_activate` and C2 quarantined it — visible on the APPS row as designed,
+cleared through `/api/v1/apps/clear`.)

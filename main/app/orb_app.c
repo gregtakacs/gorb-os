@@ -1,20 +1,20 @@
 /**
  * orb_app.c — the app registry (docs/app-platform-plan.md §1.4).
  *
- * Three entries live here today: the clock (app #0, the C8 homing screen), the
- * color picker (app #1, the first non-clock app and the cheap proof the ABI
- * works), and the shell's own options page — which walks in the carousel but is
- * OS chrome, not an app, and so is tagged ORB_APP_KIND_SHELL rather than being
- * faked into apphood.
+ * One entry lives here since D35 (§35): the shell's own options page — which
+ * walks in the carousel but is OS chrome, not an app, tagged
+ * ORB_APP_KIND_SHELL, and owns is_home: the long press lands on the menu. The
+ * clock and the color picker used to be compiled rows; they are factory card
+ * rows now, installed into slots 0 and 1 from containers in the image, with
+ * the same toggles, the same uninstall door and the same C2 quarantine as any
+ * app a card brings. A row that can be removed is a row the owner owns.
  *
- * The build order is the order main.c used to hardcode: clock first, then the
- * picker, then the menu. That order is load-bearing, not incidental — the clock
- * builds the dial that must exist before the router can home to it, and the
- * menu's pages are built after the display exists. The one blocking-work task
- * is the shell's orb_jobs, started from main.c rather than by any app, so no
- * entry can quietly grow a second stack out of the internal heap that the
- * framebuffer also spends. orb_app_init_all() walks the table in order, so the
- * table's order IS the boot order and nobody has to remember it in two places.
+ * Build order: the shell first (the one compiled row), then the card tier in
+ * slot order, so the factory dial leads every installed app. The shared
+ * blocking-work task is the shell's orb_jobs, started from main.c before this
+ * ladder rather than by any app, so no entry can quietly grow a second stack
+ * out of the internal heap the framebuffer also spends and nothing can post to
+ * a queue that does not exist yet.
  *
  * Hook calling order on a switch is the order input_router.c used to run
  * inline, and it is deliberately kept: pre-load visibility, then
@@ -125,7 +125,14 @@ static const orb_app_iface_t s_clock_iface = {
     .opt_arm     = clock_opt_arm,
 };
 
-static esp_err_t picker_init(orb_app_t *app)   { (void)app; return color_picker_init(); }
+static esp_err_t picker_init(orb_app_t *app)
+{
+    /* D35: the row owns the picker's settings; bind it before the screen builds
+     * so the first frame shows the stored color, not the static default. */
+    const esp_err_t e = color_picker_init();
+    if (e == ESP_OK) color_picker_bind_app(app);
+    return e;
+}
 static void      picker_show(orb_app_t *app)   { (void)app; color_picker_show(); }
 static void      picker_input(orb_app_t *app, int32_t d, bool p)
 {
@@ -231,6 +238,10 @@ typedef struct {
 
 static const orb_behaviour_module_t s_behaviour[] = {
     { ORB_BEHAVIOUR_COLOR_PICKER, &s_picker_iface },
+    /* D35 (§35): the dial face registers exactly like the picker — one compiled
+     * iface behind one kind id. The factory container for "clock" names kind 3,
+     * and the row it fills walks, draws and faults like any other card app. */
+    { ORB_BEHAVIOUR_CLOCK,        &s_clock_iface  },
     /* P7.2 (D20): the wasm3 code tier. One compiled iface serves every code-bearing
      * .orbapp; orb_app_wasm.c keys per-app state by flash_slot, so two installed wasm
      * apps sharing this iface are two rows over two M3 runtimes — unlike the picker,
@@ -263,56 +274,29 @@ bool orb_app_behaviour_known(uint32_t behaviour_kind)
  * orb_theme_boot() picked the slot and art_bank_init() mapped it before
  * display_init(), and clock_view.c reads it through the base that mapping hands
  * out. Only a SECONDARY bank goes through the fields below. */
+/* D35 (§35) took the clock and the HSB editor out of this table. They are
+ * factory card rows now: the same compiled ifaces the entries above registered,
+ * reached through behaviour kinds 3 and 1, and installed into flash slots by
+ * orb_app_install_factory() the way any other card app installs. What is left
+ * here is the shell row — the one entry that is chrome, cannot be uninstalled,
+ * and cannot be turned off. It owns is_home, so the long press lands on the
+ * menu (the amended C8) and no app can ever take the dial's homing away.
+ *
+ * The caps note that led this table before moved into the two factory
+ * containers: the clock now *declares* themes and sd_read, and the picker
+ * declares nothing — the honest picture of what each one imports, in the one
+ * place D19 says declarations live. */
 static orb_app_t s_apps[] = {
-    /* None of these declares owner caps (orb_app_t.caps, left 0 by static
-     * init). That is the honest answer, not an unfinished one: §14 makes the
-     * compiled tier trusted OS code, so it reaches idle_dim, orb_theme and
-     * orb_net through their own headers and never through the broker's gate —
-     * a cap they "declared" would be a permission the ledger claims is being
-     * enforced while nothing consults it. The status page therefore reads
-     * "declared":[] for all three, which is exactly what an owner should
-     * believe about the two apps that shipped inside the firmware. D19's
-     * declared set is the manifest's job, and manifests arrive with P4's card
-     * apps: the loader fills caps from the .orbapp and the ladder gains real
-     * rows to revoke on the day the first one installs. */
-    {
-        .slug       = "clock",
-        .alias      = NULL,
-        .title      = "Clock",
-        .kind       = ORB_APP_KIND_APP,
-        .is_home    = true,          /* C8: long-press always returns here */
-        .art_offset = 0,
-        .art_bytes  = 0,             /* primary bank, mapped at boot */
-        .art_slot   = -1,
-        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
-        .iface      = &s_clock_iface,
-        .installed  = true,
-        .enabled    = true,
-    },
-    {
-        .slug       = "color_picker",
-        .alias      = "hue",         /* what /api/v1/screen and the PWA call it */
-        .title      = "HSB",
-        .kind       = ORB_APP_KIND_APP,
-        .is_home    = false,
-        .art_offset = 0,
-        .art_bytes  = 0,             /* vector-only: LVGL draws the whole face */
-        .art_slot   = -1,
-        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
-        .iface      = &s_picker_iface,
-        .installed  = true,
-        .enabled    = true,
-    },
     {
         .slug       = "menu",
         .alias      = NULL,
         .title      = "Menu",
         .kind       = ORB_APP_KIND_SHELL,
-        .is_home    = false,
+        .is_home    = true,          /* C8 as amended by D35: long press lands here */
         .art_offset = 0,
         .art_bytes  = 0,
         .art_slot   = -1,
-        .flash_slot = -1,          /* compiled tier: no flash slot, no toggle, no uninstall */
+        .flash_slot = -1,          /* chrome: no flash slot, no toggle, no uninstall */
         .iface      = &s_menu_iface,
         .installed  = true,
         .enabled    = true,
@@ -323,7 +307,7 @@ static orb_app_t s_apps[] = {
 
 static orb_app_t *s_current;
 
-/* ---- the card table (P4): installed .orbapp apps, beside the compiled three --
+/* ---- the card table (P4): installed .orbapp apps, beside the compiled shell --
  *
  * A card app draws nothing until its declared behaviour_kind names a
  * compiled-in module (D1/C6): orb_app_behaviour_iface() turns that integer into
@@ -377,7 +361,8 @@ static card_entry_t *card_table(void)
 /* Copy row's scalar fields into slot s, re-pointing slug/title/settings at s's
  * own stable buffers. The scalar copy is by value (orb_app_t is small and POD);
  * the three pointers are then fixed up. kind comes from row so a card app is
- * tagged ORB_APP_KIND_APP; is_home is forced false (the clock stays home, C8) and
+ * tagged ORB_APP_KIND_APP; is_home is forced false (C8 as amended by D35: homing is
+ * the shell row's, and no package can claim it) and
  * iface is DERIVED here from behaviour_kind, never taken from the caller — see the
  * D1/C6 note at the assignment. behaviour_kind itself rides in from row (the slot
  * header), which is the word the dispatch keys on. */
@@ -410,7 +395,7 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
      * re-point the string fields): a stack row from a scan cannot smuggle an
      * iface into the resident record. */
     s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
-    s->app.is_home      = false;           /* the clock stays home (C8)           */
+    s->app.is_home      = false;           /* home is the shell's (C8 as amended)  */
     s->app.installed    = true;
     s->app.enabled      = false;           /* P4a default: an install lands off, and the
                                             * enable word or the owner's toggle turns it
@@ -569,20 +554,26 @@ size_t orb_app_rows(void)
      * the carousel hides. The carousel keeps using orb_app_count(). Card
      * apps appear here and nowhere the knob can reach.
      *
-     * P4a: the span is POSITIONAL — the compiled tier plus the whole card
+     * P4a: the span is POSITIONAL — every compiled index plus the whole card
      * table — so index == orb_app_index_of() == the broker's key for every
      * row a caller enumerates. A sparse table (slot 2 and slot 5 installed,
      * 3 and 4 free) answers row() with NULL for the holes; ledger walkers
      * skip them. A rank-dense span would drift on every uninstall and hand
      * a removed app's grant, fault and enable words to its successor —
-     * exactly the misfiling D19 forbids. */
-    return ORB_APP_N + ORB_APP_CAP;
+     * exactly the misfiling D19 forbids.
+     *
+     * D35 drew the boundary at ORB_APP_BASE, not ORB_APP_N: the compiled tier
+     * shrank to the shell alone, but the indices the clock and picker held as
+     * compiled rows (1 and 2) are retired keys, never reused. The span is the
+     * key space, and the key space does not renumber. */
+    return ORB_APP_BASE + ORB_APP_CAP;
 }
 
 const orb_app_t *orb_app_row(size_t i)
 {
     if (i < ORB_APP_N) return &s_apps[i];
-    const size_t p = i - ORB_APP_N;
+    if (i < ORB_APP_BASE) return NULL;                  /* retired compiled keys */
+    const size_t p = i - ORB_APP_BASE;
     if (p >= ORB_APP_CAP) return NULL;
     return (s_card && s_card[p].used) ? &s_card[p].app : NULL;   /* hole: no row
                                                                   * at this slot */
@@ -602,8 +593,10 @@ const orb_app_t *orb_app_find_slug(const char *slug)
             return &s_apps[i];
     /* Card apps resolve too — ?to=<card-slug> and GET /api/v1/screen name them —
      * but only after the compiled tier, so an installed app can never shadow the
-     * clock or the picker. A card app has no iface, so activation refuses it; a
-     * slug lookup still finds it for the ledger. */
+     * shell. Since D1/C6 (and for the factory pair since D35) a card row's iface
+     * comes from the behaviour module its header names, so a row found here can
+     * be a live screen, not only a ledger line; an unregistered kind stays
+     * ledger-only exactly as before. */
     for (int k = 0; s_card && k < ORB_APP_CAP; k++)
         if (s_card[k].used && strcmp(s_card[k].slug_store, slug) == 0)
             return &s_card[k].app;
@@ -634,18 +627,20 @@ int orb_app_index_of(const orb_app_t *app)
 
 esp_err_t orb_app_init_all(void)
 {
-    /* Table order is boot order, which is what main.c used to hardcode and
-     * what still matters: the clock's init creates the worker task the theme
-     * path needs, and it must exist before anything posts to it. */
+    /* D35 left one compiled row: the menu. The card tier builds after it, in
+     * slot order, so the factory dial (slot 0) still leads every installed app
+     * and the shared orb_jobs worker — started before this whole ladder by
+     * main.c — already exists before any row posts to it. */
     for (size_t i = 0; i < ORB_APP_N; i++) {
         orb_app_t *app = &s_apps[i];
         /* C2: an app the broker marked failed — two unexpected resets with
          * it on the glass — does not build this boot. Its reason stays in
          * the broker until the APPS page (P4) can show it; the home entry is
-         * deliberately exempt, because "boot into the clock" needs a clock
-         * that boots (the counter still runs and the status endpoint shows
-         * it, which is how a faulting home stays visible without being
-         * fatal). */
+         * deliberately exempt. Under D35 that entry is the menu — chrome that
+         * builds from tables and cannot fault — so the exemption protects the
+         * one destination long press can always reach (the counter still runs
+         * and the status endpoint shows it, which is how a faulting home stays
+         * visible without being fatal). */
         if (orb_svc_faulted(app) && !app->is_home) {
             app->failed = true;
             ESP_LOGE(TAG, "%s: %u faults — booting without it (%s)",
@@ -693,6 +688,20 @@ esp_err_t orb_app_init_all(void)
     for (int k = 0; s_card && k < ORB_APP_CAP; k++) {
         orb_app_t *app = &s_card[k].app;
         if (!s_card[k].used || !app->enabled || app->failed) continue;
+        /* C2, uniform for the card tier: two unexpected resets with this row on
+         * the glass and it does not build this boot — no is_home exemption lives
+         * here, because no card row is home (D35 moved homing to the chrome). The
+         * compiled loop above reaches the same verdict through orb_svc_faulted;
+         * a wasm row reaches it through apply_code's load skip and this loop's
+         * failed init. The factory clock and picker quarantine exactly like every
+         * other app now that they are rows in this loop. */
+        if (orb_svc_faulted(app)) {
+            app->failed = true;
+            ESP_LOGE(TAG, "%s: %u faults — booting without it (%s)",
+                     app->slug, (unsigned)orb_svc_fault_count(app),
+                     orb_svc_fault_reason(app));
+            continue;
+        }
         if (!app->iface || !app->iface->init || !app->iface->screen) {
             ESP_LOGW(TAG, "%s: no registered behaviour module (kind %lu) — ledger only",
                      app->slug, (unsigned long)app->behaviour_kind);
@@ -700,10 +709,11 @@ esp_err_t orb_app_init_all(void)
             continue;
         }
         /* C6 singleton rule: a behaviour module builds its widgets once. A row
-         * whose module is already built — the installed HSB beside the compiled
-         * HSB, or two card apps naming one kind — rides the first row's screen
-         * instead of re-running init() and stranding the first widget tree
-         * (color_picker_init builds a fresh s_scr and leaks the old one). Two
+         * whose module is already built — two installed containers naming one
+         * kind, or the factory clock beside a later install of kind 3 — rides
+         * the first row's screen instead of re-running init() and stranding the
+         * first widget tree (color_picker_init builds a fresh s_scr and leaks
+         * the old one). Two
          * rows, one face: the carousel may show the same live module twice,
          * and the ledger keeps each row's own grant, fault and enable words. */
         bool built = false;

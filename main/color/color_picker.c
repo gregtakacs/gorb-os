@@ -13,6 +13,7 @@
 
 #include "color_picker.h"
 #include "board_config.h"
+#include "orb_svc.h"      /* D35: the row's settings persist through the broker's cfg */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,6 +155,11 @@ static void refresh(void)
     for (int i = 0; i < CH_COUNT; i++) style_chip((channel_t)i);
 }
 
+/* D35's commit edge set (see color_picker_bind_app in the Public API section):
+ * any adjust since the last commit must land in NVS when the editor closes. */
+static bool s_dirty;
+static void picker_persist(void);
+
 static void adjust(int32_t delta, int step)
 {
     if (delta == 0) return;
@@ -177,6 +183,7 @@ static void adjust(int32_t delta, int step)
         }
         default: break;
     }
+    s_dirty = true;      /* commit happens when the editor closes, not per turn */
     refresh();
 }
 
@@ -184,6 +191,39 @@ static void cycle_channel(void)
 {
     s_ch = (channel_t)((s_ch + 1) % CH_COUNT);
     refresh();
+}
+
+/* ---- D35 settings: load once, commit on the disarm edge --------------------
+ *
+ * The picker's three numbers are the app's own config now: the factory
+ * container declares hue/sat/bri as int settings and the broker stores them in
+ * the row's orb.app<slot> namespace under the same quota, revocation and
+ * uninstall wipe every other app's config pays. The broker's cfg_get answers
+ * the DECLARED default for an absent key, so a first boot needs no seed write,
+ * and the statics above keep the same numbers as compile-time fallback for a
+ * caller that never binds a row (the host sentinel, and no other). */
+static orb_app_t *s_app;
+
+void color_picker_bind_app(orb_app_t *app)
+{
+    s_app = app;
+    if (!app) return;
+    const orb_svc_t *svc = orb_svc_table();
+    int32_t v;
+    if (svc->cfg_get(app, "hue", &v) == ESP_OK) s_hue  = (uint16_t)v;
+    if (svc->cfg_get(app, "sat", &v) == ESP_OK) s_sat  = (uint8_t)v;
+    if (svc->cfg_get(app, "bri", &v) == ESP_OK) s_val  = (uint8_t)v;
+    s_dirty = false;
+}
+
+static void picker_persist(void)
+{
+    if (!s_app || !s_dirty) return;
+    const orb_svc_t *svc = orb_svc_table();
+    svc->cfg_set(s_app, "hue", s_hue);
+    svc->cfg_set(s_app, "sat", s_sat);
+    svc->cfg_set(s_app, "bri", s_val);
+    s_dirty = false;
 }
 
 /* ---- Public API ---- */
@@ -315,6 +355,11 @@ bool color_picker_armed(void) { return s_armed; }
 void color_picker_set_armed(bool armed)
 {
     if (s_armed == armed) return;
+    /* D35's commit edge: leaving the editor is the last moment this task knows
+     * the owner stopped editing, so the three numbers go to the row's own NVS
+     * namespace here and nowhere mid-turn — a turn is a gesture, and a gesture
+     * would commit dozens of writes a second against the same four keys. */
+    if (!armed && s_armed) picker_persist();
     s_armed = armed;
     /* Drop any stale velocity on every transition, so the first turn after
      * entering the editor is always priced as a slow start rather than

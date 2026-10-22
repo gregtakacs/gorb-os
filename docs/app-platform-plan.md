@@ -68,13 +68,13 @@ These are decided. An implementer who disagrees edits this table, not the code.
 | B4 | Where uninstall lives | The **OS options menu**, not inside the app |
 | B5 | How many apps | **Cap 8 installed**, hard, no repartition |
 | C1 | Art residency, A/B, capacity | **No A/B for apps.** Reboot on load is expected and committed. Provision **two flagship apps**, revisit the rest once those two exist |
-| C2 | Fault handling | NVS fault counter; boot into the clock; mark the app `failed` with a reason shown in APPS |
+| C2 | Fault handling | NVS fault counter; boot into the clock; mark the app `failed` with a reason shown in APPS — **amended 2026-10-21 by D35 (§0.10): "the clock" becomes "the home row", which is the shell menu; the clock quarantines like every other app now that it is one** |
 | C3 | Provenance | Trust the card. Reserve a `sig` word at a fixed header offset so signing later does not move `GEOM_ABI` |
 | C4 | Compatibility gate | `abi_min`/`abi_max` instead of `min_os_build`; out-of-range refuses with a named reason |
 | C5 | Carousel identity | **Text only.** No art tile |
 | C6 | Behaviour-kind registry | Compiled into the OS, one table, append-only IDs, never renumbered |
 | C7 | Suspended apps | `service()` yes, `tick()` no; refresh on reveal |
-| C8 | Uninstall the clock | Not offered. The clock is the permanent homing screen the long-press returns to, replacing the hardcoded `INPUT_SCREEN_CLOCK` |
+| C8 | Uninstall the clock | Not offered. The clock is the permanent homing screen the long-press returns to, replacing the hardcoded `INPUT_SCREEN_CLOCK` — **SUPERSEDED 2026-10-21 by D35 (§0.10): the clock is a factory row and uninstalls like any app. The invariant survives as: long press returns to the shell's menu row, which is `is_home` and is chrome.** |
 | C9 | Setting types | `int`, `enum`, `toggle` **and `string`**, frozen now |
 | C10 | Card writes | No `sd_write`. Apps persist through NVS inside their quota |
 | C11 | Tooling | `tools/orbapp.py` writes the container; upload lands `/sd/apps/<slug>.orbapp.part` then renames, exactly the theme path |
@@ -216,6 +216,15 @@ shipped av-kit bank is 1,173,563 B (18 pages) and the kit3 stress bank measured
 owner's ruling is that this is a theme-editor budget decision rather than a firmware
 one, and D29 polices it. Two launch apps drawing on globals fit with room to spare.
 
+### 0.10 Owner's rulings, 2026-10-21 (ninth round) — the clock and the HSB editor become factory apps (D35)
+
+P9's design review ended with the owner rejecting the "system app" concept outright.
+The two compiled entries are not a tier; they are two apps that happened to ship in
+the image, and the platform's own rules say what that makes them.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D35 | Clock and HSB as regular apps | **The compiled tier keeps one row: the shell menu.** The clock and the color picker ship inside the firmware as real `.orbapp` containers (authored by `tools/make_factory_apps.py` from `tools/orbapp.py`, transcribed to `main/app/orb_app_factory_blobs.c`), and a boot rung — `orb_app_install_provision_clean()`, right after `resolve_boot` — runs them through the SAME installer a card file pays: identity ladder, slot state, `install_decide`, erase-copy-verify-header-last, `card_upsert`. They occupy ordinary slots (clock 0, picker 1), take ordinary `e<slot>`/`g<slot>`/`c<slot>`/`x<slot>` keys, answer the same toggle, uninstall through the same door, and are quarantined by C2 with no exemption — because C2's home exemption now lands on the menu, which is chrome and cannot fault. `ORB_BEHAVIOUR_CLOCK = 3` registers the dial face beside the picker's kind 1 (C6 append-only: kind 3 is claimed by this ruling and never reused). **C8 is amended, not retired**: the invariant "long press returns to a row that always exists" survives by moving `is_home` to the shell menu row — uninstalling the clock cannot strand the dial, and the dial boots to the shell (the boot screen is the first walkable entry; the C2 rule now says boot into the home row, and the home row is chrome). **Factory-reset rule**: the clean-slate rung keys on the ledger, not a marker — zero live slots means the box is fresh or wiped and gets the pair, enabled through the same enable door `/apps` presses; a board whose owner uninstalled the clock has a non-empty ledger and the uninstall is permanent until they press the Restore button (`POST /api/v1/apps/factory`), which re-seeds only what is absent and never walks back a serial (`RESET ALL` calls the same rearm path, since its NVS wipe took the enable words). **Settings move**: the picker's three numbers become declared settings (`hue` 0..359 def 210, `sat`/`bri` 0..100 def 80/90) stored under the row's own namespace through the broker's `cfg_*` with the disarm edge as the commit point; the clock's theme selection stays theme-system state in `orb.settings`, not app config. **Zero-RAM note**: the clock's art bank is theme-owned (D21) — its row carries `art_bytes 0` exactly like every other card row, so the move costs no internal RAM; it retires static `.bss` table bytes and costs ~8 KB of image for the two containers. 
 
 ---
 
@@ -5383,4 +5392,113 @@ boot-time-only truth. `wtrap` reads `faults:0` this boot because any pre-fix str
 the identity tuple that `a9916a9` widened (now `code_crc`/`code_size`), so the old rows are orphaned.
 Owner's call on which of the three. P8.1 beat delivery proceeds regardless — it does not depend on
 this field.
+
+---
+
+## 35 — P9 as landed: the factory apps, one ladder, no tiers — 2026-10-21
+
+D35 (§0.10) shipped as ruled. This section records what landed against the tree, so
+the next reader sees the ruling's shape in code rather than in intent.
+
+**One installer, two sources.** `main/app/orb_app_install.c` grew an `appsrc_t` —
+either an open card fd or a byte range in the image — and every ladder gate
+(`read_and_check_header`, `verify_payload`, `copy_prefix`) reads through
+`src_read()`. The half of `orb_app_install()` that starts at the settings scratch
+moved whole into `install_ladder()`, so the card front (`open_verified_stem` +
+lock) and the image front (`orb_app_install_image`, a straight call) cannot drift:
+same identity ladder, same pure `install_decide` the host suite already pinned, same
+P4a fresh-slot owner-word wipe, same D9 header-last ordering, same `card_upsert`
+commit. `tools/host_orbapp_install_test.py`'s structural lint was retargeted at
+`install_ladder()` and gained a D35 block: every front must call the shared ladder,
+the clean-slate rule must key on `installed_count`, the factory enable must write
+the `e<slot>` word, and the two blob symbols must be referenced.
+
+**The containers.** `tools/make_factory_apps.py` authors `clock.orbapp` (kind 3,
+caps `sd_read|themes`) and `color_picker.orbapp` (kind 1, caps none, settings
+`hue`/`sat`/`bri` with the picker's own defaults) through `orbapp.write_container`
+and transcribes the bytes to `main/app/orb_app_factory_blobs.c`. The generator is
+pinned fresh by the install suite (`--check` mode, the `bake_clock.py` rule), and
+the suite parses both blobs with the reader's Python mirror: slug, kind, caps
+word, serial, and the settings table are all checked against this ruling, so a
+re-bake that quietly changes a declaration fails the battery.
+
+**The boot rung.** `orb_app_install_provision_clean()` in main.c's ladder, after
+`orb_app_install_resolve_boot()` and before `orb_svc_init()`: zero live slots →
+install both, enable both through the same doors; anything else → stand aside.
+`RESET ALL` calls `orb_app_install_factory_rearm()` (NVS re-enable for rows that
+survive its wipe, posted worker job for rows the wipe found absent). The page's
+`Restore the factory apps` button — shown when `/api/v1/apps` answers
+`"factory_missing":true` — posts `POST /api/v1/apps/factory`, which runs the same
+install function on the worker.
+
+**The registry.** `s_apps[]` is one row: the shell, `is_home = true`. Kind 3
+registers the dial face beside the picker's kind 1. The card tier's build loop
+consults `orb_svc_faulted()` uniformly — D35 closed the gap where a native-kind
+card app's quarantine relied on wasm's load-failure accident — and the clock now
+quarantines, uninstalls, toggles, and revokes like a card file. The ledger span
+is the KEY space: `orb_app_rows() == ORB_APP_BASE + ORB_APP_CAP` with indices 1
+and 2 retired and never reused (the registry suite caught this one as a real bug;
+main.c's `orb_app_row()` answers NULL for the holes).
+
+**Gates that answer.** The clock's manifest declares `sd_read|themes`; the two
+revocable edges are `clock_opt_arm` (the card walk) and `clock_opt_sel` (the D11
+install), and both now check `orb_grant_ok()` and answer a revoked ladder with a
+status row — "card permission revoked" / "theme permission revoked" — instead of
+posting work the ledger has already counted as denied. `themes` and `sd_read` are
+the only two caps the clock imports through the broker, and the ledger's
+revoked count for each moves with the ladder's position. The picker declares
+nothing and has nothing to check — its three settings ride `CAP_CONFIG`, which is
+free by §4.2 and merely counted. A first boot therefore shows `declared: []` for
+the picker and `declared: ["sd_read","themes"]` for the clock, which is the
+honest mirror of what each one imports.
+
+**The settings move.** `color_picker.c` binds its row (`color_picker_bind_app`,
+from `picker_init`) and reads `hue`/`sat`/`bri` through the broker's `cfg_get` —
+whose absent-key answer IS the declared default, so the pre-D35 statics (210/80/90)
+and the container's defaults are the same numbers and there is no legacy key to
+move: the compiled picker never persisted anything across a reboot. Commits ride
+the disarm edge (`set_armed(false)`, which `disarm_all()` fires on every leave),
+not the turn — a detent is a gesture, and a gesture must not write NVS. The
+clock's theme selection stays where it already was — the D11 slot word in the
+bundle, theme-system state, not app config — and `orb.settings` keys the OS owns
+(idle timeout, wifi, net) stay OS chrome state, untouched by the row's identity.
+
+**Ledger fidelity.** `?to=hue` still routes: the alias field died with the
+compiled row, and `orb_net.c`'s screen handler translates `hue` to
+`color_picker` before `orb_app_find_slug()` — the route layer shimming its own
+historical name, the registry staying alias-free. The `?to=` 400 body streams
+the live registry, so `clock` and `color_picker` answer as the slugs they are.
+The installed tier labels the pair `factory, slot N`; toggle, uninstall, clear-fault
+and re-grant buttons render for them because the page keys off
+`orb_app_is_card()`, which they now pass.
+
+**Suites, all green on host.** 26/26. The registry suite grew
+`seed_factory()` — the upsert+enable pair the clean-slate rung leaves behind — and
+its pins now read: boot trace `menu_init|clock_init|picker_init|picker_bind`, home
+is the menu, a faulted clock quarantines and a faulted menu still boots, the
+retired `hue` alias answers NULL in the registry, and the ring is shell-first with
+the factory dial leading the card tier. The scan suite's stream-closer pin follows
+the computed `closer` buffer (the object gained `factory_missing`).
+
+**RAM arithmetic, as predicted at the ruling.** Image +8 KB (two 4 KB containers;
+bin 1,661,296 → 1,672,528 B, 19 % partition free). The static table loses two
+entries (~150 B .bss). No new internal heap asks: the memory source streams
+through the same 4 KB-clamped `s_chunk`, and the settings scratch stays one PSRAM
+block freed at the single `out:`.
+
+**Bench, to run on orb-B (the §15 ladder for this slice):** (1) flash blank or
+wipe → first boot lands on the menu; the ring is menu, clock, HSB; (2) `/apps`
+shows both rows with Turn off / Uninstall live and no refusal sentence; (3) long
+press lands on the menu from every screen including the clock; (4) uninstall the
+clock → it vanishes, long press still lands on the menu, reboot does NOT resurrect
+it (ledger non-empty), `Restore the factory apps` brings it back slot-hung and
+enabled; (5) `RESET ALL` → post-wipe boot shows the dial again (the rearm path);
+(6) with the clock's `themes` and `sd_read` revoked from the PERMISSIONS ladder,
+the theme page answers the revoked sentence and the dial still tells the time;
+(7) edit the HSB color, reboot, the color comes back (the settings move);
+(8) fault-bill the clock (two `reset` posts with it on the glass via the
+worker's disarm + panic path): it quarantines, the ledger shows FAILED with its
+reason, the dial boots to the menu, Clear-fault revives it. Items (1)-(7) are the
+owner-visible diff; (8) is the proof the ruling's core sentence — no exemptions —
+is true in code.
 

@@ -5321,3 +5321,66 @@ neither needed a code change. The open items P8 owes next: the commit-hook calle
 pick a consumer, and the D31 per-element damage route that lets the table attribute fps to one
 element rather than to the composite stack.
 
+## 34 — Bench pass: the config door came back, and the message stopped rolling off — 2026-10-21
+
+The P7 bench run left two symptoms that blocked P8 testing. Both are now fixed and verified on
+orb-B (`v1.1.0+a9916a9-dirty`).
+
+### 34.1 The dead config door: three wasm value stacks starved `httpd_start`
+
+With all three wasm test apps enabled (`wtick`, `wnow`, `wtrap`), the boot ran the code-app ladder
+before networking, and `httpd_start` failed: `ESP_ERR_HTTPD_TASK`, then `main: networking down —
+clock running without config page`. The dial kept ticking (that is the point of starting the network
+last), but every remote path was gone, so a stuck "a card job is already running" message — itself a
+symptom of an earlier boot where the door *was* up — could not be cleared or re-read.
+
+The heap ladder named the exact cost. At `httpd_start` the largest internal block had fallen to
+**9,216 B**, and the httpd task stack was refused. Cause: `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`
+(16,384) pins every sub-16 KB `malloc` to internal RAM, so each `m3_NewRuntime` value stack
+(8,192 B, `ORB_WASM_STACK_BYTES`) landed internal. Three of them drained ~42 KB before the network
+started. `sdkconfig.defaults:202` documents this same trap for the LVGL pool; the fix there — lower
+`ALWAYSINTERNAL` globally — is wrong here because it would drag the render pool onto PSRAM and slow
+the dial.
+
+The fix is scoped to the wasm tier at its one allocation seam. `components/wasm3/source/m3_core.c`
+`m3_Malloc_Impl`/`m3_Free_Impl`/`m3_Realloc_Impl` gained an `ESP_PLATFORM` branch using
+`heap_caps_*` with `MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT`. The guest's linear memory already lives in
+PSRAM (a 64 KB `m3_Realloc` clears the same threshold), so the value stack joining it is consistent,
+not a new exposure. The host branch is untouched: sentinel and POSIX builds stay on `calloc`. No
+ladder reorder — `init_all` right behind the load is what makes the order load-bearing.
+
+Measured after the fix, all three runtimes resident at boot:
+
+| boot rung | internal free / largest, before | after |
+|---|---|---|
+| `pre-netif` | 70,143 / 31,744 | 112,827 / 31,744 |
+| `post-wifi_start` | 17,079 / **9,216** | 59,743 / **29,696** |
+| `post-httpd_start` | (refused) | 42,503 / 21,504 — `config server listening on port 80` |
+
+PSRAM moved ~42 KB of its 8 MB pool. Door answers over HTTP with the full apps list. The sentinel is
+green (15 lints). A transient `invalid segment length 0xffffffff` boot loop on the second write was
+USB-CDC contention from a concurrent capture, not a firmware fault: a clean re-flash with the port to
+itself booted one time, no loop.
+
+### 34.2 The message that rolled off the card
+
+On the card sub-pages (`/apps`, `/themes`, the SD page) a press on a row far down a long list wrote
+its result into `#msg` near the top of the document — off the current scroll position, so the outcome
+of the button you just pressed scrolled away unreadable. All three share one `#msg` rule; it is now
+`position:sticky;top:0` so the message pins to the viewport top for the whole list. Ships in the live
+`/apps` page (verified).
+
+### 34.3 Open display-fidelity question (for the owner, not patched blind)
+
+Both `/api/v1/apps` and `/api/v1/status` emit `faults` and `reason` from the live NVS ledger
+(`orb_svc_fault_count`/`_reason`), but emit `failed` from `a->failed` — a RAM mirror `init_all` sets
+once at boot. So a fault billed while the dial runs can read `faults:2, failed:false` until reboot.
+The naive fix — paint `failed` as `orb_svc_faulted(a)` — is wrong for two reasons: `a->failed` also
+carries init-failure (`orb_app.c:678/728`), which is not a C2 strike; and an intentionally-kept
+faulting HOME entry boots with `failed=false` by design. Displaying the live ledger honestly needs
+`failed = a->failed || (orb_svc_faulted(a) && !is_home)`, a new accessor, or acceptance of
+boot-time-only truth. `wtrap` reads `faults:0` this boot because any pre-fix strikes were billed under
+the identity tuple that `a9916a9` widened (now `code_crc`/`code_size`), so the old rows are orphaned.
+Owner's call on which of the three. P8.1 beat delivery proceeds regardless — it does not depend on
+this field.
+

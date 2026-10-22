@@ -2152,14 +2152,14 @@ static esp_err_t h_status(httpd_req_t *req)
      * paragraph below is the current bound on total width, and the re-measure above
      * is what settles it against hardware.
      *
-     * The ledger binds before this frame does. apps_json holds the whole array in
-     * 1024 B (raised from 768 B for the per-app reason field), and the three
-     * compiled-in rows filled 440 B of it; two more rows fit
-     * at the observed 146 B per row. The ~110 B per row this comment carried was
-     * low by a third, because declared and denied_mask joined the row after that
-     * figure was set. Both buffers reject rather than clip: the ledger answers an
-     * error array and the body answers a 500, because a truncated body parses as
-     * nothing and the page shows a blank card. The merged body measured 1118 B on
+     * The ledger binds before this frame does. D35 moved the ledger array to a
+     * 2048 B PSRAM block — the factory pair names its caps and its slugs longer
+     * than the compiled trio did, and six shipped rows measured past the old
+     * 1024 B internal static (observed: the seventh row fell off on orb-B
+     * 2026-10-21). The frame below still rejects rather than clips: the ledger
+     * answers an error array and the body answers a 500, because a truncated
+     * body parses as nothing and the page shows a blank card. The merged body
+     * measured 1118 B on
      * orb-A on 2026-10-12 over the LAN with those rows' counters at zero, and the
      * fleet build before the ledger measured 668-676 B on orb-B at the 960 frame,
      * the -dirty stamp adding the extra 5-7 B.
@@ -2290,11 +2290,22 @@ static esp_err_t h_status(httpd_req_t *req)
      * the LAN — a broker nobody can audit is a broker nobody has to trust.
      * Rows, not walkable entries: the ledger is exactly about the failed
      * and disabled apps the carousel hides. */
-    static char apps_json[1024];       /* static: h_config_get's argument —
-                                        * httpd handlers run serially */
+    /* D35 grew the shipped ledger past the old 1024 B static's six-row reach
+     * (the factory pair names caps and slugs longer than the compiled trio
+     * did), and this file's own memory note rules out growing an internal
+     * static: one PSRAM block, sized for the whole span, allocated once. A
+     * failed allocation answers the honest error array, never a truncated
+     * body — the same reject-not-clip rule the fixed static carried. */
+    static char *apps_json;                  /* PSRAM; httpd handlers run serially */
+    enum { APPS_JSON_BYTES = 2048 };
+    static bool apps_json_bad;
+    if (!apps_json && !apps_json_bad) {
+        apps_json = heap_caps_malloc(APPS_JSON_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!apps_json) apps_json_bad = true;
+    }
     {
-        int off = snprintf(apps_json, sizeof apps_json, "[");
-        if (off < 0 || (size_t)off >= sizeof apps_json) off = -1;
+        int off = apps_json ? snprintf(apps_json, APPS_JSON_BYTES, "[") : -1;
+        if (off < 0 || (size_t)off >= APPS_JSON_BYTES) off = -1;
         for (size_t i = 0; off >= 0 && i < orb_app_rows(); i++) {
             const orb_app_t *a = orb_app_row(i);
             if (!a) continue;           /* P4a: the span is positional — a free card
@@ -2330,7 +2341,7 @@ static esp_err_t h_status(httpd_req_t *req)
                 if (dw < 0 || (size_t)dw >= sizeof declared - (size_t)doff) break;
                 doff += dw;
             }
-            const int w = snprintf(apps_json + off, sizeof apps_json - (size_t)off,
+            const int w = snprintf(apps_json + off, APPS_JSON_BYTES - (size_t)off,
                 "%s{\"slug\":\"%s\",\"grants\":[%s],\"declared\":[%s],\"calls\":%u,"
                 "\"denials\":%u,\"denied_mask\":%u,\"beat_ms\":%u,\"cfg_used\":%u,"
                 "\"faults\":%u,\"layers\":[%d,%u],\"failed\":%s,\"status\":\"%s\","
@@ -2343,13 +2354,15 @@ static esp_err_t h_status(httpd_req_t *req)
                 orb_svc_layers_live(a), (unsigned)orb_svc_layers_refused(a),
                 a->failed ? "true" : "false", orb_svc_last_status(a),
                 orb_svc_fault_reason(a));
-            if (w < 0 || (size_t)w >= sizeof apps_json - (size_t)off) break;
+            if (w < 0 || (size_t)w >= APPS_JSON_BYTES - (size_t)off) break;
             off += w;
         }
-        if (off >= 0 && (size_t)off + 1 < sizeof apps_json)
-            snprintf(apps_json + off, sizeof apps_json - (size_t)off, "]");
-        else
-            snprintf(apps_json, sizeof apps_json, "[{\"error\":\"ledger too large\"}]");
+        if (off >= 0 && (size_t)off + 1 < APPS_JSON_BYTES)
+            snprintf(apps_json + off, APPS_JSON_BYTES - (size_t)off, "]");
+        else if (apps_json)
+            snprintf(apps_json, APPS_JSON_BYTES, "[{\"error\":\"ledger too large\"}]");
+        /* apps_json NULL (no PSRAM) leaves the "[{"error":"out of memory"}]" the
+         * caller already sends for a refused frame buffer — same answer, honest. */
     }
 
     /* The chip's BASE MAC, not the SoftAP one. esp_read_mac(ESP_MAC_WIFI_SOFTAP)
@@ -2457,7 +2470,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)idle_dim_activity_count(),
         (unsigned)idle_dim_level_write_fail_count(),
         rst, rst_nm,
-        apps_json);
+        apps_json ? apps_json : "[{\"error\":\"ledger unavailable\"}]");
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
         /* A silently truncated body is worse than an error: the page would fail

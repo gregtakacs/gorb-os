@@ -151,6 +151,13 @@ void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps)
     return calloc(n, sz);
 }
 
+/* P7.2: the wasm behaviour module's iface lives in orb_app_wasm.c, not in the lifted
+ * orb_app.c body, so the harness supplies the symbol the registry's behaviour table
+ * references. An all-NULL iface is the honest stub: this suite proves the registry
+ * DISPATCHES ORB_BEHAVIOUR_WASM to this module (orb_app_behaviour_iface answers the
+ * pointer); the hooks' own behaviour is host_orbapp_wasm_test.py's and the device's. */
+const orb_app_iface_t orb_wasm_iface = { 0 };
+
 esp_err_t clock_view_init(void)  { T("clock_init");  return g_rc_clock; }
 /* The clock's options surface (B1/B2). Stubbed rather than lifted: what this
  * suite proves is that the registry DISPATCHES them, and the answers themselves
@@ -593,6 +600,15 @@ int main(void)
     ck("an unregistered behaviour_kind resolves to no iface",
        brow && brow->iface == NULL && orb_app_behaviour_known(4242) == false
        && orb_app_behaviour_iface(4242) == NULL);
+    /* P7.2: the wasm tier is a registered behaviour module, so ORB_BEHAVIOUR_WASM
+     * must resolve (not to NULL) and be known, exactly as the picker does. This is a
+     * DISPATCH fact — that the registry maps the kind to the wasm module — and it is
+     * what makes an installed code app walkable-instead-of-ledger-only rather than a
+     * card row nobody can reach. The stub iface (all-NULL) is enough to prove it. */
+    ck("the wasm behaviour_kind resolves to its module (registered, not ledger-only)",
+       orb_app_behaviour_known(ORB_BEHAVIOUR_WASM) == true
+       && orb_app_behaviour_iface(ORB_BEHAVIOUR_WASM) == &orb_wasm_iface
+       && orb_app_behaviour_iface(ORB_BEHAVIOUR_WASM) != NULL);
     ((orb_app_t *)brow)->enabled = true;   /* force-enable: it must STILL stay out */
     ck("a card app with no module never joins the walkable set",
        orb_app_count() == 3 && orb_app_neighbour(A("menu"), 1) == A("clock")

@@ -5,6 +5,10 @@ idf_component_register(
         "app/orb_app_install.c"
         "app/orb_app_manifest.c"
         "app/orb_app_scan.c"
+        # P7.2: the wasm3 behaviour module. Own TU because it is the only file in the
+        # tree that reaches the interpreter; the registry sees it as one iface behind
+        # one behaviour_kind, exactly like the picker.
+        "app/orb_app_wasm.c"
         "app/orb_carousel.c"
         "app/orb_jobs.c"
         "app/orb_svc.c"
@@ -72,6 +76,7 @@ idf_component_register(
         "sd"
         "../assets"
     REQUIRES
+        wasm3                    # P7.2: the vendored interpreter behind the wasm tier
         esp_driver_spi
         esp_driver_gpio
         esp_driver_i2c         # imu: the QMI8658 on the shared I2C bus (GPIO 15/14)

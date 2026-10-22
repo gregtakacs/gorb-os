@@ -40,6 +40,8 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 WASM_C = os.path.join(ROOT, "main", "app", "orb_app_wasm.c")
+INSTALL_C = os.path.join(ROOT, "main", "app", "orb_app_install.c")
+MAIN_C = os.path.join(ROOT, "main", "main.c")
 WASM_H = os.path.join(ROOT, "main", "app", "orb_app_wasm.h")
 MANIFEST_H = os.path.join(ROOT, "main", "app", "orb_app_manifest.h")
 NL = "\n"
@@ -300,6 +302,58 @@ def lint(text):
     return fails
 
 
+# ---- the P7.4 seam lint ------------------------------------------------------
+# orb_wasm_load has no caller a board could forget: the load rung in
+# orb_app_install.c is the engine's ONLY door besides the enable door, and both
+# must verify before handing bytes over and bind only after the engine takes them.
+# main.c's rung ORDER is pinned too: applying code before the enable words would
+# load disabled apps at full D27 cost, and after init_all would build a dial where
+# every code app failed its init.
+def lint_seam(inst, mn):
+    fails = []
+
+    def pos(pat, label, text):
+        m = re.search(pat, text, re.S)
+        if not m:
+            fails.append("  seam lint: %s is gone" % label)
+            return -1
+        return m.start()
+
+    def order(a, b, whya, whyb, why, text):
+        pa, pb = pos(a, whya, text), pos(b, whyb, text)
+        if pa >= 0 and pb >= 0 and not (pa < pb):
+            fails.append("  seam lint: %s must come before %s (%s)" % (whya, whyb, why))
+
+    # The read-back CRC guards the engine: the compare sits in the reject guard
+    # that gates the load, not merely somewhere before it.
+    if not re.search(r"if \(e == ESP_OK && esp_rom_crc32_le\(0, buf, "
+                     r"h\.code_size\) != h\.code_crc\)[\s\S]{0,200}?orb_wasm_load\(slot", inst):
+        fails.append("  seam lint: the code read-back CRC does not guard the engine — "
+                     "orb_wasm_load must run only after the compare rejects a rotted slot")
+    # The row is bound only once the engine took the module.
+    order(r"orb_wasm_load\(slot", r"orb_wasm_bind_app\(slot",
+          "orb_wasm_load", "orb_wasm_bind_app",
+          "the row pointer only ever names a live instance", inst)
+    # The boot rung skips C2-quarantined rows: a failed app must not hold its memory.
+    order(r"orb_svc_faulted\(row\)", r"wasm_row_load\(p,",
+          "orb_svc_faulted skip", "wasm_row_load",
+          "quarantined code apps stay cold", inst)
+    # The enable door releases a stale slot before loading the new occupant.
+    order(r"orb_wasm_unload\(row->flash_slot\)", r"wasm_row_load\(cp,",
+          "stale-slot orb_wasm_unload", "enable-door wasm_row_load",
+          "a slot reused after an uninstall never keeps its previous module", inst)
+    # main.c's ladder: enable words, then code, then init.
+    order(r"orb_app_install_apply_enable\s*\(\s*\)\s*;",
+          r"orb_app_install_apply_code\s*\(\s*\)\s*;",
+          "apply_enable", "apply_code",
+          "disabled apps never pay their D27 memory at boot", mn)
+    order(r"orb_app_install_apply_code\s*\(\s*\)\s*;",
+          r"orb_app_init_all\s*\(\s*\)",
+          "apply_code", "orb_app_init_all",
+          "the wasm init answers OK only for a module this rung already loaded", mn)
+    return fails
+
+
 # ---- mutations ---------------------------------------------------------------
 # (name, kind, rewrite). kind picks which lifted text is rewritten; each must turn at
 # least one vector (plan) or table row (entries) red. An uncaught mutant means the
@@ -347,17 +401,52 @@ MUTATIONS = [
      _sub("snprintf(why, sizeof why, \"wasm trapped in %s\", s_entries[entry].export_name);",
           "orb_svc_note_fault(s->app, why); snprintf(why, sizeof why, \"wasm %s\", "
           "s_entries[entry].export_name);")),
+    # seam: the read-back becomes a size nod instead of a CRC — a rotted slot would
+    # reach the engine, the exact thing verify_slot_geom refuses for geometry.
+    ("drop code read-back CRC", "seam",
+     _sub("if (e == ESP_OK && esp_rom_crc32_le(0, buf, h.code_size) != h.code_crc) {",
+          "if (e == ESP_OK && h.code_size != 0) {")),
+    # seam: the row is bound before the engine has taken the module.
+    ("bind before load", "seam",
+     _rex(r"(e = orb_wasm_load\(slot, &h, buf, h\.code_size\);\s*\n\s*if \(e == ESP_OK\) )"
+          r"(orb_wasm_bind_app\(slot, row\);)", r"\2\n        \1")),
+    # seam: the boot rung loads a C2-quarantined code app — its memory held hostage.
+    ("load despite fault words", "seam",
+     _sub("if (orb_svc_faulted(row)) continue;", "/* no quarantine check */")),
+    # seam: the enable door keeps a previous occupant's engine state on the slot.
+    ("keep stale slot", "seam",
+     _sub("orb_wasm_unload(row->flash_slot);", "/* stale state kept */")),
+    # seam_main: the boot ladder skips the rung — enabled code apps never load.
+    ("no code rung at boot", "seam_main",
+     _sub("orb_app_install_apply_code();", "/* rung skipped */")),
+    # seam_main: the rung runs BEFORE the enable words — every installed code app
+    # pays its D27 memory, even the ones the owner turned off.
+    ("rung before enable words", "seam_main",
+     _rex(r"(orb_app_install_apply_enable\(\);)",
+          r"orb_app_install_apply_code();\n    \1")),
 ]
 
 
 def run_mutations(tmp):
     caught, missed = 0, []
     for name, kind, fn in MUTATIONS:
-        if kind == "lint":
-            # A shipped-text rewrite: its lint must go red on the mutant.
-            if lint(fn(src)):
+        if kind in ("lint", "seam", "seam_main"):
+            # A shipped-text rewrite: its lint must go red on the mutant. An
+            # absent anchor is a MISS, not a catch: the code moved and the
+            # mutant silently stopped mutating anything.
+            try:
+                if kind == "lint":
+                    red = bool(lint(fn(src)))
+                else:
+                    red = bool(lint_seam(
+                        fn(read(INSTALL_C)) if kind == "seam" else read(INSTALL_C),
+                        fn(read(MAIN_C)) if kind == "seam_main" else read(MAIN_C)))
+            except SystemExit:
+                red = False
+                missed.append(name + " (anchor moved)")
+            if red:
                 caught += 1
-            else:
+            elif not missed or not missed[-1].startswith(name + " ("):
                 missed.append(name)
             continue
         try:
@@ -382,6 +471,7 @@ def main():
         fails += run_plan(binp, vecs_plan(), os.path.join(tmp, "v.bin"))
         fails += run_entries(binp)
         fails += lint(read(WASM_C))
+        fails += lint_seam(read(INSTALL_C), read(MAIN_C))
         app_c = read(os.path.join(ROOT, "main", "app", "orb_app.c"))
         if not re.search(r"\{\s*ORB_BEHAVIOUR_WASM\s*,\s*&orb_wasm_iface\s*\}", app_c):
             fails.append("  device lint: orb_app.c does not register the wasm module")
@@ -397,8 +487,8 @@ def main():
     tail = ""
     if mutate:
         tail = ", all %d mutants caught" % len(MUTATIONS)
-    print("all host checks pass (%d plan vectors, %d table rows, 7 lint rules%s)" % (
-        len(vecs_plan()), len(EXPECT_ENTRIES), tail))
+    print("all host checks pass (%d plan vectors, %d table rows, %d lint rules%s)" % (
+        len(vecs_plan()), len(EXPECT_ENTRIES), 7 + 6, tail))
 
 
 if __name__ == "__main__":

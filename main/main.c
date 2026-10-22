@@ -156,6 +156,11 @@ void app_main(void)
      * walks this boot only if its stored word says so, and one with no word
      * stays exactly as installed: off. */
     orb_app_install_apply_enable();
+    /* P7.4's rung: the code tier loads after the enable words are known (a
+     * disabled app must not cost its D27 memory) and before init_all asks each
+     * module to build — the wasm module's init answers OK only once its slot
+     * holds a runtime, so this rung is what makes an enabled code app walkable. */
+    orb_app_install_apply_code();
     ESP_ERROR_CHECK(orb_app_init_all());
 
     /* The carousel's name chip, on the top layer, built once here so no flick

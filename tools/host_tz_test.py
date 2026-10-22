@@ -47,8 +47,10 @@ if "--src" in sys.argv:
     SRC = sys.argv[sys.argv.index("--src") + 1]
 src = open(SRC).read()
 import hashlib
-# Resolved before BIN, not at the D13 block below: the binary's name has to carry
-# which theme file went in, or a mutation run reuses the previous run's image.
+# Resolved before BIN, not lower down: the binary's name has to carry which theme
+# file went in, or a mutation run reuses the previous run's image. Migration 1's
+# single-slot switch left no theme-target mutations, but THEME_SRC still keys BIN and
+# backs --theme-src, so a future battery that mutates orb_theme.c reuses this wiring.
 THEME_SRC = os.path.join(ROOT, "main", "art", "orb_theme.c")
 if "--theme-src" in sys.argv:
     THEME_SRC = sys.argv[sys.argv.index("--theme-src") + 1]
@@ -139,38 +141,8 @@ disarm_fn = lift(r"static void prov_intent_disarm\(void\)\n\{[^}]*\}")
 # that logs nothing wrong. So the encoding is pinned here instead.
 dns_fn = lift(r"static int dns_build_reply\(const uint8_t \*rx.*?return len;\n\}")
 
-# Ruling D13's two pure predicates, lifted out of the theme layer for the same
-# reason everything else in this harness is lifted: they are one-line decisions
-# about which 4 MB of flash the dial reads, and the bench has no second slot to
-# corrupt and no way to watch a boot draw the wrong bank. Truth-tabled below.
 THEME_HDR = os.path.join(ROOT, "main", "art", "orb_theme.h")
 theme_src = open(THEME_SRC).read()
-theme_hdr = open(THEME_HDR).read()
-
-
-def lift_theme(text, where, pattern):
-    m = re.search(pattern, text, re.S)
-    if not m:
-        sys.exit(f"could not lift {pattern!r} from {where} — did the code move? An "
-                 f"empty lift here would keep the D13 table green while testing a "
-                 f"predicate that no longer ships.")
-    return m.group(0)
-
-
-d13_lift = "\n".join([
-    lift_theme(theme_hdr, THEME_HDR, r"#define THEME_LIVE_DEFAULT[^\n]*\n"
-                                     r"#define THEME_LIVE_SLOT_A[^\n]*\n"
-                                     r"#define THEME_LIVE_SLOT_B[^\n]*"),
-    lift_theme(theme_src, THEME_SRC, r"#define SLOT_A_HDR[^\n]*\n#define SLOT_B_HDR[^\n]*"),
-    lift_theme(theme_src, THEME_SRC, r"typedef enum \{ BOOT_ART_DEFAULT = 0,"
-                                     r" BOOT_ART_CARD = 1 \} boot_art_t;"),
-    lift_theme(theme_src, THEME_SRC,
-               r"static boot_art_t boot_resolve\(const char \*live, const bool b_is_bundle\)"
-               r"\n\{[\s\S]*?\n\}"),
-    lift_theme(theme_src, THEME_SRC,
-               r"static uint32_t install_target\(boot_art_t live\)\n"
-               r"\{[\s\S]*?\n\}"),
-])
 
 wifi_reasons = """
 enum { WIFI_REASON_AUTH_EXPIRE = 2,           /* esp_wifi_types_generic.h */
@@ -317,7 +289,6 @@ static uint32_t s_prov_intent;
 {consume_fn}
 {disarm_fn}
 {dns_fn}
-{d13_lift}
 #define TAG "host"
 #define ESP_LOGI(a, ...) do {{ }} while (0)
 #define ESP_LOGW(a, ...) do {{ }} while (0)
@@ -484,34 +455,6 @@ static void rollback_case(const char *why){{
     printf("%-5s intent rollback %-18s -> %-9s word 0x%08X (want no-intent 0x00000000)\\n",
            ok ? "ok" : "FAIL", why, got ? "PROVISION" : "no-intent",
            (unsigned)s_prov_intent);
-}}
-/* Ruling D13's two decisions, tabled. Which slot a boot draws and which slot an
- * install may write are the two numbers a wrong answer about costs a device its
- * dial, and neither is observable on a bench with one card and no second slot to
- * corrupt: the shipped predicates are lifted and run instead of watched. */
-static void boot_case(const char *what, const char *live, bool b_bundle, int want){{
-    const boot_art_t got = boot_resolve(live, b_bundle);
-    const int pass = ((int)got == want);
-    if (!pass) fails++;
-    printf("%-5s boot_resolve %-34s -> %-7s (want %s)\\n", pass ? "ok" : "FAIL", what,
-           (int)got == BOOT_ART_CARD ? "card" : "default",
-           want == BOOT_ART_CARD ? "card" : "default");
-}}
-static void install_target_case(const char *what, boot_art_t drawn, uint32_t want){{
-    /* §26 slice 3's ping-pong. Under ruling D13 the answer was a constant (slot B) and
-     * the test pinned that constant, because slot A held the one copy of the factory
-     * pixels. D13 is retired and the owner ruled the default expendable, so A is a legal
-     * target and the constant is no longer the property worth defending. What is still
-     * load-bearing — and the reason a power cut during a store is survivable at all — is
-     * that the target is never the slot on the glass. Both directions are tabled, and
-     * each row checks the invariant as well as the answer, so a predicate that simply
-     * returned the other constant could not pass half the table. */
-    const uint32_t drawn_slot = (drawn == BOOT_ART_CARD) ? SLOT_B_HDR : SLOT_A_HDR;
-    const uint32_t t = install_target(drawn);
-    const int pass = (t == want) && (t != drawn_slot) && (t == SLOT_A_HDR || t == SLOT_B_HDR);
-    if (!pass) fails++;
-    printf("%-5s install_target(%-14s) -> 0x%08X (want 0x%08X, never the drawn 0x%08X)\\n",
-           pass ? "ok" : "FAIL", what, (unsigned)t, (unsigned)want, (unsigned)drawn_slot);
 }}
 static void off(const char *posix, int hh, int mm, int ss, int want){{
     struct tm t;
@@ -723,32 +666,6 @@ int main(void)
     drop_case(0, 0, 0, 0); drop_case(1, 1, 0, 0); drop_case(1, 0, 1, 0);
     drop_case(0, 1, 0, 0); drop_case(0, 0, 1, 0);
     drop_case(1, 1, 1, 0); drop_case(0, 1, 1, 0);
-    puts("== ruling D13: the slot the dial draws, and the one an install may write ==");
-    /* P6.5 retired FORMAT 2, so the resolve predicate has one input that matters:
-     * the choice, and whether the slot it points at holds a drawable FORMAT 3
-     * bundle. A choice that names no drawable bundle is an absence, and
-     * the answer is the default with the choice left written — a boot that quietly
-     * cleared it would forget what the owner asked for. */
-    /* §26 slice 3: the slot designators. "slot-B" is the only word that draws B;
-     * "slot-A" names the default leg whatever B holds, because A draws mapped from
-     * its own header and B's state cannot move it. The legacy "card" is DEAD by
-     * owner ruling 2026-10-20 — new infra owes no backwards compatibility — and a
-     * board still holding it in NVS falls like any other unknown until one press
-     * rewrites the word. Both rows below pin that deletion as behaviour. */
-    boot_case("card is dead, B is a bundle", "card", true, BOOT_ART_DEFAULT);
-    boot_case("card is dead, no bundle", "card", false, BOOT_ART_DEFAULT);
-    boot_case("slot-B chosen, B is a bundle", THEME_LIVE_SLOT_B, true, BOOT_ART_CARD);
-    boot_case("slot-B chosen, no bundle", THEME_LIVE_SLOT_B, false, BOOT_ART_DEFAULT);
-    boot_case("slot-A chosen, B is a bundle", THEME_LIVE_SLOT_A, true, BOOT_ART_DEFAULT);
-    boot_case("default chosen, B is a bundle", THEME_LIVE_DEFAULT, true, BOOT_ART_DEFAULT);
-    boot_case("junk in the key, B is a bundle", " Card ", true, BOOT_ART_DEFAULT);
-    boot_case("no key at all, B is a bundle", "", true, BOOT_ART_DEFAULT);
-    boot_case("NVS unreadable, B is a bundle", NULL, true, BOOT_ART_DEFAULT);
-    /* The ping-pong tabled in both directions: the default leg sends the store to B,
-     * the card leg sends it to A, and the A row is the ruling that spends the flashed
-     * default — the case D13 existed to forbid, now pinned as required behaviour. */
-    install_target_case("drawing default", BOOT_ART_DEFAULT, SLOT_B_HDR);
-    install_target_case("drawing card", BOOT_ART_CARD, SLOT_A_HDR);
     leave_case(0, 0);      /* driver reported nothing: must still count, or the
                             * ladder stops and the orb sits unreachable forever */
     guard_counter();
@@ -1206,27 +1123,6 @@ MUTATIONS = [
      'cfg.max_uri_handlers  = %s;' % re.search(r'max_uri_handlers\s*=\s*(\d+)',
                                                src).group(1),
      'cfg.max_uri_handlers  = 12;'),
-    # The ping-pong's two predicates, mutated in the file that ships them. Each is
-    # the failure the pair was written to remove, and each must turn a row of the
-    # table above red: an install aimed at either slot regardless of the glass, a
-    # boot that draws a slot it never verified, a boot that revives the dead card
-    # word, and a boot that stops honouring the one B spelling that exists.
-    ('an install aims at slot B whatever the glass',
-     'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
-     'return SLOT_B_HDR;', 1, 'theme'),
-    ('an install aims at slot A whatever the glass',
-     'return (live == BOOT_ART_CARD) ? SLOT_A_HDR : SLOT_B_HDR;',
-     'return SLOT_A_HDR;', 1, 'theme'),
-    ('boot draws the slot-B leg with no bundle in it',
-     'return b_is_bundle ? BOOT_ART_CARD : BOOT_ART_DEFAULT;',
-     '(void)b_is_bundle;\n    return BOOT_ART_CARD;', 1, 'theme'),
-    ('the dead card word is revived as a B choice',
-     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)',
-     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0 || strcmp(live, "card") == 0)',
-     1, 'theme'),
-    ('the slot-B designator stops being honoured',
-     'if (strcmp(live, THEME_LIVE_SLOT_B) == 0)',
-     'if (0 && strcmp(live, THEME_LIVE_SLOT_B) == 0)', 1, 'theme'),
 ]
 
 def run_mutations():

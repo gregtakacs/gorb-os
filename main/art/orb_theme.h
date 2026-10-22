@@ -13,41 +13,26 @@
  * pair left in place as the fallback, which is what keeps `idf.py flash` and the
  * shipped dial working exactly as they did.
  *
- * INSTALL ALTERNATES BETWEEN TWO SLOTS INSIDE THE `assets` PARTITION
- * (§26 slice 3, owner ruling 2026-10-20; superseding ruling D13, 2026-10-12).
- * Two slots exist on the partition, each a 4 KB header followed by a
- * 64 KB-aligned payload:
+ * ONE 8 MB SLOT AT THE HEAD OF THE `assets` PARTITION (Migration 1).
+ * A single slot holds one theme: a 4 KB header at offset 0, geometry tables at
+ * 0x1000, pixel banks at 0x10000, an 8 MB ceiling. There is no second slot and no
+ * A/B switch. The `assets` partition row in partitions.csv does not change — the
+ * retired A/B pair was two regions inside the same 8 MB partition.
  *
- *     slot A  header @ 0x000000   payload @ 0x00010000
- *     slot B  header @ 0x00400000 payload @ 0x00410000
+ * A store erases the slot, writes the payload and geometry, reads them back and
+ * checksums them, and writes the header LAST. A store interrupted at any point —
+ * power cut, card pulled, a killed upload — leaves the slot headerless and invalid,
+ * so the next boot falls to the base digital face and one re-store recovers it. The
+ * loading page during a store is what protects the live pixels: there are no live
+ * pixels to protect, because a store IS the theme change and the only answer to a
+ * torn store is to press it again.
  *
- * A store writes whichever slot the dial is NOT drawing, so the live theme is never
- * the one being erased. Slot A normally holds what `idf.py flash` wrote — the shipped
- * av-kit bundle — and it is now a legal target: on the second store the flashed
- * default is overwritten, and reflashing is the sanctioned recovery. D13 forbade that
- * because slot A was then the only copy of the factory pixels and the card-less fallback
- * read from the same region; FORMAT 3 retired both halves of that premise, and the owner
- * ruled the default expendable rather than finding it a third home.
- *
- * Payload and geometry are written and read back verified BEFORE the header, so a store
- * interrupted at any point — power cut, card pulled, crash — leaves the target slot
- * headerless and invalid while the slot on the glass keeps its own header. The boot that
- * follows draws what it drew before. That guarantee is what alternation buys, and it is
- * independent of which slot is which.
- *
- * What the dial draws is a CHOICE, stored under THEME_NVS_LIVE as a slot
- * designator: "default", "slot-A" or "slot-B" (§26 slice 3). The legacy "card"
- * word is DEAD, by owner ruling 2026-10-20 — new infra owes no backwards
- * compatibility — so an NVS still holding it boots the default leg until one
- * press overwrites the word.
- * It is not a pending operation: nothing installs at boot. Boot reads the
- * choice, verifies the slot it names, and falls back to the default with the
- * damage recorded when the named slot's bytes do not match what the store
- * checked — a slot was verified when it was written, so anything else is
- * corruption, not a state a user is waiting on.
- *
- * A board that has never installed anything reports source "slot-A" and draws the
- * flashed bundle, or the base digital face if slot A holds nothing drawable.
+ * The choice of which theme the dial draws is gone: the one slot holds the one
+ * theme. `orb_theme_source()` answers "slot" when that theme is a valid drawable
+ * bundle and "none" otherwise. The `theme_live` NVS key and the damage-reporting
+ * pair are retired; `theme_staged` survives as a witness that a store was armed and
+ * never completed. A board carrying old slot-B-only data boots themeless once and
+ * re-stores.
  */
 #pragma once
 
@@ -62,14 +47,12 @@
 #define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */
 #define ORB_THEME_ID_HEX   12      /* sha256(name)[:12] — the card filename stem */
 
-/* Partition offsets inside `assets`, both 64 KB aligned so esp_partition_mmap
- * wastes no MMU entry on rounding. ORB_THEME_SLOT_CAP is what a theme has to fit
- * in: the shipped bank is 3.68 MB of its 4 MB, so check this number before
- * believing any particular theme will install. */
-#define ORB_THEME_SLOT_A_HDR  0x000000u
-#define ORB_THEME_SLOT_A_ART  0x00010000u
-#define ORB_THEME_SLOT_B_HDR  0x00400000u
-#define ORB_THEME_SLOT_B_ART  0x00410000u
+/* Partition offsets inside `assets`. One slot at the head of the partition: a 4 KB
+ * header at offset 0, 64 KB-aligned geometry at 0x1000 and pixels at 0x10000. See
+ * orb_theme.c's SLOT_* defines for the authoritative layout. ORB_THEME_SLOT_CAP is
+ * what a theme has to fit in; the 8 MB ceiling is the whole `assets` partition.
+ * (Migration 1 retired the old A/B slot pair — two 4 MB regions inside this same 8 MB
+ * partition — so the header no longer names a slot letter.) */
 
 /* The complication/aux record types and the CLK_KIND_/CLK_SRC_/CLK_FLAG_
  * vocabularies moved to clk_types.h with D32 slice 2: the FORMAT 3 projection
@@ -113,61 +96,37 @@ typedef struct {
  * clock_view.c includes the generated header first and the macro header second. */
 
 /**
- * Resolve the choice the owner made and verify the slot it names. Call BEFORE
- * clock_view_init(), which maps the bank — this reads the same multi-megabyte
- * region the paint path is about to map, and resolving first is what stops the
- * dial drawing half of one theme and half of another.
+ * Read the one slot's header, verify its bytes, and hand back the geometry the
+ * dial draws. Call BEFORE clock_view_init(), which maps the bank — this reads the
+ * same multi-megabyte region the paint path is about to map, and resolving first is
+ * what stops the dial drawing half of one theme and half of another.
  *
- * It resolves and verifies ONLY. Nothing installs from the card here (D13): the
- * boot path that opened the card, copied a container and kept a retry counter was
- * a boot that could spend seconds on a card it did not need and could be left
- * half-installed by a power cut. Storing is orb_theme_install_bundle()'s job, and the
- * only thing that decides when it runs is a pick.
+ * It reads and verifies ONLY. Nothing installs from the card here (D13): the boot
+ * path that opened the card, copied a container and kept a retry counter was a boot
+ * that could spend seconds on a card it did not need and could be left half-installed
+ * by a power cut. Storing is orb_theme_install_bundle()'s job, and the only thing
+ * that decides when it runs is a press.
  */
 esp_err_t orb_theme_boot(void);
 
 /** The resolved geometry; valid from orb_theme_boot() onwards, never NULL. */
 const orb_theme_geo_t *orb_theme_geo(void);
 
-/** "slot-A", "slot-B" or "baked-in": what the dial is drawing from. */
+/** "slot" when the dial draws the slot's bundle, "none" for the base face. */
 const char *orb_theme_source(void);
-/** The owner name of the theme currently on the wall, "" for the factory dial. */
+/** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);
-
-/** The owner's choice, as resolved at boot: a slot designator. The legacy
- *  "card" word is deleted outright (owner ruling 2026-10-20: no backwards
- *  compatibility at this stage); a board whose NVS still holds it boots the
- *  default leg like any other unknown word. The lifted-line pair below is
- *  pinned by tools/host_tz_test.py's lift regex — keep the three defines
- *  adjacent. */
-#define THEME_LIVE_DEFAULT "default"
-#define THEME_LIVE_SLOT_A  "slot-A"
-#define THEME_LIVE_SLOT_B  "slot-B"
-const char *orb_theme_live(void);
-
-/**
- * Write the choice. Nothing else: no card, no copy, no reboot. Writing NVS can
- * cost a sector erase, so the caller is a worker task, never the LVGL one, and
- * the caller owns asking for the reboot (orb_jobs_reboot_soon) — this function
- * leaves the dial drawing what it was drawing until the boot that follows.
- */
-esp_err_t orb_theme_set_live(const char *which);
 
 /* True when `id` is exactly ORB_THEME_ID_HEX chars of [0-9a-f] — a card filename
  * stem this device could have issued. The HTTP handlers call it to reject a
  * malformed id at the edge; install/delete re-check it on the resolve path. */
 bool orb_theme_id_ok(const char *id);
 
-/** Why the choice on the wall is not what the owner picked: both are "" when the
- *  slot boot wanted verified, and the id of the install that did not when it
- *  did not. The picker shows the sentence on that theme's row. */
-const char *orb_theme_damage_id(void);
-const char *orb_theme_damage_why(void);
-
-/** D30's `staged` word (§20.4): the 12-hex id of an install whose pixels reached
+/** D30's `staged` word (§20.4): the 12-hex id of a store whose pixels reached
  *  the slot and whose header never did, and the sentence for its row. ""/"" when
- *  nothing is staged. Read-only — the word never selects a theme (§20.2's flip
- *  rolls back on its own, because boot draws the slot that is committed). */
+ *  nothing is staged. Read-only — under the single slot the word is only a witness
+ *  that a store was armed and never completed; boot draws the base face and one
+ *  re-store clears the word. */
 const char *orb_theme_staged_id(void);
 const char *orb_theme_staged_why(void);
 
@@ -183,26 +142,28 @@ uint32_t orb_theme_refill_bytes(void);
 uint32_t orb_theme_bundle_ms(void);
 uint32_t orb_theme_bundle_bytes(void);
 
-/** Put a FORMAT 3 app bundle in the target slot: streaming ingest (§22.3, P6.3).
+/** Put a FORMAT 3 app bundle in the single slot: streaming ingest (§22.3, P6.3).
  *  Each section's bank is checksummed as its bytes cross from the card, the region
  *  is verified before the first erase, and the installed bytes are read back and
  *  checksummed from the partition before the header makes them live.
  *
- *  This is the only theme-store door. It does NOT choose the theme and does not ask
- *  for a reboot: the firmware draws a stored bundle from slot B on the next boot, so
- *  the row reports the store as done. Boot says the same thing from the slot rather
- *  than calling installed bytes missing (D26).
+ *  This is the only theme-store door, and it writes the ONE slot at offset 0. It
+ *  makes no choice and reboots on its own; the caller that posts it asks for the
+ *  reboot on success (orb_jobs_reboot_soon), because under the single slot the
+ *  stored bundle IS the theme the next boot draws. A store that returns an error
+ *  left the slot headerless — the base face on the next boot, recoverable by
+ *  pressing again.
  *
  *  Returns the esp_err_t/`why` pair the picker and page show. */
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
 
 /**
  * Queue the streaming bundle store (orb_theme_install_bundle) on the shell's one
- * worker. This is the ONLY way anything below main/ triggers a theme change: the
- * dial's picker and the browser's Store button both post here, so the knob and the
- * page cannot hold two opinions about what picking a theme does. No reboot follows —
- * a stored bundle is drawn from slot B on the next boot, and a boot that shows the
- * owner nothing is theatre.
+ * worker, then reboot on success. This is the ONLY way anything below main/ triggers
+ * a theme change: the dial's picker and the browser's Store and upload doors all post
+ * here, so the knob and the page cannot hold two opinions about what picking a theme
+ * does. A stored bundle is the theme the next boot draws, so a successful store asks
+ * for the reboot that draws it.
  *
  * Returns what the queue said — ESP_ERR_INVALID_STATE when another job is
  * outstanding, ESP_ERR_NO_MEM when the queue refused — and never blocks, so a
@@ -211,19 +172,6 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz);
  * row and the page read as one string.
  */
 esp_err_t orb_theme_post_bundle(const char *id);
-esp_err_t orb_theme_post_default(void);
-
-/**
- * §26 slice 3's flip door: POST /api/v1/sd/flip?id=X. The second half of the
- * two-stage press (§24.5(4)): the store put the bundle into a slot and the glass
- * never moved; the flip finds which slot holds that id, writes the choice to
- * name it, and asks for the reboot that draws it. No card is needed — it resolves
- * against the SLOT headers, which is what makes a flipped theme survive the card
- * going back in the drawer. Same queue discipline as the store door: returns
- * immediately, ESP_ERR_INVALID_STATE when a job is already running, and the
- * refusal lands on the pressed row's try witness exactly as the store's does.
- */
-esp_err_t orb_theme_post_flip(const char *id);
 
 /** What the last pick could not do: the id it was asked for and the sentence
  *  the ladder answered with. Both "" after a success, and the picker puts them on
@@ -240,17 +188,17 @@ typedef struct {
     uint32_t  fmt;                /* 2 or 3, from the FORMAT word; 0 = unreadable.
                                    * A fmt 3 row is a BUNDLE: loadable through
                                    * orb_theme_post_bundle(), never through the
-                                   * picker, and never active — a FORMAT 3 slot
-                                   * is stored, not drawn, until P6.5's reader. */
+                                   * picker, and never active until it is the one
+                                   * theme in the slot. */
     uint32_t  n_sections;         /* fmt 3 only: the index's app count; 0 for v2 */
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;           /* this file is what the dial is drawing */
     bool      changed;          /* the installed copy of this name has different bytes */
-    char      slot;             /* 'A' / 'B': stored in that slot; 0 when in neither.
-                                 * §26 slice 3: this is what makes a row flippable —
-                                 * the flip door takes the id, not the slot, and the
-                                 * page shows the button when this is set and active
-                                 * is not. */
+    bool      stored;           /* the single slot holds this file's bytes.
+                                 * Migration 1: repurposed from the A/B 'A'/'B' slot
+                                 * designator to a plain "is this the stored theme".
+                                 * With one slot it is the same test as matching the
+                                 * slot's 12-hex id and format tuple. */
 } orb_theme_entry_t;
 
 /**
@@ -278,9 +226,10 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap);
  */
 typedef struct orb_theme_up orb_theme_up_t;
 
-/* 4 MB of theme plus room for the header and the alignment gap. A bigger body is
- * refused on Content-Length, before a byte of it reaches the card. */
-#define ORB_THEME_UPLOAD_MAX  (0x00400000u + 0x20000u)
+/* The whole `assets` partition (8 MB) plus room for the header and the alignment
+ * gap. A bigger body is refused on Content-Length, before a byte of it reaches the
+ * card. The single slot's payload ceiling is 8 MB less the 64 KB header block. */
+#define ORB_THEME_UPLOAD_MAX  (0x00800000u + 0x20000u)
 
 esp_err_t orb_theme_upload_begin(orb_theme_up_t **out);
 esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n);
@@ -294,8 +243,12 @@ esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n);
  * Duplicate policy: same name + same geom_crc/art_crc/serial is accepted
  * idempotently; a different set of bytes under an existing name is refused with
  * ORB_THEME_UPLOAD_E_DUP unless overwrite. On failure nothing is committed and the
- * .part is removed, so a bad upload cannot be loaded by mistake. */
-esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why);
+ * .part is removed, so a bad upload cannot be loaded by mistake. On success the
+ * committed 12-hex id is copied into `committed_id` (may be NULL); orb_theme_upload_begin
+ * already armed the slot invalid, so the caller re-stores this id (post_bundle) to land
+ * the theme and reboot. */
+esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why,
+                               char *committed_id);
 void      orb_theme_upload_cancel(orb_theme_up_t **u);
 
 /* True while an upload owns the card, so the status endpoint can answer instead of
@@ -307,4 +260,6 @@ bool orb_theme_upload_busy(void);
  *  header name. Never builds a path from the caller's string. */
 esp_err_t orb_theme_delete(const char *id);
 
-#define ORB_THEME_SLOT_CAP    0x003F0000u   /* 4 MB less the 64 KB header block */
+#define ORB_THEME_SLOT_CAP    0x007F0000u   /* the 8 MB `assets` slot less its 64 KB
+                                             * header block: the ceiling a bundle's
+                                             * total art must fit within (Migration 1) */

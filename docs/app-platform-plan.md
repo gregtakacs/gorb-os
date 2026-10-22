@@ -5502,3 +5502,22 @@ reason, the dial boots to the menu, Clear-fault revives it. Items (1)-(7) are th
 owner-visible diff; (8) is the proof the ruling's core sentence — no exemptions —
 is true in code.
 
+**Bench, run 2026-10-21 on orb-B (`v1.1.0+94d7f1f`, stamp-audited serial flash).**
+The board carried the P7 test trio, so the ledger was non-empty and the clean-slate
+rung correctly skipped it (item 1's negative form: `resolved 3 installed apps`, no
+seed). `POST /api/v1/apps/factory` seeded clock→slot 3 and color_picker→slot 4,
+both enabled from their stored words at the next boot (`enabled "clock" from its
+stored word`), and `factory_missing` went false; the toggle door refused to disable
+the picker while it was on the glass with the ordinary sentence; `?to=hue` answered
+`accepted` on the shim and `?to=clock` on the row's own slug; the 400 body streams
+the live slugs with no hand-kept list. Uninstalling the clock erased its slot, the
+reboot after it showed `resolved 4` with no resurrection and `factory_missing:true`
+again, and the second Restore brought it back on. The status ledger grew to all six
+rows only after the PSRAM move — the 1024 B internal static dropped the seventh row
+on the first bench pass, and that regression is fix `94d7f1f`, pinned as item (9).
+The synthetic long-press (`hold=1`) from the clock's own screen landed on
+`screen -> menu` in the boot log — item (3), C8 as amended, on hardware. The knob's
+physical feel (items 2's confirm prose, 6's page text, 7's color surviving a
+reboot) stays the owner's fingers; the code paths behind all three are the ones the
+suites pin.
+

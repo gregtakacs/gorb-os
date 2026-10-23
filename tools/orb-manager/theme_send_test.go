@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
@@ -112,4 +113,67 @@ func getSendStatus(t *testing.T, s *Server, mux *http.ServeMux, ip string) *http
 	req.Header.Set(tokenHeader, s.token)
 	mux.ServeHTTP(rec, req)
 	return rec
+}
+
+// §32.5: a copy the device reports live outruns the idle budget and is still
+// held to its verdict. On 2026-10-23 evening the hub answered "lost — no store
+// witness within 150 s" for a 5.5 MB send while /api/v1/sd kept returning
+// job_busy:true — and that answer released the claim, re-admitting the sweep to
+// the port the copy still owned. The wait now follows the device's own word;
+// the fake scripts the busy streak longer than a shrunk budget and lands the
+// store after it, and the POST must return stored, later than the budget.
+func TestAStoreThatOutlivesTheIdleBudgetIsHeldToItsVerdict(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	budget, poll, ceil := themeStoreBudget, themeStorePoll, themeStoreBusyCeiling
+	defer func() {
+		themeStoreBudget, themeStorePoll, themeStoreBusyCeiling = budget, poll, ceil
+	}()
+	themeStoreBudget, themeStorePoll, themeStoreBusyCeiling =
+		120*time.Millisecond, 30*time.Millisecond, 30*time.Second
+	f.BusyPolls = 8 // ~240 ms of attested work at a 30 ms beat: twice the idle budget
+	file := orbfake.Container("hold-dial")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	t0 := time.Now()
+	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip, file)
+	env := decodeEnv(t, rec)
+	data, _ := env["data"].(map[string]any)
+	if env["ok"] != true || data["store"] != "stored" {
+		t.Fatalf("store verdict = %v, want stored for a copy that outlived the idle budget: %s", env["data"], rec.Body.String())
+	}
+	if d := time.Since(t0); d < themeStoreBudget {
+		t.Errorf("the POST returned after %v, under the %v idle budget: the hold never happened", d, themeStoreBudget)
+	}
+}
+
+// The ceiling is real: a board wedged on job_busy forever must still come back
+// answered — lost, with the ceiling named — because a hub that never releases
+// would hold the port forever. The verdict must arrive at the ceiling, not at
+// the idle budget: shrinking only the budget must not end the wait.
+func TestAStoreStuckBusyEndsAtTheCeilingNotTheIdleBudget(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	budget, poll, ceil := themeStoreBudget, themeStorePoll, themeStoreBusyCeiling
+	defer func() {
+		themeStoreBudget, themeStorePoll, themeStoreBusyCeiling = budget, poll, ceil
+	}()
+	themeStoreBudget, themeStorePoll, themeStoreBusyCeiling =
+		60*time.Millisecond, 20*time.Millisecond, 300*time.Millisecond
+	f.BusyForever = true
+	file := orbfake.Container("wedge-dial")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	t0 := time.Now()
+	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip, file)
+	env := decodeEnv(t, rec)
+	data, _ := env["data"].(map[string]any)
+	if env["ok"] != true || data["store"] != "lost" {
+		t.Fatalf("store verdict = %v, want lost at the busy ceiling: %s", env["data"], rec.Body.String())
+	}
+	note, _ := data["store_note"].(string)
+	if !strings.Contains(note, "busy ceiling") {
+		t.Errorf("the lost note says %q, want it to name the ceiling the wait ended at", note)
+	}
+	if d := time.Since(t0); d < themeStoreBusyCeiling {
+		t.Errorf("released after %v, before the %v busy ceiling: the idle budget ended a busy wait again", d, themeStoreBusyCeiling)
+	}
 }

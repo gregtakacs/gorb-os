@@ -680,3 +680,29 @@ orbital-arrow — no longer exists in the shipped hub. The C6 gate is unchanged:
 the flash of `v1.1.0+4ef0960` (or newer) still has to land before a v4 bake
 means anything, and orbital-arrow wants one press of Send to orb once it does.
 
+4. The claim binds one process; the bench runs hub instances (23 Oct, 14:04).
+   A send through the fixed hub tore at 42% anyway, and the hub log on the
+   stale instance tells it: `probing /dev/ttyACM0 (chip ...): the orb stopped
+   answering the address it was seen at`, eight times in ninety seconds, each
+   followed by a confirm — while the serving instance's log held no POST at
+   all. A launcher had started a second hub (it fell back to a random port
+   because the first instance still held :3779), the browser's send went
+   through one process, and the *other* process's identity sweep — consulting
+   its own empty operation ledger and finding no flock on the lead — pulsed
+   DTR/RTS through the copy. `rst:11` again. The slot ledger was never wrong;
+   it just speaks to one process, and `probeCableNow` honours it only inside
+   its own process. The fix closes the loop the way the probe already
+   expects: `holdDevicePort` now takes `orbbind.LockPort` for the whole
+   transfer and releases it with the slot, so a theme claim is visible to
+   every hub process on the machine, not just the one that made it. A busy
+   flock declines the claim exactly like a busy slot does — the holder is
+   another writer and keeps its own probe off. The probe already abandons
+   "before the reset" when the flock is held (the ttyACM1 lines in the same
+   log prove the guard works when someone holds the lock); the theme call
+   simply never held it. The bench rule the log teaches stands: one
+   orb-manager per machine — `fuser /dev/ttyACM*` before a send is worth the
+   two seconds — and the flock now makes even that mistake survivable.
+   `TestAThemeCallHoldsThePortTheProbeWouldUse` pins both directions: while
+   the claim is live a foreign `LockPort` must fail, and it must succeed the
+   moment the release runs.
+

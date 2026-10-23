@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -333,7 +334,12 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, strin
 // .part file. Nothing was wrong with the file, nothing was wrong with the orb, and
 // nothing was written down: the operator saw a card that never changed. Claiming the
 // slot makes cableNeedsProbe and proveCable both decline that port until the transfer
-// ends, which is the deferral the sweep already owes any other writer.
+// ends, which is the deferral the sweep already owes any other writer. The slot only
+// binds THIS process's sweep, so the claim also takes the port's flock — the one guard
+// that binds every process on the bench. A second hub instance tore a store on
+// 23 Oct for exactly the reason the slot could not give it: the first hub's ledger
+// said held, the second hub's probe checked only its own empty ledger and the port's
+// flock, found that free, and paid the reset (docs/theme-delta-mmap-plan.md 32.4).
 //
 // It resolves the address the way the hub resolves every other one: the MAC the grant was
 // committed for, falling back to the address book, then the MAC the USB sweep attributes
@@ -396,8 +402,23 @@ func (s *Server) holdDevicePort(ctx context.Context, ip string, budget time.Dura
 		// wire is HTTP and the holder is somebody else's business.
 		return noop, nil
 	}
+	// The operation slot only speaks to THIS process's sweep. The 23 Oct teardown
+	// proved a second orb-manager on the same bench (a launcher start while a stale
+	// instance still held the UI port) resets the board mid-store regardless: its
+	// probeCableNow consults its own empty slot table, finds no flock on the lead,
+	// and pays the DTR/RTS pulse while the first hub holds a perfectly real claim
+	// in its own private ledger. The flock is the only guard that speaks across
+	// processes — the probe takes it before every pulse precisely to decline
+	// someone else's write — so the theme claim must hold it for the copy's full
+	// length, not just the slot. A busy flock declines the same way a busy slot
+	// does: the holder is another writer, and its own rule keeps the probe off.
+	lock, lerr := orbbind.LockPort(port)
+	if lerr != nil {
+		s.ops.finish(job)
+		return noop, nil
+	}
 	log.Printf("orb-manager: a theme call to %s holds %s; the identity sweep waits", ip, port)
-	return func() { s.ops.finish(job) }, nil
+	return func() { lock.Release(); s.ops.finish(job) }, nil
 }
 
 // macBare is orbmdns.CanonicalMAC's shape without its refusal: lower case, separators

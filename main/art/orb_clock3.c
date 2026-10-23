@@ -35,6 +35,25 @@ static const char *const CLASS_NAMES[9] = {
 #define CLS_BANK   5
 #define CLS_AUX    8            /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+#define EF_INSTANCE 32          /* C4: the row's one plane is its whole frame
+                                 * window, and the comp maths draws `n_frames`
+                                 * slots of it. The reading rule is one condition
+                                 * (§4.2); the bit means nothing below a window
+                                 * and nothing outside the delta dialect, so
+                                 * both refusals live here, not in the schema's
+                                 * u8 gate alone. */
+#define PARENT_NONE 0xFFFFu     /* C4's element-row parent column, none */
+
+/* C4's row table is bounded by the clock's own slot vocabulary — two plates, six
+ * hands, five shadow twins, eight pointers, sixteen complications — and a table
+ * that outgrows it died in the walk above for naming a slot twice or a class the
+ * dial has no field for. The parent pass reserves one slot per row it accepted,
+ * so this bound is the walk's, not a new cap: a row count past it cannot arrive
+ * here at all, and the assert below is the check that says so. */
+#define CLOCK_ROWS_MAX (2 + 6 + 5 + 8 + 16 + 1)
+
+/* §31 rule 5: the plate row's frames, and every row's parent claim, are the two
+ * vocabularies a v3 stamp has never carried a meaning for. The gate: */
 #define AUX_F_SHADOW 0x10       /* aux row: the shadow TWIN of the row before it.
                                  * FORMAT 3's element flag column is a u8, so the
                                  * runtime's CLK_FLAG_AUX_SHADOW (1 << 8) cannot ride
@@ -186,6 +205,40 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     if (scr_w != CLK_SCR_W || scr_h != CLK_SCR_H)
         return "a format-3 clock section made for a different panel";
 
+    /* ---- C4, Decision A: the clock's own dialect gate, before any row ----
+     * The clock section stamps its geometry version in the index record's own
+     * word; the row width must be the width that stamp was written with,
+     * exactly. A v3 clock carries the three widths this schema has ever shipped
+     * (17, 19, 23 words) and no delta columns; a v4 clock carries exactly 25
+     * and honours the ones C4 appends. A stride that matches no stamp, or a
+     * stride that disagrees with the stamp it rides, is not a dialect to decode
+     * leniently — it is a file whose meaning is unknown, and leniency here is
+     * the silent mispaint §4.1 refuses. The container header's word gates the
+     * whole bundle at the door (orb_bundle.c); this is the clock's own line. */
+    const uint8_t cabi = sec->abi_max;
+    if (sec->abi_min > cabi ||
+        (cabi != (uint8_t)ORB_BUNDLE3_ABI && cabi != (uint8_t)ORB_BUNDLE3_ABI2))
+        return reject("a clock section stamped geometry v%u..v%u; this reader's clock "
+                      "dialect is v%u and v%u — re-bake it",
+                      (unsigned)sec->abi_min, (unsigned)cabi,
+                      (unsigned)ORB_BUNDLE3_ABI, (unsigned)ORB_BUNDLE3_ABI2);
+    const bool delta = cabi == (uint8_t)ORB_BUNDLE3_ABI2;
+    const uint32_t ew = orb_bundle_elem_stride(sec);
+    if (delta ? (ew != 25u) : (ew != 17u && ew != 19u && ew != 23u))
+        return reject("clock rows are %lu words under geometry v%u; that stamp writes %s",
+                      (unsigned long)ew, (unsigned)cabi,
+                      delta ? "exactly 25" : "17, 19 or 23");
+    if (ne > CLOCK_ROWS_MAX)   /* the walk's own bound, asserted before its slots */
+        return reject("%lu clock rows: the dial's slot vocabulary seats %u at most",
+                      (unsigned long)ne, (unsigned)CLOCK_ROWS_MAX);
+    const uint32_t sprb = orb_bundle_spr_stride(sec);
+    if (delta ? (sprb != ORB_BUNDLE_SPR_BYTES2) : (sprb != ORB_BUNDLE_SPR_BYTES))
+        return reject("clock catalogue rows are %lu bytes under geometry v%u; that "
+                      "stamp writes %lu",
+                      (unsigned long)sprb, (unsigned)cabi,
+                      delta ? (unsigned long)ORB_BUNDLE_SPR_BYTES2
+                            : (unsigned long)ORB_BUNDLE_SPR_BYTES);
+
     /* ---- the table, indexed by (class, slot): the identity §25.2 ruled ---- */
     int16_t at_plate[2] = { -1, -1 }, at_hand[6] = { -1,-1,-1,-1,-1,-1 };
     int16_t at_shadow[5] = { -1,-1,-1,-1,-1 };
@@ -193,6 +246,11 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     for (int i = 0; i < CLK_AUX_MAX; i++) at_aux[i] = -1;   /* the stack zeroes no -1 */
     int16_t at_bank[CLK_COMP_MAX] = { -1,-1,-1,-1,-1,-1,-1,-1,
                                       -1,-1,-1,-1,-1,-1,-1,-1 };
+    /* C4's parent bookkeeping: one slot per row the walk accepts, so the bound
+     * is the walk's own (the gate refused any table that could outgrow it). */
+    uint16_t row_tag[CLOCK_ROWS_MAX];
+    uint16_t row_par[CLOCK_ROWS_MAX];        /* tag on entry, row index + 1 out */
+    uint32_t nrows = 0;
     for (uint32_t i = 0; i < ne; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
@@ -264,6 +322,84 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             return reject("two rows for %s slot %u: one slot draws one layer",
                           nm, (unsigned)e.slot);
         *cell = (int16_t)i;
+
+        /* C4's per-row rules, run once the row has a slot: the delta columns
+         * mean nothing to a v3 stamp (and the gate above already proved no v3
+         * row can carry them — a narrower stride reads parent as none and
+         * delay as zero, so nothing below can fire on an old file). */
+        row_tag[nrows] = e.n;
+        row_par[nrows] = 0u;
+        if (delta) {
+            if ((e.flags & EF_INSTANCE) &&
+                (e.cls != CLS_BANK || e.kind != CLK_KIND_WINDOW ||
+                 e.src >= CLK_SRC__MAX ||
+                 WINDOW_DOMAIN[e.src].count == 0u ||
+                 e.n_frames != WINDOW_DOMAIN[e.src].count))
+                return reject("element %u asks to instance %u plates over a domain of "
+                              "%u: one plane standing for a window needs a fixed "
+                              "domain and its full frame count",
+                              (unsigned)e.n, (unsigned)e.n_frames,
+                              (unsigned)WINDOW_DOMAIN[e.src].count);
+            if (e.parent != PARENT_NONE) {
+                if (e.parent == 0u)
+                    return reject("element %u names parent 0: zero is the plate's own "
+                                  "tag, and a parent of none is 0xFFFF — refused, not "
+                                  "guessed", (unsigned)e.n);
+                if (e.cls != CLS_AUX && e.cls != CLS_BANK)
+                    return reject("element %u is class %s and names a parent: pointers "
+                                  "and complications hang on other rows, plates and "
+                                  "hands are hung from", (unsigned)e.n, nm);
+                if (e.flags & AUX_F_SHADOW)
+                    return reject("element %u is a shadow twin and names a parent: a "
+                                  "twin hangs off its hand's light, not off a row",
+                                  (unsigned)e.n);
+                row_par[nrows] = e.parent;      /* resolved by tag after the walk */
+            }
+            if (e.delay && e.n_frames < 2u)
+                return reject("element %u carries a delay of %u ms and one frame: a "
+                              "tempo on a row that never advances is a bake that lost "
+                              "its animation", (unsigned)e.n, (unsigned)e.delay);
+        } else if (e.flags & EF_INSTANCE) {
+            return reject("element %u carries the instance flag under geometry v%u: "
+                          "the v3 dialect has no reading for it",
+                          (unsigned)e.n, (unsigned)cabi);
+        }
+        nrows++;
+    }
+
+    /* ---- C4: the parent pass. Tags resolve, chains stop at two links, and a
+     * cycle is refused by the walk that would otherwise spin. O(n²) over a table
+     * the slot vocabulary already caps at CLOCK_ROWS_MAX rows: a dial this small
+     * is the reason the cap is honest, not a thing to optimize. Validation runs
+     * over the whole table BEFORE any resolution rewrites a slot, so a resolved
+     * small index can never masquerade as a tag mid-pass. ---- */
+    for (uint32_t k = 0; k < ne; k++) {
+        if (row_par[k] == 0u) continue;
+        uint32_t cur = k;
+        for (uint32_t hops = 1;; hops++) {
+            const uint16_t tag = row_par[cur];
+            int found = -1;
+            for (uint32_t m = 0; m < ne; m++)
+                if (row_tag[m] == tag) { found = (int)m; break; }
+            if (found < 0)
+                return reject("element %u names parent %u: no row in this table carries "
+                              "that tag", (unsigned)row_tag[cur], (unsigned)tag);
+            if ((uint32_t)found == k)
+                return reject("element %u's parent chain is a cycle: the walk came home "
+                              "after %lu link%s", (unsigned)row_tag[k],
+                              (unsigned long)hops, hops == 1u ? "" : "s");
+            if (hops > 2u)
+                return reject("element %u hangs three deep: this compositor carries two "
+                              "links — a child on a rotator, a rotator on a plate",
+                              (unsigned)row_tag[k]);
+            cur = (uint32_t)found;
+            if (row_par[cur] == 0u) break;
+        }
+    }
+    for (uint32_t k = 0; k < ne; k++) {
+        if (row_par[k] == 0u) continue;
+        for (uint32_t m = 0; m < ne; m++)
+            if (row_tag[m] == row_par[k]) { row_par[k] = (uint16_t)(m + 1u); break; }
     }
 
     /* The scalars, verbatim (D31), and then the two a table can contradict. */
@@ -389,9 +525,26 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * animation vocabularies claiming one background; and a one-shot with no
      * tempo is a frame that never arrives, so it is refused rather than drawn
      * as a freeze. The plate's own plane — the consumer's frame 0 — is seated
-     * below, where the catalogue has been walked and the row bounds proved. */
+     * below, where the catalogue has been walked and the row bounds proved.
+     * C4 adds the third reading: under the delta stamp a gif bank rides its row
+     * (frame 0 whole, the rest rects), which is exactly the vocabulary §25.3
+     * called un-carriable — it now has a carrier, so the refusal retires for
+     * that shape and that shape alone. A keyframe bank keeps its own rule
+     * untouched: av-kit's still plate and 15-plane gif boot the same pixels
+     * under either stamp. */
     const uint8_t plate_anim = plate.n_frames > 1u || t->bg_frames != 0;
-    if (plate_anim) {
+    const uint8_t plate_delta =
+        delta && t->bg_mode == 1 && plate.n_frames > 1u && t->bg_frames == 0;
+    if (plate_delta) {
+        if (t->gif_frames != (uint16_t)plate.n_frames)
+            return reject("a delta plate row names %u planes while the gif table "
+                          "counts %u frames: the row is the loop",
+                          (unsigned)plate.n_frames, (unsigned)t->gif_frames);
+        if (!t->bg_loop && t->bg_fps < 1 && !plate.delay)
+            return reject("a one-shot delta bank at bg_fps %d and no row delay: an "
+                          "animation with no tempo is a frame that never arrives",
+                          (int)t->bg_fps);
+    } else if (plate_anim) {
         if (t->bg_frames != (uint16_t)(plate.n_frames - 1u))
             return reject("a plate row naming %u frames while the scalars name %u "
                           "extra: the row's planes are the animation's length",
@@ -449,19 +602,42 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         if (e.frame0 >= ns)
             return reject("element %u points at sprite row %u of a table with %u rows",
                           (unsigned)e.n, (unsigned)e.frame0, (unsigned)ns);
-        if ((uint64_t)e.frame0 + e.n_frames > ns)
+        /* C4: an instanced row's frame window is virtual — one seated plane,
+         * drawn n_frames times — so only its base is bounded and sized here. */
+        const uint32_t win = (delta && (e.flags & EF_INSTANCE)) ? 1u : e.n_frames;
+        if ((uint64_t)e.frame0 + win > ns)
             return reject("element %u names %u frames from row %u of a table with %u "
                           "rows: the animation runs off the end of the catalogue",
                           (unsigned)e.n, (unsigned)e.n_frames, (unsigned)e.frame0,
                           (unsigned)ns);
-        for (uint32_t f = 0; f < e.n_frames; f++) {
+        const uint8_t delta_stream =
+            delta && (t->bg_mode == 1 ? (i == (uint32_t)at_plate[0] && plate_anim)
+                                      : win > 1u);
+        for (uint32_t f = 0; f < win; f++) {
             orb_bundle_spr_t sp;
             orb_bundle_spr_at(sec, e.frame0 + f, &sp);
-            if (sp.w != e.w || sp.h != e.h)
-                return reject("element %u is %ux%u while its plane is %lux%lu: the "
-                              "table and the catalogue describe different layers",
-                              (unsigned)e.n, (unsigned)e.w, (unsigned)e.h,
-                              (unsigned long)sp.w, (unsigned long)sp.h);
+            if (f == 0u || !delta_stream) {
+                if (sp.w != e.w || sp.h != e.h)
+                    return reject("element %u is %ux%u while its plane is %lux%lu: the "
+                                  "table and the catalogue describe different layers",
+                                  (unsigned)e.n, (unsigned)e.w, (unsigned)e.h,
+                                  (unsigned long)sp.w, (unsigned long)sp.h);
+                if (f && (sp.diffx || sp.diffy))
+                    return reject("element %u frame %u is a whole plane that names a "
+                                  "rect position: a keyframe sits at the box origin",
+                                  (unsigned)e.n, (unsigned)f);
+            } else if (!sp.w || !sp.h ||
+                       sp.w > e.w || sp.h > e.h ||
+                       sp.diffx < 0 || sp.diffy < 0 ||
+                       (int32_t)sp.w + sp.diffx > e.w ||
+                       (int32_t)sp.h + sp.diffy > e.h)
+                return reject("element %u frame %u carries a %lux%lu rect at (%d,%d) "
+                              "outside its %ux%u box: a delta that is not a delta is "
+                              "refused before it paints",
+                              (unsigned)e.n, (unsigned)f,
+                              (unsigned long)sp.w, (unsigned long)sp.h,
+                              (int)sp.diffx, (int)sp.diffy,
+                              (unsigned)e.w, (unsigned)e.h);
         }
     }
 
@@ -537,6 +713,17 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             orb_bundle_spr_t sp;
             orb_bundle_spr_at(sec, e.frame0 + f, &sp);
             fill_sprite(&t->tourbillon[f], &e, &sp, NULL);
+            /* C4: the delta frames of a v4 carriage carry their rect into the
+             * fields FORMAT 2 pre-computed — the chord-marking path keeps its
+             * dirty box honest when the carriage costs its swept arc, not the
+             * whole bbox. A v3 (or flat v4) frame reads (0,0,0,0): the frame
+             * that differs from its predecessor by everything. */
+            if (delta && f && (sp.w < e.w || sp.h < e.h)) {
+                t->tourbillon[f].diffx = sp.diffx;
+                t->tourbillon[f].diffy = sp.diffy;
+                t->tourbillon[f].diffw = (uint16_t)sp.w;
+                t->tourbillon[f].diffh = (uint16_t)sp.h;
+            }
         }
     }
 
@@ -621,10 +808,18 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         c->count       = count;
         c->first       = e.order;             /* R-D: the z bucket */
         c->off         = sp.off;
-        c->frame_bytes = (uint32_t)e.w * (uint32_t)e.h * 3u;
+        /* C4: an instanced row's frame stride is zero — every slot of the
+         * domain reads the one seated plane, the §4.2 reading rule arrived at
+         * through the window maths that already indexes off + f * frame_bytes.
+         * parent_row and delay_ms ride the two new columns (0 = none/default;
+         * the walk refused the claims a v3 stamp cannot carry). */
+        c->frame_bytes = (e.flags & EF_INSTANCE)
+                       ? 0u : (uint32_t)e.w * (uint32_t)e.h * 3u;
         c->value_min   = value_min;
         c->scale       = e.scale16;           /* 0 reads as 16 in comp maths */
         c->show        = (uint8_t)(e.flags & EF_HIDDEN ? 0 : 1);
+        c->parent_row  = row_par[at_bank[slot]];
+        c->delay_ms    = e.delay;
         /* flags stays 0: the bank gate costs every row past the plate at
          * w*h*3, so a FORMAT 3 tile is always the runtime-composited kind. The
          * under-dial case is one a FORMAT 2 bake could produce and a FORMAT 3
@@ -744,6 +939,12 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * The twin is the one meaning a row can carry: AUX_F_SHADOW lands on the
          * runtime flag every clock-side pairing rule already reads. */
         a->flags     = 0;
+        /* C4: the pointer's two appended columns. A needle parented to the
+         * carriage it rides is the attach the escapement needs, and the row's
+         * own tempo replaces the tick where the bake wrote one; both read 0
+         * (none, default) for every row a v3 stamp or a flat v4 bake carried. */
+        a->parent_row = row_par[at_aux[slot]];
+        a->delay_ms   = e.delay;
         if (e.flags & AUX_F_SHADOW) {
             /* The twin takes its pose from the row before it and draws under it, so
              * the row before it must exist and must be a hand. A twin with no hand
@@ -802,22 +1003,55 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         return "the keyframe pixels lie outside the declared payload";
 
     /* ---- the gif block, derived (§25.6), and the plate bank (§31) ----
-     * One zero rect: the compiled path the shipped pair takes is the keyframe copy,
-     * which discards the rect list, and a FORMAT 3 clock section carries no delta
-     * bank to index. Every window boundary is therefore 0. The plate-frame table
-     * is the bgAnim consumer's own row list: a still plate keeps the one keyframe
-     * row it has always been handed, and an animated one gets one offset per
-     * extra plane, in bank order — frame 0 needs no row because the consumer
-     * starts on the plate. R6 retired the per-frame delay, so the delay table
-     * carries the OS beat — the same uniform figure a PNG frame pack's own bake
-     * printed, which is the 67 ms the shipped av-kit pair carries. */
-    io->rects[0].x = io->rects[0].y = 0;
-    io->rects[0].w = io->rects[0].h = 0;
-    io->rects[0].off = 0;
-    for (uint32_t i = 0; i <= (uint32_t)t->gif_frames; i++) io->rect_first[i] = 0;
+     * A keyframe bank — and every v3 table, and a flat v4 one — lands where it
+     * has always landed: one zero rect (the keyframe copy the compiled path
+     * takes discards the rect list), zero windows, and the OS beat in the delay
+     * table: the same uniform figure a PNG frame pack's bake printed, the 67 ms
+     * the shipped av-kit pair carries. C4's delta plate says its own truth:
+     * one rect row per gif frame after the keyframe, taken from the plane's
+     * catalogue row — and the row's own delay column, when it carries one,
+     * replaces the tick figure, because a row that names its tempo means it.
+     * The plate-frame table is unchanged: the bgAnim consumer's row list, one
+     * offset per extra plane in bank order — frame 0 needs no row because the
+     * consumer starts on the plate. */
+    int honest_rects = 0;
+    if (plate_delta) {
+        for (uint32_t f = 1; f < plate.n_frames && !honest_rects; f++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, plate.frame0 + f, &sp);
+            if (sp.w < plate.w || sp.h < plate.h || sp.diffx || sp.diffy)
+                honest_rects = 1;
+        }
+    }
     const uint32_t beat = (uint32_t)(t->tick_rate ? t->tick_rate : 1);
     uint32_t ms = (1000u + beat / 2u) / beat;
     if (!ms) ms = 1;
+    if (delta && plate.delay)
+        ms = plate.delay;
+    if (honest_rects) {
+        /* Windows the L3/L4 gif consumers already read: frame tgt applies
+         * [rect_first[tgt], rect_first[tgt + 1]). The keyframe applies nothing
+         * (it IS the canvas), so its window is empty, and every frame after it
+         * owns exactly the one rect its plane row named. */
+        io->rect_first[0] = 0;
+        io->rect_first[1] = 0;
+        for (uint32_t f = 1; f < (uint32_t)t->gif_frames; f++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, plate.frame0 + f, &sp);
+            io->rects[f - 1].x    = (uint16_t)(plate.x + sp.diffx);
+            io->rects[f - 1].y    = (uint16_t)(plate.y + sp.diffy);
+            io->rects[f - 1].w    = (uint16_t)sp.w;
+            io->rects[f - 1].h    = (uint16_t)sp.h;
+            io->rects[f - 1].off  = sp.off;
+            io->rect_first[f + 1] = (uint16_t)f;
+        }
+    } else {
+        io->rects[0].x = io->rects[0].y = 0;
+        io->rects[0].w = io->rects[0].h = 0;
+        io->rects[0].off = 0;
+        for (uint32_t i = 0; i <= (uint32_t)t->gif_frames; i++)
+            io->rect_first[i] = 0;
+    }
     for (uint32_t i = 0; i < (uint32_t)t->gif_frames; i++)
         io->gif_delays[i] = (uint16_t)ms;
     if (plate.n_frames > 1u) {

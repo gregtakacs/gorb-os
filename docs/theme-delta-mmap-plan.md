@@ -485,12 +485,54 @@ count in the sentence.
 missing parent, a cycle, a depth over 2, and a claimed delta with no rect. Pass
 line: `host_clock3_test.py` carries mirrored vectors for all four, and a flat ABI
 2 theme bakes and draws pixel-identically to the same theme at ABI 1.
+**DONE.** The append rides geometry stamp 4: element rows widen to 25 words
+(`parent` at word 23, `delay` at word 24), the catalogue to 6 words (`diffx`/`diffy`),
+and the row-size gate at `orb_bundle.c` refuses a stride that disagrees with the
+stamp it carries rather than guessing at the dialect (`orb_bundle_elem_stride`).
+`c4_battery` in `host_clock3_test.py` mirrors it: an honest flat v4 table reads at
+25/6 with the appended columns zeroed, a delta plate materializes one rect row per
+extra plane at the plate origin plus each diff and honours the row's own tempo, a
+comp resolves its `parent` to a row index, and the refusals fire in the projection's
+own words for a plate claiming a parent, a `parent` of 0, `EF_INSTANCE` under a v3
+stamp, a delta outside its box, a stride that lies about its stamp, and a tempo on a
+one-frame row. The C4 vectors run under the shared harness (`--dump3f`/`--refuse`),
+so the byte-level contract is the shipped reader's claim, not the host packer's.
 
 **C5 — the fold in the browser.** `captureDeltaSet3` record, model-bounded
 encoder, per-region `splitPolicy3`, guard moved to the measure pass (§7). Pass
 line: the same kit's tourbillon banks a delta stream whose first frame is the
 base plane and whose loop closes on frame 0; the price the tool shows is within
 5% of the bytes it emits.
+- **DONE (headless-verified; board checks in C6).** `orbtheme-baker.js` now
+  carries the v4 dialect end to end: `ELEMENT_FIELDS` widened to 25 words
+  (`parent`/`delay`) appended after the drive four exactly as `theme_schema`
+  does, with `ELEMENT_WORDS_V3`, `GEOM_ABI4`, `PARENT_NONE`, `SPR_WORDS2` and the
+  two stride families (`CLOCK_STRIDES_V3`/`_V4`) mirrored from the Python.
+  `packElements`/`packBlob3` take the section stamp and pack 23 words + a 4-word
+  catalogue at v3 (byte-identical to every file shipped before C4) and 25 words +
+  a 6-word `off/size/w/h/diffx/diffy` catalogue at v4; `writeBundle3` stamps the
+  container header at the max section stamp; `unpackBlob3`/`checkClockStamp` read
+  and gate both families in the reader's refusal order, and the v4 reader
+  materializes `rect_count`/`diffw`/`diffh` onto the row as `orb_clock3.c` does.
+  `checkElement`/`checkTable` gained the parent/delay/instance rules and the
+  parent graph (claim exists, not itself, ≤2 links, no cycle). `bakeClock3`
+  encodes an animated plate as the delta stream: frame 0 the whole base plane,
+  each later frame the union box of its changed texels over the running canvas
+  (a full-panel or unchanged frame costs a keyframe, and a loop that returns to
+  frame 0 ships `bg_loop=1`/`bg_frames=0`/`bg_mode=1`); it carries its own
+  `delay` (row `bg_fps`, else the shipped 67 ms) and a `parent`. A plate riding
+  under a carriage row stays the keyframe bank — the tourbillon owns the gif
+  table (`orb_clock3.c:539` refuses both), so `deltaBank` is cleared when one is
+  present. `selfVerify3` composites the baked deltas back and refuses a chain
+  that drifts before the bake ships. The `headless-bundle3` delta-contract check
+  (line 369, red by design through C1–C4) is now green; the whole suite is green
+  (182 checks) and the shipped `orb_clock3.c` projects the new delta bake — the
+  projection prints the loop frames at their keyframe offsets (§5.2), so the
+  harness prints a delta plate's `io.bg_frames` under the same `bgframe` line a
+  keyframe bank used. The board pass line (re-baked tourbillon on orb-B, the
+  within-5% price, the loop-closes-on-frame-0 glass check) and
+  `sim_tourb_mark.py` against a built `assets/clock_assets.bin` need the device
+  build and are carried into C6.
 
 **C6 — the tourbillon earns its keep.** Re-bake `orbital-arrow` at the corrected
 budget, flash, measure. Pass line: art lands near 860 KB, the escapement and

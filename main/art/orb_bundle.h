@@ -42,17 +42,40 @@ extern "C" {
 
 #define ORB_BUNDLE3_FORMAT   3u        /* the header's FORMAT word */
 #define ORB_BUNDLE3_ABI      3u        /* the header's GEOM_ABI word */
+#define ORB_BUNDLE3_ABI2     4u        /* C4's clock delta dialect. A container
+                                        * stamped 4 carries a clock section whose
+                                        * own stamp is 4: element rows are exactly
+                                        * 25 words (parent, delay appended), and
+                                        * catalogue rows are six (diffx, diffy).
+                                        * The strict gate is this stamp — the
+                                        * version word the format already checks
+                                        * and already refuses in a sentence naming
+                                        * both numbers — not a row width the
+                                        * loader infers. A reader that knows only
+                                        * v3 refuses the whole container at the
+                                        * header, which is the failure the §4.1
+                                        * ruling asked for. */
+#define ORB_BUNDLE_SPR_WORDS 4u        /* a catalogue row before the delta dialect */
+#define ORB_BUNDLE_SPR_WORDS2 6u       /* and at ABI 2: off,size,w,h,diffx,diffy */
 #define ORB_BUNDLE_SECT_MAX  8u        /* B5's app cap: the index's width */
 #define ORB_BUNDLE_IDX_WORDS 10u       /* 4H + 7I + 2H = 40-byte records */
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
-#define ORB_BUNDLE_ELEM_WORDS 23u      /* theme_schema.ELEMENT_FIELDS: the width a
-                                        * write carries and this reader decodes.
+#define ORB_BUNDLE_ELEM_WORDS 25u      /* theme_schema.ELEMENT_FIELDS: the width a
+                                        * C4 write carries and this reader decodes.
                                         * A read row's STRIDE is the blob's own
                                         * number (§23.5): blob_check() derives it
                                         * from the length equality, an older row
                                         * stride decodes with the appended
-                                        * columns zero, and D32's ruling A —
-                                        * append-only, no format bump — holds. */
+                                        * columns at their defaults — zero for
+                                        * D32/D34's set-to-zero columns, parent's
+                                        * 0xFFFF NONE for the C4 pair (a narrower
+                                        * row names no parent, which IS none) —
+                                        * and D32's ruling A — append-only, no
+                                        * format bump — holds for the clock
+                                        * section only under its own stamp gate:
+                                        * orb_clock3.c requires v3 stamps to carry
+                                        * 17, 19 or 23 words and v4 stamps to
+                                        * carry exactly 25. */
 #define ORB_BUNDLE_ELEM_WORDS_MIN 17u  /* the narrowest row the shipped dialect
                                         * ever wrote, pre-D32: the floor the
                                         * derived stride is refused below */
@@ -83,9 +106,12 @@ typedef struct {
     uint32_t    art_off,  art_size;             /* its bank inside the file */
     uint32_t    art_crc;                        /* record's, cross-checked to blob */
     uint16_t    n_elem, n_spr;
-    uint16_t    elem_words;    /* the blob's own row stride (§23.5): 19 from a
-                                * current bake, 17 from an older one; 0 reads
-                                * as the current width */
+    uint16_t    elem_words;    /* the blob's own row stride (§23.5): 25 from a
+                                * C4 clock bake, 23/19/17 from older ones; 0
+                                * reads as the current width */
+    uint16_t    spr_words;     /* the blob's catalogue row width: 4 before the
+                                * delta dialect, 6 (off,size,w,h,diffx,diffy) at
+                                * a clock section stamped for it; 0 reads as 4 */
     uint16_t    scr_w, scr_h;
     uint8_t     abi_min, abi_max;
     uint8_t     slug_len;
@@ -94,6 +120,9 @@ typedef struct {
 typedef struct {
     char     name[57];                 /* the bundle name: R4's theme_id input */
     uint32_t n_sections;
+    uint32_t geom_abi;                 /* the header's GEOM_ABI word, carried so
+                                        * the store can re-stamp the slot header
+                                        * with the bundle's own dialect (C4)  */
     uint32_t geom_off, geom_size, geom_crc;
     uint32_t art_off,  art_size,  art_crc;
     uint32_t serial;
@@ -216,6 +245,14 @@ typedef struct {
     int16_t  zero;   /* AUX: where the pointer sits at vmin        */
     uint16_t vmin;   /* AUX: the value `zero` stands for           */
     uint16_t vmax;   /* AUX: the domain `span` divides; 0 refuses  */
+    /* C4's two delta columns, read only from a row wide enough to hold them.
+     * `parent` is the element-row `n` of the drawing row this one hangs on,
+     * 0xFFFF for none: a row from before the column reads 0xFFFF, which is the
+     * value the dialect itself says a v3 row means — none. 0 is not that value:
+     * orb_clock3.c refuses a v4 row naming parent 0 rather than guess whether
+     * the bake meant the plate (whose row is tagged 0) or meant none. */
+    uint16_t parent;  /* parent row's n; 0xFFFF = none */
+    uint16_t delay;   /* per-frame ms; 0 = the dial's own default tempo */
 } orb_bundle_elem_t;
 
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
@@ -227,14 +264,26 @@ void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
  * filled by blob_check() — reads as the current schema's width. */
 uint32_t orb_bundle_elem_stride(const orb_bundle_sec_t *s);
 
+/* The catalogue row stride, in BYTES: 16 for a v3 section (off, size, w, h)
+ * and 24 at the delta dialect, which appends the i16 pair diffx, diffy — the
+ * position of each delta rect inside its row's box. Keyed by the section's own
+ * stamp, exactly as blob_check() sized the table with it. */
+#define ORB_BUNDLE_SPR_BYTES   (ORB_BUNDLE_SPR_WORDS  * 4u)
+#define ORB_BUNDLE_SPR_BYTES2  (ORB_BUNDLE_SPR_WORDS2 * 4u)
+uint32_t orb_bundle_spr_stride(const orb_bundle_sec_t *s);
+
 /* One row of the section's sprite catalogue — the planes its bank holds, in byte
  * order, each named by the element that draws it. `orb_bundle_elem_at()` gives a
  * row's frame0, and frame0 indexes THIS list: the catalogue is why a compositor
  * never has to guess whether a bank is contiguous or what a plane costs. Read
  * through the same blob_check() bounds as the element table, so an index the
- * record's n_spr did not vouch for is the caller's bug, not the file's. */
+ * record's n_spr did not vouch for is the caller's bug, not the file's.
+ * C4's two delta columns ride the wide row: `diffx`/`diffy` place the delta
+ * rect inside the drawing row's own box; the rect's size is the plane's own
+ * `w`/`h`. A v3 row — and a v4 row that is a full plane — reads (0, 0). */
 typedef struct {
     uint32_t off, size, w, h;
+    int16_t  diffx, diffy;   /* C4: delta rect origin in the row's box; 0,0 = full */
 } orb_bundle_spr_t;
 
 void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,

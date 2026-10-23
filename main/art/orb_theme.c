@@ -964,7 +964,12 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
 {
     memset(hdr, 0, W_WORDS * 4);
     hdr[0] = THEME_MAGIC;     hdr[1] = ORB_BUNDLE3_FORMAT;
-    hdr[2] = ORB_BUNDLE3_ABI; hdr[3] = W_WORDS * 4;
+    /* C4: the slot carries the STORED bundle's own dialect stamp, not the
+     * constant this build happens to write into new containers. A v4 theme
+     * installs a v4 slot: a reader that cannot read it must refuse it at the
+     * same header gate every other route runs, not boot a dial it decoded
+     * with defaulted columns. */
+    hdr[2] = h->geom_abi;     hdr[3] = W_WORDS * 4;
     hdr[4] = SLOT_GEOM_OFF;   hdr[5] = h->geom_size;  hdr[6] = h->geom_crc;
     hdr[7] = h->art_size;     hdr[8] = art_crc;
     hdr[9] = h->n_sections;   hdr[11] = serial;       hdr[13] = SLOT_ART_OFF;

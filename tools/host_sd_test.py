@@ -293,7 +293,7 @@ _H3_FMT2 = _recrc([orbtheme.FORMAT if i == orbtheme.W_FORMAT else w
 _H3_FMT_SENT  = "theme format this firmware cannot read"
 _H3_TORN_SENT = "container header is damaged — re-copy the file onto the card"
 _H3_NONAME_SENT = "theme has no name in its header — re-bake it"
-_H3_ABISIZE_SENT = "bundle geometry v99; this build reads v3 — re-bake it"
+_H3_ABISIZE_SENT = "bundle geometry v99; this build reads v3 and v4 — re-bake it"
 _H3_BIG_SENT = ("pixel payload is %d B; a theme slot holds %d B — theme is larger "
                 "than a slot" % (orbtheme.ART_BUDGET + 1, orbtheme.ART_BUDGET))
 

@@ -495,8 +495,12 @@ solo_blob = ob.pack_blob("solo", [SENT], SCAL, SPR)
 solo_len = len(solo_blob)
 # The row width the writer emits TODAY, read from the schema that owns it. D34 took it
 # from 19 words to 23; a literal 19 in the two stride vectors below would have spliced
-# out a legal 20-word row and been reported as a caught mutant.
-EW = ts.ELEMENT_WORDS
+# The row width the writer emits for a DEFAULT (v3) pack_blob, read from the
+# schema that owns it. D34 took it 19->23; C4's delta columns live at 25, and
+# the delta dialect is opt-in per section, so the default pack a parity vector
+# builds still lays 23. A literal here would splice a legal row wrongly the
+# moment a column moves.
+EW = ts.ELEMENT_WORDS_V3
 solo_goff = 48
 solo_aoff = art_offset(48 + solo_len)
 
@@ -576,8 +580,8 @@ VECTORS = [
     (22, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={1: 2, 2: ob.GEOM_ABI3}),
      "pair", ("theme format this firmware cannot read",
               "theme format 2; this reader takes format 3"), "format"),
-    (23, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={2: 4}),
-     "same", None, "geometry v4"),
+    (23, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={2: 5}),
+     "same", None, "geometry v5"),
     (24, 0, NO_ROW, [], build(specs=[SOLO], hdr_crc_break=True),
      "pair", ("container header is damaged — re-copy the file onto the card",
               "container header checksum mismatch — re-copy the file onto "

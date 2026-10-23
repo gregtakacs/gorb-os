@@ -269,8 +269,8 @@ function restamp(src, word, value) {
 }
 refuses(() => B.parseBundle3(restamp(fixture, 2, 2)), 'reads v3',
         'a bundle ABI this build is not (v2) is refused as an ABI, not as damage');
-refuses(() => B.parseBundle3(restamp(fixture, 2, 4)), 'reads v3',
-        'and so is one stamped ahead of it, which is the D24 no-backward-path rule');
+refuses(() => B.parseBundle3(restamp(fixture, 2, 5)), 'reads v3',
+        'and so is one stamped ahead of it (v5, past C4\u2019s delta dialect), which is the D24 no-backward-path rule');
 refuses(() => B.parseBundle3(restamp(fixture, 5, 61441)), 'overrun the pixels',
         'a header claiming more geometry than the table area is refused at the caps');
 refuses(() => B.parseBundle3(restamp(fixture, 7, B.ORB_THEME_SLOT_CAP + 1)), 'larger than a slot',

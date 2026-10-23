@@ -860,23 +860,56 @@
     return { w: w, h: h, rgba: out };
   }
 
+  /* THE carriage row's rect — the one place that decides it, and the ONLY one. Both the
+   * bake (bakeTourbillon crops to it) and the price (the composer's measure bills it) read
+   * this function, because the two disagreeing was what blew the slot: a measure that
+   * thresholded ink at alpha >= 8 while the crop runs at alpha > 0, and that added no pad
+   * while the crop pads by 2 and clamps to the screen, billed a tight box and shipped a
+   * panel-wide one. Under-pricing is the direction this file refuses to be wrong in.
+   * Returns the padded, screen-clamped [l, t, r, b] over the cycle-wide union of ink, or
+   * null when no plane carries ink at all. */
+  function carriageRect3(planes, o) {
+    var i, n = planes.length, pad = (o && o.pad !== undefined) ? o.pad : 2;
+    var piv = o && o.pivot, l, t, r, b, pw = 0, ph = 0;
+    l = 1 << 30; t = 1 << 30; r = -1; b = -1;
+    for (i = 0; i < n; i++) {
+      var bb = alphaBbox(planes[i].rgba, planes[i].w, planes[i].h);
+      if (planes[i].w > pw) pw = planes[i].w;
+      if (planes[i].h > ph) ph = planes[i].h;
+      if (!bb) continue;
+      l = Math.min(l, bb[0]); t = Math.min(t, bb[1]);
+      r = Math.max(r, bb[2]); b = Math.max(b, bb[3]);
+    }
+    if (r <= l || b <= t) return null;
+    // Clamped to the planes' own extent, not just the screen: a row whose art fills its
+    // canvas exactly (a 64x64 carriage sprite) must not be padded into a 66x66 crop that
+    // reads past the plane it was measured on.
+    var mw = Math.min(SCREEN_W, pw), mh = Math.min(SCREEN_H, ph);
+    l = Math.max(0, l - pad); t = Math.max(0, t - pad);
+    r = Math.min(mw, r + pad); b = Math.min(mh, b + pad);
+    // A caller that names a pivot gets a rect holding it. Slot 5 turns about that point, so
+    // a row cropped away from its own centre of rotation is an art loss the dial would show
+    // as a carriage swinging off its pin. A closed orbit always contains its centre, so
+    // this costs nothing on the dials that have one; bakeTourbillon passes no pivot, and
+    // the FORMAT 2 crop stays byte-identical against bake_clock.py.
+    if (piv) {
+      l = Math.min(l, Math.max(0, Math.min(mw, piv[0] | 0)));
+      t = Math.min(t, Math.max(0, Math.min(mh, piv[1] | 0)));
+      r = Math.max(r, Math.max(0, Math.min(mw, (piv[0] | 0) + 1)));
+      b = Math.max(b, Math.max(0, Math.min(mh, (piv[1] | 0) + 1)));
+    }
+    return [l, t, r, b];
+  }
+
   /* The tourbillon / carriage bank: every frame cropped to the ONE ink bbox of the whole
    * cycle, so all frames rotate about the same pivot and dirty the same box, each storing
    * the rect that differs from its predecessor — chained and cyclic, like the bank's. */
   function bakeTourbillon(blob, planes, o) {
     var n = planes.length, i, j, c;
     if (n > TOURB_MAX) throw new Error(n + ' carriage frames exceed the baked max of ' + TOURB_MAX);
-    var l = 1 << 30, t = 1 << 30, r = -1, b = -1;
-    for (i = 0; i < n; i++) {
-      var bb = alphaBbox(planes[i].rgba, planes[i].w, planes[i].h);
-      if (!bb) continue;
-      l = Math.min(l, bb[0]); t = Math.min(t, bb[1]);
-      r = Math.max(r, bb[2]); b = Math.max(b, bb[3]);
-    }
-    if (r <= l || b <= t) throw new Error('the carriage frames are fully transparent');
-    var pad = o.pad === undefined ? 2 : o.pad;
-    l = Math.max(0, l - pad); t = Math.max(0, t - pad);
-    r = Math.min(SCREEN_W, r + pad); b = Math.min(SCREEN_H, b + pad);
+    var rect = carriageRect3(planes, o);
+    if (!rect) throw new Error('the carriage frames are fully transparent');
+    var l = rect[0], t = rect[1], r = rect[2], b = rect[3];
     var thr = Math.max(1, o.diffThresh || 12) * 3, recs = [];
     var px = o.pivot[0], py = o.pivot[1], cx = o.centre[0], cy = o.centre[1];
     for (i = 0; i < n; i++) {
@@ -2583,10 +2616,27 @@
             alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
     }
     if (car) {
-      rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: car.x, y: car.y,
-                  w: cw, h: chh, pivot_x: car.pivot_x, pivot_y: car.pivot_y,
+      /* The row ships CROPPED to carriageRect3, and that crop is the byte figure the
+       * policy billed. The extent is what the dial invalidates every tick and what the
+       * slot charges for, so passing the cage canvas through cost a panel of masked
+       * pixels per frame for art that sweeps a fraction of the glass: an orbital arrow's
+       * 466x466 cage canvas against 402x359 of ink billed 64,896 B and shipped 1,302,936 B
+       * for two frames, and the bake blew the slot. Cropping moves the draw point to the
+       * crop's top-left and the pivot back by the same amount, so the row paints the same
+       * pixels about the same point and the §25.2 identity still holds. */
+      var carPl = car.frames, cx3 = car.x | 0, cy3 = car.y | 0, cpx = car.pivot_x, cpy = car.pivot_y;
+      var cr3 = carriageRect3(car.frames, { pivot: [cpx, cpy] });
+      if (cr3 && (cr3[0] || cr3[1] || cr3[2] !== cw || cr3[3] !== chh)) {
+        carPl = [];
+        for (k = 0; k < car.frames.length; k++)
+          carPl.push(cropRect(car.frames[k], cr3[0], cr3[1], cr3[2], cr3[3]));
+        cx3 += cr3[0]; cy3 += cr3[1]; cpx -= cr3[0]; cpy -= cr3[1];
+        cw = cr3[2] - cr3[0]; chh = cr3[3] - cr3[1];
+      }
+      rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: cx3, y: cy3,
+                  w: cw, h: chh, pivot_x: cpx, pivot_y: cpy,
                   order: ord++, alpha: 255, n_frames: car.frames.length,
-                  degrees: car.degrees || 0 }, car.frames, true);
+                  degrees: car.degrees || 0 }, carPl, true);
     }
     /* D34: the pointers. Every refusal below is orb_clock3.c's AUX projection said
      * here, at the author's elbow, so a bake never ships a pointer the dial would
@@ -2766,10 +2816,14 @@
    * Returns { carrier, keyframes, fps, decim, sentence }. */
   /* The carrier split. Two decisions, not one:
    *
-   * 1. THE CARRIAGE ROW. On a caged dial the carriage is priced on the box the row
-   *    actually occupies (m.carriageW/H, measured un-caged off the cage planes) when
-   *    the caller has it, and off the plate's motion box when it does not — the
-   *    legacy shape, which every pre-existing vector uses. It is mandatory when
+   * 1. THE CARRIAGE ROW. On a caged dial the carriage is priced on m.carriageW/H, which
+   *    MUST be the rect GorbBake.carriageRect3 answers for the cage planes — the padded,
+   *    screen-clamped cycle-wide union, alpha > 0, the rect bakeTourbillon crops to. Any
+   *    tighter estimate under-bills: a measure that thresholded ink at alpha >= 8 and
+   *    skipped the pad priced a 402x359 row and shipped a 466x466 one, and the bake blew
+   *    the slot by 2.9 MB on art the policy had already been told to expect. The
+   *    plate-box fallback (price off bboxW/H when the caller has no cage measure) is the
+   *    legacy shape, which every pre-existing vector uses. The row is mandatory when
    *    m.orbital: the carriage IS the seconds hand, and a plate keyframe bank is
    *    blitted unrotated, so a bank ships a dial whose escapement animates and whose
    *    orbit is frozen at the instant the walk sampled it. That is the defect
@@ -3059,6 +3113,7 @@
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
+    carriageRect3: carriageRect3,
     liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3
   };

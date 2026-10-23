@@ -370,6 +370,25 @@ refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466,
         'no room for', 'a seventeen-frame bank is refused before a byte is encoded');
 // ---- 7c. §31's other carrier: the carriage bank, the motion's bbox ----
 const CARF = (a) => ({ rgba: mkPlane(64, 64, a), w: 64, h: 64 });
+// Bank AND carriage in one bundle — the answer splitPolicy3 now gives an orbital dial
+// whose train also moves. The two carriers were mutually exclusive in the old single
+// verdict, which is how every orbital bake lost its orbit. Both scalars must cross-set
+// and the row must still seat at hand slot 5.
+const bakedAC = B.bakeClock3({ name: 'Bank And Carriage', serial: 20261022, bakedMs: 1730000000002,
+  plate: APL, hands: [HK], order: [0],
+  carriage: { x: 200, y: 200, w: 64, h: 64, pivot_x: 32, pivot_y: 32, degrees: 0, fps: 4,
+              frames: [CARF(200), CARF(220), CARF(240)] } });
+const walkAC = B.verifyBundle3(bakedAC.bytes).sections[0];
+ok(walkAC.blob.scalars.bg_frames === 2 && walkAC.blob.scalars.tourbillon_n === 3
+   && walkAC.blob.scalars.tourbillon_fps === 4,
+   'a plate bank and a carriage row cross-set their scalars together: two extra keyframes, three carriage frames',
+   'bg_frames ' + walkAC.blob.scalars.bg_frames + ' tourbillon_n ' + walkAC.blob.scalars.tourbillon_n
+     + ' @ ' + walkAC.blob.scalars.tourbillon_fps);
+const carAC = walkAC.blob.elements[walkAC.blob.elements.length - 1];
+ok(carAC.class === 2 && carAC.slot === 5 && carAC.n_frames === 3,
+   'and the carriage still rides hand slot 5 beneath the animated plate row',
+   'class ' + carAC.class + ' slot ' + carAC.slot + ' n ' + carAC.n_frames);
+
 const bakedC = B.bakeClock3({ name: 'Carriage Bake', serial: 20261020, bakedMs: 1730000000001,
   plate: PL, hands: [HK], order: [0],
   carriage: { x: 200, y: 200, w: 64, h: 64, pivot_x: 32, pivot_y: 32, degrees: 4500, fps: 12,
@@ -404,19 +423,55 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK],
 const sp = (m) => B.splitPolicy3(m);
 ok(sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 368, bboxH: 265, otherB: 75696, hasCage: false }).carrier === 'still',
    'a 65-px union of AA shimmer bakes the still, not a lie of motion');
-const pBank = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070, hasCage: true });
-ok(pBank.carrier === 'bank' && pBank.keyframes === 8 && pBank.decim === 1 && pBank.fps === 4,
-   'a whole-panel motion takes the full bank at its own tempo', pBank.sentence);
+// The plate is now baked WITHOUT the carriage, so a caged dial that names no measured
+// box cannot be priced at all — and answering 'bank' here would silently drop the
+// tourbillon out of the bake. Refuse.
+const pBlind = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070, hasCage: true });
+ok(pBlind.carrier === 'refuse' && /was not measured/.test(pBlind.sentence),
+   'a caged dial with no measured carriage box refuses: the plate would ship without its tourbillon',
+   pBlind.sentence);
 const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, hasCage: false });
 ok(pThin.carrier === 'bank' && pThin.keyframes === 7 && pThin.decim === 2,
    'a 15-frame loop thins to what fits rather than refusing: 7 keyframes by step 2', pThin.sentence);
-const pSp = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: true });
-ok(pSp.carrier === 'sprite' && pSp.keyframes === 15,
-   'a local motion on a caged dial rides the carriage at full length, cheapest first', pSp.sentence);
+// The carriage row and the plate carrier are two decisions now. A caged dial whose
+// ONLY motion is the cage measures under the shimmer band un-caged, and the plate
+// rides the still while the row carries the loop at full length.
+const pSp = sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 146, bboxH: 146, otherB: 57450,
+                 hasCage: true, carriageW: 146, carriageH: 146 });
+ok(pSp.carrier === 'sprite' && pSp.carriage && pSp.carriage.keyframes === 15 && pSp.keyframes === 1,
+   'a cage that is the only motion rides the carriage at full length over a still plate', pSp.sentence);
+// Bank AND carriage: a caged dial whose train moves too. The row is billed FIRST, so
+// the plate thins against the room left rather than stealing bytes the row needs.
+const pBoth = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 57450,
+                   hasCage: true, carriageW: 146, carriageH: 146 });
+ok(pBoth.carrier === 'bank' && pBoth.carriage && pBoth.carriage.keyframes === 15 && pBoth.keyframes === 5,
+   'a moving train on a caged dial bakes the bank thin and keeps the carriage whole', pBoth.sentence);
+const pNoCar = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 57450, hasCage: false });
+ok(pBoth.keyframes < pNoCar.keyframes,
+   'the carriage bills the bank budget before the thin: the same dial without a row keeps more keyframes',
+   'bank ' + pNoCar.keyframes + ' vs ' + pBoth.keyframes + ' with the row');
+// The orbital arrow: the motion box is the whole dial BECAUSE the carriage is the
+// seconds hand, so the old locality gate refused it the carrier and shipped the orbit
+// frozen into the plate. It now takes the row, and the plate rides the still.
+const pOrb = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070,
+                  hasCage: true, orbital: true, carriageW: 389, carriageH: 389 });
+ok(pOrb.carrier === 'sprite' && pOrb.carriage && pOrb.carriage.keyframes === 8 && pOrb.carriage.fps === 4,
+   'an orbital carriage takes the row at its own tempo over a still plate — the bank could never turn it',
+   pOrb.sentence);
+const pOrbRef = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 3300000,
+                      hasCage: true, orbital: true, carriageW: 389, carriageH: 389 });
+ok(pOrbRef.carrier === 'refuse' && /frozen orbit/.test(pOrbRef.sentence),
+   'an orbital carriage that will not fit refuses and says the byte, rather than banking a frozen orbit',
+   pOrbRef.sentence);
+const pOrbCaged = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 4050000,
+                        hasCage: true, carriageW: 146, carriageH: 146 });
+ok(pOrbCaged.carrier === 'refuse' && /baked without it/.test(pOrbCaged.sentence),
+   'a plain tourbillon whose row will not fit refuses too: the strip is in the plate either way',
+   pOrbCaged.sentence);
 const pNoCage = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: false });
-ok(pNoCage.carrier === 'bank',
-   'the same box without a cage is still a bank — the carriage carrier is the cage');
-const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: true });
+ok(pNoCage.carrier === 'bank' && !pNoCage.carriage,
+   'the same box without a cage is still a bank — the carriage row is the cage, and nothing else');
+const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: false });
 ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
    'a bake with no room left names the byte it tripped on', pRef.sentence);
 const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, auxB: 3 * 466 * 466 * 2, hasCage: false });
@@ -561,8 +616,8 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'date', 31, 40
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'second', 60, 200, 200)] }),
         'complication tiles cost', 'the over-cap sentence names the comp bytes an owner can trade away');
 const pCompR = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070,
-                    compB: 3600000, hasCage: true });
-ok(pCompR.carrier === 'refuse' && /3600000 B of complication tiles/.test(pCompR.sentence),
+                    compB: 4000000, hasCage: true, carriageW: 146, carriageH: 146 });
+ok(pCompR.carrier === 'refuse' && /4000000 B of complication tiles/.test(pCompR.sentence),
    'a comp table that eats the bank forces the refusal, and the sentence names its cost', pCompR.sentence);
 const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450,
                     compB: 1300000, hasCage: false });
@@ -660,13 +715,23 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxTw
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: Array.from({ length: 5 }, (_, i) => Object.assign({}, auxTwin, { slot: i })) }),
         'twins counted', 'four shadowed pointers is the cap; the fifth refuses before any art is drawn');
 const bkTwin = '/tmp/js_bake_twin.orbtheme';
+const bkBoth = '/tmp/js_bake_bank_and_carriage.orbtheme';
 fs.writeFileSync(bkTwin, Buffer.from(bakedT.bytes));
+fs.writeFileSync(bkBoth, Buffer.from(bakedAC.bytes));
 fs.writeFileSync(bkAux, Buffer.from(bakedX.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
   console.log('SKIP the shipped projection: no gcc or no zlib.h on this bench');
 } else {
   const pr = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkPath, bkAnim, bkCar, bkComp, bkAux, bkTwin], { encoding: 'utf8' });
+  // The one claim this slice adds at the device's own door: a plate bank AND a
+  // carriage row in the same section. Run ALONE, so both detail lines are the
+  // coexistence bundle's and not another fixture's.
+  const prBoth = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkBoth], { encoding: 'utf8' });
+  ok(prBoth.status === 0 && /plate bank: 2 extra keyframes/.test(prBoth.stdout)
+     && /tourbillon\s*\[\d\] 64x64 draws at \(200,200\)/.test(prBoth.stdout),
+     'and the compiled dial projects a plate bank and a carriage row in one section',
+     (prBoth.stdout || prBoth.stderr).trim().split('\\n')[0]);
   ok(pr.status === 0, 'the shipped orb_clock3.c projects all five browser bakes, comp table included',
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
   ok(/hand\s+\[0\] 40x200 draws at \(233,233\) colour_off 434312/.test(pr.stdout),

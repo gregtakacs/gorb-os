@@ -2764,32 +2764,85 @@
    * A union under one in a thousand of the panel is antialiasing shimmer —
    * RGB565 quantisation swallows it, and the honest bake is the still.
    * Returns { carrier, keyframes, fps, decim, sentence }. */
+  /* The carrier split. Two decisions, not one:
+   *
+   * 1. THE CARRIAGE ROW. On a caged dial the carriage is priced on the box the row
+   *    actually occupies (m.carriageW/H, measured un-caged off the cage planes) when
+   *    the caller has it, and off the plate's motion box when it does not — the
+   *    legacy shape, which every pre-existing vector uses. It is mandatory when
+   *    m.orbital: the carriage IS the seconds hand, and a plate keyframe bank is
+   *    blitted unrotated, so a bank ships a dial whose escapement animates and whose
+   *    orbit is frozen at the instant the walk sampled it. That is the defect
+   *    app-platform-plan.md already records of kitetour — "it had no carriage row, so
+   *    its tourbillon never turned" — and locality was how it hid: an orbital arrow's
+   *    own sweep covers the dial, so a rule that demands a local box can never price
+   *    the one motion that proves the carriage turns. If the row does not fit, refuse.
+   *
+   * 2. THE PLATE. Measured on its own motion (un-caged, so the orbit does not price
+   *    it), and billed against the room the carriage left.
+   */
   function splitPolicy3(m) {
     var panel = SCREEN_W * SCREEN_H, kf = panel * 2, cap = SLOT_ART_CAP3;
     var oth = m.otherB | 0, comp = m.compB | 0, aux = m.auxB | 0, B = m.frames | 0, fps = m.fps | 0;
     comp += aux;   // D34: a pointer plate is art the slot carries before any bank frame fits
     var bw = m.bboxW | 0, bh = m.bboxH | 0, area = bw * bh;
     var thin = function (n, step) { return { keyframes: Math.floor(n / step), fps: Math.max(1, Math.round(fps / step)), decim: step }; };
-    if (B < 2 || fps < 1) return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1, sentence: 'no measured loop to bake: frames ' + B + ' at ' + fps + ' fps' };
+    var no = function (s) { return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1, carriage: null, sentence: s }; };
+    // One shape for every answer: the PLATE's carrier and length at the top level,
+    // the carriage ROW (its own length, tempo and box) under .carriage or null.
+    var out = function (carrier, plate, row, s) {
+      return { carrier: carrier, keyframes: plate.keyframes, fps: plate.fps, decim: plate.decim,
+               bbox: plate.bbox || null, carriage: row, sentence: s };
+    };
+    if (B < 2 || fps < 1) return no('no measured loop to bake: frames ' + B + ' at ' + fps + ' fps');
+
+    /* --- 1. the carriage row, priced first because the indication comes first ---
+     * The walk composed this dial's plate WITHOUT the carriage, so a caged dial that
+     * ships no row ships no carriage at all. Every caged dial therefore either gets
+     * its row or refuses: dropping art the bake was handed is the one answer worse
+     * than the frozen orbit this slice exists to stop. */
+    var car = null, carCost = 0;
+    if (m.hasCage) {
+      var cw = m.carriageW | 0, ch = m.carriageH | 0, cArea = cw * ch;
+      if (!cArea)
+        return no('a caged dial whose carriage box was not measured: the plate is baked '
+          + 'without the carriage, so pricing the row off the plate box would either refuse a '
+          + 'carriage that fits or ship a dial missing its tourbillon');
+      var per = cArea * 3, maxSp = Math.min(TOURB_MAX, Math.floor((cap - oth - comp) / per));
+      var s2 = maxSp >= 2 ? thin(B, Math.ceil(B / maxSp)) : { keyframes: 0, fps: 0, decim: 1 };
+      if (s2.keyframes < 2)
+        return no('the ' + (m.orbital ? 'orbital carriage is the seconds hand' : 'carriage is a live layer this bake strips from the plate')
+          + ' and does not fit: ' + B + ' frames of ' + cw + 'x' + ch + ' cost ' + (2 * per)
+          + ' B for the two a loop needs against the ' + (cap - oth - comp) + ' B the slot leaves after '
+          + oth + ' B of art' + (comp ? ' and ' + comp + ' B of complication tiles' : '')
+          + (m.orbital ? ' — a plate bank cannot turn it, and this bake will not ship a frozen orbit'
+                       : ' — and the plate it would ride is baked without it'));
+      carCost = s2.keyframes * per;
+      car = { keyframes: s2.keyframes, fps: s2.fps, decim: s2.decim, bbox: [cw, ch], bytes: carCost,
+              sentence: 'carriage bank at the ' + cw + 'x' + ch + ' box: ' + s2.keyframes
+                + ' masked frames, ' + carCost + ' B' };
+    }
+
+    /* --- 2. the plate, off its own motion and the room the carriage left --- */
     if (!(m.unionPx > panel / 1000))
-      return { carrier: 'still', keyframes: 1, fps: 0, decim: 1, sentence: 'plate union ' + (m.unionPx | 0) + ' px is under the shimmer band; the still bakes the same dial' };
-    if (m.hasCage && area && area <= panel / 3) {
-      var per = area * 3, maxSp = Math.min(TOURB_MAX, Math.floor((cap - oth - comp) / per));
-      if (maxSp >= 2) {
-        var s2 = thin(B, Math.ceil(B / maxSp));
-        if (s2.keyframes >= 2) { s2.carrier = 'sprite'; s2.bbox = [bw, bh];
-          s2.sentence = 'carriage bank at the ' + bw + 'x' + bh + ' motion box: ' + s2.keyframes + ' masked frames, ' + (s2.keyframes * per) + ' B'; return s2; }
-      }
-    }
-    var maxB = Math.min(BG3_FRAMES_MAX, Math.floor((cap - oth - comp) / kf));
-    if (maxB >= 2) {
-      var b2 = thin(B, Math.ceil(B / maxB));
-      if (b2.keyframes >= 2) { b2.carrier = 'bank';
-        b2.sentence = 'plate keyframe bank: ' + b2.keyframes + ' of ' + B + ' frames at ' + b2.fps + ' fps' + (b2.decim > 1 ? ' (thinned by ' + b2.decim + ')' : '') + ', ' + (b2.keyframes * kf) + ' B'; return b2; }
-    }
-    return { carrier: 'refuse', keyframes: 0, fps: 0, decim: 1,
-             sentence: 'union ' + (m.unionPx | 0) + ' px in a ' + bw + 'x' + bh + ' box fits neither carrier: ' + B + ' plate keyframes of ' + kf + ' B exceed the ' + (cap - oth - comp) + ' B the slot leaves after ' + oth + ' B of art' + (comp ? ' and ' + comp + ' B of complication tiles' : '') + ', and the box is ' + (m.hasCage ? 'not local' : 'not a caged motion a carriage row can carry') };
+      return out(car ? 'sprite' : 'still', { keyframes: 1, fps: 0, decim: 1 }, car,
+                 (car ? 'plate under the shimmer band, ' + car.sentence
+                      : 'plate union ' + (m.unionPx | 0) + ' px is under the shimmer band; the still bakes the same dial'));
+    var left = cap - oth - comp - carCost;
+    var maxB = Math.min(BG3_FRAMES_MAX, Math.floor(left / kf));
+    var b2 = maxB >= 2 ? thin(B, Math.ceil(B / maxB)) : { keyframes: 0, fps: 0, decim: 1, bbox: [bw, bh] };
+    if (b2.keyframes >= 2)
+      return out('bank', b2, car, 'plate keyframe bank: ' + b2.keyframes + ' of ' + B + ' frames at '
+        + b2.fps + ' fps' + (b2.decim > 1 ? ' (thinned by ' + b2.decim + ')' : '') + ', '
+        + (b2.keyframes * kf) + ' B' + (car ? ' over the ' + carCost + ' B the carriage took; ' + car.sentence : ''));
+    if (car) return out('sprite', { keyframes: 1, fps: 0, decim: 1 }, car, 'plate rides the still: ' + car.sentence);
+    return no('union ' + (m.unionPx | 0) + ' px in a ' + bw + 'x' + bh + ' box fits neither carrier: '
+      + B + ' plate keyframes of ' + kf + ' B exceed the ' + left + ' B'
+      + (carCost ? ' left after the carriage took ' + carCost + ' B' : ' the slot leaves after '
+        + oth + ' B of art' + (comp ? ' and ' + comp + ' B of complication tiles' : ''))
+      + ', and the box is ' + (m.hasCage ? 'not local' : 'not a caged motion a carriage row can carry'));
   }
+
 
   /* The D29 meter, read back off finished bytes rather than estimated from the model. The
    * editor shows it before an owner stores and after, and a number that disagreed with the

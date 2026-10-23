@@ -114,8 +114,9 @@
       const why = [];
       // Measure what the export would carry: the engine's own split, live comps
       // off the plate, their motion carried by window rows instead.
-      const meas = { frames: V.B, fps: IT.F, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt };
-      IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, undefined, onlyBaseOf(d)), meas);
+      const meas = { frames: V.B, fps: IT.F, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt, orbital: !!M.orbital };
+      IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, undefined, onlyBaseOf(d)), meas);
+      if (meas.hasCage) { const cb = IT.measureCarriage3(V.gt, V.B); if (cb) { meas.carriageW = cb[0]; meas.carriageH = cb[1]; } }
       const pol = G.splitPolicy3(meas);
       if (pol.carrier === 'refuse') why.push(pol.sentence.slice(0, 150));
       /* The export pane's silent-still tripwire refuses a "still" verdict when the
@@ -124,7 +125,7 @@
        * tripwire false-refusing a legitimate bake. Rows come from the build's own
        * rowPrice pass, so this costs no extra rendering. -1 means unpriced. */
       const bs = IT.budgetStats, rows = bs && bs.mv === IT.mvKey(1) ? bs.rows : -1;
-      if (pol.carrier === 'still' && rows >= 16) stillTrips.push(id + ' (' + rows + ' rows)');
+      if (pol.carrier === 'still' && !pol.carriage && rows >= 16) stillTrips.push(id + ' (' + rows + ' rows)');
       // §31's comp table closed the last blocker: a live comp plans a window row.
       // Only what no element row can carry (a datetext flare, an unknown type) refuses.
       let cnote = '';

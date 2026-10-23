@@ -11,7 +11,14 @@
 extern "C" {
 #endif
 
-/** Initialize the CO5300 panel and LVGL. Call once at boot. */
+/** Bring up QSPI + panel + disp_on + the LVGL handle, WITHOUT arming the flush
+ *  path. Call before anything that may take seconds in front of the glass
+ *  (theme load, install) so the boot overlay has a live panel (§6.2). */
+esp_err_t display_panel_early(void);
+
+/** Initialize LVGL's flush path on the early panel. Call after the theme has
+ *  resolved and before the LVGL task is created. Returns ESP_ERR_INVALID_STATE
+ *  if display_panel_early() has not run. */
 esp_err_t display_init(void);
 
 /** Get the esp_lcd panel handle (for brightness, etc.). */

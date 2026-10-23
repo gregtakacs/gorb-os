@@ -3042,6 +3042,21 @@
       }
     }
 
+    /* The cadence, named. packBlob3 zero-fills the scalars a bake does not
+     * name, and clock_view reads those zeros as a deadbeat second at 1 Hz: a
+     * 4 fps bank then animates its escapement four times a second while the
+     * carriage that carries it turns once a second, which is the frozen-orbit
+     * defect §31 exists to stop, arriving from the cadence side instead of the
+     * carrier side. Name the FORMAT 2 path's rule here — an animated dial
+     * sweeps, sampled at the fastest tempo on the wire — and let the author's
+     * own words win: a bake that names second_sweep or tick_rate keeps them. */
+    if (sc.second_sweep === undefined) sc.second_sweep = 1;
+    if (!sc.tick_rate) {
+      var tempo3 = Math.max(frames !== undefined ? (sc.bg_fps || fps || 0) : 0,
+                            sc.tourbillon_fps || 0, 1);
+      sc.tick_rate = Math.min(255, tempo3 | 0);
+    }
+
     // The D29 sum, named before the file is written: the plate bank is the part
     // of an over-cap bake an owner can actually trade away, so the sentence says
     // what it cost. checkBudget3 still refuses the same overage at the door —

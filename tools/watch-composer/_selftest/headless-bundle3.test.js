@@ -407,6 +407,26 @@ const carAC = walkAC.blob.elements[walkAC.blob.elements.length - 1];
 ok(carAC.class === 2 && carAC.slot === 5 && carAC.n_frames === 3,
    'and the carriage still rides hand slot 5 beneath the animated plate row',
    'class ' + carAC.class + ' slot ' + carAC.slot + ' n ' + carAC.n_frames);
+// The cadence defaults. A bake that names no sweep used to pack second_sweep=0,
+// tick_rate=0 — the board read the zeros literally, ran the bank at its 4 fps and
+// turned the carriage once a second. The animated dial must now ship sweeping at
+// the fastest tempo on the wire, and an author who names the cadence still wins.
+ok(walkAC.blob.scalars.second_sweep === 1 && walkAC.blob.scalars.tick_rate === 4,
+   'the bank-plus-carriage bake sweeps at the carriage tempo, not the shipped zeros',
+   'second_sweep ' + walkAC.blob.scalars.second_sweep + ' tick_rate ' + walkAC.blob.scalars.tick_rate);
+const APLT = { rgba: kf(1), w: 466, h: 466, fps: 6,
+  frames: [{ rgba: kf(1), w: 466, h: 466 }, { rgba: kf(9), w: 466, h: 466 }] };
+const walkAT = B.verifyBundle3(B.bakeClock3({ name: 'Tempo Bake', serial: 20261023,
+  bakedMs: 1730000000003, plate: APLT, hands: [HK], order: [0] }).bytes).sections[0];
+ok(walkAT.blob.scalars.second_sweep === 1 && walkAT.blob.scalars.tick_rate === 6,
+   'a plate bank with a named tempo ticks the dial at it',
+   'second_sweep ' + walkAT.blob.scalars.second_sweep + ' tick_rate ' + walkAT.blob.scalars.tick_rate);
+const walkAD = B.verifyBundle3(B.bakeClock3({ name: 'Deadbeat Bake', serial: 20261024,
+  bakedMs: 1730000000004, plate: APL, hands: [HK], order: [0],
+  scalars: { second_sweep: 0 } }).bytes).sections[0];
+ok(walkAD.blob.scalars.second_sweep === 0,
+   'an author naming a deadbeat second keeps it past the sweep default',
+   'second_sweep ' + walkAD.blob.scalars.second_sweep);
 
 const bakedC = B.bakeClock3({ name: 'Carriage Bake', serial: 20261020, bakedMs: 1730000000001,
   plate: PL, hands: [HK], order: [0],

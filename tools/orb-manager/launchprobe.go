@@ -64,6 +64,15 @@ const (
 	// launchProbeWait is the gap between those attempts. It is short because the
 	// alternative is a hub that boots a card nobody has identified.
 	launchProbeWait = 2 * time.Second
+
+	// selfRebootWindow bounds how long a board's silence is excused as the install it was
+	// told to do. The firmware acks a store before performing it and reboots to draw it, so
+	// the deaf span covers the copy, the restart, and the rejoin: orb-B's measured store of a
+	// 3.6 MB theme took 32 s to ack plus 11 s dark, and the same door on a slower card runs
+	// longer. A minute is the least window that covers a store and a rejoin on any bench, and
+	// it stays far inside identityTTL, so a board that really was reflashed abroad is still
+	// asked about on the next sweep rather than excused indefinitely.
+	selfRebootWindow = 90 * time.Second
 )
 
 // probeCablesAtLaunch asks every attributable cable on the bench what it is running,
@@ -155,6 +164,18 @@ func (s *Server) cableNeedsProbe(c cableSighting) (bool, string) {
 
 	info, at, proven, present := s.identities.cachedVerdict(c.port)
 	if !present {
+		// A board the hub just rebooted itself is not a board with no answer on file.
+		// USB-Serial-JTAG re-enumerates when the chip restarts, the port vanishes from the
+		// host's list for a few seconds, and the departure reaper (identity.go's all)
+		// deletes the entry it was holding. The answer is gone, the chip is the same, and
+		// the gate's own rule for a missing answer is to pay a probe — which pulses the lead
+		// again, re-enumerates it again, and deletes the fresh answer again. That loop is
+		// why one install cost several resets rather than the one it was promised. Until a
+		// restart the hub asked for has finished and been answered, this lead is not owed a
+		// question it cannot use.
+		if s.selfRebootExcused(c.mac) {
+			return false, ""
+		}
 		// Nothing on file — never asked, or voided by a departure. This is the case that
 		// overrides a lonely mark. That mark is a verdict the hub paid for at some point
 		// and is exempt from the TTL so it never decays, which means the only thing that
@@ -168,7 +189,14 @@ func (s *Server) cableNeedsProbe(c cableSighting) (bool, string) {
 	// A wired dial that just went quiet is worth a reset even when the cache says the
 	// answer is still good, because the answer being stale is precisely what the silence
 	// suggests. This is the only rule that outranks freshness, and it is spent on arrival.
+	// The one silence it must not buy is the one the hub caused: the flag can have been set
+	// a beat before the install was sent, and a pulse then lands inside the store's staged
+	// window and tears the install. The excuse is consulted here for that race, and only
+	// for that race — a silence the hub did not cause still costs exactly one reset.
 	if s.owed[c.mac] {
+		if s.selfRebootExcused(c.mac) {
+			return false, ""
+		}
 		return true, "the orb stopped answering the address it was seen at"
 	}
 	if proven == provenFailed {
@@ -389,6 +417,17 @@ func (s *Server) noteWiredSilence(ip string) {
 		if s.cables.cablePortFor(r.MAC, time.Now()) == "" {
 			continue
 		}
+		// The hub caused this silence. A store the operator started is acked before the
+		// device performs it and reboots the board to draw it, and the dial that just
+		// failed is exactly what that restart looks like from out here. Flagging it buys
+		// a pulse that lands inside the store's staged window and tears the install the
+		// hub itself asked for, which is the whole of the reboot-loop-and-lose-the-theme
+		// report. The excuse is spent on arrival, and it never outranks a real answer:
+		// a board that comes back speaking still renews its own clock as usual.
+		if s.selfRebootExcused(r.MAC) {
+			log.Printf("orb-manager: %s is quiet because it is installing what the hub sent; no probe owed", ip)
+			return
+		}
 		s.suspMu.Lock()
 		if s.suspicious == nil {
 			s.suspicious = map[string]bool{}
@@ -397,6 +436,52 @@ func (s *Server) noteWiredSilence(ip string) {
 		s.suspMu.Unlock()
 		return
 	}
+}
+
+// expectSelfReboot records that the hub just sent this chip something it will restart to
+// apply, for as long as that restart plausibly takes. Callers are the theme doors, which
+// are the only ones that reboot a board without the operator pressing Reset.
+func (s *Server) expectSelfReboot(mac string) {
+	if s.expectedSelfReboot == nil {
+		s.expectedSelfReboot = map[string]time.Time{}
+	}
+	s.expectMu.Lock()
+	s.expectedSelfReboot[macBare(mac)] = time.Now().Add(selfRebootWindow)
+	s.expectMu.Unlock()
+}
+
+// selfRebootExcused reports whether this chip's silence is still covered by a store the
+// hub asked for. It does NOT consume: the cable sweep runs every five seconds and three
+// separate rules consult the excuse, so a consuming check would be spent by whichever
+// looked first and leave the other two to pulse a board that is still rebooting. The
+// excuse ends when the board is heard from again (clearSelfReboot, off the liveness dial
+// that proves it is alive and still an orb) or when the window lapses, whichever is first.
+// It keys on macBare, not macNorm: the callers hold a colon form from a grant on one side
+// and a bare form from a fleet row or a cable sighting on the other, and a key that
+// preserved the separator would let the two miss each other — the same class of miss that
+// made the port lookup fail, and the reason that guard did nothing on a real bench.
+func (s *Server) selfRebootExcused(mac string) bool {
+	key := macBare(mac)
+	s.expectMu.Lock()
+	defer s.expectMu.Unlock()
+	deadline, ok := s.expectedSelfReboot[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(deadline) {
+		delete(s.expectedSelfReboot, key)
+		return false
+	}
+	return true
+}
+
+// clearSelfReboot retires the silence excuse once the chip has proven itself alive. The
+// same free dial that corroborates the identity verdict is what shows the install finished,
+// so the two retire together and a later silence is judged on its own again.
+func (s *Server) clearSelfReboot(mac string) {
+	s.expectMu.Lock()
+	delete(s.expectedSelfReboot, macBare(mac))
+	s.expectMu.Unlock()
 }
 
 // suspiciousPorts snapshots and clears the escalation flags, so one silence episode costs

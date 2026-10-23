@@ -112,6 +112,17 @@ type Server struct {
 	// noteWiredSilence (launchprobe.go): silence is grounds to ask, never grounds to claim.
 	suspMu     sync.Mutex
 	suspicious map[string]bool
+	// explained guards the MACs whose silence the hub has just caused itself, and the
+	// deadline by which that excuse expires. A theme store is acked BEFORE the device does
+	// the work: the firmware answers {"state":"storing","reboot":"automatic"} and only then
+	// copies the slot and restarts to draw it, which takes the board off the network for
+	// tens of seconds. Silence inside that window is the install doing what it promised, not
+	// a board that defected. Without this the hub reads its own reboot as evidence against
+	// the board, flags it, and pulses the lead — landing inside the store's staged window,
+	// which is how every theme install since this shipped could tear itself. See
+	// expectSelfReboot (launchprobe.go).
+	expectMu           sync.Mutex
+	expectedSelfReboot map[string]time.Time
 	// owed is the silence escalation for the identity pass currently running: MACs whose
 	// wired dial went quiet and whose question is therefore due regardless of how fresh the
 	// cached answer looks. Set and cleared inside one identifyCables pass, so it needs no
@@ -399,6 +410,13 @@ func main() {
 			log.Printf("orb-manager: %s still answers as an orb, so %s keeps its verdict without a reset",
 				st.MAC, port)
 		}
+		// The board is back and speaking. Whatever it was doing — an install it rebooted to
+		// apply, a re-enumeration that cost it its cached entry — is over, so the silence
+		// excuse the theme doors armed is retired here rather than left to run out. A later
+		// silence with no install behind it is then judged on its own merits, which is the
+		// only way the wired-reflash detection stays alive after the false alarm this one
+		// would otherwise cause on every install.
+		s.clearSelfReboot(st.MAC)
 		s.foldProbeStatus(ip, st)
 		return true
 	}

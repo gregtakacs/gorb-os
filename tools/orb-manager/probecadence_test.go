@@ -234,12 +234,72 @@ func TestAThemeCallHoldsThePortTheProbeWouldUse(t *testing.T) {
 	}
 	release()
 
-	// Released, the lead is askable again: the claim defers the question, never cancels it.
+	// Released, the lead is askable again — but not yet. The store the hub just sent is
+	// applied by a reboot the device performs after it acks, so the silence that follows a
+	// release is the install landing, not a board defecting, and the excuse covers it. The
+	// test retires the excuse by hand because it has no reboot to wait for: on a real bench
+	// the next successful liveness dial clears it (main.go), which is the same line.
+	s.clearSelfReboot(macHall)
 	if ask, _ := s.cableNeedsProbe(goldSighting()[0]); !ask {
 		t.Fatal("the probe stayed deferred after the install finished")
 	}
 	if n := s.identifyCables(context.Background()); n != 1 {
 		t.Errorf("after the release the sweep asked %d questions, want the owed one", n)
+	}
+}
+
+// The whole reason the theme stopped tearing, stated as a rule. A store is acked before the
+// device performs it and reboots the board to draw it, so the lead goes quiet for as much as
+// a minute after a call the hub considers finished. Every gate that reads that silence as
+// evidence and pays a reset is cutting the install in half, and the operator sees a store
+// that staged and never committed. Three separate rules can fire on that one silence — the
+// flag set a beat too early, the flag arriving while the board is dark, and the departure
+// reaper deleting the entry when the port re-enumerates — so all three are pinned here,
+// against one install.
+func TestAnInstallRebootIsNotReadAsADefection(t *testing.T) {
+	p := &probeScript{answer: map[string]func() (esprom.OrbInfo, error){reflashPort: orbAnswer}}
+	s := launchHub(t, goldSighting(), p)
+	// Colon on the grant, bare on the sighting: exactly what production holds, because
+	// CanonicalMAC strips separators on the way into the cable cache and the API does not on
+	// the way into a grant. A resolver that normalizes only one side finds no port and claims
+	// nothing, which is how this guard did nothing on a real bench while passing a test that
+	// seeded the same constant on both sides.
+	s.grants.learnAs(themeTestIP, "44:bd:8d:78:26:18")
+
+	release, err := s.holdDevicePort(context.Background(), themeTestIP, time.Minute)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	release()
+
+	// The board is now dark because it is installing. Nobody dialled it; the hub did.
+	if ask, why := s.cableNeedsProbe(goldSighting()[0]); ask {
+		t.Errorf("the gate reset a board that is rebooting to apply its own install: %s", why)
+	}
+	// The flag that says "it went quiet" must not buy the reset either.
+	s.suspicious = map[string]bool{macHall: true}
+	s.owed = map[string]bool{macHall: true}
+	if ask, why := s.cableNeedsProbe(goldSighting()[0]); ask {
+		t.Errorf("the silence escalation reset a board mid-install: %s", why)
+	}
+	s.owed = nil
+	// The device restarts USB-Serial-JTAG and the port re-enumerates, so the reaper takes
+	// the entry with it and the gate reads a board that was never asked.
+	s.identities.forget(reflashPort)
+	if ask, why := s.cableNeedsProbe(goldSighting()[0]); ask {
+		t.Errorf("a re-enumeration during an install cost a second reset: %s", why)
+	}
+
+	// And the excuse does not become a permanent shield. Once the board has been heard from,
+	// an unexplained silence flags again — that is wiredSilenceDetection's whole job, and a
+	// board reflashed abroad must still be caught.
+	s.clearSelfReboot(macHall)
+	s.noteWiredSilence(themeTestIP)
+	s.suspMu.Lock()
+	flagged := s.suspicious[macHall]
+	s.suspMu.Unlock()
+	if !flagged {
+		t.Error("the install excuse never retired, so a board reflashed abroad would go unasked forever")
 	}
 }
 

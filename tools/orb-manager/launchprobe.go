@@ -51,7 +51,15 @@ const (
 	// chip. A wedged console or a foreign process holding the lock is not a board that
 	// is slow to answer, so the retry is patient; it is not forever, because a lead that
 	// came loose and re-seated cleanly has to become askable again without a restart.
+	// It is the FIRST gap only: identityCache.nextAsk doubles it per consecutive miss.
 	failedRetry = 60 * time.Second
+
+	// failedRetryMax caps that doubling. A link that is genuinely broken — a flaky
+	// USBIP stub, a tired hub — answers no probe at any interval, and each unanswered
+	// attempt is still a reset pulsed into the board. Ten minutes is patient enough to
+	// stop being a storm and short enough that a lead which comes back is noticed
+	// inside a coffee break.
+	failedRetryMax = 10 * time.Minute
 
 	// launchProbeWait is the gap between those attempts. It is short because the
 	// alternative is a hub that boots a card nobody has identified.
@@ -105,7 +113,9 @@ func (s *Server) launchSights(ctx context.Context) ([]cableSighting, bool) {
 
 // cableNeedsProbe is the gate on resetting a chip nobody asked about, and the answer to
 // "what does the hub owe this lead". Every clause is a reason the question is already
-// answered, unsafe, or rude.
+// answered, unsafe, or rude. It reports the reason it said yes so the caller can log the
+// reboot it is about to cause: a hub that resets boards for reasons it never states is
+// how a periodic sweep reads as a haunting.
 //
 // The policy is deliberately asymmetric between the two kinds of answer on file:
 //
@@ -113,25 +123,34 @@ func (s *Server) launchSights(ctx context.Context) ([]cableSighting, bool) {
 //     by a free PING: the hub knows what a MAC implies plus what it overheard, which is
 //     the guess this whole file exists to replace, so it asks;
 //   - a fresh answer that the lead runs an orb: never re-paid on a clock. The free facts
-//     corroborate it continuously, and an orb on a lead has no reason to be reset every
-//     half hour for a version string the row already carries;
+//     corroborate it continuously — identityCache.corroborate is that sentence made
+//     true, refreshed by every liveness dial that names this chip — so a board answering
+//     its own door on the LAN ages out only when it stops answering;
 //   - an answer that the lead does NOT run an orb: re-paid inside contradictedReprobe,
 //     because that verdict is exempt from the cache TTL and would otherwise become a
 //     permanent claim the hub never tests again;
-//   - a probe that never reached a chip: an absence of evidence, retried after a
-//     backoff rather than treated as a verdict or dropped silently.
-func (s *Server) cableNeedsProbe(c cableSighting) bool {
+//   - a probe that never reached a chip: an absence of evidence, retried on a backoff
+//     that doubles (identityCache.nextAsk) rather than treated as a verdict or dropped.
+func (s *Server) cableNeedsProbe(c cableSighting) (bool, string) {
 	// Only a chip the host can attribute to a device, and only one whose serial it read:
 	// an answer filed against no MAC describes nobody. The gate takes any Espressif chip
 	// rather than only one enumerating as an orb, which is what makes a board in its
 	// downloader or mid boot-loop a question the hub asks unprompted instead of one the
 	// operator has to click for.
 	if !(c.isOrb || c.espressif) || c.mac == "" {
-		return false
+		return false, ""
 	}
-	// Something is writing that wire.
+	// Something is writing that wire — a flash, a console, or an install the operator
+	// started from the Theme card (theme.go claims the port for exactly this).
 	if _, busy := s.ops.busy(c.port); busy {
-		return false
+		return false, ""
+	}
+	// And the hub is not still backing off a question this same lead failed to answer.
+	// This clause is what stops a disturbed USBIP path from turning one unlucky probe
+	// into a reset per sweep: a port that will not sync today will not sync in five
+	// seconds, and every attempt spends a reboot to learn that again.
+	if wait := s.identities.nextAsk(c.port, time.Now()); wait > 0 {
+		return false, ""
 	}
 
 	info, at, proven, present := s.identities.cachedVerdict(c.port)
@@ -144,28 +163,28 @@ func (s *Server) cableNeedsProbe(c cableSighting) bool {
 		// off the bench. The mark still stands until the answer overturns it, and an
 		// answer always arrives here: foldProbeIdentity clears the mark when the chip
 		// speaks as an orb.
-		return true
+		return true, "no answer on file for this cable"
 	}
 	// A wired dial that just went quiet is worth a reset even when the cache says the
 	// answer is still good, because the answer being stale is precisely what the silence
 	// suggests. This is the only rule that outranks freshness, and it is spent on arrival.
 	if s.owed[c.mac] {
-		return true
+		return true, "the orb stopped answering the address it was seen at"
 	}
 	if proven == provenFailed {
-		return time.Since(at) >= failedRetry
+		return true, "the last probe never reached a chip"
 	}
 	// A cable proof is the hub hearing a PING come back, not the hub reading a chip. It
 	// proves the board answers to an orb, and it is the exact evidence that survives a
 	// reflash out of gorb-os being half-finished, so it never excuses the paid question.
 	if proven == provenCable {
-		return true
+		return true, "only the free PING has answered, which survives a partial reflash"
 	}
 	// A negative verdict about a different chip answers nothing about this one: the board
 	// it was about has left the bench, and a lead with a stranger on it is owed a question
 	// however the stranger was labelled.
 	if !info.IsOrb && info.MAC != "" && !sameChip(info.MAC, c.mac) {
-		return true
+		return true, "the verdict on file names a different chip than this cable"
 	}
 	// A fresh paid answer that is still doing its job is the only thing a lonely mark has
 	// to stand on, so the mark is consulted here rather than above: it protects a board
@@ -173,9 +192,15 @@ func (s *Server) cableNeedsProbe(c cableSighting) bool {
 	// tested. Ordering matters and this is the whole reason — a not-an-orb answer is
 	// TTL-exempt, so a mark checked against mere presence would be unfalsifiable forever.
 	if s.lonely != nil && s.lonely.has(c.mac) && !verdictDue(at, info) {
-		return false
+		return false, ""
 	}
-	return verdictDue(at, info)
+	if !verdictDue(at, info) {
+		return false, ""
+	}
+	if info.IsOrb {
+		return true, "the paid answer aged out without a free fact to renew it"
+	}
+	return true, "a not-an-orb verdict aged out of the window it is trusted for"
 }
 
 // verdictDue is the point of no longer believing an answer enough to leave a chip alone:
@@ -214,12 +239,21 @@ func sameChip(a, b string) bool {
 // It reports whether the hub learned anything. An error is filed as a reason on the port
 // rather than dropped: a board that will not answer to a probe is information the card
 // should show, and the reason it is missing.
-func (s *Server) probeCableNow(ctx context.Context, c cableSighting) bool {
+//
+// why is the rule that decided to ask, and it is logged before the reset is pulsed
+// rather than after. The hub is taking something the operator can see — the glass goes
+// blank for a few seconds — on a rule the operator cannot see; the log is the only place
+// those two halves can be read together. A probe that dies partway leaves the reason
+// behind it, which is the difference between "the hub did this and said why" and a board
+// that rebooted itself for nothing.
+func (s *Server) probeCableNow(ctx context.Context, c cableSighting, why string) bool {
+	log.Printf("orb-manager: probing %s (chip %s): %s", c.port, c.mac, why)
 	if !s.identities.begin(c.port) {
 		return false
 	}
 	job, pctx, oerr := s.ops.start(ctx, c.port, opProbe, probeBudget)
 	if oerr != nil {
+		log.Printf("orb-manager: probe of %s abandoned before the reset: %s", c.port, oerr)
 		s.identities.doneFailed(c.port, oerr.Error())
 		return false
 	}
@@ -227,18 +261,39 @@ func (s *Server) probeCableNow(ctx context.Context, c cableSighting) bool {
 
 	lock, lerr := orbbind.LockPort(c.port)
 	if lerr != nil {
+		log.Printf("orb-manager: probe of %s abandoned before the reset: the port is held (%s)",
+			c.port, lerr)
 		s.identities.doneFailed(c.port, "port busy: "+lerr.Error())
 		return false
 	}
 	info, err := s.probeOrb(pctx, c.port)
 	lock.Release()
 	if err != nil {
+		log.Printf("orb-manager: probe of %s reached no chip: %s", c.port, err)
 		s.identities.doneFailed(c.port, err.Error())
 		return false
+	}
+	// The verdict in the same breath as the reason, so one line is enough to judge
+	// whether the reboot was worth it.
+	if info.IsOrb {
+		log.Printf("orb-manager: probe of %s answered an orb running %s%s", c.port,
+			info.Project, versionWord(info.Version))
+	} else {
+		log.Printf("orb-manager: probe of %s answered NOT an orb: %s", c.port, info.Reason)
 	}
 	s.identities.done(c.port, info)
 	s.foldProbeIdentity(info)
 	return true
+}
+
+// versionWord keeps a probe log line to one line: " v1.4.0" when there is a stamp, ""
+// when the bootloader did not print one. A blank here is a fact, not a formatting bug,
+// and printing "v" alone would read as a truncated version.
+func versionWord(v string) string {
+	if v == "" {
+		return ""
+	}
+	return " " + v
 }
 
 // identifyCables asks every attributable lead the hub owes a question to, and is the body
@@ -292,10 +347,11 @@ func (s *Server) identifyCables(ctx context.Context) int {
 		if ctx.Err() != nil {
 			break
 		}
-		if !s.cableNeedsProbe(c) {
+		ask, why := s.cableNeedsProbe(c)
+		if !ask {
 			continue
 		}
-		if s.probeCableNow(ctx, c) {
+		if s.probeCableNow(ctx, c, why) {
 			asked++
 		}
 	}

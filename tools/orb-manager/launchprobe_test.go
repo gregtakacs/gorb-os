@@ -577,7 +577,11 @@ func (s *Server) backdateFailure(port string, by time.Duration) {
 	s.identities.mu.Lock()
 	defer s.identities.mu.Unlock()
 	if e, ok := s.identities.byPort[port]; ok {
+		// Both clocks: `at` is when the hub last believed anything, `lastTry` is when it
+		// last paid a reset to ask. The backoff measures the second one, and a test that
+		// aged only the first would stand at the edge of a window nobody is reading.
 		e.at = time.Now().Add(-by)
+		e.lastTry = time.Now().Add(-by)
 		s.identities.byPort[port] = e
 	}
 }

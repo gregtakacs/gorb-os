@@ -390,6 +390,15 @@ func main() {
 			s.noteWiredSilence(ip)
 			return false
 		}
+		// An orb that answers this door has just told the hub, in its own eFuse MAC, that
+		// it is an orb running gorb-os. That is the same fact a probe buys with a reboot,
+		// and the hub already paid for the dial to answer the Forget gate, so the identity
+		// cache takes it: a board the network can see is never aged into a reset by the
+		// TTL. Only the clock moves, never the provenance (identityCache.corroborate).
+		if port, saved := s.identities.corroborate(st.MAC, time.Now()); saved {
+			log.Printf("orb-manager: %s still answers as an orb, so %s keeps its verdict without a reset",
+				st.MAC, port)
+		}
 		s.foldProbeStatus(ip, st)
 		return true
 	}

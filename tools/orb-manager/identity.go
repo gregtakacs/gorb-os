@@ -39,6 +39,15 @@ type identityEntry struct {
 	// click; "cable" is the hub's own PING (cableproof.go). Empty means "probe", so
 	// every hand-built entry in the suite keeps reporting the way it always did.
 	proven string
+	// fails counts consecutive probes that never reached a chip. It is the shape of
+	// the backoff on launchprobe.go: one missed probe is a board that was busy, ten is
+	// a link that is broken, and asking them at the same rate is what turns a flaky
+	// USBIP path into a reset storm. Cleared by any answer, including a free one.
+	fails int
+	// lastTry is when this port was last asked, whether or not the answer survived to
+	// become the entry. The belief clock (`at`) must not be moved by a probe that
+	// reached no chip, so the backoff needs a clock of its own.
+	lastTry time.Time
 }
 
 // The three ways an entry gets into this cache. They are strings rather than a bool so
@@ -225,16 +234,53 @@ func (c *identityCache) done(port string, info esprom.OrbInfo) {
 // statement about the board: nothing reached a chip, so nothing is known about one.
 func (c *identityCache) doneFailed(port string, reason string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	e, ok := c.byPort[port]
-	c.mu.Unlock()
+	fails := nextFail(e)
 	// A failure keeps whatever an earlier success proved. Overwriting a paid verdict
 	// because the door would not open a moment later is the same error the provenFailed
 	// tag exists to prevent, one level down: the hub would trade a fact for nothing, and
 	// the trade is always a board losing its cable.
 	if ok && (e.paidNegative() || (e.proven == provenProbe && e.info.IsOrb)) {
+		// The verdict stands; the attempt clock does not. A port holding a believed
+		// negative is due again every contradictedReprobe forever, so this path is taken
+		// repeatedly on a lead that will not answer. It needs its own timer because the
+		// belief clock never moves here — and the belief clock alone cannot answer "this
+		// lead is deaf; when is another reset worth it?"
+		e.lastTry = time.Now()
+		e.fails = fails
+		c.byPort[port] = e
+		// And the probe's claim on the port is released. It was taken by begin, and only
+		// record cleared it, so this path — the one path that files no record — left the
+		// port claimed by a probe that had already returned. Every later pass then read
+		// the port as busy and asked nothing: a wedged board wearing the costume of a
+		// patient hub, and a bench that silently stops being interrogated until restart.
+		delete(c.inFlight, port)
 		return
 	}
-	c.record(port, esprom.OrbInfo{Port: port, Reason: reason}, provenFailed)
+	delete(c.inFlight, port)
+	c.byPort[port] = identityEntry{
+		info:    esprom.OrbInfo{Port: port, Reason: reason},
+		who:     c.serialOf(port),
+		at:      time.Now(),
+		proven:  provenFailed,
+		fails:   fails,
+		lastTry: time.Now(),
+	}
+}
+
+// nextFail is the one rule for counting a missed probe: a streak continues off whatever
+// the entry already carries, and a first miss is one. Any recorded answer zeroes fails, so
+// a nonzero streak always means the last thing this port did was not answer.
+//
+// Both doors that file a failure read this, because they hold different entries — one
+// keeps a paid verdict and so never wears the provenFailed tag, the other IS the failure
+// record — and a rule spelled twice in two places is two rules, free to drift.
+func nextFail(e identityEntry) int {
+	if e.fails > 0 || e.proven == provenFailed {
+		return e.fails + 1
+	}
+	return 1
 }
 
 // doneCable records the answer to the free question: the hub opened the lead, sent
@@ -330,7 +376,98 @@ func (c *identityCache) record(port string, info esprom.OrbInfo, proven string) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.inFlight, port)
-	c.byPort[port] = identityEntry{info: info, who: c.serialOf(port), at: time.Now(), proven: proven}
+	fails := 0
+	if proven == provenFailed {
+		fails = nextFail(c.byPort[port])
+	}
+	c.byPort[port] = identityEntry{info: info, who: c.serialOf(port), at: time.Now(),
+		proven: proven, fails: fails, lastTry: time.Now()}
+}
+
+// nextAsk is when this port may be asked again, as a duration still to wait: zero once
+// the backoff is spent. It is the rate limit for a question that went unanswered, in one
+// place, so a stale verdict and a failed probe cannot each invent their own cadence.
+//
+// It gates ONLY a port whose last probe never reached a chip (fails > 0). A port that
+// answered is governed by the belief rules in cableNeedsProbe — a fresh verdict is not
+// re-asked and an expired one is, on their own clocks — and clamping those to a second
+// window would make a re-plug or a paid negative wait for a backoff nobody owes it. The
+// failure clock exists because the belief clock cannot answer the question "this lead
+// will not talk to me; when is it worth another reset?"
+//
+// One miss waits failedRetry. Each consecutive one doubles it, capped at failedRetryMax,
+// because a link that is genuinely broken answers no probe at any interval and every
+// unanswered attempt still costs the board a reboot.
+func (c *identityCache) nextAsk(port string, now time.Time) time.Duration {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.byPort[port]
+	if !ok || e.fails < 1 || e.lastTry.IsZero() {
+		return 0
+	}
+	wait := failedRetry
+	if e.fails > 1 {
+		// Doubling, clamped two ways: the shift is bounded so the arithmetic cannot
+		// wrap into a small number and re-open the storm it is meant to end, and the
+		// result is capped so a lead that stays deaf becomes askable again someday.
+		shift := min(e.fails-1, 6)
+		wait = failedRetry << shift
+		if wait > failedRetryMax {
+			wait = failedRetryMax
+		}
+	}
+	if left := e.lastTry.Add(wait).Sub(now); left > 0 {
+		return left
+	}
+	return 0
+}
+
+// corroborate refreshes the clock on a cached positive answer using free evidence, and
+// reports the port it refreshed. The caller is the liveness dial (main.go wires it into
+// live.probe), which already reads the board's own `mac` from /api/v1/status ten times a
+// minute for reasons that have nothing to do with identity.
+//
+// This is the line that makes the stated policy true rather than merely asserted. A
+// positive answer is supposed to be "corroborated continuously" by the free facts and so
+// never re-paid on a clock (launchprobe.go). Until now nothing refreshed `at` except a
+// paid probe, so the belief expired at identityTTL anyway and a board that had answered
+// every one of those dials as itself was still reset to ask the same question again. The
+// dial names the chip by its eFuse MAC — the same fact the probe pays the reboot to read
+// — so a match is not a hint, it is the same answer got for free.
+//
+// Deliberately narrow. It only moves a clock, never a claim: the entry keeps its
+// provenance, so a card that reports a reboot-paid stamp still reports the reboot that
+// bought it. It only touches an entry the host can still attribute to this cable, and it
+// only refreshes a positive: a LAN answer is evidence that an orb is running, which says
+// nothing useful about a verdict that says one is not.
+func (c *identityCache) corroborate(mac string, at time.Time) (string, bool) {
+	if c == nil || mac == "" {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for port, e := range c.byPort {
+		if !e.info.IsOrb || e.proven == provenFailed {
+			continue
+		}
+		// The host's own view of the cable, not the answer's. A dial proving chip X is
+		// an orb must not renew what the hub believes about a port holding chip Y.
+		if !sameChip(e.who, mac) {
+			continue
+		}
+		// The rescue the caller may announce: this answer was already past its TTL, so
+		// the next sweep would have paid a reboot for it. Everything else is the routine
+		// ten-second renewal, which must stay silent or the log buries the news.
+		saved := c.ttl > 0 && time.Since(e.at) > c.ttl
+		e.at = at
+		e.fails = 0
+		c.byPort[port] = e
+		return port, saved
+	}
+	return "", false
 }
 
 // all returns the still-true answers with their provenance, keyed by port, and drops

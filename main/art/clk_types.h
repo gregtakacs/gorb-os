@@ -221,6 +221,15 @@ typedef struct {
     uint8_t  blend;            /* 0 normal 1 multiply 2 screen */
     uint8_t  show;             /* draw it */
     uint32_t reserve;          /* must be 0: checked at load, so it stays free */
+    /* C4's delta dialect, appended at the END for the pair rule above: a record
+     * baked before them reads 0, and 0 here means NONE. `parent_row` is one more
+     * than the row `n` of the drawing row this one hangs on (0 = no parent), so
+     * the tag that means plate on the wire — 0 — can never arrive here by
+     * accident: the loader refuses ABI-2 rows that name parent 0 outright.
+     * `delay_ms` is the row's own per-frame interval, 0 = the tempo the dial
+     * keeps for it today (the GIF table, the tick). */
+    uint16_t parent_row;       /* parent's element row n + 1; 0 = none */
+    uint16_t delay_ms;         /* per-frame interval; 0 = the dial's own default */
 } clk_comp_t;
 
 /* One extra hand: a baked sprite plus how it is driven. The sub-dial hour /
@@ -239,4 +248,10 @@ typedef struct {
     uint16_t value_min;
     uint16_t value_max;
     uint16_t flags;            /* CLK_FLAG_*  */
+    /* C4: the same appended pair as clk_comp_t, same meanings, same 0 = none.
+     * The pointer rows are the attach points the escapement needs: a needle
+     * parented to the carriage it rides is the one claim the wire makes and
+     * the compositor must honour. */
+    uint16_t parent_row;       /* parent's element row n + 1; 0 = none */
+    uint16_t delay_ms;         /* per-frame interval; 0 = the dial's own default */
 } clk_aux_t;

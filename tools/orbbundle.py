@@ -46,11 +46,13 @@ import orbtheme as _ot
 import theme_schema as _ts
 
 FORMAT3      = 3
-GEOM_ABI3    = 3
+GEOM_ABI3    = 3                    # the container stamp of every file before C4
+GEOM_ABI4    = 4                    # C4's delta dialect: a v4 clock section rode along
 SECT_MAX     = 8                    # B5's app cap, the index's width
 IDX_WORDS    = 10                   # IDX_PACK below: 4H + 7I + 2H = 40 B
 SCALARS_N    = len(_ot.THEME_FIELDS)   # 26 today; the clock dialect, carried opaque
 SPR_WORDS    = 4                    # off, size, w, h — a bank entry's byte range
+SPR_WORDS2   = 6                    # C4 delta dialect: plus diffx, diffy (i16 pair)
 BLOB_HEAD    = 4 + SCALARS_N        # counts + scalars, before the element table
 SLOT_CAP     = _ts.SLOT_CAP             # orb_theme.c SLOT_CAP: the whole 8 MB slot
 SLOT_ART_OFF = 0x00010000           # orb_theme.c SLOT_ART_OFF: banks install here
@@ -124,9 +126,9 @@ def parse_header3(raw):
     if hdr[1] != FORMAT3:
         raise ValueError("theme format %d; this reader takes format %d"
                          % (hdr[1], FORMAT3))
-    if hdr[2] != GEOM_ABI3:
-        raise ValueError("bundle geometry v%d; this build reads v%d — re-bake it"
-                         % (hdr[2], GEOM_ABI3))
+    if hdr[2] not in (GEOM_ABI3, GEOM_ABI4):
+        raise ValueError("bundle geometry v%d; this build reads v%d and v%d — "
+                         "re-bake it" % (hdr[2], GEOM_ABI3, GEOM_ABI4))
     if hdr[_ot.W_HDR_CRC] != _ot._hdr_crc(hdr):
         raise ValueError("container header checksum mismatch — re-copy the file "
                          "onto the card")
@@ -145,7 +147,7 @@ def parse_header3(raw):
             "art_off": hdr[_ot.W_ART_OFF], "name": name}
 
 
-def pack_blob(slug, elements, scalars=None, sprites=()):
+def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
     """One section's geometry blob, self-describing from its count head.
 
     `elements` are theme_schema dicts and pass check_table HERE — the refusal
@@ -155,9 +157,16 @@ def pack_blob(slug, elements, scalars=None, sprites=()):
     words are always present, absent ones zero. `sprites` catalogue the section's
     bank by byte range — validated against the bank's length by write_bundle, the
     only caller that holds those bytes.
+
+    `abi` is the section's own geometry stamp (C4). At the delta stamp (4) the
+    element rows pack 25 wide and the catalogue rows carry the delta rect
+    position — `diffx`/`diffy`, signed, default 0,0 — beside the byte range they
+    always carried. At 3 the rows pack 23 wide, diff fields are refused before
+    they can be silently dropped, and the shipped bytes are the bytes C3 verified.
     """
     elements = list(elements or ())
     _ts.check_table(elements)
+    delta = abi >= _ts.CLOCK_ABI_V4
     sb = slug.encode("utf-8")
     if not 1 <= len(sb) <= SLUG_MAX:
         raise ValueError("bundle slug %r is %d bytes, outside 1..%d"
@@ -170,6 +179,7 @@ def pack_blob(slug, elements, scalars=None, sprites=()):
                              % (slug, name))
         scal_words[hit[0]] = _ot._val("%s.scalars.%s" % (slug, name),
                                       _ot.THEME_FIELDS[hit[0]][1], v)
+    sw = SPR_WORDS2 if delta else SPR_WORDS
     spr_words = []
     for i, sp in enumerate(sprites or ()):
         for fname in ("off", "size", "w", "h"):
@@ -177,31 +187,49 @@ def pack_blob(slug, elements, scalars=None, sprites=()):
                 raise ValueError("blob %r sprite[%d] is missing %r" % (slug, i, fname))
             spr_words.append(_ot._val("%s.sprite[%d].%s" % (slug, i, fname),
                                       "u32", sp[fname]))
-    if len(elements) > 0xFFFF or len(spr_words) // SPR_WORDS > 0xFFFF:
+        for fname, signed in (("diffx", True), ("diffy", True)):
+            v = int(sp.get(fname, 0))
+            if not delta:
+                if v:
+                    raise ValueError("blob %r sprite[%d] names %s %d at geometry v%d: "
+                                     "the v3 catalogue row has no place for a delta "
+                                     "rect" % (slug, i, fname, v, abi))
+                continue
+            spr_words.append(_ot._val("%s.sprite[%d].%s" % (slug, i, fname),
+                                      "i16" if signed else "u16", v))
+    if len(elements) > 0xFFFF or len(spr_words) // sw > 0xFFFF:
         raise ValueError("blob %r outgrew its u16 counts" % slug)
-    counts = struct.pack("<4I", len(elements), len(spr_words) // SPR_WORDS,
+    counts = struct.pack("<4I", len(elements), len(spr_words) // sw,
                          SCALARS_N, len(sb))
     body = struct.pack("<%dI" % SCALARS_N, *scal_words)
     if elements:
-        body += struct.pack("<%dI" % (len(elements) * _ts.ELEMENT_WORDS),
-                            *_ts.pack_elements(elements))
+        words = (_ts.pack_elements(elements) if delta
+                 else _ts.pack_elements_v3(elements))
+        body += struct.pack("<%dI" % len(words), *words)
     if spr_words:
         body += struct.pack("<%dI" % len(spr_words), *spr_words)
     return counts + body + sb + b"\0" * (-len(sb) % 4)
 
 
-def unpack_blob(blob):
+def unpack_blob(blob, abi=GEOM_ABI3):
     """The device-side reading, mirrored: the counts decide every later offset, and
     a blob whose length the counts cannot produce is refused, never truncated-read
     — the discipline geom_counts() enforces on FORMAT 2. The refusal sentences
-    here are orb_bundle.c's blob_check() sentences; the refusal order is too."""
+    here are orb_bundle.c's blob_check() sentences; the refusal order is too.
+    C4: `abi` is the stamp the INDEX record carries for this section — the
+    catalogue row width is keyed by it before any arithmetic (the element
+    stride's length equality cannot be honest twice over: it cannot both derive
+    the row width and pay for a catalogue of a width it has to guess), and the
+    delta columns decode behind the same guards the device reader uses."""
+    delta = abi >= _ts.CLOCK_ABI_V4
+    sw = SPR_WORDS2 if delta else SPR_WORDS
     if len(blob) < BLOB_HEAD * 4:
         raise ValueError("section blob is shorter than its counts and scalars")
     n_elem, n_spr, n_scal, n_slug = struct.unpack_from("<4I", blob, 0)
     if n_scal != SCALARS_N:
         raise ValueError("blob carries %d scalars; this dialect has %d"
                          % (n_scal, SCALARS_N))
-    want_min = (4 + n_scal + n_spr * SPR_WORDS) * 4 + n_slug + (-n_slug % 4)
+    want_min = (4 + n_scal + n_spr * sw) * 4 + n_slug + (-n_slug % 4)
     # §23.5's append-only rule: the element row width is carried by the blob's own
     # length, not assumed by the reader. The fixed head/scalars/sprites/slug bytes
     # come off first; what is left over must divide into whole n_elem rows of a
@@ -234,12 +262,25 @@ def unpack_blob(blob):
     elems = _ts.unpack_elements(list(struct.unpack_from(
         "<%dI" % (n_elem * elem_words), blob, off)), n_elem,
         stride=elem_words) if n_elem else []
+    if not delta:
+        # Decision B, mirrored: a v3 stamp's zero parent column carried no
+        # claim, and normalizes to the none the loader will hand the compositor
+        # anyway. The clock section's family gate is check_clock_stamp(), run
+        # by read_bundle with the record's stamp in hand.
+        for e in elems:
+            if e.get("parent", _ts.PARENT_NONE) == 0:
+                e["parent"] = _ts.PARENT_NONE
     off += n_elem * elem_words * 4
     sprs = []
     for i in range(n_spr):
-        o, sz, w, h = struct.unpack_from("<4I", blob, off + i * 16)
-        sprs.append({"off": o, "size": sz, "w": w, "h": h})
-    off += n_spr * SPR_WORDS * 4
+        o, sz, w, h = struct.unpack_from("<4I", blob, off + i * sw * 4)
+        if delta:
+            dx, dy = struct.unpack_from("<2h", blob, off + i * sw * 4 + 16)
+            sprs.append({"off": o, "size": sz, "w": w, "h": h,
+                         "diffx": dx, "diffy": dy})
+        else:
+            sprs.append({"off": o, "size": sz, "w": w, "h": h})
+    off += n_spr * sw * 4
     # The slug travels as BYTES, and read_bundle() compares it as bytes: a
     # forged blob can carry anything at all, and the device reader memcpys
     # those bytes without decoding. surrogateescape keeps the display form
@@ -247,6 +288,7 @@ def unpack_blob(blob):
     sb = blob[off:off + n_slug]
     return {"slug": sb.decode("utf-8", "surrogateescape"), "slug_b": sb,
             "elements": elems, "sprites": sprs,
+            "elem_words": elem_words, "spr_words": sw, "abi": abi,
             "scalars": {n: _ot._sext(scal[i], _ot.THEME_FIELDS[i][1])
                         for i, (n, _t) in enumerate(_ot.THEME_FIELDS)}}
 
@@ -275,12 +317,14 @@ def unpack_index(region):
 
 
 def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
-                 art_crc, serial=0, baked_ms=0):
+                 art_crc, serial=0, baked_ms=0, abi=GEOM_ABI3):
     """FORMAT 2's header, stamped FORMAT 3 (see the module docstring for the swapped
-    meaning of words 9/10)."""
+    meaning of words 9/10). `abi` (C4) is the container dialect word: a v4 clock
+    section raises it to 4, and a reader that stops at 3 refuses the file at this
+    header rather than read delta columns as zeros."""
     hdr = [0] * _ot.HDR_WORDS
     hdr[0], hdr[1], hdr[2], hdr[3] = (_ot._u(_ot.MAGIC), _ot._u(FORMAT3),
-                                      _ot._u(GEOM_ABI3), _ot._u(_ot.HDR_WORDS * 4))
+                                      _ot._u(abi), _ot._u(_ot.HDR_WORDS * 4))
     hdr[4] = _ot._u(_ot.HDR_WORDS * 4)      # the geometry region follows the header
     hdr[5], hdr[6] = _ot._u(geom_size), _ot._u(geom_crc)
     hdr[7], hdr[8] = _ot._u(art_size), _ot._u(art_crc)
@@ -326,7 +370,8 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
         if not s.get("elements") and not art:
             raise ValueError("section %r carries neither elements nor art" % s["slug"])
         blobs.append(pack_blob(s["slug"], s.get("elements"), s.get("scalars"),
-                               s.get("sprites", ())))
+                               s.get("sprites", ()),
+                               abi=s.get("abi_max", GEOM_ABI3)))
 
     # Pass 1 sizes the region; pass 2 stamps the records once every offset exists.
     # geom_off is derived, never guessed — stating it is the point, and read_bundle
@@ -374,7 +419,9 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
         region += b
     geom_crc = zlib.crc32(bytes(region)) & 0xFFFFFFFF
     hdr = pack_header3(name, len(sections), len(region), geom_crc, art_off,
-                       art_size, art_crc_all, serial, baked_ms)
+                       art_size, art_crc_all, serial, baked_ms,
+                       abi=max([s.get("abi_max", GEOM_ABI3) for s in sections]
+                               + [GEOM_ABI3]))
     out = bytearray(hdr)
     out += region
     out += b"\0" * (art_off - len(out))
@@ -428,7 +475,13 @@ def read_bundle(path):
         blob = region[r["geom_off"]:r["geom_off"] + r["geom_size"]]
         if zlib.crc32(blob) & 0xFFFFFFFF != r["geom_crc"]:
             raise ValueError("section %d blob checksum mismatch" % i)
-        b = unpack_blob(blob)
+        b = unpack_blob(blob, abi=r["abi_max"])
+        if b["slug"] == "clock":
+            # Decision A, host side: the clock's stride must be its stamp's. The
+            # device reader repeats the sentence; the suite pairs the two.
+            _ts.check_clock_stamp({"abi_max": r["abi_max"],
+                                   "elem_words": b["elem_words"],
+                                   "spr_words": b["spr_words"]})
         if r["slug_off"] + r["slug_len"] > h["geom_size"]:
             # the index's own name does not fit the region it lives in
             raise ValueError("section %d: the index's slug and the blob's disagree" % i)

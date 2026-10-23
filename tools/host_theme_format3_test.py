@@ -144,9 +144,11 @@ def _read_forged(word, val, suffix):
 
 
 try:
-    # SECTIONS[1] alone: region 48 + (4+26+2*ts.ELEMENT_WORDS+4) words, one 4096 B
-    # bank. The figure moves with the schema, because a budget gate pinned to one width would test the width and not the rule (D32 ruled append-only).
-    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 4) * 4 + 8 - 1
+    # SECTIONS[1] alone: region 48 + (4+26+2*ts.ELEMENT_WORDS_V3+4) words, one 4096 B
+    # bank. The figure moves with the width the default (v3) pack lays, because a
+    # budget gate pinned to one width would test the width and not the rule (D32
+    # ruled append-only, and C4's delta width is opt-in per section).
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8 - 1
     _gate("region past the table area", "table area",
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
     _gate("the refusal is the device's pre-erase sentence", "overrun the pixels",
@@ -157,7 +159,7 @@ try:
           lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
     # The moved boundary, §21's lesson stated for themes: == cap is legal.
     ob.SLOT_ART_CAP = 4096
-    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 4) * 4 + 8
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8
     try:
         ob.write_bundle(tmp + ".x", "Edge", [SECTIONS[1]])
         _h, _s = ob.read_bundle(tmp + ".x")

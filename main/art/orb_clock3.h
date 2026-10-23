@@ -31,13 +31,17 @@
 extern "C" {
 #endif
 
-/* The one rect a FORMAT 3 clock section can name: a plate keyframe with no
- * deltas (§25.6). And the plate-frame table: still as the one keyframe row it
- * has always been, or §31's keyframe bank, where a plate row of N frames writes
- * N-1 extra-plane offsets at rows 0..N-2 (frame 0 stays the plate the scalars
- * paint). Sized as a promise, not a capacity — the capacities a caller must
- * really have are the gif tables' and CLK_BG_MAX's. */
-#define ORB_CLOCK3_N_RECTS 1u
+/* The rect table C4's delta plate can name: one row per gif frame after the
+ * keyframe, each filled from the delta plane's own catalogue row (§4.3). Every
+ * other table — a keyframe bank, a flat v4 bake, any v3 file — keeps the one
+ * zero rect it has always been handed, the keyframe copy the compiled path
+ * takes discarding the list. Sized at CLK_BG_MAX because that is the gif bound
+ * the projection refuses against; a rect can never overrun a table its own
+ * frame count was refused past. And the plate-frame table: still as the one
+ * keyframe row a still plate has always been handed, or §31's keyframe bank,
+ * where a plate row of N frames writes N-1 extra-plane offsets at rows
+ * 0..N-2 (frame 0 stays the plate the scalars paint). */
+#define ORB_CLOCK3_N_RECTS CLK_BG_MAX
 #define ORB_CLOCK3_N_BGF   CLK_BG_MAX
 
 /** The caller's room, its own clock_assets.h, and where the result goes. Every

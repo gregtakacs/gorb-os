@@ -181,7 +181,7 @@ HARNESS_C = r"""
 
 #define GIF_CAP 64u
 static clk_theme_t        th;
-static clk_bg_rect_t      rects[4];
+static clk_bg_rect_t      rects[CLK_BG_MAX];
 static uint16_t           first_[GIF_CAP];
 static uint16_t           delays[GIF_CAP];
 static uint32_t           bgf[CLK_BG_MAX];
@@ -280,9 +280,10 @@ int main(int argc, char **argv)
     printf("n_comps %u\n", io.out_n_comps);
     for (uint32_t i = 0; i < io.out_n_comps; i++) {
         const clk_comp_t *c = &comps[i];
-        printf("comp %u %u %u %u %d %d %u %u %u %u %u %u %d %u %u\n", i,
+        printf("comp %u %u %u %u %d %d %u %u %u %u %u %u %d %u %u %u %u\n", i,
                c->tag, c->kind, c->src, c->x, c->y, c->w, c->h, c->count,
-               c->first, c->off, c->frame_bytes, c->value_min, c->scale, c->show);
+               c->first, c->off, c->frame_bytes, c->value_min, c->scale, c->show,
+               c->parent_row, (unsigned)c->delay_ms);
     }
     printf("n_aux %u\n", io.out_n_aux);
     /* idx tag kind(motion) src x y w h pivot span zero vmin vmax show flags pivotx
@@ -295,20 +296,44 @@ int main(int argc, char **argv)
      * read as §25.2's identity: centre = hand centre + light. */
     for (uint32_t i = 0; i < io.out_n_aux; i++) {
         const clk_aux_t *a = &auxs[i];
-        printf("aux %u %u %u %u %d %d %u %u %d %d %d %u %u %u %u %d %d %d %d\n", i,
+        printf("aux %u %u %u %u %d %d %u %u %d %d %d %u %u %u %u %d %d %d %d %u %u\n", i,
                a->tag, a->kind, a->src, a->spr.offx, a->spr.offy, a->spr.w, a->spr.h,
                (int)a->span, (int)a->zero, (int)a->value_min, (unsigned)a->value_max,
                (unsigned)a->spr.color_off, a->spr.show, (unsigned)a->flags,
                (int)a->spr.pivotx, (int)a->spr.pivoty,
-               (int)a->spr.centerx, (int)a->spr.centery);
+               (int)a->spr.centerx, (int)a->spr.centery,
+               a->parent_row, (unsigned)a->delay_ms);
     }
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
            rects[0].off);
+    /* C4: every materialized rect row, and the section's own geometry dialect, so
+     * a battery can name the delta rects the projection wrote and the stamp that
+     * authorised them without a second reader. `geom abi_max estride bstride` is
+     * what the container gate let through. `rectrow i` is the honest list, one
+     * line per materialized rect — the L3/L4 gif windows say there are
+     * `rect_first[gif_frames]` of them, zero for a keyframe table and the extra
+     * planes for a delta plate. */
+    printf("geom %u %u %u\n", (unsigned)s->abi_max, (unsigned)s->elem_words,
+           (unsigned)s->spr_words);
+    {
+        uint32_t nmat = (th.gif_frames <= GIF_CAP) ? first_[th.gif_frames] : 0u;
+        printf("nmat %u\n", nmat);
+        for (uint32_t i = 0; i < nmat && i < CLK_BG_MAX; i++)
+            printf("rectrow %u %u %u %u %u %u\n", i, rects[i].x, rects[i].y,
+                   rects[i].w, rects[i].h, rects[i].off);
+    }
     for (uint32_t i = 0; i <= th.gif_frames; i++) printf("first %u %u\n", i, first_[i]);
     for (uint32_t i = 0; i < th.gif_frames; i++) printf("delay %u %u\n", i, delays[i]);
     printf("bgf %u\n", bgf[0]);
-    for (uint32_t i = 0; i < th.bg_frames; i++) printf("bgframe %u %u\n", i, bgf[i]);
+    /* A keyframe bank fills io.bg_frames for its bg_frames extra planes; a delta
+     * plate fills it for its gif_frames-1 loop frames (§5.2). Both are the offsets
+     * the bgAnim consumer flips through, so print the row's own loop length. */
+    {
+        uint32_t nb = (th.bg_mode == 1 && th.gif_frames >= 2) ? (th.gif_frames - 1u)
+                                                              : th.bg_frames;
+        for (uint32_t i = 0; i < nb && i < CLK_BG_MAX; i++) printf("bgframe %u %u\n", i, bgf[i]);
+    }
     printf("art %u %u\n", io.out_art_off, io.out_art_size);
     printf("scr %u %u\n", s->scr_w, s->scr_h);
     printf("counts %u %u\n", s->n_elem, s->n_spr);
@@ -357,20 +382,31 @@ def parsed(out):
     sc, spr, first, delay = {}, {}, {}, {}
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
     comps, bgl, aux = [], {}, []
+    rectrows, geom, nmat = [], None, None
     for line in out.splitlines():
         w = line.split()
         if w[0] == "scalar":
             sc[w[1]] = [int(x) for x in w[2:]]
         elif w[0] in ("n_comps", "n_aux"):
             pass
+        elif w[0] == "geom":
+            geom = dict(zip(("abi_max", "elem_words", "spr_words"),
+                            (int(v) for v in w[1:])))
+        elif w[0] == "rectrow":
+            rectrows.append(dict(zip(("i", "x", "y", "w", "h", "off"),
+                                     (int(v) for v in w[1:]))))
+        elif w[0] == "nmat":
+            nmat = int(w[1])
         elif w[0] == "aux":
             # idx tag kind src x y w h span zero vmin vmax color_off show flags
-            # pivotx pivoty centerx centery — the harness's own order, named here so
-            # the battery reads a field and not an index. flags carries the
-            # projection's CLK_FLAG_AUX_SHADOW (256).
+            # pivotx pivoty centerx centery parent_row delay_ms — the harness's own
+            # order, named here so the battery reads a field and not an index. flags
+            # carries the projection's CLK_FLAG_AUX_SHADOW (256). parent_row is the
+            # resolved row index + 1 (0 = none); delay_ms the row's own tempo.
             aux.append(dict(zip(("i", "tag", "kind", "src", "x", "y", "w", "h", "span",
                                  "zero", "vmin", "vmax", "off", "show", "flags",
-                                 "pivotx", "pivoty", "cx", "cy"),
+                                 "pivotx", "pivoty", "cx", "cy", "parent_row",
+                                 "delay_ms"),
                                 (int(v) for v in w[1:]))))
         elif w[0] == "comp":
             comps.append([int(x) for x in w[1:]])
@@ -398,7 +434,7 @@ def parsed(out):
             cnt = (int(w[1]), int(w[2]))
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
                 art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl,
-                aux=aux)
+                aux=aux, rectrows=rectrows, geom=geom, nmat=nmat)
 
 
 SCALARS = ("bg", "plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
@@ -802,7 +838,10 @@ def d32_battery(exe, base):
     ck(len(p["comps"]) == 1, "the month window did not project alone: %d rows"
        % len(p["comps"]))
     c = p["comps"][0]
-    ck(c[1:] == [0, 0, 2, 60, 200, WIN_W, WIN_H, 12, 3, win_off, WIN_PLANE, 0, 16, 1],
+    # The window carries no parent and no per-row tempo, so C4's two appended
+    # comp columns (parent_row, delay_ms) land on their zeros with the row.
+    ck(c[1:] == [0, 0, 2, 60, 200, WIN_W, WIN_H, 12, 3, win_off, WIN_PLANE, 0, 16, 1,
+                 0, 0],
        "the window projected as %s, not the row-and-domain record" % (c,))
 
     # --from-bundle: the pair carries the bank it is shown and refuses the
@@ -1267,17 +1306,53 @@ def mutant_input(drv, golden, by_name):
     raise AssertionError("no such mutant driver %r" % (kind,))
 
 
+def _blob_row_bytes(buf):
+    """The element-row stride of the clock blob (record 0) this file carries —
+    derived from that blob's own length exactly as blob_check() derives it
+    (§23.5), not from the schema's current width. C4 moved the current width to
+    25 words, and the whole point of the append-only rule is that a forger
+    aiming at a v3 file must pay the v3 width the file actually lays its rows
+    at. The catalogue width is keyed by the record's own stamp, as the device
+    reader keys it."""
+    import theme_schema as ts
+    geom_off = _st.unpack_from("<I", buf, 4 * W_GEOM_OFF)[0]
+    rec = geom_off + 8                       # record 0's head, after the index head
+    abi = _st.unpack_from("<H", buf, rec + 6)[0]          # IDX_ORDER abi_max
+    blob_at = geom_off + _st.unpack_from("<I", buf, rec + IDX_GEOM_OFF)[0]
+    n_elem, n_spr, _nsc, n_slug = _st.unpack_from("<4I", buf, blob_at)
+    blob_size = _st.unpack_from("<I", buf, rec + IDX_GEOM_SIZE)[0]
+    spr_bytes = 24 if abi >= ts.CLOCK_ABI_V4 else 16
+    fixed = (4 + 26) * 4 + n_spr * spr_bytes + n_slug + (-n_slug % 4)
+    return (blob_size - fixed) // (n_elem * 4) * 4 if n_elem else \
+        ts.ELEMENT_WORDS * 4
+
+
 def elem_tamper(base, row, word, new):
     """One word of one element row, forged after the write and restamped."""
     buf = bytearray(open(base, "rb").read())
     geom_off = _st.unpack_from("<I", buf, 4 * W_GEOM_OFF)[0]
-    geom_size = _st.unpack_from("<I", buf, 4 * W_GEOM_SIZE)[0]
     n = sections_of(buf)
     blob_off = _st.unpack_from("<I", buf, geom_off + 8 + IDX_GEOM_OFF)[0]
-    at = geom_off + blob_off + BLOB_HEAD_BYTES + row * ELEM_WORDS_BYTES + word * 4
+    at = geom_off + blob_off + BLOB_HEAD_BYTES + row * _blob_row_bytes(buf) + word * 4
     buf[at:at + 4] = _st.pack("<I", new)
     _st.pack_into("<I", buf, 24, _regeom(buf))
     out = "%s.elem%d-%d.orbtheme" % (base, row, word)
+    open(out, "wb").write(bytes(buf))
+    return out
+
+
+def abi_lie(base, abi_max):
+    """The clock section's own index-record stamp forged after the write and fully
+    restamped, so the file reaches the clock gate and not the header's. Decision A
+    lives here: a stride that disagrees with the stamp it rides is not a dialect to
+    decode. The record's abi_max is the u16 at byte 6 (IDX_ORDER: the first <4H)."""
+    buf = bytearray(open(base, "rb").read())
+    geom_off = _st.unpack_from("<I", buf, 4 * W_GEOM_OFF)[0]
+    rec = geom_off + 8                              # record 0's head
+    _st.pack_into("<H", buf, rec + 6, abi_max)       # abi_max
+    _st.pack_into("<H", buf, rec + 4, abi_max)       # keep abi_min <= abi_max
+    _st.pack_into("<I", buf, 24, _regeom(buf))       # full restamp, header included
+    out = "%s.abi%d.orbtheme" % (base, abi_max)
     open(out, "wb").write(bytes(buf))
     return out
 
@@ -1305,12 +1380,238 @@ def mutants(exe, golden_path):
 
 
 
+# ---------------------------------------------------------------------------
+# C4 — the delta dialect (geometry ABI v4). The refusals battery proves a v3
+# table stays honest; this proves the v4 append is honoured and that the gate
+# refuses a lie rather than guessing at it. `c4_forge` re-emits the pair-forged
+# clock section at a stamp, so the byte-level contract — exact stride, the
+# parent/delay columns, the delta rects — is the shipped C reader's claim, not
+# the host packer's own. Every vector bends one field out of an honest v4 base.
+# ---------------------------------------------------------------------------
+
+
+def c4_forge(base, abi=4, mutate=None):
+    """The pair-forged clock section re-emitted at geometry stamp `abi`, with an
+    optional mutate(els, sc, art, spr) on the read-back table before re-pack."""
+    hdr, secs = ob.read_bundle(base)
+    sec = [s for s in secs if s["blob"]["slug"] == "clock"][0]
+    els = [dict(e) for e in sec["blob"]["elements"]]
+    sc = dict(sec["blob"]["scalars"])
+    spr = [dict(s) for s in sec["blob"]["sprites"]]
+    art = bytearray(sec["art"])
+    if mutate:
+        mutate(els, sc, art, spr)
+    out = "%s.c4-%d.orbtheme" % (base, c4_forge.n)
+    c4_forge.n += 1
+    ob.write_bundle(out, hdr["name"],
+                    [{"slug": "clock", "elements": els, "scalars": sc,
+                      "sprites": spr, "art": bytes(art),
+                      "scr_w": sec["rec"]["scr_w"], "scr_h": sec["rec"]["scr_h"],
+                      "abi_min": abi, "abi_max": abi}])
+    return out
+
+
+c4_forge.n = 0
+C4_MONTH = ts.SOURCES.index("month")     # domain 12, the instanced window's value
+C4_WINDOW = ts.KINDS.index("window")
+C4_SCR = (SCR_W, SCR_H)                  # the panel the plate must fill
+C4_PLATE_BYTES = SCR_W * SCR_H * 2       # a colour-only plate plane (RGB565)
+
+
+def c4_defaults(els, sc, art, spr):
+    """Honest v4 base: the two appended columns ride at their defaults, so every
+    row reads parent NONE and delay 0 — the shape a flat v4 bake of the av-kit
+    pair lays down, and the base every accept and refusal vector starts from."""
+    for e in els:
+        e.setdefault("parent", ts.PARENT_NONE)
+        e.setdefault("delay", 0)
+
+
+def c4_rect(w, h, dx, dy, art, spr, fill=b"\x22"):
+    """Append one delta-plane catalogue row at the bank's tail; returns its offset."""
+    at = len(art)
+    spr.append({"off": at, "size": w * h * 3, "w": w, "h": h, "diffx": dx, "diffy": dy})
+    art.extend(fill * (w * h * 3))
+    return at
+
+
+def c4_bank_row(els, n, slot, src, frame0, n_frames, flags=0, parent=None, delay=0):
+    """A fresh month-window BANK row (the class a parent/instance/delay may ride)."""
+    return dict(els[0], n=n, slot=slot, flags=flags, order=1,
+                parent=ts.PARENT_NONE if parent is None else parent, delay=delay,
+                **{"class": ts.CLASS_BANK, "kind": C4_WINDOW, "src": src},
+                x=30, y=30, w=80, h=60, frame0=frame0, n_frames=n_frames)
+
+
+# A 4-plane delta plate: frame 0 whole at the plate offset, frames 1..3 rects that
+# ride the catalogue's diff columns. The row is the loop (bg_frames stays 0) and
+# carries its own tempo, so the one-shot guard passes on truth rather than bg_fps.
+C4_DELTA_RECTS = [(40, 40, 64, 64), (200, 30, 32, 48), (10, 400, 80, 50)]
+
+
+def c4_build_delta_bank(els, sc, art, spr, rects, delay):
+    """Rebuild the bank so the plate's frames lead it: one whole colour-only plane
+    at offset 0, then one colour-only rect (w*h*2) per delta frame. The pair's other
+    planes (overlay, hands, shadows — RGB888) shift back by the rect count and every
+    non-plate row's frame0 follows. bg_frames stays 0 (the row IS the loop) and the
+    row carries its own tempo, so the one-shot guard passes on truth rather than on
+    bg_fps. `rects` is [(dx, dy, w, h)] and each rect must fit the plate box."""
+    c4_defaults(els, sc, art, spr)
+    plate = next(e for e in els if e["class"] == ts.CLASS_PLATE and e["slot"] == 0)
+    scr_w, scr_h = C4_SCR
+    whole = bytes(art[0:scr_w * scr_h * 2])         # the pair's own plate pixels
+    survivors = []                                  # the RGB888 planes that stay
+    for sp in spr[1:]:
+        survivors.append({"size": sp["size"], "w": sp["w"], "h": sp["h"],
+                          "bytes": bytes(art[sp["off"]:sp["off"] + sp["size"]])})
+    art[:] = whole
+    for dx, dy, w, h in rects:
+        art.extend(b"\x22" * (w * h * 2))           # colour-only, like the plate
+    for s in survivors:
+        art.extend(s["bytes"])
+    del spr[:]
+    spr.append({"off": 0, "size": scr_w * scr_h * 2, "w": scr_w, "h": scr_h,
+                "diffx": 0, "diffy": 0})
+    at = scr_w * scr_h * 2
+    for dx, dy, w, h in rects:
+        spr.append({"off": at, "size": w * h * 2, "w": w, "h": h,
+                    "diffx": dx, "diffy": dy})
+        at += w * h * 2
+    for s in survivors:                             # offsets continue the plate block
+        spr.append({"off": at, "size": s["size"], "w": s["w"], "h": s["h"]})
+        at += s["size"]
+    shift = len(rects)
+    for e in els:
+        if e is not plate and e.get("frame0", 0):
+            e["frame0"] = e["frame0"] + shift
+    plate["n_frames"] = 1 + shift
+    plate["delay"] = delay
+    sc["gif_frames"] = plate["n_frames"]
+    sc["bg_mode"], sc["bg_frames"] = 1, 0
+
+
+def c4_mk_delta(els, sc, art, spr):
+    c4_build_delta_bank(els, sc, art, spr, C4_DELTA_RECTS, 50)
+
+
+def c4_mk_inst(els, sc, art, spr):
+    """One seated plane, an instanced month window over the full domain of twelve."""
+    c4_defaults(els, sc, art, spr)
+    f0 = len(spr)
+    c4_rect(80, 60, 0, 0, art, spr, b"\x44")
+    els.append(c4_bank_row(els, 20, 0, C4_MONTH, f0, 12, flags=ts.EF_INSTANCE))
+
+
+def c4_mk_comp_on_hand(els, sc, art, spr):
+    """A comp hung on the hour hand (its row tag is the comp's parent): one link.
+    Instanced so the one seated plane stands for all twelve month plates."""
+    c4_defaults(els, sc, art, spr)
+    f0 = len(spr)
+    c4_rect(80, 60, 0, 0, art, spr, b"\x55")
+    hand = next(e for e in els if e["class"] == ts.CLASS_HAND and e["slot"] == 0)
+    els.append(c4_bank_row(els, 20, 0, C4_MONTH, f0, 12, flags=ts.EF_INSTANCE,
+                           parent=hand["n"]))
+
+
+def c4_mk_inst_v3(els, sc, art, spr):
+    """An instance-flagged month window (the flag is the v4 bit) — emitted at v3."""
+    c4_defaults(els, sc, art, spr)
+    f0 = len(spr)
+    c4_rect(80, 60, 0, 0, art, spr, b"\x44")
+    els.append(c4_bank_row(els, 20, 0, C4_MONTH, f0, 12, flags=ts.EF_INSTANCE))
+
+
+def c4_mk_rect_outside(els, sc, art, spr):
+    """A delta plane wider than its plate box (500 wide on a 466 plate): the
+    projection refuses a delta that is not a delta before it reaches the bank."""
+    c4_build_delta_bank(els, sc, art, spr, [(0, 0, 500, 10)], 40)
+
+
+
+def c4_battery(exe, base):
+    # ---- honest flat v4 table: stride 25/6, appended columns at zero, no rects ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_defaults))[1])
+    ck(g["geom"] == {"abi_max": 4, "elem_words": 25, "spr_words": 6},
+       "the section stamped %s, not the v4 25/6 the writer packed" % (g["geom"],))
+    ck(g["nmat"] == 0 and g["rectrows"] == [],
+       "a flat v4 table materialized %s rects, not zero" % (g["rectrows"],))
+    ck(all(c[15] == 0 and c[16] == 0 for c in g["comps"]),
+       "a flat v4 comp read parent/delay nonzero: %s" % (g["comps"],))
+    print("  C4 flat v4 table: stride 25/6, zero appended columns, no rects")
+
+    # ---- delta plate: accept, one rect row per extra plane at plate.xy + diff ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_delta))[1])
+    ck(g["geom"]["abi_max"] == 4 and g["geom"]["elem_words"] == 25
+       and g["geom"]["spr_words"] == 6,
+       "the delta bank rode a v%s stamp at %s words, not 4 at 25/6"
+       % (g["geom"]["abi_max"], g["geom"]["elem_words"]))
+    ck(g["nmat"] == 3 and len(g["rectrows"]) == 3,
+       "a 4-plane delta plate materialized %s rects, not three" % (g["nmat"],))
+    got = [(r["x"], r["y"], r["w"], r["h"]) for r in g["rectrows"]]
+    ck(got == [(0 + dx, 0 + dy, w, h) for dx, dy, w, h in C4_DELTA_RECTS],
+       "the delta rects are %s, not the plate origin plus each diff %s"
+       % (got, C4_DELTA_RECTS))
+    ck(set(g["delay"].values()) == {50},
+       "the plate's own 50 ms tempo did not reach the delay table: %s" % (g["delay"],))
+    print("  C4 delta plate: 3 rects at plate.xy + diff, tempo honoured")
+
+    # ---- instance flag: a month window over the fixed domain, frame_bytes 0 ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_inst))[1])
+    inst = [c for c in g["comps"] if c[3] == C4_MONTH]
+    ck(len(inst) == 1 and inst[0][11] == 0,
+       "the instanced month window did not project with frame_bytes 0: %s" % (g["comps"],))
+    print("  C4 instance: month window over 12 plates, frame_bytes 0")
+
+    # ---- parent: a comp on the hour hand resolves to that row's index + 1 ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_comp_on_hand))[1])
+    bank = [c for c in g["comps"] if c[3] == C4_MONTH]
+    ck(len(bank) == 1 and bank[0][15] != 0,
+       "the hung comp's parent_row did not resolve: %s" % (g["comps"],))
+    print("  C4 parent: a comp resolves its rotator to a row index")
+
+    # ---- refusals the writer emits and the projection refuses ----
+    for what, mut, needle in (
+            ("EF_INSTANCE under v3", c4_mk_inst_v3, "instance flag under geometry v3"),
+            ("a delta outside its box", c4_mk_rect_outside, "outside its")):
+        abi = 3 if mut is c4_mk_inst_v3 else 4
+        rc, out, err = run(exe, "--refuse", c4_forge(base, abi, mut))
+        ck(rc == 0 and needle in out,
+           "%s was not refused in its own words (%r): %r" % (what, needle, out[:220]))
+
+    # ---- the two parent refusals are writer-refused, so they reach the reader as a
+    # damaged card: a forged word on an honest v4 table. The plate row is index 0;
+    # its parent column is word 23 (0xFFFF = none, a legal value the tamper replaces).
+    v4 = c4_forge(base, 4, c4_defaults)
+    for what, par, needle in (
+            ("a plate claiming a parent", 2, "names a parent"),
+            ("a parent of 0", 0, "parent 0")):
+        rc, out, err = run(exe, "--refuse", elem_tamper(v4, 0, 23, par))
+        ck(rc == 0 and needle in out,
+           "%s was not refused in its own words (%r): %r" % (what, needle, out[:240]))
+
+    # ---- Decision A: a stride that disagrees with its stamp refuses at the gate ----
+    lying = abi_lie(c4_forge(base, 3, c4_defaults), 4)   # 23-wide table, v4 stamp
+    rc, out, err = run(exe, "--refuse", lying)
+    ck(rc == 0 and "clock rows are" in out and "that stamp writes" in out,
+       "a 23-wide table under a v4 stamp was not refused by the stride gate: %r"
+       % out[:240])
+
+    # ---- a tempo on a one-frame row: forged word, check_element refuses a written one ----
+    rc, out, err = run(exe, "--refuse",
+                       elem_tamper(c4_forge(base, 4, c4_defaults), 0, 24, 120))
+    ck(rc == 0 and "one frame" in out and "tempo" in out,
+       "a delay on a single-frame row was not refused: %r" % out[:240])
+    print("  C4 refusals: plate parent, parent 0, instance under v3, delta outside box, "
+          "stride/stamp, one-frame tempo")
+
+
 if __name__ == "__main__":
     EXE, PAIR = main()
     refusals(EXE, PAIR)
     d32_battery(EXE, PAIR)
     s31_battery(EXE, PAIR)
     d34_battery(EXE, PAIR)
+    c4_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))

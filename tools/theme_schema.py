@@ -504,8 +504,33 @@ ELEMENT_FIELDS = (
     ("zero",     "i16"),   # AUX: where the pointer sits at value_min, same unit
     ("vmin",     "u16"),   # AUX: the value `zero` stands for
     ("vmax",     "u16"),   # AUX: the domain `span` divides. 0 is a refusal, never a /0
+    # C4's delta dialect, appended exactly as D32's ruling A did. Both columns
+    # mean nothing below the v4 clock stamp, and the stamp gate (orb_clock3.c,
+    # mirrored here and in the baker) is what says so; a row packed into a
+    # narrower stride reads them at their defaults — parent NONE, delay 0 —
+    # the same append-only answer kind/src and the drive four got.
+    ("parent",   "u16"),   # row `n` of the drawing row this one hangs on;
+                           # 0xFFFF = none. 0 is the plate's tag and a refusal.
+    ("delay",    "u16"),   # per-frame ms for this row's animation; 0 = default
 )
-ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 23 words, 92 bytes per row
+ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 25 words, 100 bytes per row
+# The v3 clock row — every file shipped before C4, and every app row whatever
+# the stamp — and the widths the two clock dialects themselves carry. The clock
+# section's stride is gated EXACTLY against its stamp (Decision A): a v3 clock
+# row is one of the three widths that stamp has ever written, a v4 clock row is
+# one width. Anything else is a torn file or a lying stamp, and refused.
+ELEMENT_WORDS_V3 = 23
+ELEMENT_WORDS_CLOCK_V3 = (17, 19, 23)
+ELEMENT_WORDS_CLOCK_V4 = (25,)
+# The clock section's own geometry stamp values. The index record has carried
+# abi_min/abi_max words since FORMAT 3's first byte; C4 gives them their first
+# meaning: the clock's dialect version, gated exactly by orb_clock3.c and by
+# check_clock_stamp() here. The container header's GEOM_ABI moves to 4 only
+# when a v4 clock section rides along — old readers refuse a 4 header at the
+# door with the sentence they already have.
+CLOCK_ABI_V3 = 3      # == orbbundle.GEOM_ABI3 == orb_bundle.h ORB_BUNDLE3_ABI
+CLOCK_ABI_V4 = 4      # == orbbundle.GEOM_ABI4 == orb_bundle.h ORB_BUNDLE3_ABI2
+PARENT_NONE = 0xFFFF
 # The narrowest row the FORMAT 3 dialect has ever written, before D32's ruling A
 # appended kind and src. A blob's element-row stride is derived from its own
 # length (§23.5), and a stride below this floor is not a shorter row of this
@@ -524,7 +549,13 @@ EF_AUX_SHADOW = 1 << 4  # aux row: the shadow TWIN of the row directly before it
                         # the flag lives here as bit 4; orb_clock3.c's AUX_F_SHADOW
                         # maps it onto CLK_FLAG_AUX_SHADOW, and class aux is the only
                         # place it means anything — a hand's shadow is its own class.
-EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW
+EF_INSTANCE = 1 << 5    # C4: one seated plane standing for the row's whole frame
+                        # window (§4.2's first_stride=0 reading rule: the comp
+                        # maths draw n_frames slots of the one plate). Legal on a
+                        # fixed-domain WINDOW row under the v4 clock stamp and
+                        # nowhere else; orb_clock3.c refuses the bit under v3
+                        # rather than draw the single frame the row must be.
+EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW | EF_INSTANCE
 
 ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
 
@@ -841,6 +872,34 @@ def check_element(rec, where="elem"):
                 raise ValueError("%s: a window driven by %r indexes %d plates, and "
                                  "the row carries %d" % (where, SOURCES[src], want,
                                                          int(rec["n_frames"])))
+    # ---- C4: the delta columns and the instance bit ----
+    # Refuse-don't-guess, at the door that can still say it cheaply. The stamp
+    # itself is the baker's and the loader's business (check_clock_stamp and
+    # orb_clock3.c); these are the rules that hold under either stamp, because a
+    # v3 pack refuses the columns outright before any of them can ride.
+    parent = int(rec.get("parent", PARENT_NONE))
+    if parent != PARENT_NONE:
+        if parent == 0:
+            raise ValueError("%s.parent: 0 is the plate's own row tag, and a parent "
+                             "of none is %d (0x%X) — refused, not guessed"
+                             % (where, PARENT_NONE, PARENT_NONE))
+        if cls not in (CLASS_AUX, CLASS_BANK):
+            raise ValueError("%s.parent: class %r draws, it is not hung from — only a "
+                             "pointer or a complication names a parent"
+                             % (where, CLASS_NAMES[cls]))
+    if int(rec.get("delay", 0)) and int(rec["n_frames"]) < 2:
+        raise ValueError("%s.delay: %d ms on a row that carries %d frame — a tempo "
+                         "nobody will keep is a bake that lost its animation"
+                         % (where, int(rec["delay"]), int(rec["n_frames"])))
+    if flags & EF_INSTANCE:
+        if cls != CLASS_BANK or kind != KINDS.index("window"):
+            raise ValueError("%s.flags: the instance bit stands for a window's plates "
+                             "and means nothing on class %r kind %r"
+                             % (where, CLASS_NAMES[cls], kind))
+        if SOURCES[src] not in CLOCK_WINDOW_DOMAIN:
+            raise ValueError("%s.flags: an instanced window needs a fixed value domain "
+                             "to stand over, and %r has none"
+                             % (where, SOURCES[src]))
     return rec
 
 
@@ -851,6 +910,9 @@ def check_table(recs):
     Identity uniqueness is the load-bearing one. An app resolves an element by
     (class, slot), so two rows claiming one slot leave it painting one of them on a
     coin flip, and the order column then decides what the owner sees instead.
+    C4 adds the parent graph: a claim must name a row that exists, may not point
+    at itself, may not take more than two links, and may not close a cycle — the
+    same refusals orb_clock3.c repeats on the bytes it was handed.
     """
     if len(recs) > ELEM_MAX:
         raise ValueError("element table holds %d rows, past the bound of %d"
@@ -867,19 +929,103 @@ def check_table(recs):
                              "%d), and the app cannot paint both"
                              % (i, CLASS_NAMES[key[0]], key[1], seen_slot[key], i))
         seen_n[n], seen_slot[key] = i, i
+    for i, r in enumerate(recs):
+        par = int(r.get("parent", PARENT_NONE))
+        if par == PARENT_NONE:
+            continue
+        if par == int(r["n"]):
+            raise ValueError("elem[%d]: row %d names itself as its parent"
+                             % (i, int(r["n"])))
+        hops, cur, seen = 0, int(r["n"]), set()
+        while True:
+            if cur in seen:
+                raise ValueError("elem[%d]: the parent chain of row %d is a cycle"
+                                 % (i, int(r["n"])))
+            seen.add(cur)
+            j = seen_n.get(par)
+            if j is None:
+                raise ValueError("elem[%d]: row %d names parent %d and no row in this "
+                                 "table carries that tag" % (i, cur, par))
+            hops += 1
+            if hops > 2:
+                raise ValueError("elem[%d]: row %d hangs three deep; the compositor "
+                                 "carries two links" % (i, int(r["n"])))
+            cur = int(recs[j]["n"])
+            par = int(recs[j].get("parent", PARENT_NONE))
+            if par == PARENT_NONE:
+                break
     return recs
+
+
+def check_clock_stamp(rec):
+    """The §4.1 Decision-A gate, host side: a clock section's derived element
+    stride must be one of the widths its own stamp has ever carried, and its
+    catalogue row must be the width the stamp's dialect writes. `rec` carries
+    the index record's stamp and the blob reader's derived widths. Refusals
+    name both the stride and the stamp, mirroring orb_clock3.c's sentences."""
+    abi = rec.get("abi_max", CLOCK_ABI_V3)
+    ew = rec.get("elem_words", ELEMENT_WORDS)
+    spw = rec.get("spr_words") or (6 if abi >= CLOCK_ABI_V4 else 4)
+    if abi < CLOCK_ABI_V3 or abi > CLOCK_ABI_V4:
+        raise ValueError("a clock section stamped geometry v%d; this reader's clock "
+                         "dialect is v%d and v%d — re-bake it"
+                         % (abi, CLOCK_ABI_V3, CLOCK_ABI_V4))
+    if abi >= CLOCK_ABI_V4:
+        if ew not in ELEMENT_WORDS_CLOCK_V4:
+            raise ValueError("clock rows are %d words under geometry v%d; that stamp "
+                             "writes exactly 25" % (ew, abi))
+        if spw != 6:
+            raise ValueError("clock catalogue rows are %d words under geometry v%d; "
+                             "that stamp writes 6" % (spw, abi))
+    else:
+        if ew not in ELEMENT_WORDS_CLOCK_V3:
+            raise ValueError("clock rows are %d words under geometry v%d; that stamp "
+                             "writes 17, 19 or 23" % (ew, abi))
+        if spw != 4:
+            raise ValueError("clock catalogue rows are %d words under geometry v%d; "
+                             "that stamp writes 4" % (spw, abi))
 
 
 def pack_elements(recs, cap=ELEM_MAX):
     """Checked pack of a whole table: real rows only, no padding to the cap, exactly
-    as pack_records does its own tables."""
+    as pack_records does its own tables. C4's two appended columns default HERE
+    (parent NONE, delay 0) rather than at pack_record's door: a row dict from
+    before the delta dialect carries no claim, which is exactly what the
+    defaults say. A v3-width pack additionally refuses a non-default pair — the
+    bake that sets delay and packs 23 words is the same lie Decision A refuses
+    on the reader's side.
+    """
     check_table(recs)
     if len(recs) > cap:
         raise ValueError("element table: %d rows exceed the cap of %d"
                          % (len(recs), cap))
     out = []
     for i, r in enumerate(recs):
+        r = dict(r)
+        r.setdefault("parent", PARENT_NONE)
+        r.setdefault("delay", 0)
         out += pack_record(r, ELEMENT_FIELDS, "elem[%d]" % i)
+    return out
+
+
+def pack_elements_v3(recs, cap=ELEM_MAX):
+    """The v3-width pack: every app section, and every clock file that names no
+    delta vocabulary. Non-default delta columns are refused at this door, not
+    silently truncated — the writer cannot undo a claim."""
+    check_table(recs)
+    for i, r in enumerate(recs):
+        par, dly = r.get("parent", PARENT_NONE), r.get("delay", 0)
+        if par != PARENT_NONE or dly:
+            raise ValueError("elem[%d] names parent %d delay %d at stride %d: the "
+                             "v3 clock stamp has no reading for them — bake the "
+                             "section at the v4 stamp" % (i, par, dly,
+                                                          ELEMENT_WORDS_V3))
+    if len(recs) > cap:
+        raise ValueError("element table: %d rows exceed the cap of %d"
+                         % (len(recs), cap))
+    out = []
+    for i, r in enumerate(recs):
+        out += pack_record(r, ELEMENT_FIELDS[:ELEMENT_WORDS_V3], "elem[%d]" % i)
     return out
 
 
@@ -904,8 +1050,12 @@ def unpack_elements(words, n, stride=None):
 
 def blank_element():
     """A zeroed row with every key present. n_frames 0 is not a legal element, so a
-    bake fills that before it packs: blank is a starting point, not a default."""
-    return {n: 0 for n, _ in ELEMENT_FIELDS}
+    bake fills that before it packs: blank is a starting point, not a default.
+    C4's parent column defaults to the NONE sentinel — a zeroed row would name
+    the plate — and delay to zero, which is the dial's own default tempo."""
+    rec = {n: 0 for n, _ in ELEMENT_FIELDS}
+    rec["parent"] = PARENT_NONE
+    return rec
 
 if __name__ == "__main__":
     # Cheap self-check, and the reason the caps and the record sizes cannot
@@ -953,7 +1103,9 @@ if __name__ == "__main__":
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.
-    assert ELEMENT_WORDS == 23 == len(ELEMENT_FIELDS), "element row width moved"
+    assert ELEMENT_WORDS == 25 == len(ELEMENT_FIELDS), "element row width moved"
+    assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[-2][0] == "parent" \
+        and ELEMENT_FIELDS[-1][0] == "delay", "C4's append moved"
     assert len(CLASS_NAMES) == 9, "class vocabulary moved; orb_assets.h's bound must agree"
     assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None

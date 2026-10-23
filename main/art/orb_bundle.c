@@ -48,7 +48,18 @@ enum {
 #define IDX_HEAD_BYTES   8u
 #define BLOB_COUNT_WORDS 4u
 #define BLOB_HEAD_BYTES  ((BLOB_COUNT_WORDS + ORB_BUNDLE_SCALARS_N) * 4u)
-#define SPR_BYTES        (4u * 4u) /* a sprite entry: off, size, w, h */
+#define SPR_BYTES        ORB_BUNDLE_SPR_BYTES   /* a v3 catalogue row */
+#define SPR_BYTES2       ORB_BUNDLE_SPR_BYTES2  /* and at the delta dialect */
+
+/* A section's catalogue row width, keyed by the stamp the index record carries:
+ * a clock section stamped for the delta dialect widened its rows with the rect
+ * position every delta plane needs; nothing else ever names 6. The stamp gate
+ * proper — the exact stride, the refusals — is orb_clock3.c's, at the other end
+ * of the parse; this helper only keeps the length arithmetic honest. */
+static uint32_t spr_bytes_of(uint8_t abi_max)
+{
+    return abi_max >= (uint8_t)ORB_BUNDLE3_ABI2 ? SPR_BYTES2 : SPR_BYTES;
+}
 
 static uint16_t b16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t b32(const uint8_t *p)
@@ -108,6 +119,11 @@ uint32_t orb_bundle_elem_stride(const orb_bundle_sec_t *s)
     return s->elem_words ? s->elem_words : ORB_BUNDLE_ELEM_WORDS;
 }
 
+uint32_t orb_bundle_spr_stride(const orb_bundle_sec_t *s)
+{
+    return s->spr_words ? s->spr_words * 4u : ORB_BUNDLE_SPR_BYTES;
+}
+
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
                         orb_bundle_elem_t *e)
 {
@@ -140,6 +156,20 @@ void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
     e->zero     = orb_bundle_elem_stride(s) >= 21u ? (int16_t) b32(r + 80) : 0;
     e->vmin     = orb_bundle_elem_stride(s) >= 22u ? (uint16_t)b32(r + 84) : 0u;
     e->vmax     = orb_bundle_elem_stride(s) >= 23u ? (uint16_t)b32(r + 88) : 0u;
+    /* C4's two delta columns, at the same guard. A narrower row reads parent as
+     * the 0xFFFF it means: a dialect that never carried the column named no
+     * parent. Zero is NOT the narrower row's default — zero is tag 0, the plate
+     * — which is why orb_clock3.c refuses a v4 row that names it rather than
+     * guess, and why a v3 stamp's zero column normalizes to none here instead:
+     * under the old stamp the column carried no claim either way. */
+    {
+        const uint32_t st = orb_bundle_elem_stride(s);
+        uint16_t p = st >= 24u ? (uint16_t)b32(r + 92) : 0xFFFFu;
+        if (s->abi_max < (uint8_t)ORB_BUNDLE3_ABI2 && p == 0u)
+            p = 0xFFFFu;
+        e->parent = p;
+        e->delay  = st >= 25u ? (uint16_t)b32(r + 96) : 0u;
+    }
 }
 
 /* ---- the FORMAT 3 header -------------------------------------------------- */
@@ -153,9 +183,10 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
                                                             * suite: the host
                                                             * bake names both
                                                             * numbers */
-    if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI)
-        return reject("bundle geometry v%lu; this build reads v%lu — re-bake it",
-                      (unsigned long)w[W_GEOM_ABI], (unsigned long)ORB_BUNDLE3_ABI);
+    if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI2)
+        return reject("bundle geometry v%lu; this build reads v%lu and v%lu — re-bake it",
+                      (unsigned long)w[W_GEOM_ABI], (unsigned long)ORB_BUNDLE3_ABI,
+                      (unsigned long)ORB_BUNDLE3_ABI2);
 
     /* The self-checksum first, on the header's SHAPE — one rule for every
      * .orbtheme the door admits: same 128 bytes, same zeroed word 28 — the
@@ -171,6 +202,9 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
     o->art_off  = w[W_ART_OFF];    o->art_size  = w[W_ART_SIZE];
     o->art_crc  = w[W_ART_CRC];
     o->serial   = w[W_SERIAL];
+    o->geom_abi = w[W_GEOM_ABI];       /* carried: the store stamps the slot's
+                                        * header with the bundle's own dialect
+                                        * (C4), and only v3/v4 got here. */
     o->n_sections = w[W_SCR_W];    /* the one repurposed word: FORMAT 3's count.
                                     * No range test HERE: a count outside 1..8
                                     * dies at the index's own sentence below or
@@ -229,13 +263,19 @@ int orb_bundle_slug_rule(const uint8_t *p, uint32_t n)
 void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
                        orb_bundle_spr_t *sp)
 {
+    const uint32_t stride = orb_bundle_spr_stride(s);
     const uint8_t *r = s->blob + BLOB_HEAD_BYTES +
                        (uint64_t)s->n_elem * (orb_bundle_elem_stride(s) * 4u) +
-                       (uint64_t)i * SPR_BYTES;
+                       (uint64_t)i * stride;
     sp->off  = b32(r +  0);
     sp->size = b32(r +  4);
     sp->w    = b32(r +  8);
     sp->h    = b32(r + 12);
+    /* C4's delta position, read only from the wide row. A v3 catalogue — and a
+     * hand-built section that never set spr_words — reads (0, 0): the full
+     * plane this dialect has always carried. */
+    sp->diffx = stride >= ORB_BUNDLE_SPR_BYTES2 ? (int16_t)b32(r + 16) : 0;
+    sp->diffy = stride >= ORB_BUNDLE_SPR_BYTES2 ? (int16_t)b32(r + 20) : 0;
 }
 
 /* unpack_blob()'s mirror, in its refusal order: head length, scalar dialect,
@@ -243,8 +283,13 @@ void orb_bundle_spr_at(const orb_bundle_sec_t *s, uint32_t i,
  * Python's arbitrary precision cannot and the two readers must refuse the
  * same files. Reports the blob's own counts and the slug's place inside it;
  * the tables stay in place (the zero-copy rule) and every later read is
- * bounded by the length equality proven here. */
+ * bounded by the length equality proven here. `spr_bytes` is the catalogue row
+ * width the section's own stamp selects (C4): the element stride derives from
+ * the length equality, and that equality only holds when the fixed part costs
+ * what the writer counted — the stamp is therefore read before any arithmetic,
+ * never inferred from it. */
 static const char *blob_check(const uint8_t *blob, uint32_t len,
+                              uint32_t spr_bytes,
                               uint32_t *n_elem, uint32_t *n_spr,
                               uint32_t *slug_off, uint32_t *slug_len,
                               uint32_t *elem_words)
@@ -263,7 +308,7 @@ static const char *blob_check(const uint8_t *blob, uint32_t len,
      * were written after. A width this schema has never had is a torn file. */
     const uint32_t pad = nl + (4u - (nl % 4u)) % 4u;
     const uint64_t fixed = (uint64_t)(BLOB_COUNT_WORDS + nsc) * 4u
-                         + (uint64_t)ns * SPR_BYTES + pad;
+                         + (uint64_t)ns * spr_bytes + pad;
     uint64_t eb = 0;
     *elem_words = ORB_BUNDLE_ELEM_WORDS;   /* the width a table with no rows
                                             * could not contradict */
@@ -413,12 +458,17 @@ static const char *parse_core(const orb_bundle3_hdr_t *h, const uint8_t *file,
         if (esp_rom_crc32_le(0, s->blob, s->geom_size) != geom_crc)
             return reject("section %lu blob checksum mismatch", (unsigned long)i);
 
+        /* C4: the catalogue's row width is the section stamp's, not a derived
+         * number — the element stride's length equality can only be honest if
+         * the fixed part it subtracts costs what the writer counted. */
+        s->spr_words = (uint16_t)(spr_bytes_of(s->abi_max) / 4u);
         uint32_t ne = 0, ns = 0, so = 0, sl = 0, ew = ORB_BUNDLE_ELEM_WORDS;
                                                     /* zeroed to answer gcc's
                                                    * uninit warning: blob_check
                                                    * fills all four on success */
-        const char *why = blob_check(s->blob, s->geom_size, &ne, &ns, &so, &sl,
-                                     &ew);
+        const char *why = blob_check(s->blob, s->geom_size,
+                                     spr_bytes_of(s->abi_max),
+                                     &ne, &ns, &so, &sl, &ew);
         if (why) return why;
         s->elem_words = (uint16_t)ew;
         /* The record's window first — sized, not summed, so no u32 wrap can

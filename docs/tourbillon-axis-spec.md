@@ -362,8 +362,12 @@ tourbillon that is not a tourbillon. On an orbital train the carriage IS the sec
 hand (`orbital`, `kite`), so its motion box is the orbit and measures near the whole
 panel; a bake that prices the carriage row off that box and then demands a local one
 refuses its own carriage. `splitPolicy3` prices the row on the carriage's measured ink
-box, bills it before the plate, and refuses rather than ship a frozen orbit. See plan
-§"Correction (2026-10-22)".
+box, bills it before the plate, and refuses rather than ship a frozen orbit. The row's
+box is answered by one function, `carriageRect3` — cycle-wide union at `alpha > 0`,
+padded by 2, clamped to the planes, widened to hold the pivot it turns about — and both
+sides read it: FORMAT 3 crops each shipped frame to it and moves the draw point and pivot
+with it, and the price bills it. A measure and a crop that disagree bill a local row at
+panel price and blow the slot. See plan §"Correction (2026-10-22)".
 
 ## Appendix A — the ink-budget prior, and where the sweep corrected it
 

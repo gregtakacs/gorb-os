@@ -468,6 +468,67 @@ const pOrbCaged = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359
 ok(pOrbCaged.carrier === 'refuse' && /baked without it/.test(pOrbCaged.sentence),
    'a plain tourbillon whose row will not fit refuses too: the strip is in the plate either way',
    pOrbCaged.sentence);
+
+// ---- 7e. the row's price IS the rect it ships ----
+/* The over-cap bake of 2026-10-22: a caged orbital dial whose bake refused at 7,064,426 B
+ * against a 4,128,768 B slot, on a policy verdict that had already been told the row was
+ * affordable. The cause was two functions deciding the row's box — the measure counted
+ * ink at alpha >= 8 and added no pad, while alphaBbox crops at alpha > 0 and
+ * bakeTourbillon pads by 2. Under-pricing is the direction a budget miss must never go,
+ * so the baker answers the rect and the composer bills it. These vectors hold that line:
+ * build a cage canvas whose real ink sits in a 100x100 window, optionally with ONE faint
+ * texel far from it, price it, bake it, and read the shipped bytes off the finished file.
+ * Both figures must be the same number, or the policy is estimating. */
+const cagePlane = (seed, faint) => {
+  const r = new Uint8Array(466 * 466 * 4);
+  for (let y = 200; y < 300; y++) for (let x = 200; x < 300; x++) {
+    const o = (y * 466 + x) * 4;
+    r[o] = (x + seed) & 0xFF; r[o + 1] = (y * 3) & 0xFF; r[o + 2] = 128; r[o + 3] = 200;
+  }
+  if (faint) r[(faint[1] * 466 + faint[0]) * 4 + 3] = faint[2];
+  return { rgba: r, w: 466, h: 466 };
+};
+const rectTight = B.carriageRect3([cagePlane(1, null), cagePlane(2, null)]);
+ok(rectTight[0] === 198 && rectTight[1] === 198 && rectTight[2] === 302 && rectTight[3] === 302,
+   'the row rect pads the ink box by 2 on every side, the way the bake crops it',
+   'rect ' + rectTight.join(','));
+const rectFaint = B.carriageRect3([cagePlane(1, [460, 460, 3]), cagePlane(2, [460, 460, 3])]);
+ok(rectFaint[2] === 463 && rectFaint[3] === 463,
+   'one alpha-3 texel moves the row rect: alpha > 0 governs the crop, not a tidier threshold',
+   'rect ' + rectFaint.join(',') + ' over a 104x104 ink box');
+const carPrice = (rect) => B.splitPolicy3({ frames: 2, fps: 2, unionPx: 0, bboxW: 0, bboxH: 0,
+  otherB: 24000, hasCage: true, carriageW: rect[2] - rect[0], carriageH: rect[3] - rect[1] });
+const noRow = B.bakeClock3({ name: 'Price Ship', serial: 1, bakedMs: 1, plate: PL, hands: [HK], order: [0] });
+const shipRow = (planes) => B.bakeClock3({ name: 'Price Ship', serial: 1, bakedMs: 1, plate: PL,
+  hands: [HK], order: [0], carriage: { x: 0, y: 0, w: 466, h: 466, pivot_x: 250, pivot_y: 250,
+                                       degrees: 0, fps: 2, frames: planes } }).meter.artSize;
+const cpTight = carPrice(rectTight), shipTight = shipRow([cagePlane(1, null), cagePlane(2, null)]);
+ok(cpTight.carriage && cpTight.carriage.bytes === shipTight - noRow.meter.artSize,
+   'the row bills the bytes it ships: padded crop priced, padded crop encoded, to the letter',
+   cpTight.carriage.bytes + ' B priced against ' + (shipTight - noRow.meter.artSize) + ' B shipped');
+const cpFaint = carPrice(rectFaint), shipFaint = shipRow([cagePlane(1, [460, 460, 3]), cagePlane(2, [460, 460, 3])]);
+ok(cpFaint.carriage && cpFaint.carriage.bytes === shipFaint - noRow.meter.artSize,
+   'and it still agrees when faint rim texels widen the row — the miss that blew the slot',
+   cpFaint.carriage.bytes + ' B priced against ' + (shipFaint - noRow.meter.artSize) + ' B shipped');
+ok(cpFaint.carriage.bytes > cpTight.carriage.bytes * 6,
+   'the faint texel costs the bake six times the row it hides: the tight measure was the lie',
+   cpTight.carriage.bytes + ' B billed, ' + cpFaint.carriage.bytes + ' B true');
+
+// A row cropped away from the point it turns about is art the dial swings off its pin, so
+// the rect holds the pivot and the bill grows to match. Widening costs nothing on a closed
+// orbit, which always contains its own centre.
+const rectPiv = B.carriageRect3([cagePlane(1, null)], { pivot: [100, 250] });
+ok(rectPiv[0] === 100 && rectPiv[1] === 198 && rectPiv[2] === 302 && rectPiv[3] === 302,
+   'a pivot outside the ink box widens the row rect to hold it', 'rect ' + rectPiv.join(','));
+const cpPiv = carPrice(rectPiv);
+const shipPiv = B.bakeClock3({ name: 'Pivot Row', serial: 1, bakedMs: 1, plate: PL, hands: [HK], order: [0],
+  carriage: { x: 0, y: 0, w: 466, h: 466, pivot_x: 100, pivot_y: 250, degrees: 0, fps: 2,
+              frames: [cagePlane(1, null), cagePlane(2, null)] } }).meter.artSize;
+ok(cpPiv.carriage && cpPiv.carriage.bytes === shipPiv - noRow.meter.artSize,
+   'and the widened row bills its widened box, to the byte',
+   cpPiv.carriage.bytes + ' B priced against ' + (shipPiv - noRow.meter.artSize) + ' B shipped');
+
+
 const pNoCage = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: false });
 ok(pNoCage.carrier === 'bank' && !pNoCage.carriage,
    'the same box without a cage is still a bank — the carriage row is the cage, and nothing else');
@@ -716,8 +777,16 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: Array.from({ length: 5 }
         'twins counted', 'four shadowed pointers is the cap; the fifth refuses before any art is drawn');
 const bkTwin = '/tmp/js_bake_twin.orbtheme';
 const bkBoth = '/tmp/js_bake_bank_and_carriage.orbtheme';
+const bkCrop = '/tmp/js_bake_row_crop.orbtheme';
 fs.writeFileSync(bkTwin, Buffer.from(bakedT.bytes));
 fs.writeFileSync(bkBoth, Buffer.from(bakedAC.bytes));
+// The row the crop exists for: a cage canvas at full panel carrying a 100x100 ink window.
+// The dial must seat the row at the crop's top-left, at the crop's size.
+const bakedCrop = B.bakeClock3({ name: 'Row Crop Projection', serial: 20261022, bakedMs: 1730000000003,
+  plate: PL, hands: [HK], order: [0],
+  carriage: { x: 0, y: 0, w: 466, h: 466, pivot_x: 250, pivot_y: 250, degrees: 0, fps: 2,
+              frames: [cagePlane(1, null), cagePlane(2, null)] } });
+fs.writeFileSync(bkCrop, Buffer.from(bakedCrop.bytes));
 fs.writeFileSync(bkAux, Buffer.from(bakedX.bytes));
 const hasGcc = spawnSync('sh', ['-c', 'command -v gcc >/dev/null && test -f /usr/include/zlib.h']).status === 0;
 if (!hasGcc) {
@@ -728,6 +797,10 @@ if (!hasGcc) {
   // carriage row in the same section. Run ALONE, so both detail lines are the
   // coexistence bundle's and not another fixture's.
   const prBoth = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkBoth], { encoding: 'utf8' });
+  const prCrop = spawnSync(PY, [path.join(ROOT, 'tools', 'verify_js_bake.py'), bkCrop], { encoding: 'utf8' });
+  ok(prCrop.status === 0 && /tourbillon\s*\[\d\] 104x104 draws at \(198,198\)/.test(prCrop.stdout),
+     'the compiled dial seats the cropped row at the crop\'s own box, the byte the policy billed',
+     (prCrop.stdout.match(/tourbillon[^\n]*/) || [(prCrop.stdout || prCrop.stderr).trim().split('\n')[0]])[0]);
   ok(prBoth.status === 0 && /plate bank: 2 extra keyframes/.test(prBoth.stdout)
      && /tourbillon\s*\[\d\] 64x64 draws at \(200,200\)/.test(prBoth.stdout),
      'and the compiled dial projects a plate bank and a carriage row in one section',

@@ -2051,27 +2051,27 @@ class Component extends DCLogic {
     m.bboxW = moved ? bx2 - bx + 1 : 0; m.bboxH = moved ? by2 - by + 1 : 0;
     return pxs;
   }
-  /* The carriage's OWN extent, measured as one box across every frame of the loop —
-   * the same cycle-wide crop bake_clock.py's bake_tourbillon takes, so the box the
-   * policy prices is the box the row ships. Answering null says the cage planes are
-   * not one bank, which is the bake's own refusal to make, not this measure's. */
+  /* The carriage's OWN extent — the rect the row actually ships, asked of the baker rather
+   * than estimated here. bakeTourbillon crops to carriageRect3: the cycle-wide union at
+   * alpha > 0, padded by 2, clamped to the panel. This measure used to threshold ink at
+   * alpha >= 8 and add no pad, so it billed a tight box while the bake shipped a wider
+   * one — on an orbital arrow whose faint rim texels run to the canvas edge, the gap is a
+   * 402x359 price against a 466x466 row, and the bake blew the slot by 2.9 MB. One
+   * function deciding the rect is the only thing that keeps the two from drifting again.
+   * Answering null says the cage planes carry no ink, which is the bake's own refusal to
+   * make, not this measure's. */
   measureCarriage3(gt, frames) {
-    const W = 466;
-    let x0 = W, y0 = W, x1 = -1, y1 = -1, ink = 0;
+    const G = window.GorbBake;
+    if (!G || !G.carriageRect3) return null;
+    const planes = [];
     for (let f = 0; f < frames; f++) {
       const im = gt[f] && gt[f].cage;
       if (!im) return null;
-      const d = im.getContext('2d').getImageData(0, 0, W, W).data;
-      for (let p = 0, i = 3; p < W * W; p++, i += 4) {
-        if (d[i] < 8) continue;
-        ink++;
-        const x = p % W, y = (p / W) | 0;
-        if (x < x0) x0 = x; if (x > x1) x1 = x;
-        if (y < y0) y0 = y; if (y > y1) y1 = y;
-      }
+      const w = im.width, h = im.height;
+      planes.push({ w: w, h: h, rgba: im.getContext('2d').getImageData(0, 0, w, h).data });
     }
-    if (!ink || x1 < 0) return null;
-    return [x1 - x0 + 1, y1 - y0 + 1];
+    const r = G.carriageRect3(planes, { pivot: this.base && this.base.cageAt });
+    return r ? [r[2] - r[0], r[3] - r[1]] : null;
   }
   /* The split's other half: decide carriers off the measurement, assemble the
    * planes the bake wants, and download under the id the card will file it by.

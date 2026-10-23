@@ -5749,7 +5749,8 @@ could answer only `bank` before this.
 
 **What this corrects above.** The `carriage (sprite) — none today` row was a property of
 the gate, not of the presets. Orbital and kite carriage now take the row.
-`headless-bundle3.test.js` grows the section to eight new checks (170, up from 162): the
+`headless-bundle3.test.js` grows the section to eight new checks (170, up from 162, and 178
+after the rect correction below): the
 carriage over a still plate, the bank and the row together, the row billing the bank's
 budget before the thin, the refusal when a carriage will not fit, and the refusal when
 the carriage box was never measured — and at the device's own door, the compiled
@@ -5758,6 +5759,23 @@ That last pair is the invariant the strip demands: once the plate bakes without 
 carriage, a caged dial that ships no row ships no tourbillon, so every caged dial refuses
 rather than lose art it was handed. Pricing a swept carriage off the plate box is also
 gone — it under-prices, the direction this suite refuses to be wrong in.
+
+**Second miss, same bake, same day.** The re-bake then refused at the slot door with
+`the bake's art bank is 7,064,426 B against the 4,128,768 B the slot leaves for banks`. The
+plate's 4 keyframes priced correctly, at 1,737,248 B. The row did not, for two reasons. The
+composer measured the carriage box at `alpha >= 8` and added no pad, while `alphaBbox` crops
+at `alpha > 0` and `bakeTourbillon` pads by 2. And FORMAT 3 never cropped at all: it shipped
+each cage canvas at its declared extent. A 402x359 arrow billed 3,463,632 B and shipped
+5,211,744 B. `carriageRect3` now owns that rect alone: the baker crops the FORMAT 3 row to it
+and moves the draw point and pivot with it, the composer bills the same call, and the rect
+widens to hold the pivot the row turns about. `bakeTourbillon` passes no pivot, so the FORMAT
+2 crop stays byte-identical and `gfx_parity_test.py` still holds at the `3116942` pin.
+`headless-bundle3.test.js` reaches 178 checks: priced bytes equal shipped bytes to the byte
+on three row shapes, one alpha-3 texel moves the rect, and the compiled dial seats a cropped
+row at (198,198) rather than at the canvas it was cut from. Off the reported figures — 8
+frames at 4 fps, 115,434 B of hands and glass — the dial now fits every way its art can
+measure: 4,086,818 B with the plate riding the still at a 406x363 row, or 3,589,930 B thinned
+to 2 keyframes and a 4-frame row if the art truly covers the panel.
 
 **Bench obligation, UNJUDGED.** The bake runs in a browser, so the figures above are
 computed from the kit's committed geometry, not baked on glass. The proof is a re-bake

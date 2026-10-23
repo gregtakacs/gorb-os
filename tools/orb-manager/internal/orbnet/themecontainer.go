@@ -53,13 +53,15 @@ const (
 	bundleIdxWords = 10         // ORB_BUNDLE_IDX_WORDS: a 40-byte record
 	bundleIdxHead  = 8          // n_sections + reserved
 	// bundleGeomCap is ORB_BUNDLE_GEOM_CAP (orb_theme.c's SLOT_GEOM_CAP) and
-	// bundleArtCap is ORB_BUNDLE_ART_CAP (ORB_THEME_SLOT_CAP). Both are INSTALL sums, not
-	// file shapes: geometry lands at slot +0x1000 and its erase covers it sector-aligned,
-	// so 61,440 B ends exactly on the banks at +0x10000, and the banks have SLOT_CAP less
-	// SLOT_ART_OFF to live in. `== cap` is ACCEPTED at both — the same boundary
-	// check_budget() and orb_bundle3_hdr_parse() apply (D29, §22.3).
+	// bundleArtCap is ORB_BUNDLE_ART_CAP (ORB_THEME_SLOT_CAP, defined once in
+	// main/art/orb_bundle.h). Both are INSTALL sums, not file shapes: geometry lands at
+	// slot +0x1000 and its erase covers it sector-aligned, so 61,440 B ends exactly on
+	// the banks at +0x10000, and the banks have the 8 MB slot less that offset to live
+	// in. `== cap` is ACCEPTED at both — the same boundary check_budget() and
+	// orb_bundle3_hdr_parse() apply (D29, §22.3). Until C1 this line carried the retired
+	// 4 MB A/B pair's figure while the device reported 8 MB (§7.4).
 	bundleGeomCap = 0xF000
-	bundleArtCap  = 0x3F0000 // 4,128,768 B
+	bundleArtCap  = 0x7F0000 // 8,323,072 B
 	// themeSector is _ot.SECTOR and the flash erase granularity: the art bank starts on a
 	// sector boundary after the region, which is what makes a max-size bundle land on the
 	// hub's forwarding cap to the byte.

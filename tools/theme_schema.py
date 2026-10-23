@@ -49,6 +49,20 @@ CLK_AUX_WORDS  = 24    # == len(AUX_FIELDS) == 15 sprite words + 9 driving words
 CLK_BANK_WORDS = 15    # == orbtheme.SPRITE_FIELDS
 
 # ---------------------------------------------------------------------------
+# The slot a theme installs into, exported so every tool IMPORTS the cap instead
+# of restating it (§7.4: four tools carried the retired 4 MB A/B pair's figure
+# long after Migration 1 made the slot the whole 8 MB partition). The authority
+# is main/art/orb_bundle.h ORB_THEME_SLOT_CAP; the private layout that produces
+# it is main/art/orb_theme.c's SLOT_*, bound to the export by a _Static_assert
+# there; tools/host_sd_test.py re-derives all of it from the C on every run.
+# ---------------------------------------------------------------------------
+SLOT_GEOM_OFF      = 0x00001000              # geometry lands here, within the slot
+SLOT_ART_OFF       = 0x00010000              # banks land here
+SLOT_CAP           = 0x00800000              # the whole `assets`: one slot
+ORB_THEME_SLOT_CAP = SLOT_CAP - SLOT_ART_OFF           # 8,323,072 B of banks
+GEOM_BUDGET        = SLOT_ART_OFF - SLOT_GEOM_OFF      # 61,440 B: SLOT_GEOM_CAP
+
+# ---------------------------------------------------------------------------
 # Enumerations. Index order is the wire value: appending is allowed, reordering
 # is an ABI break. `none` at 0 keeps a blank record inert.
 # ---------------------------------------------------------------------------

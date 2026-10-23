@@ -486,11 +486,12 @@ const (
 	fIdxWords   = 10 // a 40-byte index record
 	fIdxHead    = 8  // n_sections + reserved
 	fSector     = 4096
-	// The two D29 install sums — ORB_BUNDLE_GEOM_CAP and ORB_BUNDLE_ART_CAP. `== cap` is
+	// The two D29 install sums — ORB_BUNDLE_GEOM_CAP and ORB_BUNDLE_ART_CAP (the one
+	// exported ORB_THEME_SLOT_CAP, 8,323,072 B; §7.4). `== cap` is
 	// accepted at both: geometry's erase covers it sector-aligned and lands exactly on the
 	// banks, and the banks have slot-less-art-offset to live in.
 	fGeomCap = 0xF000
-	fArtCap  = 0x3F0000
+	fArtCap  = 0x7F0000
 )
 
 func le32(v uint32) []byte {
@@ -545,8 +546,11 @@ func hdrCRC(b []byte) uint32 {
 }
 
 // MaxUpload is ORB_THEME_UPLOAD_MAX, restated here rather than imported from orbnet so
-// this file keeps failing when the client's copy drifts.
-const MaxUpload = 0x00400000 + 0x20000
+// this file keeps failing when the client's copy drifts. The device's copy
+// (main/art/orb_theme.h:253) is 8 MB plus the header block's 0x20000 of wire slack —
+// the whole 8 MB `assets` slot is one theme's since Migration 1, and this restatement
+// carried the retired 4 MB pair's figure until C1 (§7.4).
+const MaxUpload = 0x00800000 + 0x20000
 
 // idOK is orb_theme_id_ok: exactly 12 chars of [0-9a-f].
 func idOK(s string) bool {

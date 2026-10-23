@@ -139,14 +139,20 @@ ok(B.packElements([E({ class: BANK, n_frames: 4 })]).length === B.ELEMENT_WORDS,
 
 // ---- 4. the D29 gate, at the boundary rather than near it ------------------
 // The sums are the INSTALL's: geometry against the dial's table area, payload against what
-// the banks have left. == cap is legal, and the suites that moved these caps on the Python
-// side are the reason the numbers are asserted before the boundary is probed.
-ok(B.GEOM_CAP === 61440 && B.ART_CAP === 4128768, 'the caps are orb_theme.c\u2019s own numbers',
+// the banks have left. == cap is legal. C1 rewrote the cap check: it used to assert the
+// literal 4128768 under a comment claiming those were orb_theme.c's own numbers, and that
+// is exactly how four tools shipped a cap the device had not reported since Migration 1 —
+// a test that asserts the shipped value cannot notice the shipped value is wrong. The cap
+// is now asserted AGAINST the baker's exported ORB_THEME_SLOT_CAP, which the writer itself
+// gates on, and the boundary is probed at the same exported figure, not near an old one.
+ok(B.GEOM_CAP === 61440 && B.ART_CAP === B.ORB_THEME_SLOT_CAP &&
+   B.ORB_THEME_SLOT_CAP === 8323072,
+   'the caps are orb_theme.c\u2019s own numbers: ART_CAP imports the exported ORB_THEME_SLOT_CAP, the 8 MB slot less its 64 KB header block',
    B.GEOM_CAP + ' / ' + B.ART_CAP);
-let threw = false; try { B.checkBudget3(61440, 4128768); } catch (e) { threw = true; }
+let threw = false; try { B.checkBudget3(61440, B.ART_CAP); } catch (e) { threw = true; }
 ok(!threw, '== cap on both sums is legal');
 refuses(() => B.checkBudget3(61441, 0), 'overrun the pixels', 'one byte of geometry past the cap is refused');
-refuses(() => B.checkBudget3(0, 4128769), 'larger than a slot', 'one byte of payload past the cap is refused');
+refuses(() => B.checkBudget3(0, B.ART_CAP + 1), 'larger than a slot', 'one byte of payload past the cap is refused');
 
 // ---- 5. the read-side gates, in the device's refusal order -----------------
 // A hub or editor that validates in its own order reports a reason the dial will never
@@ -267,7 +273,7 @@ refuses(() => B.parseBundle3(restamp(fixture, 2, 4)), 'reads v3',
         'and so is one stamped ahead of it, which is the D24 no-backward-path rule');
 refuses(() => B.parseBundle3(restamp(fixture, 5, 61441)), 'overrun the pixels',
         'a header claiming more geometry than the table area is refused at the caps');
-refuses(() => B.parseBundle3(restamp(fixture, 7, 4128769)), 'larger than a slot',
+refuses(() => B.parseBundle3(restamp(fixture, 7, B.ORB_THEME_SLOT_CAP + 1)), 'larger than a slot',
         'and the same for the payload, before the name or the bounds get a turn');
 
 // The container's own ABI stamp is a door check; a section's abi_min..abi_max pair is the
@@ -320,7 +326,7 @@ ok(walk.rec.art_size === baked.meter.artSize && walk.rec.scr_w === 466 && walk.r
 ok(baked.meter.geomSize === 8 + 40 + 16 + 104 + 276 + 48 + 8,
    'the region is the index over one self-describing blob at D34’s 23-word rows',
    baked.meter.geomSize + ' B');
-ok(baked.meter.geomCap === 61440 && baked.meter.artCap === 4128768,
+ok(baked.meter.geomCap === 61440 && baked.meter.artCap === B.ART_CAP,
    'the meter names both D29 install caps, not the file shape');
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: mkPlane(10, 10), w: 10, h: 10 } }),
         'full-screen', 'a plate that is not the whole panel is refused as the dial words it');
@@ -350,9 +356,22 @@ ok(walkA.blob.sprites[0].size === 466 * 466 * 2 && walkA.blob.sprites[1].size ==
    walkA.blob.sprites[2].size === 466 * 466 * 2,
    'every keyframe costs the plate colour-only, alpha strides and all',
    'rows 0-2: ' + walkA.blob.sprites.slice(0, 3).map(s => s.size).join('/'));
-ok(walkA.blob.scalars.bg_frames === 2 && walkA.blob.scalars.bg_mode === 0 &&
-   walkA.blob.scalars.gif_frames === 0 && walkA.blob.scalars.bg_loop === 1,
-   'the scalars cross-set: two extra, delta vocabularies zero, the loop live');
+// C1 rewrote this row as the CONTRACT (§4.2, §5.1), not the shipped output. The old
+// assertion read `bg_mode === 0 && gif_frames === 0` and called it "delta vocabularies
+// zero" — it pinned the exact accident that made the animated plate cost 3.97 MB and the
+// tourbillon run at 4 fps. The contract: an animated row is a delta stream. Frame 0 is
+// the base plane; every frame after it names a rect in the row's own box; the row carries
+// its own delay; and the row names its parent, so the escapement rides the carriage's
+// transform instead of being painted into a plate. The shipped bake zeroes all of that,
+// so THIS CHECK IS RED ON PURPOSE: the red is the spec C2-C5 implement. Do not restore
+// the old assertion and do not make this one read the current output — that is how this
+// bug survived its last three test suites.
+const dRowA = walkA.blob.elements[0];
+ok(walkA.blob.scalars.bg_loop === 1 && dRowA.n_frames === 3 &&
+   dRowA.delay > 0 && dRowA.rect_count === dRowA.n_frames - 1 &&
+   dRowA.diffw > 0 && dRowA.parent !== undefined,
+   'the delta contract: an animated row carries rects from frame 1, its own delay, and its parent \u2014 RED until C5, by design',
+   'n_frames ' + dRowA.n_frames + ' delay ' + dRowA.delay + ' rect_count ' + dRowA.rect_count + ' diffw ' + dRowA.diffw);
 ok(bakedA.meter.artSize === 466 * 466 * 2 * 3 + 40 * 200 * 3,
    'the bank is three keyframes and the masked hand, nothing else',
    bakedA.meter.artSize + ' B');
@@ -420,50 +439,56 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK],
           scalars: { tourbillon_n: 5 } }),
         'row’s planes are the bank’s length', 'a scalar disagreeing with the carriage row is refused');
 // ---- 7d. splitPolicy3: the one arithmetic, every measurement ----
+// C1 re-anchored every otherB/compB below by +4,194,304 — the difference between the
+// stale 4 MB slot these vectors were tuned against and the exported ORB_THEME_SLOT_CAP
+// the device actually reports (§7.4: "the boundary tests inherit the error too").
+// The ROOM each vector prices — cap less the other art — is the number the decision
+// depends on, and it is unchanged; so every expected carrier, keyframe count and
+// thinning step below pins the same boundary as before, now against the true cap.
 const sp = (m) => B.splitPolicy3(m);
 ok(sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 368, bboxH: 265, otherB: 75696, hasCage: false }).carrier === 'still',
    'a 65-px union of AA shimmer bakes the still, not a lie of motion');
 // The plate is now baked WITHOUT the carriage, so a caged dial that names no measured
 // box cannot be priced at all — and answering 'bank' here would silently drop the
 // tourbillon out of the bake. Refuse.
-const pBlind = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070, hasCage: true });
+const pBlind = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 4253374, hasCage: true });
 ok(pBlind.carrier === 'refuse' && /was not measured/.test(pBlind.sentence),
    'a caged dial with no measured carriage box refuses: the plate would ship without its tourbillon',
    pBlind.sentence);
-const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, hasCage: false });
+const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754, hasCage: false });
 ok(pThin.carrier === 'bank' && pThin.keyframes === 7 && pThin.decim === 2,
    'a 15-frame loop thins to what fits rather than refusing: 7 keyframes by step 2', pThin.sentence);
 // The carriage row and the plate carrier are two decisions now. A caged dial whose
 // ONLY motion is the cage measures under the shimmer band un-caged, and the plate
 // rides the still while the row carries the loop at full length.
-const pSp = sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 146, bboxH: 146, otherB: 57450,
+const pSp = sp({ frames: 15, fps: 15, unionPx: 65, bboxW: 146, bboxH: 146, otherB: 4251754,
                  hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pSp.carrier === 'sprite' && pSp.carriage && pSp.carriage.keyframes === 15 && pSp.keyframes === 1,
    'a cage that is the only motion rides the carriage at full length over a still plate', pSp.sentence);
 // Bank AND carriage: a caged dial whose train moves too. The row is billed FIRST, so
 // the plate thins against the room left rather than stealing bytes the row needs.
-const pBoth = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 57450,
+const pBoth = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 4251754,
                    hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pBoth.carrier === 'bank' && pBoth.carriage && pBoth.carriage.keyframes === 15 && pBoth.keyframes === 5,
    'a moving train on a caged dial bakes the bank thin and keeps the carriage whole', pBoth.sentence);
-const pNoCar = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 57450, hasCage: false });
+const pNoCar = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 4251754, hasCage: false });
 ok(pBoth.keyframes < pNoCar.keyframes,
    'the carriage bills the bank budget before the thin: the same dial without a row keeps more keyframes',
    'bank ' + pNoCar.keyframes + ' vs ' + pBoth.keyframes + ' with the row');
 // The orbital arrow: the motion box is the whole dial BECAUSE the carriage is the
 // seconds hand, so the old locality gate refused it the carrier and shipped the orbit
 // frozen into the plate. It now takes the row, and the plate rides the still.
-const pOrb = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070,
+const pOrb = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 4253374,
                   hasCage: true, orbital: true, carriageW: 389, carriageH: 389 });
 ok(pOrb.carrier === 'sprite' && pOrb.carriage && pOrb.carriage.keyframes === 8 && pOrb.carriage.fps === 4,
    'an orbital carriage takes the row at its own tempo over a still plate — the bank could never turn it',
    pOrb.sentence);
-const pOrbRef = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 3300000,
+const pOrbRef = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 7494304,
                       hasCage: true, orbital: true, carriageW: 389, carriageH: 389 });
 ok(pOrbRef.carrier === 'refuse' && /frozen orbit/.test(pOrbRef.sentence),
    'an orbital carriage that will not fit refuses and says the byte, rather than banking a frozen orbit',
    pOrbRef.sentence);
-const pOrbCaged = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 4050000,
+const pOrbCaged = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 8244304,
                         hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pOrbCaged.carrier === 'refuse' && /baked without it/.test(pOrbCaged.sentence),
    'a plain tourbillon whose row will not fit refuses too: the strip is in the plate either way',
@@ -547,13 +572,13 @@ ok(cpPiv.carriage && cpPiv.carriage.bytes === shipPiv - noRow.meter.artSize,
    cpPiv.carriage.bytes + ' B priced against ' + (shipPiv - noRow.meter.artSize) + ' B shipped');
 
 
-const pNoCage = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 57450, hasCage: false });
+const pNoCage = sp({ frames: 15, fps: 15, unionPx: 2222, bboxW: 146, bboxH: 146, otherB: 4251754, hasCage: false });
 ok(pNoCage.carrier === 'bank' && !pNoCage.carriage,
    'the same box without a cage is still a bank — the carriage row is the cage, and nothing else');
-const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 4000000, hasCage: false });
+const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 8194304, hasCage: false });
 ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
    'a bake with no room left names the byte it tripped on', pRef.sentence);
-const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450, auxB: 3 * 466 * 466 * 2, hasCage: false });
+const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754, auxB: 3 * 466 * 466 * 2, hasCage: false });
 ok(pAux.carrier === 'bank' && pAux.keyframes < pThin.keyframes,
    'pointer plates bill the bank budget before the thin: three whole-panel plates take three keyframes away',
    pThin.sentence + ' | ' + pAux.sentence);
@@ -692,13 +717,18 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [{ slot: 0, src: 'date
         'off the glass', 'a window that would hang over the panel edge refuses at the bake');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'date', 31, 40, 24), CMP(0, 'moon_age', 30, 20, 20)] }),
         'two rows claim', 'two comps on one bank slot is the duplicate the table already refuses');
-refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'second', 60, 200, 200)] }),
+// C1 re-anchored this vector at the true 8 MB slot (the same over-cap bake, now at
+// 230x230 tiles: 60 whole-second plates plus the plate and hand blow 8,323,072 B
+// exactly like the 4 MB slot made the old 200x200 ones do). The refusal and its
+// sentence — the comp bytes an owner can trade away — are the contract; the old
+// literal tile size was one more cap-relative constant, nothing more.
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, comps: [CMP(0, 'second', 60, 230, 230)] }),
         'complication tiles cost', 'the over-cap sentence names the comp bytes an owner can trade away');
-const pCompR = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 59070,
+const pCompR = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, otherB: 4253374,
                     compB: 4000000, hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pCompR.carrier === 'refuse' && /4000000 B of complication tiles/.test(pCompR.sentence),
    'a comp table that eats the bank forces the refusal, and the sentence names its cost', pCompR.sentence);
-const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 57450,
+const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754,
                     compB: 1300000, hasCage: false });
 ok(pCompT.carrier === 'bank' && pCompT.keyframes === 5 && pCompT.decim === 3,
    'the same bank thins for the tile bill first: 15 frames to 5 by step 3', pCompT.sentence);

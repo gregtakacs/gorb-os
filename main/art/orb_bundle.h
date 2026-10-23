@@ -58,9 +58,19 @@ extern "C" {
                                         * derived stride is refused below */
 #define ORB_BUNDLE_SLUG_MAX  23u       /* ORBAPP_SLUG_MAX - 1: the NUL's room */
 #define ORB_BUNDLE_GEOM_CAP  0xF000u   /* orb_theme.c SLOT_GEOM_CAP: 60 KB of tables */
-#define ORB_BUNDLE_ART_CAP   0x3F0000u /* SLOT_CAP less SLOT_ART_OFF: the
-                                        * orb_theme.h ORB_THEME_SLOT_CAP,
-                                        * 4,128,768 B of banks per slot */
+/* ORB_THEME_SLOT_CAP — the ceiling one theme's art must fit under: the 8 MB
+ * `assets` slot less its 64 KB header block. It is defined exactly once, here,
+ * because every reader and tool that gates on it and re-declared it got it
+ * wrong: docs/theme-delta-mmap-plan.md §7.4 found four sites still carrying the
+ * retired 4 MB A/B pair's figure after Migration 1 made the slot whole.
+ * orb_theme.c's private SLOT_CAP and SLOT_ART_OFF produce this number, and a
+ * _Static_assert there binds the layout to the export; tools/theme_schema.py,
+ * tools/orbtheme.py, orbtheme-baker.js and the hub's themecontainer.go import
+ * the same value. tools/host_sd_test.py re-derives it from the .c on every run.
+ * The block below the FORMAT stamp through this cap's own comment is what that
+ * suite lifts into its gcc harness, so this stays one contiguous define run. */
+#define ORB_THEME_SLOT_CAP   0x007F0000u   /* 8,323,072 B of banks per slot */
+#define ORB_BUNDLE_ART_CAP   ORB_THEME_SLOT_CAP /* the bundle reader's art gate */
 
 
 /* One parsed index record, plus pointers INTO the caller's region for the

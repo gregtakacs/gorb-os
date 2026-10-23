@@ -2274,7 +2274,18 @@ void clock_view_set_bounce(bool on)
     /* Repurposed from the old digital label's bounce: this is the router's
      * "clock is the visible screen" gate. Park the tick timer when the clock is
      * not on the glass so a hidden dial burns no flush work; on re-show, repaint
-     * the whole face cleanly and resume. */
+     * the whole face cleanly and resume.
+     *
+     * C3 (§5.3) adds the one case a re-show must refuse: a store parked the dial
+     * and unmapped its pixels, and the reboot that re-establishes the map has
+     * not run. Waking the pose pass here would re-pose the layer table from
+     * cached image descriptors into a mapping that no longer exists — a load
+     * fault, not a repaint. The dial stays exactly as the glass holds it. */
+    if (on && orb_theme_store_torn()) {
+        ESP_LOGW(TAG, "bounce refused: the store took the bank down, reboot pending");
+        orb_sched_set_running(false);
+        return;
+    }
     orb_sched_set_running(on);
     if (!orb_sched_started()) return;
     if (on) {

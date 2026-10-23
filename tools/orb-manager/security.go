@@ -388,7 +388,12 @@ var deviceRoutes = map[string][]string{
 // route that streams from turning the hub into an unbounded proxy for another host.
 const (
 	proxyResponseCap = 8 << 20 // device body copied back to the browser
-	proxyRequestCap  = 4 << 20 // browser body forwarded to the device
+	proxyRequestCap  = 8 << 20 // browser body forwarded to the device: the largest legal
+	// bundle is art 0x7F0000 (ORB_THEME_SLOT_CAP) behind a sector-aligned art start of
+	// 0x10000 — exactly 8 MB. The theme upload door on the device takes 0x800000+0x20000
+	// (ORB_THEME_UPLOAD_MAX); a hub that forwards less than the format can legally
+	// describe refuses a bundle the device would install, in the wrong door, with the
+	// wrong sentence. themecontainer_test.go pins this boundary to the byte.
 	ipGrantTTL       = 6 * time.Hour
 	// grantCeiling caps how far a live announcement stream may stretch a commitment,
 	// measured from the first time the operator committed. Without it an orb that

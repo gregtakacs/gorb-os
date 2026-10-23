@@ -281,6 +281,8 @@ bool orb_theme_upload_busy(void);
  *  header name. Never builds a path from the caller's string. */
 esp_err_t orb_theme_delete(const char *id);
 
-#define ORB_THEME_SLOT_CAP    0x007F0000u   /* the 8 MB `assets` slot less its 64 KB
-                                             * header block: the ceiling a bundle's
-                                             * total art must fit within (Migration 1) */
+/* ORB_THEME_SLOT_CAP is defined exactly once, in orb_bundle.h — the header the
+ * format's readers and tools share — and reaches this file through the include
+ * above. It names the ceiling a bundle's total art must fit within (Migration 1
+ * made the whole 8 MB `assets` partition one slot). Do not re-declare it here
+ * or in any tool: §7.4 is the record of what four restatements cost. */

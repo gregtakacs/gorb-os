@@ -100,6 +100,13 @@ _Static_assert(W_WORDS == 32, "container header must be 128 bytes");
 #define SLOT_GEOM_CAP   (SLOT_ART_OFF - SLOT_GEOM_OFF)   /* 60 KB of tables */
 #define SLOT_CAP        0x00800000u                      /* 8 MB, the whole partition */
 
+/* The exported ceiling is THIS layout's arithmetic, not a copy of it. A tool
+ * that gates on ORB_THEME_SLOT_CAP is gating on SLOT_CAP less SLOT_ART_OFF; if
+ * these two constants ever stop producing the exported number, every cap check
+ * in every reader and tool silently gates on a fiction (§7.4). */
+_Static_assert((uint32_t)SLOT_CAP - SLOT_ART_OFF == ORB_THEME_SLOT_CAP,
+               "ORB_THEME_SLOT_CAP drifted from the slot layout it names");
+
 /* Wire counts. THEME_SCALARS_N must equal len(orbtheme.THEME_FIELDS) and
  * SPRITE_WORDS_N len(orbtheme.SPRITE_FIELDS): a mismatch shifts every field after
  * it, and the sentinel test is what notices. */

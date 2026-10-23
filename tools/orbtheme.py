@@ -337,19 +337,28 @@ def art_offset(geom_size):
     return (HDR_WORDS * 4 + geom_size + SECTOR - 1) & ~(SECTOR - 1)
 
 
-# The slot's shape on the device (orb_theme.c:90-96): geometry installs at
-# SLOT_GEOM_OFF and banks at SLOT_ART_OFF inside a SLOT_CAP-sized slot. The
-# write_container bound below is the device's own PRE-ERASE sum (orb_theme.c's
-# copy_into, :1349-1350), quoted in its exact sentences — §21's deferred line,
-# paid at P6.2 so no bake can upload a file the dial refuses after an erase.
-# Both caps are sector-aligned, so the aligned erase covers them exactly: a
-# blob of GEOM_BUDGET or an art of ART_BUDGET installs to the byte, == cap
-# ACCEPTED, and one more byte overruns.
-SLOT_GEOM_OFF = 0x00001000
-SLOT_ART_OFF  = 0x00010000
-SLOT_CAP      = 0x00400000
-GEOM_BUDGET   = SLOT_ART_OFF - SLOT_GEOM_OFF   # 61,440 B: orb_theme.c SLOT_GEOM_CAP
-ART_BUDGET    = SLOT_CAP - SLOT_ART_OFF        # 4,128,768 B: ORB_THEME_SLOT_CAP
+# The slot's shape on the device (orb_theme.c's SLOT_*): geometry installs at
+# SLOT_GEOM_OFF and banks at SLOT_ART_OFF inside a SLOT_CAP-sized slot. These
+# figures are IMPORTED from theme_schema, never restated: §7.4's bug was four
+# tools each carrying its own copy, and one of them the retired 4 MB figure the
+# device stopped reporting at Migration 1. The write_container bound below is
+# the device's own PRE-ERASE sum (orb_theme.c's copy_into, :1349-1350), quoted
+# in its exact sentences — §21's deferred line, paid at P6.2 so no bake can
+# upload a file the dial refuses after an erase. Both caps are sector-aligned,
+# so the aligned erase covers them exactly: a blob of GEOM_BUDGET or an art of
+# ART_BUDGET installs to the byte, == cap ACCEPTED, and one more byte overruns.
+try:
+    import theme_schema as _ts
+except ImportError:                    # imported by a caller whose sys.path lacks tools/
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import theme_schema as _ts
+SLOT_GEOM_OFF = _ts.SLOT_GEOM_OFF
+SLOT_ART_OFF  = _ts.SLOT_ART_OFF
+SLOT_CAP      = _ts.SLOT_CAP                       # 0x00800000: the whole assets partition
+ORB_THEME_SLOT_CAP = _ts.ORB_THEME_SLOT_CAP        # the one exported art ceiling
+GEOM_BUDGET   = _ts.GEOM_BUDGET                    # 61,440 B: orb_theme.c SLOT_GEOM_CAP
+ART_BUDGET    = _ts.ORB_THEME_SLOT_CAP             # 8,323,072 B: ORB_THEME_SLOT_CAP
 
 
 def theme_id(name):

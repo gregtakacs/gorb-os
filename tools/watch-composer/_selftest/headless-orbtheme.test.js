@@ -183,10 +183,12 @@ throws(() => { const m = baseModel(); m.comps = new Array(17).fill(M.comps[0]); 
 throws(() => { const m = baseModel(); m.bank = new Array(257).fill(baseModel().hands[0]); B.packGeom(m); }, /cap/, 'two hundred fifty-seven bank rows exceed the cap');
 throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(128), name: 'x' }),
        /shorter than one full plate/, 'a payload that cannot hold a plate is refused');
-throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), name: 'x' }),
+throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(B.SLOT_BUDGET + 8), name: 'x' }),
        /over the/, 'a payload bigger than a theme slot is refused before it is ever offered');
-throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(4 * 1024 * 1024 + 8), name: 'x' }),
+throws(() => B.writeContainer({ geom: jsGeom, art: new Uint8Array(B.SLOT_BUDGET + 8), name: 'x' }),
        /larger than a slot/, 'the payload refusal ends in the sentence the dial prints pre-erase (D26)');
+ok(B.writeContainer({ geom: jsGeom, art: new Uint8Array(B.SLOT_BUDGET), name: 'x' }).length > 0,
+   'the payload exactly at the slot budget is accepted: == cap installs to the byte');
 throws(() => B.writeContainer({ geom: new Uint8Array(B.GEOM_BUDGET + 1), art: art, name: 'x' }),
        /overrun the pixels/, 'geometry past the table area is refused at the bake, not after an erase (P6.2)');
 ok(B.writeContainer({ geom: new Uint8Array(B.GEOM_BUDGET), art: art, name: 'x' }).length > 0,

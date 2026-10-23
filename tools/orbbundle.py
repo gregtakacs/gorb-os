@@ -52,10 +52,12 @@ IDX_WORDS    = 10                   # IDX_PACK below: 4H + 7I + 2H = 40 B
 SCALARS_N    = len(_ot.THEME_FIELDS)   # 26 today; the clock dialect, carried opaque
 SPR_WORDS    = 4                    # off, size, w, h — a bank entry's byte range
 BLOB_HEAD    = 4 + SCALARS_N        # counts + scalars, before the element table
-SLOT_CAP     = 0x00400000           # orb_theme.c SLOT_CAP: 4 MB per slot
+SLOT_CAP     = _ts.SLOT_CAP             # orb_theme.c SLOT_CAP: the whole 8 MB slot
 SLOT_ART_OFF = 0x00010000           # orb_theme.c SLOT_ART_OFF: banks install here
 GEOM_CAP     = 0xF000               # orb_theme.c SLOT_GEOM_CAP: 60 KB of tables
-SLOT_ART_CAP = SLOT_CAP - SLOT_ART_OFF   # orb_theme.h ORB_THEME_SLOT_CAP: banks' room
+SLOT_ART_CAP = _ts.ORB_THEME_SLOT_CAP   # orb_bundle.h ORB_THEME_SLOT_CAP: banks' room.
+# Imported, never restated (§7.4): this line held the retired 4 MB pair's 0x3F0000 while
+# the device reported 8 MB, and the sentence below quoted the wrong budget to the bench.
 SLUG_MAX     = 23                   # ORBAPP_SLUG_MAX - 1: the NUL's room
 _SLUG_OK     = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")
                                     # check_slug's charset, on bytes: read_bundle

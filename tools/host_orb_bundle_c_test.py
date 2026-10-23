@@ -72,7 +72,10 @@ HARNESS_C = r"""
 #define NO_ROW   0xFFFFFFFFu
 #define BLOB_HEAD_B ((4u + ORB_BUNDLE_SCALARS_N) * 4u)
 #define STR_ART    0x00010000u   /* orb_theme.c SLOT_ART_OFF: where banks install */
-#define STR_CAP    0x00400000u   /* orb_theme.c SLOT_CAP: the slot that holds them */
+#define STR_CAP    (STR_ART + ORB_THEME_SLOT_CAP) /* orb_theme.c SLOT_CAP: derived from
+                                                  * the one exported cap, not restated:
+                                                  * this literal held the retired 4 MB
+                                                  * pair while the device said 8 MB */
 
 static uint32_t rd32(const uint8_t *p)
 {

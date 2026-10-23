@@ -93,11 +93,17 @@
    * the bench rather than handing out a file the dial then rejects when it stages it.
    * P6.2's budget gate names them as the device's PRE-ERASE sums (orb_theme.c's
    * copy_into): geometry installs at slot +0x1000 under the banks at +0x10000
-   * (SLOT_GEOM_CAP), banks install at +0x10000 inside SLOT_CAP — the payload budget
-   * below, 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
+   * (SLOT_GEOM_CAP), banks install at +0x10000 inside the 8 MB slot — the payload
+   * budget below, ORB_THEME_SLOT_CAP = 0x7F0000. The figure is DERIVED here from the
+   * same two partition facts the device keeps, not re-declared: §7.4's bug was tools
+   * each carrying their own copy, this one still carrying the retired 4 MB pair's
+   * 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
    * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
   var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 16, TOURB_MAX = 16;
-  var SLOT_CAP = 0x003f0000;
+  var DEVICE_SLOT_CAP = 0x00800000;     // orb_theme.c SLOT_CAP: one 8 MB slot
+  var SLOT_ART_OFF2   = 0x00010000;     // orb_theme.c SLOT_ART_OFF: banks start here
+  var ORB_THEME_SLOT_CAP = DEVICE_SLOT_CAP - SLOT_ART_OFF2;  // 8,323,072 B of banks
+  var SLOT_CAP = ORB_THEME_SLOT_CAP;    // writeContainer's payload budget (FORMAT 2)
   var GEOM_BUDGET = 0xf000;
 
   var RANGES = {
@@ -1722,7 +1728,9 @@
   var SPR_WORDS = 4;                     // off, size, w, h — one bank entry's byte range
   var BLOB_HEAD = 4 + SCALARS_N;         // counts + scalars, before the element table
   var GEOM_CAP3 = 0xF000;                // orb_theme.c SLOT_GEOM_CAP
-  var SLOT_CAP3 = 0x00400000, SLOT_ART_OFF3 = 0x00010000;
+  var SLOT_CAP3 = DEVICE_SLOT_CAP, SLOT_ART_OFF3 = SLOT_ART_OFF2;  // orb_theme.c SLOT_CAP /
+  // SLOT_ART_OFF — imported from the two partition facts above, never restated (§7.4:
+  // this line carried the retired 4 MB pair's figure while the device reported 8 MB)
   var SLOT_ART_CAP3 = SLOT_CAP3 - SLOT_ART_OFF3;   // ORB_THEME_SLOT_CAP: banks' room
   var SLUG_MAX = 23;                     // ORBAPP_SLUG_MAX - 1: the NUL's room
 
@@ -3067,6 +3075,9 @@
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
     HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, SLOT_CAP: SLOT_CAP,
     GEOM_BUDGET: GEOM_BUDGET,
+    /* The FORMAT 2 payload budget = the one exported slot cap (§7.4). A suite that
+     * prices a refusal must anchor on THIS, not on a literal it carries itself. */
+    SLOT_BUDGET: SLOT_CAP,
     // The header layout is exported so a reader can check a finished container instead of
     // trusting the writer: the selftest re-CRCs the geometry and the pixel payload it read
     // back off a real Chrome canvas, exactly as orb_theme.c does before it accepts a theme.
@@ -3114,6 +3125,9 @@
     MOTION_SLIDE_X: MOTION_SLIDE_X, MOTION_SLIDE_Y: MOTION_SLIDE_Y,
     motionIsSlide: motionIsSlide, AUX_MAX: CLK_AUX_MAX,
     GEOM_CAP: GEOM_CAP3, ART_CAP: SLOT_ART_CAP3, SLUG_MAX: SLUG_MAX,
+    // The one exported slot cap, defined once above from the device's own partition
+    // facts (§7.4). A suite that asserts a cap must assert against THIS, not a literal.
+    ORB_THEME_SLOT_CAP: ORB_THEME_SLOT_CAP, DEVICE_SLOT_CAP: DEVICE_SLOT_CAP,
     IDX_ORDER: IDX_ORDER, IDX_OFF: IDX_OFF, IDX_TYPES: IDX_TYPES,
     blankElement: blankElement, classId: classId, checkElement: checkElement,
     checkTable: checkTable, packElements: packElements, unpackElements: unpackElements,

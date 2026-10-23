@@ -146,7 +146,7 @@ func TestContainerRefusals(t *testing.T) {
 		{"geometry over the cap", func(b []byte) { putWord(b, 5, bundleGeomCap+1) },
 			"geometry region is 61441 B", true},
 		{"pixels over the cap", func(b []byte) { putWord(b, 7, bundleArtCap+1) },
-			"pixel payload is 4128769 B", true},
+			"pixel payload is 8323073 B", true},
 		{"no name in the header", func(b []byte) {
 			for i := wName * 4; i < wName*4+themeNameBytes; i++ {
 				b[i] = 0
@@ -223,12 +223,13 @@ func TestDoubleWriterAndHubReaderCloseOnOneRecord(t *testing.T) {
 
 // The largest bundle the format can legally describe is exactly the largest body the hub
 // forwards. Geometry at its 61,440-byte cap pushes the sector-aligned art start to 65,536,
-// and the art cap of 4,128,768 lands the last bank byte on 4,194,304 — the same number
+// and the art cap of 8,323,072 (ORB_THEME_SLOT_CAP) lands the last bank byte on
+// 8,388,608 — the same number
 // security.go's proxyRequestCap holds, to the byte. That is not a coincidence to be
 // grateful for; it is a boundary, and a bundle one byte larger is both legal by the format
 // and refused by the transport. If either constant moves, this fails and says which.
 func TestLargestLegalBundleIsExactlyTheProxyCap(t *testing.T) {
-	const proxyRequestCap = 4 << 20 // orb-manager/security.go, restated to keep this honest
+	const proxyRequestCap = 8 << 20 // orb-manager/security.go, restated to keep this honest
 	artStart := (uint32(themeHdrBytes) + bundleGeomCap + themeSectorBytes - 1) /
 		themeSectorBytes * themeSectorBytes
 	if max := artStart + bundleArtCap; max != proxyRequestCap {

@@ -277,7 +277,7 @@ _GEOM3   = 4096
 _H3_OK   = _hdr3()
 _H3_TORN = list(_H3_OK); _H3_TORN[orbtheme.W_HDR_CRC] ^= 0x55AA   # stale checksum
 _H3_ABI  = _recrc([w if i != 2 else 99 for i, w in enumerate(_H3_OK)])
-_H3_BIG  = _recrc([w if i != orbtheme.W_ART_SIZE else 0x3F0001
+_H3_BIG  = _recrc([w if i != orbtheme.W_ART_SIZE else orbtheme.ART_BUDGET + 1
                    for i, w in enumerate(_H3_OK)])
 _H3_NAME = _recrc([0 if 14 <= i < 28 else w for i, w in enumerate(_H3_OK)])
 # A real FORMAT 2 container header: same magic, same header shape, its own checksum
@@ -295,7 +295,7 @@ _H3_TORN_SENT = "container header is damaged — re-copy the file onto the card"
 _H3_NONAME_SENT = "theme has no name in its header — re-bake it"
 _H3_ABISIZE_SENT = "bundle geometry v99; this build reads v3 — re-bake it"
 _H3_BIG_SENT = ("pixel payload is %d B; a theme slot holds %d B — theme is larger "
-                "than a slot" % (0x3F0001, 0x3F0000))
+                "than a slot" % (orbtheme.ART_BUDGET + 1, orbtheme.ART_BUDGET))
 
 
 def arr(name, words):
@@ -1153,6 +1153,30 @@ def caps_lint():
     print("%-5s %-16s reader %4d  schema %4d"
           % ("ok" if ok else "FAIL", "CLK_STRIP_GLYPHS", int(m.group(1)), ts.CLK_STRIP_GLYPHS))
     if not ok:
+        rc = 1
+    # C1 (§7.4): the slot's art ceiling is ONE exported number. orb_bundle.h defines
+    # ORB_THEME_SLOT_CAP; orb_theme.c's private layout (SLOT_CAP less SLOT_ART_OFF, the
+    # same arithmetic its _Static_assert binds) must produce exactly it; and the schema's
+    # copy — the figure orbtheme.py, orbtheme-baker.js and the hub's themecontainer.go
+    # all import or match — must equal it. Four independent restatements shipped a cap
+    # the device had not reported for a whole migration; this line makes that
+    # unreproducible from the host alone, no board in the loop.
+    _b3h = open(B3_H).read()
+    _m_cap = re.search(r"#define\s+ORB_THEME_SLOT_CAP\s+0x0*([0-9A-Fa-f]+)", _b3h)
+    _m_cslot = re.search(r"#define\s+SLOT_CAP\s+0x0*([0-9A-Fa-f]+)", th_src)
+    _m_coff = re.search(r"#define\s+SLOT_ART_OFF\s+0x0*([0-9A-Fa-f]+)", th_src)
+    if not (_m_cap and _m_cslot and _m_coff):
+        sys.exit("a slot-layout constant moved out of orb_bundle.h/orb_theme.c — "
+                 "caps_lint no longer knows the slot; find it or restore it, do not "
+                 "delete the check")
+    _hdr_cap = int(_m_cap.group(1), 16)
+    _derived = int(_m_cslot.group(1), 16) - int(_m_coff.group(1), 16)
+    _ok_slot = (_hdr_cap == _derived == ts.ORB_THEME_SLOT_CAP
+                == ts.SLOT_CAP - ts.SLOT_ART_OFF)
+    print("%-5s %-16s header 0x%X  orb_theme.c derives 0x%X  schema %d"
+          % ("ok" if _ok_slot else "FAIL", "ORB_THEME_SLOT_CAP",
+             _hdr_cap, _derived, ts.ORB_THEME_SLOT_CAP))
+    if not _ok_slot:
         rc = 1
     m = re.search(r"_Static_assert\(CLK_SRC__MAX == (\d+)", th_hdr)
     if not m:

@@ -101,8 +101,16 @@ void app_main(void)
      * face. The 10 s figure is §6.4's, and it costs a boot nobody likes less
      * than a dial that fails silently. */
     if (orb_theme_staged_id()[0]) {
-        char line[48];
-        snprintf(line, sizeof line, "theme load failed %s", orb_theme_staged_id());
+        char line[32];
+        /* §32.3: the glass carries the sentence plus six hex digits. The full
+         * 32-char id is wider than the panel at any legible size — the old line
+         * clipped mid-token into 48 bytes and the centered band ran off both
+         * edges, which is the "theme load failed xxxxx" fragment cut off on the
+         * glass on 2026-10-23. The whole id rides the serial line here and the
+         * hub's card, where it is readable and copyable. */
+        snprintf(line, sizeof line, "theme load failed %.6s", orb_theme_staged_id());
+        ESP_LOGE(TAG, "theme load failed: the staged store for %s never landed",
+                 orb_theme_staged_id());
         orb_boot_overlay(line, 0, 0, 0);
         vTaskDelay(pdMS_TO_TICKS(10000));
     }

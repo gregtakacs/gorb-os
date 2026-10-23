@@ -52,6 +52,13 @@ const (
 	// opCmd is a generic serial command (NAME/SCAN/MODE/RESET/PING) on a configured
 	// orb. It writes, so it claims a full port slot exactly like a provision.
 	opCmd opKind = "cmd"
+	// opTheme is a theme crossing the room to an orb's SD card. It never touches the
+	// serial wire — it is HTTP — and it claims the slot anyway, because the thing it
+	// must not collide with is this hub's own identity probe: a .part file is deleted the
+	// instant the board resets mid-write, and the operator watches a card that never
+	// changed. Registering the slot is what makes the probe sweep decline the port until
+	// the transfer is over, and it makes /api/ops able to say so.
+	opTheme opKind = "theme"
 )
 
 // op is one in-flight operation on one physical port.

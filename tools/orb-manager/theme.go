@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -65,6 +68,16 @@ func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The store is a queued job that acks a reboot it has not performed yet. Holding the
+	// lead across the queue keeps the hub's own probe from racing the reboot the device
+	// is about to do on its own, which is the one collision that would make the operator
+	// blame the theme.
+	release, rerr := s.holdDevicePort(r.Context(), t.IP, deviceTimeout)
+	if rerr != nil {
+		s.jsonErr(w, rerr.Error())
+		return
+	}
+	defer release()
 	raw, err := s.device.ThemeStore(t.IP, t.ID)
 	s.themeReply(w, raw, err)
 }
@@ -76,6 +89,14 @@ func (s *Server) handleThemeDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A write to the card like any other: a reset halfway leaves a directory the orb
+	// re-reads differently, and the rescan is what says so.
+	release, rerr := s.holdDevicePort(r.Context(), t.IP, deviceTimeout)
+	if rerr != nil {
+		s.jsonErr(w, rerr.Error())
+		return
+	}
+	defer release()
 	raw, err := s.device.ThemeDelete(t.IP, t.ID)
 	s.themeReply(w, raw, err)
 }
@@ -130,6 +151,15 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overwrite := r.URL.Query().Get("overwrite") == "1"
+	// The claim goes in before the bytes move, not before the dial: this is the one
+	// theme call whose failure the operator cannot see, because a reset mid-transfer
+	// makes the firmware delete the .part and answer as if nothing had been sent.
+	release, rerr := s.holdDevicePort(r.Context(), t.IP, otaTimeout)
+	if rerr != nil {
+		s.jsonErr(w, rerr.Error())
+		return
+	}
+	defer release()
 	// The upload rides the ota-tuned client, not the 8 s management client: the
 	// device opens the card file and writes 4 KB chunks straight to FAT, and a
 	// ~490 KB container took longer than one management call should ever take.
@@ -156,6 +186,55 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	payload["name"] = c.Name
 	payload["id"] = c.ID
 	s.jsonOK(w, payload)
+}
+
+// holdDevicePort claims the operation slot on the cable the orb at ip sits on, for the
+// duration of a theme call, and returns the release. It is the reason an install stops
+// dying halfway.
+//
+// The theme API is addressed by IP and the probe sweep is keyed by port, and the two
+// never met before this. The identity sweep pulses DTR/RTS to read a bootloader, so the
+// board resets, and a reset partway through an upload makes the firmware delete the
+// .part file. Nothing was wrong with the file, nothing was wrong with the orb, and
+// nothing was written down: the operator saw a card that never changed. Claiming the
+// slot makes cableNeedsProbe and proveCable both decline that port until the transfer
+// ends, which is the deferral the sweep already owes any other writer.
+//
+// It resolves the address the way the hub resolves every other one: the MAC the grant was
+// committed for, falling back to the address book, then the MAC the USB sweep attributes
+// to that chip. Two failures are silent and correct — an orb with no cable has no port to
+// claim and no probe that can ever reach it, and a port already held by something else is
+// a port the sweep declines anyway. Only a real claim is announced.
+func (s *Server) holdDevicePort(ctx context.Context, ip string, budget time.Duration) (func(), error) {
+	noop := func() {}
+	if s.cables == nil || s.ops == nil {
+		return noop, nil
+	}
+	mac := s.grants.bound(ip)
+	if mac == "" && s.fleet != nil {
+		for _, r := range s.fleet.Every() {
+			if r.IP == ip && r.MAC != "" {
+				mac = r.MAC
+				break
+			}
+		}
+	}
+	if mac == "" {
+		return noop, nil
+	}
+	port := s.cables.cablePortFor(macNorm(mac), time.Now())
+	if port == "" {
+		return noop, nil
+	}
+	job, _, oerr := s.ops.start(ctx, port, opTheme, budget)
+	if oerr != nil {
+		// Something else owns the lead. It already keeps the probe off this port, which
+		// is the whole protection this claim was for, so the theme call proceeds: the
+		// wire is HTTP and the holder is somebody else's business.
+		return noop, nil
+	}
+	log.Printf("orb-manager: a theme call to %s holds %s; the identity sweep waits", ip, port)
+	return func() { s.ops.finish(job) }, nil
 }
 
 // themeTarget decodes and checks a JSON theme request.

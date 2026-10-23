@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 )
 
 // swapLogOutput points the standard logger at w and returns what was there, so a test can
@@ -232,7 +233,21 @@ func TestAThemeCallHoldsThePortTheProbeWouldUse(t *testing.T) {
 	if kind, busy := s.ops.busy(reflashPort); !busy || kind != opTheme {
 		t.Errorf("the port reported kind %q busy=%v; /api/ops must name a theme call", kind, busy)
 	}
+	// The claim has to speak across processes, not just across this one's sweep. The
+	// 23 Oct teardown: a second hub on the bench swept the same lead, its probe found
+	// no flock on the port, and it pulsed DTR/RTS through a copy the first hub's own
+	// slot table said was held. The slot is private to one process; the flock is the
+	// cross-process half of the guard, so the theme claim must hold it for the whole
+	// transfer or one leftover instance can tear what another is feeding.
+	if _, lerr := orbbind.LockPort(reflashPort); lerr == nil {
+		t.Error("a foreign process could drive a cable a theme call is holding")
+	}
 	release()
+	if lock, lerr := orbbind.LockPort(reflashPort); lerr != nil {
+		t.Errorf("the flock outlived the release: %v", lerr)
+	} else {
+		lock.Release()
+	}
 
 	// Released, the lead is askable again — but not yet. The store the hub just sent is
 	// applied by a reboot the device performs after it acks, so the silence that follows a

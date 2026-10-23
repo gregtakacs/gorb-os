@@ -121,9 +121,14 @@
       const bw = moved ? bx2 - bx + 1 : 0, bh = moved ? by2 - by + 1 : 0;
       const oth = otherBytes(V.F);
       // One policy, one implementation: the page measures, the baker decides.
+      // This probe's plate still carries the cage (still() composes it), so its
+      // union over-states the plate on a caged dial; the row is priced on the
+      // cage's own box, which is what the export will ship.
+      const cb = V.gt && V.M.cageAt && IT.measureCarriage3 ? IT.measureCarriage3(V.gt, B) : null;
       const pol = G.splitPolicy3({ frames: B, fps: V.fps, unionPx: un,
                                    bboxW: bw, bboxH: bh, otherB: oth,
-                                   hasCage: !!V.M.cageAt });
+                                   hasCage: !!V.M.cageAt, orbital: !!V.M.orbital,
+                                   carriageW: cb ? cb[0] : 0, carriageH: cb ? cb[1] : 0 });
       say('MOTION id=' + id + ' frames=' + B + ' fps=' + V.fps +
           ' union_px=' + un + ' changed=' + moved +
           ' bbox=' + bw + 'x' + bh + '@' + (moved ? bx + ',' + by : '0,0') +

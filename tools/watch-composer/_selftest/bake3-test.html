@@ -157,8 +157,9 @@
      * shimmer band while the preview runs a live train, the walk or the phase source is
      * lying — and the watch will show a still background. */
     await mount('skeleton');
-    const m3 = { frames: IT.gt.length, fps: IT.F, unionPx: 0, movedPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!IT.base.cageAt };
-    IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, undefined), m3);
+    const m3 = { frames: IT.gt.length, fps: IT.F, unionPx: 0, movedPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!IT.base.cageAt, orbital: !!IT.base.orbital };
+    IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, null, undefined), m3);
+    if (m3.hasCage) { const cb = IT.measureCarriage3(IT.gt, m3.frames); if (cb) { m3.carriageW = cb[0]; m3.carriageH = cb[1]; } }
     const pol = G.splitPolicy3(m3);
     const sb = IT.budgetStats, srows = sb && sb.mv === IT.mvKey(1) ? sb.rows : -1;
     say('--- Skeleton motion walk: ' + m3.frames + ' gt frames at ' + m3.fps + ' fps ---');

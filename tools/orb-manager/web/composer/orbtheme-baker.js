@@ -1720,6 +1720,7 @@
    * panel. One container themes several apps, and the element table — not a dialect's
    * field list — is how a theme says what it paints (D32, R1). */
   var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;   // Ruling A: the
+  var GEOM_ABI4 = 4;    // C4's delta dialect, one stamp up from what shipped before
   // element row APPENDED kind and src without a bump — the blob's derived row
   // stride (see unpackBlob3) is what makes a narrower old row and a wider new
   // one the same readable file. A stamped 3 on a 19-word row is the promise,
@@ -1747,13 +1748,25 @@
     ['degrees', 'u16'], ['scale16', 'u16'],
     ['kind', 'u8'], ['src', 'u8'],   // D32's ruling A. On an AUX row (D34) the pair
                              // reads as the motion id and the driving source.
-    ['span', 'i16'], ['zero', 'i16'], ['vmin', 'u16'], ['vmax', 'u16']
+    ['span', 'i16'], ['zero', 'i16'], ['vmin', 'u16'], ['vmax', 'u16'],
     // D34's four drive columns, an AUX row's and nobody else's. The motion names the
     // unit: tenths of a degree on rotate/retrograde/indexed, pixels on a slide. A row
     // read through a narrower stride carries zero for each, which checkElement refuses
     // on an AUX row rather than draws as a pointer frozen at its own zero.
+    // C4's delta dialect, appended exactly as D32's ruling A did. Both mean nothing
+    // below the v4 clock stamp; a row read through a narrower stride lands on their
+    // defaults — parent NONE, delay 0 — the same append-only answer the drive four got.
+    ['parent', 'u16'],    // row n of the drawing row this one hangs on; 0xFFFF = none
+    ['delay', 'u16']      // per-frame ms for this row's animation; 0 = the dial's default
   ];
-  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 23 words, 92 bytes a row
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 25 words, 100 bytes a row
+  var ELEMENT_WORDS_V3 = 23;                    // every clock row shipped before C4
+  // The widths each clock stamp has ever written. The clock section's stride is
+  // gated EXACTLY against its stamp (theme_schema.ELEMENT_WORDS_CLOCK_V3/V4): a v3
+  // clock row is one of three widths, a v4 clock row is exactly one. The reader
+  // that refuses otherwise is orb_clock3.c's stamp gate, mirrored in checkClockStamp.
+  var CLOCK_STRIDES_V3 = [17, 19, 23], CLOCK_STRIDES_V4 = [25], SPR_WORDS2 = 6;
+  var PARENT_NONE = 0xFFFF;
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
@@ -1781,6 +1794,7 @@
   function blankElement() {
     var r = {};
     for (var i = 0; i < ELEMENT_FIELDS.length; i++) r[ELEMENT_FIELDS[i][0]] = 0;
+    r.parent = PARENT_NONE;   // C4: a zeroed row would name the plate; NONE is the default claim
     return r;
   }
   function classId(name) {
@@ -1937,6 +1951,24 @@
         }
       }
     }
+    // C4's delta columns, refused under either stamp. The stamp gate itself is
+    // checkClockStamp's (and orb_clock3.c's) business; these hold whenever the
+    // columns ride, because a v3 pack refuses them at the door before any apply.
+    var par = Math.trunc((rec.parent === undefined || rec.parent === null) ? PARENT_NONE : rec.parent);
+    if (par !== PARENT_NONE) {
+      if (par === 0) {
+        throw new Error(where + '.parent: 0 is the plate\u2019s own row tag, and a parent ' +
+          'of none is ' + PARENT_NONE + ' (0x' + PARENT_NONE.toString(16) + ') — refused, not guessed');
+      }
+      if (cls !== CLASS_AUX && cls !== CLASS_BANK) {
+        throw new Error(where + '.parent: class ' + q(CLASS_NAMES[cls]) +
+          ' draws, it is not hung from — only a pointer or a complication names a parent');
+      }
+    }
+    if (Math.trunc(rec.delay | 0) && nf < 2) {
+      throw new Error(where + '.delay: ' + (rec.delay | 0) + ' ms on a row that carries ' + nf +
+        ' frame — a tempo nobody will keep is a bake that lost its animation');
+    }
     return rec;
   }
 
@@ -1961,23 +1993,60 @@
       }
       seenN[n] = i; seenSlot[key] = i;
     }
+    // C4's parent graph: a claim names a row that exists, never itself, at most two
+    // links deep, and never a cycle — the refusals orb_clock3.c repeats on the bytes.
+    for (i = 0; i < recs.length; i++) {
+      var par = Math.trunc((recs[i].parent === undefined || recs[i].parent === null) ? PARENT_NONE : recs[i].parent);
+      if (par === PARENT_NONE) continue;
+      if (par === Math.trunc(recs[i].n | 0)) {
+        throw new Error('elem[' + i + ']: row ' + (recs[i].n | 0) + ' names itself as its parent');
+      }
+      var hops = 0, cur = Math.trunc(recs[i].n | 0), seen = {};
+      for (;;) {
+        if (seen.hasOwnProperty(cur)) {
+          throw new Error('elem[' + i + ']: the parent chain of row ' + (recs[i].n | 0) + ' is a cycle');
+        }
+        seen[cur] = 1;
+        var j = seenN.hasOwnProperty(par) ? seenN[par] : -1;
+        if (j < 0) {
+          throw new Error('elem[' + i + ']: row ' + cur + ' names parent ' + par +
+            ' and no row in this table carries that tag');
+        }
+        hops++;
+        if (hops > 2) {
+          throw new Error('elem[' + i + ']: row ' + cur + ' hangs three deep; the compositor carries two links');
+        }
+        cur = Math.trunc(recs[j].n | 0);
+        par = Math.trunc((recs[j].parent === undefined || recs[j].parent === null) ? PARENT_NONE : recs[j].parent);
+        if (par === PARENT_NONE) break;
+      }
+    }
     return recs;
   }
 
   /* Checked pack of a whole table: real rows only, no padding to the cap, and a missing
    * key is the bake's bug rather than a zero — theme_schema.pack_elements' order. */
-  function packElements(recs, cap) {
+  function packElements(recs, cap, abi) {
     cap = (cap === undefined) ? ELEM_MAX : cap;
+    abi = (abi === undefined) ? GEOM_ABI4 : abi;
     checkTable(recs);
     if (recs.length > cap) {
       throw new Error('element table: ' + recs.length + ' rows exceed the cap of ' + cap);
     }
+    var words = abi >= GEOM_ABI4 ? ELEMENT_WORDS : ELEMENT_WORDS_V3;
     var out = [];
     for (var i = 0; i < recs.length; i++) {
-      for (var k = 0; k < ELEMENT_WORDS; k++) {
+      var r = recs[i];
+      var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
+      if (words === ELEMENT_WORDS_V3 && (par !== PARENT_NONE || (r.delay | 0))) {
+        throw new Error('elem[' + i + '] names parent ' + par + ' delay ' + (r.delay | 0) +
+          ' at stride ' + ELEMENT_WORDS_V3 + ': the v3 clock stamp has no reading for them — ' +
+          'bake the section at the v4 stamp');
+      }
+      for (var k = 0; k < words; k++) {
         var name = ELEMENT_FIELDS[k][0], t = ELEMENT_FIELDS[k][1];
-        if (!(name in recs[i])) throw new Error('elem[' + i + '].' + name + ' is missing from the record');
-        out.push(val('elem[' + i + '].' + name, t, recs[i][name]));
+        var v = (name in r) ? r[name] : (name === 'parent' ? PARENT_NONE : 0);
+        out.push(val('elem[' + i + '].' + name, t, v));
       }
     }
     return out;
@@ -2048,9 +2117,11 @@
    * absent ones zero — D31), the element table, the sprite catalogue, then the slug bytes
    * and their NUL pad. The elements pass check_table HERE, so an element a theme cannot
    * even name never reaches a card. */
-  function packBlob3(slug, elements, scalars, sprites) {
+  function packBlob3(slug, elements, scalars, sprites, abi) {
     var elems = (elements || []).slice();
     checkTable(elems);
+    abi = (abi === undefined) ? GEOM_ABI3 : abi;
+    var delta = abi >= GEOM_ABI4;
     var sb = utf8(slug);
     if (sb.length < 1 || sb.length > SLUG_MAX) {
       throw new Error('bundle slug ' + q(slug) + ' is ' + sb.length + ' bytes, outside 1..' + SLUG_MAX);
@@ -2071,12 +2142,21 @@
         if (!(f in s[i])) throw new Error('blob ' + q(slug) + ' sprite[' + i + '] is missing ' + q(f));
         sprWords.push(val(slug + '.sprite[' + i + '].' + f, 'u32', s[i][f]));
       }
+      for (k = 0; k < 2; k++) {
+        var df = ['diffx', 'diffy'][k], dv = s[i][df] | 0;
+        if (!delta) {
+          if (dv) throw new Error('blob ' + q(slug) + ' sprite[' + i + '] names ' + df + ' ' + dv +
+            ' at geometry v' + abi + ': the v3 catalogue row has no place for a delta rect');
+          continue;
+        }
+        sprWords.push(val(slug + '.sprite[' + i + '].' + df, 'i16', dv));
+      }
     }
-    if (elems.length > 0xFFFF || sprWords.length / SPR_WORDS > 0xFFFF) {
+    if (elems.length > 0xFFFF || sprWords.length / (delta ? SPR_WORDS2 : SPR_WORDS) > 0xFFFF) {
       throw new Error('blob ' + q(slug) + ' outgrew its u16 counts');
     }
-    var words = [elems.length, sprWords.length / SPR_WORDS, SCALARS_N, sb.length].concat(scal);
-    if (elems.length) words = words.concat(packElements(elems));
+    var words = [elems.length, sprWords.length / (delta ? SPR_WORDS2 : SPR_WORDS), SCALARS_N, sb.length].concat(scal);
+    if (elems.length) words = words.concat(packElements(elems, ELEM_MAX, abi));
     words = words.concat(sprWords);
     var out = wordsToBytes(words), pad = (-sb.length) & 3;
     var all = new Uint8Array(out.length + sb.length + pad);
@@ -2084,17 +2164,20 @@
     all.set(sb, out.length);
     return all;
   }
-  function unpackBlob3(blob) {
+  function unpackBlob3(blob, abi) {
     if (blob.length < BLOB_HEAD * 4) {
       throw new Error('section blob is shorter than its counts and scalars');
     }
+    abi = (abi === undefined) ? GEOM_ABI3 : abi;
+    var delta = abi >= GEOM_ABI4;
+    var sw = delta ? SPR_WORDS2 : SPR_WORDS;
     var v = new DataView(blob.buffer, blob.byteOffset, blob.length);
     var nElem = v.getUint32(0, true), nSpr = v.getUint32(4, true);
     var nScal = v.getUint32(8, true), nSlug = v.getUint32(12, true);
     if (nScal !== SCALARS_N) {
       throw new Error('blob carries ' + nScal + ' scalars; this dialect has ' + SCALARS_N);
     }
-    var wantMin = (4 + nScal + nSpr * SPR_WORDS) * 4 + nSlug + ((-nSlug) & 3);
+    var wantMin = (4 + nScal + nSpr * sw) * 4 + nSlug + ((-nSlug) & 3);
     // §23.5's append-only rule, mirrored from orbbundle.unpack_blob and
     // orb_bundle.c's blob_check in the same order and the same words: the row
     // width is the blob's own number, so the leftover bytes after the fixed
@@ -2121,12 +2204,42 @@
     for (i = 0; i < nScal; i++) scal.push(v.getUint32(16 + i * 4, true));
     for (i = 0; i < nElem * elemWords; i++) words.push(v.getUint32(BLOB_HEAD * 4 + i * 4, true));
     var elems = nElem ? unpackElements(words, nElem, elemWords) : [];
+    // Decision B, mirrored: a v3 stamp's zero parent column carried no claim and
+    // normalizes to the NONE the loader hands the compositor anyway.
+    if (!delta) {
+      for (i = 0; i < elems.length; i++) {
+        var p0 = (elems[i].parent === undefined || elems[i].parent === null) ? PARENT_NONE : elems[i].parent;
+        if (p0 === 0) elems[i].parent = PARENT_NONE;
+      }
+    }
     var off = (BLOB_HEAD + nElem * elemWords) * 4, sprs = [];
     for (i = 0; i < nSpr; i++) {
-      sprs.push({ off: v.getUint32(off + i * 16, true), size: v.getUint32(off + i * 16 + 4, true),
-                  w: v.getUint32(off + i * 16 + 8, true), h: v.getUint32(off + i * 16 + 12, true) });
+      var rec = { off: v.getUint32(off + i * sw * 4, true), size: v.getUint32(off + i * sw * 4 + 4, true),
+                  w: v.getUint32(off + i * sw * 4 + 8, true), h: v.getUint32(off + i * sw * 4 + 12, true) };
+      if (delta) {
+        rec.diffx = sext(v.getUint32(off + i * sw * 4 + 16, true) & 0xFFFF, 'i16');
+        rec.diffy = sext(v.getUint32(off + i * sw * 4 + 20, true) & 0xFFFF, 'i16');
+      }
+      sprs.push(rec);
     }
-    off += nSpr * SPR_WORDS * 4;
+    // §5.2's plate materialization, mirrored from orb_clock3.c's gif_io walk so a
+    // delta row's rect_count and first rect's box reach the caller beside the row.
+    // A row with no delta frames reads rect_count 0 and the plate's own box.
+    if (delta) {
+      for (i = 0; i < elems.length; i++) {
+        var e = elems[i], nf = e.n_frames | 0;
+        e.rect_count = 0; e.diffw = 0; e.diffh = 0;
+        if (nf > 1) {
+          for (var f = 1; f < nf; f++) {
+            var sp = sprs[(e.frame0 | 0) + f];
+            if (!sp || !sp.size) continue;             // a still row: applies nothing
+            e.rect_count++;
+            if (!e.diffw) { e.diffw = sp.w; e.diffh = sp.h; }
+          }
+        }
+      }
+    }
+    off += nSpr * sw * 4;
     // The slug travels as BYTES, because the device reader memcpys them without decoding
     // and a forged blob can hold anything at all. Latin-1 keeps the round trip lossless
     // and byte-reversible, which is the reader's only promise here.
@@ -2134,7 +2247,37 @@
     for (i = 0; i < sb.length; i++) s += String.fromCharCode(sb[i]);
     var sc = {};
     for (i = 0; i < SCALARS_N; i++) sc[THEME_FIELDS[i][0]] = sext(scal[i], THEME_FIELDS[i][1]);
-    return { slug: s, slug_b: sb, elements: elems, sprites: sprs, scalars: sc };
+    return { slug: s, slug_b: sb, elements: elems, sprites: sprs, scalars: sc,
+             elem_words: elemWords, spr_words: sw, abi: abi };
+  }
+  /* The §4.1 Decision-A stamp gate, mirrored from theme_schema.check_clock_stamp: a
+   * clock section's derived element stride and catalogue width must be exactly the
+   * family its own stamp wrote, never the other stamp's. A clock stamped v3 with a
+   * 25-word row is a lying stamp; a clock stamped v4 at any width but 25 (or a 4-word
+   * catalogue) is the same lie mirrored. Refused here rather than painted wrong. */
+  function checkClockStamp(rec) {
+    var abi = rec.abi_max === undefined ? GEOM_ABI3 : rec.abi_max;
+    var ew = rec.elem_words === undefined ? ELEMENT_WORDS : rec.elem_words;
+    var spw = rec.spr_words || (abi >= GEOM_ABI4 ? SPR_WORDS2 : SPR_WORDS);
+    if (abi < GEOM_ABI3 || abi > GEOM_ABI4) {
+      throw new Error('a clock section stamped geometry v' + abi + '; this reader\u2019s clock ' +
+        'dialect is v' + GEOM_ABI3 + ' and v' + GEOM_ABI4 + ' — re-bake it');
+    }
+    if (abi >= GEOM_ABI4) {
+      if (CLOCK_STRIDES_V4.indexOf(ew) < 0)
+        throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
+          '; that stamp writes exactly 25');
+      if (spw !== SPR_WORDS2)
+        throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
+          '; that stamp writes 6');
+    } else {
+      if (CLOCK_STRIDES_V3.indexOf(ew) < 0)
+        throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
+          '; that stamp writes 17, 19 or 23');
+      if (spw !== SPR_WORDS)
+        throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
+          '; that stamp writes 4');
+    }
   }
 
   /* The index region: a two-word head, then one fixed 40-byte record per section.
@@ -2192,7 +2335,7 @@
    * word 9 carrying n_sections where a v2 container kept scr_w. */
   function packHeader3(o) {
     var hdr = new Array(HDR_WORDS).fill(0);
-    hdr[0] = MAGIC >>> 0; hdr[1] = FORMAT3; hdr[2] = GEOM_ABI3; hdr[3] = HDR_WORDS * 4;
+    hdr[0] = MAGIC >>> 0; hdr[1] = FORMAT3; hdr[2] = o.abi | 0; hdr[3] = HDR_WORDS * 4;
     hdr[4] = HDR_WORDS * 4;
     // geom_size/geom_crc/art_size/art_crc/n_sections come out of the writer's own sums and
     // are u32 by construction; serial and baked_ms are the caller's, and pack_header3 stamps
@@ -2254,7 +2397,8 @@
       if (!(s.elements && s.elements.length) && !art.length) {
         throw new Error('section ' + q(s.slug) + ' carries neither elements nor art');
       }
-      blobs.push(packBlob3(s.slug, s.elements, s.scalars, sprs));
+      blobs.push(packBlob3(s.slug, s.elements, s.scalars, sprs,
+                           s.abi_max === undefined ? GEOM_ABI3 : s.abi_max));
       arts.push(art);
     }
 
@@ -2289,9 +2433,13 @@
     checkBudget3(run, artSize);
 
     var region = concat([packIndex3(recs)].concat(blobs));
+    var hdrAbi = GEOM_ABI3;
+    for (i = 0; i < sections.length; i++)
+      if ((sections[i].abi_max === undefined ? GEOM_ABI3 : sections[i].abi_max) > hdrAbi)
+        hdrAbi = sections[i].abi_max;
     var hdr = packHeader3({ geomSize: region.length, geomCrc: crc32(region), artOff: artOff,
                            artSize: artSize, artCrc: artCrcAll, nSections: sections.length,
-                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name });
+                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name, abi: hdrAbi });
     var out = new Uint8Array(artOff + artSize), p = HDR_WORDS * 4;
     out.set(hdr, 0);
     out.set(region, p); p += region.length;
@@ -2316,8 +2464,9 @@
     if (w[1] !== FORMAT3) {
       throw new Error('theme format ' + w[1] + '; this reader takes format ' + FORMAT3);
     }
-    if (w[2] !== GEOM_ABI3) {
-      throw new Error('bundle geometry v' + w[2] + '; this build reads v' + GEOM_ABI3 + ' — re-bake it');
+    if (w[2] !== GEOM_ABI3 && w[2] !== GEOM_ABI4) {
+      throw new Error('bundle geometry v' + w[2] + '; this build reads v' + GEOM_ABI3 +
+        ' and v' + GEOM_ABI4 + ' — re-bake it');
     }
     var z = w.slice(); z[W_HDR_CRC] = 0;
     if (w[W_HDR_CRC] !== crc32(wordsToBytes(z))) {
@@ -2366,7 +2515,8 @@
       if (walk > region.length) throw new Error('section ' + i + '\u2019s blob range is outside the region');
       var blob = region.subarray(r.geom_off, r.geom_off + r.geom_size);
       if (crc32(blob) !== r.geom_crc) throw new Error('section ' + i + ' blob checksum mismatch');
-      var b = unpackBlob3(blob);
+      var b = unpackBlob3(blob, r.abi_max === undefined ? GEOM_ABI3 : r.abi_max);
+      if (b.slug === 'clock') checkClockStamp({ abi_max: r.abi_max, elem_words: b.elem_words, spr_words: b.spr_words });
       if (r.slug_off + r.slug_len > h.geomSize) throw new Error('section ' + i + ': the index\u2019s slug and the blob\u2019s disagree');
       var want = region.subarray(r.slug_off, r.slug_off + r.slug_len);
       if (want.length !== b.slug_b.length) throw new Error('section ' + i + ': the index\u2019s slug and the blob\u2019s disagree');
@@ -2468,7 +2618,7 @@
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
-    var sc = {}, k;
+    var sc = {}, k, deltaBank = 0;
     for (k in (o.scalars || {})) sc[k] = o.scalars[k];
     if (!o.plate) throw new Error('a clock section needs a plate: the compiled dial takes its blank-layer centre from the plate’s own middle, so with no plate it has no centre');
     var pl = o.plate;
@@ -2507,6 +2657,10 @@
       sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
       if (!sc.bg_every) sc.bg_every = pl.every || 1;
       sc.bg_mode = 0; sc.gif_frames = 0;
+      // C5's delta plate is for a loop the plate alone drives. A carriage row owns the
+      // gif table for the tourbillon (§5.2, one gif_io at a time), so a plate riding
+      // under a carriage stays the keyframe bank it always was.
+      deltaBank = o.carriage ? 0 : 1;
     } else if (sc.bg_frames) {
       throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
     }
@@ -2606,9 +2760,98 @@
       }
       elems.push(rec);
     }
+    // C5's delta plate (§4.2, §7.2): frame 0 is the whole-panel base plane, every
+    // frame after it a rect cropped to the run of texels it changes. A frame that
+    // turns back into its source (a still in the loop) rides the previous row's
+    // index with zero rects, the loader's "nothing to apply". The running canvas is
+    // the composited result the device ends up with, so the round trip is exact by
+    // construction, and selfVerify3 re-derives it before the bake ships.
+    function rowDelta(e, planes, delay, masked) {
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      rec.frame0 = bank.sprites.length;
+      rec.n_frames = planes.length;
+      rec.delay = delay | 0;
+      var canvas = null;
+      for (var j = 0; j < planes.length; j++) {
+        var p = planes[j], spr;
+        if (j === 0) {
+          canvas = copyPlane(p);                   // frame 0: the whole base plane
+          var b0 = bank3([p], { alpha: masked });
+          bank.art = concat([bank.art, b0.art]);
+          spr = { off: bank.size, size: b0.sprites[0].size, w: p.w, h: p.h, diffx: 0, diffy: 0 };
+          bank.size += b0.sprites[0].size;
+        } else {
+          var rect = diffRect(p, canvas, 16);      // >=16 of 1020: reject a lone dither texel
+          if (!rect) {                             // a still in the loop: zero-size, applies nothing
+            spr = { off: bank.sprites[bank.sprites.length - 1].off, size: 0, w: 0, h: 0,
+                    diffx: 0, diffy: 0 };
+          } else {
+            paintRect(canvas, p, rect);            // apply the delta, exact
+            var crop = cropRect(p, rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
+            var b2 = bank3([crop], { alpha: masked });
+            bank.art = concat([bank.art, b2.art]);
+            spr = { off: bank.size, size: b2.sprites[0].size, w: crop.w, h: crop.h,
+                    diffx: rect[0], diffy: rect[1] };
+            bank.size += b2.sprites[0].size;
+          }
+        }
+        bank.sprites.push(spr);
+      }
+      elems.push(rec);
+      return rec;
+    }
+    // The union box of texels that differ from the running canvas, within the row.
+    // Returns null for a frame that changed nothing (a still in the loop).
+    function diffRect(plane, canvas, thresh) {
+      if (!canvas) return [0, 0, plane.w, plane.h];
+      var dl = 1 << 30, dt = 1 << 30, dr = -1, db = -1;
+      for (var i = 0; i < plane.w * plane.h; i++) {
+        var a = i * 4, sum = 0;
+        for (var c = 0; c < 4; c++) sum += Math.abs(plane.rgba[a + c] - canvas.rgba[a + c]);
+        if (sum > thresh) {
+          var x = i % plane.w, y = (i / plane.w) | 0;
+          if (x < dl) dl = x; if (y < dt) dt = y; if (x > dr) dr = x; if (y > db) db = y;
+        }
+      }
+      if (dr < 0) return null;
+      return [dl, dt, dr - dl + 1, db - dt + 1];
+    }
+    function paintRect(canvas, plane, rect) {
+      for (var y = 0; y < rect[3]; y++) {
+        var row = ((rect[1] + y) * plane.w + rect[0]) * 4;
+        canvas.rgba.set(plane.rgba.subarray(row, row + rect[2] * 4), row);
+      }
+    }
+    // The round trip (§7.2): composite the baked deltas back to whole frames and
+    // compare, texel for texel, to the running planes the bake was handed. A delta
+    // sprite at (0,0) matching the row box is a still carrying no new pixels, so it
+    // applies nothing. This is the bake's own refusal, not a test reading its output.
+    function selfVerify3(planes, sprites, baseIndex) {
+      var canvas = copyPlane(planes[0]);
+      for (var i = 1; i < planes.length; i++) {
+        var sp = sprites[baseIndex + i];
+        if (sp.size) paintRect(canvas, planes[i], [sp.diffx, sp.diffy, sp.w, sp.h]);
+        for (var j = 0; j < planes[i].w * planes[i].h * 4; j++)
+          if (canvas.rgba[j] !== planes[i].rgba[j]) return false;
+      }
+      return true;
+    }
     if (frames) {
-      rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-                  order: 0, alpha: 255, n_frames: frames.length }, frames, false);
+      if (deltaBank) {
+        // Per-frame delta tempo: the row's own bg_fps, or the dial's default figure
+        // the shipped banks printed (15 Hz, the §5.1 default delay_ms) when none named.
+        var dms = fps >= 1 ? Math.round(1000 / fps) : 67;
+        rowDelta({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+                   order: 0, alpha: 255 }, frames, dms, false);
+        // bg_mode 1: the row is the delta dialect. gif_frames is the whole loop, the
+        // row's own plane count (orb_clock3.c:539), and bg_frames is zero — the base
+        // plane is frame 0 of that loop, not an extra keyed frame beside it.
+        sc.bg_mode = 1; sc.gif_frames = frames.length; sc.bg_frames = 0;
+      } else {
+        rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+                    order: 0, alpha: 255, n_frames: frames.length }, frames, false);
+      }
     } else {
       row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
             order: 0, alpha: 255, n_frames: 1 }, pl, false);
@@ -2816,7 +3059,12 @@
 
     var b = writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
       sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
-                   sprites: bank.sprites, art: bank.art }] });
+                   sprites: bank.sprites, art: bank.art,
+                   abi_min: deltaBank ? GEOM_ABI4 : GEOM_ABI3, abi_max: deltaBank ? GEOM_ABI4 : GEOM_ABI3 }] });
+    if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0))) {
+      throw new Error('the baked delta bank does not composite back to the frames it was handed: ' +
+        'the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
+    }
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
     return b;

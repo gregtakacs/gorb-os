@@ -417,6 +417,17 @@ come from `python3 tools/fbgrab.py --out /tmp/dial-<step>.bmp`; parity comes
 from `python3 tools/fbgrab.py --diff /tmp/dial-before.bmp
 /tmp/dial-after.bmp` (percent pixels changed, mean/max luma delta).
 
+Transfer feedback comes from `python3 tools/orb_watch.py`, and it reads HTTP only
+— never the port. Opening the bound ttyACM asserts DTR/RTS and resets the S3, so a
+watcher that grabbed the serial to be helpful would cause the failure it reports.
+It prints one line per second (installed art, card transfer state, free space,
+heap), names the holder of the port from `/proc` so a competing hub or `capf.py` is
+visible rather than mysterious, and shouts when the board reboots underneath a
+transfer, naming the reset reason from the boot that ended the previous one. On a
+WSL bench it also scans `dmesg` for the usbip `ECONNRESET` signature: a dropped
+serial tunnel pulses the chip into reset, the upload dies silently, and the card
+shows no `.part` and no refusal row. That silence is the gap this tool closes.
+
 Per-commit pass lines:
 
 - **Commit 1 (single slot):** boot log shows the theme adopting from the one

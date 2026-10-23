@@ -453,9 +453,19 @@ func (c *identityCache) corroborate(mac string, at time.Time) (string, bool) {
 		if !e.info.IsOrb || e.proven == provenFailed {
 			continue
 		}
-		// The host's own view of the cable, not the answer's. A dial proving chip X is
-		// an orb must not renew what the hub believes about a port holding chip Y.
-		if !sameChip(e.who, mac) {
+		// Prefer the host's own view of the cable over the answer's. A dial proving chip
+		// X is an orb must not renew what the hub believes about a port holding chip Y.
+		if sameChip(e.who, mac) {
+			// matched on the live descriptor
+		} else if e.who == "" && sameChip(e.info.MAC, mac) {
+			// The host cannot read a USB serial behind a ttyUSB or on Windows, so the
+			// only address on file is the one the chip printed itself. That is still this
+			// port's answer, and a board that leaves the bench has the entry deleted
+			// outright rather than distrusted (roster.go's departure reaper), so a re-plug
+			// cannot be laundered through this branch. Without it, the free renewal that
+			// keeps a live orb off the reboot timer would work only on the one platform
+			// that can read sysfs, and the Windows hub would keep rebooting healthy boards.
+		} else {
 			continue
 		}
 		// The rescue the caller may announce: this answer was already past its TTL, so

@@ -4,6 +4,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "esp_lcd_types.h"
 
@@ -23,6 +24,13 @@ esp_err_t display_init(void);
 
 /** Get the esp_lcd panel handle (for brightness, etc.). */
 esp_lcd_panel_handle_t display_get_panel(void);
+
+/** Paint one full-width band of RGB565 outside the LVGL pipeline and return
+ *  only after its DMA has retired (§32.5). The boot overlay reuses one band
+ *  buffer; an async submit would race the next band's stamp against the
+ *  current band's wire bytes. Safe from any task once display_panel_early()
+ *  has run; bad geometry answers ESP_ERR_INVALID_ARG. */
+esp_err_t display_band_commit(int y, int rows, const uint16_t *band);
 
 /**
  * Enable/disable the tear-effect (vertical-blanking) wait around each flush.

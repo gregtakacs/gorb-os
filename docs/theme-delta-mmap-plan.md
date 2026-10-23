@@ -706,3 +706,48 @@ means anything, and orbital-arrow wants one press of Send to orb once it does.
    the claim is live a foreign `LockPort` must fail, and it must succeed the
    moment the release runs.
 
+5. The flock held; the BUDGET leaked the claim (23 Oct, 14:22, orb-B). A
+   second send — a 5.5 MB bake, `d77c92f62c25` — went through the launcher's
+   fixed instance, and the other hub's two probe attempts were abandoned
+   "before the reset: the port is held": the flock did its job for exactly
+   150 seconds. Then `waitForStore`'s fixed `themeStoreBudget` expired while
+   the device itself kept answering `job_busy: true`, the handler answered
+   `lost — no store witness within 150 s`, the claim and flock released with
+   the copy still mid-erase, and the glass sat at a frozen 60% (`sent`
+   matched `total`: 5,788,274 B — the transfer had been whole; it was the
+   copy the hub stopped watching). A copy whose size the hub itself had just
+   pushed outran the budget the budget was sized for. The wait now follows
+   the device's own word: while `job_busy` answers true, the idle budget
+   stops applying and only `themeStoreBusyCeiling` (10 min — roughly ten
+   times a healthy store this size) ends the hold, so the claim is released
+   when the BOARD says the copy is over, or when its busy word has stopped
+   being believable as a wait. Two hub tests pin it: a scripted busy streak
+   twice the shrunk idle budget must still come back `stored`, later than
+   the budget; a forever-busy double must come back `lost` at the ceiling
+   and name it. The wedged `job_busy` orb-B showed for forty minutes is a
+   firmware story all by itself — the worker never returned from a copy the
+   httpd kept answering around — and it is where item 6's fix points too.
+6. The store screen painted correct lines onto each other's rows (same
+   evening, operator at the bench). The progress frame is three 24-row bands
+   — stage, percent, bar — stamped into ONE reused internal-DMA buffer and
+   submitted with three back-to-back `esp_lcd_panel_draw_bitmap` calls. The
+   panel io was created at `trans_queue_depth = s_tiles_n` (≥ 2), so each
+   returning call only means QUEUED: band N+1's stamp overwrote band N's
+   bytes while they were still going out over QSPI, and the wire carried a
+   mix. Nothing else the overlay draws hits this — a stage-only frame is
+   one band, and the 10 Hz throttle spaces repeats by more than a
+   transaction — which is why exactly the progress screen, the only frame
+   with three bands, is exactly what the operator watched corrupt. The LVGL
+   path has never suffered it: its bands come out of the full-frame mirror
+   and the tile ring refuses reuse until `s_tile_done` proves retirement.
+   The overlay gets the same discipline through a new seam —
+   `display_band_commit(y, rows, band)` in `display.c`: take the ring mutex,
+   let other submitters' in-flight transactions retire, submit, and return
+   only when the FIFO retire count proves THIS band left the wire (at
+   queue depth 1 the submit already blocked); the callback's retire count,
+   hoisted out of the coalesce branch, counts every submitter now. All four
+   overlay draw sites — the boot wipe included — route through it. The host
+   mirror captures bands at the seam and gained two pins: the install
+   frame's three bands land on rows 184, 252, 300, and every committed band
+   starts on an even row for the CO5300's two-rows-per-clock pairing.
+

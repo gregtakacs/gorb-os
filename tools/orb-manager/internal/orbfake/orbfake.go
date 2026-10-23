@@ -84,6 +84,13 @@ type Orb struct {
 	// JobBusy mirrors orb_jobs_busy: with a card job in flight every door on an installed
 	// app answers 409 about the job, ahead of any lookup. Seed it to exercise the ordering.
 	JobBusy bool
+	// TearStore scripts the failure orb-B ate on 2026-10-22: the store copy that lands
+	// pixels and never its header. The next bundle or upload leaves the staged witness
+	// where it would have landed the store, so the hub's wait loop meets the torn verdict
+	// through the door that armed it, which is exactly the response theme.go's
+	// waitForStore has to read correctly. SetStaged records the same witness by hand
+	// for tests that never arm a store to get it.
+	TearStore bool
 
 	// ReviveFails makes the fault-record clear on a failed app's ON refuse, which is the
 	// only path where ESP_FAIL reaches the client and door_http_status's default arm sends
@@ -320,13 +327,17 @@ func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o.mu.Lock()
-	for _, x := range o.themes {
-		x.Active = false
+	if o.TearStore {
+		o.stagedID, o.stagedWhy = id, "the copy reached the slot but its header did not"
+	} else {
+		for _, x := range o.themes {
+			x.Active = false
+		}
+		t.Stored = true
+		t.Active = true
+		o.active = t.Name
+		o.stagedID, o.stagedWhy = "", ""
 	}
-	t.Stored = true
-	t.Active = true
-	o.active = t.Name
-	o.stagedID, o.stagedWhy = "", ""
 	o.mu.Unlock()
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"automatic"}`, id))
 }
@@ -385,17 +396,39 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// h_theme_upload does not merely file the bytes: after a verified upload it
+	// queues orb_theme_post_bundle(id) and answers reboot:automatic. The double
+	// lands that queued store synchronously — the same concession serveBundle
+	// already makes ("the double has no worker for the copy to lag behind") — so a
+	// hub that watches for the stored witness after an upload, as theme.go's
+	// waitForStore does, sees the same lifecycle the real board walks through.
+	land := func(t *Theme) {
+		if o.TearStore {
+			o.stagedID, o.stagedWhy = id, "the copy reached the slot but its header did not"
+			return
+		}
+		for _, x := range o.themes {
+			x.Active = false
+		}
+		t.Stored, t.Active = true, true
+		o.active = t.Name
+		o.stagedID, o.stagedWhy = "", ""
+	}
 	for _, t := range o.themes {
 		if t.ID == id {
 			t.Bytes = len(body)
 			t.Serial++
 			t.OK, t.Why = true, ""
-			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","bytes":%d}`, len(body)))
+			land(t)
+			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
 			return
 		}
 	}
-	o.themes = append(o.themes, &Theme{Name: name, ID: id, Bytes: len(body), Serial: 1, OK: true})
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","bytes":%d}`, len(body)))
+	o.themes = append(o.themes, &Theme{Name: name, ID: id, Bytes: len(body), Serial: 1, OK: true, Stored: !o.TearStore, Active: !o.TearStore})
+	if o.TearStore {
+		land(o.themes[len(o.themes)-1])
+	}
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
 }
 
 func (o *Orb) find(id string) *Theme {

@@ -2227,51 +2227,110 @@ $("#mn-rescan").onclick = async () => {
 // shown to the operator as the theme's name while the card filed it as something else.
 // The hub reads the real name back out of the file and reports it in the reply, which is
 // what this says after a send.
-$("#mn-up-btn").onclick = () => $("#mn-fw-file").click();
+// §32: the send is watched end to end. The button PRECHECKS the container against the
+// card before any bytes dial the orb — a duplicate asks here, inline, not after
+// megabytes have crossed the room. A replacement press ships the SAME file the
+// precheck just named (no dialog, no re-pick, no browser popup), and while the POST
+// blocks, the status line polls /api/theme/upload-status so every phase — hub
+// dialing, orb filing, store copying — says its own word. The final sentence quotes
+// the hub's store witness: under Migration 1 a stored theme reboots the orb onto
+// itself; a torn one boots the base face until one re-store.
+let pendingReplace = null;   // {f} — the file the precheck stopped, awaiting the second press
+let sendWatchTimer = null;
+$("#mn-up-btn").onclick = () => {
+  if (pendingReplace) {
+    const f = pendingReplace.f;
+    pendingReplace = null;
+    uploadTheme(f, true, $("#mn-up-state"));
+    return;
+  }
+  $("#mn-fw-file").click();
+};
+function watchSendState(ip, st, f) {
+  stopSendWatch();
+  const words = {
+    uploading: (d) => "sending to the orb: " + Math.floor((d.sent || 0) * 100 / (d.total || 1)) +
+      "% of " + (d.total || 0) + " B",
+    queued: () => "on the orb \u2014 store armed, copy next",
+    storing: () => "storing into the slot \u2014 progress on the orb's glass; it reboots when the copy lands",
+    duplicate: () => "the card holds a different \u201c" + (f && f.name) + "\u201d \u2014 press Upload again to replace",
+    rejected: (d) => "the orb refused the upload" + (d.note ? ": " + d.note : "")
+  };
+  sendWatchTimer = setInterval(async () => {
+    try {
+      const d = await getJSON("/api/theme/upload-status?ip=" + encodeURIComponent(ip));
+      if (d && words[d.phase]) st.textContent = words[d.phase](d);
+    } catch (e) { /* a lost poll is noise; the POST's own answer settles it */ }
+  }, 700);
+}
+function stopSendWatch() { if (sendWatchTimer) { clearInterval(sendWatchTimer); sendWatchTimer = null; } }
+function storeVerdictSentence(d, f) {
+  if (d.store === "torn")
+    return "the copy tore before its header \u2014 the base face boots until one re-store";
+  if (d.store === "refused") return "the store refused: " + (d.store_note || "no reason from the orb");
+  if (d.store === "lost") return "filed on the card; the store outcome stayed unreported \u2014 re-read the rows";
+  return "stored into the slot \u2014 the orb is rebooting onto it";
+}
 $("#mn-fw-file").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];
   const st = $("#mn-up-state");
   e.target.value = "";
   if (!f) return;
   if (!themeIP) { st.textContent = "load an orb first"; return; }
+  pendingReplace = null;
+  st.textContent = "asking the orb about \u201c" + f.name + "\u201d\u2026";
+  try {
+    const pre = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&precheck=1",
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+    const pj = await pre.json().catch(() => ({}));
+    if (pre.ok && pj.ok && pj.data && pj.data.duplicate) {
+      pendingReplace = { f };
+      st.textContent = "\u201c" + (pj.data.name || f.name) + "\u201d is already on the card as a different dial" +
+        (pj.data.note ? " (" + pj.data.note + ")" : "") + " \u2014 press Upload theme again to replace it";
+      return;
+    }
+  } catch (err) { /* a hub that cannot answer the question does not veto the send; the device still decides */ }
   st.textContent = "sending " + f.size + " B\u2026";
+  watchSendState(themeIP, st, f);
   try {
     const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP),
       { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
     const j = await r.json().catch(() => ({}));
+    stopSendWatch();
     if (!r.ok || j.ok === false) {
-      // The orb holds a DIFFERENT theme under this name. It is the one decision on an
-      // upload the device hands back to the operator, so ask rather than report an
-      // error, and re-send with the flag the firmware asks for. The prompt quotes the
-      // orb's own sentence: it knows the name, and this page only ever read it off the
-      // file, so guessing at it here would put a name on screen the card may not hold.
+      // The late refusal the serial-only precheck cannot see (same name, same
+      // serial, different payload CRCs). Same inline second press — the prompt
+      // that used to be a browser dialog stealing the page.
       const why = j.error || ("HTTP " + r.status);
-      if (why.indexOf("already on the card") >= 0 &&
-          confirm("The orb refused this upload: " + why + "\n\nReplace it with this file?")) {
-        return uploadTheme(f, true, st);
+      if (why.indexOf("already on the card") >= 0) {
+        pendingReplace = { f };
+        st.textContent = "the orb refused: " + why + " \u2014 press Upload theme again to replace it";
+        return;
       }
       throw new Error(why);
     }
     const d = j.data || {};
-    st.textContent = "stored as \"" + (d.name || "?") + "\" (" + (d.id || "?") +
-      ") \u2014 the orb verifies it before it will draw it";
+    st.textContent = "stored \u201c" + (d.name || "?") + "\u201d (" + (d.id || "?") + ") \u2014 " + storeVerdictSentence(d, f);
     await loadThemes(themeIP);
-  } catch (err) { st.textContent = "upload failed: " + err.message; }
+  } catch (err) { stopSendWatch(); st.textContent = "upload failed: " + err.message; }
 };
 
-// uploadTheme pushes the file, with the firmware's ?overwrite=1 set only when the
-// operator has answered the replace prompt above.
+// uploadTheme pushes the file, with the firmware's ?overwrite=1 set only on the second
+// press of the inline replace prompt above. It watches the same status witness the
+// button's first press armed, and reports the hub's store verdict, not a hope.
 async function uploadTheme(f, overwrite, st) {
   st.textContent = "replacing " + f.size + " B\u2026";
+  watchSendState(themeIP, st, f);
   try {
     const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + (overwrite ? "&overwrite=1" : ""),
       { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
     const j = await r.json().catch(() => ({}));
+    stopSendWatch();
     if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
     const d = j.data || {};
-    st.textContent = "replaced \"" + (d.name || "?") + "\" (" + (d.id || "?") + ")";
+    st.textContent = "replaced \u201c" + (d.name || "?") + "\u201d (" + (d.id || "?") + ") \u2014 " + storeVerdictSentence(d, f);
     await loadThemes(themeIP);
-  } catch (err) { st.textContent = "upload failed: " + err.message; }
+  } catch (err) { stopSendWatch(); st.textContent = "upload failed: " + err.message; }
 }
 
 // ---- remembered orb ---------------------------------------------------------

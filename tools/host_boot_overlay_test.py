@@ -42,10 +42,25 @@ PROLOG = r"""
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
 int g_calls; int g_y[16]; uint16_t *g_b[16]; int64_t g_now_us;
+int g_wipe; int g_wipe_y[24];
+static int all_black(const uint16_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) if (b[i]) return 0;
+    return 1;
+}
 esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t p, int x1, int y1,
                                     int x2, int y2, const void *data)
 {
     (void)p; (void)x1; (void)x2;
+    /* §32's boot wipe arrives as black 24-row strips at y = 0, 24, 48, ...; the
+     * content bands ride y=184/252/300, which are not multiples of 24, so an
+     * all-black strip is never a stage frame. Wipes are counted on their own so
+     * the capture indexes the scenario decodes below do not shift. */
+    if (all_black((const uint16_t *)data, (size_t)(y2 - y1) * 466)) {
+        if (g_wipe < 24) g_wipe_y[g_wipe] = y1;
+        g_wipe++;
+        return ESP_OK;
+    }
     if (g_calls < 16) { g_y[g_calls] = y1;
         g_b[g_calls] = malloc((size_t)(y2 - y1) * 466 * 2);
         memcpy(g_b[g_calls], data, (size_t)(y2 - y1) * 466 * 2); }
@@ -72,6 +87,7 @@ HDRS = {
 
 DRIVER = r"""
 extern int g_calls; extern int g_y[16]; extern uint16_t *g_b[16]; extern int64_t g_now_us;
+extern int g_wipe; extern int g_wipe_y[24];
 void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
 /* One process, one scenario, in the order the boot lives it: the fake clock
  * steps forward and every band handed to the panel is dumped with its step
@@ -100,6 +116,9 @@ int main(void)
         FILE *f = fopen(path, "wb");
         fwrite(g_b[i], 1, 466 * 24 * 2, f); fclose(f);
     }
+    printf("wipe %d", g_wipe);
+    for (int i = 0; i < g_wipe && i < 24; i++) printf(" %d", g_wipe_y[i]);
+    printf("\n");
     return 0;
 }
 """
@@ -169,6 +188,18 @@ def main():
                     raw = open(os.path.join(tmp, f), "rb").read()
                     bands[i] = (int(m.group(2)),
                                 list(struct.unpack("<" + "H" * (W * BANDS), raw)))
+
+        # §32: the first draw of a boot wipes the panel. Every 466 rows must be
+        # black before the first stage line — count AND coverage, so a wipe that
+        # stopped halfway down the glass cannot pass. The CO530 keeps its frame
+        # memory across a warm reset; without the wipe the new boot's three text
+        # bands land composited onto the old life's frozen progress bar (orb-B,
+        # 2026-10-22: a torn store's 47% bar under the fallback sentences).
+        wm = re.search(r"wipe (\d+)([^\n]*)", out)
+        wn = int(wm.group(1)) if wm else -1
+        wy = [int(x) for x in wm.group(2).split()] if wm else []
+        ok(wn == (466 + 23) // 24, f"the first draw blacks the panel: {wn} wipe strips", str(wn))
+        ok(wy == list(range(0, 466, 24)), "the wipe strips tile the panel from row 0 past row 456", str(wy))
 
         # the scenario's draw counts, step by step
         ok(steps.get(0) == 1, "step 0: the first stage draws one band", str(steps))

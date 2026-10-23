@@ -103,6 +103,14 @@ type Server struct {
 	// cmu guards read: the MACs this run has confirmed off a chip. See chipRead.
 	cmu  sync.Mutex
 	read map[string]bool
+	// sendMu guards tsend: the one-in-flight witness of a theme this hub is pushing
+	// right now — which phase, how many bytes have crossed, what the store reported.
+	// GET /api/theme/upload-status reads it while the upload POST is still blocked
+	// (it blocks through the store now, which is what keeps the cable claim honest),
+	// so a page can paint a live line instead of the frozen button the old silent
+	// stretch produced. See theme.go.
+	sendMu sync.Mutex
+	tsend  map[string]*themeSend
 	// kickMu guards lastPlug: the orb MACs the previous cable sweep attributed, which
 	// is what lets kickLostCables (liveness.go) tell an unplug from a steady bench and
 	// re-dial the unplugged board's remembered address the second the lead goes quiet.
@@ -672,6 +680,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))
 	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))
+	// The live witness of a send in flight — read-only, cheap, and the reason the
+	// upload button no longer has to sit there saying nothing while megabytes move.
+	mux.Handle("/api/theme/upload-status", s.requireControl(http.HandlerFunc(s.handleThemeSendStatus)))
 
 	// Everything below changes something: it resets a chip, writes a flash, drives
 	// the device, or puts a file in the repo. requireControl is the whole reason a

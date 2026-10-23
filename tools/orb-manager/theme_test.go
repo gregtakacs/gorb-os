@@ -34,13 +34,22 @@ type orbCall struct{ method, path, query, body string }
 // Nothing here reaches a real network.
 func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 	t.Helper()
-	var last orbCall
+	last := new(orbCall)
+	var lastWrite orbCall
 	f := orbfake.New(
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 	)
 	recording := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		last = orbCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}
+		*last = orbCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}
+		// A GET answers a question; a POST made one. The install and upload handlers
+		// now watch the store through GET /api/v1/sd after the door answers — so the
+		// last WRITE the orb saw is the door claim these tests make, and the watch's
+		// GETs must not overwrite it. A call sequence with no write at all (the list
+		// route) still reports its GET, because that GET is the whole call.
+		if r.Method != http.MethodGet {
+			lastWrite = *last
+		}
 		// Hand the bytes back: reading the body here to record it would otherwise leave
 		// the double looking at an empty upload and refusing a valid file.
 		r.Body = io.NopCloser(bytes.NewReader(b))
@@ -65,7 +74,12 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 	s.ota = orbnet.NewClient(2 * time.Second)
 	s.ota.DevicePort = port
 	s.grants.learn(host)
-	return s, host, func() orbCall { return last }, f
+	return s, host, func() orbCall {
+		if lastWrite.method != "" {
+			return lastWrite
+		}
+		return *last
+	}, f
 }
 
 // The id the seeded aurora carries: theme_id("aurora"). Written out so a test that

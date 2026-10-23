@@ -79,7 +79,7 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	src := readAppJS(t)
 	for _, want := range []string{
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete",
-		"/api/theme/rescan", "/api/theme/upload", "/api/console", "/api/orb/known",
+		"/api/theme/rescan", "/api/theme/upload", "/api/theme/upload-status", "/api/console", "/api/orb/known",
 		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
 		// The fleet controls, pinned by the same rule as the rest. /api/fleet/set
 		// is deliberately NOT one of them: naming on this page is display-only,
@@ -231,9 +231,17 @@ func TestThemeCardAddressesThemesByID(t *testing.T) {
 		t.Error("the upload posts a name; h_theme_upload reads none")
 	}
 	// The replace decision is a second send with the firmware's flag on it: the card has
-	// to reach it from the refusal, and the flag has to be the one string the device reads.
-	if !strings.Contains(upload, "uploadTheme(f, true") {
+	// to reach it from the refusal, and the flag has to be the one string the device
+	// reads. §32 moved the second press from a browser dialog inside onchange onto the
+	// button itself — the precheck stops a duplicate before bytes move, the button's
+	// next press ships the same file with the flag. Same rule, steadier shape.
+	if !strings.Contains(blockOf(t, src, `$("#mn-up-btn").onclick`), "uploadTheme(f, true") {
 		t.Error("the upload has no path that retries with the replace flag, so a same-name re-bake dead-ends")
+	}
+	// The dialog-era confirm() on an upload refusal is gone by rule, not by taste: it
+	// arrived after the whole file had crossed the room and re-sent it in full.
+	if strings.Contains(upload, "confirm(") {
+		t.Error("the upload path still calls confirm(); the replace prompt is inline since §32")
 	}
 	if !strings.Contains(blockOf(t, src, "async function uploadTheme"), "overwrite=1") {
 		t.Error("the retry never sets ?overwrite=1, the only upload argument the firmware reads")

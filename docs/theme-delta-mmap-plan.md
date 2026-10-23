@@ -611,3 +611,56 @@ It carries the bench commands, the ground rules, the four corrections above, the
 mmap erase hazard, the C1 trap, the stop conditions and the report format, so the
 next agent does not re-derive them or re-introduce them.
 
+
+---
+
+## 12. §32 — the torn send of 2026-10-22, and what it took with it
+
+orb-B ate a live repeat of the store-tear during a composer send of the
+orbital-arrow dial (v3 flat bake, plate keyframe bank, 5,784,178 B art — priced
+honestly by `splitPolicy3`: with a carriage present the plate stays keyframed
+until §7.3 lands, and 69.5% of the slot is what that looks like). The upload
+landed and filed on the card; the door queued the store and acked; the hub
+released its cable claim AT THE ACK; the identity sweep re-claimed the port
+during the still-running copy and pulsed DTR/RTS at a board mid-erase.
+Evidence: status `rst:11` (ESP_RST_USB — the hub's own probe, not brownout:
+brownout is 9), `art_ready:false`, boot log `the slot is empty — base digital
+face`, the glass frozen at the copy's last chunk (47%, 2680/5652 KB) with the
+NEXT boot's overlay lines painted half over it — the CO530 keeps GRAM across a
+warm reset and the overlay paints only three text bands, never the panel. The
+card row for the uploaded id did not survive either; a rescan listed eight rows
+with no sign of `d77c92f62c25`, only the staged witness naming it.
+
+Fixed the same day, four ways:
+
+1. **The hub holds the claim through the copy.** `theme.go`'s new `waitForStore`
+   watches the four `/api/v1/sd` witnesses (`job_busy`, the row's `stored`,
+   `staged_id`, `try_id`/`try_why`) from the queue-ack to a verdict, on a
+   context detached from the browser request so a closed tab cannot release a
+   mid-erase board. The self-reboot excuse re-arms on each silence streak.
+   Applies to the upload door and the Store button alike; both responses now
+   carry `store` and `store_note` beside the device's own fields.
+2. **Progress everywhere it was missing.** `?precheck=1` answers the duplicate
+   question from the container header and one theme-list call — zero bytes
+   dialed. `GET /api/theme/upload-status` reports the hub's phase and byte
+   count while the POST blocks (the hub's upload client counts bytes as the
+   transport writes them). The composer sends over XHR for the browser-side
+   percent; the Manage card polls the same witness. The device's card-write
+   count stays on the glass, where the boot overlay already draws it per chunk.
+3. **The overwrite decision moved earlier and lost the dialog.** A duplicate —
+   at precheck, or the rare late 409 behind it — arms an inline second press
+   that re-sends the held bytes with `?overwrite=1`. No `window.confirm`, no
+   re-bake, no second transfer of the wrong bytes.
+4. **The boot overlay wipes the panel black on the first draw of every boot**,
+   24-row strips from y=0 — `host_boot_overlay_test.py` pins the count and the
+   coverage. No warm reset can leave last life's progress bar under this life's
+   sentences again.
+
+Live proof on the bench the same afternoon: a re-store of d31-anim (2.5 MB)
+through the rebuilt hub answered `store:"stored"`, held the port the whole copy
+(the hub log says so), and the board rebooted onto the dial by itself with the
+staged witness cleared. The release-at-ack window — the exact one that tore
+orbital-arrow — no longer exists in the shipped hub. The C6 gate is unchanged:
+the flash of `v1.1.0+4ef0960` (or newer) still has to land before a v4 bake
+means anything, and orbital-arrow wants one press of Send to orb once it does.
+

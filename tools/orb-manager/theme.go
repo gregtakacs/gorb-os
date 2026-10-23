@@ -72,6 +72,14 @@ func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	// lead across the queue keeps the hub's own probe from racing the reboot the device
 	// is about to do on its own, which is the one collision that would make the operator
 	// blame the theme.
+	//
+	// The hold used to END at the ack, and the ack arrives before the copy does: the
+	// door answers the moment the job is queued, and the worker then erases the slot and
+	// writes up to 8 MB for tens of seconds afterward. The sweep re-claimed the port in
+	// that window and pulsed DTR/RTS into a board mid-copy — live on orb-B on
+	// 2026-10-22, where a 5.6 MB store tore at 47% with rst=ESP_RST_USB in its status
+	// frame and the operator watched a frozen progress bar. Holding the lead through
+	// waitForStore below is the fix; the queue was never the dangerous part.
 	release, rerr := s.holdDevicePort(r.Context(), t.IP, deviceTimeout)
 	if rerr != nil {
 		s.jsonErr(w, rerr.Error())
@@ -79,6 +87,10 @@ func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	raw, err := s.device.ThemeStore(t.IP, t.ID)
+	if err == nil {
+		outcome, note := s.waitForStore(r.Context(), t.IP, t.ID)
+		raw = withStoreOutcome(raw, outcome, note)
+	}
 	s.themeReply(w, raw, err)
 }
 
@@ -126,6 +138,16 @@ func (s *Server) handleThemeRescan(w http.ResponseWriter, r *http.Request) {
 // ?overwrite=1 forwards the operator's one decision: the firmware answers 409 with
 // {"overwrite":false} when a DIFFERENT theme already holds that name, the card asks, a
 // nd the retry comes back with the flag set.
+//
+// ?precheck=1 asks the same question BEFORE any byte crosses the room: the hub reads
+// the id and serial out of the container it already holds, consults the device's theme
+// list, and answers duplicate-or-not for the cost of one GET. The device's duplicate
+// policy (§5) is unchanged and still decided by upload_end — precheck is a question,
+// not a verdict. It compares serials, not the full identity triple: same name and same
+// serial rides the device's own idempotent path (a quiet no-op, nothing to ask); same
+// name and a different serial is the collision. Same serial with different payload CRCs
+// — the cut the serial alone does not capture — still reaches the device's late 409,
+// and every caller keeps its inline replace prompt wired for exactly that case.
 func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -151,6 +173,14 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overwrite := r.URL.Query().Get("overwrite") == "1"
+	if r.URL.Query().Get("precheck") == "1" {
+		dup, note := s.themeDuplicate(ip, c)
+		s.setSend(ip, func(st *themeSend) {
+			st.Phase, st.ID, st.Total, st.Sent, st.Note = ternaryStr(dup, "duplicate", "clear"), c.ID, int64(len(body)), 0, note
+		})
+		s.jsonOK(w, map[string]any{"duplicate": dup, "note": note, "name": c.Name, "id": c.ID, "serial": c.Serial})
+		return
+	}
 	// The claim goes in before the bytes move, not before the dial: this is the one
 	// theme call whose failure the operator cannot see, because a reset mid-transfer
 	// makes the firmware delete the .part and answer as if nothing had been sent.
@@ -166,12 +196,21 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	// The 8 s budget killed the POST mid-body, the device deleted the .part, and
 	// the operator watched a card that never changed (the theme-twin of h_ota's
 	// ~2 MB reasoning above).
-	raw, err := s.ota.ThemeUpload(t.IP, body, overwrite)
+	s.setSend(ip, func(st *themeSend) {
+		st.Phase, st.ID, st.Total, st.Sent, st.Note = "uploading", c.ID, int64(len(body)), 0, ""
+	})
+	raw, err := s.ota.ThemeUploadProgress(ip, body, overwrite, func(n int64) {
+		s.setSend(ip, func(st *themeSend) { st.Sent = n })
+	})
 	if de, ok := err.(*orbnet.DeviceError); ok && de.OverwriteConflict() {
-		s.jsonErr(w, de.Error()+" — send it again with overwrite to replace it")
+		s.setSend(ip, func(st *themeSend) {
+			st.Phase, st.Note = "duplicate", "a different theme with that name is already on the card"
+		})
+		s.jsonErrFields(w, de.Error()+" — send it again with overwrite to replace it", map[string]any{"duplicate": true})
 		return
 	}
 	if err != nil {
+		s.setSend(ip, func(st *themeSend) { st.Phase, st.Note = "rejected", err.Error() })
 		s.themeReply(w, nil, err)
 		return
 	}
@@ -180,12 +219,108 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	// with after the re-read.
 	var payload map[string]any
 	if uerr := json.Unmarshal(raw, &payload); uerr != nil {
-		s.jsonOK(w, map[string]any{"deviceText": string(raw), "name": c.Name, "id": c.ID})
-		return
+		payload = map[string]any{"deviceText": string(raw)}
 	}
 	payload["name"] = c.Name
 	payload["id"] = c.ID
+	// The reply above is the door acking the QUEUE, not the store: the copy the door
+	// armed now runs unheld if this handler releases at the ack. It used to — which is
+	// how the identity sweep's DTR/RTS pulse reached orb-B mid-write on 2026-10-22 and
+	// tore a 5.6 MB store at 47% (its status frame owned the evidence as rst=11,
+	// ESP_RST_USB). The claim stays held and the handler watches the job to its
+	// outcome, so the response this route finally sends names what landed in the slot,
+	// and the board cannot be reset by this hub's own probe while the copy runs.
+	s.setSend(ip, func(st *themeSend) { st.Phase = "queued" })
+	outcome, note := s.waitForStore(r.Context(), ip, c.ID)
+	s.setSend(ip, func(st *themeSend) { st.Phase, st.Note = outcome, note })
+	payload["store"] = outcome
+	if note != "" {
+		payload["store_note"] = note
+	}
 	s.jsonOK(w, payload)
+}
+
+// themeStoreBudget is the wait for one queued store to report an outcome. A full-slot
+// copy is minutes of erase and write at the device's chunk rate; the reboot and WiFi
+// join after it run tens of seconds on a marginal board. The card's own watch loop
+// gave up at two minutes with the same arithmetic. The wait is a ceiling, not an
+// expectation — an outcome returns on the poll that shows it.
+const themeStoreBudget = 150 * time.Second
+
+// themeStorePoll is the list cadence while waiting. The device's httpd is a
+// single worker and the 8 s management client is the same one every card dial uses;
+// 1.5 s is the beat watchThemeJob already kept the device comfortable with.
+const themeStorePoll = 1500 * time.Millisecond
+
+// waitForStore watches the copy a store door just armed — the same ladder app.js's
+// watchThemeJob runs, held hub-side this time so the cable claim cannot be released
+// and the sweep re-admitted while the erase is live. It reads only the four
+// witnesses GET /api/v1/sd already publishes: job_busy (the worker holds the job),
+// the row's stored flag (the copy landed), staged_id (pixels reached the slot and
+// the header did not — the torn witness), and try_id/try_why (the press's own
+// refusal). Silence is an answer too: the reboot the door promised IS silence, so
+// misses are tolerated and the self-reboot excuse is re-armed while they run, which
+// is what keeps the rest of the hub from reading the reboot as defection and paying
+// for it with a probe. Returns stored, torn, refused, or lost; lost is the honest
+// "no verdict by the deadline", never a claim of failure. The context is detached
+// from the request on purpose: a browser tab closing must not release the claim
+// while the board is mid-erase — the exact window this function exists to hold.
+func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), themeStoreBudget)
+	defer cancel()
+	s.armSelfRebootFor(ip)
+	sawBusy, misses := false, 0
+	for {
+		// Poll first, then wait: a store that has already landed — the usual case for
+		// a double, and the case for a re-store of a theme the slot holds — returns on
+		// this tick instead of after a poll interval spent sleeping.
+		s.setSend(ip, func(st *themeSend) {
+			if st.Phase == "queued" && (sawBusy || misses > 0) {
+				st.Phase = "storing"
+			}
+		})
+		list, err := s.device.ThemeList(ip)
+		switch {
+		case err != nil:
+			misses++
+			if misses == 3 {
+				// The excuse window lapses mid-wait on a slow join; re-arm on each
+				// fresh patch of silence so the sweep keeps declining this port.
+				s.armSelfRebootFor(ip)
+			}
+		default:
+			misses = 0
+			if list.JobBusy {
+				sawBusy = true
+				break
+			}
+			if list.StagedID != "" && list.StagedID == id {
+				return "torn", firstNonEmptyStr(list.StagedWhy, "the copy reached the slot but its header did not — one re-store recovers it")
+			}
+			if list.TryID == id && list.TryWhy != "" {
+				return "refused", list.TryWhy
+			}
+			for _, row := range list.Themes {
+				if row.ID == id && row.Stored {
+					// Landed. The job now asks for the reboot that draws it — a self-
+					// inflicted silence the excuse has to cover before the next poll
+					// finds the board gone.
+					s.armSelfRebootFor(ip)
+					return "stored", ""
+				}
+			}
+			if sawBusy {
+				return "lost", "the store job ended without landing, tearing, or a refusal sentence"
+			}
+			// Not picked up yet: a longer job sat in front of it on the worker. Keep
+			// waiting; the budget is the answer for a press that never starts.
+		}
+		select {
+		case <-ctx.Done():
+			return "lost", "no store witness within " + strconv.Itoa(int(themeStoreBudget/time.Second)) + " s — the copy may still be running"
+		case <-time.After(themeStorePoll):
+		}
+	}
 }
 
 // holdDevicePort claims the operation slot on the cable the orb at ip sits on, for the
@@ -356,4 +491,143 @@ func (s *Server) themeReply(w http.ResponseWriter, raw json.RawMessage, err erro
 		return
 	}
 	s.jsonOK(w, payload)
+}
+
+// ---- the live send tracker ---------------------------------------------------
+//
+// One small state machine per address, guarded, holding what the upload handler is
+// doing RIGHT NOW so a page polling /api/theme/upload-status can say "storing" when
+// it is storing instead of showing a frozen button. The device owns the truth about
+// the slot; this is the hub's witness of the transfer it is itself driving, which is
+// why the phase words are the hub's own and the store verdict comes from the
+// device's witnesses read back.
+
+type themeSend struct {
+	Phase string `json:"phase"` // clear|duplicate|uploading|queued|storing|stored|torn|refused|rejected|lost
+	ID    string `json:"id,omitempty"`
+	Sent  int64  `json:"sent"`
+	Total int64  `json:"total"`
+	Note  string `json:"note,omitempty"`
+	At    int64  `json:"at"`
+}
+
+func (s *Server) setSend(ip string, f func(*themeSend)) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.tsend == nil {
+		s.tsend = map[string]*themeSend{}
+	}
+	st := s.tsend[ip]
+	if st == nil {
+		st = &themeSend{}
+		s.tsend[ip] = st
+	}
+	f(st)
+	st.At = time.Now().Unix()
+}
+
+func (s *Server) sendSnapshot(ip string) themeSend {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if st, ok := s.tsend[ip]; ok {
+		return *st
+	}
+	return themeSend{Phase: "idle"}
+}
+
+// themeDuplicate answers the precheck against the device's own list. A list that
+// cannot be fetched answers "no duplicate" with the reason as the note — an
+// unreachable orb is not a collision, and the real send will fail honestly a second
+// later if the orb is really gone.
+func (s *Server) themeDuplicate(ip string, c *orbnet.ThemeContainer) (bool, string) {
+	list, err := s.device.ThemeList(ip)
+	if err != nil {
+		return false, "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
+	}
+	for _, row := range list.Themes {
+		if row.ID != c.ID {
+			continue
+		}
+		if row.Serial == c.Serial {
+			return false, "the card already holds this exact theme; a send lands as a no-op"
+		}
+		return true, "the card holds a different build of this name (serial " + strconv.FormatUint(uint64(row.Serial), 10) + ")"
+	}
+	return false, ""
+}
+
+// armSelfRebootFor is expectSelfReboot resolved from an address the way
+// holdDevicePort resolves it, for the waits that run without a claim of their own.
+func (s *Server) armSelfRebootFor(ip string) {
+	if mac := s.macFor(ip); mac != "" {
+		s.expectSelfReboot(mac)
+	}
+}
+
+// macFor is the address half of holdDevicePort's lookup, standing alone: the MAC the
+// grant was committed for, then the address book, bare form — which is what both
+// expectSelfReboot and cablePortFor want.
+func (s *Server) macFor(ip string) string {
+	if s.grants == nil {
+		return ""
+	}
+	mac := s.grants.bound(ip)
+	if mac == "" && s.fleet != nil {
+		for _, r := range s.fleet.Every() {
+			if r.IP == ip && r.MAC != "" {
+				mac = r.MAC
+				break
+			}
+		}
+	}
+	return macBare(mac)
+}
+
+// withStoreOutcome adds the hub's store verdict to the device's own reply without
+// disturbing the device's fields: the theme doors answer first and finish second, so
+// the body stays the device's words and the hub adds only what it watched.
+func withStoreOutcome(raw json.RawMessage, outcome, note string) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	m["store"] = outcome
+	if note != "" {
+		m["store_note"] = note
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func firstNonEmptyStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func ternaryStr(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
+}
+
+// handleThemeSendStatus answers the one question every theme sender had no way to
+// ask while a send was in flight: where is it, honestly. The upload POST now blocks
+// through the whole store — which is what keeps the cable claim honest — and a
+// blocked POST is exactly the silent stretch this route replaces. The composer and
+// the Manage card poll it every half second and paint what it says. It reports the
+// hub's own byte counter for the transfer leg and the wait loop's verdict for the
+// slot; the device's card-write count is not exported (the glass already shows that
+// copy live at chunk boundaries, and the glass is the screen beside the board).
+func (s *Server) handleThemeSendStatus(w http.ResponseWriter, r *http.Request) {
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if _, ok := s.checkedTarget(w, ip, "", false); !ok {
+		return
+	}
+	s.jsonOK(w, s.sendSnapshot(ip))
 }

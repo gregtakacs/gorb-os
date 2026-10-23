@@ -216,6 +216,16 @@ func (c *Client) ThemeRescan(ip string) (json.RawMessage, error) {
 // The firmware demands a Content-Length and refuses an over-large one before it writes
 // a byte, so the body is measured here rather than streamed and truncated in flight.
 func (c *Client) ThemeUpload(ip string, body []byte, overwrite bool) (json.RawMessage, error) {
+	return c.ThemeUploadProgress(ip, body, overwrite, nil)
+}
+
+// ThemeUploadProgress is ThemeUpload with a byte-progress callback, and it exists
+// for one operator-visible reason: a multi-megabyte container crossing WiFi used
+// to be a silent stretch of nothing on every screen in the chain — browser, hub,
+// and glass — until the device finally answered. progress fires with the running
+// total of bytes the transport has written, may be nil, and is called from the
+// transfer goroutine only.
+func (c *Client) ThemeUploadProgress(ip string, body []byte, overwrite bool, progress func(int64)) (json.RawMessage, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("orbnet: refusing to upload an empty theme file")
 	}
@@ -232,7 +242,7 @@ func (c *Client) ThemeUpload(ip string, body []byte, overwrite bool) (json.RawMe
 	if overwrite {
 		route += "?overwrite=1"
 	}
-	return c.devicePost(ip, route, body, "application/octet-stream")
+	return c.devicePostCounted(ip, route, body, "application/octet-stream", progress)
 }
 
 // MaxThemeUpload is ORB_THEME_UPLOAD_MAX from main/art/orb_theme.h, restated so the

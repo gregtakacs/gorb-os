@@ -655,6 +655,22 @@ Fixed the same day, four ways:
    24-row strips from y=0 — `host_boot_overlay_test.py` pins the count and the
    coverage. No warm reset can leave last life's progress bar under this life's
    sentences again.
+5. **§32.3 — the failure sentence fits the glass** (the operator's next attempt,
+   same day: the boot line read `theme load failed` plus the full 32-hex id into
+   a 48-byte buffer, so the token clipped mid-number, and because `band_text`
+   CENTERS its line at 18 px a 47-char line started at x = −190 and the guards
+   ate BOTH ends — a mangled middle of a sentence, over the dark-cyan fallback
+   field, is what hung on the wall). The glass now carries the sentence and six
+   hex digits (`main.c`: `"theme load failed %.6s"`, 24 chars = 432 px, centered
+   honestly); the whole id rides a serial `ESP_LOGE` and the hub's card.
+   `band_text` clamps an over-wide line to x = 0 — it can now only ever clip at
+   the RIGHT edge. The mirror suite runs a 66-char step and checks the stamped
+   pixel SET against the clamped painter (the first inked column at x = 0, every
+   column the panel holds landed), and greps the caller so the whole id cannot
+   creep back onto the glass. Flashed to orb-B as `v1.1.0+f011366-dirty` the same
+   afternoon: the boot drew the wiped panel and the base face clean, and the
+   staged witness stayed cleared.
+
 
 Live proof on the bench the same afternoon: a re-store of d31-anim (2.5 MB)
 through the rebuilt hub answered `store:"stored"`, held the port the whole copy

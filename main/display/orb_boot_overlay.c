@@ -173,6 +173,12 @@ static uint32_t band_text(const char *s, uint16_t *out)
     const size_t len = strlen(s);
     const uint32_t w = (uint32_t)len * PITCH;
     int32_t x = ((int32_t)SCREEN_WIDTH - (int32_t)w) / 2;
+    /* §32.3: a word wider than the panel used to center at a negative x, and the
+     * clip guards ate BOTH its ends: the 2026-10-23 boot failure line ("theme load
+     * failed" plus a 32-hex id) showed the mangled middle of itself. An over-wide
+     * line now clips at the right edge only, so the head always reads. */
+    if (x < 0)
+        x = 0;
     uint32_t ink = 0;
     for (const char *p = s; *p; p++, x += PITCH) {
         unsigned char c = (unsigned char)*p;

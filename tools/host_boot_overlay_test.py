@@ -92,7 +92,7 @@ void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
 /* One process, one scenario, in the order the boot lives it: the fake clock
  * steps forward and every band handed to the panel is dumped with its step
  * index, so throttle and promotion are observed as STATE, not as luck. */
-#define NSTEP 7
+#define NSTEP 8
 static const struct { int64_t t; const char *stage; unsigned done, total; } STEPS[NSTEP] = {
     {  500000, "mapping", 0, 0 },                /* 0: first stage            */
     { 3000000, "mapping", 0, 0 },                /* 1: same word, no promotion*/
@@ -101,6 +101,8 @@ static const struct { int64_t t; const char *stage; unsigned done, total; } STEP
     { 4560000, "loading", 512u*1024u, 1024u*1024u }, /* 4: 10 Hz throttle      */
     { 5600000, "loading", 512u*1024u, 1024u*1024u }, /* 5: named second ticks  */
     { 7000000, "store\342\200\224cut", 0, 0 },   /* 6: em dash -> ???           */
+    { 7100000, "theme load failed 0123456789abcdef0123456789abcdef0123456789abcdef", 0, 0 },
+                                                /* 7: over-wide line (§32.3)   */
 };
 int main(void)
 {
@@ -229,6 +231,39 @@ def main():
            f"px={len(track)}")
         ok(band_has_string(drawn[9][1][1], F, "store???cut 6s", 14),
            "an em dash lands as three ? — every byte renderable from the table")
+
+        # §32.3: an over-wide line clips at the RIGHT edge only. Step 7 hands the
+        # painter a 66-char failure line — the old code centered it at x=-361 and
+        # the guards ate both ends, which is the cut-off "theme load failed
+        # xxxxx" the operator read on the glass on 2026-10-23. The head must
+        # start at x=0, every column the panel can hold must land, and the first
+        # column past the edge must be gone.
+        ok(steps.get(7) == 1, "step 7: the over-wide failure line paints once", str(steps))
+        LONG = ("theme load failed 0123456789abcdef0123456789abcdef"
+                "0123456789abcdef")
+        want = set()
+        for gi, ch in enumerate(LONG):
+            g = F[ord(ch) - 0x20]
+            for col in range(5):
+                px = gi * 18 + col * 3          # the clamp: x0 = 0, never negative
+                if px >= W:
+                    break                      # the painter's own column break
+                bits = g[col]
+                for row in range(7):
+                    if bits & (1 << row):
+                        for sx in range(3):
+                            for sy in range(3):
+                                if px + sx < W:
+                                    want.add((px + sx, row * 3 + sy))
+        got = {(x, y) for y in range(BANDS) for x in range(W)
+               if drawn[10][1][1][y * W + x] == 0xFFFF}
+        ok(got == want and min(px for px, _ in got) == 0,
+           "an over-wide line clips at the right edge, its head whole from x=0",
+           f"want {len(want)}px, got {len(got)}px, min_x={min([px for px, _ in got] or [-1])}")
+        main_src = open(os.path.join(ROOT, "main", "main.c")).read()
+        ok('snprintf(line, sizeof line, "theme load failed %.6s"' in main_src
+           and "char line[32];" in main_src,
+           "the glass names the failure and six hex; the whole id rides the log")
 
         ok(F[0] == [0, 0, 0, 0, 0], "codepoint 0x20 is blank")
         ok(F[ord("A") - 0x20][0] == 0x7E and F[ord("Z") - 0x20][0] == 0x61,

@@ -24,18 +24,57 @@ func (c *Client) deviceGet(ip, path string) (json.RawMessage, error) {
 }
 
 func (c *Client) devicePost(ip, path string, body []byte, contentType string) (json.RawMessage, error) {
+	return c.devicePostCounted(ip, path, body, contentType, nil)
+}
+
+// devicePostCounted is devicePost with one addition: progress, called after every
+// chunk of the body the transport has actually written to the wire. It exists
+// because a theme upload is megabytes over WiFi and the hub's caller was watching
+// a status line that could not say a single true word about the transfer until the
+// device answered. progress may be nil, which is exactly the old path.
+//
+// The ContentLength pin is load-bearing: http.NewRequest learns the length by
+// type-asserting *bytes.Reader, and a counting wrapper hides it, which would send
+// the request chunked — and h_theme_upload answers a chunked body with 411. The
+// firmware requires Content-Length (a finished upload and a vanished client must
+// not look alike), so the length is stated explicitly here.
+func (c *Client) devicePostCounted(ip, path string, body []byte, contentType string, progress func(int64)) (json.RawMessage, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
+		if progress != nil {
+			rd = &countingReader{r: rd, fn: progress}
+		}
 	}
 	req, err := http.NewRequest(http.MethodPost, c.url(ip, path), rd)
 	if err != nil {
 		return nil, err
 	}
+	if body != nil {
+		req.ContentLength = int64(len(body))
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	return c.roundTrip(req)
+}
+
+// countingReader reports cumulative bytes read, which is bytes the transport has
+// handed to the socket — the closest witness of "how much has left this building"
+// a client of net/http gets without touching the server.
+type countingReader struct {
+	r   io.Reader
+	fn  func(int64)
+	got int64
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	if n > 0 {
+		cr.got += int64(n)
+		cr.fn(cr.got)
+	}
+	return n, err
 }
 
 func (c *Client) roundTrip(req *http.Request) (json.RawMessage, error) {

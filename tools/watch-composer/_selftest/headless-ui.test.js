@@ -624,6 +624,57 @@ setTimeout(async () => {
   delete it.state.designs.calendar.hands['centre-hour'].art;
   const nxDRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
   ok(nxDRow.showWid === true && nxDRow.hideWid === false, 'and the drawn hand keeps it: the slider shapes a silhouette a sprite does not have');
+  // ---- §32 the send leg: watched, inline-armed, never a dialog ---------------------
+  {
+    let confirmed = false;
+    global.confirm = () => { confirmed = true; return true; };
+    it.state.hubCheck = true; it.state.hubIp = '10.0.0.9';
+    const bytes = new Uint8Array([1, 2, 3]);
+    const sent = [];
+    global.fetch = async (url, opt) => {
+      sent.push([url, opt && opt.body && opt.body.length]);
+      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, name: 'orbital-arrow' } }
+        : { ok: true, data: { phase: 'uploading', sent: 3, total: 3 } };
+      return { ok: true, status: 200, json: async () => j };
+    };
+    let xhrUrl = null, xhrBody = null, xhrSends = 0;
+    global.XMLHttpRequest = function () {
+      this.open = (m, u) => { xhrUrl = u; };
+      this.setRequestHeader = () => { };
+      this.upload = {};
+      this.send = (b) => {
+        xhrSends++;
+        xhrBody = b;
+        this.upload.onprogress({ loaded: b.length, total: b.length });
+        this.status = 200;
+        this.responseText = JSON.stringify({ ok: true, data: { name: 'orbital-arrow', id: 'ab12cd34ef56', store: 'stored' } });
+        this.onload();
+      };
+    };
+    const scen = { dup: true };
+    it.state.themeName = 'orbital-arrow';
+    it._replaceArmed = null;
+    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
+    ok(/press Send to orb again to replace/.test(it.state.status), 'a duplicate stops with an inline second-press line', it.state.status);
+    ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the second press');
+    ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no bytes were posted', JSON.stringify(sent));
+    scen.dup = false;
+    await it.sendTheme3ToOrb();
+    ok(!confirmed, 'the replace flow never opens a browser dialog');
+    ok(/&overwrite=1/.test(xhrUrl || ''), 'the second press sends the held bytes with the firmware flag', xhrUrl);
+    ok(xhrBody === bytes, 'and it is the SAME bake, byte-identical, not a re-bake');
+    ok(/rebooting onto it/.test(it.state.status), 'the settled line quotes the store verdict', it.state.status);
+    scen.dup = true;
+    it._replaceArmed = null;
+    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
+    ok(!!it._replaceArmed, 'the second refusal re-arms on the same name');
+    it.state.themeName = 'other-dial';
+    const sendsBefore = xhrSends;
+    await it.sendTheme3ToOrb();
+    ok(it._replaceArmed === null && xhrSends === sendsBefore,
+       'renaming the dial disarms the replace: the press became a fresh bake-and-send, not a flagged re-send of the held bytes');
+  }
+
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 }, 15);

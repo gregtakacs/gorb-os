@@ -1909,19 +1909,40 @@ class Component extends DCLogic {
     try { await this._export3Body(opts || {}); }
     catch (e) { this.setState({ status: 'Not baked: bake threw — ' + (e && e.message ? e.message : String(e)) }); }
   }
-  /* §31's last open round: send the baked bundle straight to the orb rather than
-   * handing the owner a file to re-upload. The bake is the SAME walk the download
-   * runs — same guard, same motion measure, same carrier split — so a sent dial is
-   * byte-for-byte the dial a downloaded one would have been. Only the last step
-   * differs: the bytes ride the hub's FORMAT 3 upload door (POST /api/theme/upload)
-   * to the orb the hub is already talking to. The store behaves exactly as the Manage
-   * card's own upload: the orb verifies the bundle and files it in the slot the glass
-   * is not drawing, and nothing flips or reboots on its own — a flip is a separate
-   * press, on the orb or the Manage card. The button that names this only appears
-   * when the page was served by a hub (see hubSend3), because the door is the hub's:
-   * opened from the filesystem the composer has no
-   * hub to dial and no orb address to dial it with, so only the download shows. */
+  /* §31's last open round, §32's honest round: send the baked bundle straight to the
+   * orb rather than handing the owner a file to re-upload. The bake is the SAME walk
+   * the download runs — same guard, same motion measure, same carrier split — so a
+   * sent dial is byte-for-byte the dial a downloaded one would have been. Only the
+   * last step differs: the bytes ride the hub's FORMAT 3 upload door
+   * (POST /api/theme/upload) to the orb the hub is already talking to.
+   *
+   * What the door actually does on the far side, stated here because the button's
+   * whole UX is about not being surprised by it: the orb verifies the container,
+   * files it on the card under sha256(name)[:12], and QUEUES the store — the copy
+   * into the one slot the dial reads. Under Migration 1 that store IS the theme
+   * change: the orb reboots itself onto the new face when the copy lands. There is
+   * no second slot, no flip, and no waiting press.
+   *
+   * §32's send is therefore a watched transfer, not a fire-and-forget POST:
+   * a duplicate name is asked about BEFORE megabytes cross the room (the hub's
+   * ?precheck=1 leg, answered inline on this page — no browser dialog, no re-bake),
+   * the upload runs over XHR so its bytes report live progress, and the hub's
+   * /api/theme/upload-status witness reports the phases this page cannot see on its
+   * own — the hub-to-orb leg and the store the door armed. The button appears only
+   * when a hub served the page (see hubSend3): from the filesystem there is no door
+   * to dial, so only the download shows. */
   async sendTheme3ToOrb() {
+    // §32's second press: when the last send stopped at a duplicate, the bake is
+    // held in _replaceArmed and this press ships THOSE bytes — no re-bake, so the
+    // replace is byte-for-byte the dial the owner was asked about. Editing the dial
+    // name (or any new bake) clears the arm and the next press is a fresh send.
+    const a = this._replaceArmed;
+    if (a && a.nm === this.themeName()) {
+      this._replaceArmed = null;
+      await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
+      return;
+    }
+    this._replaceArmed = null;
     await this.exportTheme3({ send: true });
   }
   async _export3Body(opts) {
@@ -2222,10 +2243,10 @@ class Component extends DCLogic {
       const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
       const bytes = r.bytes;
       const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
-      if (send) { await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
+      if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
       this.download(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
-        ' · upload it: the orb stores it without flipping, then flip to it to boot the new dial' });
+        ' · uploading or sending this file stores it into the one slot, and the orb reboots onto it' });
     } catch (e) {
       const msg3 = (e && e.message ? e.message : String(e));
       this.setState({ status: 'Not baked: ' + msg3 + (msg3.indexOf('complication tiles cost') >= 0 ? (this._ptrHint || '') : '') });
@@ -2257,42 +2278,121 @@ class Component extends DCLogic {
     this.setState({ hubIp: ip, hubCheck: true });
     return ip;
   }
-  /* Push the baked bytes to the orb through the hub's upload door. This mirrors
-   * app.js's own theme upload exactly: no name is sent (the container carries its own,
-   * and the device files it under sha256(name)[:12]); the only client decision is the
-   * overwrite, asked for only after the device refused one already under that name.
-   * A successful send is a store queued, never a claim the glass moved — the reply is
-   * read as the hub's envelope and the status names the name/id the hub read back. */
+  /* Push the baked bytes to the orb through the hub's upload door, watched end to
+   * end. The order is the §32 fix for the two live failures: a duplicate is asked
+   * about BEFORE megabytes cross the room (the hub's ?precheck=1 leg — header and
+   * one list call, no bytes dialed; a duplicate arms an inline second press, no
+   * browser dialog, no re-bake), and once bytes move, _push3 reports the browser-
+   * to-hub leg live while _watchSend3 relays the hub's own witness of the legs this
+   * page cannot see. A late device 409 (same name, same serial, different payload —
+   * the hole a serial-only precheck cannot see) arms the same inline replace. The
+   * store verdict in the final line is the hub's waitForStore witness, not an
+   * assumption: a stored dial reboots the orb onto itself; a torn one boots the
+   * base face until one re-store — said plainly. */
   async postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
     const ip = await this.hubOrbIp();
     if (!ip) {
       this.setState({ status: 'Not sent: this hub is not talking to an orb — load one on the Manage card first, then press again. (The download still ships without a hub.)' });
       return;
     }
-    this.setState({ status: 'Sending "' + nm + '" to ' + ip + (overwrite ? ' (replacing)' : '') + '…' });
-    let resp, j = {};
+    const door = '/api/theme/upload?ip=' + encodeURIComponent(ip);
+    if (!overwrite) {
+      this.setState({ status: 'Asking ' + ip + ' whether "' + nm + '" is already on the card…' });
+      let pre = null;
+      try {
+        const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+        pre = await pr.json().catch(() => null);
+      } catch (e) { pre = null; }
+      if (pre && pre.ok && pre.data && pre.data.duplicate) {
+        this._replaceArmed = { bytes, nm, stem, pol, meter };
+        this.setState({ status: 'Already on the card as a different dial: "' + nm + '" (' + stem + ') — press Send to orb again to replace it with this bake' });
+        return;
+      }
+    }
+    const say = (s) => this.setState({ status: s });
+    say('Sending "' + nm + '" to ' + ip + (overwrite ? ' (replacing)' : '') + ' — 0%');
+    const watch = this._watchSend3(ip, say, nm);
+    let code = 0, j = {};
     try {
-      resp = await fetch('/api/theme/upload?ip=' + encodeURIComponent(ip) + (overwrite ? '&overwrite=1' : ''), {
-        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes,
-      });
-      j = await resp.json().catch(() => ({}));
+      const up = await this._push3(door + (overwrite ? '&overwrite=1' : ''), bytes,
+        (sent, total) => say('Sending "' + nm + '" to ' + ip + ' — ' + Math.floor(sent * 100 / (total || 1)) + '% of ' + total + ' B to the hub'));
+      code = up.status; j = up.j;
     } catch (e) {
+      watch.stop();
       this.setState({ status: 'Send failed: ' + (e && e.message ? e.message : String(e)) });
       return;
     }
-    if (!resp.ok || j.ok === false) {
-      const why = j.error || ('HTTP ' + resp.status);
-      if (!overwrite && String(why).indexOf('already on the card') >= 0 &&
-          typeof confirm === 'function' &&
-          confirm('The orb refused this send: ' + why + '\n\nReplace it with this bake?')) {
-        return this.postTheme3ToOrb(bytes, nm, stem, pol, meter, true);
+    watch.stop();
+    if (code !== 200 || j.ok === false) {
+      const why = (j && j.error) || ('HTTP ' + code);
+      if (!overwrite && String(why).indexOf('already on the card') >= 0) {
+        this._replaceArmed = { bytes, nm, stem, pol, meter };
+        this.setState({ status: 'The orb refused the send: ' + why + ' — press Send to orb again to replace it' });
+        return;
       }
       this.setState({ status: 'Not sent: ' + why });
       return;
     }
-    const d = j.data || {};
+    const d = (j && j.data) || {};
+    const storeLine = {
+      stored: 'stored into the one slot — the orb is rebooting onto it',
+      torn: 'the copy tore before its header: the base face boots until one re-store' + (d.store_note ? ' (' + d.store_note + ')' : ''),
+      refused: 'the store refused: ' + (d.store_note || 'no reason from the orb'),
+      lost: 'filed on the card, and the store outcome stayed unreported past the wait — check the Manage card'
+    }[d.store] || 'stored on the card';
     this.setState({ status: 'Sent to ' + ip + ' as "' + (d.name || nm) + '" (' + (d.id || stem) + ') — ' +
-      pol.sentence + ' · ' + meter + ' · stored in the slot the glass is not drawing — flip to it on the orb to boot the new dial' });
+      pol.sentence + ' · ' + meter + ' · ' + storeLine });
+  }
+  /* XHR for the one thing fetch will not tell a page: how many body bytes the
+   * browser has handed the transport. Resolves {status, j} on any HTTP answer —
+   * the hub's verdict is an answer — and rejects only when the request itself
+   * dies, which is the one case the caller must word as a failed send. */
+  _push3(url, bytes, onProgress) {
+    return new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', url);
+      x.setRequestHeader('Content-Type', 'application/octet-stream');
+      let lastPaint = 0;
+      x.upload.onprogress = (e) => {
+        const now = Date.now();
+        if (now - lastPaint < 120 && e.loaded < e.total) return;
+        lastPaint = now;
+        onProgress(e.loaded, e.total);
+      };
+      x.onload = () => {
+        let j = {};
+        try { j = JSON.parse(x.responseText); } catch (e) { /* not JSON: the status line carries the code */ }
+        resolve({ status: x.status, j });
+      };
+      x.onerror = () => reject(new Error('the hub closed the connection mid-send'));
+      x.send(bytes);
+    });
+  }
+  /* The hub's own witness, polled while the POST is blocked at the hub — the
+   * hub-to-orb byte count and the store phases this page cannot see. The device's
+   * card-write progress rides the glass (the boot overlay draws it at chunk
+   * boundaries, beside the board), so this page relays the hub's phase words
+   * verbatim instead of inventing a percent for bytes it never touches. */
+  _watchSend3(ip, say, nm) {
+    const words = {
+      uploading: (st) => 'Sending "' + nm + '" — the hub is dialing the orb: ' +
+        Math.floor((st.sent || 0) * 100 / ((st.total || 1))) + '% of ' + (st.total || 0) + ' B',
+      queued: () => '"' + nm + '" is on the orb, the store is armed — the copy comes next',
+      storing: () => '"' + nm + '" is storing into the slot — progress rides the orb glass; the orb reboots itself when the copy lands',
+      duplicate: () => 'the card holds a different "' + nm + '" — press Send to orb again to replace it',
+      rejected: (st) => 'the orb refused the upload' + (st.note ? ': ' + st.note : '')
+    };
+    let dead = false;
+    const timer = setInterval(async () => {
+      if (dead) return;
+      try {
+        const r = await fetch('/api/theme/upload-status?ip=' + encodeURIComponent(ip));
+        const j = await r.json().catch(() => null);
+        const st = j && j.ok && j.data;
+        if (st && words[st.phase]) say(words[st.phase](st));
+      } catch (e) { /* a lost poll is noise; the POST's own answer settles everything */ }
+    }, 700);
+    return { stop() { dead = true; clearInterval(timer); } };
   }
   /* §31's comp-table pass: render every domain value of every planned row as one
    * RGBA plate, cropped to the footprint it actually changed against the plate it
@@ -3172,6 +3272,7 @@ class Component extends DCLogic {
         if (!this.hubSend3()) return 'no hub';
         const G = window.GorbBake;
         if (!G || !G.bakeClock3) return 'baker not loaded';
+        if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return 'press again to replace';
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
         return this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';

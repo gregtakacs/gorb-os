@@ -234,6 +234,22 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
             return;
         }
         s_first_us = esp_timer_get_time();
+
+        /* §6.2, first: every boot wipes the panel black before the first stage
+         * line. The CO530 holds its framebuffer across a warm reset — the panel
+         * controller is powered and its GRAM survives an MCU restart — so after
+         * one, the last life's image is still on the glass while the new boot
+         * draws. The overlay paints three 24-row bands and nothing else; a
+         * restart into a half-drawn store progress left that frozen bar showing
+         * under every stage line this boot wrote, and orb-B wore exactly that
+         * ghost on 2026-10-22 (a torn store's 47% bar under the fallback
+         * sentences) where the operator could read neither. A cold boot pays one
+         * black fill at ~22 KB over QSPI; a warm boot finally starts honest. */
+        memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
+        for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
+            const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
+            esp_lcd_panel_draw_bitmap(panel, 0, y, SCREEN_WIDTH, y + rows, s_band);
+        }
     }
 
     const int64_t now_us = esp_timer_get_time();

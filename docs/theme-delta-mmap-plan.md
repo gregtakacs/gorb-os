@@ -538,6 +538,23 @@ base plane and whose loop closes on frame 0; the price the tool shows is within
 budget, flash, measure. Pass line: art lands near 860 KB, the escapement and
 carriage animate independently, the fps line rises against today's 4.7, and
 `sim_tourb_mark.py` still exits 0 on the new geometry.
+- **BLOCKED on the kit source, not the code.** C6 needs a re-baked tourbillon
+  theme as its input, and that input is gone from this tree. `e3f73a1` deleted
+  `assets/sources/orbital-arrow-3/` (its `clock_style.json` carried no tourbillon
+  entry; the carriage frames lived only in the untracked composer kit); the only
+  committed source kit is av-kit, and the shipped bank records `tourbillon_n = 0`
+  (`tests/fixtures/avkit-pair.h:104`), so it has no carriage to price. The bake is
+  the browser's (`Watch Composer.dc.html` over `watch-engine.js`): §7 rules out a
+  Python re-fold, and this box has no canvas or headless browser (no `canvas`, no
+  `puppeteer`), so no `.orbtheme` can be produced here to flash. The two gates C6
+  does name are green on what is present: the device build of the C4/C5 reader
+  completes (`BUILD_EXIT=0`, `gorb-os.bin` 0x1a0a20 B, 19% free), and the board
+  orb-B is bound and idling (`fw=v1.1.0+8c1537d`, ARP proves
+  `192.168.2.34` = `44:bd:8d:78:26:18`). `sim_tourb_mark.py` fails only at a missing
+  `assets/clock_assets.bin` (`FileNotFoundError`, identical at HEAD~1) — an unbuilt
+  artifact, so unrelated to C4/C5. To run C6: recover a tourbillon kit, bake the
+  theme in the composer, flash orb-B, and read the fps line and per-region art
+  sizes against §3.
 
 C2 and C3 are the reboot-and-progress work the owner asked for. C1 is cheap and
 unlocks honest numbers for the rest. C4 and C5 are the size and quality fix. C6

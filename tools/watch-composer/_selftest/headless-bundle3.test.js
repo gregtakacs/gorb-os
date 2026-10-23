@@ -514,6 +514,24 @@ ok(cpFaint.carriage.bytes > cpTight.carriage.bytes * 6,
    'the faint texel costs the bake six times the row it hides: the tight measure was the lie',
    cpTight.carriage.bytes + ' B billed, ' + cpFaint.carriage.bytes + ' B true');
 
+// The row's start orientation reaches the wire NEGATED. The preview draws
+// rotate(seconds*TAU - cageOff) and the kit publishes zeroRotationDeg = -cageOff, but
+// slot 5 ADDS the wire figure to the seconds angle (clock_view.c's c_a = a + s_car_start_10).
+// A sign flipped here is a carriage seated twice its offset off the take-up angle on the
+// glass, and no byte count anywhere shows it — which is how the shipped orbital arrow
+// carried +17.69 deg for a pose the editor had drawn at -17.69.
+const D2R = Math.PI / 180;
+ok(B.carriageStart3(0) === 0, 'a carriage with no cage offset starts at zero');
+ok(B.carriageStart3(17.69 * D2R) === 36000 - 1769,
+   'a +17.69 deg cage offset ships 342.31: adding it turns the row by minus the offset',
+   'wire ' + B.carriageStart3(17.69 * D2R));
+ok(B.carriageStart3(-17.69 * D2R) === 1769,
+   'and the mirror offset mirrors back: the fold negates, it does not clamp',
+   'wire ' + B.carriageStart3(-17.69 * D2R));
+ok([0, 1, 90, 180, 359.99, -45, -179, 720].every((d) => {
+     const v = B.carriageStart3(d * D2R); return v >= 0 && v < 36000; }),
+   'every offset folds into the 0..35999 hundredths the C reader takes without a negative modulo');
+
 // A row cropped away from the point it turns about is art the dial swings off its pin, so
 // the rect holds the pivot and the bill grows to match. Widening costs nothing on a closed
 // orbit, which always contains its own centre.

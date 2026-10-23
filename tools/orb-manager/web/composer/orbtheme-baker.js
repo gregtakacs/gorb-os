@@ -901,6 +901,21 @@
     return [l, t, r, b];
   }
 
+  /* The carriage row's START ORIENTATION, in the hundredths-of-a-degree the wire
+   * carries — asked of the engine's cage offset rather than estimated at either end.
+   * The sign is the whole bug this function exists to kill. The preview draws the
+   * carriage with rotate(seconds*TAU - cageOff) (watch-engine.js), and the layer kit
+   * publishes zeroRotationDeg = -cageOff for the same reason; but slot 5 ADDS this
+   * figure to the seconds angle (clock_view.c's c_a = a + s_car_start_10). So the
+   * offset the author sees subtracted must reach the wire negated, or the carriage
+   * sits 2x off its own take-up angle. Folded into 0..35999 because the C side takes
+   * it through a % that keeps a negative operand negative, which would land the
+   * carriage the wrong way round the dial rather than refusing the bake. */
+  function carriageStart3(cageOffRad) {
+    var h = Math.round((+cageOffRad || 0) * 18000 / Math.PI);
+    return ((-h % 36000) + 36000) % 36000;
+  }
+
   /* The tourbillon / carriage bank: every frame cropped to the ONE ink bbox of the whole
    * cycle, so all frames rotate about the same pivot and dirty the same box, each storing
    * the rect that differs from its predecessor — chained and cyclic, like the bank's. */
@@ -3113,7 +3128,7 @@
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
-    carriageRect3: carriageRect3,
+    carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3
   };

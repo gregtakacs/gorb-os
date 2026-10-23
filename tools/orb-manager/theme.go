@@ -241,17 +241,34 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, payload)
 }
 
-// themeStoreBudget is the wait for one queued store to report an outcome. A full-slot
-// copy is minutes of erase and write at the device's chunk rate; the reboot and WiFi
-// join after it run tens of seconds on a marginal board. The card's own watch loop
-// gave up at two minutes with the same arithmetic. The wait is a ceiling, not an
-// expectation — an outcome returns on the poll that shows it.
-const themeStoreBudget = 150 * time.Second
+// themeStoreBudget is the wait for one queued store to report an outcome while
+// the device says it is NOT working: the pickup window before the worker takes
+// the job, and the verdict window after its last busy word. A full-slot copy is
+// minutes of erase and write at the device's chunk rate; the reboot and WiFi
+// join after it run tens of seconds on a marginal board. The wait is a ceiling,
+// not an expectation — an outcome returns on the poll that shows it.
+//
+// They are vars, not consts, so the tests can run the whole ladder on a clock a
+// store cannot hide behind.
+var (
+	themeStoreBudget = 150 * time.Second
 
-// themeStorePoll is the list cadence while waiting. The device's httpd is a
-// single worker and the 8 s management client is the same one every card dial uses;
-// 1.5 s is the beat watchThemeJob already kept the device comfortable with.
-const themeStorePoll = 1500 * time.Millisecond
+	// themeStorePoll is the list cadence while waiting. The device's httpd is a
+	// single worker and the 8 s management client is the same one every card dial
+	// uses; 1.5 s is the beat watchThemeJob already kept the device comfortable
+	// with.
+	themeStorePoll = 1500 * time.Millisecond
+
+	// themeStoreBusyCeiling is the hard stop on a board that keeps answering
+	// job_busy: true. The 23 Oct evening released a send at exactly
+	// themeStoreBudget while the device was still testifying the copy was live —
+	// a 5.5 MB store on a busy card outruns any fixed wait, and the release
+	// re-admits the sweep to the port the copy still owns. A job the DEVICE
+	// attests therefore outruns the idle budget, and only this ceiling ends the
+	// wait: ten minutes is roughly ten times a healthy 5.5 MB store, and past
+	// that a busy word names a wedge rather than a wait.
+	themeStoreBusyCeiling = 10 * time.Minute
+)
 
 // waitForStore watches the copy a store door just armed — the same ladder app.js's
 // watchThemeJob runs, held hub-side this time so the cable claim cannot be released
@@ -262,15 +279,21 @@ const themeStorePoll = 1500 * time.Millisecond
 // refusal). Silence is an answer too: the reboot the door promised IS silence, so
 // misses are tolerated and the self-reboot excuse is re-armed while they run, which
 // is what keeps the rest of the hub from reading the reboot as defection and paying
-// for it with a probe. Returns stored, torn, refused, or lost; lost is the honest
-// "no verdict by the deadline", never a claim of failure. The context is detached
-// from the request on purpose: a browser tab closing must not release the claim
-// while the board is mid-erase — the exact window this function exists to hold.
+// for it with a probe. A job the device itself reports busy extends the wait up to
+// the busy ceiling: the 23 Oct release at the idle budget, while the board kept
+// answering job_busy:true through a 5.5 MB copy, is the failure this rule exists
+// to forbid — the claim's whole point is the port until the copy is done. Returns
+// stored, torn, refused, or lost; lost is the honest "no verdict by the deadline",
+// never a claim of failure. The context is detached from the request on purpose:
+// a browser tab closing must not release the claim while the board is mid-erase —
+// the exact window this function exists to hold.
 func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), themeStoreBudget)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	s.armSelfRebootFor(ip)
 	sawBusy, misses := false, 0
+	deadline := time.Now().Add(themeStoreBudget)
+	hardStop := time.Now().Add(themeStoreBusyCeiling)
 	for {
 		// Poll first, then wait: a store that has already landed — the usual case for
 		// a double, and the case for a re-store of a theme the slot holds — returns on
@@ -293,6 +316,12 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, strin
 			misses = 0
 			if list.JobBusy {
 				sawBusy = true
+				// The board attests the copy is live: the idle budget stops
+				// applying and only the busy ceiling may end the wait.
+				deadline = time.Now().Add(themeStoreBudget)
+				if deadline.After(hardStop) {
+					deadline = hardStop
+				}
 				break
 			}
 			if list.StagedID != "" && list.StagedID == id {
@@ -316,10 +345,29 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, strin
 			// Not picked up yet: a longer job sat in front of it on the worker. Keep
 			// waiting; the budget is the answer for a press that never starts.
 		}
+		if !time.Now().Before(deadline) {
+			if sawBusy && !time.Now().Before(hardStop) {
+				return "lost", "the orb still reported the store live at the " +
+					strconv.Itoa(int(themeStoreBusyCeiling/time.Second)) +
+					" s busy ceiling — the claim held throughout; the copy may still be running"
+			}
+			if sawBusy {
+				return "lost", "the orb stopped answering after a live store job — the commit's own reboot may have taken it"
+			}
+			return "lost", "no store witness within " + strconv.Itoa(int(themeStoreBudget/time.Second)) + " s — the copy may still be running"
+		}
+		// Sleep one poll beat, clipped at the deadline so the last wait lands
+		// exactly on it; the top of the next turn reads the deadline again and
+		// answers. Polling to the deadline, not to the beat, would make every
+		// mid-wait verdict invisible until the budget expired.
+		sleep := themeStorePoll
+		if d := time.Until(deadline); d < sleep {
+			sleep = d
+		}
 		select {
 		case <-ctx.Done():
-			return "lost", "no store witness within " + strconv.Itoa(int(themeStoreBudget/time.Second)) + " s — the copy may still be running"
-		case <-time.After(themeStorePoll):
+			return "lost", "the wait was cancelled while the store ran"
+		case <-time.After(sleep):
 		}
 	}
 }

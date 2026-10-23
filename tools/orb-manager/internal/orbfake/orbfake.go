@@ -84,6 +84,12 @@ type Orb struct {
 	// JobBusy mirrors orb_jobs_busy: with a card job in flight every door on an installed
 	// app answers 409 about the job, ahead of any lookup. Seed it to exercise the ordering.
 	JobBusy bool
+	// BusyPolls scripts job_busy:true on the next N /api/v1/sd reads whatever JobBusy
+	// says, decrementing on each — a copy the device itself still reports live, for
+	// the waits that must outlast the hub's idle budget (§32.5). BusyForever answers
+	// busy on every read: the hub's busy-ceiling test.
+	BusyPolls   int
+	BusyForever bool
 	// TearStore scripts the failure orb-B ate on 2026-10-22: the store copy that lands
 	// pixels and never its header. The next bundle or upload leaves the staged witness
 	// where it would have landed the store, so the hub's wait loop meets the torn verdict
@@ -255,11 +261,15 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (o *Orb) serveSD(w http.ResponseWriter) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	busy := o.JobBusy || o.BusyForever || o.BusyPolls > 0
+	if o.BusyPolls > 0 {
+		o.BusyPolls--
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, `{"mounted":%t,"card":%q,"uploading":false,"job_busy":%t,"total_mb":7581,"free_mb":7100,`+
 		`"source":%q,"active":%q,"card_count":%d,"try_id":%q,"try_why":%q,`+
 		`"staged_id":%q,"staged_why":%q,"themes":[`,
-		o.Mounted, o.MountedCard(), o.JobBusy, o.sourceLocked(), o.active, len(o.themes),
+		o.Mounted, o.MountedCard(), busy, o.sourceLocked(), o.active, len(o.themes),
 		o.tryID, o.tryWhy, o.stagedID, o.stagedWhy)
 	for i, t := range o.themes {
 		if i > 0 {

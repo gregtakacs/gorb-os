@@ -36,6 +36,8 @@ condition applies.
 6. **Do not hand-edit** `main/app/orb_app_factory_blobs.c` (generated, with a
    stale-file lint) or `tools/orb-manager/web/composer/orbtheme-baker.js` (a
    vendor copy; rebuild it from `tools/watch-composer/` instead).
+7. **Scope stays in this one project folder.** Nothing here touches NAS-STACK,
+   DEV-LLM-STACK or any other neighbour of the workspace.
 
 ## Suite commands
 
@@ -89,6 +91,9 @@ that silently breaks a build.
    the per-frame delay, and `:818-822` fills every slot from the one scalar.
    Per-row tempo is therefore new ABI vocabulary, not a reinterpretation of an
    existing column.
+4. **The budget arithmetic, exactly:** 859,837 B is 10.3% of the real 8 MB cap
+   (`ORB_THEME_SLOT_CAP`, 8,323,072 B) and 20.5% of the stale 4 MB figure. A full
+   slot costs **127** pages of the 234-page art budget, not 128.
 
 ## The hazard mmap introduces
 
@@ -150,10 +155,3 @@ Per commit, in order:
 End with the C6 measured numbers against §3's per-region budget, and an explicit
 list of anything you could not verify. Do not report a commit as done on the
 strength of a passing build alone.
-
-4. **The budget arithmetic, exactly:** 859,837 B is 10.3% of the real 8 MB cap
-   (`ORB_THEME_SLOT_CAP`, 8,323,072 B) and 20.5% of the stale 4 MB figure. A full
-   slot costs **127** pages of the 234-page art budget, not 128.
-
-7. **Scope stays in this one project folder.** Nothing here touches NAS-STACK,
-   DEV-LLM-STACK or any other neighbour of the workspace.

@@ -1658,6 +1658,32 @@ class Component extends DCLogic {
     m.bboxW = moved ? bx2 - bx + 1 : 0; m.bboxH = moved ? by2 - by + 1 : 0;
     return pxs;
   }
+  /* The carriage bank in DEVICE space — the kit's transform, and the only version of
+   * these planes that may be priced or baked. exportKit draws every carriage frame
+   * through cageFrame(f, {k, dx, dy}): scaled by the opening (inset x dynK) about the
+   * canvas centre, then nudged so the staff axis lands on a texel centre. gt[f].cage is
+   * the raw ENGINE-space canvas — the carriage at full 466 scale. Shipping it against a
+   * plate that WAS inset-scaled drew the cage 1/K over the geartrain it is meant to sit
+   * inside, and unioned a box larger than the art; on an orbital arrow (inset 1, dynK
+   * under 1) it billed 259x352 for the kit's 190x335, and the surplus is what thinned
+   * the plate bank to half its tempo. One method answers the planes for both the price
+   * and the bake, so the two cannot draw the row two ways again. The staff comes back as
+   * T — the same texel centre the kit puts in manifest.centre and manifest.pivot. */
+  carriagePlanes3(fc, B) {
+    const E = window.WatchEngine, M = this.base;
+    if (!M || !M.cageFrame || !M.cageAt || !fc || !(B > 0)) return null;
+    const K = (fc.inset || 1) * (fc.dynK || 1), Mp = (v) => 233 + (v - 233) * K;
+    const want = M.cageAt.map(Mp), T = want.map((v) => Math.round(v));
+    const WB = +((this.cfg && this.cfg().wb) || 6500);
+    const out = [];
+    for (let f = 0; f < B; f++) {
+      let c = M.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
+      if (!c) return null;
+      if (WB !== 6500) c = E.wb(c, WB);
+      out.push(c);
+    }
+    return { planes: out, pivot: T, k: K };
+  }
   /* The carriage's OWN extent — the rect the row actually ships, asked of the baker rather
    * than estimated here. bakeTourbillon crops to carriageRect3: the cycle-wide union at
    * alpha > 0, padded by 2, clamped to the panel. This measure used to threshold ink at
@@ -1665,19 +1691,18 @@ class Component extends DCLogic {
    * one — on an orbital arrow whose faint rim texels run to the canvas edge, the gap is a
    * 402x359 price against a 466x466 row, and the bake blew the slot by 2.9 MB. One
    * function deciding the rect is the only thing that keeps the two from drifting again.
-   * Answering null says the cage planes carry no ink, which is the bake's own refusal to
-   * make, not this measure's. */
+   * It now asks for the device-space planes above rather than the raw cage, because a box
+   * measured on art at the wrong scale prices art the bake does not ship. Answering null
+   * says the cage planes carry no ink, which is the bake's own refusal to make, not this
+   * measure's. */
   measureCarriage3(gt, frames) {
     const G = window.GorbBake;
     if (!G || !G.carriageRect3) return null;
-    const planes = [];
-    for (let f = 0; f < frames; f++) {
-      const im = gt[f] && gt[f].cage;
-      if (!im) return null;
-      const w = im.width, h = im.height;
-      planes.push({ w: w, h: h, rgba: im.getContext('2d').getImageData(0, 0, w, h).data });
-    }
-    const r = G.carriageRect3(planes, { pivot: this.base && this.base.cageAt });
+    const cp = this.carriagePlanes3(this.face(), frames);
+    if (!cp) return null;
+    const planes = cp.planes.map((c) => ({ w: c.width, h: c.height,
+      rgba: c.getContext('2d').getImageData(0, 0, c.width, c.height).data }));
+    const r = G.carriageRect3(planes, { pivot: cp.pivot });
     return r ? [r[2] - r[0], r[3] - r[1]] : null;
   }
   /* The split's other half: decide carriers off the measurement, assemble the
@@ -1762,11 +1787,24 @@ class Component extends DCLogic {
     if (shadows.length) { opts.shadows = shadows; opts.scalars = { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }; }
     const cpol = pol.carriage;
     if (cpol) {
+      /* The planes come from carriagePlanes3 — the kit's own device-space draw, the
+       * same one exportKit writes tourbillon/frame_NN.png from. Until now this fed the
+       * bake gt[k].cage, the carriage at raw engine scale, against a plate that had
+       * already been inset-scaled: the row drew 1/K oversized across the geartrain it
+       * sits inside, and its box was priced off art nobody ships. The staff is the
+       * texel centre T, not the engine's fractional cageAt, so the dial turns the row
+       * about the point the art was seated on. The start angle is NEGATED: the engine
+       * previews with rotate(seconds*TAU - cageOff) and the kit publishes
+       * zeroRotationDeg = -cageOff, while slot 5 ADDS this figure to the seconds angle
+       * (clock_view.c's c_a = a + s_car_start_10), so the sign the preview drew with is
+       * the sign the wire must not carry. It is folded into 0..35999 hundredths because
+       * the C side takes it through a % that keeps a negative operand negative. */
+      const cp = this.carriagePlanes3(fc, B);
+      if (!cp) { this.setState({ status: 'Not baked: the motion split chose the carriage, but this dial’s cage frames could not be drawn in device space — bake the still or change the design' }); return; }
       const cf = [];
       let cw = 0, chh = 0, same = true;
       for (let k = 0; k < cpol.keyframes; k++) {
-        const im = gt[Math.min(k * cpol.decim, B - 1)].cage;
-        if (!im) { same = false; break; }
+        const im = cp.planes[Math.min(k * cpol.decim, B - 1)];
         const w = im.width, hh = im.height;
         if (!cw) { cw = w; chh = hh; } else if (w !== cw || hh !== chh) same = false;
         const c = document.createElement('canvas'); c.width = w; c.height = hh;
@@ -1774,8 +1812,9 @@ class Component extends DCLogic {
         cf.push({ rgba: pixOf(c), w, h: hh });
       }
       if (!same || cf.length < 2) { this.setState({ status: 'Not baked: the motion split chose the carriage, but this dial’s cage frames are not one extent — bake the still or change the design' }); return; }
-      opts.carriage = { x: 0, y: 0, w: cw, h: chh, pivot_x: M.cageAt[0], pivot_y: M.cageAt[1],
-                        degrees: Math.round(M.cageOff * 18000 / Math.PI), fps: cpol.fps, frames: cf };
+      opts.carriage = { x: 0, y: 0, w: cw, h: chh, pivot_x: cp.pivot[0], pivot_y: cp.pivot[1],
+                        degrees: window.GorbBake.carriageStart3(M.cageOff),
+                        fps: cpol.fps, frames: cf };
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;

@@ -522,12 +522,12 @@ func TestAnUnplugRedialsTheRememberedAddress(t *testing.T) {
 	f.set(orbAt("/dev/ttyACM0", macHall))
 	now := time.Now()
 	s.roster(nil, now)
-	if len(dialed) != 0 {
-		t.Fatalf("the baseline sweep dialled %v: a first sight is not an unplug", dialed)
+	if snap := dialedSnapshot(&mu, &dialed); len(snap) != 0 {
+		t.Fatalf("the baseline sweep dialled %v: a first sight is not an unplug", snap)
 	}
 	f.set() // the lead is gone
 	s.roster(nil, now)
-	for i := 0; i < 100 && len(dialed) == 0; i++ {
+	for i := 0; i < 100 && len(dialedSnapshot(&mu, &dialed)) == 0; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
 	mu.Lock()
@@ -544,6 +544,16 @@ func TestAnUnplugRedialsTheRememberedAddress(t *testing.T) {
 	if n := len(dialed); n != 1 {
 		t.Errorf("%d dials: an address-less cable board must not be dialled at its unplug", n)
 	}
+}
+
+// dialedSnapshot copies the probe log under the mutex the probe closure appends under.
+// The unplug kick checks on its own goroutine (liveness.go kickLostCables), so a bare
+// read of the slice in this test is a race the -race detector rightly fails: the
+// snapshot is the same question, asked with the lock held.
+func dialedSnapshot(mu *sync.Mutex, dialed *[]string) []string {
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), *dialed...)
 }
 
 // The refusal has to survive the wire, and this is the regression it did not: the gate

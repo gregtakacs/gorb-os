@@ -180,11 +180,10 @@ esp_err_t art_bank_map(size_t offset, size_t need_bytes)
 
     if (art_bank_primary_live()) {
         /* A different theme than the one we made resident: drop the old bank and
-         * redo it. Rare (only a load from the card changes it, and that reboots
-         * first), and callers must rebuild every cached LVGL descriptor
-         * afterwards — which is exactly why orb_theme installs before
-         * clock_view_init() rather than while the dial is running. The release is
-         * by mechanism, so an arena bank from art_bank_fill() is freed here and
+         * redo it. Reachable at boot only — the store door parks the dial, calls
+         * art_bank_unmap(), and lets the reboot re-map (§5.3), so no live map is
+         * ever swapped under a running compositor any more. The release is by
+         * mechanism, so an arena bank from art_bank_fill() is freed here and
          * not munmap'd as a map it never was. */
         ESP_LOGI(TAG, "re-mapping @0x%x %u B -> %u B",
                  (unsigned)offset, (unsigned)s_bytes, (unsigned)need_bytes);
@@ -336,15 +335,32 @@ esp_err_t art_bank_fill(size_t offset, size_t need_bytes, bool verify,
 
 esp_err_t art_bank_init(size_t offset, size_t need_bytes)
 {
-    /* One entry point, two mechanisms, chosen by the define rather than by the
-     * caller — §3.3's rule applied to the dial's own bank for the first time by
-     * D30. A caller that must have the map whatever the build says (the card-less
-     * fallback, or Arm A) calls art_bank_map() directly. */
+    /* One entry point, two mechanisms, chosen by the define. Since C3 the THEME
+     * does not come through here — orb_theme.c calls art_bank_map() at the call
+     * site, so the theme's residency is mechanism A whatever this build says
+     * (theme-delta plan §5.3). This dispatcher serves callers that want the
+     * shipping mechanism without naming it: the probes, which measure one arm
+     * per build, and art_bank_init_at_0()'s bench callers. */
 #if ORB_ART_MECH_B
     return art_bank_fill(offset, need_bytes, false, 0, NULL);
 #else
     return art_bank_map(offset, need_bytes);
 #endif
+}
+
+esp_err_t art_bank_unmap(void)
+{
+    if (!art_bank_primary_live())
+        return ESP_OK;                    /* idempotent, like every release should be */
+
+    /* Loud, like the secondary's unmap: the munmap voids every pointer into the
+     * region, and the store that took the dial's pixels away must be findable in
+     * the log from the frame it cost. */
+    ESP_LOGI(TAG, "primary bank unmapped (%u B @0x%x released, %u banks accounted)",
+             (unsigned)s_bytes, (unsigned)(s_part ? s_part->address + s_off : 0),
+             (unsigned)orb_art_resident_count());
+    art_bank_primary_release();
+    return ESP_OK;
 }
 
 /* art_bank_map_at_0() retired with §26 slice 2: the default now maps through
@@ -495,6 +511,14 @@ size_t art_bank_pages_for(size_t bytes)
     return (bytes + ORB_ART_PAGE_SIZE - 1) / ORB_ART_PAGE_SIZE;
 }
 
+esp_err_t art_bank_reserve_span(size_t span_bytes)
+{
+    if (span_bytes == 0) return ESP_ERR_INVALID_ARG;
+    /* The one rounding-by-page the caller must not have to copy: the figure
+     * booked here is the figure art_bank_map() will be charged for. */
+    return orb_art_reserve(art_round_pages(span_bytes));
+}
+
 unsigned orb_art_refusals(void)
 {
     /* How often a requested residency — a booking or a map — was refused for
@@ -511,6 +535,17 @@ size_t art_bank_mmu_pages(void)
      * the same bank — art_bank_map_extra() consumes the booking on success, so
      * the pair never bills its pages twice. */
     return art_pages_accounted();
+}
+
+size_t art_bank_page_budget(void)
+{
+    return ORB_ART_PAGE_BUDGET;
+}
+
+size_t art_bank_pages_free(void)
+{
+    const size_t used = art_pages_accounted();
+    return used < ORB_ART_PAGE_BUDGET ? ORB_ART_PAGE_BUDGET - used : 0;
 }
 
 size_t orb_art_resident_count(void)

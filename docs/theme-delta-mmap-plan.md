@@ -235,21 +235,16 @@ The define stays 1, so nothing else in the build changes.
 
 Two rules come with the theme's move to A, and both are new:
 
-- **The erase must not happen under a live map.** A cached DROM page does not
-  notice an erase under it, so a later read returns the old bytes and the theme
-  that reboots into "success" renders a stale plane. Install therefore unmaps
-  first, and never remaps — the reboot that follows re-establishes the map from
-  the bytes on the flash. `orb_theme_install_bundle()` has no unmap today
-  (`grep unmap main/art/orb_theme.c` is empty), which is safe only because the
-  arena model never leaves the slot mapped; under mmap that omission becomes a
-  correctness bug.
-- **Pages are billed at install, not at boot.** `orb_art_reserve()` exists to
-  refuse an install that cannot map, with the reason (`art_bank.h:327-349`), and
-  no clock has ever called it. Install reserves the page-rounded art extent;
-  `ESP_ERR_NO_MEM` becomes the sentence "this theme needs N MMU pages and this
-  board has M free". A full slot is 127 of the 234 art pages; this theme is 14.
-  The rest of the budget belongs to app banks, and an install that ignores it
-  spends a resource other apps have already been promised.
+**Implemented (C3).** The store runs verify, project, bill, park, unmap,
+erase, write, reboot — in `orb_theme_install_bundle()`, in that order:
+`art_bank_reserve_span()` bills the rounded art span before any destructive
+step (a miss puts "this theme needs N MMU pages and this board has M free"
+on the row and leaves the slot whole); `store_park_dial()` then drops the
+tick's running gate and switches the glass to the home row from the worker
+task; `art_bank_unmap()` releases the map with the compositor parked; the
+copy writes; the reboot re-maps from flash. Nothing past the unmap resumes
+the clock: `s_slot_torn` refuses every re-entry route, each answering
+"storing, reboot to finish" rather than erasing over the copy in flight.
 
 Boot gets simpler rather than harder: no arena malloc, no ~2 s copy, no
 `ESP_ERR_NO_MEM` fallback, and the theme's pixels are current the instant the
@@ -324,8 +319,20 @@ threaded into `copy_bundle3()`, which already loops in chunks:
 
 The clock must stop painting before the erase, for two independent reasons: the
 erase takes the theme's pixels out from under the map (§5.3), and a painted row
-would overwrite the overlay. `clock_view` parks on the overlay via the existing
-park path, and the unmap happens there.
+would overwrite the overlay.
+
+**Implemented (C3).** The store parks the dial task-safely, from the worker,
+without touching LVGL: `store_park_dial()` sets `orb_sched_set_running(false)`
+— the plain bool the tick and the commit hook already read — and hands the
+screen to the home row with `input_router_request(orb_app_home())`; a hidden
+screen is a screen LVGL never re-renders. It waits 120 ms (two router polls)
+so the switch has landed and no tick was mid-frame, then paints the overlay;
+the overlay paints last or the switch would paint the menu over it. If the
+running gate came back up under the wait, the park refuses and restores the
+owner's screen with everything whole. `copy_bundle3()` grew a progress
+callback; `store_progress()` drives the overlay at chunk boundaries (its own
+10 Hz throttle keeps the panel from rate-limiting the flash write), and the
+erases lead the frames because they lead the point of no resume.
 
 ### 6.4 Boot: status whenever it runs long
 

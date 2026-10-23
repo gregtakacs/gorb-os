@@ -157,6 +157,13 @@ const char *orb_theme_staged_why(void);
 uint32_t orb_theme_refill_ms(void);
 uint32_t orb_theme_refill_bytes(void);
 
+/** C3 (§5.3): true from the store's unmap of the primary bank until the reboot
+ *  that re-establishes it. Between those two points the theme's pixels are gone
+ *  for this boot, so the dial must not be re-posed from cached descriptors —
+ *  clock_view's bounce refuses to wake on it. False until a store parks, and
+ *  false again only on the next boot. */
+bool orb_theme_store_torn(void);
+
 /** The last streaming bundle store (P6.4): milliseconds of the fused card-to-slot
  *  pass and the bytes of art it moved. Both 0 until a bundle installs. The page
  *  reads the pair so the §20.5(1) copy rate needs no serial cable. */

@@ -40,6 +40,11 @@
 #include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
 #include "art_bank.h"
+#include "orb_sched.h"          /* store_park_dial: the tick's park gate is the task-safe half of §6.3 */
+#include "orb_app.h"            /* orb_app_home(): the row the store hands the glass to */
+#include "input_router.h"       /* input_router_request/current: the task-safe screen switch */
+#include "orb_boot_overlay.h"   /* the store's progress frames (§6.3) */
+#include "freertos/task.h"      /* vTaskDelay: the park wait rides ticks, not a spin */
 #include "mbedtls/sha256.h"  /* theme_id(): sha256 over the header name -> the card filename */
 
 static const char *TAG = "orb_theme";
@@ -819,6 +824,59 @@ static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t
     return fd;
 }
 
+/* ---- the store's ordering, C3 (§5.3 + §6.3) ---------------------------------
+ *
+ * Two rules come with the theme's move to mechanism A, and both are ordering,
+ * not checks: the pages are billed before the erase, and the erase must not
+ * happen under a live map. The store door therefore runs: verify, project,
+ * bill, park, unmap, erase, write, reboot. Nothing after the unmap can resume
+ * the dial — the copy erases the displayed theme's own pixels first thing — so
+ * every path past it ends in the reboot, torn store included, and the staged
+ * witness names the tear on the next boot.
+ *
+ * The park is task-safe by construction and touches no LVGL call: the worker
+ * may not call lv_timer_pause outside the LVGL task, so it drops the tick's
+ * running gate (the plain bool the tick and the commit hook already read
+ * verbatim) and hands the glass to the home row, whose activation hides the
+ * dial — and a hidden screen is a screen LVGL never re-renders. The wait
+ * outlives any tick already in flight. */
+static volatile bool s_slot_torn;        /* set once the unmap is behind us */
+
+static bool store_park_dial(const orb_app_t *was, uint32_t total)
+{
+    orb_sched_set_running(false);
+    const orb_app_t *home = orb_app_home();
+    if (home) input_router_request(home);
+    /* 120 ms: the router's poll period doubled, so the switch to the menu has
+     * landed and no tick was mid-frame when the gate dropped. The overlay paints
+     * AFTER the dial is hidden, or the switch would paint the menu over it. */
+    vTaskDelay(pdMS_TO_TICKS(120));
+    if (orb_sched_running()) {
+        /* A resume raced the request (the bounce stands on its own gate). The
+         * erase cannot be trusted against a compositor that reads the map, so
+         * refuse while everything is still whole — and put the owner's screen
+         * back exactly as they left it. */
+        if (was) input_router_request(was);
+        return false;
+    }
+    orb_boot_overlay("storing", 0, total, 0);
+    return true;
+}
+
+/* One chunk boundary of the copy (§6.3): the glass says what the row and the
+ * ledger say, and the overlay's own 10 Hz throttle keeps the panel from
+ * rate-limiting the flash write. */
+static void store_progress(void *arg, uint32_t done, uint32_t total)
+{
+    (void)arg;
+    orb_boot_overlay("storing", done, total, 0);
+}
+
+bool orb_theme_store_torn(void)
+{
+    return s_slot_torn;
+}
+
 /* Erase, write, and read back — the FORMAT 2 discipline in copy_into(), applied to
  * a region and N banks. The header is written LAST by the caller, so an interrupt
  * anywhere in here leaves the target slot headerless and the boot drawing what it
@@ -830,7 +888,9 @@ static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t
 static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *region,
                               uint32_t file_art_base, const esp_partition_t *p,
                               uint32_t hdr_base, uint32_t *out_art_crc,
-                              const char **why)
+                              const char **why,
+                              void (*progress)(void *arg, uint32_t done, uint32_t total),
+                              void *parg)
 {
     if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
 
@@ -844,9 +904,13 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     if (SLOT_GEOM_OFF + geom_len > SLOT_ART_OFF) { *why = "geometry would overrun the pixels"; return ESP_ERR_INVALID_SIZE; }
     if (art_len > SLOT_CAP - SLOT_ART_OFF)       { *why = "bundle is larger than a slot — re-bake it"; return ESP_ERR_INVALID_SIZE; }
 
+    /* §6.3: the erases lead the progress frames because they lead the point of
+     * no resume — until the first byte goes down the old theme still exists on
+     * the card and in nothing else. */
     esp_err_t e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
     if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
     if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+    if (progress) progress(parg, 0, art_len);
 
     for (uint32_t done = 0; done < b->region_size; ) {
         const uint32_t want = (b->region_size - done > s_chunk_bytes) ? s_chunk_bytes
@@ -870,6 +934,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
             e = esp_partition_write(p, hdr_base + s->art_off + done, s_chunk, want);
             if (e != ESP_OK) { *why = "flash write failed on the pixels"; return e; }
             done += want;
+            if (progress) progress(parg, s->art_off - SLOT_ART_OFF + done, art_len);
         }
         const char *rw = orb_bundle_bank_rule(s, done, crc);
         if (rw) { *why = rw; return ESP_ERR_INVALID_CRC; }
@@ -994,7 +1059,9 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * orb_clock3_parse refused the clock section for the panel — themeless dial,
      * and on v1.1.0 a panic loop. A clock that will not draw from this region on
      * this panel will not draw at boot either: the inputs are identical. A refusal
-     * here costs the card read and leaves the working slot whole. */
+     * here costs the card read and leaves the working slot whole. C3 keeps the
+     * verdict where it leads everything: the page bill below, the park, the unmap,
+     * and the erase all speak only after it answered yes. */
     {
         const char *cv = clock3_verdict(&b);
         if (cv) {
@@ -1002,6 +1069,49 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
             return install_failed(ESP_FAIL, cv, why, whysz);
         }
     }
+
+    /* C3, §5.3 rule 2: pages are billed at install, and the billing leads the
+     * erase. The span to book is the span boot will map: the art region rounded
+     * to sectors, exactly what copy_bundle3 erases and adopt maps. Refusing here
+     * costs the card read and leaves the slot whole — the budget this check
+     * guards is shared with every app bank that reserved before it, and a store
+     * that ignored it would spend pages another app was promised. The sentence
+     * names both figures, because "install failed" without a count is the same
+     * dead button §24.8 buried at the identity door. */
+    {
+        uint32_t art_end = SLOT_ART_OFF;
+        for (uint32_t i = 0; i < b.n_sections; i++) {
+            const uint32_t end = b.sec[i].art_off + b.sec[i].art_size;
+            if (end > art_end) art_end = end;
+        }
+        const uint32_t art_span = (art_end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+        const size_t need = art_bank_pages_for(art_span);
+        const size_t free_pages = art_bank_pages_free();
+        const esp_err_t re = art_bank_reserve_span(art_span);
+        if (re != ESP_OK) {
+            char sent[72];
+            snprintf(sent, sizeof sent,
+                     "this theme needs %u MMU pages and this board has %u free",
+                     (unsigned)need, (unsigned)free_pages);
+            heap_caps_free(region); card_close(fd);
+            return install_failed(re, sent, why, whysz);
+        }
+    }
+
+    /* C3, §5.3 rule 1: the erase must not happen under a live map. The dial
+     * parks first, the map comes down second, and from here on there is no
+     * path back to the old theme — its pixels are about to be erased — so every
+     * remaining outcome, success or failure, ends in the reboot. If the park
+     * itself will not land, refuse while the bank is still resident. */
+    s_slot_torn = false;
+    const orb_app_t *was = input_router_current();
+    if (!store_park_dial(was, h.art_size)) {
+        orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
+        heap_caps_free(region); card_close(fd);
+        return install_failed(ESP_ERR_INVALID_STATE, "the dial would not park", why, whysz);
+    }
+    art_bank_unmap();
+    s_slot_torn = true;                    /* from here the reboot is the only way back */
 
     /* One target for the whole store: the single slot at offset 0. Migration 1 retired
      * the ping-pong, so the target is a constant and the serial probe, the copy, the
@@ -1021,11 +1131,19 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     staged_mark(id);
     uint32_t art_crc = 0;
     esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
-                               &art_crc, &w);
+                               &art_crc, &w, store_progress, NULL);
     card_close(fd);
     heap_caps_free(region);
     if (e != ESP_OK) {
         staged_clear();
+        /* Past the unmap there is no dial to preserve: the erase already took
+         * the old theme's pixels, so a failure here is a reboot into the base
+         * face with the sentence on the glass and the row, not a resume. */
+        if (s_slot_torn) {
+            orb_boot_overlay(w ? w : "store failed", 0, 0, 0);
+            if (orb_jobs_reboot_soon("theme: the store failed with the map down") != ESP_OK)
+                ESP_LOGE(TAG, "torn store but the reboot could not be armed");
+        }
         return install_failed(e, w, why, whysz);
     }
 
@@ -1041,11 +1159,17 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     }
     if (e != ESP_OK) {
         staged_clear();
+        if (s_slot_torn) {
+            orb_boot_overlay(w, 0, 0, 0);
+            if (orb_jobs_reboot_soon("theme: the store failed with the map down") != ESP_OK)
+                ESP_LOGE(TAG, "torn store but the reboot could not be armed");
+        }
         return install_failed(e, w, why, whysz);
     }
     staged_clear();
     s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     s_bundle_bytes = h.art_size;
+    orb_boot_overlay("stored, rebooting", h.art_size, h.art_size, 0);
     ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, drawn on the next boot",
              h.name, id, slot_name(tgt), (unsigned)s_bundle_ms);
     return ESP_OK;
@@ -1101,7 +1225,7 @@ static clk_comp_t s_b3_comps[CLK_COMP_MAX];   /* D32 slice 2: the FORMAT 3 dial'
 
 static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t *h,
                                const uint32_t *raw, const char *src_name,
-                               uint32_t slot_hdr_base, bool resident_map)
+                               uint32_t slot_hdr_base)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) return ESP_ERR_NO_MEM;
@@ -1163,18 +1287,15 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     }
     const uint32_t span = (end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
 
-    uint32_t ms = 0;
-    esp_err_t fe;
-    if (resident_map) {
-        /* The default maps its own pixels rather than copying them to the arena
-         * (D13's "the default ALWAYS maps"): the flashed slot-A bank is the only copy
-         * of these pixels on the board, and it is version-matched to this firmware.
-         * mmap is not content-verified here — the bytes were written whole by
-         * esptool, and clock_view proves residency on the mapped span. */
-        fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
-    } else {
-        fe = art_bank_fill(slot_hdr_base + SLOT_ART_OFF, span, true, raw[W_ART_CRC], &ms);
-    }
+    /* C3 (§5.3): the theme's residency is mechanism A at the call, whatever
+     * ORB_ART_MECH_B says. mmap is not content-verified here — the bytes were
+     * written whole at the last store's readback-verified copy, the header's
+     * geom checksum pins the tables, and a bank that no longer matches its
+     * record's provenance is a torn store, which the staged witness already
+     * names on this same boot. The refill figures stay 0 beside a slot source:
+     * that pair is the page's proof a boot mapped rather than copied (§20.5(2)
+     * reads through them, and they now read 0 by design, not by failure). */
+    const esp_err_t fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
     if (fe != ESP_OK) {
         heap_caps_free(region);              /* the parse's copy dies with the map */
         return fe;
@@ -1239,19 +1360,19 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     s_active_art_crc  = s_active_geom_crc;
     s_active_valid    = true;
     s_source = src_name;
-    s_refill_ms = ms;
+    s_refill_ms = 0;                      /* a boot that mapped refilled nothing (§20.5(2)) */
     s_refill_bytes = span;
     return ESP_OK;
 }
 
 
 /* The single slot's bundle (Migration 1): the header at offset 0, read through the
- * bundle door. If it is a FORMAT 3 bundle with a clock section, it is adopted MAPPED
- * (not arena-filled) exactly as the flashed default was. A header that is not a
- * FORMAT 3 bundle — erased, a torn store, or a FORMAT 2 blob — returns non-OK and the
- * caller falls to the base face. This is the only read that turns the slot's pixels
- * into a dial; it installs and erases nothing, so the no-write-in-the-fallback rule
- * that outlived the A/B pair holds. */
+ * bundle door. If it is a FORMAT 3 bundle with a clock section it is adopted MAPPED
+ * — mechanism A at the call, C3's rule, the only mechanism the theme has any more.
+ * A header that is not a FORMAT 3 bundle — erased, a torn store, or a FORMAT 2 blob
+ * — returns non-OK and the caller falls to the base face. This is the only read that
+ * turns the slot's pixels into a dial; it installs and erases nothing, so the
+ * no-write-in-the-fallback rule that outlived the A/B pair holds. */
 static esp_err_t adopt_default_bundle(const esp_partition_t *p)
 {
     uint32_t raw[W_WORDS];
@@ -1262,7 +1383,7 @@ static esp_err_t adopt_default_bundle(const esp_partition_t *p)
     orb_bundle3_hdr_t h;
     if (orb_bundle3_hdr_parse(raw, &h) != NULL)
         return ESP_ERR_INVALID_CRC;         /* claims 3, header will not check */
-    return adopt_bundle3(p, &h, raw, "slot", SLOT_HDR, true);
+    return adopt_bundle3(p, &h, raw, "slot", SLOT_HDR);
 }
 
 /* One slot's header, read and classified. Returns whether the slot holds a parseable
@@ -1335,8 +1456,11 @@ esp_err_t orb_theme_boot(void)
      * no factory copy to fall back on: a torn store answers one re-store. */
     const esp_err_t de = adopt_default_bundle(p);
     if (de == ESP_OK) {
-        ESP_LOGI(TAG, "slot holds bundle \"%s\": mapped, %u B resident",
-                 s_active_name, (unsigned)s_refill_bytes);
+        /* The C3 pass-line line: a stored theme boots MAPPED, with the page count
+         * the §9 budget speaks of, and art_bank's refill line is absent. */
+        ESP_LOGI(TAG, "slot holds bundle \"%s\": mapped, %u B / %u MMU pages resident",
+                 s_active_name, (unsigned)s_refill_bytes,
+                 (unsigned)art_bank_mmu_pages());
         return ESP_OK;
     }
     if (claims3 && de == ESP_ERR_INVALID_CRC)
@@ -1375,7 +1499,12 @@ static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t wh
  *  install attempted from the browser must put the same words on the dial's row,
  *  or the two entry points are two opinions about the same event. */
 static char s_try_id[ORB_THEME_ID_HEX + 1];
-static char s_try_why[56];
+/* C3 widened the witness from 56 to 72 bytes: §5.3's refusal sentence carries
+ * two page counts ("this theme needs N MMU pages and this board has M free")
+ * and must not lose the count that is its whole point to a truncation. The
+ * static assert on THEME3_REFUSAL still bounds the older sentence; this buffer
+ * is now the wider of the two rules. */
+static char s_try_why[72];
 
 const char *orb_theme_try_id(void)  { return s_try_id; }
 const char *orb_theme_try_why(void) { return s_try_why; }
@@ -1401,7 +1530,7 @@ typedef struct { char id[ORB_THEME_ID_HEX + 1]; } install_req_t;
 static void bundle_job(void *arg)
 {
     const install_req_t *r = arg;
-    char why[56] = "";
+    char why[72] = "";        /* as wide as the try witness: §5.3's page-count sentence must land whole */
     if (orb_theme_install_bundle(r->id, why, sizeof why) != ESP_OK) {
         try_note(r->id, why[0] ? why : "the install failed");
         return;

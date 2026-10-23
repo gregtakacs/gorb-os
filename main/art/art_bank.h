@@ -17,9 +17,15 @@
  *   - The map is byte-addressable (ESP_PARTITION_MMAP_DATA / Vaddr0), which the
  *     unaligned sprite offsets require; the instruction MMU would not.
  *
- * Lifetime: mapped in art_bank_init() and deliberately never unmapped — the
- * LVGL image descriptors built in clock_view.c cache raw pointers into it, so
- * the mapping must outlive every screen. Call it before clock_view_init().
+ * Lifetime: mapped by the theme path before clock_view_init() and never
+ * unmapped while the dial reads it — the LVGL image descriptors built in
+ * clock_view.c cache raw pointers into it, so the mapping must outlive every
+ * screen. One release exists and it is ordered, not opportunistic:
+ * art_bank_unmap() runs between the store door's park and its erase, and the
+ * reboot the store always asks for re-establishes the map from the bytes on
+ * the flash (docs/theme-delta-mmap-plan.md §5.3). The theme's residency is
+ * mechanism A at the CALL — orb_theme.c calls art_bank_map() directly — so
+ * ORB_ART_MECH_B governs app banks only.
  */
 #pragma once
 
@@ -96,15 +102,15 @@ void art_bank_lat_probe(void);
  * installer question (per-theme residency flags), and a runtime switch today
  * would be a second residency table the host mirror cannot pin.
  *
- * D30 (docs/app-platform-plan.md §20.4) lights it: an installed theme's pixels
- * are arena pixels from boot onward, refilled from its slot by one fused
- * read-and-CRC pass. Mechanism A keeps two jobs and loses none of them — it is
- * how the flashed default maps its bank (through orb_theme's slot-A door, which
- * verifies the FORMAT 3 header before mapping and can refuse — §26 slice 2
- * retired D13's always-map rule), and it is Arm A, the fallback an install
- * takes when the arena cannot hold the bundle it was handed (§20.2).
- * The two M3 probe builds this define priced are still exactly this define at 0
- * and at 1; lighting it for shipping does not retire the measurement. */
+ * D30 (docs/app-platform-plan.md §20.4) lit it for themes too; the theme move
+ * to mmap (docs/theme-delta-mmap-plan.md §5.3, C3) took it back off. An
+ * installed theme's pixels are MAPPED from boot onward — one art_bank_map()
+ * through orb_theme's slot-A door, which verifies the FORMAT 3 header before
+ * mapping and can refuse. The define stays 1 because app banks keep the arena
+ * (§9's out-of-scope ruling): each is one copy, the count is small, and a
+ * revoke must stay able to release a bank without cycling MMU pages. The two
+ * M3 probe builds this define priced are still exactly this define at 0 and at
+ * 1; the theme's move does not retire the measurement. */
 #define ORB_ART_MECH_B 1
 
 /* PSRAM the arena gate keeps off the table on top of the bank itself. 2048 KiB is the
@@ -228,6 +234,33 @@ esp_err_t art_bank_fill(size_t offset, size_t need_bytes, bool verify,
  *  Same arguments, same release-and-remap behaviour, same failure codes. */
 esp_err_t art_bank_map(size_t offset, size_t need_bytes);
 
+/**
+ * Release the primary bank, by whichever mechanism currently holds it, and
+ * leave the bank unresident: art_bank_ptr() answers NULL and art_bank_ready()
+ * answers false from here until the next map. C3 (theme-delta plan §5.3)
+ * exists: the erase must not happen under a live map, because a cached DROM
+ * page does not notice an erase under it and the store would reboot into a
+ * stale plane. The store door therefore parks the dial, calls this, and only
+ * then erases — and it never remaps in place; the reboot the store asks for
+ * re-establishes the map from the bytes on the flash.
+ *
+ * The caller owns the promise, exactly like unmap_extra's: every cached
+ * pointer into the mapping must be dead first. For the primary that means the
+ * clock is PARKED (the tick timer paused and the dial's layer table emptied),
+ * not merely hidden. Idempotent: an unresident bank returns ESP_OK.
+ */
+esp_err_t art_bank_unmap(void);
+
+/** The whole DROM page budget for art: 256 window pages less the 22 the image's
+ *  own .text and .rodata consume. The refusal sentence an install must name
+ *  ("needs N pages, M free") cannot be built from art_bank_mmu_pages() alone. */
+size_t art_bank_page_budget(void);
+
+/** Budgeted pages currently unclaimed: art_bank_page_budget() less
+ *  art_bank_mmu_pages(). What a reservation of this many pages-or-under is
+ *  granted, and nothing bigger. */
+size_t art_bank_pages_free(void);
+
 /** Mapped base pointer, or NULL if art_bank_init() has not succeeded. */
 const uint8_t *art_bank_ptr(void);
 
@@ -347,6 +380,16 @@ size_t art_bank_mmu_pages(void);
  * for.
  */
 esp_err_t orb_art_reserve(size_t bytes);
+
+/**
+ * Account for a bank a caller intends to MAP, by its raw span: the installer's
+ * shape. Rounds the span up to whole MMU pages first (the same ceil the mapping
+ * itself is charged for) and then books it through orb_art_reserve(), so a
+ * caller that holds a file or partition length never has to restate the page
+ * size. Returns the reserve's own codes — ESP_ERR_NO_MEM names the shortage
+ * through art_bank_pages_free(); art_bank_pages_for(span) names the ask.
+ */
+esp_err_t art_bank_reserve_span(size_t span_bytes);
 
 /** How many banks are resident or reserved — primary, secondaries, and the
  *  reservations not yet converted into a mapping — and the bytes outstanding

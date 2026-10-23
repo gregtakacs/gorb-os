@@ -81,13 +81,13 @@ void app_main(void)
     ESP_ERROR_CHECK(display_panel_early());
     orb_boot_overlay("starting", 0, 0, 0);
 
-    /* Resolve the theme — and carry out any install the config page staged.
-     * art_bank_init() must map the slot the CHOSEN theme lives in, and only
-     * this call knows which of the two that is; a staged-but-never-committed
-     * load is a torn copy, and the copy belongs before any pixels can read it.
-     * Deliberately not ESP_ERROR_CHECK — a failed load falls back to the theme
-     * that was already installed (or to the baked-in one), and the clock still
-     * has to tell the time. */
+    /* Resolve the theme: orb_theme_boot() maps the one slot's bundle through
+     * art_bank_map() — mechanism A at the call since C3, no arena copy and no
+     * refill pass — and reports whether the slot's header is a drawable bundle
+     * or a tear the staged witness will name. There is no choice to make and no
+     * install to carry out here: Migration 1 made the store a worker job that
+     * reboots, and a boot draws the slot or the base face.
+     * Deliberately not ESP_ERROR_CHECK — the clock still has to tell the time. */
     orb_boot_overlay("mapping", 0, 0, 0);
     const esp_err_t theme_err = orb_theme_boot();
     if (theme_err != ESP_OK)

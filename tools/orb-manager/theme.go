@@ -202,9 +202,18 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 //
 // It resolves the address the way the hub resolves every other one: the MAC the grant was
 // committed for, falling back to the address book, then the MAC the USB sweep attributes
-// to that chip. Two failures are silent and correct — an orb with no cable has no port to
-// claim and no probe that can ever reach it, and a port already held by something else is
-// a port the sweep declines anyway. Only a real claim is announced.
+// to that chip. The MAC is canonicalized before the lookup, because the two halves of the
+// hub spell it differently — the cable cache stores orbmdns.CanonicalMAC output, which has
+// no separators at all, while a grant learned from the API or a fleet row can carry colons
+// — and cablePortFor compares with plain ==. Handing it a colon form finds no port, the
+// claim quietly does nothing, and the sweep resets the board mid-store: the exact failure
+// this function exists to prevent, reintroduced through its own address lookup.
+//
+// Every way this can decline to claim is now announced. It used to return a no-op in
+// silence for three of them, which meant a broken lookup and a genuinely cable-less orb
+// looked identical in the log, and an operator watching a theme tear for the third time had
+// nothing to read. Only the LAN-only case is routine; the other two are the lookup failing
+// on a board that IS on a lead, which is precisely when the claim matters.
 func (s *Server) holdDevicePort(ctx context.Context, ip string, budget time.Duration) (func(), error) {
 	noop := func() {}
 	if s.cables == nil || s.ops == nil {
@@ -220,12 +229,31 @@ func (s *Server) holdDevicePort(ctx context.Context, ip string, budget time.Dura
 		}
 	}
 	if mac == "" {
+		// Nothing ties this address to a chip. The call proceeds, and the board is
+		// unprotected: say so, because this is the one case where a theme can tear and
+		// the operator cannot see why.
+		log.Printf("orb-manager: a theme call to %s cannot be tied to a chip, so no lead is held "+
+			"and the identity sweep may reset it mid-transfer", ip)
 		return noop, nil
 	}
-	port := s.cables.cablePortFor(macNorm(mac), time.Now())
+	// Canonical form on both sides of the compare, or the lookup silently finds nothing.
+	port := s.cables.cablePortFor(macBare(mac), time.Now())
 	if port == "" {
+		// The hub knows the chip and the chip is not on a lead the host can see. Either
+		// the orb is LAN-only, which is fine, or the cable pass has not attributed this
+		// port yet, which is not. The two are indistinguishable from here, and the second
+		// is the dangerous one, so the line is printed for both and worded so a reader
+		// can tell which to go and check.
+		log.Printf("orb-manager: %s is %s but no lead is attributed to it, so no port is held; "+
+			"if it is on a cable, the sweep can reset it mid-transfer", ip, mac)
 		return noop, nil
 	}
+	// The board is about to restart itself to draw what it was just sent, and the hub must
+	// not read that self-inflicted silence as defection. Armed before the call: a store is
+	// acked before the device performs it, so the excuse has to be on file by the time the
+	// first dial fails. It is keyed on the chip, not the port, so it survives the
+	// re-enumeration the restart causes.
+	s.expectSelfReboot(mac)
 	job, _, oerr := s.ops.start(ctx, port, opTheme, budget)
 	if oerr != nil {
 		// Something else owns the lead. It already keeps the probe off this port, which
@@ -235,6 +263,16 @@ func (s *Server) holdDevicePort(ctx context.Context, ip string, budget time.Dura
 	}
 	log.Printf("orb-manager: a theme call to %s holds %s; the identity sweep waits", ip, port)
 	return func() { s.ops.finish(job) }, nil
+}
+
+// macBare is orbmdns.CanonicalMAC's shape without its refusal: lower case, separators
+// gone. It is what the cable cache stores, so it is what every lookup against that cache
+// has to hand it, and what the self-reboot excuse is keyed on so one install's colon form
+// still excuses the bare form the fleet row carries. A value that was never a MAC comes
+// back stripped and matches nothing, which is the honest answer for a foreign chip.
+func macBare(s string) string {
+	t := strings.ToLower(strings.TrimSpace(s))
+	return strings.NewReplacer(":", "", "-", "", ".", "", " ", "").Replace(t)
 }
 
 // themeTarget decodes and checks a JSON theme request.

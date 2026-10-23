@@ -4751,7 +4751,9 @@ bake3-test's design-only mount left classic: the caged presets' unions differ by
 between the two mounts), composes the plate at every frame including the wrap, and
 feeds the consecutive-frame union and its bbox to **`GorbBake.splitPolicy3`** — one
 policy function for sweep, composer, and suite alike (still under a 0.1%-panel shimmer
-band; carriage bank first when the box is local AND the train is caged; plate keyframe
+band; carriage bank first when the box is local AND the train is caged — superseded for
+orbital dials by the 2026-10-22 correction, which prices the row on the carriage's own
+box and refuses rather than bank an orbital carriage; plate keyframe
 bank next, thinned by frame step before it ever refuses; the refusal sentence names the
 byte it tripped on). Fifteen presets, fifteen honest verdicts, zero refusals:
 
@@ -4760,7 +4762,7 @@ byte it tripped on). Fifteen presets, fifteen honest verdicts, zero refusals:
 | bank at native tempo | skeleton, orbital, opentour, kitetour | 8 keyframes @ 4 fps, 3,474,496 B |
 | bank, thinned | calendar, regulator (÷2), modern (÷3), sector, diver (÷2) | 7–8 keyframes, 3.0–3.5 MB |
 | still (shimmer) | aviator, station, luna, neon, phase, perpetual | union 47–65 px — AA jitter RGB565 swallows |
-| carriage (sprite) | none today | every local box measured un-caged; every caged train measured whole-panel |
+| carriage (sprite) | none today | every local box measured un-caged; every caged train measured whole-panel. **Voided by the 2026-10-22 correction below: the row was the gate, not the presets. Orbital and kite carriage take the row today, and an orbital carriage that will not fit refuses instead of banking.** |
 
 §29's "0 of 15 qualify" is superseded: 9 of 15 bake animated today, 6 bake as the
 stills they already are. The carriage carrier (`bakeClock3`'s `carriage` row — hand
@@ -5689,3 +5691,78 @@ strip rules for the retired mark seam; `tools/host_orblayers_test.py`'s
 section 14 now pins the hook (name, gate, registration, and the tick body
 WITHOUT a commit call) where it pinned the tick call. The full `host_*.py`
 suite, the Go suites, and `idf.py build` land the host gate.
+
+### Correction (2026-10-22): the locality gate refused every orbital carriage, and the bake shipped its orbit frozen
+
+**Reported on glass.** Orbital arrow, installed into the slot on orb-B, animates its
+escapement and never turns. The projection line says why:
+
+```
+bundle "Orbital arrow" projected into a dial: 0 complication rows, 0 pointer rows, tourbillon_n 0 @ 0 fps start 0
+plate bank: 8 keyframes @ 4 fps, loop
+```
+
+`tourbillon_n 0` is no carriage layer, and only a carriage layer turns: `apply_angles`
+poses hand slot 5 from the seconds angle, and this doc's own carriage rule is "the
+device applies the carriage's rotation from `seconds/60 * 360 + zeroRotationDeg`;
+never bake it in." A keyframe bank is blitted unrotated. The 8 frames still step, so
+the escapement lives; the orbit is frozen at the instant the walk sampled it, because
+`compose()` draws the cage at `TURN.second(date)` and one `date` serves the whole walk.
+
+**The cause was one precondition.** `splitPolicy3` offered the carriage carrier only
+when the measured motion box was local: `area <= panel / 3`, 72,385 px. It measured
+that box off the PLATE frames, and the plate frames contained the carriage. An orbital
+arrow with `tip: 194` sweeps a circle near the dial's rim, so its motion box measures
+about 402 x 359 = 144,318 px — every orbital dial fails that gate by construction. The
+motion that proves the carriage turns is the motion that disqualified it. The bake fell
+through to the plate bank and composed the frozen arrow into all 8 frames.
+
+**The plan already knew, twice, and filed it as a table row.** §35's sweep table records
+`carriage (sprite) | none today | every caged train measured whole-panel`, and the
+correction above it says of kitetour: "it had no carriage row, so its tourbillon never
+turned." Both read as observations about the presets. They were the defect, and no
+orbital dial could escape them.
+
+
+**The fix, in three parts.**
+
+- `compose()` honours `hidden.cage`, so the bake captures the plate WITHOUT the
+  carriage. FORMAT 2 already did this through `exportKit`'s `noCage` copy; FORMAT 3's
+  walk composes for real and needed the flag. Without it the shipped plate keeps a ghost
+  arrow beneath the live one.
+- `splitPolicy3` answers two decisions in one shape: the plate's carrier at the top
+  level, the carriage row under `.carriage`. The row is priced on its own measured box
+  (`carriageW/H` — the cycle-wide ink crop the baker takes anyway) and billed FIRST, so
+  the bank thins against the room the row left instead of competing with it.
+- The row is mandatory for EVERY caged dial, not just orbital ones. Because the plate
+  now bakes without the carriage, a caged dial that ships no row loses its tourbillon
+  outright — so when the row will not fit, the bake refuses and names the byte, in D34's
+  discipline. A plate bank cannot turn a carriage, so falling back to one is not a
+  degraded bake: it is a dial that looks installed and cannot do the one thing its
+  design names.
+
+**The arithmetic, off the recovered kit3 manifest** (ink box 245 x 306 = 74,970 px,
+`per` 224,910 B, 8 frames at 4 fps, 59,070 B of hands and glass): the carriage answers
+8 frames at 4 fps for 1,799,280 B, and the plate thins to 4 keyframes at 2 fps for
+1,737,248 B. Both carriers sit inside the 4,128,768 B the slot leaves. The same dial
+could answer only `bank` before this.
+
+**What this corrects above.** The `carriage (sprite) — none today` row was a property of
+the gate, not of the presets. Orbital and kite carriage now take the row.
+`headless-bundle3.test.js` grows the section to eight new checks (170, up from 162): the
+carriage over a still plate, the bank and the row together, the row billing the bank's
+budget before the thin, the refusal when a carriage will not fit, and the refusal when
+the carriage box was never measured — and at the device's own door, the compiled
+`orb_clock3.c` projecting one section that carries BOTH a plate bank and a carriage row.
+That last pair is the invariant the strip demands: once the plate bakes without the
+carriage, a caged dial that ships no row ships no tourbillon, so every caged dial refuses
+rather than lose art it was handed. Pricing a swept carriage off the plate box is also
+gone — it under-prices, the direction this suite refuses to be wrong in.
+
+**Bench obligation, UNJUDGED.** The bake runs in a browser, so the figures above are
+computed from the kit's committed geometry, not baked on glass. The proof is a re-bake
+of Orbital arrow answering `tourbillon_n 8 @ 4 fps` in its projection line, then the
+fbgrab check this session could not finish: two committed frames a minute apart, and the
+centroid of the changed pixels must travel about 6 deg/s around the dial. Until that
+prints, this correction is landed and not passed.
+

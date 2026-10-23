@@ -1609,13 +1609,22 @@ class Component extends DCLogic {
       return;
     }
     M = s1.M; gt = s1.gt; B = s1.B; fps = s1.fps; fc = s1.fc;
-    const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt };
-    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1 }, null, compRows.length ? onlyBase : undefined), m3);
+    /* The plate is measured WITHOUT the carriage (hidden.cage): its orbit is not the
+     * plate's motion, and pricing the plate off a swept circle refused the carriage
+     * carrier on every orbital dial — then shipped the carriage frozen into the bank.
+     * The carriage's own box is measured off the cage planes and priced separately. */
+    const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt, orbital: !!M.orbital };
+    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, null, compRows.length ? onlyBase : undefined), m3);
+    if (m3.hasCage) {
+      const cb = this.measureCarriage3(gt, m3.frames);
+      if (cb) { m3.carriageW = cb[0]; m3.carriageH = cb[1]; }
+    }
     // measureFrames3 settles unionPx/bboxW/bboxH onto m; reading m3.un read undefined for
     // every animated dial — the walk's answer dropped on the floor, t3bake's tripwire
     // reporting it as "union 0 px", and every moving plate bake refused as stale.
     const un = m3.unionPx, bw = m3.bboxW, bh = m3.bboxH;
-    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB };
+    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB,
+                 orbital: !!m3.orbital, carW: m3.carriageW | 0, carH: m3.carriageH | 0 };
     await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
   }
   /* §31's motion walk, apart from the export so the sweep page runs the same
@@ -1649,13 +1658,35 @@ class Component extends DCLogic {
     m.bboxW = moved ? bx2 - bx + 1 : 0; m.bboxH = moved ? by2 - by + 1 : 0;
     return pxs;
   }
+  /* The carriage's OWN extent, measured as one box across every frame of the loop —
+   * the same cycle-wide crop bake_clock.py's bake_tourbillon takes, so the box the
+   * policy prices is the box the row ships. Answering null says the cage planes are
+   * not one bank, which is the bake's own refusal to make, not this measure's. */
+  measureCarriage3(gt, frames) {
+    const W = 466;
+    let x0 = W, y0 = W, x1 = -1, y1 = -1, ink = 0;
+    for (let f = 0; f < frames; f++) {
+      const im = gt[f] && gt[f].cage;
+      if (!im) return null;
+      const d = im.getContext('2d').getImageData(0, 0, W, W).data;
+      for (let p = 0, i = 3; p < W * W; p++, i += 4) {
+        if (d[i] < 8) continue;
+        ink++;
+        const x = p % W, y = (p / W) | 0;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    if (!ink || x1 < 0) return null;
+    return [x1 - x0 + 1, y1 - y0 + 1];
+  }
   /* The split's other half: decide carriers off the measurement, assemble the
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
    * frame pixels in its locals and the bake should not also hold its stack. */
   async t3bake(nm, fc, M, gt, B, fps, send) {
     const G = window.GorbBake;
-    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB } = this._t3; this._t3 = null;
+    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
     const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
     const hands = [], shadows = [];
@@ -1693,7 +1724,8 @@ class Component extends DCLogic {
       }
     }
     if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
-    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0, hasCage: !!M.cageAt });
+    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0,
+                                 hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH });
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
     /* The silent-still tripwire. A "still" verdict is only honest when the loop
      * genuinely does not move, and this walk is the LAST thing the bake does: the
@@ -1706,9 +1738,12 @@ class Component extends DCLogic {
      * has dirty rows, the walk measured stale or blank canvases rather than this
      * dial — and baking it ships a frozen train behind the sentence "the still
      * bakes the same dial", which is exactly the defect D34 shipped. Refuse, and
-     * quote both readings so the next report is a measurement, not a guess. */
+     * quote both readings so the next report is a measurement, not a guess.
+     * A dial whose carriage row ships is exempt: rowPrice() flattens the cage
+     * through a full orbit when it prices a carriage kit (baseImgs/flatCar), so
+     * those dirty rows ARE the carriage, and a still plate under it is honest. */
     const bs = this.budgetStats;
-    if (pol.carrier === 'still' && bs && bs.mv === this.mvKey(1) && bs.rows >= 16) {
+    if (pol.carrier === 'still' && !pol.carriage && bs && bs.mv === this.mvKey(1) && bs.rows >= 16) {
       this.setState({ status: 'Not baked: the walk measured a still plate (union ' + (un | 0) +
         ' px) but this movement prices ' + bs.rows + ' dirty rows a tick — the bake ran against stale frames. ' +
         'Wait for the seam readout to settle, then press again.' });
@@ -1720,16 +1755,17 @@ class Component extends DCLogic {
       for (let k = 0; k < pol.keyframes; k++) plate.frames.push({ rgba: pxs[k * pol.decim], w: 466, h: 466 });
       plate.fps = pol.fps;
     }
-    const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier)),
+    const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier + (pol.carriage ? '+carriage' : ''))),
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
     if (shadows.length) { opts.shadows = shadows; opts.scalars = { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }; }
-    if (pol.carrier === 'sprite') {
+    const cpol = pol.carriage;
+    if (cpol) {
       const cf = [];
       let cw = 0, chh = 0, same = true;
-      for (let k = 0; k < pol.keyframes; k++) {
-        const im = gt[Math.min(k * pol.decim, B - 1)].cage;
+      for (let k = 0; k < cpol.keyframes; k++) {
+        const im = gt[Math.min(k * cpol.decim, B - 1)].cage;
         if (!im) { same = false; break; }
         const w = im.width, hh = im.height;
         if (!cw) { cw = w; chh = hh; } else if (w !== cw || hh !== chh) same = false;
@@ -1739,11 +1775,11 @@ class Component extends DCLogic {
       }
       if (!same || cf.length < 2) { this.setState({ status: 'Not baked: the motion split chose the carriage, but this dial’s cage frames are not one extent — bake the still or change the design' }); return; }
       opts.carriage = { x: 0, y: 0, w: cw, h: chh, pivot_x: M.cageAt[0], pivot_y: M.cageAt[1],
-                        degrees: Math.round(M.cageOff * 18000 / Math.PI), fps: pol.fps, frames: cf };
+                        degrees: Math.round(M.cageOff * 18000 / Math.PI), fps: cpol.fps, frames: cf };
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
-    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
+    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
       let id = null;

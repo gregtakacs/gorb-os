@@ -3190,7 +3190,10 @@
     if (!hidden.movement && base) dz(() => ctx.drawImage(base.plate, 0, 0));
     if (!hidden.movement && F.bgL) ctx.drawImage(F.bgL, 0, 0);
     if (!hidden.movement && F.plateFlares) dz(() => ctx.drawImage(F.plateFlares, 0, 0));
-    if (!hidden.geartrain && gt) dz(() => { ctx.drawImage(gt, 0, 0); drawCage(ctx, base, gt, date); });
+    // hidden.cage drops ONLY the carriage: the train still rides, the plate the bake
+    // ships never carries a frozen arrow. FORMAT 2 strips it the same way (exportKit's
+    // noCage copy); FORMAT 3 needs the flag because its walk composes the plate for real.
+    if (!hidden.geartrain && gt) dz(() => { ctx.drawImage(gt, 0, 0); if (!hidden.cage) drawCage(ctx, base, gt, date); });
     if (base && !(hidden.movement && hidden.geartrain)) dz(() => { ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(base.haze, 0, 0); ctx.globalCompositeOperation = 'source-over'; });
     const cp = F.comps(date, compOnly), df = F.dateFlares ? F.dateFlares(date) : null;
     if (!hidden.complications) dz(() => ctx.drawImage(cp.dial, 0, 0));

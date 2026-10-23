@@ -354,6 +354,17 @@ and centroid, spread ≤ 0.01 px. The baker takes ONE cycle-wide crop
 (lines 558-571), so drift desyncs the dirty rects. The device applies the
 carriage's rotation from `seconds/60 * 360 + zeroRotationDeg`; never bake it in.
 
+**A carriage shipped any other way cannot turn, so a carriage kit must carry a
+`tourbillon` entry.** A plate keyframe bank is blitted unrotated: its frames can
+animate the escapement and leave the orbit frozen at one instant, and the dial reads
+alive while the seconds hand stands still. That is not a lesser animation — it is a
+tourbillon that is not a tourbillon. On an orbital train the carriage IS the seconds
+hand (`orbital`, `kite`), so its motion box is the orbit and measures near the whole
+panel; a bake that prices the carriage row off that box and then demands a local one
+refuses its own carriage. `splitPolicy3` prices the row on the carriage's measured ink
+box, bills it before the plate, and refuses rather than ship a frozen orbit. See plan
+§"Correction (2026-10-22)".
+
 ## Appendix A — the ink-budget prior, and where the sweep corrected it
 
 Written before any flush model existed, from the kit geometry alone:

@@ -280,6 +280,42 @@ func TestAnUnboundAddressClaimsNoPort(t *testing.T) {
 
 const themeTestIP = "192.0.2.31"
 
+// The fallback, and its boundary. A Windows hub cannot read a USB serial, so `who` is
+// empty on every entry it holds and corroboration would never fire — the reboot timer
+// would keep running on a supported release platform. The chip's own printed address is
+// the only handle there. It must still name THIS entry's chip: a stranger answering the
+// door gets no immunity for a board it is not.
+func TestAHostThatCannotReadASerialStillCorroborates(t *testing.T) {
+	p := &probeScript{answer: map[string]func() (esprom.OrbInfo, error){reflashPort: orbAnswer}}
+	s := launchHub(t, goldBenchPorts(), p)
+	s.identities.usbMAC = func(string) string { return "" }
+	s.identities.record(reflashPort, esprom.OrbInfo{Port: reflashPort,
+		MAC: "44:bd:8d:78:26:18", IsOrb: true, Project: "gorb-os"}, provenProbe)
+	backdateIdentity(s, reflashPort, identityTTL+time.Minute)
+
+	if ask, _ := s.cableNeedsProbe(goldSighting()[0]); !ask {
+		t.Fatal("setup: no serial read means no live match, so this must still be due")
+	}
+	port, saved := s.identities.corroborate(macHall, time.Now())
+	if port != reflashPort || !saved {
+		t.Fatalf("corroborate refreshed (%q,%v) on a host that cannot read the descriptor", port, saved)
+	}
+	if ask, why := s.cableNeedsProbe(goldSighting()[0]); ask {
+		t.Errorf("the renewal did not reach the gate: %s", why)
+	}
+
+	// And it stays keyed to the recorded chip. orb-B's banner says 44:bd:8d:78:26:18; an
+	// orb answering as something else must not buy this lead a pass.
+	s.identities.record(reflashPort, esprom.OrbInfo{Port: reflashPort,
+		MAC: "44:bd:8d:78:26:18", IsOrb: true, Project: "gorb-os"}, provenProbe)
+	backdateIdentity(s, reflashPort, identityTTL+time.Minute)
+	if port, _ := s.identities.corroborate("aabbccddeeff", time.Now()); port != "" {
+		t.Errorf("a dial naming another chip refreshed %s on a host with no descriptor read", port)
+	}
+}
+
+// them can prove the hub calls it, and a method nobody dials is a reboot timer still
+// ticking. Same reason launchprobe_test.go asserts on the source of the launch flag: this
 // The wiring a suite cannot execute. Every test above calls corroborate directly; none of
 // them can prove the hub calls it, and a method nobody dials is a reboot timer still
 // ticking. Same reason launchprobe_test.go asserts on the source of the launch flag: this

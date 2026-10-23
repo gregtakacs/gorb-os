@@ -9,8 +9,13 @@
  *
  * One band buffer of 466x24 RGB565 (22,368 B) in internal DMA RAM is allocated
  * on first use and never freed: §6.2's cost ceiling is "one small buffer, no
- * PSRAM, nothing on the paint path". Bands are drawn top line first, so a torn
- * mid-draw is at worst half a text row on a screen that is about to change.
+ * PSRAM, nothing on the paint path". Because it is ONE reused buffer and the
+ * QSPI io submits asynchronously, every band goes through display_band_commit,
+ * which returns only after that band's DMA retired — §32.5. The 2026-10-23
+ * store watched the three lines of a progress frame arrive on each other's
+ * rows: the stamps for band N+1 were landing on band N's in-flight wire bytes.
+ * Bands are drawn top line first, so a torn mid-draw is at worst half a text
+ * row on a screen that is about to change.
  */
 #include <stdio.h>
 #include <string.h>
@@ -254,7 +259,7 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
         memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
         for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
             const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
-            esp_lcd_panel_draw_bitmap(panel, 0, y, SCREEN_WIDTH, y + rows, s_band);
+            display_band_commit(y, rows, s_band);
         }
     }
 
@@ -283,7 +288,7 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
 
     uint16_t *b = s_band;
     uint32_t ink = band_text(line1, b);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, LINE1_Y, SCREEN_WIDTH, LINE1_Y + BAND_ROWS, b));
+    ESP_ERROR_CHECK(display_band_commit(LINE1_Y, BAND_ROWS, b));
 
     if (total) {
         char line2[48];
@@ -291,9 +296,9 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
                  (unsigned)((done * 100u) / (total ? total : 1u)),
                  (unsigned)(done / 1024u), (unsigned)(total / 1024u));
         ink += band_text(line2, b);
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, LINE2_Y, SCREEN_WIDTH, LINE2_Y + BAND_ROWS, b));
+        ESP_ERROR_CHECK(display_band_commit(LINE2_Y, BAND_ROWS, b));
         band_bar(b, done, total);
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, BAR_Y, SCREEN_WIDTH, BAR_Y + BAND_ROWS, b));
+        ESP_ERROR_CHECK(display_band_commit(BAR_Y, BAND_ROWS, b));
     }
 
     if (stage_changed) {

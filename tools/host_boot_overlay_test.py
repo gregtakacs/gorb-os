@@ -48,22 +48,22 @@ static int all_black(const uint16_t *b, size_t n)
     for (size_t i = 0; i < n; i++) if (b[i]) return 0;
     return 1;
 }
-esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t p, int x1, int y1,
-                                    int x2, int y2, const void *data)
+esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
 {
-    (void)p; (void)x1; (void)x2;
     /* §32's boot wipe arrives as black 24-row strips at y = 0, 24, 48, ...; the
      * content bands ride y=184/252/300, which are not multiples of 24, so an
      * all-black strip is never a stage frame. Wipes are counted on their own so
-     * the capture indexes the scenario decodes below do not shift. */
-    if (all_black((const uint16_t *)data, (size_t)(y2 - y1) * 466)) {
+     * the capture indexes the scenario decodes below do not shift. §32.5: the
+     * overlay paints only through this seam, and the seam is exactly where the
+     * shipped display.c drains; the capture below is the band as it goes out. */
+    if (all_black(data, (size_t)rows * 466)) {
         if (g_wipe < 24) g_wipe_y[g_wipe] = y1;
         g_wipe++;
         return ESP_OK;
     }
     if (g_calls < 16) { g_y[g_calls] = y1;
-        g_b[g_calls] = malloc((size_t)(y2 - y1) * 466 * 2);
-        memcpy(g_b[g_calls], data, (size_t)(y2 - y1) * 466 * 2); }
+        g_b[g_calls] = malloc((size_t)rows * 466 * 2);
+        memcpy(g_b[g_calls], data, (size_t)rows * 466 * 2); }
     g_calls++;
     return ESP_OK;
 }
@@ -80,7 +80,9 @@ HDRS = {
                       "#define MALLOC_CAP_INTERNAL 0\n#define MALLOC_CAP_DMA 0\n",
     "esp_lcd_panel_ops.h": "#include \"esp_err.h\"\ntypedef void *esp_lcd_panel_handle_t;\n"
       "esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t, int, int, int, int, const void *);\n",
-    "display.h": "#include \"esp_lcd_panel_ops.h\"\nesp_lcd_panel_handle_t display_get_panel(void);\n",
+    "display.h": "#include \"esp_lcd_panel_ops.h\"\n#include <stdint.h>\n"
+      "esp_lcd_panel_handle_t display_get_panel(void);\n"
+      "esp_err_t display_band_commit(int, int, const uint16_t *);\n",
     "board_config.h": "#define SCREEN_WIDTH 466\n#define SCREEN_HEIGHT 466\n",
 }
 
@@ -229,6 +231,18 @@ def main():
            f"px={len(filled)}")
         ok(len(track) == 160 * 10, "the other half stays on the dark track",
            f"px={len(track)}")
+
+        # §32.5: a progress frame's three lines must LAND on the rows §6.2
+        # names. The capture records the row of every committed band, and the
+        # install frame of step 3 is captures 3, 4, 5 in global order. The
+        # 2026-10-23 report of correct lines sent to incorrect rows was the
+        # reused-buffer DMA race, fixed at the seam (display_band_commit
+        # returns only drained); these pins are the geometry the glass keeps.
+        ys = [bands[i][0] for i in sorted(bands)]
+        ok(ys[3:6] == [184, 252, 300],
+           "the install frame's three bands ride rows 184, 252, 300", str(ys))
+        ok(all(y % 2 == 0 for y in ys),
+           "every committed band starts on an even row for the CO5300's row pairing", str(ys))
         ok(band_has_string(drawn[9][1][1], F, "store???cut 6s", 14),
            "an em dash lands as three ? — every byte renderable from the table")
 

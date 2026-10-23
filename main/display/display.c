@@ -296,16 +296,18 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
                                           esp_lcd_panel_io_event_data_t *edata,
                                           void *user_ctx)
 {
+    /* Count every retire, whoever submitted it: the ping-pong write-guard in
+     * dma_dirty_bands and the wait in display_band_commit read the same FIFO
+     * proof (one cb per draw_bitmap — a tile, a fallback PSRAM submit, and a
+     * committed overlay band are each one bus transaction). §32.5 hoisted this
+     * line out of the coalesce branch, where it had left every other submitter
+     * uncalled. */
+    if (s_band_inflight > 0) { s_band_inflight--; s_tile_done++; }
     if (s_coalesce_mode) {
         /* The only DMA that reaches here is the coalesced last-chunk band push.
          * Release the LVGL buffer (which LVGL re-arms for the NEXT frame) only
          * once the final band's DMA has completed, so the next frame cannot
-         * mirror over s_fb while these bands are still being read out of it.
-         * s_tile_done counts FIFO-ordered tile completions for the ping-pong
-         * write-guard in dma_dirty_bands (one cb per draw_bitmap: a tile is a
-         * single bus transaction; the fallback PSRAM submit counts too but
-         * nobody reads it in that mode). */
-        if (s_band_inflight > 0) { s_band_inflight--; s_tile_done++; }
+         * mirror over s_fb while these bands are still being read out of it. */
         if (s_band_inflight == 0 && s_last_pending) {
             s_last_pending = false;
             lv_display_flush_ready((lv_display_t *)user_ctx);
@@ -351,6 +353,53 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
     return false;   /* no yield needed */
 }
 
+/* ---- the band-commit seam for painters outside LVGL (§32.5) ------------------
+ *
+ * The boot overlay reuses one 466x24 DMA buffer for every band it paints, and
+ * a progress frame paints three back to back: stage, percent, bar. At
+ * trans_queue_depth > 1 a returning draw_bitmap only means QUEUED, so the next
+ * band's stamp lands on the previous band's in-flight wire bytes and the glass
+ * shows correct lines arriving on each other's rows — what the bench operator
+ * watched through the store of 2026-10-23. The LVGL path cannot suffer this
+ * (its bands come out of s_fb, and the tile ring guards reuse off s_tile_done);
+ * the overlay needs the same discipline, and this seam is it. Hold the ring
+ * mutex so no LVGL commit interleaves, let other submitters' in-flight
+ * transactions retire, submit, and do not return until THIS transaction's cb
+ * has fired — FIFO order makes the counter the proof, exactly as the L1 comment
+ * above the TILE_ROWS define argues. At queue depth 1 the submit already
+ * blocked and its cb has run inline by the time we look.
+ */
+esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
+{
+    if (!s_panel || !band || rows <= 0 || y < 0 || y + rows > SCREEN_HEIGHT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    /* Start from a quiet bus, so s_tile_done can advance only for our own
+     * transaction. 500 ms outlasts a full frame of tiles: whoever is inflight
+     * here retired before the mutex was ours and is seconds from done. */
+    int64_t t0 = esp_timer_get_time();
+    while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
+    const uint32_t want = s_tile_done + 1u;
+    s_band_inflight++;
+    const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, SCREEN_WIDTH, y + rows, band);
+    if (e != ESP_OK) {
+        if (s_band_inflight > 0) s_band_inflight--;   /* refused pre-cb; no cb will come */
+    } else if (s_tiles_ok) {
+        t0 = esp_timer_get_time();
+        while (s_tile_done < want && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
+        if (s_tile_done < want) {
+            /* Late, not gone: the cb balances the inflight count when it
+             * arrives. Say so anyway — a QSPI that never retires leaves no
+             * other trace, and this line is the store screen's error report. */
+            ESP_LOGW(TAG, "band at r%d did not retire within 500 ms", y);
+        }
+    } else if (s_band_inflight > 0) {
+        s_band_inflight--;                            /* depth 1: blocked submit, cb ran */
+    }
+    if (s_ring_mux) xSemaphoreGive(s_ring_mux);
+    return e;
+}
 
 
 /* ---- LVGL 9 flush callback ----

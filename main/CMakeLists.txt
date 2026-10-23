@@ -16,6 +16,9 @@ idf_component_register(
         "app/orb_jobs.c"
         "app/orb_svc.c"
         "display/display.c"
+        # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
+        # that runs with LVGL unarmed, on esp_lcd_panel_draw_bitmap alone.
+        "display/orb_boot_overlay.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
         # P5.5: the app layer table. Its header stays LVGL-free and the suite

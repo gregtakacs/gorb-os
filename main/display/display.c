@@ -827,9 +827,22 @@ static uint32_t lvgl_tick_cb(void)
 }
 
 /* ---- Public API ---- */
-esp_err_t display_init(void)
+/* Two-half bring-up, per docs/theme-delta-mmap-plan.md §6.2/§6.4: the panel
+ * half runs EARLY, before the theme resolves, so a theme load that takes
+ * seconds is spent in front of a live overlay instead of a dark dial. The
+ * LVGL half is display_init() below: two calls that wire the flush path, which
+ * must wait until after the theme because the flush mirrors into s_fb over the
+ * dial's pixels. Everything between the halves draws nothing on its own: LVGL
+ * paints only once lv_timer_handler runs, and the LVGL task is created last.
+ * The buffer/ring/mirror allocations ride with the panel half so the io's
+ * trans_queue_depth and user_ctx — both baked at creation — match what
+ * display_init later arms. */
+static void *s_buf1, *s_buf2;
+static size_t s_buf_bytes;
+
+esp_err_t display_panel_early(void)
 {
-    ESP_LOGI(TAG, "Initializing CO5300 QSPI display (%dx%d)",
+    ESP_LOGI(TAG, "Bringing up CO5300 QSPI panel early (%dx%d)",
              SCREEN_WIDTH, SCREEN_HEIGHT);
 
     /* 1. LVGL core first, so the display handle exists before panel IO
@@ -838,22 +851,23 @@ esp_err_t display_init(void)
     lv_tick_set_cb(lvgl_tick_cb);
 
     const size_t buf_bytes = (size_t)SCREEN_WIDTH * LVGL_BUF_LINES * 2; /* RGB565 */
-    void *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    void *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    s_buf_bytes = buf_bytes;
+    s_buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    s_buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     s_scratch  = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!buf1 || !buf2 || !s_scratch) {
-        free(buf1);
-        free(buf2);
-        free(s_scratch);
+    if (!s_buf1 || !s_buf2 || !s_scratch) {
+        free(s_buf1); free(s_buf2);
+        s_buf1 = NULL; s_buf2 = NULL;
         s_scratch = NULL;
         ESP_LOGE(TAG, "Failed to allocate LVGL draw buffers in internal DMA RAM");
         return ESP_ERR_NO_MEM;
     }
 
     s_lvgl_disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
-    lv_display_set_buffers(s_lvgl_disp, buf1, buf2, (uint32_t)buf_bytes,
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_flush_cb(s_lvgl_disp, lvgl_flush_cb);
+    /* set_buffers/set_flush_cb deferred to display_init(): until the LVGL half
+     * runs, no flush can be armed, so nothing between the halves can paint the
+     * dial behind the overlay. Only lv_timer_handler flushes, and that task is
+     * created after display_init(). */
 
     /* Panel mirror (see s_fb comment): CPU-only access, so PSRAM is fine and
      * costs us no internal DMA RAM. Black-init: matches the panel's post-reset
@@ -1012,6 +1026,18 @@ esp_err_t display_init(void)
              0);
 #endif
 
+    return ESP_OK;
+}
+
+/* The LVGL half: arm the flush path on the panel display_panel_early() brought
+ * up. Call after the theme has resolved and before any task can render. */
+esp_err_t display_init(void)
+{
+    if (!s_panel || !s_lvgl_disp || !s_buf1) return ESP_ERR_INVALID_STATE;
+    lv_display_set_buffers(s_lvgl_disp, s_buf1, s_buf2, (uint32_t)s_buf_bytes,
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(s_lvgl_disp, lvgl_flush_cb);
+    ESP_LOGI(TAG, "LVGL flush armed; dial may paint");
     return ESP_OK;
 }
 

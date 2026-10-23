@@ -16,6 +16,7 @@
 
 #include "board_config.h"
 #include "display.h"
+#include "orb_boot_overlay.h"
 #include "orb_app.h"
 #include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
 #include "orb_app_install.h" /* orb_app_install_resolve_boot: the card table from the apps partition */
@@ -70,23 +71,41 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    /* Resolve the theme — and carry out any install the config page staged — BEFORE
-     * the display comes up. Two reasons, both load-bearing:
-     *   - An install is an erase-and-rewrite of the multi-megabyte region the dial
-     *     reads its pixels from. Doing it while the LVGL task is mid-paint is how a
-     *     device shows half of one theme and half of another.
-     *   - art_bank_init() must map the slot the CHOSEN theme lives in, and only this
-     *     call knows which of the two that is.
-     * The cost is that a boot with a staged load shows a dark screen for the seconds
-     * the copy takes. That is the correct trade: it happens once, only when somebody
-     * asked for a new theme, and the alternative is a dial that can corrupt.
-     * Deliberately not ESP_ERROR_CHECK — a failed load falls back to the theme that
-     * was already installed (or to the baked-in one), and the clock still has to tell
-     * the time. */
+    /* C2 (§6.4): the panel comes up before the theme resolves, so every slow
+     * moment below is spent in front of the overlay, not a dark dial. The
+     * install-before-display rule this replaced was about erasing while LVGL
+     * paints; the overlay is not LVGL and paints no dial, so the ordering
+     * reason disappears while the safety it protected is kept verbatim: the
+     * flush path is not armed until display_init(), and the LVGL task that
+     * could paint is created after it. */
+    ESP_ERROR_CHECK(display_panel_early());
+    orb_boot_overlay("starting", 0, 0, 0);
+
+    /* Resolve the theme — and carry out any install the config page staged.
+     * art_bank_init() must map the slot the CHOSEN theme lives in, and only
+     * this call knows which of the two that is; a staged-but-never-committed
+     * load is a torn copy, and the copy belongs before any pixels can read it.
+     * Deliberately not ESP_ERROR_CHECK — a failed load falls back to the theme
+     * that was already installed (or to the baked-in one), and the clock still
+     * has to tell the time. */
+    orb_boot_overlay("mapping", 0, 0, 0);
     const esp_err_t theme_err = orb_theme_boot();
     if (theme_err != ESP_OK)
         ESP_LOGE(TAG, "theme bring-up degraded (%s) — clock runs on the fallback bank",
                  esp_err_to_name(theme_err));
+
+    /* §6.4's torn-store case, on the glass instead of only on a serial line
+     * nobody reads on a device hung on a wall: the staged witness survived a
+     * reboot and names an id the slot does not hold. Hold the sentence on the
+     * overlay for 10 s — nothing else can paint during it — then the base
+     * face. The 10 s figure is §6.4's, and it costs a boot nobody likes less
+     * than a dial that fails silently. */
+    if (orb_theme_staged_id()[0]) {
+        char line[48];
+        snprintf(line, sizeof line, "theme load failed %s", orb_theme_staged_id());
+        orb_boot_overlay(line, 0, 0, 0);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
 
 #if ORB_ART_M2_PROBE
     /* M2 residency protocol (docs/app-platform-plan.md §6): runs after the
@@ -118,7 +137,10 @@ void app_main(void)
     art_bank_m3_probe();
 #endif
 
-    /* Bring up the display (SPI + panel + LVGL) */
+    /* Arm the LVGL flush on the panel that came up before the theme (§6.2).
+     * The overlay's "ready" frame is the last thing the glass shows before the
+     * first real commit paints over it. */
+    orb_boot_overlay("ready", 0, 0, 0);
     ESP_ERROR_CHECK(display_init());
 
     /* Build the apps and their screens. Each registers its own LVGL screen

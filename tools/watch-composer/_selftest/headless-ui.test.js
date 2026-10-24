@@ -647,7 +647,7 @@ setTimeout(async () => {
     const sent = [];
     global.fetch = async (url, opt) => {
       sent.push([url, opt && opt.body && opt.body.length]);
-      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, exact: scen.exact, name: 'orbital-arrow' } }
+      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, exact: scen.exact, note: scen.note, name: 'orbital-arrow' } }
         : { ok: true, data: { phase: 'uploading', sent: 3, total: 3 } };
       return { ok: true, status: 200, json: async () => j };
     };
@@ -665,7 +665,7 @@ setTimeout(async () => {
         this.onload();
       };
     };
-    const scen = { dup: true, exact: false };
+    const scen = { dup: true, exact: false, note: undefined };
     // the bindings the template actually reads for the modal's two buttons
     const dupBtns = () => { const v = it.renderVals(); return { open: v.dupOpen, nm: v.dupNm, stem: v.dupStem, pre: v.dupPre, replace: v.dupReplace, cancel: v.dupCancel }; };
     it.state.themeName = 'orbital-arrow';
@@ -724,6 +724,32 @@ setTimeout(async () => {
        'the exact refusal cost only the 128-byte header, not the bake', JSON.stringify(sent.slice(sentBefore)));
     ok(xhrSends === xhrSendsBefore,
        '§32.9: and the bake never reached the transport — no second full upload', JSON.stringify([xhrSendsBefore, xhrSends]));
+    // Bug B: the precheck that CANNOT get an answer must fail CLOSED, not open. The hub
+    // spells "I could not ask the orb" as a clear verdict carrying a note (themeDuplicate).
+    // A tempo-only re-send of a banked dial whose serial the precheck never read must
+    // therefore stop BEFORE upload — not ship blind and lean on the device's late 409,
+    // which is how the duplicate modal came up AFTER the megabytes had already crossed.
+    scen.dup = false; scen.exact = false; scen.note = 'the hub could not ask the orb, so it will not promise there is no collision';
+    it.state.themeName = 'orbital-arrow';
+    it._replaceArmed = null; it.state.dup = null;
+    const xhrSendsUnread = xhrSends;
+    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
+    ok(/Nothing sent/.test(it.state.status),
+       'Bug B: a precheck that could not read the card stops before upload and says so', it.state.status.slice(0, 60));
+    ok(/could not get a clean read/.test(it.state.status) && /could not ask the orb/.test(it.state.status),
+       'Bug B: the line names the cause and the hub\'s own reason verbatim', it.state.status.slice(0, 120));
+    ok(!!it._replaceArmed,
+       'Bug B: the refused bake is held, so a second press forces the replace over the unknown');
+    ok(xhrSends === xhrSendsUnread,
+       'Bug B: an unread card uploads NOTHING before the operator forces it', JSON.stringify([xhrSendsUnread, xhrSends]));
+    // and forcing it (overwrite) ships the held bytes once, no precheck dial on the force
+    const sentForceBefore = sent.length;
+    await it.sendTheme3ToOrb();
+    ok(/&overwrite=1/.test(xhrUrl || '') && xhrBody === bytes,
+       'Bug B: the second press ships the held bake flagged to overwrite', xhrUrl);
+    ok(sent.length === sentForceBefore,
+       'Bug B: the forced replace skips the precheck dial — overwrite is the answer already given', JSON.stringify(sent.slice(sentForceBefore)));
+    scen.note = undefined;
     scen.exact = false;
   }
 

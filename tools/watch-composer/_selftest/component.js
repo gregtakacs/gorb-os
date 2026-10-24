@@ -1722,7 +1722,15 @@ class Component extends DCLogic {
           const r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
           const j = await r.json().catch(() => null);
           if (r.status === 200 && j && j.ok) {
-            this.setState({ status: 'Sent to ' + ip + ' as "' + a.nm + '" (' + (a.stem) + ') — replaced from the copy already on the card · ' + (((j.data && j.data.state) || 'stored')) });
+            // The commit renamed THIS upload's staged scratch over the old file and
+            // queued the store (the device's own reply: state=stored, reboot=automatic).
+            // Until now the line read "replaced from the copy already on the card", which
+            // sounded like a no-op — and on a tempo-only edit (identical art, different
+            // seconds cadence) it looked like nothing copied at all. Say plainly that the
+            // new build landed and the orb is rebooting onto it.
+            const st = (j.data && j.data.state) || 'stored';
+            const rebo = (j.data && j.data.reboot === 'automatic');
+            this.setState({ status: 'Sent to ' + ip + ' as "' + a.nm + '" (' + (a.stem) + ') — the new build replaced the old copy on its card · ' + st + (rebo ? ' — rebooting onto it' : '') });
             return;
           }
           this.setState({ status: 'The staged copy was refused (' + ((j && j.error) || ('HTTP ' + r.status)) + ') — sending the file itself' });
@@ -2225,6 +2233,24 @@ class Component extends DCLogic {
         // sentence and never a window.confirm. The bake stays held in _replaceArmed;
         // the modal's Replace ships THOSE bytes with overwrite, Cancel dismisses.
         this.setState({ dup: { nm, stem, note: (pre.data.note || 'the card holds a different build of this name'), pre: true } });
+        return;
+      }
+      // Bug B follow-up: the precheck only protects the upload when it got a real
+      // answer. A fetch that died (pre null), an HTTP error, or a verdict of "clear"
+      // that carries a note — the hub's own spelling for "I could not ask the orb, so
+      // I cannot promise there is no collision" (theme.go's themeDuplicate) — are all
+      // one situation: the card state is UNKNOWN. Falling through shipped the bytes
+      // blind, the precheck's whole point evaporated, and a tempo-only re-send of a
+      // banked dial (the shipped serial moves, but the precheck never saw it) hit the
+      // device's late 409 instead — the modal appeared AFTER the megabytes crossed,
+      // the exact symptom the §32 precheck exists to forbid. Stop BEFORE upload; hold
+      // the bake so the next press forces the replace over the unknown, which is the
+      // operator's call to make, not this page's silent default.
+      if (!pre || !pre.ok || !pre.data || pre.data.note) {
+        this._replaceArmed = { bytes, nm, stem, pol, meter };
+        this.setState({ status: 'Nothing sent: the hub could not get a clean read of "' + nm + '" on ' + ip +
+          (pre && pre.data && pre.data.note ? ' — ' + pre.data.note : '') +
+          ' — so it will not ship over a card it cannot check. Press Send again to replace it anyway.' });
         return;
       }
     }

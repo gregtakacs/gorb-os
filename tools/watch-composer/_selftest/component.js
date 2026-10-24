@@ -1,7 +1,7 @@
 window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
-  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
+  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
   state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
@@ -16,7 +16,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
   paneRef = React.createRef();
@@ -79,7 +79,80 @@ class Component extends DCLogic {
    * monotone clamp -- the emulator uses it to price a chosen tier directly. */
   budget(forceWant) {
     this._bG = 1;
-    try { return this._budget(forceWant); } finally { this._bG = 0; }
+    let b;
+    try { b = this._budget(forceWant); } finally { this._bG = 0; }
+    b.dev = this._devPace(b);
+    return b;
+  }
+  /* The tempo the preview must play at and the tempo the readout quotes: the
+   * tier for every carrier the device can drive at tier, the device pace
+   * where _devPace sees a sweep the panel cannot sustain. One getter so the
+   * timer, the restart check, and any future seat all read the same number. */
+  devFps() { const b = this.budget(); return Math.min(b.fps, b.dev.pace); }
+  /* The rate the glass will actually hold, as distinct from the tier the bank
+   * can pay. The CAPS ladder prices the delta-bank push only: rowPrice()
+   * measures the PLATE's own motion with hands hidden (baseImgs), and the
+   * needle cap simply books a sweep over plain plate at ~130 swept-box rows
+   * per tick. Nothing in the ladder prices a sweep ACROSS opaque plates: the
+   * commit restores dirty rows from canvas then re-blits every layer over them
+   * in z-order (orb_gfx.c), so each tick whose wedge overlaps a subdial
+   * re-composites that plate, twice while a cast-shadow twin rides with it.
+   * The tax lands whether or not a bank also pushes: the hands are never in
+   * the bank, so rows>0 proves nothing about it. Panel-calibrated anchors: a
+   * bare sweep ring holds the full tier (aviator, 15 sustained); the same
+   * hand across four sealed subdials with gilt twins clamps to the scheduler
+   * floor (perpetual, 4). The twins halve the crossed-plate bill, so predict
+   * 8 without them, never under the floor of 4. A ticked hand holds between
+   * beats and pays only on the beat. The centre seconds hand is required: a
+   * subdial's own small seconds ticks inside its window row, not across the
+   * dial. A caged dial is exempt: its carriage marks by chord, unmeasured. */
+  _devPace(b) {
+    const out = { pace: b.fps, cross: 0, why: '' };
+    if (!b.measured || b.car) return out;
+    const c = this.cfg(), D = this.design();
+    if (!(D.centre && D.centre.second === 1)) return out;
+    if (c.tick && c.tick !== 'sweep') return out;
+    const RE = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205,
+      railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
+    const hc = (D.hands && D.hands['centre-second']) || {};
+    const tip = Math.min(216, (RE[D.print] || 205) * 0.98 * (+hc.len || 1));   // buildHands' own formula
+    const half = (x) => x.size != null ? Math.max(+x.size / 2, 18) : 28;
+    const hit = (x) => x.host === 'dial' && (x.type === 'subdial' || x.type === 'moon' || x.type === 'window')
+      && (+x.dist || 0) + half(x) > 18 && (+x.dist || 0) - half(x) <= tip;
+    const n = (D.comps || []).filter(hit).length;
+    if (!n) { out.why = 'Still dial sweeps clear of every plate: the device holds the tier rate, as the aviator does.'; return out; }
+    out.cross = n;
+    /* Only the MOVING gate halves the bill: each twin is a second plate re-blitted
+     * under the wedge. Plate relief is art already in the statics and rides along
+     * with them, so shOp changes the look and not the pace. */
+    const shOn = +c.shMove > 0.01 && +c.shOp > 0.01;
+    out.pace = Math.max(4, Math.min(b.fps, shOn ? 4 : 8));
+    if (out.pace < b.fps) out.why = 'Seconds sweep crosses ' + n + ' live plate' + (n > 1 ? 's' : '') +
+      ': each tick re-blits them under the wedge. Panel-measured 4 fps with cast shadows; ' +
+      (shOn ? 'Cast shadows off predicts ~8.' : 'with the twins it measured 4.');
+    return out;
+  }
+  /* "Cast shadows off" is the pace switch, and it touches the MOVING shadow only.
+   * It writes shMove 0: the bake's alpha gate then skips every twin, so the theme
+   * ships no shadow rows and the device stops re-blitting a second plate under
+   * each moved hand -- roughly twice the pace on a dial whose sweep crosses live
+   * plates. The baked plate relief (a raised or sunken subdial's drop, an
+   * aperture's inner shade) is art, costs nothing per tick, and keeps its own
+   * switch below this one. The last positive value round-trips, so the look
+   * returns exactly as it was left. */
+  castShadowsOn(on) {
+    const cur = +this.cfg().shMove;
+    if (on) this.setCfg('shMove', this._shLast > 0.01 ? this._shLast : 1);
+    else { if (cur > 0.01) this._shLast = cur; this.setCfg('shMove', 0); }
+  }
+  /* The static half: the drop the subdial and aperture art carries, composited
+   * into the plate when the dial is drawn. Zeroing it re-samples the art and costs
+   * the dial its depth; it changes no tick cost, which is why it is not the
+   * switch the frame-rate readout answers to. */
+  staticShadowsOn(on) {
+    const cur = +this.cfg().shOp;
+    if (on) this.setCfg('shOp', this._opLast > 0.01 ? this._opLast : 1);
+    else { if (cur > 0.01) this._opLast = cur; this.setCfg('shOp', 0); }
   }
   _budget(forceWant) {
     const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train];
@@ -93,7 +166,9 @@ class Component extends DCLogic {
    * SMALLER fraction of a tooth and changes fewer rows than the figure the cap
    * was struck against. A cap measured at the bigger step therefore still
    * bounds the smaller one; deepening a bank can only buy rows back, never
-   * spend rows the cap does not already allow. */
+   * spend rows the cap does not already allow. CAPS price the bank push ONLY:
+   * a sealed carrier that sweeps pays a live re-composite this ladder cannot
+   * see, and _devPace quotes that separately. */
   const CAPS = needle ? { 15: 64, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
   /* The carriage bank is a fixed frame count on the device (bake_clock.py holds
    * CLK_TOURB_MAX=16) and the plate keyframe bank caps at CLK_BG_MAX=16
@@ -164,9 +239,9 @@ class Component extends DCLogic {
     // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
     // the texture has to travel with it: changing Surface re-bakes these base frames
     if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; if (dsg.weaveAngle != null) bg.bgWeaveAngle = dsg.weaveAngle; if (dsg.weaveScale != null) bg.bgWeaveScale = dsg.weaveScale; }
-    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
+    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, shMove: +c.shMove, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
-  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
+  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
     o.noCase = this.state.caseStyle === 'none' ? 1 : 0; if (noframes) delete o.frames; return JSON.stringify(o); }
   artKey(mvk) { return (mvk || this.mvKey(1)) + '|' + this.state.dial + '|' + JSON.stringify(this.design()); }   // priced-art signature: the movement art, the tempo-independent part, plus the dial that hides it
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
@@ -480,7 +555,7 @@ class Component extends DCLogic {
     const P = this.preset(), say = (t) => this.setState({ status: t + ' reset' });
     if (tab === 'dial') { this.upd((d) => { const keep = { comps: d.comps, hands: d.hands, order: d.order, centre: d.centre }; Object.keys(d).forEach((k) => delete d[k]); Object.assign(d, JSON.parse(JSON.stringify(P.design)), keep); }); say('Dial'); }
     if (tab === 'comps') { this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null }); say('Complications'); }
-    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp']); say('Hands'); }
+    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove']); say('Hands'); }
     if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
     if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
@@ -558,7 +633,7 @@ class Component extends DCLogic {
      * is safe (not inside a budget build) and the write is monotone -- balance
      * only falls to 2, so the precondition cannot return and re-fire. */
     if (this._mk === this.mvKey() && +this.cfg().balance > 2 && this.F < 12) this.setCfg('balance', '2');
-    if (this._lastSlow !== this.state.slow || this._lastF !== this.F) this.startTimer();
+    if (this._lastSlow !== this.state.slow || this._lastF !== this.devFps()) this.startTimer();
     const fk = this.faceKey(this.state.dial) + this.state.timeMode;
     if (fk !== this._fk) { this._fk = fk; this.drawLayers(); this.drawHandOpts(); this.drawArtThumbs(); }
     const ck = JSON.stringify([this.opts(), this.state.dial, !!this.gt[0]]);
@@ -570,8 +645,12 @@ class Component extends DCLogic {
   }
   startTimer() {
     clearInterval(this.timer);
-    this._lastSlow = this.state.slow; this._lastF = this.F;
-    const F = this.F;
+    this._lastSlow = this.state.slow; this._lastF = this.devFps();
+    /* Pace the preview at what the glass will hold, not at the tier the bank
+     * can pay: a sweep over live sealed plates ships still and re-composites
+     * its hands at the device pace, and a preview that floats at 15 sells a
+     * motion the orb never shows. Banked and clear dials keep the tier. */
+    const F = this._lastF;
     this.timer = setInterval(() => {
       if (this.state.playing && !this.rendering && this.gt.length === this.B) this.setState((s) => ({ frame: (s.frame + 1) % this.B }));
       else this.drawMain();
@@ -1424,12 +1503,20 @@ class Component extends DCLogic {
       let sp = h.sp.c;
       if (K !== 1) { sp = document.createElement('canvas'); sp.width = Math.ceil(h.sp.c.width * K); sp.height = Math.ceil(h.sp.c.height * K); sp.getContext('2d').drawImage(h.sp.c, 0, 0, sp.width, sp.height); }
       files.push({ name, data: await this.png(sp) });
+      /* A twin at zero alpha is not a transparent shadow, it is no shadow: write no
+       * file and ship no shadow record, so prep_watch_kit leaves the hand's shadow
+       * absent and the device builds no second object to blend each tick. The
+       * engine zeroes this alpha from the moving gate, so the kit a person opens in
+       * the bench pipeline matches the dial they see here. */
       const sh = fc.handShadow(h), bl = sh.blur * K, pd = Math.ceil(bl * 1.5 + 2), mc = document.createElement('canvas'), sil = document.createElement('canvas');
-      sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
-      mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
-      const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
-      files.push({ name: shName, data: await this.png(mc, true) });
-      const shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
+      let shadow = null;
+      if (sh.alpha > 0.01) {
+        sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
+        mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
+        const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
+        files.push({ name: shName, data: await this.png(mc, true) });
+        shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
+      }
       hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: WatchEngine.handZeroDeg ? WatchEngine.handZeroDeg(h) : +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && String(h.id).startsWith('centre-') ? { drive: CAL_DRIVE[h.kind] + (offTurn && h.kind === ringHand ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
     }
     const perimeter = !pg ? undefined : {
@@ -1465,7 +1552,7 @@ class Component extends DCLogic {
       hands,
       ...(perimeter ? { perimeter } : {}),
       textKits,
-      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
+      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, moving: fc.shadow.mv, note: 'per-hand offsets grow with stack height; see hands[].shadow. opacity 0 or moving 0 ships no shadow file at all — moving is the runtime gate (the twin turns with the hand, so it costs a re-blit each tick), opacity is the art gate (the drop baked into the plate and the subdial relief, which costs nothing per tick)' },
       assets: await this.kitAssets(files, D0),
       backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? D0.bgFinishKey : undefined, finishBlendKeyTolerance: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? (D0.bgFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.bgFinishKeyTol) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
       // on the dial face, so it ships inside dial.png rather than as its own layer:
@@ -1554,21 +1641,50 @@ class Component extends DCLogic {
     const a = this._replaceArmed;
     if (a && a.nm === this.themeName()) {
       this._replaceArmed = null;
-      await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
+      await this._shipHeldReplace(a);
       return;
     }
     this._replaceArmed = null;
     await this.exportTheme3({ send: true });
   }
-  /* §32.6: the modal's Replace. Ships the held bytes — no re-bake, so the replace is
-   * byte-for-byte the dial the precheck refused — with the firmware overwrite flag, and
-   * closes the modal. If the arm was already consumed (a racing press, or the name
-   * changed under the modal) the overlay just clears; there is nothing held to send. */
+  /* §32.6: the modal's Replace. Ships the held bake — no re-bake, so the replace is
+   * byte-for-byte the dial the precheck refused — and closes the modal. If the arm was
+   * already consumed (a racing press, or the name changed under the modal) the overlay
+   * just clears; there is nothing held to send. */
   async replaceArmed3() {
     const a = this._replaceArmed;
     this.setState({ dup: null });
     if (!a) return;
     this._replaceArmed = null;
+    await this._shipHeldReplace(a);
+  }
+  /* The held bake's two roads to the same file on the glass. When the refusal armed
+   * the hold it may have handed back a commit token: the device verified these bytes
+   * once, liked them, and kept the copy on its card, so Replace spends the token on
+   * an empty POST and the megabytes cross the room zero times instead of two. A
+   * refused or lost commit (410: stale, card swapped, reboot between) says so on the
+   * status line and the bytes ship the old way — the confirm was for the theme, not
+   * for a particular road, and the re-upload must never die with the token. No
+   * token, no try: a precheck-armed hold never sent bytes, so an upload is the only
+   * honest crossing. */
+  async _shipHeldReplace(a) {
+    if (a.commit) {
+      const ip = await this.hubOrbIp();
+      if (ip) {
+        this.setState({ status: 'Replacing "' + a.nm + '" on ' + ip + ' from the copy already on the card — no second upload' });
+        try {
+          const r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
+          const j = await r.json().catch(() => null);
+          if (r.status === 200 && j && j.ok) {
+            this.setState({ status: 'Sent to ' + ip + ' as "' + a.nm + '" (' + (a.stem) + ') — replaced from the copy already on the card · ' + (((j.data && j.data.state) || 'stored')) });
+            return;
+          }
+          this.setState({ status: 'The staged copy was refused (' + ((j && j.error) || ('HTTP ' + r.status)) + ') — sending the file itself' });
+        } catch (e) {
+          this.setState({ status: 'The commit could not be sent (' + (e && e.message ? e.message : String(e)) + ') — sending the file itself' });
+        }
+      }
+    }
     await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
   }
   /* The modal's Cancel: drop the arm so the next Send is a fresh bake, and say so on
@@ -1766,7 +1882,10 @@ class Component extends DCLogic {
    * plates. bakeClock3 is deterministic over these inputs, so re-baking an untouched
    * dial reproduces this serial exactly and the send stays a no-op; any pixel that
    * moves moves it. Geometry that carries no pixels (pivot/x/y) rides in the seed so a
-   * reseat alone is not silently identical. */
+   * reseat alone is not silently identical. The cadence words count too: the
+   * shipped scalars (the Motion dropdown's second_sweep/tick_rate above all) and
+   * the plate/carriage fps fold in at the tail, so re-picking a beat moves the
+   * witness and the hub's precheck re-sends instead of calling it exact. */
   serialContent3(G, nm, B, fps, pol, opts) {
     const te = new TextEncoder();
     const parts = [te.encode(nm + ':' + B + ':' + fps + ':' + pol.carrier + (pol.carriage ? '+carriage' : ''))];
@@ -1843,10 +1962,10 @@ class Component extends DCLogic {
     /* The crystal comes home as a row. The FORMAT 3 element table never carried
      * the case or the glass, so every baked dial lost the bezel ring and the
      * reflections the preview draws above the hands. One masked plate: outer
-     * first, glass above it — the same fold the FORMAT 2 overlay packs — and the
-     * dial's GLASS role paints it over every live row. Both layers empty ships
-     * no plane. Its bytes join the policy price so a dial at the cap hears the
-     * truth BEFORE the bake, not at pack. */
+     * first, glass above it — the same fold the FORMAT 2 overlay packs (1405's
+     * glass-over-case) — and the dial's GLASS role paints it over every live
+     * row. Both layers empty ships no plane. Its bytes join the policy price
+     * so a dial at the cap hears the truth BEFORE the bake, not at pack. */
     let glassP = null, glassB = 0;
     if (fc.outer || fc.glass) {
       const gc = document.createElement('canvas'); gc.width = gc.height = 466;
@@ -1863,27 +1982,27 @@ class Component extends DCLogic {
     /* A bank the byte budget thinned re-prices the readout to the tempo that
      * actually ships, so the chip never outlives the receipt it just printed. */
     if (pol.decim > 1) this._hbFps = pol.fps;
-    /* The silent-still tripwire. A "still" verdict is only honest when the loop
-     * genuinely does not move, and this walk is the LAST thing the bake does: the
-     * comp and pointer passes awaited for seconds before it, and every canvas it
-     * reads comes back through frameCanvas. The build already priced this same
-     * loop on its own canvases, before any of that: rowPrice() diffs consecutive
-     * BASE frames and returns the worst dirty-row count, so a dial that truly
-     * holds still prices at 0 rows and a turning train prices well above one tile
-     * row. When the bake calls the plate still but the movement that painted it
-     * has dirty rows, the walk measured stale or blank canvases rather than this
-     * dial — and baking it ships a frozen train behind the sentence "the still
-     * bakes the same dial", which is exactly the defect D34 shipped. Refuse, and
-     * quote both readings so the next report is a measurement, not a guess.
-     * A dial whose carriage row ships is exempt: rowPrice() flattens the cage
-     * through a full orbit when it prices a carriage kit (baseImgs/flatCar), so
-     * those dirty rows ARE the carriage, and a still plate under it is honest. */
-    const bs = this.budgetStats;
-    if (pol.carrier === 'still' && !pol.carriage && bs && bs.mv === this.mvKey(1) && bs.rows >= 16) {
-      this.setState({ status: 'Not baked: the walk measured a still plate (union ' + (un | 0) +
-        ' px) but this movement prices ' + bs.rows + ' dirty rows a tick — the bake ran against stale frames. ' +
-        'Wait for the seam readout to settle, then press again.' });
-      return;
+    /* The blank-plate tripwire. D34 shipped a frozen dial because the walk read
+     * blank canvases: blank diffed against blank measures no motion, so the
+     * bake called the plate still and baked nothing into it. The rebuild race
+     * that blanks the canvases is closed at the source by the settled3() gates
+     * before and after the walk, so what is left to watch for at bake time has
+     * a direct, deterministic test: a real plate paints the opaque base disc,
+     * and any dial the compositor can draw carries far more full-alpha
+     * coverage than the floor below, while a blank canvas carries none. This
+     * reads the exact plane about to ship, so no timing can move the verdict.
+     * (The check this replaces compared the walk against budgetStats rows:
+     * that price charges the animated geartrain even where the shipped dial
+     * hides it, so a closed calendar dial whose plate genuinely holds still
+     * refused forever behind a message telling the operator to wait. 2026-10-24.) */
+    {
+      let ink = 0;
+      const p0 = pxs[0];
+      for (let i = 3; i < p0.length; i += 40) if (p0[i] === 255) ink++;
+      if (ink < 1000) {
+        this.setState({ status: 'Not baked: the walked plate came back blank (no opaque coverage: the frames never painted). Press Bake again with this window visible and the dial running on screen.' });
+        return;
+      }
     }
     const plate = { rgba: pxs[0], w: 466, h: 466 };
     if (pol.carrier === 'bank') {
@@ -1949,10 +2068,10 @@ class Component extends DCLogic {
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
     if (glassP) opts.plates = [glassP];
-    /* The ONE depth list: the author's hand order, bottom to top — the same list
-     * the preview draws by and the layer kit ships. The baker turns it into the
-     * element order column, so the rung the author set in the studio is the rung
-     * the L4 compositor sorts by and the glass shows. */
+    /* The ONE depth list: the author's hand order, bottom to top — the same list the
+     * preview draws by and the layer kit ships. The baker turns it into the element
+     * order column, so the rung the author set in the studio is the rung the L4
+     * compositor sorts by and the glass shows. */
     if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
     // The content-aware serial, now every shipped plane is on opts. It folds the
     // baked art's own CRC (geom + art) so any pixel change — the plate texture
@@ -2080,11 +2199,17 @@ class Component extends DCLogic {
     if (code !== 200 || j.ok === false) {
       const why = (j && j.error) || ('HTTP ' + code);
       if (!overwrite && String(why).indexOf('already on the card') >= 0) {
-        this._replaceArmed = { bytes, nm, stem, pol, meter };
         // The safety net: same serial, different payload CRCs — the one cut the
         // content-aware serial still cannot capture before the device checks it. The
-        // same modal arms here, so the operator's second act is a press, not a re-bake.
-        this.setState({ dup: { nm, stem, note: String(why), pre: false } });
+        // same modal arms here, so the operator's second act is a press, not a
+        // re-bake. The device kept the bytes it just verified and named the keep with
+        // a commit token: the hold carries it, and _shipHeldReplace spends it, so
+        // this act costs an empty POST. An old firmware that deleted the scratch
+        // sends no token and the hold falls back to the re-upload it always was.
+        this._replaceArmed = { bytes, nm, stem, pol, meter, commit: String(j.commit || '') };
+        // The modal's wording follows the road the hold can take: with a token the
+        // replace names the copy already on the card; without one it says it ships.
+        this.setState({ dup: { nm, stem, note: String(why) + (j.commit ? ' — the orb kept this upload; Replace files the copy already on its card.' : ''), pre: false } });
         return;
       }
       this.setState({ status: 'Not sent: ' + why });
@@ -2434,7 +2559,13 @@ class Component extends DCLogic {
     rd.readAsText(file);
   }
   renderVals() {
-    const s = this.state, F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
+    /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked
+     * carrier ships as tick_rate. HB.dev.pace is what the glass will hold --
+     * the scheduler can floor below the bank, and a still carrier's ticks pay
+     * the hand re-composite the row ladder can't price. Every label that
+     * reads as "the rate you'll SEE" takes the pace; the bank rate rides as
+     * the appendix, because the frame stepper really does cycle bank samples. */
+    const s = this.state, HB = this.budget(), F = HB.fps, DEV = HB.dev.pace, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
@@ -2773,12 +2904,19 @@ class Component extends DCLogic {
        * tempo is decided separately by the row price below. Picking sweep asks
        * for the 15 fps tier; if the art cannot pay for it, budget() silently
        * clamps to the highest tier it can (never a hard refusal -- the user
-       * chooses the look, the dial decides the rate). */
+       * chooses the look, the dial decides the rate). The readout appends the
+       * pace the device itself will hold when it differs from the tier: a
+       * sealed carrier has no bank to push, so its ticks pay a live
+       * re-composite the row ladder cannot price, and the cast-shadow twin
+       * doubles that bill -- see _devPace. */
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
         { v: 'sweep', label: 'Sweep' }];
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' }),
-        Nt('', 'Available frame rates depend on how much of the dial opening is visible.'),
-        H('Drop shadow · hands and raised/sunken subdials'),
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' + (HB.dev.pace < HB.fps ? ' · device ~' + HB.dev.pace : '') }),
+        Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
+        H('Drop shadow · hand twins and plate relief'),
+        Ch('Cast shadows', +c0.shMove > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
+        Ch('Plate relief', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),
+        Nt('', 'Cast shadows are the dark twins that turn with the hands. The watch repaints them every tick, so switching them off buys pace and costs nothing else. Plate relief is a subdial’s own drop, baked into the art at bake time. It costs nothing per tick, so it is a separate choice. Opacity below scales both.'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
         ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
         Rg('Distance', +c0.shDist, 0, 3, 0.05, cf('shDist'), (+c0.shDist).toFixed(2) + '×'),
@@ -2829,9 +2967,9 @@ class Component extends DCLogic {
       const balV = String(HB.fps < 12 && +c0.balance > 2 ? 2 : c0.balance);
       const balOpts = [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }].concat(HB.fps >= 12 ? [{ v: '4', label: '4 / s' }] : []);
       fields.push(H('Loop'),
-        Nt('Frame rate', F + ' fps — ' + (HB.measured
+        Nt('Frame rate', F + ' fps' + (HB.dev.pace < F ? ' · device ~' + HB.dev.pace + ' fps' : '') + ' — ' + (HB.dev.why || (HB.measured
           ? 'available frame rates depend on how much of the dial opening is visible'
-          : 'measuring the geartrain row footprint…')),
+          : 'measuring the geartrain row footprint…'))),
         Ch('Balance beats', balV, balOpts, cf('balance')));
     }
     if (ready && s.tab === 'light') {
@@ -2872,7 +3010,7 @@ class Component extends DCLogic {
     const hcfg = D.hands || {}, ce = D.centre || {};
     const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + ({ hours24: '24-hour', gmt: 'GMT', day: 'day', date: 'date' }[id.slice(7)] || id.slice(7)) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
     return {
-      metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      metaLabel: '466 × 466 · ' + (DEV < F ? '~' + DEV + ' fps (bank ' + F + ')' : F + ' fps') + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
       mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
@@ -2883,9 +3021,9 @@ class Component extends DCLogic {
       clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
       pickGuide: () => this.cycleGuide(),
       g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, bg: lit ? '#2a2722' : '#1f1d1a', bd: lit ? '#c9a25a' : '#3a352d', fg: lit ? '#f0d79a' : '#8d8472' }; })(),
-      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + F + ' fps)',
+      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + (DEV < F ? '~' + DEV + ' fps · bank ' + F : F + ' fps') + ')',
       playLabel: s.playing ? 'Pause' : 'Play',
-      slowLabel: s.slow ? Math.max(1, Math.round(F / 5)) + ' fps' : F + ' fps',
+      slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : (DEV < F ? '~' + DEV + ' fps · bank ' + F : DEV + ' fps'),
       // step the BANK: the frames on the glass are the bank's, while F only
       // paces them, so wrapping here by F would strand half of a deep bank
       prev: stop((f) => (f + B - 1) % B), next: stop((f) => (f + 1) % B),

@@ -465,6 +465,25 @@ setTimeout(() => {
       const Rf = (rot) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });
       ok(Rf(45).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 45 * Math.PI / 180) < 1e-9), 'a 45° dial-surface art really turns on the glass');
       ok(!Rf(0).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 0) < 1e-9 && g.a.length === 1), 'an unrotated art is drawn exactly as it was before the slider existed');
+      // ---- the two shadow gates: the MOVING twin versus the STATIC plate relief ----
+      {
+        const { FakeCanvas } = require('./headless-stub.js');
+        const shFace = (o) => E.face(Object.assign({ design: E.canonDesign({ print: 'roman',
+          comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'enamel', height: 0.8 }],
+          centre: { hour: 1, minute: 1, second: 1 } }),
+          finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
+        const shOn = shFace({}), shOff = shFace({ shMove: 0 }), shFlat = shFace({ shOp: 0 });
+        eq([shOn.shadow.mv, shOff.shadow.mv, shFlat.shadow.mv], [1, 0, 1], 'shMove is on unless the author says otherwise, and the static gate ignores it');
+        const twinA = (f) => f.handShadow(f.hands[0]).alpha;
+        ok(twinA(shOn) > 0.01 && twinA(shOff) === 0 && twinA(shFlat) === 0,
+          'every bake gate reads the twin alpha, which either gate can zero', [twinA(shOn), twinA(shOff), twinA(shFlat)].join('/'));
+        const tape = (f) => { const x = new FakeCanvas().getContext('2d'); f.drawHands(x, new Date(2024, 0, 1, 10, 8, 30)); return x.draws.filter((g) => g.sh).length; };
+        const tOn = tape(shOn), tOff = tape(shOff);
+        ok(tOn >= 2 && tOff === 0, 'Cast shadows off takes the twin passes off the tape entirely, ink included', tOn + ' -> ' + tOff);
+        const gOf = (f) => { const g = f.subLayers[0].canvas.getContext('2d').geom; return g.length + ':' + g.map((e) => e.op).join(''); };
+        ok(gOf(shOn) === gOf(shOff) && gOf(shOn).indexOf('fill') > 0,
+          'a raised subdial keeps its baked drop exactly as it was, drawn for drawn, when the twins go off');
+      }
       if (checked < 72) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
     process.exit(fails ? 1 : 0);

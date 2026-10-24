@@ -62,6 +62,19 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   ok(i3.artSaved === false, 'a refused store is recorded as refused');
   ok(/will not survive a reload/.test(i3.state.status), 'and the status says so in the same words', i3.state.status);
   ok(/session only/.test(i3.artNote(refs)), 'artNote stops claiming it saved', i3.artNote(refs));
+  // ---- the two shadow switches, and which one the pace readout answers to --------
+  const iS = mk();
+  iS.castShadowsOn(false);
+  eq([iS.cfg().shMove, iS.cfg().shOp], [0, 1], 'Cast shadows off writes the moving gate and leaves the art alone');
+  iS.castShadowsOn(true);
+  eq(iS.cfg().shMove, 1, 'and back on restores the twins without disturbing anything else');
+  iS.setCfg('shOp', 0.5);
+  iS.staticShadowsOn(false);
+  eq(iS.cfg().shOp, 0, 'Plate relief off zeroes the art gate');
+  iS.staticShadowsOn(true);
+  eq(iS.cfg().shOp, 0.5, 'and the strength the author left comes straight back');
+  eq(iS.opts(null, true).shMove, 1, 'opts carries the moving gate, so the preview and the bake see it');
+  ok(iS.mvKey(true).shMove === undefined, 'the moving gate is no reason to resample the bank');
   global.__T = { ok, eq, wait, mk, E, S, txt, i1, d, refs, fails: () => fails, checked: () => checked };
   require('./headless-component.kit.js');
 })();

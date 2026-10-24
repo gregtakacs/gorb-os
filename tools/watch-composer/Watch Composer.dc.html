@@ -413,7 +413,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 </x-dc>
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
-  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
+  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
   state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
@@ -428,7 +428,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
   paneRef = React.createRef();
@@ -534,22 +534,37 @@ class Component extends DCLogic {
     const n = (D.comps || []).filter(hit).length;
     if (!n) { out.why = 'Still dial sweeps clear of every plate: the device holds the tier rate, as the aviator does.'; return out; }
     out.cross = n;
-    const shOn = +c.shOp > 0.01;
+    /* Only the MOVING gate halves the bill: each twin is a second plate re-blitted
+     * under the wedge. Plate relief is art already in the statics and rides along
+     * with them, so shOp changes the look and not the pace. */
+    const shOn = +c.shMove > 0.01 && +c.shOp > 0.01;
     out.pace = Math.max(4, Math.min(b.fps, shOn ? 4 : 8));
     if (out.pace < b.fps) out.why = 'Seconds sweep crosses ' + n + ' live plate' + (n > 1 ? 's' : '') +
       ': each tick re-blits them under the wedge. Panel-measured 4 fps with cast shadows; ' +
       (shOn ? 'Cast shadows off predicts ~8.' : 'with the twins it measured 4.');
     return out;
   }
-  /* Off writes shOp 0: the bake's alpha gate already skips every twin at
-   * zero, so the theme ships no shadow rows and the device stops re-blitting
-   * a second plate under each moved hand -- roughly twice the pace on a
-   * still dial sweeping live plates. The last positive opacity round-trips,
-   * so the look returns exactly as it was left. */
+  /* "Cast shadows off" is the pace switch, and it touches the MOVING shadow only.
+   * It writes shMove 0: the bake's alpha gate then skips every twin, so the theme
+   * ships no shadow rows and the device stops re-blitting a second plate under
+   * each moved hand -- roughly twice the pace on a dial whose sweep crosses live
+   * plates. The baked plate relief (a raised or sunken subdial's drop, an
+   * aperture's inner shade) is art, costs nothing per tick, and keeps its own
+   * switch below this one. The last positive value round-trips, so the look
+   * returns exactly as it was left. */
   castShadowsOn(on) {
+    const cur = +this.cfg().shMove;
+    if (on) this.setCfg('shMove', this._shLast > 0.01 ? this._shLast : 1);
+    else { if (cur > 0.01) this._shLast = cur; this.setCfg('shMove', 0); }
+  }
+  /* The static half: the drop the subdial and aperture art carries, composited
+   * into the plate when the dial is drawn. Zeroing it re-samples the art and costs
+   * the dial its depth; it changes no tick cost, which is why it is not the
+   * switch the frame-rate readout answers to. */
+  staticShadowsOn(on) {
     const cur = +this.cfg().shOp;
-    if (on) this.setCfg('shOp', this._shLast > 0.01 ? this._shLast : 1);
-    else { if (cur > 0.01) this._shLast = cur; this.setCfg('shOp', 0); }
+    if (on) this.setCfg('shOp', this._opLast > 0.01 ? this._opLast : 1);
+    else { if (cur > 0.01) this._opLast = cur; this.setCfg('shOp', 0); }
   }
   _budget(forceWant) {
     const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train];
@@ -636,9 +651,9 @@ class Component extends DCLogic {
     // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
     // the texture has to travel with it: changing Surface re-bakes these base frames
     if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; if (dsg.weaveAngle != null) bg.bgWeaveAngle = dsg.weaveAngle; if (dsg.weaveScale != null) bg.bgWeaveScale = dsg.weaveScale; }
-    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
+    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, shMove: +c.shMove, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
   }
-  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
+  mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
     o.noCase = this.state.caseStyle === 'none' ? 1 : 0; if (noframes) delete o.frames; return JSON.stringify(o); }
   artKey(mvk) { return (mvk || this.mvKey(1)) + '|' + this.state.dial + '|' + JSON.stringify(this.design()); }   // priced-art signature: the movement art, the tempo-independent part, plus the dial that hides it
   handDef(id) { const p = this.preset(id); return { style: this.state.hands === 'auto' ? p.hands : this.state.hands, finish: this.state.handFinish === 'auto' ? p.handFinish : this.state.handFinish }; }
@@ -952,7 +967,7 @@ class Component extends DCLogic {
     const P = this.preset(), say = (t) => this.setState({ status: t + ' reset' });
     if (tab === 'dial') { this.upd((d) => { const keep = { comps: d.comps, hands: d.hands, order: d.order, centre: d.centre }; Object.keys(d).forEach((k) => delete d[k]); Object.assign(d, JSON.parse(JSON.stringify(P.design)), keep); }); say('Dial'); }
     if (tab === 'comps') { this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null }); say('Complications'); }
-    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp']); say('Hands'); }
+    if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove']); say('Hands'); }
     if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
     if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
@@ -1900,12 +1915,20 @@ class Component extends DCLogic {
       let sp = h.sp.c;
       if (K !== 1) { sp = document.createElement('canvas'); sp.width = Math.ceil(h.sp.c.width * K); sp.height = Math.ceil(h.sp.c.height * K); sp.getContext('2d').drawImage(h.sp.c, 0, 0, sp.width, sp.height); }
       files.push({ name, data: await this.png(sp) });
+      /* A twin at zero alpha is not a transparent shadow, it is no shadow: write no
+       * file and ship no shadow record, so prep_watch_kit leaves the hand's shadow
+       * absent and the device builds no second object to blend each tick. The
+       * engine zeroes this alpha from the moving gate, so the kit a person opens in
+       * the bench pipeline matches the dial they see here. */
       const sh = fc.handShadow(h), bl = sh.blur * K, pd = Math.ceil(bl * 1.5 + 2), mc = document.createElement('canvas'), sil = document.createElement('canvas');
-      sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
-      mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
-      const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
-      files.push({ name: shName, data: await this.png(mc, true) });
-      const shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
+      let shadow = null;
+      if (sh.alpha > 0.01) {
+        sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
+        mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
+        const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
+        files.push({ name: shName, data: await this.png(mc, true) });
+        shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
+      }
       hands.push({ shadow, z: z + 1, file: name, mount: h.id, kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: WatchEngine.handZeroDeg ? WatchEngine.handZeroDeg(h) : +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && String(h.id).startsWith('centre-') ? { drive: CAL_DRIVE[h.kind] + (offTurn && h.kind === ringHand ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
     }
     const perimeter = !pg ? undefined : {
@@ -1941,7 +1964,7 @@ class Component extends DCLogic {
       hands,
       ...(perimeter ? { perimeter } : {}),
       textKits,
-      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, note: 'per-hand offsets grow with stack height; see hands[].shadow' },
+      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, moving: fc.shadow.mv, note: 'per-hand offsets grow with stack height; see hands[].shadow. opacity 0 or moving 0 ships no shadow file at all — moving is the runtime gate (the twin turns with the hand, so it costs a re-blit each tick), opacity is the art gate (the drop baked into the plate and the subdial relief, which costs nothing per tick)' },
       assets: await this.kitAssets(files, D0),
       backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? D0.bgFinishKey : undefined, finishBlendKeyTolerance: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? (D0.bgFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.bgFinishKeyTol) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
       // on the dial face, so it ships inside dial.png rather than as its own layer:
@@ -3302,8 +3325,10 @@ class Component extends DCLogic {
         { v: 'sweep', label: 'Sweep' }];
       fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' + (HB.dev.pace < HB.fps ? ' · device ~' + HB.dev.pace : '') }),
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
-        H('Drop shadow · hands and raised/sunken subdials'),
-        Ch('Cast shadows', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
+        H('Drop shadow · hand twins and plate relief'),
+        Ch('Cast shadows', +c0.shMove > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
+        Ch('Plate relief', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),
+        Nt('', 'Cast shadows are the dark twins that turn with the hands. The watch repaints them every tick, so switching them off buys pace and costs nothing else. Plate relief is a subdial’s own drop, baked into the art at bake time. It costs nothing per tick, so it is a separate choice. Opacity below scales both.'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
         ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
         Rg('Distance', +c0.shDist, 0, 3, 0.05, cf('shDist'), (+c0.shDist).toFixed(2) + '×'),

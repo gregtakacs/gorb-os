@@ -240,26 +240,30 @@ CONFIG_ORB_DEBUG_HTTP=y
 # "Restart to share files" for exactly that reason, and the reboot is also the
 # only way back — becoming a device moves the one PHY off the console by hardware.
 #
-# MSC is gone rather than left selectable, so the line below is not decoration.
-# Nothing selects TINYUSB_MSC_ENABLED any more, and an sdkconfig carried over from
-# the D36 build keeps its own "=y" under a plain bool: the result would be a
-# binary that exports a raw-socket MSC LUN beside an MTP device writing the same
-# files through FatFs — two owners of one volume, which is the reason MSC lost.
-CONFIG_ORB_USB_MTP=y
-# CONFIG_TINYUSB_MSC_ENABLED is not set
-# The MTP object cache is charged twice against internal RAM: the table itself, and
-# the traversal pair malloc'd while answering the FIRST request a Windows host sends.
-# At the default 512 that request wants about 6 KiB of contiguous internal heap at
-# once, which is more than an orb holding a live dial has. The malloc fails, the
-# operation answers a bare general error, WPD gives up before creating a store, and
-# the device reads as connected while showing nothing. One card of themes and apps
-# needs far fewer than 64 handles, and the traversal is sized by this either way.
-CONFIG_TINYUSB_MTP_MAX_OBJECTS=64
+# D38: the USB device class is a Kconfig CHOICE (main/Kconfig, ORB_USB_MODE), not
+# two independent booleans, and this is the only line that decides which one a
+# build gets. It reads MSC because MTP never worked: the first command of any
+# session stalls the bulk pair on a Windows host and a Linux one alike, and the
+# vendor class has no path back from a stall (docs/usb-sd-msc-plan.md §14). The
+# choice is what keeps a composite binary — a raw LUN beside an MTP device writing
+# the same volume through FatFs, two owners of one filesystem — unbuildable rather
+# than merely unwanted. Setting both symbols is a Kconfig error, not a config.
+CONFIG_ORB_USB_MODE_MSC=y
 
-# The vendor's MTP trace: one INFO line per file read, write, edit, truncate,
-# rename, move and delete, plus cancel and device-reset (grep MTP_TRACEI under
-# managed_components/espressif__esp_tinyusb/mtp/). It does NOT cover the session
-# operations a host opens with -- GetDeviceID, OpenSession, GetDeviceInfo,
-# GetStorageIDs, GetObjectPropList -- so the log stays silent during a share that
-# enumerates and never publishes anything. Read absence from it accordingly.
+# MSC's transfer window. 8192 is the number the board plan measured (§7): it is a
+# whole SD sector count rather than a stream, the allocation is internal DMA RAM,
+# and this sits under the display tile ring's loan, so it is sized to what the
+# pool can still produce after the dial is up rather than to throughput.
+CONFIG_TINYUSB_MSC_BUFSIZE=8192
+
+# Below here is the MTP build's tuning, inert while the choice selects MSC and kept
+# so that reverting the mode is this one line rather than a search. The object
+# cache note is the reason the MTP mode was never able to answer a Windows host:
+# at the default 512 the first request wants ~6 KiB of contiguous internal heap,
+# the malloc fails, and WPD gives up before creating a store.
+CONFIG_TINYUSB_MTP_MAX_OBJECTS=64
+# The vendor's MTP trace covers writes only, NOT the session operations a host
+# opens with -- GetDeviceInfo, OpenSession, GetStorageIDs -- so the log stays
+# silent through a share that enumerates and publishes nothing. Read absence from
+# it accordingly; §14 is what that silence cost.
 CONFIG_TINYUSB_MTP_TRACE_WRITES=y

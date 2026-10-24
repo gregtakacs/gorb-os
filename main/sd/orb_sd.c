@@ -54,6 +54,10 @@ static char               s_card_id[48];
  * leaves it alone, and the DMA channel does not need renegotiating per try. */
 static bool s_bus_up;
 
+/* Set when the USB host owns the raw volume (MSC mode). Declared up here because
+ * mount_now() reads it and the hand-over that sets it is further down. */
+static bool s_usb_owns;
+
 static esp_err_t mount_at_khz(uint32_t khz)
 {
     if (!s_bus_up) {
@@ -117,26 +121,38 @@ static esp_err_t mount_at_khz(uint32_t khz)
 }
 
 
-static void log_card(void)
+/* Takes the card rather than reading s_card, because the MSC hand-over has a card
+ * in hand and no mount: s_card means "the mounted volume" everywhere else in this
+ * file, and letting a raw handle live there would make the status page and the
+ * rescan refusal disagree about what is on the socket. */
+static void log_card(const sdmmc_card_t *card, const char *verb)
 {
     /* Identity in one line, in the order a person at the wall needs it: what the
      * card calls itself, how big, and what clock it negotiated. The kHz is there
      * because a card that fell back to 4 MHz is slow by agreement rather than by
-     * fault, and that is the difference between "try another card" and "the
-     * socket is broken". */
-    const int mb = (int)((int64_t)s_card->csd.capacity * s_card->csd.sector_size / (1024 * 1024));
-    const char *kind = s_card->is_mmc ? "MMC"
-                     : (s_card->ocr & SD_OCR_SDHC_CAP) ? "SDHC" : "SDSC";
+     * fault, and that is the difference between "try another card" and the
+     * "socket is broken" reading. */
+    const int mb = (int)((int64_t)card->csd.capacity * card->csd.sector_size / (1024 * 1024));
+    const char *kind = card->is_mmc ? "MMC"
+                     : (card->ocr & SD_OCR_SDHC_CAP) ? "SDHC" : "SDSC";
     snprintf(s_card_id, sizeof(s_card_id), "%.8s %s %.1fGB @%lukHz",
-             s_card->cid.name[0] ? s_card->cid.name : "card", kind,
-             mb / 1024.0, (unsigned long)s_card->max_freq_khz);
+             card->cid.name[0] ? card->cid.name : "card", kind,
+             mb / 1024.0, (unsigned long)card->max_freq_khz);
     s_card_id[sizeof(s_card_id) - 1] = '\0';
-    ESP_LOGI(TAG, "mounted %s at %s", s_card_id, ORB_SD_BASE);
+    ESP_LOGI(TAG, "%s %s", verb, s_card_id);
 }
 
 static esp_err_t mount_now(void)
 {
     s_last_try_us = esp_timer_get_time();
+
+    /* The USB host owns the raw volume. Mounting FatFs over it would put two
+     * writers on one filesystem, which is the divergence this mode exists to
+     * prevent, so the answer is a flat refusal and not a retry — and the retry
+     * throttle above is left untouched, because "the host has it" does not go
+     * away on a timer and must not cost a bus attempt every time the theme page
+     * asks. */
+    if (s_usb_owns) return ESP_ERR_INVALID_STATE;
 
     /* The speed ladder is the Arduino original's (orb-os/src/sdcard.cpp), which
      * lost a day on the bench to exactly the card it saves: 20 MHz is what a
@@ -166,7 +182,7 @@ static esp_err_t mount_now(void)
 
     s_mounted  = true;
     s_last_err = ESP_OK;
-    log_card();
+    log_card(s_card, "mounted at /sd");
 
     /* The one directory the device owns, created at mount rather than at first
      * upload: a card in a locked adapter, or one whose controller has worn out,
@@ -254,6 +270,164 @@ void orb_sd_share_begin(void) { s_share_held = true; }
 void orb_sd_share_end(void)   { s_share_held = false; }
 bool orb_sd_share_held(void)  { return s_share_held; }
 
+/* ------------------------------------------------------------------ the hand-over
+ *
+ * The other USB mode's seam, and it points the opposite way from the share claim
+ * above. MTP needs /sd mounted and refuses only an unmount; MSC needs /sd GONE,
+ * because a LUN is raw sectors of the same blocks FatFs keeps its FAT in, and two
+ * owners of one filesystem is the failure this mode exists to avoid
+ * (docs/usb-sd-msc-plan.md §8). So while the host owns the card, mount_now()
+ * refuses — on a flag set BEFORE the ladder runs, because a boot that consumed the
+ * one-shot must not mount the volume it is about to hand away.
+ *
+ * Exit is a reboot, so nothing hands the card back and keeps running: the console
+ * returns no other way (§6.1). orb_sd_hand_back() serves only the failure path, so
+ * a start that cannot attach the card leaves the volume to the dial.
+ */
+static sdmmc_card_t      *s_raw_card;
+static sdspi_dev_handle_t s_raw_dev = -1;
+static bool               s_raw_host_inited;
+
+void orb_sd_usb_claim(void) { s_usb_owns = true; }
+bool orb_sd_usb_owned(void) { return s_usb_owns; }
+
+/* The bus set-up is the mount path's, unchanged: same four wires, same SPI3, same
+ * 4 KiB window — the card does not change shape when a host is reading it. What
+ * differs is everything above the host layer: no FatFs context and no VFS
+ * registration, only a card structure the MSC class can read sectors through. */
+static esp_err_t raw_attach_bus(void)
+{
+    if (!s_bus_up) {
+        const spi_bus_config_t bus = {
+            .mosi_io_num     = PIN_SD_MOSI,
+            .miso_io_num     = PIN_SD_MISO,
+            .sclk_io_num     = PIN_SD_SCK,
+            .quadwp_io_num   = -1,
+            .quadhd_io_num   = -1,
+            .max_transfer_sz = 4096,
+        };
+        const esp_err_t be = spi_bus_initialize(SD_HOST, &bus, SPI_DMA_CH_AUTO);
+        if (be != ESP_OK && be != ESP_ERR_INVALID_STATE) return be;
+        s_bus_up = true;
+    }
+    return ESP_OK;
+}
+
+/* Mirrors IDF's own esp_vfs_fat_sdspi_mount down to sdmmc_card_init and stops
+ * there (vfs_fat_sdmmc.c:356-378). Two steps there are easy to get wrong: the host
+ * driver is inited once, and the handle sdspi_host_init_device() returns REPLACES
+ * host.slot before the card is asked anything — pass the bare SPI unit and
+ * sdmmc_card_init fails exactly as an empty socket does. */
+static esp_err_t raw_attach_at_khz(uint32_t khz, sdmmc_card_t **out)
+{
+    const esp_err_t be = raw_attach_bus();
+    if (be != ESP_OK) return be;
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot         = SD_HOST;
+    host.max_freq_khz = (int)khz;
+
+    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot.host_id = SD_HOST;
+    slot.gpio_cs = PIN_SD_CS;
+    slot.gpio_cd = SDSPI_SLOT_NO_CD;
+    slot.gpio_wp = SDSPI_SLOT_NO_WP;
+
+    if (!s_raw_host_inited) {
+        const esp_err_t ie = host.init();
+        if (ie != ESP_OK && ie != ESP_ERR_INVALID_STATE) return ie;
+        s_raw_host_inited = true;
+    }
+
+    sdspi_dev_handle_t dev = -1;
+    esp_err_t e = sdspi_host_init_device(&slot, &dev);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "sdspi_host_init_device: %s", esp_err_to_name(e));
+        return e;
+    }
+
+    sdmmc_host_t attached = host;
+    attached.slot = dev;
+
+    sdmmc_card_t *card = calloc(1, sizeof(*card));
+    if (card == NULL) {
+        (void)sdspi_host_remove_device(dev);
+        return ESP_ERR_NO_MEM;
+    }
+    e = sdmmc_card_init(&attached, card);
+    if (e != ESP_OK) {
+        free(card);
+        (void)sdspi_host_remove_device(dev);
+        return e;
+    }
+    s_raw_dev = dev;
+    *out = card;
+    return ESP_OK;
+}
+
+esp_err_t orb_sd_hand_to_usb(orb_sd_raw_card_t *out_card)
+{
+    orb_sd_lock();
+
+    /* The volume may be mounted when the press comes at runtime rather than at
+     * boot. Coming down is the same call the rescan route makes and is safe for
+     * the same reason: nothing else holds the card open, because every reader
+     * goes through this mutex. */
+    if (s_mounted) {
+        const esp_err_t ue = esp_vfs_fat_sdcard_unmount(ORB_SD_BASE, s_card);
+        if (ue != ESP_OK) {
+            orb_sd_unlock();
+            ESP_LOGE(TAG, "cannot hand the card to USB: unmount said %s",
+                     esp_err_to_name(ue));
+            return ue;
+        }
+        s_card = NULL;
+        s_mounted = false;
+    }
+    s_usb_owns = true;
+
+    /* The mount's own speed ladder, for its own reason: an SDSC card that answers
+     * the probe at 400 kHz and fails the data phase at 20 MHz is not a broken
+     * card, and it should not cost the host a missing disk. */
+    const uint32_t ladder[3] = { (uint32_t)CONFIG_ORB_SD_SPI_MAX_KHZ, 10000, 4000 };
+    sdmmc_card_t  *card = NULL;
+    esp_err_t e = ESP_FAIL;
+    for (unsigned i = 0; i < 3; i++) {
+        e = raw_attach_at_khz(ladder[i], &card);
+        if (e == ESP_OK) break;
+    }
+    if (e != ESP_OK) {
+        s_usb_owns = false;
+        s_last_err = e;
+        orb_sd_unlock();
+        ESP_LOGE(TAG, "no card to hand over (%s)", esp_err_to_name(e));
+        return e;
+    }
+
+    /* Deliberately NOT s_card: that pointer means "the mounted volume" to the
+     * status page and to the unmount in orb_sd_remount(), and neither is true
+     * here. The MSC LUN lives in s_raw_card, which only hand_back() touches. */
+    s_raw_card = card;
+    s_last_err = ESP_OK;
+    log_card(card, "attached raw for the USB host");
+    orb_sd_unlock();
+    ESP_LOGW(TAG, "card handed to the USB host — /sd stays unmounted while it holds it");
+    *out_card = card;
+    return ESP_OK;
+}
+
+void orb_sd_hand_back(void)
+{
+    orb_sd_lock();
+    if (s_raw_card != NULL) { free(s_raw_card); s_raw_card = NULL; }
+    if (s_raw_dev >= 0) { (void)sdspi_host_remove_device(s_raw_dev); s_raw_dev = -1; }
+    if (s_raw_host_inited) { (void)sdspi_host_deinit(); s_raw_host_inited = false; }
+    s_usb_owns = false;
+    orb_sd_unlock();
+}
+
+
+
 esp_err_t orb_sd_remount(void)
 {
     /* Refused before the lock, never queued behind it: a route that blocked here
@@ -262,7 +436,7 @@ esp_err_t orb_sd_remount(void)
      * an unmount looks safe to the code asking for it. A rescan issued over WiFi
      * mid-copy would take the FATFS mount out from under open MTP file handles,
      * and the host's next read lands on a card re-enumerated underneath it. */
-    if (s_share_held) return ESP_ERR_INVALID_STATE;
+    if (s_share_held || s_usb_owns) return ESP_ERR_INVALID_STATE;
     orb_sd_lock();
 
     if (s_mounted) {
@@ -427,6 +601,16 @@ esp_err_t orb_sd_remount(void)        { return ESP_ERR_NOT_SUPPORTED; }
 void      orb_sd_share_begin(void)  { }
 void      orb_sd_share_end(void)    { }
 bool      orb_sd_share_held(void)   { return false; }
+/* Nothing to claim or hand over with no socket compiled in, and false is the
+ * honest answer to "does the USB host have the card" on hardware that has none. */
+void      orb_sd_usb_claim(void)    { }
+bool      orb_sd_usb_owned(void)    { return false; }
+esp_err_t orb_sd_hand_to_usb(orb_sd_raw_card_t *out_card)
+{
+    if (out_card) *out_card = NULL;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+void      orb_sd_hand_back(void)    { }
 const char *orb_sd_card_id(void)      { return ""; }
 void      orb_sd_space(uint64_t *t, uint64_t *f) { if (t) *t = 0; if (f) *f = 0; }
 void      orb_sd_lock(void)   { }

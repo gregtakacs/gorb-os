@@ -321,11 +321,12 @@ static orb_app_t s_apps[] = {
  * refused by orb_app_activate() on its own predicate rather than by being
  * absent from a lookup.
  */
-#if CONFIG_ORB_USB_MTP
-/* One row for the feature, exported by orb_usb_mtp.c. The tier is written as a
- * table rather than a bare reference so the next settings-only OS feature lands in
- * the same list instead of inventing its own. */
-extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_mtp.c */
+#if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
+/* One row for the feature, exported by whichever mode this build chose —
+ * orb_usb_mtp.c or orb_usb_msc.c, never both, since the two are a Kconfig choice.
+ * The tier is written as a table rather than a bare reference so the next
+ * settings-only OS feature lands in the same list instead of inventing its own. */
+extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_{mtp,msc}.c */
 static orb_app_t *const s_service[] = { &orb_app_usb_files_row };
 #else
 static orb_app_t *const s_service[] = { NULL };   /* the tier, empty */

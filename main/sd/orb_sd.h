@@ -34,6 +34,14 @@
 
 #include "esp_err.h"
 
+/* Forward, not included. IDF defines sdmmc_card_t from an anonymous struct
+ * (sd_protocol_types.h:274), so there is no tag to name here, and including
+ * sdmmc_cmd.h would put the SD driver's whole type set in front of every file
+ * that only asks whether /sd is mounted. The hand-over is therefore opaque: the
+ * MSC mode passes it straight to tinyusb_msc_new_storage_sdmmc() and never reads
+ * through it. */
+typedef void *orb_sd_raw_card_t;
+
 #define ORB_SD_BASE        "/sd"
 #define ORB_SD_THEME_DIR   ORB_SD_BASE "/themes"
 #define ORB_SD_APPS_DIR    ORB_SD_BASE "/apps"   /* the .orbapp drop zone; must equal ORB_APP_DIR */
@@ -94,6 +102,16 @@ void orb_sd_unlock(void);
 void orb_sd_share_begin(void);
 void orb_sd_share_end(void);
 bool orb_sd_share_held(void);
+
+/** MSC mode's seam, the inverse of the share claim: the host gets the raw volume
+ *  and /sd must NOT be mounted. Claim sets the refusal flag early (the boot ladder
+ *  consults it before mounting); hand_to_usb unmounts if needed, attaches the card
+ *  raw and hands back the sdmmc_card_t the MSC LUN is built on; hand_back is the
+ *  failure path only — the exit gesture is a reboot. */
+void orb_sd_usb_claim(void);
+bool orb_sd_usb_owned(void);
+esp_err_t orb_sd_hand_to_usb(orb_sd_raw_card_t *out_card);
+void      orb_sd_hand_back(void);
 
 /**
  * Is `name` safe to use as a single FATFS path segment?

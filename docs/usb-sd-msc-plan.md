@@ -1,13 +1,14 @@
 # USB access to the enclosed SD card
 
-**Status: SHIPPED as MTP file sharing (§12, §13). MSC is gone (§13).**
+**Status: SHIPPED as MSC disk sharing (§14). MTP is gone (§14).**
 
-Read §13 first. It is the current state. §1–§11 are the MSC plan and its board
+Read §14 first. It is the current state. §1–§11 are the MSC plan and its board
 log: kept because they record the hardware findings that survive the class change
 (one PHY, one switch, §6.1; the reconnect pulse, §11; the throughput ceiling, §9),
 and because §10 is the record of what the first pass got wrong. §12 documents the
 inversion to MTP while MSC still existed beside it; §13 supersedes its §12.1,
-§12.4 and §12.6, which describe a two-mode build that no longer compiles.
+§12.4 and §12.6, which describe a two-mode build that no longer compiles; and §14
+supersedes §13's headline, which shipped a class that never worked on hardware.
 
 ---
 
@@ -576,4 +577,106 @@ MSC arm. In priority order:
 The MTP `DeviceInfo` Version field is the literal `"orb-os"` because the tree has no
 build-time version macro. Wiring one in is a separate change with a wider blast
 radius than a USB mode, and it is worth doing for the config page as much as for
+---
+
+## 14. D38: back to MSC, because MTP never enumerated a store
+
+§13 shipped MTP and reported the design arguments, which were sound. The class
+did not work. Reverted to MSC on 2026-10-24, on the owner's instruction, having
+accepted the cost §12 used as its argument against MSC.
+
+### 14.1 The failure, measured
+
+On firmware `v1.1.0+b4482b7`, the first PTP command of any session stalls the bulk
+pair, on both hosts, with a correctly formed container:
+
+```
+>> OpenSession op=0x1002   container = 20000000 0100 0210 50000000 df9b5713 ...
+   OUT ok: 32 bytes accepted          (declared len=32, 32 bytes written)
+   IN#0 FAIL USBError errno=32        (bulk IN stalled)
+```
+
+`mtp-detect` reaches the same conclusion by its own route: `PTP_ERROR_IO: failed to
+open session`, then `LIBMTP PANIC`. Two unrelated clients failing identically put
+the fault on the device. The storage was registered the whole time — the boot log
+says `MTP storage registered: id=0x00010001 path=/sd total=31255953408` — so this
+was never a missing volume.
+
+Windows is exonerated and was the thing §13 blamed. The UMDF host starts,
+`wpdmtsp.dll` loads, every PnP and Power operation completes `0x0`, DeviceSetup
+Manager writes 35 properties, and the devnode reports `CM_PROB_NONE`. There is no
+`WPDBUSENUM` child because the transport never answered a command, not because the
+host declined to publish one. The `0xC00000BB` entries in the admin log are
+`STATUS_NOT_SUPPORTED` on optional IRPs and are normal at that layer.
+
+### 14.2 Two defects in the vendored class, neither fixed here
+
+1. **No path back from a stall.** `MTP_REQ_RESET` is the recovery request, and
+   `mtp_device.c:349-360` clears the endpoint stalls then returns `true` from the
+   SETUP branch without calling `tud_control_xfer()` or `tud_control_status()`. The
+   status stage never completes: measured as `RESET -> timeout at 2501 ms`. One
+   command error therefore ends the mode until re-enumeration, and re-enumeration
+   needs a reboot, because the class has the console's pins.
+2. **No functional descriptor.** `TUD_MTP_DESCRIPTOR` (`usbd.h:322-330`) emits
+   interface plus three endpoints and no type `0x30` PTP functional descriptor,
+   confirmed in the 39-byte config on the wire, and this driver accepts commands
+   only on bulk OUT. Canonical PTP clients use the class control pipe, which is why
+   libmtp fails differently from Windows rather than for a different reason.
+
+Both are upstream (`espressif/esp_tinyusb` ^3.0.0, a registry component, gitignored
+and regenerated), so they are reported rather than patched here. An instrumented
+build was considered and rejected before writing it: `CFG_TUSB_DEBUG_PRINTF` is
+`esp_rom_printf` (`tusb_config.h:138`), which bypasses the `ESP_LOG` hook that feeds
+the HTTP log ring, and the console is muxed away in device mode — so raising
+`CONFIG_TINYUSB_DEBUG_LEVEL` produces logs with no reader.
+
+### 14.3 Three things §13 asserted that hardware contradicted
+
+- **"The heap starves the first Windows request."** The object table is static BSS,
+  so `heap_internal_largest` has no bearing on it. The number that mattered (12 kB
+  largest block at idle) was never the constraint.
+- **"The arm persists."** It does not, and correctly so: `orb_usb_mtp.c:133` records
+  it as one read-and-cleared NVS word, so `usb.state: off` after a reboot is the
+  design working.
+- **"`preprocess_cmd` double-encodes DeviceInfo."** It does not.
+  `MTP_DEVICE_INFO_STRUCT` is `TU_ATTR_PACKED` with every array sized to its exact
+  content, so `sizeof()` is the wire size and the four appended strings complete
+  the dataset to spec.
+
+### 14.4 What shipped instead
+
+`main/usb/orb_usb_msc.c` exports the whole card as one writable LUN. The owner's
+reasoning is the load-bearing part and is now recorded in the Kconfig help: the
+orb has no runtime use for the card, so the host may have all of it.
+
+- `choice ORB_USB_MODE` in `main/Kconfig` replaces the plain bool. The two modes are
+  a choice rather than two checkboxes so a composite binary — a raw LUN beside an
+  MTP device writing the same volume through FatFs — cannot be built at all.
+  `CONFIG_ORB_USB_MTP` and `CONFIG_ORB_USB_MSC` are derived from it, so no call site
+  moved. Verified in the linked image: 21 MSC functions, 0 MTP functions.
+- `orb_sd_hand_to_usb()` is the inverse seam of `orb_sd_share_begin()`. It unmounts
+  if the boot ladder got there first, attaches the card raw, and sets the flag that
+  makes `mount_now()` refuse for the rest of the boot. The boot claim sets that flag
+  ahead of the storage ladder, which is the one behavioural difference from the MTP
+  claim: an MSC boot must not mount the volume it is about to export.
+- The raw attach mirrors IDF's own `esp_vfs_fat_sdspi_mount` down to
+  `sdmmc_card_init` and stops there (`vfs_fat_sdmmc.c:356-378`), across the same
+  20/10/4 MHz ladder. The step that is easy to omit: the handle
+  `sdspi_host_init_device()` returns **replaces** `host.slot` before the card is
+  asked anything.
+- `tud_msc_is_writable_cb()` is defined strongly, answering yes. The component's
+  weak definition answers read-only, and a write-protected stick is not the feature.
+- `auto_mount_off` is set. Left alone, the component remounts the volume for the
+  application on USB detach, which is one automatic route back to two owners.
+- The row is unchanged in slug and address (`usb-files`) and now reads **USB Drive**,
+  because it is the same feature with a different class behind it.
+
+### 14.5 Owed, not yet done
+
+Built clean for both `esp32s3` and the `esp32` stub path, but **not yet run on a
+board**: the bench device was wedged in the MTP failure at the time of the change.
+The validation list §10's step 2 still owes, and the first pass should record
+whether the host mounts the existing FAT volume without being prompted to format
+it, which is what `do_not_format` claims.
+
 MTP.

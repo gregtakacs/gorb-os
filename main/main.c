@@ -30,6 +30,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_usb_mtp.h"   /* the file-share mode's one-shot claim; stub false when off */   /* D37: the MTP mode's, on the same boot-ladder terms  */
+#include "orb_usb_msc.h"   /* D38: the disk mode's claim, same seam, opposite mount rule  */
 #include "orb_log.h"       /* the RAM log ring: /api/v1/log's only source */
 #include "orb_theme.h"
 #include "art_bank.h"
@@ -284,7 +285,12 @@ void app_main(void)
  *
  * The claim says NOTHING about the mount: MTP answers the host with paths inside
  * the filesystem, so an armed boot mounts /sd exactly as an ordinary boot does. */
-#if CONFIG_ORB_USB_MTP
+#if CONFIG_ORB_USB_MSC
+    /* D38: the disk mode's claim is load-bearing for the mount in a way the MTP
+     * one is not — it sets the flag that makes mount_now() refuse, so the boot
+     * that hands its card away never mounts the volume it is about to export. */
+    const bool files_boot = orb_usb_msc_boot_claim();
+#elif CONFIG_ORB_USB_MTP
     const bool files_boot = orb_usb_mtp_boot_claim();
 #else
     const bool files_boot = false;
@@ -312,7 +318,15 @@ void app_main(void)
                       "the apps page will list nothing");
 #endif
 
-#if CONFIG_ORB_USB_MTP
+#if CONFIG_ORB_USB_MSC
+    /* Same rule as the MTP mode: posted, after jobs and the display are up,
+     * because a raw card init and a TinyUSB task creation are the two slowest
+     * things this does and a disk boot has no console — the row's state line is
+     * the only account of what happened. */
+    if (files_boot && orb_usb_msc_request_start() != ESP_OK)
+        ESP_LOGE(TAG, "the worker refused the disk-mode start — the card stays the "
+                      "dial's until the next boot");
+#elif CONFIG_ORB_USB_MTP
     /* The claimed boot becomes the device here and not earlier: orb_jobs_start()
      * has run, so the request has somewhere to be posted to, and the whole display
      * ladder is up — which matters because a device boot has no console, and the

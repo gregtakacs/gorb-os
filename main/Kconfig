@@ -439,7 +439,46 @@ endmenu
 menu "Orb USB file access"
     depends on IDF_TARGET_ESP32S3
 
-    config ORB_USB_MTP
+    choice ORB_USB_MODE
+        prompt "USB device class the port becomes for one boot"
+        default ORB_USB_MODE_MSC
+        help
+            One class, chosen at build time, and the choice is a choice rather
+            than two independent checkboxes on purpose: MSC hands the host raw
+            sectors of the very volume MTP would be writing through FatFs, which
+            is two owners of one filesystem. The composite binary cannot be
+            assembled by accident because the language will not build both.
+
+            Disk mode is the default. It is the class that works: the host gets
+            a drive letter, the firmware answers BOT with the component's own
+            MSC class, and nothing depends on the MTP response path — which is
+            the class that shipped first and never enumerated a store on either
+            a Windows host or a Linux one (docs/usb-sd-msc-plan.md §14).
+
+    config ORB_USB_MODE_MSC
+        bool "Disk mode — hand the whole card to the host as a USB stick"
+        select TINYUSB_MSC_ENABLED
+        help
+            The card leaves the orb's filesystem entirely for the window: /sd is
+            not mounted, the dial draws from flash, and the host owns the whole
+            volume as one LUN with full read/write. The orb does not read the
+            card at runtime — themes and apps are copied into flash at install —
+            so a host holding the card costs the dial nothing but the files it
+            is holding, and the owner can pull the card at any moment.
+
+            The volume is exported as it already is. Nothing is partitioned or
+            formatted: a card the host has partitioned into something the orb
+            cannot mount comes back as "no card in the socket" on the next boot,
+            which is the same account the socket already gives an unreadable
+            card, and reformatting it is the owner's call, not the firmware's.
+
+            Entry and exit are a reboot in each direction, exactly as with MTP:
+            becoming a device gives up the console by hardware (§6.1), so the
+            console coming back is what the reboot is for. The arm is one NVS
+            word, read and cleared at boot, so an orb that loses power mid-copy
+            comes back as a clock and not as a disk nobody asked for.
+
+    config ORB_USB_MODE_MTP
         bool "Files mode — share /sd with a host over MTP"
         select TINYUSB_MTP_ENABLED
         help
@@ -478,6 +517,20 @@ menu "Orb USB file access"
             Protocol (MTP). Its defaults are used; the storage root path comes
             from ORB_SD_BASE rather than from a menu, so the two cannot disagree
             about where the files are.
+
+    endchoice
+
+    # Derived, not selectable: every call site in the tree already reads
+    # CONFIG_ORB_USB_MTP, and the choice above is the only thing a builder
+    # touches. Exactly one of these is ever true, which is the structural
+    # refusal of a composite MSC+MTP binary.
+    config ORB_USB_MTP
+        bool
+        default y if ORB_USB_MODE_MTP
+
+    config ORB_USB_MSC
+        bool
+        default y if ORB_USB_MODE_MSC
 
 
 endmenu

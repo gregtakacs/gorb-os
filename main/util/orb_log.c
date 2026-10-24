@@ -21,11 +21,13 @@
  *
  * Sizing: ORB_LOG_BYTES is .bss in internal DRAM, so it is gone before the heap is
  * ever asked. 2048 B was chosen against the one number that matters on this board —
- * heap_internal_largest, measured 13824 B idle and 7168 B with the MTP mode armed —
- * because the MTP backend's GetObjectPropList allocates two CONFIG_TINYUSB_MTP_
+ * heap_internal_largest, measured 13824 B idle before this file and 8704 B after it
+ * (orb-B, 2026-10-24, with the 1 KB read scratch in h_log() counted too) — because
+ * the MTP backend's GetObjectPropList allocates two CONFIG_TINYUSB_MTP_
  * MAX_OBJECTS-sized buffers plus a measured payload copy from that same internal
  * pool, and a ring that steals the largest block is a ring that reintroduces the
- * failure it was built to observe. 1024 was too short to hold one enumeration
+ * failure it was built to observe. At 64 objects that traversal is 512 B plus 256 B
+ * plus the payload, which 8704 B covers. 1024 was too short to hold one enumeration
  * (GetDeviceInfo, OpenSession, GetStorageIDs and one prop-list line each cost
  * ~150 B); 4096 was rejected as a heap tax on every boot for lines nobody has read
  * yet. Re-measure the largest block after changing this.
@@ -37,6 +39,9 @@
 #include "freertos/FreeRTOS.h"
 #include "orb_log.h"
 #include "esp_log.h"
+#if CONFIG_ORB_USB_MTP
+#include "orb_usb_mtp.h"   /* orb_usb_mtp_active(): the one case the chained sink must not run in */
+#endif
 
 /* One formatted line, on the caller's stack rather than a shared static: logs come
  * from many tasks at once and a shared buffer would interleave them into garbage.
@@ -102,6 +107,27 @@ static int ring_vprintf(const char *fmt, va_list args)
     if (n > 0) {
         ring_push(line, n < (int)sizeof line ? n : (int)sizeof line - 1);
     }
+
+#if CONFIG_ORB_USB_MTP
+    /* While the file share owns the pad multiplexer the console cannot drain: the
+     * USB-Serial-JTAG peripheral keeps its registers and loses its pins
+     * (orb_usb_mtp.c:17-19), so the TX FIFO fills and no host reads it. The chained
+     * sink is plain vprintf onto that FIFO, and one stalled character costs a busy
+     * spin of TX_FLUSH_TIMEOUT_US — 50 ms, esp_driver_usb_serial_jtag/
+     * src/usb_serial_jtag_vfs.c:78 — after which the rest of the line is dropped. So
+     * roughly 50 ms per log line, billed to whichever task happened to log. With
+     * CONFIG_TINYUSB_MTP_TRACE_WRITES on, this build logs one line per MTP
+     * operation, and the operations are answered on the USB task: the trace would
+     * have been adding the latency it exists to measure.
+     *
+     * So the ring is terminal for the duration. Nothing is lost that was ever
+     * readable — the port those bytes would address is carrying MTP, and /api/v1/log
+     * is the only console this window has. */
+    if (orb_usb_mtp_active()) {
+        return n > 0 ? n : 0;
+    }
+#endif
+
     return s_prev ? s_prev(fmt, args) : n;
 }
 

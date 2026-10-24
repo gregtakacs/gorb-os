@@ -301,7 +301,7 @@
     it.png = async (c) => bytesOf(c);
     it.zip = (f) => { files.push.apply(files, f); return new Blob([]); };
     it.download = () => { };
-    it.budget = () => ({ fps: 8 });
+    it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: "" } });
     // an 8x8 solid PNG, and an 8x8 whose ONLY ink sits at alpha 3 -- below the threshold
     // prep_watch_kit calls no ink -- so the ingest rule is exercised on real bytes
     const mkSolid = () => { const c = document.createElement('canvas'); c.width = c.height = 8; const x = c.getContext('2d'); x.fillStyle = 'rgba(200,40,40,1)'; x.fillRect(0, 0, 8, 8); return c.toDataURL('image/png'); };
@@ -498,7 +498,7 @@
     const it = new (window.COMP_CLASS(DCLogic))({});
     it.ready = true; it.rendering = false;
     it.state.dial = 'modern'; it.state.timeMode = 'pose'; it.state.frame = 0; it.state.hidden = {};   // registered id, for the same reason
-    it.state.tab = 'export'; it.state.playing = false; it.budget = () => ({ fps: 8 });
+    it.state.tab = 'export'; it.state.playing = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: "" } });
     const fail = (m) => done(new Error('features: ' + m)), pass = () => done();
     const src = document.createElement('canvas'); src.width = 60; src.height = 60;
     const sx = src.getContext('2d');
@@ -1101,7 +1101,7 @@
     it.ready = true; it.rendering = false;
     it.state.dial = 'calendar'; it.state.timeMode = 'cycle'; it.state.frame = 0; it.state.hidden = {}; it.state.tab = 'export'; it.state.playing = false;
     it.state.designs = { calendar: calD };
-    it.budget = () => ({ fps: 8 });
+    it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: "" } });
     it.base = E.movement(it.opts());
     it.gt = Array.from({ length: it.B }, (_, f) => it.base.render(f).gt);
     let files2 = null;
@@ -1183,7 +1183,7 @@
       { id: 'cf1', type: 'flare', host: 'dial', angle: 0, dist: 55, rot: 0, size: 9, style: 'applied', icon: 'datetext', fmt: 'DD.MM.YYYY', fcase: 'upper', color: 'auto', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 },
       { id: 'cm1', type: 'moon', host: 'dial', angle: 200, dist: 150, rot: 0, size: 30, style: 'sphere' });
     inst.state.designs = { calendar: E.canonDesign(design) };
-    inst.budget = () => ({ fps: 8 });
+    inst.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
     inst.base = E.movement(inst.opts());
     inst.gt = Array.from({ length: inst.B }, (_, f) => inst.base.render(f).gt);
     say('dial=' + inst.state.dial + ' B=' + inst.B + ' F=' + inst.F + ' comps=' + design.comps.length);

@@ -52,9 +52,11 @@
  * Background modes (clk_theme.bg_mode, chosen by tools/bake_clock.py):
  *   0 = classic theme plate + baked bgAnim plate frames (full-page source
  *       swaps; kept for non-GIF themes).
- *   1 = GIF DELTA BANK: one full keyframe + per-frame changed-region rects
- *       (packed offline against the simulated device canvas, perceptual
- *       threshold). The keyframe is copied into a PSRAM canvas at init; the
+ *   1 = GIF DELTA BANK: one full keyframe + one changed-region rect per frame,
+ *       §37 included: frame 0's rect is the closing delta that returns the
+ *       wrapped canvas to the keyframe, so the chain is a cycle and every tick
+ *       applies a delta (packed offline against the simulated device canvas,
+ *       perceptual threshold). The keyframe is copied into a PSRAM canvas at init; the
  *       plate widget is an RGB565 image whose data IS that canvas. Each tick
  *       memcpy's the next frame's rects into the canvas and invalidates just
  *       those areas, so LVGL renders + flushes only the changed background
@@ -315,7 +317,23 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
         }
     }
 
-    float secF = (float)sec + (sweep ? (float)wall_frac : 0.0f);
+    /* The second hand's beat, from the theme's own motion words. A sweep reads
+     * the wall clock's fraction whole (subdivided above when the tick runs
+     * faster than the beat).  A TICK beats at tick_rate steps per second: 4/s
+     * quantises the wall fraction into quarter-steps, so a bank-rate tick
+     * shows that beat even between wall-second changes, and a 1/s or classic
+     * theme (tick_rate 0/1) stays the integer step it always was.  A ticking
+     * hand over a delta plate strobes — its box repaints between the bank's
+     * row pushes — which is exactly the cost the composer's Motion choice now
+     * accepts instead of silently overruling it. */
+    float secF;
+    if (sweep)
+        secF = (float)sec + (float)wall_frac;
+    else if (clk_theme.tick_rate > 1)
+        secF = (float)sec + (float)((int)(wall_frac * (float)clk_theme.tick_rate))
+                           / (float)clk_theme.tick_rate;
+    else
+        secF = (float)sec;
     float minF = (railway && sweep) ? (float)min
                                     : (float)min + secF / 60.0f;
     float hrF  = (float)(hour % 12) + minF / 60.0f;

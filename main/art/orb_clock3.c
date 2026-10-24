@@ -35,6 +35,13 @@ static const char *const CLASS_NAMES[9] = {
 #define CLS_BANK   5
 #define CLS_AUX    8            /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+#define EF_DELTA_WRAP 64        /* §37: the row's LAST sprite, one past its own frame
+                                 * window, is the rect that returns the finished canvas
+                                 * to the keyframe — the delta the device applies when a
+                                 * looping delta plate wraps to frame 0. Only a looping
+                                 * v4 delta plate may carry it; the refusal lives with
+                                 * the plate gate below, and the baker's rowDelta sets
+                                 * the bit in the same breath as shipping the row. */
 #define EF_INSTANCE 32          /* C4: the row's one plane is its whole frame
                                  * window, and the comp maths draws `n_frames`
                                  * slots of it. The reading rule is one condition
@@ -535,6 +542,12 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     const uint8_t plate_anim = plate.n_frames > 1u || t->bg_frames != 0;
     const uint8_t plate_delta =
         delta && t->bg_mode == 1 && plate.n_frames > 1u && t->bg_frames == 0;
+    /* §37 first refusal, before either animation branch: a v3 table or a
+     * keyframe-shaped plate claiming the closing bit is the lie itself, and it
+     * deserves the sentence that names it rather than a shape mismatch. */
+    if ((plate.flags & EF_DELTA_WRAP) && !plate_delta)
+        return "the closing delta means the looping v4 delta plate and nothing else: "
+               "a row without that shape cannot claim its rect";
     if (plate_delta) {
         if (t->gif_frames != (uint16_t)plate.n_frames)
             return reject("a delta plate row names %u planes while the gif table "
@@ -557,6 +570,45 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             return reject("a one-shot plate bank at bg_fps %d: an animation with no "
                           "tempo is a frame that never arrives", (int)t->bg_fps);
     }
+    /* §37: the closing delta. A looping delta plate may carry ONE sprite past its own
+     * frame window: the rect that returns the finished canvas to the keyframe, which
+     * the device applies when the loop wraps to frame 0. Without it the wrap is a
+     * keyframe blit no delta table can express, and the visible price is a stalled
+     * tick at every wrap and a stale base under frame 1 — once per second at the
+     * sweep tier's 15-frame bank. The row claims the shape with EF_DELTA_WRAP; the
+     * baker's rowDelta sets the bit in the same breath as shipping the row, and this
+     * is the gate that refuses the lie. A v3 build refuses the bit as it refuses the
+     * delta dialect, and any other row refuses it in the walk below: an unbacked
+     * bit must fail the load, never paint nothing quietly. */
+    const uint8_t plate_wrap = plate_delta && (plate.flags & EF_DELTA_WRAP);
+    if (plate_delta && t->gif_frames > (uint16_t)ORB_CLOCK3_N_RECTS)
+        return reject("a delta loop of %u frames: %u materialized rects, and the dial's "
+                      "invalid-area table holds %d — a frame forced to drop its rect "
+                      "paints stale texels forever, so this bank belongs to a wider dial",
+                      (unsigned)t->gif_frames, (unsigned)t->gif_frames,
+                      ORB_CLOCK3_N_RECTS);
+    if (plate_wrap) {
+        if ((uint64_t)plate.frame0 + plate.n_frames >= ns)
+            return reject("the plate row claims a closing delta and owns no sprite after "
+                          "its own frame window to be it: row %u of a %u-row catalogue",
+                          (unsigned)(plate.frame0 + plate.n_frames), (unsigned)ns);
+        orb_bundle_spr_t spw;
+        orb_bundle_spr_at(sec, plate.frame0 + plate.n_frames, &spw);
+        if (spw.size != (uint32_t)spw.w * spw.h * 2u)
+            return reject("the delta pays colour-only: the one row past the plate "
+                          "must BE the closing rect, not a %u-by-%u row of %lu B",
+                          (unsigned)spw.w, (unsigned)spw.h,
+                          (unsigned long)spw.size);
+        if (!spw.w || !spw.h || spw.w > plate.w || spw.h > plate.h ||
+            spw.diffx < 0 || spw.diffy < 0 ||
+            (int32_t)spw.w + spw.diffx > (int32_t)plate.w ||
+            (int32_t)spw.h + spw.diffy > (int32_t)plate.h)
+            return reject("the closing delta is a %lux%lu rect at (%d,%d) of a %ux%u "
+                          "plate: it must sit inside the plate it closes back to",
+                          (unsigned long)spw.w, (unsigned long)spw.h,
+                          (int)spw.diffx, (int)spw.diffy,
+                          (unsigned)plate.w, (unsigned)plate.h);
+    }
     const int16_t cx = (int16_t)(plate.x + plate.w / 2);
     const int16_t cy = (int16_t)(plate.y + plate.h / 2);
 
@@ -572,7 +624,9 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     for (uint32_t i = 0; i < ns; i++) {
         orb_bundle_spr_t sp;
         orb_bundle_spr_at(sec, i, &sp);
-        const int on_plate = i >= plate.frame0 && i < plate.frame0 + plate.n_frames;
+        const int on_plate = i >= plate.frame0 &&
+                             (i < plate.frame0 + plate.n_frames ||
+                              (plate_wrap && i == plate.frame0 + plate.n_frames));
         const uint64_t want = PLATE_BYTES_T(sp.w, sp.h)
                             + (on_plate ? 0 : (uint64_t)sp.w * sp.h);
         if (sp.off != at)
@@ -602,9 +656,20 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         if (e.frame0 >= ns)
             return reject("element %u points at sprite row %u of a table with %u rows",
                           (unsigned)e.n, (unsigned)e.frame0, (unsigned)ns);
+        /* §37: the closing bit means this section's looping delta plate and nowhere
+         * else — checked before the window, so a lie about it never widens one. */
+        if ((e.flags & EF_DELTA_WRAP) &&
+            !(delta && i == (uint32_t)at_plate[0] && plate_delta))
+            return reject("element %u carries the closing-delta bit: the loop it closes "
+                          "is the plate's background, and this row is not the section's "
+                          "looping v4 delta plate", (unsigned)e.n);
         /* C4: an instanced row's frame window is virtual — one seated plane,
-         * drawn n_frames times — so only its base is bounded and sized here. */
-        const uint32_t win = (delta && (e.flags & EF_INSTANCE)) ? 1u : e.n_frames;
+         * drawn n_frames times — so only its base is bounded and sized here.
+         * §37: the plate's closing delta sits one past its frame count — the
+         * row bounds and validates it like every other delta of its window. */
+        const uint32_t win = (delta && (e.flags & EF_INSTANCE))
+                                 ? 1u
+                                 : e.n_frames + ((e.flags & EF_DELTA_WRAP) ? 1u : 0u);
         if ((uint64_t)e.frame0 + win > ns)
             return reject("element %u names %u frames from row %u of a table with %u "
                           "rows: the animation runs off the end of the catalogue",
@@ -626,6 +691,11 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                     return reject("element %u frame %u is a whole plane that names a "
                                   "rect position: a keyframe sits at the box origin",
                                   (unsigned)e.n, (unsigned)f);
+            } else if (!sp.w && !sp.h && !sp.diffx && !sp.diffy) {
+                /* A still in the loop (C5 §7.2): the row exists, applies nothing, and
+                 * the canvas carries forward. rowDelta ships these; gif_apply_frame
+                 * skips them; the §37 closing delta is never one — it changed pixels
+                 * or the flag would not have been set. */
             } else if (!sp.w || !sp.h ||
                        sp.w > e.w || sp.h > e.h ||
                        sp.diffx < 0 || sp.diffy < 0 ||
@@ -1014,15 +1084,15 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * The plate-frame table is unchanged: the bgAnim consumer's row list, one
      * offset per extra plane in bank order — frame 0 needs no row because the
      * consumer starts on the plate. */
-    int honest_rects = 0;
-    if (plate_delta) {
-        for (uint32_t f = 1; f < plate.n_frames && !honest_rects; f++) {
-            orb_bundle_spr_t sp;
-            orb_bundle_spr_at(sec, plate.frame0 + f, &sp);
-            if (sp.w < plate.w || sp.h < plate.h || sp.diffx || sp.diffy)
-                honest_rects = 1;
-        }
-    }
+    /* The delta dialect is spoken by the stamp and the scalars, not by a row's
+     * shape: under plate_delta every gif frame IS a rect row — §4.2's reading
+     * rule — and a delta that covers the whole plate is an honest delta with a
+     * whole-panel bill, not a keyframe. The pre-C5 shapes (keyframe banks, still
+     * plates) have no gif mode at all: their consumer rotates whole planes from
+     * the bg_frames table. A heuristic over row extents would re-decide a question
+     * the dialect already answered, and used to freeze exactly this full-cover
+     * case by materializing no windows. */
+    const int honest_rects = plate_delta;
     const uint32_t beat = (uint32_t)(t->tick_rate ? t->tick_rate : 1);
     uint32_t ms = (1000u + beat / 2u) / beat;
     if (!ms) ms = 1;
@@ -1030,20 +1100,32 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         ms = plate.delay;
     if (honest_rects) {
         /* Windows the L3/L4 gif consumers already read: frame tgt applies
-         * [rect_first[tgt], rect_first[tgt + 1]). The keyframe applies nothing
-         * (it IS the canvas), so its window is empty, and every frame after it
-         * owns exactly the one rect its plane row named. */
+         * [rect_first[tgt], rect_first[tgt + 1]). §37: a row carrying its closing
+         * delta gives frame 0 that one rect — the wrap applies a delta like every
+         * other tick, and the canvas is the keyframe again. Without the bit the
+         * keyframe applies nothing (it IS the canvas — the pre-§37 shape), and
+         * every frame owns exactly the one rect its plane row named. */
+        const uint32_t cbase = plate_wrap ? 1u : 0u;
         io->rect_first[0] = 0;
-        io->rect_first[1] = 0;
+        if (plate_wrap) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(sec, plate.frame0 + plate.n_frames, &sp);
+            io->rects[0].x    = (uint16_t)(plate.x + sp.diffx);
+            io->rects[0].y    = (uint16_t)(plate.y + sp.diffy);
+            io->rects[0].w    = (uint16_t)sp.w;
+            io->rects[0].h    = (uint16_t)sp.h;
+            io->rects[0].off  = sp.off;
+        }
+        io->rect_first[1] = (uint16_t)cbase;
         for (uint32_t f = 1; f < (uint32_t)t->gif_frames; f++) {
             orb_bundle_spr_t sp;
             orb_bundle_spr_at(sec, plate.frame0 + f, &sp);
-            io->rects[f - 1].x    = (uint16_t)(plate.x + sp.diffx);
-            io->rects[f - 1].y    = (uint16_t)(plate.y + sp.diffy);
-            io->rects[f - 1].w    = (uint16_t)sp.w;
-            io->rects[f - 1].h    = (uint16_t)sp.h;
-            io->rects[f - 1].off  = sp.off;
-            io->rect_first[f + 1] = (uint16_t)f;
+            io->rects[cbase + f - 1u].x  = (uint16_t)(plate.x + sp.diffx);
+            io->rects[cbase + f - 1u].y  = (uint16_t)(plate.y + sp.diffy);
+            io->rects[cbase + f - 1u].w  = (uint16_t)sp.w;
+            io->rects[cbase + f - 1u].h  = (uint16_t)sp.h;
+            io->rects[cbase + f - 1u].off = sp.off;
+            io->rect_first[f + 1] = (uint16_t)(cbase + f);
         }
     } else {
         io->rects[0].x = io->rects[0].y = 0;

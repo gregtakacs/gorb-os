@@ -555,7 +555,16 @@ EF_INSTANCE = 1 << 5    # C4: one seated plane standing for the row's whole fram
                         # fixed-domain WINDOW row under the v4 clock stamp and
                         # nowhere else; orb_clock3.c refuses the bit under v3
                         # rather than draw the single frame the row must be.
-EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW | EF_INSTANCE
+EF_DELTA_WRAP = 1 << 6  # §37: the delta plate's LAST sprite, one past its own frame
+                        # window, is the rect that returns the finished canvas to the
+                        # keyframe — the delta the device applies when the loop wraps to
+                        # frame 0. Without it a wrap is a keyframe blit no delta table
+                        # can express: a stalled tick once per loop and a stale base
+                        # under frame 1. The baker's rowDelta sets it in the same breath
+                        # as shipping the row; class plate only (check_element below),
+                        # and orb_clock3.c refuses the bit on any other shape.
+EF_ALL = (EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW | EF_INSTANCE
+          | EF_DELTA_WRAP)
 
 ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
 
@@ -900,6 +909,10 @@ def check_element(rec, where="elem"):
             raise ValueError("%s.flags: an instanced window needs a fixed value domain "
                              "to stand over, and %r has none"
                              % (where, SOURCES[src]))
+    if flags & EF_DELTA_WRAP and cls != CLASS_PLATE:
+        raise ValueError("%s.flags: the closing delta (§37) belongs to a looping v4 delta "
+                         "plate and nowhere else; class %r has no background loop for it "
+                         "to close" % (where, CLASS_NAMES[cls]))
     return rec
 
 
@@ -1159,6 +1172,7 @@ if __name__ == "__main__":
         (_with(**{"class": CLASS_TEXT, "slot": 1, "radius": 40}), "radius on a text row"),
         (_with(scale16=8), "scale below one sixteenth"),
         (_with(**{"class": CLASS_AUX, "kind": 1}), "a drive on a plain hand row"),
+        (_with(flags=EF_DELTA_WRAP), "a closing delta on a hand row"),
         (_ax, "an accepted pointer refuses — the fixture broke"),
         (dict(_ax, kind=5), "motion past the vocabulary"),
         (dict(_ax, src=0), "a pointer driven by none"),

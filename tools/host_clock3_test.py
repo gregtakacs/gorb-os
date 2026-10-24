@@ -1449,13 +1449,18 @@ def c4_bank_row(els, n, slot, src, frame0, n_frames, flags=0, parent=None, delay
 C4_DELTA_RECTS = [(40, 40, 64, 64), (200, 30, 32, 48), (10, 400, 80, 50)]
 
 
-def c4_build_delta_bank(els, sc, art, spr, rects, delay):
+def c4_build_delta_bank(els, sc, art, spr, rects, delay, wrap=None):
     """Rebuild the bank so the plate's frames lead it: one whole colour-only plane
     at offset 0, then one colour-only rect (w*h*2) per delta frame. The pair's other
     planes (overlay, hands, shadows — RGB888) shift back by the rect count and every
     non-plate row's frame0 follows. bg_frames stays 0 (the row IS the loop) and the
     row carries its own tempo, so the one-shot guard passes on truth rather than on
-    bg_fps. `rects` is [(dx, dy, w, h)] and each rect must fit the plate box."""
+    bg_fps. `rects` is [(dx, dy, w, h)] and each rect must fit the plate box.
+    `wrap`, when given, is §37's closing rect: one extra colour-only sprite past the
+    plate's frame window, claimed by the row's EF_DELTA_WRAP bit.
+    A `rects` entry of None is a still in the loop: a zero-size row that ships no
+    pixels and applies nothing — §37 teaches the loader to accept it where C5's
+    contract always promised it."""
     c4_defaults(els, sc, art, spr)
     plate = next(e for e in els if e["class"] == ts.CLASS_PLATE and e["slot"] == 0)
     scr_w, scr_h = C4_SCR
@@ -1465,33 +1470,104 @@ def c4_build_delta_bank(els, sc, art, spr, rects, delay):
         survivors.append({"size": sp["size"], "w": sp["w"], "h": sp["h"],
                           "bytes": bytes(art[sp["off"]:sp["off"] + sp["size"]])})
     art[:] = whole
-    for dx, dy, w, h in rects:
-        art.extend(b"\x22" * (w * h * 2))           # colour-only, like the plate
+    for rect in rects:
+        if rect is not None:
+            art.extend(b"\x22" * (rect[2] * rect[3] * 2))   # colour-only, like the plate
+    if wrap:
+        art.extend(b"\x33" * (wrap[2] * wrap[3] * 2))
     for s in survivors:
         art.extend(s["bytes"])
     del spr[:]
     spr.append({"off": 0, "size": scr_w * scr_h * 2, "w": scr_w, "h": scr_h,
                 "diffx": 0, "diffy": 0})
     at = scr_w * scr_h * 2
-    for dx, dy, w, h in rects:
+    for rect in rects:
+        if rect is None:                            # a still: zero size, applies nothing
+            spr.append({"off": at, "size": 0, "w": 0, "h": 0, "diffx": 0, "diffy": 0})
+            continue
+        dx, dy, w, h = rect
         spr.append({"off": at, "size": w * h * 2, "w": w, "h": h,
                     "diffx": dx, "diffy": dy})
         at += w * h * 2
+    if wrap:
+        wdx, wdy, ww, wh = wrap
+        spr.append({"off": at, "size": ww * wh * 2, "w": ww, "h": wh,
+                    "diffx": wdx, "diffy": wdy})
+        at += ww * wh * 2
     for s in survivors:                             # offsets continue the plate block
         spr.append({"off": at, "size": s["size"], "w": s["w"], "h": s["h"]})
         at += s["size"]
-    shift = len(rects)
+    shift = len(rects) + (1 if wrap else 0)
     for e in els:
         if e is not plate and e.get("frame0", 0):
             e["frame0"] = e["frame0"] + shift
-    plate["n_frames"] = 1 + shift
+    plate["n_frames"] = 1 + len(rects)
     plate["delay"] = delay
+    if not delay:
+        sc["bg_fps"] = 15     # tempo off the scalar when the row names none — the v3
+                              # door below has no column for a row tempo at all
+    if wrap:
+        plate["flags"] = plate.get("flags", 0) | ts.EF_DELTA_WRAP
     sc["gif_frames"] = plate["n_frames"]
     sc["bg_mode"], sc["bg_frames"] = 1, 0
 
 
 def c4_mk_delta(els, sc, art, spr):
     c4_build_delta_bank(els, sc, art, spr, C4_DELTA_RECTS, 50)
+
+
+C4_WRAP = (300, 300, 48, 48)
+
+
+def c4_mk_delta_wrap(els, sc, art, spr):
+    """§37: the honest shape — the loop's four rects plus the closing delta one
+    row past the plate window, with the bit the row pays for them."""
+    c4_build_delta_bank(els, sc, art, spr, C4_DELTA_RECTS, 50, wrap=C4_WRAP)
+
+
+def c4_mk_wrap_no_row(els, sc, art, spr):
+    """The lie rowDelta never ships: the bit claimed with no closing sprite after
+    the window. The plate gate refuses it before the walk ever counts rows."""
+    c4_build_delta_bank(els, sc, art, spr, C4_DELTA_RECTS, 50)
+    plate = next(e for e in els if e["class"] == ts.CLASS_PLATE and e["slot"] == 0)
+    plate["flags"] = plate.get("flags", 0) | ts.EF_DELTA_WRAP
+
+
+def c4_mk_wrap_outside(els, sc, art, spr):
+    """A closing rect that overhangs the plate (400+100 on a 466 panel): the delta
+    must sit inside the plate it closes back to, or it paints beside it forever."""
+    c4_build_delta_bank(els, sc, art, spr, C4_DELTA_RECTS, 50, wrap=(400, 400, 100, 100))
+
+
+def c4_mk_wrap_on_hand(els, sc, art, spr):
+    """The closing bit forged onto a hand row: the loop it names is the plate's
+    background, and a hand has none."""
+    c4_defaults(els, sc, art, spr)
+    hand = next(e for e in els if e["class"] == ts.CLASS_HAND and e["slot"] == 0)
+    hand["flags"] = hand.get("flags", 0) | ts.EF_DELTA_WRAP
+
+
+def c4_mk_delta_wide(els, sc, art, spr):
+    """A 20-frame delta bank: inside the gif table's own cap, past the dial's
+    invalid-area table — the materialization would drop rects and repaint stale
+    texels, so the loader refuses the bank to a wider dial."""
+    c4_build_delta_bank(els, sc, art, spr,
+                        [(4, 4, 8, 8)] * 19 + [(8, 8, 8, 8)], 50)
+
+
+def c4_mk_delta_still(els, sc, art, spr):
+    """A still mid-loop (C5 §7.2's contract, §37's loader fix): the row exists at
+    zero extent, ships no pixels, and the device applies nothing that tick."""
+    c4_build_delta_bank(els, sc, art, spr, [None, (200, 30, 32, 48)], 50)
+
+
+def c4_mk_wrap_v3(els, sc, art, spr):
+    """The §37 shape forged onto a v3 stamp (emitted with abi=3): rects sit at the
+    plate origin only because the v3 catalogue has nowhere else to write a diff —
+    the plate gate refuses the closing bit together with the dialect it belongs to,
+    before any of those rows' placement comes into question."""
+    c4_build_delta_bank(els, sc, art, spr, [(0, 0, 64, 64), (0, 0, 32, 32)], 0,
+                        wrap=(0, 0, 48, 48))
 
 
 def c4_mk_inst(els, sc, art, spr):
@@ -1555,6 +1631,30 @@ def c4_battery(exe, base):
        "the plate's own 50 ms tempo did not reach the delay table: %s" % (g["delay"],))
     print("  C4 delta plate: 3 rects at plate.xy + diff, tempo honoured")
 
+    # ---- §37: the closing delta — frame 0 owns the wrap, windows are 1:1 ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_delta_wrap))[1])
+    ck(g["nmat"] == 4 and len(g["rectrows"]) == 4,
+       "a wrapping 4-frame delta plate materialized %s rects, not four — frame 0 "
+       "must own its closing delta too" % (g["nmat"],))
+    got = [(r["x"], r["y"], r["w"], r["h"]) for r in g["rectrows"]]
+    ck(got == [(0 + C4_WRAP[0], 0 + C4_WRAP[1], C4_WRAP[2], C4_WRAP[3])] +
+       [(0 + dx, 0 + dy, w, h) for dx, dy, w, h in C4_DELTA_RECTS],
+       "the closing rect is not first, or not the wrap box at the plate origin: %s"
+       % (got,))
+    ck(set(g["delay"].values()) == {50},
+       "the wrapping bank's tempo did not reach the delay table: %s" % (g["delay"],))
+    print("  §37 closing delta: frame 0 owns the wrap, four windows of one rect")
+
+    # ---- C5's still row, accepted: zero extent shipped, nothing applied ----
+    g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_delta_still))[1])
+    ck(g["nmat"] == 2 and len(g["rectrows"]) == 2,
+       "a still mid-loop did not materialize its two windows: %s" % (g["nmat"],))
+    ck(g["rectrows"][0]["w"] == 0 and g["rectrows"][0]["h"] == 0 and
+       (g["rectrows"][1]["x"], g["rectrows"][1]["w"]) == (200, 32),
+       "the still row is not a zero-extent rect followed by the real one: %s"
+       % (g["rectrows"],))
+    print("  C5 still row: zero extent accepted, the frame after it still lands")
+
     # ---- instance flag: a month window over the fixed domain, frame_bytes 0 ----
     g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_inst))[1])
     inst = [c for c in g["comps"] if c[3] == C4_MONTH]
@@ -1572,8 +1672,16 @@ def c4_battery(exe, base):
     # ---- refusals the writer emits and the projection refuses ----
     for what, mut, needle in (
             ("EF_INSTANCE under v3", c4_mk_inst_v3, "instance flag under geometry v3"),
-            ("a delta outside its box", c4_mk_rect_outside, "outside its")):
-        abi = 3 if mut is c4_mk_inst_v3 else 4
+            ("a delta outside its box", c4_mk_rect_outside, "outside its"),
+            ("a closing delta with no row behind it", c4_mk_wrap_no_row,
+             "the one row past the plate must BE the closing rect"),
+            ("a closing rect overhanging its plate", c4_mk_wrap_outside,
+             "must sit inside the plate"),
+            ("a delta loop wider than the dial's rect table", c4_mk_delta_wide,
+             "invalid-area table holds 16"),
+            ("the closing delta under a v3 stamp", c4_mk_wrap_v3,
+             "closing delta means the looping v4")):
+        abi = 3 if mut in (c4_mk_inst_v3, c4_mk_wrap_v3) else 4
         rc, out, err = run(exe, "--refuse", c4_forge(base, abi, mut))
         ck(rc == 0 and needle in out,
            "%s was not refused in its own words (%r): %r" % (what, needle, out[:220]))

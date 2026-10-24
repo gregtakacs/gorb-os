@@ -1524,20 +1524,32 @@
     // The cadence, in prep_watch_kit.py's order: its default is a sweep with the bank's own
     // fps as the tick rate (so hand_beat_ticks() is 1 and the angle comes from the wall clock
     // every tick), and --tick pins it to the 1 Hz mechanical step. The kit manifest's
-    // secondHand string is what the STUDIO preview did and prep ignores it; the bank here is
-    // always the delta-rect one, which is bake_clock.py's GIF-bg case, and that mode forces
-    // the sweep back on (a ticking hand over a bank that already moves every tick strobes)
-    // unless the caller asks for --no-sweep.
+    // secondHand string is the composer's Motion dropdown — 'sweep' or '<N> ticks per
+    // second' — and the baked dial now WEARS what that dropdown picked: a tick choice
+    // ships second_sweep=0 at its named beat. Over a delta bank a ticking hand strobes
+    // (its box repaints between the bank's row pushes); the 60 Hz GIF subdivision keeps
+    // the bank itself animating at full tempo, and the operator accepted the strobe as
+    // the honest cost of the chosen look. opts.tick/--no-sweep stay the CLI's own lever,
+    // opts.forceSweep the escape hatch that still overrules the manifest (the note below
+    // fires when it does).
     var tick = opts.tick ? true : false;
+    var manifestTickRate = 0;
+    if (!tick && !opts.noSweep && !opts.forceSweep) {
+      var mh = /^(\d+)\s+ticks?/i.exec(String(M.secondHand || ''));
+      if (mh) manifestTickRate = Math.max(1, Math.min(255, +mh[1] | 0));
+      else if (centre.second && centre.second.tick && centre.second.tick !== 'sweep')
+        manifestTickRate = Math.max(1, Math.min(255, +centre.second.tick | 0));
+      if (manifestTickRate) tick = true;
+    }
     var sweep = !tick;
-    var tickRate = tick ? 1 : fps;
+    var tickRate = tick ? (manifestTickRate || 1) : fps;
     if (opts.forceSweep) { sweep = true; tickRate = fps; }
     else if (!opts.noSweep && !tick) { sweep = true; }
     if (opts.tickRate) tickRate = opts.tickRate;
     tickRate = Math.max(1, Math.min(255, tickRate | 0));
     if (String(M.secondHand || 'sweep') !== 'sweep' && sweep)
       report.notes.push('the studio previewed the seconds hand as ' + JSON.stringify(M.secondHand) +
-        ', but a delta-rect bank animates every tick, so the baked dial sweeps (pass noSweep to keep the step)');
+        ', but forceSweep overruled it: the baked dial sweeps (drop forceSweep to keep the step)');
     var scalars = {
       bg: 0, plate_follow: 0, shadow_on: shadowOn ? 1 : 0, shadow_dx: 0, shadow_dy: 0,
       second_sweep: sweep ? 1 : 0, second_railway: 0, text_over_hands: 0, tick_rate: tickRate,
@@ -1775,7 +1787,15 @@
   var ELEMENT_WORDS_MIN = 17;
   var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
-  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3;
+  // §37: a looping delta plate carries ONE sprite past its own frame window — the rect
+  // that returns the finished canvas to the keyframe — and claims it with this bit. The
+  // device applies it when the loop wraps to frame 0; without it the wrap is a keyframe
+  // blit the delta table cannot express, which is the once-a-loop stutter and the stale
+  // base of frame 1. Bit 6, not 5: 5 is EF_INSTANCE, taken. theme_schema.EF_DELTA_WRAP
+  // and orb_clock3.c's plate gate read the same byte; checkElement below is the writer's
+  // mirror of that gate.
+  var EF_DELTA_WRAP = 64;
+  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP;
   var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
@@ -1828,6 +1848,10 @@
     if ((flags & AUX_F_SHADOW3) && cls !== CLASS_AUX) {
       throw new Error(where + '.flags: the pointer shadow twin is a rule for class aux; class ' +
         q(CLASS_NAMES[cls]) + ' already owns its shadow\u2019s placement (§25.2)');
+    }
+    if ((flags & EF_DELTA_WRAP) && cls !== CLASS_PLATE) {
+      throw new Error(where + '.flags: the loop-closing delta (§37) belongs to a delta plate and ' +
+        'nowhere else; class ' + q(CLASS_NAMES[cls]) + ' has no background loop for it to close');
     }
     var ord = Math.trunc(rec.order | 0);
     if (!(ord >= 0 && ord < ELEM_ORDER_N)) {
@@ -2239,6 +2263,7 @@
             e.rect_count++;
             if (!e.diffw) { e.diffw = sp.w; e.diffh = sp.h; }
           }
+          if (e.flags & 64) e.rect_count++;   // §37: the closing rect, one past the window
         }
       }
     }
@@ -2769,12 +2794,16 @@
       }
       elems.push(rec);
     }
-    // C5's delta plate (§4.2, §7.2): frame 0 is the whole-panel base plane, every
-    // frame after it a rect cropped to the run of texels it changes. A frame that
-    // turns back into its source (a still in the loop) rides the previous row's
-    // index with zero rects, the loader's "nothing to apply". The running canvas is
+    // C5's delta plate (§4.2, §7.2) plus §37's closing rect: frame 0 is the whole-panel
+    // base plane, every frame after it a rect cropped to the run of texels it changes,
+    // and the row's LAST sprite — one past its own frame window, claimed by
+    // EF_DELTA_WRAP — the rect that returns the finished canvas to the keyframe. A
+    // frame that turns back into its source (a still in the loop) rides a
+    // zero-size row at the bank's running end, which the loader accepts and
+    // gif_apply_frame applies as nothing. The running canvas is
     // the composited result the device ends up with; the encode is lossy at the
-    // DELTA_TOL floor, so selfVerify3 re-derives it to that same floor before ship.
+    // DELTA_TOL floor, so selfVerify3 re-derives it to that same floor, closing rect
+    // included, before ship.
     function rowDelta(e, planes, delay, masked) {
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
@@ -2792,8 +2821,10 @@
           bank.size += b0.sprites[0].size;
         } else {
           var rect = diffRect(p, canvas, DELTA_TOL); // reject a lone dither texel below the shared floor
-          if (!rect) {                             // a still in the loop: zero-size, applies nothing
-            spr = { off: bank.sprites[bank.sprites.length - 1].off, size: 0, w: 0, h: 0,
+          if (!rect) {    // a still in the loop: a zero-size row at the bank's running end —
+                          // the loader's contiguity walk only believes a row whose off is the
+                          // bytes before it, and gif_apply_frame skips zero-extent rects
+            spr = { off: bank.size, size: 0, w: 0, h: 0,
                     diffx: 0, diffy: 0 };
           } else {
             paintRect(canvas, p, rect);            // apply the delta, exact
@@ -2806,6 +2837,22 @@
           }
         }
         bank.sprites.push(spr);
+      }
+      // §37: close the loop. The device paints frame 0 over whatever the chain last
+      // applied, and without this rect the wrap is a keyframe blit the delta table
+      // cannot express: a stalled tick at every wrap and a stale base for frame 1.
+      // One delta, derived from the keyframe and the finished canvas, shipped as the
+      // row's last sprite and claimed by EF_DELTA_WRAP. A bank whose last frame
+      // already equals the keyframe needs no closing rect and ships no flag.
+      var wr = diffRect(planes[0], canvas, DELTA_TOL);
+      if (wr) {
+        var wcrop = cropRect(planes[0], wr[0], wr[1], wr[0] + wr[2], wr[1] + wr[3]);
+        var b3 = bank3([wcrop], { alpha: masked });
+        bank.art = concat([bank.art, b3.art]);
+        bank.sprites.push({ off: bank.size, size: b3.sprites[0].size,
+                            w: wcrop.w, h: wcrop.h, diffx: wr[0], diffy: wr[1] });
+        bank.size += b3.sprites[0].size;
+        rec.flags |= EF_DELTA_WRAP;
       }
       elems.push(rec);
       return rec;
@@ -2840,17 +2887,30 @@
     // or misplaced rect), which is the drift worth refusing. A delta sprite at (0,0)
     // matching the row box is a still carrying no new pixels, so it applies nothing.
     // This is the bake's own refusal, not a test reading its output.
-    function selfVerify3(planes, sprites, baseIndex) {
+    function selfVerify3(planes, sprites, baseIndex, wrap) {
       var canvas = copyPlane(planes[0]);
+      var close = function (want) {
+        var n3 = want.w * want.h;
+        for (var j = 0; j < n3; j++) {
+          var a4 = j * 4, sum = 0;
+          for (var c = 0; c < 4; c++) sum += Math.abs(canvas.rgba[a4 + c] - want.rgba[a4 + c]);
+          if (sum > DELTA_TOL) return false;
+        }
+        return true;
+      };
       for (var i = 1; i < planes.length; i++) {
         var sp = sprites[baseIndex + i];
         if (sp.size) paintRect(canvas, planes[i], [sp.diffx, sp.diffy, sp.w, sp.h]);
-        var n3 = planes[i].w * planes[i].h;
-        for (var j = 0; j < n3; j++) {
-          var a4 = j * 4, sum = 0;
-          for (var c = 0; c < 4; c++) sum += Math.abs(canvas.rgba[a4 + c] - planes[i].rgba[a4 + c]);
-          if (sum > DELTA_TOL) return false;
-        }
+        if (!close(planes[i])) return false;
+      }
+      if (wrap) {
+        // §37: the closing rect must land the canvas back on the keyframe. This is the
+        // one check that says the shipped chain is a CYCLE; without it the bake ships
+        // a path that teleports home and the device freezes at the wrap.
+        var wsp = sprites[baseIndex + planes.length];
+        if (!wsp || !wsp.size) return false;
+        paintRect(canvas, planes[0], [wsp.diffx, wsp.diffy, wsp.w, wsp.h]);
+        return close(planes[0]);
       }
       return true;
     }
@@ -3093,9 +3153,11 @@
       sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
                    sprites: bank.sprites, art: bank.art,
                    abi_min: deltaBank ? GEOM_ABI4 : GEOM_ABI3, abi_max: deltaBank ? GEOM_ABI4 : GEOM_ABI3 }] });
-    if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0))) {
-      throw new Error('the baked delta bank does not composite back to the frames it was handed: ' +
-        'the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
+    if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),
+                                 !!(elems[0].flags & EF_DELTA_WRAP))) {
+      throw new Error('the baked delta bank does not composite back to the frames it was handed' +
+        (elems[0].flags & EF_DELTA_WRAP ? ', or close its loop back to the keyframe' : '') +
+        ': the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
     }
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
@@ -3398,6 +3460,7 @@
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,
+    EF_DELTA_WRAP: EF_DELTA_WRAP,
     AUX_F_SHADOW3: AUX_F_SHADOW3,
     ELEM_MAX: ELEM_MAX, ELEM_FRAMES_MAX: ELEM_FRAMES_MAX,
     // D34: the pointer vocabulary, exported so the composer and the suite read the

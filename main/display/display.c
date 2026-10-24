@@ -369,6 +369,22 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
  * above the TILE_ROWS define argues. At queue depth 1 the submit already
  * blocked and its cb has run inline by the time we look.
  */
+esp_err_t display_band_quiet(void)
+{
+    /* §32.5 residual (a): the ONE reused overlay band belongs to its DMA until
+     * that transaction retires. A caller about to STAMP that buffer must drain
+     * first — display_band_commit's own drain runs after the stamp, so on the
+     * frame after a starved commit the stale DMA would read the new bytes.
+     * Deliberately outside the ring mutex: it waits for retirement, it does not
+     * submit, and holding the mutex while polling would starve every LVGL
+     * commit behind a bus that is retiring anyway. 500 ms matches the commit
+     * ceiling; on timeout the buffer may still be in flight and the caller
+     * must abandon the frame, never stamp. */
+    int64_t t0 = esp_timer_get_time();
+    while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
+    return (s_band_inflight == 0) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
 esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
 {
     if (!s_panel || !band || rows <= 0 || y < 0 || y + rows > SCREEN_HEIGHT) {
@@ -380,6 +396,18 @@ esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
      * here retired before the mutex was ours and is seconds from done. */
     int64_t t0 = esp_timer_get_time();
     while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
+    if (s_band_inflight > 0) {
+        /* Still not quiet. Submitting here would compute `want` against a
+         * counter someone else's transaction can advance, and the wait below
+         * could return a false ESP_OK while OUR band still rides the wire —
+         * the same restamp-in-flight race this seam exists to stop. Refuse
+         * the submit instead: the caller abandons the frame and re-enters
+         * through display_band_quiet(), which waits for the stale
+         * transaction to retire before anything stamps the buffer again. */
+        ESP_LOGW(TAG, "band at r%d refused: the bus is not quiet", y);
+        if (s_ring_mux) xSemaphoreGive(s_ring_mux);
+        return ESP_ERR_TIMEOUT;
+    }
     const uint32_t want = s_tile_done + 1u;
     s_band_inflight++;
     esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, SCREEN_WIDTH, y + rows, band);

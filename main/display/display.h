@@ -32,6 +32,14 @@ esp_lcd_panel_handle_t display_get_panel(void);
  *  has run; bad geometry answers ESP_ERR_INVALID_ARG. */
 esp_err_t display_band_commit(int y, int rows, const uint16_t *band);
 
+/** Drain the band seam to a quiet bus (§32.5 residual (a)). Waits until every
+ *  in-flight band transaction has retired, up to the same 500 ms ceiling the
+ *  commit path uses. A painter that shares one reused buffer with an earlier
+ *  starved commit MUST call this before stamping it again — commit's own
+ *  drain runs after the stamp and cannot protect it. ESP_ERR_TIMEOUT means a
+ *  band may still be in flight: abandon the frame, do not stamp. */
+esp_err_t display_band_quiet(void);
+
 /**
  * Enable/disable the tear-effect (vertical-blanking) wait around each flush.
  * Only has an effect if the TE pin was proven live at init.

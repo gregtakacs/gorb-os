@@ -367,13 +367,17 @@ ok(walkA.blob.sprites[0].size === 466 * 466 * 2 && walkA.blob.sprites[1].size ==
 // the old assertion and do not make this one read the current output — that is how this
 // bug survived its last three test suites.
 const dRowA = walkA.blob.elements[0];
+// §37: the closing delta is the chain's last link — frame 0 carries the rect that
+// returns the wrapped canvas to the keyframe — so every frame now owns a rect and
+// APL, whose texels all move, prices that rect as a fourth full plane.
 ok(walkA.blob.scalars.bg_loop === 1 && dRowA.n_frames === 3 &&
-   dRowA.delay > 0 && dRowA.rect_count === dRowA.n_frames - 1 &&
-   dRowA.diffw > 0 && dRowA.parent !== undefined,
-   'the delta contract: an animated row carries rects from frame 1, its own delay, and its parent \u2014 RED until C5, by design',
+   dRowA.delay > 0 && dRowA.rect_count === dRowA.n_frames &&
+   dRowA.diffw > 0 && dRowA.parent !== undefined &&
+   (dRowA.flags & B.EF_DELTA_WRAP) !== 0,
+   'the delta contract: every frame of an animated row carries a rect, §37 closes the loop, and the row names delay and parent',
    'n_frames ' + dRowA.n_frames + ' delay ' + dRowA.delay + ' rect_count ' + dRowA.rect_count + ' diffw ' + dRowA.diffw);
-ok(bakedA.meter.artSize === 466 * 466 * 2 * 3 + 40 * 200 * 3,
-   'the bank is three keyframes and the masked hand, nothing else',
+ok(bakedA.meter.artSize === 466 * 466 * 2 * 4 + 40 * 200 * 3,
+   'the bank is three keyframes, §37\u2019s full-plane closing delta, and the masked hand',
    bakedA.meter.artSize + ' B');
 // ---- 7b-ii. §36: the delta encoder's floor and its self-check read ONE number ----
 // The encoder drops a texel whose summed |dR|+|dG|+|dB|+|dA| is at or under DELTA_TOL, so the

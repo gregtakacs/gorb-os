@@ -1779,6 +1779,9 @@ class Component extends DCLogic {
     }
     for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
     for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
+    parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
+      '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
+      '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0)));
     let len = 0; for (const p of parts) len += p.length;
     const buf = new Uint8Array(len); let at = 0; for (const p of parts) { buf.set(p, at); at += p.length; }
     return G.crc32(buf) >>> 0;
@@ -1872,7 +1875,16 @@ class Component extends DCLogic {
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
-    if (shadows.length) { opts.shadows = shadows; opts.scalars = { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }; }
+    if (shadows.length) { opts.shadows = shadows; opts.scalars = Object.assign(opts.scalars || {}, { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }); }
+    // The Motion dropdown's verdict, worn on the wire. A tick choice names both
+    // scalars — second_sweep 0 and its own beat — so the dial steps at the rate
+    // the operator picked instead of the sweep bakeClock3 would otherwise
+    // default to; the GIF subdivision keeps the plate animating at full tempo
+    // around the stepping hand (the strobe that buys is the documented cost).
+    // Sweep names nothing: bakeClock3's own default already sweeps at the tempo.
+    const _mo = this.cfg().tick;
+    if (_mo && _mo !== 'sweep')
+      opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +_mo | 0)) });
     const cpol = pol.carriage;
     if (cpol) {
       /* The planes come from carriagePlanes3 — the kit's own device-space draw, the

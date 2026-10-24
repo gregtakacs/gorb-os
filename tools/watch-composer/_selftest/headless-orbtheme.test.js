@@ -368,6 +368,34 @@ import json; sys.stdout.write(json.dumps(out))
      'geometry size and CRC agree', u32(js, 20) + '/' + u32(js, 24).toString(16));
   ok(u32(js, 28) === u32(py, 28) && u32(js, 32) === u32(py, 32),
      'art size and CRC agree', u32(js, 28) + '/' + u32(js, 32).toString(16));
+  // Issue 2 (2026-10-23): the .h bake WEARS the composer's Motion dropdown.
+  // The manifest's secondHand string is that dropdown; a tick choice ships
+  // second_sweep=0 at its named beat (the device quantises the ticking second
+  // to that beat and the GIF subdivision keeps the bank at full tempo — the
+  // strobe is the accepted cost). forceSweep stays the documented override.
+  {
+    const m2 = JSON.parse(JSON.stringify(manifest));
+    const bake2 = (o) => B.bakeKit({ manifest: m2, planes, name: 'aviator', serial: 0, bakedMs: 0 }, o);
+    m2.secondHand = '2 ticks per second';
+    const r2 = bake2();
+    ok(r2.scalars.second_sweep === 0 && r2.scalars.tick_rate === 2,
+       'a manifest naming 2 ticks/s bakes second_sweep=0 tick_rate=2',
+       r2.scalars.second_sweep + '/' + r2.scalars.tick_rate);
+    m2.secondHand = 'sweep';
+    const rs = bake2();
+    ok(rs.scalars.second_sweep === 1, 'a sweep manifest still bakes second_sweep=1', String(rs.scalars.second_sweep));
+    m2.secondHand = '4 ticks per second';
+    const rf = bake2({ forceSweep: true });
+    ok(rf.scalars.second_sweep === 1, 'forceSweep still overrules the manifest', String(rf.scalars.second_sweep));
+    ok(rf.report.notes.some((n) => /forceSweep overruled/.test(n)), 'and the note names the overrule');
+    delete m2.secondHand;
+    const sh = (m2.hands || []).find((h) => h.kind === 'second');
+    if (sh) sh.tick = '4';
+    const rh = bake2();
+    ok(rh.scalars.second_sweep === 0 && rh.scalars.tick_rate === 4,
+       'the per-hand tick field works when secondHand is absent',
+       rh.scalars.second_sweep + '/' + rh.scalars.tick_rate);
+  }
   function u32(u, o) { return (u[o] | u[o + 1] << 8 | u[o + 2] << 16 | u[o + 3] << 24) >>> 0; }
 })();
 

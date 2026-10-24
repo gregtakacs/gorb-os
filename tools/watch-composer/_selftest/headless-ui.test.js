@@ -636,7 +636,7 @@ setTimeout(async () => {
     const sent = [];
     global.fetch = async (url, opt) => {
       sent.push([url, opt && opt.body && opt.body.length]);
-      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, name: 'orbital-arrow' } }
+      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, exact: scen.exact, name: 'orbital-arrow' } }
         : { ok: true, data: { phase: 'uploading', sent: 3, total: 3 } };
       return { ok: true, status: 200, json: async () => j };
     };
@@ -654,7 +654,7 @@ setTimeout(async () => {
         this.onload();
       };
     };
-    const scen = { dup: true };
+    const scen = { dup: true, exact: false };
     // the bindings the template actually reads for the modal's two buttons
     const dupBtns = () => { const v = it.renderVals(); return { open: v.dupOpen, nm: v.dupNm, stem: v.dupStem, pre: v.dupPre, replace: v.dupReplace, cancel: v.dupCancel }; };
     it.state.themeName = 'orbital-arrow';
@@ -696,6 +696,24 @@ setTimeout(async () => {
        'after a Cancel the arm is gone, so a press has no held bytes to re-ship');
     ok(xhrUrl === urlBefore || !/overwrite=1/.test(xhrUrl || ''),
        'renaming and pressing after a Cancel never flags a re-send of the discarded bake', xhrUrl);
+    // §32.9: the exact-match cut. The card already holds THIS bake (name + content
+    // serial agree), so a plain re-send must stop at the precheck and upload NOTHING —
+    // the double-transfer that left two progress bars racing down the glass.
+    scen.dup = false; scen.exact = true;
+    it.state.themeName = 'orbital-arrow';
+    it._replaceArmed = null; it.state.dup = null;
+    const xhrSendsBefore = xhrSends;
+    const sentBefore = sent.length;
+    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
+    ok(/already on the card, byte for byte/.test(it.state.status),
+       'an exact match stops at the precheck with a plain status line', it.state.status.slice(0, 52));
+    ok(!dupBtns().open && it._replaceArmed === null,
+       'an exact match arms no modal and holds no bake — there is nothing to replace');
+    ok(sent.length === sentBefore + 1 && /precheck=1/.test(sent[sentBefore][0]) && sent[sentBefore][1] <= 128,
+       'the exact refusal cost only the 128-byte header, not the bake', JSON.stringify(sent.slice(sentBefore)));
+    ok(xhrSends === xhrSendsBefore,
+       '§32.9: and the bake never reached the transport — no second full upload', JSON.stringify([xhrSendsBefore, xhrSends]));
+    scen.exact = false;
   }
 
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');

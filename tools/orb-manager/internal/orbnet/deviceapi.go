@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"syscall"
 )
 
 // The two verbs the device-side surfaces need, shared by the theme client. Both
@@ -39,19 +40,45 @@ func (c *Client) devicePost(ip, path string, body []byte, contentType string) (j
 // firmware requires Content-Length (a finished upload and a vanished client must
 // not look alike), so the length is stated explicitly here.
 func (c *Client) devicePostCounted(ip, path string, body []byte, contentType string, progress func(int64)) (json.RawMessage, error) {
-	var rd io.Reader
-	if body != nil {
-		rd = bytes.NewReader(body)
+	cr := &countingReader{src: bytes.NewReader(body), fn: progress}
+	raw, err := c.postOnce(ip, path, cr, contentType, len(body))
+	// One silent re-dial when the socket died with no response. The hub never
+	// reuses a connection (NewClient sets DisableKeepAlives), so a reset means
+	// the device's own httpd killed this request mid-flight: it admits 3 sockets
+	// and lru-purges to take a new one, and a status poll racing a Send can be
+	// the victim; a reboot or a WiFi drop mid-store does the same. We saw no
+	// response byte, so whatever the device did with the first attempt, it
+	// answered nothing. Re-sending is safe: h_theme_upload truncates its scratch
+	// at begin, and if the first attempt somehow completed a store whose answer
+	// was lost with the socket, the re-send comes back as a duplicate refusal —
+	// which is the truth the operator can act on — never a silent double-write.
+	// Timeouts deliberately do NOT retry: a slow finish may have already stored
+	// the theme, and re-sending 1.3 MB to check is worse than the message.
+	if err != nil && deadConnErr(err) {
+		cr.reset()
 		if progress != nil {
-			rd = &countingReader{r: rd, fn: progress}
+			progress(0)
 		}
+		raw, err = c.postOnce(ip, path, cr, contentType, len(body))
+	}
+	return raw, err
+}
+
+// postOnce builds a fresh POST (fresh body reader each attempt) and round-trips
+// it once. A fresh *http.Request is required: the transport consumed the body
+// of the first one, and reusing a request whose reader is spent would send zero
+// bytes under a full Content-Length — a truncated upload the device aborts.
+func (c *Client) postOnce(ip, path string, cr *countingReader, contentType string, n int) (json.RawMessage, error) {
+	var rd io.Reader
+	if n > 0 {
+		rd = cr
 	}
 	req, err := http.NewRequest(http.MethodPost, c.url(ip, path), rd)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.ContentLength = int64(len(body))
+	if n > 0 {
+		req.ContentLength = int64(n)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -59,22 +86,44 @@ func (c *Client) devicePostCounted(ip, path string, body []byte, contentType str
 	return c.roundTrip(req)
 }
 
+// deadConnErr reports an error the transport raised at the socket, before any
+// response byte: the exact family of "connection reset by peer" the browser
+// showed as a red banner when a rebooted orb invalidated a pooled connection.
+func deadConnErr(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNABORTED)
+}
+
 // countingReader reports cumulative bytes read, which is bytes the transport has
 // handed to the socket — the closest witness of "how much has left this building"
 // a client of net/http gets without touching the server.
 type countingReader struct {
-	r   io.Reader
+	src *bytes.Reader
 	fn  func(int64)
 	got int64
 }
 
 func (cr *countingReader) Read(p []byte) (int, error) {
-	n, err := cr.r.Read(p)
+	n, err := cr.src.Read(p)
 	if n > 0 {
 		cr.got += int64(n)
-		cr.fn(cr.got)
+		if cr.fn != nil {
+			cr.fn(cr.got)
+		}
 	}
 	return n, err
+}
+
+// reset rewinds the body and the counter so a retry re-sends the whole file.
+// The whole file matters: how much of the first attempt the device's SD write
+// took is unknowable from the client, and h_theme_upload truncates its scratch
+// at begin, so a full re-send always matches Content-Length exactly.
+func (cr *countingReader) reset() {
+	if _, err := cr.src.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	cr.got = 0
 }
 
 func (c *Client) roundTrip(req *http.Request) (json.RawMessage, error) {

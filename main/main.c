@@ -30,6 +30,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_usb_mtp.h"   /* the file-share mode's one-shot claim; stub false when off */   /* D37: the MTP mode's, on the same boot-ladder terms  */
+#include "orb_log.h"       /* the RAM log ring: /api/v1/log's only source */
 #include "orb_theme.h"
 #include "art_bank.h"
 
@@ -55,6 +56,17 @@ static void lvgl_task(void *arg)
 
 void app_main(void)
 {
+    /* First, above the line that says booting started. The ring exists to answer a
+     * question asked over HTTP minutes later, and a hook installed after the boot
+     * ladder has run has already lost the only part of the record that explains a
+     * failure — which is most of what this replaces about reading a serial cable.
+     *
+     * Chained, not replacing: esp_log_set_vprintf returns the previous sink and this
+     * calls it, and the previous sink is plain vprintf, which follows stdout
+     * whenever the console VFS gets installed below. So the console keeps every
+     * byte it printed before this file existed. */
+    orb_log_init();
+
     ESP_LOGI(TAG, "=== gorb-os booting ===");
 
     /* Initialize NVS (WiFi driver's own store: namespace "nvs.net80211").

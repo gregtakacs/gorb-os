@@ -65,6 +65,9 @@ idf_component_register(
         # borrows the card from is not its owner. MSC is out of the tree, not out
         # of the menu — see docs/usb-sd-msc-plan.md §13.1.
         "usb/orb_usb_mtp.c"
+        # The RAM log ring: /api/v1/log's source, and the only witness that survives
+        # the file-share window taking the console (docs/usb-sd-msc-plan.md §13.3).
+        "util/orb_log.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -85,6 +88,7 @@ idf_component_register(
         "net"
         "sd"
         "usb"
+        "util"
         "../assets"
     REQUIRES
         wasm3                    # P7.2: the vendored interpreter behind the wasm tier

@@ -70,6 +70,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
 #include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
 #include "orb_jobs.h"     /* h_sd: the job-busy witness the themes page polls after a press */
+#include "orb_log.h"      /* /api/v1/log + the status line's SD witness (§13.3) */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 
@@ -2397,6 +2398,15 @@ static esp_err_t h_status(httpd_req_t *req)
          * waiting for a host answer the same question with the same silence. */
         "\"usb\":{\"state\":\"%s\",\"host_up\":%s,\"reason\":\"%s\"},"
 #endif
+        /* The card, stated every boot rather than only while the share is up. D38
+         * §13.3 specified this field and the migration shipped without it, and the
+         * gap cost the diagnosis directly: MTP answers with paths under /sd, so
+         * "no folders appeared" has two opposite causes — the card never mounted,
+         * or a host that never asked — that a status line without this cannot tell
+         * apart. mounted is the answer to "is there anything to serve", and share
+         * is the answer to "why will a rescan refuse right now". Both are cache
+         * reads (orb_sd.c:255, :290), so the few-Hz poll costs no flash traffic. */
+        "\"sd\":{\"mounted\":%s,\"share\":%s,\"card\":\"%s\"},"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
@@ -2452,6 +2462,8 @@ static esp_err_t h_status(httpd_req_t *req)
 #if CONFIG_ORB_USB_MTP
         orb_usb_mtp_state(), orb_usb_mtp_host_up() ? "true" : "false", orb_usb_mtp_reason(),
 #endif
+        orb_sd_mounted() ? "true" : "false", orb_sd_share_held() ? "true" : "false",
+        orb_sd_card_id(),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
         (unsigned)orb_art_refusals(),
@@ -4224,6 +4236,46 @@ static esp_err_t h_fb(httpd_req_t *req)
     return r;
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
+#if CONFIG_ORB_DEBUG_HTTP
+/* /api/v1/log — the retained log tail, as plain text.
+ *
+ * This exists because of a gap D38 opened and this file was the only place left to
+ * close it: in the file-share window the USB Serial/JTAG console belongs to TinyUSB
+ * (§6.1), so the mode that most needs a log line is the one mode with no way to
+ * read one. The board is reachable over WiFi the entire time — MTP occupies the
+ * USB port, not the radio — which makes the HTTP server the only witness that
+ * survives the handover, and this the only route that answers a question nobody
+ * could previously ask: what the host actually sent.
+ *
+ * Gated with the other two measurement doors for the same reason plan §7 item 7
+ * gives them: its whole purpose is looking at the device, so a build shipping to a
+ * shelf compiles it out, in the table and in the handler both.
+ *
+ * Chunked rather than one buffer so the retained text costs 1 KB of .bss rather
+ * than the ring's full 2 KB: the caller wants the newest lines, and six trace
+ * lines answer "what did Windows ask for" — the older ones are the boot ladder,
+ * which the boot log already showed whoever was holding the cable. */
+static esp_err_t h_log(httpd_req_t *req)
+{
+    static char s_txt[1024];
+
+    const size_t n  = orb_log_tail(s_txt, sizeof s_txt);
+    char         hd[96];
+    const int    hn = snprintf(hd, sizeof hd,
+                               "# log ring: %u B shown of a %d B window, %u B rolled past\n",
+                               (unsigned)n, ORB_LOG_BYTES, (unsigned)orb_log_dropped());
+
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    if (hn > 0 && (size_t)hn < sizeof hd) {
+        (void)httpd_resp_send_chunk(req, hd, (size_t)hn);
+    }
+    if (httpd_resp_send_chunk(req, s_txt, n) != ESP_OK) {
+        return ESP_FAIL;   /* client hung up mid-tail; nothing to undo */
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
 
 /* Copy src into dst as JSON string contents. Every string on this page came from a
  * filename on somebody's card or from a browser, and a title containing a quote would
@@ -5805,7 +5857,13 @@ static esp_err_t net_start_httpd(void)
      * /api/v1/screen registers only under CONFIG_ORB_DEBUG_HTTP, default y on the
      * bench and off for a build that leaves for a shelf. Count is therefore 34 with
      * the door on and 32 with it off, and host_tz_test.py counts the table textually,
-     * so it sees 32 either way. Both fit 36; the guard never pushes the count up. */
+     * so it sees 32 either way. Both fit 36; the guard never pushes the count up.
+     *
+     * /api/v1/log is the 35th and sits under the same guard as /screen and /fb, for
+     * the same reason: its only purpose is looking at the device. Textual count 36,
+     * gated-off count 33 — and note the textual count now equals the cap exactly, so
+     * the next door has to raise cfg.max_uri_handlers in the same change that adds
+     * the table entry, or it registers nothing and logs the line below doing it. */
     cfg.max_uri_handlers  = 36;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -5862,6 +5920,7 @@ static esp_err_t net_start_httpd(void)
 #if CONFIG_ORB_DEBUG_HTTP
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
+        { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

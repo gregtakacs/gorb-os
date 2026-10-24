@@ -255,3 +255,11 @@ CONFIG_ORB_USB_MTP=y
 # the device reads as connected while showing nothing. One card of themes and apps
 # needs far fewer than 64 handles, and the traversal is sized by this either way.
 CONFIG_TINYUSB_MTP_MAX_OBJECTS=64
+
+# The vendor's per-operation MTP trace (transport.c:141-178, one INFO line per
+# command: phase, op name, transaction id, parameters, and the response handed back).
+# Off by default because it prints a line per PTP request; on here because the
+# question this build has to answer is "what did the host send and what did we say",
+# and /api/v1/log is the only place that answer can be read from during the share
+# window. Costs DRAM for the format buffer and a line of throughput per operation.
+CONFIG_TINYUSB_MTP_TRACE_WRITES=y

@@ -138,8 +138,10 @@ func TestContainerRefusals(t *testing.T) {
 			"reads FORMAT 3 only", false},
 		{"a pre-FORMAT-2 artifact", func(b []byte) { putWord(b, 1, 1) },
 			"reads FORMAT 3 only", false},
-		{"a foreign ABI", func(b []byte) { putWord(b, 2, 4) },
-			"re-bake it", false},
+		{"a foreign ABI, one stamp past the delta dialect", func(b []byte) { putWord(b, 2, 5) },
+			"reads v3 and v4", false},
+		{"a pre-delta ABI", func(b []byte) { putWord(b, 2, 2) },
+			"reads v3 and v4", false},
 		{"a torn header", func(b []byte) { putWord(b, 3, 129) },
 			"container header is damaged", false},
 
@@ -171,6 +173,24 @@ func TestContainerRefusals(t *testing.T) {
 				t.Errorf("%s: err = %v, want it to say %q", tc.what, err, tc.want)
 			}
 		})
+	}
+}
+
+// The delta dialect the C4/C5 animated-plate bake stamps on the header is v4, and the
+// device door takes 3 and 4. The hub must forward a v4 container, not refuse a theme its
+// own device installs — the §4.1 mirror rule that this gate drifted from. Re-stamp the
+// authority's fixture header to v4, re-seat its checksum (the ABI word is inside the CRC
+// span), and the gate must open and carry the stamp through.
+func TestContainerAcceptsTheDeltaDialect(t *testing.T) {
+	body := fixture(t, "format3-pair.orbtheme")
+	putWord(body, wGeomABI, themeABI4)
+	putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
+	c, err := ContainerName(body)
+	if err != nil {
+		t.Fatalf("the hub refused a v4 delta container the device installs: %v", err)
+	}
+	if c.ABI != themeABI4 {
+		t.Errorf("ABI = %d, want the v4 delta stamp it carries", c.ABI)
 	}
 }
 

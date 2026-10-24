@@ -279,9 +279,36 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
                                char *committed_id);
 void      orb_theme_upload_cancel(orb_theme_up_t **u);
 
+/* The confirmed answer to a duplicate refusal, with no second body. upload_end keeps
+ * the verified scratch (upload.part) when it answers ORB_THEME_UPLOAD_E_DUP, and one
+ * one-shot token names it: orb_theme_staged_commit() is that token, empty when no
+ * scratch waits. recommit() accepts an upload only carrying that token, re-verifies
+ * the scratch from the card, and files it exactly as a completed upload would — so a
+ * replaced theme crosses the radio once, not twice. Any error (ESP_ERR_NOT_FOUND for
+ * a scratch that is gone or no longer tokened) means the caller must upload for real;
+ * the bytes of the answer are never a client's guess: the token came from this
+ * module's own RNG. */
+esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
+                                    char *committed_id, uint32_t *bytes);
+const char *orb_theme_staged_commit(void);   /* "" when nothing is staged */
+
 /* True while an upload owns the card, so the status endpoint can answer instead of
  * blocking the httpd worker behind the write. */
 bool orb_theme_upload_busy(void);
+
+/* Put the copy-to-card progress on the glass. The upload is the longest wait an
+ * owner sees with the dial frozen, and it used to name nothing: these park the
+ * compositor the way the store's park does, black the panel, and draw the
+ * overlay's "copying" frames until the body has landed. park() returns false if
+ * the park could not take the glass (a resume raced it), in which case the
+ * upload must proceed without the frames rather than fight the compositor; it
+ * has already then returned the dial. Call park() after upload_begin succeeds
+ * (the slot arms the moment the file opens, so the base-face promise is already
+ * made), and unpark() on every refusal after it. A completed upload does NOT
+ * unpark: the store the door queues takes the glass from here and reboots. */
+bool orb_theme_upload_park(uint32_t total);
+void orb_theme_upload_progress(uint32_t done, uint32_t total);
+void orb_theme_upload_unpark(void);
 
 /** Delete one theme file from the card by its device-issued id (12 hex chars),
  *  resolved by walking the themes directory and re-verified against the file's

@@ -32,29 +32,29 @@ import (
 // meaning of word 9, which is why a v2 reader refuses on the FORMAT word long before it
 // could misread a panel pair as a size.
 const (
-	themeHdrWords  = 32
-	themeHdrBytes  = themeHdrWords * 4 // 128
-	wMagic         = 0
-	wFormat        = 1
-	wGeomABI       = 2
-	wGeomOff       = 4
-	wGeomSize      = 5
-	wArtSize       = 7
-	wNSections     = 9 // FORMAT 2 read this word as scr_w; FORMAT 3 counts sections here
-	wSerial        = 11
-	wArtOff        = 13
-	wName          = 14
-	wHdrCRC        = 28
-	themeMagic     = 0x474F5254 // 'T','R','O','G' little-endian on the wire
-	themeFormat3   = 3          // ORB_BUNDLE3_FORMAT
-	themeABI3      = 3          // ORB_BUNDLE3_ABI
-	themeABI4      = 4          // ORB_BUNDLE3_ABI2: C4's clock delta dialect. An animated
-	                            // plate bake stamps the header 4; the device door and the
-	                            // browser reader both take 3 and 4, so the hub must too.
-	themeNameBytes = 56         // ORB_THEME_NAME_MAX: 55 usable + the NUL
-	bundleSectMax  = 8          // ORB_BUNDLE_SECT_MAX: the index's width
-	bundleIdxWords = 10         // ORB_BUNDLE_IDX_WORDS: a 40-byte record
-	bundleIdxHead  = 8          // n_sections + reserved
+	themeHdrWords = 32
+	themeHdrBytes = themeHdrWords * 4 // 128
+	wMagic        = 0
+	wFormat       = 1
+	wGeomABI      = 2
+	wGeomOff      = 4
+	wGeomSize     = 5
+	wArtSize      = 7
+	wNSections    = 9 // FORMAT 2 read this word as scr_w; FORMAT 3 counts sections here
+	wSerial       = 11
+	wArtOff       = 13
+	wName         = 14
+	wHdrCRC       = 28
+	themeMagic    = 0x474F5254 // 'T','R','O','G' little-endian on the wire
+	themeFormat3  = 3          // ORB_BUNDLE3_FORMAT
+	themeABI3     = 3          // ORB_BUNDLE3_ABI
+	themeABI4     = 4          // ORB_BUNDLE3_ABI2: C4's clock delta dialect. An animated
+	// plate bake stamps the header 4; the device door and the
+	// browser reader both take 3 and 4, so the hub must too.
+	themeNameBytes = 56 // ORB_THEME_NAME_MAX: 55 usable + the NUL
+	bundleSectMax  = 8  // ORB_BUNDLE_SECT_MAX: the index's width
+	bundleIdxWords = 10 // ORB_BUNDLE_IDX_WORDS: a 40-byte record
+	bundleIdxHead  = 8  // n_sections + reserved
 	// bundleGeomCap is ORB_BUNDLE_GEOM_CAP (orb_theme.c's SLOT_GEOM_CAP) and
 	// bundleArtCap is ORB_BUNDLE_ART_CAP (ORB_THEME_SLOT_CAP, defined once in
 	// main/art/orb_bundle.h). Both are INSTALL sums, not file shapes: geometry lands at

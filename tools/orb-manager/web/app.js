@@ -2240,8 +2240,14 @@ let sendWatchTimer = null;
 $("#mn-up-btn").onclick = () => {
   if (pendingReplace) {
     const f = pendingReplace.f;
+    const tok = pendingReplace.commit || "";
     pendingReplace = null;
-    uploadTheme(f, true, $("#mn-up-state"));
+    // The short road when the refusal staged one: the bytes the orb refused are
+    // already verified on its card, so the replace spends the token instead of
+    // pushing the file again. A refused or stale commit falls back to the full
+    // replace inside commitTheme — the press is for the theme, not for a road.
+    if (tok) commitTheme(f, tok, $("#mn-up-state"));
+    else uploadTheme(f, true, $("#mn-up-state"));
     return;
   }
   $("#mn-fw-file").click();
@@ -2300,11 +2306,16 @@ $("#mn-fw-file").onchange = async (e) => {
     if (!r.ok || j.ok === false) {
       // The late refusal the serial-only precheck cannot see (same name, same
       // serial, different payload CRCs). Same inline second press — the prompt
-      // that used to be a browser dialog stealing the page.
+      // that used to be a browser dialog stealing the page. The refusal now
+      // usually carries a commit token too: the orb verified these bytes, kept
+      // the copy on its card, and offers to file the keep for an empty POST.
+      // The token lives on the hold so the second press can take the short road;
+      // a refusal without one (older firmware) keeps the re-upload it always was.
       const why = j.error || ("HTTP " + r.status);
       if (why.indexOf("already on the card") >= 0) {
-        pendingReplace = { f };
-        st.textContent = "the orb refused: " + why + " \u2014 press Upload theme again to replace it";
+        pendingReplace = { f, commit: j.commit || "" };
+        st.textContent = "the orb refused: " + why + " \u2014 press Upload theme again to " +
+          (j.commit ? "file the copy already on its card" : "replace it");
         return;
       }
       throw new Error(why);
@@ -2331,6 +2342,31 @@ async function uploadTheme(f, overwrite, st) {
     st.textContent = "replaced \u201c" + (d.name || "?") + "\u201d (" + (d.id || "?") + ") \u2014 " + storeVerdictSentence(d, f);
     await loadThemes(themeIP);
   } catch (err) { stopSendWatch(); st.textContent = "upload failed: " + err.message; }
+}
+
+// commitTheme spends a duplicate refusal's one-shot token: POST /api/theme/commit
+// with an empty crossing, which files the copy the orb already verified and staged,
+// and queues the same store an overwrite upload would. The status line says which
+// road is being taken and, when the token turns out stale (410: a reboot, a card
+// swap, another upload since), the file ships the long way instead — the operator
+// confirmed the replacement, and a dead token must not quietly cancel it.
+async function commitTheme(f, tok, st) {
+  st.textContent = "filing the copy already on the orb\u2026";
+  try {
+    const r = await hubFetch("/api/theme/commit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: themeIP, commit: tok })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    const d = j.data || {};
+    st.textContent = "replaced \u201c" + f.name + "\u201d (" + (d.id || "?") + ") from the copy on the card \u2014 " +
+      (d.reboot === "automatic" ? "the orb is rebooting onto it" : "stored");
+    await loadThemes(themeIP);
+  } catch (err) {
+    st.textContent = "commit refused (" + err.message + ") \u2014 sending the file again\u2026";
+    uploadTheme(f, true, st);
+  }
 }
 
 // ---- remembered orb ---------------------------------------------------------

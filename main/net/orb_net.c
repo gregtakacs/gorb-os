@@ -4940,18 +4940,24 @@ static esp_err_t h_app_upload(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
-/* POST /api/v1/sd/theme[?overwrite=1], body = the .orbtheme bytes.
+/* POST /api/v1/sd/theme[?overwrite=1|?commit=TOK], body = the .orbtheme bytes.
  *
  * Raw body, not multipart: a boundary-following parser is ~200 lines of state machine
  * in a device that also renders a clock, and the page can set the request body to the
  * File object directly. Content-Length is mandatory for the reason h_ota gives for the
  * same rule — without it, a finished upload and a client that vanished are the same
- * request, and a partial file must never be reachable under a loadable name.
+ * request, and a partial file must never be reachable under a loadable name. The one
+ * empty-body request is the ?commit= branch below, which is not an upload at all.
  *
  * No name comes from the client: the file lands under the id its OWN header name
  * hashes to, decided in orb_theme_upload_end() once the bytes have arrived. ?overwrite=1
- * is the only client-controlled decision here, and it only governs whether a verified
- * file replaces a different theme already filed under the same name. */
+ * is the only client-controlled body decision, and it only governs whether a verified
+ * file replaces a different theme already filed under the same name. A duplicate
+ * refusal now KEEPS the verified bytes staged and answers with a one-shot commit
+ * token: the confirmed replace may then arrive as ?commit=<token> with no body at
+ * all, and the staged copy is re-verified from the card and filed. The old re-upload
+ * with ?overwrite=1 remains honored — every road ends with the same file on the card,
+ * and no road re-sends bytes the card already holds. */
 static esp_err_t h_theme_upload(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -4963,6 +4969,41 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * on the card. */
     char ow[4] = "";
     const bool overwrite = q_param(req, "overwrite", ow, sizeof ow) && strcmp(ow, "1") == 0;
+
+    /* The confirmed-duplicate answer: an empty-body POST carrying ?commit=<token>
+     * files the copy the last refusal left staged, instead of making the owner
+     * watch a second full upload cross the room for bytes the card already holds.
+     * The token came from this device's own refusal and recommit re-verifies the
+     * staged file from the card before anything is renamed — the query parameter
+     * is an identifier, never a path. */
+    char commit[20] = "";
+    if (q_param(req, "commit", commit, sizeof commit)) {
+        const char *why = NULL;
+        char committed[ORB_THEME_ID_HEX + 1] = "";
+        uint32_t sz = 0;
+        const esp_err_t ce = orb_theme_upload_recommit(commit, &why, committed, &sz);
+        if (ce != ESP_OK) {
+            /* The staged copy is gone, stale, or corrupt — an honest re-upload is
+             * the only way forward, and the body says so. 410: what was offered
+             * is no longer available, distinct from a fresh refusal's 409. */
+            httpd_resp_set_status(req, "410 Gone");
+            char b[224];
+            snprintf(b, sizeof b, "{\"error\":\"commit refused\",\"detail\":\"%s\"}",
+                     why ? why : "the staged copy is gone");
+            return httpd_resp_sendstr(req, b);
+        }
+        char b[192];
+        const esp_err_t pe = orb_theme_post_bundle(committed);
+        if (pe != ESP_OK) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            snprintf(b, sizeof b, "{\"error\":\"stored on the card, store job refused: %s\","
+                     "\"id\":\"%s\",\"reboot\":\"none\"}", esp_err_to_name(pe), committed);
+            return httpd_resp_sendstr(req, b);
+        }
+        snprintf(b, sizeof b, "{\"state\":\"stored\",\"id\":\"%s\",\"bytes\":%lu,"
+                 "\"reboot\":\"automatic\",\"committed\":\"staged\"}", committed, (unsigned long)sz);
+        return httpd_resp_sendstr(req, b);
+    }
 
     const int clen = (int)req->content_len;
     if (clen <= 0) {
@@ -5000,6 +5041,12 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the theme file on the card\"}");
     }
 
+    /* The file is open and the slot is armed: from here to a queued store the dial
+     * is promised to the overlay, so the copy names itself on the glass. A park
+     * that loses to a raced resume says so once and the upload proceeds anyway —
+     * the frames are courtesy, the bytes are the job. */
+    const bool parked = orb_theme_upload_park((uint32_t)clen);
+
     /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096
      * (esp_http_server.h:57), which is also why the OTA chunk buffer is static. */
     static char rx[4096];
@@ -5012,12 +5059,14 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing is left on the
              * card that could later be listed as a theme and fail to load. */
             orb_theme_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
         const esp_err_t de = orb_theme_upload_data(up, rx, (size_t)r);
         if (de != ESP_OK) {
             orb_theme_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -5036,6 +5085,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
                 : "{\"error\":\"the card refused the write\"}");
         }
         got += r;
+        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
     }
 
     const char *why = NULL;
@@ -5043,20 +5093,29 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
     const esp_err_t ee = orb_theme_upload_end(&up, overwrite, &why, committed);
     if (ee == ORB_THEME_UPLOAD_E_DUP) {
         /* A different theme already lives under that name. 409, not 422: nothing is
-         * wrong with the upload — the owner has to decide, and the page re-sends with
-         * ?overwrite=1 to keep the one they are pushing. The upload armed the slot
-         * invalid before it ran, so this refusal leaves the dial base-faced until a
-         * store lands — the re-send, or a plain re-store of what is already on the card. */
+         * wrong with the upload — the owner has to decide. The verified bytes STAY
+         * staged on the card (upload_end's DUP branch), and the body hands back the
+         * one-shot commit token that names them: the confirmed answer is an empty
+         * POST to this door with ?commit=<token>, not a second full crossing. The
+         * old contract — re-send the whole file with ?overwrite=1 — still works for
+         * any client too old or too new to know about the token. The upload armed
+         * the slot invalid before it ran, so this refusal leaves the dial base-faced
+         * until a store lands — the commit, the re-send, or a plain re-store. */
+        if (parked) orb_theme_upload_unpark();
         httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req,
+        char db[256];
+        snprintf(db, sizeof db,
             "{\"error\":\"a different theme with that name is already on the card\","
-            "\"overwrite\":false,\"reboot\":\"none\"}");
+            "\"overwrite\":false,\"reboot\":\"none\",\"commit\":\"%s\"}",
+            orb_theme_staged_commit());
+        return httpd_resp_sendstr(req, db);
     }
     if (ee != ESP_OK) {
         /* The reason goes in the body and not only the status line: whoever is at this
          * page has no serial cable and no reason to go and get one. The upload armed the
          * slot invalid before it ran, so a rejected upload leaves the base face — recover
          * by re-uploading or re-storing a good file. */
+        if (parked) orb_theme_upload_unpark();
         char b[256];
         httpd_resp_set_status(req, "422 Unprocessable Entity");
         snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\",\"reboot\":\"none\"}",
@@ -5072,7 +5131,10 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
     const esp_err_t pe = orb_theme_post_bundle(committed);
     if (pe != ESP_OK) {
         /* On the card but not queued. The slot stays armed invalid; the page says so and
-         * the owner re-presses Store. */
+         * the owner re-presses Store. No store is coming, so the glass comes back too —
+         * a parked dial with no job ahead of it is the frozen clock this frame set
+         * exists to end, not a state to leave anybody in. */
+        if (parked) orb_theme_upload_unpark();
         httpd_resp_set_status(req, "500 Internal Server Error");
         snprintf(b, sizeof b, "{\"error\":\"stored on the card, store job refused: %s\","
                  "\"id\":\"%s\",\"reboot\":\"none\"}", esp_err_to_name(pe), committed);
@@ -5494,11 +5556,19 @@ static const char HTML_THEMES[] =
 "try{d=JSON.parse(x.responseText);}catch(e){}"
 "if(x.status==200){say('uploaded - it is on the card','ok');refresh();}"
 
-"else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different theme with that name is already on the card. Replace it?')){doUp(true);return;}say('not replaced: the existing theme is kept','bad');}"
+"else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different theme with that name is already on the card. Replace it?')){if(d.commit){doCommit(d.commit);}else{doUp(true);}return;}say('not replaced: the existing theme is kept','bad');}"
 "else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};"
 "x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};"
 "x.ontimeout=function(){say('upload timed out','bad');};"
 "say('copying to the card\\u2026','');x.send(f);}"
+"function doCommit(tok){var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/theme?commit='+encodeURIComponent(tok),true);x.timeout=300000;"
+"x.onload=function(){var d={};try{d=JSON.parse(x.responseText);}catch(e){}"
+"if(x.status==200){say('replaced from the copy already on the card - storing','ok');refresh();}"
+"else if(x.status==410){say('the staged copy is gone - uploading the file again','');doUp(true);return;}"
+"else{say('replace refused: '+(d.detail||d.error||x.status),'bad');}};"
+"x.onerror=function(){say('replace failed \\u2014 is the card locked?','bad');};"
+"x.ontimeout=function(){say('replace timed out','bad');};"
+"say('replacing from the copy already on the card\\u2026','');x.send();}"
 "refresh();"
 "</script></body></html>";
 

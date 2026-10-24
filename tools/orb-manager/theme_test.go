@@ -346,6 +346,75 @@ func TestThemeUploadOverwriteIsTheOperatorsCall(t *testing.T) {
 	}
 }
 
+// The staged-commit contract end to end, through the hub's own doors. A duplicate
+// upload must come back with the device's commit token in the envelope; the
+// operator's confirmed Replace then costs POST /api/theme/commit and an empty
+// crossing — the orb must see the token in the query and ZERO body bytes on the
+// commit call, which is the whole point of the feature stated as an assertion. A
+// replayed commit must fail (the offer is one-shot), and the row must end filed
+// with the replacing bytes.
+func TestThemeDuplicateCommitsFromTheStagedCopy(t *testing.T) {
+	s, ip, called, f := fakeOrbHub(t)
+	first := orbfake.Container("Tourbillon")
+	second := orbfake.Container("Tourbillon")
+	second[200] ^= 0xFF // same name, different bytes — the duplicate case
+	if _, err := s.device.ThemeUpload(ip, first, false); err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip, bytes.NewReader(second))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	env := decodeEnv(t, rec)
+	if env["ok"] == true || env["duplicate"] != true {
+		t.Fatalf("env = %v, want the duplicate refusal", env)
+	}
+	tok, _ := env["commit"].(string)
+	if tok == "" {
+		t.Fatalf("env = %v, want the staged-commit token the refusal carries", env)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/theme/commit",
+		strings.NewReader(`{"ip":"`+ip+`","commit":"`+tok+`"}`))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	env = decodeEnv(t, rec)
+	if env["ok"] != true {
+		t.Fatalf("the confirmed commit was refused: %v", env)
+	}
+	c := called()
+	if c.path != "/api/v1/sd/theme" || !strings.Contains(c.query, "commit="+tok) {
+		t.Errorf("orb saw %s ?%s, want POST /api/v1/sd/theme?commit=<token>", c.path, c.query)
+	}
+	if c.body != "" {
+		t.Errorf("the commit carried %d body bytes; staged means NOTHING re-sent", len(c.body))
+	}
+	replaced := false
+	for _, th := range f.Themes() {
+		if th.Name == "Tourbillon" && th.Bytes == len(second) {
+			replaced = true
+		}
+	}
+	if !replaced {
+		t.Errorf("the commit did not file the staged bytes: %+v", f.Themes())
+	}
+
+	// One-shot: the same token again finds nothing to file, on the hub's side or
+	// the orb's. The refusal wording may differ; the refusal must not.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/theme/commit",
+		strings.NewReader(`{"ip":"`+ip+`","commit":"`+tok+`"}`))
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	if env = decodeEnv(t, rec); env["ok"] == true {
+		t.Error("a spent commit token was accepted a second time")
+	}
+}
+
 // A FORMAT-1 container is the fragmented-identity artifact: its name lived in the
 // filename, which no orb reads any more. The hub refuses it before the bytes cross the
 // room, so the operator learns the file is old instead of watching a 422 arrive late.
@@ -471,4 +540,3 @@ func TestThemePrecheckVerdicts(t *testing.T) {
 		t.Errorf("free name reported %v, want a clear verdict", d)
 	}
 }
-

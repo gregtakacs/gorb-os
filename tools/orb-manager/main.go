@@ -680,6 +680,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))
 	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))
+	// The confirmed answer to a duplicate: spend the device's one-shot commit token
+	// so the replace costs an empty POST instead of a second full upload.
+	mux.Handle("/api/theme/commit", s.requireControl(http.HandlerFunc(s.handleThemeCommit)))
 	// The live witness of a send in flight — read-only, cheap, and the reason the
 	// upload button no longer has to sit there saying nothing while megabytes move.
 	mux.Handle("/api/theme/upload-status", s.requireControl(http.HandlerFunc(s.handleThemeSendStatus)))

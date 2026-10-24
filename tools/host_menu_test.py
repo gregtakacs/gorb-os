@@ -1249,9 +1249,32 @@ int main(void)
        !strcmp(rowline(2), "uninstall - press again"));
     turn_up(1);
     ck("a detent ends the arm", s_uninst_arm == -1);
+    /* And the line it printed goes with it. Bench, orb-B 2026-10-24: the owner
+     * rotated away without confirming, the row went back to plain `uninstall`,
+     * and the yellow line underneath still read "press uninstall again to
+     * confirm" — offering a press the arm no longer honored. The check above is
+     * the one that shipped with the bug: it watched the arm and never the glass.
+     */
+    ck("and takes the confirmation's line off the status row",
+       s_ui.status[0] == '\0');
     g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
     ck("the next press arms again rather than erasing",
        g_posts == 0 && g_un_calls == 0 && s_uninst_arm == 0);
+    /* The clear is scoped to the arm's own sentence. An answer the worker
+     * published while the row stood armed belongs to the owner, and cancelling
+     * a confirmation is no reason to lose a refusal nobody has read yet. Landed
+     * the way this suite lands every result: through the shared slot, since the
+     * recorder only witnesses the publish. */
+    memset(&s_shared, 0, sizeof s_shared);
+    snprintf(s_shared.status, sizeof s_shared.status, "\"Clock\": it is on the dial");
+    s_dirty = true;
+    menu_view_service();
+    ck("a refusal landing while the row stands armed reaches the line",
+       !strcmp(s_ui.status, "\"Clock\": it is on the dial") && s_uninst_arm == 0);
+    turn_up(-1);
+    ck("cancelling the arm leaves that answer where it is",
+       s_uninst_arm == -1 && !strcmp(s_ui.status, "\"Clock\": it is on the dial"));
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
     s_cur = 2; menu_view_apply_input(0, true);
     ck("the second press on the same row posts the removal",
        g_posts == 1 && g_posted_fn == job_uninstall && g_posted_pack == (0 << 2) &&
@@ -1705,10 +1728,10 @@ MUTATIONS = [
      "        if (s_uninst_arm != s_door_slot) {",
      "        if (0) {"),
     ("a detent leaves the uninstall armed",
-     "    s_uninst_arm = -1;\n    s_cur = next;",
+     "    unarm_uninstall();\n    s_cur = next;",
      "    s_cur = next;"),
     ("leaving the catalog keeps the previous app and its arm",
-     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_uninst_arm = -1;\n}",
+     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    unarm_uninstall();\n}",
      "static void enter_apps(void)\n{\n}"),
     ("the refused switch gets the menu's words instead of the door's",
      'e == ESP_OK ? (on ? "on" : "off") : why);',
@@ -1891,6 +1914,14 @@ MUTATIONS = [
     ("P5.4: the fold loses its em-dash mapping",
      '{ 0x2014, "-"  }, { 0x2015, "-"  }, { 0x2212, "-"  },',
      '{ 0x2015, "-"  }, { 0x2212, "-"  },'),
+    # A cancel is two halves of one fact. Each mutant keeps the arm correct and
+    # breaks only what the owner can see — the shape the bug shipped in.
+    ("P5.3: a detent ends the arm and leaves its prompt on the glass",
+     "    unarm_uninstall();\n    s_cur = next;",
+     "    s_uninst_arm = -1;\n    s_cur = next;"),
+    ("P5.3: a cancel wipes the status line whatever is on it",
+     'if (strstr(s_ui.status, "press uninstall again to confirm")) s_ui.status[0] = \'\\0\';',
+     "s_ui.status[0] = '\\0';"),
 ]
 
 def run_mutations():
@@ -2045,14 +2076,19 @@ def main():
           and "orb_app_activate" in tcode)
     # Structural half of the two-press rule; the behavioural half is the check
     # in the harness that presses the uninstall row twice, and once either side
-    # of a detent. The arm is cleared exactly where the cursor moves, and the
-    # row's own label is the other place the arm appears.
-    check("uninstall arms, and only a cursor move clears it",
-          # declaration, the list page clearing it on entry, the firing press
-          # disarming before it posts, and the cursor move. Four, or a site is
-          # missing: without the one in apply_input a detent leaves the arm live.
-          tcode.count("s_uninst_arm = -1") == 4          # decl, enter, fire, move
-          and tcode.count("s_uninst_arm") == 7
+    # of a detent. The arm used to be cleared by four hand-written assignments,
+    # and the cursor move's among them cleared ONLY the arm — which is how a
+    # cancel left its own confirmation on the glass (bench, orb-B 2026-10-24).
+    # One helper now clears the arm and its line together, so a cancel that
+    # forgets the second half cannot be written by accident.
+    check("uninstall arms, and one helper owns every cancel",
+          # the declaration's initializer and the helper's own clear: two, or a
+          # site went back to disarming by hand and left its line behind.
+          tcode.count("s_uninst_arm = -1") == 2
+          # three cancels call it: leaving the catalog, the firing press, and the
+          # cursor move. Miss the one in apply_input and a detent leaves the arm
+          # live; miss its line and the glass still says press again.
+          and tcode.count("unarm_uninstall();") == 3
           and tcode.count("s_uninst_arm != s_door_slot") == 1
           and tcode.count("s_uninst_arm == s_door_slot") == 1)
     check("the switch model stays dead",

@@ -901,6 +901,24 @@ static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back    
 static int s_door_slot  = -1;
 static int s_uninst_arm = -1;
 
+/* Cancel the armed uninstall, and take its line off the status row with it.
+ * The arm and the yellow prompt it printed are one fact — this row awaits its
+ * second press — so every cancel clears both, or the glass keeps offering a
+ * press the arm no longer honors. Bench, orb-B 2026-10-24: the owner pressed
+ * uninstall, rotated away without confirming, and the row went back to plain
+ * `uninstall` under a line still reading "press uninstall again to confirm".
+ *
+ * The line goes ONLY while it is still the arm's own words. Anything the
+ * worker published since the first press overwrote it, and that answer belongs
+ * to the owner: rotating the knob is not a reason to lose a refusal they have
+ * not read yet. So the test is on the text, not on a flag that would have to
+ * be kept honest at every other write. */
+static void unarm_uninstall(void)
+{
+    s_uninst_arm = -1;
+    if (strstr(s_ui.status, "press uninstall again to confirm")) s_ui.status[0] = '\0';
+}
+
 static void open_appact(const orb_app_t *a)
 {
     s_door_slot = orb_app_index_of(a);
@@ -968,7 +986,7 @@ static const char *hint_apps(void)  { return "rotate: choose   push: open"; }
 static void enter_apps(void)
 {
     s_door_slot  = -1;
-    s_uninst_arm = -1;
+    unarm_uninstall();
 }
 
 /* The three doors, in the order an owner wants them: put it on the glass,
@@ -1056,7 +1074,7 @@ static void act_appact(int row)
             repaint();
             return;
         }
-        s_uninst_arm = -1;
+        unarm_uninstall();
         job_post(job_uninstall, door_pack(a, 0));
         repaint();
         return;
@@ -1717,8 +1735,10 @@ void menu_view_apply_input(int32_t delta, bool pressed)
     /* Any move of the cursor ends the uninstall arm (P5.3): the confirmation is
      * a second press on THE SAME ROW, and an arm that survived a detent would
      * let the press that follows a rotation erase an app the owner had already
-     * walked away from. */
-    s_uninst_arm = -1;
+     * walked away from. The helper takes the confirmation's own line with it —
+     * the arm and the prompt are one fact, and the bench caught a detent that
+     * cleared the first and left the second on the glass. */
+    unarm_uninstall();
     s_cur = next;
     /* Where the cursor landed, in the log. The menu never said: it repaints the
      * highlight and that was the only answer, so driving it blind over

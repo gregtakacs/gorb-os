@@ -2948,7 +2948,13 @@ class Component extends DCLogic {
     rd.readAsText(file);
   }
   renderVals() {
-    const s = this.state, F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
+    /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked
+     * carrier ships as tick_rate. HB.dev.pace is what the glass will hold --
+     * the scheduler can floor below the bank, and a still carrier's ticks pay
+     * the hand re-composite the row ladder can't price. Every label that
+     * reads as "the rate you'll SEE" takes the pace; the bank rate rides as
+     * the appendix, because the frame stepper really does cycle bank samples. */
+    const s = this.state, HB = this.budget(), F = HB.fps, DEV = HB.dev.pace, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
@@ -3391,7 +3397,7 @@ class Component extends DCLogic {
     const hcfg = D.hands || {}, ce = D.centre || {};
     const handLabel = (id) => (id.startsWith('centre-') ? 'Centre ' + ({ hours24: '24-hour', gmt: 'GMT', day: 'day', date: 'date' }[id.slice(7)] || id.slice(7)) : '#' + num(id) + ' ' + (E && D.comps.find((c) => c.id === id) ? E.SCALES[D.comps.find((c) => c.id === id).scale].toLowerCase() : '') + ' hand');
     return {
-      metaLabel: '466 × 466 · ' + F + ' fps · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      metaLabel: '466 × 466 · ' + (DEV < F ? '~' + DEV + ' fps (bank ' + F + ')' : F + ' fps') + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
       mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
@@ -3402,9 +3408,9 @@ class Component extends DCLogic {
       clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
       pickGuide: () => this.cycleGuide(),
       g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, bg: lit ? '#2a2722' : '#1f1d1a', bd: lit ? '#c9a25a' : '#3a352d', fg: lit ? '#f0d79a' : '#8d8472' }; })(),
-      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + F + ' fps)',
+      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + (DEV < F ? '~' + DEV + ' fps · bank ' + F : F + ' fps') + ')',
       playLabel: s.playing ? 'Pause' : 'Play',
-      slowLabel: s.slow ? Math.max(1, Math.round(F / 5)) + ' fps' : F + ' fps',
+      slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : (DEV < F ? '~' + DEV + ' fps · bank ' + F : DEV + ' fps'),
       // step the BANK: the frames on the glass are the bank's, while F only
       // paces them, so wrapping here by F would strand half of a deep bank
       prev: stop((f) => (f + B - 1) % B), next: stop((f) => (f + 1) % B),

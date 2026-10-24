@@ -249,6 +249,11 @@ static void band_bar(uint16_t *out, uint32_t done, uint32_t total)
  * callers pay it once. Requires s_band allocated and the panel up. */
 static void overlay_fill_black(void)
 {
+    /* §32.5 residual (a): the memset below stamps the ONE reused s_band. After
+     * a starved commit that buffer still belongs to an un-retired DMA — black
+     * bleed-through on a few rows would be harmless on a backdrop, but the
+     * same refuse-then-drain rule covers every stamp site in one place. */
+    if (s_band_starved) display_band_quiet();
     memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
     for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
         const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
@@ -353,6 +358,15 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
     char line1[72];
     if (secs) snprintf(line1, sizeof line1, "%s %us", stage, (unsigned)secs);
     else      snprintf(line1, sizeof line1, "%s", stage);
+
+    /* §32.5 residual (a): a starved frame left its band mid-wire, and that DMA
+     * still owns s_band. commit()'s quiet-bus drain runs AFTER band_text has
+     * already rewritten the buffer, which is the window the 2026-10-23 flicker
+     * slipped through — the stale transaction latched half-old, half-new bytes
+     * and the glass showed a second green bar for a frame before it settled.
+     * Drain BEFORE stamping: on timeout abandon the beat with the buffer
+     * untouched; s_band_starved stays set so the next tick retries. */
+    if (s_band_starved && display_band_quiet() != ESP_OK) return;
 
     uint16_t *b = s_band;
     uint32_t ink = band_text(line1, b);

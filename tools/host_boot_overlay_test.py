@@ -45,10 +45,23 @@ int g_calls; int g_y[16]; uint16_t *g_b[16]; int64_t g_now_us;
 int g_wipe; int g_wipe_y[24];
 int g_fail_left;   /* §32.5: when > 0, the next non-black commit returns a timeout and
                     * is NOT counted, so the capture list never carries a refused band. */
+int g_inflight;    /* §32.5 residual (a): a refused band is still on the wire     */
+int g_quiet;       /* display_band_quiet() calls the overlay actually made        */
+int g_quiet_left;  /* when > 0, the next display_band_quiet() times out holding it */
+int g_violation;   /* content committed while a band was still in flight          */
 static int all_black(const uint16_t *b, size_t n)
 {
     for (size_t i = 0; i < n; i++) if (b[i]) return 0;
     return 1;
+}
+esp_err_t display_band_quiet(void)
+{
+    /* Models the shipped drain: retire the refused band, or time out holding
+     * it when the harness says the bus stays busy. */
+    g_quiet++;
+    if (g_quiet_left > 0) { g_quiet_left--; return 258; }
+    g_inflight = 0;
+    return 0;
 }
 esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
 {
@@ -57,14 +70,19 @@ esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
      * all-black strip is never a stage frame. Wipes are counted on their own so
      * the capture indexes the scenario decodes below do not shift. §32.5: the
      * overlay paints only through this seam, and the seam is exactly where the
-     * shipped display.c drains; the capture below is the band as it goes out. */
+     * shipped display.c drains; the capture below is the band as it goes out.
+     * §32.5 residual (a): a band handed over while g_inflight is still 1 was
+     * stamped while the refused transaction owned the wire — the double-green-
+     * bar race — and the violation counter below fails the suite on it. */
+    if (g_inflight) g_violation++;
     if (all_black(data, (size_t)rows * 466)) {
         if (g_wipe < 24) g_wipe_y[g_wipe] = y1;
         g_wipe++;
         return ESP_OK;
     }
-    if (g_fail_left > 0) { g_fail_left--; return 258; }  /* ESP_ERR_TIMEOUT: refused band,
-        * not counted and not captured — the seam never hands it to the panel. */
+    if (g_fail_left > 0) { g_fail_left--; g_inflight = 1; return 258; }  /* ESP_ERR_TIMEOUT: refused band,
+        * not counted and not captured — the seam never hands it to the panel,
+        * and its DMA stays on the wire until the overlay drains it. */
     if (g_calls < 16) { g_y[g_calls] = y1;
         g_b[g_calls] = malloc((size_t)rows * 466 * 2);
         memcpy(g_b[g_calls], data, (size_t)rows * 466 * 2); }
@@ -86,7 +104,8 @@ HDRS = {
       "esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t, int, int, int, int, const void *);\n",
     "display.h": "#include \"esp_lcd_panel_ops.h\"\n#include <stdint.h>\n"
       "esp_lcd_panel_handle_t display_get_panel(void);\n"
-      "esp_err_t display_band_commit(int, int, const uint16_t *);\n",
+      "esp_err_t display_band_commit(int, int, const uint16_t *);\n"
+      "esp_err_t display_band_quiet(void);\n",
     "board_config.h": "#define SCREEN_WIDTH 466\n#define SCREEN_HEIGHT 466\n",
 }
 
@@ -95,6 +114,7 @@ DRIVER = r"""
 extern int g_calls; extern int g_y[16]; extern uint16_t *g_b[16]; extern int64_t g_now_us;
 extern int g_wipe; extern int g_wipe_y[24];
 extern int g_fail_left;
+extern int g_inflight, g_quiet, g_quiet_left, g_violation;
 void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
 void orb_boot_overlay_backdrop(void);
 /* One process, one scenario, in the order the boot lives it: the fake clock
@@ -134,6 +154,27 @@ int main(void)
     s_before = g_calls;
     orb_boot_overlay("verifying", 512u*1024u, 1024u*1024u, 0);
     printf("retry step calls %d\n", g_calls - s_before);       /* expect 3: the starved frame redrawn */
+    g_fail_left = 0;
+    /* §32.5 residual (a): the restamp after a starvation must DRAIN first. Refuse a
+     * fresh-stage band (starved set, band in flight), then run one beat where the
+     * drain itself times out — the overlay must abandon it with s_band untouched —
+     * and one beat where the drain succeeds. g_violation counts content committed
+     * while the refused band was still on the wire; it must end at zero. */
+    g_now_us = 8200000;                                       /* new stage word forces the frame */
+    g_fail_left = 1;
+    s_before = g_calls;
+    orb_boot_overlay("storing", 640u*1024u, 1024u*1024u, 0);
+    printf("refused step calls %d\n", g_calls - s_before);     /* expect 0, band in flight */
+    g_now_us = 8300000;
+    g_quiet_left = 1;                                         /* the stale band will not retire */
+    s_before = g_calls;
+    orb_boot_overlay("storing", 640u*1024u, 1024u*1024u, 0);
+    printf("drain-timeout step calls %d\n", g_calls - s_before); /* expect 0: abandoned before stamping */
+    g_now_us = 8400000;
+    s_before = g_calls;
+    orb_boot_overlay("storing", 640u*1024u, 1024u*1024u, 0);
+    printf("drained step calls %d\n", g_calls - s_before);     /* expect 3: quiet first, then the frame */
+    printf("quiet %d violations %d\n", g_quiet, g_violation);  /* expect >= 3 and 0 */
     g_fail_left = 0;
     for (int i = 0; i < g_calls && i < 16; i++) {
         char path[160];
@@ -276,6 +317,32 @@ def main():
         ok(rm and int(rm.group(1)) == 3,
            "the starved frame is retried on the next beat despite the throttle",
            rm.group(1) if rm else "no line")
+
+        # §32.5 residual (a): the restamp AFTER a starvation must drain first.
+        # The harness models the refused band as on-the-wire until the overlay
+        # calls display_band_quiet(); a content commit handed over while it is
+        # still inflight counts as a violation — the second-green-bar race the
+        # 2026-10-23 store watched, pinned as an ORDERING rule, not a hope.
+        fm = re.search(r"refused step calls (\d+)", out)
+        ok(fm and int(fm.group(1)) == 0,
+           "a band refused mid-store abandons that frame too", fm.group(1) if fm else "no line")
+        tm = re.search(r"drain-timeout step calls (\d+)", out)
+        ok(tm and int(tm.group(1)) == 0,
+           "a starved frame whose drain times out is abandoned before any stamp lands",
+           tm.group(1) if tm else "no line")
+        dm = re.search(r"drained step calls (\d+)", out)
+        ok(dm and int(dm.group(1)) == 3,
+           "the beat after a successful drain paints the full three-band frame",
+           dm.group(1) if dm else "no line")
+        qm = re.search(r"quiet (\d+) violations (\d+)", out)
+        ok(qm and int(qm.group(1)) >= 3 and int(qm.group(2)) == 0,
+           "every restamp of the shared s_band followed a quiet-bus drain — zero commits rode "
+           "the wire behind an un-retired band",
+           qm.group(0) if qm else "no line")
+        disp_src = open(os.path.join(ROOT, "main", "display", "display.c")).read()
+        ok("esp_err_t display_band_quiet(void)" in disp_src
+           and "band at r%d refused: the bus is not quiet" in disp_src,
+           "display.c ships the drain seam and refuses a commit whose bus never quieted")
 
         # what those bands actually carry, decoded independently
         drawn = sorted(bands.items())          # global capture order preserved

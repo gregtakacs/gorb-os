@@ -161,11 +161,19 @@ Add one exclusion to `hit()`: a comp whose `open` field exceeds `0.5` is a cut
 into the dial rather than an opaque plate, so the wedge costs nothing crossing
 it. Skip those.
 
-## Edit 3: bound the tax for a banked carrier
+## Edit 3: bound the tax for a banked carrier — SUPERSEDED
 
 Do not restore the `b.rows > 0` exemption. `7649661` killed it for the right
 reason: `rowPrice()` measures plate motion with the hands hidden, so rows prove
 nothing about the seconds wedge. Keep the term applying to banked carriers.
+
+The bound below (shipped as commit `4322bac`) was WRONG and is removed. The one-step
+grace it added (`floorStep`) read the banked perpetual as 12 and banked modern as 12,
+contradicting both panel anchors — a banked subdial the seconds wedge crosses re-blits
+its whole plate on every crossing tick, so the tax is not marginal to a bank push. The
+shipped `07d3411` anchor sustains the banked perpetual at 4, three steps below its
+bank. The tax now runs to the scheduler floor 4 for a banked dial exactly as for an
+open one. The plan below is kept only to record the superseded reasoning.
 
 Bound it instead. When `b.rows > 0` the tick already pays a bank push, so the
 marginal crossed-plate cost may not cut more than one tier step below `b.fps`:

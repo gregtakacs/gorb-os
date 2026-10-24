@@ -428,7 +428,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
   paneRef = React.createRef();
@@ -491,7 +491,56 @@ class Component extends DCLogic {
    * monotone clamp -- the emulator uses it to price a chosen tier directly. */
   budget(forceWant) {
     this._bG = 1;
-    try { return this._budget(forceWant); } finally { this._bG = 0; }
+    let b;
+    try { b = this._budget(forceWant); } finally { this._bG = 0; }
+    b.dev = this._devPace(b);
+    return b;
+  }
+  /* The rate the glass will actually hold, as distinct from the tier the bank
+   * can pay. The CAPS ladder prices the delta-bank push only. A carrier with
+   * nothing to push -- measured rows 0, train sealed -- rides its ticks on the
+   * live re-composite instead, and there the seconds wedge re-blits every
+   * opaque plate it crosses, twice while a cast-shadow twin rides with it.
+   * Panel-calibrated pairs: a bare sweep ring holds the full tier (aviator,
+   * 15 fps sustained); the same hand across four sealed subdials with gilt
+   * twins clamps to the scheduler floor (perpetual, 4 fps). The twins halve
+   * the crossed-plate bill, so predict 8 without them, never under the floor
+   * of 4. A banked carrier already pays the wedge inside its measured rows,
+   * so the tier stands there, and a ticked hand holds between beats and pays
+   * only on the beat. The centre seconds hand is required: a subdial's own
+   * small seconds ticks inside its window row, not across the dial. */
+  _devPace(b) {
+    const out = { pace: b.fps, cross: 0, why: '' };
+    if (!b.measured || b.rows > 0 || b.car) return out;
+    const c = this.cfg(), D = this.design();
+    if (!(D.centre && D.centre.second === 1)) return out;
+    if (c.tick && c.tick !== 'sweep') return out;
+    const RE = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205,
+      railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
+    const hc = (D.hands && D.hands['centre-second']) || {};
+    const tip = Math.min(216, (RE[D.print] || 205) * 0.98 * (+hc.len || 1));   // buildHands' own formula
+    const half = (x) => x.size != null ? Math.max(+x.size / 2, 18) : 28;
+    const hit = (x) => x.host === 'dial' && (x.type === 'subdial' || x.type === 'moon' || x.type === 'window')
+      && (+x.dist || 0) + half(x) > 18 && (+x.dist || 0) - half(x) <= tip;
+    const n = (D.comps || []).filter(hit).length;
+    if (!n) { out.why = 'Still dial sweeps clear of every plate: the device holds the tier rate, as the aviator does.'; return out; }
+    out.cross = n;
+    const shOn = +c.shOp > 0.01;
+    out.pace = Math.max(4, Math.min(b.fps, shOn ? 4 : 8));
+    if (out.pace < b.fps) out.why = 'Seconds sweep crosses ' + n + ' live plate' + (n > 1 ? 's' : '') +
+      ': each tick re-blits them under the wedge. Panel-measured 4 fps with cast shadows; ' +
+      (shOn ? 'Cast shadows off predicts ~8.' : 'with the twins it measured 4.');
+    return out;
+  }
+  /* Off writes shOp 0: the bake's alpha gate already skips every twin at
+   * zero, so the theme ships no shadow rows and the device stops re-blitting
+   * a second plate under each moved hand -- roughly twice the pace on a
+   * still dial sweeping live plates. The last positive opacity round-trips,
+   * so the look returns exactly as it was left. */
+  castShadowsOn(on) {
+    const cur = +this.cfg().shOp;
+    if (on) this.setCfg('shOp', this._shLast > 0.01 ? this._shLast : 1);
+    else { if (cur > 0.01) this._shLast = cur; this.setCfg('shOp', 0); }
   }
   _budget(forceWant) {
     const T = window.WatchEngine && WatchEngine.TRAINS[this.state.train];
@@ -505,7 +554,9 @@ class Component extends DCLogic {
    * SMALLER fraction of a tooth and changes fewer rows than the figure the cap
    * was struck against. A cap measured at the bigger step therefore still
    * bounds the smaller one; deepening a bank can only buy rows back, never
-   * spend rows the cap does not already allow. */
+   * spend rows the cap does not already allow. CAPS price the bank push ONLY:
+   * a sealed carrier that sweeps pays a live re-composite this ladder cannot
+   * see, and _devPace quotes that separately. */
   const CAPS = needle ? { 15: 64, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
   /* The carriage bank is a fixed frame count on the device (bake_clock.py holds
    * CLK_TOURB_MAX=16) and the plate keyframe bank caps at CLK_BG_MAX=16
@@ -3223,12 +3274,17 @@ class Component extends DCLogic {
        * tempo is decided separately by the row price below. Picking sweep asks
        * for the 15 fps tier; if the art cannot pay for it, budget() silently
        * clamps to the highest tier it can (never a hard refusal -- the user
-       * chooses the look, the dial decides the rate). */
+       * chooses the look, the dial decides the rate). The readout appends the
+       * pace the device itself will hold when it differs from the tier: a
+       * sealed carrier has no bank to push, so its ticks pay a live
+       * re-composite the row ladder cannot price, and the cast-shadow twin
+       * doubles that bill -- see _devPace. */
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
         { v: 'sweep', label: 'Sweep' }];
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' }),
-        Nt('', 'Available frame rates depend on how much of the dial opening is visible.'),
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' + (HB.dev.pace < HB.fps ? ' · device ~' + HB.dev.pace : '') }),
+        Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
         H('Drop shadow · hands and raised/sunken subdials'),
+        Ch('Cast shadows', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
         ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
         Rg('Distance', +c0.shDist, 0, 3, 0.05, cf('shDist'), (+c0.shDist).toFixed(2) + '×'),

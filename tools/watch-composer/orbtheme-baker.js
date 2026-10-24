@@ -1721,6 +1721,9 @@
    * field list — is how a theme says what it paints (D32, R1). */
   var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;   // Ruling A: the
   var GEOM_ABI4 = 4;    // C4's delta dialect, one stamp up from what shipped before
+  var DELTA_TOL = 16;   // §36: the summed |dR|+|dG|+|dB|+|dA| (max 1020) a texel must clear to
+                       // earn a delta byte. diffRect and selfVerify3 read the same number, so
+                       // the codec's floor and the bake's round-trip promise can never disagree.
   // element row APPENDED kind and src without a bump — the blob's derived row
   // stride (see unpackBlob3) is what makes a narrower old row and a wider new
   // one the same readable file. A stamped 3 on a 19-word row is the promise,
@@ -2770,8 +2773,8 @@
     // frame after it a rect cropped to the run of texels it changes. A frame that
     // turns back into its source (a still in the loop) rides the previous row's
     // index with zero rects, the loader's "nothing to apply". The running canvas is
-    // the composited result the device ends up with, so the round trip is exact by
-    // construction, and selfVerify3 re-derives it before the bake ships.
+    // the composited result the device ends up with; the encode is lossy at the
+    // DELTA_TOL floor, so selfVerify3 re-derives it to that same floor before ship.
     function rowDelta(e, planes, delay, masked) {
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
@@ -2788,7 +2791,7 @@
           spr = { off: bank.size, size: b0.sprites[0].size, w: p.w, h: p.h, diffx: 0, diffy: 0 };
           bank.size += b0.sprites[0].size;
         } else {
-          var rect = diffRect(p, canvas, 16);      // >=16 of 1020: reject a lone dither texel
+          var rect = diffRect(p, canvas, DELTA_TOL); // reject a lone dither texel below the shared floor
           if (!rect) {                             // a still in the loop: zero-size, applies nothing
             spr = { off: bank.sprites[bank.sprites.length - 1].off, size: 0, w: 0, h: 0,
                     diffx: 0, diffy: 0 };
@@ -2830,16 +2833,24 @@
       }
     }
     // The round trip (§7.2): composite the baked deltas back to whole frames and
-    // compare, texel for texel, to the running planes the bake was handed. A delta
-    // sprite at (0,0) matching the row box is a still carrying no new pixels, so it
-    // applies nothing. This is the bake's own refusal, not a test reading its output.
+    // compare, texel for texel, to the running planes the bake was handed — but to
+    // the same DELTA_TOL floor the encoder dropped sub-threshold texels at. A texel
+    // inside the rect was copied exact; one outside it never cleared the floor, so a
+    // summed change past DELTA_TOL means a rect that missed real motion (a too-small
+    // or misplaced rect), which is the drift worth refusing. A delta sprite at (0,0)
+    // matching the row box is a still carrying no new pixels, so it applies nothing.
+    // This is the bake's own refusal, not a test reading its output.
     function selfVerify3(planes, sprites, baseIndex) {
       var canvas = copyPlane(planes[0]);
       for (var i = 1; i < planes.length; i++) {
         var sp = sprites[baseIndex + i];
         if (sp.size) paintRect(canvas, planes[i], [sp.diffx, sp.diffy, sp.w, sp.h]);
-        for (var j = 0; j < planes[i].w * planes[i].h * 4; j++)
-          if (canvas.rgba[j] !== planes[i].rgba[j]) return false;
+        var n3 = planes[i].w * planes[i].h;
+        for (var j = 0; j < n3; j++) {
+          var a4 = j * 4, sum = 0;
+          for (var c = 0; c < 4; c++) sum += Math.abs(canvas.rgba[a4 + c] - planes[i].rgba[a4 + c]);
+          if (sum > DELTA_TOL) return false;
+        }
       }
       return true;
     }
@@ -3383,6 +3394,7 @@
     // fixture. packElements refuses through the same check_element / check_table rules the
     // device door applies, so an element a theme cannot name never reaches a card.
     FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
+    GEOM_ABI4: GEOM_ABI4, DELTA_TOL: DELTA_TOL,   // the delta floor, so a suite asserts against the codec's number, not a literal
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,

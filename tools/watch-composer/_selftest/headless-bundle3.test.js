@@ -375,6 +375,33 @@ ok(walkA.blob.scalars.bg_loop === 1 && dRowA.n_frames === 3 &&
 ok(bakedA.meter.artSize === 466 * 466 * 2 * 3 + 40 * 200 * 3,
    'the bank is three keyframes and the masked hand, nothing else',
    bakedA.meter.artSize + ' B');
+// ---- 7b-ii. §36: the delta encoder's floor and its self-check read ONE number ----
+// The encoder drops a texel whose summed |dR|+|dG|+|dB|+|dA| is at or under DELTA_TOL, so the
+// verifier may only refuse drift PAST that same floor. The old byte-exact self-check refused the
+// sub-floor dither the encoder throws away on purpose, which is what made an animated Skeleton
+// bake fail with "does not composite back" for art that projects clean. These three pins derive
+// their probe magnitudes from B.DELTA_TOL so the boundary lives in the codec, not the test.
+const TOL36 = B.DELTA_TOL;
+const driftPlate = (corner) => {
+  const W = 466, H = 466, mk = () => { const r = new Uint8Array(W * H * 4); for (let i = 0; i < W * H; i++) { r[i*4]=3; r[i*4+1]=7; r[i*4+2]=11; r[i*4+3]=255; } return r; };
+  const f0 = mk(), f1 = mk();
+  for (let y = 220; y < 240; y++) for (let x = 220; x < 240; x++) { const a = (y * W + x) * 4; f1[a]=200; f1[a+1]=200; f1[a+2]=200; }
+  f1[(300 * W + 300) * 4] = 3 + corner;   // one faint texel at (300,300), far outside the 20x20 block, red channel only
+  return { rgba: f0, w: W, h: H, frames: [{ rgba: f0, w: W, h: H }, { rgba: f1, w: W, h: H }] };
+};
+const driftWalk = (corner) => B.verifyBundle3(B.bakeClock3({
+  name: 'drift ' + corner, plate: driftPlate(corner), hands: [HK], order: [0] }).bytes).sections[0];
+const diffw36 = (w) => w && w.blob ? w.blob.elements[0].diffw : -1;
+// (a) a lone sub-floor dither texel: it must bake, where the byte-exact verifier refused it. RED until the tolerance fix.
+let d36 = null;
+try { d36 = driftWalk(TOL36 - 1); } catch (e) { d36 = { threw: String((e && e.message) || e) }; }
+ok(d36 && d36.blob, '§36 the sub-floor dither bakes instead of refusing drift the encoder drops on purpose', d36 && d36.threw ? d36.threw.slice(0, 70) : 'diffw ' + diffw36(d36));
+// (b) the dropped texel neither ships nor widens the delta rect: it stays the tight 20-wide block.
+ok(diffw36(d36) === 20, '§36 the sub-floor texel neither ships nor stretches the delta rect', 'diffw ' + diffw36(d36));
+// (c) the floor still bites real motion: one step past DELTA_TOL is a change the rect must reach.
+ok(diffw36(driftWalk(TOL36 + 1)) > 20, '§36 a change past the floor is motion, so the delta rect grows to cover it', 'diffw ' + diffw36(driftWalk(TOL36 + 1)));
+// (d) exactly at the floor is the still diffRect named, not a drift selfVerify3 refuses: one boundary, two readers.
+ok(diffw36(driftWalk(TOL36)) === 20, '§36 a change of exactly DELTA_TOL is read the same by the encoder and the self-check', 'diffw ' + diffw36(driftWalk(TOL36)));
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466, frames: [kf(1)] },
    }), 'two or more', 'a one-frame bank is a still plate and the bake says which');
 refuses(() => B.bakeClock3({ name: 'x', plate: APL, scalars: { bg_frames: 4 } }),

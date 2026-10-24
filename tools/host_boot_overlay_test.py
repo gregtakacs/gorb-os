@@ -271,8 +271,8 @@ def main():
         # reused-buffer DMA race, fixed at the seam (display_band_commit
         # returns only drained); these pins are the geometry the glass keeps.
         ys = [bands[i][0] for i in sorted(bands)]
-        ok(ys[3:6] == [184, 252, 300],
-           "the install frame's three bands ride rows 184, 252, 300", str(ys))
+        ok(ys[3:6] == [184, 208, 232],
+           "§32.7: the install frame's three bands form one contiguous card (rows 184/208/232, no gaps)", str(ys))
         ok(all(y % 2 == 0 for y in ys),
            "every committed band starts on an even row for the CO5300's row pairing", str(ys))
         ok(band_has_string(drawn[9][1][1], F, "store???cut 6s", 14),

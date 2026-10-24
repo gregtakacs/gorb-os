@@ -2392,7 +2392,16 @@ class Component extends DCLogic {
       this.setState({ status: 'Asking ' + ip + ' whether "' + nm + '" is already on the card…' });
       let pre = null;
       try {
-        const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+        // §32.7: the precheck is a question about the container's IDENTITY, so only the
+        // 128-byte header has to cross the room, not the megabytes. The hub's
+        // ContainerName reads the magic, the header CRC, the serial (word 11) and the
+        // name (bytes 56..112) all inside the first 128 B, and answers the duplicate
+        // off those; the section index it reads past 128 B is best-effort and never
+        // fails a container. Before this the precheck POSTed the WHOLE bake, so a plain
+        // send moved every byte twice — upload, check, upload, memcopy — the exact
+        // double-transfer the operator named. Replace below still ships the full bytes.
+        const head = bytes.slice(0, 128);
+        const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: head });
         pre = await pr.json().catch(() => null);
       } catch (e) { pre = null; }
       if (pre && pre.ok && pre.data && pre.data.duplicate) {

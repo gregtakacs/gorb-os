@@ -100,6 +100,13 @@ and on a bounce it calls the Windows CLI, which clears that record. Releases obs
 after that held for the entire window, 12 s and 16 s, with the kernel logging a clean
 disconnect. If both attempts bounce, a watcher is running: `unwatch`.
 
+The verify window inside `detach` is 12 s, and it has to stay longer than the replay. It
+was 6 s, which is shorter than the 8 s above, so a client-side release could print
+`released` while the service was already replaying its record, and the Windows CLI call
+that clears the record was skipped. Check `status` for a watcher count above zero, and
+`tusb_desc` in `GET /api/v1/log` for a TinyUSB install, before attributing a host that
+cannot see the board to that host.
+
 Sharing is a separate thing and it does survive. `usbipd list` shows both boards
 `Shared` across every event above; the registry keys under
 `HKLM\SOFTWARE\usbipd-win\Devices` hold them. Nothing in this file ever needs `bind`

@@ -162,6 +162,10 @@ cmd_attach() {
 # undone -- the service keeps an `Attached` record per device and replays it -- so every
 # detach is verified, and a bounced one is retried through the Windows CLI, which clears
 # that record. The node coming and staying gone is the only evidence that counts.
+#
+# The verify window is 12 s, not 6. The service replays its record inside 8 s (see
+# docs/wsl-usb-reattach.md), so a window shorter than that can print "released" while a
+# replay is in flight and skip the Windows-side call that clears the record.
 cmd_detach() {
   local rc=0 m b p
   for m in $MACS; do
@@ -169,7 +173,7 @@ cmd_detach() {
     p=$(client_port_of "${b:-none}")
     if [ -n "$p" ]; then
       $SUDO usbip detach --port="$p" >/dev/null 2>&1 || { echo "  $m  detach failed on vhci port $p"; rc=1; continue; }
-      if ! released_for "$m" 6; then
+      if ! released_for "$m" 12; then
         "$USBIPD" detach --busid="$b" >/dev/null 2>&1
         if released_for "$m" 8; then echo "  $m  released via Windows (the first release was replayed)"
         else echo "  $m  STILL HELD after two attempts; a watcher is running: '$0 unwatch'"; rc=1; continue; fi

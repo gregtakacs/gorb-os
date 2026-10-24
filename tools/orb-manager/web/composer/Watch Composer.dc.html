@@ -2307,27 +2307,27 @@ class Component extends DCLogic {
     /* A bank the byte budget thinned re-prices the readout to the tempo that
      * actually ships, so the chip never outlives the receipt it just printed. */
     if (pol.decim > 1) this._hbFps = pol.fps;
-    /* The silent-still tripwire. A "still" verdict is only honest when the loop
-     * genuinely does not move, and this walk is the LAST thing the bake does: the
-     * comp and pointer passes awaited for seconds before it, and every canvas it
-     * reads comes back through frameCanvas. The build already priced this same
-     * loop on its own canvases, before any of that: rowPrice() diffs consecutive
-     * BASE frames and returns the worst dirty-row count, so a dial that truly
-     * holds still prices at 0 rows and a turning train prices well above one tile
-     * row. When the bake calls the plate still but the movement that painted it
-     * has dirty rows, the walk measured stale or blank canvases rather than this
-     * dial — and baking it ships a frozen train behind the sentence "the still
-     * bakes the same dial", which is exactly the defect D34 shipped. Refuse, and
-     * quote both readings so the next report is a measurement, not a guess.
-     * A dial whose carriage row ships is exempt: rowPrice() flattens the cage
-     * through a full orbit when it prices a carriage kit (baseImgs/flatCar), so
-     * those dirty rows ARE the carriage, and a still plate under it is honest. */
-    const bs = this.budgetStats;
-    if (pol.carrier === 'still' && !pol.carriage && bs && bs.mv === this.mvKey(1) && bs.rows >= 16) {
-      this.setState({ status: 'Not baked: the walk measured a still plate (union ' + (un | 0) +
-        ' px) but this movement prices ' + bs.rows + ' dirty rows a tick — the bake ran against stale frames. ' +
-        'Wait for the seam readout to settle, then press again.' });
-      return;
+    /* The blank-plate tripwire. D34 shipped a frozen dial because the walk read
+     * blank canvases: blank diffed against blank measures no motion, so the
+     * bake called the plate still and baked nothing into it. The rebuild race
+     * that blanks the canvases is closed at the source by the settled3() gates
+     * before and after the walk, so what is left to watch for at bake time has
+     * a direct, deterministic test: a real plate paints the opaque base disc,
+     * and any dial the compositor can draw carries far more full-alpha
+     * coverage than the floor below, while a blank canvas carries none. This
+     * reads the exact plane about to ship, so no timing can move the verdict.
+     * (The check this replaces compared the walk against budgetStats rows:
+     * that price charges the animated geartrain even where the shipped dial
+     * hides it, so a closed calendar dial whose plate genuinely holds still
+     * refused forever behind a message telling the operator to wait. 2026-10-24.) */
+    {
+      let ink = 0;
+      const p0 = pxs[0];
+      for (let i = 3; i < p0.length; i += 40) if (p0[i] === 255) ink++;
+      if (ink < 1000) {
+        this.setState({ status: 'Not baked: the walked plate came back blank (no opaque coverage: the frames never painted). Press Bake again with this window visible and the dial running on screen.' });
+        return;
+      }
     }
     const plate = { rgba: pxs[0], w: 466, h: 466 };
     if (pol.carrier === 'bank') {

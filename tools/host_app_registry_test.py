@@ -252,6 +252,20 @@ void lv_screen_load(lv_obj_t *scr) { g_last_loaded = (struct _lv_obj_t *)scr; T(
 /* ---- the registry, lifted verbatim from main/app/orb_app.c -------------- */
 __BODY__
 
+/* The row orb_app.c's service array points at, which the firmware build finds in
+ * main/usb/orb_usb_mtp.c when CONFIG_ORB_USB_MTP is on. Its title and opt_* hooks
+ * are that module's
+ * business — what is under test here is the registry's treatment of the tier:
+ * whether a row outside the ledger can reach the ledger's words, the walk, or a
+ * face. The flags are the ones the registry reads when it counts the tier. */
+static const orb_app_iface_t s_usb_stub_iface = {0};
+orb_app_t orb_app_usb_files_row = {
+    .slug = (char *)"usb-files", .title = (char *)"USB Files",
+    .kind = ORB_APP_KIND_APP, .behaviour_kind = ORB_BEHAVIOUR_NONE,
+    .iface = &s_usb_stub_iface, .installed = true, .enabled = true,
+    .art_slot = -1, .flash_slot = -1,
+};
+
 /* ---- the cases ---------------------------------------------------------- */
 static int g_fail;
 static void ck(const char *name, int ok)
@@ -665,6 +679,46 @@ int main(void)
        orb_app_row((size_t)bidx) == brow && orb_app_index_of(brow) == ORB_APP_BASE + (bidx - ORB_APP_BASE));
     restore_table(); orb_app_card_reset();
 
+    /* -- D36: the service tier, populated -- */
+    restore_table();
+    const size_t nface = orb_app_count();
+    const int    ncard = orb_app_card_count();
+    ck("one service row, and the index past it answers nothing",
+       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_usb_files_row &&
+       orb_app_menu_at(1) == NULL);
+    ck("a service is a menu row only — no slug lookup, so no route reaches it",
+       A("usb-files") == NULL);
+    ck("its index is an address past the ledger span, not a key into it",
+       orb_app_index_of(&orb_app_usb_files_row) == ORB_APP_MENU_BASE &&
+       ORB_APP_MENU_BASE >= ORB_APP_BASE + ORB_APP_CAP);
+    ck("it is a service and no face row is",
+       orb_app_is_menu_only(&orb_app_usb_files_row) &&
+       orb_app_is_menu_only(A("menu")) == false &&
+       orb_app_is_menu_only(A("clock")) == false);
+    ck("activating it is refused with the reason the header promises",
+       orb_app_activate(&orb_app_usb_files_row) == ESP_ERR_NOT_SUPPORTED &&
+       orb_app_current() != &orb_app_usb_files_row);
+    ck("a populated tier adds no face to the ledger",
+       orb_app_count() == nface && orb_app_card_count() == ncard);
+    ck("the carousel walk never lands on it",
+       orb_app_neighbour(A("menu"), 1) != &orb_app_usb_files_row &&
+       orb_app_neighbour(A("clock"), 1) != &orb_app_usb_files_row &&
+       orb_app_neighbour(A("color_picker"), 1) != &orb_app_usb_files_row);
+    /* The row's own enable flag is the module's to set — orb_app_set_enabled()
+     * writes the ledger's words, which is the thing this tier has none of — so the
+     * gate is checked the way the module drives it. A disabled service must vanish
+     * from the menu rather than leave a row that refuses its own press. */
+    orb_app_usb_files_row.enabled = false;
+    ck("a disabled service has no menu row",
+       orb_app_menu_count() == 0 && orb_app_menu_at(0) == NULL);
+    orb_app_usb_files_row.enabled = true;
+    orb_app_usb_files_row.failed = true;
+    ck("a failed service likewise vanishes",
+       orb_app_menu_count() == 0 && orb_app_menu_at(0) == NULL);
+    orb_app_usb_files_row.failed = false;
+    ck("and it comes back when its module re-enables it",
+       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_usb_files_row);
+
     /* -- the shell page is chrome, not an app -- */
     restore_table();
     ck("the options page is tagged shell chrome", A("menu")->kind == ORB_APP_KIND_SHELL);
@@ -686,6 +740,10 @@ def build_and_run(tmpdir):
         f.write(src)
     exe = os.path.join(tmpdir, "reg_test")
     cmd = ["cc", "-std=gnu17", "-g", "-O0", "-Wall", "-Wno-unused-parameter",
+           # With the feature off the tier is one NULL and every case below reads
+           # the ledger exactly as it always did. Defining it is what makes the
+           # service-array code in orb_app.c the code under test.
+           "-DCONFIG_ORB_USB_MTP=1",
            "-I", tmpdir,                       # the leaf stubs shadow the IDF ones
            "-I", P("main", "app"),
            "-I", P("main", "art"),

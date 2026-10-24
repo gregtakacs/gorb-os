@@ -231,3 +231,19 @@ CONFIG_FATFS_CODEPAGE_437=y
 # handler silently compiles out with a binary that barely grows.
 CONFIG_ORB_DEBUG_HTTP=y
 
+# ---- USB file sharing (D37, docs/usb-sd-msc-plan.md §12) -----------------------
+#
+# The mode is compiled in, and that is all this enables. Nothing is armed at
+# runtime by it: the port comes up as the USB-Serial-JTAG console and the flash
+# path on every boot unless the owner presses USB Files on the dial, because the
+# claim is one NVS byte that a boot reads and erases. The row's own label says
+# "Restart to share files" for exactly that reason, and the reboot is also the
+# only way back — becoming a device moves the one PHY off the console by hardware.
+#
+# MSC is gone rather than left selectable, so the line below is not decoration.
+# Nothing selects TINYUSB_MSC_ENABLED any more, and an sdkconfig carried over from
+# the D36 build keeps its own "=y" under a plain bool: the result would be a
+# binary that exports a raw-socket MSC LUN beside an MTP device writing the same
+# files through FatFs — two owners of one volume, which is the reason MSC lost.
+CONFIG_ORB_USB_MTP=y
+# CONFIG_TINYUSB_MSC_ENABLED is not set

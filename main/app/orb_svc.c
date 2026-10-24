@@ -157,6 +157,14 @@ static void row_load_grants(svc_row_t *r, const orb_app_t *a, int slot)
 
 static svc_row_t *row_of(const orb_app_t *a)
 {
+    /* A service row is refused by name, not by falling outside the bounds: its
+     * index comes back at ORB_APP_MENU_BASE, which ORB_SVC_ROWS happens to leave
+     * room for (11 of 16 today). Nothing enumerates services into the broker now —
+     * orb_app_row() stops at the card span and orb_app_find_slug() never looks — but
+     * an index that is an address and not a key has to be rejected where the key is
+     * made, or the first caller that walks the menu tier grants a USB drive another
+     * app's capabilities. */
+    if (orb_app_is_menu_only(a)) return NULL;
     const int slot = orb_app_index_of(a);
     if (slot < 0 || slot >= ORB_SVC_ROWS) return NULL;   /* not in the table:
         * an app the registry does not know has no grants to check, and a

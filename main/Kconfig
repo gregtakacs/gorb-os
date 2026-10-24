@@ -435,3 +435,49 @@ menu "Orb idle dim"
 
 
 endmenu
+
+menu "Orb USB file access"
+    depends on IDF_TARGET_ESP32S3
+
+    config ORB_USB_MTP
+        bool "Files mode — share /sd with a host over MTP"
+        select TINYUSB_MTP_ENABLED
+        help
+            The TF socket and both side buttons sit INSIDE the sealed shell
+            (docs/usb-sd-msc-plan.md §1), so the USB-C port is the only opening
+            an owner has at the wall. This option decides what that port can
+            become for one boot.
+
+            With it on, the dial's USB Files row arms the mode for the NEXT boot
+            and the next boot serves the card's files to the host through MTP:
+            the host browses /sd, pushes .orbapp and .orbtheme kits, deletes
+            them, and can pull a log off — all while the orb keeps running with
+            the card mounted. Nothing is partitioned, formatted or unmounted.
+            The class is MTP and only MTP: a host with MTP sees no drive letter,
+            so Windows lists the orb under Portable Devices and never under This
+            PC.
+
+            There is no timeout on the window. It ends when the owner reboots —
+            which is the only way it can end, since becoming a device gives up
+            the console by hardware (GPIO 19/20 feed one FSLS PHY that USB_WRAP
+            multiplexes, §6.1) and a reboot is therefore what gives it back. The
+            arm is one NVS word read-and-cleared at boot, so the port is the
+            console and the flash path on every boot nobody asked about, and a
+            device left plugged into a sleeping laptop comes back by itself at
+            its next reboot. The dial's row says "Restart to share files" before
+            the window and "Stop sharing, restart" during it.
+
+            Turned off, the source compiles to one function returning false and
+            the port is only ever the console. The shipped build turns it ON, and
+            that is not the same as turning the mode on: an orb on a wall with
+            this compiled in behaves exactly as one without it until somebody
+            presses the row.
+
+            The TinyUSB class behind this option is the component's own menu, not
+            a duplicate here: Component config -> TinyUSB Stack -> Media Transfer
+            Protocol (MTP). Its defaults are used; the storage root path comes
+            from ORB_SD_BASE rather than from a menu, so the two cannot disagree
+            about where the files are.
+
+
+endmenu

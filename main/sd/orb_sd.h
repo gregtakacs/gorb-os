@@ -78,6 +78,23 @@ void orb_sd_space(uint64_t *out_total, uint64_t *out_free);
 void orb_sd_lock(void);
 void orb_sd_unlock(void);
 
+/* ---- the card's second reader: USB file sharing (D37) ---------------------
+ *
+ * MTP answers the host with paths inside the mounted volume, so the card has ONE
+ * owner here — the FATFS mount the dial and the config page already use — and the
+ * host holds file handles through it. Nothing switches hands. What has to be
+ * declared is the one thing that ownership does NOT cover: while a host holds
+ * handles, the volume must not come down.
+ */
+
+/** Hold the volume against unmount for an MTP session (orb_usb_mtp). The card
+ *  stays MOUNTED for the whole window — that is the mode's entire point — so this
+ *  refuses orb_sd_remount() and nothing else. Held by orb_usb_mtp_start(),
+ *  released by orb_usb_mtp_stop(). */
+void orb_sd_share_begin(void);
+void orb_sd_share_end(void);
+bool orb_sd_share_held(void);
+
 /**
  * Is `name` safe to use as a single FATFS path segment?
  *

@@ -177,12 +177,14 @@ static void go_back(void);       static void activate(void);
 static void repaint(void);       static void job_post(orb_job_fn fn, int idx);
 
 
-/** How many app rows the top page carries: one per walkable entry that declares
- *  options, in table order, which is the carousel's order — so the menu's list
- *  and the knob's walk cannot disagree about what exists. */
+/** How many app rows the top page carries: the service tier first (D36 — those
+ *  are rows with settings and no face, and they lead because they are the OS's
+ *  own answers), then one per entry with a face that declares options, in table
+ *  order, which is the carousel's order — so the menu's list and the knob's walk
+ *  cannot disagree about what exists. */
 static int app_rows(void)
 {
-    int n = 0;
+    int n = (int)orb_app_menu_count();
     for (size_t i = 0; i < orb_app_count(); i++) {
         const orb_app_t *a = orb_app_at(i);
         if (a && orb_app_has_options(a)) n++;
@@ -196,6 +198,12 @@ static int app_rows(void)
 static const orb_app_t *app_row(int i)
 {
     if (i < 0) return NULL;
+    /* D36: the service tier leads the run, then the faces, in the same order
+     * app_rows() counted. Asking the registry for both keeps this the only place
+     * the menu's dynamic run is defined. */
+    const int nsvc = (int)orb_app_menu_count();
+    if (i < nsvc) return orb_app_menu_at((size_t)i);
+    i -= nsvc;
     for (size_t k = 0; k < orb_app_count(); k++) {
         const orb_app_t *a = orb_app_at(k);
         if (!a || !orb_app_has_options(a)) continue;
@@ -562,7 +570,16 @@ static void label_top(int row, char *out, size_t outsz, bool *sel_hi)
     if (row >= TOP_OS_N && row < TOP_EXIT) {
         const orb_app_t *a = app_row(row - TOP_OS_N);
         if (!a) { snprintf(out, outsz, "?"); return; }   /* unreachable: rows_top sized it */
-        snprintf(out, outsz, "%s", a->title ? a->title : a->slug);
+        /* A service row answers its own state, asked through the same option
+         * hooks that fill its page (D36): row 0's value is the one line that
+         * says what the feature is doing right now, and the title alone says it
+         * when there is nothing to report. A face row keeps the bare title,
+         * exactly as before — its state is the glass itself. */
+        const char *v = orb_app_is_menu_only(a) ? orb_app_opt_value(a, 0) : NULL;
+        if (v && v[0])
+            snprintf(out, outsz, "%s  (%s)", a->title ? a->title : a->slug, v);
+        else
+            snprintf(out, outsz, "%s", a->title ? a->title : a->slug);
         return;
     }
     if (row >= TOP_OS_N) { snprintf(out, outsz, "exit"); return; }

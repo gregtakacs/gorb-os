@@ -267,6 +267,26 @@ bool orb_app_card_remove(const char *slug);
  *  broker's per-slot words; compiled and shell rows are never togglable). */
 bool orb_app_is_card(const orb_app_t *app);
 
+/* ---- the service tier (D36) ----------------------------------------------
+ *
+ * A handful of OS features have settings and no face: USB Files is the first.
+ * They belong in this registry rather than in a table of their own inside the
+ * menu view, because "what rows exist on the glass" already has one owner — and
+ * a second one is the bug where the menu and the knob disagree about what is
+ * installed. They are NOT card rows: a card row's index is its NVS key for
+ * grants, faults and the enable word (P4a), and an OS feature with no capability
+ * demand and no uninstall must not file words under a retired app's key. So they
+ * live outside the ledger span, at indices >= ORB_APP_MENU_BASE.
+ */
+#define ORB_APP_MENU_BASE (ORB_APP_BASE + ORB_APP_CAP)
+
+/** How many service rows the menu lists, in table order, after the apps. */
+size_t orb_app_menu_count(void);
+const orb_app_t *orb_app_menu_at(size_t i);
+/** True for a service row: not in the carousel, not togglable, not
+ *  uninstallable, and its press belongs to its own module. */
+bool orb_app_is_menu_only(const orb_app_t *app);
+
 /** True when a card row already holds `slug`. The install gate asks before it
  *  decides whether this is a new install (B5 counts it) or a re-use (it does
  *  not). Scans the card table only; the compiled tier's slugs never collide. */

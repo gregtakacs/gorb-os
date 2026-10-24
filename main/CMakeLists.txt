@@ -61,6 +61,10 @@ idf_component_register(
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
         "sd/orb_files.c"
+        # D38: the MTP file-share mode, in its own file because the SD layer it
+        # borrows the card from is not its owner. MSC is out of the tree, not out
+        # of the menu — see docs/usb-sd-msc-plan.md §13.1.
+        "usb/orb_usb_mtp.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -80,6 +84,7 @@ idf_component_register(
         "assets"
         "net"
         "sd"
+        "usb"
         "../assets"
     REQUIRES
         wasm3                    # P7.2: the vendored interpreter behind the wasm tier
@@ -108,6 +113,7 @@ idf_component_register(
         esp_driver_sdspi         # "            (SDSPI host on SPI3_HOST)
         lvgl__lvgl
         espressif__esp_lcd_co5300
+        espressif__esp_tinyusb  # D36: the MSC gadget behind `orb usb drive`
 )
 
 # The baked analog-clock art (assets/clock_assets.bin, produced by

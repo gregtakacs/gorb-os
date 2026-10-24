@@ -432,6 +432,17 @@ static int  g_opt_n;
 static int  g_arms;
 static int  g_last_opt_sel = -1;
 static size_t g_opt_app_count = 1;
+/* The service tier (orb_app.h's ORB_BEHAVIOUR_MENU_ONLY), off the same settable
+ * count the face apps use: g_menu_n is 0 for every case that predates it, so the
+ * rows checks below keep the geometry they were written against, and the service
+ * cases set it to 1 to see where the row lands and what it prints. One service is
+ * enough to test a tier: two would only test the harness's array. */
+static orb_app_t g_fake_service = { .title = (char *)("USB Files") };
+#define FAKE_SERVICE (&g_fake_service)
+static size_t g_menu_n = 0;
+size_t orb_app_menu_count(void) { return g_menu_n; }
+const orb_app_t *orb_app_menu_at(size_t i) { return (g_menu_n && i == 0) ? FAKE_SERVICE : NULL; }
+bool orb_app_is_menu_only(const orb_app_t *a) { return a == FAKE_SERVICE; }
 static orb_app_t g_fake_app, g_fake_app2;
 #define FAKE_APP (&g_fake_app)
 #define FAKE_APP2 (&g_fake_app2)
@@ -652,6 +663,49 @@ int main(void)
        page_rows() == OSN + 3 && !strcmp(rowline(FIRST_APP), "Clock") &&
        !strcmp(rowline(FIRST_APP + 1), "HSB") && !strcmp(rowline(EXIT + 1), "exit"));
     g_opt_app_count = 1;
+
+    /* ---- D36: the service tier -------------------------------------------
+     * A row with options and no face. The registry owns which services exist;
+     * the menu's job is to place the row, print its state on it, and hand the
+     * press to the same option hooks a face page uses. */
+    g_menu_n = 1;
+    snprintf(g_opt_label0, sizeof g_opt_label0, "Start as USB drive");
+    g_opt_val0[0] = '\0';
+    const int SVC = OSN, EXIT2 = OSN + 2;
+    ck("a service row joins the dynamic run, ahead of the face apps",
+       page_rows() == OSN + 3 && !strcmp(rowline(SVC), "USB Files") &&
+       !strcmp(rowline(SVC + 1), "Clock") && !strcmp(rowline(EXIT2), "exit"));
+    snprintf(g_opt_val0, sizeof g_opt_val0, "armed");
+    ck("a service row prints its own state; a face row still prints its bare title",
+       !strcmp(rowline(SVC), "USB Files  (armed)") &&
+       !strcmp(rowline(SVC + 1), "Clock"));
+    /* Turning it off makes the row vanish rather than leave a dead line, the same
+     * way an app that stops answering opt_* loses its row a few checks above. */
+    g_menu_n = 0;
+    ck("a service with no registry entry has no row, and exit moves back down",
+       page_rows() == OSN + 2 && !strcmp(rowline(OSN), "Clock") &&
+       !strcmp(rowline(OSN + 1), "exit"));
+    g_menu_n = 1;
+    /* Pressing it goes to the option page and arms the knob, exactly as a face
+     * app row does: the shell has no second code path for a service. */
+    g_opt_n = 1;
+    const int act0 = g_activations;
+    s_cur = SVC;
+    menu_view_apply_input(0, true);
+    ck("a press on a service row opens its page and arms the knob",
+       s_pg == &s_pages[PG_APP] && s_cur == 0 && s_app == FAKE_SERVICE &&
+       g_arms == 1 && page_rows() == 2 &&
+       !strcmp(rowline(0), "Start as USB drive  (armed)") &&
+       !strcmp(rowline(1), "<- back"));
+    menu_view_apply_input(0, true);
+    ck("the service answers the press through the same option hooks a face uses",
+       g_activations == act0 + 1 && g_last_opt_sel == 0);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("back from a service lands on its own top row and disarms",
+       s_pg == &s_pages[PG_TOP] && s_cur == SVC && g_arms == 0);
+    g_menu_n = 0;
+    g_opt_n = 2;
 
     /* ---- the clamp, both ends, no wrap ---- */
     g_delta_down = knob_row_step(1);      /* derived, never assumed */

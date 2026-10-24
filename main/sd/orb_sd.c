@@ -100,7 +100,16 @@ static esp_err_t mount_at_khz(uint32_t khz)
          * exFAT or ext4 would be the most destructive line in the firmware. A
          * card we cannot read is reported, not erased. */
         .format_if_mount_failed = false,
-        .max_files              = 4,
+        /* Ten, not four. The ceiling is per-volume and every reader shares it,
+         * so the HTTP handlers, the theme scanner and the MTP bridge all spend the
+         * same four slots (esp_vfs_fat_sdmmc.c:418 opens each file with
+         * FF_VOLATOR). Four was enough when only the firmware opened files; MTP
+         * fopen()s the same paths the dial reads, so a host paging through a theme
+         * list can take the last slot and leave a thumbnail read answering
+         * FR_NOT_ENOUGH_CORE. The FatFs objects come from the FATFS ptr window in
+         * orb_config.h, not from this number, so the ten slots cost DRAM only when
+         * open. */
+        .max_files              = 10,
         .allocation_unit_size   = 16 * 1024,
     };
 
@@ -224,8 +233,36 @@ esp_err_t orb_sd_init(void)
     return e;
 }
 
+/* ---- holding the volume against unmount while a host shares it -----------
+ *
+ * Set for the whole of an MTP window by orb_usb_mtp_start() and cleared by
+ * orb_usb_mtp_stop(). The card keeps exactly one owner in this mode — the FATFS
+ * mount everything else already uses — and the host reaches files through it, so
+ * there is no hand-over to guard and no mount refusal to make. What this blocks
+ * is the unmount below, which would pull the volume out from under file handles
+ * the host is still holding.
+ *
+ * Deliberately not refcounted: one session per boot is the design, and a second
+ * claim would be a bug worth losing the release over. Neither setter takes the
+ * card lock — that guards the mount table, not this flag — and locking here would
+ * deadlock the release path, which runs while the worker may still be inside a
+ * file operation.
+ */
+static bool s_share_held;
+
+void orb_sd_share_begin(void) { s_share_held = true; }
+void orb_sd_share_end(void)   { s_share_held = false; }
+bool orb_sd_share_held(void)  { return s_share_held; }
+
 esp_err_t orb_sd_remount(void)
 {
+    /* Refused before the lock, never queued behind it: a route that blocked here
+     * would look like a hung card rather than a shared one. The refusal is worth
+     * its own line because the volume is mounted and healthy, which is exactly why
+     * an unmount looks safe to the code asking for it. A rescan issued over WiFi
+     * mid-copy would take the FATFS mount out from under open MTP file handles,
+     * and the host's next read lands on a card re-enumerated underneath it. */
+    if (s_share_held) return ESP_ERR_INVALID_STATE;
     orb_sd_lock();
 
     if (s_mounted) {
@@ -385,7 +422,11 @@ bool orb_sd_theme_path(char *out, size_t outsz, const char *name)
 esp_err_t orb_sd_ensure_mounted(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t orb_sd_init(void)           { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t orb_sd_remount(void)        { return ESP_ERR_NOT_SUPPORTED; }
-bool      orb_sd_mounted(void)        { return false; }
+/* The share claim has nothing to hold with the socket off, and true would be the
+ * wrong lie: an orb with no card never reaches an MTP window at all. */
+void      orb_sd_share_begin(void)  { }
+void      orb_sd_share_end(void)    { }
+bool      orb_sd_share_held(void)   { return false; }
 const char *orb_sd_card_id(void)      { return ""; }
 void      orb_sd_space(uint64_t *t, uint64_t *f) { if (t) *t = 0; if (f) *f = 0; }
 void      orb_sd_lock(void)   { }

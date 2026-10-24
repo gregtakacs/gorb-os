@@ -304,6 +304,59 @@ static orb_app_t s_apps[] = {
 
 #define ORB_APP_N (sizeof(s_apps) / sizeof(s_apps[0]))
 
+/* ---- the service tier (D36): settings with no face ------------------------
+ *
+ * USB Files is an OS feature with a page of options and no screen to walk to.
+ * It goes here rather than into a table inside menu_view.c because the menu
+ * already asks the registry what exists, and a second source for that question
+ * is the bug where the menu lists a row the knob disagrees about.
+ *
+ * It is deliberately NOT a card row and NOT a fourth behaviour kind. A card
+ * row's index keys its grant, fault and enable words in NVS (P4a), so filing an
+ * OS feature under slot 1 would hand it the retired clock's words; and a kind
+ * id is how a package names the module that interprets ITS data, which is not
+ * what is happening — this row carries no data, only code. So it sits outside
+ * the ledger span (indices >= ORB_APP_MENU_BASE), is invisible to the walkable
+ * gather below (which walks s_apps and s_card and never looks here), and is
+ * refused by orb_app_activate() on its own predicate rather than by being
+ * absent from a lookup.
+ */
+#if CONFIG_ORB_USB_MTP
+/* One row for the feature, exported by orb_usb_mtp.c. The tier is written as a
+ * table rather than a bare reference so the next settings-only OS feature lands in
+ * the same list instead of inventing its own. */
+extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_mtp.c */
+static orb_app_t *const s_service[] = { &orb_app_usb_files_row };
+#else
+static orb_app_t *const s_service[] = { NULL };   /* the tier, empty */
+#endif
+#define ORB_APP_SERVICE_N ((int)(sizeof(s_service) / sizeof(s_service[0])))
+
+size_t orb_app_menu_count(void)
+{
+    size_t n = 0;
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++)
+        if (s_service[i] && s_service[i]->enabled && !s_service[i]->failed) n++;
+    return n;
+}
+
+const orb_app_t *orb_app_menu_at(size_t idx)
+{
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++) {
+        if (!s_service[i] || !s_service[i]->enabled || s_service[i]->failed) continue;
+        if (idx-- == 0) return s_service[i];
+    }
+    return NULL;
+}
+
+bool orb_app_is_menu_only(const orb_app_t *app)
+{
+    if (!app) return false;
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++)
+        if (s_service[i] == app) return true;
+    return false;
+}
+
 static orb_app_t *s_current;
 
 /* ---- the card table (P4): installed .orbapp apps, beside the compiled shell --
@@ -616,6 +669,11 @@ int orb_app_index_of(const orb_app_t *app)
     if (!app) return -1;
     for (size_t i = 0; i < ORB_APP_N; i++)
         if (&s_apps[i] == app) return (int)i;
+    /* Service rows answer at ORB_APP_MENU_BASE and above, past the ledger span,
+     * so nothing that keys NVS words by index can meet one and mistake it for a
+     * card's slot. It is an address, not a key. */
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++)
+        if (s_service[i] == app) return ORB_APP_MENU_BASE + i;
     /* Card rows get a stable index at ORB_APP_BASE + slot, which is what keys
      * the broker's grant word — pointer-matched so the answer cannot drift from
      * the row the ledger handed out. */
@@ -674,6 +732,29 @@ esp_err_t orb_app_init_all(void)
         }
         app->installed = true;
         app->init_done = true;
+    }
+
+    /* The service tier (D36), built last among the compiled rows and by its own
+     * short rule: it needs an init hook and the option hooks, and it is the one
+     * tier that must NOT be required to have a screen() — that is what makes it
+     * a service row rather than an app. It is not fault-gated either: the broker
+     * has no words for a row outside the ledger span, and an OS feature with no
+     * code to fault has no reason to be. */
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++) {
+        orb_app_t *svc = s_service[i];
+        if (!svc) continue;
+        if (!svc->iface || !svc->iface->init) {
+            ESP_LOGE(TAG, "service row %d has no init hook — not listed", i);
+            continue;
+        }
+        const esp_err_t err = svc->iface->init(svc);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "service row %s: init failed (%s) — not listed",
+                     svc->slug, esp_err_to_name(err));
+            svc->failed = true;
+            continue;
+        }
+        svc->init_done = true;
     }
 
     /* The card table, built after the compiled tier so an installed app never
@@ -816,6 +897,14 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * write the state fields, and only from the LVGL task. */
     orb_app_t *app = (orb_app_t *)app_cp;
     if (orb_app_index_of(app) < 0) return ESP_ERR_INVALID_ARG;
+    if (orb_app_is_menu_only(app)) {
+        /* D36: no face to load, so there is nothing to activate. The press that
+         * would have landed here came from the menu's app run, and the menu
+         * gives it to the row's own option hooks instead — which is the whole
+         * reason this tier exists: a settings page and a state line, without a
+         * carousel slot, an art bank, or a ledger word. */
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     if (app->failed)  return ESP_ERR_INVALID_STATE;
     if (!app->enabled) return ESP_ERR_NOT_SUPPORTED;
     /* D1/C6: an installed card app whose declared behaviour_kind no firmware

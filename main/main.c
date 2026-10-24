@@ -29,6 +29,7 @@
 #include "idle_dim.h"
 #include "orb_net.h"
 #include "orb_sd.h"
+#include "orb_usb_mtp.h"   /* the file-share mode's one-shot claim; stub false when off */   /* D37: the MTP mode's, on the same boot-ladder terms  */
 #include "orb_theme.h"
 #include "art_bank.h"
 
@@ -263,6 +264,21 @@ void app_main(void)
         ESP_LOGE(TAG, "networking down — clock running without config page");
 #endif
 
+/* First act of the storage ladder and deliberately ahead of it: consume the "next
+ * boot shares its files over USB" one-shot before anything else can act on it. The
+ * stub answers false when the option is out of the build, so this line is here
+ * whether or not the feature is, and the boot below can only be a file-share boot
+ * on the strength of a flag it has already erased.
+ *
+ * The claim says NOTHING about the mount: MTP answers the host with paths inside
+ * the filesystem, so an armed boot mounts /sd exactly as an ordinary boot does. */
+#if CONFIG_ORB_USB_MTP
+    const bool files_boot = orb_usb_mtp_boot_claim();
+#else
+    const bool files_boot = false;
+    (void)files_boot;   /* no mode compiled, so nothing consumes the claim below */
+#endif
+
 #if CONFIG_ORB_SD_ENABLE
     /* Same rule as the network, and for the same reason: the TF socket has no
      * card-detect line, so finding out whether a card is in it means driving
@@ -282,6 +298,19 @@ void app_main(void)
     if (orb_app_scan_init() != ESP_OK)
         ESP_LOGE(TAG, "the /sd/apps drop zone refused registration — "
                       "the apps page will list nothing");
+#endif
+
+#if CONFIG_ORB_USB_MTP
+    /* The claimed boot becomes the device here and not earlier: orb_jobs_start()
+     * has run, so the request has somewhere to be posted to, and the whole display
+     * ladder is up — which matters because a device boot has no console, and the
+     * only account of what happened is the USB Files row on the dial. Posted rather
+     * than called: a card mount, an MTP object-store scan and a TinyUSB task
+     * creation are the slowest things this mode does, and app_main is not where they
+     * belong. */
+    if (files_boot && orb_usb_mtp_request_start() != ESP_OK)
+        ESP_LOGE(TAG, "the worker refused the file-share start — the card stays the "
+                      "dial's until the next boot");
 #endif
 
     /* C2, last act of the ladder: the boot survived to here — the dial is

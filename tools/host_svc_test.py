@@ -208,6 +208,7 @@ static orb_setting_desc_t A_SET[] = {
 #define DECL_B (1u << CAP_THEMES)
 static orb_app_t TBL[3];
 static orb_app_t *GHOST;              /* an app the table does not know */
+static orb_app_t *SERVICE;            /* the USB Files row: settings, no face */
 static void mk_tbl(void)
 {
     memset(TBL, 0, sizeof TBL);
@@ -221,12 +222,23 @@ static void mk_tbl(void)
     static orb_app_t ghost; memset(&ghost, 0, sizeof ghost);
     ghost.slug = "ghost"; ghost.period_ms = 67; ghost.art_slot = -1;
     GHOST = &ghost;
+    /* A service row is the harder not-in-table case, and the reason this stub
+     * hands out a real-looking index for it: orb_app_index_of() answers
+     * ORB_APP_MENU_BASE for the menu tier, which ORB_SVC_ROWS leaves room for
+     * (11 of 16), so the broker has to refuse the row by kind and not by bounds.
+     * Delete orb_svc.c's is_menu_only() line and SERVICE starts borrowing
+     * slot 11's grants, which is the aliasing that check below pins. */
+    static orb_app_t svc; memset(&svc, 0, sizeof svc);
+    svc.slug = "usb-files"; svc.period_ms = 0; svc.art_slot = -1;
+    SERVICE = &svc;
 }
 int orb_app_index_of(const orb_app_t *a)
 {
     for (int i = 0; i < 3; i++) if (&TBL[i] == a) return i;
+    if (a == SERVICE) return ORB_APP_MENU_BASE;   /* in range, and not a key */
     return -1;
 }
+bool orb_app_is_menu_only(const orb_app_t *a) { return a == SERVICE; }
 /* D19's other direction: the broker reads each slot's DECLARED caps off the
  * registry at preload, so the door it uses is part of the interface this stub
  * must honour. Rows past the fake table answer NULL, which is the case the
@@ -798,6 +810,13 @@ int main(int argc, char **argv)
        S->power_request(GHOST, 1, true) == ESP_ERR_NOT_ALLOWED);
     CK("and its cfg never reaches NVS",
        S->cfg_set(GHOST, "bright", 5) == ESP_ERR_NOT_ALLOWED && g_opens == opens0);
+    /* The service tier (orb_app.h): an OS feature row is not an app, so it gets no
+     * cap even though its index lands inside the broker's own table. */
+    CK("a service row is refused by kind, not by bounds",
+       S->power_request(SERVICE, 1, true) == ESP_ERR_NOT_ALLOWED &&
+       orb_svc_grants(SERVICE) == 0);
+    CK("and refusing it leaves the slot it aliases alone",
+       orb_svc_grants(A) == DECL_A && S->cfg_set(SERVICE, "bright", 5) == ESP_ERR_NOT_ALLOWED);
     /* P5.5: the layer entries pass the free gate for any REGISTERED app and
      * the table never hears from one that is not. The denial here is the
      * not-in-registry shape, and the pass is the call counter moving. */

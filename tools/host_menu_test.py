@@ -150,6 +150,13 @@ def lifts(src):
     ]
     consts = [
         lift(src, r"#define ROW_MAX\s+\d+[^\n]*", MENU_C),
+        # The glyph floor, lifted whole: the table IS the answer to "what can
+        # this dial draw", so a restated copy would keep the suite green while
+        # the shipped face lost a mapping. dial_text() is pure, which is what
+        # lets it lift at all — repaint() is a stub here.
+        lift(src, r"typedef struct \{ unsigned cp; const char \*sub; \} glyph_fold_t;"
+                  r"[\s\S]*?static void dial_text\(char \*dst, size_t dstsz, const char \*src\)"
+                  r"\n\{[\s\S]*?\n\}", MENU_C),
         presets,
         model,
         protos,
@@ -1157,11 +1164,11 @@ int main(void)
     ck("the APPS row opens the catalog on its first app",
        s_pg == &s_pages[PG_APPS] && s_cur == 0);
     ck("the catalog is every installed app, the B5 count, then back",
-       page_rows() == 4 && !strcmp(rowline(0), "Clock  on card") &&
+       page_rows() == 4 && !strcmp(rowline(0), "Clock  off") &&
        !strcmp(rowline(1), "HSB  enabled") &&
        !strcmp(rowline(2), "2 of 8 slots used") &&
        !strcmp(rowline(3), "<- back"));
-    ck("a disabled installed app reads on card, not absent",
+    ck("a disabled installed app reads off, not absent",
        strstr(rowline(0), "absent") == NULL);
     ck("chrome keeps out of the catalog", strstr(rowline(0), "Menu") == NULL &&
        strstr(rowline(1), "Menu") == NULL);
@@ -1239,7 +1246,7 @@ int main(void)
        g_posts == 0 && s_uninst_arm == 0 &&
        strstr(s_ui.status, "press uninstall again") != NULL);
     ck("the armed row says so on the glass",
-       !strcmp(rowline(2), "uninstall \u2014 press again"));
+       !strcmp(rowline(2), "uninstall - press again"));
     turn_up(1);
     ck("a detent ends the arm", s_uninst_arm == -1);
     g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
@@ -1332,6 +1339,48 @@ int main(void)
     ck("unarmed, the count is gone whatever the page was",
        !strcmp(hb, "TIME ZONE"));
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
+
+    /* ---- the glyph floor: what the dial can actually draw ------------------
+     * The face is generated with `-r 0x20-0x7F,0xB0,0x2022` and there is no
+     * fallback, so an unmapped codepoint paints LVGL's missing-glyph box — the
+     * report this suite exists to make impossible. dial_text() is lifted, not
+     * restated, so these vectors run against the shipped table. */
+    {
+        char gb[64];
+        dial_text(gb, sizeof gb, "APPS");
+        ck("ascii row text comes back untouched", !strcmp(gb, "APPS"));
+        dial_text(gb, sizeof gb, "uninstall \xe2\x80\x94 press again");
+        ck("the armed uninstall row draws a hyphen, not a box",
+           !strcmp(gb, "uninstall - press again"));
+        dial_text(gb, sizeof gb, "\xe2\x80\xa6loading");
+        ck("an ellipsis takes three dots", !strcmp(gb, "...loading"));
+        dial_text(gb, sizeof gb, "don\xe2\x80\x99t");
+        ck("a curly apostrophe takes the straight one", !strcmp(gb, "don't"));
+        dial_text(gb, sizeof gb, "21\xc2\xb0" "C");
+        ck("U+00B0 survives — the face was generated with it",
+           !strcmp(gb, "21\xc2\xb0" "C"));
+        dial_text(gb, sizeof gb, "\xe2\x80\xa2one");
+        ck("U+2022 survives, same reason", !strcmp(gb, "\xe2\x80\xa2one"));
+        dial_text(gb, sizeof gb, "\xe4\xb8\x96");
+        ck("a codepoint with no ASCII twin asks the question mark",
+           !strcmp(gb, "?"));
+        dial_text(gb, sizeof gb, "\xe2");                      /* lead, no tail */
+        ck("a lone lead byte asks the question mark", !strcmp(gb, "?"));
+        dial_text(gb, sizeof gb, "\xe2\x80");          /* lead + one of two tails */
+        ck("torn UTF-8 marks each byte it cannot read, and stops at the string",
+           !strcmp(gb, "??"));
+        dial_text(gb, sizeof gb, "a\xe2\x80" "b");
+        ck("so a torn byte in the middle costs two marks, not the rest of the row",
+           !strcmp(gb, "a??b"));
+        memset(gb, 0x5a, sizeof gb);                     /* canary the bound */
+        dial_text(gb, 12, "uninstall \xe2\x80\x94 press again");
+        ck("a tight bound truncates at a whole substitution, never half",
+           !strcmp(gb, "uninstall -"));
+        ck("and the fold never writes past the bound it was given",
+           gb[12] == (char)0x5a);
+        dial_text(gb, sizeof gb, "");
+        ck("the empty line stays the empty line", gb[0] == '\0');
+    }
 
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
@@ -1495,6 +1544,45 @@ def repaint_lint(src):
     if "title_line(" not in armed:
         bad.append("the armed header is painted from page_title() directly, so the "
                    "position readout exists but nothing draws it")
+    return bad
+
+
+def glyph_lint(src):
+    """No dial-facing literal may hold a codepoint the shipped face lacks.
+
+    lv_font_montserrat_14.c:4 records how the face was generated:
+    `-r 0x20-0x7F,0xB0,0x2022` plus the FontAwesome symbol codepoints, and
+    CONFIG_LV_FONT_MONTSERRAT_14 is the only face built in with no fallback set.
+    Anything outside that prints as LVGL's missing-glyph box — which is the
+    report this file's row "uninstall [box] press again" came in as on the bench
+    (orb-B, 2026-10-24). dial_text() folds the common cases at the paint
+    boundary so a door's refusal sentence keeps its wording, but a menu-owned
+    row that needs a fold is a row written in the wrong characters: the fold
+    costs bytes on a 64 B row buffer every repaint, and '-' is what the
+    house style asks for on the glass anyway.
+
+    ESP_LOG* statements are exempt, and deliberately: their text goes to the
+    serial console and the HTTP log ring, both UTF-8, where the dash renders.
+    That is also why this reads the literals rather than _code_only(), which
+    blanks them out entirely (see the note in the mutation battery).
+    """
+    t = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    t = re.sub(r"//[^\n]*", "", t)
+    t = re.sub(r"ESP_LOG[A-Z]+\s*\(.*?;", "", t, flags=re.S)
+    bad = []
+    for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"', t):
+        lit = m.group(1)
+        line = t[:m.start()].count("\n") + 1
+        for esc in re.finditer(r"\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8}))", lit):
+            cp = int(esc.group(1) or esc.group(2), 16)
+            if not (0x20 <= cp <= 0x7E or cp in (0x00B0, 0x2022)):
+                bad.append("line %d: escape U+%04X has no glyph in the face"
+                           % (line, cp))
+        for ch in re.sub(r"\\.", "", lit):
+            cp = ord(ch)
+            if cp > 127 and not (cp in (0x00B0, 0x2022)):
+                bad.append("line %d: %r (U+%04X) has no glyph in the face"
+                           % (line, ch, cp))
     return bad
 
 
@@ -1792,8 +1880,17 @@ MUTATIONS = [
      'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
      'snprintf(out, outsz, "%d/%d", s_cur + 1, rows);'),
     ("P5.4: the painted header bypasses the readout",
-     "        title_line(head, sizeof head);\n        lv_label_set_text(s_title, head);",
+     "        title_line(head, sizeof head);\n        dial_text(gl, sizeof gl, head);\n        lv_label_set_text(s_title, gl);",
      "        lv_label_set_text(s_title, page_title());"),
+    # The glyph floor, added after the bench read a missing-glyph box in the
+    # armed uninstall row. Both halves are pinned: the literal, and the fold
+    # that saves a borrowed sentence this file cannot rewrite.
+    ("P5.4: an unrenderable codepoint goes back into a dial row",
+     's_uninst_arm == s_door_slot ? " - press again" : "");',
+     's_uninst_arm == s_door_slot ? " \u2014 press again" : "");'),
+    ("P5.4: the fold loses its em-dash mapping",
+     '{ 0x2014, "-"  }, { 0x2015, "-"  }, { 0x2212, "-"  },',
+     '{ 0x2015, "-"  }, { 0x2212, "-"  },'),
 ]
 
 def run_mutations():
@@ -1820,6 +1917,7 @@ def run_mutations():
         caught = ((not ok_c) or ("FAIL" in out_c)
                   or bool(threading_lint(mutated))
                   or bool(repaint_lint(mutated))
+                  or (target == MENU_C and bool(glyph_lint(mutated)))
                   or bool(worker_lint(shipped,
                                       mutated if target == CT_C else None)))
         if caught:
@@ -1849,6 +1947,9 @@ def main():
     rbad = repaint_lint(menu_src)
     check("a landed result cannot paint a list onto the title card",
           not rbad, "; ".join(rbad))
+    gbad = glyph_lint(menu_src)
+    check("every dial-facing literal is a glyph the shipped face carries",
+          not gbad, "; ".join(gbad))
     wbad = worker_lint(menu_src)
     check("the worker task still owns both card calls", not wbad, "; ".join(wbad))
     check("rotate still owns the screen swap (router)",

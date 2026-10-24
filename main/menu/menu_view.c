@@ -866,14 +866,25 @@ static void enter_to(void)
  * job is the owner's doors cannot afford to hide the disabled ones — "turned
  * off" is exactly the row they come to turn back on.
  *
- * The four states are the plan's words, and the row says one of them rather
- * than a boolean: `on the dial` (the entry the glass is showing), `enabled`
- * (on the carousel, not showing), `on card` (installed and walkable but
- * switched off), and `failed: <reason>` (C2's fault record, shown with its
+ * The four states, restated 2026-10-24: the row says one of them rather than a
+ * boolean: `on the dial` (the entry the glass is showing), `enabled`
+ * (on the carousel, not showing), `off` (installed and walkable but switched
+ * off), and `failed: <reason>` (C2's fault record, shown with its
  * reason verbatim — the orb_theme_scan rule that a row which cannot be used is
  * still a row that must be explained). The reason wins over the enable state
  * because a failed app that reads merely "off" tells the owner to go looking
  * for a switch.
+ *
+ * `off` is the word now, and the word it replaced was a lie. This row read
+ * `on card` since P5.3, naming the drop zone an app is copied FROM rather than
+ * the state it is in: the bytes an installed row is drawn from live in the
+ * `apps` partition (resolve_boot reads the slot headers), and the card copy is
+ * only the transport — which is exactly why uninstall says "the card copy
+ * stays". An owner who empties /sd/apps over USB and opens APPS then sees rows
+ * claiming a location that has nothing in them (bench, orb-B, 2026-10-24, after
+ * a host-side delete-all). `off` is the switch's own word, the same one the
+ * door one row below uses and the same one the /apps page prints as
+ * "turned off", so one state has one name across both surfaces.
  *
  * One press cannot carry three doors, so an app row opens PG_APPACT rather than
  * cycling anything. B5's cap shows here as a row of its own: an owner at 8 of 8
@@ -934,7 +945,7 @@ static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
     }
     const bool on_glass = app_on_glass(a);
     snprintf(out, outsz, "%s  %s", a->title ? a->title : a->slug,
-             on_glass ? "on the dial" : (a->enabled ? "enabled" : "on card"));
+             on_glass ? "on the dial" : (a->enabled ? "enabled" : "off"));
 }
 
 static void act_apps(int row)
@@ -982,7 +993,7 @@ static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
         /* The arm is stated on the row, not only in the status line: the owner
          * who walks back to this row after a detent sees the press is armed. */
         snprintf(out, outsz, "uninstall%s",
-                 s_uninst_arm == s_door_slot ? " — press again" : "");
+                 s_uninst_arm == s_door_slot ? " - press again" : "");
         return;
     default: snprintf(out, outsz, "<- back"); return;
     }
@@ -1182,6 +1193,96 @@ static void job_post(orb_job_fn fn, int idx)
         ESP_LOGW(TAG, "job refused (%s)", esp_err_to_name(e));
 }
 
+/* ---- the glyph floor: what the shipped face can actually draw -------------
+ * The dial paints with lv_font_montserrat_14 and _48, both generated with
+ * `-r 0x20-0x7F,0xB0,0x2022` plus a list of FontAwesome symbol codepoints
+ * (lv_font_montserrat_14.c:4). No fallback face is configured, so a codepoint
+ * outside that list is not substituted — LVGL draws the missing-glyph box, and
+ * mid-row it reads as broken firmware rather than as punctuation (bench, orb-B,
+ * 2026-10-24: the armed uninstall row showed a box where the dash belongs).
+ *
+ * The fold belongs HERE, at the last point that is still the dial's own
+ * decision, and not in the strings. Two reasons, both load-bearing:
+ *   - The switch/uninstall doors print orb_app_install()'s refusal sentence
+ *     verbatim by rule (see job_enable's note), and those sentences carry em
+ *     dashes like every other string in this repo, because the writing style
+ *     wants them. The same words are pinned against tools/orbapp.py and against
+ *     tools/orb-manager's fake device, and they also print to the browser,
+ *     where the glyph exists and renders correctly.
+ *   - App titles arrive off the card, from a manifest an owner wrote. Whatever
+ *     is in one of those is never this build's to reject at the last moment.
+ *
+ * So: ASCII passes untouched, the two non-ASCII codepoints the face carries
+ * (U+00B0, U+2022) pass untouched, a mapped codepoint takes its ASCII twin, and
+ * anything else — including torn UTF-8 — takes '?'. The fold never lengthens
+ * the string in bytes (its longest expansion, U+2026 to three dots, is the same
+ * three bytes), so a caller's bound on the original is still a bound here.
+ *
+ * Pure: no widget, no allocation, no I/O. repaint() is a no-op in the host
+ * harness, so a fold that lived inside it would be unfalsifiable there — the
+ * same trap repaint_lint exists for. It is lifted and pinned instead. */
+typedef struct { unsigned cp; const char *sub; } glyph_fold_t;
+static const glyph_fold_t s_glyph_fold[] = {
+    { 0x2010, "-"  }, { 0x2011, "-"  }, { 0x2012, "-"  }, { 0x2013, "-"  },
+    { 0x2014, "-"  }, { 0x2015, "-"  }, { 0x2212, "-"  },
+    { 0x2018, "'"  }, { 0x2019, "'"  }, { 0x201A, "'"  }, { 0x201B, "'"  },
+    { 0x201C, "\"" }, { 0x201D, "\"" }, { 0x201E, "\"" }, { 0x201F, "\"" },
+    { 0x2026, "..." },
+    { 0x00A0, " "  }, { 0x2007, " "  }, { 0x2009, " "  }, { 0x200A, " "  },
+    { 0x202F, " "  }, { 0x3000, " "  },
+};
+
+static void dial_text(char *dst, size_t dstsz, const char *src)
+{
+    if (!dst || !dstsz) return;
+    if (!src) { dst[0] = '\0'; return; }
+
+    size_t o = 0;
+    const unsigned char *s = (const unsigned char *)src;
+    while (*s && o + 1 < dstsz) {
+        const unsigned b = *s;
+        if (b < 0x80) { dst[o++] = (char)b; s++; continue; }
+
+        /* Long enough to decode, valid enough to trust: a lead byte with a
+         * non-continuation behind it is a torn byte, and one byte of a torn
+         * sequence is all this consumes before falling back to '?'. */
+        unsigned cp;
+        int need;
+        if      ((b & 0xE0) == 0xC0) { cp = b & 0x1Fu;      need = 1; }
+        else if ((b & 0xF0) == 0xE0) { cp = b & 0x0Fu;      need = 2; }
+        else if ((b & 0xF8) == 0xF0) { cp = b & 0x07u;      need = 3; }
+        else                         { dst[o++] = '?'; s++; continue; }
+
+        unsigned v = 0;
+        int i;
+        for (i = 0; i < need; i++) {
+            const unsigned c = s[1 + i];
+            if ((c & 0xC0) != 0x80) break;
+            v = (v << 6) | (c & 0x3Fu);
+        }
+        if (i != need) { dst[o++] = '?'; s++; continue; }
+        cp = (cp << (6 * need)) | v;
+        const int bytes = need + 1;
+
+        if (cp == 0x00B0u || cp == 0x2022u) {     /* generated into the face */
+            if (o + (size_t)bytes >= dstsz) break;
+            for (int k = 0; k < bytes; k++) dst[o++] = (char)s[k];
+            s += bytes;
+            continue;
+        }
+
+        const char *sub = "?";
+        for (unsigned k = 0; k < sizeof s_glyph_fold / sizeof s_glyph_fold[0]; k++)
+            if (s_glyph_fold[k].cp == cp) { sub = s_glyph_fold[k].sub; break; }
+        const size_t sl = strlen(sub);
+        if (o + sl >= dstsz) break;               /* never cut a substitution in half */
+        memcpy(dst + o, sub, sl);
+        o += sl;
+        s += bytes;
+    }
+    dst[o] = '\0';
+}
+
 /* Repaint from the model. Called only from the LVGL task (via apply_input or
  * service), never from the worker — which is the entire point of the queue. */
 static void repaint(void)
@@ -1203,6 +1304,7 @@ static void repaint(void)
     }
 
     char buf[64];
+    char gl[96];                                   /* fold scratch: status is 72 B */
     for (int i = 0; i < ROW_MAX; i++) {
         const int r = win + i;
         if (rows == 0 || r >= rows) {
@@ -1212,7 +1314,8 @@ static void repaint(void)
         }
         bool mark = false;
         row_text(r, buf, sizeof(buf), &mark);
-        lv_label_set_text(s_row_lbl[i], buf);
+        dial_text(gl, sizeof gl, buf);
+        lv_label_set_text(s_row_lbl[i], gl);
         const bool on_cursor = (r == s_cur);
         lv_obj_set_style_bg_color(s_row[i],
             on_cursor ? COL_BG_SEL : (mark ? COL_BG_ROW : lv_color_black()), 0);
@@ -1236,9 +1339,12 @@ static void repaint(void)
         char head[64];
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_14, 0);
         title_line(head, sizeof head);
-        lv_label_set_text(s_title, head);
-        lv_label_set_text(s_hint, page_hint());
-        lv_label_set_text(s_status, s_ui.status);
+        dial_text(gl, sizeof gl, head);
+        lv_label_set_text(s_title, gl);
+        dial_text(gl, sizeof gl, page_hint());
+        lv_label_set_text(s_hint, gl);
+        dial_text(gl, sizeof gl, s_ui.status);
+        lv_label_set_text(s_status, gl);
     }
 
     lv_obj_invalidate(s_scr);

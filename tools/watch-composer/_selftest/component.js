@@ -2959,7 +2959,7 @@ class Component extends DCLogic {
       fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' + (HB.dev.pace < HB.fps ? ' · device ~' + HB.dev.pace : '') }),
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
         H('Drop shadow · hand twins and plate relief'),
-        Ch('Cast shadows', +c0.shMove > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
+        Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
         Ch('Plate relief', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),
         Nt('', 'Cast shadows are the dark twins that turn with the hands. The watch repaints them every tick, so switching them off buys pace and costs nothing else. Plate relief is a subdial’s own drop, baked into the art at bake time. It costs nothing per tick, so it is a separate choice. Opacity below scales both.'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),

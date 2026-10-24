@@ -671,12 +671,35 @@ orb has no runtime use for the card, so the host may have all of it.
 - The row is unchanged in slug and address (`usb-files`) and now reads **USB Drive**,
   because it is the same feature with a different class behind it.
 
-### 14.5 Owed, not yet done
+### 14.5 Board run (2026-10-24): it enumerates, and the files are the host's
 
-Built clean for both `esp32s3` and the `esp32` stub path, but **not yet run on a
-board**: the bench device was wedged in the MTP failure at the time of the change.
-The validation list §10's step 2 still owes, and the first pass should record
-whether the host mounts the existing FAT volume without being prompted to format
-it, which is what `do_not_format` claims.
+Flashed to orb-B (`44:bd:8d:78:26:18`) as `v1.1.0+654a59b` and pressed from the
+dial on a Windows host. The owner reported a new drive letter, and browse,
+delete and copy-in all working. That is the first time either USB mode has made
+the card reachable from a host at all — MTP managed neither on this board nor
+under `mtp-detect` on Linux (§14.1).
+
+Three things the run confirmed rather than assumed:
+
+- **The raw SDSPI attach works.** `sdmmc_card_init()` behind the substituted
+  device handle (§14.4) enumerates the same SD32G the mount path does, so the
+  card did not need FatFs underneath it to answer for itself.
+- **The volume came up as FAT, not as unformatted.** `do_not_format` holds: the
+  host mounted the existing filesystem and saw the existing tree, with no format
+  prompt in the way. This was §14.5's open question and it is closed.
+- **The exit is the reboot and nothing else was needed.** The board came back
+  `rst:sw`, `sd.mounted:true`, `/sd` normal — the card returned to the dial with
+  no residue, which is the property the read-and-cleared arm exists to guarantee.
+
+The `usb` object survived the class change in `/api/v1/status`, which is why the
+run was verifiable over LAN at all: a device-mode boot has no console, and during
+the window the config page is the only witness. Reading it mid-transition returns
+an empty body rather than an error, because the board is rebooting — worth
+remembering before concluding the mode broke the webserver.
+
+Observed heap alongside an 8,192 B MSC buffer: `heap_internal_largest` 12,800 B
+at idle after boot. It fits, with less margin than the number suggests, and
+`CONFIG_TINYUSB_MSC_ASYNC_IO` stays off so the block work stays on the TinyUSB
+task rather than buying a second stack.
 
 MTP.

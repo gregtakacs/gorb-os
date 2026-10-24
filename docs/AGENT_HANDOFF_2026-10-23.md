@@ -164,6 +164,45 @@ A firmware-side commit-token correctness audit was NOT needed: recommit re-verif
 the staged scratch from the card and renames THAT file, so it already files the new
 bytes, not the stale copy.
 
+
+### Issue 6 - Watch Composer sweep pace floor-snapped an off-rung device rate
+Symptom: a sweep dial's device-pace readout and preview ran on the `[15,12,8,4]` rung
+ladder. A crossed-plate estimate of raw ~11 displayed as 8, under-selling the glass.
+
+Benchmark (live, this device, 2026-10-24, through the hub console route at
+`127.0.0.1:3779/api/console`): `modern` (banked running-seconds subdial, cov 0.103,
+shadows on) held a post-reboot steady-state median of **10 fps**; `neon` (a static moon
+crossed by the sweep, cov 0.114, shadows on) held a median of **12**. Near-identical
+coverage, both under moving twins, two different sustained rates - and the old model
+called both 8. Perpetual (four *static* calendar subdials, cov 0.32) still clamps to the
+panel floor 4, the `07d3411` anchor.
+
+Fix (composer only, no firmware change - the bank already plays on a millisecond flush
+clock, decoupled from frame count): `_devPace` now **rounds** `raw = fps * (1 - K * cov)`
+to the nearest whole fps, clamped to the scheduler floor 4 and the tier ceiling, instead
+of snapping it down the rungs. `modern` now reads 11 and `neon` 11 - each within one of
+its measurement. The shipped bank tempo is untouched: `F`/`B` still follow `budget().fps`
+(a rung); only the preview rate and the readout fold the rounded estimate through
+`devFps()`.
+
+The plan's second half - narrowing `K_TWIN` to moving/animated crossed plates and
+charging a plain static single plate only `K_PLAIN` - was TESTED AND REJECTED by this
+same benchmark. Perpetual's crossed plates are static calendar subdials, yet the shipped
+dial clamps to 4; only `K_TWIN` reaches 4, so `K_PLAIN` for a static plate would lift the
+anchor to ~9 and break it. `neon`'s static moon under a moving twin measured 12, which
+`K_TWIN` rounded (11) brackets; `K_PLAIN` would over-predict (13) and claim pace the
+single static dial did not show. The discriminator the data supports is the MOVING TWIN
+(`shOn`), which is what the committed model already gates on. So the gate and the two
+slopes stand; only the snap was wrong.
+
+The Motion menu gained the `8 / s` tick rung, gated on `budget().fps >= 8` (the same rung
+the row ladder already prices), so a 4-fps dial is never offered a rate it cannot drive;
+the readout now also states the bank frame count (`12 fps · 12 frames`). Guarded by a new
+`headless-pace.test.js` (13 checks, the asserted form of `probe_pace.cjs`) and four
+`headless-ui.test.js` Motion-gate checks. Suites after: engine 177, regression 96/15, ui
+264, component 51, orbtheme 74, bundle3 190, pace 13 - all green. README pace trip moved
+to `modern` 11 / `diver` 15 / `aviator`/`sector` 15 / `perpetual` 4.
+
 ## Ground rules for this pass
 - One project (gorb-os). Do not fan a change into sibling workspace folders.
 - Long bench commands (WiFi OTA, serial flash, first idf.py build) MUST run

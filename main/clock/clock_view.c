@@ -2110,6 +2110,23 @@ esp_err_t clock_view_init(orb_app_t *self)
     const orb_theme_geo_t *geo = orb_theme_geo();
     s_aux_at = aux_insert_at();
 
+    /* D32 ruling C REVERSED (§32.6): the carriage rides at geartrain depth, under
+     * every hand, exactly as the preview composes it (watch-engine.js draws the cage
+     * inside the geartrain pass). It used to be created after the hand loop, so the
+     * frame bank blitted unrotated over the needle and hands the carriage was meant
+     * to carry. Created here — after the bucket-0 complications and before the
+     * shadow/hand loop — it sits above the plate and below the hands, and the
+     * bucketed hosted windows created later still cover it the way their bucket says.
+     * One object when the theme names a frame bank, placed by the bank's own shared
+     * geometry and turned by tourbillon_advance with the seconds angle plus the row's
+     * start orientation. A theme that carries both hand/2 and hand/5 now draws both. */
+    s_car = NULL;
+    s_car_start_10 = ((int32_t)clk_theme.tourbillon_start + 5) / 10 % 3600;
+    if (clk_theme.tourbillon_n > 0 && clk_theme.tourbillon_n <= CLK_TOURB_MAX &&
+        clk_theme.tourbillon[0].show &&
+        gfx_sprite_drawable(&clk_theme.tourbillon[0]))
+        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc);
+
     /* Each shadow goes down immediately before its OWN hand, walking the
      * theme's back-to-front order, so the z-stack is
      *     S2 H2 S1 H1 S0 H0   (S=shadow, H=hand, 2=second, 1=minute, 0=hour)
@@ -2141,22 +2158,12 @@ esp_err_t clock_view_init(orb_app_t *self)
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
     }
     if (!aux_built) aux_create();                 /* nothing to join under: ride the top */
-    /* D32 ruling C: the carriage. One object when the theme names a frame
-     * bank, created under the complications so a hosted window still covers
-     * it the way its bucket says, placed by the bank's own shared geometry,
-     * and turned by tourbillon_advance with the seconds angle plus the row's
-     * start orientation. A theme that carries both hand/2 and hand/5 now
-     * draws both — the needle and the animated frame it carries. */
-    s_car = NULL;
-    s_car_start_10 = ((int32_t)clk_theme.tourbillon_start + 5) / 10 % 3600;
-    if (clk_theme.tourbillon_n > 0 && clk_theme.tourbillon_n <= CLK_TOURB_MAX &&
-        clk_theme.tourbillon[0].show &&
-        gfx_sprite_drawable(&clk_theme.tourbillon[0]))
-        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc);
-    /* What the dial actually built for the sub-dials, in the line the owner reads
-     * after a re-bake: the count the theme declared, and the order position the
-     * block joined. A row with an src this build cannot drive is reported by
-     * aux_update the first time it tries, and shows no blends/s here either. */
+    /* The carriage (s_car) is already created above, at geartrain depth — see the
+     * D32-reversal note before the hand loop. What the dial actually built for the
+     * sub-dials, in the line the owner reads after a re-bake: the count the theme
+     * declared, and the order position the block joined. A row with an src this
+     * build cannot drive is reported by aux_update the first time it tries, and
+     * shows no blends/s here either. */
     if (geo->n_aux)
         ESP_LOGI(TAG, "aux: %u sub-dial pointer row%s above order[%d]",
                  (unsigned)geo->n_aux, (geo->n_aux == 1) ? "" : "s", s_aux_at);

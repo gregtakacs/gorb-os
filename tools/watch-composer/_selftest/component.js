@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
@@ -1552,6 +1552,24 @@ class Component extends DCLogic {
     this._replaceArmed = null;
     await this.exportTheme3({ send: true });
   }
+  /* §32.6: the modal's Replace. Ships the held bytes — no re-bake, so the replace is
+   * byte-for-byte the dial the precheck refused — with the firmware overwrite flag, and
+   * closes the modal. If the arm was already consumed (a racing press, or the name
+   * changed under the modal) the overlay just clears; there is nothing held to send. */
+  async replaceArmed3() {
+    const a = this._replaceArmed;
+    this.setState({ dup: null });
+    if (!a) return;
+    this._replaceArmed = null;
+    await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
+  }
+  /* The modal's Cancel: drop the arm so the next Send is a fresh bake, and say so on
+   * the status line. The held bytes are discarded, not deferred — a Cancel is the
+   * owner declining to clobber the card, so the next press must not re-ship them. */
+  dismissDup3() {
+    this._replaceArmed = null;
+    this.setState({ dup: null, status: 'Send cancelled — the card keeps its current "' + (this.state.dup && this.state.dup.nm || 'theme') + '"' });
+  }
   async _export3Body(opts) {
     opts = opts || {};
     const G = window.GorbBake;
@@ -1726,6 +1744,45 @@ class Component extends DCLogic {
     const r = G.carriageRect3(planes, { pivot: cp.pivot });
     return r ? [r[2] - r[0], r[3] - r[1]] : null;
   }
+  /* §32.6: the content-aware bake serial. The serial is BOTH the device's idempotency
+   * key (§5 duplicate policy: same name+geom+art+serial is a quiet re-store, same name
+   * different bytes is the 409) and the hub's ?precheck=1 duplicate witness, and until
+   * now it hashed only name:B:fps:carrier:carriage-flag — blind to the backdrop plate,
+   * so a texture-only re-pick shipped a SAME serial and the serial-only precheck waved
+   * the bytes through to the device's late geom/art refusal. The old cut was documented
+   * at theme.go ("Same serial with different payload CRCs ... still reaches the
+   * device's late 409"); this closes it at the source. A plate bank is the dominant
+   * term in the bake and the one the author edits, so it folds every shipped plane's
+   * own CRC: the plate (still or each keyframe, and a delta plate's per-frame sprites
+   * via the bank), hands, shadows, the carriage frames, the comp tiles, and the pointer
+   * plates. bakeClock3 is deterministic over these inputs, so re-baking an untouched
+   * dial reproduces this serial exactly and the send stays a no-op; any pixel that
+   * moves moves it. Geometry that carries no pixels (pivot/x/y) rides in the seed so a
+   * reseat alone is not silently identical. */
+  serialContent3(G, nm, B, fps, pol, opts) {
+    const te = new TextEncoder();
+    const parts = [te.encode(nm + ':' + B + ':' + fps + ':' + pol.carrier + (pol.carriage ? '+carriage' : ''))];
+    const crc = (u8) => { if (u8 && u8.length) parts.push(new Uint8Array((G.crc32(u8) >>> 0).toString(16).padStart(8, '0').split(''))); };
+    const pos = (o, tag) => parts.push(te.encode(tag + ':' + (o.x | 0) + ',' + (o.y | 0) + ',' + (o.w | 0) + ',' + (o.h | 0) + ':' + (o.pivot_x | 0) + ',' + (o.pivot_y | 0)));
+    const pl = opts.plate;
+    if (pl) {
+      if (pl.frames) for (const fr of pl.frames) crc(fr.rgba);
+      else crc(pl.rgba);
+      pos(pl, 'plate');
+    }
+    for (const h of (opts.hands || [])) { crc(h.rgba); pos(h, 'hand' + h.slot); }
+    for (const s of (opts.shadows || [])) { crc(s.rgba); pos(s, 'sh' + s.slot); }
+    if (opts.carriage) {
+      const c = opts.carriage;
+      for (const fr of (c.frames || [])) crc(fr.rgba);
+      pos(c, 'car');
+    }
+    for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
+    for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
+    let len = 0; for (const p of parts) len += p.length;
+    const buf = new Uint8Array(len); let at = 0; for (const p of parts) { buf.set(p, at); at += p.length; }
+    return G.crc32(buf) >>> 0;
+  }
   /* The split's other half: decide carriers off the measurement, assemble the
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
@@ -1801,7 +1858,17 @@ class Component extends DCLogic {
       for (let k = 0; k < pol.keyframes; k++) plate.frames.push({ rgba: pxs[k * pol.decim], w: 466, h: 466 });
       plate.fps = pol.fps;
     }
-    const opts = { name: nm, serial: G.crc32(new TextEncoder().encode(nm + ':' + B + ':' + fps + ':' + pol.carrier + (pol.carriage ? '+carriage' : ''))),
+    // The serial is the device's idempotency key AND the hub precheck's duplicate
+    // witness, so it MUST move when the shipped pixels move. Until §32.6 it hashed
+    // only name:B:fps:carrier:carriage-flag — a value blind to the backdrop plate, so
+    // re-picking a texture (sandblasted to geneva strips) kept the SAME serial, the
+    // hub's ?precheck=1 leg read it as "the exact theme, a no-op", let the bytes cross
+    // the room, and the device's geom/art-CRC check refused late with the 409 the
+    // operator called an unanswered question. The serial now folds a CRC of every plane
+    // actually shipped, computed here (deterministic, so an unchanged dial re-bakes to
+    // the same serial and stays a quiet no-op). Set below, once the carriage planes are
+    // on opts; see serialContent3.
+    const opts = { name: nm, serial: 0,
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
@@ -1839,6 +1906,12 @@ class Component extends DCLogic {
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
+    // The content-aware serial, now every shipped plane is on opts. It folds the
+    // baked art's own CRC (geom + art) so any pixel change — the plate texture
+    // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
+    // question honestly BEFORE bytes cross the room. bakeClock3 is deterministic,
+    // so an unchanged dial re-bakes to the same serial and stays a no-op on the card.
+    opts.serial = this.serialContent3(G, nm, B, fps, pol, opts);
     this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
@@ -1912,7 +1985,10 @@ class Component extends DCLogic {
       } catch (e) { pre = null; }
       if (pre && pre.ok && pre.data && pre.data.duplicate) {
         this._replaceArmed = { bytes, nm, stem, pol, meter };
-        this.setState({ status: 'Already on the card as a different dial: "' + nm + '" (' + stem + ') — press Send to orb again to replace it with this bake' });
+        // §32.6: the duplicate is asked about in a real modal, not a status-line
+        // sentence and never a window.confirm. The bake stays held in _replaceArmed;
+        // the modal's Replace ships THOSE bytes with overwrite, Cancel dismisses.
+        this.setState({ dup: { nm, stem, note: (pre.data.note || 'the card holds a different build of this name'), pre: true } });
         return;
       }
     }
@@ -1934,7 +2010,10 @@ class Component extends DCLogic {
       const why = (j && j.error) || ('HTTP ' + code);
       if (!overwrite && String(why).indexOf('already on the card') >= 0) {
         this._replaceArmed = { bytes, nm, stem, pol, meter };
-        this.setState({ status: 'The orb refused the send: ' + why + ' — press Send to orb again to replace it' });
+        // The safety net: same serial, different payload CRCs — the one cut the
+        // content-aware serial still cannot capture before the device checks it. The
+        // same modal arms here, so the operator's second act is a press, not a re-bake.
+        this.setState({ dup: { nm, stem, note: String(why), pre: false } });
         return;
       }
       this.setState({ status: 'Not sent: ' + why });
@@ -2879,11 +2958,26 @@ class Component extends DCLogic {
         if (!this.hubSend3()) return 'no hub';
         const G = window.GorbBake;
         if (!G || !G.bakeClock3) return 'baker not loaded';
-        if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return 'press again to replace';
+        if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return s.dup ? 'awaiting your choice' : 'press again to replace';
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
         return this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
       })(),
+      /* §32.6: the duplicate modal. When the send stopped at a duplicate — whether the
+       * precheck caught it (s.dup.pre) or the device refused late (a same-serial,
+       * different-CRC bake) — the bake is held in _replaceArmed and this overlay asks
+       * the question in the page, never as a window.confirm or a status-line sentence.
+       * Replace ships THOSE held bytes with the overwrite flag; Cancel dismisses the
+       * arm so the next press is a fresh bake. The modal rides s.dup, so it disappears
+       * on the first setState that clears it. */
+      dupOpen: !!s.dup,
+      dupNm: s.dup ? s.dup.nm : '',
+      dupStem: s.dup ? s.dup.stem : '',
+      dupNote: s.dup ? s.dup.note : '',
+      dupPre: !!(s.dup && s.dup.pre),
+      dupReplace: () => this.replaceArmed3(),
+      dupCancel: () => this.dismissDup3(),
+      dupStop: (e) => e.stopPropagation(),
       // FORMAT 2: the name is typed, so the field that types it sits beside the button,
       // and the byte counter beside it is the same count the baker applies, not JS chars.
       themeNameVal: this.state.themeName == null ? '' : this.state.themeName,

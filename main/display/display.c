@@ -382,7 +382,7 @@ esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
     while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
     const uint32_t want = s_tile_done + 1u;
     s_band_inflight++;
-    const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, SCREEN_WIDTH, y + rows, band);
+    esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, SCREEN_WIDTH, y + rows, band);
     if (e != ESP_OK) {
         if (s_band_inflight > 0) s_band_inflight--;   /* refused pre-cb; no cb will come */
     } else if (s_tiles_ok) {
@@ -390,9 +390,16 @@ esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
         while (s_tile_done < want && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
         if (s_tile_done < want) {
             /* Late, not gone: the cb balances the inflight count when it
-             * arrives. Say so anyway — a QSPI that never retires leaves no
-             * other trace, and this line is the store screen's error report. */
+             * arrives, so we do NOT decrement it here. But this band has NOT
+             * retired, so its DMA still owns the caller's buffer — returning
+             * ESP_OK here told the boot overlay the stamp landed and let it
+             * re-stamp the one reused s_band in flight, which is the two-green-
+             * bars/stray-status-word race of the 2026-10-23 store. Report the
+             * starvation as an error so the caller skips the frame rather than
+             * corrupting the next one; a QSPI that never retires leaves no other
+             * trace, and this line is the store screen's error report. */
             ESP_LOGW(TAG, "band at r%d did not retire within 500 ms", y);
+            e = ESP_ERR_TIMEOUT;
         }
     } else if (s_band_inflight > 0) {
         s_band_inflight--;                            /* depth 1: blocked submit, cb ran */

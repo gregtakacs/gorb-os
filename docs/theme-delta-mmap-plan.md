@@ -751,3 +751,80 @@ means anything, and orbital-arrow wants one press of Send to orb once it does.
    frame's three bands land on rows 184, 252, 300, and every committed band
    starts on an even row for the CO5300's two-rows-per-clock pairing.
 
+## §32.6 — the four-open-fixes pass (23 Oct, same day, reflash and re-verify)
+
+Four confirmed field issues landed together, then reflashed and re-verified.
+
+1. **The duplicate prompt answered before it asked — the serial was content-blind.**
+   `Watch Composer.dc.html` derived the bake serial from `name:B:fps:carrier:carriage`
+   only, never the plate/hand pixels. A plate-only re-pick (sandblasted → Geneva strips)
+   kept the SAME serial, so the hub's `?precheck=1` leg (`themeDuplicate`, theme.go:620)
+   read "this exact theme, a no-op", waved the bytes through, and the device's
+   `geom_crc`/`art_crc` check refused LATE with the 409 the operator called an
+   unanswered question — the one cut theme.go had documented ("same serial with
+   different payload CRCs … still reaches the device's late 409"). The composer now
+   folds a CRC of every shipped plane (`serialContent3`) into the serial: the plate
+   (still, keyframe, or delta sprites), hands, shadows, carriage frames, comp tiles,
+   and pointer plates, plus the geometry that carries no pixels. `bakeClock3` is
+   deterministic, so an untouched dial re-bakes to the same serial and stays a quiet
+   no-op; any pixel that moves moves it, and `themeDuplicate` then answers
+   `duplicate:true` (a different build of this name) BEFORE any byte crosses. The
+   inline second-press line became a real in-page modal (`state.dup`): Replace ships
+   the held bytes with `?overwrite=1`, Cancel discards the arm. No `window.confirm`.
+   `headless-ui.test.js` asserts the modal opens/arms/replaces/cancels and still
+   proves the flow never opens a browser dialog.
+
+2. **The corrupt boot-overlay status bar: a starved band reported success.**
+   `display_band_commit` returned `ESP_OK` after its 500 ms retirement wait even when
+   the transaction never retired, and `orb_boot_overlay.c` wrapped the call in
+   `ESP_ERROR_CHECK` — so a QSPI starved by store pressure both re-stamped the one
+   reused `s_band` (the two-green-bars / status-word-on-the-wrong-row race) and, on a
+   non-OK, aborted the boot task. The seam now returns `ESP_ERR_TIMEOUT` on a band that
+   did not retire. The caller treats a refused band as a frame to ABANDON, not abort:
+   it stamps LINE1 and, only on success, LINE2 and the bar, so it never overwrites an
+   in-flight buffer; a refused attempt sets `s_band_starved`, which the 10 Hz throttle
+   reads back so the next beat RETRIES the half-drawn frame. `host_boot_overlay_test.py`
+   gained a starvation scenario (a refused first band counts zero bands; the identical
+   next beat redraws all three).
+
+3. **The store path is healthy; the "strips defeat delta compression" note was wrong.**
+   Live probes returned `store:"stored"` for `av-kit` (1.19 MB) and `Skeleton` (3.6 MB),
+   clean reset words. The missing "Orbital arrow" was an empty slot (`source:"none"`),
+   not a lost theme. Those two store facts are live-confirmed and stand.
+   The earlier attribution of the >5 MB bake to a Geneva-strip texture defeating the
+   frame-to-frame delta was asserted without measuring and is FALSE. Two code paths
+   rule it out, and a direct bake confirmed it:
+   - A static plate texture contributes ZERO to a delta bank. `gifTransition`
+     (`orbtheme-baker.js:733`) skips any texel byte-identical between consecutive base
+     frames *before* the threshold; a surface finish that does not move is identical
+     frame-to-frame, so no pattern — flat or high-contrast — adds a single changed texel.
+   - An Orbital-arrow plate rides UNDER a carriage (tourbillon), so it is a keyframe
+     bank, not a delta (`deltaBank = o.carriage ? 0 : 1`, `orbtheme-baker.js:2663`): a
+     fixed `466×466×2 B` plane per frame, content-invariant by construction.
+   Measured directly: two bakes over frames whose moving train is identical, one
+   set on a flat mid-grey plate and one on high-contrast Geneva strips, returned the
+   SAME `packedTexels` (289792) and the SAME rect count (218). A pure surface-finish
+   swap has no path to doubling the bake, and the frame count is tempo-driven
+   (`get B() = bankFrames(this.F)`, `Watch Composer.dc.html:459`), not texture-driven.
+   (The conic sheen on the six textured finishes keys on `LIGHT.outer`, set once from
+   the `outerAngle` config — `watch-engine.js:2094` — so it does not rotate across the
+   loop and the finish stays a static plane.) The only real lever a busy texture has is
+   second-order: the moving train's cast shadow lands on higher-contrast stripes, so a
+   few more texels in the swept band cross the RGB565 threshold. That is a small
+   rect-count change, not a doubling, and it cannot flip the carrier for a caged dial
+   (already a keyframe bank). The reported 2.5→5.8 MB growth was therefore confounded —
+   it rode a theme rename and a re-pick, not the finish alone — and was NOT isolated or
+   reproduced here. Pinning it needs a controlled two-bake diff with the finish the only
+   variable. The size is not a store-path fault; fix 1's content-aware serial still
+   catches a real collision first.
+
+4. **The carriage rendered over the hands, not under — D32 ruling C reversed.**
+   The preview (`watch-engine.js`) composes the cage INSIDE the geartrain pass, under
+   the hands — the intended depth. D32 ruling C had put the carriage above them on both
+   firmware paths: the classic path created `s_car` AFTER the hand loop, and the L4 tile
+   painter's ascending `order` sort gave the carriage `order: ord++` (the highest value,
+   emitted last) so it painted last/front. Both now place it at geartrain depth: the
+   baker reserves `order:1` for a carriage (plate is 0, hands walk up from 2), and the
+   classic path creates `s_car` BEFORE the shadow/hand loop. `headless-bundle3.test.js`
+   pins the carriage bakes at `order:1` under the hand's `order:2`.
+

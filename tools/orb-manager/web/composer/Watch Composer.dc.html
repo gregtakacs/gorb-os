@@ -574,14 +574,15 @@ class Component extends DCLogic {
      * with the sweep, K_PLAIN (half the crossed-plate bill) when they do not. */
     const shOn = +c.shMove > 0.01 && +c.shOp > 0.01;
     const K_TWIN = 2.31, K_PLAIN = 1.16;
-    /* A banked carrier already pays a push inside its measured rows, so this term is only
-     * the marginal crossed-plate cost and may not cut more than one tier step below b.fps.
-     * Bound it, never exempt it: 7649661 removed the blanket banked exemption for the right
-     * reason (rowPrice measures plate motion with the hands hidden, so rows prove nothing
-     * about the seconds wedge). */
-    const step = [15, 12, 8, 4].filter((t) => t <= b.fps)[1] || 4;
-    const floorStep = b.rows > 0 ? step : 4;
-    const tier = (raw) => Math.max(floorStep, [15, 12, 8, 4].find((t) => t <= raw) || 4);
+    /* The crossed-plate re-blit is a full per-tick cost, not a marginal add-on to a bank
+     * push. A banked subdial the seconds wedge crosses re-composites its whole plate on
+     * every crossing tick, whether or not it also animates, so the tax runs to the
+     * scheduler floor 4 for a banked dial exactly as for an open one: the shipped
+     * perpetual's four gilt subdials sustain 4 at tier 15 (07d3411) — three steps below
+     * its bank, not one. rowPrice measures the plate's own motion with the hands hidden,
+     * so measured rows prove nothing about the seconds wedge (7649661). A prior
+     * one-step bank grace read that banked perpetual as 12; it is removed. */
+    const tier = (raw) => Math.max(4, [15, 12, 8, 4].find((t) => t <= raw) || 4);
     out.pace = tier(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov));
     const plain = tier(b.fps * (1 - K_PLAIN * cov));
     if (out.pace < b.fps) out.why = 'Sweep crosses ' + n + ' plate' + (n > 1 ? 's' : '') + ' on ' +

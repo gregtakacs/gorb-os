@@ -194,15 +194,16 @@ its own bearing; overlapping intervals merge, so two plates sharing a bearing co
 sweep once. The merged arc over 360 is `cov`, the fraction of beats whose wedge touches
 a plate. `raw = b.fps * (1 - K * cov)`, with K = 2.31 while cast-shadow twins ride and
 1.16 without. `raw` snaps down the `[15, 12, 8, 4]` ladder, floored at the scheduler's
-4 and capped at `b.fps`. A banked carrier (`rows > 0`) already pays a push, so the
-marginal crossed-plate cost may not cut more than one tier step below its bank.
+4 and capped at `b.fps`. The tax is a full per-tick re-blit, so it runs to floor 4 for a
+banked dial exactly as for an open one — `b.rows` proves nothing about the seconds wedge.
 
 Two panel anchors fix the slope (measured in `07d3411`): aviator's bare ring (cov 0.00)
 holds tier 15, and perpetual's four gilt-twin subdials (cov 0.32) clamp to 4. A
 date-only `diver` crosses about one percent of the beat and lands at 12; `modern`
-crosses about ten percent and lands at 8. The banked bound is the correction for
-`7649661`, which removed the blanket banked exemption and dropped every banked date
-dial to the perpetual's floor.
+crosses about ten percent and lands at 8. An earlier one-step bank grace (`floorStep`)
+read the banked perpetual as 12 and modern as 12, contradicting both anchors; it is
+removed. `7649661` priced the tax on banked carriers, and the grace quietly re-exempted
+them.
 
 `tools/watch-composer/_selftest/probe_pace.cjs` is the regression trip. It mounts the
 real `Component` and prints `_devPace` per preset, asserting those targets without a

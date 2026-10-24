@@ -1753,6 +1753,24 @@ static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
     d->art.h       = (int16_t)e->h;
     d->art.pivotx  = e->pivot_x;
     d->art.pivoty  = e->pivot_y;
+    /* A shadow twin (class sprite, slot<5) carries the §25.2 light offset on
+     * its pivot COLUMN: its centre is hand-centre + (dx,dy) while its rotation
+     * pivot is the CROP pivot (hand centre minus its own draw point). The two
+     * break the centre = top-left + pivot identity that orb_layer_desc_t and
+     * theme_spr bake into every other row, so feeding the raw pivot_x here made
+     * the L4 painter spin the shadow about a point (dx,dy) off its true arbour:
+     * the shadow swung out around the hand as it turned, worst on the second
+     * hand (largest offset, full sweep). orb_clock3_parse already worked the
+     * identity back into clk_theme.shadow[slot]; restate the row's box and
+     * pivot from it so the L4 path rotates the shadow about the hand's real
+     * arbour and lands its centre on hand + light, exactly like the LVGL path. */
+    if (e->cls == ORB_ASSET_SPRITE && e->slot < 5u) {
+        const clk_sprite_t *sh = &clk_theme.shadow[e->slot];
+        d->art.x       = (int16_t)(sh->centerx - sh->pivotx);   /* top-left */
+        d->art.y       = (int16_t)(sh->centery - sh->pivoty);
+        d->art.pivotx  = sh->pivotx;                             /* crop pivot */
+        d->art.pivoty  = sh->pivoty;
+    }
     d->art.prim    = (uint16_t)orb_asset_class_prim((orb_asset_class_t)e->cls);
     d->art.global  = 0;                               /* the clock's namespace  */
     d->art.off     = bank_off + e->off;               /* the fold — see above   */

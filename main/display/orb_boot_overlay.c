@@ -3,8 +3,9 @@
  *
  * Frame layout (diameter 466, center 233):
  *   - stage line, scale-3 (15x21 px glyphs), centered at y=184;
- *   - with total > 0: a ring arc at r=200..204 (inside the bezel ring the glass
- *     itself hides at the edge) and a `NN% ddd/dddKB` line at y=252;
+ *   - with total > 0: a `NN% ddd/dddKB` line and a progress bar stacked
+ *     contiguously under the stage line (y=208, y=232) — one opaque card, no
+ *     transparent gaps for a retained frame to show through (§32.7);
  *   - a 4 s-old frame appends `NNs` to the stage line (§6.4).
  *
  * One band buffer of 466x24 RGB565 (22,368 B) in internal DMA RAM is allocated
@@ -142,8 +143,18 @@ static const uint8_t FONT5x7[95][5] = {
 #define SCALE       3                          /* glyphs land at 15x21 px      */
 #define PITCH       ((GLYPH_W + 1) * SCALE)    /* 18 px advance                */
 #define LINE1_Y     184                        /* stage band top row           */
-#define LINE2_Y     252                        /* percent/KB band              */
-#define BAR_Y       300                        /* progress band (total > 0)    */
+/* §32.7: the store readout is ONE opaque window, not three floating bars. The
+ * bands were formerly 184 / 252 / 300, leaving 44- and 24-row transparent gaps
+ * through which the parked menu (or the CO530's retained clock GRAM after a warm
+ * reset) showed — the "paints straight over the dial, looks bad" the operator
+ * named — and a band starved mid-frame left a lone fragment stranded in a gap.
+ * The three bands now stack edge-to-edge (184, 208, 232) so their union is a
+ * single solid 72-row card across the middle of the glass: full-width, every
+ * pixel written (black background, white text, colored bar), no transparency
+ * for the old frame to bleed through. The one reused 24-row buffer is unchanged;
+ * §6.2's "nothing on the paint path" budget still holds. */
+#define LINE2_Y     208                        /* percent/KB band (contiguous) */
+#define BAR_Y       232                        /* progress band (contiguous)   */
 #define BAR_W       320
 #define BAR_H       10
 

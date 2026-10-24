@@ -629,7 +629,10 @@ setTimeout(async () => {
     let confirmed = false;
     global.confirm = () => { confirmed = true; return true; };
     it.state.hubCheck = true; it.state.hubIp = '10.0.0.9';
-    const bytes = new Uint8Array([1, 2, 3]);
+    // §32.7: a bake big enough to tell the precheck's 128-byte header from the full
+    // body. The old precheck posted the WHOLE container, so every plain send moved
+    // every byte twice; this array makes the double-transfer and its fix measurable.
+    const bytes = Uint8Array.from({ length: 300 }, (_, i) => (i * 7 + 1) & 0xff);
     const sent = [];
     global.fetch = async (url, opt) => {
       sent.push([url, opt && opt.body && opt.body.length]);
@@ -661,12 +664,14 @@ setTimeout(async () => {
     ok(dv.open === true && dv.nm === 'orbital-arrow' && dv.stem === 'stem', 'a duplicate opens the in-page modal naming the dial', JSON.stringify(dv.open && [dv.nm, dv.stem]));
     ok(dv.pre === true, 'the modal says the precheck caught it before any byte crossed');
     ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the modal Replace');
-    ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no bytes were posted', JSON.stringify(sent));
+    ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no whole-bake body posted', JSON.stringify(sent));
+    ok(sent.length === 1 && sent[0][1] <= 128, '§32.7: the precheck leg carried at most the 128-byte header, not the bake', JSON.stringify(sent));
     scen.dup = false;
     await it.sendTheme3ToOrb();
     ok(!confirmed, 'the replace flow never opens a browser dialog');
     ok(/&overwrite=1/.test(xhrUrl || ''), 'the second press sends the held bytes with the firmware flag', xhrUrl);
     ok(xhrBody === bytes, 'and it is the SAME bake, byte-identical, not a re-bake');
+    ok(xhrBody && xhrBody.length === 300, '§32.7: the real send ships the full bake once — the precheck was the only short body', xhrBody && xhrBody.length);
     ok(/rebooting onto it/.test(it.state.status), 'the settled line quotes the store verdict', it.state.status);
     scen.dup = true;
     it._replaceArmed = null; it.state.dup = null;

@@ -134,6 +134,36 @@ explicit Replace affordance for the exact case. Note the theme id is
 sha256(name)[:12], so a re-bake under a NEW name (Skeleton -> Skeleton2) yields a
 new serial; only a same-bytes re-send is "exact".
 
+### Issue 5 - a tempo-only re-send to a banked dial prompted AFTER upload
+Symptom: operator changed only the Motion/tick cadence of a dial already on the
+card. The bake uploaded fully, THEN a modal appeared, and confirming it read as a
+no-op ("using that one - didn't copy over").
+
+Root cause has two halves. (1) A tempo change rides the runtime cadence scalar
+(second_sweep/tick_rate), so it DOES move the shipped content serial - verified
+headless: perpetual sweep=650821054, tick2=3540822210, tick4=2157822246. The
+precheck reads that serial, so it should have caught the duplicate BEFORE upload.
+It only failed to when it could not get a clean answer: theme.go's themeDuplicate
+returns "clear" (not "ask") when the hub cannot read the device's theme list, and
+the composer fell through to a blind upload, leaning on the device's late 409 - the
+post-upload modal. (2) The commit success line read "replaced from the copy already
+on the card", which sounded like a no-op; on identical art with a different cadence
+it looked like nothing landed, though the commit did rename the new scratch and
+queue a reboot (orb_net.c:4996, orb_theme.c:2080-2152).
+
+Fix (composer only, hub contract unchanged): postTheme3ToOrb now FAILS THE PRECHECK
+CLOSED. A fetch that died, an HTTP error, or a "clear" verdict carrying the hub's
+note are treated as UNKNOWN card state and stop before upload with
+"...could not get a clean read of X... Press Send again to replace it anyway."; the
+bake is held so the second press forces the overwrite. A genuinely free name
+(clear, empty note) still uploads. The commit line now reads "the new build replaced
+the old copy on its card - stored - rebooting onto it". Guarded by six new
+headless-ui.test.js checks (Bug B). Suites: engine 177, regression 96/15, ui 260,
+component 51, orbtheme 74, bundle3 190; Go precheck/commit/embed-parity green.
+A firmware-side commit-token correctness audit was NOT needed: recommit re-verifies
+the staged scratch from the card and renames THAT file, so it already files the new
+bytes, not the stale copy.
+
 ## Ground rules for this pass
 - One project (gorb-os). Do not fan a change into sibling workspace folders.
 - Long bench commands (WiFi OTA, serial flash, first idf.py build) MUST run

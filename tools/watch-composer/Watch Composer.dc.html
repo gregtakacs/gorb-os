@@ -502,21 +502,25 @@ class Component extends DCLogic {
    * timer, the restart check, and any future seat all read the same number. */
   devFps() { const b = this.budget(); return Math.min(b.fps, b.dev.pace); }
   /* The rate the glass will actually hold, as distinct from the tier the bank
-   * can pay. The CAPS ladder prices the delta-bank push only. A carrier with
-   * nothing to push -- measured rows 0, train sealed -- rides its ticks on the
-   * live re-composite instead, and there the seconds wedge re-blits every
-   * opaque plate it crosses, twice while a cast-shadow twin rides with it.
-   * Panel-calibrated pairs: a bare sweep ring holds the full tier (aviator,
-   * 15 fps sustained); the same hand across four sealed subdials with gilt
-   * twins clamps to the scheduler floor (perpetual, 4 fps). The twins halve
-   * the crossed-plate bill, so predict 8 without them, never under the floor
-   * of 4. A banked carrier already pays the wedge inside its measured rows,
-   * so the tier stands there, and a ticked hand holds between beats and pays
-   * only on the beat. The centre seconds hand is required: a subdial's own
-   * small seconds ticks inside its window row, not across the dial. */
+   * can pay. The CAPS ladder prices the delta-bank push only: rowPrice()
+   * measures the PLATE's own motion with hands hidden (baseImgs), and the
+   * needle cap simply books a sweep over plain plate at ~130 swept-box rows
+   * per tick. Nothing in the ladder prices a sweep ACROSS opaque plates: the
+   * commit restores dirty rows from canvas then re-blits every layer over them
+   * in z-order (orb_gfx.c), so each tick whose wedge overlaps a subdial
+   * re-composites that plate, twice while a cast-shadow twin rides with it.
+   * The tax lands whether or not a bank also pushes: the hands are never in
+   * the bank, so rows>0 proves nothing about it. Panel-calibrated anchors: a
+   * bare sweep ring holds the full tier (aviator, 15 sustained); the same
+   * hand across four sealed subdials with gilt twins clamps to the scheduler
+   * floor (perpetual, 4). The twins halve the crossed-plate bill, so predict
+   * 8 without them, never under the floor of 4. A ticked hand holds between
+   * beats and pays only on the beat. The centre seconds hand is required: a
+   * subdial's own small seconds ticks inside its window row, not across the
+   * dial. A caged dial is exempt: its carriage marks by chord, unmeasured. */
   _devPace(b) {
     const out = { pace: b.fps, cross: 0, why: '' };
-    if (!b.measured || b.rows > 0 || b.car) return out;
+    if (!b.measured || b.car) return out;
     const c = this.cfg(), D = this.design();
     if (!(D.centre && D.centre.second === 1)) return out;
     if (c.tick && c.tick !== 'sweep') return out;

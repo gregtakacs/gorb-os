@@ -245,6 +245,22 @@ func (c *Client) ThemeUploadProgress(ip string, body []byte, overwrite bool, pro
 	return c.devicePostCounted(ip, route, body, "application/octet-stream", progress)
 }
 
+// ThemeCommit spends a duplicate refusal's one-shot token: the same
+// /api/v1/sd/theme door with ?commit=<token> and an empty body, which files the
+// copy the refusal left staged on the card and queues the store. It exists so a
+// confirmed replace costs a query string rather than a second multi-megabyte
+// crossing — the double upload the operator watched happen "once before the
+// question, once right after" was the old overwrite contract asking for the file
+// again. A 410 answer means the staged copy is gone or stale: the caller must
+// ThemeUpload for real.
+func (c *Client) ThemeCommit(ip, token string) (json.RawMessage, error) {
+	if token == "" {
+		return nil, fmt.Errorf("orbnet: refusing a theme commit with no token")
+	}
+	route := "/api/v1/sd/theme?commit=" + url.QueryEscape(token)
+	return c.devicePost(ip, route, nil, "")
+}
+
 // MaxThemeUpload is ORB_THEME_UPLOAD_MAX from main/art/orb_theme.h, restated so the
 // hub refuses the same size the device would, with a sentence an operator can act on
 // instead of a 413 from a device two hops away. Migration 1 grew the single slot from

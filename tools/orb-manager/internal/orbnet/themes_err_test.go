@@ -86,11 +86,13 @@ func TestThemeUploadBounds(t *testing.T) {
 
 // The firmware's duplicate refusal is a decision, not a failure: the card has to be able
 // to tell "ask the operator" from "report the error", which needs the status and the
-// overwrite flag to survive the round trip.
+// overwrite flag to survive the round trip. Since the staged-commit contract the refusal
+// also carries a one-shot token naming the copy the device kept: CommitToken is how the
+// caller reads the offer, and "" (older firmware, no offer) must read as no offer.
 func TestThemeUploadDuplicateIsRecognisable(t *testing.T) {
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":"a different theme with that name is already on the card","overwrite":false}`))
+		_, _ = w.Write([]byte(`{"error":"a different theme with that name is already on the card","overwrite":false,"commit":"0123456789abcdef"}`))
 	})
 	_, err := NewClient(2*time.Second).ThemeUpload(fakeIP(srv), themeUploadBody(t), false)
 	if err == nil {
@@ -102,6 +104,56 @@ func TestThemeUploadDuplicateIsRecognisable(t *testing.T) {
 	}
 	if !de.OverwriteConflict() {
 		t.Errorf("status %d body %s not recognised as the overwrite prompt", de.Status, string(de.Body))
+	}
+	if got := de.CommitToken(); got != "0123456789abcdef" {
+		t.Errorf("CommitToken() = %q, want the staged-commit token the refusal carried", got)
+	}
+}
+
+// An older firmware's refusal — the same decision, no token — must still read as the
+// overwrite prompt, and CommitToken must say "no offer" rather than inventing one.
+func TestThemeUploadDuplicateWithoutTokenIsStillAPrompt(t *testing.T) {
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"a different theme with that name is already on the card","overwrite":false}`))
+	})
+	_, err := NewClient(2*time.Second).ThemeUpload(fakeIP(srv), themeUploadBody(t), false)
+	de, ok := err.(*DeviceError)
+	if !ok || !de.OverwriteConflict() {
+		t.Fatalf("err = %v, want an overwrite prompt", err)
+	}
+	if de.CommitToken() != "" {
+		t.Errorf("CommitToken() = %q, want empty for a refusal that offered nothing", de.CommitToken())
+	}
+}
+
+// ThemeCommit is the confirmed answer the refusal makes possible: an empty POST to the
+// same door carrying ?commit=<token>, answered with the store reply. The contract the
+// device holds to — no body, the token in the query, the store queued — is what this
+// pins, because the whole point is that NO bytes cross on the second act.
+func TestThemeCommitSpendsTheTokenWithNoBody(t *testing.T) {
+	var seenMethod, seenQuery string
+	var seenLen int64
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		seenMethod, seenQuery, seenLen = r.Method, r.URL.RawQuery, r.ContentLength
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"stored","id":"9b89025ce7a6","bytes":4096,"reboot":"automatic","committed":"staged"}`))
+	})
+	raw, err := NewClient(2*time.Second).ThemeCommit(fakeIP(srv), "0123456789abcdef")
+	if err != nil {
+		t.Fatalf("ThemeCommit: %v", err)
+	}
+	if seenMethod != http.MethodPost || seenQuery != "commit=0123456789abcdef" {
+		t.Errorf("device saw %s ?%s, want POST ?commit=<token>", seenMethod, seenQuery)
+	}
+	if seenLen != 0 {
+		t.Errorf("commit carried %d body bytes; the staged copy means ZERO re-sent bytes", seenLen)
+	}
+	if !strings.Contains(string(raw), `"committed":"staged"`) {
+		t.Errorf("reply = %s, want the device's staged store reply passed through", raw)
+	}
+	if _, err := NewClient(time.Second).ThemeCommit("10.0.0.1", ""); err == nil {
+		t.Error("an empty token was accepted — the refusal, not the caller, owns this string")
 	}
 }
 

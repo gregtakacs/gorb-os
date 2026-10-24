@@ -1966,21 +1966,50 @@ class Component extends DCLogic {
     const a = this._replaceArmed;
     if (a && a.nm === this.themeName()) {
       this._replaceArmed = null;
-      await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
+      await this._shipHeldReplace(a);
       return;
     }
     this._replaceArmed = null;
     await this.exportTheme3({ send: true });
   }
-  /* §32.6: the modal's Replace. Ships the held bytes — no re-bake, so the replace is
-   * byte-for-byte the dial the precheck refused — with the firmware overwrite flag, and
-   * closes the modal. If the arm was already consumed (a racing press, or the name
-   * changed under the modal) the overlay just clears; there is nothing held to send. */
+  /* §32.6: the modal's Replace. Ships the held bake — no re-bake, so the replace is
+   * byte-for-byte the dial the precheck refused — and closes the modal. If the arm was
+   * already consumed (a racing press, or the name changed under the modal) the overlay
+   * just clears; there is nothing held to send. */
   async replaceArmed3() {
     const a = this._replaceArmed;
     this.setState({ dup: null });
     if (!a) return;
     this._replaceArmed = null;
+    await this._shipHeldReplace(a);
+  }
+  /* The held bake's two roads to the same file on the glass. When the refusal armed
+   * the hold it may have handed back a commit token: the device verified these bytes
+   * once, liked them, and kept the copy on its card, so Replace spends the token on
+   * an empty POST and the megabytes cross the room zero times instead of two. A
+   * refused or lost commit (410: stale, card swapped, reboot between) says so on the
+   * status line and the bytes ship the old way — the confirm was for the theme, not
+   * for a particular road, and the re-upload must never die with the token. No
+   * token, no try: a precheck-armed hold never sent bytes, so an upload is the only
+   * honest crossing. */
+  async _shipHeldReplace(a) {
+    if (a.commit) {
+      const ip = await this.hubOrbIp();
+      if (ip) {
+        this.setState({ status: 'Replacing "' + a.nm + '" on ' + ip + ' from the copy already on the card — no second upload' });
+        try {
+          const r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
+          const j = await r.json().catch(() => null);
+          if (r.status === 200 && j && j.ok) {
+            this.setState({ status: 'Sent to ' + ip + ' as "' + a.nm + '" (' + (a.stem) + ') — replaced from the copy already on the card · ' + (((j.data && j.data.state) || 'stored')) });
+            return;
+          }
+          this.setState({ status: 'The staged copy was refused (' + ((j && j.error) || ('HTTP ' + r.status)) + ') — sending the file itself' });
+        } catch (e) {
+          this.setState({ status: 'The commit could not be sent (' + (e && e.message ? e.message : String(e)) + ') — sending the file itself' });
+        }
+      }
+    }
     await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
   }
   /* The modal's Cancel: drop the arm so the next Send is a fresh bake, and say so on
@@ -2495,11 +2524,17 @@ class Component extends DCLogic {
     if (code !== 200 || j.ok === false) {
       const why = (j && j.error) || ('HTTP ' + code);
       if (!overwrite && String(why).indexOf('already on the card') >= 0) {
-        this._replaceArmed = { bytes, nm, stem, pol, meter };
         // The safety net: same serial, different payload CRCs — the one cut the
         // content-aware serial still cannot capture before the device checks it. The
-        // same modal arms here, so the operator's second act is a press, not a re-bake.
-        this.setState({ dup: { nm, stem, note: String(why), pre: false } });
+        // same modal arms here, so the operator's second act is a press, not a
+        // re-bake. The device kept the bytes it just verified and named the keep with
+        // a commit token: the hold carries it, and _shipHeldReplace spends it, so
+        // this act costs an empty POST. An old firmware that deleted the scratch
+        // sends no token and the hold falls back to the re-upload it always was.
+        this._replaceArmed = { bytes, nm, stem, pol, meter, commit: String(j.commit || '') };
+        // The modal's wording follows the road the hold can take: with a token the
+        // replace names the copy already on the card; without one it says it ships.
+        this.setState({ dup: { nm, stem, note: String(why) + (j.commit ? ' — the orb kept this upload; Replace files the copy already on its card.' : ''), pre: false } });
         return;
       }
       this.setState({ status: 'Not sent: ' + why });

@@ -394,7 +394,7 @@ const (
 	// (ORB_THEME_UPLOAD_MAX); a hub that forwards less than the format can legally
 	// describe refuses a bundle the device would install, in the wrong door, with the
 	// wrong sentence. themecontainer_test.go pins this boundary to the byte.
-	ipGrantTTL       = 6 * time.Hour
+	ipGrantTTL = 6 * time.Hour
 	// grantCeiling caps how far a live announcement stream may stretch a commitment,
 	// measured from the first time the operator committed. Without it an orb that
 	// announces forever holds a dial open on a decision made months ago; with the TTL

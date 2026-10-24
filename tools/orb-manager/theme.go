@@ -205,10 +205,16 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		s.setSend(ip, func(st *themeSend) { st.Sent = n })
 	})
 	if de, ok := err.(*orbnet.DeviceError); ok && de.OverwriteConflict() {
+		// The refusal now usually carries a one-shot commit token naming the copy the
+		// device kept staged on its card. The page offers Replace as a zero-byte
+		// commit instead of a second upload; an empty token is an older firmware that
+		// deleted the scratch, and the page's only path stays the re-upload.
 		s.setSend(ip, func(st *themeSend) {
 			st.Phase, st.Note = "duplicate", "a different theme with that name is already on the card"
 		})
-		s.jsonErrFields(w, de.Error()+" — send it again with overwrite to replace it", map[string]any{"duplicate": true})
+		s.jsonErrFields(w, de.Error()+" — send it again with overwrite to replace it", map[string]any{
+			"duplicate": true, "commit": de.CommitToken(),
+		})
 		return
 	}
 	if err != nil {
@@ -270,6 +276,40 @@ var (
 	// that a busy word names a wedge rather than a wait.
 	themeStoreBusyCeiling = 10 * time.Minute
 )
+
+// handleThemeCommit spends a duplicate refusal's one-shot token on the operator's
+// behalf: POST {ip, commit}, an empty crossing to the device that files the copy the
+// refusal left staged and queues the store. It replaces the confirmed overwrite's
+// second upload. The probe lead is held exactly as handleThemeInstall holds it — the
+// commit queues the same store job, and a hub probe racing that reboot blames the
+// theme. A 410 from the device (staged copy gone, stale, or corrupt) passes through
+// untouched: the page then uploads the file for real, the only honest recovery.
+func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
+	var q struct {
+		IP     string `json:"ip"`
+		Commit string `json:"commit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+		s.jsonErr(w, "bad request: "+err.Error())
+		return
+	}
+	t, ok := s.checkedTarget(w, q.IP, "", false)
+	if !ok {
+		return
+	}
+	if q.Commit == "" {
+		s.jsonErr(w, "no commit token given — the token came with the duplicate refusal")
+		return
+	}
+	release, rerr := s.holdDevicePort(r.Context(), t.IP, deviceTimeout)
+	if rerr != nil {
+		s.jsonErr(w, rerr.Error())
+		return
+	}
+	defer release()
+	raw, err := s.device.ThemeCommit(t.IP, q.Commit)
+	s.themeReply(w, raw, err)
+}
 
 // waitForStore watches the copy a store door just armed — the same ladder app.js's
 // watchThemeJob runs, held hub-side this time so the cable claim cannot be released

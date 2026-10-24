@@ -26,6 +26,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_random.h"           // the staged-commit token
 #include "esp_rom_crc.h"
 #include "esp_timer.h"              // the listing timing in orb_theme_scan()
 #include "freertos/FreeRTOS.h"
@@ -842,6 +843,51 @@ static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t
  * outlives any tick already in flight. */
 static volatile bool s_slot_torn;        /* set once the unmap is behind us */
 
+/* ---- the upload's own park (the copy-to-card frames on the glass) ---------
+ *
+ * The store parks before the slot copy (store_park_dial), but the upload that
+ * precedes a store is the longer wait — a few megabytes over WiFi — and it used
+ * to be the silent stretch the owner watched the clock freeze on with no word
+ * about why. Same discipline as the store's park, reached through the same
+ * task-safe halves: stop the tick gate, hand the glass to the home row so the
+ * compositor never repaints over the overlay, black the panel, and name the
+ * stage. The httpd task owns the glass for exactly as long as the body crosses.
+ * An unpark puts the dial back whole: the slot may stand armed invalid, but the
+ * mapped theme is still there, and the owner is owed the face they had. */
+static const orb_app_t *s_upload_was;
+
+bool orb_theme_upload_park(uint32_t total)
+{
+    s_upload_was = input_router_current();
+    orb_sched_set_running(false);
+    const orb_app_t *home = orb_app_home();
+    if (home) input_router_request(home);
+    vTaskDelay(pdMS_TO_TICKS(120));       /* one router poll, doubled — as in store_park_dial */
+    if (orb_sched_running()) {
+        if (s_upload_was) input_router_request(s_upload_was);
+        return false;
+    }
+    orb_boot_overlay_backdrop();
+    orb_boot_overlay("copying", 0, total, 0);
+    return true;
+}
+
+void orb_theme_upload_progress(uint32_t done, uint32_t total)
+{
+    orb_boot_overlay("copying", done, total, 0);   /* the overlay's 10 Hz rule applies */
+}
+
+void orb_theme_upload_unpark(void)
+{
+    orb_sched_set_running(true);
+    if (s_upload_was) input_router_request(s_upload_was);
+    s_upload_was = NULL;
+}
+
+/* The store parks the glass on the menu for its own reasons (§6.3), and that
+ * switch is what a naive resume record would read as "the owner was on the
+ * menu". The boot after a store is therefore steered at the clock explicitly
+ * (bundle_job); this is where the wrong answer would have been written. */
 static bool store_park_dial(const orb_app_t *was, uint32_t total)
 {
     orb_sched_set_running(false);
@@ -1542,6 +1588,12 @@ static void bundle_job(void *arg)
         return;
     }
     try_note(NULL, NULL);
+    /* The store parked the glass on the menu — the erase needs the map down — and
+     * the park's own switch wrote `menu` into the resume record. Overwrite it with
+     * the face the store just replaced: the reboot this job arms should answer the
+     * owner's upload with their new dial, not the menu. If the clock row refuses or
+     * vanished, resume_last falls back home exactly as an unremembering boot does. */
+    input_router_remember_slug("clock");
     if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
         ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
 }
@@ -1789,6 +1841,19 @@ static orb_theme_up_t *s_up;
  * upload at a time, so this name cannot collide with a second upload's scratch. */
 #define THEME_SCRATCH "upload.part"
 
+/* The one-shot token naming a scratch that a duplicate refusal left standing. A
+ * refused-by-duplication upload keeps its bytes on the card (see upload_end's DUP
+ * branch) so the owner's "replace it?" answer costs an empty POST, not a second
+ * multi-megabyte crossing. The token is 8 random bytes in hex, lives only in RAM,
+ * and every path that consumes, replaces, rejects or cancels the scratch clears it
+ * — so a commit either names exactly the copy a refusal just tokened or is refused,
+ * and a months-old scratch can never be filed under a stranger's overwrite. */
+static char s_stage_tok[17];
+
+static void stage_forget(void) { s_stage_tok[0] = 0; }
+
+const char *orb_theme_staged_commit(void) { return s_stage_tok; }
+
 
 bool orb_theme_upload_busy(void) { return s_up != NULL; }
 
@@ -1818,6 +1883,9 @@ esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)
         return ESP_FAIL;
     }
     ESP_LOGW(TAG, "upload started: the theme slot is armed invalid until a re-store lands");
+    /* A fresh upload owns the scratch's fixed name from here: whatever token named
+     * the previous one refers to bytes this begin() is about to truncate. */
+    stage_forget();
 
     orb_theme_up_t *u = calloc(1, sizeof *u);
     if (!u) return ESP_ERR_NO_MEM;
@@ -1932,14 +2000,30 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
                  * has — an upload armed the slot, so the only way out is a store. */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
                 if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+                stage_forget();
                 ESP_LOGI(TAG, "upload of \"%s\" (%s) is unchanged — kept as is", b3.name, id);
                 return ESP_OK;
             }
             if (!overwrite) {
-                /* Same name, different bytes. The existing file is left intact; the
-                 * scratch is deleted so no rejected upload survives to confuse the list. */
-                unlink(up->tmp); orb_sd_unlock();
+                /* Same name, different bytes: the existing file stays, and the
+                 * scratch STAYS too — verified bytes already sit on the card, and the
+                 * owner's next word may be "replace". Deleting it here is what made
+                 * every duplicate cost a second full upload after the confirm. The
+                 * refusal now issues a one-shot commit token naming the scratch; the
+                 * hub's confirmed replace commits it with an empty body. The scratch
+                 * keeps its fixed non-.orbtheme name so the list never shows it, and
+                 * the next upload_begin() truncates whatever a refusal left behind. */
+                orb_sd_unlock();
+                const uint32_t rnd[2] = { esp_random(), esp_random() };
+                static const char hx[] = "0123456789abcdef";
+                for (int i = 0; i < 8; i++) {
+                    const uint8_t b = (uint8_t)(rnd[i / 4] >> ((i % 4) * 8));
+                    s_stage_tok[i * 2]     = hx[b >> 4];
+                    s_stage_tok[i * 2 + 1] = hx[b & 0xF];
+                }
+                s_stage_tok[16] = 0;
                 *why = "a different theme with that name is already on the card";
+                free(up);
                 ESP_LOGW(TAG, "upload \"%s\" (%s) collides with a different installed theme", b3.name, id);
                 return ORB_THEME_UPLOAD_E_DUP;
             }
@@ -1953,6 +2037,7 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
          * uploaded it or somebody else did. */
         unlink(up->tmp);
         orb_sd_unlock();
+        stage_forget();
         *why = r;
         ESP_LOGW(TAG, "upload rejected: %s", r);
         free(up);
@@ -1977,9 +2062,93 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
         ESP_LOGE(TAG, "rename: %s", strerror(re));
         return ESP_FAIL;
     }
+    stage_forget();   /* the rename consumed the scratch; its token names nothing now */
     ESP_LOGI(TAG, "bundle \"%s\" uploaded to the card as %s%s", b3.name, id,
              replace ? " (overwrote the previous one)" : "");
     if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+    return ESP_OK;
+}
+
+/* The confirmed answer to a duplicate refusal — the empty-body twin of a completed
+ * upload. The caller proves it holds the token the refusal issued (the refusal's own
+ * JSON echoed it), and the scratch it names is re-verified from the card, not from
+ * the token: card_check3 + verify_bundle3 + the identity hash, the same three gates
+ * upload_end ran when the bytes first landed. Only then does it take the same last
+ * step a completed upload takes — rename over the existing file. Everything that can
+ * go wrong returns a code and leaves the scratch exactly as found, so a failed
+ * commit still costs a real re-upload rather than a lost theme. */
+esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
+                                    char *committed_id, uint32_t *bytes)
+{
+    *why = NULL;
+    if (committed_id) committed_id[0] = '\0';
+    if (bytes) *bytes = 0;
+    if (!token || !s_stage_tok[0] || strcmp(token, s_stage_tok) != 0) {
+        *why = "no staged upload answers to that token";
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (s_up) {                       /* an upload owns the scratch name right now */
+        *why = "an upload is in progress";
+        return ESP_ERR_INVALID_STATE;
+    }
+    const orb_file_src_t *src = orb_files_src("clock", "themes");
+    if (!src) { *why = "no card in the socket"; return ESP_ERR_NOT_FOUND; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return ESP_ERR_NOT_FOUND; }
+    if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
+
+    char tmp[ORB_SD_PATH_MAX];
+    const int tn = snprintf(tmp, sizeof tmp, "%s/%s", src->dir, THEME_SCRATCH);
+    if (tn < 0 || (size_t)tn >= sizeof tmp) { *why = "staged path overflow"; return ESP_ERR_INVALID_SIZE; }
+
+    orb_sd_lock();
+    const int fd = open(tmp, O_RDONLY);
+    if (fd < 0) {
+        orb_sd_unlock(); stage_forget();
+        *why = "the staged copy is no longer on the card";
+        return ESP_ERR_NOT_FOUND;
+    }
+    const long scratch_sz = lseek(fd, 0, SEEK_END);
+    (void)lseek(fd, 0, SEEK_SET);
+    orb_bundle3_hdr_t b3;
+    uint32_t fsz = 0;
+    const char *r = (scratch_sz > 0) ? card_check3(fd, &b3, &fsz) : "the staged copy is no longer on the card";
+    if (!r) r = verify_bundle3(fd, &b3, fsz);
+    close(fd);
+    if (r) {
+        /* Corrupt or gone: exactly what a refused upload's deletion used to do —
+         * remove it, forget the token, and make the caller send the file for real. */
+        unlink(tmp);
+        orb_sd_unlock(); stage_forget();
+        *why = r;
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    char id[THEME_ID_HEX + 1];
+    char final[ORB_SD_PATH_MAX];
+    theme_id(b3.name, id);
+    if (!theme_file(id, final, sizeof final)) {
+        orb_sd_unlock();
+        *why = "the theme name is not one the card can hold";
+        return ESP_FAIL;
+    }
+    const int efd = open(final, O_RDONLY);   /* the old file, if it still stands */
+    if (efd >= 0) close(efd);
+    const uint32_t sz = (uint32_t)scratch_sz;
+    /* The overwrite window, same reasoning as upload_end's: verified bytes in hand,
+     * unlink the old, rename the staged copy in. */
+    if (efd >= 0) unlink(final);
+    const int rr = rename(tmp, final);
+    const int re = errno;
+    orb_sd_unlock();
+    if (rr != 0) {
+        *why = "could not put the staged theme in place";
+        ESP_LOGE(TAG, "recommit rename: %s", strerror(re));
+        return ESP_FAIL;
+    }
+    stage_forget();
+    if (bytes) *bytes = sz;
+    if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+    ESP_LOGI(TAG, "duplicate confirmed from the staged copy: bundle \"%s\" filed as %s (one upload, not two)", b3.name, id);
     return ESP_OK;
 }
 
@@ -1994,8 +2163,11 @@ void orb_theme_upload_cancel(orb_theme_up_t **u)
         /* The partial file is always removed: the next attempt truncates it anyway,
          * but a .part left here is a file with the theme's name and none of its
          * bytes, which is the kind of thing that gets found months later and
-         * investigated as corruption. */
+         * investigated as corruption. A cancelled upload takes any staged-commit
+         * token with it: the scratch name is fixed, so a token left standing could
+         * only ever name the file this cancel just deleted. */
         unlink(up->tmp);
+        stage_forget();
         orb_sd_unlock();
     }
     free(up);

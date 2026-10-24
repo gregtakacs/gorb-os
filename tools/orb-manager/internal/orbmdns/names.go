@@ -58,7 +58,6 @@ func OrbHost(name string) (string, bool) {
 	return host, true
 }
 
-
 // ExpectInstance checks the announcement against the rule the device builds it
 // from: instance is "orb-" plus the last six hex digits of the base MAC
 // (orb_mdns.c mdns_update's six %c arguments off mac[6..11]). This is checked

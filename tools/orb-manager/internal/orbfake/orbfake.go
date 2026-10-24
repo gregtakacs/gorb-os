@@ -45,9 +45,19 @@ type Theme struct {
 
 // Orb is the fake. The zero value is not useful; build one with New.
 type Orb struct {
-	mu        sync.Mutex
-	themes    []*Theme
-	active    string
+	mu     sync.Mutex
+	themes []*Theme
+	active string
+
+	// The staged-commit contract, mirrored field-for-field from main/art/orb_theme.c's
+	// s_up/s_stage_tok: a duplicate refusal KEEPS the verified body (the firmware keeps
+	// the scratch on the card), issues a one-shot token, and the next empty POST with
+	// ?commit=<token> files the keep. stageN counts tokens so a hub test can tell a
+	// spent offer from a stale one.
+	stageBody []byte
+	stageID   string
+	stageTok  string
+	stageN    uint32
 	tryID     string
 	tryWhy    string
 	stagedID  string
@@ -372,8 +382,16 @@ func (o *Orb) serveDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveUpload is h_theme_upload: the body is the container, the destination comes from
-// the name INSIDE it, and the only client argument is ?overwrite=1.
+// the name INSIDE it, and the only client argument is ?overwrite=1 — plus, since the
+// staged-commit contract, the empty ?commit=<token> POST that answers a refusal.
 func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
+	// The commit branch stands before the Content-Length rule exactly as the firmware's
+	// does: the confirmed replace carries NO body by design, and the rule that refuses
+	// an empty upload must not swallow the one request that is empty on purpose.
+	if tok := r.URL.Query().Get("commit"); tok != "" {
+		o.serveCommit(w, tok)
+		return
+	}
 	if r.ContentLength <= 0 {
 		writeJSON(w, 411, `{"error":"Content-Length required"}`)
 		return
@@ -402,7 +420,14 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 	defer o.mu.Unlock()
 	for _, t := range o.themes {
 		if t.ID == id && !overwrite {
-			writeJSON(w, 409, `{"error":"a different theme with that name is already on the card","overwrite":false}`)
+			// The staged-commit mirror: the refusal KEEPS the verified body the way
+			// upload_end keeps the scratch, mints the one-shot token the firmware
+			// mints, and hands it back in the same field name. A duplicate with
+			// nobody watching costs the double nothing; a hub that knows the token
+			// can commit with an empty POST, and a hub test can demand that road.
+			o.stageBody, o.stageID, o.stageTok = body, id, fmt.Sprintf("%016x", o.stageN+uint32(len(body))*0x9E3779B9+0x5bf03635)
+			o.stageN++
+			writeJSON(w, 409, fmt.Sprintf(`{"error":"a different theme with that name is already on the card","overwrite":false,"commit":%q}`, o.stageTok))
 			return
 		}
 	}
@@ -439,6 +464,44 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 		land(o.themes[len(o.themes)-1])
 	}
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
+}
+
+// serveCommit is orb_theme_upload_recommit: the empty POST that spends a refusal's
+// token. The staged body is filed under the id the refusal derived from it (the
+// double re-verifies nothing — it verified the body when it staged it, and the real
+// device re-reads it from the card), the store lands the same synchronous way
+// serveUpload lands it, and a token that does not answer the one standing offer is a
+// 410 with the firmware's own sentence shape. The offer is one-shot: success clears
+// it, so a replayed commit finds nothing to file.
+func (o *Orb) serveCommit(w http.ResponseWriter, tok string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stageBody == nil || tok != o.stageTok {
+		writeJSON(w, 410, `{"error":"commit refused","detail":"no staged upload answers to that token"}`)
+		return
+	}
+	body, id := o.stageBody, o.stageID
+	o.stageBody, o.stageID, o.stageTok = nil, "", ""
+	for _, t := range o.themes {
+		if t.ID == id {
+			t.Bytes = len(body)
+			t.Serial++
+			t.OK, t.Why = true, ""
+			if o.TearStore {
+				o.stagedID, o.stagedWhy = id, "the copy reached the slot but its header did not"
+			} else {
+				for _, x := range o.themes {
+					x.Active = false
+				}
+				t.Stored, t.Active = true, true
+				o.active = t.Name
+				o.stagedID, o.stagedWhy = "", ""
+			}
+			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic","committed":"staged"}`, id, len(body)))
+			return
+		}
+	}
+	writeJSON(w, 410, fmt.Sprintf(`{"error":"commit refused","detail":"the staged copy is no longer on the card"}`))
 }
 
 func (o *Orb) find(id string) *Theme {
@@ -509,9 +572,9 @@ func ContainerWithSerial(name string, serial uint32) []byte {
 	put(4, fHdrBytes)
 	put(5, uint32(len(region)))
 	put(6, crc32.ChecksumIEEE(region))
-	put(7, 0)  // art_size
-	put(8, 0)  // art_crc
-	put(9, 1)  // n_sections — where FORMAT 2 kept scr_w
+	put(7, 0)       // art_size
+	put(8, 0)       // art_crc
+	put(9, 1)       // n_sections — where FORMAT 2 kept scr_w
 	put(11, serial) // serial
 	put(13, artOff)
 	copy(b[fNameWord*4:], name)

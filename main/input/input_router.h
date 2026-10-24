@@ -95,6 +95,19 @@ bool input_router_armed(void);
  */
 void input_router_request(const orb_app_t *app);
 
+/**
+ * Write the resume record for a slug without touching the glass — for the task
+ * that cannot load a screen but knows what the next boot should show. The theme
+ * store's worker uses it: the store parks the dial on the menu before the copy
+ * (the erase needs the map down), which would otherwise leave `menu` as the
+ * remembered page, and every post-store reboot would answer the owner's clock
+ * upload with the menu. Naming "clock" here says what the store really did —
+ * it replaced the face — and the reboot resume honours it. Nothing loads: the
+ * boot's own resume_last resolves the slug exactly as it does for a remembered
+ * page, and falls back home if the row refuses or vanished.
+ */
+void input_router_remember_slug(const char *slug);
+
 #ifdef __cplusplus
 }
 #endif

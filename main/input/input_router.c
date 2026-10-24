@@ -132,16 +132,27 @@ static void switch_window_close(int64_t now)
 
 static char s_last_slug[32];   /* "" = nothing remembered since this boot */
 
-static void page_remember(const orb_app_t *app)
+/* The one writer of the resume record. NVS is thread-safe per handle, and both
+ * callers (a glass switch on the LVGL task, a store job on the worker) are
+ * idempotent-by-comparison against s_last_slug, so the steady state costs zero
+ * commits no matter which task walks over the same page repeatedly. */
+static void page_write(const char *slug)
 {
-    if (!app || !app->slug || strcmp(s_last_slug, app->slug) == 0) return;
-    snprintf(s_last_slug, sizeof s_last_slug, "%s", app->slug);
+    if (!slug || !*slug || strcmp(s_last_slug, slug) == 0) return;
+    snprintf(s_last_slug, sizeof s_last_slug, "%s", slug);
     nvs_handle_t h;
     if (nvs_open(PAGE_NS, NVS_READWRITE, &h) != ESP_OK) return;
     (void)nvs_set_str(h, PAGE_KEY, s_last_slug);
     (void)nvs_commit(h);
     nvs_close(h);
 }
+
+static void page_remember(const orb_app_t *app)
+{
+    if (app && app->slug) page_write(app->slug);
+}
+
+void input_router_remember_slug(const char *slug) { page_write(slug); }
 
 static esp_err_t set_screen(const orb_app_t *app, bool load)
 {

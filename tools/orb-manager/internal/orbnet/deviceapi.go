@@ -130,6 +130,21 @@ func (e *DeviceError) OverwriteConflict() bool {
 	return env.Overwrite != nil && !*env.Overwrite
 }
 
+// CommitToken reads the one-shot commit token out of a duplicate refusal's body.
+// A device that answers OverwriteConflict with a token is offering to file the
+// copy it already staged: ThemeCommit spends the offer with an empty POST instead
+// of pushing the same megabytes a second time. "" means the device offered nothing
+// (older firmware), and the caller's only path is the full re-upload it always was.
+func (e *DeviceError) CommitToken() string {
+	var env struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.Unmarshal(e.Body, &env); err != nil {
+		return ""
+	}
+	return env.Commit
+}
+
 // maxDeviceReply bounds what one device call may pull. The firmware's own replies are
 // small by construction — h_sd writes into a static json[6144] and reports an overflow
 // rather than truncating — so this is a ceiling against whatever else happens to answer

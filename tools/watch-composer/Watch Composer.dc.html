@@ -496,6 +496,11 @@ class Component extends DCLogic {
     b.dev = this._devPace(b);
     return b;
   }
+  /* The tempo the preview must play at and the tempo the readout quotes: the
+   * tier for every carrier the device can drive at tier, the device pace
+   * where _devPace sees a sweep the panel cannot sustain. One getter so the
+   * timer, the restart check, and any future seat all read the same number. */
+  devFps() { const b = this.budget(); return Math.min(b.fps, b.dev.pace); }
   /* The rate the glass will actually hold, as distinct from the tier the bank
    * can pay. The CAPS ladder prices the delta-bank push only. A carrier with
    * nothing to push -- measured rows 0, train sealed -- rides its ticks on the
@@ -1021,7 +1026,7 @@ class Component extends DCLogic {
      * is safe (not inside a budget build) and the write is monotone -- balance
      * only falls to 2, so the precondition cannot return and re-fire. */
     if (this._mk === this.mvKey() && +this.cfg().balance > 2 && this.F < 12) this.setCfg('balance', '2');
-    if (this._lastSlow !== this.state.slow || this._lastF !== this.F) this.startTimer();
+    if (this._lastSlow !== this.state.slow || this._lastF !== this.devFps()) this.startTimer();
     const fk = this.faceKey(this.state.dial) + this.state.timeMode;
     if (fk !== this._fk) { this._fk = fk; this.drawLayers(); this.drawHandOpts(); this.drawArtThumbs(); }
     const ck = JSON.stringify([this.opts(), this.state.dial, !!this.gt[0]]);
@@ -1033,8 +1038,12 @@ class Component extends DCLogic {
   }
   startTimer() {
     clearInterval(this.timer);
-    this._lastSlow = this.state.slow; this._lastF = this.F;
-    const F = this.F;
+    this._lastSlow = this.state.slow; this._lastF = this.devFps();
+    /* Pace the preview at what the glass will hold, not at the tier the bank
+     * can pay: a sweep over live sealed plates ships still and re-composites
+     * its hands at the device pace, and a preview that floats at 15 sells a
+     * motion the orb never shows. Banked and clear dials keep the tier. */
+    const F = this._lastF;
     this.timer = setInterval(() => {
       if (this.state.playing && !this.rendering && this.gt.length === this.B) this.setState((s) => ({ frame: (s.frame + 1) % this.B }));
       else this.drawMain();
@@ -3335,9 +3344,9 @@ class Component extends DCLogic {
       const balV = String(HB.fps < 12 && +c0.balance > 2 ? 2 : c0.balance);
       const balOpts = [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }].concat(HB.fps >= 12 ? [{ v: '4', label: '4 / s' }] : []);
       fields.push(H('Loop'),
-        Nt('Frame rate', F + ' fps — ' + (HB.measured
+        Nt('Frame rate', F + ' fps' + (HB.dev.pace < F ? ' · device ~' + HB.dev.pace + ' fps' : '') + ' — ' + (HB.dev.why || (HB.measured
           ? 'available frame rates depend on how much of the dial opening is visible'
-          : 'measuring the geartrain row footprint…')),
+          : 'measuring the geartrain row footprint…'))),
         Ch('Balance beats', balV, balOpts, cf('balance')));
     }
     if (ready && s.tab === 'light') {

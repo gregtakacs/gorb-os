@@ -67,7 +67,8 @@ Checked against `tools/prep_watch_kit.py`, `tools/bake_clock.py`, `tools/kit_che
    manually copied into the WCD5 field. No named library, no bulk import/export.
 3. **The gate does not gate.** A failed `kitCheck` sets a status line but still
    downloads the zip (html 642). Only prep's `sys.exit`s stop a doomed kit downstream.
-4. **Zero device-cost visibility.** The numbers this project cares about — per-tick blend
+4. **Zero device-cost visibility.** (Superseded — see "The device-pace model" below.)
+   The numbers this project cares about — per-tick blend
    traffic, base delta row band, carriage bbox ink — are invisible until prep prints
    them post-hoc. The tool cannot answer "is this design inside the 125 ms budget?".
 5. **Not agent-operable.** Export is a DOM anchor click (html 545–548). Regenerating a
@@ -174,3 +175,37 @@ No browser on this box: this is a full code read plus a live schema match agains
 kit3's manifest — not a click-through of the running UI. The contract table above is
 evidence-backed; the flaw list is code-evident except font-fallback behavior, which is
 inferred from the load-race code.
+
+## The device-pace model
+
+`_devPace(b)` (`Watch Composer.dc.html`) predicts the rate the glass actually holds,
+which the row ladder cannot price. `rowPrice()` measures the plate's own motion with
+the hands hidden, and the needle cap books a sweep over plain plate. Neither prices a
+sweep ACROSS opaque plates: `gfx_commit` restores each dirty row from the canvas and
+repaints every layer overlapping it in table order (`orb_gfx.c`,
+`orb_sched_commit_layers` in `orb_sched.c`), so a seconds wedge crossing a plate
+re-blits it. The 2026-10-10 flush findings
+(`docs/fps-budget-findings-2026-10-10.md`) back this mechanism: a full-width row band
+costs milliseconds on every flush.
+
+The crossed-plate tax is priced by the **arc the wedge sweeps**, not the number of
+plates. Each crossed plate contributes an angular interval `[angle - w, angle + w]` at
+its own bearing; overlapping intervals merge, so two plates sharing a bearing cost the
+sweep once. The merged arc over 360 is `cov`, the fraction of beats whose wedge touches
+a plate. `raw = b.fps * (1 - K * cov)`, with K = 2.31 while cast-shadow twins ride and
+1.16 without. `raw` snaps down the `[15, 12, 8, 4]` ladder, floored at the scheduler's
+4 and capped at `b.fps`. A banked carrier (`rows > 0`) already pays a push, so the
+marginal crossed-plate cost may not cut more than one tier step below its bank.
+
+Two panel anchors fix the slope (measured in `07d3411`): aviator's bare ring (cov 0.00)
+holds tier 15, and perpetual's four gilt-twin subdials (cov 0.32) clamp to 4. A
+date-only `diver` crosses about one percent of the beat and lands at 12; `modern`
+crosses about ten percent and lands at 8. The banked bound is the correction for
+`7649661`, which removed the blanket banked exemption and dropped every banked date
+dial to the perpetual's floor.
+
+`tools/watch-composer/_selftest/probe_pace.cjs` is the regression trip. It mounts the
+real `Component` and prints `_devPace` per preset, asserting those targets without a
+browser. The `Cast shadows` chip derives its state from the same twin gate the bake
+reads (`shMove` and `shOp` both positive), so the control and the export cannot disagree
+for a legacy design that carries `shOp: 0` with no `shMove`.

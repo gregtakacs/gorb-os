@@ -258,7 +258,8 @@ silently. The path is the same for every clone on the box — both dev instances
 |---|---|
 | `headless-engine.test.js` | `canonDesign` art defaults vanish (Design IDs stay stable), transparent-subdial layout, registry, fit gate (incl. the zoomed box), sprite pivot scaling, centroid + ink-bbox maths, a pivot outside the ink, the length-normalised sprite fit (big uploads shrink, small ones enlarge, zoom rides on top, the measure follows the facing's axis, an ink-free asset keeps the old box fit, and the minute hand's tip lands where the drawn one reaches at every slider value), the aperture frame metal (`hole.fc` plumbing, gilt is the no-choice and never reaches the Design ID, non-framed styles drop the field), the pick stack, the no-case opening (the layer records zero drawing calls; `artClipR` opens the art clip to the panel there and keeps the dial circle elsewhere; `dynScale` eases the DRAWN content into the ring and `compose` turns the dynamic layers through it, proven on the recorded geometry — and every hand shadow cast is the full-opening cast times `dynK`, proven on the recorded device-space offsets), the hands-row eye on a centre hand, a round aperture, and the two shadow gates (`shMove` is the runtime twin that turns with the hand and disappears from the draw tape when off; `shOp` is the baked plate relief, and a raised subdial's geometry is identical drawn-for-drawn under either) |
 | `headless-component.test.js` | localStorage save/load, a blocked store admitted honestly, `manifest.assets[]`, `.wckit` round trip (incl. off-art arbour + facing), loader refusals, the two shadow switches (Cast shadows writes `shMove` and leaves `shOp`; Plate relief round-trips `shOp`; the moving gate is not in the movement key, so it never resamples the bank) |
-| `headless-ui.test.js` | the control row offers each field, the hands tab offers the moving and the static shadow gate as two separate chips, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, a complication already picked on the tab wins the pixel through the hand painted over it (and the same-spot cycle still reaches that hand), a pointer-down on the stage surround deselects while a bubbled canvas click does not, the ghost's picture turns with its facing while the read ray stands at the time angle, the frame-metal row appears only on styles that strike a ring, the guide draws what it claims. Its `it.budget` stub must carry the `dev` block, because `renderVals` reads `HB.dev.pace` for every rate label. |
+| `headless-ui.test.js` | the control row offers each field, the hands tab offers the moving and the static shadow gate as two separate chips, the hands-row eye hides and shows a centre hand through the engine and reads back on the row, the build-gate seatbelt re-arms on a seconds-rate flip but still caps one rate, drag arms the right target, the pane jumps with the selection, the click cycle walks the stack, a complication already picked on the tab wins the pixel through the hand painted over it (and the same-spot cycle still reaches that hand), a pointer-down on the stage surround deselects while a bubbled canvas click does not, the ghost's picture turns with its facing while the read ray stands at the time angle, the frame-metal row appears only on styles that strike a ring, the guide draws what it claims. Its `it.budget` stub must carry the `dev` block (`pace`, `cross`, `cov`, `why`), because `renderVals` reads `HB.dev.pace` for every rate label. |
+| `probe_pace.cjs` | the `_devPace` crossed-arc model, run live against the real `Component`: prints `pace`/`cross`/`cov` per preset. Must show `modern` 8, `diver` 12, `aviator`/`sector` 15, `perpetual` 4. The regression trip for the coverage model (see below). |
 | `headless-regression.test.js` | all 15 presets still build; procedural sprites keep `{c, px, py}` |
 | `headless-orbtheme.test.js` | the in-browser `.orbtheme` baker held against the Python that defines the format: the geometry blob, the pixel bank and keyframe, the container bytes, PIL's `alpha_composite` integer maths on 14k sampled texels, the device caps and size rule, PNG decode, and the whole shipped kit baked both ways (bench `prep_watch_kit.py` + `bake_clock.py --orbtheme` versus `GorbBake.bakeKit`), byte for byte apart from the bake stamp |
 | `headless-bundle3.test.js` | the browser's FORMAT 3 bundle writer held against the Python that defines the format: `writeBundle3` reproducing `tests/fixtures/format3-pair.orbtheme` byte for byte, the reference `read_bundle` opening the JS bytes, the element table refusing every row the device door refuses (an animated LAYER or STATUS, a BANK carrying `EF_OS_ADV`, a duplicate class/slot, an unknown flag bit — §29's animated-region rule among them), the D29 install caps probed at the boundary rather than near it, the read-side gates in the device's refusal order, the index record's four-leading-`uint16` layout that shifts every field eight bytes if a reader assumes a `uint32` first, and the bake path (`bank3`/`bakeClock3`/`budget3`) whose bytes the shipped `orb_clock3.c` projects |
@@ -387,6 +388,32 @@ A checked-in `component.js` older than the html is a trap, not a convenience: th
 suites read the extract, so an html change (a new field, a new label) stays invisible to
 them until someone regenerates, and that first regeneration then fails against stubs the
 html left behind. Run `node --check` and the suites straight after the snippet.
+
+### The device-pace probe (`probe_pace.cjs`)
+
+`_devPace` prices what the seconds sweep costs the glass, not what the row ladder
+prices. The commit restores dirty rows from the canvas and re-blits every layer over
+them in z-order (`orb_gfx.c`), so a wedge crossing an opaque plate re-composites that
+plate on each tick it overlaps. That is the flush cost the 2026-10-10 findings
+measured. The model charges this by the **crossed arc**, not the plate count. One
+`[angle-w, angle+w]` interval per hit plate, merged on the circle so two plates on the
+same bearing cost the sweep once, divided by 360 gives `cov`: the fraction of beats
+whose wedge overlaps a plate, the duty cycle. `raw = b.fps * (1 - K * cov)`, where K is
+2.31 with cast-shadow twins riding and 1.16 without. `raw` snaps down the
+`[15,12,8,4]` ladder, floored at the scheduler's 4, capped at `b.fps`. A banked carrier
+(`rows > 0`) already pays a push, so the marginal crossed-plate tax may not cut more
+than one tier step below its bank. Both K re-fit the two panel anchors (`07d3411`):
+aviator's bare ring (cov 0.00) holds tier 15, and perpetual's four gilt-twin subdials
+(cov 0.32) clamp to 4.
+
+`node probe_pace.cjs` mounts the real `Component` and prints `_devPace` per preset. It
+re-checks the arithmetic after any geometry edit, with no browser. It must print
+`modern -> pace=8`, `diver -> pace=12`, `aviator`/`sector -> pace=15`, and
+`perpetual -> pace=4` (with the `cov` each step maps to). It is the regression trip for
+`7649661`, which dropped the blanket banked exemption and pulled every banked date dial
+down to the perpetual's floor. This model bounds that tax instead. Regenerate
+`component.js` before running it, or it tests the stale extract.
+
 
 Run (Windows Chrome from WSL, or any Chrome with `--headless`):
 

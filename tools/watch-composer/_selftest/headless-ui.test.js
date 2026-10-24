@@ -16,7 +16,7 @@ E.assetRestore([{ id: 'ui-art', name: 'art.png', kind: 'png', dataUrl: u('ui', 3
 const it = new Comp({});
 // budget()'s real contract carries the device pace block _devPace writes; renderVals
 // reads HB.dev.pace for every rate label, so a stub without it is not a budget.
-it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, why: '' } });
+it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
 it.state.dial = 'calendar'; it.state.tab = 'dial'; it.state.playing = false; it.state.hidden = {};
 it.state.designs = { calendar: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.calendar.design))) };
 const labels = (tab) => { it.state.tab = tab; return it.renderVals().fields; };

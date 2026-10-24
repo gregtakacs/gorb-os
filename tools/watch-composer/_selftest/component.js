@@ -98,16 +98,22 @@ class Component extends DCLogic {
    * in z-order (orb_gfx.c), so each tick whose wedge overlaps a subdial
    * re-composites that plate, twice while a cast-shadow twin rides with it.
    * The tax lands whether or not a bank also pushes: the hands are never in
-   * the bank, so rows>0 proves nothing about it. Panel-calibrated anchors: a
-   * bare sweep ring holds the full tier (aviator, 15 sustained); the same
-   * hand across four sealed subdials with gilt twins clamps to the scheduler
-   * floor (perpetual, 4). The twins halve the crossed-plate bill, so predict
-   * 8 without them, never under the floor of 4. A ticked hand holds between
-   * beats and pays only on the beat. The centre seconds hand is required: a
-   * subdial's own small seconds ticks inside its window row, not across the
-   * dial. A caged dial is exempt: its carriage marks by chord, unmeasured. */
+   * the bank, so rows>0 proves nothing about it. Price it by the ARC the wedge
+   * sweeps across live plates, not the plate count: the sweep pays only on the
+   * fraction of beats whose wedge overlaps a plate, so a small date window costs
+   * a fraction of what four sealed subdials cost. Panel-calibrated anchors set
+   * the slope: a bare sweep ring holds the full tier (aviator, cov 0.00, 15
+   * sustained, 07d3411); the same hand across four gilt-twin subdials clamps to
+   * the scheduler floor (perpetual, cov 0.32, 4 at tier 15, 07d3411). The slopes
+   * K_TWIN 2.31 / K_PLAIN 1.16 re-fit those two panel points and are restated at
+   * the term below so the next author re-fits data, not lore. Snap the raw product
+   * to the tier ladder, never under the floor of 4, never above the tier b.fps, and
+   * bound a banked carrier to one step below its own bank rate (7649661). A ticked
+   * hand holds between beats and pays only on the beat. The centre seconds hand is
+   * required: a subdial's own small seconds ticks inside its window row, not across
+   * the dial. A caged dial is exempt: its carriage marks by chord, unmeasured. */
   _devPace(b) {
-    const out = { pace: b.fps, cross: 0, why: '' };
+    const out = { pace: b.fps, cross: 0, cov: 0, why: '' };
     if (!b.measured || b.car) return out;
     const c = this.cfg(), D = this.design();
     if (!(D.centre && D.centre.second === 1)) return out;
@@ -116,20 +122,59 @@ class Component extends DCLogic {
       railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
     const hc = (D.hands && D.hands['centre-second']) || {};
     const tip = Math.min(216, (RE[D.print] || 205) * 0.98 * (+hc.len || 1));   // buildHands' own formula
-    const half = (x) => x.size != null ? Math.max(+x.size / 2, 18) : 28;
+    // A plate's own half-width, and the smaller floor for an aperture: a window shows a
+    // few pixels of disc behind the hand, so it must not be prized as a full 36px disc.
+    const half = (x) => x.size != null
+      ? Math.max(+x.size / 2, x.type === 'window' ? 6 : 18)
+      : 28;
+    // A comp opened past half (open > 0.5) is a cut into the dial, not an opaque plate,
+    // so the wedge costs nothing crossing it.
     const hit = (x) => x.host === 'dial' && (x.type === 'subdial' || x.type === 'moon' || x.type === 'window')
+      && !(+x.open > 0.5)
       && (+x.dist || 0) + half(x) > 18 && (+x.dist || 0) - half(x) <= tip;
-    const n = (D.comps || []).filter(hit).length;
+    const crossed = (D.comps || []).filter(hit);
+    const n = crossed.length;
     if (!n) { out.why = 'Still dial sweeps clear of every plate: the device holds the tier rate, as the aviator does.'; return out; }
     out.cross = n;
-    /* Only the MOVING gate halves the bill: each twin is a second plate re-blitted
-     * under the wedge. Plate relief is art already in the statics and rides along
-     * with them, so shOp changes the look and not the pace. */
+    /* One [angle-w, angle+w] interval per crossed plate, merged on the circle so two
+     * plates sharing a bearing cost the sweep once, then /360 for the fraction of beats
+     * on which a tick actually re-blits a plate (the duty cycle). The comp's own angle is
+     * its bearing; asin only sets the interval WIDTH from the plate's half at its radius. */
+    const iv = [];
+    for (const x of crossed) {
+      const w = (Math.asin(Math.min(1, half(x) / Math.max(1, +x.dist || 1))) * 180) / Math.PI;
+      const a = +x.angle || 0, lo = (((a - w) % 360) + 360) % 360, hi = lo + 2 * w;
+      if (hi <= 360) iv.push([lo, hi]); else iv.push([lo, 360], [0, hi - 360]);
+    }
+    iv.sort((p, q) => p[0] - q[0]);
+    let deg = 0, cur = null;
+    for (const [s0, e0] of iv) {
+      if (cur && s0 <= cur[1]) { if (e0 > cur[1]) cur[1] = e0; }
+      else { if (cur) deg += cur[1] - cur[0]; cur = [s0, e0]; }
+    }
+    if (cur) deg += cur[1] - cur[0];
+    const cov = out.cov = Math.min(1, deg / 360);
+    /* Only the MOVING gate doubles the re-blit bill: each twin is a second plate under
+     * the wedge. Plate relief is art already in the statics, so shOp changes the look and
+     * not the pace. Both slopes below re-fit the two panel anchors measured in 07d3411
+     * (aviator's bare ring, cov 0, holds the tier; perpetual, cov 0.32 across four
+     * gilt-twin subdials, clamps to the scheduler floor 4): K_TWIN when the twins ride
+     * with the sweep, K_PLAIN (half the crossed-plate bill) when they do not. */
     const shOn = +c.shMove > 0.01 && +c.shOp > 0.01;
-    out.pace = Math.max(4, Math.min(b.fps, shOn ? 4 : 8));
-    if (out.pace < b.fps) out.why = 'Seconds sweep crosses ' + n + ' live plate' + (n > 1 ? 's' : '') +
-      ': each tick re-blits them under the wedge. Panel-measured 4 fps with cast shadows; ' +
-      (shOn ? 'Cast shadows off predicts ~8.' : 'with the twins it measured 4.');
+    const K_TWIN = 2.31, K_PLAIN = 1.16;
+    /* A banked carrier already pays a push inside its measured rows, so this term is only
+     * the marginal crossed-plate cost and may not cut more than one tier step below b.fps.
+     * Bound it, never exempt it: 7649661 removed the blanket banked exemption for the right
+     * reason (rowPrice measures plate motion with the hands hidden, so rows prove nothing
+     * about the seconds wedge). */
+    const step = [15, 12, 8, 4].filter((t) => t <= b.fps)[1] || 4;
+    const floorStep = b.rows > 0 ? step : 4;
+    const tier = (raw) => Math.max(floorStep, [15, 12, 8, 4].find((t) => t <= raw) || 4);
+    out.pace = tier(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov));
+    const plain = tier(b.fps * (1 - K_PLAIN * cov));
+    if (out.pace < b.fps) out.why = 'Sweep crosses ' + n + ' plate' + (n > 1 ? 's' : '') + ' on ' +
+      Math.round(cov * 100) + '% of beats: each re-blits it under the wedge, so the device holds ~' +
+      out.pace + ' fps' + (shOn && plain > out.pace ? '. Cast shadows off predicts ~' + plain + ' fps.' : '.');
     return out;
   }
   /* "Cast shadows off" is the pace switch, and it touches the MOVING shadow only.

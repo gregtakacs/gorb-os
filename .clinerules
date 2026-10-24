@@ -1015,15 +1015,39 @@ point at this suite — do not claim a rendered-output pass.
 ## Testing the Watch Composer: deploy it to Windows and drive Chrome there
 
 The composer (`tools/watch-composer/Watch Composer.dc.html`) is a browser app. Its real
-behaviour lives in canvas pixels, file dialogs, and a localStorage asset store. This WSL
-box has no Chrome, so those three can only be exercised on the Windows side. Ask for
-"test the composer" and the expected action is this one command:
+behaviour lives in canvas pixels, file dialogs, and a localStorage asset store, so those
+three must be exercised in the Windows Chrome. **This WSL box reaches that Chrome directly:
+the host binary is `/mnt/c/Program Files/Google/Chrome/Application/chrome.exe`, and it runs
+`--headless=new --dump-dom` from here.** No need to ask the user to open a browser — drive
+it headless. A bare `chrome.exe --version` attaches to the running GUI session and prints
+nothing useful; always pass `--headless=new`. The GUI instance is usually open, so a headless
+run needs its own `--user-data-dir` (a fresh temp dir under `C:\Users\greg\AppData\Local\Temp`)
+or it silently reuses the live profile and dumps the wrong page.
+
+Ask for "test the composer" and the expected action is these two commands:
 
 ```sh
 cd /home/greg/docker/Projects/gorb-os
 python3 tools/watch-composer/deploy_test_folder.py            # -> /mnt/c/Users/greg/Downloads/test
-~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side gate
+~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side node gate
+
+# the browser suites, through the host Chrome. Launch detached: a headless run of
+# export-test/bake3/motion exceeds the 30 s inline tool cap (it boots React from unpkg
+# first). Redirect to a log and poll it, per the rule at the top of this file.
+CHROME='/mnt/c/Program Files/Google/Chrome/Application/chrome.exe'
+cd /mnt/c/Users/greg/Downloads/test   # the deployed copy; file:// must resolve to Windows paths
+"$CHROME" --headless=new --disable-gpu --no-sandbox \
+  --user-data-dir='C:\Users\greg\AppData\Local\Temp\wc_headless' \
+  --virtual-time-budget=120000 \
+  --dump-dom 'file:///C:/Users/greg/Downloads/test/_selftest/export-test.html' \
+  > /tmp/wc_export_dump.html 2>/tmp/wc_chrome.log
 ```
+
+Every Chrome output line ends in `\r` (drvfs); pipe through `tr -d '\r'` before grepping. The
+verdict is the dumped `<title>` and the last `RESULT:` line, not the exit code — Chrome exits 0
+on a page that printed FAIL. The suites need internet: `support.js` boots React, ReactDOM and
+Babel from unpkg and the `<helmet>` pulls ~40 families from Google Fonts; offline, the page
+renders blank and reads as broken when it is not.
 
 The deploy script copies the four files the app loads (`Watch Composer.dc.html`,
 `support.js`, `dial-renderer.js`, `watch-engine.js`) into the target root, and all of
@@ -1032,14 +1056,11 @@ pages load `../watch-engine.js`. Flatten the layout and every probe 404s its eng
 Each copy is compared by sha256 before and after, because a drvfs cache can hand Chrome
 stale JS with no error at all.
 
-Then open the two URLs the script prints:
-
-- `file:///C:/Users/greg/Downloads/test/Watch%20Composer.dc.html` — the app itself
-- `file:///C:/Users/greg/Downloads/test/_selftest/export-test.html` — the end-to-end suite
-
-Both need internet. `support.js` boots React, ReactDOM and Babel from unpkg, and the
-`<helmet>` pulls ~40 families from Google Fonts. Offline, the composer renders blank and
-looks broken when it is not.
+Run each browser suite the same way, swapping the file name: `export-test.html` (end to
+end, the verdict rules below), `bake3-test.html` (FORMAT 3 in real pixels, greps for a
+`B64:` line to hand `tools/verify_js_bake.py`), and `motion-test.html`. The app itself at
+`file:///C:/Users/greg/Downloads/test/Watch%20Composer.dc.html` is only worth opening by
+hand for the human-confirm checks far below — a headless `--dump-dom` cannot see the canvas.
 
 Verdict rules, so a skipped block cannot read as success:
 

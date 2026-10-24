@@ -2413,9 +2413,21 @@
     return lx >= -hd.sp.px - pad && lx <= hd.sp.c.width - hd.sp.px + pad
       && ly >= -hd.sp.py - pad && ly <= hd.sp.c.height - hd.sp.py + pad;
   }
+  /* Two shadow gates, because the two kinds cost different things.
+   *
+   * `op` (shOp) is the STATIC gate: the drop a raised or sunken subdial throws,
+   * the aperture inner shade, the chapter relief. All of it lands in the art at
+   * bake time, so the glass pays nothing extra per tick.
+   *
+   * `mv` (shMove) is the MOVING gate: the dark twin that turns with each hand,
+   * shipped as its own row (FORMAT 2's shadow record, FORMAT 3's AUX_F_SHADOW
+   * twin). It doubles the re-blit bill on every tick whose wedge crosses a
+   * sealed plate, which is why "Cast shadows off" must reach this one and only
+   * this one. shOp 0 flattens the art as well, and that is the author's other
+   * choice, not the same one. */
   function shadowCfg(o, Lt) {
     const auto = !(+o.shAngle >= 0), a = auto ? Lt.outer + Math.PI : rad(+o.shAngle - 90);
-    return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, kk: Math.min(1.5, Lt.outerK) };
+    return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, mv: o.shMove == null ? 1 : +o.shMove, kk: Math.min(1.5, Lt.outerK) };
   }
   /* Canvas casts shadows in DEVICE space: shadowOffsetX/Y and shadowBlur ignore the CTM.
    * compose eases the "no case" opening through one scale about the centre and the chapter
@@ -2428,20 +2440,24 @@
   function drawHands(ctx, hands, date, Lt, SH) {
     SH = SH || shadowCfg({}, Lt);
     const [ax, ay] = SH.dir, kk = SH.kk, dm = SH.dist, bm = SH.blur, om = SH.op, sk = devS(ctx);
+    // The moving gate only: every cast here belongs to a hand, so it turns with
+    // the hand and the device repaints it every tick. SH.op 0 already zeroes the
+    // alpha; mv 0 skips the passes outright, which is the point of the switch.
+    const mv = SH.mv == null ? 1 : SH.mv;
     if (!HT.c) HT.c = cv(S);
     const t = HT.c.getContext('2d');
     hands.forEach((hd) => {
       t.setTransform(1, 0, 0, 1, 0, 0); t.clearRect(0, 0, S, S);
       t.translate(hd.x, hd.y); t.rotate(handAngle(hd, date)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
       const h = hd.h;
-      [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
+      if (mv > 0.01) [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
         ctx.save(); ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = b * sk; ctx.shadowOffsetX = (OFF + ox) * sk; ctx.shadowOffsetY = oy * sk;
         ctx.drawImage(HT.c, -OFF, 0); ctx.restore();
       });
       ctx.drawImage(HT.c, 0, 0);
       if (hd.cap) {
         const r = hd.cap, f = hd.fin;
-        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')'; ctx.shadowBlur = 3 * bm * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = [ax * 2.2 * dm * sk, ay * 2.2 * dm * sk];
+        ctx.save(); if (mv > 0.01) ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')'; else ctx.shadowColor = 'rgba(0,0,0,0)'; ctx.shadowBlur = 3 * bm * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = [ax * 2.2 * dm * sk, ay * 2.2 * dm * sk];
         let g = f.m;
         if (!hd.flat) { g = ctx.createRadialGradient(hd.x - r * 0.35, hd.y - r * 0.35, r * 0.1, hd.x, hd.y, r); g.addColorStop(0, f.b); g.addColorStop(0.6, f.m); g.addColorStop(1, f.a); }
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(hd.x, hd.y, r, 0, TAU); ctx.fill(); ctx.restore();
@@ -2949,8 +2965,11 @@
     // noSh renders the hands with every cast shadow alpha-zeroed and nothing else
     // changed: the bake's pointer diff needs the ink alone, because the twin row —
     // not the hand plate — carries the shadow (§25.2, and orb_clock3.c's AUX_F_SHADOW).
-    F.drawHands = (ctx, date, only, noH, noSh) => { let hs = only ? F.hands.filter((h) => only.indexOf(h.id) >= 0) : F.hands; if (noH) hs = hs.filter((h) => noH.indexOf(h.id) < 0); drawHands(ctx, hs, date, F.light, noSh ? { dir: [0, 0], kk: 0, dist: 0, blur: 0, op: 0 } : SH); };
-    F.handShadow = (hd) => ({ dx: SH.dir[0] * 1.6 * hd.h * SH.dist, dy: SH.dir[1] * 1.6 * hd.h * SH.dist, blur: 1.4 * hd.h * SH.blur, alpha: Math.min(1, 0.5 * SH.kk * SH.op) });
+    F.drawHands = (ctx, date, only, noH, noSh) => { let hs = only ? F.hands.filter((h) => only.indexOf(h.id) >= 0) : F.hands; if (noH) hs = hs.filter((h) => noH.indexOf(h.id) < 0); drawHands(ctx, hs, date, F.light, noSh ? { dir: [0, 0], kk: 0, dist: 0, blur: 0, op: 0, mv: 0 } : SH); };
+    // The twin's own strength. The moving gate reads through it, so a bake asked
+    // for no moving shadows ships no twin row at all: the FORMAT 2 kit export, the
+    // FORMAT 3 aux twin and the in-browser bake all gate on this alpha alone.
+    F.handShadow = (hd) => ({ dx: SH.dir[0] * 1.6 * hd.h * SH.dist, dy: SH.dir[1] * 1.6 * hd.h * SH.dist, blur: 1.4 * hd.h * SH.blur, alpha: (SH.mv == null ? 1 : SH.mv) > 0.01 ? Math.min(1, 0.5 * SH.kk * SH.op) : 0 });
     F.hit = (x, y) => { for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) return h.id; } return null; };
     /* What sits under this pixel, top of the stack first -- the drawing order read
      * backwards: the hand sprites are the last thing before the glass, so a hand is

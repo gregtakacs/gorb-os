@@ -14,7 +14,9 @@ const u = (tag, w, h) => { const x = 'data:image/png;base64,' + Buffer.from(tag)
 E.assetRestore([{ id: 'ui-art', name: 'art.png', kind: 'png', dataUrl: u('ui', 300, 300) },
   { id: 'ui-big', name: 'big.png', kind: 'png', dataUrl: u('big', 600, 600) }]);
 const it = new Comp({});
-it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8 });
+// budget()'s real contract carries the device pace block _devPace writes; renderVals
+// reads HB.dev.pace for every rate label, so a stub without it is not a budget.
+it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, why: '' } });
 it.state.dial = 'calendar'; it.state.tab = 'dial'; it.state.playing = false; it.state.hidden = {};
 it.state.designs = { calendar: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.calendar.design))) };
 const labels = (tab) => { it.state.tab = tab; return it.renderVals().fields; };
@@ -67,6 +69,15 @@ setTimeout(async () => {
   // ---- the hands tab: sprite slot, pivot fields, hub snap --------------------------
   const hands = labels('hands');
   ok(hands.length > 0, 'hands tab renders');
+  // Two shadow switches, because they buy different things: the twin that turns
+  // with the hand costs a re-blit, the relief baked in the art costs nothing.
+  const shCh = byLabel(hands, 'Cast shadows'), rlCh = byLabel(hands, 'Plate relief');
+  ok(!!shCh && !!shCh.isChips && !!rlCh && !!rlCh.isChips, 'the panel offers the moving and the static gate as two separate switches');
+  shCh.opts.find((o) => o.label === 'Off').pick();
+  ok(it.cfg().shMove === 0 && it.cfg().shOp === 1, 'Cast shadows off writes the moving gate and leaves the art strength alone', JSON.stringify([it.cfg().shMove, it.cfg().shOp]));
+  shCh.opts.find((o) => o.label === 'On').pick();
+  ok(it.cfg().shMove === 1, 'and the twins come back');
+  ok(hands.some((f) => f.isNote && /repaints them every tick/.test(f.note || '')), 'the panel says in one line why the two are not the same choice');
   const rows = (it.state.tab = 'hands', it.renderVals().handRows);
   ok(rows.length >= 3, 'rows built: ' + rows.length);
   const r = rows.find((q) => q.label === 'Centre hour');

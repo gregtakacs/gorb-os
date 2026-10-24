@@ -96,6 +96,7 @@ extern int g_calls; extern int g_y[16]; extern uint16_t *g_b[16]; extern int64_t
 extern int g_wipe; extern int g_wipe_y[24];
 extern int g_fail_left;
 void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
+void orb_boot_overlay_backdrop(void);
 /* One process, one scenario, in the order the boot lives it: the fake clock
  * steps forward and every band handed to the panel is dumped with its step
  * index, so throttle and promotion are observed as STATE, not as luck. */
@@ -143,6 +144,21 @@ int main(void)
     printf("wipe %d", g_wipe);
     for (int i = 0; i < g_wipe && i < 24; i++) printf(" %d", g_wipe_y[i]);
     printf("\n");
+
+    /* §32.8 store backdrop: the store door calls orb_boot_overlay_backdrop() to
+     * wipe the live glass before the first "storing" frame. Fresh wipe
+     * accounting, then assert it tiles the whole panel and that the frame that
+     * follows repaints despite the throttle the backdrop cleared. */
+    g_wipe = 0;
+    int bb = g_calls;
+    orb_boot_overlay_backdrop();
+    printf("backdrop wipes %d calls %d", g_wipe, g_calls - bb);
+    for (int i = 0; i < g_wipe && i < 24; i++) printf(" %d", g_wipe_y[i]);
+    printf("\n");
+    g_now_us = 8150000;                                     /* 50 ms after the retry */
+    int br = g_calls;
+    orb_boot_overlay("verifying", 512u*1024u, 1024u*1024u, 0);
+    printf("backdrop retry calls %d\n", g_calls - br);       /* expect 3: throttle cleared */
     return 0;
 }
 """
@@ -224,6 +240,21 @@ def main():
         wy = [int(x) for x in wm.group(2).split()] if wm else []
         ok(wn == (466 + 23) // 24, f"the first draw blacks the panel: {wn} wipe strips", str(wn))
         ok(wy == list(range(0, 466, 24)), "the wipe strips tile the panel from row 0 past row 456", str(wy))
+
+        # §32.8 store backdrop: the store door wipes the whole live glass before
+        # the first "storing" frame, so the card cannot land on the parked menu.
+        # It also clears the throttle so the following frame cannot be swallowed.
+        bm = re.search(r"backdrop wipes (\d+) calls (\d+)([^\n]*)", out)
+        bn, bc = (int(bm.group(1)), int(bm.group(2))) if bm else (-1, -1)
+        by = [int(x) for x in bm.group(3).split()] if bm else []
+        ok(bn == (466 + 23) // 24, f"the store backdrop blacks the whole panel: {bn} strips", str(bn))
+        ok(by == list(range(0, 466, 24)), "the backdrop strips tile the panel from row 0 past row 456", str(by))
+        ok(bn == (466 + 23) // 24 and bc == 0,
+           "the backdrop commits only black strips — no content band counted", str(bc))
+        brm = re.search(r"backdrop retry calls (\d+)", out)
+        ok(brm and int(brm.group(1)) == 3,
+           "the frame after the backdrop repaints, not throttled by the wipe it cleared",
+           brm.group(1) if brm else "no line")
 
         # the scenario's draw counts, step by step
         ok(steps.get(0) == 1, "step 0: the first stage draws one band", str(steps))

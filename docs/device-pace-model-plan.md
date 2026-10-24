@@ -297,3 +297,45 @@ Body of the first names the anchor presets and their measured rates, and cites
 State the `pace` value the probe prints for each of `modern`, `diver`, `aviator`,
 `sector`, `perpetual`. State whether the Go embed test passes. Name any Chrome
 suite you could not run.
+
+## Outcome (implemented 2026-10-24, measured on the live device)
+
+This section records what shipped against the plan above, and supersedes the parts
+the live benchmark contradicted. The arc-coverage model (Edits 1-2) and the removal
+of the one-step bank grace (Edit 3, `4322bac`) were already committed before this
+pass; what changed here is the last step.
+
+Round-to-integer, rung-snap removed. `_devPace` no longer snaps `raw` down
+`[15,12,8,4]`; it rounds to the nearest whole fps, clamped to floor 4 and the tier
+`b.fps`. The firmware advances the bank on a millisecond flush clock decoupled from
+the frame count, so an off-rung integer is a legal device rate and snapping it down
+under-sold the glass. The Edit 1 table's "modern must land at 8" was the snap
+artifact, not a measurement — see the benchmark below.
+
+Live benchmark (this device, hub console route): `modern` (banked running-seconds
+subdial + window, cov 0.103, shadows on) held a post-reboot steady-state median of
+10 fps; `neon` (a static moon crossed by the sweep, cov 0.114, shadows on) held a
+median of 12. Both rounded model reads 11 — each within one of its measurement,
+where the floor-snap called both 8. The probe now prints `modern 11`, `diver 15`,
+`aviator`/`sector` 15, `perpetual` 4; `headless-pace.test.js` enforces those.
+
+The proposed `K_TWIN` narrowing (charge a static single plate only `K_PLAIN`) was
+tested and rejected. `neon`'s single crossed plate is a static moon, yet it
+sustained 12 under a moving hand twin; a `K_PLAIN` reading (13) would over-predict
+and break the "predict as a floor, not a ceiling" rule. `perpetual`'s four crossed
+plates are likewise static calendar subdials, but the shipped dial clamps to 4,
+which only `K_TWIN` reaches — `K_PLAIN` would lift the panel anchor to ~9. The
+discriminator the data supports is the MOVING TWIN (`shOn`), which the model already
+gates on. Both slopes stand; only the snap was wrong.
+
+Motion menu: the `8 / s` tick rung is now offered, gated on `budget().fps >= 8` (the
+rung the row ladder already prices), so a dial that cannot drive 8 is never offered
+it; tick mode stays on hard rungs. The readout appends the bank frame count
+(`12 fps · 12 frames`). The shipped bank tempo still follows `budget().fps` through
+`F`/`B` — only the preview rate and the pace label fold the rounded estimate through
+`devFps()`. No firmware change, no scalar change, no `CAPS`/`_budget`/tier-ladder
+change, so every early-return guard the Constraints list still holds.
+
+Suites after this change: engine 177, regression 96/15 presets, ui 264, component
+51, orbtheme 74, bundle3 190, pace 13 (new) — all green. The embedded hub copy was
+re-synced (`cp`, md5-equal).

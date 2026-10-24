@@ -571,7 +571,12 @@ class Component extends DCLogic {
      * not the pace. Both slopes below re-fit the two panel anchors measured in 07d3411
      * (aviator's bare ring, cov 0, holds the tier; perpetual, cov 0.32 across four
      * gilt-twin subdials, clamps to the scheduler floor 4): K_TWIN when the twins ride
-     * with the sweep, K_PLAIN (half the crossed-plate bill) when they do not. */
+     * with the sweep, K_PLAIN (half the crossed-plate bill) when they do not. The gate is
+     * the MOVING TWIN, not the plate's own animation: a 2026-10-24 live pair (modern
+     * banked-seconds cov 0.10 measured 10 vs neon static-moon cov 0.11 measured 12, both
+     * shOn) shows a static crossed plate under a moving twin still pays the doubled bill —
+     * perpetual's static calendar subdials clamp to 4 for the same reason — so K was NOT
+     * narrowed to moving plates. Charge K_TWIN whenever shOn, K_PLAIN only when it is off. */
     const shOn = +c.shMove > 0.01 && +c.shOp > 0.01;
     const K_TWIN = 2.31, K_PLAIN = 1.16;
     /* The crossed-plate re-blit is a full per-tick cost, not a marginal add-on to a bank
@@ -582,9 +587,18 @@ class Component extends DCLogic {
      * its bank, not one. rowPrice measures the plate's own motion with the hands hidden,
      * so measured rows prove nothing about the seconds wedge (7649661). A prior
      * one-step bank grace read that banked perpetual as 12; it is removed. */
-    const tier = (raw) => Math.max(4, [15, 12, 8, 4].find((t) => t <= raw) || 4);
-    out.pace = tier(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov));
-    const plain = tier(b.fps * (1 - K_PLAIN * cov));
+    /* The device pace is a measured millisecond rate, not a rung. The firmware advances
+     * the bank on its own flush clock (orb_net.c / orb_theme.c), decoupled from the frame
+     * count, so a sweep can sustain an off-rung integer and the estimate should say so:
+     * round raw to the nearest whole fps, clamped to the scheduler floor 4 and the tier
+     * ceiling, instead of snapping it DOWN the [15,12,8,4] ladder. The old snap pulled a
+     * raw of 11 down to 8 and under-sold the glass. The two live 2026-10-24 anchors this
+     * replaces: modern (banked running-seconds subdial + window, cov 0.10) measured a
+     * median 10 and neon (static moon, cov 0.11) a median 12 — near-identical coverage,
+     * both under moving shadows. Floor-snapping called both 8; rounded both land 11. */
+    const est = (raw) => Math.max(4, Math.min(b.fps, Math.round(raw)));
+    out.pace = est(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov));
+    const plain = est(b.fps * (1 - K_PLAIN * cov));
     if (out.pace < b.fps) out.why = 'Sweep crosses ' + n + ' plate' + (n > 1 ? 's' : '') + ' on ' +
       Math.round(cov * 100) + '% of beats: each re-blits it under the wedge, so the device holds ~' +
       out.pace + ' fps' + (shOn && plain > out.pace ? '. Cast shadows off predicts ~' + plain + ' fps.' : '.');
@@ -3394,8 +3408,9 @@ class Component extends DCLogic {
        * re-composite the row ladder cannot price, and the cast-shadow twin
        * doubles that bill -- see _devPace. */
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
+        ...(HB.fps >= 8 ? [{ v: '8', label: '8 / s' }] : []),
         { v: 'sweep', label: 'Sweep' }];
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: HB.fps + ' fps' + (HB.dev.pace < HB.fps ? ' · device ~' + HB.dev.pace : '') }),
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') }),
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),

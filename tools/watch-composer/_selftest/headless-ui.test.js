@@ -78,6 +78,16 @@ setTimeout(async () => {
   shCh.opts.find((o) => o.label === 'On').pick();
   ok(it.cfg().shMove === 1, 'and the twins come back');
   ok(hands.some((f) => f.isNote && /repaints them every tick/.test(f.note || '')), 'the panel says in one line why the two are not the same choice');
+  // ---- the Motion menu gates the 8 / s tick rung on the measured tier ----------------
+  // A ticked second hand steps a whole beat and ships on a hard rung. The 8 / s option is
+  // offered only when budget() can pay the 8 rung; the budget stub here carries fps 8, so
+  // the rung is present, and a 4-fps stub must hide it while 1/2/4/sweep stay offered.
+  const mot = (b) => { const save = it.budget; it.budget = () => ({ fps: b, dev: { pace: b, cross: 0, cov: 0, why: '' } }); const r = byLabel(labels('hands'), 'Motion'); it.budget = save; return r; };
+  const mOptLabels = (r) => r.opts.map((o) => o.label);
+  ok(mOptLabels(mot(8)).includes('8 / s'), 'an 8-fps dial is offered the 8 / s tick rung');
+  ok(!mOptLabels(mot(4)).includes('8 / s'), 'a 4-fps dial is not offered 8 / s it cannot drive');
+  ok(JSON.stringify(mOptLabels(mot(4)).slice(0, 3)) === JSON.stringify(['1 tick / s', '2 / s', '4 / s']), 'the calm rungs and the free sweep are always offered', JSON.stringify(mOptLabels(mot(4))));
+  ok(mOptLabels(mot(4)).includes('Sweep'), 'sweep stays selectable at the floor rate (it is a look, the dial sets the rate)');
   const rows = (it.state.tab = 'hands', it.renderVals().handRows);
   ok(rows.length >= 3, 'rows built: ' + rows.length);
   const r = rows.find((q) => q.label === 'Centre hour');

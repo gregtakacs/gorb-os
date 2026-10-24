@@ -859,6 +859,7 @@ static bool store_park_dial(const orb_app_t *was, uint32_t total)
         if (was) input_router_request(was);
         return false;
     }
+    orb_boot_overlay_backdrop();
     orb_boot_overlay("storing", 0, total, 0);
     return true;
 }

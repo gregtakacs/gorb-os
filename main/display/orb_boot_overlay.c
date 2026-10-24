@@ -241,6 +241,60 @@ static void band_bar(uint16_t *out, uint32_t done, uint32_t total)
     }
 }
 
+/* Paint the whole panel black through the one reused band buffer, one
+ * BAND_ROWS-tall commit per pass. §6.2: a cold boot and a store entry both
+ * need the glass honest before the card lands — the CO530 holds its frame
+ * across a warm reset, and LVGL's last menu or clock otherwise rides in the
+ * rows the card does not cover. Costs one ~22 KB black fill over QSPI; both
+ * callers pay it once. Requires s_band allocated and the panel up. */
+static void overlay_fill_black(void)
+{
+    memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
+    for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
+        const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
+        display_band_commit(y, rows, s_band);
+    }
+}
+
+/* §32.8: the store's black backdrop. The cold-boot fill inside orb_boot_overlay
+ * runs once per boot, so it cannot help an install that lands mid-run after
+ * LVGL has drawn a live clock or menu: store_park_dial hides the dial, but a
+ * hidden screen only stops LVGL re-rendering it — whatever sat on the glass
+ * stays there, and the store card painted three opaque bands over the middle
+ * while the menu showed above and below it (the "paints straight over the dial"
+ * the operator named). The store door calls this right before its first
+ * "storing" frame so the whole glass is black and the card sits on solid black.
+ * It then clears the throttle bookkeeping so the following frame cannot be
+ * skipped as "nothing changed". */
+void orb_boot_overlay_backdrop(void)
+{
+    esp_lcd_panel_handle_t panel = display_get_panel();
+    if (!panel) {
+        if (!s_warned_no_panel) {
+            ESP_LOGW(TAG, "backdrop refused: the panel is not up yet");
+            s_warned_no_panel = true;
+        }
+        return;
+    }
+    if (!s_band) {
+        s_band = heap_caps_malloc((size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t),
+                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (!s_band) {
+            ESP_LOGW(TAG, "backdrop refused: no %u B of internal DMA RAM",
+                     (unsigned)(SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t)));
+            return;
+        }
+        s_first_us = esp_timer_get_time();
+    }
+    overlay_fill_black();
+    /* The whole glass just changed; a following stage word must repaint, so
+     * forget the last frame and any starved state the backdrop cleared. */
+    s_band_starved = false;
+    s_last_stage[0] = '\0';
+    s_last_done = 0xFFFFFFFFu;
+    s_last_secs = 0xFFFFFFFFu;
+}
+
 void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t secs)
 {
     if (!stage || !stage[0]) return;
@@ -272,11 +326,7 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
          * ghost on 2026-10-22 (a torn store's 47% bar under the fallback
          * sentences) where the operator could read neither. A cold boot pays one
          * black fill at ~22 KB over QSPI; a warm boot finally starts honest. */
-        memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
-        for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
-            const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
-            display_band_commit(y, rows, s_band);
-        }
+        overlay_fill_black();
     }
 
     const int64_t now_us = esp_timer_get_time();

@@ -34,6 +34,16 @@ extern "C" {
  */
 void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t secs);
 
+/**
+ * Paint the whole glass black and clear the throttle so the next orb_boot_overlay
+ * frame cannot be skipped as unchanged (§32.8). The store door calls this right
+ * before its first "storing" frame: the cold-boot black fill inside
+ * orb_boot_overlay runs only once per boot, so an install that lands mid-run
+ * needs its own backdrop, or the LVGL menu the dial parked behind shows above
+ * and below the store card. Costs one ~22 KB black fill over QSPI, once.
+ */
+void orb_boot_overlay_backdrop(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -247,3 +247,11 @@ CONFIG_ORB_DEBUG_HTTP=y
 # files through FatFs — two owners of one volume, which is the reason MSC lost.
 CONFIG_ORB_USB_MTP=y
 # CONFIG_TINYUSB_MSC_ENABLED is not set
+# The MTP object cache is charged twice against internal RAM: the table itself, and
+# the traversal pair malloc'd while answering the FIRST request a Windows host sends.
+# At the default 512 that request wants about 6 KiB of contiguous internal heap at
+# once, which is more than an orb holding a live dial has. The malloc fails, the
+# operation answers a bare general error, WPD gives up before creating a store, and
+# the device reads as connected while showing nothing. One card of themes and apps
+# needs far fewer than 64 handles, and the traversal is sized by this either way.
+CONFIG_TINYUSB_MTP_MAX_OBJECTS=64

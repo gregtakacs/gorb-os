@@ -113,7 +113,7 @@ idf_component_register(
         esp_driver_sdspi         # "            (SDSPI host on SPI3_HOST)
         lvgl__lvgl
         espressif__esp_lcd_co5300
-        espressif__esp_tinyusb  # D36: the MSC gadget behind `orb usb drive`
+        espressif__esp_tinyusb  # D38: the MTP gadget behind `orb usb files` (MSC is gone from the tree)
 )
 
 # The baked analog-clock art (assets/clock_assets.bin, produced by

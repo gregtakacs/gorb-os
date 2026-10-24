@@ -64,6 +64,9 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "board_config.h"   /* h_fb: SCREEN_WIDTH/HEIGHT, the row scratch's size */
 #include "orb_sd.h"
 #include "orb_theme.h"
+#if CONFIG_ORB_USB_MTP
+#include "orb_usb_mtp.h"   /* §13.3: the share window has no console, so status is its only witness */
+#endif
 #include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
 #include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
 #include "orb_jobs.h"     /* h_sd: the job-busy witness the themes page polls after a press */
@@ -2387,6 +2390,13 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
+#if CONFIG_ORB_USB_MTP
+        /* The share window has no console and no drive letter beside it, so this is
+         * the only place an owner can ask what the mode is doing. reason is the one
+         * that matters: without it an orb that failed to start serving and an orb
+         * waiting for a host answer the same question with the same silence. */
+        "\"usb\":{\"state\":\"%s\",\"host_up\":%s,\"reason\":\"%s\"},"
+#endif
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
@@ -2439,6 +2449,9 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+#if CONFIG_ORB_USB_MTP
+        orb_usb_mtp_state(), orb_usb_mtp_host_up() ? "true" : "false", orb_usb_mtp_reason(),
+#endif
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
         (unsigned)orb_art_refusals(),

@@ -2734,7 +2734,13 @@
     // plane is ever counted twice and the plate's rows keep the colour-only cost the
     // projection reads them at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
-    var elems = [], nid = 1, ord = 1, handSlot = {};
+    /* §32.6 (D32 ruling C reversed): a theme that ships a carriage reserves order 1 —
+     * one rung above the plate's 0, below every hand — so both the classic LVGL path
+     * (which creates s_car before the hand loop) and the L4 tile painter (whose
+     * insertion sort paints ascending order, lowest deepest) composite the cage at
+     * geartrain depth under the hands, exactly as the preview draws it. Hands then
+     * walk up from 2. A dial with no carriage keeps the old ord = 1 start. */
+    var elems = [], nid = 1, ord = (o.carriage ? 2 : 1), handSlot = {};
     function row(e, plane, masked) {
       var b = bank3([plane], { alpha: masked });
       bank.art = concat([bank.art, b.art]);
@@ -2901,7 +2907,7 @@
       }
       rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: cx3, y: cy3,
                   w: cw, h: chh, pivot_x: cpx, pivot_y: cpy,
-                  order: ord++, alpha: 255, n_frames: car.frames.length,
+                  order: 1, alpha: 255, n_frames: car.frames.length,
                   degrees: car.degrees || 0 }, carPl, true);
     }
     /* D34: the pointers. Every refusal below is orb_clock3.c's AUX projection said

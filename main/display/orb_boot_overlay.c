@@ -155,6 +155,11 @@ static const uint8_t FONT5x7[95][5] = {
 #define COL_ARC     0xF507u                    /* RGB565(0,255,165), swapped   */
 
 static uint16_t *s_band;                       /* 466 x 24 internal DMA RAM    */
+/* §32.5: set when a display_band_commit refused/timed out, so the caller knows the
+ * s_band it is about to restamp may still be in flight and the overlay must abandon the
+ * frame. The throttle reads it back to force the next tick to redraw what a starved band
+ * left half-drawn — otherwise "no stage/percent/second changed" would skip the retry. */
+static bool      s_band_starved;
 static int64_t   s_first_us;                   /* first accepted draw          */
 static uint32_t  s_last_ms;                    /* throttle clock               */
 static char      s_last_stage[48];
@@ -275,10 +280,12 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
 
     /* §6.3's rate rule: same stage, same byte count and same named seconds
      * redraws at most at 10 Hz; a changed stage word, progress figure or
-     * elapsed second always repaints at once. */
+     * elapsed second always repaints at once. §32.5: a frame whose band was
+     * starved (s_band_starved) never throttles — the last commit left it
+     * half-drawn, so the next tick must retry it even when nothing else moved. */
     const bool stage_changed = strcmp(stage, s_last_stage) != 0;
     const uint32_t now_ms = (uint32_t)(now_us / 1000);
-    if (!stage_changed && done == s_last_done && secs == s_last_secs &&
+    if (!s_band_starved && !stage_changed && done == s_last_done && secs == s_last_secs &&
         now_ms - s_last_ms < 100)
         return;
 
@@ -288,22 +295,37 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
 
     uint16_t *b = s_band;
     uint32_t ink = band_text(line1, b);
-    ESP_ERROR_CHECK(display_band_commit(LINE1_Y, BAND_ROWS, b));
-
-    if (total) {
+    /* §32.5: display_band_commit now surfaces ESP_ERR_TIMEOUT when a band's DMA
+     * never retired within the ceiling, so a starved commit is distinguishable from
+     * a landed one. The whole overlay paints into the ONE reused s_band, so once a
+     * band is still in flight its bytes own that buffer: stamping the next line over
+     * it is exactly the two-green-bars race the store of 2026-10-23 watched. On any
+     * commit error we set `starved` and abandon the REST of this frame — never stamp
+     * LINE2/BAR onto a buffer the panel may still be reading, and never let a refused
+     * band abort the boot task the way ESP_ERROR_CHECK did. The attempt is still
+     * recorded below, and starved rides into s_band_starved so the next beat is not
+     * throttled into leaving the frame half-drawn. */
+    bool starved = false;
+    if (display_band_commit(LINE1_Y, BAND_ROWS, b) != ESP_OK) {
+        starved = true;
+    } else if (total) {
         char line2[48];
         snprintf(line2, sizeof line2, "%u%% %u/%u KB",
                  (unsigned)((done * 100u) / (total ? total : 1u)),
                  (unsigned)(done / 1024u), (unsigned)(total / 1024u));
         ink += band_text(line2, b);
-        ESP_ERROR_CHECK(display_band_commit(LINE2_Y, BAND_ROWS, b));
-        band_bar(b, done, total);
-        ESP_ERROR_CHECK(display_band_commit(BAR_Y, BAND_ROWS, b));
+        if (display_band_commit(LINE2_Y, BAND_ROWS, b) != ESP_OK) starved = true;
+        else {
+            band_bar(b, done, total);
+            if (display_band_commit(BAR_Y, BAND_ROWS, b) != ESP_OK) starved = true;
+        }
     }
+    s_band_starved = starved;
 
     if (stage_changed) {
-        ESP_LOGI(TAG, "stage \"%s\" at +%u ms (ink %u px)", stage,
-                 (unsigned)(now_ms - (uint32_t)(s_first_us / 1000)), (unsigned)ink);
+        ESP_LOGI(TAG, "stage \"%s\" at +%u ms (ink %u px)%s", stage,
+                 (unsigned)(now_ms - (uint32_t)(s_first_us / 1000)), (unsigned)ink,
+                 starved ? " (band starved — frame abandoned)" : "");
         strlcpy(s_last_stage, stage, sizeof s_last_stage);
     }
     s_last_ms = now_ms;

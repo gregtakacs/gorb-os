@@ -444,6 +444,15 @@ ok(walkC.blob.scalars.tourbillon_n === 3 && walkC.blob.scalars.tourbillon_fps ==
 ok(walkC.blob.sprites[2].size === 64 * 64 * 3 && walkC.blob.sprites[4].off === walkC.blob.sprites[2].off + 2 * 64 * 64 * 3,
    'carriage frames are masked planes, contiguous, three strides deep',
    walkC.blob.sprites.slice(2, 5).map(s => s.size).join('/'));
+// §32.6 (D32 ruling C reversed): the carriage row now carries order 1 — one rung above
+// the plate's 0, below every hand — so the classic LVGL path and the L4 tile sort both
+// composite it UNDER the hands, as the preview draws it. Its own row and the hand row it
+// now rides beneath are read back off the shipped bundle.
+const carDepth = walkC.blob.elements[walkC.blob.elements.length - 1];
+const handDepth = walkC.blob.elements.find(el => el.class === 2 && el.slot === 0);
+ok(carDepth.order === 1 && handDepth.order === 2,
+   'the carriage bakes at geartrain depth (order 1) under the hand (order 2)',
+   'carriage order ' + carDepth.order + ' hand order ' + handDepth.order);
 refuses(() => B.bakeClock3({ name: 'x', plate: PL,
           carriage: { x: 0, y: 0, w: 64, h: 64, pivot_x: 32, pivot_y: 32, fps: 12, frames: [CARF(200)] } }),
         'is an animation', 'a one-frame carriage is a static hand and the bake says which');

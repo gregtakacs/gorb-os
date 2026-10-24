@@ -624,7 +624,7 @@ setTimeout(async () => {
   delete it.state.designs.calendar.hands['centre-hour'].art;
   const nxDRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
   ok(nxDRow.showWid === true && nxDRow.hideWid === false, 'and the drawn hand keeps it: the slider shapes a silhouette a sprite does not have');
-  // ---- §32 the send leg: watched, inline-armed, never a dialog ---------------------
+  // ---- §32 the send leg: watched, modal-armed, never a browser dialog --------------
   {
     let confirmed = false;
     global.confirm = () => { confirmed = true; return true; };
@@ -652,11 +652,15 @@ setTimeout(async () => {
       };
     };
     const scen = { dup: true };
+    // the bindings the template actually reads for the modal's two buttons
+    const dupBtns = () => { const v = it.renderVals(); return { open: v.dupOpen, nm: v.dupNm, stem: v.dupStem, pre: v.dupPre, replace: v.dupReplace, cancel: v.dupCancel }; };
     it.state.themeName = 'orbital-arrow';
-    it._replaceArmed = null;
+    it._replaceArmed = null; it.state.dup = null;
     await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    ok(/press Send to orb again to replace/.test(it.state.status), 'a duplicate stops with an inline second-press line', it.state.status);
-    ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the second press');
+    let dv = dupBtns();
+    ok(dv.open === true && dv.nm === 'orbital-arrow' && dv.stem === 'stem', 'a duplicate opens the in-page modal naming the dial', JSON.stringify(dv.open && [dv.nm, dv.stem]));
+    ok(dv.pre === true, 'the modal says the precheck caught it before any byte crossed');
+    ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the modal Replace');
     ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no bytes were posted', JSON.stringify(sent));
     scen.dup = false;
     await it.sendTheme3ToOrb();
@@ -665,14 +669,28 @@ setTimeout(async () => {
     ok(xhrBody === bytes, 'and it is the SAME bake, byte-identical, not a re-bake');
     ok(/rebooting onto it/.test(it.state.status), 'the settled line quotes the store verdict', it.state.status);
     scen.dup = true;
-    it._replaceArmed = null;
+    it._replaceArmed = null; it.state.dup = null;
     await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    ok(!!it._replaceArmed, 'the second refusal re-arms on the same name');
-    it.state.themeName = 'other-dial';
+    ok(!!it._replaceArmed && dupBtns().open, 'the second refusal re-arms and reopens the modal on the same name');
+    // the modal Replace ships the held bytes with the flag and closes the overlay
+    dv = dupBtns();
+    await dv.replace();
+    ok(dupBtns().open === false, 'the modal Replace closes the overlay');
+    ok(/&overwrite=1/.test(xhrUrl || '') && xhrBody === bytes, 'and the modal Replace ships those held bytes byte-identical, flagged to overwrite', xhrUrl);
+    // a Cancel discards the arm so the next press is a fresh bake
+    it._replaceArmed = null; it.state.dup = null;
+    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
     const sendsBefore = xhrSends;
+    await dupBtns().cancel();
+    ok(dupBtns().open === false && it._replaceArmed === null, 'Cancel closes the modal and drops the held arm');
+    ok(/Send cancelled/.test(it.state.status), 'and the status line says the card keeps its dial', it.state.status);
+    it.state.themeName = 'other-dial';
+    const urlBefore = xhrUrl;
     await it.sendTheme3ToOrb();
-    ok(it._replaceArmed === null && xhrSends === sendsBefore,
-       'renaming the dial disarms the replace: the press became a fresh bake-and-send, not a flagged re-send of the held bytes');
+    ok(it._replaceArmed === null,
+       'after a Cancel the arm is gone, so a press has no held bytes to re-ship');
+    ok(xhrUrl === urlBefore || !/overwrite=1/.test(xhrUrl || ''),
+       'renaming and pressing after a Cancel never flags a re-send of the discarded bake', xhrUrl);
   }
 
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');

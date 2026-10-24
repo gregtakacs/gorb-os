@@ -43,6 +43,8 @@ PROLOG = r"""
 #include "esp_lcd_panel_ops.h"
 int g_calls; int g_y[16]; uint16_t *g_b[16]; int64_t g_now_us;
 int g_wipe; int g_wipe_y[24];
+int g_fail_left;   /* §32.5: when > 0, the next non-black commit returns a timeout and
+                    * is NOT counted, so the capture list never carries a refused band. */
 static int all_black(const uint16_t *b, size_t n)
 {
     for (size_t i = 0; i < n; i++) if (b[i]) return 0;
@@ -61,6 +63,8 @@ esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
         g_wipe++;
         return ESP_OK;
     }
+    if (g_fail_left > 0) { g_fail_left--; return 258; }  /* ESP_ERR_TIMEOUT: refused band,
+        * not counted and not captured — the seam never hands it to the panel. */
     if (g_calls < 16) { g_y[g_calls] = y1;
         g_b[g_calls] = malloc((size_t)rows * 466 * 2);
         memcpy(g_b[g_calls], data, (size_t)rows * 466 * 2); }
@@ -90,6 +94,7 @@ HDRS = {
 DRIVER = r"""
 extern int g_calls; extern int g_y[16]; extern uint16_t *g_b[16]; extern int64_t g_now_us;
 extern int g_wipe; extern int g_wipe_y[24];
+extern int g_fail_left;
 void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
 /* One process, one scenario, in the order the boot lives it: the fake clock
  * steps forward and every band handed to the panel is dumped with its step
@@ -114,6 +119,21 @@ int main(void)
         orb_boot_overlay(STEPS[i].stage, STEPS[i].done, STEPS[i].total, 0);
         printf("step %d calls %d\n", i, g_calls - before);
     }
+    /* §32.5 starvation: a boot on store pressure. A fresh stage ("verifying") forces a
+     * redraw; the seam refuses its FIRST band (LINE1), so the overlay must abandon the
+     * rest of the frame — no stamping LINE2/BAR onto the s_band still in flight — and
+     * must NOT abort the task. Then the SAME frame one beat later, which the throttle
+     * would normally swallow, must be retried because the starved flag forces it. */
+    g_now_us = 8000000;
+    int s_before = g_calls;
+    g_fail_left = 1;
+    orb_boot_overlay("verifying", 512u*1024u, 1024u*1024u, 0);
+    printf("starve step calls %d\n", g_calls - s_before);      /* expect 0: refused, nothing counted */
+    g_now_us = 8100000;                                       /* < 100 ms later, identical frame */
+    s_before = g_calls;
+    orb_boot_overlay("verifying", 512u*1024u, 1024u*1024u, 0);
+    printf("retry step calls %d\n", g_calls - s_before);       /* expect 3: the starved frame redrawn */
+    g_fail_left = 0;
     for (int i = 0; i < g_calls && i < 16; i++) {
         char path[160];
         snprintf(path, sizeof path, "%s.b%d.y%d", getenv("OV_TAG"), i, g_y[i]);
@@ -213,6 +233,18 @@ def main():
         ok(steps.get(4) == 0, "step 4: 10 ms later, identical frame is refused", str(steps))
         ok(steps.get(5) == 3, "step 5: a new named second redraws the frame", str(steps))
         ok(steps.get(6) == 1, "step 6: a new stage word always repaints")
+        # §32.5 starvation: the seam refusing the first band must make the overlay
+        # abandon the frame (0 counted) and the next identical beat must retry it (3),
+        # proving (a) no restamp of the in-flight s_band, (b) no task abort, (c) the
+        # starved flag defeats the 10 Hz throttle so a half-drawn frame is completed.
+        sm = re.search(r"starve step calls (\d+)", out)
+        rm = re.search(r"retry step calls (\d+)", out)
+        ok(sm and int(sm.group(1)) == 0,
+           "a refused first band abandons the frame — no band counted, task not aborted",
+           sm.group(1) if sm else "no line")
+        ok(rm and int(rm.group(1)) == 3,
+           "the starved frame is retried on the next beat despite the throttle",
+           rm.group(1) if rm else "no line")
 
         # what those bands actually carry, decoded independently
         drawn = sorted(bands.items())          # global capture order preserved

@@ -413,24 +413,37 @@ esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
     esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, SCREEN_WIDTH, y + rows, band);
     if (e != ESP_OK) {
         if (s_band_inflight > 0) s_band_inflight--;   /* refused pre-cb; no cb will come */
-    } else if (s_tiles_ok) {
+    } else {
+        /* Always wait for THIS transaction's own trans_done, whatever the tile
+         * ring is doing. §32.5 used to gate this on s_tiles_ok and, when the
+         * ring was parked (an SD store parks it), fall through to a "depth 1:
+         * blocked submit, cb ran" decrement that trusted the callback had
+         * already run inline. That premise is false: esp_lcd_new_panel_io_spi
+         * froze io_cfg.trans_queue_depth at panel-create from the ring funded
+         * BEFORE the card mounted (measured 2 on this board), and a later park
+         * or a short refund never lowers it. A returning draw_bitmap therefore
+         * still means QUEUED, and dropping the inflight count without the
+         * retire proved by `want` let the caller re-stamp the ONE reused s_band
+         * while its DMA was still reading it — the bar's green pixels latched
+         * into the LINE2 band ~24 rows up, the double green line the operator
+         * watched through every store since. The count is the same proof the
+         * coalesce path uses (line 305): on_color_trans_done advances
+         * s_tile_done for any submitter while a band is inflight, independent
+         * of the ring, so the wait holds at depth 1, depth 2, and parked. */
         t0 = esp_timer_get_time();
         while (s_tile_done < want && esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
         if (s_tile_done < want) {
             /* Late, not gone: the cb balances the inflight count when it
              * arrives, so we do NOT decrement it here. But this band has NOT
              * retired, so its DMA still owns the caller's buffer — returning
-             * ESP_OK here told the boot overlay the stamp landed and let it
-             * re-stamp the one reused s_band in flight, which is the two-green-
-             * bars/stray-status-word race of the 2026-10-23 store. Report the
+             * ESP_OK here would tell the boot overlay the stamp landed and let
+             * it re-stamp the one reused s_band in flight. Report the
              * starvation as an error so the caller skips the frame rather than
              * corrupting the next one; a QSPI that never retires leaves no other
              * trace, and this line is the store screen's error report. */
             ESP_LOGW(TAG, "band at r%d did not retire within 500 ms", y);
             e = ESP_ERR_TIMEOUT;
         }
-    } else if (s_band_inflight > 0) {
-        s_band_inflight--;                            /* depth 1: blocked submit, cb ran */
     }
     if (s_ring_mux) xSemaphoreGive(s_ring_mux);
     return e;

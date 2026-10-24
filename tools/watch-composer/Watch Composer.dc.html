@@ -2397,13 +2397,27 @@ class Component extends DCLogic {
         // ContainerName reads the magic, the header CRC, the serial (word 11) and the
         // name (bytes 56..112) all inside the first 128 B, and answers the duplicate
         // off those; the section index it reads past 128 B is best-effort and never
-        // fails a container. Before this the precheck POSTed the WHOLE bake, so a plain
-        // send moved every byte twice — upload, check, upload, memcopy — the exact
-        // double-transfer the operator named. Replace below still ships the full bytes.
+        // fails a container. Before this the precheck POSTed the WHOLE bake, so the
+        // question itself cost the full file. The double-send the operator named was a
+        // separate cut — see the exact branch below, which is what actually stops it.
         const head = bytes.slice(0, 128);
         const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: head });
         pre = await pr.json().catch(() => null);
       } catch (e) { pre = null; }
+      if (pre && pre.ok && pre.data && pre.data.exact) {
+        // §32.9: the card already holds this EXACT bake — same name, same content serial.
+        // Until now the hub answered this "clear", so a plain re-send of an installed theme
+        // moved all the bytes over the air again AND the device's door re-armed an
+        // idempotent store: a reboot onto the face it is already drawing, with a second
+        // progress paint racing the first down the glass (the two green bars the operator
+        // watched). Stop BEFORE the upload. Nothing to replace — the bytes already match —
+        // so there is no modal to arm and no held bake; the next press is a fresh bake.
+        // To actually re-store or switch to the installed copy, use its store button on the
+        // Manage card: that lands the file already on the card for an id, not a re-upload.
+        this._replaceArmed = null;
+        this.setState({ status: '"' + nm + '" is already on the card, byte for byte — nothing sent. To reboot onto it or re-store it, use its store button on the Manage card.' });
+        return;
+      }
       if (pre && pre.ok && pre.data && pre.data.duplicate) {
         this._replaceArmed = { bytes, nm, stem, pol, meter };
         // §32.6: the duplicate is asked about in a real modal, not a status-line
@@ -2487,6 +2501,7 @@ class Component extends DCLogic {
       queued: () => '"' + nm + '" is on the orb, the store is armed — the copy comes next',
       storing: () => '"' + nm + '" is storing into the slot — progress rides the orb glass; the orb reboots itself when the copy lands',
       duplicate: () => 'the card holds a different "' + nm + '" — press Send to orb again to replace it',
+      exact: () => '"' + nm + '" is already on the card, byte for byte — nothing was sent',
       rejected: (st) => 'the orb refused the upload' + (st.note ? ': ' + st.note : '')
     };
     let dead = false;

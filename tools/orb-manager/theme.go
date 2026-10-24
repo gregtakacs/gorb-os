@@ -175,11 +175,12 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	overwrite := r.URL.Query().Get("overwrite") == "1"
 	if r.URL.Query().Get("precheck") == "1" {
-		dup, note := s.themeDuplicate(ip, c)
+		verdict, note := s.themeDuplicate(ip, c)
 		s.setSend(ip, func(st *themeSend) {
-			st.Phase, st.ID, st.Total, st.Sent, st.Note = ternaryStr(dup, "duplicate", "clear"), c.ID, int64(len(body)), 0, note
+			st.Phase, st.ID, st.Total, st.Sent, st.Note = verdict, c.ID, int64(len(body)), 0, note
 		})
-		s.jsonOK(w, map[string]any{"duplicate": dup, "note": note, "name": c.Name, "id": c.ID, "serial": c.Serial})
+		s.jsonOK(w, map[string]any{"duplicate": verdict == "duplicate", "exact": verdict == "exact",
+			"note": note, "name": c.Name, "id": c.ID, "serial": c.Serial})
 		return
 	}
 	// The claim goes in before the bytes move, not before the dial: this is the one
@@ -572,7 +573,7 @@ func (s *Server) themeReply(w http.ResponseWriter, raw json.RawMessage, err erro
 // device's witnesses read back.
 
 type themeSend struct {
-	Phase string `json:"phase"` // clear|duplicate|uploading|queued|storing|stored|torn|refused|rejected|lost
+	Phase string `json:"phase"` // clear|exact|duplicate|uploading|queued|storing|stored|torn|refused|rejected|lost
 	ID    string `json:"id,omitempty"`
 	Sent  int64  `json:"sent"`
 	Total int64  `json:"total"`
@@ -604,25 +605,31 @@ func (s *Server) sendSnapshot(ip string) themeSend {
 	return themeSend{Phase: "idle"}
 }
 
-// themeDuplicate answers the precheck against the device's own list. A list that
-// cannot be fetched answers "no duplicate" with the reason as the note — an
-// unreachable orb is not a collision, and the real send will fail honestly a second
-// later if the orb is really gone.
-func (s *Server) themeDuplicate(ip string, c *orbnet.ThemeContainer) (bool, string) {
+// themeDuplicate answers the precheck against the device's own list with one of three
+// verdicts, so the composer can act on the exact-match case instead of uploading over it:
+// "duplicate" means the card holds a DIFFERENT build under this name (a blind send would
+// be refused late at the door, and a Replace must be offered); "exact" means the card
+// already holds THIS bake (name and content serial agree), so a full re-send only moves
+// every byte again and re-arms an idempotent store that reboots onto the face already on
+// the glass — the §32.9 double-send this precheck exists to stop; "clear" means the name
+// is free. A list that cannot be fetched answers "clear" with the reason as the note: an
+// unreachable orb is not a collision, and the real send will fail honestly a second later
+// if the orb is really gone.
+func (s *Server) themeDuplicate(ip string, c *orbnet.ThemeContainer) (string, string) {
 	list, err := s.device.ThemeList(ip)
 	if err != nil {
-		return false, "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
+		return "clear", "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
 	}
 	for _, row := range list.Themes {
 		if row.ID != c.ID {
 			continue
 		}
 		if row.Serial == c.Serial {
-			return false, "the card already holds this exact theme; a send lands as a no-op"
+			return "exact", "the card already holds this exact theme; a re-send would only reboot onto it"
 		}
-		return true, "the card holds a different build of this name (serial " + strconv.FormatUint(uint64(row.Serial), 10) + ")"
+		return "duplicate", "the card holds a different build of this name (serial " + strconv.FormatUint(uint64(row.Serial), 10) + ")"
 	}
-	return false, ""
+	return "clear", ""
 }
 
 // armSelfRebootFor is expectSelfReboot resolved from an address the way

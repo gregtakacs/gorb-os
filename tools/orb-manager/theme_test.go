@@ -430,3 +430,45 @@ func TestThemeDeviceCallsLiveInOneModule(t *testing.T) {
 		t.Error("the theme client addresses install and delete by name; the firmware takes ?id= only")
 	}
 }
+
+// §32.9: the precheck's exact-match cut. When the card already holds the bake the
+// operator is about to send — same name, same content serial — the hub must call it
+// "exact", not "clear". The old code answered "clear", so the composer treated an already-
+// installed theme as a fresh send and pushed the whole file again; the device's door then
+// re-armed an idempotent store, and the operator watched every byte cross the air a second
+// time and a second progress bar race the first down the glass. A different build under the
+// name still answers "duplicate" so the Replace modal arms, and a free name still answers
+// "clear". This test drives all three verdicts through the real ?precheck=1 handler.
+func TestThemePrecheckVerdicts(t *testing.T) {
+	s, ip, _, _ := fakeOrbHub(t) // fake seeded with "aurora" at serial 1
+	const auroraName = "aurora"
+
+	precheck := func(body []byte) map[string]any {
+		rec := postTheme(t, s, "/api/theme/upload?ip="+ip+"&precheck=1", string(body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("precheck status = %d body %s", rec.Code, rec.Body)
+		}
+		env := decodeEnv(t, rec)
+		data, _ := env["data"].(map[string]any)
+		if env["ok"] != true || data == nil {
+			t.Fatalf("precheck body = %s, want an ok payload", rec.Body)
+		}
+		return data
+	}
+
+	// Exact: same name and the serial the card already reports.
+	if d := precheck(orbfake.ContainerWithSerial(auroraName, 1)); d["exact"] != true || d["duplicate"] != false {
+		t.Errorf("exact match reported %v, want exact=true duplicate=false", d)
+	}
+
+	// Duplicate: same name, a different content serial — the Replace case.
+	if d := precheck(orbfake.ContainerWithSerial(auroraName, 2)); d["exact"] != false || d["duplicate"] != true {
+		t.Errorf("different build reported %v, want duplicate=true exact=false", d)
+	}
+
+	// Clear: a name the card does not hold — the upload goes through normally.
+	if d := precheck(orbfake.Container("zephyr")); d["exact"] != false || d["duplicate"] != false {
+		t.Errorf("free name reported %v, want a clear verdict", d)
+	}
+}
+

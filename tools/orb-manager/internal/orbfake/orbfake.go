@@ -469,7 +469,13 @@ func (o *Orb) takeBusy() bool {
 // the C reader field by field; this is the LAN shape of the same file, written here from
 // the layout rather than imported from orbnet, so the two agree by rule and not by
 // construction.
-func Container(name string) []byte {
+func Container(name string) []byte { return ContainerWithSerial(name, 0) }
+
+// ContainerWithSerial is Container with the header's install serial set, so a test can
+// bake a container whose serial agrees with a row already on the fake's list — the one
+// shape that turns the hub's ?precheck=1 verdict from "duplicate" into "exact". The
+// header CRC is recomputed below, so the serial stays inside the checksummed span.
+func ContainerWithSerial(name string, serial uint32) []byte {
 	slug := []byte("clock")
 	blob := appendWords(nil, 1, 0, 26, uint32(len(slug))) // n_elem, n_spr, n_scal, n_slug
 	// The clock dialect's 26 scalars, every one at the app's own default: the fixture
@@ -506,7 +512,7 @@ func Container(name string) []byte {
 	put(7, 0)  // art_size
 	put(8, 0)  // art_crc
 	put(9, 1)  // n_sections — where FORMAT 2 kept scr_w
-	put(11, 0) // serial
+	put(11, serial) // serial
 	put(13, artOff)
 	copy(b[fNameWord*4:], name)
 	put(fHdrCRCWord, hdrCRC(b))

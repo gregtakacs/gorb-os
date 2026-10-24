@@ -178,6 +178,11 @@ static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
 static lv_obj_t       *s_car;               /* the carriage object, NULL = none */
 static lv_image_dsc_t  s_car_dsc;           /* its descriptor until the first swap */
 static int32_t         s_car_start_10;      /* start orientation, tenths of a degree */
+/* C4's consumed parent column: the carriage row's element index + 1 (0 = the
+ * table holds no carriage row). The projection put the parent's ROW INDEX in
+ * clk_aux_t.parent_row; this is the one figure needed to recognise it. A needle
+ * whose parent_row equals this rides the carriage's rotation — see aux_update. */
+static uint16_t        s_car_row_1;
 
 /* Orbit marks (sweep perf). The generic hand marking would take the union
  * of the two rotated bounding boxes of the carriage (~260x350 swung around
@@ -1531,6 +1536,17 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
                                                  : aux_angle_10(a, v1000);
             }
         }
+        /* C4's other half, unspent since the column landed: a needle parented to
+         * the carriage rides the carriage's rotation too. The needle's arbour IS
+         * the carriage's axis (the §25.2 crop pivot carries it), so rotation
+         * about a shared centre commutes and the whole pose is one summed angle
+         * — the same figure the carriage row itself wears (s_ang_10[2] plus the
+         * row's start orientation). The twin is untouched: it mirrors its hand
+         * row's stored angle and inherits the sum with it. */
+        if (a->parent_row && a->parent_row == s_car_row_1 && s_car &&
+            a_new > AUX_HIDDEN && !MOTION_IS_SLIDE(a->kind) &&
+            s_ang_10[2] != INT32_MIN)
+            a_new = (int32_t)(((int64_t)a_new + s_ang_10[2] + s_car_start_10) % 3600);
         if (a_new == s_aux_ang_10[i]) continue;               /* nothing moved */
 
         /* The wedge to rebuild: where the pointer was and where it is going,
@@ -1796,6 +1812,7 @@ static void clock_layers_build(orb_app_t *self)
     s_lay_n = 0;
     s_lay_sec = NULL;                          /* the pose pass parks with the  */
     s_lay_bank_off = 0;                        /* rows it cannot resolve        */
+    s_car_row_1 = 0;                           /* no carriage row seen yet      */
 
     const orb_bundle_sec_t *sec = NULL;
     uint32_t bank_off = 0;
@@ -1817,6 +1834,8 @@ static void clock_layers_build(orb_app_t *self)
     for (uint32_t i = 0; i < sec->n_elem && n < CLK_LAYER_KEYS_MAX; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
+        if (e.cls == ORB_ASSET_HAND && e.slot == 5u)
+            s_car_row_1 = (uint16_t)(i + 1u);  /* C4: needles parented to this row ride it */
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
         if ((e.cls == ORB_ASSET_HAND || e.cls == ORB_ASSET_SPRITE)

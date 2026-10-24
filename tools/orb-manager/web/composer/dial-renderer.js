@@ -1,7 +1,7 @@
 // Procedural steampunk skeleton dial, 466x466. Seamless loop: every wheel advances
 // exactly K teeth per loop, and spoke/pinion counts are N/K multiples, so the
 // per-loop rotation is a symmetry of every rotating part. Lighting is world-fixed.
-// K must stay coprime with every bank length (8/16/24/15 frames), or a step of a
+// K must stay coprime with every bank length (8/16/12/15 frames), or a step of a
 // whole number of teeth makes the rim identical to itself and the teeth read as
 // still. K = 4 was the worst case: on a 1:1 bank at 4 fps it stepped exactly one
 // tooth and only the spokes crawled. K = 7 is coprime with all four, so every
@@ -18,21 +18,25 @@
 // reading costs 0 px of mismatch with no mark, and 58 px with the index tooth
 // present. So the index tooth is keyed on the STEP, not on coprimality:
 // markPeriod engages it whenever one tick turns more than half a tooth, which
-// these bank depths leave to the 4 fps tier (7/8) alone. The 8 and 12 fps banks
-// are deep enough to step under half a tooth by themselves, and 15 fps sits just
-// under at 7/15. loopcheck.py rasterises the rim and asserts both the freeze and
+// the shipped banks leave to the 4 fps tier (7/8) and the 12 fps tier (7/12);
+// the 8 fps bank steps at 7/16 and 15 fps at 7/15, both under half a tooth.
+// loopcheck.py rasterises the rim and asserts both the freeze and
 // the direction, so a bank or a K that breaks either one fails the suite.
 (function () {
   const S = 466, C = 233, WIN = 160, K = 7, TAU = Math.PI * 2;
   const TEMPOS = [4, 8, 12, 15];
-  // Bank depth per tempo. The device advances the background bank exactly one
-  // frame per tick (clock_view.c: gif_tick_ms() = clk_gif_delays[0] = 1000/the
-  // bank's own fps), so a deeper bank plays the SAME loop more slowly: each tick
-  // turns half as far and dirties fewer rows than the 1:1 bank the row caps were
-  // measured against. 8/16/24 frames at 4/8/12 fps holds the train at half its
-  // old speed, the cadence the watch actually reads best; 15 stays 1:1, where
-  // the step is already 7/15 of a tooth.
-  const BANKS = { 4: 8, 8: 16, 12: 24, 15: 15 };
+  // Bank depth per tempo, authored as a LOOP LENGTH first: one authored loop is
+  // two seconds of motion at the calm tiers and one second at the fast ones.
+  // The device advances the background bank exactly one frame per tick
+  // (clock_view.c: gif_tick_ms() = clk_gif_delays[0] = 1000/the bank's own fps),
+  // so bank = fps x seconds gives the authored speed on the glass with no
+  // re-timing anywhere: the preview ticks at the same delivered rate and shows
+  // the same frames the device will ship. Every bank here is 16 frames or
+  // fewer, the FORMAT 3 plate keyframe cap (orb_clock3.c, CLK_BG_MAX), so no
+  // tier can be thinned and no tier can be skipped for depth: a dial that
+  // measures into the 12 tier SHIPS 12 fps. The 12/15 one-second banks trade
+  // the half-speed reading of the old 16/24-frame banks for that honesty.
+  const BANKS = { 4: 8, 8: 16, 12: 12, 15: 15 };
   const bankFrames = (fps) => BANKS[fps] || fps;
   // A rim that repeats every `period` pitches reads its motion honestly only
   // while one tick steps at most half a period. Past that the frames are

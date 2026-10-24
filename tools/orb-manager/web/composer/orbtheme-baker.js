@@ -2766,9 +2766,26 @@
      * one rung above the plate's 0, below every hand — so both the classic LVGL path
      * (which creates s_car before the hand loop) and the L4 tile painter (whose
      * insertion sort paints ascending order, lowest deepest) composite the cage at
-     * geartrain depth under the hands, exactly as the preview draws it. Hands then
-     * walk up from 2. A dial with no carriage keeps the old ord = 1 start. */
-    var elems = [], nid = 1, ord = (o.carriage ? 2 : 1), handSlot = {};
+     * geartrain depth under the hands, exactly as the preview draws it.
+     * The sub-dial pointers ride the rung just above that (below the hands — the
+     * preview's natural draw order, handSlots: subdial hands first), and the hands
+     * walk up from the rung above them. o.depthOrder — the author's ONE hands list
+     * from the composer, bottom to top — overrides the natural rungs: the same list
+     * the preview turns and the FORMAT 2 kit ships, so the preview, the wire and the
+     * glass agree from one control. Rows the list omits ride their natural rung.
+     * A dial with no carriage starts the same ladder one rung lower. */
+    var SUBDIAL_RUNG = (o.carriage ? 2 : 1);
+    var elems = [], nid = 1, ord = SUBDIAL_RUNG + 1, handSlot = {}, handOrd = {};
+    var dOrder3 = o.depthOrder || [], rung3 = {};
+    for (var q3 = 0, r3 = 2; q3 < dOrder3.length; q3++) {
+      var id3 = String(dOrder3[q3]);
+      if (rung3[id3] === undefined) rung3[id3] = r3++;
+    }
+    /* The natural fallback ladder: sub-dial pointers in table order, then the
+     * centre stack hour, minute, second — exactly handSlots' order, so a bake
+     * with no depthOrder list ships the depth the preview already shows. */
+    var nat3 = (o.aux || []).map(function (a) { return a.id ? String(a.id) : null; })
+                  .concat(['centre-hour', 'centre-minute', 'centre-second']);
     function row(e, plane, masked) {
       var b = bank3([plane], { alpha: masked });
       bank.art = concat([bank.art, b.art]);
@@ -2940,8 +2957,15 @@
       var h = hands[k];
       if (!(h.slot >= 0 && h.slot < 5)) throw new Error('a hand at slot ' + h.slot + ': the compiled clock has five hand fields, slots 0-4');
       handSlot[h.slot] = 1;
+      /* The hand's rung is the author's list position if the list names it, the
+       * centre-stack natural otherwise; the shadow twin below rides one rung
+       * under, which is the S-before-H pairing both clock_view paths use. */
+      var hid3 = h.id ? String(h.id) : ('centre-' + (['hour', 'minute', 'second', 'static1', 'static2'][h.slot] || h.slot));
+      handOrd[h.slot] = Math.max(1, Math.min(63, dOrder3.indexOf(hid3) >= 0 ? rung3[hid3]
+                                     : (h.order | 0) >= 1 ? (h.order | 0)
+                                     : SUBDIAL_RUNG + ((o.aux || []).length) + k));
       row({ n: nid++, 'class': classId('hand'), slot: h.slot, x: h.x, y: h.y, w: h.w, h: h.h,
-            pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: ord++, alpha: h.alpha === undefined ? 255 : h.alpha,
+            pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: handOrd[h.slot], alpha: h.alpha === undefined ? 255 : h.alpha,
             n_frames: 1, flags: h.flags || 0, scale16: h.scale16 || 0 }, h, true);
     }
     for (k = 0; k < shadows.length; k++) {
@@ -2950,12 +2974,12 @@
         throw new Error('a shadow at slot ' + s.slot + ' with no hand there: a shadow’s crop pivot is its hand’s centre minus its own draw point, so the light offset is only recoverable from the hand it hangs under');
       }
       row({ n: nid++, 'class': classId('sprite'), slot: s.slot, x: s.x, y: s.y, w: s.w, h: s.h,
-            pivot_x: s.pivot_x, pivot_y: s.pivot_y, order: ord++, alpha: s.alpha === undefined ? 255 : s.alpha,
+            pivot_x: s.pivot_x, pivot_y: s.pivot_y, order: (handOrd[s.slot] || 2) - 1, alpha: s.alpha === undefined ? 255 : s.alpha,
             n_frames: 1, flags: s.flags || 0 }, s, true);
     }
     for (k = 0; k < plates.length; k++) {
       row({ n: nid++, 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
-            w: plates[k].w, h: plates[k].h, order: ord++, flags: plates[k].flags || 0,
+            w: plates[k].w, h: plates[k].h, order: 63 - (plates.length - 1 - k), flags: plates[k].flags || 0,
             alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
     }
     if (car) {
@@ -3079,7 +3103,9 @@
       // A slide carries no pivot to turn about; its own centre is the origin the row
       // places, and clk_sprite_t's pivot is read only by the dirty-mark maths. The
       // motion rides the row's `kind` column and the drive its four appended words.
-      var or5 = a5.order === undefined ? ord : a5.order;
+      var aid5 = a5.id ? String(a5.id) : null;
+      var or5 = a5.order === undefined ? (aid5 && dOrder3.indexOf(aid5) >= 0 ? rung3[aid5]
+                            : (aid5 ? SUBDIAL_RUNG + nat3.indexOf(aid5) : ord)) : a5.order;
       row({ n: nid++, 'class': classId('aux'), slot: auxSlotW++, kind: m5, src: SOURCES.indexOf(String(a5.src)),
             x: a5.x | 0, y: a5.y | 0, w: a5.w | 0, h: a5.h | 0,
             pivot_x: motionIsSlide(m5) ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),

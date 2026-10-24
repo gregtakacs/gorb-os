@@ -13,6 +13,9 @@
 #include "idle_dim.h"
 #include "orb_app.h"
 #include "orb_carousel.h"   /* the peek: a turn names the next stop, it does not switch */
+#include "nvs.h"            /* the boot-page memory: last shown page, one string key  */
+#include <stdio.h>
+#include <string.h>
 
 #include <stdint.h>
 #include "esp_log.h"
@@ -116,6 +119,30 @@ static void switch_window_close(int64_t now)
  * around it. Returns the registry's refusal, if any, with the dial left exactly
  * where it was: a switch that failed has not switched, and reporting one as a
  * new screen is how a broken app turns into a misleading log. */
+
+/* The boot-page memory (one NVS string, its own namespace): the slug of the
+ * last page that actually reached the glass. A reboot resumes there instead of
+ * at home; an orb with no record, an erased storage partition, or a remembered
+ * card that no longer resolves (uninstalled, or refusing its own activate)
+ * boots the home entry exactly as every earlier boot did. The in-memory cache
+ * keeps the write off unchanged repeat switches — NVS wears, and a page the
+ * user walks over ten times a day must not cost ten commits. */
+#define PAGE_NS  "orb_page"
+#define PAGE_KEY "last"
+
+static char s_last_slug[32];   /* "" = nothing remembered since this boot */
+
+static void page_remember(const orb_app_t *app)
+{
+    if (!app || !app->slug || strcmp(s_last_slug, app->slug) == 0) return;
+    snprintf(s_last_slug, sizeof s_last_slug, "%s", app->slug);
+    nvs_handle_t h;
+    if (nvs_open(PAGE_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    (void)nvs_set_str(h, PAGE_KEY, s_last_slug);
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
 static esp_err_t set_screen(const orb_app_t *app, bool load)
 {
     if (!app) return ESP_ERR_INVALID_ARG;
@@ -160,6 +187,7 @@ static esp_err_t set_screen(const orb_app_t *app, bool load)
     ESP_LOGI(TAG, "switch %s sync %lld ms", screen_name(app),
              (long long)((esp_timer_get_time() - sw_t0) / 1000));
     ESP_LOGI(TAG, "screen -> %s", screen_name(app));
+    page_remember(app);   /* this view is the glass's now — a reboot returns here */
     return ESP_OK;
 }
 
@@ -332,6 +360,35 @@ static void poll_timer_cb(lv_timer_t *timer)
     orb_app_input(delta, pressed);
 }
 
+/* D36: boot where the glass last stood. Read the remembered slug, resolve it
+ * through the registry, and try the switch the way a flick tries it — an entry
+ * that refuses its own activate falls the orb back to home, the same face an
+ * unremembering boot has always shown. The home entry itself needs no trip
+ * through NVS: it is the default this function carries. */
+static esp_err_t resume_last(const orb_app_t *home)
+{
+    char slug[32] = { 0 };
+    size_t sz = sizeof slug;
+    nvs_handle_t h;
+    if (nvs_open(PAGE_NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_str(h, PAGE_KEY, slug, &sz) != ESP_OK) slug[0] = '\0';
+        nvs_close(h);
+    }
+    if (slug[0] && home && strcmp(slug, home->slug) != 0) {
+        const orb_app_t *w = orb_app_find_slug(slug);
+        if (w) {
+            snprintf(s_last_slug, sizeof s_last_slug, "%s", slug);
+            const esp_err_t werr = set_screen(w, /*load=*/true);
+            if (werr == ESP_OK) {
+                ESP_LOGI(TAG, "resume: glass returns to %s", slug);
+                return ESP_OK;
+            }
+            s_last_slug[0] = '\0';   /* the resume was refused — home re-remembers */
+        }
+    }
+    return set_screen(home, /*load=*/true);
+}
+
 esp_err_t input_router_init(void)
 {
     /* Boot on the home entry — the clock, per C8, read off the table rather
@@ -352,8 +409,8 @@ esp_err_t input_router_init(void)
         if (!home) return ESP_ERR_NOT_FOUND;
         ESP_LOGE(TAG, "no home entry in the app table — booting on %s", home->slug);
     }
-    const esp_err_t err = set_screen(home, /*load=*/true);
-    if (err != ESP_OK) return err;
+    const esp_err_t err0 = resume_last(home);
+    if (err0 != ESP_OK) return err0;
 
     s_poll_timer = lv_timer_create(poll_timer_cb, POLL_PERIOD_MS, NULL);
     if (!s_poll_timer) return ESP_FAIL;

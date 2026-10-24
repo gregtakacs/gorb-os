@@ -262,7 +262,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
       <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #25221e">
-            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Each hand · top of the stack first</div>
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472" title="This list is the dial's one depth order. Top of the list draws nearest you on the glass: the preview draws by it, the theme bake ships it, and the watch composites by it. Sub-dial needles turn under the main hands unless you raise them.">Each hand · top of the stack first · depth on the glass</div>
             <button onClick="{{ resetHands }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset all to defaults</button>
           </div>
           <div style="display:none">Each hand · top of the stack first</div>
@@ -449,13 +449,15 @@ class Component extends DCLogic {
     if (this._bG) throw new Error('rows budget read this.F: the key it builds must not depend on the export frame count -- call opts(id, 1) / mvKey(1), which leave frames out');
     return this.budget().fps;
   }
-  /* The bank: how many PNGs one authored loop is chopped into. Deliberately
-   * deeper than the tempo -- see BANKS in dial-renderer.js. The device advances
-   * exactly one bank frame per tick, so a deeper bank plays the SAME loop more
-   * slowly for the same rows-per-tick price, and a rim that would step past half
-   * a tooth pitch (and so read as running backwards) is stepped under it instead.
-   * COUNT frames with this; PACE them with F. budgetStats.f stays F: the row
-   * price is per tick, and the ladder compares per-tick prices. */
+  /* The bank: how many PNGs one authored loop is chopped into — a loop length
+   * in seconds counted out at the delivered tempo (BANKS in dial-renderer.js):
+   * two seconds at 4/8 fps, one second at 12/15. The device advances exactly one
+   * bank frame per tick, so the glass plays the loop in exactly that many
+   * seconds, and the preview — ticking at the same delivered rate, _hbFps —
+   * shows frame-for-frame what the device ships. A rim step past half a tooth
+   * reads as running backwards; the index tooth and markPeriod own that risk,
+   * not the bank depth. COUNT frames with this; PACE them with F. budgetStats.f
+   * stays F: the row price is per tick, and the ladder compares per-tick prices. */
   get B() { return window.DialRenderer.bankFrames(this.F); }
   /* Device rows budget (docs/rows-capacity-2026-10-10.md, batch-6 numbers
    * under CLOCK_L4_MARK_STATIC_BOXES=0 -- now the shipped marking): the tick
@@ -506,19 +508,18 @@ class Component extends DCLogic {
    * spend rows the cap does not already allow. */
   const CAPS = needle ? { 15: 64, 12: 96, 8: 240 } : { 15: 96, 12: 160, 8: 304 };
   /* The carriage bank is a fixed frame count on the device (bake_clock.py holds
-   * CLK_TOURB_MAX=16), so a carriage kit may not sit at a tempo whose bank is
-   * deeper than that -- the 12 fps tier's 24-frame bank cannot be baked. This is
-   * a device limit, not an art limit: the carriage's ROWS are priced by
-   * baseImgs()/rowPrice() like every other mover, so an exposed carriage still
-   * costs rows (and falls to 4 fps) while one sealed behind an opaque dial costs
-   * none and earns the full 15 fps a closed dial gets. CLK_BG_MAX puts the same
-   * 16 on the PLATE keyframe bank (orb_clock3.c refuses more), so the 12 tier
-   * cannot ride a moving base either: splitPolicy3 would thin its 24-frame loop
-   * by stride 2 and ship 12 keyframes at 6 fps -- half the tempo the readout
-   * promised, and dominated outright by the whole 8 fps a 16-frame bank ships.
-   * The skip below prices motion, not just carriages: any dial with measured
-   * dirty rows skips every tier whose bank exceeds MAXBANK, so the chip, the
-   * preview and the shipped bundle cannot disagree about the tempo. */
+   * CLK_TOURB_MAX=16) and the plate keyframe bank caps at CLK_BG_MAX=16
+   * (orb_clock3.c refuses more), so no tier may ship a bank deeper than 16
+   * frames. BANKS (dial-renderer.js) authors every tier at or under that cap
+   * today: one second of motion at 12/15, two at 4/8 -- so the 12 fps tier
+   * holds a 12-frame bank and SHIPS at 12 whenever the rows earn it. The skip
+   * below stays as the guard that forbids a future tier from re-opening the
+   * 23 Oct hole, where the 12 tier priced a 24-frame bank the slot cannot hold,
+   * splitPolicy3 thinned it by stride 2, and the readout promised 12 while the
+   * glass played 6. The carriage's ROWS stay priced by baseImgs()/rowPrice()
+   * like every other mover: an exposed carriage still costs rows (and falls to
+   * 4 fps) while one sealed behind an opaque dial costs none and earns the full
+   * 15 fps a closed dial gets. */
   const MAXBANK = 16;
     const mvk = this.mvKey(1), ak = this.artKey(mvk);
     const s = this.budgetStats && this.budgetStats.mv === mvk ? this.budgetStats : null;
@@ -2201,9 +2202,11 @@ class Component extends DCLogic {
     }
     for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
     for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
+    for (const p of (opts.plates || [])) crc(p.rgba);
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
-      '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0)));
+      '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0) +
+      '|dp:' + (opts.depthOrder ? opts.depthOrder.join(',') : '')));
     let len = 0; for (const p of parts) len += p.length;
     const buf = new Uint8Array(len); let at = 0; for (const p of parts) { buf.set(p, at); at += p.length; }
     return G.crc32(buf) >>> 0;
@@ -2252,7 +2255,24 @@ class Component extends DCLogic {
       }
     }
     if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
-    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0,
+    /* The crystal comes home as a row. The FORMAT 3 element table never carried
+     * the case or the glass, so every baked dial lost the bezel ring and the
+     * reflections the preview draws above the hands. One masked plate: outer
+     * first, glass above it — the same fold the FORMAT 2 overlay packs (1405's
+     * glass-over-case) — and the dial's GLASS role paints it over every live
+     * row. Both layers empty ships no plane. Its bytes join the policy price
+     * so a dial at the cap hears the truth BEFORE the bake, not at pack. */
+    let glassP = null, glassB = 0;
+    if (fc.outer || fc.glass) {
+      const gc = document.createElement('canvas'); gc.width = gc.height = 466;
+      const gx = gc.getContext('2d');
+      if (fc.outer) gx.drawImage(fc.outer, 0, 0);
+      if (fc.glass) gx.drawImage(fc.glass, 0, 0);
+      const gp = pixOf(gc);
+      for (let p = 3; p < gp.length; p += 4096) if (gp[p] > 2) { glassB = 466 * 466 * 3; break; }
+      if (glassB) glassP = { x: 0, y: 0, w: 466, h: 466, rgba: gp };
+    }
+    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth + glassB, compB: compB || 0, auxB: auxB || 0,
                                  hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH });
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
     /* A bank the byte budget thinned re-prices the readout to the tempo that
@@ -2343,6 +2363,12 @@ class Component extends DCLogic {
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
+    if (glassP) opts.plates = [glassP];
+    /* The ONE depth list: the author's hand order, bottom to top — the same list the
+     * preview draws by and the layer kit ships. The baker turns it into the element
+     * order column, so the rung the author set in the studio is the rung the L4
+     * compositor sorts by and the glass shows. */
+    if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
     // The content-aware serial, now every shipped plane is on opts. It folds the
     // baked art's own CRC (geom + art) so any pixel change — the plate texture
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
@@ -2658,7 +2684,17 @@ class Component extends DCLogic {
       if (bx2 < 0) return { refuse: 'the pointer \u201c' + r.id + '\u201d draws no hand: that subdial prints no hand for the bake to lift off the plate and turn' };
       const g = this.face().outline(r.id);                     // the layout centre that hand turns about
       if (!g) return { refuse: 'the pointer \u201c' + r.id + '\u201d has no layout centre on this dial' };
-      const gx = Math.round(g.x), gy = Math.round(g.y);
+      /* Layout space is not device space. frameCanvas composes through the face's
+       * own lenses -- the case inset and the no-case ease (dynK) -- so the ink this
+       * diff lands on the panel sits at centre*scale about the middle, while
+       * outline() answers the unscaled layout figure. Taking gx raw put the pivot
+       * column of every pointer on an eased face a few pixels off its true arbour:
+       * the needle swung about empty air beside its own dial, worst on the
+       * openwork tourbillon's seconds subdial at the biggest opening. drawMain's
+       * selection ring already maps by inset*dynK; the bake now maps by it too,
+       * so the studio's dashed ring and the shipped pivot row cannot disagree. */
+      const kP = (this.face().inset || 1) * (this.face().dynK || 1);
+      const gx = Math.round(233 + (g.x - 233) * kP), gy = Math.round(233 + (g.y - 233) * kP);
       if (gx < bx) bx = gx; if (gx > bx2) bx2 = gx;
       if (gy < by) by = gy; if (gy > by2) by2 = gy;
       const w = bx2 - bx + 1, h = by2 - by + 1;
@@ -2682,7 +2718,7 @@ class Component extends DCLogic {
         rgba = sx.getImageData(0, 0, w, h).data;
       }
       auxB += w * h * 3;
-      const row = { slot: ri, src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
+      const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
                     x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } };
       /* The pointer's own cast shadow, down the §25.2 twin the centred hands take:
        * the plate carries ink only, and the shadow is a second row — a padded black

@@ -511,7 +511,14 @@ class Component extends DCLogic {
    * a device limit, not an art limit: the carriage's ROWS are priced by
    * baseImgs()/rowPrice() like every other mover, so an exposed carriage still
    * costs rows (and falls to 4 fps) while one sealed behind an opaque dial costs
-   * none and earns the full 15 fps a closed dial gets. */
+   * none and earns the full 15 fps a closed dial gets. CLK_BG_MAX puts the same
+   * 16 on the PLATE keyframe bank (orb_clock3.c refuses more), so the 12 tier
+   * cannot ride a moving base either: splitPolicy3 would thin its 24-frame loop
+   * by stride 2 and ship 12 keyframes at 6 fps -- half the tempo the readout
+   * promised, and dominated outright by the whole 8 fps a 16-frame bank ships.
+   * The skip below prices motion, not just carriages: any dial with measured
+   * dirty rows skips every tier whose bank exceeds MAXBANK, so the chip, the
+   * preview and the shipped bundle cannot disagree about the tempo. */
   const MAXBANK = 16;
     const mvk = this.mvKey(1), ak = this.artKey(mvk);
     const s = this.budgetStats && this.budgetStats.mv === mvk ? this.budgetStats : null;
@@ -530,7 +537,7 @@ class Component extends DCLogic {
     if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '' };
     const r = s.rows;
     let fps = 4;
-    for (const t of [15, 12, 8]) { if (t > want) continue; if (car && WatchEngine.bankFrames(t) > MAXBANK) continue; if (r <= CAPS[t]) { fps = t; break; } }
+    for (const t of [15, 12, 8]) { if (t > want) continue; if ((car || r > 0) && WatchEngine.bankFrames(t) > MAXBANK) continue; if (r <= CAPS[t]) { fps = t; break; } }
     if (!forceWant) {
       const fk = ak + '|' + want;
       if (this._ftierKey !== fk) { this._ftierKey = fk; this._ftier = 15; this._ftierOcc = null; }
@@ -2248,6 +2255,9 @@ class Component extends DCLogic {
     const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth, compB: compB || 0, auxB: auxB || 0,
                                  hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH });
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
+    /* A bank the byte budget thinned re-prices the readout to the tempo that
+     * actually ships, so the chip never outlives the receipt it just printed. */
+    if (pol.decim > 1) this._hbFps = pol.fps;
     /* The silent-still tripwire. A "still" verdict is only honest when the loop
      * genuinely does not move, and this walk is the LAST thing the bake does: the
      * comp and pointer passes awaited for seconds before it, and every canvas it
@@ -2545,7 +2555,7 @@ class Component extends DCLogic {
     const PANEL = 466 * 466, W = 466;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
     const DATE3 = {
-      date: (v) => new Date(2026, 0, v),
+      date: (v) => new Date(2026, 0, v + 1),          // frame 0 is day 1: the window's value_min is 1 (D32 ruling B)
       weekday: (v) => new Date(2026, 0, 5 + v),        // 2026-01-05 is a Monday: frame 0, Monday first
       month: (v) => new Date(2026, v, 15),
       moon_age: (v) => { const d = new Date(2026, 6, 15); d.__moon = v / 30; d.toDateString = () => 'moon-' + v; return d; },

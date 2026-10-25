@@ -1458,6 +1458,19 @@ serves the bytes it was built with, never the ones on disk.
   refund cannot be funded, the frozen card (already the honest one) simply
   holds until the reboot. No behavior regressed on failure; the volume stays
   the host's either way, and the card is never handed back mid-window.
+- **Bench proof (usbip lead, WSL2, board Bronze on 192.168.2.32, 2026-10-25,
+  card build)**: walked the menu by injector (cursor log lines confirmed rows),
+  press started the share (log: handover → "tile ring borrowed 18640 B" →
+  TinyUSB install → "exporting the whole card" → "host has configured the
+  device"), and `/api/v1/fb?direct=1` during the window served the frozen
+  mirror — pixel analysis says SHARE CARD, not frozen menu: a 1.9 k-px white
+  band at the 48 px title, an amber wrapped status line, a grey door line at
+  the hint, and ZERO blue-rectangle row-highlight pixels where the list used
+  to be. ONE injected press then closed the ring exactly as designed:
+  `rebooting out of disk mode` → `host let go of the card` (the detach is
+  heard) → `tile ring back: 1 x 18640 B` one millisecond later (the farewell
+  repaint window is real) → `rebooting in 750 ms` → clean boot, `usb off`,
+  `sd mounted`. The old label-pass proof below stays as history.
 - **Bench proof (usbip lead, WSL2, board on 192.168.2.32)**: walked the menu by
   injector (cursor log lines confirmed rows), press armed the share (log:
   handover → "tile ring borrowed 18640 B" → TinyUSB install → "exporting the

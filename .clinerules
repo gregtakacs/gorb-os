@@ -395,6 +395,18 @@ orb-A (`44:bd:8d:60:80:88`, ttyACM0, `192.168.2.32`); clone `gorb-os` → orb-B
 self-join GTROUTER2 at boot (~2.5 s observed 2026-10-11); neither runs an AP
 unless opened via `/api/v1/wifi/ap`. If a DHCP lease moves, boot-capture to
 read the new address and fix `ORB_IP` there — the ip-neigh gate re-proves it
+
+- **Address the clone's `ORB_IP`, never an IP carried in session memory.**
+  2026-10-25: a full share-card bench cycle ran against `192.168.2.32` —
+  orb-A — from a `gorb-os` shell whose binding line is two paragraphs above.
+  The cycle was valid evidence for Bronze and a protocol violation for the
+  clone doing the editing; the owner caught it. Read `.orb-target` at the
+  start of every device touch.
+- **`/api/orb/update` refuses a rebuild of the same semver head.** The gate
+  compares `v1.1.0+5af35cf-dirty` to `v1.1.0+4ba2bde` as `same-version` — the
+  commit suffix is metadata to `firmware.Compare`. A new build on an orb
+  already at `v1.1.0+<anything>` needs `"force":true`; the push itself stays
+  honest (it re-verifies the device's stamp on return).
 every run. If usbipd re-attach renames ACM numbers, nothing breaks: tools ask
 by by-id path, not number.
 

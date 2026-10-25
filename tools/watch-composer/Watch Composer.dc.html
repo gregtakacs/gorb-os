@@ -1754,6 +1754,35 @@ class Component extends DCLogic {
     // outside the ink, and the engine grows the plane to hold it.
     this.setHand(id, { pivotX: +((sx - m.ox) / m.k / m.s).toFixed(1), pivotY: +((sy - m.oy) / m.k / m.s).toFixed(1) });
   }
+  /* The card stem for a name, from whichever sha256 this context has. The browser's
+     own crypto.subtle answers first — it needs no server. Subtle is defined only in
+     secure contexts, so a hub page opened over a LAN IP (plain http on any address
+     that is not localhost) has none, and the old fallback named the download for the
+     raw title: a stem the orb counts
+     and hides, because /sd/themes belongs to the app whose prefix leads the name. The
+     hub answers that question instead — /api/theme/stem is the same pair-hash the
+     firmware itself files by — so every download served by a hub lands named the way
+     the card files it. A file:// open with no hub keeps the title fallback and says
+     so in the status line: a wrong-looking filename still beats a wrong filename. */
+  async cardStemFor(G, nm) {
+    let id = null;
+    try {
+      if (window.crypto && window.crypto.subtle)
+        id = G.themeIdFromDigest(new Uint8Array(
+          await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
+    } catch (e) { id = null; }
+    if (id) return G.cardStem('clock', nm, id);
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      try {
+        const r = await fetch('/api/theme/stem?name=' + encodeURIComponent(nm));
+        if (r.ok) {
+          const j = await r.json();
+          if (j && j.ok && j.data && typeof j.data.stem === 'string' && j.data.stem) return j.data.stem;
+        }
+      } catch (e) { /* no hub, no answer: the caller's fallback and its warning */ }
+    }
+    return null;
+  }
   download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
@@ -2562,12 +2591,8 @@ class Component extends DCLogic {
     this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
-      let id = null;
-      try {
-        if (window.crypto && window.crypto.subtle)
-          id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
-      } catch (e) { id = null; }
-      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
+      const stem0 = await this.cardStemFor(G, nm);
+      const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
       const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
@@ -2998,17 +3023,11 @@ class Component extends DCLogic {
       // sha256 comes from the browser's own crypto (subtle is async, and the baker stays
       // DOM-free and sync); a context without it — an old file:// open — keeps the old
       // name and says so, because a wrong-looking filename beats a wrong filename.
-      let id = null;
-      try {
-        if (window.crypto && window.crypto.subtle) {
-          id = G.themeIdFromDigest(new Uint8Array(
-            await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
-        }
-      } catch (e) { id = null; }
-      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
+      const stem0 = await this.cardStemFor(G, nm);
+      const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       const c = r.report.counts;
-      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (id ? '' : ' (id unavailable here: upload it and the page will name it)') +
+      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (stem0 ? '' : ' (id unavailable here: upload it and the page will name it)') +
         ' (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
     } catch (e) {
       // The caps and the fold proof throw here: the device would silently drop or misdraw

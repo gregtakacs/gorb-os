@@ -245,7 +245,17 @@ int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg,
         rec.name[len - elen] = '\0';
         if (!orb_sd_name_ok(rec.name)) continue;
         counted++;
-        if (plen && strncmp(rec.name, src->name_prefix, plen) != 0) continue;
+        if (plen && strncmp(rec.name, src->name_prefix, plen) != 0) {
+            /* Counted, not opened, and now NAMED. A file copied into this app's own
+             * directory under another app's prefix used to vanish with only "0 of N
+             * entries listed" as its obituary, and an owner who put two files on the
+             * card watched the page swear the card was empty. The skip is still right
+             * — this walk's rows belong to one app — but the log says which files and
+             * why, so the silence is at least diagnosable. */
+            ESP_LOGI(TAG, "%s: hides \"%s\" — the name lacks the %sprefix",
+                     src->dir, de->d_name, src->name_prefix);
+            continue;
+        }
         if (kept >= (int)src->max_entries) continue;
 
         char path[ORB_SD_PATH_MAX];

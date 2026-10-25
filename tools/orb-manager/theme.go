@@ -125,6 +125,31 @@ func (s *Server) handleThemeRescan(w http.ResponseWriter, r *http.Request) {
 	s.themeReply(w, raw, err)
 }
 
+// handleThemeStem answers the one question a non-secure browser context cannot
+// answer for itself: the 12-hex identity of a theme name. The composer names its
+// .orbtheme downloads with window.crypto.subtle, which browsers define only on
+// https:// and http://localhost; a hub reached over a LAN IP (`http://10.x:3779`)
+// has no subtle, and the download used to fall back to the raw title as the file
+// name — a stem no orb lists under an app's prefix, which is how "uploaded from
+// the hub" files end up invisible on the card. The hub holds the same rule as
+// orbnet's own pair-hash and can answer for any origin it serves, so the fallback
+// becomes a fetch instead of a rename-the-lie. This is a question, not a door:
+// it writes nothing, dials nothing, and the device re-derives the same stem from
+// the container header the moment the file is actually uploaded.
+func (s *Server) handleThemeStem(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
+	if slug == "" {
+		slug = "clock"
+	}
+	name := r.URL.Query().Get("name")
+	stem, err := orbnet.ThemeIDOf(slug, name)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	s.jsonOK(w, map[string]any{"stem": stem})
+}
+
 // handleThemeUpload takes the bytes of a .orbtheme the operator picked and pushes them
 // to the orb. The file never touches the hub's disk: it is read under a cap, its own
 // header is checked, and the bytes go straight on.

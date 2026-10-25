@@ -686,6 +686,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// The live witness of a send in flight — read-only, cheap, and the reason the
 	// upload button no longer has to sit there saying nothing while megabytes move.
 	mux.Handle("/api/theme/upload-status", s.requireControl(http.HandlerFunc(s.handleThemeSendStatus)))
+	// The stem a download should carry: the pair-hash answered server-side for a
+	// composer window whose browser withheld crypto.subtle (any http:// non-localhost
+	// origin). Read-only, dials nothing — see handleThemeStem in theme.go.
+	mux.Handle("/api/theme/stem", s.requireControl(http.HandlerFunc(s.handleThemeStem)))
 
 	// Everything below changes something: it resets a chip, writes a flash, drives
 	// the device, or puts a file in the repo. requireControl is the whole reason a

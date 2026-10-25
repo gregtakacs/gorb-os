@@ -465,7 +465,7 @@ func TestThemeRoutesAreTokenGuarded(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	for _, p := range []string{"/api/theme/list", "/api/theme/install",
-		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload"} {
+		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload", "/api/theme/stem"} {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+p, strings.NewReader(themeBody(ip, auroraID)))
 		req.Header.Set("Origin", "http://attack.example")
 		resp, err := http.DefaultClient.Do(req)
@@ -540,5 +540,49 @@ func TestThemePrecheckVerdicts(t *testing.T) {
 	// Clear: a name the card does not hold — the upload goes through normally.
 	if d := precheck(orbfake.Container("zephyr")); d["exact"] != false || d["duplicate"] != false {
 		t.Errorf("free name reported %v, want a clear verdict", d)
+	}
+}
+
+// TestThemeStemNamesLikeTheDeviceFiles pins /api/theme/stem to the filenames the
+// device actually lists. The endpoint exists because the composer's own stem
+// needs crypto.subtle, which no browser exposes over a plain-http LAN origin —
+// and a download that cannot compute the hash used to fall back to naming the
+// file by its title alone, which the firmware's walker skips: two themes sat on
+// orb-b invisible, reported as zero, until their names were rebuilt by hand
+// (2026-10-25). The two clock cases below are those two files' names as
+// measured on the repaired card, so this test fails if the hub and the device
+// ever disagree about what a theme is called. A stem is a question, not a door:
+// the endpoint must also never reach a device.
+func TestThemeStemNamesLikeTheDeviceFiles(t *testing.T) {
+	s, _, called, _ := fakeOrbHub(t)
+	mux := http.NewServeMux()
+	s.routes(mux)
+	get := func(query string) map[string]any {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/theme/stem?"+query, nil)
+		req.Header.Set(tokenHeader, s.token)
+		mux.ServeHTTP(rec, req)
+		return decodeEnv(t, rec)
+	}
+	for _, c := range []struct{ query, want string }{
+		{"name=Skeleton", "clock-skeleton-209c630ff17d"},
+		{"slug=clock&name=Open+tourbillon", "clock-open-tourbillon-4cfdd4c0d959"},
+	} {
+		env := get(c.query)
+		if env["ok"] != true {
+			t.Fatalf("stem(%s): env = %v, want ok", c.query, env)
+		}
+		data, _ := env["data"].(map[string]any)
+		if got, _ := data["stem"].(string); got != c.want {
+			t.Errorf("stem(%s) = %q, want the device's own filename stem %q", c.query, got, c.want)
+		}
+	}
+	// The firmware's own refusal, kept: a nameless theme hashes to a constant,
+	// so the endpoint answers the hub's error, not a stem.
+	if env := get("slug=clock"); env["ok"] == true {
+		t.Errorf("an empty name returned %v, want the nameless refusal", env)
+	}
+	if c := called(); c.path != "" {
+		t.Errorf("a stem question reached the orb: %+v", c)
 	}
 }

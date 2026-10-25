@@ -1061,6 +1061,11 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
             "that row carries an alpha stride, which the class never bakes", whysz);
         return ORB_ASSET_CLASS;
     }
+    /* A shape probe asks only whether the row is there and how big it is, so it
+     * must not be refused for the size it is probing: NULL buf means "verify,
+     * report the extent, copy nothing" (the header's contract), and the extent
+     * stays reported on this answer. The cap check below is for real reads only. */
+    if (!buf) return ORB_ASSET_OK;
     if (e.size > cap) {
         if (why && whysz) snprintf(why, whysz,
             "the plane is %lux%lu (%lu B of RGB565) and the buffer holds %lu B",
@@ -1068,7 +1073,6 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
             (unsigned long)e.size, (unsigned long)cap);
         return ORB_ASSET_ROOM;
     }
-    if (!buf) return ORB_ASSET_OK;            /* shape probe: verify, do not copy */
 
     size_t pos = sec->art_off + e.off;
     const ssize_t got = rd_at(fd, &pos, buf, e.size);

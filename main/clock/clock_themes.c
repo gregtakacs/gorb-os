@@ -148,10 +148,10 @@ static void job_run(void *arg)
 }
 
 /* Runs on the worker. arg is the theme id the cursor rested on, copied by the
- * queue. The read is transient: the shape probe (cap 0 — a plane that exists
- * answers ROOM with its extents, the header's documented probe idiom) sizes
- * the buffer to the plane's actual bytes, the class's square 2 B/px shape (a
- * preview for the 466 panel is 232x232, 107,648 B), and the buffer is
+ * queue. The read is transient: the shape probe (NULL buf — a plane that exists
+ * answers OK with its extents and copies nothing, the header's documented probe
+ * idiom) sizes the buffer to the plane's actual bytes, the class's square 2 B/px
+ * shape (a preview for the 466 panel is 232x232, 107,648 B), and the buffer is
  * published for the LVGL task to free. NO_SLOT and NO_CONTENT are the
  * absent-preview answers the design makes quiet (the row stays text-only), not
  * errors, so they publish an empty; the caller that shows status reads e for
@@ -172,9 +172,12 @@ static void pv_job_run(void *arg)
 
     uint16_t w = 0, h = 0;
     char why[72] = "";
+    /* The probe answers OK with the extent and copies nothing (NULL buf is the
+     * shape probe orb_theme.h documents); ROOM is the over-full-buffer refusal,
+     * which a probe cannot earn. A probe that found no row leaves w/h zero. */
     orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h,
                                                why, sizeof why);
-    if (a == ORB_ASSET_ROOM && w && h) {  /* a plane exists; this is its size */
+    if (a == ORB_ASSET_OK && w && h) {   /* a plane exists; this is its size */
         const uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
         uint8_t *px = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!px) {

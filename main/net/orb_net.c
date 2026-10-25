@@ -4506,6 +4506,85 @@ static esp_err_t h_theme_del(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
+/* GET /api/v1/sd/preview?id=X — one theme's preview plane, as bytes.
+ *
+ * The body is [u16 w LE][u16 h LE][w*h*2 B RGB565 little-endian], the same
+ * texel rule as /api/v1/fb?fmt=raw565. The 4-byte header is what lets a page
+ * size a canvas before the pixels land; the plane itself is verbatim out of
+ * the theme file's bank, unupscaled — a picker or page scales it as it likes.
+ *
+ * The read is transient and synchronous on the httpd task, the same call the
+ * glass picker posts to its worker: h_sd already walks the card on this task,
+ * and one preview is one probe plus one ≤108 KB read of one theme's own file
+ * (~82 ms measured on the store chain, less than this page's list call takes).
+ * It never touches the slot, the installer, or the LVGL task. An upload in
+ * flight is refused 503 rather than queued: the card is mid-copy and the file
+ * this call would read may be half its bytes — the h_fb one-at-a-time rule.
+ *
+ * Absent preview is the design's quiet answer (docs/theme-preview-plan.md §1):
+ * 404 with no plane, not an error worth a retry. A row that exists but will
+ * not draw answers 422 with the reader's own sentence, the h_sd rule that a
+ * refusal the owner can act on stays honest rather than reading as empty. */
+static esp_err_t h_sd_preview(httpd_req_t *req)
+{
+    char id[ORB_THEME_HANDLE_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
+    }
+    if (!orb_sd_mounted()) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"no theme on the card answers that id\"}");
+    }
+    if (orb_theme_upload_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"an upload holds the card\",\"retry\":\"later\"}");
+    }
+    char why[128] = "";
+    uint16_t w = 0, h = 0;
+    orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h, why, sizeof why);
+    if (a == ORB_ASSET_NO_SLOT || a == ORB_ASSET_NO_CONTENT) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"this theme carries no preview\"}");
+    }
+    if (a != ORB_ASSET_OK || !w || !h) {
+        char body[224];
+        snprintf(body, sizeof body, "{\"error\":\"%s\"}", why[0] ? why : "the preview row did not verify");
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, body);
+    }
+    const size_t bytes = (size_t)w * (size_t)h * 2u;
+    uint8_t *px = heap_caps_malloc(bytes + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!px) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"no room for the plane\"}");
+    }
+    px[0] = (uint8_t)(w & 0xff); px[1] = (uint8_t)(w >> 8);
+    px[2] = (uint8_t)(h & 0xff); px[3] = (uint8_t)(h >> 8);
+    a = orb_theme_preview_read(id, px + 4, bytes, &w, &h, why, sizeof why);
+    if (a != ORB_ASSET_OK) {                          /* raced into gone/unsound */
+        heap_caps_free(px);
+        char body[224];
+        snprintf(body, sizeof body, "{\"error\":\"%s\"}", why[0] ? why : "the preview vanished");
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, body);
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_send(req, (const char *)px, (size_t)4 + bytes);
+    heap_caps_free(px);
+    return r;
+}
+
 /* POST /api/v1/sd/rescan — the card-detect replacement. With no detect line wired,
  * this is the only way a card inserted after boot becomes visible without opening the
  * case or rebooting. */
@@ -5571,6 +5650,7 @@ static const char HTML_THEMES[] =
 ".row{border-bottom:1px solid #262626;padding:.5rem 0}"
 ".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
 "a{color:#7ad}"
+".pv{float:right;width:84px;height:84px;background:#000;border-radius:10px;margin:0 0 .3rem .5rem}"
 "</style></head><body>"
 "<h1>orb themes</h1>"
 "<div id=msg>loading&hellip;</div>"
@@ -5606,7 +5686,7 @@ static const char HTML_THEMES[] =
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
 "if(data.job_busy){h=h+'<div class=row><b>a theme job is running</b> <span class=sub>the copy is on the worker; the rows update when it lands</span></div>';}"
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
-"h=h+'<div class=row><div class=nm>'+esc(nm)"
+"h=h+'<div class=row>'+(t.ok?'<canvas class=pv data-id='+esc(t.id)+\" width=84 height=84></canvas>\":'')+'<div class=nm>'+esc(nm)"
 "+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
 "h=h+'<div class=sub>'+esc(t.app||'?')+' \\u00b7 '+esc((t.id||'').split('-').slice(1,-1).join('-'))+' \\u00b7 '+esc((t.id||'').slice(-12))+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
@@ -5615,9 +5695,10 @@ static const char HTML_THEMES[] =
 "if(t.ok&&t.stored&&!t.active){h=h+' <span class=sub>stored, re-store to draw it</span>';}"
 "if(!t.ok){h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why||'the card copy did not verify')+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
-"L.innerHTML=h;}"
+"L.innerHTML=h;var pvx=L.querySelectorAll('.pv');for(var k=0;k<pvx.length;k++){pv(pvx[k],pvx[k].getAttribute('data-id'));}}"
 
 
+"function pv(el,id){fetch('/api/v1/sd/preview?id='+encodeURIComponent(id)).then(function(r){if(!r.ok){return null;}return r.arrayBuffer();}).then(function(b){if(!b){el.style.visibility='hidden';return;}var dv=new DataView(b);if(dv.byteLength()<4){el.style.visibility='hidden';return;}var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);if(w<1||ht<1||dv.byteLength()<4+w*ht*2){el.style.visibility='hidden';return;}el.width=w;el.height=ht;var cx=el.getContext('2d'),im=cx.createImageData(w,ht),p=im.data;for(var i=0,n=w*ht;i<n;i++){var v=dv.getUint16(4+i*2,true);p[i*4]=(v>>11)<<3;p[i*4+1]=((v>>5)&63)<<2;p[i*4+2]=(v&31)<<3;p[i*4+3]=255;}cx.putImageData(im,0,0);}).catch(function(){el.style.visibility='hidden';});}"
 "function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "function store(id){var nm=ROWS[id]||id;"
 "if(!confirm('Store '+nm+' on the dial? It overwrites the current theme and the orb reboots onto it. A power cut during the copy leaves the base face, and storing again recovers it.')){return;}"
@@ -5900,7 +5981,7 @@ static esp_err_t net_start_httpd(void)
      * gated-off count 33 — and note the textual count now equals the cap exactly, so
      * the next door has to raise cfg.max_uri_handlers in the same change that adds
      * the table entry, or it registers nothing and logs the line below doing it. */
-    cfg.max_uri_handlers  = 36;
+    cfg.max_uri_handlers  = 40;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -6004,6 +6085,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
+        { .uri = "/api/v1/sd/preview",  .method = HTTP_GET,  .handler = h_sd_preview },
         { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },
         /* Android + iOS/macOS captive-portal probes (see h_captive). The last two
          * are Firefox's network-check and the old-Chromium/Kindle endpoint: a phone

@@ -125,6 +125,11 @@ def lifts(src):
         # names it, and C reads top to bottom.
         lift(src, r"static int cap_pack\(const orb_app_t \*a, int row\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"static void job_grant\(void \*arg\)\n\{[\s\S]*?\n\}", MENU_C),
+        # The share card's page functions (PG_SHARE), one lift: they are
+        # defined ahead of the shipped page block, and the lifted table names
+        # them, so the lift keeps that order.
+        lift(src, r"static int rows_share\(void\)[\s\S]*?"
+                  r"static const char \*hint_share\(void\)\n\{[\s\S]*?\n\}", MENU_C),
         # The page block as one lift: the top sub-table, every count, label,
         # title, hint, press, ordinal, enter and leave the table names, and
         # the sub-table's helpers between them. They ship as one unit, and a
@@ -461,6 +466,10 @@ const char *orb_app_opt_value(const orb_app_t *a, int i)
 { (void)a; return (i == 0) ? g_opt_val0 : g_opt_val1; }
 void orb_app_opt_sel(const orb_app_t *a, int i) { (void)a; g_activations++; g_last_opt_sel = i; }
 void orb_app_opt_arm(const orb_app_t *a, bool on) { (void)a; g_arms += on ? 1 : -1; }
+/* The page's own first refusal, pinned closed: every lifted long-press test here
+ * exercises the shell's group rule, which is the fall-through path the real
+ * dispatcher hands the shell when no app claims the hold. */
+bool orb_app_opt_long(const orb_app_t *a) { (void)a; return false; }
 /* D12's answer, off a settable table: the shape checks below are the whole point
  * of lifting the shell's nesting, and they need to hand it a page that nests.
  * g_kind_hook == 0 is the NULL hook — every row OPT_ROW, the page color_picker
@@ -1411,12 +1420,13 @@ int main(void)
 """
 
 
-# The two caps the shipped orb_theme_entry_t is sized with, lifted from the header
+# The caps the shipped orb_theme_entry_t is sized with, lifted from the header
 # alongside the struct itself: the row prints the name and addresses the theme by its
 # id, and a harness that hardcoded either length would keep passing while the device's
-# struct grew past it.
+# struct grew past it. The stem pair arrived with the 2026-10-24 card-naming rule.
 ENTRY_DEFS = "\n".join(lift(th_hdr, r"#define " + k + r"\s+\d+[^\n]*", TH_H)
-                      for k in ("ORB_THEME_NAME_MAX", "ORB_THEME_ID_HEX"))
+                      for k in ("ORB_THEME_NAME_MAX", "ORB_THEME_ID_HEX",
+                                "ORB_THEME_HANDLE_MAX", "ORB_THEME_APP_MAX"))
 
 def assembled(src):
     """The harness source: the shipped types and functions, spliced verbatim."""
@@ -1768,7 +1778,9 @@ MUTATIONS = [
      "                if (next > hi) next = hi;\n            }",
      "            if (0) { }"),
     ("the long press goes home instead of closing the group",
-     "    if (!s_armed || s_pg != P(PG_APP) || !s_app || s_group_open < 0) return false;",
+     "    if (!s_armed || s_pg != P(PG_APP) || !s_app) return false;\n"
+     "    if (orb_app_opt_long(s_app)) return true;\n"
+     "    if (s_group_open < 0) return false;",
      "    return false;"),
     ("an open header loses the fact that it is open",
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"',

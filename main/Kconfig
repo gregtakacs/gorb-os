@@ -503,8 +503,10 @@ menu "Orb USB file access"
             arm is one NVS word read-and-cleared at boot, so the port is the
             console and the flash path on every boot nobody asked about, and a
             device left plugged into a sleeping laptop comes back by itself at
-            its next reboot. The dial's row says "Restart to share files" before
-            the window and "Stop sharing, restart" during it.
+            its next reboot. The dial's row says "Share the disk now" before
+            the press, and every row of the page says "Press to restart, stop
+            sharing" while the window holds — the glass cannot repaint during
+            it, so the press is the door, found blind or not.
 
             Turned off, the source compiles to one function returning false and
             the port is only ever the console. The shipped build turns it ON, and

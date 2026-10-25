@@ -45,7 +45,12 @@ typedef void *orb_sd_raw_card_t;
 #define ORB_SD_BASE        "/sd"
 #define ORB_SD_THEME_DIR   ORB_SD_BASE "/themes"
 #define ORB_SD_APPS_DIR    ORB_SD_BASE "/apps"   /* the .orbapp drop zone; must equal ORB_APP_DIR */
-#define ORB_SD_NAME_MAX    31    /* one FATFS name, sans directory */
+/* ORB_SD_NAME_MAX was 31 until per-app theming: a theme stem carries a slug,
+ * a legible token, and a 12-hex id, and the volume admits 64
+ * (CONFIG_FATFS_MAX_LFN). The host suites lift these #define lines with a
+ * one-line regex, so the value line stays single-line and the prose lives
+ * above it. */
+#define ORB_SD_NAME_MAX    55    /* one FATFS name, sans directory */
 #define ORB_SD_PATH_MAX    128   /* ORB_SD_THEME_DIR + name + spare */
 
 /**

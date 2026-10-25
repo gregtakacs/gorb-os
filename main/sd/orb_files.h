@@ -46,7 +46,12 @@
 
 #define ORB_FILES_ID_MAX   15    /* the source's name, e.g. "themes" */
 #define ORB_FILES_DIR_MAX  64    /* a full directory path on /sd */
-#define ORB_FILES_MAX_NAME 32    /* one FATFS name, sans directory */
+/* ORB_FILES_MAX_NAME equals ORB_SD_NAME_MAX, not +1 as it was when the two
+ * read 32 and 31: the drift let the walk's buffer and the validator disagree
+ * about which names exist. orb_app_scan.h pins the direction the walk needs
+ * (ORB_SD_NAME_MAX <= ORB_FILES_MAX_NAME) with a static assert. The value line
+ * stays single-line: host_files_test.py lifts it with a one-line regex. */
+#define ORB_FILES_MAX_NAME 55    /* one FATFS name, sans directory */
 
 /** One declared source of files. `id` is what the app and the OS both call it by
  *  ("themes"); it reaches the browser in a query parameter, so it is matched

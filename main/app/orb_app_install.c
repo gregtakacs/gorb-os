@@ -187,7 +187,7 @@ static const char *TAG = "appinstall";
 /* What the last install attempt was on and what it failed with — the two
  * accessors the /apps refresh reads so the page shows the same words the dial
  * would (orb_theme.c's s_try_id/s_try_why rule). */
-static char s_try_stem[32];
+static char s_try_stem[ORB_SD_NAME_MAX + 1];
 static char s_try_why[128];
 
 const char *orb_app_install_try_stem(void) { return s_try_stem; }

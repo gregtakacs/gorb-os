@@ -31,7 +31,7 @@ const (
 	wArtSize    = 38 // W_SET_OFF 33, GEOM_OFF 34, GEOM_SIZE 35, GEOM_CRC 36, ART_OFF 37
 	slugBytes   = 24
 	titleBytes  = 32
-	appNameMax  = 31                // ORB_SD_NAME_MAX
+	appNameMax  = 55                // ORB_SD_NAME_MAX
 	appHdrWords = 39                // through W_ART_SIZE, the last word the double reads
 	appUploadMa = 0x40000 + 0x20000 // ORB_APP_UPLOAD_MAX
 )
@@ -82,7 +82,7 @@ type CardApp struct {
 // carries "hue", an alias that never appears in the ledger).
 var builtInSlugs = []string{"clock", "color_picker", "menu"}
 
-// sdNameOK is orb_sd_name_ok (orb_sd.c): 1..31 bytes of [A-Za-z0-9._-], no leading '.'.
+// sdNameOK is orb_sd_name_ok (orb_sd.c): 1..55 bytes of [A-Za-z0-9._-], no leading '.'.
 // Duplicated on purpose. The card stem is the one app identifier a caller controls, and a
 // double that accepts what the device refuses is how a traversal hole stays invisible
 // until it is on a device in someone's house.

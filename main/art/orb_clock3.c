@@ -25,15 +25,18 @@
  * esp_err.h, and this one compiles on a host. The suite pins the mirror, so a
  * class renamed on one side and not the other fails there — the discipline every
  * other counted vocabulary in this firmware uses. */
-static const char *const CLASS_NAMES[9] = {
-    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux"
+#define CLASS_N 10
+static const char *const CLASS_NAMES[CLASS_N] = {
+    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
+    "preview"
 };
 
-#define CLS_SPRITE 1
-#define CLS_HAND   2
-#define CLS_PLATE  3
-#define CLS_BANK   5
-#define CLS_AUX    8            /* D34: theme_schema.CLASS_AUX, appended at 8 */
+#define CLS_SPRITE    1
+#define CLS_HAND      2
+#define CLS_PLATE     3
+#define CLS_BANK      5
+#define CLS_AUX       8   /* D34: theme_schema.CLASS_AUX, appended at 8 */
+#define CLS_PREVIEW   9   /* the picker's plane, appended at 9: this dial does not draw it */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
 #define EF_DELTA_WRAP 64        /* §37: the row's LAST sprite, one past its own frame
                                  * window, is the rect that returns the finished canvas
@@ -262,7 +265,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
         int16_t *cell = NULL;
-        const char *nm = e.cls < 8 ? CLASS_NAMES[e.cls] : "?";
+        const char *nm = e.cls < CLASS_N ? CLASS_NAMES[e.cls] : "?";
         switch (e.cls) {
             case CLS_PLATE:
                 if (e.slot > 1)
@@ -320,15 +323,28 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                                   (unsigned)e.slot, (unsigned)CLK_AUX_MAX);
                 cell = &at_aux[e.slot];
                 break;
+            case CLS_PREVIEW:
+                /* The picker's plane rides the theme's table and this dial does not
+                 * draw it: the owner chooses a theme in the OS's app-scoped picker,
+                 * and the shell reads the extent by class through orb_elems.c. The
+                 * row claims no clock slot, so no `cell` is set and the walk below
+                 * (row_tag, nrows) still counts it: the theme's other rows can hang
+                 * a parent on it, and the projection's own refusal for a parent on
+                 * a class that is not AUX or BANK fires at the row's own dialect,
+                 * not at a nameplate it cannot verify. A second preview row is a
+                 * refusal by checkTable's class:slot uniqueness, not the clock's. */
+                break;
             default:
                 return reject("element %u is class %s: the compiled clock has no field "
                               "for it, and §25.3 rules it into the complication "
                               "mapping", (unsigned)e.n, nm);
         }
-        if (*cell >= 0)
-            return reject("two rows for %s slot %u: one slot draws one layer",
-                          nm, (unsigned)e.slot);
-        *cell = (int16_t)i;
+        if (cell) {
+            if (*cell >= 0)
+                return reject("two rows for %s slot %u: one slot draws one layer",
+                              nm, (unsigned)e.slot);
+            *cell = (int16_t)i;
+        }
 
         /* C4's per-row rules, run once the row has a slot: the delta columns
          * mean nothing to a v3 stamp (and the gate above already proved no v3

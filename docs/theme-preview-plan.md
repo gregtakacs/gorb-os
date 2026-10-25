@@ -11,9 +11,16 @@ file puts the decision and the honest current state where a session picks them u
 **Status: DESIGN RATIFIED; PARTLY BUILT.** The class `ORB_ASSET_PREVIEW` is
 appended at index 9 in `main/assets/orb_assets.h` (D34's AUX append is the
 pattern: end-of-enum, no ABI move, old firmware refuses by class). The reader's
-`orb_asset_slot_bytes()` gives it the two-byte RGB565 shape. No code path writes or
-reads a preview plane *yet*: the theme list stays text rows. The owner's report
-"I still don't see any previews" is correct — they were never baked.
+`orb_asset_slot_bytes()` gives it the two-byte RGB565 shape. The compiled dial's
+projection at `main/art/orb_clock3.c` accepts a class-9 row and skips it (the
+dial does not draw it; the OS picker reads it via `orb_elems.c`). The baker at
+`tools/watch-composer/orbtheme-baker.js` emits the plane on `bakeClock3({preview:
+{plane, x, y}})`: class 9 slot 0, one square frame at half the panel's edge,
+appended at the running end of the art bank so no other row's `frame0` shifts.
+Still unbuilt: `orb_theme_preview_read()` (a transient picker-side reader
+generalising the class-based find to any section), and the shell's paint at
+cursor-land. The owner's report "I still don't see any previews" is correct —
+nothing draws them yet on the glass.
 
 ## 1. The decision, revised (2026-10-25 session)
 
@@ -76,6 +83,10 @@ service lives inside the OS. Item 5 of the handoff closes on this.
 
 Still unbuilt (verified against the tree as of 2026-10-25):
 
+- **The class `PREVIEW` at index 9 is appended (previous session, `08d6f28`),
+  and the baker now writes a plane into the section's art bank. The compiled
+  dial's projection at `main/art/orb_clock3.c` accepts a class-9 row and skips
+  it, so a theme with a preview rides install on the shipped firmware.**
 - One-section enforcement and app-scoped identity DID land (`5af35cf`, `2d27e35`,
   `0668370`): the filename carries the app slug, and FORMAT 2 acceptance is retired.
   `ORB_BUNDLE_SECT_MAX` is still `8u` in `main/art/orb_bundle.h` — the design's

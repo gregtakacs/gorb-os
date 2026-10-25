@@ -724,8 +724,10 @@ MOTION_SLIDES = (MOTION_SLIDE_X, MOTION_SLIDE_Y)
 # per value", so OS advancement would march a date wheel on a tick nobody asked for.
 CLASS_APP_ADV = (CLASS_BANK, CLASS_TEXT, CLASS_STATUS)
 # Classes the OS composites rather than an app paints: a row claiming several frames
-# of a composited slot is a mistake about what the class is.
-CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS)
+# of a composited slot is a mistake about what the class is. A PREVIEW is one plane
+# (theme_schema.CLASS_PREVIEW's slot_bytes is RGB565, and the picker reads it
+# transiently as one picture): a second frame is a mistake about that too.
+CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW)
 
 
 def class_id(name):
@@ -1187,6 +1189,12 @@ if __name__ == "__main__":
         (_with(scale16=8), "scale below one sixteenth"),
         (_with(**{"class": CLASS_AUX, "kind": 1}), "a drive on a plain hand row"),
         (_with(flags=EF_DELTA_WRAP), "a closing delta on a hand row"),
+        # CLASS_PREVIEW: a preview row is one plane and this table refuses a second.
+        # The picker draws one picture; several frames would want a compositor the
+        # shell does not have, and the class's slot_bytes is w*h*2 for one plane.
+        (_with(**{"class": CLASS_PREVIEW, "n_frames": 2}), "an animated preview"),
+        (_with(**{"class": CLASS_PREVIEW, "kind": 1}), "a preview naming a driven kind"),
+        (_with(**{"class": CLASS_PREVIEW, "src": 1}), "a preview naming a driven source"),
         (_ax, "an accepted pointer refuses — the fixture broke"),
         (dict(_ax, kind=5), "motion past the vocabulary"),
         (dict(_ax, src=0), "a pointer driven by none"),

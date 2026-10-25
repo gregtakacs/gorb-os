@@ -384,6 +384,48 @@ ok(walkA.blob.scalars.bg_loop === 1 && dRowA.n_frames === 3 &&
 ok(bakedA.meter.artSize === 466 * 466 * 2 * 4 + 40 * 200 * 3,
    'the bank is three keyframes, §37\u2019s full-plane closing delta, and the masked hand',
    bakedA.meter.artSize + ' B');
+// ---- 7b-i-pre. A preview plane rides the same section's art bank (theme-preview-plan §2).
+// One row, class 9 slot 0, one plane of RGB565 (w*h*2), at the running end of the bank so
+// no other row's frame0 shifts. The compiled dial skips it and the OS reads it by class
+// through orb_elems.c. ----
+const PREVIEW_PLANE = (() => {
+  const r = new Uint8Array(232 * 232 * 4);
+  for (let i = 0; i < 232 * 232; i++) { r[i * 4] = 20; r[i * 4 + 1] = 40; r[i * 4 + 2] = 60; r[i * 4 + 3] = 255; }
+  return { rgba: r, w: 232, h: 232 };
+})();
+const bakedPrev = B.bakeClock3({ name: 'Bench Bake With Preview', serial: 20261021, bakedMs: 1730000001000,
+  plate: PL, hands: [HK], shadows: [SK], order: [0],
+  scalars: { shadow_on: 1, shadow_dx: 2, shadow_dy: 2 },
+  preview: { plane: PREVIEW_PLANE } });
+const walkPrev = B.verifyBundle3(bakedPrev.bytes).sections[0];
+const prevRow = walkPrev.blob.elements[walkPrev.blob.elements.length - 1];
+ok(walkPrev.blob.elements.length === 4 && prevRow.class === 9 && prevRow.slot === 0 &&
+   prevRow.n_frames === 1 && prevRow.w === 232 && prevRow.h === 232,
+   'the preview rides the last row, class 9 slot 0, one 232x232 plane',
+   'class ' + prevRow.class + ' slot ' + prevRow.slot + ' n_frames ' + prevRow.n_frames);
+ok(prevRow.frame0 === walkPrev.blob.sprites.length - 1 &&
+   walkPrev.blob.sprites[prevRow.frame0].size === 232 * 232 * 2,
+   'the row\\u2019s sprite is the bank\\u2019s last extent, and its size is the RGB565 2B/px the class rule prices',
+   'frame0 ' + prevRow.frame0 + ' size ' + walkPrev.blob.sprites[prevRow.frame0].size);
+ok(bakedPrev.meter.artSize === baked.meter.artSize + 232 * 232 * 2,
+   'the bank costs the same as the bake without a preview, plus one 2B/px plane at the end',
+   bakedPrev.meter.artSize + ' B against ' + baked.meter.artSize + ' + 107,648');
+// A preview plane at panel size is refused: the picker reads one into a buffer sized for
+// the half-res of the glass, and an oversized bake cannot be held on a slow path.
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0],
+  preview: { plane: { rgba: new Uint8Array(300 * 300 * 4), w: 300, h: 300 } } }),
+  'half-res',
+  'a preview plane past the panel half is refused at the bake\u2019s own door');
+// A non-square preview is refused: the OS card is square, so the plane is too.
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0],
+  preview: { plane: { rgba: new Uint8Array(100 * 200 * 4), w: 100, h: 200 } } }),
+  'square',
+  'a preview plane that is not square is refused');
+// A preview plane naming no pixels is refused before its extent is measured.
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0],
+  preview: { plane: { rgba: null, w: 232, h: 232 } } }),
+  'no plane',
+  'a preview plane naming no pixels is refused');
 // ---- 7b-ii. §36: the delta encoder's floor and its self-check read ONE number ----
 // The encoder drops a texel whose summed |dR|+|dG|+|dB|+|dA| is at or under DELTA_TOL, so the
 // verifier may only refuse drift PAST that same floor. The old byte-exact self-check refused the

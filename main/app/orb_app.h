@@ -119,6 +119,20 @@ typedef struct {
      *  C8, for closing an open option group without losing the page. NULL, the
      *  answer of every entry with nothing nested to collapse, takes nothing. */
     bool         (*opt_long)(orb_app_t *app);
+    /** The cursor landed on this entry's row idx (its own numbering, like
+     *  opt_sel). The entry may start a job here — the same licence opt_sel has —
+     *  and may not paint. NULL is the pre-preview ABI: an entry that never
+     *  heard of previews answers no row and its page stays text-only. */
+    void         (*opt_focus)(orb_app_t *app, int idx);
+    /** The plane to draw over the list for row idx, as a reaped answer only:
+     *  the same rule opt_label and opt_value live under — a read of state the
+     *  entry already has, never the card. Answers NULL (no plane: text-only
+     *  rows), or the plane with its drawn extent and a stamp that bumps with
+     *  every new answer. The buffer belongs to the entry; the shell blits it
+     *  and never frees it. NULL, the whole pre-preview ABI, is no plane on
+     *  every row. */
+    const void *(*opt_preview)(orb_app_t *app, int idx, uint16_t *w,
+                               uint16_t *h, uint32_t *stamp);
 } orb_app_iface_t;
 
 /** How a table entry participates in the knob's carousel. */
@@ -431,6 +445,17 @@ void orb_app_opt_arm(const orb_app_t *app, bool armed);
  *  the LVGL task, from the router's poll, so like every other answer here it may
  *  not block. */
 bool orb_app_opt_long(const orb_app_t *app);
+/** The cursor landed on row idx (app's own numbering). A NULL opt_focus hook is
+ *  the pre-preview ABI: the shell moves its highlight and the app never hears.
+ *  The hook runs on the LVGL task from the painter; like every answer here it
+ *  may not block, but — like opt_sel — it may start a job. */
+void orb_app_opt_focus(const orb_app_t *app, int idx);
+/** The plane to draw over the list at row idx, or NULL. A NULL hook, an
+ *  out-of-range row, and an app with nothing reaped all answer NULL, which is
+ *  the text-only page every pre-preview entry already draws. The plane is
+ *  owned by the app: the shell blits it and never frees it. */
+const void *orb_app_opt_preview(const orb_app_t *app, int idx, uint16_t *w,
+                                uint16_t *h, uint32_t *stamp);
 
 /**
  * D38: the USB share window's claim on the knob, asked once per router poll

@@ -8,7 +8,8 @@ reported "no thumbnail field in the FORMAT 3 header, so previews need a format
 decision," which read the wrong layer: the design never wanted a header field. This
 file puts the decision and the honest current state where a session picks them up.
 
-**Status: DESIGN RATIFIED; PARTLY BUILT.** The class `ORB_ASSET_PREVIEW` is
+**Status: DESIGN RATIFIED; BUILT ON GLASS, PARTLY BUILT ELSEWHERE.** The class
+`ORB_ASSET_PREVIEW` is
 appended at index 9 in `main/assets/orb_assets.h` (D34's AUX append is the
 pattern: end-of-enum, no ABI move, old firmware refuses by class). The reader's
 `orb_asset_slot_bytes()` gives it the two-byte RGB565 shape. The compiled dial's
@@ -17,7 +18,7 @@ dial does not draw it; the OS picker reads it via `orb_elems.c`). The baker at
 `tools/watch-composer/orbtheme-baker.js` emits the plane on `bakeClock3({preview:
 {plane, x, y}})`: class 9 slot 0, one square frame at half the panel's edge,
 appended at the running end of the art bank so no other row's `frame0` shifts.
-The firmware reader `orb_theme_preview_read()` (main/art/orb_theme.c) now resolves
+The firmware reader `orb_theme_preview_read()` (main/art/orb_theme.c) resolves
 the plane transiently out of a theme's card file: it generalizes the card-open
 door to any app slug (the picker's caller passes `handle`, and the file source
 under that slug's `orb_files_src(slug, "themes")` is walked; `card_open_verified_id3`
@@ -25,12 +26,18 @@ is now the clock-bound wrapper of the generalized `card_open_verified_slug3`), r
 the geometry region into a PSRAM scratch, and resolves (9, 0, 0) through
 `orb_elems_at` — so a weather theme's preview resolves against `weather/` without
 the clock being resident, and the absent-preview answer matches the design's rule
-(NO_CONTENT, never an error). Still unbuilt: the shell's paint at cursor-land (the
-worker read that copies the plane into a PSRAM buffer and the compositor that draws
-it), and the JS/HTTP surface (browser `GET /api/v1/sd/preview?id=<handle>` and its
-~30-line canvas unpack). The owner's report "I still don't see any previews" stays
-correct until those land — the reader is in the tree but nothing calls it yet on
-the glass.
+(NO_CONTENT, never an error). The shell's paint at cursor-land is BUILT (step 4):
+the app ABI answers two new optional doors — `opt_focus` (the cursor landed; may
+start a job, may not paint) and `opt_preview` (the reaped plane, its extent, and
+a stamp; may not touch the card) — the clock's picker posts one settled worker
+read of the plane into a PSRAM buffer through them, and `menu_view.c` blits the
+answer full-frame over the list on an `lv_image` that paints over the rows. The
+JS/HTTP surface is still unbuilt (browser `GET /api/v1/sd/preview?id=<handle>`
+and its ~30-line canvas unpack), as is content generation: existing themes in
+`art/` carry no preview row yet, so every shipped theme answers NO_CONTENT and
+draws its text-only row. The owner's report "I still don't see any previews"
+stays correct until a theme is baked with one; on such a theme the dial shows
+the plane now.
 
 ## 1. The decision, revised (2026-10-25 session)
 
@@ -62,13 +69,35 @@ append and zero format change.
   (`previewDate()`), moon 0.34 (`PREVIEW_MOON`), `watch-engine.js`. No pose
   metadata enters the file — the pose is a bake-time fact, not a runtime one.
 
-## 2. On glass (the render path, to be built)
+## 2. On glass (BUILT — step 4, this session)
 
 Landing the cursor on a theme row queues **one** worker read of that extent's
-`preview` plane (~108 KB, ~82 ms off the card). It is drawn full-frame over the
-list until the cursor moves. It is never in the flush path and never on the LVGL
-task — the card-read + scan blocking rule in `.clinerules` applies: a theme read on
-the poll freezes the dial for as long as the card mutex is held elsewhere.
+`preview` plane (~108 KB, ~82 ms off the card), after the cursor has rested on
+the row for one settle window (120 ms): a fast spin past ten themes costs one
+read of the theme the owner stopped on, not ten. The read runs on the shell's
+one worker (`orb_jobs_post`), never on the LVGL task and never in the flush
+path — the card-read + scan blocking rule in `.clinerules` holds. The answer
+publishes a PSRAM plane under the picker's own mutex, is reaped by the app's
+`service()` hook on the LVGL task, and is dropped (freed on the LVGL task, one
+repaint after the shell last blitted it) when the cursor moves on, the group
+closes, or the page is left.
+
+The ABI carries it through two optional doors appended to `orb_app_iface_t`
+(both NULL on every pre-preview entry, exactly `opt_kind`'s NULL-is-the-old-
+ABI pattern): `opt_focus(app, idx)` says the cursor landed on the app's row
+`idx` — the app's licence to start the worker read, the same licence `opt_sel`
+carries — and `opt_preview(app, idx, &w, &h, &stamp)` answers the reaped plane,
+its extent, and a publish stamp, from already-arrived state only: the same
+rule `opt_label`/`opt_value` live under. The shell asks both from `repaint()`
+(the one place that knows the cursor), draws the plane full-frame over the
+list on one hidden-by-default `lv_image` created last on the menu screen (so
+it paints over the rows and the share card can take it down), and upscales it
+to the glass by integer nearest (`antialias off`: a bake doubled, not a
+picture resampled). A plane that lands while the page stands still still
+reaches the glass: `menu_view_service()` re-asks `opt_preview` every poll and
+repaints on a stamp change — the same reap idiom the row count already uses,
+and `host_menu_test.py` pins both directions (a landing plane repaints; the
+check mutates red).
 
 ## 3. In the browser (to be built)
 

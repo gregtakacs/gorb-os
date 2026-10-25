@@ -173,6 +173,20 @@ const char *clock_opt_value(orb_app_t *a, int i) { (void)a; return (i == 0) ? "o
 void      clock_opt_inc(orb_app_t *a, int i, int32_t d) { (void)a; T("clock_inc(%d,%d)", i, (int)d); }
 void      clock_opt_sel(orb_app_t *a, int i) { (void)a; T("clock_sel(%d)", i); }
 void      clock_opt_arm(orb_app_t *a, bool on) { (void)a; T(on ? "clock_arm(1)" : "clock_arm(0)"); }
+/* Step 4: the cursor-land event and the plane answer, stubbed like the rest of
+ * the clock's option hooks. g_clock_pv_px is what a check can arm the fake with;
+ * the dispatchers' own bounds rules are tested below against them. */
+void      clock_opt_focus(orb_app_t *a, int i) { (void)a; T("clock_focus(%d)", i); }
+static uint8_t g_clock_plane_bytes[4];
+static const void *g_clock_pv_px;
+const void *clock_opt_preview(orb_app_t *a, int i, uint16_t *w, uint16_t *h,
+                              uint32_t *stamp)
+{
+    (void)a; (void)i;
+    if (!g_clock_pv_px) return NULL;
+    *w = 232; *h = 232; *stamp = 1;
+    return g_clock_plane_bytes;
+}
 /* D12's two new answers, stubbed the same way: this suite proves the registry
  * DISPATCHES them and defaults them sanely, and the answers' content is
  * host_menu_test.py's shape table to check. The clock says GROUP at row 1 and
@@ -183,6 +197,12 @@ orb_opt_kind_t clock_opt_kind(orb_app_t *a, int i)
                                                       (i == 2 ? OPT_ITEM : g_clock_kind); }
 static bool g_menu_long_taken;
 bool menu_view_opt_long(void) { T("menu_long"); return g_menu_long_taken; }
+/* D38 left this stub out of the harness: orb_app_share_gate reaches the share
+ * window's claim through it, and without the fake the lifted registry did not
+ * link at all (the suite has been red at HEAD since that hook landed). One
+ * recorder, answering false — the same shape menu_long carries. */
+static bool g_share_gate_claim;
+bool menu_view_share_gate(bool press) { (void)press; T("share_gate"); return g_share_gate_claim; }
 esp_err_t color_picker_init(void){ T("picker_init"); return g_rc_picker; }
 void color_picker_bind_app(orb_app_t *a) { (void)a; T("picker_bind"); }
 esp_err_t menu_view_init(void)   { T("menu_init");   return g_rc_menu; }
@@ -562,6 +582,32 @@ int main(void)
     ck("the clock declares no long-press hook, so it cannot swallow the escape hatch",
        orb_app_opt_long(clk) == false);
     ck("no entry at all takes nothing", orb_app_opt_long(NULL) == false);
+    /* Step 4's two doors. The focus event is opt_sel's licence spelled for the
+     * cursor: it dispatches for the app that names the hook and bounds-gates
+     * like every other answer. The plane door answers NULL three separate ways
+     * (no hook, no app, out of range) and every one of them is the text-only
+     * page, with the extents zeroed so a caller cannot paint a stale frame. */
+    TR(); orb_app_opt_focus(clk, 1);
+    ck("a cursor land reaches the app that names the hook",
+       strcmp(g_trace, "clock_focus(1)|") == 0);
+    TR(); orb_app_opt_focus(clk, 9); orb_app_opt_focus(clk, -1);
+    ck("a focus outside the count never reaches the app", g_trace[0] == '\0');
+    TR(); orb_app_opt_focus(pick, 0); orb_app_opt_focus(NULL, 0);
+    ck("a NULL focus hook and a NULL entry are skipped, not called", g_trace[0] == '\0');
+    uint16_t pw = 42, ph = 42; uint32_t pst = 42;
+    ck("an app with no preview hook answers the text-only NULL",
+       orb_app_opt_preview(pick, 0, &pw, &ph, &pst) == NULL &&
+       pw == 0 && ph == 0 && pst == 0);
+    ck("no entry answers NULL too",
+       orb_app_opt_preview(NULL, 0, &pw, &ph, &pst) == NULL && pst == 0);
+    ck("and so does a row outside the count, without asking the app",
+       orb_app_opt_preview(clk, 9, &pw, &ph, &pst) == NULL && pw == 0 && pst == 0);
+    g_clock_pv_px = g_clock_plane_bytes;
+    pw = ph = 0; pst = 0;
+    const void *pv = orb_app_opt_preview(clk, 1, &pw, &ph, &pst);
+    ck("with the hook armed, the plane and its extents answer",
+       pv == g_clock_plane_bytes && pw == 232 && ph == 232 && pst == 1);
+    g_clock_pv_px = NULL;
     if (menu) {
         g_menu_long_taken = true;
         ck("the shell entry can take it, and the router must then not home",

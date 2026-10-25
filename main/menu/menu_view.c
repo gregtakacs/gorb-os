@@ -408,6 +408,22 @@ static lv_obj_t *s_hint;
 static lv_obj_t *s_row[ROW_MAX];
 static lv_obj_t *s_row_lbl[ROW_MAX];
 
+/* The preview plane, B2's one image answer. One lv_image over the five row
+ * strips, built once at init and hidden until an app's opt_preview answers a
+ * plane for the row under the cursor — the same build-once/repaint-from-
+ * statics shape the row strips use, for the same reason: allocating under a
+ * turning knob fragments the heap the framebuffer is competing with. The
+ * dsc is the shell's own (the buffer it points at belongs to the app); the
+ * stamp keys the reap repaint, so a plane that lands while the page stands
+ * still still reaches the glass. The image is created after every other
+ * child of s_scr, so it paints over the list, which is what the design's
+ * "full-frame over the list" means: the rows stay painted under it, and the
+ * plane hides them. */
+static lv_obj_t         *s_pv_img;
+static lv_image_dsc_t    s_pv_dsc;
+static uint32_t          s_pv_stamp;      /* the stamp last painted; 0 = none */
+static uint16_t          s_pv_w, s_pv_h;  /* its drawn extent                 */
+
 static const lv_color_t COL_BG_SEL   = LV_COLOR_MAKE(0x2e, 0x5f, 0x8a);
 static const lv_color_t COL_BG_ROW   = LV_COLOR_MAKE(0x18, 0x18, 0x18);
 static const lv_color_t COL_TXT_HI   = LV_COLOR_MAKE(0xff, 0xff, 0xff);
@@ -1398,6 +1414,71 @@ static void dial_text(char *dst, size_t dstsz, const char *src)
     dst[o] = '\0';
 }
 
+/* The app's plane answer for the row under the cursor, or NULL. Pure: no
+ * widget, so the host suite compiles it and the service() recheck below reads
+ * the same truth the painter draws. The answer comes from the app's reaped
+ * state only (opt_preview's own rule); asking is not starting — the focus
+ * event that may start a read is orb_app_opt_focus, and service() never
+ * focuses. */
+static const void *app_preview(uint16_t *w, uint16_t *h, uint32_t *stamp)
+{
+    if (!s_armed || s_pg != P(PG_APP) || !s_app) return NULL;
+    const int rows = orb_app_opt_count(s_app);
+    const int ar = vis_to_row(rows, s_cur);
+    if (ar < 0 || drawn_kind(rows, ar) != OPT_ITEM) return NULL;
+    return orb_app_opt_preview(s_app, ar, w, h, stamp);
+}
+
+/* The preview plane's paint. Runs on the LVGL task from repaint() — the one
+ * place that knows which row the cursor is on. The ask goes out first (the
+ * focus event is the app's licence to start one worker read — opt_sel's
+ * licence, spelled for the cursor); the answer drawn is app_preview's, which
+ * is reaped state only: the callback that paints the page never touches the
+ * card, the same rule opt_label and opt_value live under. */
+static void paint_preview(void)
+{
+    if (s_pg == P(PG_APP) && s_app) {
+        const int rows = orb_app_opt_count(s_app);
+        const int ar = vis_to_row(rows, s_cur);
+        if (ar >= 0) orb_app_opt_focus(s_app, ar);
+    }
+
+    uint16_t w = 0, h = 0;
+    uint32_t stamp = 0;
+    const void *px = app_preview(&w, &h, &stamp);
+
+    /* The stamp is the answer's own "this is a new plane" word; a plane whose
+     * extents change without a new stamp is the same repaint trigger. A NULL
+     * answer means hide: the text rows this repaint just drew stand. */
+    const bool same = px && stamp == s_pv_stamp && w == s_pv_w && h == s_pv_h;
+    if (!px) {
+        s_pv_stamp = 0;
+        if (s_pv_img) lv_obj_add_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (same) return;                    /* unchanged plane; no re-blit */
+
+    memset(&s_pv_dsc, 0, sizeof s_pv_dsc);
+    s_pv_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
+    s_pv_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;   /* the class's shape   */
+    s_pv_dsc.header.w      = w;
+    s_pv_dsc.header.h      = h;
+    s_pv_dsc.header.stride = (uint32_t)w * 2u;         /* 2 B/px, opaque      */
+    s_pv_dsc.data_size     = (uint32_t)w * (uint32_t)h * 2u;
+    s_pv_dsc.data          = (const uint8_t *)px;
+    s_pv_w = w; s_pv_h = h; s_pv_stamp = stamp;
+
+    lv_image_set_src(s_pv_img, &s_pv_dsc);
+    lv_obj_set_size(s_pv_img, w, h);
+    lv_image_set_pivot(s_pv_img, w / 2, h / 2);
+    /* The half-res square the design reserves, upscaled to the glass — nearest
+     * (antialias off above): a bake doubled, not a picture resampled. */
+    const int scale = (w && SCREEN_WIDTH >= w) ? (SCREEN_WIDTH * 256 / w) : 256;
+    lv_image_set_scale(s_pv_img, (uint32_t)scale);
+    lv_obj_center(s_pv_img);
+    lv_obj_remove_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* Repaint from the model. Called only from the LVGL task (via apply_input or
  * service), never from the worker — which is the entire point of the queue. */
 static void repaint(void)
@@ -1417,6 +1498,12 @@ static void repaint(void)
             lv_label_set_text(s_row_lbl[i], "");
             lv_obj_set_style_bg_color(s_row[i], lv_color_black(), 0);
         }
+        /* The window's card is the whole glass: any plane the page had up goes
+         * with it. The share window can open over an armed options page, and a
+         * preview left on the mirror under a frozen panel is a picture of a
+         * theme painting over the one fact the card exists to carry. */
+        s_pv_stamp = 0;
+        lv_obj_add_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN);
         const bool closing = orb_usb_msc_stopping();
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
         lv_label_set_text(s_title, "USB SHARED");
@@ -1494,6 +1581,13 @@ static void repaint(void)
         dial_text(gl, sizeof gl, s_ui.status);
         lv_label_set_text(s_status, gl);
     }
+
+    /* The plane over the list, asked and drawn in the same pass that decided
+     * the list: one repaint, one source of truth about which row is under the
+     * cursor. Hidden on every page that is not an app's open group — a plane
+     * surviving a page change is the last theme's picture over a page that
+     * never mentioned it. */
+    paint_preview();
 
     lv_obj_invalidate(s_scr);
 }
@@ -1588,6 +1682,18 @@ esp_err_t menu_view_init(void)
     lv_label_set_text(s_hint, "push to open");
     lv_obj_align(s_hint, LV_ALIGN_BOTTOM_MID, 0, -34);
 
+    /* The preview plane, created last so it paints over every other child. It
+     * carries no style of its own: an RGB565 plane is opaque, and the design
+     * says full-frame. The size and the source are set when a plane arrives
+     * (the extent comes from the app with the answer); until then it is
+     * hidden, and the pivot is its centre so a square plane scaled 2x stays
+     * centred on the 466 glass. */
+    s_pv_img = lv_image_create(s_scr);
+    if (!s_pv_img) goto nomem;
+    lv_obj_add_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN);
+    lv_image_set_antialias(s_pv_img, false);      /* 2x nearest, not a resample */
+    lv_obj_remove_flag(s_pv_img, LV_OBJ_FLAG_CLICKABLE);
+
     repaint();
     ESP_LOGI(TAG, "menu ready (worker up, %d zones, %s)", orb_net_tz_count(),
              orb_sd_mounted() ? "card mounted" : "no card");
@@ -1599,7 +1705,7 @@ nomem:
      * init leaves no dangling screen for menu_view_screen()/repaint() to touch
      * and nothing held across the failure. The next boot starts from empty. */
     lv_obj_del(s_scr);
-    s_scr = NULL; s_title = NULL; s_status = NULL; s_hint = NULL;
+    s_scr = NULL; s_title = NULL; s_status = NULL; s_hint = NULL; s_pv_img = NULL;
     for (int i = 0; i < ROW_MAX; i++) { s_row[i] = NULL; s_row_lbl[i] = NULL; }
     vSemaphoreDelete(s_res_mx);
     s_res_mx = NULL;
@@ -2064,19 +2170,28 @@ void menu_view_service(void)
         repaint();
     }
 #endif
-    /* Two independent reasons to repaint, either of which can fire without the
-     * other: this screen's own worker landing a result (s_dirty), and the app
+    /* Three independent reasons to repaint, any of which can fire without the
+     * others: this screen's own worker landing a result (s_dirty), and the app
      * PG_APP is showing gaining or losing rows out from under a paint. The
      * second is the one that makes a theme page reachable at all — entering it
      * posts the clock's card walk, that walk reaps in orb_app_service_all()
      * BEFORE menu_service is ever reached, so by the time this runs the app
      * already has four rows the glass has never drawn. Without the count
      * re-check the page opens on an empty list and only fills in once the owner
-     * turns the knob, which reads as the card being ignored. */
+     * turns the knob, which reads as the card being ignored. The third is the
+     * same reap for the plane: the preview read lands on the app's worker and
+     * changes no row count, so without the stamp re-check a plane that arrives
+     * while the cursor rests paints nothing until the next detent — the
+     * "previews never show" bug written into the layout. */
     const bool app_grew = (s_pg == P(PG_APP) && s_app &&
                            page_rows() != s_painted_rows);
+    uint16_t pw = 0, ph = 0;
+    uint32_t pst = 0;
+    const void *px = app_preview(&pw, &ph, &pst);
+    const bool pv_landed = (px != NULL) != (s_pv_stamp != 0) ||
+                           (px && (pst != s_pv_stamp || pw != s_pv_w || ph != s_pv_h));
     const bool own_result = s_dirty;
-    if (!own_result && !app_grew) return;
+    if (!own_result && !app_grew && !pv_landed) return;
     s_dirty = false;
 
     if (own_result) {

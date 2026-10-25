@@ -122,6 +122,8 @@ static const orb_app_iface_t s_clock_iface = {
     .opt_inc     = clock_opt_inc,
     .opt_sel     = clock_opt_sel,
     .opt_arm     = clock_opt_arm,
+    .opt_focus   = clock_opt_focus,
+    .opt_preview = clock_opt_preview,
 };
 
 static esp_err_t picker_init(orb_app_t *app)
@@ -1174,6 +1176,34 @@ bool orb_app_opt_long(const orb_app_t *app)
      * router's to spend on going home (C8). */
     if (!app || !app->iface || !app->iface->opt_long) return false;
     return app->iface->opt_long((orb_app_t *)app);
+}
+
+void orb_app_opt_focus(const orb_app_t *app, int idx)
+{
+    /* A NULL hook is the whole pre-preview ABI: the shell moved its cursor and
+     * this entry has no reason to hear about it. The bounds check is the
+     * wrappers' own, like opt_kind's: a focus on a row the app did not count
+     * must not reach it, because the count is the app's and the cursor is the
+     * shell's, and the two agree only through this door. */
+    if (!app || !app->iface || !app->iface->opt_focus) return;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
+    app->iface->opt_focus((orb_app_t *)app, idx);
+}
+
+const void *orb_app_opt_preview(const orb_app_t *app, int idx, uint16_t *w,
+                                uint16_t *h, uint32_t *stamp)
+{
+    /* Every refusal here answers NULL — no hook, no entry, an out-of-range row —
+     * and NULL is the shell's own "text-only" answer, the state the whole tree
+     * was in before previews existed. The extents and the stamp are written only
+     * with a plane; a caller that reads them on a NULL reads its own stale
+     * frame, so they are zeroed first. */
+    if (w) *w = 0;
+    if (h) *h = 0;
+    if (stamp) *stamp = 0;
+    if (!app || !app->iface || !app->iface->opt_preview) return NULL;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return NULL;
+    return app->iface->opt_preview((orb_app_t *)app, idx, w, h, stamp);
 }
 
 bool orb_app_share_gate(bool press)

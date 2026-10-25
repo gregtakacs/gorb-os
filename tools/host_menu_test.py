@@ -152,6 +152,14 @@ def lifts(src):
         lift(src, r"#define MENU_POS_NS[\s\S]*?nvs_close\(h\);\n\}", MENU_C),
         lift(src, r"void menu_view_set_armed\(bool armed\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_apply_input\(int32_t delta, bool pressed\)\n\{[\s\S]*?\n\}", MENU_C),
+        # Step 4: the plane answer for the row under the cursor, lifted so the
+        # service() re-check compiles against the shipped translation and not a
+        # restated one: it is the only path from the app's reaped plane to the
+        # repaint decision this suite can observe. Ahead of the service lift —
+        # C reads the spliced file top to bottom, and the shipped service()
+        # calls it.
+        lift(src, r"static const void \*app_preview\(uint16_t \*w, uint16_t \*h,"
+                   r" uint32_t \*stamp\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_service\(void\)\n\{[\s\S]*?\n    repaint\(\);\n\}", MENU_C),
         # D12: the long press that closes an open group instead of going home.
         # It touches no widget directly (repaint() is stubbed above), so it
@@ -374,8 +382,46 @@ const char *orb_net_tz_label(int i) { return g_tz_labels[i < 8 ? i : 7]; }
  * unfalsifiable-fix repaint_lint was later added to catch. */
 static int  s_painted_rows;      /* stamped by the stub below, read by the lifted service() */
 static int  page_rows(void);     /* the lifted definition follows */
+static const void *app_preview(uint16_t *w, uint16_t *h, uint32_t *stamp);
+                                 /* the lifted definition follows; the stub below
+                                  * reads it the way the shipped repaint does */
+/* Step 4: the plane the last repaint drew, the shipped paint_preview stamps.
+ * The lifted service() reads these directly (the pv_landed re-check), and the
+ * shipped repaint() is the writer, so the stub mirrors that stamping exactly —
+ * otherwise the check below would pass against a service() that never repaints
+ * for a plane, which is the "previews never show" bug the layout names. */
+static uint32_t s_pv_stamp;
+static uint16_t s_pv_w, s_pv_h;
+static int  g_focus = -1;
+/* The app's preview answer, settable per check: a fake plane the shell can be
+ * made to see. The dispatcher itself is the real one (compiled from orb_app.c);
+ * this fake stands for the clock's opt_preview hook. */
+static uint8_t g_fake_plane[8];
+static const void *g_pv_px;
+static uint16_t g_pv_pw, g_pv_ph;
+static uint32_t g_pv_pstamp;
+static void pv_set(const void *px, uint16_t w, uint16_t h, uint32_t stamp)
+{ g_pv_px = px; g_pv_pw = w; g_pv_ph = h; g_pv_pstamp = stamp; }
+void orb_app_opt_focus(const orb_app_t *a, int i) { (void)a; g_focus = i; }
+const void *orb_app_opt_preview(const orb_app_t *a, int i, uint16_t *w,
+                                uint16_t *h, uint32_t *stamp)
+{
+    (void)a; (void)i;                     /* the fake answers every row the same */
+    if (w) *w = g_pv_pw;
+    if (h) *h = g_pv_ph;
+    if (stamp) *stamp = g_pv_pstamp;
+    return g_pv_px;
+}
 static int  g_repaints;
-static void repaint(void) { g_repaints++; s_painted_rows = page_rows(); }
+static void repaint(void)
+{
+    g_repaints++;
+    s_painted_rows = page_rows();
+    uint16_t w = 0, h = 0; uint32_t st = 0;
+    const void *px = app_preview(&w, &h, &st);
+    if (px) { s_pv_stamp = st; s_pv_w = w; s_pv_h = h; }
+    else { s_pv_stamp = 0; }
+}
 static int  g_homes;               /* the share card's park lands here */
 static void input_router_home(void) { g_homes++; }
 /* Item 3's exit door: the lifted go_to/opt_long reach the save only through
@@ -1125,6 +1171,45 @@ int main(void)
     menu_view_service();
     ck("and settles once it has caught up", g_repaints == base_paints + 1);
     g_opt_n = 2;
+
+    /* ---- the preview plane landing repaints the shell (step 4) -------------
+     * The plane arrives on the app's own worker, and it changes no row count:
+     * a menu_view_service() that repainted only on s_dirty and app_grew would
+     * sit showing text under a plane the app already has — the report "I still
+     * don't see any previews". The fake answers with one plane after the
+     * settle, and g_repaints is the witness again; the mutation list pins that
+     * dropping the pv_landed re-check reddens this check. */
+    g_opt_n = 3; g_kind_hook = true; g_nkind = 3;
+    g_kind[0] = OPT_GROUP; g_kind[1] = OPT_ITEM; g_kind[2] = OPT_ITEM;
+    g_pv_px = NULL;
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    s_group_open = 0; s_cur = 1;                    /* cursor on an item row  */
+    s_dirty = false;
+    repaint();                                      /* settled: no plane yet  */
+    const int pv_base = g_repaints;
+    s_dirty = false;
+    menu_view_service();
+    ck("no plane, no repaint", g_repaints == pv_base && s_pv_stamp == 0);
+    pv_set(g_fake_plane, 232, 232, 7);               /* the read landed        */
+    s_dirty = false;
+    menu_view_service();
+    ck("the plane landing repaints with every menu flag clear",
+       g_repaints > pv_base && s_pv_stamp == 7);
+    menu_view_service();
+    ck("and settles once it has caught up, plane stamped",
+       g_repaints == pv_base + 1);
+    pv_set(g_fake_plane, 232, 232, 9);               /* a re-read, new answer  */
+    s_dirty = false;
+    menu_view_service();
+    ck("a stamp change repaints even on the same buffer", g_repaints > pv_base + 1);
+    pv_set(NULL, 0, 0, 0);                           /* the plane withdrawn    */
+    s_dirty = false;
+    const int off_paints = g_repaints;
+    menu_view_service();
+    ck("a plane taken back repaints the list back",
+       g_repaints > off_paints && s_pv_stamp == 0);
+    g_kind_hook = false; g_opt_n = 2; g_app_rows_n = 3;
+    s_group_open = -1; s_cur = 0;
     /* Entered properly: the go_back() above left PG_TOP with s_app cleared, and
      * an app page that was never entered proves nothing about leaving one. */
     g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
@@ -1795,9 +1880,19 @@ MUTATIONS = [
     # The bug that made a theme page unreachable-but-not-obvious: the app's scan
     # lands with the menu's own worker idle, so a service() that repaints only on
     # s_dirty opens the page empty. Forcing that back must red the new check.
+    # Step 4 added pv_landed to the same guard; each re-check is mutated out of
+    # the shipped text separately, and each mutation is written against the
+    # three-reason guard as it now ships.
     ("the app's scan landing no longer repaints the shell",
-     "    const bool own_result = s_dirty;\n    if (!own_result && !app_grew) return;",
-     "    const bool own_result = s_dirty;\n    (void)app_grew;\n    if (!own_result) return;"),
+     "    if (!own_result && !app_grew && !pv_landed) return;",
+     "    (void)app_grew;\n    if (!own_result && !pv_landed) return;"),
+    # Step 4: the plane landing is the third reason. The shipped guard now reads
+    # all three, so this mutation is written against the shipped text: forcing
+    # pv_landed out must redden the plane-landing checks, exactly as the
+    # app_grew mutation reddens the scan-landing check.
+    ("the plane landing no longer repaints the shell",
+     "    if (!own_result && !app_grew && !pv_landed) return;",
+     "    (void)pv_landed;\n    if (!own_result && !app_grew) return;"),
     ("page_rows forgets that unarmed means no list",
      "static int page_rows(void) { return s_armed && s_pg->rows ? s_pg->rows() : 0; }",
      "static int page_rows(void) { return s_pg->rows ? s_pg->rows() : 0; }"),

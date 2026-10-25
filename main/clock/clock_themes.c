@@ -40,6 +40,8 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_timer.h"     /* the preview's settle timer */
+#include "esp_heap_caps.h" /* the plane's PSRAM buffer */
 
 static const char *TAG = "clock_theme";
 
@@ -64,6 +66,51 @@ static cui_t   s_shared;    /* worker writes this under s_mx */
 static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
 static bool    s_armed;
+
+/* ---- the preview plane (docs/theme-preview-plan.md §2) --------------------
+ *
+ * The picker draws one theme's `preview` plane when the cursor lands on its
+ * row, and the card walk that reads it cannot run on the LVGL task: holding
+ * the card there freezes the dial for as long as the mutex is held elsewhere.
+ * So this is the same worker/service split the row list already uses, one
+ * plane deep — and the same discipline: nothing that touches a widget runs on
+ * the worker, and nothing that blocks runs on the LVGL task.
+ *
+ * s_pvx is the worker's answer (written under s_mx); s_pvu is the copy the
+ * paint and the opt_preview answer read (LVGL task only). The plane buffer is
+ * allocated transiently per read on the worker and freed on the LVGL task at
+ * the reap — a buffer the shell may still be blitting is never freed from
+ * under it, so a superseded read's buffer is freed only once its answer is no
+ * longer the one being displayed. An absent preview is an empty answer
+ * (ORB_ASSET_NO_CONTENT), never an error: the row stays text-only.
+ */
+#define PV_SETTLE_MS 120     /* the cursor rests this long before a read starts */
+
+typedef struct {
+    uint8_t  *px;                     /* RGB565 plane, w*h*2 bytes; NULL = none */
+    uint16_t  w, h;                   /* its extent                             */
+    char      id[ORB_THEME_HANDLE_MAX + 1];  /* the theme it was read for — the
+                                              * whole card stem, the same width
+                                              * orb_theme_entry_t.id carries    */
+    uint32_t  gen;                    /* bumped per publish, incl. empty ones   */
+    esp_err_t e;                      /* ESP_OK, or why the read refused        */
+    char      why[72];                /* the reader's sentence when e != ESP_OK */
+} pv_t;
+
+static pv_t    s_pvx;                 /* worker writes under s_mx              */
+static pv_t    s_pvu;                 /* LVGL task only: what paint answers    */
+static volatile bool s_pv_dirty;      /* an answer is waiting to be reaped     */
+static int     s_pv_row = -1;         /* the app row the cursor rests on       */
+static int64_t s_pv_since;            /* us at the last row change             */
+static uint32_t s_pv_gen;             /* publish counter, worker-owned         */
+
+static void pv_publish(const pv_t *src)
+{
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    s_pvx = *src;
+    xSemaphoreGive(s_mx);
+    s_pv_dirty = true;                /* published last, as publish() does */
+}
 
 static void publish(const cui_t *src)
 {
@@ -100,6 +147,57 @@ static void job_run(void *arg)
     publish(&out);
 }
 
+/* Runs on the worker. arg is the theme id the cursor rested on, copied by the
+ * queue. The read is transient: the shape probe (cap 0 — a plane that exists
+ * answers ROOM with its extents, the header's documented probe idiom) sizes
+ * the buffer to the plane's actual bytes, the class's square 2 B/px shape (a
+ * preview for the 466 panel is 232x232, 107,648 B), and the buffer is
+ * published for the LVGL task to free. NO_SLOT and NO_CONTENT are the
+ * absent-preview answers the design makes quiet (the row stays text-only), not
+ * errors, so they publish an empty; the caller that shows status reads e for
+ * the rest. A post that raced a card pull answers NO_SLOT from the reader's
+ * own door and is reported the same quiet way. */
+static void pv_job_run(void *arg)
+{
+    const char *id = (const char *)arg;
+    pv_t out;
+    memset(&out, 0, sizeof out);
+    strlcpy(out.id, id, sizeof out.id);
+    out.gen = ++s_pv_gen;                 /* worker-owned counter, one writer */
+
+    if (!orb_sd_mounted() || orb_theme_upload_busy()) {
+        pv_publish(&out);                 /* empty, quiet: no card, no plane */
+        return;
+    }
+
+    uint16_t w = 0, h = 0;
+    char why[72] = "";
+    orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h,
+                                               why, sizeof why);
+    if (a == ORB_ASSET_ROOM && w && h) {  /* a plane exists; this is its size */
+        const uint32_t bytes = (uint32_t)w * (uint32_t)h * 2u;
+        uint8_t *px = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!px) {
+            out.e = ESP_ERR_NO_MEM;
+        } else {
+            a = orb_theme_preview_read(id, px, bytes, &w, &h, why, sizeof why);
+            if (a == ORB_ASSET_OK) { out.px = px; out.w = w; out.h = h; }
+            else heap_caps_free(px);      /* read refused after the alloc */
+        }
+    }
+    /* NO_SLOT/NO_CONTENT stay e=ESP_OK with a NULL plane: the quiet no-preview
+     * answer. Anything else the caller can name carries the reader's sentence,
+     * and the reap puts it on the status line the page already owns. */
+    if (a != ORB_ASSET_OK && a != ORB_ASSET_ROOM &&
+        a != ORB_ASSET_NO_SLOT && a != ORB_ASSET_NO_CONTENT) {
+        out.e = ESP_FAIL;
+        strlcpy(out.why, why[0] ? why : "the preview could not be read",
+                sizeof out.why);
+        ESP_LOGW(TAG, "preview \"%s\": %s", id, why);
+    }
+    pv_publish(&out);
+}
+
 /* The one job this file owns. A refused post is reported, not swallowed: a page
  * that sits at its old rows because the queue was busy is the "card ignored me"
  * report, and the shell's busy gate is the only reason it happens. */
@@ -126,16 +224,81 @@ const char *clock_themes_status(void)
 void clock_themes_reset(void)
 {
     /* Nothing to carry: the rows are re-walked on entry, so there is no mid-list
-     * position to restore and no stale row to point at. */
+     * position to restore and no stale row to point at. The preview goes with
+     * the rows — the leave path drops the plane, so re-entering answers "what
+     * is on the card" again rather than holding a picture of the theme the
+     * cursor last sat on. */
+    clock_themes_drop_preview();
+}
+
+/* Drop the displayed plane and any published-but-unreaped answer. Runs on the
+ * LVGL task only (the leave path, and service()'s discard): the buffer it
+ * frees may be the one the shell blitted on the last repaint, and the worker
+ * never paints, so the worker never frees. */
+void clock_themes_drop_preview(void)
+{
+    if (s_pvu.px) heap_caps_free(s_pvu.px);
+    memset(&s_pvu, 0, sizeof s_pvu);
+    s_pv_row = -1;
+    s_pv_since = 0;
 }
 
 void clock_themes_service(void)
 {
-    if (!s_dirty) return;
-    s_dirty = false;
-    xSemaphoreTake(s_mx, portMAX_DELAY);
-    s_ui = s_shared;
-    xSemaphoreGive(s_mx);
+    if (s_dirty) {
+        s_dirty = false;
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        s_ui = s_shared;
+        xSemaphoreGive(s_mx);
+    }
+
+    /* A cursor that moved while a read was in flight invalidates that read: the
+     * row the answer names is no longer the one on the glass. The reaper
+     * compares the answer's id against the row the cursor rests on and frees a
+     * plane that arrived for the wrong one — so a fast spin past a theme costs
+     * one wasted card read and never one wrong picture. */
+    if (s_pv_dirty) {
+        s_pv_dirty = false;
+        pv_t next;
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        next = s_pvx;
+        memset(&s_pvx, 0, sizeof s_pvx);      /* ownership moves with the copy */
+        xSemaphoreGive(s_mx);
+
+        const int i = (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n)
+                    ? s_pv_row - ROW_ITEMS : -1;
+        const bool mine = i >= 0 && next.id[0] &&
+                          strcmp(next.id, s_ui.e[i].id) == 0;
+        if (!mine) {
+            if (next.px) heap_caps_free(next.px);
+            if (s_pvu.px) heap_caps_free(s_pvu.px);
+            memset(&s_pvu, 0, sizeof s_pvu);
+            if (next.gen >= s_pvu.gen) s_pvu.gen = next.gen;   /* paint still keys off it */
+        } else {
+            if (s_pvu.px) heap_caps_free(s_pvu.px);
+            s_pvu = next;
+            if (s_pvu.e != ESP_OK && s_pvu.why[0])
+                strlcpy(s_ui.status, s_pvu.why, sizeof s_ui.status);
+        }
+    }
+
+    /* The settle: post one read once the cursor has rested on a theme row for
+     * PV_SETTLE_MS with the worker free. The rest rule is the whole reason a
+     * land queues a read at all — a read per detent through a 62-row spin is
+     * ~108 KB of card work per stop and the knob never answers; a read after
+     * the spin costs the one theme the owner stopped on. */
+    if (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n && s_pv_since &&
+        !orb_jobs_busy() &&
+        esp_timer_get_time() / 1000 - s_pv_since / 1000 >= PV_SETTLE_MS) {
+        const int i = s_pv_row - ROW_ITEMS;
+        if (!s_pvu.px || strcmp(s_pvu.id, s_ui.e[i].id) != 0) {
+            s_pv_since = 0;                   /* one post per land, settled */
+            const esp_err_t e = orb_jobs_post(pv_job_run, s_ui.e[i].id,
+                                              strlen(s_ui.e[i].id) + 1);
+            if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+                ESP_LOGW(TAG, "preview post refused (%s)", esp_err_to_name(e));
+        }
+    }
 }
 
 /* Chosen by index, never by a cursor of this module's own: the shell owns the
@@ -323,6 +486,50 @@ void clock_opt_arm(orb_app_t *app, bool armed)
     } else {
         clock_themes_reset();
     }
+}
+
+void clock_opt_focus(orb_app_t *app, int idx)
+{
+    /* The preview read is a card read: the manifest declares sd_read and the
+     * gate says whether it still runs, exactly as clock_opt_arm's walk does.
+     * A revoked cap makes the focus a no-op — the revoke is already on the
+     * status line from the arm, and a row with no preview is the same page
+     * every theme without one draws. */
+    if (!orb_grant_ok(app, CAP_SD_READ)) return;
+    /* The shell tells the app where its cursor landed, in the app's own row
+     * numbers. A land on the group header (row 0) or past the walk's end shows
+     * nothing; the plane drops so the list the owner can actually see is the
+     * list on the glass. A land on the same row is not a new land: the settle
+     * only re-arms when the row changes. */
+    if (idx == s_pv_row) return;
+    s_pv_row = idx;
+    s_pv_since = idx >= ROW_ITEMS ? esp_timer_get_time() : 0;
+    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) {
+        if (s_pvu.px) heap_caps_free(s_pvu.px);
+        memset(&s_pvu, 0, sizeof s_pvu);
+    }
+}
+
+const void *clock_opt_preview(orb_app_t *app, int idx, uint16_t *w,
+                              uint16_t *h, uint32_t *stamp)
+{
+    (void)app;
+    /* The answer half, not the ask: it reads only the reaped plane (s_pvu), the
+     * same rule opt_label and opt_value live under — the callback that answers
+     * a row is the dial's animation, and a card read here would hold the task
+     * that paints it. NULL is the text-only answer: nothing reaped for this
+     * row, a theme with no preview (NO_CONTENT, never an error), a page whose
+     * cursor is not on an item, or a group that is closed. */
+    if (!s_pvu.px || idx != s_pv_row) return NULL;
+    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) return NULL;
+    /* §6's identity rule applies to a picture too: the plane answers the row
+     * that carries the same id it was read for. A card re-walk that moved the
+     * theme out from under the cursor answers text, not the old face. */
+    if (strcmp(s_ui.e[idx - ROW_ITEMS].id, s_pvu.id) != 0) return NULL;
+    *w = s_pvu.w;
+    *h = s_pvu.h;
+    *stamp = s_pvu.gen;
+    return s_pvu.px;
 }
 
 bool clock_opt_armed(void)

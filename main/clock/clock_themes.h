@@ -59,8 +59,16 @@ void clock_themes_pick(int idx);
 
 /** Leave the theme page: the cursor goes back to the top so re-entering answers
  *  "what is on the card" rather than dropping the owner mid-list where they
- *  left it, which on a round screen with no scroll bar reads as a lost knob. */
+ *  left it, which on a round screen with no scroll bar reads as a lost knob.
+ *  The preview plane goes with the visit (clock_themes_drop_preview). */
 void clock_themes_reset(void);
+
+/** Free the preview plane the shell may be blitting and any published answer.
+ *  Call from the LVGL task only — the buffer it frees is one the paint may
+ *  have drawn on the last repaint, and only the task that paints may retire a
+ *  buffer it painted. clock_themes_reset() runs it; it is exposed for the same
+ *  reason reset() is. */
+void clock_themes_drop_preview(void);
 
 #ifdef __cplusplus
 }
@@ -90,6 +98,9 @@ orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx);
 void         clock_opt_inc(orb_app_t *app, int idx, int32_t steps);
 void         clock_opt_sel(orb_app_t *app, int idx);
 void         clock_opt_arm(orb_app_t *app, bool armed);
+void         clock_opt_focus(orb_app_t *app, int idx);
+const void  *clock_opt_preview(orb_app_t *app, int idx, uint16_t *w,
+                               uint16_t *h, uint32_t *stamp);
 
 #ifdef __cplusplus
 }

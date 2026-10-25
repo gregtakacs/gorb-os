@@ -218,7 +218,7 @@ func TestContainerAcceptsBothCapsExactly(t *testing.T) {
 		// the budget gate, whose rule is `== cap` accepted.
 		if tc.word == wGeomSize {
 			putWord(body, wArtOff, 65536)
-			putWord(body, wArtSize, 4096)   // the fixture's own bank cannot span a moved art start
+			putWord(body, wArtSize, 4096) // the fixture's own bank cannot span a moved art start
 		}
 		putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
 		c, err := ContainerName(body)
@@ -285,13 +285,41 @@ func TestLargestLegalBundleIsExactlyTheProxyCap(t *testing.T) {
 // identical file with the identical sentence; the hub's door says it first.
 func TestContainerReportsNoSectionsOnALiedIndex(t *testing.T) {
 	body := fixture(t, "format3-pair.orbtheme")
-	putWord(body, wNSections, 3) // the index head still says 2
+	putWord(body, wNSections, 3) // the index head still says 1
 	putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
 	c, err := ContainerName(body)
 	if err == nil {
 		t.Fatalf("a miscounted index sailed through the hub: %+v", c)
 	}
-	if !strings.Contains(err.Error(), "header names 3 sections, the index holds 2") {
+	if !strings.Contains(err.Error(), "header names 3 sections, the index holds 1") {
 		t.Errorf("err = %v, want the firmware's header-vs-index sentence", err)
+	}
+}
+
+// The authority ships a second file on purpose: the same bytes plus a weather section
+// written through the writer's rejection-vector bypass. ContainerName refuses it with
+// the device's door sentence (orb_theme.c's one_section_why), and ParseContainer still
+// walks it — the wire reads 1..8, so a multi-section file stays nameable in a refusal
+// and is never guessed past its first slug.
+func TestContainerRefusesTheRejectionVector(t *testing.T) {
+	body := fixture(t, "format3-two-app.orbtheme")
+	c, err := ContainerName(body)
+	if err == nil {
+		t.Fatalf("a two-app container passed the hub gate: %+v", c)
+	}
+	if !strings.Contains(err.Error(), "a theme file carries exactly one section — this one carries 2") {
+		t.Errorf("err = %v, want the door's one-section sentence", err)
+	}
+	p, perr := ParseContainer(body)
+	if perr != nil {
+		t.Fatalf("the wire reader could not walk the rejection vector: %v", perr)
+	}
+	if p.NSections != 2 || p.Sections[0] != "clock" {
+		t.Errorf("parse fields = n=%d first=%q, want n=2 first=clock", p.NSections, p.Sections[0])
+	}
+	side := fixtureSidecar(t)
+	stems := side["card_stems"].(map[string]any)
+	if p.ID != stems["clock"].(string) {
+		t.Errorf("first-slug id is %q, want the pair fixture's clock stem %v (same name, same slug, same hash)", p.ID, stems["clock"])
 	}
 }

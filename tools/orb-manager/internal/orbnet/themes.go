@@ -46,8 +46,8 @@ import (
 // therefore the id, alone, so a row can read active while the card underneath it has
 // moved.
 type ThemeEntry struct {
-	Name    string `json:"name"`
-	ID      string `json:"id"`
+	Name string `json:"name"`
+	ID   string `json:"id"`
 	// App is the stem's first token — the owning app — even on a row whose header
 	// never got read. It is what the hub's card groups by, and what the device's
 	// own picker filters on. "" only on a device too old to answer it.
@@ -157,7 +157,7 @@ func StemParts(stem string) (slug, token, hexTail string) {
 	return stem[:f], stem[f+1 : l], stem[l+1:]
 }
 
-func stemSlug(stem string) string { s, _, _ := StemParts(stem); return s }
+func stemSlug(stem string) string  { s, _, _ := StemParts(stem); return s }
 func stemToken(stem string) string { _, t, _ := StemParts(stem); return t }
 func stemHex(stem string) string   { _, _, h := StemParts(stem); return h }
 
@@ -226,7 +226,6 @@ func ThemeIDHexOf(slug, name string) (string, error) {
 	d := sha256.Sum256([]byte(slug + "/" + name))
 	return hex.EncodeToString(d[:])[:ThemeIDHex], nil
 }
-
 
 // ThemeNameMax is ORB_THEME_NAME_MAX - 1 from main/art/orb_theme.h: the name field is
 // 56 bytes and the last is the NUL the C reader stops at, so 55 bytes is the longest

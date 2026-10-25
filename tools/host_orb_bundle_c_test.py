@@ -426,7 +426,7 @@ def read_verdict(raw):
     with open(p, "wb") as f:
         f.write(raw)
     try:
-        return ob.read_bundle(p)
+        return ob.read_bundle(p, theme=False)  # parity is wire-level; the door rule has its own vectors
     except ValueError as e:
         return str(e)
 
@@ -779,7 +779,7 @@ def _slot_image(raw, h, recs, region, cur):
     with open(p, "wb") as f:
         f.write(bytes(img))
     try:
-        return ob.read_bundle(p), None
+        return ob.read_bundle(p, theme=False), None  # parity is wire-level; the door rule has its own vectors
     except ValueError as e:
         return None, str(e)
 

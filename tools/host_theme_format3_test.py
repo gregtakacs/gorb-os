@@ -3,8 +3,10 @@
 
 Four things this proves and nothing else.
 
-1. A bundle round-trips: two sections written, read back byte-identical, in slug
-   order, with negative scalars intact and the resolver answering a miss with None.
+1. A bundle round-trips: one section written, read back byte-identical, with
+   negative scalars intact and the resolver answering a miss with None. A FORMAT 3
+   file themes exactly one app, and part 3 pins that the writer and the reader both
+   refuse a second section in the device's door sentence.
 2. The budget gate bites at BOTH ends (D29, P6.2): a region past the dial's table
    area and a payload past the slot's art budget are refused in the sentences the
    device prints, at the writer and at the reader alike, and == cap is accepted.
@@ -45,19 +47,24 @@ def elem(n, cls, slot, order, **kw):
 
 ART_A = bytes((i * 7) & 0xFF for i in range(4096))
 ART_B = bytes((i * 13 + 5) & 0xFF for i in range(2048))
-SECTIONS = [
-    {"slug": "paint_studio", "scr_w": 464, "scr_h": 464,
-     "elements": [elem(0, ts.CLASS_SPRITE, 0, 0, x=-12, y=300)],
-     "sprites": [{"off": 0, "size": 2048, "w": 64, "h": 64}],
-     "art": ART_B},
-    {"slug": "clock", "scr_w": 464, "scr_h": 464,
-     "elements": [elem(0, ts.CLASS_PLATE, 0, 0, x=100, y=100, w=32, h=32),
-                  elem(1, ts.CLASS_HAND, 0, 1, frame0=6, n_frames=12,
-                       flags=ts.EF_OS_ADV, radius=90)],
-     "scalars": {"tourbillon_n": 12, "shadow_dx": -3, "bg": 0x11223344},
-     "sprites": [{"off": 0, "size": 1024, "w": 32, "h": 32}],
-     "art": ART_A},
-]
+# GATE is the two-row clock a budget probe wants: small, known region, 4096 B bank.
+# SECTIONS is the round-trip model — one section, holding every row the old
+# two-section model carried, the sprite's offset shifted behind the clock bank the
+# same way make_bundle_fixture.py shifts weather's rows into the owning file.
+GATE = {
+    "slug": "clock", "scr_w": 464, "scr_h": 464,
+    "elements": [elem(0, ts.CLASS_PLATE, 0, 0, x=100, y=100, w=32, h=32),
+                 elem(1, ts.CLASS_HAND, 0, 1, frame0=6, n_frames=12,
+                      flags=ts.EF_OS_ADV, radius=90)],
+    "scalars": {"tourbillon_n": 12, "shadow_dx": -3, "bg": 0x11223344},
+    "sprites": [{"off": 0, "size": 1024, "w": 32, "h": 32}],
+    "art": ART_A,
+}
+SECTIONS = [dict(GATE,
+                 elements=GATE["elements"] + [elem(2, ts.CLASS_SPRITE, 0, 2, x=-12, y=300)],
+                 sprites=GATE["sprites"] + [{"off": len(ART_A), "size": 2048,
+                                             "w": 64, "h": 64}],
+                 art=ART_A + ART_B)]
 
 tmp = tempfile.mktemp(suffix=".orbtheme")
 
@@ -65,33 +72,33 @@ tmp = tempfile.mktemp(suffix=".orbtheme")
 # ---------------------------------------------------------------------------
 # 1. Round trip.
 # ---------------------------------------------------------------------------
-size = ob.write_bundle(tmp, "Two App Bundle", SECTIONS)
+size = ob.write_bundle(tmp, "One App Bundle", SECTIONS)
 raw = open(tmp, "rb").read()
 h, secs = ob.read_bundle(tmp)
 check(h["fmt"] == ob.FORMAT3, "header does not stamp format 3")
 check(h["abi"] == ob.GEOM_ABI3, "header does not stamp geometry v3")
-check(h["n_sections"] == 2, "header word 9 lost the section count")
-check(h["name"] == "Two App Bundle", "the bundle name came back wrong (R4 input)")
-check(ot.theme_id("clock", h["name"]) == ot.theme_id("clock", "Two App Bundle"),
+check(h["n_sections"] == 1, "header word 9 lost the section count")
+check(h["name"] == "One App Bundle", "the bundle name came back wrong (R4 input)")
+check(ot.theme_id("clock", h["name"]) == ot.theme_id("clock", "One App Bundle"),
       "a bundle's theme_id does not run through the (slug, name) pair (R4)")
 check(ot.theme_id("clock", h["name"]) != ot.theme_id("paint_studio", h["name"]),
       "the same name under two apps hashes to one id: per-app theming says two")
-check([x["blob"]["slug"] for x in secs] == ["clock", "paint_studio"],
-      "sections did not come back slug-sorted, although the writer sorts them")
+check([x["blob"]["slug"] for x in secs] == ["clock"],
+      "a one-section bundle did not come back as the one section it is")
 c = ob.find_section(secs, "clock")
-p = ob.find_section(secs, "paint_studio")
-check(c is not None and p is not None, "the resolver lost a section that is there")
-check(ob.find_section(secs, "weather") is None,
-      "find_section invented an answer for a slug no theme carries (D31)")
-check(c["art"] == ART_A and p["art"] == ART_B, "a bank came back not byte-identical")
+check(c is not None, "the resolver lost the section that is there")
+check(ob.find_section(secs, "weather") is None and
+      ob.find_section(secs, "paint_studio") is None,
+      "find_section invented an answer for a slug no theme carries (D31, one-section)")
+check(c["art"] == ART_A + ART_B, "a bank came back not byte-identical")
 check(c["blob"]["scalars"]["shadow_dx"] == -3,
       "a negative i8 scalar came back as %r, not -3" % c["blob"]["scalars"]["shadow_dx"])
 check(c["blob"]["scalars"]["tourbillon_n"] == 12, "a u8 scalar came back wrong")
 check(c["blob"]["scalars"]["bg"] == 0x11223344, "a u32 scalar came back wrong")
-check(p["blob"]["elements"][0]["x"] == -12,
+check(c["blob"]["elements"][2]["x"] == -12,
       "an element at x=-12 did not survive the round trip")
 check(c["blob"]["elements"][1]["flags"] & ts.EF_OS_ADV, "EF_OS_ADV was lost in the pack")
-check(c["blob"]["sprites"] == SECTIONS[1]["sprites"], "the sprite directory drifted")
+check(c["blob"]["sprites"] == SECTIONS[0]["sprites"], "the sprite directory drifted")
 check(h["art_off"] % ot.SECTOR == 0, "the art region starts off a sector boundary")
 check(all(r["rec"]["art_off"] % ot.SECTOR == 0 for r in secs),
       "a bank starts off a sector boundary; the device mmaps them")
@@ -146,24 +153,24 @@ def _read_forged(word, val, suffix):
 
 
 try:
-    # SECTIONS[1] alone: region 48 + (4+26+2*ts.ELEMENT_WORDS_V3+4) words, one 4096 B
+    # GATE alone: region 48 + (4+26+2*ts.ELEMENT_WORDS_V3+4) words, one 4096 B
     # bank. The figure moves with the width the default (v3) pack lays, because a
     # budget gate pinned to one width would test the width and not the rule (D32
     # ruled append-only, and C4's delta width is opt-in per section).
     ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8 - 1
     _gate("region past the table area", "table area",
-          lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
+          lambda: ob.write_bundle(tmp + ".x", "Gate", [GATE]))
     _gate("the refusal is the device's pre-erase sentence", "overrun the pixels",
-          lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
+          lambda: ob.write_bundle(tmp + ".x", "Gate", [GATE]))
     ob.GEOM_CAP = _real_geom
     ob.SLOT_ART_CAP = 4095
     _gate("payload past the art budget", "larger than a slot",
-          lambda: ob.write_bundle(tmp + ".x", "Gate", [SECTIONS[1]]))
+          lambda: ob.write_bundle(tmp + ".x", "Gate", [GATE]))
     # The moved boundary, §21's lesson stated for themes: == cap is legal.
     ob.SLOT_ART_CAP = 4096
     ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8
     try:
-        ob.write_bundle(tmp + ".x", "Edge", [SECTIONS[1]])
+        ob.write_bundle(tmp + ".x", "Edge", [GATE])
         _h, _s = ob.read_bundle(tmp + ".x")
         check(_h["art_size"] == 4096 and _s[0]["blob"]["slug"] == "clock",
               "the == cap file wrote and read but not intact")
@@ -187,8 +194,10 @@ sent("reader: payload == cap passes the gate", "runs past",
      lambda: _read_forged(7, ob.SLOT_ART_CAP, ".f4"))
 
 # §21's deferred bound, paid: the FORMAT 2 writer takes the same two device
-# sums, in copy_into's verbatim sentences. bake_clock.py --orbtheme reaches
-# this function, and so does every host-side emitter of a legacy container.
+# sums, in copy_into's verbatim sentences. FORMAT 2 is retired — no device,
+# hub, or reader installs a v2 file any more, and write_container survives only as
+# the generator of the legacy artifact these refusal rows need. Nothing that ships
+# a theme reaches for it.
 sent("format 2 writer: oversized geometry", "geometry would overrun the pixels",
      lambda: ot.write_container(tmp + ".v2g", "BigGeom",
                                 b"\x00" * (ot.GEOM_BUDGET + 1),
@@ -211,20 +220,25 @@ except ValueError as _e:
 # ---------------------------------------------------------------------------
 # 3. Refusals, each isolated by the word its own rule must produce.
 # ---------------------------------------------------------------------------
-sent("duplicate slug", "twice",
-     lambda: ob.write_bundle(tmp + ".x", "Dup", [dict(SECTIONS[1]), dict(SECTIONS[1])]))
+sent("two apps in one file", "exactly one section",
+     lambda: ob.write_bundle(tmp + ".x", "Dup", [dict(GATE), dict(GATE, slug="paint_studio")]))
 sent("slug charset", "lowercase",
-     lambda: ob.write_bundle(tmp + ".x", "Bad", [dict(SECTIONS[1], slug="Clock")]))
+     lambda: ob.write_bundle(tmp + ".x", "Bad", [dict(GATE, slug="Clock")]))
 sent("slug too long", "1..23", lambda: ob.check_slug("x" * 30))
-sent("nine sections", "1..8",
+sent("nine sections", "exactly one section",
      lambda: ob.write_bundle(tmp + ".x", "Nine",
-                             [dict(SECTIONS[1], slug="s%d" % i) for i in range(9)]))
-sent("nameless bundle", "name", lambda: ob.write_bundle(tmp + ".x", "", [SECTIONS[1]]))
+                             [dict(GATE, slug="s%d" % i) for i in range(9)]))
+sent("the shipped rejection vector", "exactly one section",
+     lambda: ob.read_bundle(os.path.join(HERE, os.pardir, "tests", "fixtures",
+                                         "format3-two-app.orbtheme")))
+sent("a two-section write names the count", "carries 2",
+     lambda: ob.write_bundle(tmp + ".x", "Dup2", [dict(GATE), dict(GATE, slug="weather")]))
+sent("nameless bundle", "name", lambda: ob.write_bundle(tmp + ".x", "", [GATE]))
 sent("empty section", "neither",
      lambda: ob.write_bundle(tmp + ".x", "Void", [{"slug": "clock"}]))
 sent("sprite past its bank", "past its own bank",
      lambda: ob.write_bundle(tmp + ".x", "Run",
-                             [dict(SECTIONS[1], sprites=[{"off": 0, "size": 10 ** 7,
+                             [dict(GATE, sprites=[{"off": 0, "size": 10 ** 7,
                                                           "w": 1, "h": 1}])]))
 sent("unknown class row", "class", lambda: ob.pack_blob("clock", [elem(0, 99, 0, 0)]))
 sent("unknown scalar name", "dialect",
@@ -328,10 +342,11 @@ def restamp(buf):
     return bytes(buf)
 
 
-# Move section 1's stored geom_off by 4 and re-stamp: only the walk check stands.
+# Move the one record's stored geom_off by 4 and re-stamp: only the walk check
+# stands. (The one-section file has no second record to mislocate; the walk
+# refuses the first record's lie just as hard.)
 bad_off = bytearray(raw)
-# section 1's record is the second: at geom_off + 8 + 10 words.
-r1 = 128 + 8 + ob.IDX_WORDS * 4
+r1 = 128 + 8  # section 0's record: straight past the index head
 go_word = struct.unpack_from("<I", bytes(bad_off), r1 + 12)[0]  # geom_off: past the 4 u16s + slug_off
 struct.pack_into("<I", bad_off, r1 + 12, go_word + 4)
 offpath = tempfile.mktemp(suffix=".orbtheme")

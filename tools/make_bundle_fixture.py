@@ -10,8 +10,11 @@ number rather than against a guess.
 
 The bundle is deliberately not minimal:
 
-  * two sections, so the index walk and the slug sort are exercised;
-  * an animated sprite (12 frames, EF_OS_ADV) in the weather section, because D32's
+  * ONE section — the rule since per-app theming: a FORMAT 3 file themes exactly
+    one app, its card stem names that app, and every writer here refuses a second
+    section. The weather content below lives inside the clock section as rows of the
+    generic dialect so the index walk and the multi-row blob are still exercised;
+  * an animated sprite (12 frames, EF_OS_ADV), because D32's
     animated region rides a sprite row and a fixture with only single-frame rows would
     let a writer drop multi-frame planes and still pass;
   * a bank with four plates, because a bank is the other legal multi-frame row and the
@@ -36,6 +39,8 @@ import theme_schema as ts
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
                    "tests", "fixtures", "format3-pair.orbtheme")
 SIDE = os.path.splitext(OUT)[0] + ".json"
+TWO = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                   "tests", "fixtures", "format3-two-app.orbtheme")
 NAME = "Longplayer Pair"
 # Fixed, not a clock: a fixture that changed every time it was baked could not be the one
 # file four readers are pinned against, and a diff of the .orbtheme would say nothing about
@@ -94,7 +99,8 @@ clock_elems = [
 # is also ONE frame now: the compiled dial turns one plane per hand slot, so a row
 # naming twelve would sit inside the catalogue's letter and outside the dial's use —
 # the animated row in this fixture's clock dialect is the pointer, and the multi-frame
-# OS-ADV row the writers still pin lives in the weather section.
+# OS-ADV row the writers still pin is the sprite the weather section used to carry, now
+# merged in below: the file has one owner, and the rows it themes are that owner's.
 aux_ptr_art = plane(28, 64, 41) + bytes([0xFF]) * (28 * 64)
 hand_art = plane(40, 200, 9) + bytes((i * 13 + 9) & 0xFF for i in range(40 * 200))  # one masked plane
 # The glass is a sprite the compositor blends, so it carries the planar alpha
@@ -132,15 +138,24 @@ weather_sprites = [
      "w": 48, "h": 48},
 ]
 
+# One section, owning both dialects' rows. The weather rows enter the merged file after
+# the clock art, so the three rows' sprite ranges shift by the clock bank's length —
+# the offsets a sprite row answers to live in the sprite directory, not the row.
+_LA = len(clock_art)
 SECTIONS = [
-    {"slug": "clock", "elements": clock_elems, "art": clock_art,
-     "sprites": clock_sprites, "scr_w": 466, "scr_h": 466,
+    # The weather rows re-number behind the clock rows: a section's row identities are
+    # unique inside it, and merging sections means merging the identity space too.
+    {"slug": "clock", "elements": clock_elems +
+                 [dict(e, n=e["n"] + 4, order=e["order"] + 4) for e in weather_elems],
+     "art": clock_art + weather_art,
+     "sprites": clock_sprites +
+                [{k: (v + _LA if k == "off" else v) for k, v in sp.items()}
+                 for sp in weather_sprites],
+     "scr_w": 466, "scr_h": 466,
      # D34: orb_clock3 refuses a seated live hand the order table omits — the
      # fixture's own hand at slot 0 must be named, so this clock is a projection
      # -legal dial and not just wire-legal bytes.
      "scalars": {"order0": 0, "order_n": 1}},
-    {"slug": "weather", "elements": weather_elems, "art": weather_art,
-     "sprites": weather_sprites},
 ]
 
 def write_vectors(outdir):
@@ -265,11 +280,24 @@ def main():
         return read_back(sys.argv[sys.argv.index("--read-back") + 1])
     if "--vectors" in sys.argv:
         return write_vectors(sys.argv[sys.argv.index("--vectors") + 1])
-    # Written to a sibling and renamed in: the hub's tests read this file straight off
-    # disk, and a reader that catches a half-written bundle reports a layout failure the
-    # format never had.
+    # Written to a sibling and renamed in: the hub's tests read these files straight
+    # off disk, and a reader that catches a half-written bundle reports a layout
+    # failure the format never had.
     tmp = OUT + ".tmp"
     ob.write_bundle(tmp, NAME, SECTIONS, serial=SERIAL, baked_ms=BAKED_MS)
+
+    # The second file is the REJECTION vector: the same bytes the authority ships,
+    # plus a weather section bolted back on through the writer's bypass. Every door
+    # in the repo (C, the fake, the hub, this package's own reader) must name it
+    # with the one-section sentence, and a reader-side mirror that quietly accepted
+    # it would fail on this file and not on a synthesized forgery.
+    two = [dict(SECTIONS[0]),
+           {"slug": "weather", "elements": weather_elems, "art": weather_art,
+            "sprites": weather_sprites}]
+    tmp2 = TWO + ".tmp"
+    ob.write_bundle(tmp2, NAME, two, serial=SERIAL, baked_ms=BAKED_MS,
+                    one_section=False)
+    os.replace(tmp2, TWO)
 
     hdr, secs = ob.read_bundle(tmp)  # the authority reads back what it wrote
     raw = open(tmp, "rb").read()

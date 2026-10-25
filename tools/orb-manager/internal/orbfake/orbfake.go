@@ -28,13 +28,13 @@ import (
 // Theme is one card row, holding the fields h_sd actually formats: the owner's name,
 // the id derived from it, and the two load-state bits a page needs.
 type Theme struct {
-	Name    string
+	Name string
 	// App is the owning app slug — the stem's first token. Per-app theming
 	// files every card row under "<app>-<token>-<hex>"; a seeded row that names no
 	// app is the clock's, which is what every orb's card carried before themes had
 	// owners.
-	App string
-	ID  string
+	App     string
+	ID      string
 	Why     string
 	Bytes   int
 	Serial  int
@@ -425,6 +425,17 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 	if ferr != "" {
 		writeJSON(w, 422, fmt.Sprintf(`{"error":"rejected","detail":%q}`, ferr))
 		return
+	}
+	// The door's one rule, in the door's words (orb_theme.c's one_section_why): a
+	// FORMAT 3 file themes exactly one app, and a container naming two is a file no
+	// card stem could ever answer to. The device checks it after its parse passes;
+	// so does this double, between the name and the filing. The fallback below
+	// stays for the minimal header a test seeds without an index.
+	if len(body) >= fHdrBytes {
+		if n := binary.LittleEndian.Uint32(body[9*4:]); n != 1 {
+			writeJSON(w, 422, fmt.Sprintf(`{"error":"rejected","detail":"orbfake: a theme file carries exactly one section — this one carries %d"}`, n))
+			return
+		}
 	}
 	// The double keeps the firmware's filing rule, not the client's: a FORMAT 3
 	// container themes exactly one app, so its upload files under that app's slug.

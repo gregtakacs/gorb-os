@@ -2438,8 +2438,13 @@
       }
       seen[slug] = 1;
     }
-    if (!(sections.length >= 1 && sections.length <= SECT_MAX)) {
-      throw new Error('a bundle holds 1..' + SECT_MAX + ' app sections, not ' + sections.length);
+    // A FORMAT 3 file themes exactly one app: the card stem embeds that app's slug,
+    // so a second section is a file no single owner could install or evict, and the
+    // device's door (orb_theme.c's one_section_why) refuses it. This writer cannot
+    // produce one. The WIRE still reads 1..8 (unpackIndex3 above keeps parse_core's
+    // width, because a multi-section file stays a valid REJECTION vector).
+    if (sections.length !== 1) {
+      throw new Error('a theme file carries exactly one section — this one carries ' + sections.length);
     }
     sections.sort(function (a, b) { return a.slug < b.slug ? -1 : (a.slug > b.slug ? 1 : 0); });
 

@@ -90,7 +90,12 @@ type ThemeContainer struct {
 // the retired FORMAT 2, an ABI this build does not speak, a damaged header, a bundle over
 // either D29 cap, and a container with no name — in the device's own words, before any
 // byte crosses the room.
-func ContainerName(body []byte) (*ThemeContainer, error) {
+//
+// ParseContainer is the WIRE surface: it applies the reader's rules, which still walk an
+// index of 1..8 sections (orb_bundle.c's parse_core keeps that width, and a two-section
+// file stays a valid REJECTION vector worth parsing far enough to name). A caller that
+// wants the door's verdict wants ContainerName.
+func ParseContainer(body []byte) (*ThemeContainer, error) {
 	if len(body) < themeHdrBytes {
 		return nil, fmt.Errorf("orbnet: that file is %d B, shorter than the %d B header a .orbtheme starts with", len(body), themeHdrBytes)
 	}
@@ -142,10 +147,10 @@ func ContainerName(body []byte) (*ThemeContainer, error) {
 	// and nowhere else in the header. A container this reader cannot walk the index
 	// of has no identity to report, and the walk is refused rather than guessed —
 	// an id derived from the wrong slug addresses a file no orb will ever open.
-	// A multi-section bundle is filed under its FIRST section (the index is
-	// slug-sorted, so that is the app the device would resolve first); the device's
-	// door refuses such a container outright as of the one-section rule, and the
-	// hub's refusal follows the door's, not leads it.
+	// A container with more than one section still gets its fields and its first-slug
+	// identity here (the index is slug-sorted); ContainerName applies the door's one-
+	// section rule over the top, so a half-read multi-section file is nameable in an
+	// error report without ever passing for a theme.
 	slugs, err := indexSlugs(body, c.NSections, geomSize)
 	if err != nil {
 		return nil, err
@@ -154,6 +159,23 @@ func ContainerName(body []byte) (*ThemeContainer, error) {
 	c.ID, err = ThemeIDOf(slugs[0], name)
 	if err != nil {
 		return nil, err
+	}
+	return c, nil
+}
+
+// ContainerName is the upload gate the room's handlers use. It parses everything
+// ParseContainer does, then applies the one rule the device's door applies at the card
+// slot (orb_theme.c's one_section_why): a FORMAT 3 file themes EXACTLY one app — the
+// card stem carries that app's slug, and no stem covers two — so a second section is
+// a file no owner can install or evict. The refusal is the door's sentence, and it lands
+// before a byte crosses the room. The WIRE still reads 1..8; only the theme layer narrowed.
+func ContainerName(body []byte) (*ThemeContainer, error) {
+	c, err := ParseContainer(body)
+	if err != nil {
+		return nil, err
+	}
+	if c.NSections != 1 {
+		return nil, fmt.Errorf("orbnet: a theme file carries exactly one section — this one carries %d", c.NSections)
 	}
 	return c, nil
 }

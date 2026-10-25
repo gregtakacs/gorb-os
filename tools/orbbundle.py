@@ -367,7 +367,10 @@ def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
     return b"".join(struct.pack("<I", v) for v in hdr)
 
 
-def write_bundle(path, name, sections, serial=0, baked_ms=0):
+def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True):
+    """one_section=False is the REJECTION-VECTOR bypass: it lets the fixture generator
+    still build the multi-section file the door must refuse. Nothing that handles a
+    theme uses it, and a caller that reaches for it owes a comment saying why."""
     """Emit one FORMAT 3 `.orbtheme`. `sections` is a list of dicts: slug,
     elements, and optional scalars / sprites / art (bytes). Slug order is
     normalised here — a person reading --inspect should not have to know the
@@ -386,9 +389,14 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
             raise ValueError("bundle lists app %r twice; one slug resolves to one "
                              "section and cannot hold two answers" % slug)
         seen.add(slug)
-    if not 1 <= len(sections) <= SECT_MAX:
-        raise ValueError("a bundle holds 1..%d app sections, not %d"
-                         % (SECT_MAX, len(sections)))
+    # A FORMAT 3 THEMES exactly one app: the card stem embeds that app's slug, so a
+    # second section is a file no single owner could install or evict " + D + " the
+    # device's door refuses it (orb_theme.c's one_section_why) and this writer cannot
+    # produce one. The WIRE still reads 1..8 (the index's width); only the theme layer
+    # narrowed. A multi-section byte file stays a valid REJECTION vector.
+    if one_section and len(sections) != 1:
+        raise ValueError("a theme file carries exactly one section — this one carries %d"
+                         % len(sections))
     sections = sorted(sections, key=lambda s: s["slug"])
 
     blobs = []
@@ -467,7 +475,11 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0):
     return len(out)
 
 
-def read_bundle(path):
+def read_bundle(path, theme=True):
+    """theme=False drops the door's one-section rule and answers as the WIRE reader
+    alone (orb_bundle.c's parse_core): the parity harness and the rejection-vector
+    generator read through it, because a two-section file is a fine thing to parse
+    far enough to refuse well. Nothing that installs a theme passes False."""
     """Whole-file read and every checksum, for the host suite and the bench; the
     device streams instead. The mirror of the writer's promises: header crc, region
     crc, per-section blob crc and length, per-bank crc, the geom_off and art_off
@@ -549,6 +561,12 @@ def read_bundle(path):
     if any(b <= a for a, b in zip(slugs, slugs[1:])):
         raise ValueError("index is not slug-sorted; the resolver and --inspect both "
                          "walk it in order, and a shuffled one hides a lost section")
+    # The theme door's rule, LAST, exactly where orb_theme.c's card_check3 asks it:
+    # once every parse_core check (including the sortedness right above) has passed.
+    # A file that fails both sentences hears the parse one first, in every layer.
+    if theme and n != 1:
+        raise ValueError("a theme file carries exactly one section — this one carries %d"
+                         % n)
     return h, out
 
 

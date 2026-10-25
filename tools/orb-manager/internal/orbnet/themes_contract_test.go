@@ -1,7 +1,10 @@
 package orbnet
 
 import (
+	"bytes"
 	"encoding/binary"
+	"hash/crc32"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -128,6 +131,28 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 // Uploading a FORMAT 3 container lands it under the id its own name hashes to, and the
 // name the operator picked for the file on disk is irrelevant. The old client asked for a
 // name and the firmware threw it away; this pins the two agreeing that the header decides.
+// The double's own door, hit directly with the hub's pre-gate bypassed: a container whose
+// header names two sections must come back 422 with the firmware's one-section sentence
+// (orb_theme.c's one_section_why). The hub refuses the same bytes in ContainerName before
+// dialing (orbnet's TestContainerRefusesTheRejectionVector); this pins that the far side
+// would refuse them too, so a hub that ever loses its pre-gate still lands a refusal.
+func TestFakeDoorRefusesASecondSection(t *testing.T) {
+	_, _, orb := liveOrb(t)
+	body := fakeContainer(t, "Spring Boulevard")
+	binary.LittleEndian.PutUint32(body[9*4:], 2)                               // the index head still says 1
+	binary.LittleEndian.PutUint32(body[28*4:], 0)                              // the double re-checks the header's own
+	binary.LittleEndian.PutUint32(body[28*4:], crc32.ChecksumIEEE(body[:128])) // checksum
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sd/theme", bytes.NewReader(body))
+	orb.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "a theme file carries exactly one section — this one carries 2") {
+		t.Errorf("body = %q, want the door's one-section sentence", rec.Body.String())
+	}
+}
+
 func TestThemeUploadFilesByTheEmbeddedName(t *testing.T) {
 	c, ip, _ := liveOrb(t)
 

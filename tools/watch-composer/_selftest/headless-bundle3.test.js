@@ -172,14 +172,18 @@ refuses(() => B.verifyBundle3(dmg), 'checksum mismatch', 'a flipped bit in the g
 // ---- 6. what the writer itself refuses ------------------------------------
 refuses(() => B.writeBundle3({ name: '', sections: model.sections }), 'needs a name',
         'a bundle with no name is refused (R4: it is the theme_id input)');
-refuses(() => B.writeBundle3({ name: 'X', sections: [] }), 'holds 1..8', 'an empty bundle is refused');
+refuses(() => B.writeBundle3({ name: 'X', sections: [] }), 'exactly one section', 'an empty bundle is refused');
+refuses(() => B.writeBundle3({ name: 'X', sections: [
+  { slug: 'clock', elements: [E({ class: SPRITE })], art: new Uint8Array(64) },
+  { slug: 'weather', elements: [E({ class: SPRITE })], art: new Uint8Array(64) }] }),
+  'exactly one section', 'two apps are refused: a card stem names one owner');
 const nine = [];
 for (let i = 0; i < 9; i++) nine.push({ slug: 'app' + i, elements: [E({ class: SPRITE })], art: new Uint8Array(64) });
-refuses(() => B.writeBundle3({ name: 'X', sections: nine }), 'holds 1..8', 'nine sections are refused (B5\u2019s cap)');
+refuses(() => B.writeBundle3({ name: 'X', sections: nine }), 'exactly one section', 'nine sections are refused');
 refuses(() => B.writeBundle3({ name: 'X', sections: [
   { slug: 'clock', elements: [E({ class: SPRITE })], art: new Uint8Array(64) },
   { slug: 'clock', elements: [E({ class: SPRITE })], art: new Uint8Array(64) }] }),
-  'twice', 'one slug listed twice is refused: one slug resolves to one section');
+  'twice', 'one slug listed twice is refused by the loop before the count gate (belt and braces)');
 refuses(() => B.writeBundle3({ name: 'X', sections: [{ slug: 'Clock', elements: [E({ class: SPRITE })] }] }),
   'lowercase a-z 0-9 _', 'an uppercase slug is refused');
 refuses(() => B.writeBundle3({ name: 'X', sections: [{ slug: 'a'.repeat(24), elements: [E({ class: SPRITE })] }] }),
@@ -220,10 +224,11 @@ ok(back.sections.map(s => s.blob.slug).join(',') === side.slugs.join(','),
    'and finds the sections slug-sorted', back.sections.map(s => s.blob.slug).join(','));
 ok(back.sections.every(s => s.blob.elements.length === side.n_elem[s.blob.slug]),
    'with the element count the index records and the blob carries agreeing');
-const wx = back.sections.filter(s => s.blob.slug === 'weather')[0];
-// The fixture carries TWO multi-frame rows on purpose: the 12-frame sprite D32's animated
-// region rides, and a 4-plate bank. Only the first may carry EF_OS_ADV, and §29's rule is
-// exactly that distinction, so the check names both rather than counting rows.
+const wx = back.sections.filter(s => s.blob.slug === 'clock')[0];
+// The one-section fixture carries TWO multi-frame rows on purpose: the 12-frame sprite
+// D32's animated region rides, and a 4-plate bank — weather's rows, merged into the
+// owning section. Only the first may carry EF_OS_ADV, and §29's rule is exactly that
+// distinction, so the check names both rather than counting rows.
 const spr = wx.blob.elements.filter(e => e.class === SPRITE)[0];
 const bnk = wx.blob.elements.filter(e => e.class === BANK)[0];
 ok(spr && spr.n_frames === 12 && (spr.flags & B.EF_OS_ADV) !== 0,

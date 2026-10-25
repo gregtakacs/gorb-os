@@ -1342,6 +1342,35 @@ class Component extends DCLogic {
     // outside the ink, and the engine grows the plane to hold it.
     this.setHand(id, { pivotX: +((sx - m.ox) / m.k / m.s).toFixed(1), pivotY: +((sy - m.oy) / m.k / m.s).toFixed(1) });
   }
+  /* The card stem for a name, from whichever sha256 this context has. The browser's
+     own crypto.subtle answers first — it needs no server. Subtle is defined only in
+     secure contexts, so a hub page opened over a LAN IP (plain http on any address
+     that is not localhost) has none, and the old fallback named the download for the
+     raw title: a stem the orb counts
+     and hides, because /sd/themes belongs to the app whose prefix leads the name. The
+     hub answers that question instead — /api/theme/stem is the same pair-hash the
+     firmware itself files by — so every download served by a hub lands named the way
+     the card files it. A file:// open with no hub keeps the title fallback and says
+     so in the status line: a wrong-looking filename still beats a wrong filename. */
+  async cardStemFor(G, nm) {
+    let id = null;
+    try {
+      if (window.crypto && window.crypto.subtle)
+        id = G.themeIdFromDigest(new Uint8Array(
+          await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
+    } catch (e) { id = null; }
+    if (id) return G.cardStem('clock', nm, id);
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      try {
+        const r = await fetch('/api/theme/stem?name=' + encodeURIComponent(nm));
+        if (r.ok) {
+          const j = await r.json();
+          if (j && j.ok && j.data && typeof j.data.stem === 'string' && j.data.stem) return j.data.stem;
+        }
+      } catch (e) { /* no hub, no answer: the caller's fallback and its warning */ }
+    }
+    return null;
+  }
   download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
@@ -1378,6 +1407,30 @@ class Component extends DCLogic {
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
   // hands at 10:09:36 and the moon at PREVIEW_MOON whatever mode the preview is playing in.
   previewCanvas() { const f = Math.min(this.state.frame, Math.max(0, this.gt.length - 1)); return this.frameCanvas(f, {}, WatchEngine.previewDate()); }
+  /* The plane the bake ships as the theme's `preview` row: the dial composed at
+   * the design pose (10:09:36, moon 0.34 — previewDate's own ruling) on KEYFRAME
+   * 0, never the live transport, so re-baking an untouched dial reproduces these
+   * bytes exactly and the content serial stays the quiet no-op it promises.
+   * Full panel, matted on black, nearest halved to 232x232 (texel 2x+1): the
+   * design's one figure, the size every picker buffers it at. The matte is the
+   * exact divide — the baker quantizes to 565 steps right after this, and an
+   * off-by-one here would be the one visible kind. */
+  previewPlane3() {
+    const P = 232, c = this.frameCanvas(0, {}, WatchEngine.previewDate());
+    const src = c.getContext('2d').getImageData(0, 0, 466, 466).data;
+    const out = new Uint8Array(P * P * 4);
+    for (let y = 0; y < P; y++) {
+      for (let x = 0; x < P; x++) {
+        const si = (((y * 2 + 1) * 466) + (x * 2 + 1)) * 4, di = (y * P + x) * 4;
+        const a = src[si + 3];
+        out[di] = Math.round(src[si] * a / 255);
+        out[di + 1] = Math.round(src[si + 1] * a / 255);
+        out[di + 2] = Math.round(src[si + 2] * a / 255);
+        out[di + 3] = 255;
+      }
+    }
+    return { rgba: out, w: P, h: P };
+  }
   // mirror of kit_check.py: red staff jewel (alpha>=60, R>100, R-max(G,B)>40), 8-connected, blob nearest the centre
   kitCheck(bank, T) {
     const W = 466, out = [], lines = [], fails = []; let ink = [W, W, -1, -1];
@@ -1975,6 +2028,7 @@ class Component extends DCLogic {
     for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
     for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
     for (const p of (opts.plates || [])) crc(p.rgba);
+    if (opts.preview) crc((opts.preview.plane || opts.preview).rgba);   // the picker's ID photo moves the witness too
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
       '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0) +
@@ -2141,6 +2195,12 @@ class Component extends DCLogic {
      * order column, so the rung the author set in the studio is the rung the L4
      * compositor sorts by and the glass shows. */
     if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
+
+    /* The preview rides every bake. The glass picker, the orb's own /themes page,
+     * and the hub's Theme card all paint this plane, and a theme without one reads
+     * as an unfinished export rather than a smaller theme. Keyframe 0 at the
+     * design pose, so this line cannot drift the serial the next fold computes. */
+    opts.preview = { plane: this.previewPlane3(), x: 0, y: 0 };
     // The content-aware serial, now every shipped plane is on opts. It folds the
     // baked art's own CRC (geom + art) so any pixel change — the plate texture
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
@@ -2150,12 +2210,8 @@ class Component extends DCLogic {
     this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
-      let id = null;
-      try {
-        if (window.crypto && window.crypto.subtle)
-          id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
-      } catch (e) { id = null; }
-      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
+      const stem0 = await this.cardStemFor(G, nm);
+      const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
       const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
@@ -2586,17 +2642,11 @@ class Component extends DCLogic {
       // sha256 comes from the browser's own crypto (subtle is async, and the baker stays
       // DOM-free and sync); a context without it — an old file:// open — keeps the old
       // name and says so, because a wrong-looking filename beats a wrong filename.
-      let id = null;
-      try {
-        if (window.crypto && window.crypto.subtle) {
-          id = G.themeIdFromDigest(new Uint8Array(
-            await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
-        }
-      } catch (e) { id = null; }
-      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
+      const stem0 = await this.cardStemFor(G, nm);
+      const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       const c = r.report.counts;
-      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (id ? '' : ' (id unavailable here: upload it and the page will name it)') +
+      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (stem0 ? '' : ' (id unavailable here: upload it and the page will name it)') +
         ' (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
     } catch (e) {
       // The caps and the fold proof throw here: the device would silently drop or misdraw

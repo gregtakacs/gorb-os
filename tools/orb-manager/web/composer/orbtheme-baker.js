@@ -1828,10 +1828,11 @@
   // mirror of that gate.
   var EF_DELTA_WRAP = 64;
   var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP;
-  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux'];
+  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
   var CLASS_AUX = 8;                       // D34: a pointer, appended at 8
+  var CLASS_PREVIEW = 9;                   // the picker's plane, appended at 9
   // How an AUX row moves (theme_schema.MOTION_NAMES / clk_types.h's CLK_MOTION_*).
   // The motion IS the unit of span/zero: an angle in tenths of a degree, or pixels
   // along the named axis. One vocabulary, so a row cannot name a motion and a unit
@@ -1844,7 +1845,7 @@
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
   var CLASS_APP_ADV = [CLASS_BANK, CLASS_TEXT, CLASS_STATUS];
-  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS];
+  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW];
 
   function blankElement() {
     var r = {};
@@ -2683,7 +2684,7 @@
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
-    var sc = {}, k, deltaBank = 0;
+    var sc = {}, k, deltaBank = 0, prevB = 0;
     for (k in (o.scalars || {})) sc[k] = o.scalars[k];
     if (!o.plate) throw new Error('a clock section needs a plate: the compiled dial takes its blank-layer centre from the plate’s own middle, so with no plate it has no centre');
     var pl = o.plate;
@@ -3197,18 +3198,56 @@
       sc.tick_rate = Math.min(255, tempo3 | 0);
     }
 
+    /* A theme's preview: one opaque RGB565 plate the OS picker paints and this dial
+     * does not. The caller hands `preview: { plane, x, y }` where plane is the
+     * composed dial already downscaled to the preview's own size (a square at half
+     * the panel by design). Class 9 slot 0, one frame, at the running end of the
+     * bank so no other row's frame0 shifts. A second preview row is refused by
+     * checkTable's class:slot uniqueness, not this block. A row's x/y is the caller's
+     * picker-slot placement; the shell may scale and place the pixels wherever its
+     * card wants, so the pair is authoring metadata the compiled dial ignores. */
+    if (o.preview) {
+      var pv = o.preview, pp = pv.plane || pv;
+      if (!pp || !pp.rgba || !(pp.w > 0) || !(pp.h > 0))
+        throw new Error('a preview row with no plane, or a plane with no extent: the picker reads pixels, not a nameplate');
+      if (pp.rgba.length !== pp.w * pp.h * 4)
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' carries ' + pp.rgba.length +
+          ' B of RGBA, not the ' + (pp.w * pp.h * 4) + ' B its extent calls for');
+      if (pp.w !== pp.h)
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ': a preview is a square, so the OS card slot is a square — ' +
+          'a non-square plane reads as a wrong bake, not a wrong panel');
+      if (pp.w > (scrW >> 1) || pp.h > (scrH >> 1))
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
+          'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
+      var pb = bank3([pp], { alpha: false });      // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
+      bank.art = concat([bank.art, pb.art]);
+      bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
+      bank.size += pb.sprites[0].size;
+      var prev = blankElement();
+      prev.n = nid++; prev['class'] = CLASS_PREVIEW; prev.slot = 0;
+      prev.order = pv.order | 0;
+      prev.x = pv.x | 0; prev.y = pv.y | 0;
+      prev.w = pp.w; prev.h = pp.h;
+      prev.frame0 = bank.sprites.length - 1;
+      prev.n_frames = 1;
+      prev.alpha = 255;
+      elems.push(prev);
+      prevB = pb.sprites[0].size;
+    }
+
     // The D29 sum, named before the file is written: the plate bank is the part
     // of an over-cap bake an owner can actually trade away, so the sentence says
     // what it cost. checkBudget3 still refuses the same overage at the door —
     // this is the authoring half of §31, and it must never disagree with it.
     if (bank.size > SLOT_ART_CAP3) {
-      throw new Error('the bake\'s art bank is ' + bank.size + ' B against the ' +
-        SLOT_ART_CAP3 + ' B the slot leaves for banks' +
-        (frames ? ': the plate\'s ' + frames.length + ' keyframes of ' + scrW + 'x' + scrH +
+      var why3 = (frames ? ': the plate\'s ' + frames.length + ' keyframes of ' + scrW + 'x' + scrH +
                 ' cost ' + (scrW * scrH * 2 * frames.length) + ' B of it, and one keyframe ' +
                 'is ' + (scrW * scrH * 2) + ' B' : '') +
         (compB ? (frames ? ', and' : ':') + ' the complication tiles cost ' + compB + ' B' : '') +
         (auxB ? (frames || compB ? ', and' : ':') + ' the pointer plates cost ' + auxB + ' B' : '') +
+        (prevB ? (frames || compB || auxB ? ', and' : ':') + ' the preview plane costs ' + prevB + ' B' : '');
+      throw new Error('the bake\'s art bank is ' + bank.size + ' B against the ' +
+        SLOT_ART_CAP3 + ' B the slot leaves for banks' + why3 +
         ' — drop frames or shrink the art');
     }
 

@@ -75,6 +75,45 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   eq(iS.cfg().shOp, 0.5, 'and the strength the author left comes straight back');
   eq(iS.opts(null, true).shMove, 1, 'opts carries the moving gate, so the preview and the bake see it');
   ok(iS.mvKey(true).shMove === undefined, 'the moving gate is no reason to resample the bank');
+  // ---- the baked preview plane (docs/theme-preview-plan.md) ------------------
+  // Every bake carries an ID photo: the dial at the design pose, nearest halved
+  // to 232². The picker page, the glass, and the hub all paint this one plane, so
+  // the plane's shape, pose, matte, determinism, and serial fold are pinned here.
+  {
+    const iv = mk();
+    const SRC = new Uint8ClampedArray(466 * 466 * 4);
+    for (let y = 0; y < 466; y++) for (let x = 0; x < 466; x++) {
+      const i = (y * 466 + x) * 4;
+      SRC[i] = x & 255; SRC[i + 1] = y & 255; SRC[i + 2] = (x + y) & 255; SRC[i + 3] = 255;
+    }
+    for (let y = 0; y < 466; y++) for (let x = 400; x < 466; x++) SRC[(y * 466 + x) * 4 + 3] = 0;
+    iv.frameCanvas = (f, hidden, date) => { iv._pose = [f, date]; return {
+      width: 466, height: 466, getContext: () => ({ getImageData: () => ({ data: SRC }) }) }; };
+    const plane = iv.previewPlane3();
+    eq([plane.w, plane.h, plane.rgba.length], [232, 232, 232 * 232 * 4], 'previewPlane3 ships a 232² RGBA plane');
+    eq(iv._pose[0], 0, 'the plane composes at keyframe 0, never the live transport');
+    ok(iv._pose[1].getHours() === 10 && iv._pose[1].getMinutes() === 9 && iv._pose[1].__moon === 0.34,
+       'the plane composes at the design pose: 10:09:36, moon 0.34');
+    const oi = (13 * 232 + 7) * 4;
+    ok(plane.rgba[oi] === 15 && plane.rgba[oi + 1] === 27 && plane.rgba[oi + 3] === 255,
+       'nearest-half samples the odd texel centre of each 2x2 cell');
+    const bi = (5 * 232 + 210) * 4;   // source x 421: inside the transparent band
+    ok(plane.rgba[bi] === 0 && plane.rgba[bi + 1] === 0 && plane.rgba[bi + 2] === 0 && plane.rgba[bi + 3] === 255,
+       'transparent art mattes to black, never to alpha');
+    const plane2 = iv.previewPlane3();
+    let same = plane.rgba.length === plane2.rgba.length;
+    for (let i = 0; same && i < plane.rgba.length; i += 601) if (plane.rgba[i] !== plane2.rgba[i]) same = false;
+    ok(same, 'the same dial hands back identical bytes, so the serial stays a quiet no-op');
+    const BKR = require('../orbtheme-baker.js');
+    const baseOpts = () => ({ plate: { rgba: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), w: 2, h: 2 }, x: 0, y: 0, w: 2, h: 2 });
+    const s1 = iv.serialContent3(BKR, 'nm', 16, [], { carrier: 'still' }, baseOpts());
+    const s2 = iv.serialContent3(BKR, 'nm', 16, [], { carrier: 'still' }, Object.assign(baseOpts(), { preview: plane }));
+    const s3 = iv.serialContent3(BKR, 'nm', 16, [], { carrier: 'still' },
+      Object.assign(baseOpts(), { preview: { rgba: new Uint8Array(232 * 232 * 4), w: 232, h: 232 } }));
+    ok(s1 !== s2, 'a bake with a preview serializes apart from one without it');
+    ok(s2 !== s3, 'and preview pixels alone move the witness: a re-posed dial re-stores');
+  }
+
   global.__T = { ok, eq, wait, mk, E, S, txt, i1, d, refs, fails: () => fails, checked: () => checked };
   require('./headless-component.kit.js');
 })();

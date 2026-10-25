@@ -1819,6 +1819,30 @@ class Component extends DCLogic {
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
   // hands at 10:09:36 and the moon at PREVIEW_MOON whatever mode the preview is playing in.
   previewCanvas() { const f = Math.min(this.state.frame, Math.max(0, this.gt.length - 1)); return this.frameCanvas(f, {}, WatchEngine.previewDate()); }
+  /* The plane the bake ships as the theme's `preview` row: the dial composed at
+   * the design pose (10:09:36, moon 0.34 — previewDate's own ruling) on KEYFRAME
+   * 0, never the live transport, so re-baking an untouched dial reproduces these
+   * bytes exactly and the content serial stays the quiet no-op it promises.
+   * Full panel, matted on black, nearest halved to 232x232 (texel 2x+1): the
+   * design's one figure, the size every picker buffers it at. The matte is the
+   * exact divide — the baker quantizes to 565 steps right after this, and an
+   * off-by-one here would be the one visible kind. */
+  previewPlane3() {
+    const P = 232, c = this.frameCanvas(0, {}, WatchEngine.previewDate());
+    const src = c.getContext('2d').getImageData(0, 0, 466, 466).data;
+    const out = new Uint8Array(P * P * 4);
+    for (let y = 0; y < P; y++) {
+      for (let x = 0; x < P; x++) {
+        const si = (((y * 2 + 1) * 466) + (x * 2 + 1)) * 4, di = (y * P + x) * 4;
+        const a = src[si + 3];
+        out[di] = Math.round(src[si] * a / 255);
+        out[di + 1] = Math.round(src[si + 1] * a / 255);
+        out[di + 2] = Math.round(src[si + 2] * a / 255);
+        out[di + 3] = 255;
+      }
+    }
+    return { rgba: out, w: P, h: P };
+  }
   // mirror of kit_check.py: red staff jewel (alpha>=60, R>100, R-max(G,B)>40), 8-connected, blob nearest the centre
   kitCheck(bank, T) {
     const W = 466, out = [], lines = [], fails = []; let ink = [W, W, -1, -1];
@@ -2416,6 +2440,7 @@ class Component extends DCLogic {
     for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
     for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
     for (const p of (opts.plates || [])) crc(p.rgba);
+    if (opts.preview) crc((opts.preview.plane || opts.preview).rgba);   // the picker's ID photo moves the witness too
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
       '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0) +
@@ -2582,6 +2607,12 @@ class Component extends DCLogic {
      * order column, so the rung the author set in the studio is the rung the L4
      * compositor sorts by and the glass shows. */
     if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
+
+    /* The preview rides every bake. The glass picker, the orb's own /themes page,
+     * and the hub's Theme card all paint this plane, and a theme without one reads
+     * as an unfinished export rather than a smaller theme. Keyframe 0 at the
+     * design pose, so this line cannot drift the serial the next fold computes. */
+    opts.preview = { plane: this.previewPlane3(), x: 0, y: 0 };
     // The content-aware serial, now every shipped plane is on opts. It folds the
     // baked art's own CRC (geom + art) so any pixel change — the plate texture
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate

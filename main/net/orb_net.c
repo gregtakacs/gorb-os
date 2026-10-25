@@ -4300,7 +4300,10 @@ static void json_put(char *dst, size_t dsz, const char *src)
     dst[o] = '\0';
 }
 
-#define THEME_LIST_MAX 12
+/* Per-app theming: sixteen rows is the listing ceiling (the walk's source cap
+ * and the page's scroll agree on it), and a row's id is now the compound card
+ * stem, not the 12-hex tail, so the row bound and the json[] budget grew. */
+#define THEME_LIST_MAX 16
 
 /* GET /api/v1/sd — the card, the installed theme, and what is on the card. */
 static esp_err_t h_sd(httpd_req_t *req)
@@ -4326,14 +4329,20 @@ static esp_err_t h_sd(httpd_req_t *req)
      * short-named themes and every new field empty, and a truncated body would look
      * exactly like the empty list "no card" prints — which is why an overflow is an
      * error string, not a partial body. Same reason h_status carries its own bound. */
-    static char json[6144];
+    /* Worst-case row: ~104 B of fixed row text and digits + 113 (name) + 113
+     * (id, at the compound stem's ceiling) + 115 (why) + 49 (app) + ~34 B of
+     * the fmt/sects and slot-letter pairs = ~628 B a row, ~10 kB for 16 of
+     * them, plus ~955 B of base fields. Measured against the live device the
+     * same route answers ~650 B with four short-named themes; a truncated
+     * body would read as "no card", which is why an overflow is an error. */
+    static char json[11264];
     /* The last install refused, if any, travels with the list: the dial's row and
      * this page read the same two strings out of orb_theme, so a pick the firmware
      * said no to cannot come back as a silent no-op on the glass that pressed it
      * (ruling D11's "failure stays honest", and the C8 lesson that a swallowed press
-     * is a press the owner has to be told about). Both name the theme by its id —
-     * 12 hex, so the buffer only has to hold that. */
-    char t_id[ORB_THEME_ID_HEX * 2 + 3], t_why[128];
+     * is a press the owner has to be told about). Both name the theme by its card
+     * stem, which is what the row's buttons carry. */
+    char t_id[ORB_THEME_HANDLE_MAX * 2 + 3], t_why[128];
     json_put(t_id, sizeof t_id, orb_theme_try_id());
     json_put(t_why, sizeof t_why, orb_theme_try_why());
     /* And the `staged` witness (Migration 1): a store whose pixels reached the slot and
@@ -4341,7 +4350,7 @@ static esp_err_t h_sd(httpd_req_t *req)
      * store was armed and torn — boot draws the base face and one re-store clears it.
      * The damage-reporting pair is retired with the A/B choice: with one slot there is
      * no chosen-but-uncorruptable slot to explain. */
-    char stg_id[ORB_THEME_ID_HEX * 2 + 3], stg_why[128];
+    char stg_id[ORB_THEME_HANDLE_MAX * 2 + 3], stg_why[128];
     json_put(stg_id, sizeof stg_id, orb_theme_staged_id());
     json_put(stg_why, sizeof stg_why, orb_theme_staged_why());
     /* The installed slot's owner name, escaped for the base "active" field the page
@@ -4359,7 +4368,8 @@ static esp_err_t h_sd(httpd_req_t *req)
         orb_sd_mounted() ? orb_sd_card_id() : "",
         orb_theme_upload_busy() ? "true" : "false",
         (unsigned)(total / (1024 * 1024)), (unsigned)(freeb / (1024 * 1024)),
-        orb_theme_source(), active_name, n > 0 ? n : 0,
+        orb_theme_source(), active_name,
+        n > 0 ? orb_theme_scan_counted() : 0,   /* on the card, not just shown */
         t_id, t_why, stg_id, stg_why,
         (unsigned)orb_theme_refill_ms(), (unsigned)orb_theme_refill_bytes(),
         (unsigned)orb_theme_bundle_ms(), (unsigned)orb_theme_bundle_bytes(),
@@ -4379,21 +4389,24 @@ static esp_err_t h_sd(httpd_req_t *req)
          * because a partial list reads as "no card". */
         if (off < 0 || (size_t)off >= sizeof json) { too_big = true; break; }
         /* name is the owner's free-text label (escaped, up to NAME_MAX chars); id is
-         * the 12-hex handle every later request comes back with. A damaged row keeps
+         * the compound card stem every later request comes back with; app names the
+         * owning app even for a row whose name did not parse. A damaged row keeps
          * its id (the filename the OS normalised) so it stays addressable, and puts
          * the reason in why. */
-        char e_name[ORB_THEME_NAME_MAX * 2 + 3], e_id[ORB_THEME_ID_HEX * 2 + 3], e_why[116];
+        char e_name[ORB_THEME_NAME_MAX * 2 + 3], e_id[ORB_THEME_HANDLE_MAX * 2 + 3], e_why[116];
+        char e_app[ORB_THEME_APP_MAX * 2 + 3];
         json_put(e_name, sizeof e_name, ent[i].name);
         json_put(e_id,   sizeof e_id,   ent[i].id);
         json_put(e_why,  sizeof e_why,  ent[i].why);
+        json_put(e_app,  sizeof e_app,  ent[i].app);
         /* stored is whether the one slot holds this file's stored copy. Under the
          * single slot it is the same test as the row's id matching the slot's, and the
          * page marks the row "stored" and offers a re-store; the door takes the id,
          * never this flag. */
         off += snprintf(json + off, sizeof json - (size_t)off,
-            "%s{\"name\":\"%s\",\"id\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
+            "%s{\"name\":\"%s\",\"id\":\"%s\",\"app\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
             "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
-            i ? "," : "", e_name, e_id, e_why,
+            i ? "," : "", e_name, e_id, e_app, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
             ent[i].err == ESP_OK ? "true" : "false",
             ent[i].active ? "true" : "false",
@@ -4425,7 +4438,7 @@ static esp_err_t h_bundle_install(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_THEME_ID_HEX + 1] = "";
+    char id[ORB_THEME_HANDLE_MAX + 1] = "";
     if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
@@ -4455,7 +4468,7 @@ static esp_err_t h_theme_del(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_THEME_ID_HEX + 1] = "";
+    char id[ORB_THEME_HANDLE_MAX + 1] = "";
     if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
@@ -5049,7 +5062,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
     char commit[20] = "";
     if (q_param(req, "commit", commit, sizeof commit)) {
         const char *why = NULL;
-        char committed[ORB_THEME_ID_HEX + 1] = "";
+        char committed[ORB_THEME_HANDLE_MAX + 1] = "";
         uint32_t sz = 0;
         const esp_err_t ce = orb_theme_upload_recommit(commit, &why, committed, &sz);
         if (ce != ESP_OK) {
@@ -5159,7 +5172,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
     }
 
     const char *why = NULL;
-    char committed[ORB_THEME_ID_HEX + 1] = "";
+    char committed[ORB_THEME_HANDLE_MAX + 1] = "";
     const esp_err_t ee = orb_theme_upload_end(&up, overwrite, &why, committed);
     if (ee == ORB_THEME_UPLOAD_E_DUP) {
         /* A different theme already lives under that name. 409, not 422: nothing is
@@ -5577,7 +5590,7 @@ static const char HTML_THEMES[] =
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
 "h=h+'<div class=row><div class=nm>'+esc(nm)"
 "+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
-"h=h+'<div class=sub>'+esc(t.id)+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
+"h=h+'<div class=sub>'+esc(t.app||'?')+' \\u00b7 '+esc((t.id||'').split('-').slice(1,-1).join('-'))+' \\u00b7 '+esc((t.id||'').slice(-12))+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
 "if(data.staged_id==t.id&&data.staged_why){h=h+'<div class=sub>STORE NEVER COMMITTED: '+esc(data.staged_why)+'</div>';}"
 "if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"

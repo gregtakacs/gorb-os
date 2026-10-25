@@ -134,20 +134,26 @@ func ContainerName(body []byte) (*ThemeContainer, error) {
 	if err := CheckThemeName(name); err != nil {
 		return nil, err
 	}
-	id, err := ThemeIDOf(name)
+	c := &ThemeContainer{Name: name, Format: f, ABI: w(wGeomABI),
+		Bytes: len(body), GeomSize: geomSize, ArtSize: artSize,
+		Serial: w(wSerial), NSections: w(wNSections)}
+	// Per-app theming made the index load part of the IDENTITY, not a courtesy: the
+	// card stem hashes the OWNING app's slug with the name, and the slug lives here
+	// and nowhere else in the header. A container this reader cannot walk the index
+	// of has no identity to report, and the walk is refused rather than guessed —
+	// an id derived from the wrong slug addresses a file no orb will ever open.
+	// A multi-section bundle is filed under its FIRST section (the index is
+	// slug-sorted, so that is the app the device would resolve first); the device's
+	// door refuses such a container outright as of the one-section rule, and the
+	// hub's refusal follows the door's, not leads it.
+	slugs, err := indexSlugs(body, c.NSections, geomSize)
 	if err != nil {
 		return nil, err
 	}
-	c := &ThemeContainer{Name: name, ID: id, Format: f, ABI: w(wGeomABI),
-		Bytes: len(body), GeomSize: geomSize, ArtSize: artSize,
-		Serial: w(wSerial), NSections: w(wNSections)}
-	// The index is where a multi-section bundle says WHICH apps it themes. Read it only as
-	// far as the region's own length agrees, exactly as unpack_index does — and never fail
-	// a container over it. A section list this reader cannot parse is still a theme the
-	// device's door may accept, and the door is the authority; the sentences indexSlugs
-	// returns are the firmware's own, for whoever asks what the region said.
-	if slugs, err := indexSlugs(body, c.NSections, geomSize); err == nil {
-		c.Sections = slugs
+	c.Sections = slugs
+	c.ID, err = ThemeIDOf(slugs[0], name)
+	if err != nil {
+		return nil, err
 	}
 	return c, nil
 }

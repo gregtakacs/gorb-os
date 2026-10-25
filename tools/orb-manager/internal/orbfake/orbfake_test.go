@@ -66,7 +66,8 @@ func TestDoubleRefusesEveryNameAddressedVerb(t *testing.T) {
 func TestDoubleHoldsTheFirmwaresExactIdRule(t *testing.T) {
 	f := New(Theme{Name: "aurora", Bytes: 100, Serial: 1, OK: true})
 	for _, id := range []string{"9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f", "gb89025ce7a6",
-		"../etc", "aurora", "", "00000000000 "} {
+		"../etc", "aurora", "", "00000000000 ",
+		"9b89025ce7a6", "clock--a1b2c3d4e5f6", "clock-x.y-a1b2c3d4e5f6"} {
 		code, body := post(t, f, "/api/v1/sd/bundle?id="+id, nil)
 		if code != http.StatusBadRequest {
 			t.Errorf("id %q accepted with %d %s, want 400", id, code, body)
@@ -82,7 +83,7 @@ func TestDoubleEmitsTheFormatTwoRowShape(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("status %d", code)
 	}
-	for _, want := range []string{`"name":"aurora"`, `"id":"9b89025ce7a6"`, `"changed":false`,
+	for _, want := range []string{`"name":"aurora"`, `"id":"clock-aurora-958c30f62484"`, `"app":"clock"`, `"changed":false`,
 		`"try_id":`, `"staged_id":`, `"stored":`, `"active":true`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("h_sd reply missing %s:\n%s", want, body)
@@ -108,8 +109,8 @@ func TestDoubleFilesUploadsByTheEmbeddedName(t *testing.T) {
 	if !strings.Contains(list, `"name":"Mirage — Gold"`) {
 		t.Errorf("uploaded theme not listed under its embedded name: %s", list)
 	}
-	if !strings.Contains(list, `"id":"373b51cc021b"`) {
-		t.Errorf("uploaded theme not filed under theme_id(name): %s", list)
+	if !strings.Contains(list, `"id":"clock-mirage-gold-fe74010a96bc"`) {
+		t.Errorf("uploaded theme not filed under the compound card stem: %s", list)
 	}
 
 	// FORMAT 1: rejected, and nothing filed.
@@ -155,13 +156,14 @@ func container(name string) []byte { return Container(name) }
 // files its own list is not naming.
 func TestDoubleIdsAreTheFirmwaresHash(t *testing.T) {
 	for _, tc := range []struct{ name, id string }{
-		{"aurora", "9b89025ce7a6"},
-		{"Aurora", "e9de098c7733"},
-		{"Neon", "618484e2c549"},
-		{"Mirage — Gold", "373b51cc021b"},
+		{"aurora", "clock-aurora-958c30f62484"},
+		{"Aurora", "clock-aurora-fede927ce7de"},
+		{"Neon", "clock-neon-7dec75fbb470"},
+		{"Mirage — Gold", "clock-mirage-gold-fe74010a96bc"},
+		{"!!!", "clock-theme-ffe5e525fbe3"},
 	} {
-		if got := themeID(tc.name); got != tc.id {
-			t.Errorf("themeID(%q) = %s, want %s from tools/orbtheme.py", tc.name, got, tc.id)
+		if got := themeID("clock", tc.name); got != tc.id {
+			t.Errorf("themeID(\"clock\", %q) = %s, want %s from tools/orbtheme.py", tc.name, got, tc.id)
 		}
 	}
 }

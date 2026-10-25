@@ -137,9 +137,13 @@ ok(field[M.nameBytes] === 0 && field[M.nameBytes + 1] === 0,
 const sha256 = (s) => new Uint8Array(require('crypto').createHash('sha256').update(s, 'utf8').digest());
 ok(wordStr(B.W_NAME, B.NAME_MAX).slice(0, 6) === 'Mirror',
    'the field reads back as the reader reads it: little-endian bytes out of words 14 up');
-ok(B.themeIdFromDigest(sha256(M.name)) === M.themeId,
-   'the JS id rule matches orbtheme.theme_id(): three implementations, one identity',
-   B.themeIdFromDigest(sha256(M.name)) + ' vs ' + M.themeId);
+ok(B.themeIdFromDigest(sha256(M.slug + '/' + M.name)) === M.themeId,
+   'the JS id rule matches orbtheme.theme_id(): three implementations, one identity, over the (slug, name) pair',
+   B.themeIdFromDigest(sha256(M.slug + '/' + M.name)) + ' vs ' + M.themeId);
+ok(B.cardStem(M.slug, M.name, sha256(M.slug + '/' + M.name)) === M.cardStem &&
+   B.nameToken(M.name) === M.cardStem.split('-').slice(1, -1).join('-'),
+   'the JS stem builder reproduces orbtheme.card_stem() byte for byte',
+   String(B.cardStem(M.slug, M.name, sha256(M.slug + '/' + M.name))));
 ok(B.themeIdFromDigest(new Uint8Array(5)) === null && B.themeIdFromDigest(null) === null,
    'a short or missing digest is refused, not padded into an id');
 ok(dv.getUint32(44, true) === M.serial, 'serial');

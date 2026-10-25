@@ -640,8 +640,9 @@ static int svc_theme_count(orb_app_t *a)
 static esp_err_t svc_theme_id(orb_app_t *a, int idx, char *buf, size_t cap)
 {
     SVC(a, THEMES);
-    if (s_te_n < 0 || idx < 0 || idx >= s_te_n || cap < ORB_THEME_ID_HEX + 1)
-        return ESP_ERR_NOT_FOUND;              /* id is 12 hex + NUL, frozen by
+    if (s_te_n < 0 || idx < 0 || idx >= s_te_n || cap < ORB_THEME_HANDLE_MAX + 1)
+        return ESP_ERR_NOT_FOUND;              /* id is the compound card stem —
+                                                * slug, token, 12 hex — frozen by
                                                 * the card's own filename shape */
     snprintf(buf, cap, "%s", s_te[idx].id);
     return ESP_OK;

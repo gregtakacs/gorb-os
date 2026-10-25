@@ -111,10 +111,20 @@ gen_types = gen_src[_i0:gen_src.index("} clk_bg_rect_t;") + len("} clk_bg_rect_t
 # The §6 installed-slot comparison, lifted: it decides which row the page calls
 # "on the dial" and which one it offers to re-store.
 f_theme_state = lift(th_src, r"static void theme_state\(const orb_thdr_t \*h,[\s\S]*?\n\}", TH_C)
-# The card identity: one hasher, one validator. Lifted so the vectors run the shipped
-# hex loop and the shipped [0-9a-f] bounds rather than a Python copy of them.
-f_theme_id   = lift(th_src, r"static void theme_id\(const char \*name, char out\[THEME_ID_HEX \+ 1\]\)[\s\S]*?\n\}", TH_C)
-f_theme_idok = lift(th_src, r"static bool theme_id_ok\(const char \*id\)[\s\S]*?\n\}", TH_C)
+# The card identity: the hasher, the sanitizer, the splitter, the stem builder and the
+# validator. Lifted so the vectors run the shipped hex loop, the shipped slug rule and
+# the shipped bounds rather than a Python copy of them. The split leans on the bundle
+# layer's slug rule, lifted too — the stem's first token is that rule's, verbatim.
+f_theme_id   = lift(th_src, r"static void theme_id\(const char \*slug, const char \*name, char out\[THEME_ID_HEX \+ 1\]\)[\s\S]*?\n\}", TH_C)
+f_theme_idok = lift(th_src, r"static bool theme_id_ok\(const char \*stem\)[\s\S]*?\n\}", TH_C)
+_tokmax_def  = lift(th_src, r"#define THEME_TOKEN_MAX\b[^\n]*", TH_C)
+_slug_def    = lift(open(B3_H).read(), r"#define ORB_BUNDLE_SLUG_MAX\b[^\n]*", B3_H)
+f_slugrule   = lift(open(B3_C).read(), r"int orb_bundle_slug_rule\(const uint8_t \*p, uint32_t n\)[\s\S]*?\n\}", B3_C)
+f_token      = lift(th_src, r"static void theme_name_token\(const char \*name, char \*tok, size_t tokcap\)[\s\S]*?\n\}", TH_C)
+f_stemsplit  = lift(th_src, r"static bool theme_stem_split\(const char \*stem,[\s\S]*?\n\}", TH_C)
+f_stem       = lift(th_src, r"static void theme_stem\(const char \*slug, const char \*name,[\s\S]*?\n\}", TH_C)
+IDDEP = (_slug_def + "\n" + f_slugrule + "\n" + _tokmax_def + "\n"
+         + f_token + "\n" + f_stemsplit + "\n" + f_stem + "\n")
 for _s in ("f_name_ok", "f_theme_pt", "f_theme_file", "f_theme_state"):
     globals()[_s] = globals()[_s].replace("strlcpy", "host_strlcpy").replace("strlcat", "host_strlcat")
 
@@ -163,10 +173,14 @@ static const unsigned char *s_hash_in;
 static size_t               s_hash_len;
 static const unsigned char *s_hash_want;
 static int                  s_hash_is224;
+static unsigned char s_hash_copy[256];
 static int host_sha256_hook(const unsigned char *in, size_t ilen,
                            unsigned char out[32], int is224)
 {
-    s_hash_in = in; s_hash_len = ilen; s_hash_is224 = is224;
+    /* COPY, not alias: theme_id() hashes a stack buffer that dies on return, and
+     * gcc rightly flags storing its address into a file-static. */
+    memcpy(s_hash_copy, in, ilen < sizeof s_hash_copy ? ilen : sizeof s_hash_copy);
+    s_hash_in = s_hash_copy; s_hash_len = ilen; s_hash_is224 = is224;
     if (!s_hash_want) return -1;
     memcpy(out, s_hash_want, 32);
     return 0;
@@ -343,29 +357,53 @@ STATE_ROWS = "\n".join(_STATE_ROWS)
 # recording hook, must (a) be the digest of exactly the name to its NUL and (b) come
 # back as the id theme_id_ok admits. The padded-tail row is the one that fails if the
 # hash input ever becomes the NAME_MAX array instead of the string.
-_ID_NAMES = ["av-kit", "Neon", "Ünïcödé 日本語 🔆", "a" * (orbtheme.NAME_MAX - 1), "0"]
+_ID_CASES = [("clock", "av-kit"), ("clock", "Neon"), ("clock", "Ünïcödé 日本語 🔆"),
+             ("clock", "a" * (orbtheme.NAME_MAX - 1)), ("clock", "0"),
+             ("menu", "Av Kit!"), ("my_app", "x")]
 _ID_ROWS = []
-for _i, _nm in enumerate(_ID_NAMES):
-    _b = _nm.encode("utf-8")
+for _i, (_sl, _nm) in enumerate(_ID_CASES):
+    _pair = (_sl + "/" + _nm).encode("utf-8")
     _ID_ROWS.append('    static const unsigned char sdig%d[32] = {%s};'
-                    % (_i, ",".join(str(x) for x in hashlib.sha256(_b).digest())))
-    _ID_ROWS.append('    icase("%s", sdig%d, %d, "%s");'
-                    % (_nm.replace("\\", "\\\\").replace('"', '\\"'), _i, len(_b),
-                       orbtheme.theme_id(_nm)))
+                    % (_i, ",".join(str(x) for x in hashlib.sha256(_pair).digest())))
+    _ID_ROWS.append('    icase("%s", "%s", sdig%d, %d, "%s", "%s");'
+                    % (_sl, _nm.replace("\\", "\\\\").replace('"', '\\"'), _i, len(_pair),
+                       orbtheme.theme_id(_sl, _nm), orbtheme.card_stem(_sl, _nm)))
 _PAD = "Padded Tail"
+_PAIRP = ("clock/" + _PAD).encode("utf-8")
 _ID_ROWS.append('    static const unsigned char sdigpad[32] = {%s};'
-                % ",".join(str(x) for x in hashlib.sha256(_PAD.encode()).digest()))
-_ID_ROWS.append('    icase_pad("%s", sdigpad, "%s");' % (_PAD, orbtheme.theme_id(_PAD)))
+                % ",".join(str(x) for x in hashlib.sha256(_PAIRP).digest()))
+_ID_ROWS.append('    icase_pad("clock", "%s", sdigpad, %d, "%s");'
+                % (_PAD, len(_PAIRP), orbtheme.theme_id("clock", _PAD)))
 for _id, _want, _cmt in (
-        ("a1b2c3d4e5f6", 1, "a real issued id"), ("", 0, "empty"),
-        ("a1b2c3d4e5f", 0, "eleven: one too short"),
-        ("a1b2c3d4e5f60", 0, "thirteen: one too long"),
-        ("A1B2C3D4E5F6", 0, "uppercase is not the id"),
-        ("a1b2c3d4e5g6", 0, "not hex"),
-        ("../../../../etc/passwd", 0, "no traversal reaches the id"),
-        ("a1b2c3d4e5f6/../", 0, "slash inside")):
+        ("clock-aurora-9b89025ce7a6", 1, "a real issued stem"),
+        ("my_app-x-000000000000", 1, "underscores are slug bytes"),
+        ("a-x-ffffffffffff", 1, "the shortest slug"),
+        ("clock-Aurora-9b89025ce7a6", 1, "a hand rename keeps the case; the token is decoration"),
+        ("aurora", 0, "no dash at all"),
+        ("9b89025ce7a6", 0, "the old whole stem: a hex tail names no app"),
+        ("", 0, "empty"),
+        ("clock--a1b2c3d4e5f6", 0, "empty token"),
+        ("clock-x.y-a1b2c3d4e5f6", 0, "a dot inside the token reads as an extension"),
+        ("clocK-x-a1b2c3d4e5f6", 0, "uppercase is not the slug"),
+        ("clock-x-A1B2C3D4E5F6", 0, "uppercase is not the id"),
+        ("clock-x-a1b2c3d4e5g6", 0, "not hex"),
+        ("clock-x-a1b2c3d4e5f", 0, "eleven: one too short"),
+        ("clock-x-a1b2c3d4e5f60", 0, "thirteen: the tail is the LAST token, exactly 12"),
+        ("../etc/passwd", 0, "no traversal reaches the id"),
+        ("a1b2c3d4e5f6/../", 0, "slash inside"),
+        ("x" * 56, 0, "over the name cap")):
     _ID_ROWS.append('    idcase("%s", %d);                            /* %s */' % (_id, _want, _cmt))
 _ID_ROWS.append('    idcase(NULL, 0);')
+# The sanitizer: one rule in four languages, driven here on the edges the stem leans on.
+_TOK_CASES = [("av-kit", "av-kit"), ("Av Kit!", "av-kit"),
+              ("  --Hello, World__!!  ", "hello-world"),
+              ("!!!", "theme"), ("Ünïcödé 日本語 🔆", "n-c-d"),
+              ("x" * 40, "x" * 24), ("x" * 23 + "-y", "x" * 23),
+              ("-x-", "x"), ("a__b", "a-b"), ("a-b", "a-b"),
+              ("24 chars here ok!", "24-chars-here-ok")]
+for _nm, _tok in _TOK_CASES:
+    assert orbtheme.name_token(_nm) == _tok, _nm
+    _ID_ROWS.append('    tcase("%s", "%s");' % (_nm, _tok))
 ID_ROWS = "\n".join(_ID_ROWS)
 NAME_DIG = hashlib.sha256("av-kit".encode()).digest()
 
@@ -403,6 +441,7 @@ static uint32_t s_active_geom_crc, s_active_art_crc;
 static bool     s_active_valid;
 @THEMESTATE@
 @IDFN@
+@IDDEP@
 @IDOK@
 
 static int fails = 0;
@@ -436,31 +475,37 @@ static void fcase(const char *n, int want, const char *wantpath, unsigned outsz)
     printf("%-5s theme_file(%-20s, outsz=%2u) -> %s%s\n", pass ? "ok" : "FAIL",
            n ? n : "(null)", outsz, ok ? fbuf : "(refused)", pass ? "" : "   <== BAD DESTINATION");
 }
-static void icase(const char *name, const unsigned char *dig, size_t n, const char *want)
+static void icase(const char *slug, const char *name, const unsigned char *dig, size_t n,
+                  const char *want, const char *want_stem)
 {
-    char got[16];
+    char got[16], stem[96], pair[160];
+    snprintf(pair, sizeof pair, "%s/%s", slug, name);
     s_hash_want = dig; s_hash_is224 = -1;
-    theme_id(name, got);
+    theme_id(slug, name, got);
     const bool hex_ok = strcmp(got, want) == 0;
     const bool pass = hex_ok && s_hash_len == n && s_hash_is224 == 0
-                      && memcmp(s_hash_in, name, n) == 0 && s_hash_in[n] == '\0';
-    if (!pass) fails++;
-    printf("%-5s id(\"%s\") -> %s (want %s)%s%s%s\n", pass ? "ok" : "FAIL", name, got, want,
+                      && memcmp(s_hash_in, pair, n) == 0 && s_hash_len == n;   /* exact pair bytes */
+    theme_stem(slug, name, stem, sizeof stem);
+    const bool stem_ok = strcmp(stem, want_stem) == 0 && theme_id_ok(stem);
+    if (!pass || !stem_ok) fails++;
+    printf("%-5s id(\"%s\",\"%s\") -> %s (want %s)%s%s%s\n",
+           (pass && stem_ok) ? "ok" : "FAIL", slug, name, got, want,
            s_hash_len != n ? "   <== HASHED THE WRONG BYTE COUNT" : "",
            (hex_ok || s_hash_len != n) ? "" : "   <== HEX CONVERSION OR THE DIGEST IS WRONG",
-           s_hash_is224 ? "   <== ASKED FOR SHA-224, WHICH TRUNCATES" : "");
-    if (theme_id_ok(got) != hex_ok) { fails++; printf("FAIL id \"%s\" issued but theme_id_ok() disagrees\n", got); }
+           stem_ok ? "" : "   <== THE STEM DOES NOT REPRODUCE THE PACKER'S");
+    if (theme_id_ok(want)) { fails++; printf("FAIL a bare hex tail passed theme_id_ok()\n"); }
 }
-static void icase_pad(const char *name, const unsigned char *dig, const char *want)
+static void icase_pad(const char *slug, const char *name, const unsigned char *dig,
+                      size_t n, const char *want)
 {
     char arr[ORB_THEME_NAME_MAX + 1]; memset(arr, 0xA5, sizeof arr);
     memcpy(arr, name, strlen(name) + 1);                   /* NUL, then 0xA5 pad to the tail */
     char got[16]; s_hash_want = dig; s_hash_len = 0; s_hash_is224 = -1;
-    theme_id(arr, got);
-    const bool pass = strcmp(got, want) == 0 && s_hash_len == strlen(name) && s_hash_is224 == 0;
+    theme_id(slug, arr, got);
+    const bool pass = strcmp(got, want) == 0 && s_hash_len == n && s_hash_is224 == 0;
     if (!pass) fails++;
-    printf("%-5s padded id(\"%s\") -> %s (want %s, hashed %u bytes)%s\n", pass ? "ok" : "FAIL",
-           name, got, want, (unsigned)s_hash_len, pass ? "" : "   <== HASHED THE PAD, NOT THE NAME");
+    printf("%-5s padded id(\"%s\",\"%s\") -> %s (want %s, hashed %u bytes)%s\n", pass ? "ok" : "FAIL",
+           slug, name, got, want, (unsigned)s_hash_len, pass ? "" : "   <== HASHED THE PAD, NOT THE PAIR");
 }
 static void idcase(const char *id, int want)
 {
@@ -468,6 +513,14 @@ static void idcase(const char *id, int want)
     if (got != want) fails++;
     printf("%-5s theme_id_ok(%-24s) -> %d (want %d)\n", got == want ? "ok" : "FAIL",
            id ? (id[0] ? id : "(empty)") : "(null)", got, want);
+}
+static void tcase(const char *name, const char *want)
+{
+    char tok[THEME_TOKEN_MAX + 1];
+    theme_name_token(name, tok, sizeof tok);
+    const int pass = strcmp(tok, want) == 0;
+    if (!pass) fails++;
+    printf("%-5s token(\"%s\") -> %s (want %s)\n", pass ? "ok" : "FAIL", name, tok, want);
 }
 static void scase(const char *name, uint32_t g, uint32_t a, const char *act_name,
                   uint32_t ag, uint32_t aa, int want_active, int want_changed, const char *why)
@@ -544,7 +597,7 @@ for _k, _v in (("@HELPERS@", HELPERS), ("@CRC@", CRC_STUB), ("@TYPES@", gen_type
                ("@CONSTS@", sd_consts),
                ("@NAMEOK@", f_name_ok), ("@THEMEPATH@", f_theme_pt), ("@EXT@", ext_define),
                ("@THEMEFILE@", f_theme_file), ("@B3READER@", B3_READER), ("@CKV@", CKV),
-               ("@THEMESTATE@", f_theme_state), ("@IDFN@", f_theme_id), ("@IDOK@", f_theme_idok),
+               ("@THEMESTATE@", f_theme_state), ("@IDFN@", f_theme_id), ("@IDDEP@", IDDEP), ("@IDOK@", f_theme_idok),
                ("@NAMES@", NAME_ROWS), ("@PATHS@", PATH_ROWS), ("@FILECASES@", FILE_ROWS),
                ("@IDCASES@", ID_ROWS), ("@STATECASES@", STATE_ROWS), ("@B3ROWS@", B3_ROWS)):
     HARNESS = HARNESS.replace(_k, _v)
@@ -1054,23 +1107,33 @@ def naming_lint():
         return "\n".join(lines[a:b + 1])
 
     for need, why, sym in (
-            (r"mbedtls_sha256\s*\(\s*\(const unsigned char \*\)\s*name\s*,\s*strlen\s*\(\s*name\s*\)",
-             "hashes the name to its NUL, not the padded header array", "theme_id"),
+            (r"memcpy\s*\(\s*buf\s*,\s*slug\s*,\s*sl\s*\)",
+             "hashes the OWNING SLUG first", "theme_id"),
+            (r"buf\s*\[\s*sl\s*\]\s*=\s*'/'",
+             "separates slug and name with the one slash the pair rule says", "theme_id"),
+            (r"mbedtls_sha256\s*\(\s*\(const unsigned char \*\)\s*buf\s*,\s*sl\s*\+\s*1\s*\+\s*nl",
+             "hashes exactly slug, slash, and name to its NUL, not a padded array", "theme_id"),
             (r'"0123456789abcdef"\s*\[\s*digest\[i\]\s*>>\s*4\s*\]',
              "builds the id's hex from the high nibble, lower-case", "theme_id"),
-            (r"out\[THEME_ID_HEX\]\s*=\s*'", "NUL-terminates the id", "theme_id")):
+            (r"out\[THEME_ID_HEX\]\s*=\s*'", "NUL-terminates the id", "theme_id"),
+            (r"memcpy\s*\(\s*tok\s*,\s*\"theme\"",
+             "names an illegible token 'theme' rather than empty", "theme_name_token"),
+            (r"orb_bundle_slug_rule\s*\(\s*\(\s*const uint8_t \*\s*\)\s*stem",
+             "holds the stem's first token to the one slug rule", "theme_stem_split")):
         if sym not in spans:
             print("FAIL %s() is not a column-0 definition any more" % sym); rc = 1
         elif not re.search(need, body(sym)):
             print("FAIL main/art/orb_theme.c: %s() no longer %s" % (sym, why)); rc = 1
     for need, why in (
-            (r"if\s*\(\s*id\s*==\s*NULL\s*\)\s*return false;", "refuses a missing id"),
-            (r"if\s*\(\s*n\s*>=\s*THEME_ID_HEX\s*\)\s*return false;", "refuses an id too long"),
-            (r"return\s+n\s*==\s*THEME_ID_HEX\s*;", "refuses an id too short"),
-            (r"\(c\s*>=\s*'0'\s*&&\s*c\s*<=\s*'9'\)\s*\|\|\s*\(c\s*>=\s*'a'\s*&&\s*c\s*<=\s*'f'\)",
-             "admits nothing outside [0-9a-f]")):
+            (r"orb_sd_name_ok\s*\(\s*stem\s*\)", "runs the one name validator first"),
+            (r"theme_stem_split", "asks the split what the name is"),
+            (r"==\s*'\.'", "refuses a dot inside the token")):
         if not re.search(need, body("theme_id_ok")):
             print("FAIL main/art/orb_theme.c: theme_id_ok() no longer %s" % why); rc = 1
+    if "theme_stem_split" in spans and not re.search(
+            r"\(c\s*>=\s*'0'\s*&&\s*c\s*<=\s*'9'\)\s*\|\|\s*\(c\s*>=\s*'a'\s*&&\s*c\s*<=\s*'f'\)",
+            body("theme_stem_split")):
+        print("FAIL main/art/orb_theme.c: theme_stem_split() admits non-hex into the tail"); rc = 1
     CONSUMERS = ("scan_entry", "resolve3_entry", "card_open_verified_id3",
                  "orb_theme_upload_end", "orb_theme_delete")
     for n in CONSUMERS:
@@ -1080,7 +1143,8 @@ def naming_lint():
         seg = calls(n)
         # A consumer applies the rule itself, or reaches it through the door that does:
         # card_open_verified_id3 / card_check3 / theme_file all go by the one hash.
-        if not any(k in seg for k in ("theme_id(", "theme_id_ok(",
+        if not any(k in seg for k in ("theme_id(", "theme_id_ok(", "theme_stem(",
+                                      "theme_stem_split(",
                                       "card_open_verified_id3(", "card_check3(", "theme_file(")):
             print("FAIL main/art/orb_theme.c:%d: %s() touches a card theme without asking "
                   "theme_id()/theme_id_ok() what its name is" % (spans[n][0] + 1, n))
@@ -1099,7 +1163,7 @@ def naming_lint():
         if not re.search(r"strcmp\s*\(\s*id2\s*,\s*id\s*\)\s*!=\s*0", seg):
             print("FAIL card_open_verified_id3() re-hashes without comparing to the id asked for"); rc = 1
     if "scan_entry" in spans:
-        if not re.search(r"strcmp\s*\(\s*bid\s*,\s*rec->name\s*\)", calls("scan_entry")):
+        if not re.search(r"strcmp\s*\(\s*bid\s*,\s*id\s*\)", calls("scan_entry")):
             print("FAIL scan_entry() lists a theme without checking the filename against the "
                   "hash of its header name"); rc = 1
         if "clock3_verdict3(" not in calls("scan_entry"):
@@ -1226,24 +1290,29 @@ MUTATIONS = [
     ("leading dot allowed (hides the entry)",       "sd",
      "if (name[0] == '.') return false;", ""),
     # The card identity: the bytes hashed and the charset admitted.
-    ("identity: hashes the padded name array",       "th",
-     "mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/0);",
-     "mbedtls_sha256((const unsigned char *)name, THEME_NAME_MAX, digest, /*is224=*/0);"),
+    ("identity: hashes the padded pair buffer",       "th",
+     "mbedtls_sha256((const unsigned char *)buf, sl + 1 + nl, digest, /*is224=*/0);",
+     "mbedtls_sha256((const unsigned char *)buf, THEME_NAME_MAX, digest, /*is224=*/0);"),
     ("identity: asks for SHA-224, whose digest is shorter", "th",
-     "mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/0);",
-     "mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/1);"),
+     "mbedtls_sha256((const unsigned char *)buf, sl + 1 + nl, digest, /*is224=*/0);",
+     "mbedtls_sha256((const unsigned char *)buf, sl + 1 + nl, digest, /*is224=*/1);"),
+    ("identity: drops the slug from the hash input",  "th",
+     "memcpy(buf, slug, sl);", "sl = 0;"),
+    ("stem split admits a tail with no separator",    "th",
+     "if (stem[n - THEME_ID_HEX - 1] != '-') return false;", "/* no separator bound */"),
+    ("token sanitizer keeps a truncation dash",       "th",
+     "if (tok[o - 1] == '-') o--;", "/* no trim */"),
+    ("id gate stops running the name validator",      "th",
+     "if (stem == NULL || !orb_sd_name_ok(stem)) return false;",
+     "if (stem == NULL) return false;"),
     ("identity: the high nibble comes out uppercase", "th",
      '        out[2 * i]     = "0123456789abcdef"[digest[i] >> 4];',
      '        out[2 * i]     = "0123456789ABCDEF"[digest[i] >> 4];'),
     ("identity validator admits uppercase",          "th",
      "        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;",
      "        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;"),
-    ("identity validator has no upper length bound", "th",
-     "        if (n >= THEME_ID_HEX) return false;          /* too long */",
-     "        if (n > THEME_ID_HEX) return false;           /* too long */"),
-    ("identity validator stops checking the lower bound", "th",
-     "    return n == THEME_ID_HEX;                          /* and no shorter */",
-     "    return n > 0;                                      /* and no shorter */"),
+    ("id gate admits an empty token", "th",
+     "    if (tokn == 0) return false;", "    /* */"),
     # The §6 pair.
     ("§6 calls any same-named file active",          "th",
      "    *active  = same_name && !geom_diff && !art_diff;", "    *active  = same_name;"),
@@ -1264,7 +1333,8 @@ MUTATIONS = [
      "    const uint32_t tgt = SLOT_HDR;",
      "    const uint32_t tgt = SLOT_HDR + THEME_SECTOR;"),
     ("the upload door accepts a bundle without the region check", "th",
-     "    if (!r) r = verify_bundle3(fd, &b3, fsz);", "    (void)verify_bundle3;"),
+     "    if (!r) r = verify_bundle3(fd, &b3, fsz, sec0, &nsec);",
+     "    if (!r) { (void)verify_bundle3; }"),
     ("upload duplicate check drops the owner name",  "th",
      "oh3.serial == b3.serial && strcmp(oh3.name, b3.name) == 0) {", "oh3.serial == b3.serial) {"),
     # The net routes under the single slot: the store must stay registered, and the retired

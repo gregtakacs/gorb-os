@@ -193,21 +193,21 @@ func TestThemeIdRuleMatchesTheFirmware(t *testing.T) {
 		t.Fatal("theme_id() is no longer recognisable in orb_theme.c; update the Go mirror in internal/orbnet")
 	}
 	for _, tc := range []struct{ name, id string }{
-		{"aurora", "9b89025ce7a6"},
-		{"Aurora", "e9de098c7733"},
-		{"skeleton", "2ac11a92104c"},
+		{"aurora", "clock-aurora-958c30f62484"},
+		{"Aurora", "clock-aurora-fede927ce7de"},
+		{"skeleton", "clock-skeleton-e517bb95e243"},
 	} {
-		got, err := orbnet.ThemeIDOf(tc.name)
+		got, err := orbnet.ThemeIDOf("clock", tc.name)
 		if err != nil {
-			t.Fatalf("ThemeIDOf(%q): %v", tc.name, err)
+			t.Fatalf("ThemeIDOf(\"clock\", %q): %v", tc.name, err)
 		}
 		if got != tc.id {
-			t.Errorf("ThemeIDOf(%q) = %s, want %s", tc.name, got, tc.id)
+			t.Errorf("ThemeIDOf(\"clock\", %q) = %s, want %s", tc.name, got, tc.id)
 		}
 	}
 	// The 12-hex gate, spelled the firmware's way and the client's way.
 	h := firmwareFile(t, filepath.Join("main", "net", "orb_net.c"))
-	if !strings.Contains(h, "ORB_THEME_ID_HEX + 1") {
+	if !strings.Contains(h, "ORB_THEME_HANDLE_MAX + 1") {
 		t.Error("h_bundle_install no longer sizes an id buffer from ORB_THEME_ID_HEX; re-check CheckThemeID")
 	}
 	for _, bad := range []string{"", "A", "9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f"} {
@@ -247,13 +247,12 @@ func TestUploadCeilingMatchesTheHeader(t *testing.T) {
 func themeRowJSONTags(t *testing.T) []string {
 	t.Helper()
 	tags := jsonTagsOf(t, orbnet.ThemeEntry{})
-	// Nine, not eight: Migration 1 replaced the flip-era slot letter on h_sd's row
-	// with the stored boolean — the single witness that a copy sits in the one slot
-	// the dial draws — and the hub card now reads that witness to report a store
-	// landing. The firmware row also carries fmt and sects, which the card does not
-	// decode and this test therefore does not check.
-	if len(tags) != 9 {
-		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is nine, and this test only checks the ones the struct declares", len(tags), tags)
+	// Ten: Migration 1's stored witness, and the app tag per-app theming added —
+	// the owning app of every row, which the hub groups and dials by. The firmware
+	// row also carries fmt and sects, which the card does not decode and this test
+	// therefore does not check.
+	if len(tags) != 10 {
+		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is ten, and this test only checks the ones the struct declares", len(tags), tags)
 	}
 	return tags
 }

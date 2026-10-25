@@ -29,7 +29,12 @@ import (
 // the id derived from it, and the two load-state bits a page needs.
 type Theme struct {
 	Name    string
-	ID      string
+	// App is the owning app slug — the stem's first token. Per-app theming
+	// files every card row under "<app>-<token>-<hex>"; a seeded row that names no
+	// app is the clock's, which is what every orb's card carried before themes had
+	// owners.
+	App string
+	ID  string
 	Why     string
 	Bytes   int
 	Serial  int
@@ -133,7 +138,10 @@ func New(themes ...Theme) *Orb {
 	for i := range themes {
 
 		t := themes[i]
-		t.ID = themeID(t.Name)
+		if t.App == "" {
+			t.App = "clock"
+		}
+		t.ID = themeID(t.App, t.Name)
 		if t.Active {
 			// The single slot being drawn IS stored: h_sd marks such a row
 			// stored true, and source answers "slot".
@@ -232,6 +240,10 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveScreen(w, r)
 	case r.URL.Path == "/api/v1/fb" && r.Method == http.MethodGet:
 		o.serveFb(w, r)
+	case r.URL.Path == "/api/v1/log" && r.Method == http.MethodGet:
+		// h_log's shape: the retained tail as plain text, newest last.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		writeJSON(w, 200, "I (42110) theme: listing /sd/themes\nI (42115) sd: card SDSC-8G mounted\n")
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
 		o.serveSD(w)
 	case r.URL.Path == "/api/v1/sd/delete" && r.Method == http.MethodPost:
@@ -285,8 +297,8 @@ func (o *Orb) serveSD(w http.ResponseWriter) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		fmt.Fprintf(&b, `{"name":%q,"id":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"stored":%t}`,
-			t.Name, t.ID, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Stored)
+		fmt.Fprintf(&b, `{"name":%q,"id":%q,"app":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"stored":%t}`,
+			t.Name, t.ID, t.App, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Stored)
 	}
 	b.WriteString("]}")
 	writeJSON(w, 200, b.String())
@@ -414,7 +426,11 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, fmt.Sprintf(`{"error":"rejected","detail":%q}`, ferr))
 		return
 	}
-	id := themeID(name)
+	// The double keeps the firmware's filing rule, not the client's: a FORMAT 3
+	// container themes exactly one app, so its upload files under that app's slug.
+	// containerSlug reads the pair the device reads; "clock" is the fallback only
+	// for the minimal header a test seeds without an index.
+	id := themeID(containerSlug(body, "clock"), name)
 	overwrite := r.URL.Query().Get("overwrite") == "1"
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -459,7 +475,7 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	o.themes = append(o.themes, &Theme{Name: name, ID: id, Bytes: len(body), Serial: 1, OK: true, Stored: !o.TearStore, Active: !o.TearStore})
+	o.themes = append(o.themes, &Theme{Name: name, App: containerSlug(body, "clock"), ID: id, Bytes: len(body), Serial: 1, OK: true, Stored: !o.TearStore, Active: !o.TearStore})
 	if o.TearStore {
 		land(o.themes[len(o.themes)-1])
 	}
@@ -665,25 +681,120 @@ func hdrCRC(b []byte) uint32 {
 // carried the retired 4 MB pair's figure until C1 (§7.4).
 const MaxUpload = 0x00800000 + 0x20000
 
-// idOK is orb_theme_id_ok: exactly 12 chars of [0-9a-f].
+// idOK is orb_theme_id_ok: the compound card stem "<slug>-<token>-<12 hex>" inside the
+// one FATFS name rule, checked the device's way (own copy, not orbnet's, for the same
+// reason this double keeps any rule of its own). A lone hex tail — the FORMAT 2 era's
+// whole stem — names no app and fails here exactly as it fails on an orb.
 func idOK(s string) bool {
-	if len(s) != 12 {
+	if s == "" || len(s) > 55 || s[0] == '.' {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	f := strings.IndexByte(s, '-')
+	l := strings.LastIndexByte(s, '-')
+	if f <= 0 || l <= f {
+		return false
+	}
+	slug, tok, hex := s[:f], s[f+1:l], s[l+1:]
+	if len(slug) > 23 || tok == "" || len(hex) != 12 || strings.ContainsRune(tok, '.') {
+		return false
+	}
+	for i := 0; i < len(slug); i++ {
+		c := slug[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	for i := 0; i < len(hex); i++ {
+		c := hex[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
 			return false
 		}
 	}
 	return true
 }
 
-// themeID is main/art/orb_theme.c's theme_id() and tools/orbtheme.py's theme_id():
-// hex(sha256(name))[:12] over the UTF-8 bytes up to the NUL.
-func themeID(name string) string {
-	d := sha256.Sum256([]byte(name))
-	return hex.EncodeToString(d[:])[:12]
+// themeID is main/art/orb_theme.c's theme_stem() and tools/orbtheme.py's card_stem():
+// the compound card stem "<slug>-<token>-<hex(sha256(slug/name))[:12]>". Duplicated on
+// purpose, exactly as idOK is: a double that addresses rows the way a client names them,
+// rather than the way the device files them, lets a hub test pass against wiring no orb
+// would answer. The sanitizer below is theme_name_token's rule restated; the shared
+// vectors in orbfake_test pin it against tools/orbtheme.py.
+func themeID(slug, name string) string {
+	d := sha256.Sum256([]byte(slug + "/" + name))
+	return slug + "-" + nameToken(name) + "-" + hex.EncodeToString(d[:])[:12]
+}
+
+// nameToken mirrors orb_theme.c's theme_name_token(): lowercase alphanumerics,
+// separators collapsed to '-', trimmed, cut at 24, "theme" when nothing is legible.
+func nameToken(name string) string {
+	var out []byte
+	pending := false
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		alnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if !alnum {
+			pending = len(out) > 0
+			continue
+		}
+		if pending && len(out) < 24 {
+			out = append(out, '-')
+		}
+		pending = false
+		if len(out) >= 24 {
+			break
+		}
+		out = append(out, c)
+	}
+	tok := strings.TrimRight(string(out), "-")
+	if tok == "" {
+		return "theme"
+	}
+	return tok
+}
+
+// containerSlug is card_check3's one-section answer, read just far enough: the
+// header's count and the first record's slug, nothing else. What it cannot answer
+// falls back to the caller's default — the fixtures that seed a row without an
+// index are the clock's, and the device refuses such a container at the door anyway.
+func containerSlug(body []byte, def string) string {
+	if len(body) < 128 {
+		return def
+	}
+	n := binary.LittleEndian.Uint32(body[9*4:])
+	geomOff := binary.LittleEndian.Uint32(body[4*4:])
+	if n != 1 || geomOff+8+40 > uint32(len(body)) {
+		return def
+	}
+	rec := body[geomOff+8:]
+	slen := int(binary.LittleEndian.Uint16(rec[2:]))
+	goff := int(binary.LittleEndian.Uint32(rec[12:]))
+	gsz := int(binary.LittleEndian.Uint32(rec[16:]))
+	if slen < 1 || slen > 23 || goff < 0 || gsz < slen {
+		return def
+	}
+	pad := slen + ((4 - slen%4) % 4)
+	start := int(geomOff) + goff + gsz - pad
+	if start < 0 || start+slen > len(body) {
+		return def
+	}
+	slug := string(body[start : start+slen])
+	for i := 0; i < len(slug); i++ {
+		c := slug[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return def
+		}
+	}
+	return slug
 }
 
 // containerName is the firmware's read of the header — card_check3's gate, kept

@@ -46,7 +46,7 @@
 #include "input_router.h"       /* input_router_request/current: the task-safe screen switch */
 #include "orb_boot_overlay.h"   /* the store's progress frames (§6.3) */
 #include "freertos/task.h"      /* vTaskDelay: the park wait rides ticks, not a spin */
-#include "mbedtls/sha256.h"  /* theme_id(): sha256 over the header name -> the card filename */
+#include "mbedtls/sha256.h"  /* theme_id(): sha256 over "slug/name" -> the card filename */
 
 static const char *TAG = "orb_theme";
 
@@ -112,6 +112,12 @@ _Static_assert(W_WORDS == 32, "container header must be 128 bytes");
  * in every reader and tool silently gates on a fiction (§7.4). */
 _Static_assert((uint32_t)SLOT_CAP - SLOT_ART_OFF == ORB_THEME_SLOT_CAP,
                "ORB_THEME_SLOT_CAP drifted from the slot layout it names");
+/* The stem ceiling and the name ceiling are ONE number by rule: every theme
+ * handle the identity layer can build must pass orb_sd_name_ok() and fit the
+ * walk's buffer, and a handle the validator refused would be a theme the
+ * upload door filed under a name the next scan cannot echo back. */
+_Static_assert(ORB_THEME_HANDLE_MAX == ORB_SD_NAME_MAX,
+               "the theme handle ceiling and the card name ceiling drifted apart");
 
 /* Wire counts. THEME_SCALARS_N must equal len(orbtheme.THEME_FIELDS) and
  * SPRITE_WORDS_N len(orbtheme.SPRITE_FIELDS): a mismatch shifts every field after
@@ -170,7 +176,7 @@ typedef struct {
                                          * four-count blob, and the length is
                                          * what proves they are really zero */
     char     name[THEME_NAME_MAX + 1];   /* the theme's one true name; the card
-                                          * filename is theme_id(name), never this */
+                                          * filename is theme_stem(slug, name), never this */
     uint32_t fmt;                        /* the format stamp card_check3 reads; only 3
                                           * survives now that FORMAT 2 is retired.
                                           * Unset (0) means unreadable. */
@@ -208,19 +214,29 @@ _Static_assert(sizeof THEME3_REFUSAL <= 56,
 
 
 /* One canonical card identity, mirrored from tools/orbtheme.py's theme_id(): the
- * card filename stem is hex(sha256(name))[:12], LOWERCASE, over the name bytes up
- * to its NUL — never the padded THEME_NAME_MAX-byte array, so "Neon" hashes exactly
- * as hashlib.sha256(b"Neon") and a stored name never picks up trailing zero bytes as
- * identity. The theme's one true name is the string inside its container; the card
- * filename is derived from it and is opaque hex no human types or labels with.
+ * card filename stem is <slug>-<token>-<hex(sha256(slug/name))[:12]>, LOWERCASE
+ * hex over the slug, a '/', and the name bytes up to the name's NUL — never the
+ * padded THEME_NAME_MAX-byte array, so ("clock","Neon") hashes exactly as
+ * hashlib.sha256(b"clock/Neon") and a stored name never picks up trailing zero
+ * bytes as identity. The theme's one true name is the string inside its
+ * container and its owner is the container's single section; the card filename
+ * carries BOTH, which is why the same theme name can live under two apps
+ * without either stealing the other's row. The middle token is a legible
+ * decoration derived from the name; the identity is the pair around it, so a
+ * hand rename that keeps slug and hex keeps the theme addressable.
  *
- * The host harness lifts this function verbatim and pins it against the Python
- * version on known-answer rows (see tools/host_sd_test.py), so "the two sides agree
- * on the hash input" is a green line and not a hope. */
-static void theme_id(const char *name, char out[THEME_ID_HEX + 1])
+ * The host harness lifts these functions verbatim and pins them against the
+ * Python versions on known-answer rows (see tools/host_sd_test.py), so "the two
+ * sides agree on the hash input" is a green line and not a hope. */
+static void theme_id(const char *slug, const char *name, char out[THEME_ID_HEX + 1])
 {
     uint8_t digest[32];
-    mbedtls_sha256((const unsigned char *)name, strlen(name), digest, /*is224=*/0);
+    char buf[ORB_BUNDLE_SLUG_MAX + 1 + THEME_NAME_MAX];
+    const size_t sl = strlen(slug), nl = strlen(name);
+    memcpy(buf, slug, sl);
+    buf[sl] = '/';
+    memcpy(buf + sl + 1, name, nl);
+    mbedtls_sha256((const unsigned char *)buf, sl + 1 + nl, digest, /*is224=*/0);
     for (int i = 0; i < THEME_ID_HEX / 2; i++) {
         out[2 * i]     = "0123456789abcdef"[digest[i] >> 4];
         out[2 * i + 1] = "0123456789abcdef"[digest[i] & 0x0F];
@@ -228,22 +244,111 @@ static void theme_id(const char *name, char out[THEME_ID_HEX + 1])
     out[THEME_ID_HEX] = '\0';
 }
 
-/* Is `id` a card filename stem this device could have issued? Exactly
- * THEME_ID_HEX (12) chars of [0-9a-f] and nothing else: uppercase, 11 or 13 chars,
- * '/' and "../" are all refused before the card is touched. An id arrives back from
- * the browser, but it never reaches a path builder — orb_theme_resolve_id() finds the
- * file by walking the directory and then re-verifies the header name; the id only
- * selects which directory entry to accept. */
-static bool theme_id_ok(const char *id)
+/* The stem's legible middle, sanitized from the theme name: lowercase ASCII
+ * letters and digits, every other byte a separator, runs collapsed to one '-',
+ * leading and trailing separators dropped, cut at THEME_TOKEN_MAX so the pair
+ * around it always fits ORB_SD_NAME_MAX. A name with nothing legible in it
+ * ("Ünïcödé 日本語 🔆" sanitizes to a token, "!!!" does not) lands on "theme":
+ * the token decorates the row, and an empty token would double the '-'. This
+ * is the one sanitizer; orbbundle.py, orbtheme-baker.js and the hub's Go copy
+ * mirror these lines, and host_sd_test drives all four on shared vectors. */
+#define THEME_TOKEN_MAX 24
+static void theme_name_token(const char *name, char *tok, size_t tokcap)
 {
-    if (id == NULL) return false;
-    size_t n = 0;
-    for (const char *p = id; *p; ++p, ++n) {
-        if (n >= THEME_ID_HEX) return false;          /* too long */
-        const char c = *p;
+    size_t o = 0;
+    bool pending = false;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        char c = (char)*p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        const bool alnum = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (!alnum) { pending = o > 0; continue; }
+        if (pending && o + 1 < tokcap) tok[o++] = '-';
+        pending = false;
+        if (o + 1 >= tokcap) break;
+        tok[o++] = c;
+    }
+    if (o == 0) { memcpy(tok, "theme", 6); return; }
+    if (tok[o - 1] == '-') o--;                    /* truncation may leave one */
+    if (o == 0) { memcpy(tok, "theme", 6); return; }
+    tok[o] = '\0';
+}
+
+static void theme_stem(const char *slug, const char *name,
+                       char *out, size_t outsz)
+{
+    char tok[THEME_TOKEN_MAX + 1], id[THEME_ID_HEX + 1];
+    theme_name_token(name, tok, sizeof tok);
+    theme_id(slug, name, id);
+    snprintf(out, outsz, "%s-%s-%s", slug, tok, id);
+}
+
+/* Split a stem into its authoritative parts: the slug before the first '-' and
+ * the 12-hex after the last. False when either boundary lies (no '-', a slug
+ * outside the manifest rule, a tail that is not 12 lowercase hex). The token
+ * between them is deliberately NOT checked — the hand-rename rule above. The
+ * split reads the stem's own first '-' so a token holding '-' (the sanitizer
+ * emits them) cannot shift the slug: the slug charset has no '-', so the first
+ * one ends it. */
+static bool theme_stem_split(const char *stem, char *slug, size_t slugsz,
+                             char *id, size_t idsz)
+{
+    if (stem == NULL || stem[0] == '\0') return false;
+    const char *d = strchr(stem, '-');
+    if (d == NULL || d == stem) return false;
+    const size_t sl = (size_t)(d - stem);
+    if (sl > ORB_BUNDLE_SLUG_MAX) return false;
+    if (orb_bundle_slug_rule((const uint8_t *)stem, (uint32_t)sl) != 0) return false;
+    if (sl + 1 > slugsz) return false;
+    memcpy(slug, stem, sl);
+    slug[sl] = '\0';
+    const size_t n = strlen(stem);
+    if (n < 1 + THEME_ID_HEX || n - THEME_ID_HEX - 1 < sl + 1) return false;
+    /* The separator ahead of the tail fixes its length: a 13-hex tail has no
+     * '-' thirteen bytes from the end, and a shorter tail fails the hex loop. */
+    if (stem[n - THEME_ID_HEX - 1] != '-') return false;
+    if (idsz < THEME_ID_HEX + 1) return false;
+    memcpy(id, stem + n - THEME_ID_HEX, THEME_ID_HEX);
+    id[THEME_ID_HEX] = '\0';
+    for (int i = 0; i < THEME_ID_HEX; i++) {
+        const char c = id[i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
-    return n == THEME_ID_HEX;                          /* and no shorter */
+    return true;
+}
+
+/* Is `stem` a card filename this device could have issued? The rule is the
+ * split: a legal slug, a '-', a tail of exactly THEME_ID_HEX chars of [0-9a-f],
+ * and a token between them that at least exists and carries no dot — the dot
+ * was FORMAT 2's whole stem, and one inside a token would read as an extension
+ * to every tool that splits on it. '/' and ".." fail the same gate, before the
+ * card is touched. An id arrives back from the browser, but it never reaches a
+ * path builder — orb_theme_resolve_id() finds the file by walking the directory
+ * and re-verifies the header against the stem; the id only selects which
+ * directory entry to accept. */
+/* The one-section rule's sentence, in the two doors that verify a whole
+ * container. A theme container that carries several apps' sections is the
+ * FORMAT 2 era's habit in FORMAT 3 clothing: it cannot be named by one stem,
+ * installed by one app, or evicted by one owner, so every door refuses it. */
+static const char *one_section_why(uint32_t n)
+{
+    static char why[72];
+    snprintf(why, sizeof why,
+             "a theme file carries exactly one section %s this one carries %lu",
+             "—", (unsigned long)n);
+    return why;
+}
+
+static bool theme_id_ok(const char *stem)
+{
+    if (stem == NULL || !orb_sd_name_ok(stem)) return false;
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_stem_split(stem, slug, sizeof slug, id, sizeof id)) return false;
+    const char *first = strchr(stem, '-'), *last = strrchr(stem, '-');
+    const size_t tokn = (size_t)(last - first) - 1;
+    if (tokn == 0) return false;
+    for (const char *p = first + 1; p < last; p++)
+        if (*p == '.') return false;
+    return true;
 }
 
 /* The public form, so the HTTP handlers can reject a malformed id before calling
@@ -292,11 +397,13 @@ static uint32_t      s_bundle_file_geom;
 static bool          s_active_valid;
 static const char   *s_source = "none";
 
-/* §20.4's `staged` word: the 12-hex id of a store whose pixels reached the slot
+/* §20.4's `staged` word: the card stem of a store whose pixels reached the slot
  * and never wrote its header, read back out of NVS at boot and kept until a boot
  * finds the commit landed. "" is the clean state. Under the single slot it is only
- * a witness that a store was armed and torn — never a request and never a choice. */
-static char          s_staged_id[ORB_THEME_ID_HEX + 1];
+ * a witness that a store was armed and torn — never a request and never a choice.
+ * The stem, not the 12-hex: per-app theming made the hex ambiguous across apps,
+ * and the witness must name the row the page can point at. */
+static char          s_staged_id[ORB_THEME_HANDLE_MAX + 1];
 /* Migration 1's measured fact for that witness: an interrupted store on this
  * single-slot firmware leaves the one slot headerless, so the dial falls to the
  * base digital face and one re-store recovers it. */
@@ -393,6 +500,12 @@ uint32_t    orb_theme_refill_bytes(void)   { return s_refill_bytes; }
 uint32_t    orb_theme_bundle_ms(void)      { return s_bundle_ms; }
 uint32_t    orb_theme_bundle_bytes(void)   { return s_bundle_bytes; }
 
+/* How many files the last scan's walk saw carrying the extension, cap and
+ * other apps' prefixes included: the "8 shown of 19 on the card" pair. 0
+ * before the first scan, and unchanged by a scan that never reached the card. */
+static int s_scan_counted;
+int orb_theme_scan_counted(void)           { return s_scan_counted; }
+
 /* ---- single-slot boot (Migration 1) -----------------------------------------
  *
  * With one slot at offset 0 there is no "which slot does a boot draw" and no
@@ -447,10 +560,10 @@ static esp_err_t ensure_chunk(void)
 
 /* "/sd/themes/<stem>.orbtheme", or false. The extension is appended HERE, not by
  * the caller: letting the client spell the suffix is how ".orbtheme/../../x" or a
- * doubled extension reaches the path. Every caller passes either a device-issued id
- * (theme_id(name), 12 lowercase hex) — which card_open_verified_id proved against the
- * file's own header before it got here — or nothing at all, so this builder never sees
- * a human-supplied string. The directory and the name rule come from the SD layer, so
+ * doubled extension reaches the path. Every caller passes either a device-issued
+ * compound stem (theme_stem(slug, name)) — which card_open_verified_id proved
+ * against the file's own header before it got here — or nothing at all, so this
+ * builder never sees a human-supplied string. The directory and the name rule come from the SD layer, so
  * an endpoint added later cannot reach the card without going through the one
  * validator the host test exercises. */
 static bool theme_file(const char *stem, char *out, size_t outsz)
@@ -681,8 +794,13 @@ static const char *clock3_verdict(const orb_bundle_t *b)
 /* The verdict straight off a card file's own bytes: the region read is the whole
  * ask — orb_bundle_parse_region checks the index, every bank record and the region
  * checksum, and the projection needs no pixels. verify_bundle3() streams the art
- * for that file's integrity; this asks only whether the clock inside would draw. */
-static const char *clock3_verdict3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size)
+ * for that file's integrity; this asks only whether the clock inside would draw.
+ * The per-app stem needs what the region OWNS, so the parsed index's first slug
+ * and its section count come back out too when the caller asks: record 0 is the
+ * only section a theme container may carry, and the door that lists or files the
+ * file must be able to say which app that section names. */
+static const char *clock3_verdict3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size,
+                                   char *slug_out, uint32_t *nsec_out)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) return "out of memory for the bundle's tables";
@@ -693,7 +811,12 @@ static const char *clock3_verdict3(int fd, const orb_bundle3_hdr_t *h, uint32_t 
     }
     orb_bundle_t b;
     const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, &b);
-    if (!r) r = clock3_verdict(&b);
+    if (!r) {
+        if (slug_out)
+            strlcpy(slug_out, b.sec[0].slug, ORB_BUNDLE_SLUG_MAX + 1);
+        if (nsec_out) *nsec_out = b.n_sections;
+        r = clock3_verdict(&b);
+    }
     heap_caps_free(region);
     return r;
 }
@@ -713,7 +836,8 @@ static const char *clock3_verdict3(int fd, const orb_bundle3_hdr_t *h, uint32_t 
  * The region buffer is install_bundle()'s size and cap: geom_size is already
  * clamped to ORB_BUNDLE_GEOM_CAP by the header gate before it reaches this
  * malloc. */
-static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size)
+static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t file_size,
+                                  char *slug_out, uint32_t *nsec_out)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) return "out of memory for the bundle's tables";
@@ -726,7 +850,12 @@ static const char *verify_bundle3(int fd, const orb_bundle3_hdr_t *h, uint32_t f
     const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, &b);
     /* §31: the upload door asks the projection while the region is already in
      * hand. A clock this panel refuses never reaches the card, let alone a row. */
-    if (!r) r = clock3_verdict(&b);
+    if (!r) {
+        if (slug_out)
+            strlcpy(slug_out, b.sec[0].slug, ORB_BUNDLE_SLUG_MAX + 1);
+        if (nsec_out) *nsec_out = b.n_sections;
+        r = clock3_verdict(&b);
+    }
     heap_caps_free(region);
     if (r) return r;
     if (ensure_chunk() != ESP_OK) return "out of memory for the card read buffer";
@@ -788,35 +917,42 @@ static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
     resolve3_t *r = arg;
     if (strcmp(rec->name, r->want) != 0) return false;
     r->found = true;
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_stem_split(r->want, slug, sizeof slug, id, sizeof id)) return false;
     orb_bundle3_hdr_t h;
     uint32_t fsz = 0;
     const char *cr = card_check3(fd, &h, &fsz);
     if (cr) { r->why = cr; return false; }
-    char id[THEME_ID_HEX + 1];
-    theme_id(h.name, id);
-    r->verified = (strcmp(id, r->want) == 0);
+    char want[THEME_ID_HEX + 1];
+    theme_id(slug, h.name, want);
+    r->verified = (strcmp(want, id) == 0);
     return r->verified;
 }
 
-static int card_open_verified_id3(const char *id, orb_bundle3_hdr_t *o, uint32_t *file_size,
+static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
                                   const char **why)
 {
     *why = NULL;
-    if (!theme_id_ok(id)) { *why = "that theme id is not one this device issued"; return -1; }
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_id_ok(stem) ||
+        !theme_stem_split(stem, slug, sizeof slug, id, sizeof id)) {
+        *why = "that theme id is not one this device issued";
+        return -1;
+    }
     const orb_file_src_t *src = orb_files_src("clock", "themes");
     if (!src) { *why = "no \"themes\" file source declared"; return -1; }
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
 
-    resolve3_t r = { .want = id, .found = false, .verified = false };
-    if (orb_files_walk(src, resolve3_entry, &r) < 0) { *why = "no card in the socket"; return -1; }
+    resolve3_t r = { .want = stem, .found = false, .verified = false };
+    if (orb_files_walk(src, resolve3_entry, &r, NULL) < 0) { *why = "no card in the socket"; return -1; }
     if (!r.found)    { *why = "no such theme on the card";                        return -1; }
     if (!r.verified && r.why) { *why = r.why;                                     return -1; }
     if (!r.verified) { *why = "that file's name does not match its id — refused"; return -1; }
 
-    const int fd = card_open_locked3(id, o, file_size, why);
+    const int fd = card_open_locked3(stem, o, file_size, why);
     if (fd < 0) return -1;
     char id2[THEME_ID_HEX + 1];
-    theme_id(o->name, id2);
+    theme_id(slug, o->name, id2);
     if (strcmp(id2, id) != 0) {
         card_close(fd);
         *why = "that file's name does not match its id — refused";
@@ -1489,13 +1625,19 @@ esp_err_t orb_theme_boot(void)
     bool claims3 = false;
     const bool slot_is_bundle = slot_probe3(p, SLOT_HDR, &b3, raw3, &claims3);
 
-    char staged[ORB_THEME_ID_HEX + 1];
+    /* The witness is the card STEM the store was asked for. Its slug is the one
+     * the install hashed with, so the landing test re-derives the id from the
+     * slot's own name under that slug: the header that arrives says the store
+     * committed, and a stale witness dies here either way. */
+    char staged[ORB_THEME_HANDLE_MAX + 1];
     if (nvs_get(THEME_NVS_STAGED, staged, sizeof staged) && theme_id_ok(staged)) {
+        char wslug[ORB_BUNDLE_SLUG_MAX + 1], wid[ORB_THEME_ID_HEX + 1];
         bool landed = false;
-        if (slot_is_bundle) {
+        if (slot_is_bundle &&
+            theme_stem_split(staged, wslug, sizeof wslug, wid, sizeof wid)) {
             char cid[ORB_THEME_ID_HEX + 1];
-            theme_id(b3.name, cid);
-            landed = (strcmp(cid, staged) == 0);
+            theme_id(wslug, b3.name, cid);
+            landed = (strcmp(cid, wid) == 0);
         }
         if (landed) staged_clear();
         else        strlcpy(s_staged_id, staged, sizeof s_staged_id);
@@ -1550,7 +1692,7 @@ static esp_err_t install_failed(esp_err_t e, const char *w, char *why, size_t wh
  *  than in the picker or the page so both show one sentence about one failure: an
  *  install attempted from the browser must put the same words on the dial's row,
  *  or the two entry points are two opinions about the same event. */
-static char s_try_id[ORB_THEME_ID_HEX + 1];
+static char s_try_id[ORB_THEME_HANDLE_MAX + 1];
 /* C3 widened the witness from 56 to 72 bytes: §5.3's refusal sentence carries
  * two page counts ("this theme needs N MMU pages and this board has M free")
  * and must not lose the count that is its whole point to a truncation. The
@@ -1571,7 +1713,7 @@ static void try_note(const char *id, const char *why)
 
 /** The worker's copy of a request: the id, nothing else. Small enough that the
  *  queue owns it outright and the caller's stack may vanish on return. */
-typedef struct { char id[ORB_THEME_ID_HEX + 1]; } install_req_t;
+typedef struct { char id[ORB_THEME_HANDLE_MAX + 1]; } install_req_t;
 
 
 /* Migration 1's one worker: the press that stores a bundle into the single slot and
@@ -1676,33 +1818,62 @@ typedef struct {
     orb_theme_entry_t *out;
     int                cap;
     int                n;
-    /* Migration 1: the id the ONE slot header carried when this walk started, probed
-     * LIVE rather than remembered from boot — a store lands and reboots, and the row
-     * must show as stored for the theme that is in the slot right now. Empty string =
-     * nothing drawable in the slot. */
-    char               slot_id[ORB_THEME_ID_HEX + 1];
+    int                counted;         /* the walk's extension-total, cap and
+                                         * prefix included — the page's "8 of 19" */
+    const char        *app;             /* which app's rows this listing carries;
+                                         * another app's file is not a refusal,
+                                         * it is not this source's row at all */
+    /* Migration 1: the OWNER NAME the ONE slot header carried when this walk
+     * started, probed LIVE rather than remembered from boot — a store lands and
+     * reboots, and the row must show as stored for the theme that is in the slot
+     * right now. The slot stores the theme, not the filename, so a row's stored
+     * test re-derives the stem id from this name under the row's own slug.
+     * Empty string = nothing drawable in the slot. */
+    char               slot_name[THEME_NAME_MAX + 1];
 } scan_ctx_t;
 
-/* The app's half of the walk. The OS found a <id>.orbtheme, checked the filename
- * is one path segment, and has it open; what the file MEANS — whether it is a theme
- * at all, whether its header name hashes to the id its file is named after, whether
- * it is the one on the dial — is this layer's business and not the card's. */
+/* The app's half of the walk. The OS found a <slug>-<token>-<id>.orbtheme, checked
+ * the filename is one path segment, and has it open; what the file MEANS — whether
+ * it is a theme at all, whether its header name hashes to the id its file is named
+ * under, whether its section belongs to the app its name claims, whether it is the
+ * one on the dial — is this layer's business and not the card's. */
 static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
 {
     scan_ctx_t *const c = arg;
     if (c->n >= c->cap) return false;
 
+    /* Split first, before any row is spent: a name that is not the device's own
+     * compound form was never filed here by an orb, and one carrying ANOTHER
+     * app's slug is not this source's row — the walk counted it, this listing
+     * does not show it, and no header of it is read on this walk. An
+     * unparseable name keeps a row with its reason: the owner has to be able to
+     * see the file the page then declines to act on. */
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    const bool mine = theme_stem_split(rec->name, slug, sizeof slug,
+                                       id, sizeof id) != false;
+    if (mine && strcmp(slug, c->app) != 0) return false;
+
     orb_theme_entry_t *e = &c->out[c->n];
     ESP_LOGI(TAG, "checking \"%s\" on the card", rec->name);
     e->name[0] = '\0';
     /* The id is the filename the OS already normalised; echo it so a damaged row
-     * still has an addressable handle, then overwrite with the header's own id once
-     * the header is read. */
+     * still has an addressable handle, and fill the owner from the name the
+     * split proved. An unparseable name keeps its stem echoed all the same: the
+     * page lists it, refuses it, and names why in .why. */
     strlcpy(e->id, rec->name, sizeof(e->id));
+    strlcpy(e->app, mine ? slug : "", sizeof e->app);
     e->why[0] = '\0';
     e->active = false; e->changed = false; e->stored = false;
     e->art_size = 0; e->serial = 0;
     e->fmt = 0; e->n_sections = 0;
+
+    if (!mine) {
+        strlcpy(e->why, "not a name the orb gives themes — re-export the file",
+                sizeof e->why);
+        e->err = ESP_ERR_INVALID_ARG;
+        c->n++;
+        return true;
+    }
 
     orb_bundle3_hdr_t b3;
     uint32_t fsz3 = 0;
@@ -1728,27 +1899,42 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
      * by omission. FORMAT 2 is retired; a bundle whose name is not its id is refused
      * exactly as the Store door refuses it, keeping the row addressable. */
     char bid[THEME_ID_HEX + 1];
-    theme_id(b3.name, bid);
+    theme_id(slug, b3.name, bid);
     strlcpy(e->name, b3.name, sizeof e->name);
     e->fmt = 3;
     e->n_sections = b3.n_sections;
     e->art_size = b3.art_size;
     e->serial = b3.serial;
-    if (strcmp(bid, rec->name) != 0) {
+    if (strcmp(bid, id) != 0) {
         strlcpy(e->why, "the file is not named for its own theme name — re-upload it",
                 sizeof(e->why));
         e->err = ESP_ERR_INVALID_ARG;
         c->n++;
         return true;
     }
-    strlcpy(e->id, bid, sizeof e->id);
     /* §31: "valid on this orb" is the projection's answer, not the header's. The
      * region read is bounded by the header-checked geom_size, and the answer is
      * the store door's own sentence — the row can mark nothing the press would
-     * then do. This is the check the hub's Store button gates on. */
-    const char *dr = clock3_verdict3(fd, &b3, fsz3);
+     * then do. This is the check the hub's Store button gates on. The same read
+     * names the section this container carries: the stem's slug is the row's
+     * owner, and a file named for one app that themes another is a file the
+     * listing must refuse by name, not one it files under a stranger. */
+    char sec0[ORB_BUNDLE_SLUG_MAX + 1] = "";
+    uint32_t nsec = 0;
+    const char *dr = clock3_verdict3(fd, &b3, fsz3, sec0, &nsec);
+    if (!dr && nsec != 1) {
+        snprintf(e->why, sizeof e->why,
+                 "a theme file carries exactly one section — this one carries %lu",
+                 (unsigned long)nsec);
+        dr = e->why;
+    }
+    if (!dr && strcmp(sec0, slug) != 0) {
+        snprintf(e->why, sizeof e->why,
+                 "this file themes %s — its name says %s", sec0, slug);
+        dr = e->why;
+    }
     if (dr) {
-        strlcpy(e->why, dr, sizeof(e->why));
+        if (dr != e->why) strlcpy(e->why, dr, sizeof(e->why));   /* set-in-place rows copy once */
         e->err = ESP_ERR_INVALID_ARG;
         c->n++;
         return true;
@@ -1757,9 +1943,15 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     /* Which slot holds this file's stored copy — the one slot. The store reboots, so a
      * row's stored marker tells the page this file is what the dial now draws; the
      * store door re-verifies the same header before it writes, so a card that changed
-     * under the answer costs nothing but one honest refusal on the row. */
-    if (c->slot_id[0] && strcmp(c->slot_id, bid) == 0)
-        e->stored = true;
+     * under the answer costs nothing but one honest refusal on the row. The slot
+     * carries the theme, not the filename: the test re-derives this row's id from
+     * the slot's name under this row's own slug — the identity the store hashed on
+     * its way in. */
+    if (c->slot_name[0]) {
+        char sid[THEME_ID_HEX + 1];
+        theme_id(slug, c->slot_name, sid);
+        if (strcmp(sid, id) == 0) e->stored = true;
+    }
     orb_thdr_t as;      /* the identity theme_state() reads: name + the two figures */
     memset(&as, 0, sizeof as);
     strlcpy(as.name, b3.name, sizeof as.name);
@@ -1792,18 +1984,20 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
         return -1;
     }
 
-    scan_ctx_t c = { .out = out, .cap = cap, .n = 0 };
+    scan_ctx_t c = { .out = out, .cap = cap, .n = 0, .app = "clock" };
     /* Probe the one slot for this walk's answer. The partition outliving the card is
      * the point: a stored bundle stays listed as stored with no card in the socket at
      * all, and this probe only decides what the page MARKS — the store door re-reads
-     * the same header on the worker before it writes anything. */
+     * the same header on the worker before it writes anything. The probe answers with
+     * the slot's OWNER NAME; the stem a row is stored under is re-derived per row,
+     * because the slot holds a theme and the name is a filing decision. */
     const esp_partition_t *sp = art_bank_partition();
     if (sp) {
         orb_bundle3_hdr_t sh;
         uint32_t sraw[W_WORDS];
         bool claims;
         if (slot_probe3(sp, SLOT_HDR, &sh, sraw, &claims))
-            theme_id(sh.name, c.slot_id);
+            strlcpy(c.slot_name, sh.name, sizeof c.slot_name);
     }
     /* Both ends logged, with the wait: a scan that never comes back is the one card
      * failure that looks like a dead web server from outside (the dial keeps drawing
@@ -1811,8 +2005,10 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * worker is waiting on the mutex or inside FatFs. */
     const int64_t t_scan = esp_timer_get_time();
     ESP_LOGI(TAG, "listing %s", src->dir);
-    if (orb_files_walk(src, scan_entry, &c) < 0) return -1;
-    ESP_LOGI(TAG, "%d entr%slisted in %lld ms", c.n, c.n == 1 ? "y " : "ies ",
+    if (orb_files_walk(src, scan_entry, &c, &c.counted) < 0) return -1;
+    s_scan_counted = c.counted;
+    ESP_LOGI(TAG, "%d of %d entr%slisted in %lld ms", c.n, c.counted,
+             c.n == 1 ? "y " : "ies ",
              (long long)((esp_timer_get_time() - t_scan) / 1000));
     return c.n;
 }
@@ -1963,18 +2159,24 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
     }
     orb_bundle3_hdr_t b3;
     uint32_t fsz = 0;
+    char sec0[ORB_BUNDLE_SLUG_MAX + 1] = "";
+    uint32_t nsec = 0;
     const char *r = card_check3(fd, &b3, &fsz);
-    if (!r) r = verify_bundle3(fd, &b3, fsz);
-    close(fd);
+    if (!r) r = verify_bundle3(fd, &b3, fsz, sec0, &nsec);
+    if (!r && nsec != 1)
+        r = one_section_why(nsec);
 
-    /* The card filename is the id, and the id is the hash of the header's owner name.
-     * Nothing the client named this upload — the destination is whatever this decides,
-     * from bytes that had to arrive intact. card_check3() already refused a container
-     * with no name in it, so the name here is never empty and theme_id() cannot be
-     * asked for the hash of nothing. */
-    char id[THEME_ID_HEX + 1];
+    /* The card filename is the compound stem: the owning app's slug from the
+     * header's single section, a token sanitized from the owner name, and the
+     * id that hashes the pair. Nothing the client named this upload — the
+     * destination is whatever this decides, from bytes that had to arrive
+     * intact. card_check3() already refused a container with no name in it, so
+     * the name here is never empty and theme_stem() cannot be asked to file a
+     * theme of nothing. */
+    close(fd);
+    char id[ORB_THEME_HANDLE_MAX + 1];
     char final[ORB_SD_PATH_MAX];
-    if (!r) theme_id(b3.name, id);
+    if (!r) theme_stem(sec0, b3.name, id, sizeof id);
     if (!r && !theme_file(id, final, sizeof final)) r = "the theme name is not one the card can hold";
 
     /* Duplicate policy (plan §5). If a file already sits at this id's path, compare
@@ -1999,7 +2201,7 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
                  * The id is still reported so the caller re-stores the one it already
                  * has — an upload armed the slot, so the only way out is a store. */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
-                if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+                if (committed_id) strlcpy(committed_id, id, ORB_THEME_HANDLE_MAX + 1);
                 stage_forget();
                 ESP_LOGI(TAG, "upload of \"%s\" (%s) is unchanged — kept as is", b3.name, id);
                 return ESP_OK;
@@ -2065,7 +2267,7 @@ esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **
     stage_forget();   /* the rename consumed the scratch; its token names nothing now */
     ESP_LOGI(TAG, "bundle \"%s\" uploaded to the card as %s%s", b3.name, id,
              replace ? " (overwrote the previous one)" : "");
-    if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+    if (committed_id) strlcpy(committed_id, id, ORB_THEME_HANDLE_MAX + 1);
     return ESP_OK;
 }
 
@@ -2111,8 +2313,11 @@ esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
     (void)lseek(fd, 0, SEEK_SET);
     orb_bundle3_hdr_t b3;
     uint32_t fsz = 0;
+    char sec0[ORB_BUNDLE_SLUG_MAX + 1] = "";
+    uint32_t nsec = 0;
     const char *r = (scratch_sz > 0) ? card_check3(fd, &b3, &fsz) : "the staged copy is no longer on the card";
-    if (!r) r = verify_bundle3(fd, &b3, fsz);
+    if (!r) r = verify_bundle3(fd, &b3, fsz, sec0, &nsec);
+    if (!r && nsec != 1) r = one_section_why(nsec);
     close(fd);
     if (r) {
         /* Corrupt or gone: exactly what a refused upload's deletion used to do —
@@ -2123,9 +2328,9 @@ esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
         return ESP_ERR_INVALID_CRC;
     }
 
-    char id[THEME_ID_HEX + 1];
+    char id[ORB_THEME_HANDLE_MAX + 1];
     char final[ORB_SD_PATH_MAX];
-    theme_id(b3.name, id);
+    theme_stem(sec0, b3.name, id, sizeof id);
     if (!theme_file(id, final, sizeof final)) {
         orb_sd_unlock();
         *why = "the theme name is not one the card can hold";
@@ -2147,7 +2352,7 @@ esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
     }
     stage_forget();
     if (bytes) *bytes = sz;
-    if (committed_id) strlcpy(committed_id, id, ORB_THEME_ID_HEX + 1);
+    if (committed_id) strlcpy(committed_id, id, ORB_THEME_HANDLE_MAX + 1);
     ESP_LOGI(TAG, "duplicate confirmed from the staged copy: bundle \"%s\" filed as %s (one upload, not two)", b3.name, id);
     return ESP_OK;
 }

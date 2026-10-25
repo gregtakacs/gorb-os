@@ -443,7 +443,7 @@ static int open_verified_stem(const orbapp_hdr_t **h_out, orbapp_hdr_t *h_storag
     /* Pass one: the walk proves the file exists and passes the header ladder. It
      * takes the lock itself, so it runs OUTSIDE ours. */
     resolve_t r = { .want = stem, .found = false, .verified = false };
-    if (orb_files_walk(src, resolve_entry, &r) < 0) { *why = "no card in the socket"; return -1; }
+    if (orb_files_walk(src, resolve_entry, &r, NULL) < 0) { *why = "no card in the socket"; return -1; }
     if (!r.found)    { *why = "no such app on the card"; return -1; }
     if (!r.verified) { *why = "that file failed the app reader — see the /apps row"; return -1; }
 

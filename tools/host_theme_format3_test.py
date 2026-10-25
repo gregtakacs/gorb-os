@@ -72,8 +72,10 @@ check(h["fmt"] == ob.FORMAT3, "header does not stamp format 3")
 check(h["abi"] == ob.GEOM_ABI3, "header does not stamp geometry v3")
 check(h["n_sections"] == 2, "header word 9 lost the section count")
 check(h["name"] == "Two App Bundle", "the bundle name came back wrong (R4 input)")
-check(ot.theme_id(h["name"]) == ot.theme_id("Two App Bundle"),
-      "a bundle's theme_id does not run through the plain name (R4)")
+check(ot.theme_id("clock", h["name"]) == ot.theme_id("clock", "Two App Bundle"),
+      "a bundle's theme_id does not run through the (slug, name) pair (R4)")
+check(ot.theme_id("clock", h["name"]) != ot.theme_id("paint_studio", h["name"]),
+      "the same name under two apps hashes to one id: per-app theming says two")
 check([x["blob"]["slug"] for x in secs] == ["clock", "paint_studio"],
       "sections did not come back slug-sorted, although the writer sorts them")
 c = ob.find_section(secs, "clock")

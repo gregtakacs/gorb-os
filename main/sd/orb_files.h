@@ -46,6 +46,7 @@
 
 #define ORB_FILES_ID_MAX   15    /* the source's name, e.g. "themes" */
 #define ORB_FILES_DIR_MAX  64    /* a full directory path on /sd */
+#define ORB_FILES_PREFIX_MAX 24  /* a name_prefix: the 23-byte slug cap plus its '-' */
 /* ORB_FILES_MAX_NAME equals ORB_SD_NAME_MAX, not +1 as it was when the two
  * read 32 and 31: the drift let the walk's buffer and the validator disagree
  * about which names exist. orb_app_scan.h pins the direction the walk needs
@@ -55,12 +56,20 @@
 
 /** One declared source of files. `id` is what the app and the OS both call it by
  *  ("themes"); it reaches the browser in a query parameter, so it is matched
- *  exactly against this table and is never used as a path component. */
+ *  exactly against this table and is never used as a path component.
+ *
+ *  `name_prefix` is the stem prefix this source's files carry, or "" for all.
+ *  Per-app theming put every app's themes in one directory, and the walk's cap
+ *  is per source: without the prefix, one app's files eat another app's rows
+ *  and a source full of foreign files lists as empty. The walk refuses a prefix
+ *  that is not lowercase a-z 0-9 _ and '-', and counts (never opens) a name it
+ *  does not start with — the cap and the listing stay the owning app's. */
 typedef struct {
     char        id[ORB_FILES_ID_MAX + 1];
     char        dir[ORB_FILES_DIR_MAX];   /* absolute: "/sd/themes" */
     char        ext[16];                  /* with the dot: ".orbtheme" */
     uint8_t     max_entries;              /* most entries one walk returns */
+    char        name_prefix[ORB_FILES_PREFIX_MAX + 1];   /* "clock-", or "" */
 } orb_file_src_t;
 
 /** One file the OS found. `name` is the stem the browser sends back to act on
@@ -84,8 +93,9 @@ typedef bool (*orb_file_each_fn)(void *arg, const orb_file_rec_t *rec, int fd);
 
 /** Register one source for one app. Called from the app's init on the boot
  *  ladder, before any walk can be asked for. Refused, with the reason in the
- *  log, when the directory is not under /sd or the extension does not carry its
- *  dot — a declaration that would make the OS walk somewhere it has no business
+ *  log, when the directory is not under /sd, the extension does not carry its
+ *  dot, or a name_prefix is not lowercase a-z 0-9 _ with at most one trailing
+ *  '-' — a declaration that would make the OS walk somewhere it has no business
  *  walking is a build bug, not a runtime condition to tolerate. */
 esp_err_t orb_files_register(const char *app_slug, const orb_file_src_t *src);
 
@@ -103,14 +113,22 @@ bool orb_files_path(const orb_file_src_t *src, const char *name,
                     char *out, size_t outsz);
 
 /** Walk the source's directory, calling `cb` for each file carrying its
- *  extension, up to src->max_entries. Returns the number kept, or -1 when the
- *  card is not mounted or the directory is not there — the two states the page
- *  must be able to tell apart from "zero files".
+ *  extension and (when the source declares one) its name_prefix, up to
+ *  src->max_entries CALLBACKS. Returns the number kept, or -1 when the card is
+ *  not mounted or the directory is not there — the two states the page must be
+ *  able to tell apart from "zero files".
+ *
+ *  When `counted` is not NULL it receives the number of directory entries that
+ *  carried the extension at all — every file the owner can see on the card,
+ *  including the ones past the cap and the ones the prefix hid, none of which
+ *  was opened. A page that lists 8 of 19 says so with the second number; a
+ *  source full of another app's files says so the same way.
  *
  *  Entries the callback refuses are counted out, not hidden silently: the caller
  *  owns what "damaged" means and is expected to keep the row with its reason,
  *  which is orb_theme_scan()'s shown-with-reason rule verbatim. */
-int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg);
+int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg,
+                   int *counted);
 
 /** Remove one file by name. Refuses a name the validator refuses, and reports
  *  ENOENT as ESP_ERR_NOT_FOUND rather than as success — deleting nothing and

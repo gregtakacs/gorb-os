@@ -79,7 +79,7 @@ def build(src, fi_hdr, sd_src, sd_hdr):
                        for k in ("ORB_SD_BASE", "ORB_SD_NAME_MAX"))
     fconsts = "\n".join(lift(fi_hdr, r"#define " + k + r"\b[^\n]*", FI_H)
                         for k in ("ORB_FILES_ID_MAX", "ORB_FILES_DIR_MAX",
-                                  "ORB_FILES_MAX_NAME"))
+                                  "ORB_FILES_MAX_NAME", "ORB_FILES_PREFIX_MAX"))
     st = lift(fi_hdr, r"typedef struct \{\s*char\s+id\[ORB_FILES_ID_MAX[\s\S]*?\} orb_file_src_t;", FI_H)
     # The table's own record type and its cap, lifted rather than restated: the
     # harness compiles the shipped register()/src(), and a restated record would
@@ -133,21 +133,29 @@ static void pcase(const char *dir, const char *ext, const char *name,
            pass ? "" : "   <== WRONG");
 }
 
-static void rcase(const char *app, const char *dir, const char *ext, int want,
-                  const char *why)
+static void rcase_pre(const char *app, const char *dir, const char *ext,
+                      const char *pre, int want, const char *why)
 {
     orb_file_src_t s; memset(&s, 0, sizeof s);
     snprintf(s.id, sizeof s.id, "themes");
     snprintf(s.dir, sizeof s.dir, "%s", dir);
     snprintf(s.ext, sizeof s.ext, "%s", ext);
+    if (pre) snprintf(s.name_prefix, sizeof s.name_prefix, "%s", pre);
     s.max_entries = 8;
     const esp_err_t e = orb_files_register(app, &s);
     const int got = (e == ESP_OK);
     if (got != !!want) fails++;
-    printf("%-5s register(%-8s %-14s %-11s) -> %-8s (%s)\n",
+    printf("%-5s register(%-8s %-14s %-11s pre=%-9s) -> %-8s (%s)\n",
            got == !!want ? "ok" : "FAIL", app ? app : "(null)", dir, ext,
-           got ? "accepted" : "refused", why);
+           pre ? pre : "-", got ? "accepted" : "refused", why);
 }
+
+static void rcase(const char *app, const char *dir, const char *ext, int want,
+                  const char *why)
+{
+    rcase_pre(app, dir, ext, NULL, want, why);
+}
+
 
 int main(void)
 {
@@ -184,6 +192,14 @@ int main(void)
     rcase("clock", "/sdthemes",  ".orbtheme", 0, "sibling, not child");
     rcase("clock", "",           ".orbtheme", 0, "no directory");
     rcase(NULL,   "/sd/themes",  ".orbtheme", 0, "no owning app");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "clock-", 1, "the owner's prefix is the compound name's first token and its dash");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "my_app-", 1, "underscores are slug bytes");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "x", 1, "a prefix may omit the dash: the slug alone");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "Clock-", 0, "a prefix is lowercase like the slug rule");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "cl-ck-", 0, "a second dash is not a slug byte");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "clock.-", 0, "no dot in a prefix");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "-x", 0, "a prefix cannot lead with the separator");
+    rcase_pre("clock", "/sd/themes", ".orbtheme", "x-----------------------", 0, "over the prefix cap");
 
     if (orb_files_src("nosuchapp", "themes")) { fails++; printf("FAIL  unknown app resolved\n"); }
     if (orb_files_src("clock", "nosuchid"))   { fails++; printf("FAIL  unknown id resolved\n"); }

@@ -127,7 +127,7 @@ def main():
                       "scr_w": SCR, "scr_h": SCR}])
     h2, s2 = ob.read_bundle(OUT)     # the reader's whole verdict, on the way out
     print("%s: name %r id %s, %d elements, %d planes, art %d B"
-          % (OUT, h2["name"], ot.theme_id(h2["name"]), len(els),
+          % (OUT, h2["name"], ot.card_stem("clock", h2["name"]), len(els),
              len(s2[0]["blob"]["sprites"]), h2["art_size"]))
 
 

@@ -38,7 +38,7 @@ func TestAPrecheckAnswersBeforeAnyBytesCrossTheRoom(t *testing.T) {
 		return n
 	}
 	before := doorCalls()
-	id, _ := orbnet.ThemeIDOf("aurora")
+	id, _ := orbnet.ThemeIDOf("clock", "aurora")
 	mux := http.NewServeMux()
 	s.routes(mux)
 	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip+"&precheck=1", file)

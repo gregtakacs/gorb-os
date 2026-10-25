@@ -18,7 +18,7 @@ func TestThemeErrorsCarryTheFirmwaresOwnWords(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"error":"a theme job is already running"}`))
 	})
-	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6")
+	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err == nil {
 		t.Fatal("a 409 was reported as success")
 	}
@@ -38,7 +38,7 @@ func TestThemeStoreReportsTheFirmwaresIdRefusal(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"id is missing or not a theme id"}`))
 	})
-	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6")
+	_, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err == nil || !strings.Contains(err.Error(), "not a theme id") {
 		t.Errorf("err = %v, want the firmware's id refusal carried through", err)
 	}
@@ -51,7 +51,7 @@ func TestThemeErrorFallsBackToTheStatus(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`not json at all`))
 	})
-	if _, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "9b89025ce7a6"); err == nil {
+	if _, err := NewClient(2*time.Second).ThemeStore(fakeIP(srv), "clock-aurora-9b89025ce7a6"); err == nil {
 		t.Fatal("a 404 was reported as success")
 	}
 }
@@ -137,7 +137,7 @@ func TestThemeCommitSpendsTheTokenWithNoBody(t *testing.T) {
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
 		seenMethod, seenQuery, seenLen = r.Method, r.URL.RawQuery, r.ContentLength
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"state":"stored","id":"9b89025ce7a6","bytes":4096,"reboot":"automatic","committed":"staged"}`))
+		_, _ = w.Write([]byte(`{"state":"stored","id":"clock-aurora-9b89025ce7a6","bytes":4096,"reboot":"automatic","committed":"staged"}`))
 	})
 	raw, err := NewClient(2*time.Second).ThemeCommit(fakeIP(srv), "0123456789abcdef")
 	if err != nil {

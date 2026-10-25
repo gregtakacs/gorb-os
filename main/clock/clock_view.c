@@ -2045,7 +2045,10 @@ esp_err_t clock_view_init(orb_app_t *self)
         .id          = "themes",
         .dir         = ORB_SD_THEME_DIR,
         .ext         = ORB_THEME_EXT,
-        .max_entries = 8,
+        .max_entries = 16,
+        /* Every app's themes share this directory; the compound stem names its
+         * owner, and the prefix keeps this source's cap and rows the clock's. */
+        .name_prefix = "clock-",
     };
     const esp_err_t fe = orb_files_register("clock", &themes);
     if (fe != ESP_OK)

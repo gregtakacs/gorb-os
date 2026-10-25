@@ -321,6 +321,10 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/status": {http.MethodGet},
 	"/api/v1/screen": {http.MethodGet},
 	"/api/v1/sd":     {http.MethodGet},
+	// The retained log tail, plain text. Read-only and guarded on the device by the
+	// same token as /screen; the hub's diagnose flow reads it after any failed call,
+	// so a hub that cannot dial it makes the firmware's own witness unreachable.
+	"/api/v1/log":      {http.MethodGet},
 	"/themes":        {http.MethodGet},
 	"/timezone":      {http.MethodGet},
 	"/api/v1/config": {http.MethodGet, http.MethodPost},

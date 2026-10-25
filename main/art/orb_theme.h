@@ -46,7 +46,14 @@
 
 #define ORB_THEME_EXT      ".orbtheme"
 #define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */
-#define ORB_THEME_ID_HEX   12      /* sha256(name)[:12] — the card filename stem */
+#define ORB_THEME_ID_HEX   12      /* sha256("<slug>/<name>")[:12] — the stem's identity tail */
+/* The card filename stem: "<slug>-<token>-<ID_HEX>", the app that owns the theme,
+ * a legible cut of the theme name, and the app-scoped hash that makes the pair a
+ * handle. ORB_THEME_HANDLE_MAX is the stem's length ceiling, and it equals
+ * ORB_SD_NAME_MAX by rule — a theme name the validator would refuse is a file
+ * the card cannot hold — pinned by an assert in orb_theme.c. */
+#define ORB_THEME_HANDLE_MAX 55
+#define ORB_THEME_APP_MAX    23      /* ORB_BUNDLE_SLUG_MAX: the stem's leading token */
 
 /* Partition offsets inside `assets`. One slot at the head of the partition: a 4 KB
  * header at offset 0, 64 KB-aligned geometry at 0x1000 and pixels at 0x10000. See
@@ -138,12 +145,15 @@ const char *orb_theme_source(void);
 /** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);
 
-/* True when `id` is exactly ORB_THEME_ID_HEX chars of [0-9a-f] — a card filename
- * stem this device could have issued. The HTTP handlers call it to reject a
- * malformed id at the edge; install/delete re-check it on the resolve path. */
+/* True when `id` is a card filename stem this device could have issued: a legal
+ * app slug, a '-', a legible token carrying no dot, and a tail of exactly
+ * ORB_THEME_ID_HEX chars of [0-9a-f]. The token between the pair is NOT checked
+ * — it is decoration, and a hand rename that keeps the slug and the hex keeps
+ * the theme addressable. The HTTP handlers call it to reject a malformed id at
+ * the edge; install/delete re-check it on the resolve path. */
 bool orb_theme_id_ok(const char *id);
 
-/** D30's `staged` word (§20.4): the 12-hex id of a store whose pixels reached
+/** D30's `staged` word (§20.4): the card stem of a store whose pixels reached
  *  the slot and whose header never did, and the sentence for its row. ""/"" when
  *  nothing is staged. Read-only — under the single slot the word is only a witness
  *  that a store was armed and never completed; boot draws the base face and one
@@ -209,7 +219,11 @@ const char *orb_theme_try_why(void);
 
 typedef struct {
     char      name[ORB_THEME_NAME_MAX + 1];  /* the owner's name, from the header */
-    char      id[ORB_THEME_ID_HEX + 1];      /* sha256(name)[:12] — card filename stem */
+    char      id[ORB_THEME_HANDLE_MAX + 1];  /* "<slug>-<token>-<hex12>": the card stem,
+                                              * the handle every later request carries */
+    char      app[ORB_THEME_APP_MAX + 1];    /* the stem's leading token: which app owns
+                                              * this theme; "" when the name did not
+                                              * parse and the row is only a refusal */
     char      why[72];            /* why it is unloadable; empty when err == ESP_OK */
     uint32_t  art_size;
     uint32_t  serial;
@@ -225,8 +239,8 @@ typedef struct {
     bool      stored;           /* the single slot holds this file's bytes.
                                  * Migration 1: repurposed from the A/B 'A'/'B' slot
                                  * designator to a plain "is this the stored theme".
-                                 * With one slot it is the same test as matching the
-                                 * slot's 12-hex id and format tuple. */
+                                 * With one slot it is the stem's app-scoped id
+                                 * re-derived from the slot's stored name. */
 } orb_theme_entry_t;
 
 /**
@@ -236,6 +250,11 @@ typedef struct {
  * page has to be able to tell the owner which one they have.
  */
 int orb_theme_scan(orb_theme_entry_t *out, int cap);
+
+/** How many files the last scan's walk saw carrying the theme extension at all,
+ *  the listing cap and other apps' files included: the "shown of on the card"
+ *  pair. 0 before the first successful scan. */
+int orb_theme_scan_counted(void);
 
 /* ---- uploading a theme FROM the browser TO the card -------------------------
  *
@@ -272,7 +291,8 @@ esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n);
  * idempotently; a different set of bytes under an existing name is refused with
  * ORB_THEME_UPLOAD_E_DUP unless overwrite. On failure nothing is committed and the
  * .part is removed, so a bad upload cannot be loaded by mistake. On success the
- * committed 12-hex id is copied into `committed_id` (may be NULL); orb_theme_upload_begin
+ * committed card stem is copied into `committed_id` (buffer ORB_THEME_HANDLE_MAX
+ * + 1, may be NULL); orb_theme_upload_begin
  * already armed the slot invalid, so the caller re-stores this id (post_bundle) to land
  * the theme and reboot. */
 esp_err_t orb_theme_upload_end(orb_theme_up_t **u, bool overwrite, const char **why,

@@ -275,11 +275,11 @@
     return crc32(wordsToBytes(z));
   }
   function packHeader(o) {
-    // The name IS the theme now: main/art/orb_theme.c files the container under
-    // sha256(name)[:12] and refuses a container whose name field is empty, so baking one
-    // with no name would only produce a file the device can never list. Refuse it here,
-    // where the reason can be said, instead of at the card.
-    if (!o.name) throw new Error('the theme has no name to bake — the card files a theme by sha256(name)[:12] and refuses a container with an empty name');
+    // The name IS half the theme's identity: main/art/orb_theme.c files the container
+    // under sha256(slug/name)[:12] and refuses a container whose name field is empty,
+    // so baking one with no name would only produce a file the device can never list.
+    // Refuse it here, where the reason can be said, instead of at the card.
+    if (!o.name) throw new Error('the theme has no name to bake — the card files a theme by sha256(slug/name)[:12] and refuses a container with an empty name');
     var hdr = new Array(HDR_WORDS).fill(0);
     hdr[0] = MAGIC >>> 0; hdr[1] = FORMAT; hdr[2] = GEOM_ABI; hdr[3] = HDR_WORDS * 4;
     hdr[4] = HDR_WORDS * 4;
@@ -298,8 +298,10 @@
    * entry to round. */
   function artOffset(geomSize) { return (HDR_WORDS * 4 + geomSize + SECTOR - 1) & ~(SECTOR - 1); }
 
-  /* The card filename a name yields: hex(sha256(name))[:12], lowercase — the same rule
-   * tools/orbtheme.py's theme_id() defines and main/art/orb_theme.c's theme_id() mirrors.
+  /* The card filename's identity tail: hex(sha256(slug + '/' + name))[:12], lowercase
+   * — the same rule tools/orbtheme.py's theme_id() defines and main/art/orb_theme.c's
+   * theme_id() mirrors, over the OWNING APP and the name: per-app theming made the pair
+   * the identity, so the caller digests 'clock/Av Kit', not just the name.
    * The DIGEST arrives from the caller, because the baker runs in three places: Chrome
    * (window.crypto.subtle.digest, in the studio's own async path), node (the mirror
    * suite, require('crypto')), and nowhere that has a hash this file may reimplement.
@@ -313,6 +315,36 @@
       h += (digest[i] >> 4).toString(16) + (digest[i] & 15).toString(16);
     }
     return h;
+  }
+
+  /* The card stem's legible middle: theme_name_token() in main/art/orb_theme.c and
+   * name_token() in tools/orbtheme.py restated over the UTF-8 bytes of the name. The
+   * studio offers it so a download can be named like the card will name the file; the
+   * card's own rule, and every hand rename that keeps slug and hex, still works. */
+  function nameToken(name) {
+    var bs = new TextEncoder().encode(String(name)), out = [], pending = false;
+    for (var i = 0; i < bs.length; i++) {
+      var c = bs[i];
+      if (c >= 65 && c <= 90) c += 32;
+      var alnum = (c >= 97 && c <= 122) || (c >= 48 && c <= 57);
+      if (!alnum) { pending = out.length > 0; continue; }
+      if (pending && out.length < 24) out.push(45);
+      pending = false;
+      if (out.length >= 24) break;
+      out.push(c);
+    }
+    var tok = String.fromCharCode.apply(null, out).replace(/-+$/, '');
+    return tok || 'theme';
+  }
+
+  /* The whole card filename stem: <slug>-<token>-<12 hex>. Pass the digest of
+   * slug + '/' + name (UTF-8), matching themeIdFromDigest's rule. Returns null when
+   * the digest leg is missing — a studio without crypto keeps its old download
+   * name, and the device renames the upload from the header anyway. */
+  function cardStem(slug, name, digest) {
+    var id = themeIdFromDigest(digest);
+    if (!id || !slug) return null;
+    return slug + '-' + nameToken(name) + '-' + id;
   }
 
   /* A theme name in the unit the header actually measures: UTF-8 BYTES, not JS
@@ -3475,6 +3507,7 @@
     // is refused because the C reader stops at it and the rest of the name would be
     // silently gone — from the list, from the id, and from the card filename.
     nameOk: nameOk, nameBytes: nameBytes, themeIdFromDigest: themeIdFromDigest,
+    nameToken: nameToken, cardStem: cardStem,
     // FORMAT 3 (D32/D33): the multi-section bundle, the element table, and the D29 gate.
     // The browser owns the whole dialect, caps and refusal order included, so the release
     // ships as a web page that flashes over Web Serial; internal/orbnet's reader is the

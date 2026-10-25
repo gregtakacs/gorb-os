@@ -16,12 +16,13 @@ field on one side only therefore fails a test rather than shipping a dial with t
 hands' pivots in the overlay's slots — which is the exact class of bug a
 struct-layout mismatch produces, and it would look like bad art, not like a bug.
 
-FORMAT 2 — the theme's identity lives in the header's `name`, never in the
-filename. A theme's one true name is the string the owner set when they built the
-file, stored in the single NAME_MAX-byte field at W_NAME (words 14..27). The card
-filename is derived from it by theme_id(name) = sha256(name)[:12] + ".orbtheme" —
-opaque hex nobody types, reads, or labels with. The upload filename is meaningless
-once the bytes land and is not stored. FORMAT 1 (a slug + title pair) is refused
+FORMAT 2 — the theme's identity lives in the header: the pair (owning app slug,
+`name`), never the filename. A theme's one true name is the string the owner set
+when they built the file, stored in the single NAME_MAX-byte field at W_NAME (words
+14..27), and the owning app is the container's one section. The card filename is
+derived from the pair by card_stem(slug, name) = "<slug>-<token>-<sha256(slug/name)
+[:12]>" + ".orbtheme": legible where it labels, hash-exact where it identifies. The
+upload filename is meaningless once the bytes land and is not stored. FORMAT 1 (a slug + title pair) is refused
 outright: this reader has no legacy path and there is no migration. GEOM_ABI stays
 1; only the name fields changed, so W_HDR_CRC stays 28 and HDR_WORDS stays 32.
 
@@ -361,23 +362,67 @@ GEOM_BUDGET   = _ts.GEOM_BUDGET                    # 61,440 B: orb_theme.c SLOT_
 ART_BUDGET    = _ts.ORB_THEME_SLOT_CAP             # 8,323,072 B: ORB_THEME_SLOT_CAP
 
 
-def theme_id(name):
-    """The card identity of a theme name: sha256(name)[:12], lowercase hex.
+def theme_id(slug, name):
+    """The card identity of one app's theme: sha256(slug + "/" + name)[:12], lowercase hex.
 
-    THE INPUT IS THE NAME UP TO ITS NUL, never the padded NAME_MAX-byte array, so
-    "Neon" hashes exactly as hashlib.sha256(b"Neon") and a stored name never picks
-    up trailing zero bytes as identity. This is the canonical implementation; the
-    firmware's theme_id() in main/art/orb_theme.c mirrors it byte for byte, and
-    tools/host_sd_test.py lifts the C version and pins it against this one on
-    known-answer rows (ASCII, UTF-8, the 55-char boundary, and a row that proves
-    the padded array and the NUL-terminated bytes hash differently). An empty name
-    is refused: otherwise every nameless theme hashes to one constant.
+    THE INPUT IS THE SLUG, A '/', AND THE NAME UP TO ITS NUL — never the padded
+    NAME_MAX-byte array — so ("clock","Neon") hashes exactly as
+    hashlib.sha256(b"clock/Neon") and a stored name never picks up trailing zero
+    bytes as identity. Per-app theming made the pair the identity: the same theme
+    name under two apps is two themes, and the card filename says which is which.
+    This is the canonical implementation; the firmware's theme_id() in
+    main/art/orb_theme.c mirrors it byte for byte, and tools/host_sd_test.py lifts
+    the C version and pins it against this one on known-answer rows (ASCII, UTF-8,
+    the boundary, and a row that proves the padded array and the NUL-terminated
+    bytes hash differently). An empty name or slug is refused: otherwise a nameless
+    theme hashes to one constant.
 
-    The card filename is theme_id(name) + ".orbtheme" — opaque hex no human types
-    or reads. The upload filename carries no identity and is not stored."""
-    if not name:
-        raise ValueError("theme_id: an empty name is refused")
-    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    The card filename is card_stem(slug, name) + ".orbtheme". The upload filename
+    carries no identity and is not stored."""
+    if not name or not slug:
+        raise ValueError("theme_id: an empty name or slug is refused")
+    return hashlib.sha256((slug + "/" + name).encode("utf-8")).hexdigest()[:12]
+
+
+def name_token(name):
+    """The stem's legible middle, sanitized from the theme name: lowercase ASCII
+    letters and digits, every other byte a separator, runs collapsed to one '-',
+    leading and trailing separators dropped, cut at 24 so the pair around it
+    always fits the 55-byte stem. A name with nothing legible in it yields
+    "theme". This mirrors theme_name_token() in main/art/orb_theme.c byte for
+    byte; host_sd_test drives the shared vectors through both."""
+    out = []
+    pending = False
+    for b in name.encode("utf-8"):
+        c = chr(b)
+        if "A" <= c <= "Z":
+            c = chr(b + 32)
+        if ("a" <= c <= "z") or ("0" <= c <= "9"):
+            if pending and len(out) < 24:
+                out.append("-")
+            pending = False
+            if len(out) < 24:
+                out.append(c)
+            continue
+        pending = len(out) > 0
+    tok = "".join(out)
+    while tok.endswith("-"):
+        tok = tok[:-1]
+    return tok if tok else "theme"
+
+
+def card_stem(slug, name):
+    """The card filename stem the device files (slug, name) under:
+    "<slug>-<name_token(name)>-<theme_id(slug, name)>". The token is decoration
+    and the identity is the pair around it, which is why a hand rename that keeps
+    the slug and the 12-hex tail keeps the theme addressable."""
+    return "%s-%s-%s" % (slug, name_token(name), theme_id(slug, name))
+
+
+def card_name(slug, name):
+    """The card filename — the stem plus its extension."""
+    return card_stem(slug, name) + ".orbtheme"
+
 
 
 def pack_header(name, geom_size, art_size, geom_crc, art_crc,
@@ -498,8 +543,14 @@ if __name__ == "__main__":
                 and struct.unpack("<I", head[4:8])[0] == 3:
             import orbbundle                      # local: orbbundle imports this file
             h, secs = orbbundle.read_bundle(sys.argv[2])
-            print("%-12s '%s'  FORMAT 3  %d section(s)  geom %d B  art %d B  serial %d"
-                  % (theme_id(h["name"]), h["name"], h["n_sections"],
+            # One card stem per container: the rule admits exactly one section, and
+            # a multi-section file has no single owning app to name it after. The
+            # device's door refuses such a file; the inspect line says so too.
+            stem = (card_stem(secs[0]["blob"]["slug"], h["name"])
+                    if h["n_sections"] == 1 else "(no card stem: %d sections)"
+                    % h["n_sections"])
+            print("%-56s '%s'  FORMAT 3  %d section(s)  geom %d B  art %d B  serial %d"
+                  % (stem, h["name"], h["n_sections"],
                      h["geom_size"], h["art_size"], h["serial"]))
             for x in secs:
                 b, r = x["blob"], x["rec"]
@@ -510,8 +561,10 @@ if __name__ == "__main__":
             h, geom, art = read_container(sys.argv[2])
             g = unpack_geom(geom)
             print("%-12s '%s'  %dx%d  geom %d B  art %d B  serial %d"
-                  % (theme_id(h["name"]), h["name"], h["scr_w"], h["scr_h"],
+                  % ("(FORMAT 2)", h["name"], h["scr_w"], h["scr_h"],
                      h["geom_size"], h["art_size"], h["serial"]))
+            print("  FORMAT 2 is retired: the device refuses it at the door — "
+                  "re-export it as a FORMAT 3 bundle (tools/orbbundle.py)")
             print("  hands show=%s  tourbillon_n=%d  gif_frames=%d  rects=%d  bg_frames=%d"
                   % ([x["show"] for x in g["hands"]], g["scalars"]["tourbillon_n"],
                      g["scalars"]["gif_frames"], len(g["rects"]) // 5,

@@ -2153,9 +2153,9 @@ class Component extends DCLogic {
       let id = null;
       try {
         if (window.crypto && window.crypto.subtle)
-          id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(nm))));
+          id = G.themeIdFromDigest(new Uint8Array(await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
       } catch (e) { id = null; }
-      const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
+      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
       const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
@@ -2590,10 +2590,10 @@ class Component extends DCLogic {
       try {
         if (window.crypto && window.crypto.subtle) {
           id = G.themeIdFromDigest(new Uint8Array(
-            await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(nm))));
+            await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode('clock/' + nm))));
         }
       } catch (e) { id = null; }
-      const stem = id || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1);
+      const stem = (id ? G.cardStem('clock', nm, id) : nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       const c = r.report.counts;
       this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (id ? '' : ' (id unavailable here: upload it and the page will name it)') +

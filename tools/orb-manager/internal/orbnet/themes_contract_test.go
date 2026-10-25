@@ -73,8 +73,8 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 	for _, e := range l.Themes {
 		byName[e.Name] = e
 	}
-	if byName["aurora"].ID != "9b89025ce7a6" {
-		t.Errorf("aurora id = %q, want the stem theme_id(name) issues", byName["aurora"].ID)
+	if byName["aurora"].ID != "clock-aurora-958c30f62484" {
+		t.Errorf("aurora id = %q, want the compound stem theme_stem(clock, name) issues", byName["aurora"].ID)
 	}
 	if !byName["aurora"].Active || byName["damaged"].OK {
 		t.Errorf("load state lost: %+v", l.Themes)
@@ -149,7 +149,7 @@ func TestThemeUploadFilesByTheEmbeddedName(t *testing.T) {
 	if row == nil {
 		t.Fatalf("the uploaded theme is not on the card: %+v", l.Themes)
 	}
-	want, _ := ThemeIDOf("Spring Boulevard")
+	want, _ := ThemeIDOf("clock", "Spring Boulevard")
 	if row.ID != want {
 		t.Errorf("filed under %q, want theme_id(name) = %q", row.ID, want)
 	}
@@ -251,7 +251,7 @@ func TestThemeStoreRejectsANameWhereItWantsAnID(t *testing.T) {
 	}
 	// Passing the gate locally and reaching a device that knows the id is the happy path;
 	// this proves the double is really the one answering.
-	_, err := c.ThemeStore(ip, "000000000000")
+	_, err := c.ThemeStore(ip, "clock-x-000000000000")
 	if err == nil {
 		t.Fatal("store of an id the card does not hold succeeded")
 	}

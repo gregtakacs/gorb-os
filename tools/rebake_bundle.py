@@ -184,8 +184,8 @@ def rebake(src, dst, name=None, serial=0):
     nfail = verify(got[0], g, planes, art, scr_w, scr_h, hdr, name or h["name"])
     print("wrote %s: %d B, format %d, %d elements, art %d B; verify %d failure(s)"
           % (dst, out, hdr["fmt"], len(recs), len(art), nfail))
-    # The identity the device keys on: the name hashed to the card stem.
-    print("  name %-20r -> card file %s.orbtheme" % (nm, ot.theme_id(nm)))
+    # The identity the device keys on: the pair the single section names.
+    print("  name %-20r -> card file %s" % (nm, ob.card_name(nm, got)))
     if nfail:
         refuse("the re-bake failed its own round trip: %d field(s) disagree with "
                "the source geometry above" % nfail)

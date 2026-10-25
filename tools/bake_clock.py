@@ -2782,18 +2782,12 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             sys.exit("--orbtheme refused: {}".format(_e))
         print("wrote {} ({} B, {} B of pixels + {} B of geometry)".format(
             args.orbtheme, n, len(blob.buf), len(geom)))
-        # FORMAT 2 makes the card filename a pure function of the name baked inside the
-        # container: the device files the card copy under sha256(name)[:12].orbtheme, so
-        # what this file is named on disk is irrelevant — the page and the card derive it
-        # from the header. The name you typed here is therefore the only thing to get
-        # right; print the id it produces so a hand-copied card can be named to match.
-        tid = _ot.theme_id(name)
-        print("  name {:<24s} -> card file {}.orbtheme".format(repr(name), tid))
-        stem = os.path.splitext(os.path.basename(args.orbtheme))[0]
-        if stem != tid:
-            print("  (to hand-copy this to the card, name it \"{}.orbtheme\"; the page "
-                  "renames the upload by its header name and ignores this file's name)"
-                  .format(tid))
+        # FORMAT 2 is retired: the device refuses this container at the door, and
+        # card naming moved to the (slug, name) pair a FORMAT 3 bundle carries.
+        # Say so HERE rather than print a stem this file can never earn.
+        print("  (FORMAT 2 is retired — the device refuses {}; re-export as a "
+              "FORMAT 3 single-section bundle — tools/orbbundle.py card_name() "
+              "names the card file it earns)".format(args.orbtheme))
 
     if args.dump_dir:
         dump_inspection(args.dump_dir, blob.buf, gif,

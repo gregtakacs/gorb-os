@@ -75,6 +75,38 @@ IDX_ORDER = ("slug_off", "slug_len", "abi_min", "abi_max", "n_elem",
 IDX_PACK  = "<4H7I2H"
 
 
+def card_stem(name, sections):
+    """
+    The card filename stem a written or read bundle earns: the compound name the
+    device files a theme under — slug, legible token, app-scoped hash. A theme
+    container carries exactly one section, and that section's slug is the file's
+    owner; a multi-section bundle has no single owner to name it after, and the
+    device's door refuses it exactly here. Mirrors orb_theme.c's theme_stem()
+    through orbtheme.card_stem(), the one sanitizer and hash.
+    """
+    slugs = [x["blob"]["slug"] if "blob" in x else x["slug"] for x in sections]
+    if len(slugs) != 1:
+        raise ValueError("a theme file carries exactly one section — this one "
+                         "carries %d" % len(slugs))
+    return _ot.card_stem(slugs[0], name)
+
+
+def card_name(name, sections):
+    """
+    card_stem() plus the extension — the filename to hand-copy to the card.
+    """
+    return card_stem(name, sections) + ".orbtheme"
+
+
+def CardName(path):
+    """
+    The card filename the bundle at `path` will be filed under — what
+    `orbbundle.CardName(path)` gives the hub's replace-by-name flow.
+    """
+    h, secs = read_bundle(path)
+    return card_stem(h["name"], secs) + ".orbtheme"
+
+
 def check_slug(slug):
     """The one slug rule, restated here rather than imported from orbapp so a theme
     bake never needs the app container's module. Must stay byte-identical to

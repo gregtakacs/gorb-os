@@ -122,8 +122,8 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	uploadable := fakeContainer(t, "aurora")
 	steps := []func() error{
 		func() error { _, err := c.ThemeList(ip); return err },
-		func() error { _, err := c.ThemeStore(ip, "9b89025ce7a6"); return err },
-		func() error { _, err := c.ThemeDelete(ip, "f893c0d634b3"); return err },
+		func() error { _, err := c.ThemeStore(ip, "clock-aurora-9b89025ce7a6"); return err },
+		func() error { _, err := c.ThemeDelete(ip, "weather-x-f893c0d634b3"); return err },
 		func() error { _, err := c.ThemeRescan(ip); return err },
 		func() error { _, err := c.ThemeUpload(ip, uploadable, false); return err },
 		func() error { _, err := c.ThemeUpload(ip, uploadable, true); return err },
@@ -135,8 +135,8 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	}
 	want := []string{
 		"GET /api/v1/sd",
-		"POST /api/v1/sd/bundle?id=9b89025ce7a6",
-		"POST /api/v1/sd/delete?id=f893c0d634b3",
+		"POST /api/v1/sd/bundle?id=clock-aurora-9b89025ce7a6",
+		"POST /api/v1/sd/delete?id=weather-x-f893c0d634b3",
 		"POST /api/v1/sd/rescan",
 		"POST /api/v1/sd/theme",
 		"POST /api/v1/sd/theme?overwrite=1",
@@ -176,9 +176,11 @@ func TestThemeUploadCarriesNoName(t *testing.T) {
 	}
 }
 
-// The firmware owns the id rule (orb_theme_id_ok in main/art/orb_theme.c): exactly 12
-// chars of [0-9a-f]. The client mirrors it so a malformed handle never reaches a device
-// whose own first act is to 400 it, and so uppercase or traversal never leaves the box.
+// The firmware owns the id rule (orb_theme_id_ok in main/art/orb_theme.c): the compound
+// stem "<slug>-<token>-<12 hex>" inside the one FATFS name rule. The client mirrors it so
+// a malformed handle never reaches a device whose own first act is to 400 it, and so
+// uppercase, a bare hex tail, or traversal never leaves the box. A lone 12-hex id is
+// refused here: per-app theming made the slug part of the handle.
 func TestThemeIDsAreCheckedBeforeDialing(t *testing.T) {
 	dialed := false
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +191,13 @@ func TestThemeIDsAreCheckedBeforeDialing(t *testing.T) {
 	c := NewClient(2 * time.Second)
 	bad := []string{"", " ", "9B89025CE7A6", "9b89025ce7a", "9b89025ce7a6f",
 		"gb89025ce7a6", "../etc", "a/b/c/d/e/f", "9b8902 5ce7a6", "aurora",
-		"9b89025ce7a6/", "-b89025ce7a6", "_b89025ce7a6"}
+		"9b89025ce7a6", // the FORMAT 2 era's whole stem: a hex tail names no app now
+		"-b89025ce7a6", "_b89025ce7a6",
+		"clock-x-9B89025CE7A6",   // uppercase tail
+		"clocK-x-a1b2c3d4e5f6",   // uppercase in the slug
+		"clock-.x-a1b2c3d4e5f6",  // dot inside the token's leading edge
+		"clock-x.y-a1b2c3d4e5f6", // dot inside the token
+		"clock--a1b2c3d4e5f6"}    // empty token
 	for _, id := range bad {
 		if _, err := c.ThemeStore(ip, id); err == nil {
 			t.Errorf("store(%q) was accepted", id)
@@ -198,7 +206,10 @@ func TestThemeIDsAreCheckedBeforeDialing(t *testing.T) {
 			t.Errorf("delete(%q) was accepted", id)
 		}
 	}
-	for _, id := range []string{"9b89025ce7a6", "000000000000", "ffffffffffff"} {
+	for _, id := range []string{"clock-aurora-9b89025ce7a6", "weather-x-000000000000",
+		"menu-a-ffffffffffff", "my_app-x-9b89025ce7a6", "clock-Aurora-9b89025ce7a6"} {
+		// The last two probe the rule's edges: '_' is a legal slug byte, and the
+		// token is decoration — a hand rename keeping the case is still addressable.
 		if _, err := c.ThemeStore(ip, id); err != nil {
 			t.Errorf("store(%q) was refused: %v", id, err)
 		}
@@ -219,21 +230,21 @@ func TestThemeIDOfMatchesTheCanonicalPacker(t *testing.T) {
 	for _, tc := range []struct {
 		name, id string
 	}{
-		{"aurora", "9b89025ce7a6"},
-		{"Aurora", "e9de098c7733"},
-		{"a", "ca978112ca1b"},
-		{"Neon Clock", "c02019da0ef0"},
-		{"Mirage \u2014 Gold", "373b51cc021b"},
-		{"\u00fcnt\u00f6me \u2603", "fd5b280e3bfe"},
-		{strings.Repeat("x", 55), "d5e285683cd4"},
+		{"aurora", "958c30f62484"},
+		{"Aurora", "fede927ce7de"},
+		{"a", "45b613c4cf4a"},
+		{"Neon Clock", "6c55873ea699"},
+		{"Mirage \u2014 Gold", "fe74010a96bc"},
+		{"\u00fcnt\u00f6me \u2603", "abbca87ae206"},
+		{strings.Repeat("x", 55), "9d42d2fec21b"},
 	} {
-		got, err := ThemeIDOf(tc.name)
+		got, err := ThemeIDHexOf("clock", tc.name)
 		if err != nil {
-			t.Errorf("ThemeIDOf(%q): %v", tc.name, err)
+			t.Errorf("ThemeIDHexOf(\"clock\", %q): %v", tc.name, err)
 			continue
 		}
 		if got != tc.id {
-			t.Errorf("ThemeIDOf(%q) = %s, want %s (tools/orbtheme.py's theme_id)", tc.name, got, tc.id)
+			t.Errorf("ThemeIDHexOf(\"clock\", %q) = %s, want %s (tools/orbtheme.py's theme_id)", tc.name, got, tc.id)
 		}
 	}
 }

@@ -149,7 +149,7 @@ def main():
     assert sc2["bg_frames"] == n - 1 and sc2["gif_frames"] == 0, sc2
     assert c2["sprites"][0]["off"] == 0 and c2["sprites"][0]["size"] == sz
     print("  wrote %s: name %r id %s, bank %d keyframes @ %d fps loop, art %d B"
-          % (a.out, h2["name"], ot.theme_id(h2["name"]), n, a.fps, h2["art_size"]))
+          % (a.out, h2["name"], ot.card_stem("clock", h2["name"]), n, a.fps, h2["art_size"]))
     return 0
 
 

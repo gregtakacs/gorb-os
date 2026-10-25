@@ -152,11 +152,13 @@ def build_units(out):
     dump(geom, os.path.join(out, "geom.bin"))
     ot.write_container(os.path.join(out, "container.bin"), m["name"], geom, art,
                        W, H, serial=m["serial"], baked_ms=m["bakedMs"])
-    # The card filename the device will file this container under, from the name inside
-    # it. The JS suite pins its own themeIdFromDigest against this value, which is the
+    # The card filename the device will file this container under, from the (slug,
+    # name) pair inside it. The JS suite pins its own themeIdFromDigest against this value, which is the
     # only check anywhere that the third implementation of the identity rule agrees with
     # the first two (tools/orbtheme.py and the firmware's theme_id()).
-    m["themeId"] = ot.theme_id(m["name"])
+    m["slug"] = "clock"
+    m["themeId"] = ot.theme_id(m["slug"], m["name"])
+    m["cardStem"] = ot.card_stem(m["slug"], m["name"])
     m["nameBytes"] = len(m["name"].encode("utf-8"))
     m["geomHex"] = geom.hex()
     m["geomSize"], m["artSize"] = len(geom), len(art)

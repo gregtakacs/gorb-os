@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 )
 
 // The device-side THEME API, in one place: what main/net/orb_net.c registers, and
@@ -47,6 +48,10 @@ import (
 type ThemeEntry struct {
 	Name    string `json:"name"`
 	ID      string `json:"id"`
+	// App is the stem's first token — the owning app — even on a row whose header
+	// never got read. It is what the hub's card groups by, and what the device's
+	// own picker filters on. "" only on a device too old to answer it.
+	App     string `json:"app"`
 	Why     string `json:"why"`
 	Bytes   uint32 `json:"bytes"`
 	Serial  uint32 `json:"serial"`
@@ -92,36 +97,136 @@ type ThemeList struct {
 	Themes    []ThemeEntry `json:"themes"`
 }
 
-// ThemeIDHex is ORB_THEME_ID_HEX: the length of a card filename stem.
+// ThemeIDHex is ORB_THEME_ID_HEX: the length of the identity tail of a card stem.
 const ThemeIDHex = 12
 
-// themeIDRe is orb_theme_id_ok in main/art/orb_theme.c, which admits exactly 12
-// chars of [0-9a-f] and nothing else — uppercase, 11 or 13 chars, '/' and "../" all
-// refused before the card is touched. The device checks it again on the resolve path;
-// this is the edge, so a malformed id is refused here rather than dialled.
-var themeIDRe = regexp.MustCompile(`^[0-9a-f]{12}$`)
+// ThemeStemMax is ORB_THEME_HANDLE_MAX == ORB_SD_NAME_MAX: the length ceiling of a
+// whole card stem — slug, token, and the hex tail that carries the identity.
+const ThemeStemMax = 55
 
-// CheckThemeID reports whether id is a theme id this device could have issued.
+// slugRe is the one slug rule orb_bundle_slug_rule() applies to a section's owner:
+// lowercase a-z 0-9 _, 1..23 bytes. The stem's first token must answer to it.
+var slugRe = regexp.MustCompile(`^[a-z0-9_]{1,23}$`)
+
+// hexTailRe is the stem's identity half: exactly 12 lowercase hex.
+var hexTailRe = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// CheckThemeID reports whether id is a card stem this device could have issued.
+// It mirrors orb_theme_id_ok() in main/art/orb_theme.c: the whole stem inside the
+// one FATFS name rule (orb_sd_name_ok's charset), a legal slug before the first
+// '-', a tail of exactly 12 lowercase hex after the last, and a token between
+// them that is non-empty and carries no dot. The token is NOT recomputed from
+// any name: per-app theming made it decoration, and a hand rename that keeps the
+// slug and the hex keeps the theme addressable — so this checks the SHAPE and
+// the device re-checks the HASH against the file's own header. '/' and "../" all
+// fail here, before the card is dialled; the device checks it again on resolve.
 func CheckThemeID(id string) error {
-	if !themeIDRe.MatchString(id) {
-		return fmt.Errorf("orbnet: %q is not a theme id: it must be the 12 lowercase hex chars the device issued for a theme it is holding", id)
+	if err := checkCardName(id); err == nil && slugRe.MatchString(stemSlug(id)) {
+		tok := stemToken(id)
+		if tok != "" && !strings.ContainsRune(tok, '.') && hexTailRe.MatchString(stemHex(id)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("orbnet: %q is not a theme id: it must be \"<slug>-<token>-<12 hex>\", the compound stem the device issued for a theme it is holding", id)
+}
+
+// checkCardName is orb_sd_name_ok: 1..55 bytes of [A-Za-z0-9._-], no leading dot.
+func checkCardName(name string) error {
+	if name == "" || len(name) > ThemeStemMax || name[0] == '.' {
+		return fmt.Errorf("orbnet: %q is not one FATFS name", name)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-') {
+			return fmt.Errorf("orbnet: %q carries byte %d, outside the card name rule", name, c)
+		}
 	}
 	return nil
 }
 
-// ThemeIDOf is the firmware's theme_id() and tools/orbtheme.py's theme_id(): the card
-// stem a name yields, hex(sha256(name))[:12] over the UTF-8 bytes up to the NUL, never
-// over the padded NAME_MAX array. Use it to show an operator where a file will land,
-// and to check a row's id against the name beside it — never to build a card path, and
-// never to address a theme the device has not listed. An empty name is refused for the
-// firmware's own reason: otherwise every nameless theme hashes to one constant.
-func ThemeIDOf(name string) (string, error) {
+// StemSlug, StemToken, StemHex split a card stem the way the device does: slug up
+// to the first '-', hex after the last, token in between. Empty when the stem has
+// no '-'; a stem that must not be empty goes through CheckThemeID first.
+func StemParts(stem string) (slug, token, hexTail string) {
+	f := strings.IndexByte(stem, '-')
+	l := strings.LastIndexByte(stem, '-')
+	if f < 0 || l <= f {
+		return "", "", ""
+	}
+	return stem[:f], stem[f+1 : l], stem[l+1:]
+}
+
+func stemSlug(stem string) string { s, _, _ := StemParts(stem); return s }
+func stemToken(stem string) string { _, t, _ := StemParts(stem); return t }
+func stemHex(stem string) string   { _, _, h := StemParts(stem); return h }
+
+// NameToken is the sanitizer theme_name_token() in main/art/orb_theme.c and
+// name_token() in tools/orbtheme.py mirror byte for byte: lowercase ASCII letters
+// and digits, every other byte a separator, runs collapsed to one '-', leading and
+// trailing separators dropped, cut at 24 so the pair around it always fits the
+// 55-byte stem. A name with nothing legible in it yields "theme".
+func NameToken(name string) string {
+	var out []byte
+	pending := false
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		alnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if !alnum {
+			pending = len(out) > 0
+			continue
+		}
+		if pending && len(out) < 24 {
+			out = append(out, '-')
+		}
+		pending = false
+		if len(out) >= 24 {
+			break
+		}
+		out = append(out, c)
+	}
+	tok := strings.TrimRight(string(out), "-")
+	if tok == "" {
+		return "theme"
+	}
+	return tok
+}
+
+// ThemeIDOf is the firmware's theme_stem() and tools/orbtheme.py's card_stem(): the
+// compound card stem the device files (slug, name) under — slug, the name sanitized
+// into a token, and hex(sha256(slug/name))[:12] over the UTF-8 pair, never over the
+// padded NAME_MAX array. Use it to show an operator where a file will land, and to
+// check a row's stem against the name beside it — never to build a card path, and
+// never to address a theme the device has not listed. An empty slug or name is
+// refused for the firmware's own reason: a nameless theme hashes to a constant.
+func ThemeIDOf(slug, name string) (string, error) {
 	if err := CheckThemeName(name); err != nil {
 		return "", err
 	}
-	d := sha256.Sum256([]byte(name))
+	if !slugRe.MatchString(slug) {
+		return "", fmt.Errorf("orbnet: theme slug %q is not lowercase a-z 0-9 _ of 1..23 chars", slug)
+	}
+	d := sha256.Sum256([]byte(slug + "/" + name))
+	id := hex.EncodeToString(d[:])[:ThemeIDHex]
+	return slug + "-" + NameToken(name) + "-" + id, nil
+}
+
+// ThemeIDHexOf returns just the identity tail of ThemeIDOf — the 12 hex the device
+// hashes from the pair, for callers that need the id without the filename.
+func ThemeIDHexOf(slug, name string) (string, error) {
+	if err := CheckThemeName(name); err != nil {
+		return "", err
+	}
+	if !slugRe.MatchString(slug) {
+		return "", fmt.Errorf("orbnet: theme slug %q is not lowercase a-z 0-9 _ of 1..23 chars", slug)
+	}
+	d := sha256.Sum256([]byte(slug + "/" + name))
 	return hex.EncodeToString(d[:])[:ThemeIDHex], nil
 }
+
 
 // ThemeNameMax is ORB_THEME_NAME_MAX - 1 from main/art/orb_theme.h: the name field is
 // 56 bytes and the last is the NUL the C reader stops at, so 55 bytes is the longest

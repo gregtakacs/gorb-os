@@ -117,6 +117,25 @@ esp_err_t orb_files_register(const char *app_slug, const orb_file_src_t *src)
         ESP_LOGE(TAG, "\"%s\": ext \"%s\" must carry the dot", app_slug, src->ext);
         return ESP_ERR_INVALID_ARG;
     }
+    /* The prefix is matched by strncmp against a stem, so it is checked here
+     * the way the ext is: lowercase slug bytes with at most one trailing '-',
+     * which is what a slug plus the compound name's separator spells. A prefix
+     * carrying a '.' or a second '-' would match nothing the device writes and
+     * everything a hand-named file hides. */
+    if (src->name_prefix[0]) {
+        const size_t pn = strlen(src->name_prefix);
+        bool ok = pn <= ORB_FILES_PREFIX_MAX;
+        for (size_t i = 0; ok && i < pn; i++) {
+            const char c = src->name_prefix[i];
+            ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
+                 (c == '-' && i + 1 == pn && i > 0);
+        }
+        if (!ok) {
+            ESP_LOGE(TAG, "\"%s\": name_prefix \"%s\" is not a slug with its '-'",
+                     app_slug, src->name_prefix);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
 
     for (size_t i = 0; i < ORB_FILES_SRC_MAX; i++) {
         src_rec_t *r = &s_srcs[i];
@@ -130,8 +149,9 @@ esp_err_t orb_files_register(const char *app_slug, const orb_file_src_t *src)
             r->used = true;
             r->src  = *src;
             snprintf(r->app, sizeof r->app, "%s", app_slug);
-            ESP_LOGI(TAG, "%s: \"%s\" -> %s/*%s (max %u)", app_slug, src->id,
-                     src->dir, src->ext, (unsigned)src->max_entries);
+            ESP_LOGI(TAG, "%s: \"%s\" -> %s/%s*%s (max %u)", app_slug, src->id,
+                     src->dir, src->name_prefix[0] ? src->name_prefix : "",
+                     src->ext, (unsigned)src->max_entries);
             return ESP_OK;
         }
     }
@@ -179,7 +199,8 @@ bool orb_files_path(const orb_file_src_t *src, const char *name,
     return true;
 }
 
-int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg)
+int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg,
+                   int *counted_p)
 {
     if (src == NULL || cb == NULL) return -1;
     if (orb_sd_ensure_mounted() != ESP_OK) return -1;
@@ -187,8 +208,11 @@ int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg)
     orb_sd_lock();
 
     const size_t elen = strlen(src->ext);
+    const size_t plen = strlen(src->name_prefix);
     int kept = 0;
     int seen = 0;
+    int counted = 0;
+    if (counted_p) *counted_p = 0;
 
     DIR *d = opendir(src->dir);
     if (!d) {
@@ -200,8 +224,13 @@ int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg)
         return -1;
     }
 
+    /* The loop runs to the end of the directory even once the cap is full: the
+     * count of everything carrying the extension is what tells a 19-file card
+     * "8 shown", and it costs a readdir, not an open. A name the prefix hides
+     * is counted and NOT opened — one app's busy directory cannot spend
+     * another app's callback time, and cannot spend its open()s either. */
     struct dirent *de;
-    while (kept < (int)src->max_entries && (de = readdir(d)) != NULL) {
+    while ((de = readdir(d)) != NULL) {
         const size_t len = strlen(de->d_name);
         if (len <= elen || strcmp(de->d_name + (len - elen), src->ext) != 0) continue;
 
@@ -215,6 +244,9 @@ int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg)
         memcpy(rec.name, de->d_name, len - elen);
         rec.name[len - elen] = '\0';
         if (!orb_sd_name_ok(rec.name)) continue;
+        counted++;
+        if (plen && strncmp(rec.name, src->name_prefix, plen) != 0) continue;
+        if (kept >= (int)src->max_entries) continue;
 
         char path[ORB_SD_PATH_MAX];
         if (!orb_files_path(src, rec.name, path, sizeof path)) continue;
@@ -241,7 +273,9 @@ int orb_files_walk(const orb_file_src_t *src, orb_file_each_fn cb, void *arg)
     closedir(d);
     orb_sd_unlock();
 
-    if (seen) ESP_LOGI(TAG, "%s: kept %d of %d *%s", src->dir, kept, seen, src->ext);
+    if (counted_p) *counted_p = counted;
+    if (seen) ESP_LOGI(TAG, "%s: kept %d of %d *%s (%d named the extension)",
+                       src->dir, kept, seen, src->ext, counted);
     return kept;
 }
 

@@ -84,7 +84,9 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 
 // The id the seeded aurora carries: theme_id("aurora"). Written out so a test that
 // drifts from the firmware's hash fails rather than following the client.
-const auroraID = "9b89025ce7a6"
+// The compound card stem the seeded aurora carries: theme_stem("clock", "aurora"),
+// written out so a test that dials a row does not re-derive ids it must match.
+const auroraID = "clock-aurora-958c30f62484"
 
 // themeBody builds a call's JSON so tests do not hand-write strings with quotes in
 // them, which is how an id like ../etc would have been mistyped rather than tested.
@@ -230,7 +232,7 @@ func TestThemeRoutesReachTheOrbAsTheFirmwareRegistersThem(t *testing.T) {
 	cases := []struct{ path, id, wantMethod, wantPath, wantQuery string }{
 		{"/api/theme/list", "", http.MethodGet, "/api/v1/sd", ""},
 		{"/api/theme/install", auroraID, http.MethodPost, "/api/v1/sd/bundle", "id=" + auroraID},
-		{"/api/theme/delete", "7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=7565e4480e56"},
+		{"/api/theme/delete", "weather-x-7565e4480e56", http.MethodPost, "/api/v1/sd/delete", "id=weather-x-7565e4480e56"},
 		{"/api/theme/rescan", "", http.MethodPost, "/api/v1/sd/rescan", ""},
 	}
 	for _, tc := range cases {
@@ -282,7 +284,7 @@ func TestThemeUploadForwardsTheFileBytes(t *testing.T) {
 	// it, so the card can name what it just pushed.
 	env := decodeEnv(t, rec)
 	data, _ := env["data"].(map[string]any)
-	want, _ := orbnet.ThemeIDOf("Perpetual Calendar")
+	want, _ := orbnet.ThemeIDOf("clock", "Perpetual Calendar")
 	if data["name"] != "Perpetual Calendar" || data["id"] != want {
 		t.Errorf("upload reply = %v, want the embedded name and its id %s", env["data"], want)
 	}

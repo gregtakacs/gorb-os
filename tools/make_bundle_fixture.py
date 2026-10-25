@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import orbbundle as ob
+import orbtheme as _ot
 import theme_schema as ts
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
@@ -275,7 +276,11 @@ def main():
 
     side = {
         "name": NAME,
-        "theme_id": hashlib.sha256(NAME.encode("utf-8")).hexdigest()[:12],
+        # Per-app theming files a bundle by (slug, name): the sidecar carries the
+        # card stem for EVERY section's app, so the Go and JS mirrors are pinned
+        # against the Python one on each slug the fixture ships with.
+        "card_stems": {sec["slug"]: ob.card_stem(NAME, [sec]) for sec in SECTIONS},
+        "theme_ids": {sec["slug"]: _ot.theme_id(sec["slug"], NAME) for sec in SECTIONS},
         "format": 3,
         "abi": ob.GEOM_ABI3,
         "bytes": len(raw),

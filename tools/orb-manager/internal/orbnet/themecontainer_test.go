@@ -58,8 +58,11 @@ func TestContainerParsesTheAuthoritysBundle(t *testing.T) {
 	if c.Name != side["name"] {
 		t.Errorf("name is %q, want %q from the sidecar", c.Name, side["name"])
 	}
-	if c.ID != side["theme_id"] {
-		t.Errorf("theme_id is %q, want %q", c.ID, side["theme_id"])
+	// The hub files a bundle under its FIRST section's stem (slug-sorted index):
+	// the sidecar holds one stem per app the fixture themes.
+	stems := side["card_stems"].(map[string]any)
+	if c.ID != stems[side["slugs"].([]any)[0].(string)] {
+		t.Errorf("card stem is %q, want %q", c.ID, stems[side["slugs"].([]any)[0].(string)])
 	}
 	if int64(c.Format) != int64(3) || int64(c.ABI) != int64(side["abi"].(float64)) {
 		t.Errorf("format/abi = %d/%d, want 3/%v", c.Format, c.ABI, side["abi"])
@@ -208,13 +211,28 @@ func TestContainerAcceptsBothCapsExactly(t *testing.T) {
 	} {
 		body := fixture(t, "format3-pair.orbtheme")
 		putWord(body, tc.word, tc.cap)
+		// The reader walks the layout the firmware's door walks: a geom_size at the
+		// cap moves the art start with it, or the file contradicts itself before the
+		// caps ever get asked. The art-cap case cannot fit in a 1.2 MB fixture at
+		// all, so its honest assertion is that the hub refused the LAYOUT and not
+		// the budget gate, whose rule is `== cap` accepted.
+		if tc.word == wGeomSize {
+			putWord(body, wArtOff, 65536)
+			putWord(body, wArtSize, 4096)   // the fixture's own bank cannot span a moved art start
+		}
 		putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
 		c, err := ContainerName(body)
+		if tc.word == wArtSize {
+			if err == nil || strings.Contains(err.Error(), "a theme slot holds") {
+				t.Errorf("art at exactly the cap: err = %v, want a layout refusal, not the budget gate", err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Errorf("word %d at exactly %d B was refused: %v", tc.word, tc.cap, err)
 			continue
 		}
-		if tc.word == wGeomSize && c.GeomSize != tc.cap {
+		if c.GeomSize != tc.cap {
 			t.Errorf("geom_size read back as %d", c.GeomSize)
 		}
 	}
@@ -261,22 +279,19 @@ func TestLargestLegalBundleIsExactlyTheProxyCap(t *testing.T) {
 	}
 }
 
-// A container whose index lies about its own walk must still install: the hub reports the
-
-// sections it could not read as none, and lets the device's door — the authority — decide.
-// The alternative is a hub that vetoes a file on a rule the device did not apply.
+// A container whose index lies about its own count is not a container: per-app
+// theming reads the index for the identity itself, so forwarding the file would
+// forward an id the hub could not vouch for. The device's parse_core refuses the
+// identical file with the identical sentence; the hub's door says it first.
 func TestContainerReportsNoSectionsOnALiedIndex(t *testing.T) {
 	body := fixture(t, "format3-pair.orbtheme")
 	putWord(body, wNSections, 3) // the index head still says 2
 	putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
 	c, err := ContainerName(body)
-	if err != nil {
-		t.Fatalf("a miscounted index vetoed the upload: %v", err)
+	if err == nil {
+		t.Fatalf("a miscounted index sailed through the hub: %+v", c)
 	}
-	if c.Sections != nil {
-		t.Errorf("sections = %v, want none: header names 3, the index holds 2", c.Sections)
-	}
-	if c.NSections != 3 {
-		t.Errorf("NSections is %d, want the header's own 3", c.NSections)
+	if !strings.Contains(err.Error(), "header names 3 sections, the index holds 2") {
+		t.Errorf("err = %v, want the firmware's header-vs-index sentence", err)
 	}
 }

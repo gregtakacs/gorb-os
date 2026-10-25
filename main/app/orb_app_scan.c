@@ -197,7 +197,7 @@ int orb_app_scan(orbapp_scan_entry_t *out, int cap)
     scan_ctx_t c = { .out = out, .cap = cap, .n = 0 };
     const int64_t t0 = esp_timer_get_time();
     ESP_LOGI(TAG, "listing %s", src->dir);
-    if (orb_files_walk(src, scan_entry, &c) < 0) return -1;
+    if (orb_files_walk(src, scan_entry, &c, NULL) < 0) return -1;
     ESP_LOGI(TAG, "%d entr%slisted in %lld ms", c.n, c.n == 1 ? "y " : "ies ",
              (long long)((esp_timer_get_time() - t0) / 1000));
     return c.n;

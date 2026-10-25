@@ -6,6 +6,10 @@
   "baked_ms": 1730000000000,
   "baked_ms_word": 3423147008,
   "bytes": 1271040,
+  "card_stems": {
+    "clock": "clock-longplayer-pair-a0ff40af0b9e",
+    "weather": "weather-longplayer-pair-44ad4df27293"
+  },
   "format": 3,
   "frames": {
     "weather.bank": 4,
@@ -27,5 +31,8 @@
     "clock",
     "weather"
   ],
-  "theme_id": "d9acdaa0c420"
+  "theme_ids": {
+    "clock": "a0ff40af0b9e",
+    "weather": "44ad4df27293"
+  }
 }

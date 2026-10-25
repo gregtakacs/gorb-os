@@ -125,7 +125,7 @@ def main():
     assert sc2["bg_frames"] == BG_N - 1 and sc2["gif_frames"] == 0, sc2
     assert c2["sprites"][0]["off"] == 0 and c2["sprites"][0]["size"] == sz
     print("%s: name %r id %s, plate bank %d keyframes @ %d fps, art %d B"
-          % (OUT, h2["name"], ot.theme_id(h2["name"]), BG_N, BG_FPS,
+          % (OUT, h2["name"], ot.card_stem("clock", h2["name"]), BG_N, BG_FPS,
              h2["art_size"]))
 
 

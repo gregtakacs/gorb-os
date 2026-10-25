@@ -258,6 +258,17 @@ static void poll_timer_cb(lv_timer_t *timer)
                           : (delta ? (pressed ? "turn+press" : "turn")
                                     : (pressed ? "press" : "hold")));
 
+    /* D38: a USB share window owns the card, and the card owns the glass — no
+     * frame reaches the panel for the window's whole life, so every screen
+     * beneath it is a painting of the past. The gate goes on the event stream
+     * itself, above even a requested screen switch: the card paints over
+     * whatever the freeze caught, a press or a hold anywhere is the door back
+     * to a live dial, and turns are swallowed rather than spent moving a
+     * cursor nobody can see. The idle dim above still heard the touch: waking
+     * a frozen-but-honest card is not a lost event. The registry, not this
+     * file, knows whose view the card is (C6). */
+    if (orb_app_share_gate(pressed || lpress)) return;
+
     /* A screen requested over HTTP is applied here, on the LVGL task, before any
      * knob event is considered: lv_screen_load() off this task is the widget
      * race every other rule in this file exists to avoid. */

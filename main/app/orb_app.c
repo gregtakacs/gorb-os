@@ -1176,6 +1176,18 @@ bool orb_app_opt_long(const orb_app_t *app)
     return app->iface->opt_long((orb_app_t *)app);
 }
 
+bool orb_app_share_gate(bool press)
+{
+    /* D38: the USB share window's claim on the knob. This is the one input
+     * question that is NOT asked of the current screen: during a window the
+     * glass paints no frames, so the screen the freeze caught is history, and
+     * the shell's share card (menu_view's PG_SHARE) speaks for the whole dial
+     * — press or hold is the stop, turns are spent. The router asks the
+     * registry rather than naming the view (C6); the registry's answer is
+     * false on every build and every poll that holds no window. */
+    return menu_view_share_gate(press);
+}
+
 bool orb_app_has_options(const orb_app_t *app)
 {
     /* Whether an app OFFERS a page is decided by what it declares, not by the

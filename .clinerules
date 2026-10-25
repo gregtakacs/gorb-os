@@ -1268,3 +1268,246 @@ the real client against a stub DOM under the node binary this box carries at
 a hand-written element stub is enough to catch a boot throw and a broken click path).
 Re-fetch the **served** file after `make manager`: assets are embedded, so a running hub
 serves the bytes it was built with, never the ones on disk.
+## Store-path stack overflow and the httpd boot squeeze — measured 2026-10-24, orb-B
+
+- `orb_jobs`'s 4096 B worker **no longer fits the theme-store chain**: two
+  stores of the 4.94 MB tourbillon overflowed it identically (PC 0x4037c87b,
+  during `copy_bundle3`), each after the erase, so each crash left the single
+  slot torn and the dial on the base face. The fix in the tree raises the
+  worker to 8192 with the watermark line as proof; read `orb_jobs.c`'s header
+  comment before touching either number.
+- A torn slot is not a neutral state: same-day boots with the torn slot
+  measured `pre-netif internal free=65215` against `78311` on a whole-slot
+  boot — ~13 KB gone before `orb_net` runs (`app: menu: faulting HOME entry`
+  is present on both sides and did not explain it; unnamed). Under that
+  penalty **httpd's boot-instant task create fails** (`ESP_ERR_HTTPD_TASK`,
+  `post-wifi_start largest=7168/8192/12288` all died; the P5.5 ladder's slack
+  is gone on HEAD) — page dead, store unreachable, repair impossible. This
+  cascades from the overflow: crash → torn slot → starved boot → dead page.
+- A failed `httpd_start` **leaks its listen socket**: IDF frees the server
+  (`esp_http_server/src/httpd_main.c:469`) but closes fds only on the normal
+  stop path (`:350`). Every later attempt in the same boot then dies at
+  `httpd_server_init: error in listen (112)` — the ten-second deferred-retry
+  loop observed all evening never recovers. Deferring the start after a
+  failure is pointless: fix the boot instant or reboot.
+- The stale-`PROJECT_VER` trap bit the reasoning, not just the stamp: the
+  evening's only httpd-healthy boot ran the session-start binary (stamped
+  `14884ae`, compile-time 16:46:36 — the audit log names it), so "the 8192
+  build booted fine" was false. When a boot behaves strangely, `grep
+  "Compile time\|App version"` the capture BEFORE comparing heap ladders.
+- The 1739 ms Skeleton-store success line predates the current HEAD on this
+  board; `orb_jobs_post(bundle_job)` at 4096 has since failed for BOTH
+  bundle sizes tested (2.6 MB and 4.9 MB). Bench rule: after any store-path
+  crash, land a good store in the same session before the pool penalty
+  compounds.
+## The reclaim boot — measured 2026-10-24 late, same board
+
+- With `orb_jobs` at 8192 AND the two orb_net statics reclaimed (`ota_buf`
+  4,096 + `s_scan_json` 1,408 to lazy PSRAM), the board **boots stable**: one
+  boot, WiFi creds accepted and stored, sntp synced, mDNS announcing, no
+  reboot for the rest of the capture. The crash-loop half of the cascade is
+  dead. The repair itself needed no full factory reflash — the regenerated
+  `storage` image at /tmp (ledger cleared, creds re-injected) held across
+  boots, and the torn slot self-healed on the first good boot.
+- **httpd is fixed as of the 23:01 build.** The +9 KB hunt ended with one
+  symbol: `s_lay_key` in `clock_view.c` (2,960 B incl. `s_lay_handle`) was the
+  entire regression versus the last known-good map — `mapdiff` of
+  `gorb-os-2/build/gorb-os.map` against the live one showed it as the only
+  `.bss` symbol grown ≥ 256 B. It moved to lazy PSRAM beside its siblings
+  (`s_wp_x0/x1` 1,864 B in the same file, `s_chk_*` ~3.5 KB in `orb_theme.c`
+  — the latter had a second, unreferenced duplicate set at line ~1194, also
+  removed). The real bar measured by the new retry ladder in `orb_net.c`:
+  `httpd_create` + `httpd_server_init` consume ~5.6 KB of the hole before the
+  single task spawn (IDF 5.4 has ONE xTaskCreate, no separate ctrl task — the
+  older "12 KB" figure in this file was right, the two-task story was wrong).
+  Post-fix boot: `post-wifi_start largest=17,408`, `httpd_start` succeeds on
+  the 8,192 tier first try, `post-httpd_start internal free=7,663`. The
+  ladder (8192→6144→4096 with heap state per miss) stays as the instrument;
+  a TASK-failure retry is futile — the first attempt's socketpair lands in
+  TIME_WAIT and retries die `error in listen (112)` — so the ladder's value
+  is the print, not the retry.
+- **USB disk mode failed `lun: ESP_ERR_NO_MEM` for the same heap reason, in
+  a different door** (owner hit it 23:07): the component's storage object
+  embeds the 8 KB write buffer inline (`MSC_BUFSIZE=8192`) and allocs it as
+  ONE `MALLOC_CAP_DMA` calloc; `orb_sd` lends the display tile ring only
+  inside `orb_sd_lock()/unlock()` pairs, so by the time
+  `tinyusb_msc_new_storage_sdmmc()` asked, the ring was funded back and the
+  largest DMA block was 7,168. Fixed by holding `display_dma_borrow()` across
+  driver-install + storage-new + tinyusb-install in `orb_usb_msc_start`
+  (measured window: largest 19,456). Held through the whole share window on
+  purpose: flushes drop, the panel holds its GRAM (frozen dial), and stop is
+  a reboot anyway. Bench-trap: the glass freezes the moment share arms — by
+  design, not a crash. Not yet bench-pressed: the only door is the menu row
+  "Restart to share disk", so the owner's next press is the live test.
+- **Preview is a hub page, never a firmware page (D28/D33):** the theme
+  editor/preview is orb-manager's Watch Composer at
+  `http://127.0.0.1:3779/composer/` (`web/composer/dial-renderer.js`).
+  `orb_net.c` contains zero previews by design. SD theme load is
+  firmware-side and live at `http://<orb>/themes` — it lists the CARD, so an
+  empty card reads as "No themes on the card yet. Upload a .orbtheme below"
+  and the page's own Upload button writes to the card. If the page is gone
+  AND the composer is gone, check two things: `httpd` (boot heap lines) and
+  whether something killed `bin/orb-manager`.
+- **Boot-loop reports from a wired board with the hub running are the HUB,
+  until proven otherwise — and the proven fix is in, 2026-10-24 23:30.**
+  Three self-sustaining loops, all reading one board's reboot-blink as a
+  brand-new cable: (1) `cableProof.retain` deleted a port's throttle clock
+  the moment the port left the sweep, so the five-second sweep pinged the
+  "new" board forever — fixed with `cableProofGoneGrace` (45 s; a same-MAC
+  return keeps its clock, a MAC swap drops it); (2) on this board's
+  USB-Serial-JTAG console, a plain host open asserts DTR/RTS and the ROM's
+  auto-reset can land the chip in the download stub — `cableConsolePing` now
+  always leaves with `esprom.HardReset` (the identity.go pattern): the board
+  is handed back running its app, never stranded; (3) the paid probe's own
+  reboot made the liveness dial fail 10 s later, `noteWiredSilence` flagged
+  it, and the flag bought a fresh reset per tick — fixed by arming
+  `expectSelfReboot` around the paid pulse and re-arming it when the probe
+  ENDS (the handshake eats ten seconds off the front of the 90 s window), so
+  the silence a probe caused excuses itself until the dial answers. The old
+  plan claim that the PING "forces no reboot" is false for USB-JTAG leads:
+  on this bench the door costs at most one boot per window, and the throttle
+  is what bounds it now. `-probe-cables=false` only skips the launch burst;
+  the sweep doors run under every flag and are the ones that were pulsing.
+  `selfRebootExcused` keys on `macBare` — colon-vs-bare MAC forms have
+  already fooled this guard once.
+  Its built-in firmware is embedded at `make manager` time: after any
+  `idf.py build`, refresh with `make firmware && make manager` or the hub's
+  Update button silently downgrades the board. Started headless on this box
+  as `bin/orb-manager -addr 127.0.0.1:3779 -no-window -probe-cables=false`.
+- **Console / flashing moved to the native USB-JTAG port `/dev/ttyACM1`**
+  (mac 44:BD:8D:78:26:18); the CH340 `ttyUSB0` path is gone. The CDC console
+  streams **only to a freshly-opened, DTR-asserted handle**: `cat` shows
+  nothing, and an esptool open/close detaches the stream. Working recipe:
+  reset with `esptool --after no_reset chip_id`, then `esptool run` (or a
+  hard reset) and open `/tmp/orb_serC.py` within ~200 ms — it timestamps
+  lines and catches the 1 s/7 s/9 s boot ladder (appinstall, httpd, sta ip).
+  esptool from `/home/greg/.espressif/python_env/idf5.4_py3.14_env/bin/`,
+  storage partition read/write at `0xD60000`, 24 KB.
+- **`esptool run` leaves the chip in DOWNLOAD mode** (`rst:0x15
+  USB_UART_CHIP_RESET, boot:0x23 DOWNLOAD`): the dial goes black, the console
+  goes silent, and it reads exactly like a boot-loop or a dead flash. Escape
+  with `esptool --after hard_reset <cmd>`; confirm liveness first with
+  `ping 192.168.2.34` before diagnosing firmware. The build environment is
+  `~/esp/esp-idf` **v5.4** via `/tmp/buildB.sh` (build, serflash, 25 s serial
+  capture, DONE marker) — the `/home/rocklinux/esp-idf-v5.5.2` path in older
+  notes is wrong; the running image reports `idf: v5.4`.
+- **The clock-app disappearance was self-inflicted by the 22:11 rebuilt
+  `storage` image** (`/tmp/stor_new.bin`): it was regenerated containing
+  only `orb.net`/`orb.idle`/`orb.grants`, so it silently dropped the
+  `orb.app<slot>` enable words, `orb.os`, `tz`, and the whole `orb.fault`
+  namespace — `appinstall: resolved 1`, dial lost clock. **Re-flashing the
+  untouched pre-repair capture `/tmp/storB.bin` restored everything**
+  (`enabled "clock" from its stored word`, 2 walkable apps, tz US/Central,
+  idle 60 s) and did NOT restart the fault loop — its `orb.fault` counts
+  were already zeroed and the torn slot had self-healed. Bench rule:
+  **image surgery on `storage`, never image regeneration**; `nvs_tool.py`
+  (IDF `nvs_flash/nvs_partition_tool/`, run under the idf5.4 venv python)
+  dumps a capture to JSON so the edit is by-namespace and auditable.
+- **The 4096→8192 `orb_jobs` stack is not why httpd dies.** A boot with the
+  old 4096 worker still logged `ESP_ERR_HTTPD_TASK`; the reclaim build
+  (worker 8192 + ota_buf/s_scan_json in PSRAM, `post-wifi_start
+  largest=10240`) fails identically. The failing ask is the 8192 httpd
+  task stack with ~3 KB of struct/ctx/semaphore/socket allocs taken before
+  it — needs largest ≳ 12 KB at the boot instant. HEAD's .bss is 130,624 B
+  vs 121,584 B at the last config-page-good boot: find those +9 KB first
+  (theme-parser-era growth), then re-run the httpd-start ladder at
+  12288/14336. The 8192 worker stays — the store-path overflow at 4096 is
+  reproduced twice with a PC trace and the 8 KB figure is the documented
+  plan fix.
+
+
+## The USB Drive share: honest labels, and the window's own card — measured 2026-10-25
+
+- **The press shares the card NOW. It never restarted to share** — the old row
+  label "Restart to share disk" was a lie the code never executed. The reclaim
+  restart is real (console and FatFs both return only at boot). The USB Drive
+  row still labels its press the door during a window, because the hub's menu
+  walk reads the row table, not the glass; on the dial the door no longer lives
+  there (next bullet).
+- **A share window freezes the glass on purpose**: `orb_usb_msc_start()` holds
+  `display_dma_borrow()` for the whole window (the MSC storage object needs the
+  ring's 8 KB as one DMA block; it cannot be re-funded while the mode lives), so
+  every flush after the borrow is DROPPED (display.c `s_ring_parked` branch —
+  dropped frames still call flush_ready, so the LVGL task and the 10 ms router
+  poll keep running). The CO5300 holds its own GRAM: frozen, not blank.
+- **The freeze now preserves the share card, not a dead menu** (owner ruling
+  2026-10-25: the frozen row list read as "my orb is locked up"). `menu_view`
+  owns `PG_SHARE`, a row-less card: "USB SHARED" at 48 px, one line saying the
+  computer holds the card, and the door in words. `input_router`'s poll calls
+  `menu_view_share_gate(pressed||lpress)` right after the idle-dim touch line and
+  before any dispatch: while `orb_usb_msc_window_open()` (PENDING or ACTIVE) the
+  card is painted once (homed to the menu first if some other screen was up, so
+  even a boot-claim share's frozen frame carries words), every press or hold
+  ANYWHERE posts the stop, and turns are swallowed — a cursor moving on a panel
+  that cannot repaint is the knob looking broken. The page survives
+  disarm/re-entry: `repaint()` paints the card from any armed state while
+  `s_pg` is the share page, and `menu_view_set_armed` bows to the window.
+- **New MSC_PENDING state is the press's word**: `orb_usb_msc_request_start()`
+  flips it synchronously on the LVGL task BEFORE act_app's repaint, so the card
+  (and the row's true exit text) land on the LAST frame the glass will get.
+  job_start sleeps 150 ms before touching anything so that frame commits while
+  the ring is still funded — two router polls of slack, by design. Failure
+  paths reset PENDING→OFF: frames resume, and `menu_view_service` sees a share
+  page under a closed window and repaints the menu live.
+- **Stop says goodbye live, best effort**: `orb_usb_msc_stop` now sets
+  `s_stopping` (state word `"stopping"`, card line "The orb is restarting"),
+  `tud_disconnect()`s the host, deletes the storage LUN, uninstalls the MSC
+  class and TinyUSB, and `display_dma_return()`s the ring — all inside the
+  750 ms the reboot timer allows. With the ring refunded, the gate's per-poll
+  repaint lands the closing card on a live panel before the boot; if the
+  refund cannot be funded, the frozen card (already the honest one) simply
+  holds until the reboot. No behavior regressed on failure; the volume stays
+  the host's either way, and the card is never handed back mid-window.
+- **Bench proof (usbip lead, WSL2, board on 192.168.2.32)**: walked the menu by
+  injector (cursor log lines confirmed rows), press armed the share (log:
+  handover → "tile ring borrowed 18640 B" → TinyUSB install → "exporting the
+  whole card"), status flipped `host connected`, then ONE injected press rebooted
+  the board back to normal (`usb.state: "off"`, clean boot, hub logged refusal,
+  zero resets). `/api/v1/fb` cannot capture during a window ("capture buffer
+  held by a commit" — the capture rides on commits, and none land); verify the
+  frozen label's pixels with eyes on the bench.
+- **usbip caveat**: the console lead is attached from the Windows host via
+  usbipd-win. The MSC switch reconfigures the composite and the reclaim reboot
+  detaches it — after a bench share test, re-attach from Windows
+  (`usbipd attach --wsl -b <busid>`) before expecting /dev/ttyACM0. The hub
+  handles the gone-port window correctly: probe fails with "no answer on file",
+## The two invisible themes on orb-b — FORMAT 2 download names, measured 2026-10-25
+
+- Symptom: orb-b (Gold, .34) card had two .orbtheme copied on, the device page said
+  none. Boot log said `0 of 2 entries listed` and nothing else. The silence was the
+  bug's other half: `orb_files_walk` counts every `.orbtheme` then **skips, unopened,
+  any stem without the source's prefix** (`clock-` for the clock's themes source,
+  clock_view.c), and a skip printed nothing. Now it prints
+  `files: /sd/themes: hides "NAME" — the name lacks the clock-prefix` (orb_files.c).
+  Read that line before believing an empty page.
+- The two files were `ea5f6bdc79b8.orbtheme` + `32eddb138f42.orbtheme` =
+  **sha256(name)[:12] of the bare title** — the FORMAT 2 id rule. Content was healthy
+  FORMAT 3 ("Skeleton", "Open tourbillon"). Producer: the composer download AT
+  `2d27e35^` — it baked FORMAT 3 bytes but named the download with the retired
+  name-only hash (`stem = id || title`). `2d27e35` fixed the naming; a Chrome tab or
+  cache predating that commit still shipped the old name. The hub's UPLOAD door never
+  produces this: the firmware files every upload itself from the container header
+  (upload_end → theme_stem), which is why a 409-duplicate path always lands compound.
+- Repair loop, all of it over the bench doors: MSC share (menu walk + injected press,
+  see the 10-25 USB section) → Windows auto-mounted the card as E: → renamed the two
+  files to `orbtheme.card_name()`'s output (`clock-skeleton-209c630ff17d`,
+  `clock-open-tourbillon-4cfdd4c0d959`) → ONE injected press on the frozen page ran
+  the new opt_sel door: reboot, card re-mounted, usb.state off, and
+  `2 of 2 entries listed` with both rows verified. A press during the window is the
+  door on real hardware, not just in the test.
+- Hub-side close of the remaining hole (browser without crypto.subtle — every
+  plain-http non-localhost origin): `GET /api/theme/stem?name=` answers the compound
+  stem from Go's own sha256 (`orbnet.ThemeIDOf`), gated by requireControl like the
+  other theme routes; the composer's `cardStemFor` falls back to it before the raw
+  title, so a hub-served download is now named the way the card files it, from any
+  origin. `TestThemeStemNamesLikeTheDeviceFiles` pins the answer against orbnet's
+  mirror of the firmware rule. The title fallback survives only for file:// opens.
+- usbip truth from tonight: at MSC handover the composite reconfigures and the WSL
+  attach DIES ("connection closed", busid vanishes from the export list while Windows
+  claims the disk). After the reclaim reboot re-attach with
+  `sudo usbip attach -r 127.0.0.1 -b <busid>` (the serial port and the MAC that names
+  the board are in `usbip list --remote`). esptool while the hub also holds the port
+  can blip once — a retry while the hub is between probes flashed clean.
+
+  it does NOT reset (cableproof decline path).
+

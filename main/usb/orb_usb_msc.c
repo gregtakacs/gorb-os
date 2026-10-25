@@ -33,6 +33,7 @@
 #include "tinyusb_msc.h"
 
 #include "orb_usb_msc.h"
+#include "display.h"            /* display_dma_borrow — see orb_usb_msc_start */
 #include "orb_sd.h"
 #include "orb_jobs.h"
 #include "orb_app.h"        /* the service-tier row at the bottom of this file */
@@ -48,10 +49,17 @@ static const char *TAG = "orb_usb_msc";
  * on the strength of a press that meant something else. */
 #define MSC_NVS_KEY       "usb_disk"
 
-enum { MSC_OFF, MSC_ACTIVE };
+/* PENDING is the press's word, not the mode's: the press landed and the worker
+ * owns the job, but the card has not moved yet. It exists so the row repaints
+ * honestly BEFORE the tile ring is borrowed, because the frame painted at that
+ * moment is the last frame the glass will get until the reboot — a share window
+ * freezes the dial on whatever was funded when the loan opened (display.c, the
+ * tile-ring loan). */
+enum { MSC_OFF, MSC_PENDING, MSC_ACTIVE };
 
 static volatile int                 s_state;
 static volatile bool                s_host_up;     /* set by the ATTACHED event */
+static volatile bool                s_stopping;    /* the door was pressed; the reboot timer is running */
 static tinyusb_msc_storage_handle_t s_store;
 static bool                         s_tinyusb_up;  /* one install per boot, at most */
 static char                         s_reason[48] = "";
@@ -181,6 +189,7 @@ esp_err_t orb_usb_msc_start(void)
     orb_sd_raw_card_t card = NULL;
     const esp_err_t he = orb_sd_hand_to_usb(&card);
     if (he != ESP_OK) {
+        s_state = MSC_OFF;
         snprintf(s_reason, sizeof s_reason, "%s",
                  he == ESP_ERR_NOT_FOUND ? "no card in the socket" : esp_err_to_name(he));
         ESP_LOGE(TAG, "nothing to hand over: the card did not attach (%s)",
@@ -196,10 +205,25 @@ esp_err_t orb_usb_msc_start(void)
         .callback = msc_storage_cb,
         .user_flags.auto_mount_off = 1,
     };
+    /* 2026-10-24: the ring loan must cover the allocations, not just the card
+     * hand-over. orb_sd_lock lends and orb_sd_unlock returns, so the ring was
+     * already funded back when the component went looking for its storage
+     * object — which embeds the 8 KB write buffer inline (MSC_BUFSIZE=8192)
+     * and asks for it as one MALLOC_CAP_DMA calloc. Measured on the bench:
+     * that calloc met a largest DMA block of 7,168 B and answered NO_MEM
+     * ("lun: ESP_ERR_NO_MEM"); the same instant inside a borrow window shows
+     * 19,456 B free. Refcounted, so hand_to_usb's own inner pair nests here
+     * harmlessly. Held through the rest of the window on purpose: the flush
+     * path drops, the panel holds its GRAM, and the only exit from the mode
+     * is a reboot anyway (§6.1) — a funded ring buys a share window nothing. */
+    display_dma_borrow();
+
     esp_err_t e = tinyusb_msc_install_driver(&dcfg);
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        s_state = MSC_OFF;
         snprintf(s_reason, sizeof s_reason, "msc: %s", esp_err_to_name(e));
         ESP_LOGE(TAG, "tinyusb_msc_install_driver: %s", esp_err_to_name(e));
+        display_dma_return();
         orb_sd_hand_back();
         return e;
     }
@@ -216,17 +240,21 @@ esp_err_t orb_usb_msc_start(void)
     };
     e = tinyusb_msc_new_storage_sdmmc(&scfg, &s_store);
     if (e != ESP_OK) {
+        s_state = MSC_OFF;
         snprintf(s_reason, sizeof s_reason, "lun: %s", esp_err_to_name(e));
         ESP_LOGE(TAG, "tinyusb_msc_new_storage_sdmmc: %s", esp_err_to_name(e));
+        display_dma_return();
         orb_sd_hand_back();
         return e;
     }
     const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(usb_event_cb);
     e = tinyusb_driver_install(&tusb_cfg);
     if (e != ESP_OK) {
+        s_state = MSC_OFF;
         snprintf(s_reason, sizeof s_reason, "tinyusb: %s", esp_err_to_name(e));
         ESP_LOGE(TAG, "tinyusb_driver_install: %s", esp_err_to_name(e));
         (void)tinyusb_msc_delete_storage(s_store); s_store = NULL;
+        display_dma_return();
         orb_sd_hand_back();
         return e;
     }
@@ -242,18 +270,42 @@ esp_err_t orb_usb_msc_start(void)
     return ESP_OK;
 }
 
-/* No unmount and no hand-back here either, and that is the design rather than an
- * omission: the host may be mid-write, and the only moment it is safe to take the
- * card back is a boot — which is also the only way the console comes back (§6.1). */
+/* No unmount and no hand-back of the CARD here either, and that remains the
+ * design: the host may be mid-write, and the only moment it is safe to take
+ * the volume back is a boot. What does come back is the tile ring — 2026-10-24,
+ * after owners read the frozen window as a lock-up. The door press starts a
+ * 750 ms reboot timer; inside that window the USB side can be laid down
+ * honestly first (a clean host-facing detach, then the class and the driver —
+ * which frees the DMA memory the ring was lent to), so the flush path's own
+ * refund retry can paint the card's closing line before the panel goes dark.
+ * If the memory does not come back, nothing regresses: the ring stays parked
+ * and the frame the owner already reads is the one they keep until the boot. */
 esp_err_t orb_usb_msc_stop(void)
 {
-    if (s_state != MSC_ACTIVE) return ESP_OK;
+    if (s_state != MSC_ACTIVE || s_stopping) return ESP_OK;
+    s_stopping = true;
     ESP_LOGW(TAG, "rebooting out of disk mode — eject from the host first if it is copying");
+    tud_disconnect();                              /* the host sees go before we vanish */
+    if (s_store) { (void)tinyusb_msc_delete_storage(s_store); s_store = NULL; }
+    (void)tinyusb_msc_uninstall_driver();
+    if (s_tinyusb_up) { (void)tinyusb_driver_uninstall(); s_tinyusb_up = false; }
+    (void)display_dma_return();
     orb_jobs_reboot_soon("USB disk mode stopped");
     return ESP_OK;
 }
 
-static void job_start(void *arg) { (void)arg; (void)orb_usb_msc_start(); }
+static void job_start(void *arg)
+{
+    (void)arg;
+    /* The press set PENDING on the LVGL task and the menu repainted under it;
+     * give that frame time to reach the glass before the loan parks the ring.
+     * One poll period is 10 ms and the paint is submitted in the press's own
+     * handler pass, so this waits on a commit already in flight, not on a hope:
+     * the frame the freeze preserves is the honest one. */
+    vTaskDelay(pdMS_TO_TICKS(150));
+    if (s_state != MSC_PENDING) return;   /* withdrawn while the job queued */
+    (void)orb_usb_msc_start();
+}
 static void job_stop(void *arg)  { (void)arg; orb_usb_msc_stop(); }
 static void job_arm(void *arg)
 {
@@ -279,7 +331,17 @@ static esp_err_t post(orb_job_fn job)
 esp_err_t orb_usb_msc_request_start(void)
 {
     if (s_state == MSC_ACTIVE) return ESP_OK;
-    return post(orb_usb_msc_armed() ? job_arm : job_start);
+    /* Armed means the next boot is already promised to the disk; a press on the
+     * row cancels that instead (usb_opt_sel routes armed to disarm), so this
+     * arm path only runs from the boot claim, where NVS was already consumed. */
+    if (orb_usb_msc_armed()) return post(job_arm);
+    /* The state flips here, synchronously, on the press's own task — before the
+     * repaint act_app takes one call later can read it. That ordering is the
+     * whole point: it puts the true label on the last frame the glass gets. */
+    if (s_state == MSC_OFF) s_state = MSC_PENDING;
+    const esp_err_t e = post(job_start);
+    if (e != ESP_OK) s_state = MSC_OFF;   /* the worker refused: nothing pending */
+    return e;
 }
 
 esp_err_t orb_usb_msc_request_stop(void) { return post(job_stop); }
@@ -299,10 +361,14 @@ MTP row ran on, which is what makes them safe to call from a render callback on
 the LVGL task and from httpd alike. No card I/O, no network, no allocation. */
 bool orb_usb_msc_active(void)  { return s_state == MSC_ACTIVE; }
 bool orb_usb_msc_host_up(void) { return s_state == MSC_ACTIVE && s_host_up; }
+bool orb_usb_msc_window_open(void) { return s_state == MSC_PENDING || s_state == MSC_ACTIVE; }
+bool orb_usb_msc_stopping(void) { return s_stopping; }
 
 const char *orb_usb_msc_state(void)
 {
+    if (s_stopping)            return "stopping";
     if (s_state == MSC_ACTIVE)   return s_host_up ? "host connected" : "disk up, no host";
+    if (s_state == MSC_PENDING)  return "starting";
     if (orb_usb_msc_armed())     return "next boot: disk";
     if (s_reason[0])             return "failed";
     return "off";
@@ -321,17 +387,22 @@ post. */
 #define USB_ROW_NOTE    1        /* the one fact an owner cannot otherwise see    */
 #define USB_ROW_N       2
 
-static const char *const s_act_off   = "Restart to share disk";
+/* A press shares the card NOW; the mode has never restarted anything to get
+ * there. The armed path is the boot promise, not this press. */
+static const char *const s_act_off   = "Share the disk now";
 static const char *const s_act_armed = "Cancel the next boot";
 /* The only way out, and the honest label: stopping means a reboot, because the
- * console this mode gave up comes back no other way and because the card must not
- * be remounted under a host that may still be writing. */
-static const char *const s_act_on    = "Stop sharing, restart";
-/* The note's whole job is saying what the host owns. A disk the orb is also
- * mounted on would corrupt itself quietly; this mode cannot, because the orb puts
- * the volume down completely before handing it over — and the card is blank to the
- * dial until the reboot that follows. */
-static const char *const s_note_up   = "Host owns the whole card";
+ * console this mode gave up comes back no other way and because the card must
+ * not be remounted under a host that may still be writing. PENDING and the note
+ * row carry it too — a share window paints no more frames (the tile ring is on
+ * loan to the card), so this row's own press is the door, found blind or not. */
+static const char *const s_act_on    = "Press to restart, stop sharing";
+/* The note's whole job is saying what the press makes true, before it is true.
+ * During a window the note row carries the door instead (usb_opt_label): the
+ * glass paints no frames then, and a fact nobody can press is worth less than a
+ * press that gets the dial back. The card is blank to the dial until the reboot
+ * that follows a share — the orb puts the volume down completely before handing
+ * it over, which is why this mode cannot corrupt a volume it also mounts. */
 static const char *const s_note_off  = "Whole card, one disk, writable";
 static char s_val[40];
 
@@ -340,8 +411,13 @@ static int usb_opt_count(orb_app_t *app) { (void)app; return USB_ROW_N; }
 static const char *usb_opt_label(orb_app_t *app, int idx)
 {
     (void)app;
-    if (idx == USB_ROW_NOTE) return orb_usb_msc_active() ? s_note_up : s_note_off;
-    if (s_state == MSC_ACTIVE)            return s_act_on;
+    /* While the mode holds — or is committed to holding — the card, every row
+     * on this page carries the door. The glass cannot repaint during the
+     * window, so the row the owner sees selected when the freeze lands is the
+     * row they will press blind, whatever it was before: it must read as the
+     * exit on the note row too. */
+    if (s_state == MSC_ACTIVE || s_state == MSC_PENDING) return s_act_on;
+    if (idx == USB_ROW_NOTE) return s_note_off;
     if (orb_usb_msc_armed())              return s_act_armed;
     return s_act_off;
 }
@@ -363,10 +439,30 @@ static const char *usb_opt_value(orb_app_t *app, int idx)
 static void usb_opt_sel(orb_app_t *app, int idx)
 {
     (void)app;
+    /* A press during a window means the door, whichever row the selection
+     * drifted to while the glass was frozen: opt_label put the exit on every
+     * row for exactly this, and opt_sel honours that promise. The request is a
+     * post and a reboot, so nothing here touches the card or the USB stack. */
+    if (s_state == MSC_ACTIVE || s_state == MSC_PENDING) {
+        (void)orb_usb_msc_request_stop();
+        return;
+    }
     if (idx != USB_ROW_ACTION) return;
-    if (s_state == MSC_ACTIVE)             (void)orb_usb_msc_request_stop();
-    else if (orb_usb_msc_armed())          (void)orb_usb_msc_request_disarm();
-    else                                   (void)orb_usb_msc_request_start();
+    if (orb_usb_msc_armed())             (void)orb_usb_msc_request_disarm();
+    else                                 (void)orb_usb_msc_request_start();
+}
+
+/* Hold is the drift-proof door. The router offers it before the hold-to-home
+ * rule spends it (orb_app.h, opt_long), and while the mode owns the card there
+ * is nothing else a hold could usefully do on this page: home would switch a
+ * screen the glass cannot repaint. True means the hold was the exit; false
+ * leaves it the ordinary hold-to-home. */
+static bool usb_opt_long(orb_app_t *app)
+{
+    (void)app;
+    if (s_state != MSC_ACTIVE && s_state != MSC_PENDING) return false;
+    (void)orb_usb_msc_request_stop();
+    return true;
 }
 
 /* Nothing to build: there is no face, and every state the hooks read is RAM or an
@@ -382,6 +478,7 @@ static const orb_app_iface_t s_usb_iface = {
     .opt_value = usb_opt_value,
     .opt_sel   = usb_opt_sel,
     .opt_arm   = usb_opt_arm,
+    .opt_long  = usb_opt_long,
 };
 
 orb_app_t orb_app_usb_files_row = {
@@ -409,5 +506,7 @@ orb_app_t orb_app_usb_files_row = {
  * build, so the boot ladder calls it unguarded. Nothing here claims the card, so
  * an MTP build mounts /sd exactly as it always did. */
 bool orb_usb_msc_boot_claim(void) { return false; }
+bool orb_usb_msc_window_open(void) { return false; }
+bool orb_usb_msc_stopping(void) { return false; }
 
 #endif /* CONFIG_ORB_USB_MSC */

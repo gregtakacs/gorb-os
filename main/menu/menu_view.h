@@ -82,6 +82,17 @@ void menu_view_service(void);
  */
 bool menu_view_opt_long(void);
 
+/**
+ * D38: the USB share window's claim on the dial. Call from the router's poll,
+ * on the LVGL task, before any knob dispatch: while a share window holds the
+ * card, the glass paints no frames until the reclaim reboot, so the window
+ * puts its own full-screen card up (over any screen, once per window) and
+ * spends every knob event — press or hold stops the share, and a turn moves
+ * nothing worth moving. True means the event was the window's. False whenever
+ * no window is open, which is every poll of every other build and boot.
+ */
+bool menu_view_share_gate(bool press);
+
 #ifdef __cplusplus
 }
 #endif

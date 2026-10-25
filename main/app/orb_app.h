@@ -431,6 +431,16 @@ void orb_app_opt_arm(const orb_app_t *app, bool armed);
  *  the LVGL task, from the router's poll, so like every other answer here it may
  *  not block. */
 bool orb_app_opt_long(const orb_app_t *app);
+
+/**
+ * D38: the USB share window's claim on the knob, asked once per router poll
+ * before anything else is. True means the window spent the event: the shell's
+ * share card owns the glass for the window's whole life, a press or a hold
+ * anywhere stops the share, and turns are swallowed with it. False when no
+ * window is open. The current screen is NOT asked — under a frozen panel the
+ * screen the freeze caught cannot answer anything the owner can see.
+ */
+bool orb_app_share_gate(bool press);
 /** True while this entry has anything to show on the options page. */
 bool orb_app_has_options(const orb_app_t *app);
 

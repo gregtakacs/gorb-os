@@ -70,16 +70,37 @@ esp_err_t orb_usb_msc_request_disarm(void);
 /** True while the mode is up, whether or not a host has enumerated it. */
 bool orb_usb_msc_active(void);
 
+/** True for the whole share window — from the press (PENDING) through the
+ *  freeze to the reclaim reboot (ACTIVE). The frame the glass carries during
+ *  a window is the share card (menu_view), and every knob event anywhere on
+ *  the dial is the stop door (input_router) — this one flag is what both ask,
+ *  and it covers the pending half-second the row-level getter alone misses. */
+bool orb_usb_msc_window_open(void);
+
 /** True only when a host has configured the device. Sampled from the TinyUSB
  *  event callback here, not polled: MSC reports ATTACHED from tud_mount_cb, and
  *  the row's repaint is what reads the flag the event set. */
 bool orb_usb_msc_host_up(void);
 
-/** "off" / "next boot: disk" / "disk up, no host" / "host connected" / "failed". */
+/** "off" / "starting" / "next boot: disk" / "disk up, no host" / "host connected"
+ *  / "stopping" / "failed". "starting" is the press's word: the job is posted, the
+ *  card has not moved. It exists so the row repaints honestly before the share
+ *  window freezes the glass — the tile ring goes on loan to the card, the flush
+ *  path drops every frame after that, and the last painted frame is what the
+ *  owner reads until the reclaim reboot. That frame is now the share card
+ *  (menu_view's PG_SHARE): the router spends every press or hold anywhere on the
+ *  dial as the stop while the window is up, so a door that must be found blind
+ *  no longer exists. The USB Drive row still carries its own door for the hub's
+ *  menu walk, which reads the row table rather than the glass. */
 const char *orb_usb_msc_state(void);
 
 /** The last failure as the owner should read it, "" when there is none. */
 const char *orb_usb_msc_reason(void);
+
+/** True from the moment the stop door is pressed: the mode is still the disk's
+ *  — the reboot it asked for is on its 750 ms timer — but the honest word the
+ *  owner should be reading, on the card and over the hub alike, is "stopping". */
+bool orb_usb_msc_stopping(void);
 
 /** The registry's service row for this feature — the same row the MTP build
  *  exports, since it is the same feature with a different class behind it. */

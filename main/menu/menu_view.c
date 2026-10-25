@@ -43,6 +43,9 @@
 #include "orb_app_install.h"   /* APPS: the enable/uninstall doors (P5.3) */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_home() */
+#if CONFIG_ORB_USB_MSC
+#include "orb_usb_msc.h"      /* PG_SHARE: the share window's one fact (D38) */
+#endif
 
 static const char *TAG = "menu";
 
@@ -78,6 +81,7 @@ typedef enum {
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
     PG_APPACT,        /* one app's own doors: activate / enable / uninstall */
     PG_ABOUT,         /* inert identity list — no press does anything  */
+    PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
     PG_N
 } page_t;
 
@@ -162,6 +166,8 @@ static void act_appact(int);     static int  ord_appact(void);
 static void open_appact(const orb_app_t *);
 static int  rows_about(void);    static void label_about(int, char *, size_t, bool *);
 static const char *title_about(void);
+static int  rows_share(void);    static void label_share(int, char *, size_t, bool *);
+static const char *title_share(void);  static const char *hint_share(void);
 static int  top_os_rows(void);   static int app_row_index(const orb_app_t *);
 static void act_ap(void);        static void go_to(int to, int cur);
 static int  cap_pack(const orb_app_t *, int row);
@@ -1158,6 +1164,78 @@ static const char *title_about(void) { return "ABOUT"; }
 static const char *hint_about(void)  { return "rotate: read   push: nothing here"; }
 
 
+/* ---- D38: the share card ---------------------------------------------------
+ *
+ * A share window parks the display's tile ring on purpose — that memory is
+ * what funds the MSC storage object (orb_usb_msc.c) — so from the handover to
+ * the reclaim reboot no frame reaches the glass. Before this page existed the
+ * window froze on whatever the USB Drive row list happened to be: a dead menu
+ * with a spinner's status line, which owners read as a lock-up. The card is
+ * what the freeze preserves instead: what the orb gave, where it went, and the
+ * one gesture that takes it back. It carries no rows because during a window
+ * there is nothing to choose and one thing to press.
+ *
+ * The router calls menu_view_share_gate() on every poll while the window is
+ * open (input_router.c): the card paints once, before the handover, and every
+ * press or hold anywhere on the dial becomes the stop. PG_SHARE is reachable
+ * from no row — only the window itself puts it on the glass — and it survives
+ * disarm and re-entry, because during a window it is the only page that is
+ * true. */
+static bool s_share_shown;     /* the card is the painted truth (LVGL task)  */
+static bool s_share_homed;     /* the window dragged the dial to the menu    */
+
+static int rows_share(void) { return 0; }
+static void label_share(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    (void)row;
+    if (sel_hi) *sel_hi = false;
+    snprintf(out, outsz, "%s", "press the knob to stop sharing");
+}
+static const char *title_share(void) { return "USB SHARED"; }
+static const char *hint_share(void)
+{
+    /* The reboot is stated with the stop because the stop is the reboot: the
+     * only exit the mode has. Saying it here, before the press, is what keeps
+     * the press from reading as the second half of a lock-up. */
+    return "the card lives in the host until the orb restarts. "
+           "press the knob: it restarts and takes the card back";
+}
+
+bool menu_view_share_gate(bool press)
+{
+#if CONFIG_ORB_USB_MSC
+    if (!orb_usb_msc_window_open()) return false;
+    /* A boot-claim window can open under the clock, and a frozen clock with no
+     * words is exactly the panic this card exists to prevent. The router owns
+     * the screen, so the card asks for the menu through him, once per window —
+     * the same door a hold-to-home takes. */
+    if (!s_share_homed && input_router_current() != orb_app_home()) {
+        s_share_homed = true;
+        input_router_home();
+    }
+    if (!s_share_shown) {
+        s_share_shown = true;
+        s_pg = P(PG_SHARE);
+        s_cur = 0;
+        repaint();
+        ESP_LOGI(TAG, "share card up — the knob is the door");
+    }
+    if (press) (void)orb_usb_msc_request_stop();
+    /* Closing words go on the glass only once the worker has laid the USB
+     * side down and the flush path is funded again (orb_usb_msc_stop), and the
+     * dropped attempts in between leave no dirty area behind: while the door
+     * is falling, ask once per poll. It costs a repaint of one card, and the
+     * window it is trying to land in is 750 ms long. */
+    if (orb_usb_msc_stopping()) repaint();
+    return true;                      /* the window spent this poll's knob */
+#else
+    (void)press;
+    return false;
+#endif
+}
+
+
+
 /* The pack the worker decodes: slot in the high bits, cap, wanted state last.
  * Its own function because this is the whole contract between a press on a cap
  * row and the write that follows — a wrong shift here writes another app's word
@@ -1306,6 +1384,32 @@ static void dial_text(char *dst, size_t dstsz, const char *src)
 static void repaint(void)
 {
     if (!s_scr) return;
+
+#if CONFIG_ORB_USB_MSC
+    /* The share card owns the glass for the whole window, through disarm and
+     * re-entry alike: every paint path that lands here during the window paints
+     * the card and stops. A window can start while the menu is unarmed (the boot
+     * claim opens under the clock), and an unarmed branch that painted "MENU /
+     * push to open" over it would put a dead door back on the frozen frame.
+     * Every string here is ASCII, so the fold pass cannot grow one. */
+    if (s_pg == P(PG_SHARE)) {
+        char gl[160];
+        for (int i = 0; i < ROW_MAX; i++) {
+            lv_label_set_text(s_row_lbl[i], "");
+            lv_obj_set_style_bg_color(s_row[i], lv_color_black(), 0);
+        }
+        const bool closing = orb_usb_msc_stopping();
+        lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
+        lv_label_set_text(s_title, "USB SHARED");
+        lv_label_set_text(s_status, closing
+            ? "Stopping the share. The orb is restarting now."
+            : "The whole card is the computer's disk. Your files, themes and apps wait inside it.");
+        dial_text(gl, sizeof gl, closing ? "" : hint_share());
+        lv_label_set_text(s_hint, gl);
+        lv_obj_invalidate(s_scr);
+        return;
+    }
+#endif
 
     const int rows = page_rows();
     s_painted_rows = rows;
@@ -1484,6 +1588,13 @@ void menu_view_show(void) { repaint(); }
 
 void menu_view_set_armed(bool armed)
 {
+#if CONFIG_ORB_USB_MSC
+    /* During a share window the card outranks arming: the router may disarm on
+     * the way, and PG_LANDING under a parked ring is the dead frozen menu this
+     * card replaced. Keep the page where it is — repaint paints the card from
+     * any page state. */
+    if (orb_usb_msc_window_open()) { repaint(); return; }
+#endif
     s_armed = armed;
     s_pg    = armed ? P(PG_TOP) : P(PG_LANDING);
     s_cur   = 0;
@@ -1627,6 +1738,12 @@ const menu_page_t s_pages[PG_N] = {
                      .back_to = PG_APPS, .back_cur = 0 },
     [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
                      .hint = hint_about, .back_to = PG_TOP, .back_cur = 5 },
+    /* The share card: reachable from no row, carrying no rows of its own, and
+     * answering no press with navigation — the whole page is the door. The
+     * table holds it so the paint path stays the table's; the window installs
+     * it (menu_view_share_gate), and only the window can take it off. */
+    [PG_SHARE]   = { .rows = rows_share, .label = label_share, .title = title_share,
+                     .hint = hint_share, .back_to = MENU_GO_NONE, .back_cur = 0 },
 };
 
 /* The press, table-driven. The two answers every page shares are decided
@@ -1757,14 +1874,20 @@ void menu_view_apply_input(int32_t delta, bool pressed)
 
 bool menu_view_opt_long(void)
 {
-    /* Only an app's option page with a group actually open spends the press.
-     * Everything else — the landing, the menu's own pages, a page with no
-     * nesting — answers false and lets the hold home as C8 rules it.
+    /* Only an app's option page spends the press. Everything else — the
+     * landing, the menu's own pages, a page with nothing open — answers false
+     * and lets the hold home as C8 rules it.
+     *
+     * A page's own long hook has first refusal (D12), before the group rule:
+     * a row that declares a door means any hold on its page, not only a hold
+     * that happened to land over a group.
      *
      * The cursor goes back to the header the items just vanished under: leaving
      * it on an un-drawn row is the knob appearing not to work, because the next
      * detent would move from a row the glass is not showing. */
-    if (!s_armed || s_pg != P(PG_APP) || !s_app || s_group_open < 0) return false;
+    if (!s_armed || s_pg != P(PG_APP) || !s_app) return false;
+    if (orb_app_opt_long(s_app)) return true;
+    if (s_group_open < 0) return false;
     const int rows = orb_app_opt_count(s_app);
     const int at = row_to_vis(rows, s_group_open);
     ESP_LOGI(TAG, "hold closes group row %d: %s", s_group_open,
@@ -1777,6 +1900,21 @@ bool menu_view_opt_long(void)
 
 void menu_view_service(void)
 {
+#if CONFIG_ORB_USB_MSC
+    /* A loan that fell through (no card, a refused alloc) returns the mode to
+     * OFF without a reboot while the card may still be the painted page: the
+     * glass is live again, so put the page back that was there before the
+     * press. The reboot exit never reaches this line — the glass is parked
+     * and the boot that follows rebuilds everything. */
+    if (s_pg == P(PG_SHARE) && !orb_usb_msc_window_open()) {
+        s_share_shown = false;
+        s_share_homed = false;
+        s_pg = s_app ? P(PG_APP) : P(PG_TOP);
+        s_cur  = 0;
+        ESP_LOGI(TAG, "share refused — the menu is live again");
+        repaint();
+    }
+#endif
     /* Two independent reasons to repaint, either of which can fire without the
      * other: this screen's own worker landing a result (s_dirty), and the app
      * PG_APP is showing gaining or losing rows out from under a paint. The

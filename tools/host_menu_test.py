@@ -2034,8 +2034,8 @@ def main():
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "TZ", "APP", "DISPLAY",
                                        "TO", "PERMS", "CAPS", "APPS", "APPACT",
-                                       "ABOUT"])
-          and len(entry_ids) == 11, ",".join(entry_ids))
+                                       "ABOUT", "SHARE"])
+          and len(entry_ids) == 12, ",".join(entry_ids))
     _tparts = re.split(r"\[PG_(\w+)\]\s*=\s*\{",
                        tcode[tcode.index("s_pages[PG_N] = {") + len("s_pages[PG_N] = {"):])
     entries = dict(zip(_tparts[1::2], _tparts[2::2]))

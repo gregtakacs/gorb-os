@@ -694,10 +694,19 @@ ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 20
 # hour/minute/second mapping; an AUX row names its own drive and its own motion, and
 # a reader that has never heard of class 8 refuses it whole (D26) rather than let a
 # pointer that should be turning sit still.
-CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux")
+CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
+               "aux", "preview")
 CLASS_TEXT, CLASS_SPRITE, CLASS_HAND, CLASS_PLATE = 0, 1, 2, 3
 CLASS_RING, CLASS_BANK, CLASS_LAYER, CLASS_STATUS = 4, 5, 6, 7
 CLASS_AUX = 8
+# The preview class: one opaque RGB565 plane a theme carries so a picker can draw
+# the dial before it is installed. A theme's art bank costs it `w*h*2` for the
+# same reason orb_asset_slot_bytes() returns that width: the third byte per pixel
+# an RGB565A8 class pays would be a plane of 255s no reader consults. Appended at
+# 9 without moving CLASS_ABI or the enum's earlier order, exactly as D34 appended
+# AUX at 8: a theme that predates this build never names the slot, and a theme
+# that does names it against a class this writer stamps and this schema reads.
+CLASS_PREVIEW = 9
 
 # How an AUX row moves, in the order clk_aux_t.kind reads it. The first three are the
 # vocabulary clk_types.h has always carried; the two slide kinds are D34's append and
@@ -1119,10 +1128,11 @@ if __name__ == "__main__":
     assert ELEMENT_WORDS == 25 == len(ELEMENT_FIELDS), "element row width moved"
     assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[-2][0] == "parent" \
         and ELEMENT_FIELDS[-1][0] == "delay", "C4's append moved"
-    assert len(CLASS_NAMES) == 9, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert len(CLASS_NAMES) == 10, "class vocabulary moved; orb_assets.h's bound must agree"
     assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"
+    assert class_id("preview") == CLASS_PREVIEW == 9, "preview must append at 9, never move"
     _e = dict(blank_element(), **{"n": 0, "class": CLASS_HAND, "slot": 0,
                                   "flags": EF_OS_ADV, "order": 1, "alpha": 255,
                                   "frame0": 0, "n_frames": 1, "x": 10, "y": 20,
@@ -1159,7 +1169,11 @@ if __name__ == "__main__":
     assert check_element(_twin, "sentinel-aux-twin")
     assert unpack_elements(pack_elements([_twin]), 1)[0] == _twin, "a twin row must round-trip"
     for _bad, _why in (
-        (_with(**{"class": 9}), "unknown class"),
+        # Derived from the vocabulary's own width, so the next class appended at the
+        # end cannot quietly turn this refusal into an acceptance: an id past the end
+        # is a class this build cannot draw, and that is what D26 refuses at the door.
+        (_with(**{"class": len(CLASS_NAMES)}), "unknown class"),
+        (_with(**{"class": 200}), "class far past the vocabulary"),
         (_with(flags=EF_ALPHA | 0x80), "unknown flag bit"),
         (_with(flags=EF_AUX_SHADOW), "twin bit off class aux"),
         (_with(order=64), "order past the rungs"),

@@ -85,7 +85,19 @@ typedef enum {
      * class serve a running seconds hand, a retrograde reserve and a sliding date bar
      * without a new slot vocabulary. */
     ORB_ASSET_AUX,          /* one plate that moves by a value: it turns or slides   */
-    ORB_ASSET_CLASS_N       /* 9: the vocabulary's width, and the refusal bound      */
+    /* Preview's append. One static plate a theme carries so a picker can show the
+     * dial before it is installed, on the dial or in the browser. It is not a PLATE:
+     * a PLATE is the background a dial draws on, and an app can ship both a PLATE
+     * slot and a preview, which one name cannot tell apart. It is its own class for
+     * the reason AUX is — the class column is the cross-app vocabulary, and a row
+     * that means "a preview" reads as a preview to every app that has one.
+     * It is RGB565 with no alpha plane: the compositor draws it opaque, and a
+     * theme's bank charges it the two-byte shape orb_asset_slot_bytes() gives for
+     * this class. Appended at 9 without moving the ABI word, exactly as D34
+     * appended AUX at 8: an OS that predates this build refuses a row naming class 9
+     * at its own bound, and D26 makes that a refusal at the door. */
+    ORB_ASSET_PREVIEW,      /* one static plate: the theme's own preview            */
+    ORB_ASSET_CLASS_N       /* 10: the vocabulary's width, and the refusal bound     */
 } orb_asset_class_t;
 
 /* The dialect this vocabulary speaks — the container's geometry ABI, and not a

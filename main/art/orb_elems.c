@@ -34,9 +34,12 @@
 #define EF_HIDDEN  0x08u
 
 /* Class names in enum order, for the refusal sentences. Fixed strings: a sentence an
- * owner reads has to name the thing in the words the vocabulary uses. */
-static const char *const CLS_NAME[9] = {
-    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux"
+ * owner reads has to name the thing in the vocabulary's own words. The width tracks
+ * orb_asset_class_t's bound, and the sentinel lifts this table against the schema's
+ * CLASS_NAMES so a class appended on one side and not the other fails a suite. */
+static const char *const CLS_NAME[10] = {
+    "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
+    "preview"
 };
 
 static const char *cls_word(uint16_t cls)

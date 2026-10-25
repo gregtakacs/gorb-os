@@ -1125,6 +1125,7 @@ def lint_asset_mirror(hc, hh, ah):
                      "ORB_ASSET_PLATE", "ORB_ASSET_RING", "ORB_ASSET_BANK",
                      "ORB_ASSET_LAYER", "ORB_ASSET_STATUS",
                      "ORB_ASSET_AUX",       # D34's append, at 8
+                     "ORB_ASSET_PREVIEW",   # the preview plane's append, at 9
                      "ORB_ASSET_CLASS_N"], \
         "the class vocabulary moved: %s" % (names,)
     assert orbapp.ASSET_CLASSES == tuple(n.lower().replace("orb_asset_", "")

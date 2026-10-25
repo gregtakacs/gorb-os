@@ -551,8 +551,14 @@ def unpack_settings(blob, n):
 # it refuses a row naming 8 at its own bound instead of drawing a pointer that sits
 # still. An app offers it the way it offers a hand — one named slot, one plane — and
 # what moves is the row's own drive, which the manifest has no business naming.
+# `preview` appends at the END the same way, and this writer is the one that stamps it:
+# a theme carries its preview as one RGB565 plane the baker names `preview` and the
+# composer draws opaque, so the third byte per pixel an RGB565A8 class pays would be
+# a plane of 255s nobody reads. orb_asset_slot_bytes() gives the two-byte shape for
+# this class and this writer writes the extent the same width, so a preview's extents
+# validate against the rule the reader will apply to them.
 ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
-                 "aux")
+                 "aux", "preview")
 ASSET_MAX      = 16            # rows in one manifest's table; == ORBAPP_ASSETS_MAX
 ASSET_NAME_MAX = 12            # bytes incl NUL, and the name carries NO prefix
 ASSET_OWNER_MAX = SLUG_MAX - 1 # the `<slug>` half of an owner-scoped reference
@@ -574,11 +580,11 @@ ASSET_RE = re.compile(r"^[a-z0-9_]{1,%d}$" % (ASSET_NAME_MAX - 1))
 
 
 def asset_class(name):
-    """The wire index of a class name. A name outside the frozen eight is refused by
-    the writer, because a class this build cannot spell is a slot that can never
-    resolve, and D26 says an unresolved slot is not a thing to install."""
+    """The wire index of a class name. A name outside this build's vocabulary is
+    refused by the writer, because a class this build cannot spell is a slot that can
+    never resolve, and D26 says an unresolved slot is not a thing to install."""
     if name not in ASSET_CLASSES:
-        raise ValueError("asset class %r is not one of the eight the registry carries "
+        raise ValueError("asset class %r is not one of the classes the registry carries "
                          "(%s): a PR promotes a class, a manifest never does"
                          % (name, ", ".join(ASSET_CLASSES)))
     return ASSET_CLASSES.index(name)
